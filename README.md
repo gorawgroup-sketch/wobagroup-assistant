@@ -1,6 +1,6 @@
 # WOBA Copilot — Core
 
-Esqueleto conversacional del asistente administrativo para el grupo de 3 empresas (WOBA/BAE, Footprint, eWorks).
+Esqueleto conversacional del asistente administrativo para el grupo de 3 empresas (WOBA/BAE, Footprint, eWorks). Cuenta con patrón de tool use para consultar la base de conocimiento bajo demanda.
 
 Este repo contiene únicamente el **core**: recepción de mensajes de Telegram, envío del contexto a Claude, y respuesta al usuario. Los módulos de negocio (cashflow, fiscal, documental, onboarding...) se irán añadiendo en `/modules`.
 
