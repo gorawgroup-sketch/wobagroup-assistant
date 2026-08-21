@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const RESPONSABILIDADES_PATH = join(__dirname, "..", "..", "docs", "responsabilidades.md");
+const RESPONSABILIDADES_PATH = join(process.cwd(), "docs", "responsabilidades.md");
 
 let cachedKnowledge: string | null = null;
 
