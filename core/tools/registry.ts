@@ -1,12 +1,14 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolDefinition } from "./types";
 import { knowledgeBaseTool } from "./knowledgeBase";
+import { cashflowResumenTool } from "./cashflowResumen";
+import { cashflowDetalleTool } from "./cashflowDetalle";
 
 /**
  * Registro central de herramientas disponibles para Claude.
- * Cada nueva herramienta (cashflow, holded, drive, gmail...) se agrega aquí.
+ * Cada nueva herramienta (holded, drive, gmail...) se agrega aquí.
  */
-const tools: ToolDefinition[] = [knowledgeBaseTool];
+const tools: ToolDefinition[] = [knowledgeBaseTool, cashflowResumenTool, cashflowDetalleTool];
 
 /**
  * Definiciones en el formato que espera el parámetro `tools` de la API de Anthropic.
