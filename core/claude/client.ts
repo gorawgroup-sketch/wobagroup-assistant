@@ -1,7 +1,15 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { loadKnowledgeBase } from "../knowledge/loader";
+import { executeTool, getToolDefinitions } from "../tools/registry";
 
 const MODEL = "claude-sonnet-4-6";
+const MAX_TOOL_ITERATIONS = 5;
+
+const SYSTEM_PROMPT = [
+  "Eres el asistente administrativo interno de un grupo de 3 empresas: WOBA/BAE, Footprint y eWorks.",
+  "Respondes de forma clara, concisa y profesional, en español salvo que te escriban en otro idioma.",
+  "Tienes acceso a herramientas para consultar información interna del grupo. Úsalas cuando la " +
+    "pregunta del usuario lo requiera, en vez de inventar o asumir la respuesta.",
+].join("\n\n");
 
 let client: Anthropic | null = null;
 
@@ -17,35 +25,57 @@ function getClient(): Anthropic {
   return client;
 }
 
-function buildSystemPrompt(): string {
-  const knowledge = loadKnowledgeBase();
-
-  return [
-    "Eres el asistente administrativo interno de un grupo de 3 empresas: WOBA/BAE, Footprint y eWorks.",
-    "Respondes de forma clara, concisa y profesional, en español salvo que te escriban en otro idioma.",
-    "A continuación tienes el documento de responsabilidades del grupo como contexto de referencia:",
-    "---",
-    knowledge || "(No se ha cargado ningún documento de responsabilidades todavía.)",
-    "---",
-  ].join("\n\n");
-}
-
 /**
- * Envía el texto del usuario a Claude junto con el contexto de la base de conocimiento
- * y devuelve la respuesta en texto plano.
+ * Envía el texto del usuario a Claude con las herramientas disponibles. Si Claude decide
+ * invocar una o más, se ejecutan localmente y el resultado se le devuelve (tool_result)
+ * hasta que produzca una respuesta final en texto.
  */
 export async function askClaude(userText: string): Promise<string> {
   const anthropic = getClient();
+  const tools = getToolDefinitions();
 
-  const response = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    system: buildSystemPrompt(),
-    messages: [{ role: "user", content: userText }],
-  });
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
 
-  const textBlock = response.content.find((block) => block.type === "text");
-  return textBlock && textBlock.type === "text"
-    ? textBlock.text
-    : "No he podido generar una respuesta.";
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const response = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      tools,
+      messages,
+    });
+
+    if (response.stop_reason !== "tool_use") {
+      const textBlock = response.content.find((block) => block.type === "text");
+      return textBlock && textBlock.type === "text"
+        ? textBlock.text
+        : "No he podido generar una respuesta.";
+    }
+
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolUseBlocks = response.content.filter(
+      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+    );
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+    for (const block of toolUseBlocks) {
+      console.log(`[claude] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
+
+      const result = await executeTool(block.name, block.input as Record<string, unknown>);
+
+      console.log(`[claude] tool_result <- ${block.name} (${result.length} caracteres)`);
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: result,
+      });
+    }
+
+    messages.push({ role: "user", content: toolResults });
+  }
+
+  return "No he podido completar la respuesta tras varios intentos de usar herramientas.";
 }
