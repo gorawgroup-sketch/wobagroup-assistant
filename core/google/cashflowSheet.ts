@@ -61,6 +61,8 @@ export type DetalleCategoria =
   | "PAGOS_EXTRAS"
   | "APLAZAMIENTO_IMPUESTOS";
 
+export type EmpresaTag = "WOBA" | "EWORKS";
+
 export interface DetalleRegistro {
   categoria: DetalleCategoria;
   cliente?: string;
@@ -68,9 +70,15 @@ export interface DetalleRegistro {
   concepto?: string;
   semana: string;
   valor: string;
+  /**
+   * Empresa DUEÑA del movimiento (WOBA | EWORKS), leída de la columna de tag.
+   * undefined cuando el bloque no tiene esa columna (Pagos Extras, Aplazamiento
+   * Impuestos) — no debe confundirse con el nombre del cliente/proveedor.
+   */
+  empresa?: EmpresaTag;
 }
 
-type DetalleField = "cliente" | "proyecto" | "concepto" | "semana" | "valor";
+type DetalleField = "cliente" | "proyecto" | "concepto" | "semana" | "valor" | "empresa";
 
 interface DetalleBlock {
   categoria: DetalleCategoria;
@@ -80,9 +88,11 @@ interface DetalleBlock {
 
 // Bloques de la hoja DATOS. Deliberadamente NO incluye Gastos Fijos ni
 // Pagos Pendientes Alberto / Deudas Pendientes (fuera de alcance de este tool).
+// Solo Ingresos y Pagos Proyectos tienen columna de tag de empresa dueña
+// (F y R respectivamente); Pagos Extras y Aplazamiento Impuestos no la tienen.
 const DETALLE_BLOCKS: DetalleBlock[] = [
-  { categoria: "INGRESOS", range: "DATOS!B6:E500", fields: ["cliente", "proyecto", "semana", "valor"] },
-  { categoria: "PAGOS_PROYECTOS", range: "DATOS!N6:Q500", fields: ["cliente", "proyecto", "semana", "valor"] },
+  { categoria: "INGRESOS", range: "DATOS!B6:F500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
+  { categoria: "PAGOS_PROYECTOS", range: "DATOS!N6:R500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
   { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:V500", fields: ["cliente", "semana", "valor"] },
   { categoria: "APLAZAMIENTO_IMPUESTOS", range: "DATOS!AC6:AE500", fields: ["concepto", "semana", "valor"] },
 ];
@@ -110,7 +120,13 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
     rows.forEach((row) => {
       const record: Partial<DetalleRegistro> = { categoria: block.categoria };
       block.fields.forEach((field, colIdx) => {
-        record[field] = row[colIdx] ?? "";
+        const raw = row[colIdx] ?? "";
+        if (field === "empresa") {
+          const normalizado = String(raw).trim().toUpperCase();
+          record.empresa = normalizado === "WOBA" || normalizado === "EWORKS" ? (normalizado as EmpresaTag) : undefined;
+        } else {
+          record[field] = raw;
+        }
       });
 
       if (!record.semana && !record.valor) return;
