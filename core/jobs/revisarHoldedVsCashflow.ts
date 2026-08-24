@@ -1,7 +1,7 @@
 import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
-import { crearPropuesta } from "../telegram/proposalStore";
+import { crearPropuesta, actualizarMessageId } from "../google/proposalSheet";
 import { previousWeekRange, weekLabel, formatDateISO } from "../utils/isoWeek";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 
@@ -118,8 +118,9 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
       ].join("\n");
 
       try {
-        // Se envía primero con botones "pendientes" (el id real se agrega tras crear la propuesta)
-        const propuestaTemp = crearPropuesta({
+        // Se persiste primero (con messageId=0 provisional) para tener el id real
+        // antes de mandar los botones; se actualiza el messageId tras enviarlos.
+        const propuesta = await crearPropuesta({
           empresa: candidato.empresa,
           bloqueSugerido,
           clienteOConcepto: candidato.descripcion,
@@ -132,12 +133,12 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
 
         const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
           [
-            { text: "✅ Agregar", callback_data: `cf_approve:${propuestaTemp.id}` },
-            { text: "❌ Ignorar", callback_data: `cf_reject:${propuestaTemp.id}` },
+            { text: "✅ Agregar", callback_data: `cf_approve:${propuesta.id}` },
+            { text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` },
           ],
         ]);
 
-        propuestaTemp.messageId = messageId;
+        await actualizarMessageId(propuesta.id, messageId);
         propuestasCreadas++;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

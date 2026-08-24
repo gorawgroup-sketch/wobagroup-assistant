@@ -1,5 +1,5 @@
 import { answerCallbackQuery, editTelegramMessage } from "./client";
-import { consumirPropuesta } from "./proposalStore";
+import { consumirPropuesta } from "../google/proposalSheet";
 import { cashflowEscrituraTool } from "../tools/cashflowEscritura";
 import type { TelegramCallbackQuery } from "./types";
 
@@ -38,7 +38,7 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
     return;
   }
 
-  const propuesta = consumirPropuesta(id);
+  const propuesta = await consumirPropuesta(id);
 
   if (!propuesta) {
     await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
