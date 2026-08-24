@@ -97,21 +97,31 @@ export interface AlertaProxima {
   diasParaVencer: number;
 }
 
+// Ventana de aviso por defecto: las entradas "anual" tienen fecha aproximada
+// (no un día confirmado), así que se avisan con más margen que las
+// "mensual", cuyo día es exacto y conocido.
+const VENTANA_MENSUAL_DIAS = 3;
+const VENTANA_ANUAL_DIAS = 7;
+
 /**
- * Devuelve las entradas cuya próxima fecha cae dentro de los próximos
- * `diasVentana` días (incluyendo hoy), ordenadas por cercanía.
+ * Devuelve las entradas cuya próxima fecha cae dentro de su ventana de aviso,
+ * ordenadas por cercanía. Sin `diasOverride`, usa 3 días para "mensual" (día
+ * exacto) y 7 días para "anual" (fecha aproximada). Con `diasOverride`, esa
+ * misma ventana se aplica a todas por igual (para consultas puntuales tipo
+ * "qué vence en los próximos 60 días").
  */
-export function calcularProximasAlertas(diasVentana = 3, hoy: Date = new Date()): AlertaProxima[] {
+export function calcularProximasAlertas(hoy: Date = new Date(), diasOverride?: number): AlertaProxima[] {
   const entradas = loadCalendarioFiscal();
   const hoyNorm = normalizarFecha(hoy);
 
-  const alertas: AlertaProxima[] = entradas.map((entrada) => {
+  const alertas = entradas.map((entrada) => {
     const fecha = calcularProximaFecha(entrada, hoy);
     const diasParaVencer = Math.round((fecha.getTime() - hoyNorm.getTime()) / 86_400_000);
-    return { concepto: entrada.concepto, empresa: entrada.empresa, fecha, diasParaVencer };
+    const ventana = diasOverride ?? (entrada.tipo === "mensual" ? VENTANA_MENSUAL_DIAS : VENTANA_ANUAL_DIAS);
+    return { concepto: entrada.concepto, empresa: entrada.empresa, fecha, diasParaVencer, ventana };
   });
 
   return alertas
-    .filter((a) => a.diasParaVencer >= 0 && a.diasParaVencer <= diasVentana)
+    .filter((a) => a.diasParaVencer >= 0 && a.diasParaVencer <= a.ventana)
     .sort((a, b) => a.diasParaVencer - b.diasParaVencer);
 }

@@ -17,16 +17,21 @@ export const alertasFiscalesTool: ToolDefinition = {
     properties: {
       dias: {
         type: "number",
-        description: "Ventana de días hacia adelante a considerar. Opcional, por defecto 3.",
+        description:
+          "Ventana de días hacia adelante a considerar, aplicada por igual a todas las entradas. " +
+          "Opcional: si se omite, usa 3 días para vencimientos mensuales (día exacto conocido) y 7 " +
+          "días para anuales (fecha aproximada).",
       },
     },
   },
   handler: async (input) => {
-    const dias = typeof input.dias === "number" && input.dias > 0 ? input.dias : 3;
-    const alertas = calcularProximasAlertas(dias);
+    const diasOverride = typeof input.dias === "number" && input.dias > 0 ? input.dias : undefined;
+    const alertas = calcularProximasAlertas(new Date(), diasOverride);
 
     if (alertas.length === 0) {
-      return `No hay vencimientos fiscales ni pagos recurrentes en los próximos ${dias} días.`;
+      return diasOverride
+        ? `No hay vencimientos fiscales ni pagos recurrentes en los próximos ${diasOverride} días.`
+        : "No hay vencimientos fiscales ni pagos recurrentes próximos (3 días para mensuales, 7 para anuales).";
     }
 
     return alertas

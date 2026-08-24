@@ -1,8 +1,6 @@
 import { calcularProximasAlertas } from "../fiscal/calendario";
 import { sendTelegramMessage } from "../telegram/client";
 
-const VENTANA_DIAS = 3;
-
 function describirCuando(diasParaVencer: number): string {
   if (diasParaVencer === 0) return "HOY";
   if (diasParaVencer === 1) return "mañana";
@@ -11,9 +9,10 @@ function describirCuando(diasParaVencer: number): string {
 
 /**
  * Job diario: revisa /docs/calendario_fiscal.json y, si hay algún vencimiento
- * dentro de los próximos 3 días (incluyendo hoy), manda UN solo mensaje de
- * Telegram agrupando todos. Si no hay nada próximo, no manda nada. Solo
- * lectura y notificación — no escribe en ningún lado.
+ * dentro de su ventana de aviso (3 días para "mensual" con día exacto, 7 días
+ * para "anual" con fecha aproximada), manda UN solo mensaje de Telegram
+ * agrupando todos. Si no hay nada próximo, no manda nada. Solo lectura y
+ * notificación — no escribe en ningún lado.
  */
 export async function revisarAlertasFiscales(referenceDate: Date = new Date()): Promise<{
   alertasEnviadas: number;
@@ -25,7 +24,7 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
     return { alertasEnviadas: 0 };
   }
 
-  const alertas = calcularProximasAlertas(VENTANA_DIAS, referenceDate);
+  const alertas = calcularProximasAlertas(referenceDate);
 
   if (alertas.length === 0) {
     console.log("[revisarAlertasFiscales] Sin vencimientos próximos, no se envía nada.");
