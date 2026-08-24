@@ -1,0 +1,148 @@
+import { google, drive_v3 } from "googleapis";
+import { loadServiceAccountCredentials } from "../google/serviceAccount";
+
+let driveClient: drive_v3.Drive | null = null;
+
+/**
+ * Devuelve un cliente autenticado de la API de Google Drive (solo lectura),
+ * reutilizado entre llamadas. Usa la misma cuenta de servicio que Sheets.
+ */
+function getDriveClient(): drive_v3.Drive {
+  if (driveClient) return driveClient;
+
+  const credentials = loadServiceAccountCredentials();
+
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+  });
+
+  driveClient = google.drive({ version: "v3", auth });
+  return driveClient;
+}
+
+const FRIENDLY_TYPES: Record<string, string> = {
+  "application/vnd.google-apps.document": "Google Doc",
+  "application/vnd.google-apps.spreadsheet": "Google Sheet",
+  "application/vnd.google-apps.presentation": "Google Slides",
+  "application/pdf": "PDF",
+  "image/jpeg": "Imagen JPEG",
+  "image/png": "Imagen PNG",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word (.docx)",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel (.xlsx)",
+};
+
+export interface DriveSearchResult {
+  name: string;
+  folderPath: string;
+  friendlyType: string;
+  webViewLink: string;
+}
+
+interface FolderInfo {
+  name: string;
+  parentId?: string;
+}
+
+const MAX_ANCESTRY_HOPS = 30;
+
+/**
+ * Busca archivos por nombre en TODO lo que la cuenta de servicio puede ver
+ * (búsqueda global, indexada por nombre — rápida sin importar el tamaño del
+ * árbol), y luego, solo para los archivos que coinciden por nombre, verifica
+ * si están dentro del árbol de la carpeta raíz solicitada subiendo por la
+ * cadena de padres. Esto evita enumerar árboles de carpetas enteros (que
+ * pueden ser muy grandes y lentos) cuando solo hace falta filtrar unos pocos
+ * resultados. Solo lectura — no descarga ni lee contenido de archivos.
+ */
+export async function searchDriveFiles(rootFolderId: string, query: string): Promise<DriveSearchResult[]> {
+  const drive = getDriveClient();
+  const escapedQuery = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+  const q =
+    `name contains '${escapedQuery}' and mimeType != 'application/vnd.google-apps.folder' ` +
+    `and trashed = false`;
+
+  const candidatos: drive_v3.Schema$File[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.files.list({
+      q,
+      fields: "nextPageToken, files(id, name, mimeType, webViewLink, parents)",
+      pageSize: 100,
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      corpora: "allDrives",
+    });
+
+    candidatos.push(...(res.data.files ?? []));
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  const folderCache = new Map<string, FolderInfo | null>();
+
+  async function getFolderInfo(folderId: string): Promise<FolderInfo | null> {
+    if (folderCache.has(folderId)) return folderCache.get(folderId) ?? null;
+
+    try {
+      const res = await drive.files.get({
+        fileId: folderId,
+        fields: "name, parents",
+        supportsAllDrives: true,
+      });
+      const info: FolderInfo = { name: res.data.name ?? "(sin nombre)", parentId: res.data.parents?.[0] };
+      folderCache.set(folderId, info);
+      return info;
+    } catch {
+      folderCache.set(folderId, null);
+      return null;
+    }
+  }
+
+  /**
+   * Sube por la cadena de padres desde `startFolderId` hasta encontrar
+   * `rootFolderId` (devuelve la ruta de carpetas intermedias) o hasta
+   * quedarse sin padres / superar el límite de saltos (no está en el árbol).
+   */
+  async function resolveAncestry(startFolderId: string | undefined): Promise<string[] | null> {
+    if (!startFolderId) return null;
+    if (startFolderId === rootFolderId) return [];
+
+    const path: string[] = [];
+    let current: string | undefined = startFolderId;
+    let hops = 0;
+
+    while (current && hops < MAX_ANCESTRY_HOPS) {
+      hops++;
+      if (current === rootFolderId) return path.reverse();
+
+      const info = await getFolderInfo(current);
+      if (!info) return null;
+
+      path.push(info.name);
+      current = info.parentId;
+    }
+
+    return null;
+  }
+
+  const results: DriveSearchResult[] = [];
+
+  for (const f of candidatos) {
+    const parentId = f.parents?.[0];
+    const ancestry = await resolveAncestry(parentId);
+    if (ancestry === null) continue; // no está dentro del árbol de esta empresa
+
+    results.push({
+      name: f.name ?? "(sin nombre)",
+      folderPath: ancestry.length > 0 ? ancestry.join(" / ") : "(raíz)",
+      friendlyType: (f.mimeType && FRIENDLY_TYPES[f.mimeType]) || f.mimeType || "Desconocido",
+      webViewLink: f.webViewLink ?? "",
+    });
+  }
+
+  return results;
+}

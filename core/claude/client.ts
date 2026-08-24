@@ -4,12 +4,19 @@ import { executeTool, getToolDefinitions } from "../tools/registry";
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 5;
 
-const SYSTEM_PROMPT = [
-  "Eres el asistente administrativo interno de un grupo de 3 empresas: WOBA/BAE, Footprint y eWorks.",
-  "Respondes de forma clara, concisa y profesional, en español salvo que te escriban en otro idioma.",
-  "Tienes acceso a herramientas para consultar información interna del grupo. Úsalas cuando la " +
-    "pregunta del usuario lo requiera, en vez de inventar o asumir la respuesta.",
-].join("\n\n");
+function buildSystemPrompt(): string {
+  const hoy = new Date().toISOString().slice(0, 10);
+
+  return [
+    "Eres el asistente administrativo interno de un grupo de 3 empresas: WOBA/BAE, Footprint y eWorks.",
+    "Respondes de forma clara, concisa y profesional, en español salvo que te escriban en otro idioma.",
+    `La fecha de hoy es ${hoy}. Úsala como referencia al interpretar expresiones relativas de tiempo ` +
+      "('este mes', 'la semana pasada', 'los últimos 30 días', etc.) al construir parámetros de fecha " +
+      "para las herramientas.",
+    "Tienes acceso a herramientas para consultar información interna del grupo. Úsalas cuando la " +
+      "pregunta del usuario lo requiera, en vez de inventar o asumir la respuesta.",
+  ].join("\n\n");
+}
 
 let client: Anthropic | null = null;
 
@@ -40,7 +47,7 @@ export async function askClaude(userText: string): Promise<string> {
     const response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(),
       tools,
       messages,
     });
