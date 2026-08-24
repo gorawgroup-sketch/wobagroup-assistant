@@ -1,11 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, getToolDefinitions } from "../tools/registry";
+import { formatDateLocal } from "../utils/dateFormat";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 5;
 
 function buildSystemPrompt(): string {
-  const hoy = new Date().toISOString().slice(0, 10);
+  const hoy = formatDateLocal(new Date());
 
   return [
     "Eres el asistente administrativo interno de un grupo de 3 empresas: WOBA/BAE, Footprint y eWorks.",

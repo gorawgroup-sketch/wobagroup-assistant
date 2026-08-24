@@ -1,0 +1,13 @@
+[
+  { "concepto": "Seguridad social", "tipo": "mensual", "dia_referencia": "ultimo_dia_mes", "empresa": "todas" },
+  { "concepto": "Cuotas créditos/préstamos", "tipo": "mensual", "dia_referencia": 1, "empresa": "todas" },
+  { "concepto": "Bonhomía", "tipo": "mensual", "dia_referencia": 15, "empresa": "todas" },
+  { "concepto": "SII - facturas definitivas del mes anterior", "tipo": "mensual", "dia_referencia": 12, "empresa": "Footprint" },
+  { "concepto": "Seguro del coche", "tipo": "anual", "mes": 8, "aproximado": "mediados", "empresa": "BAE" },
+  { "concepto": "IBI piso Pérez Lavid", "tipo": "anual", "mes": 12, "aproximado": "mediados", "empresa": "BAE" },
+  { "concepto": "Seguro de la moto (Pelayo)", "tipo": "anual", "mes": 5, "aproximado": "finales", "empresa": "BAE" },
+  { "concepto": "Seguro piso Pérez Lavid (Pelayo)", "tipo": "anual", "mes": 2, "aproximado": "mediados", "empresa": "BAE" },
+  { "concepto": "Seguro showroom (Allianz)", "tipo": "anual", "mes": 3, "aproximado": "inicio", "empresa": "BAE" },
+  { "concepto": "Seguro Markel (Responsabilidad Civil)", "tipo": "anual", "mes": 4, "aproximado": "mediados", "empresa": "BAE" },
+  { "concepto": "Controles médicos anuales empleados", "tipo": "anual", "mes": 11, "aproximado": "durante el mes", "empresa": "BAE" }
+]

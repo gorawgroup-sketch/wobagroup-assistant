@@ -5,6 +5,7 @@ import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
+import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -73,6 +74,33 @@ app.post("/admin/run-holded-check", async (req: Request, res: Response) => {
 
   try {
     const resultado = await revisarHoldedVsCashflow();
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Dispara manualmente el job revisarAlertasFiscales, sin esperar al cron.
+ * Protegido por ADMIN_SECRET (query param ?secret=...). No escribe nada —
+ * solo detecta y notifica (y solo manda mensaje si hay algo próximo).
+ */
+app.post("/admin/run-fiscal-check", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const resultado = await revisarAlertasFiscales();
     res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

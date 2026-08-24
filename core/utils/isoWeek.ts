@@ -43,6 +43,4 @@ export function previousWeekRange(referenceDate: Date): { start: Date; end: Date
   return { start, end };
 }
 
-export function formatDateISO(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
+export { formatDateLocal as formatDateISO } from "./dateFormat";

@@ -1,11 +1,8 @@
 import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
+import { formatDateLocal } from "../utils/dateFormat";
 import type { ToolDefinition } from "./types";
 
 const DIAS_POR_DEFECTO = 30;
-
-function formatFecha(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 function esIngreso(amount: number): boolean {
   return amount > 0;
@@ -55,8 +52,8 @@ export const holdedMovimientosTool: ToolDefinition = {
     const hoy = new Date();
     const hace30Dias = new Date(hoy.getTime() - DIAS_POR_DEFECTO * 24 * 60 * 60 * 1000);
 
-    const desde = typeof input.desde === "string" && input.desde ? input.desde : formatFecha(hace30Dias);
-    const hasta = typeof input.hasta === "string" && input.hasta ? input.hasta : formatFecha(hoy);
+    const desde = typeof input.desde === "string" && input.desde ? input.desde : formatDateLocal(hace30Dias);
+    const hasta = typeof input.hasta === "string" && input.hasta ? input.hasta : formatDateLocal(hoy);
     const tipo = (typeof input.tipo === "string" ? input.tipo : "todos") as "ingreso" | "gasto" | "todos";
 
     const cuentas = (await listTreasuryAccounts(empresa)).filter((cuenta) => !cuenta.archived);
