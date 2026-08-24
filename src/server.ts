@@ -1,7 +1,10 @@
 import "dotenv/config";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage } from "../core/telegram/client";
+import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { askClaude } from "../core/claude/client";
+import { startScheduler } from "../core/jobs/scheduler";
+import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -18,6 +21,16 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   res.sendStatus(200);
 
   const update = req.body as TelegramUpdate;
+
+  if (update.callback_query) {
+    try {
+      await handleCallbackQuery(update.callback_query);
+    } catch (error) {
+      console.error("Error procesando callback_query de Telegram:", error);
+    }
+    return;
+  }
+
   const incoming = parseIncomingUpdate(update);
 
   if (!incoming) {
@@ -40,6 +53,34 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Dispara manualmente el job revisarHoldedVsCashflow, sin esperar al cron.
+ * Protegido por ADMIN_SECRET (query param ?secret=...) para que no cualquiera
+ * en internet pueda disparar el job. No escribe nada — solo detecta y notifica.
+ */
+app.post("/admin/run-holded-check", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const resultado = await revisarHoldedVsCashflow();
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
+  startScheduler();
 });

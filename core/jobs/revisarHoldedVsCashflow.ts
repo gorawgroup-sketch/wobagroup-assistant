@@ -1,0 +1,151 @@
+import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
+import { fetchDetalleRegistros } from "../google/cashflowSheet";
+import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { crearPropuesta } from "../telegram/proposalStore";
+import { previousWeekRange, weekLabel, formatDateISO } from "../utils/isoWeek";
+import type { BloqueEscritura } from "../google/cashflowWrite";
+
+const TOLERANCIA_EUR = 0.01;
+const EMPRESAS: Empresa[] = ["WOBA", "EWORKS"];
+
+function parseValorFormateado(valor: string): number {
+  const limpio = valor.replace(/[^0-9.\-]/g, "");
+  const numero = Number(limpio);
+  return Number.isFinite(numero) ? numero : 0;
+}
+
+function sugerirBloque(amount: number): BloqueEscritura {
+  return amount > 0 ? "ingresos" : "pagos_extras";
+}
+
+interface CandidatoNoRegistrado {
+  empresa: Empresa;
+  descripcion: string;
+  fecha?: string;
+  valorAbs: number;
+  esIngreso: boolean;
+}
+
+async function detectarNoRegistrados(empresa: Empresa, semanaLabel: string, desde: string, hasta: string) {
+  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived);
+
+  const movimientosHolded = (
+    await Promise.all(cuentas.map((c) => listBankMovements(empresa, c.id, desde, hasta)))
+  ).flat();
+
+  const registrosSemana = (await fetchDetalleRegistros()).filter(
+    (r) =>
+      r.semana.toUpperCase() === semanaLabel &&
+      (r.categoria === "INGRESOS" || r.categoria === "PAGOS_PROYECTOS" || r.categoria === "PAGOS_EXTRAS")
+  );
+
+  const valoresRegistrados = registrosSemana.map((r) => Math.abs(parseValorFormateado(r.valor)));
+
+  const candidatos: CandidatoNoRegistrado[] = [];
+
+  for (const mov of movimientosHolded) {
+    const amount = typeof mov.amount === "number" ? mov.amount : Number(mov.amount ?? 0);
+    const valorAbs = Math.abs(amount);
+
+    const yaExiste = valoresRegistrados.some((v) => Math.abs(v - valorAbs) <= TOLERANCIA_EUR);
+    if (yaExiste) continue; // conservador: si hay duda razonable de match, no se propone
+
+    candidatos.push({
+      empresa,
+      descripcion: mov.description ?? "(sin descripción)",
+      fecha: mov.booking_date?.slice(0, 10),
+      valorAbs,
+      esIngreso: amount > 0,
+    });
+  }
+
+  return candidatos;
+}
+
+/**
+ * Job semanal: compara movimientos bancarios de Holded (semana anterior) contra
+ * lo ya registrado en DATOS, y propone por Telegram los que no encuentra
+ * match. NO escribe nada — solo detecta y notifica. La escritura solo ocurre
+ * si el usuario aprueba con el botón "✅ Agregar" (ver callback_query en
+ * src/server.ts).
+ */
+export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()): Promise<{
+  propuestasCreadas: number;
+}> {
+  const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
+
+  if (!chatId) {
+    console.error("[revisarHoldedVsCashflow] Falta CASHFLOW_ALERTS_CHAT_ID, no se puede notificar.");
+    return { propuestasCreadas: 0 };
+  }
+
+  const { start, end } = previousWeekRange(referenceDate);
+  const semanaLabel = weekLabel(start);
+  const desde = formatDateISO(start);
+  const hasta = formatDateISO(end);
+
+  console.log(`[revisarHoldedVsCashflow] Revisando semana ${semanaLabel} (${desde} a ${hasta})`);
+
+  let propuestasCreadas = 0;
+
+  for (const empresa of EMPRESAS) {
+    let candidatos: CandidatoNoRegistrado[] = [];
+
+    try {
+      candidatos = await detectarNoRegistrados(empresa, semanaLabel, desde, hasta);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[revisarHoldedVsCashflow] Error revisando ${empresa}:`, message);
+      continue;
+    }
+
+    for (const candidato of candidatos) {
+      const bloqueSugerido = sugerirBloque(candidato.esIngreso ? 1 : -1);
+
+      const texto = [
+        `📋 Movimiento de Holded sin registrar en el cashflow`,
+        ``,
+        `Empresa: ${candidato.empresa}`,
+        `Fecha: ${candidato.fecha ?? "(sin fecha)"}`,
+        `Semana: ${semanaLabel}`,
+        `Concepto: ${candidato.descripcion}`,
+        `Valor: ${candidato.valorAbs.toFixed(2)} € (${candidato.esIngreso ? "abono" : "cargo"})`,
+        ``,
+        `Bloque sugerido: ${bloqueSugerido}` +
+          (bloqueSugerido === "pagos_extras"
+            ? " (no puedo distinguir si es un pago a proyecto — corrígelo si aplica)"
+            : ""),
+      ].join("\n");
+
+      try {
+        // Se envía primero con botones "pendientes" (el id real se agrega tras crear la propuesta)
+        const propuestaTemp = crearPropuesta({
+          empresa: candidato.empresa,
+          bloqueSugerido,
+          clienteOConcepto: candidato.descripcion,
+          semana: semanaLabel,
+          valor: candidato.valorAbs,
+          fechaMovimiento: candidato.fecha,
+          chatId,
+          messageId: 0,
+        });
+
+        const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+          [
+            { text: "✅ Agregar", callback_data: `cf_approve:${propuestaTemp.id}` },
+            { text: "❌ Ignorar", callback_data: `cf_reject:${propuestaTemp.id}` },
+          ],
+        ]);
+
+        propuestaTemp.messageId = messageId;
+        propuestasCreadas++;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[revisarHoldedVsCashflow] Error enviando propuesta a Telegram:`, message);
+      }
+    }
+  }
+
+  console.log(`[revisarHoldedVsCashflow] ${propuestasCreadas} propuesta(s) enviada(s) para la semana ${semanaLabel}.`);
+  return { propuestasCreadas };
+}
