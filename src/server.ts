@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage } from "../core/telegram/client";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
@@ -170,6 +172,32 @@ app.post("/admin/run-fiscal-check", async (req: Request, res: Response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Lectura de solo diagnóstico de docs/conocimiento_capturado.md, para
+ * verificar qué hay capturado sin tener que preguntarle al bot por
+ * Telegram. Protegido por ADMIN_SECRET.
+ */
+app.get("/admin/conocimiento-capturado", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const contenido = await readFile(join(process.cwd(), "docs", "conocimiento_capturado.md"), "utf-8");
+    res.type("text/plain").send(contenido);
+  } catch {
+    res.status(404).json({ error: "docs/conocimiento_capturado.md no existe todavía." });
   }
 });
 
