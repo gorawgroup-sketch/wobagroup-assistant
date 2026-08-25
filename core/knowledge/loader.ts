@@ -34,3 +34,8 @@ export function loadKnowledgeBase(): string {
 
   return cachedKnowledge;
 }
+
+/** Fuerza a que la próxima llamada a loadKnowledgeBase() vuelva a leer disco. */
+export function invalidarCacheConocimiento(): void {
+  cachedKnowledge = null;
+}

@@ -6,6 +6,7 @@ import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { manejarClasificacion } from "../core/documental/processClassification";
+import { esMensajeCaptura, guardarCaptura } from "../core/knowledge/capture";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -53,6 +54,17 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   const incoming = parseIncomingUpdate(update);
 
   if (!incoming) {
+    return;
+  }
+
+  if (esMensajeCaptura(incoming.text)) {
+    try {
+      await guardarCaptura(incoming.text, incoming.fromUsername);
+      await sendTelegramMessage(incoming.chatId, "✅ Guardado en borrador, gracias.");
+    } catch (error) {
+      console.error("Error guardando captura de conocimiento:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la captura. Intenta de nuevo.");
+    }
     return;
   }
 

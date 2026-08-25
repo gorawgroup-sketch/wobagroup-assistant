@@ -8,3 +8,4 @@ credentials/
 woba-copilot-*.json
 tmp/
 data/
+docs/_staging/
