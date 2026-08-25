@@ -1,17 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import type { TipoRecurrencia } from "./calendario";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_pagos_recurrentes_pendientes";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las propuestas de cashflow
 
-const HEADERS = ["id", "empresaCashflow", "concepto", "proveedor", "monto", "fechaVencimiento", "chatId", "messageId", "creadoEn"];
+const HEADERS = [
+  "id",
+  "empresaCashflow",
+  "concepto",
+  "tipo",
+  "proveedor",
+  "monto",
+  "fechaVencimiento",
+  "chatId",
+  "messageId",
+  "creadoEn",
+];
 
 export interface PropuestaPagoRecurrente {
   id: string;
   empresaCashflow: "WOBA" | "EWORKS";
   concepto: string;
+  tipo: TipoRecurrencia;
   proveedor: string;
   monto: number;
   fechaVencimiento: string; // YYYY-MM-DD
@@ -72,7 +85,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:I1`,
+    range: `${TAB_NAME}!A1:J1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -88,17 +101,29 @@ function rowToPropuesta(row: unknown[]): PropuestaPagoRecurrente | null {
     id: String(row[0]),
     empresaCashflow: row[1] as "WOBA" | "EWORKS",
     concepto: row[2] ? String(row[2]) : "",
-    proveedor: row[3] ? String(row[3]) : "",
-    monto: Number(row[4]) || 0,
-    fechaVencimiento: row[5] ? String(row[5]) : "",
-    chatId: Number(row[6]) || 0,
-    messageId: Number(row[7]) || 0,
-    creadoEn: Number(row[8]) || 0,
+    tipo: row[3] as TipoRecurrencia,
+    proveedor: row[4] ? String(row[4]) : "",
+    monto: Number(row[5]) || 0,
+    fechaVencimiento: row[6] ? String(row[6]) : "",
+    chatId: Number(row[7]) || 0,
+    messageId: Number(row[8]) || 0,
+    creadoEn: Number(row[9]) || 0,
   };
 }
 
 function propuestaToRow(p: PropuestaPagoRecurrente): (string | number)[] {
-  return [p.id, p.empresaCashflow, p.concepto, p.proveedor, p.monto, p.fechaVencimiento, p.chatId, p.messageId, p.creadoEn];
+  return [
+    p.id,
+    p.empresaCashflow,
+    p.concepto,
+    p.tipo,
+    p.proveedor,
+    p.monto,
+    p.fechaVencimiento,
+    p.chatId,
+    p.messageId,
+    p.creadoEn,
+  ];
 }
 
 interface FilaConIndice {
@@ -113,7 +138,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:I10000`,
+    range: `${TAB_NAME}!A2:J10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -171,7 +196,7 @@ export async function crearPropuestaPagoRecurrente(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:I`,
+    range: `${TAB_NAME}!A:J`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },
@@ -190,7 +215,7 @@ export async function actualizarMessageIdPagoRecurrente(id: string, messageId: n
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!H${match.rowIndex}`,
+    range: `${TAB_NAME}!I${match.rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [[messageId]] },
   });

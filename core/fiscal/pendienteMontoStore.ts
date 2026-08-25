@@ -2,11 +2,14 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { TipoRecurrencia } from "./calendario";
+
 export interface PendienteMontoPago {
   chatId: number;
   messageId: number;
   entradaId: string;
   concepto: string;
+  tipo: TipoRecurrencia;
   empresaCashflow: "WOBA" | "EWORKS";
   proveedor?: string;
   fechaVencimiento: string; // YYYY-MM-DD

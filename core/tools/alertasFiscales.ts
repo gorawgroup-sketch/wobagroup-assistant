@@ -37,7 +37,7 @@ export const alertasFiscalesTool: ToolDefinition = {
     return alertas
       .map((a) => {
         const cuando = a.diasParaVencer === 0 ? "hoy" : a.diasParaVencer === 1 ? "mañana" : `en ${a.diasParaVencer} días`;
-        return `${a.concepto} (${a.empresa}) — vence ${cuando} (${formatDateLocal(a.fecha)})`;
+        return `${a.concepto} (${a.empresa}, ${a.tipo}) — vence ${cuando} (${formatDateLocal(a.fecha)})`;
       })
       .join("\n");
   },

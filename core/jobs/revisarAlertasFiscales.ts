@@ -42,7 +42,7 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
   if (informativas.length > 0) {
     const lineas = informativas.map(
       (a) =>
-        `• ${a.concepto} (${a.empresa}) — vence ${describirCuando(a.diasParaVencer)} ` +
+        `• ${a.concepto} (${a.empresa}, ${a.tipo}) — vence ${describirCuando(a.diasParaVencer)} ` +
         `(${a.fecha.toLocaleDateString("es-ES")})`
     );
     const texto = [`⚠️ Alertas fiscales próximas (${informativas.length}):`, "", ...lineas].join("\n");
@@ -51,7 +51,7 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
 
   for (const a of accionables) {
     const texto = [
-      `⚠️ *${a.concepto}* (${a.empresa}) — vence ${describirCuando(a.diasParaVencer)} (${formatDateLocal(a.fecha)})`,
+      `⚠️ *${a.concepto}* (${a.empresa}, ${a.tipo}) — vence ${describirCuando(a.diasParaVencer)} (${formatDateLocal(a.fecha)})`,
       a.proveedor ? `Proveedor conocido: ${a.proveedor}` : "",
       `¿Quieres que lo registre en Holded (como gasto) y en el cashflow?`,
     ]

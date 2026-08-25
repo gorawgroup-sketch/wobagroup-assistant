@@ -1,8 +1,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type TipoRecurrencia = "mensual" | "anual";
+export type TipoRecurrencia = "mensual" | "trimestral" | "semestral" | "anual";
 export type Aproximado = "inicio" | "mediados" | "finales" | "durante el mes";
+
+/** Cada ciclo no-mensual avanza sumando este número de meses al mes ancla. */
+const INTERVALO_MESES: Record<Exclude<TipoRecurrencia, "mensual">, number> = {
+  trimestral: 3,
+  semestral: 6,
+  anual: 12,
+};
 
 export interface EntradaCalendarioFiscal {
   /** Slug corto y estable, solo en entradas que pueden proponerse para Holded+cashflow (ver empresaCashflow). */
@@ -11,9 +18,9 @@ export interface EntradaCalendarioFiscal {
   tipo: TipoRecurrencia;
   /** Solo para tipo "mensual": día del mes (1-31) o "ultimo_dia_mes". */
   dia_referencia?: number | "ultimo_dia_mes";
-  /** Solo para tipo "anual": mes (1-12). */
+  /** Para "trimestral"/"semestral"/"anual": mes (1-12) de la primera ocurrencia del ciclo — el resto se calculan sumando el intervalo del período. */
   mes?: number;
-  /** Solo para tipo "anual": posición aproximada dentro del mes. */
+  /** Para "trimestral"/"semestral"/"anual": posición aproximada dentro del mes. */
   aproximado?: Aproximado;
   empresa: string;
   /**
@@ -91,13 +98,17 @@ export function calcularProximaFecha(entrada: EntradaCalendarioFiscal, hoy: Date
     return candidato;
   }
 
-  // tipo === "anual"
-  const mesIndex0 = (entrada.mes ?? 1) - 1;
+  // tipo === "trimestral" | "semestral" | "anual" — se calcula el ciclo desde
+  // el mes ancla (entrada.mes), sumando el intervalo del período hasta llegar
+  // a la primera ocurrencia que no haya pasado todavía. "anual" es el caso
+  // particular con intervalo=12 (mismo comportamiento que antes).
+  const intervalo = INTERVALO_MESES[entrada.tipo];
+  const mesAncla = (entrada.mes ?? 1) - 1;
   const dia = entrada.aproximado ? DIA_APROXIMADO[entrada.aproximado] : 15;
 
-  let candidato = new Date(hoyNorm.getFullYear(), mesIndex0, dia);
-  if (candidato < hoyNorm) {
-    candidato = new Date(hoyNorm.getFullYear() + 1, mesIndex0, dia);
+  let candidato = new Date(hoyNorm.getFullYear(), mesAncla, dia);
+  while (candidato < hoyNorm) {
+    candidato = new Date(candidato.getFullYear(), candidato.getMonth() + intervalo, dia);
   }
 
   return candidato;
@@ -110,6 +121,7 @@ export function obtenerEntradaPorId(id: string): EntradaCalendarioFiscal | undef
 
 export interface AlertaProxima {
   concepto: string;
+  tipo: TipoRecurrencia;
   empresa: string;
   fecha: Date;
   diasParaVencer: number;
@@ -119,11 +131,11 @@ export interface AlertaProxima {
   proveedor?: string;
 }
 
-// Ventana de aviso por defecto: las entradas "anual" tienen fecha aproximada
-// (no un día confirmado), así que se avisan con más margen que las
-// "mensual", cuyo día es exacto y conocido.
+// Ventana de aviso por defecto: las entradas "trimestral"/"semestral"/"anual"
+// tienen fecha aproximada (no un día confirmado), así que se avisan con más
+// margen que las "mensual", cuyo día es exacto y conocido.
 const VENTANA_MENSUAL_DIAS = 3;
-const VENTANA_ANUAL_DIAS = 7;
+const VENTANA_APROXIMADA_DIAS = 7;
 
 /**
  * Devuelve las entradas cuya próxima fecha cae dentro de su ventana de aviso,
@@ -139,9 +151,10 @@ export function calcularProximasAlertas(hoy: Date = new Date(), diasOverride?: n
   const alertas = entradas.map((entrada) => {
     const fecha = calcularProximaFecha(entrada, hoy);
     const diasParaVencer = Math.round((fecha.getTime() - hoyNorm.getTime()) / 86_400_000);
-    const ventana = diasOverride ?? (entrada.tipo === "mensual" ? VENTANA_MENSUAL_DIAS : VENTANA_ANUAL_DIAS);
+    const ventana = diasOverride ?? (entrada.tipo === "mensual" ? VENTANA_MENSUAL_DIAS : VENTANA_APROXIMADA_DIAS);
     return {
       concepto: entrada.concepto,
+      tipo: entrada.tipo,
       empresa: entrada.empresa,
       fecha,
       diasParaVencer,

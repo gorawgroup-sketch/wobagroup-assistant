@@ -7,10 +7,20 @@ import {
   crearPropuestaPagoRecurrente,
   actualizarMessageIdPagoRecurrente,
   consumirPropuestaPagoRecurrente,
+  type PropuestaPagoRecurrente,
 } from "./pagoRecurrenteProposalSheet";
 import { buscarContactoHolded, crearGastoHolded } from "../holded/write";
 import { registrarMovimientoEnSheet } from "../google/cashflowWrite";
 import type { TelegramCallbackQuery } from "../telegram/types";
+
+/**
+ * Etiqueta de periodicidad que se antepone al concepto tanto en Holded como
+ * en el cashflow, para que quede trazable que es un pago recurrente y con
+ * qué frecuencia — nunca se registra como un movimiento suelto sin más.
+ */
+function conEtiquetaRecurrencia(concepto: string, tipo: PropuestaPagoRecurrente["tipo"]): string {
+  return `${concepto} (recurrente ${tipo})`;
+}
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   try {
@@ -66,6 +76,7 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
       messageId,
       entradaId: entrada.id ?? id,
       concepto: entrada.concepto,
+      tipo: entrada.tipo,
       empresaCashflow: entrada.empresaCashflow,
       proveedor: entrada.proveedor,
       fechaVencimiento: fechaISO,
@@ -115,16 +126,18 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
         return;
       }
 
+      const conceptoEtiquetado = conEtiquetaRecurrencia(propuesta.concepto, propuesta.tipo);
+
       const gasto = await crearGastoHolded(propuesta.empresaCashflow, {
         contactId: contacto.id,
         fecha: propuesta.fechaVencimiento,
-        descripcion: propuesta.concepto,
+        descripcion: conceptoEtiquetado,
         importe: propuesta.monto,
       });
 
       const resultadoCashflow = await registrarMovimientoEnSheet({
         bloque: "pagos_extras",
-        cliente_o_concepto: propuesta.concepto,
+        cliente_o_concepto: conceptoEtiquetado,
         semana: weekLabel(new Date(propuesta.fechaVencimiento)),
         valor: propuesta.monto,
         empresa: propuesta.empresaCashflow,
@@ -205,6 +218,7 @@ export async function continuarConMontoPago(pendiente: PendienteMontoPago, texto
   const propuesta = await crearPropuestaPagoRecurrente({
     empresaCashflow: pendiente.empresaCashflow,
     concepto: pendiente.concepto,
+    tipo: pendiente.tipo,
     proveedor,
     monto: montoExtraido.valor,
     fechaVencimiento: pendiente.fechaVencimiento,
@@ -216,12 +230,13 @@ export async function continuarConMontoPago(pendiente: PendienteMontoPago, texto
     `✅ Confirmar registro de pago recurrente:`,
     ``,
     `Concepto: ${propuesta.concepto}`,
+    `Periodicidad: ${propuesta.tipo}`,
     `Empresa: ${propuesta.empresaCashflow}`,
     `Proveedor: ${propuesta.proveedor}`,
     `Importe: ${propuesta.monto.toFixed(2)} €`,
     `Fecha: ${formatDateLocal(new Date(propuesta.fechaVencimiento))}`,
     ``,
-    `Al confirmar se crea el gasto en Holded (como borrador) y la línea en cashflow.`,
+    `Al confirmar se crea el gasto en Holded (como borrador) y la línea en cashflow, ambos etiquetados como "(recurrente ${propuesta.tipo})".`,
   ].join("\n");
 
   const messageId = await sendTelegramMessageWithButtons(pendiente.chatId, texto, [
