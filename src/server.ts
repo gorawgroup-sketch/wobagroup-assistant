@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery } from "../core/telegram/client";
-import { esUsuarioAutorizado } from "../core/telegram/authorization";
+import { esUsuarioAutorizado, esAccionSensible, obtenerRol } from "../core/telegram/authorization";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
@@ -56,6 +56,16 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
 
   if (update.callback_query) {
     const data = update.callback_query.data ?? "";
+
+    if (esAccionSensible(data) && obtenerRol(remitente?.id) !== "admin") {
+      console.warn(`[auth] Colaborador sin permiso intentó acción sensible — id: ${remitente?.id}, accion: ${data}`);
+      await answerCallbackQuery(
+        update.callback_query.id,
+        "Esta acción requiere aprobación de un administrador."
+      ).catch(() => {});
+      return;
+    }
+
     try {
       if (data.startsWith("doc_")) {
         await handleDocumentCallback(update.callback_query);

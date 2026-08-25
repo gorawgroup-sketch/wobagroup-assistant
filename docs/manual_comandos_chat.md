@@ -14,6 +14,15 @@ recibe "🔒 No tienes acceso a este asistente." Para dar acceso a alguien
 nuevo: que le escriba al bot una vez (quedará bloqueado y su `user_id`
 aparece en los logs de Railway), y se agrega esa id a la lista.
 
+**Niveles de acceso (rol por usuario):**
+- **admin** — acceso completo, incluye presionar los botones que disparan una
+  escritura real (✅ Agregar a cashflow, ✅ Confirmar pago recurrente,
+  📤 Enviar así, ✅ Sí, archivar aquí).
+- **colaborador** — puede chatear, consultar, usar `CAPTURA` y `corrección:`,
+  y descartar/cancelar cualquier propuesta — pero si intenta presionar un
+  botón de escritura, recibe "Esta acción requiere aprobación de un
+  administrador." y no se ejecuta nada.
+
 ---
 
 ## 1. Comandos exactos
