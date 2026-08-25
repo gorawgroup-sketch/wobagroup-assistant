@@ -17,6 +17,8 @@ import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditStore";
+import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
+import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -43,6 +45,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleEmailActionCallback(update.callback_query);
       } else if (data.startsWith("draft_")) {
         await handleDraftCallback(update.callback_query);
+      } else if (data.startsWith("recpago_")) {
+        await handlePagoRecurrenteCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
@@ -104,6 +108,23 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     } catch (error) {
       console.error("Error guardando captura de conocimiento:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la captura. Intenta de nuevo.");
+    }
+    return;
+  }
+
+  const pendienteMontoPago = await consumirPendienteMontoPago(incoming.chatId);
+  if (pendienteMontoPago) {
+    try {
+      await continuarConMontoPago(pendienteMontoPago, incoming.text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Error procesando importe de pago recurrente:", message);
+      // Se reinserta el pendiente (con creadoEn actualizado) para que el
+      // usuario pueda corregir su respuesta sin tener que pulsar el botón
+      // de nuevo — a diferencia de otros "pendiente_*", aquí el error es
+      // casi siempre un simple problema de formato del texto, no algo grave.
+      await guardarPendienteMontoPago(pendienteMontoPago);
+      await sendTelegramMessage(incoming.chatId, message);
     }
     return;
   }

@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-25.
+actualización: 2026-08-25 (pagos recurrentes → Holded + cashflow).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -56,6 +56,13 @@ registrar en cashflow) sin que presiones uno de estos botones.
 
 **Sobre archivos/documentos enviados por Telegram para archivar en Drive:**
 - El asistente propone una carpeta de destino con botones de aprobación (sí/no) antes de subir nada.
+
+**Sobre alertas de pagos recurrentes (seguros, IBI, etc. con proveedor y empresa conocidos — solo WOBA/EWORKS):**
+- 💰 Indicar monto y registrar — pide el importe exacto (y el proveedor, si no se conoce de antemano) por texto libre.
+- Tras responder con el importe, aparece un mensaje de confirmación con:
+  - ✅ Confirmar y registrar — crea el gasto en Holded (como borrador) y la línea en el cashflow.
+  - ❌ Cancelar — descarta la propuesta, no escribe nada.
+- Nota: por ahora este flujo de escritura en Holded es exclusivo de pagos recurrentes detectados por `calendario_fiscal.json` — no hay ninguna forma de pedirle al asistente que cree un gasto en Holded fuera de este flujo.
 
 ---
 

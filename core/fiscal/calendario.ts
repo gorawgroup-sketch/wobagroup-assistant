@@ -5,6 +5,8 @@ export type TipoRecurrencia = "mensual" | "anual";
 export type Aproximado = "inicio" | "mediados" | "finales" | "durante el mes";
 
 export interface EntradaCalendarioFiscal {
+  /** Slug corto y estable, solo en entradas que pueden proponerse para Holded+cashflow (ver empresaCashflow). */
+  id?: string;
   concepto: string;
   tipo: TipoRecurrencia;
   /** Solo para tipo "mensual": día del mes (1-31) o "ultimo_dia_mes". */
@@ -14,6 +16,17 @@ export interface EntradaCalendarioFiscal {
   /** Solo para tipo "anual": posición aproximada dentro del mes. */
   aproximado?: Aproximado;
   empresa: string;
+  /**
+   * Si está presente, la entrada es candidata a proponerse como pago
+   * recurrente para registrar en Holded + cashflow (botón en la alerta). El
+   * valor es la empresa tal como la reconoce el cashflow (WOBA o EWORKS) —
+   * "BAE" y "WOBA" son la misma entidad, así que las entradas "BAE" mapean a
+   * "WOBA" aquí. Entradas sin este campo se quedan como aviso informativo
+   * únicamente (monto desconocido o aplica a varias empresas a la vez).
+   */
+  empresaCashflow?: "WOBA" | "EWORKS";
+  /** Nombre del proveedor/contacto en Holded, si se conoce de antemano. */
+  proveedor?: string;
 }
 
 const CALENDARIO_PATH = join(process.cwd(), "docs", "calendario_fiscal.json");
@@ -90,11 +103,20 @@ export function calcularProximaFecha(entrada: EntradaCalendarioFiscal, hoy: Date
   return candidato;
 }
 
+/** Busca una entrada del calendario por su `id` (solo las que lo tienen). */
+export function obtenerEntradaPorId(id: string): EntradaCalendarioFiscal | undefined {
+  return loadCalendarioFiscal().find((e) => e.id === id);
+}
+
 export interface AlertaProxima {
   concepto: string;
   empresa: string;
   fecha: Date;
   diasParaVencer: number;
+  /** Presente solo si la entrada es candidata a proponerse para Holded + cashflow. */
+  id?: string;
+  empresaCashflow?: "WOBA" | "EWORKS";
+  proveedor?: string;
 }
 
 // Ventana de aviso por defecto: las entradas "anual" tienen fecha aproximada
@@ -118,7 +140,16 @@ export function calcularProximasAlertas(hoy: Date = new Date(), diasOverride?: n
     const fecha = calcularProximaFecha(entrada, hoy);
     const diasParaVencer = Math.round((fecha.getTime() - hoyNorm.getTime()) / 86_400_000);
     const ventana = diasOverride ?? (entrada.tipo === "mensual" ? VENTANA_MENSUAL_DIAS : VENTANA_ANUAL_DIAS);
-    return { concepto: entrada.concepto, empresa: entrada.empresa, fecha, diasParaVencer, ventana };
+    return {
+      concepto: entrada.concepto,
+      empresa: entrada.empresa,
+      fecha,
+      diasParaVencer,
+      ventana,
+      id: entrada.id,
+      empresaCashflow: entrada.empresaCashflow,
+      proveedor: entrada.proveedor,
+    };
   });
 
   return alertas

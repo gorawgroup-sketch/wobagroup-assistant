@@ -1,5 +1,6 @@
 import { calcularProximasAlertas } from "../fiscal/calendario";
-import { sendTelegramMessage } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { formatDateLocal } from "../utils/dateFormat";
 
 function describirCuando(diasParaVencer: number): string {
   if (diasParaVencer === 0) return "HOY";
@@ -10,9 +11,13 @@ function describirCuando(diasParaVencer: number): string {
 /**
  * Job diario: revisa /docs/calendario_fiscal.json y, si hay algún vencimiento
  * dentro de su ventana de aviso (3 días para "mensual" con día exacto, 7 días
- * para "anual" con fecha aproximada), manda UN solo mensaje de Telegram
- * agrupando todos. Si no hay nada próximo, no manda nada. Solo lectura y
- * notificación — no escribe en ningún lado.
+ * para "anual" con fecha aproximada):
+ * - las entradas SIN empresaCashflow (monto desconocido, o aplican a varias
+ *   empresas) se agrupan en un solo mensaje informativo, como antes.
+ * - las entradas CON empresaCashflow (candidatas a proponerse en Holded +
+ *   cashflow) mandan además un mensaje individual con botón "💰 Indicar
+ *   monto y registrar" — nunca escribe nada por sí solo, solo abre el flujo
+ *   de confirmación (ver core/fiscal/pagoRecurrenteCallbackHandler.ts).
  */
 export async function revisarAlertasFiscales(referenceDate: Date = new Date()): Promise<{
   alertasEnviadas: number;
@@ -31,16 +36,35 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
     return { alertasEnviadas: 0 };
   }
 
-  const lineas = alertas.map(
-    (a) =>
-      `• ${a.concepto} (${a.empresa}) — vence ${describirCuando(a.diasParaVencer)} ` +
-      `(${a.fecha.toLocaleDateString("es-ES")})`
+  const accionables = alertas.filter((a) => a.id && a.empresaCashflow);
+  const informativas = alertas.filter((a) => !(a.id && a.empresaCashflow));
+
+  if (informativas.length > 0) {
+    const lineas = informativas.map(
+      (a) =>
+        `• ${a.concepto} (${a.empresa}) — vence ${describirCuando(a.diasParaVencer)} ` +
+        `(${a.fecha.toLocaleDateString("es-ES")})`
+    );
+    const texto = [`⚠️ Alertas fiscales próximas (${informativas.length}):`, "", ...lineas].join("\n");
+    await sendTelegramMessage(chatId, texto);
+  }
+
+  for (const a of accionables) {
+    const texto = [
+      `⚠️ *${a.concepto}* (${a.empresa}) — vence ${describirCuando(a.diasParaVencer)} (${formatDateLocal(a.fecha)})`,
+      a.proveedor ? `Proveedor conocido: ${a.proveedor}` : "",
+      `¿Quieres que lo registre en Holded (como gasto) y en el cashflow?`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    await sendTelegramMessageWithButtons(chatId, texto, [
+      [{ text: "💰 Indicar monto y registrar", callback_data: `recpago_indicar:${a.id}` }],
+    ]);
+  }
+
+  console.log(
+    `[revisarAlertasFiscales] ${informativas.length} informativa(s), ${accionables.length} accionable(s) con botón.`
   );
-
-  const texto = [`⚠️ Alertas fiscales próximas (${alertas.length}):`, "", ...lineas].join("\n");
-
-  await sendTelegramMessage(chatId, texto);
-
-  console.log(`[revisarAlertasFiscales] ${alertas.length} alerta(s) enviada(s) en un solo mensaje.`);
   return { alertasEnviadas: alertas.length };
 }
