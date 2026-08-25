@@ -14,6 +14,8 @@ import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
+import { handleEmailActionCallback, continuarConOrientacion } from "../core/gmail/emailCallbackHandler";
+import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -36,6 +38,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     try {
       if (data.startsWith("doc_")) {
         await handleDocumentCallback(update.callback_query);
+      } else if (data.startsWith("email_")) {
+        await handleEmailActionCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
@@ -81,6 +85,23 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     } catch (error) {
       console.error("Error guardando captura de conocimiento:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la captura. Intenta de nuevo.");
+    }
+    return;
+  }
+
+  const pendienteOrientacion = await consumirPendienteOrientacionCorreo(incoming.chatId);
+  if (pendienteOrientacion) {
+    try {
+      await continuarConOrientacion(
+        pendienteOrientacion.chatId,
+        pendienteOrientacion.de,
+        pendienteOrientacion.asunto,
+        pendienteOrientacion.resumen,
+        incoming.text
+      );
+    } catch (error) {
+      console.error("Error procesando orientación específica de correo:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
     }
     return;
   }

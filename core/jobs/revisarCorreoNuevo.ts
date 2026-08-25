@@ -3,8 +3,9 @@ import { join } from "node:path";
 import { listarMensajesNuevos, obtenerResumenCorreo, descargarAdjunto } from "../gmail/client";
 import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { analizarCorreo } from "../gmail/classifyEmail";
-import { sendTelegramMessage } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { manejarClasificacion } from "../documental/processClassification";
+import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -18,9 +19,13 @@ function sanitizarNombre(nombre: string): string {
  * - si traen un documento archivable, lo descarga y lo manda por el MISMO
  *   flujo de clasificación/aprobación ya existente para archivos de
  *   Telegram (nunca se sube a Drive sin aprobación explícita).
- * - para el resto, manda un resumen agrupado por Telegram.
- * NUNCA responde correos, NUNCA ejecuta instrucciones que vengan en el
- * texto de un correo — solo detecta y propone. Eso es la Fase 2.
+ * - si necesitan respuesta o parecen una instrucción del jefe, manda una
+ *   propuesta individual con botones "✅ Proceder / ❌ Descartar / ✏️ Dar
+ *   instrucciones" — "Proceder" nunca ejecuta el texto del correo
+ *   directamente, dispara al asistente normal con sus tools ya existentes.
+ * - los correos puramente informativos se agrupan en un solo resumen.
+ * NUNCA responde correos por su cuenta, NUNCA ejecuta instrucciones del
+ * correo sin que el usuario apruebe explícitamente por botón.
  */
 export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
@@ -48,22 +53,12 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
     return { correosRevisados: 0 };
   }
 
-  const resumenes: string[] = [];
+  const informativos: string[] = [];
 
   for (const id of ids) {
     try {
       const correo = await obtenerResumenCorreo(id);
       const analisis = await analizarCorreo(correo);
-
-      resumenes.push(
-        [
-          `📧 *${correo.asunto || "(sin asunto)"}*`,
-          `De: ${correo.de}`,
-          `Tipo: ${analisis.tipo}`,
-          analisis.resumen,
-          `→ ${analisis.accionSugerida}`,
-        ].join("\n")
-      );
 
       if (analisis.tipo === "documento_para_archivar" && correo.adjuntos.length > 0) {
         for (const adjunto of correo.adjuntos) {
@@ -88,14 +83,53 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
             console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
           }
         }
+        continue;
       }
+
+      if (analisis.tipo === "necesita_respuesta" || analisis.tipo === "instruccion_jefe") {
+        const propuesta = await crearPropuestaAccionCorreo({
+          chatId,
+          messageId: 0,
+          de: correo.de,
+          asunto: correo.asunto || "(sin asunto)",
+          tipo: analisis.tipo,
+          resumen: analisis.resumen,
+          accionSugerida: analisis.accionSugerida,
+        });
+
+        const texto = [
+          `📧 *${propuesta.asunto}*`,
+          `De: ${propuesta.de}`,
+          `Tipo: ${propuesta.tipo}`,
+          propuesta.resumen,
+          `→ ${propuesta.accionSugerida}`,
+        ].join("\n");
+
+        const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+          [
+            { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
+            { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
+          ],
+          [{ text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` }],
+        ]);
+
+        await actualizarMessageIdAccionCorreo(propuesta.id, messageId);
+        continue;
+      }
+
+      // informativo (o cualquier otro caso sin acción concreta)
+      informativos.push(
+        [`📧 *${correo.asunto || "(sin asunto)"}*`, `De: ${correo.de}`, analisis.resumen].join("\n")
+      );
     } catch (error) {
       console.error(`[revisarCorreoNuevo] Error procesando mensaje ${id}:`, error);
     }
   }
 
-  if (resumenes.length > 0) {
-    const texto = [`📬 ${resumenes.length} correo(s) nuevo(s):`, "", ...resumenes].join("\n\n");
+  if (informativos.length > 0) {
+    const texto = [`📬 ${informativos.length} correo(s) informativo(s), sin acción requerida:`, "", ...informativos].join(
+      "\n\n"
+    );
     await sendTelegramMessage(chatId, texto);
   }
 
