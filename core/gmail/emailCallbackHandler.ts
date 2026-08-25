@@ -1,8 +1,67 @@
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
-import { consumirPropuestaAccionCorreo } from "./emailActionStore";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { consumirPropuestaAccionCorreo, type PropuestaAccionCorreo } from "./emailActionStore";
 import { guardarPendienteOrientacionCorreo } from "./emailOrientationStore";
+import { crearBorradorCorreo, actualizarMessageIdBorrador, actualizarCuerpoBorrador, obtenerBorradorCorreo, consumirBorradorCorreo } from "./emailDraftStore";
+import { guardarPendienteEdicionBorrador } from "./emailDraftEditStore";
+import { enviarCorreo } from "./client";
 import { askClaude } from "../claude/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
+
+/** Extrae la dirección pura de un header "From" tipo `Nombre <correo@dominio.com>`. */
+function extraerDireccion(de: string): string {
+  const match = de.match(/<([^>]+)>/);
+  return match ? match[1] : de.trim();
+}
+
+/**
+ * Genera un borrador de respuesta y lo ofrece por Telegram con botones de
+ * envío. Nunca envía nada por sí sola — solo redacta y muestra.
+ */
+async function generarBorradorYOfrecer(
+  chatId: number,
+  de: string,
+  asunto: string,
+  threadId: string | undefined,
+  messageIdHeader: string | undefined,
+  contextoInvestigacion: string
+): Promise<void> {
+  try {
+    const promptBorrador =
+      `Redacta el CUERPO de un correo de respuesta (solo el texto del cuerpo, sin asunto, sin encabezados, ` +
+      `sin firma automática) para responder este correo — Asunto: "${asunto}". ` +
+      `Contexto e investigación ya realizada: ${contextoInvestigacion}. ` +
+      `Tono profesional y conciso, en español. Devuelve únicamente el texto del cuerpo del correo.`;
+
+    const cuerpo = await askClaude(promptBorrador);
+    const to = extraerDireccion(de);
+
+    const borrador = await crearBorradorCorreo({
+      chatId,
+      messageId: 0,
+      to,
+      subject: asunto,
+      threadId,
+      messageIdHeader,
+      cuerpo,
+    });
+
+    const texto = [`✉️ Borrador de respuesta a ${to}:`, "", cuerpo].join("\n");
+
+    const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+      [
+        { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
+        { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
+      ],
+      [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
+    ]);
+
+    await actualizarMessageIdBorrador(borrador.id, messageId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[emailCallbackHandler] Error generando borrador de respuesta:", message);
+    await sendTelegramMessage(chatId, `⚠️ No se pudo generar el borrador de respuesta: ${message}`);
+  }
+}
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   try {
@@ -64,6 +123,8 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       de: propuesta.de,
       asunto: propuesta.asunto,
       resumen: propuesta.resumen,
+      threadId: propuesta.threadId,
+      messageIdHeader: propuesta.messageIdHeader,
     });
     return;
   }
@@ -86,6 +147,17 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `✅ Procesado — ${propuesta.asunto} (${propuesta.de})\n\n${respuesta}`,
       []
     );
+
+    if (propuesta.tipo === "necesita_respuesta" || propuesta.tipo === "instruccion_jefe") {
+      await generarBorradorYOfrecer(
+        propuesta.chatId,
+        propuesta.de,
+        propuesta.asunto,
+        propuesta.threadId,
+        propuesta.messageIdHeader,
+        respuesta
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[emailCallbackHandler] Error procediendo con la acción:", message);
@@ -109,7 +181,9 @@ export async function continuarConOrientacion(
   de: string,
   asunto: string,
   resumen: string,
-  instruccionUsuario: string
+  instruccionUsuario: string,
+  threadId?: string,
+  messageIdHeader?: string
 ): Promise<void> {
   const instruccion =
     `El usuario dio instrucciones específicas sobre un correo entrante. ` +
@@ -119,4 +193,119 @@ export async function continuarConOrientacion(
 
   const respuesta = await askClaude(instruccion);
   await sendTelegramMessage(chatId, respuesta);
+
+  const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);
+  if (pareceRespuesta) {
+    await generarBorradorYOfrecer(chatId, de, asunto, threadId, messageIdHeader, respuesta);
+  }
+}
+
+/**
+ * Maneja los botones de un borrador de respuesta (draft_enviar / draft_editar
+ * / draft_cancelar). Solo "draft_enviar" dispara el envío real por Gmail —
+ * es el único punto de todo el sistema donde se manda un correo de verdad.
+ */
+export async function handleDraftCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const data = callback.data;
+  if (!data) {
+    await answerCallbackQuerySafe(callback.id);
+    return;
+  }
+
+  const [accion, id] = data.split(":");
+
+  if (accion === "draft_cancelar") {
+    const borrador = await consumirBorradorCorreo(id);
+    await answerCallbackQuerySafe(callback.id, "No enviado.");
+    if (borrador) {
+      await editTelegramMessage(
+        borrador.chatId,
+        borrador.messageId,
+        `❌ No enviado — borrador descartado (para: ${borrador.to}).`,
+        []
+      );
+    }
+    return;
+  }
+
+  if (accion === "draft_editar") {
+    const borrador = await obtenerBorradorCorreo(id);
+    if (!borrador) {
+      await answerCallbackQuerySafe(callback.id, "Este borrador ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id);
+    await editTelegramMessage(
+      borrador.chatId,
+      borrador.messageId,
+      `✏️ Ok — mándame el texto completo con el que quieres reemplazar este borrador (para: ${borrador.to}).`,
+      []
+    );
+    await guardarPendienteEdicionBorrador(borrador.chatId, borrador.id);
+    return;
+  }
+
+  // draft_enviar
+  const borrador = await obtenerBorradorCorreo(id);
+  if (!borrador) {
+    await answerCallbackQuerySafe(callback.id, "Este borrador ya no está disponible.");
+    return;
+  }
+
+  await answerCallbackQuerySafe(callback.id, "Enviando...");
+
+  try {
+    await enviarCorreo({
+      to: borrador.to,
+      asunto: borrador.subject,
+      cuerpo: borrador.cuerpo,
+      threadId: borrador.threadId,
+      messageIdHeader: borrador.messageIdHeader,
+    });
+
+    // Solo se consume (se descarta) el borrador si el envío tuvo éxito —
+    // si falla, se conserva para poder reintentar sin perder el texto.
+    await consumirBorradorCorreo(id);
+
+    await editTelegramMessage(borrador.chatId, borrador.messageId, `📤 Enviado a ${borrador.to}.`, []);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[emailCallbackHandler] Error enviando correo:", message);
+    await editTelegramMessage(
+      borrador.chatId,
+      borrador.messageId,
+      `⚠️ Error al enviar a ${borrador.to}: ${message}\n\nEl borrador se conserva — puedes volver a intentarlo.`,
+      [
+        [
+          { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
+          { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
+        ],
+        [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
+      ]
+    );
+  }
+}
+
+/**
+ * Continúa el flujo cuando el usuario responde con el texto de reemplazo
+ * tras pulsar "✏️ Editar antes de enviar".
+ */
+export async function continuarConEdicionBorrador(chatId: number, borradorId: string, nuevoTexto: string): Promise<void> {
+  const borrador = await actualizarCuerpoBorrador(borradorId, nuevoTexto);
+  if (!borrador) {
+    await sendTelegramMessage(chatId, "Ese borrador ya no está disponible.");
+    return;
+  }
+
+  const texto = [`✉️ Borrador actualizado — para ${borrador.to}:`, "", nuevoTexto].join("\n");
+
+  const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+    [
+      { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
+      { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
+    ],
+    [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
+  ]);
+
+  await actualizarMessageIdBorrador(borrador.id, messageId);
 }

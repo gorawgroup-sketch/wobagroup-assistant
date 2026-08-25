@@ -95,6 +95,8 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
           tipo: analisis.tipo,
           resumen: analisis.resumen,
           accionSugerida: analisis.accionSugerida,
+          threadId: correo.threadId,
+          messageIdHeader: correo.messageIdHeader,
         });
 
         const texto = [

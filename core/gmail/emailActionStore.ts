@@ -13,6 +13,8 @@ export interface PropuestaAccionCorreo {
   tipo: TipoCorreo;
   resumen: string;
   accionSugerida: string;
+  threadId: string;
+  messageIdHeader: string;
   creadoEn: number;
 }
 

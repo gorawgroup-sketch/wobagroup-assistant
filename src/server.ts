@@ -14,8 +14,9 @@ import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
-import { handleEmailActionCallback, continuarConOrientacion } from "../core/gmail/emailCallbackHandler";
+import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
+import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -40,6 +41,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleDocumentCallback(update.callback_query);
       } else if (data.startsWith("email_")) {
         await handleEmailActionCallback(update.callback_query);
+      } else if (data.startsWith("draft_")) {
+        await handleDraftCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
@@ -89,6 +92,21 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     return;
   }
 
+  const pendienteEdicionBorrador = await consumirPendienteEdicionBorrador(incoming.chatId);
+  if (pendienteEdicionBorrador) {
+    try {
+      await continuarConEdicionBorrador(
+        pendienteEdicionBorrador.chatId,
+        pendienteEdicionBorrador.borradorId,
+        incoming.text
+      );
+    } catch (error) {
+      console.error("Error procesando edición de borrador de correo:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error actualizando el borrador.");
+    }
+    return;
+  }
+
   const pendienteOrientacion = await consumirPendienteOrientacionCorreo(incoming.chatId);
   if (pendienteOrientacion) {
     try {
@@ -97,7 +115,9 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         pendienteOrientacion.de,
         pendienteOrientacion.asunto,
         pendienteOrientacion.resumen,
-        incoming.text
+        incoming.text,
+        pendienteOrientacion.threadId,
+        pendienteOrientacion.messageIdHeader
       );
     } catch (error) {
       console.error("Error procesando orientación específica de correo:", error);
