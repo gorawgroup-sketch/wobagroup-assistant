@@ -1,7 +1,7 @@
 import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
-import { crearPropuesta, actualizarMessageId } from "../google/proposalSheet";
+import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
 import { previousWeekRange, weekLabel, formatDateISO } from "../utils/isoWeek";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 
@@ -117,9 +117,10 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
             : ""),
       ].join("\n");
 
+      // Se persiste primero (con messageId=0 provisional) para tener el id real
+      // antes de mandar los botones; se actualiza el messageId tras enviarlos.
+      let propuestaId: string | undefined;
       try {
-        // Se persiste primero (con messageId=0 provisional) para tener el id real
-        // antes de mandar los botones; se actualiza el messageId tras enviarlos.
         const propuesta = await crearPropuesta({
           empresa: candidato.empresa,
           bloqueSugerido,
@@ -130,6 +131,7 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
           chatId,
           messageId: 0,
         });
+        propuestaId = propuesta.id;
 
         const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
           [
@@ -143,6 +145,15 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[revisarHoldedVsCashflow] Error enviando propuesta a Telegram:`, message);
+
+        // Si la fila ya se creó pero el envío/actualización falló, el usuario
+        // nunca verá botones válidos para ella — se borra de inmediato en vez
+        // de dejarla como basura hasta el purgado por TTL (7 días).
+        if (propuestaId) {
+          await consumirPropuesta(propuestaId).catch((cleanupError) => {
+            console.error(`[revisarHoldedVsCashflow] Error limpiando propuesta huérfana:`, cleanupError);
+          });
+        }
       }
     }
   }
