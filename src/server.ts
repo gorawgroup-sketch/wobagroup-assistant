@@ -3,6 +3,7 @@ import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage } from "../core/telegram/client";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
+import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -25,8 +26,13 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   const update = req.body as TelegramUpdate;
 
   if (update.callback_query) {
+    const data = update.callback_query.data ?? "";
     try {
-      await handleCallbackQuery(update.callback_query);
+      if (data.startsWith("doc_")) {
+        await handleDocumentCallback(update.callback_query);
+      } else {
+        await handleCallbackQuery(update.callback_query);
+      }
     } catch (error) {
       console.error("Error procesando callback_query de Telegram:", error);
     }

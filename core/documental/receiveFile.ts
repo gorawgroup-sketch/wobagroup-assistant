@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { downloadTelegramFile, getTelegramFile, sendTelegramMessage } from "../telegram/client";
+import { downloadTelegramFile, getTelegramFile, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { clasificarDocumento } from "./classifyFile";
+import { crearPropuestaClasificacion } from "./classificationStore";
 import type { TelegramMessage } from "../telegram/types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -73,9 +75,10 @@ function extraerArchivo(message: TelegramMessage): ArchivoEntrante | null {
 
 /**
  * Recibe un archivo adjunto de Telegram (documento o foto), lo descarga a
- * una carpeta temporal local (tmp/uploads/), y confirma por Telegram qué se
- * recibió. NO sube nada a Drive ni clasifica el archivo — eso vendrá en un
- * paso posterior del módulo documental.
+ * una carpeta temporal local (tmp/uploads/), confirma por Telegram qué se
+ * recibió, y propone una clasificación (empresa/tipo/carpeta) usando el
+ * nombre del archivo y el caption — sin leer el contenido todavía. NO sube
+ * nada a Drive — eso es el Paso 3.
  */
 export async function handleIncomingFile(message: TelegramMessage): Promise<void> {
   const chatId = message.chat.id;
@@ -115,9 +118,43 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
       partes.push(`Texto adjunto: ${message.caption}`);
     }
 
-    partes.push(``, `Guardado temporalmente. Todavía no lo subí a Drive ni lo clasifiqué.`);
+    partes.push(``, `Guardado temporalmente. Clasificando...`);
 
     await sendTelegramMessage(chatId, partes.join("\n"));
+
+    const nombreParaClasificar = archivo.nombreOriginal ?? "(foto sin nombre de archivo)";
+    const clasificacion = await clasificarDocumento(nombreParaClasificar, message.caption);
+
+    if (clasificacion.confianza === "baja") {
+      await sendTelegramMessage(
+        chatId,
+        clasificacion.preguntaSiAmbiguo ?? "¿A qué empresa y carpeta pertenece este documento?"
+      );
+      return;
+    }
+
+    const propuesta = crearPropuestaClasificacion({
+      nombreArchivo: nombreParaClasificar,
+      clasificacion,
+      chatId,
+      messageId: 0,
+    });
+
+    const textoPropuesta = [
+      `Este documento parece ser de **${clasificacion.empresa}**, tipo **${clasificacion.tipoDocumento}**.`,
+      `¿Lo archivo en "${clasificacion.carpetaSugerida}"?`,
+      ``,
+      `(${clasificacion.razon})`,
+    ].join("\n");
+
+    const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta, [
+      [
+        { text: "✅ Sí, archivar aquí", callback_data: `doc_confirm:${propuesta.id}` },
+        { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}` },
+      ],
+    ]);
+
+    propuesta.messageId = messageId;
   } catch (error) {
     const errMessage = error instanceof Error ? error.message : String(error);
     console.error("[receiveFile] Error procesando archivo entrante:", errMessage);
