@@ -4,6 +4,8 @@ import { parseIncomingUpdate, sendTelegramMessage } from "../core/telegram/clien
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
+import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
+import { manejarClasificacion } from "../core/documental/processClassification";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -51,6 +53,27 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   const incoming = parseIncomingUpdate(update);
 
   if (!incoming) {
+    return;
+  }
+
+  const pendiente = await consumirPendienteDesambiguacion(incoming.chatId);
+  if (pendiente) {
+    try {
+      await manejarClasificacion({
+        chatId: pendiente.chatId,
+        rutaLocal: pendiente.rutaLocal,
+        nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
+        mimeType: pendiente.mimeType,
+        nombreParaClasificar: pendiente.nombreParaClasificar,
+        captionEfectivo:
+          `${pendiente.captionOriginal ?? ""}\n\n` +
+          `Pregunta que se le hizo al usuario para desambiguar: ${pendiente.preguntaFormulada}\n` +
+          `Respuesta del usuario: ${incoming.text}`,
+      });
+    } catch (error) {
+      console.error("Error procesando respuesta de desambiguación:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu respuesta. Intenta reenviar el archivo.");
+    }
     return;
   }
 

@@ -1,8 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { downloadTelegramFile, getTelegramFile, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
-import { clasificarDocumento } from "./classifyFile";
-import { crearPropuestaClasificacion, actualizarMessageIdClasificacion } from "./classificationStore";
+import { downloadTelegramFile, getTelegramFile, sendTelegramMessage } from "../telegram/client";
+import { manejarClasificacion } from "./processClassification";
 import type { TelegramMessage } from "../telegram/types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -124,40 +123,15 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
     await sendTelegramMessage(chatId, partes.join("\n"));
 
     const nombreParaClasificar = archivo.nombreOriginal ?? "(foto sin nombre de archivo)";
-    const clasificacion = await clasificarDocumento(nombreParaClasificar, message.caption);
 
-    if (clasificacion.confianza === "baja") {
-      await sendTelegramMessage(
-        chatId,
-        clasificacion.preguntaSiAmbiguo ?? "¿A qué empresa y carpeta pertenece este documento?"
-      );
-      return;
-    }
-
-    const propuesta = await crearPropuestaClasificacion({
-      nombreArchivoOriginal: archivo.nombreOriginal ?? nombreBase,
-      rutaLocal: destino,
-      mimeType: archivo.mimeType,
-      clasificacion,
+    await manejarClasificacion({
       chatId,
-      messageId: 0,
+      rutaLocal: destino,
+      nombreArchivoOriginal: archivo.nombreOriginal ?? nombreBase,
+      mimeType: archivo.mimeType,
+      nombreParaClasificar,
+      captionEfectivo: message.caption,
     });
-
-    const textoPropuesta = [
-      `Este documento parece ser de **${clasificacion.empresa}**, tipo **${clasificacion.tipoDocumento}**.`,
-      `¿Lo archivo en "${clasificacion.carpetaSugerida}"?`,
-      ``,
-      `(${clasificacion.razon})`,
-    ].join("\n");
-
-    const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta, [
-      [
-        { text: "✅ Sí, archivar aquí", callback_data: `doc_confirm:${propuesta.id}` },
-        { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}` },
-      ],
-    ]);
-
-    await actualizarMessageIdClasificacion(propuesta.id, messageId);
   } catch (error) {
     const errMessage = error instanceof Error ? error.message : String(error);
     console.error("[receiveFile] Error procesando archivo entrante:", errMessage);
