@@ -81,6 +81,22 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     return;
   }
 
+  if (/^\/revisarcorreo\b/i.test(incoming.text.trim())) {
+    await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
+    revisarCorreoNuevo()
+      .then((resultado) => {
+        sendTelegramMessage(
+          incoming.chatId,
+          `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`
+        ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+      })
+      .catch((error) => {
+        console.error("Error en revisión extraordinaria de correo:", error);
+        sendTelegramMessage(incoming.chatId, "⚠️ Hubo un error revisando el correo.").catch(() => {});
+      });
+    return;
+  }
+
   if (esMensajeCaptura(incoming.text)) {
     try {
       await guardarCaptura(incoming.text, incoming.fromUsername);
