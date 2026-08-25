@@ -27,6 +27,11 @@ function buildSystemPrompt(): string {
     "Tienes memoria de los mensajes recientes de esta conversación — si el usuario hace referencia a " +
       "algo mencionado antes ('ese link', 'el correo del que hablamos'), interpreta la referencia usando " +
       "ese contexto en vez de pedir que lo repita.",
+    "Si el usuario corrige algo que dijiste o asumiste (frases como 'eso no era así, en realidad...', " +
+      "'corrección: ...', 'no, en realidad es...'), usa la herramienta registrar_correccion de inmediato " +
+      "— no esperes a que lo pida explícitamente. Las correcciones ya registradas son SIEMPRE la fuente " +
+      "de verdad: si algo que lees en consultar_base_conocimiento contradice una corrección registrada, " +
+      "la corrección gana.",
   ].join("\n\n");
 }
 

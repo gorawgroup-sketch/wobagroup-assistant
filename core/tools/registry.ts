@@ -8,6 +8,7 @@ import { driveSearchTool } from "./driveSearch";
 import { driveListFoldersTool } from "./driveListFolders";
 import { alertasFiscalesTool } from "./alertasFiscales";
 import { proponerEnvioCorreoTool } from "./proposeEmail";
+import { registrarCorreccionTool } from "./registerCorrection";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -22,6 +23,7 @@ const tools: ToolDefinition[] = [
   driveListFoldersTool,
   alertasFiscalesTool,
   proponerEnvioCorreoTool,
+  registrarCorreccionTool,
 ];
 
 /**
