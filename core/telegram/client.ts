@@ -138,6 +138,50 @@ export async function editTelegramMessage(
   }
 }
 
+export interface TelegramFileInfo {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+  file_path?: string;
+}
+
+/**
+ * Pide a Telegram la ruta de descarga (file_path) de un file_id. Válida solo
+ * un tiempo limitado; hay que descargar poco después de llamarla.
+ */
+export async function getTelegramFile(fileId: string): Promise<TelegramFileInfo> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Error obteniendo el archivo de Telegram (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as { result: TelegramFileInfo };
+  return data.result;
+}
+
+/**
+ * Descarga el contenido de un archivo de Telegram (dado su file_path, de
+ * getTelegramFile) y devuelve los bytes crudos.
+ */
+export async function downloadTelegramFile(filePath: string): Promise<Buffer> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/file/bot${token}/${filePath}`;
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Error descargando el archivo de Telegram (${response.status}): ${url}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
 /**
  * Registra la URL del webhook en Telegram (útil para configurar el bot tras el deploy).
  */
