@@ -6,8 +6,6 @@ import { cashflowDetalleTool } from "./cashflowDetalle";
 import { holdedMovimientosTool } from "./holdedMovimientos";
 import { driveSearchTool } from "./driveSearch";
 import { alertasFiscalesTool } from "./alertasFiscales";
-import { revisarCapturasTool } from "./revisarCapturas";
-import { aprobarCapturasTool } from "./aprobarCapturas";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -20,8 +18,6 @@ const tools: ToolDefinition[] = [
   holdedMovimientosTool,
   driveSearchTool,
   alertasFiscalesTool,
-  revisarCapturasTool,
-  aprobarCapturasTool,
 ];
 
 /**

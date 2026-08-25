@@ -43,6 +43,20 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   }
 
   if (update.message?.document || update.message?.photo) {
+    // Si el caption trae "CAPTURA:", se captura ese texto directo (no el
+    // archivo) — mismo comportamiento que un mensaje de texto normal.
+    const caption = update.message.caption;
+    if (caption && esMensajeCaptura(caption)) {
+      try {
+        await guardarCaptura(caption, update.message.from?.username);
+        await sendTelegramMessage(update.message.chat.id, "✅ Guardado, gracias.");
+      } catch (error) {
+        console.error("Error guardando captura de conocimiento:", error);
+        await sendTelegramMessage(update.message.chat.id, "Hubo un error guardando la captura. Intenta de nuevo.");
+      }
+      return;
+    }
+
     try {
       await handleIncomingFile(update.message);
     } catch (error) {
@@ -60,7 +74,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   if (esMensajeCaptura(incoming.text)) {
     try {
       await guardarCaptura(incoming.text, incoming.fromUsername);
-      await sendTelegramMessage(incoming.chatId, "✅ Guardado en borrador, gracias.");
+      await sendTelegramMessage(incoming.chatId, "✅ Guardado, gracias.");
     } catch (error) {
       console.error("Error guardando captura de conocimiento:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la captura. Intenta de nuevo.");
