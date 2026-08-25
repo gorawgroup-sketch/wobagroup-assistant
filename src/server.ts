@@ -81,7 +81,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     return;
   }
 
-  if (/^\/revisarcorreo\b/i.test(incoming.text.trim())) {
+  if (/^\/?revisarcorreo\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     revisarCorreoNuevo()
       .then((resultado) => {
