@@ -131,6 +131,12 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
 
   // email_proceder
   await answerCallbackQuerySafe(callback.id, "Procesando...");
+  await editTelegramMessage(
+    propuesta.chatId,
+    propuesta.messageId,
+    `🔄 Procesando — ${propuesta.asunto} (${propuesta.de})\n\nEsto puede tardar uno o dos minutos si hace falta explorar Drive o Holded.`,
+    []
+  ).catch((error) => console.error("[emailCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error));
 
   try {
     const instruccion =
@@ -185,6 +191,10 @@ export async function continuarConOrientacion(
   threadId?: string,
   messageIdHeader?: string
 ): Promise<void> {
+  await sendTelegramMessage(chatId, "🔄 Procesando tu instrucción — esto puede tardar uno o dos minutos...").catch(
+    (error) => console.error("[emailCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error)
+  );
+
   const instruccion =
     `El usuario dio instrucciones específicas sobre un correo entrante. ` +
     `Correo — De: ${de}. Asunto: ${asunto}. Resumen: ${resumen}. ` +
