@@ -2,7 +2,8 @@ import "dotenv/config";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
-import { parseIncomingUpdate, sendTelegramMessage } from "../core/telegram/client";
+import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery } from "../core/telegram/client";
+import { esUsuarioAutorizado } from "../core/telegram/authorization";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
@@ -35,6 +36,23 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   res.sendStatus(200);
 
   const update = req.body as TelegramUpdate;
+
+  const remitente = update.callback_query?.from ?? update.message?.from;
+  if (!esUsuarioAutorizado(remitente?.id)) {
+    console.warn(
+      `[auth] Bloqueado usuario no autorizado — id: ${remitente?.id}, username: ${remitente?.username ?? "(sin username)"}`
+    );
+
+    if (update.callback_query) {
+      await answerCallbackQuery(update.callback_query.id, "No tienes acceso a este asistente.").catch(() => {});
+    } else if (update.message) {
+      await sendTelegramMessage(
+        update.message.chat.id,
+        "🔒 No tienes acceso a este asistente. Pídele acceso a Carlos."
+      ).catch(() => {});
+    }
+    return;
+  }
 
   if (update.callback_query) {
     const data = update.callback_query.data ?? "";

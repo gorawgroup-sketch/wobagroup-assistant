@@ -8,6 +8,12 @@ Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos d
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
 simplemente pregúntalo en lenguaje natural.
 
+**Acceso**: solo los usuarios de Telegram en la lista de autorizados
+(`TELEGRAM_ALLOWED_USER_IDS`) pueden usar el bot — cualquier otra persona
+recibe "🔒 No tienes acceso a este asistente." Para dar acceso a alguien
+nuevo: que le escriba al bot una vez (quedará bloqueado y su `user_id`
+aparece en los logs de Railway), y se agrega esa id a la lista.
+
 ---
 
 ## 1. Comandos exactos
