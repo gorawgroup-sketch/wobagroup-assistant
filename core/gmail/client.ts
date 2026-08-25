@@ -119,6 +119,13 @@ export async function listarMensajesNuevos(afterUnixSeconds: number): Promise<st
   return ids;
 }
 
+/** Busca mensajes con una consulta arbitraria de Gmail (ej. `subject:"X" from:y@z.com`). */
+export async function buscarMensajes(query: string, maxResults = 10): Promise<string[]> {
+  const gmail = getGmailClient();
+  const res = await gmail.users.messages.list({ userId: "me", q: query, maxResults });
+  return (res.data.messages ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
+}
+
 /** Trae metadatos + extracto + lista de adjuntos de un mensaje. */
 export async function obtenerResumenCorreo(id: string): Promise<CorreoResumen> {
   const gmail = getGmailClient();

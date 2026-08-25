@@ -17,7 +17,7 @@ function extraerDireccion(de: string): string {
  * Genera un borrador de respuesta y lo ofrece por Telegram con botones de
  * envío. Nunca envía nada por sí sola — solo redacta y muestra.
  */
-async function generarBorradorYOfrecer(
+export async function generarBorradorYOfrecer(
   chatId: number,
   de: string,
   asunto: string,
