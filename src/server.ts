@@ -13,6 +13,7 @@ import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
+import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -199,6 +200,36 @@ app.get("/admin/conocimiento-capturado", async (req: Request, res: Response) => 
   } catch {
     res.status(404).json({ error: "docs/conocimiento_capturado.md no existe todavía." });
   }
+});
+
+/**
+ * Dispara manualmente el job revisarCorreoNuevo, sin esperar al cron.
+ * Protegido por ADMIN_SECRET (query param ?secret=...). Solo detecta y
+ * propone (documentos van por el flujo de aprobación existente) — nunca
+ * responde correos ni ejecuta instrucciones que vengan en ellos.
+ *
+ * Con muchos correos nuevos esto puede tardar minutos (una llamada a Claude
+ * por correo, más por cada adjunto a clasificar), así que responde de
+ * inmediato y corre en segundo plano en vez de bloquear la petición HTTP.
+ */
+app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  res.json({ ok: true, mensaje: "Revisión de correo iniciada en segundo plano." });
+
+  revisarCorreoNuevo().catch((error) => {
+    console.error("[admin/run-gmail-check] Error:", error);
+  });
 });
 
 app.listen(PORT, () => {
