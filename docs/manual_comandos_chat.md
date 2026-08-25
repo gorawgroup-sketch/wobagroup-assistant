@@ -57,7 +57,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
 **Sobre archivos/documentos enviados por Telegram para archivar en Drive:**
 - El asistente propone una carpeta de destino con botones de aprobación (sí/no) antes de subir nada.
 
-**Sobre alertas de pagos recurrentes (seguros, IBI, etc. con proveedor y empresa conocidos — solo WOBA/EWORKS):**
+**Sobre alertas de pagos recurrentes (seguros, IBI, etc. con proveedor y empresa conocidos — solo WOBA/EWORKS, cualquier periodicidad: mensual/trimestral/semestral/anual):**
 - 💰 Indicar monto y registrar — pide el importe exacto (y el proveedor, si no se conoce de antemano) por texto libre.
 - Tras responder con el importe, aparece un mensaje de confirmación con:
   - ✅ Confirmar y registrar — crea el gasto en Holded (como borrador) y la línea en el cashflow.
