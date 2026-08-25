@@ -4,20 +4,28 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 let gmailClient: gmail_v1.Gmail | null = null;
 
 /**
- * Cliente de Gmail de solo lectura, impersonando a GOOGLE_IMPERSONATE_EMAIL
- * (mismo mecanismo de delegación de dominio que ya usamos para Drive).
+ * Cliente de Gmail de solo lectura, impersonando a GMAIL_IMPERSONATE_EMAIL
+ * (el buzón dedicado del asistente, ej. asistente@wobagroup.com) — distinto
+ * de GOOGLE_IMPERSONATE_EMAIL (que usa Drive, con la identidad de Carlos
+ * porque es quien tiene permiso de Editor en esas carpetas). La misma
+ * delegación de dominio autoriza impersonar a cualquier usuario del
+ * dominio, por scope — no hace falta configurar nada extra por persona.
  */
 function getGmailClient(): gmail_v1.Gmail {
   if (gmailClient) return gmailClient;
 
   const credentials = loadServiceAccountCredentials();
-  const impersonate = process.env.GOOGLE_IMPERSONATE_EMAIL;
+  const impersonate = process.env.GMAIL_IMPERSONATE_EMAIL;
+
+  if (!impersonate) {
+    throw new Error("Falta la variable de entorno GMAIL_IMPERSONATE_EMAIL.");
+  }
 
   const auth = new google.auth.JWT({
     email: credentials.client_email,
     key: credentials.private_key,
     scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-    subject: impersonate || undefined,
+    subject: impersonate,
   });
 
   gmailClient = google.gmail({ version: "v1", auth });
