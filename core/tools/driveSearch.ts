@@ -10,10 +10,12 @@ import type { ToolDefinition } from "./types";
 export const driveSearchTool: ToolDefinition = {
   name: "buscar_documento_drive",
   description:
-    "Busca archivos por nombre en Google Drive dentro de la carpeta raíz de una empresa del grupo " +
-    "(WOBA, EWORKS o Footprint), incluyendo subcarpetas. Devuelve dónde está cada archivo y un link " +
-    "para abrirlo, no su contenido. Úsala cuando el usuario pregunte dónde encontrar un documento, " +
-    "contrato, factura escaneada u otro archivo por nombre.",
+    "Busca archivos O carpetas por nombre en Google Drive dentro de la carpeta raíz de una empresa " +
+    "del grupo (WOBA, EWORKS o Footprint), incluyendo subcarpetas. Devuelve dónde está cada resultado " +
+    "y un link para abrirlo, no su contenido. Úsala cuando el usuario pregunte dónde encontrar un " +
+    "documento, contrato, factura escaneada, o una carpeta por nombre (ej. 'la carpeta de normatividad " +
+    "España'). Para explorar qué hay dentro de una carpeta sin saber el nombre exacto, usa en cambio " +
+    "listar_carpetas_drive.",
   input_schema: {
     type: "object",
     properties: {

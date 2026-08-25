@@ -63,6 +63,7 @@ const FRIENDLY_TYPES: Record<string, string> = {
   "image/png": "Imagen PNG",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word (.docx)",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel (.xlsx)",
+  "application/vnd.google-apps.folder": "Carpeta",
 };
 
 export interface DriveSearchResult {
@@ -80,21 +81,19 @@ interface FolderInfo {
 const MAX_ANCESTRY_HOPS = 30;
 
 /**
- * Busca archivos por nombre en TODO lo que la cuenta de servicio puede ver
- * (búsqueda global, indexada por nombre — rápida sin importar el tamaño del
- * árbol), y luego, solo para los archivos que coinciden por nombre, verifica
- * si están dentro del árbol de la carpeta raíz solicitada subiendo por la
- * cadena de padres. Esto evita enumerar árboles de carpetas enteros (que
- * pueden ser muy grandes y lentos) cuando solo hace falta filtrar unos pocos
- * resultados. Solo lectura — no descarga ni lee contenido de archivos.
+ * Busca archivos Y carpetas por nombre en TODO lo que la cuenta de servicio
+ * puede ver (búsqueda global, indexada por nombre — rápida sin importar el
+ * tamaño del árbol), y luego, solo para los que coinciden por nombre,
+ * verifica si están dentro del árbol de la carpeta raíz solicitada subiendo
+ * por la cadena de padres. Esto evita enumerar árboles de carpetas enteros
+ * (que pueden ser muy grandes y lentos) cuando solo hace falta filtrar unos
+ * pocos resultados. Solo lectura — no descarga ni lee contenido de archivos.
  */
 export async function searchDriveFiles(rootFolderId: string, query: string): Promise<DriveSearchResult[]> {
   const drive = getDriveClient();
   const escapedQuery = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
-  const q =
-    `name contains '${escapedQuery}' and mimeType != 'application/vnd.google-apps.folder' ` +
-    `and trashed = false`;
+  const q = `name contains '${escapedQuery}' and trashed = false`;
 
   const candidatos: drive_v3.Schema$File[] = [];
   let pageToken: string | undefined;
