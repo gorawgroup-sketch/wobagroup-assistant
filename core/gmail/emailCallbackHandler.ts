@@ -145,7 +145,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `Acción a realizar: ${propuesta.accionSugerida}. ` +
       `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
-    const respuesta = await askClaude(instruccion);
+    const respuesta = await askClaude(instruccion, propuesta.chatId);
 
     await editTelegramMessage(
       propuesta.chatId,
@@ -201,7 +201,7 @@ export async function continuarConOrientacion(
     `Instrucción del usuario: ${instruccionUsuario}. ` +
     `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
-  const respuesta = await askClaude(instruccion);
+  const respuesta = await askClaude(instruccion, chatId);
   await sendTelegramMessage(chatId, respuesta);
 
   const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);

@@ -157,7 +157,10 @@ function construirMimeRespuesta(params: {
   cuerpo: string;
   messageIdHeader?: string;
 }): string {
-  const asuntoConRe = /^re:/i.test(params.asunto.trim()) ? params.asunto : `Re: ${params.asunto}`;
+  // Solo se antepone "Re:" cuando es respuesta a un hilo existente
+  // (messageIdHeader presente) — un correo nuevo debe llevar el asunto tal cual.
+  const asuntoConRe =
+    !params.messageIdHeader || /^re:/i.test(params.asunto.trim()) ? params.asunto : `Re: ${params.asunto}`;
 
   const headers = [
     `To: ${params.to}`,

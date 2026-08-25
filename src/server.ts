@@ -164,7 +164,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   }
 
   try {
-    const reply = await askClaude(incoming.text);
+    const reply = await askClaude(incoming.text, incoming.chatId);
     await sendTelegramMessage(incoming.chatId, reply);
   } catch (error) {
     console.error("Error procesando el mensaje de Telegram:", error);

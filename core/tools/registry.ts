@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type { ToolDefinition } from "./types";
+import type { ToolContext, ToolDefinition } from "./types";
 import { knowledgeBaseTool } from "./knowledgeBase";
 import { cashflowResumenTool } from "./cashflowResumen";
 import { cashflowDetalleTool } from "./cashflowDetalle";
@@ -7,6 +7,7 @@ import { holdedMovimientosTool } from "./holdedMovimientos";
 import { driveSearchTool } from "./driveSearch";
 import { driveListFoldersTool } from "./driveListFolders";
 import { alertasFiscalesTool } from "./alertasFiscales";
+import { proponerEnvioCorreoTool } from "./proposeEmail";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -20,6 +21,7 @@ const tools: ToolDefinition[] = [
   driveSearchTool,
   driveListFoldersTool,
   alertasFiscalesTool,
+  proponerEnvioCorreoTool,
 ];
 
 /**
@@ -37,7 +39,11 @@ export function getToolDefinitions(): Anthropic.Tool[] {
  * Ejecuta la herramienta solicitada por Claude y devuelve el resultado como texto,
  * listo para enviarse de vuelta como tool_result.
  */
-export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+export async function executeTool(
+  name: string,
+  input: Record<string, unknown>,
+  context: ToolContext = {}
+): Promise<string> {
   const tool = tools.find((t) => t.name === name);
 
   if (!tool) {
@@ -45,7 +51,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
   }
 
   try {
-    return await tool.handler(input);
+    return await tool.handler(input, context);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return `Error ejecutando la herramienta "${name}": ${message}`;

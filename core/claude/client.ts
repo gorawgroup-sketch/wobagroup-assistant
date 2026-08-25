@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
+import { obtenerHistorial, guardarHistorial } from "./conversationStore";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 12;
@@ -16,6 +17,16 @@ function buildSystemPrompt(): string {
       "para las herramientas.",
     "Tienes acceso a herramientas para consultar información interna del grupo. Úsalas cuando la " +
       "pregunta del usuario lo requiera, en vez de inventar o asumir la respuesta.",
+    "Carlos Gonzalez (carlos@wobagroup.com) es el CAO del grupo y tu jefe/administrador principal. " +
+      "Cuando alguien mencione a 'Carlos' sin más aclaración, asume que se refiere a él salvo que el " +
+      "contexto indique lo contrario.",
+    "Sí puedes enviar correos: cuando te pidan enviar, mandar o contestar algo por correo, usa la " +
+      "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
+      "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
+      "borrador con un botón en Telegram, así que proponer uno es siempre seguro.",
+    "Tienes memoria de los mensajes recientes de esta conversación — si el usuario hace referencia a " +
+      "algo mencionado antes ('ese link', 'el correo del que hablamos'), interpreta la referencia usando " +
+      "ese contexto en vez de pedir que lo repita.",
   ].join("\n\n");
 }
 
@@ -38,11 +49,12 @@ function getClient(): Anthropic {
  * invocar una o más, se ejecutan localmente y el resultado se le devuelve (tool_result)
  * hasta que produzca una respuesta final en texto.
  */
-export async function askClaude(userText: string): Promise<string> {
+export async function askClaude(userText: string, chatId?: number): Promise<string> {
   const anthropic = getClient();
   const tools = getToolDefinitions();
 
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
+  const historial = chatId !== undefined ? obtenerHistorial(chatId) : [];
+  const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const response = await anthropic.messages.create({
@@ -55,9 +67,15 @@ export async function askClaude(userText: string): Promise<string> {
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((block) => block.type === "text");
-      return textBlock && textBlock.type === "text"
-        ? textBlock.text
-        : "No he podido generar una respuesta.";
+      const respuestaFinal =
+        textBlock && textBlock.type === "text" ? textBlock.text : "No he podido generar una respuesta.";
+
+      if (chatId !== undefined) {
+        messages.push({ role: "assistant", content: response.content });
+        guardarHistorial(chatId, messages);
+      }
+
+      return respuestaFinal;
     }
 
     messages.push({ role: "assistant", content: response.content });
@@ -71,7 +89,7 @@ export async function askClaude(userText: string): Promise<string> {
     for (const block of toolUseBlocks) {
       console.log(`[claude] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
 
-      const result = await executeTool(block.name, block.input as Record<string, unknown>);
+      const result = await executeTool(block.name, block.input as Record<string, unknown>, { chatId });
 
       console.log(`[claude] tool_result <- ${block.name} (${result.length} caracteres)`);
 
