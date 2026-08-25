@@ -293,14 +293,27 @@ export async function subirArchivoADrive(
  * reales de carpetas en vez de adivinar (ej. "SEGUROS📜" en vez de "Seguros").
  */
 export async function listarSubcarpetas(rootFolderId: string, nombreCarpetaPadre?: string): Promise<string[]> {
-  const drive = getDriveClient();
+  return listarCarpetasEnRuta(rootFolderId, nombreCarpetaPadre?.trim() ? [nombreCarpetaPadre] : []);
+}
 
+/**
+ * Lista los nombres de las subcarpetas al final de una ruta de nombres de
+ * carpetas (coincidencia parcial en cada segmento), descendiendo desde
+ * `rootFolderId`. Con `ruta` vacía, lista las carpetas de primer nivel.
+ * Si algún segmento de la ruta no se encuentra, devuelve un array vacío
+ * (nunca inventa una carpeta que no verificó que existe).
+ */
+export async function listarCarpetasEnRuta(rootFolderId: string, ruta: string[]): Promise<string[]> {
+  const drive = getDriveClient();
   let parentId = rootFolderId;
 
-  if (nombreCarpetaPadre?.trim()) {
-    const escapado = nombreCarpetaPadre.trim().replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  for (const segmento of ruta) {
+    const limpio = segmento.trim();
+    if (!limpio) continue;
+
+    const escapado = limpio.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const q =
-      `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' ` +
+      `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' ` +
       `and name contains '${escapado}' and trashed = false`;
 
     const res = await drive.files.list({

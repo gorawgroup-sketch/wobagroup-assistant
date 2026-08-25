@@ -3,7 +3,7 @@ import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
 
 const MODEL = "claude-sonnet-4-6";
-const MAX_TOOL_ITERATIONS = 5;
+const MAX_TOOL_ITERATIONS = 12;
 
 function buildSystemPrompt(): string {
   const hoy = formatDateLocal(new Date());

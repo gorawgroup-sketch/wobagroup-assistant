@@ -5,6 +5,7 @@ import { cashflowResumenTool } from "./cashflowResumen";
 import { cashflowDetalleTool } from "./cashflowDetalle";
 import { holdedMovimientosTool } from "./holdedMovimientos";
 import { driveSearchTool } from "./driveSearch";
+import { driveListFoldersTool } from "./driveListFolders";
 import { alertasFiscalesTool } from "./alertasFiscales";
 
 /**
@@ -17,6 +18,7 @@ const tools: ToolDefinition[] = [
   cashflowDetalleTool,
   holdedMovimientosTool,
   driveSearchTool,
+  driveListFoldersTool,
   alertasFiscalesTool,
 ];
 
