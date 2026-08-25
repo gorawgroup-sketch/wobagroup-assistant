@@ -209,10 +209,12 @@ export interface CarpetaResuelta {
 
 /**
  * Busca, dentro del árbol de `rootFolderId`, una subcarpeta cuyo nombre
- * coincida exactamente con alguno de `nombresCandidatos` (en orden de
- * preferencia — el primero que encuentre y esté dentro del árbol gana). Si
- * no encuentra ninguna, devuelve el propio `rootFolderId` como destino
- * (fallback seguro: nunca sube "a ciegas" a una carpeta no verificada).
+ * coincida con alguno de `nombresCandidatos` (en orden de preferencia — el
+ * primero que encuentre y esté dentro del árbol gana). Prueba coincidencia
+ * exacta primero y, si no hay, coincidencia parcial (por si el nombre real
+ * trae variaciones como emojis, ej. "SEGUROS📜"). Si no encuentra ninguna,
+ * devuelve el propio `rootFolderId` como destino (fallback seguro: nunca
+ * sube "a ciegas" a una carpeta no verificada).
  */
 export async function resolverCarpetaDestino(
   rootFolderId: string,
@@ -220,26 +222,29 @@ export async function resolverCarpetaDestino(
 ): Promise<CarpetaResuelta> {
   const drive = getDriveClient();
 
-  for (const nombre of nombresCandidatos) {
-    const limpio = nombre.trim();
-    if (!limpio) continue;
+  for (const modo of ["exacta", "parcial"] as const) {
+    for (const nombre of nombresCandidatos) {
+      const limpio = nombre.trim();
+      if (!limpio) continue;
 
-    const escapado = limpio.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-    const q = `mimeType = 'application/vnd.google-apps.folder' and name = '${escapado}' and trashed = false`;
+      const escapado = limpio.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const condicionNombre = modo === "exacta" ? `name = '${escapado}'` : `name contains '${escapado}'`;
+      const q = `mimeType = 'application/vnd.google-apps.folder' and ${condicionNombre} and trashed = false`;
 
-    const res = await drive.files.list({
-      q,
-      fields: "files(id, name)",
-      pageSize: 20,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-      corpora: "allDrives",
-    });
+      const res = await drive.files.list({
+        q,
+        fields: "files(id, name)",
+        pageSize: 20,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      });
 
-    for (const folder of res.data.files ?? []) {
-      if (!folder.id) continue;
-      if (await estaDentroDelArbol(drive, folder.id, rootFolderId)) {
-        return { folderId: folder.id, encontrada: true, rutaEncontrada: folder.name ?? limpio };
+      for (const folder of res.data.files ?? []) {
+        if (!folder.id) continue;
+        if (await estaDentroDelArbol(drive, folder.id, rootFolderId)) {
+          return { folderId: folder.id, encontrada: true, rutaEncontrada: folder.name ?? limpio };
+        }
       }
     }
   }
@@ -279,4 +284,47 @@ export async function subirArchivoADrive(
     fileId: res.data.id,
     webViewLink: res.data.webViewLink ?? `https://drive.google.com/file/d/${res.data.id}/view`,
   };
+}
+
+/**
+ * Lista los nombres de las subcarpetas DIRECTAS de `rootFolderId`, o de una
+ * subcarpeta suya llamada `nombreCarpetaPadre` (coincidencia parcial) si se
+ * especifica. Pensado para que el clasificador de documentos vea nombres
+ * reales de carpetas en vez de adivinar (ej. "SEGUROS📜" en vez de "Seguros").
+ */
+export async function listarSubcarpetas(rootFolderId: string, nombreCarpetaPadre?: string): Promise<string[]> {
+  const drive = getDriveClient();
+
+  let parentId = rootFolderId;
+
+  if (nombreCarpetaPadre?.trim()) {
+    const escapado = nombreCarpetaPadre.trim().replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const q =
+      `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' ` +
+      `and name contains '${escapado}' and trashed = false`;
+
+    const res = await drive.files.list({
+      q,
+      fields: "files(id, name)",
+      pageSize: 5,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+
+    const match = res.data.files?.[0];
+    if (!match?.id) {
+      return [];
+    }
+    parentId = match.id;
+  }
+
+  const res = await drive.files.list({
+    q: `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: "files(name)",
+    pageSize: 100,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+
+  return (res.data.files ?? []).map((f) => f.name ?? "").filter(Boolean);
 }

@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBaseTool } from "../tools/knowledgeBase";
+import { listarSubcarpetas } from "../drive/client";
+import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 
 const MODEL = "claude-sonnet-4-6";
-const MAX_ITERATIONS = 5;
+const MAX_ITERATIONS = 6;
 
 let client: Anthropic | null = null;
 
@@ -30,6 +32,7 @@ export interface ClasificacionDocumento {
 }
 
 const REPORTAR_TOOL_NAME = "reportar_clasificacion_documento";
+const LISTAR_CARPETAS_TOOL_NAME = "listar_carpetas_drive";
 
 const REPORTAR_TOOL: Anthropic.Tool = {
   name: REPORTAR_TOOL_NAME,
@@ -46,40 +49,71 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       },
       carpeta_sugerida: {
         type: "string",
-        description: "Carpeta o ruta sugerida dentro de Drive donde archivarlo.",
+        description:
+          "Nombre EXACTO (copiado literal, con emojis/mayúsculas si los trae) de una carpeta real " +
+          "vista con listar_carpetas_drive. No inventes una ruta genérica si no la confirmaste ahí.",
       },
       confianza: { type: "string", enum: ["alta", "media", "baja"] },
       razon: { type: "string", description: "Explicación breve de por qué se propone esta clasificación." },
       pregunta_si_ambiguo: {
         type: "string",
         description:
-          "Solo si confianza='baja': la pregunta exacta para desambiguar con el usuario, en vez de adivinar.",
+          "Solo si confianza='baja': la pregunta exacta para desambiguar con el usuario, en vez de " +
+          "adivinar. Si hay varias carpetas reales igual de plausibles, menciónalas por su nombre real.",
       },
     },
     required: ["empresa", "tipo_documento", "carpeta_sugerida", "confianza", "razon"],
   },
 };
 
+const LISTAR_CARPETAS_TOOL: Anthropic.Tool = {
+  name: LISTAR_CARPETAS_TOOL_NAME,
+  description:
+    "Lista los nombres reales de las subcarpetas dentro de Drive para una empresa (WOBA, EWORKS o " +
+    "Footprint). Sin 'carpeta_padre', lista las carpetas de primer nivel. Con 'carpeta_padre' (nombre " +
+    "parcial de una carpeta ya vista), lista lo que hay DENTRO de esa carpeta. Úsala antes de proponer " +
+    "una carpeta_sugerida — los nombres reales pueden traer emojis o variaciones que no adivinarías " +
+    "(ej. 'SEGUROS📜'), y a veces hay más de una carpeta plausible (ej. 'SEGUROS📜' junto a una carpeta " +
+    "separada 'MOTO PIAGGIO 300') que debes detectar para preguntar en vez de adivinar.",
+  input_schema: {
+    type: "object",
+    properties: {
+      empresa: { type: "string", enum: ["WOBA", "EWORKS", "Footprint"] },
+      carpeta_padre: {
+        type: "string",
+        description: "Nombre (parcial) de una subcarpeta ya conocida, para listar su contenido. Opcional.",
+      },
+    },
+    required: ["empresa"],
+  },
+};
+
 const SYSTEM_PROMPT = [
   "Eres el clasificador de documentos entrantes del grupo (WOBA/BAE, Footprint, eWorks).",
   "Te llega el nombre de un archivo y, si existe, el texto/caption que el usuario escribió al enviarlo " +
-    "por Telegram. Tu trabajo es proponer a qué empresa pertenece el documento y en qué tipo de carpeta " +
-    "debería archivarse, basándote en esas pistas.",
+    "por Telegram. Tu trabajo es proponer a qué empresa pertenece el documento y en qué carpeta REAL de " +
+    "Drive debería archivarse, basándote en esas pistas.",
+  "Antes de proponer una carpeta, usa listar_carpetas_drive para ver los nombres reales (de primer " +
+    "nivel, y si hace falta explora dentro de alguna con carpeta_padre). NUNCA propongas una ruta " +
+    "genérica o inventada ('Facturas/2025', etc.) — carpeta_sugerida debe ser el nombre EXACTO de una " +
+    "carpeta que efectivamente viste con esta herramienta.",
+  "Si al explorar encuentras más de una carpeta igual de plausible para este documento (ej. una carpeta " +
+    "general de 'Seguros' y también una carpeta específica de un activo, como un vehículo, que podría " +
+    "aplicar), NO elijas una al azar: marca confianza='baja' y en pregunta_si_ambiguo pregunta al " +
+    "usuario mencionando los nombres reales de esas carpetas para que elija.",
   "Si hace falta contexto sobre qué tipos de documentos van a qué carpetas (ej. documentos de un " +
-    "colaborador nuevo, de un proveedor, de ISO...), usa la herramienta consultar_base_conocimiento " +
-    "(documento de responsabilidades del grupo) antes de decidir.",
+    "colaborador nuevo, de un proveedor, de ISO...), usa también consultar_base_conocimiento " +
+    "(documento de responsabilidades del grupo).",
   "No tienes acceso al contenido del archivo (PDF/imagen), solo al nombre y al caption — no inventes ni " +
     "asumas contenido que no esté en esas pistas.",
-  "Si la información es insuficiente para proponer con confianza razonable, marca confianza='baja' y en " +
-    "'pregunta_si_ambiguo' escribe la pregunta exacta para desambiguar con el usuario, en vez de adivinar.",
   `SIEMPRE debes terminar llamando a la herramienta ${REPORTAR_TOOL_NAME} con tu conclusión final.`,
 ].join("\n\n");
 
 /**
  * Clasifica un documento entrante usando solo el nombre de archivo y el
  * caption (sin leer contenido), con Claude apoyándose en
- * consultar_base_conocimiento cuando hace falta contexto. Nunca sube nada a
- * Drive — solo propone una clasificación.
+ * consultar_base_conocimiento y listar_carpetas_drive (nombres reales de
+ * Drive) para no adivinar. Nunca sube nada a Drive — solo propone.
  */
 export async function clasificarDocumento(
   nombreArchivo: string,
@@ -93,6 +127,7 @@ export async function clasificarDocumento(
       description: knowledgeBaseTool.description,
       input_schema: knowledgeBaseTool.input_schema,
     },
+    LISTAR_CARPETAS_TOOL,
     REPORTAR_TOOL,
   ];
 
@@ -137,12 +172,27 @@ export async function clasificarDocumento(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
+      console.log(`[classifyFile] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
+
+      let resultado: string;
+
       if (block.name === knowledgeBaseTool.name) {
-        console.log(`[classifyFile] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
-        const resultado = await knowledgeBaseTool.handler(block.input as Record<string, unknown>);
-        console.log(`[classifyFile] tool_result <- ${block.name} (${resultado.length} caracteres)`);
-        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultado });
+        resultado = await knowledgeBaseTool.handler(block.input as Record<string, unknown>);
+      } else if (block.name === LISTAR_CARPETAS_TOOL_NAME) {
+        const input = block.input as { empresa?: EmpresaConCarpeta; carpeta_padre?: string };
+        const rootId = input.empresa ? ROOT_FOLDERS[input.empresa] : undefined;
+        if (!rootId) {
+          resultado = `Error: empresa "${input.empresa}" no reconocida.`;
+        } else {
+          const nombres = await listarSubcarpetas(rootId, input.carpeta_padre);
+          resultado = nombres.length > 0 ? nombres.join("\n") : "(sin subcarpetas encontradas ahí)";
+        }
+      } else {
+        continue;
       }
+
+      console.log(`[classifyFile] tool_result <- ${block.name} (${resultado.length} caracteres)`);
+      toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultado });
     }
     messages.push({ role: "user", content: toolResults });
   }
