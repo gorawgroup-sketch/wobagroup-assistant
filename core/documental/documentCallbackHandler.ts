@@ -1,5 +1,6 @@
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { consumirPropuestaClasificacion } from "./classificationStore";
+import { archivarDocumentoEnDrive } from "./archiveFile";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -13,8 +14,8 @@ async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): 
 
 /**
  * Maneja los botones de clasificación de documentos (doc_confirm / doc_reroute).
- * IMPORTANTE: "✅ Sí, archivar aquí" NO sube nada a Drive todavía — solo
- * confirma por texto dónde quedaría archivado. La subida real es el Paso 3.
+ * "✅ Sí, archivar aquí" es el ÚNICO camino de código que dispara la subida
+ * real a Drive (archivarDocumentoEnDrive) — nunca ocurre automáticamente.
  */
 export async function handleDocumentCallback(callback: TelegramCallbackQuery): Promise<void> {
   const data = callback.data;
@@ -24,7 +25,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   }
 
   const [accion, id] = data.split(":");
-  const propuesta = consumirPropuestaClasificacion(id);
+  const propuesta = await consumirPropuestaClasificacion(id);
 
   if (!propuesta) {
     await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
@@ -36,19 +37,30 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
-      `✏️ Ok — respóndeme con la empresa y carpeta correctas para "${propuesta.nombreArchivo}".`,
+      `✏️ Ok — respóndeme con la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}".`,
       []
     );
     return;
   }
 
   // doc_confirm
-  await answerCallbackQuerySafe(callback.id, "Confirmado.");
-  await editTelegramMessage(
-    propuesta.chatId,
-    propuesta.messageId,
-    `✅ Quedaría archivado en "${propuesta.clasificacion.carpetaSugerida}" (${propuesta.clasificacion.empresa}).\n\n` +
-      `(Todavía no se sube realmente a Drive — eso es el Paso 3.)`,
-    []
-  );
+  await answerCallbackQuerySafe(callback.id, "Subiendo a Drive...");
+
+  const resultado = await archivarDocumentoEnDrive(propuesta);
+
+  if (resultado.ok) {
+    await editTelegramMessage(
+      propuesta.chatId,
+      propuesta.messageId,
+      `✅ Archivado — ${propuesta.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`,
+      []
+    );
+  } else {
+    await editTelegramMessage(
+      propuesta.chatId,
+      propuesta.messageId,
+      `⚠️ No se pudo archivar — ${propuesta.nombreArchivoOriginal}\n\n${resultado.mensaje}`,
+      []
+    );
+  }
 }

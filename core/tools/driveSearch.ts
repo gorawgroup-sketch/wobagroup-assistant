@@ -1,10 +1,6 @@
 import { searchDriveFiles } from "../drive/client";
+import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import type { ToolDefinition } from "./types";
-
-const ROOT_FOLDERS: Record<"WOBA" | "EWORKS", string> = {
-  WOBA: "1BvNawKKN6BUxStcU8FqXRBLuKmkxa-Q8",
-  EWORKS: "1CYMOAUnOJN1eTIlmvNaJVyZ1ujNLB-e8",
-};
 
 /**
  * Busca documentos por nombre en la carpeta raíz de Drive de la empresa
@@ -15,15 +11,15 @@ export const driveSearchTool: ToolDefinition = {
   name: "buscar_documento_drive",
   description:
     "Busca archivos por nombre en Google Drive dentro de la carpeta raíz de una empresa del grupo " +
-    "(WOBA o EWORKS), incluyendo subcarpetas. Devuelve dónde está cada archivo y un link para " +
-    "abrirlo, no su contenido. Úsala cuando el usuario pregunte dónde encontrar un documento, " +
+    "(WOBA, EWORKS o Footprint), incluyendo subcarpetas. Devuelve dónde está cada archivo y un link " +
+    "para abrirlo, no su contenido. Úsala cuando el usuario pregunte dónde encontrar un documento, " +
     "contrato, factura escaneada u otro archivo por nombre.",
   input_schema: {
     type: "object",
     properties: {
       empresa: {
         type: "string",
-        enum: ["WOBA", "EWORKS"],
+        enum: ["WOBA", "EWORKS", "Footprint"],
         description: "Empresa del grupo cuya carpeta raíz de Drive se consulta.",
       },
       consulta: {
@@ -34,9 +30,9 @@ export const driveSearchTool: ToolDefinition = {
     required: ["empresa", "consulta"],
   },
   handler: async (input) => {
-    const empresa = input.empresa as "WOBA" | "EWORKS";
-    if (empresa !== "WOBA" && empresa !== "EWORKS") {
-      return "Error: 'empresa' debe ser WOBA o EWORKS.";
+    const empresa = input.empresa as EmpresaConCarpeta;
+    if (!ROOT_FOLDERS[empresa]) {
+      return "Error: 'empresa' debe ser WOBA, EWORKS o Footprint.";
     }
 
     const consulta = typeof input.consulta === "string" ? input.consulta.trim() : "";

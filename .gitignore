@@ -7,3 +7,4 @@ credentials/
 *.json.key
 woba-copilot-*.json
 tmp/
+data/

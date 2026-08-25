@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { google, drive_v3 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
@@ -20,6 +21,37 @@ function getDriveClient(): drive_v3.Drive {
 
   driveClient = google.drive({ version: "v3", auth });
   return driveClient;
+}
+
+let driveWriteClient: drive_v3.Drive | null = null;
+
+/**
+ * Cliente de Drive con permiso de escritura (scope completo), distinto del
+ * de solo lectura usado por la búsqueda. Se usa exclusivamente para subir
+ * archivos ya aprobados por el usuario.
+ *
+ * Las cuentas de servicio no tienen cuota de almacenamiento propia, así que
+ * no pueden crear archivos en carpetas de un Drive personal (solo en
+ * Unidades Compartidas). Por eso este cliente "impersona" a un usuario real
+ * (GOOGLE_IMPERSONATE_EMAIL) vía delegación de dominio — configurada en el
+ * Admin Console de Google Workspace, con el client_id de esta cuenta de
+ * servicio y el scope drive autorizados.
+ */
+function getDriveWriteClient(): drive_v3.Drive {
+  if (driveWriteClient) return driveWriteClient;
+
+  const credentials = loadServiceAccountCredentials();
+  const impersonate = process.env.GOOGLE_IMPERSONATE_EMAIL;
+
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ["https://www.googleapis.com/auth/drive"],
+    subject: impersonate || undefined,
+  });
+
+  driveWriteClient = google.drive({ version: "v3", auth });
+  return driveWriteClient;
 }
 
 const FRIENDLY_TYPES: Record<string, string> = {
@@ -145,4 +177,106 @@ export async function searchDriveFiles(rootFolderId: string, query: string): Pro
   }
 
   return results;
+}
+
+const MAX_ANCESTRY_HOPS_UPLOAD = 30;
+
+async function estaDentroDelArbol(drive: drive_v3.Drive, folderId: string, rootFolderId: string): Promise<boolean> {
+  let current: string | undefined = folderId;
+  let hops = 0;
+
+  while (current && hops < MAX_ANCESTRY_HOPS_UPLOAD) {
+    if (current === rootFolderId) return true;
+    hops++;
+
+    try {
+      const fileId: string = current;
+      const res = await drive.files.get({ fileId, fields: "parents", supportsAllDrives: true });
+      current = res.data.parents?.[0];
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+export interface CarpetaResuelta {
+  folderId: string;
+  encontrada: boolean;
+  rutaEncontrada?: string;
+}
+
+/**
+ * Busca, dentro del árbol de `rootFolderId`, una subcarpeta cuyo nombre
+ * coincida exactamente con alguno de `nombresCandidatos` (en orden de
+ * preferencia — el primero que encuentre y esté dentro del árbol gana). Si
+ * no encuentra ninguna, devuelve el propio `rootFolderId` como destino
+ * (fallback seguro: nunca sube "a ciegas" a una carpeta no verificada).
+ */
+export async function resolverCarpetaDestino(
+  rootFolderId: string,
+  nombresCandidatos: string[]
+): Promise<CarpetaResuelta> {
+  const drive = getDriveClient();
+
+  for (const nombre of nombresCandidatos) {
+    const limpio = nombre.trim();
+    if (!limpio) continue;
+
+    const escapado = limpio.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const q = `mimeType = 'application/vnd.google-apps.folder' and name = '${escapado}' and trashed = false`;
+
+    const res = await drive.files.list({
+      q,
+      fields: "files(id, name)",
+      pageSize: 20,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      corpora: "allDrives",
+    });
+
+    for (const folder of res.data.files ?? []) {
+      if (!folder.id) continue;
+      if (await estaDentroDelArbol(drive, folder.id, rootFolderId)) {
+        return { folderId: folder.id, encontrada: true, rutaEncontrada: folder.name ?? limpio };
+      }
+    }
+  }
+
+  return { folderId: rootFolderId, encontrada: false };
+}
+
+export interface ArchivoSubido {
+  fileId: string;
+  webViewLink: string;
+}
+
+/**
+ * Sube un archivo local a una carpeta específica de Drive. Solo debe
+ * invocarse tras aprobación explícita del usuario — nunca automáticamente.
+ */
+export async function subirArchivoADrive(
+  rutaLocal: string,
+  nombreArchivo: string,
+  mimeType: string | undefined,
+  folderId: string
+): Promise<ArchivoSubido> {
+  const drive = getDriveWriteClient();
+
+  const res = await drive.files.create({
+    requestBody: { name: nombreArchivo, parents: [folderId] },
+    media: { mimeType: mimeType || "application/octet-stream", body: createReadStream(rutaLocal) },
+    fields: "id, webViewLink",
+    supportsAllDrives: true,
+  });
+
+  if (!res.data.id) {
+    throw new Error("Drive no devolvió un id para el archivo subido.");
+  }
+
+  return {
+    fileId: res.data.id,
+    webViewLink: res.data.webViewLink ?? `https://drive.google.com/file/d/${res.data.id}/view`,
+  };
 }

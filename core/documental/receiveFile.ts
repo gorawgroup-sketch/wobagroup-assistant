@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { downloadTelegramFile, getTelegramFile, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { clasificarDocumento } from "./classifyFile";
-import { crearPropuestaClasificacion } from "./classificationStore";
+import { crearPropuestaClasificacion, actualizarMessageIdClasificacion } from "./classificationStore";
 import type { TelegramMessage } from "../telegram/types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -77,8 +77,9 @@ function extraerArchivo(message: TelegramMessage): ArchivoEntrante | null {
  * Recibe un archivo adjunto de Telegram (documento o foto), lo descarga a
  * una carpeta temporal local (tmp/uploads/), confirma por Telegram qué se
  * recibió, y propone una clasificación (empresa/tipo/carpeta) usando el
- * nombre del archivo y el caption — sin leer el contenido todavía. NO sube
- * nada a Drive — eso es el Paso 3.
+ * nombre del archivo y el caption — sin leer el contenido todavía. La subida
+ * real a Drive ocurre en documentCallbackHandler.ts al aprobar la propuesta,
+ * nunca aquí.
  */
 export async function handleIncomingFile(message: TelegramMessage): Promise<void> {
   const chatId = message.chat.id;
@@ -133,8 +134,10 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
       return;
     }
 
-    const propuesta = crearPropuestaClasificacion({
-      nombreArchivo: nombreParaClasificar,
+    const propuesta = await crearPropuestaClasificacion({
+      nombreArchivoOriginal: archivo.nombreOriginal ?? nombreBase,
+      rutaLocal: destino,
+      mimeType: archivo.mimeType,
       clasificacion,
       chatId,
       messageId: 0,
@@ -154,7 +157,7 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
       ],
     ]);
 
-    propuesta.messageId = messageId;
+    await actualizarMessageIdClasificacion(propuesta.id, messageId);
   } catch (error) {
     const errMessage = error instanceof Error ? error.message : String(error);
     console.error("[receiveFile] Error procesando archivo entrante:", errMessage);
