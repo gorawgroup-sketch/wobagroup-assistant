@@ -46,15 +46,25 @@ que hacer nada más.
   - si ya existe un gasto parecido en Holded (mismo proveedor, monto y
     fecha cercana), propone adjuntarle el comprobante ahí;
   - si no, propone crear un gasto nuevo, ya clasificado (empresa,
-    proveedor, importe, concepto).
+    proveedor, importe, concepto), mostrando el desglose real de IVA por
+    línea (base + % leído de la factura) antes de que apruebes.
   - Todo con botón de aprobación — nunca escribe en Holded sin confirmar.
   - Si la clasificación no es correcta, puedes corregirla; esa corrección
     queda **aprendida** para la próxima factura del mismo proveedor.
   - Solo administradores pueden aprobar esta escritura.
+  - Tras crear/adjuntar el gasto con éxito, intenta conciliar automáticamente
+    el movimiento bancario correspondiente (si encuentra exactamente uno
+    parecido en monto y fecha); si no está seguro, te lo dice en vez de
+    asumir que quedó conciliado.
 - **Gastos sin comprobante**: pregúntale "¿qué gastos de WOBA/EWORKS/Footprint
   no tienen comprobante?" y revisa Holded para decirte cuáles faltan (con el
   proveedor, monto, fecha, y si hay una pista de a quién corresponde). Solo
   consulta — no escribe nada.
+- **Movimientos bancarios sin conciliar**: pregúntale "¿qué movimientos de
+  Footprint faltan por conciliar?" y revisa las cuentas de Holded Treasury
+  para decirte cuáles no están conciliados todavía (cuenta, descripción,
+  monto, fecha) — útil para detectar cargos sin ningún gasto asociado. Solo
+  consulta — no escribe ni concilia nada.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.

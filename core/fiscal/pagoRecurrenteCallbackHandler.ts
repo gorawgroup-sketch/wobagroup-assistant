@@ -132,7 +132,10 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
         contactId: contacto.id,
         fecha: propuesta.fechaVencimiento,
         descripcion: conceptoEtiquetado,
-        importe: propuesta.monto,
+        // Pagos recurrentes no traen desglose de IVA (el monto lo da el
+        // usuario a mano, no una factura leída) — una sola línea al 0%,
+        // igual que el comportamiento anterior.
+        lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
       });
 
       const resultadoCashflow = await registrarMovimientoEnSheet({

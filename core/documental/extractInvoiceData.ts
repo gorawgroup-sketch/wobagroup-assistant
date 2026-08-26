@@ -20,13 +20,22 @@ function getClient(): Anthropic {
 
 export type EmpresaGasto = "WOBA" | "EWORKS" | "Footprint" | "desconocida";
 
+export interface LineaFactura {
+  concepto: string;
+  base: number;
+  tipoIvaPct: number;
+}
+
 export interface DatosFactura {
   esFacturaOGasto: boolean;
   proveedor: string;
+  /** Total real de la factura (base + todo el IVA), tal como aparece impreso — se usa para el matching. */
   monto: number;
   moneda: string;
   fecha: string; // YYYY-MM-DD, según lo que diga el documento
   concepto: string;
+  /** Desglose por tipo de IVA (una o varias líneas). El % es el que aparece impreso, no un código de Holded. */
+  lineas: LineaFactura[];
   empresaProbable: EmpresaGasto;
   confianza: "alta" | "media" | "baja";
   razon: string;
@@ -47,10 +56,29 @@ const REPORTAR_TOOL: Anthropic.Tool = {
         description: "true si el documento es una factura, recibo, ticket o comprobante de gasto/pago.",
       },
       proveedor: { type: "string", description: "Nombre del proveedor/emisor tal como aparece en el documento." },
-      monto: { type: "number", description: "Importe total (numérico, sin símbolo de moneda)." },
+      monto: { type: "number", description: "Importe TOTAL de la factura (base + todo el IVA), tal como aparece impreso." },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD." },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
+      lineas: {
+        type: "array",
+        description:
+          "Desglose por tipo de IVA, tal como aparece en la factura (una línea por cada base+IVA " +
+          "distinto). Si la factura no desglosa nada (un solo total, sin IVA separado), reporta UNA " +
+          "línea con base = monto y tipo_iva_pct = 0 (nunca inventes un desglose que no está impreso).",
+        items: {
+          type: "object",
+          properties: {
+            concepto: { type: "string", description: "Descripción de esta línea/concepto." },
+            base: { type: "number", description: "Base imponible de esta línea (sin IVA)." },
+            tipo_iva_pct: {
+              type: "number",
+              description: "Porcentaje de IVA de esta línea tal como aparece impreso (ej. 21, 10, 0). NUNCA un código de Holded.",
+            },
+          },
+          required: ["concepto", "base", "tipo_iva_pct"],
+        },
+      },
       empresa_probable: {
         type: "string",
         enum: ["WOBA", "EWORKS", "Footprint", "desconocida"],
@@ -72,6 +100,11 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "sigas extrayendo los demás campos.",
     "Si sí es un gasto, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
       "aparecen en el documento — no inventes ni redondees.",
+    "Extrae también el desglose de IVA en 'lineas': si la factura muestra bases y tipos de IVA " +
+      "distintos (ej. una parte al 21% y otra al 10%), repórtalos como líneas separadas. Si solo hay un " +
+      "total sin desglose, repórtalo como una sola línea. El porcentaje de IVA es el que está impreso " +
+      "en el documento (un número como 21 o 10) — nunca un código interno de Holded, eso se resuelve " +
+      "después con datos reales del sistema.",
     "Para decidir la empresa probable (WOBA, EWORKS o Footprint), usa consultar_base_conocimiento si " +
       "hace falta contexto sobre qué proveedores/gastos son de cada empresa.",
     clasificacionesAprendidas
@@ -126,6 +159,7 @@ export async function extraerDatosFactura(rutaLocal: string, mimeType: string | 
     moneda: "",
     fecha: "",
     concepto: "",
+    lineas: [],
     empresaProbable: "desconocida",
     confianza: "baja",
     razon: "No fue posible leer el documento.",
@@ -172,13 +206,32 @@ export async function extraerDatosFactura(rutaLocal: string, mimeType: string | 
     const reportar = toolUseBlocks.find((b) => b.name === REPORTAR_TOOL_NAME);
     if (reportar) {
       const input = reportar.input as Record<string, unknown>;
+      const monto = typeof input.monto === "number" ? input.monto : 0;
+
+      const lineasRaw = Array.isArray(input.lineas) ? input.lineas : [];
+      const lineas: LineaFactura[] = lineasRaw
+        .map((l): LineaFactura | null => {
+          if (typeof l !== "object" || l === null) return null;
+          const linea = l as Record<string, unknown>;
+          return {
+            concepto: typeof linea.concepto === "string" ? linea.concepto : "",
+            base: typeof linea.base === "number" ? linea.base : 0,
+            tipoIvaPct: typeof linea.tipo_iva_pct === "number" ? linea.tipo_iva_pct : 0,
+          };
+        })
+        .filter((l): l is LineaFactura => l !== null);
+
       return {
         esFacturaOGasto: Boolean(input.es_factura_o_gasto),
         proveedor: (input.proveedor as string) ?? "",
-        monto: typeof input.monto === "number" ? input.monto : 0,
+        monto,
         moneda: (input.moneda as string) ?? "EUR",
         fecha: (input.fecha as string) ?? "",
         concepto: (input.concepto as string) ?? "",
+        // Si Claude no reportó líneas (o vinieron vacías), se usa una sola
+        // línea con el total completo a 0% en vez de perder el importe —
+        // crearGastoHolded siempre necesita al menos una línea.
+        lineas: lineas.length > 0 ? lineas : [{ concepto: (input.concepto as string) ?? "", base: monto, tipoIvaPct: 0 }],
         empresaProbable: (input.empresa_probable as EmpresaGasto) ?? "desconocida",
         confianza: (input.confianza as DatosFactura["confianza"]) ?? "baja",
         razon: (input.razon as string) ?? "",

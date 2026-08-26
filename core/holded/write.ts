@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { Empresa } from "./client";
+import { formatDateLocal } from "../utils/dateFormat";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -112,7 +113,7 @@ export interface PurchaseCandidato {
   descripcion: string;
 }
 
-/** Los importes de Holded vienen como string en formato ES ("1.234,56"). */
+/** Los importes de /purchases vienen como string en formato ES ("1.234,56"). */
 function parsearMontoHolded(raw: unknown): number {
   if (typeof raw === "number") return raw;
   if (typeof raw !== "string") return NaN;
@@ -121,13 +122,23 @@ function parsearMontoHolded(raw: unknown): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
+/**
+ * Los importes de /treasury/.../bank-movements vienen en formato decimal
+ * normal ("-3.77"), NO en formato ES como /purchases — verificado en vivo
+ * (bug encontrado: usar parsearMontoHolded aquí convertía "-3.77" en -377,
+ * porque interpretaba el punto como separador de miles). No confundir los
+ * dos parsers aunque ambos "parseen un monto de Holded".
+ */
+function parsearMontoMovimiento(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return NaN;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 const TOLERANCIA_MONTO = 0.01;
 const VENTANA_DIAS_BUSQUEDA = 10;
 const MAX_PAGINAS_PURCHASES = 10;
-
-function formatearFechaISO(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
 
 /**
  * Busca gastos YA existentes en Holded que podrían corresponder a una
@@ -155,8 +166,8 @@ export async function buscarGastoSimilar(
   for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
     const params = new URLSearchParams({
       limit: "100",
-      start_date: formatearFechaISO(desde),
-      end_date: formatearFechaISO(hasta),
+      start_date: formatDateLocal(desde),
+      end_date: formatDateLocal(hasta),
     });
     if (cursor) params.set("cursor", cursor);
 
@@ -284,25 +295,90 @@ export async function adjuntarComprobanteHolded(empresa: Empresa, purchaseId: st
   }
 }
 
+export interface TaxCatalogEntry {
+  key: string;
+  amount: number;
+}
+
+const catalogoImpuestosCache = new Map<Empresa, TaxCatalogEntry[]>();
+
+/**
+ * Catálogo real de códigos de impuesto de Holded (GET /taxes, filtrado a
+ * compras). Se consulta en vez de adivinar un código — verificado en vivo
+ * que mandar el key real (ej. "p_iva_21") calcula correctamente el IVA de
+ * la línea (probado: 10€ base + p_iva_21 → tax 2,10€, total 12,10€).
+ * Cacheado en memoria por empresa (el catálogo no cambia en caliente).
+ */
+export async function obtenerCatalogoImpuestos(empresa: Empresa): Promise<TaxCatalogEntry[]> {
+  const cached = catalogoImpuestosCache.get(empresa);
+  if (cached) return cached;
+
+  const data = (await holdedWriteCall(empresa, "GET", "/taxes")) as {
+    items?: Array<{ key?: string; amount?: string | number; scope?: string; type?: string }>;
+  };
+
+  const catalogo = (data.items ?? [])
+    .filter((t) => t.scope === "purchases" && t.type !== "group" && t.key)
+    .map((t) => ({ key: t.key as string, amount: Number(t.amount) || 0 }));
+
+  catalogoImpuestosCache.set(empresa, catalogo);
+  return catalogo;
+}
+
+/**
+ * Mapea un porcentaje de IVA (leído de una factura, ej. 21 o 7.5) al código
+ * real más plausible del catálogo — prefiere el código "plano" p_iva_XX
+ * (el caso normal) y si no existe, cualquier código con ese mismo
+ * porcentaje. Nunca inventa un key que no esté en el catálogo real; si no
+ * encuentra nada, devuelve undefined (la línea queda sin taxes, 0% neto).
+ */
+export function mapearPorcentajeATaxKey(catalogo: TaxCatalogEntry[], pct: number): string | undefined {
+  const claveDirecta = `p_iva_${String(pct).replace(".", "")}`;
+  const directo = catalogo.find((t) => t.key === claveDirecta);
+  if (directo) return directo.key;
+
+  return catalogo.find((t) => t.amount === pct)?.key;
+}
+
+export interface LineaGastoHolded {
+  concepto: string;
+  base: number;
+  tipoIvaPct: number;
+}
+
 export interface NuevoGastoHolded {
   contactId: string;
   fecha: string; // YYYY-MM-DD
   descripcion: string;
-  importe: number;
+  lineas: LineaGastoHolded[];
 }
 
 /**
- * Crea un documento de gasto/compra en Holded (POST /v2/purchases). Solo
- * debe invocarse tras aprobación explícita del usuario por botón — nunca
- * automáticamente. Queda como borrador/pendiente en Holded (no contabilizado
- * en firme), tal como se comportó en la prueba en vivo.
+ * Crea un documento de gasto/compra en Holded (POST /v2/purchases), con el
+ * desglose de IVA real por línea. Solo debe invocarse tras aprobación
+ * explícita del usuario por botón — nunca automáticamente. Queda como
+ * borrador/pendiente en Holded (no contabilizado en firme), tal como se
+ * comportó en la prueba en vivo.
  */
 export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded): Promise<{ id: string }> {
+  const catalogo = await obtenerCatalogoImpuestos(empresa);
+
+  const items = gasto.lineas.map((linea) => {
+    const taxKey = mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
+    return {
+      name: linea.concepto || gasto.descripcion,
+      units: 1,
+      price: linea.base,
+      tax: 0,
+      taxes: taxKey ? [taxKey] : [],
+    };
+  });
+
   const data = (await holdedWriteCall(empresa, "POST", "/purchases", {
     contact_id: gasto.contactId,
     date: gasto.fecha,
     description: gasto.descripcion,
-    items: [{ name: gasto.descripcion, units: 1, price: gasto.importe, tax: 0 }],
+    items,
   })) as { id?: string };
 
   if (!data.id) {
@@ -310,4 +386,114 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
   }
 
   return { id: data.id };
+}
+
+export interface MovimientoBancarioCandidato {
+  accountId: string;
+  movementId: string;
+  descripcion: string;
+  monto: number;
+  fecha: string;
+}
+
+const VENTANA_DIAS_MOVIMIENTO = 5;
+
+/**
+ * Busca movimientos bancarios SIN conciliar (status != "reconciled") en
+ * todas las cuentas activas de la empresa, con monto (en valor absoluto) y
+ * fecha cercanos a los dados. Se usa solo para el auto-conciliar tras crear
+ * o adjuntar un gasto propio — nunca para crear gastos a partir de
+ * movimientos huérfanos (eso queda para revisión humana, ver
+ * consultar_movimientos_sin_conciliar).
+ */
+export async function buscarMovimientoSimilar(
+  empresa: Empresa,
+  criterios: { monto: number; fecha: string }
+): Promise<MovimientoBancarioCandidato[]> {
+  const fechaBase = new Date(criterios.fecha);
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
+
+  const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+    items?: Array<{ id: string; archived?: boolean }>;
+  };
+  const cuentas = (cuentasData.items ?? []).filter((c) => !c.archived);
+
+  const candidatos: MovimientoBancarioCandidato[] = [];
+
+  for (const cuenta of cuentas) {
+    const params = new URLSearchParams({
+      start_date: formatDateLocal(desde),
+      end_date: formatDateLocal(hasta),
+      limit: "100",
+    });
+    const data = (await holdedWriteCall(
+      empresa,
+      "GET",
+      `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
+    )) as {
+      items?: Array<{ id: string; description?: string; amount?: string | number; booking_date?: string; status?: string }>;
+    };
+
+    for (const mov of data.items ?? []) {
+      if (mov.status === "reconciled") continue;
+      const monto = parsearMontoMovimiento(mov.amount);
+      if (!Number.isFinite(monto) || Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) > TOLERANCIA_MONTO) continue;
+
+      candidatos.push({
+        accountId: cuenta.id,
+        movementId: mov.id,
+        descripcion: mov.description ?? "",
+        monto,
+        fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
+      });
+    }
+  }
+
+  return candidatos;
+}
+
+/**
+ * Intenta conciliar un movimiento bancario contra el gasto que se le
+ * asocia (POST .../reconcile). El body de este endpoint no está bien
+ * documentado — probado en vivo con varios cuerpos contra un movimiento ya
+ * conciliado, todos devuelven 200/null sin poder confirmar el efecto real.
+ * Por eso esta función SIEMPRE relee el movimiento después de llamarlo y
+ * solo reporta éxito si `status` realmente pasó a "reconciled" — nunca
+ * confía en el 200 por sí solo.
+ */
+export async function reconciliarMovimiento(
+  empresa: Empresa,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string
+): Promise<{ ok: boolean; statusFinal: string }> {
+  await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {});
+
+  // La API no tiene un GET por id individual de movimiento documentado —
+  // se relee acotando por fecha (misma ventana que la búsqueda) y se busca
+  // el id dentro de esos resultados.
+  const fechaBase = new Date(fechaAproximada);
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
+
+  const params = new URLSearchParams({
+    start_date: formatDateLocal(desde),
+    end_date: formatDateLocal(hasta),
+    limit: "100",
+  });
+  const verificacion = (await holdedWriteCall(
+    empresa,
+    "GET",
+    `/treasury/accounts/${accountId}/bank-movements?${params.toString()}`
+  )) as { items?: Array<{ id: string; status?: string }> };
+
+  const movimiento = (verificacion.items ?? []).find((m) => m.id === movementId);
+  const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
+
+  return { ok: statusFinal === "reconciled", statusFinal };
 }

@@ -58,9 +58,14 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     nombreArchivoOriginal: entrada.nombreArchivoOriginal,
     mimeType: entrada.mimeType,
     candidatos,
+    lineas: datos.lineas,
     chatId,
     messageId: 0,
   });
+
+  const desgloseIva = datos.lineas
+    .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} € + IVA ${l.tipoIvaPct}%`)
+    .join("\n");
 
   let texto: string;
   let botones: { text: string; callback_data: string }[][];
@@ -92,6 +97,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       `Importe: ${datos.monto} ${datos.moneda}`,
       `Fecha: ${datos.fecha}`,
       `Concepto: ${datos.concepto}`,
+      `Desglose de IVA:`,
+      desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
     ].join("\n");
 

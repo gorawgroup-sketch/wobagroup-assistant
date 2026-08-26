@@ -3,6 +3,7 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import type { Empresa } from "../holded/client";
 import type { PurchaseCandidato } from "../holded/write";
+import type { LineaFactura } from "../documental/extractInvoiceData";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_gastos_pendientes";
@@ -23,6 +24,7 @@ const HEADERS = [
   "chatId",
   "messageId",
   "creadoEn",
+  "lineasJSON",
 ];
 
 export interface PropuestaGasto {
@@ -37,6 +39,8 @@ export interface PropuestaGasto {
   nombreArchivoOriginal: string;
   mimeType?: string;
   candidatos: PurchaseCandidato[];
+  /** Desglose de IVA leído de la factura — se usa al crear el gasto en Holded. */
+  lineas: LineaFactura[];
   chatId: number;
   messageId: number;
   creadoEn: number;
@@ -92,7 +96,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:N1`,
+    range: `${TAB_NAME}!A1:O1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -111,6 +115,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     candidatos = [];
   }
 
+  let lineas: LineaFactura[] = [];
+  try {
+    lineas = row[14] ? JSON.parse(String(row[14])) : [];
+  } catch {
+    lineas = [];
+  }
+
   return {
     id: String(row[0]),
     empresa: row[1] as Empresa,
@@ -123,6 +134,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     nombreArchivoOriginal: row[8] ? String(row[8]) : "",
     mimeType: row[9] ? String(row[9]) : undefined,
     candidatos,
+    lineas,
     chatId: Number(row[11]) || 0,
     messageId: Number(row[12]) || 0,
     creadoEn: Number(row[13]) || 0,
@@ -145,6 +157,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.chatId,
     p.messageId,
     p.creadoEn,
+    JSON.stringify(p.lineas),
   ];
 }
 
@@ -160,7 +173,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:N10000`,
+    range: `${TAB_NAME}!A2:O10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -214,7 +227,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:N`,
+    range: `${TAB_NAME}!A:O`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

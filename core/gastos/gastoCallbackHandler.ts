@@ -3,8 +3,15 @@ import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from ".
 import { consumirPropuestaGasto, obtenerPropuestaGasto, type PropuestaGasto } from "./gastoProposalSheet";
 import { guardarPendienteCorreccionGasto, type PendienteCorreccionGasto } from "./pendienteCorreccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
-import { buscarContactoHolded, crearGastoHolded, adjuntarComprobanteHolded } from "../holded/write";
+import {
+  buscarContactoHolded,
+  crearGastoHolded,
+  adjuntarComprobanteHolded,
+  buscarMovimientoSimilar,
+  reconciliarMovimiento,
+} from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
+import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -29,6 +36,41 @@ async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): 
     propuesta.mimeType
   );
   await limpiarArchivoLocal(propuesta.rutaLocal);
+}
+
+/**
+ * Tras crear/adjuntar un gasto con soporte real, intenta cerrar el círculo
+ * conciliando el movimiento bancario correspondiente — solo si hay
+ * exactamente un candidato sin conciliar con monto/fecha cercanos (nunca
+ * adivina entre varios). Siempre relee el movimiento para confirmar el
+ * estado real (ver reconciliarMovimiento) — el texto que devuelve refleja
+ * lo que se pudo confirmar, nunca asume éxito. Nunca lanza: un fallo aquí
+ * no debe tumbar el flujo principal de creación/adjunto, que ya tuvo éxito.
+ */
+async function intentarConciliar(empresa: Empresa, monto: number, fecha: string): Promise<string> {
+  try {
+    const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
+    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda });
+
+    if (candidatos.length === 0) return "";
+    if (candidatos.length > 1) {
+      return `\n\n💳 Hay ${candidatos.length} movimientos bancarios sin conciliar parecidos — revísalo a mano en Holded.`;
+    }
+
+    const candidato = candidatos[0];
+    const resultado = await reconciliarMovimiento(empresa, candidato.accountId, candidato.movementId, candidato.fecha);
+
+    if (resultado.ok) {
+      return `\n\n💳 Movimiento bancario conciliado automáticamente (${candidato.descripcion || "sin descripción"}, ${candidato.monto.toFixed(2)} €).`;
+    }
+    return (
+      `\n\n⚠️ Encontré un movimiento bancario parecido (${candidato.descripcion || "sin descripción"}, ` +
+      `${candidato.monto.toFixed(2)} €) pero no pude confirmar que quedó conciliado (estado: ${resultado.statusFinal}) — revísalo a mano en Holded.`
+    );
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error intentando conciliar movimiento bancario:", error);
+    return "";
+  }
 }
 
 /**
@@ -99,15 +141,17 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 
         await adjuntarYLimpiar(propuesta, candidato.id);
         await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto);
+        const notaConciliacion = await intentarConciliar(propuesta.empresa, propuesta.monto, propuesta.fecha);
 
         await editTelegramMessage(
           propuesta.chatId,
           propuesta.messageId,
-          `✅ Comprobante adjuntado al gasto de ${candidato.contactName} (${candidato.total.toFixed(2)} €, ${candidato.fecha}) en Holded.`,
+          `✅ Comprobante adjuntado al gasto de ${candidato.contactName} (${candidato.total.toFixed(2)} €, ${candidato.fecha}) en Holded.${notaConciliacion}`,
           []
         );
       } else {
-        await crearYAdjuntar(propuesta, propuesta.empresa, propuesta.concepto);
+        const mensaje = await crearGastoYReportar(propuesta, propuesta.empresa, propuesta.concepto);
+        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensaje, []);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -125,36 +169,45 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   await answerCallbackQuerySafe(callback.id);
 }
 
-/** Crea el gasto en Holded, le adjunta el comprobante, y reporta el resultado editando el mensaje. */
-async function crearYAdjuntar(propuesta: PropuestaGasto, empresaFinal: PropuestaGasto["empresa"], conceptoFinal: string): Promise<void> {
+/**
+ * Crea el gasto en Holded (con el desglose de IVA de la propuesta), le
+ * adjunta el comprobante, intenta conciliar el movimiento bancario
+ * correspondiente, y devuelve el texto final para reportar — no manda el
+ * mensaje él mismo, porque lo usan dos caminos distintos (editar un mensaje
+ * existente vs. mandar uno nuevo tras una corrección).
+ */
+async function crearGastoYReportar(
+  propuesta: PropuestaGasto,
+  empresaFinal: PropuestaGasto["empresa"],
+  conceptoFinal: string
+): Promise<string> {
   const contacto = await buscarContactoHolded(empresaFinal, propuesta.proveedor);
   if (!contacto) {
-    await editTelegramMessage(
-      propuesta.chatId,
-      propuesta.messageId,
+    return (
       `⚠️ No encontré el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}). ` +
-        `Créalo primero en Holded y vuelve a mandar la factura — no quiero adivinar a qué contacto asignarlo.`,
-      []
+      `Créalo primero en Holded y vuelve a mandar la factura — no quiero adivinar a qué contacto asignarlo.`
     );
-    return;
   }
+
+  const lineas =
+    propuesta.lineas.length > 0
+      ? propuesta.lineas
+      : [{ concepto: conceptoFinal || propuesta.concepto, base: propuesta.monto, tipoIvaPct: 0 }];
 
   const gasto = await crearGastoHolded(empresaFinal, {
     contactId: contacto.id,
     fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
     descripcion: conceptoFinal || propuesta.concepto,
-    importe: propuesta.monto,
+    lineas,
   });
 
   await adjuntarYLimpiar(propuesta, gasto.id);
   await registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto);
+  const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha);
 
-  await editTelegramMessage(
-    propuesta.chatId,
-    propuesta.messageId,
+  return (
     `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${contacto.name ?? propuesta.proveedor}, como borrador) ` +
-      `y comprobante adjuntado.`,
-    []
+    `y comprobante adjuntado.${notaConciliacion}`
   );
 }
 
@@ -188,37 +241,11 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
   await sendTelegramMessage(pendiente.chatId, `🔄 Procesando "${propuesta.proveedor}" con la corrección...`);
 
   try {
-    await crearYAdjuntarPublico(propuesta, empresaFinal, conceptoFinal);
+    const mensaje = await crearGastoYReportar(propuesta, empresaFinal, conceptoFinal);
+    await sendTelegramMessage(propuesta.chatId, mensaje);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando corrección de gasto:", message);
     await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);
   }
-}
-
-async function crearYAdjuntarPublico(propuesta: PropuestaGasto, empresaFinal: PropuestaGasto["empresa"], conceptoFinal: string): Promise<void> {
-  const contacto = await buscarContactoHolded(empresaFinal, propuesta.proveedor);
-  if (!contacto) {
-    await sendTelegramMessage(
-      propuesta.chatId,
-      `⚠️ No encontré el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}). ` +
-        `Créalo primero en Holded y vuelve a mandar la factura.`
-    );
-    return;
-  }
-
-  const gasto = await crearGastoHolded(empresaFinal, {
-    contactId: contacto.id,
-    fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
-    descripcion: conceptoFinal || propuesta.concepto,
-    importe: propuesta.monto,
-  });
-
-  await adjuntarYLimpiar(propuesta, gasto.id);
-  await registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto);
-
-  await sendTelegramMessage(
-    propuesta.chatId,
-    `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${contacto.name ?? propuesta.proveedor}, como borrador) y comprobante adjuntado.`
-  );
 }
