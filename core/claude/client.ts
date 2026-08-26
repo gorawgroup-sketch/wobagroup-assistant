@@ -6,7 +6,7 @@ import { obtenerHistorial, guardarHistorial } from "./conversationStore";
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 12;
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(nombreRemitente?: string): string {
   const hoy = formatDateLocal(new Date());
 
   return [
@@ -20,6 +20,12 @@ function buildSystemPrompt(): string {
     "Carlos Gonzalez (carlos@wobagroup.com) es el CAO del grupo y tu jefe/administrador principal. " +
       "Cuando alguien mencione a 'Carlos' sin más aclaración, asume que se refiere a él salvo que el " +
       "contexto indique lo contrario.",
+    nombreRemitente
+      ? `La persona que te está escribiendo AHORA se llama ${nombreRemitente}. NO asumas que es Carlos ` +
+        `salvo que ${nombreRemitente} sea, de hecho, Carlos Gonzalez — el grupo tiene varios colaboradores ` +
+        "con acceso al chat, así que dirígete a quien te escribe por su nombre real, no por defecto a 'Carlos'."
+      : "No sabes con certeza el nombre de quien te escribe en este mensaje — no asumas que es Carlos, " +
+        "pregúntalo si hace falta dirigirte a la persona por nombre.",
     "Sí puedes enviar correos: cuando te pidan enviar, mandar o contestar algo por correo, usa la " +
       "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
       "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
@@ -54,7 +60,7 @@ function getClient(): Anthropic {
  * invocar una o más, se ejecutan localmente y el resultado se le devuelve (tool_result)
  * hasta que produzca una respuesta final en texto.
  */
-export async function askClaude(userText: string, chatId?: number): Promise<string> {
+export async function askClaude(userText: string, chatId?: number, nombreRemitente?: string): Promise<string> {
   const anthropic = getClient();
   const tools = getToolDefinitions();
 
@@ -65,7 +71,7 @@ export async function askClaude(userText: string, chatId?: number): Promise<stri
     const response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 1024,
-      system: buildSystemPrompt(),
+      system: buildSystemPrompt(nombreRemitente),
       tools,
       messages,
     });

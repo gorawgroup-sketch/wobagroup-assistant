@@ -20,10 +20,13 @@ export function parseIncomingUpdate(update: TelegramUpdate): IncomingMessage | n
     return null;
   }
 
+  const nombre = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ");
+
   return {
     chatId: message.chat.id,
     text: message.text,
     fromUsername: message.from?.username,
+    fromNombre: nombre || undefined,
   };
 }
 

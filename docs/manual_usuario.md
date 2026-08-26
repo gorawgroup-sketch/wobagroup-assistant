@@ -18,8 +18,9 @@ lenguaje natural, como le escribirías a un compañero. No hace falta memorizar
 comandos para la mayoría de las cosas.
 
 **Acceso**: solo personas autorizadas pueden usarlo. Si no tienes acceso
-todavía, escríbele igual una vez y pide que te den de alta — tu identificador
-queda registrado y un administrador te habilita.
+todavía, escríbele igual una vez — un administrador recibe automáticamente
+una notificación con tu nombre y un botón para darte de alta, sin que tengas
+que hacer nada más.
 
 ---
 

@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery } from "../core/telegram/client";
-import { esUsuarioAutorizado, esAccionSensible, obtenerRol } from "../core/telegram/authorization";
+import { esUsuarioAutorizado, esAccionSensible, obtenerRolUsuario } from "../core/telegram/authorizedUsersSheet";
+import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/adminNotify";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
@@ -38,18 +39,24 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   const update = req.body as TelegramUpdate;
 
   const remitente = update.callback_query?.from ?? update.message?.from;
-  if (!esUsuarioAutorizado(remitente?.id)) {
+  if (!(await esUsuarioAutorizado(remitente?.id))) {
     console.warn(
       `[auth] Bloqueado usuario no autorizado — id: ${remitente?.id}, username: ${remitente?.username ?? "(sin username)"}`
     );
 
     if (update.callback_query) {
       await answerCallbackQuery(update.callback_query.id, "No tienes acceso a este asistente.").catch(() => {});
-    } else if (update.message) {
-      await sendTelegramMessage(
-        update.message.chat.id,
-        "🔒 No tienes acceso a este asistente. Pídele acceso a Carlos."
-      ).catch(() => {});
+    } else if (update.message && remitente) {
+      const nombre = [remitente.first_name, remitente.last_name].filter(Boolean).join(" ");
+      await Promise.all([
+        sendTelegramMessage(
+          update.message.chat.id,
+          "🔒 No tienes acceso a este asistente. Ya avisé a un administrador para que te dé acceso."
+        ).catch(() => {}),
+        notificarSolicitudAcceso({ userId: remitente.id, nombre, username: remitente.username }).catch((error) =>
+          console.error("[auth] Error notificando solicitud de acceso a admins:", error)
+        ),
+      ]);
     }
     return;
   }
@@ -57,7 +64,12 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   if (update.callback_query) {
     const data = update.callback_query.data ?? "";
 
-    if (esAccionSensible(data) && obtenerRol(remitente?.id) !== "admin") {
+    if (data.startsWith("auth_")) {
+      await handleAuthCallback(update.callback_query);
+      return;
+    }
+
+    if (esAccionSensible(data) && (await obtenerRolUsuario(remitente?.id)) !== "admin") {
       console.warn(`[auth] Colaborador sin permiso intentó acción sensible — id: ${remitente?.id}, accion: ${data}`);
       await answerCallbackQuery(
         update.callback_query.id,
@@ -213,7 +225,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   }
 
   try {
-    const reply = await askClaude(incoming.text, incoming.chatId);
+    const reply = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
     await sendTelegramMessage(incoming.chatId, reply);
   } catch (error) {
     console.error("Error procesando el mensaje de Telegram:", error);

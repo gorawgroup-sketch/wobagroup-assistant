@@ -10,6 +10,7 @@ export interface TelegramUser {
   id: number;
   is_bot: boolean;
   first_name?: string;
+  last_name?: string;
   username?: string;
 }
 
@@ -58,6 +59,7 @@ export interface IncomingMessage {
   chatId: number;
   text: string;
   fromUsername?: string;
+  fromNombre?: string;
 }
 
 export interface InlineKeyboardButton {

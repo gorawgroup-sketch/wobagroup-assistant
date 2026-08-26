@@ -2,17 +2,18 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-25 (pagos recurrentes → Holded + cashflow).
+actualización: 2026-08-26 (autorización con notificación automática al admin).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
 simplemente pregúntalo en lenguaje natural.
 
-**Acceso**: solo los usuarios de Telegram en la lista de autorizados
-(`TELEGRAM_ALLOWED_USER_IDS`) pueden usar el bot — cualquier otra persona
-recibe "🔒 No tienes acceso a este asistente." Para dar acceso a alguien
-nuevo: que le escriba al bot una vez (quedará bloqueado y su `user_id`
-aparece en los logs de Railway), y se agrega esa id a la lista.
+**Acceso**: solo los usuarios de Telegram autorizados (guardados en la pestaña
+oculta `_usuarios_autorizados` del Sheet de cashflow — no en una variable de
+entorno) pueden usar el bot. Cualquier otra persona recibe "🔒 No tienes
+acceso a este asistente." y, automáticamente, todos los admins reciben por
+Telegram su nombre real y botones **✅ Colaborador / ✅ Admin / ❌ Ignorar** —
+un solo toque lo autoriza, sin tocar Railway ni revisar logs.
 
 **Niveles de acceso (rol por usuario):**
 - **admin** — acceso completo, incluye presionar los botones que disparan una
