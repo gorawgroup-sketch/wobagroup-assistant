@@ -9,7 +9,7 @@ const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las propuestas de 
 
 const HEADERS = [
   "id",
-  "empresaCashflow",
+  "empresaHolded",
   "concepto",
   "tipo",
   "proveedor",
@@ -22,7 +22,7 @@ const HEADERS = [
 
 export interface PropuestaPagoRecurrente {
   id: string;
-  empresaCashflow: "WOBA" | "EWORKS";
+  empresaHolded: "WOBA" | "EWORKS" | "Footprint";
   concepto: string;
   tipo: TipoRecurrencia;
   proveedor: string;
@@ -99,7 +99,7 @@ function rowToPropuesta(row: unknown[]): PropuestaPagoRecurrente | null {
 
   return {
     id: String(row[0]),
-    empresaCashflow: row[1] as "WOBA" | "EWORKS",
+    empresaHolded: row[1] as "WOBA" | "EWORKS" | "Footprint",
     concepto: row[2] ? String(row[2]) : "",
     tipo: row[3] as TipoRecurrencia,
     proveedor: row[4] ? String(row[4]) : "",
@@ -114,7 +114,7 @@ function rowToPropuesta(row: unknown[]): PropuestaPagoRecurrente | null {
 function propuestaToRow(p: PropuestaPagoRecurrente): (string | number)[] {
   return [
     p.id,
-    p.empresaCashflow,
+    p.empresaHolded,
     p.concepto,
     p.tipo,
     p.proveedor,

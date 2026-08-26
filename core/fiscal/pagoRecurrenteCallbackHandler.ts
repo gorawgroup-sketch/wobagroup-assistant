@@ -56,7 +56,7 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
     }
 
     const entrada = obtenerEntradaPorId(id);
-    if (!entrada || !entrada.empresaCashflow) {
+    if (!entrada || !entrada.empresaHolded) {
       await answerCallbackQuerySafe(callback.id, "Esta entrada ya no está disponible.");
       return;
     }
@@ -77,7 +77,7 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
       entradaId: entrada.id ?? id,
       concepto: entrada.concepto,
       tipo: entrada.tipo,
-      empresaCashflow: entrada.empresaCashflow,
+      empresaHolded: entrada.empresaHolded,
       proveedor: entrada.proveedor,
       fechaVencimiento: fechaISO,
     });
@@ -105,21 +105,23 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
       return;
     }
 
+    const tieneCashflow = propuesta.empresaHolded === "WOBA" || propuesta.empresaHolded === "EWORKS";
+
     await answerCallbackQuerySafe(callback.id, "Registrando...");
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
-      `🔄 Registrando "${propuesta.concepto}" en Holded y cashflow...`,
+      `🔄 Registrando "${propuesta.concepto}" en Holded${tieneCashflow ? " y cashflow" : ""}...`,
       []
     );
 
     try {
-      const contacto = await buscarContactoHolded(propuesta.empresaCashflow, propuesta.proveedor);
+      const contacto = await buscarContactoHolded(propuesta.empresaHolded, propuesta.proveedor);
       if (!contacto) {
         await editTelegramMessage(
           propuesta.chatId,
           propuesta.messageId,
-          `⚠️ No encontré el proveedor "${propuesta.proveedor}" en los contactos de Holded (${propuesta.empresaCashflow}). ` +
+          `⚠️ No encontré el proveedor "${propuesta.proveedor}" en los contactos de Holded (${propuesta.empresaHolded}). ` +
             `Créalo primero en Holded y vuelve a intentarlo — no quiero adivinar a qué contacto asignar el gasto.`,
           []
         );
@@ -128,7 +130,7 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
 
       const conceptoEtiquetado = conEtiquetaRecurrencia(propuesta.concepto, propuesta.tipo);
 
-      const gasto = await crearGastoHolded(propuesta.empresaCashflow, {
+      const gasto = await crearGastoHolded(propuesta.empresaHolded, {
         contactId: contacto.id,
         fecha: propuesta.fechaVencimiento,
         descripcion: conceptoEtiquetado,
@@ -138,20 +140,27 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
         lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
       });
 
-      const resultadoCashflow = await registrarMovimientoEnSheet({
-        bloque: "pagos_extras",
-        cliente_o_concepto: conceptoEtiquetado,
-        semana: weekLabel(new Date(propuesta.fechaVencimiento)),
-        valor: propuesta.monto,
-        empresa: propuesta.empresaCashflow,
-      });
+      // Footprint no tiene cashflow en Sheets (ver revisarHoldedVsCashflow.ts
+      // y project_footprint_cashflow_separado) — para esa empresa el registro
+      // se queda solo en Holded, nunca se intenta escribir una línea que no
+      // tiene dónde ir.
+      let lineaCashflow = "";
+      if (tieneCashflow) {
+        const resultadoCashflow = await registrarMovimientoEnSheet({
+          bloque: "pagos_extras",
+          cliente_o_concepto: conceptoEtiquetado,
+          semana: weekLabel(new Date(propuesta.fechaVencimiento)),
+          valor: propuesta.monto,
+          empresa: propuesta.empresaHolded as "WOBA" | "EWORKS",
+        });
+        lineaCashflow = `\nCashflow: ${resultadoCashflow.mensaje}`;
+      }
 
       await editTelegramMessage(
         propuesta.chatId,
         propuesta.messageId,
         `✅ Registrado — ${propuesta.concepto} (${propuesta.monto.toFixed(2)} €, ${formatDateLocal(new Date(propuesta.fechaVencimiento))})\n\n` +
-          `Holded: gasto creado (id ${gasto.id}, contacto ${contacto.name ?? propuesta.proveedor}, como borrador/pendiente).\n` +
-          `Cashflow: ${resultadoCashflow.mensaje}`,
+          `Holded: gasto creado (id ${gasto.id}, contacto ${contacto.name ?? propuesta.proveedor}, como borrador/pendiente).${lineaCashflow}`,
         []
       );
     } catch (error) {
@@ -219,7 +228,7 @@ export async function continuarConMontoPago(pendiente: PendienteMontoPago, texto
   }
 
   const propuesta = await crearPropuestaPagoRecurrente({
-    empresaCashflow: pendiente.empresaCashflow,
+    empresaHolded: pendiente.empresaHolded,
     concepto: pendiente.concepto,
     tipo: pendiente.tipo,
     proveedor,
@@ -229,17 +238,21 @@ export async function continuarConMontoPago(pendiente: PendienteMontoPago, texto
     messageId: 0,
   });
 
+  const tieneCashflow = propuesta.empresaHolded === "WOBA" || propuesta.empresaHolded === "EWORKS";
+
   const texto = [
     `✅ Confirmar registro de pago recurrente:`,
     ``,
     `Concepto: ${propuesta.concepto}`,
     `Periodicidad: ${propuesta.tipo}`,
-    `Empresa: ${propuesta.empresaCashflow}`,
+    `Empresa: ${propuesta.empresaHolded}`,
     `Proveedor: ${propuesta.proveedor}`,
     `Importe: ${propuesta.monto.toFixed(2)} €`,
     `Fecha: ${formatDateLocal(new Date(propuesta.fechaVencimiento))}`,
     ``,
-    `Al confirmar se crea el gasto en Holded (como borrador) y la línea en cashflow, ambos etiquetados como "(recurrente ${propuesta.tipo})".`,
+    tieneCashflow
+      ? `Al confirmar se crea el gasto en Holded (como borrador) y la línea en cashflow, ambos etiquetados como "(recurrente ${propuesta.tipo})".`
+      : `Al confirmar se crea el gasto en Holded (como borrador), etiquetado "(recurrente ${propuesta.tipo})" — Footprint no tiene cashflow en Sheets, así que no se registra ninguna línea ahí.`,
   ].join("\n");
 
   const messageId = await sendTelegramMessageWithButtons(pendiente.chatId, texto, [

@@ -12,12 +12,13 @@ function describirCuando(diasParaVencer: number): string {
  * Job diario: revisa /docs/calendario_fiscal.json y, si hay algún vencimiento
  * dentro de su ventana de aviso (3 días para "mensual" con día exacto, 7 días
  * para "anual" con fecha aproximada):
- * - las entradas SIN empresaCashflow (monto desconocido, o aplican a varias
+ * - las entradas SIN empresaHolded (monto desconocido, o aplican a varias
  *   empresas) se agrupan en un solo mensaje informativo, como antes.
- * - las entradas CON empresaCashflow (candidatas a proponerse en Holded +
- *   cashflow) mandan además un mensaje individual con botón "💰 Indicar
- *   monto y registrar" — nunca escribe nada por sí solo, solo abre el flujo
- *   de confirmación (ver core/fiscal/pagoRecurrenteCallbackHandler.ts).
+ * - las entradas CON empresaHolded (candidatas a proponerse en Holded, y en
+ *   cashflow también si es WOBA/EWORKS — Footprint no tiene cashflow en
+ *   Sheets) mandan además un mensaje individual con botón "💰 Indicar monto
+ *   y registrar" — nunca escribe nada por sí solo, solo abre el flujo de
+ *   confirmación (ver core/fiscal/pagoRecurrenteCallbackHandler.ts).
  */
 export async function revisarAlertasFiscales(referenceDate: Date = new Date()): Promise<{
   alertasEnviadas: number;
@@ -36,8 +37,8 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
     return { alertasEnviadas: 0 };
   }
 
-  const accionables = alertas.filter((a) => a.id && a.empresaCashflow);
-  const informativas = alertas.filter((a) => !(a.id && a.empresaCashflow));
+  const accionables = alertas.filter((a) => a.id && a.empresaHolded);
+  const informativas = alertas.filter((a) => !(a.id && a.empresaHolded));
 
   if (informativas.length > 0) {
     const lineas = informativas.map(
@@ -50,10 +51,13 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
   }
 
   for (const a of accionables) {
+    const tieneCashflow = a.empresaHolded === "WOBA" || a.empresaHolded === "EWORKS";
     const texto = [
       `⚠️ *${a.concepto}* (${a.empresa}, ${a.tipo}) — vence ${describirCuando(a.diasParaVencer)} (${formatDateLocal(a.fecha)})`,
       a.proveedor ? `Proveedor conocido: ${a.proveedor}` : "",
-      `¿Quieres que lo registre en Holded (como gasto) y en el cashflow?`,
+      tieneCashflow
+        ? `¿Quieres que lo registre en Holded (como gasto) y en el cashflow?`
+        : `¿Quieres que lo registre en Holded (como gasto)? Footprint no tiene cashflow en Sheets, así que solo se escribe ahí.`,
     ]
       .filter(Boolean)
       .join("\n");

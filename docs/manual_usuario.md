@@ -42,9 +42,11 @@ que hacer nada más.
 ### 🏦 Holded
 - Consultar movimientos bancarios y cuentas de tesorería (solo lectura, en
   chat normal) — **WOBA, EWORKS y Footprint**.
-- Registrar gastos recurrentes conocidos (seguros, IBI, etc.) cuando se
-  acerca su fecha — ver sección de Pagos recurrentes más abajo (solo
-  WOBA/EWORKS, porque ese flujo también escribe en cashflow).
+- Registrar gastos recurrentes conocidos (seguros, IBI, Google, Salesmate,
+  etc.) cuando se acerca su fecha — ver sección de Pagos recurrentes más
+  abajo. WOBA, EWORKS y Footprint; para WOBA/EWORKS también se registra la
+  línea en cashflow, para Footprint solo se escribe en Holded (no tiene
+  cashflow en Sheets).
 - **Conciliación de facturas/gastos puntuales** (WOBA, EWORKS y Footprint):
   si le mandas una factura o comprobante por Telegram (o llega por correo),
   lee el documento real, y:
@@ -101,11 +103,14 @@ que hacer nada más.
 
 ### 📅 Alertas fiscales y pagos recurrentes
 - Avisa con anticipación (3 días para vencimientos mensuales, 7 días para
-  aproximados) sobre seguridad social, créditos, seguros, impuestos, etc.
+  aproximados) sobre seguridad social, créditos, seguros, impuestos, etc. —
+  WOBA, EWORKS y Footprint.
 - Para los pagos con proveedor y empresa conocidos, además ofrece
   registrarlos: pide el importe, muestra un resumen de confirmación, y solo
-  al aprobar crea el gasto en Holded y la línea en cashflow — con la
-  periodicidad correcta (mensual/trimestral/semestral/anual).
+  al aprobar crea el gasto en Holded — con la periodicidad correcta
+  (mensual/trimestral/semestral/anual). Para WOBA/EWORKS también registra
+  la línea en cashflow; Footprint no tiene cashflow en Sheets, así que ahí
+  el registro se queda solo en Holded.
 
 ### 🧠 Conocimiento del equipo
 - El asistente responde con base en documentos internos (responsabilidades,

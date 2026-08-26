@@ -10,7 +10,7 @@ export interface PendienteMontoPago {
   entradaId: string;
   concepto: string;
   tipo: TipoRecurrencia;
-  empresaCashflow: "WOBA" | "EWORKS";
+  empresaHolded: "WOBA" | "EWORKS" | "Footprint";
   proveedor?: string;
   fechaVencimiento: string; // YYYY-MM-DD
   creadoEn: number;

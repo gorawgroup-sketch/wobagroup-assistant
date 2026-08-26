@@ -12,7 +12,7 @@ const INTERVALO_MESES: Record<Exclude<TipoRecurrencia, "mensual">, number> = {
 };
 
 export interface EntradaCalendarioFiscal {
-  /** Slug corto y estable, solo en entradas que pueden proponerse para Holded+cashflow (ver empresaCashflow). */
+  /** Slug corto y estable, solo en entradas que pueden proponerse para Holded (ver empresaHolded). */
   id?: string;
   concepto: string;
   tipo: TipoRecurrencia;
@@ -25,13 +25,16 @@ export interface EntradaCalendarioFiscal {
   empresa: string;
   /**
    * Si está presente, la entrada es candidata a proponerse como pago
-   * recurrente para registrar en Holded + cashflow (botón en la alerta). El
-   * valor es la empresa tal como la reconoce el cashflow (WOBA o EWORKS) —
-   * "BAE" y "WOBA" son la misma entidad, así que las entradas "BAE" mapean a
-   * "WOBA" aquí. Entradas sin este campo se quedan como aviso informativo
-   * únicamente (monto desconocido o aplica a varias empresas a la vez).
+   * recurrente para registrar en Holded (botón en la alerta) — "BAE" y
+   * "WOBA" son la misma entidad, así que las entradas "BAE" mapean a "WOBA"
+   * aquí. Para WOBA/EWORKS también se registra la línea en cashflow; para
+   * Footprint SOLO se escribe en Holded (Footprint no tiene cashflow en
+   * Sheets, ver revisarHoldedVsCashflow.ts) — el paso de cashflow se salta
+   * explícitamente en pagoRecurrenteCallbackHandler.ts para ese caso.
+   * Entradas sin este campo se quedan como aviso informativo únicamente
+   * (monto desconocido o aplica a varias empresas a la vez).
    */
-  empresaCashflow?: "WOBA" | "EWORKS";
+  empresaHolded?: "WOBA" | "EWORKS" | "Footprint";
   /** Nombre del proveedor/contacto en Holded, si se conoce de antemano. */
   proveedor?: string;
 }
@@ -127,7 +130,7 @@ export interface AlertaProxima {
   diasParaVencer: number;
   /** Presente solo si la entrada es candidata a proponerse para Holded + cashflow. */
   id?: string;
-  empresaCashflow?: "WOBA" | "EWORKS";
+  empresaHolded?: "WOBA" | "EWORKS" | "Footprint";
   proveedor?: string;
 }
 
@@ -160,7 +163,7 @@ export function calcularProximasAlertas(hoy: Date = new Date(), diasOverride?: n
       diasParaVencer,
       ventana,
       id: entrada.id,
-      empresaCashflow: entrada.empresaCashflow,
+      empresaHolded: entrada.empresaHolded,
       proveedor: entrada.proveedor,
     };
   });
