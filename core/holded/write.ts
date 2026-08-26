@@ -497,3 +497,39 @@ export async function reconciliarMovimiento(
 
   return { ok: statusFinal === "reconciled", statusFinal };
 }
+
+export interface NuevoEventoHolded {
+  nombre: string;
+  tipo: string;
+  descripcion?: string;
+  /** "YYYY-MM-DDTHH:mm:ss", tal cual — Holded lo interpreta como hora LOCAL Europe/Madrid (verificado en vivo: probé con offset +00:00, "Z" y sin offset, y en los 3 casos el valor se guardó igual, restando la diferencia de Madrid a UTC). Nunca construir esto con .toISOString() de un Date. */
+  fechaInicio: string;
+  fechaFin: string;
+  contactId?: string;
+  ubicacion?: string;
+}
+
+/**
+ * Crea una actividad en el calendario CRM de Holded (POST /events). Verificado
+ * en vivo contra las 3 empresas: `kind` es texto libre (no hay catálogo tipo
+ * /taxes, probé un valor inventado y lo aceptó sin validar), y `contact_id`
+ * vincula el evento a un contacto real si se conoce. Solo debe invocarse tras
+ * aprobación explícita del usuario por botón — nunca automáticamente.
+ */
+export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHolded): Promise<{ id: string }> {
+  const data = (await holdedWriteCall(empresa, "POST", "/events", {
+    name: evento.nombre,
+    kind: evento.tipo,
+    description: evento.descripcion ?? "",
+    start_date: evento.fechaInicio,
+    end_date: evento.fechaFin,
+    contact_id: evento.contactId,
+    location: evento.ubicacion ?? "",
+  })) as { id?: string };
+
+  if (!data.id) {
+    throw new Error("Holded no devolvió un id para el evento creado.");
+  }
+
+  return { id: data.id };
+}

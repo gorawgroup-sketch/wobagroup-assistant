@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (chequeo preliminar de cashflow el viernes + IVA por línea al crear gastos + conciliación bancaria automática).
+actualización: 2026-08-26 (programar actividades en el calendario CRM de Holded + chequeo preliminar de cashflow el viernes + IVA por línea al crear gastos + conciliación bancaria automática).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -23,6 +23,15 @@ el lado del banco, no el de los gastos ya registrados (para eso está "gastos
 sin comprobante", arriba) — sirve para detectar cargos (Uber, hoteles, etc.)
 que todavía no tienen ningún gasto/factura asociado en Holded. Solo consulta,
 no crea ni concilia nada — abierto a cualquier usuario autorizado.
+
+**Programar actividad en el calendario** (ej. "programa una llamada con
+[proveedor] el jueves a las 10am para WOBA", "agenda un recordatorio para
+el 15 de septiembre a las 9 para revisar el contrato de EWORKS") — prepara
+la actividad (título, tipo, fecha/hora, y el contacto de Holded si lo
+menciona) y la muestra por Telegram con botones para aprobar o cancelar.
+Solo se crea en el calendario CRM de Holded (WOBA, EWORKS o Footprint) si
+se aprueba con el botón "✅ Programar" — solo administradores pueden
+aprobarlo, igual que el resto de escrituras en Holded.
 
 **Costo de IA** (ej. "¿cuánto ha gastado el sistema este mes?") — solo
 administradores pueden consultarlo; un colaborador recibe un mensaje diciendo
@@ -122,6 +131,13 @@ registrar en cashflow) sin que presiones uno de estos botones.
   en vez de asumir éxito, para que se revise a mano en Holded. Nunca concilia
   movimientos huérfanos sin un gasto real detrás (para eso está la consulta
   de "movimientos sin conciliar", arriba).
+
+**Sobre actividades propuestas para el calendario CRM de Holded (WOBA, EWORKS y Footprint):**
+- ✅ Programar — crea la actividad real en el calendario de Holded.
+- ❌ Cancelar — descarta la propuesta, no escribe nada.
+- Solo administradores pueden aprobar. Si mencionaste un proveedor/cliente y
+  el asistente lo encontró entre los contactos de Holded, la actividad queda
+  vinculada a ese contacto; si no lo encuentra, avisa y la crea sin vincular.
 
 ---
 

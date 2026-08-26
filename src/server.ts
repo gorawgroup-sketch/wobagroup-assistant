@@ -24,6 +24,7 @@ import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/f
 import { revisarCostosIA } from "../core/jobs/revisarCostosIA";
 import { handleGastoCallback, continuarConCorreccionGasto } from "../core/gastos/gastoCallbackHandler";
 import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
+import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -92,6 +93,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handlePagoRecurrenteCallback(update.callback_query);
       } else if (data.startsWith("gasto_")) {
         await handleGastoCallback(update.callback_query);
+      } else if (data.startsWith("evento_")) {
+        await handleEventoCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }

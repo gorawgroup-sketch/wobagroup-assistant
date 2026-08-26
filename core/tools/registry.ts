@@ -12,6 +12,7 @@ import { registrarCorreccionTool } from "./registerCorrection";
 import { costosIATool } from "./costosIA";
 import { gastosSinComprobanteTool } from "./gastosSinComprobante";
 import { movimientosSinConciliarTool } from "./movimientosSinConciliar";
+import { proponerEventoCalendarioTool } from "./proponerEvento";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -30,6 +31,7 @@ const tools: ToolDefinition[] = [
   costosIATool,
   gastosSinComprobanteTool,
   movimientosSinConciliarTool,
+  proponerEventoCalendarioTool,
 ];
 
 /**

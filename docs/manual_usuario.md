@@ -70,6 +70,12 @@ que hacer nada más.
   para decirte cuáles no están conciliados todavía (cuenta, descripción,
   monto, fecha) — útil para detectar cargos sin ningún gasto asociado. Solo
   consulta — no escribe ni concilia nada.
+- **Programar actividades en el calendario CRM** (WOBA, EWORKS y Footprint):
+  pídele "programa una llamada con [proveedor] el jueves a las 10 para
+  WOBA" y prepara la actividad (título, tipo, fecha/hora, y el contacto de
+  Holded si lo menciona), mostrándola por Telegram con botones de
+  aprobación. Solo se crea en el calendario de Holded si apruebas con
+  "✅ Programar" — solo administradores pueden aprobarlo.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.

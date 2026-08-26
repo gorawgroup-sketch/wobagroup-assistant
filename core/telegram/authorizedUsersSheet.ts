@@ -188,6 +188,7 @@ const ACCIONES_SENSIBLES = new Set([
   "doc_confirm",
   "gasto_adjuntar",
   "gasto_nuevo",
+  "evento_confirmar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {
