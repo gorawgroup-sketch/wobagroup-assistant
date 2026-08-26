@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (conciliación de facturas/gastos con Holded).
+actualización: 2026-08-26 (Footprint integrado a Holded — sin cashflow todavía).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -86,7 +86,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
   - ❌ Cancelar — descarta la propuesta, no escribe nada.
 - Nota: este flujo de escritura en Holded es para pagos recurrentes detectados por `calendario_fiscal.json`. Para facturas/gastos puntuales, ver la sección de abajo.
 
-**Sobre facturas/gastos enviados por Telegram o recibidos por correo (con detalle y comprobante juntos — solo WOBA/EWORKS):**
+**Sobre facturas/gastos enviados por Telegram o recibidos por correo (con detalle y comprobante juntos — WOBA, EWORKS y Footprint):**
 - El asistente lee el CONTENIDO real del documento (no solo el nombre) para decidir si es una factura/gasto. Si no lo es, sigue el flujo normal de archivado en Drive.
 - Si encuentra un gasto ya registrado en Holded que podría corresponder (mismo proveedor, monto y fecha cercana):
   - ✅ Es este (#N) — adjunta el comprobante a ese gasto en Holded.

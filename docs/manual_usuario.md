@@ -28,18 +28,21 @@ que hacer nada más.
 
 ### 📊 Cashflow
 - Consultar el resumen o el detalle del cashflow de WOBA y eWorks (por
-  empresa, por semana, por bloque).
+  empresa, por semana, por bloque). Footprint no tiene cashflow en Sheets
+  todavía — sí se monitorea directo en Holded (ver abajo).
 - Detecta automáticamente (cada lunes) movimientos que aparecieron en Holded
   pero no están registrados en el cashflow, y propone agregarlos — con botón
-  de aprobación, nunca se agrega solo.
+  de aprobación, nunca se agrega solo. Solo WOBA/EWORKS.
 
 ### 🏦 Holded
 - Consultar movimientos bancarios y cuentas de tesorería (solo lectura, en
-  chat normal).
+  chat normal) — **WOBA, EWORKS y Footprint**.
 - Registrar gastos recurrentes conocidos (seguros, IBI, etc.) cuando se
-  acerca su fecha — ver sección de Pagos recurrentes más abajo.
-- **Conciliación de facturas/gastos puntuales**: si le mandas una factura o
-  comprobante por Telegram (o llega por correo), lee el documento real, y:
+  acerca su fecha — ver sección de Pagos recurrentes más abajo (solo
+  WOBA/EWORKS, porque ese flujo también escribe en cashflow).
+- **Conciliación de facturas/gastos puntuales** (WOBA, EWORKS y Footprint):
+  si le mandas una factura o comprobante por Telegram (o llega por correo),
+  lee el documento real, y:
   - si ya existe un gasto parecido en Holded (mismo proveedor, monto y
     fecha cercana), propone adjuntarle el comprobante ahí;
   - si no, propone crear un gasto nuevo, ya clasificado (empresa,

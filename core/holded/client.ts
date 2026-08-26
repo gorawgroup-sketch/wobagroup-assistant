@@ -1,9 +1,15 @@
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
-export type Empresa = "WOBA" | "EWORKS";
+export type Empresa = "WOBA" | "EWORKS" | "Footprint";
+
+const ENV_VAR_POR_EMPRESA: Record<Empresa, string> = {
+  WOBA: "HOLDED_API_KEY_WOBA",
+  EWORKS: "HOLDED_API_KEY_EWORKS",
+  Footprint: "HOLDED_API_KEY_FOOTPRINT",
+};
 
 function getApiKey(empresa: Empresa): string {
-  const envVar = empresa === "WOBA" ? "HOLDED_API_KEY_WOBA" : "HOLDED_API_KEY_EWORKS";
+  const envVar = ENV_VAR_POR_EMPRESA[empresa];
   const key = process.env[envVar];
   if (!key) {
     throw new Error(`Falta la variable de entorno ${envVar}`);

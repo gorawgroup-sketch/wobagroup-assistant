@@ -13,7 +13,7 @@ export interface GastoEntrante {
 }
 
 function esEmpresaHolded(empresa: string): empresa is Empresa {
-  return empresa === "WOBA" || empresa === "EWORKS";
+  return empresa === "WOBA" || empresa === "EWORKS" || empresa === "Footprint";
 }
 
 /**
@@ -29,8 +29,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     await sendTelegramMessage(
       chatId,
       `📄 Detecté una factura/gasto (${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${datos.moneda}) ` +
-        `pero no tengo clara la empresa (${datos.empresaProbable === "Footprint" ? "Footprint no está integrado con Holded todavía" : "no pude determinarla"}). ` +
-        `Dime a qué empresa (WOBA o EWORKS) pertenece si quieres que lo registre en Holded.`
+        `pero no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece si quieres que lo registre en Holded.`
     );
     return;
   }

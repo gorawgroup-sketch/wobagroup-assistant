@@ -17,14 +17,15 @@ export const holdedMovimientosTool: ToolDefinition = {
   name: "consultar_movimientos_holded",
   description:
     "Consulta los movimientos bancarios (no facturas) registrados en Holded para una empresa del " +
-    "grupo (WOBA o EWORKS), en un rango de fechas. Úsala cuando el usuario pregunte por cargos, " +
-    "abonos, ingresos o gastos reales según el banco, a diferencia del cashflow proyectado en Sheets.",
+    "grupo (WOBA, EWORKS o Footprint), en un rango de fechas. Úsala cuando el usuario pregunte por " +
+    "cargos, abonos, ingresos o gastos reales según el banco, a diferencia del cashflow proyectado en " +
+    "Sheets. Footprint no tiene cashflow en Sheets todavía — solo esta consulta directa a Holded.",
   input_schema: {
     type: "object",
     properties: {
       empresa: {
         type: "string",
-        enum: ["WOBA", "EWORKS"],
+        enum: ["WOBA", "EWORKS", "Footprint"],
         description: "Empresa del grupo cuya cuenta de Holded se consulta.",
       },
       desde: {
@@ -45,8 +46,8 @@ export const holdedMovimientosTool: ToolDefinition = {
   },
   handler: async (input) => {
     const empresa = input.empresa as Empresa;
-    if (empresa !== "WOBA" && empresa !== "EWORKS") {
-      return "Error: 'empresa' debe ser WOBA o EWORKS.";
+    if (empresa !== "WOBA" && empresa !== "EWORKS" && empresa !== "Footprint") {
+      return "Error: 'empresa' debe ser WOBA, EWORKS o Footprint.";
     }
 
     const hoy = new Date();

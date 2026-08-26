@@ -15,8 +15,18 @@ const HOLDED_API_BASE = "https://api.holded.com/api/v2";
  * como sugiere documentación de terceros desactualizada — ese endpoint
  * devuelve "Invalid key" sin importar la key usada).
  */
+const ENV_VAR_WRITE_POR_EMPRESA: Record<Empresa, string> = {
+  WOBA: "HOLDED_API_KEY_WRITE_WOBA",
+  EWORKS: "HOLDED_API_KEY_WRITE_EWORKS",
+  // La key de Footprint (a diferencia de WOBA/EWORKS) vino con permiso de
+  // lectura Y escritura en una sola credencial — se reutiliza el mismo
+  // valor para ambos roles (HOLDED_API_KEY_FOOTPRINT en client.ts), pero el
+  // código mantiene la separación read/write de todas formas.
+  Footprint: "HOLDED_API_KEY_WRITE_FOOTPRINT",
+};
+
 function getWriteApiKey(empresa: Empresa): string {
-  const envVar = empresa === "WOBA" ? "HOLDED_API_KEY_WRITE_WOBA" : "HOLDED_API_KEY_WRITE_EWORKS";
+  const envVar = ENV_VAR_WRITE_POR_EMPRESA[empresa];
   const key = process.env[envVar];
   if (!key) {
     throw new Error(`Falta la variable de entorno ${envVar}`);

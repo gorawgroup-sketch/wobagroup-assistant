@@ -1,4 +1,4 @@
-import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
+import { listBankMovements, listTreasuryAccounts } from "../holded/client";
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
@@ -6,7 +6,11 @@ import { previousWeekRange, weekLabel, formatDateISO } from "../utils/isoWeek";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 
 const TOLERANCIA_EUR = 0.01;
-const EMPRESAS: Empresa[] = ["WOBA", "EWORKS"];
+// Deliberadamente acotado a WOBA/EWORKS (no el tipo Empresa completo de
+// holded/client.ts, que ya incluye Footprint) — esta reconciliación escribe
+// en el cashflow de Sheets, y Footprint no tiene acceso a cashflow todavía.
+type EmpresaCashflow = "WOBA" | "EWORKS";
+const EMPRESAS: EmpresaCashflow[] = ["WOBA", "EWORKS"];
 
 function parseValorFormateado(valor: string): number {
   const limpio = valor.replace(/[^0-9.\-]/g, "");
@@ -19,14 +23,14 @@ function sugerirBloque(amount: number): BloqueEscritura {
 }
 
 interface CandidatoNoRegistrado {
-  empresa: Empresa;
+  empresa: EmpresaCashflow;
   descripcion: string;
   fecha?: string;
   valorAbs: number;
   esIngreso: boolean;
 }
 
-async function detectarNoRegistrados(empresa: Empresa, semanaLabel: string, desde: string, hasta: string) {
+async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: string, desde: string, hasta: string) {
   const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived);
 
   const movimientosHolded = (
