@@ -3,6 +3,7 @@ import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
 import { previousWeekRange, currentWeekRangeToDate, weekLabel, formatDateISO } from "../utils/isoWeek";
+import { guardarUltimoRunHoldedCashflow } from "./holdedCashflowLastRunStore";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 
 const TOLERANCIA_EUR = 0.01;
@@ -184,5 +185,10 @@ export async function revisarHoldedVsCashflow(
     `[revisarHoldedVsCashflow] ${propuestasCreadas} propuesta(s) enviada(s) para la semana ${semanaLabel}` +
       (esChequeoPreliminar ? " (chequeo preliminar)." : ".")
   );
+
+  await guardarUltimoRunHoldedCashflow(Math.floor(Date.now() / 1000)).catch((error) => {
+    console.error("[revisarHoldedVsCashflow] Error guardando último run (no crítico):", error);
+  });
+
   return { propuestasCreadas };
 }

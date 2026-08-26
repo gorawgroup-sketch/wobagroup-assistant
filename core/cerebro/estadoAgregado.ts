@@ -10,17 +10,17 @@ import { obtenerUltimoCheck } from "../gmail/lastCheckStore";
 import { contarBorradoresPendientes } from "../gmail/emailDraftStore";
 import { listarArchivosRecientesPorRaiz } from "../drive/client";
 import { ROOT_FOLDERS } from "../drive/rootFolders";
-import { obtenerModoRetrieval, obtenerIndiceDocumentos } from "../knowledge/loader";
+import { obtenerModoRetrieval } from "../knowledge/loader";
 import { obtenerCapturasCrudas } from "../knowledge/capturaSheet";
 import { obtenerCorreccionesCrudas } from "../knowledge/correctionsStore";
 import { obtenerUsuariosAutorizados } from "../telegram/authorizedUsersSheet";
 import { obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
 import { UMBRAL_ANOMALIA } from "../jobs/revisarCostosIA";
+import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunStore";
 import { mondayOf } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
-const EMPRESAS_CASHFLOW: Array<"WOBA" | "EWORKS"> = ["WOBA", "EWORKS"];
 
 /**
  * Ejecuta `fn` y devuelve su resultado, o `fallback` + log de error si falla
@@ -37,9 +37,10 @@ async function seguro<T>(etiqueta: string, fn: () => Promise<T>, fallback: T): P
 }
 
 async function construirCashflow() {
-  const [semanas, propuestas] = await Promise.all([
+  const [semanas, propuestas, ultimoRunUnix] = await Promise.all([
     seguro("cashflow.semanas", fetchResumenSemanas, [] as Awaited<ReturnType<typeof fetchResumenSemanas>>),
     seguro("cashflow.propuestas", listarPropuestasPendientes, [] as Awaited<ReturnType<typeof listarPropuestasPendientes>>),
+    seguro("cashflow.ultimoRun", obtenerUltimoRunHoldedCashflow, undefined as number | undefined),
   ]);
 
   const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
@@ -83,13 +84,10 @@ async function construirCashflow() {
     balanceUltimaSemana,
     pagosRecurrentes,
     propuestasPendientes,
-    // No existe ningún store que persista "cuándo corrió por última vez
-    // revisarHoldedVsCashflow" (a diferencia de Gmail, que sí tiene
-    // _gmail_ultimo_check) — el cron solo escribe a console.log. Se deja
-    // explícitamente null en vez de inventar un valor; instrumentarlo
-    // sería agregar un store nuevo tipo lastCheckStore.ts, no reusar uno
-    // existente.
-    ultimaDeteccionHolded: null as string | null,
+    // Instrumentado el 2026-08-26 (core/jobs/holdedCashflowLastRunStore.ts,
+    // mismo patrón que _gmail_ultimo_check) — antes el cron solo escribía a
+    // console.log, sin dejar ningún registro persistente.
+    ultimaDeteccionHolded: ultimoRunUnix ? new Date(ultimoRunUnix * 1000).toISOString() : null,
   };
 }
 
@@ -205,6 +203,11 @@ async function construirDrive() {
     Object.fromEntries(folderIds.map((id) => [id, []])) as Record<string, Array<{ name: string; createdTime: string; webViewLink: string }>>
   );
 
+  // Sin filtro por nombre: los archivos del sistema de Backup en desarrollo
+  // aparte (_execution_log, _manifest.json, ingresos_EWORKS_*, etc.) los
+  // borra ese mismo proceso — no son permanentes, así que no vale la pena
+  // excluirlos aquí. Cuenta TODO lo que Drive reporta como creado en la
+  // ventana, tal cual.
   const todos = Object.entries(porRaiz)
     .flatMap(([folderId, archivos]) => archivos.map((a) => ({ ...a, empresa: empresasPorFolderId[folderId] })))
     .sort((a, b) => (b.createdTime > a.createdTime ? 1 : -1));
@@ -230,11 +233,6 @@ async function construirConocimiento() {
   return {
     documentos: modo.documentos,
     modoActual: modo.modo,
-    // No existe ningún concepto de "revisión" de una captura: capture.ts
-    // documenta explícitamente que se integra sin paso de revisión ni
-    // aprobación. No hay cola de pendientes que contar — se deja null en
-    // vez de devolver 0, para no insinuar que existe un flujo de revisión.
-    capturasSinRevisar: null as number | null,
     ultimaCaptura,
     ultimaCorreccion,
   };
@@ -274,8 +272,7 @@ async function construirAccesos() {
   };
 }
 
-export interface EstadoCerebro {
-  generadoEn: string;
+export interface EstadoCerebroDatos {
   cashflow: Awaited<ReturnType<typeof construirCashflow>>;
   holded: Awaited<ReturnType<typeof construirHolded>>;
   crm: Awaited<ReturnType<typeof construirCrm>>;
@@ -284,6 +281,13 @@ export interface EstadoCerebro {
   drive: Awaited<ReturnType<typeof construirDrive>>;
   conocimiento: Awaited<ReturnType<typeof construirConocimiento>>;
   accesos: Awaited<ReturnType<typeof construirAccesos>>;
+}
+
+export interface EstadoCerebro extends EstadoCerebroDatos {
+  /** Instante de ESTA respuesta HTTP — cambia en cada request, cacheado o no. */
+  generadoEn: string;
+  /** Instante en que se calcularon realmente los datos de abajo — solo cambia cada CACHE_TTL_MS. Compara con generadoEn para saber si esta respuesta vino del caché. */
+  cacheadoEn: string;
 }
 
 /**
@@ -295,7 +299,7 @@ export interface EstadoCerebro {
  * falla, esa sección queda en su valor por defecto en vez de tumbar todo
  * el endpoint.
  */
-export async function obtenerEstadoCerebro(): Promise<EstadoCerebro> {
+async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
   const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos] = await Promise.all([
     construirCashflow(),
     construirHolded(),
@@ -307,15 +311,40 @@ export async function obtenerEstadoCerebro(): Promise<EstadoCerebro> {
     construirAccesos(),
   ]);
 
+  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos };
+}
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+let cache: { datos: EstadoCerebroDatos; cacheadoEnMs: number } | null = null;
+let recalculoEnCurso: Promise<{ datos: EstadoCerebroDatos; cacheadoEnMs: number }> | null = null;
+
+/**
+ * Caché de proceso de 5 minutos: agregar todo (Sheets, Holded ×3 empresas,
+ * Drive, Gmail...) toma 12-22s en vivo, demasiado para que un front lo pida
+ * en cada carga de página. `cacheadoEn` en la respuesta indica cuándo se
+ * calcularon realmente los datos — si es igual a `generadoEn`, esta
+ * respuesta se calculó de cero; si es anterior, vino del caché.
+ * `recalculoEnCurso` evita que dos requests simultáneas que lleguen justo
+ * cuando el caché expiró disparen el cálculo completo dos veces en paralelo.
+ */
+export async function obtenerEstadoCerebro(): Promise<EstadoCerebro> {
+  const ahora = Date.now();
+
+  if (!cache || ahora - cache.cacheadoEnMs >= CACHE_TTL_MS) {
+    if (!recalculoEnCurso) {
+      recalculoEnCurso = construirEstadoCerebro()
+        .then((datos) => ({ datos, cacheadoEnMs: Date.now() }))
+        .finally(() => {
+          recalculoEnCurso = null;
+        });
+    }
+    cache = await recalculoEnCurso;
+  }
+
   return {
     generadoEn: new Date().toISOString(),
-    cashflow,
-    holded,
-    crm,
-    correo,
-    fiscal,
-    drive,
-    conocimiento,
-    accesos,
+    cacheadoEn: new Date(cache.cacheadoEnMs).toISOString(),
+    ...cache.datos,
   };
 }
