@@ -1,6 +1,4 @@
 import "dotenv/config";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery } from "../core/telegram/client";
 import { esUsuarioAutorizado, esAccionSensible, obtenerRolUsuario } from "../core/telegram/authorizedUsersSheet";
@@ -11,6 +9,7 @@ import { handleDocumentCallback } from "../core/documental/documentCallbackHandl
 import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { manejarClasificacion } from "../core/documental/processClassification";
 import { esMensajeCaptura, guardarCaptura } from "../core/knowledge/capture";
+import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -342,9 +341,11 @@ app.post("/admin/run-fiscal-check", async (req: Request, res: Response) => {
 });
 
 /**
- * Lectura de solo diagnóstico de docs/conocimiento_capturado.md, para
- * verificar qué hay capturado sin tener que preguntarle al bot por
- * Telegram. Protegido por ADMIN_SECRET.
+ * Lectura de solo diagnóstico de las capturas registradas (pestaña oculta
+ * `_capturas` del Sheet de cashflow — ver core/knowledge/capturaSheet.ts),
+ * para verificar qué hay capturado sin tener que preguntarle al bot por
+ * Telegram. Protegido por ADMIN_SECRET. Antes leía docs/conocimiento_capturado.md
+ * en disco local, migrado el 2026-08-26 porque no sobrevivía un redeploy.
  */
 app.get("/admin/conocimiento-capturado", async (req: Request, res: Response) => {
   const adminSecret = process.env.ADMIN_SECRET;
@@ -360,10 +361,16 @@ app.get("/admin/conocimiento-capturado", async (req: Request, res: Response) => 
   }
 
   try {
-    const contenido = await readFile(join(process.cwd(), "docs", "conocimiento_capturado.md"), "utf-8");
-    res.type("text/plain").send(contenido);
-  } catch {
-    res.status(404).json({ error: "docs/conocimiento_capturado.md no existe todavía." });
+    const capturas = await obtenerCapturasCrudas();
+    if (capturas.length === 0) {
+      res.status(404).json({ error: "No hay ninguna captura registrada todavía." });
+      return;
+    }
+    const texto = capturas.map((c) => `### ${c.fecha}${c.autor ? ` — ${c.autor}` : ""}\n\n${c.texto}\n`).join("\n");
+    res.type("text/plain").send(texto);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: message });
   }
 });
 

@@ -1,13 +1,21 @@
 import { buscarDocumentosRelevantes, obtenerIndiceDocumentos } from "../knowledge/loader";
 import { obtenerCorreccionesFormateadas } from "../knowledge/correctionsStore";
+import { obtenerCapturasFormateadas } from "../knowledge/capturaSheet";
 import type { ToolDefinition } from "./types";
 
 /**
  * Da acceso al conocimiento interno del grupo (WOBA/BAE, Footprint, eWorks):
  * selecciona solo los documentos de /docs relevantes a la consulta (en vez
  * de concatenar todo el contenido en cada llamada) y SIEMPRE incluye las
- * correcciones registradas (registrar_correccion), sin importar la
- * consulta — un dato ya corregido una vez nunca debe volver a olvidarse.
+ * correcciones y las capturas registradas (registrar_correccion, mensajes
+ * con CAPTURA), sin importar la consulta — un dato ya corregido o capturado
+ * una vez nunca debe volver a olvidarse. Las capturas dejaron de vivir como
+ * archivo en /docs (docs/conocimiento_capturado.md, retirado el 2026-08-26
+ * porque no sobrevivía un redeploy de Railway) precisamente para que
+ * queden aquí, siempre presentes, en vez de competir por espacio en el
+ * top-3 de buscarDocumentosRelevantes junto a documentos grandes y
+ * genéricos — el mismo riesgo de "documento pequeño y específico pierde
+ * contra documento grande y genérico" que ya se identificó ahí.
  */
 export const knowledgeBaseTool: ToolDefinition = {
   name: "consultar_base_conocimiento",
@@ -37,6 +45,11 @@ export const knowledgeBaseTool: ToolDefinition = {
       partes.push(
         `## ⚠️ Correcciones registradas — SIEMPRE prioritarias sobre cualquier otro documento o suposición\n\n${correcciones}`
       );
+    }
+
+    const capturas = await obtenerCapturasFormateadas();
+    if (capturas) {
+      partes.push(`## 📌 Conocimiento capturado por el equipo (CAPTURA)\n\n${capturas}`);
     }
 
     const relevantes = buscarDocumentosRelevantes(consulta);
