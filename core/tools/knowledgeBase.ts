@@ -1,21 +1,21 @@
-import { buscarDocumentosRelevantes, obtenerIndiceDocumentos } from "../knowledge/loader";
+import { seleccionarDocumentosRelevantes, obtenerIndiceDocumentos } from "../knowledge/loader";
 import { obtenerCorreccionesFormateadas } from "../knowledge/correctionsStore";
 import { obtenerCapturasFormateadas } from "../knowledge/capturaSheet";
 import type { ToolDefinition } from "./types";
 
 /**
  * Da acceso al conocimiento interno del grupo (WOBA/BAE, Footprint, eWorks):
- * selecciona solo los documentos de /docs relevantes a la consulta (en vez
- * de concatenar todo el contenido en cada llamada) y SIEMPRE incluye las
- * correcciones y las capturas registradas (registrar_correccion, mensajes
- * con CAPTURA), sin importar la consulta — un dato ya corregido o capturado
- * una vez nunca debe volver a olvidarse. Las capturas dejaron de vivir como
- * archivo en /docs (docs/conocimiento_capturado.md, retirado el 2026-08-26
- * porque no sobrevivía un redeploy de Railway) precisamente para que
- * queden aquí, siempre presentes, en vez de competir por espacio en el
- * top-3 de buscarDocumentosRelevantes junto a documentos grandes y
- * genéricos — el mismo riesgo de "documento pequeño y específico pierde
- * contra documento grande y genérico" que ya se identificó ahí.
+ * carga los documentos de /docs vía seleccionarDocumentosRelevantes — todos,
+ * completos, mientras el corpus quepa bajo UMBRAL_CARGA_COMPLETA (ver
+ * loader.ts); solo aplica scoring por palabras clave cuando el volumen ya no
+ * cabe. SIEMPRE incluye además las correcciones y las capturas registradas
+ * (registrar_correccion, mensajes con CAPTURA), sin importar la consulta ni
+ * el umbral — un dato ya corregido o capturado una vez nunca debe volver a
+ * olvidarse. Las capturas dejaron de vivir como archivo en /docs
+ * (docs/conocimiento_capturado.md, retirado el 2026-08-26 porque no
+ * sobrevivía un redeploy de Railway) precisamente para que queden aquí,
+ * siempre presentes, en vez de competir por espacio con los documentos
+ * regulares.
  */
 export const knowledgeBaseTool: ToolDefinition = {
   name: "consultar_base_conocimiento",
@@ -52,7 +52,7 @@ export const knowledgeBaseTool: ToolDefinition = {
       partes.push(`## 📌 Conocimiento capturado por el equipo (CAPTURA)\n\n${capturas}`);
     }
 
-    const relevantes = buscarDocumentosRelevantes(consulta);
+    const relevantes = seleccionarDocumentosRelevantes(consulta);
 
     if (relevantes.length > 0) {
       partes.push(relevantes.map((d) => `<!-- Fuente: docs/${d.nombre} -->\n${d.contenido}`).join("\n\n---\n\n"));

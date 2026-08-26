@@ -62,6 +62,15 @@ const LONGITUD_MINIMA_PALABRA = 3;
  * — en vez de cargar y concatenar todo el contenido de /docs en cada
  * llamada, que desperdicia contexto en preguntas puntuales y no escala
  * si se agregan más documentos.
+ *
+ * Limitación conocida (confirmada en vivo): al contar apariciones de
+ * substring sin normalizar por longitud del documento (sin IDF), un
+ * documento pequeño y muy específico puede perder contra documentos
+ * grandes y genéricos que simplemente repiten más veces las mismas
+ * palabras clave, aunque el documento pequeño sea el realmente relevante.
+ * Por eso este mecanismo solo se usa cuando el corpus ya no cabe entero
+ * (ver seleccionarDocumentosRelevantes) — con poco volumen es preferible
+ * cargarlo todo y evitar el riesgo.
  */
 export function buscarDocumentosRelevantes(consulta: string): DocEntry[] {
   const docs = leerTodosLosDocs();
@@ -83,4 +92,33 @@ export function buscarDocumentosRelevantes(consulta: string): DocEntry[] {
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_DOCS_RELEVANTES)
     .map((p) => p.doc);
+}
+
+/**
+ * Tamaño (caracteres) por debajo del cual se prefiere cargar TODO el corpus
+ * de /docs en vez de aplicar scoring selectivo — a este volumen, cargar todo
+ * cabe cómodamente en el contexto y evita el riesgo de scoring descrito
+ * arriba. Por encima del umbral, cargar todo dejaría de ser barato y se usa
+ * buscarDocumentosRelevantes (que sí puede perder documentos pequeños, pero
+ * a cambio no desperdicia contexto en cada consulta).
+ */
+const UMBRAL_CARGA_COMPLETA = 40_000;
+
+/**
+ * Punto de entrada real para el tool consultar_base_conocimiento: decide
+ * entre cargar todos los documentos regulares de /docs (corpus pequeño) o
+ * aplicar el scoring por palabras clave de buscarDocumentosRelevantes
+ * (corpus grande) — nunca ambos a la vez. No aplica a capturas/correcciones,
+ * que se incluyen siempre desde sus propios stores en Sheets,
+ * independientemente de este umbral.
+ */
+export function seleccionarDocumentosRelevantes(consulta: string): DocEntry[] {
+  const docs = leerTodosLosDocs();
+  const tamanoTotal = docs.reduce((acc, doc) => acc + doc.contenido.length, 0);
+
+  if (tamanoTotal < UMBRAL_CARGA_COMPLETA) {
+    return docs;
+  }
+
+  return buscarDocumentosRelevantes(consulta);
 }
