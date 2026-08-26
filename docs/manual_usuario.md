@@ -72,6 +72,15 @@ que hacer nada más.
   contactos, procesos). Cualquiera puede **agregarle conocimiento nuevo** o
   **corregirlo** cuando se equivoca — ver la sección 3.
 
+### 💰 Control de costos de IA
+- Registra el costo real (en USD, según las tarifas oficiales del modelo) de
+  cada llamada que hace al modelo de IA.
+- Solo los **administradores** pueden preguntar "¿cuánto ha gastado el
+  sistema hoy/esta semana/este mes?".
+- Todas las mañanas, los administradores reciben automáticamente un resumen
+  del gasto del día anterior, con una alerta si fue inusualmente alto
+  comparado con el promedio de la semana.
+
 ---
 
 ## 3. Cómo usarlo día a día

@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial } from "./conversationStore";
+import { registrarUsoIA } from "./costTracking";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOOL_ITERATIONS = 12;
@@ -75,6 +76,13 @@ export async function askClaude(userText: string, chatId?: number, nombreRemiten
       tools,
       messages,
     });
+
+    // "Fire and forget" — no bloquea la respuesta al usuario por la latencia
+    // de escribir en Sheets. Cada llamada a la API se factura por separado,
+    // así que se registra una fila por iteración, no solo la respuesta final.
+    registrarUsoIA(chatId, response.usage).catch((error) =>
+      console.error("[costTracking] Error registrando uso de IA:", error)
+    );
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((block) => block.type === "text");

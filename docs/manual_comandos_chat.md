@@ -2,11 +2,17 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (autorización con notificación automática al admin).
+actualización: 2026-08-26 (control de costos de IA).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
 simplemente pregúntalo en lenguaje natural.
+
+**Costo de IA** (ej. "¿cuánto ha gastado el sistema este mes?") — solo
+administradores pueden consultarlo; un colaborador recibe un mensaje diciendo
+que esa consulta es solo para admins. Además, todos los admins reciben un
+resumen automático cada mañana (8:30) con el gasto del día anterior y una
+alerta si fue inusualmente alto comparado con el promedio de la semana.
 
 **Acceso**: solo los usuarios de Telegram autorizados (guardados en la pestaña
 oculta `_usuarios_autorizados` del Sheet de cashflow — no en una variable de

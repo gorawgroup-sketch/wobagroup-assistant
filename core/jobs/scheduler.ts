@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { revisarHoldedVsCashflow } from "./revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "./revisarAlertasFiscales";
 import { revisarCorreoNuevo } from "./revisarCorreoNuevo";
+import { revisarCostosIA } from "./revisarCostosIA";
 
 const TIMEZONE = "Europe/Madrid";
 
@@ -42,4 +43,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarCorreoNuevo programado: cada hora (${TIMEZONE})`);
+
+  cron.schedule(
+    "30 8 * * *",
+    () => {
+      revisarCostosIA().catch((error) => {
+        console.error("[scheduler] Error ejecutando revisarCostosIA:", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarCostosIA programado: diario 8:30 (${TIMEZONE})`);
 }

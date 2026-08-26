@@ -21,6 +21,7 @@ import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientati
 import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditStore";
 import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
 import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
+import { revisarCostosIA } from "../core/jobs/revisarCostosIA";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -348,6 +349,32 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
   revisarCorreoNuevo().catch((error) => {
     console.error("[admin/run-gmail-check] Error:", error);
   });
+});
+
+/**
+ * Dispara manualmente el job revisarCostosIA, sin esperar al cron. Protegido
+ * por ADMIN_SECRET. Solo lectura/notificación — no escribe nada.
+ */
+app.post("/admin/run-costos-check", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const resultado = await revisarCostosIA();
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
 });
 
 app.listen(PORT, () => {
