@@ -38,17 +38,29 @@ que hacer nada más.
   chat normal).
 - Registrar gastos recurrentes conocidos (seguros, IBI, etc.) cuando se
   acerca su fecha — ver sección de Pagos recurrentes más abajo.
+- **Conciliación de facturas/gastos puntuales**: si le mandas una factura o
+  comprobante por Telegram (o llega por correo), lee el documento real, y:
+  - si ya existe un gasto parecido en Holded (mismo proveedor, monto y
+    fecha cercana), propone adjuntarle el comprobante ahí;
+  - si no, propone crear un gasto nuevo, ya clasificado (empresa,
+    proveedor, importe, concepto).
+  - Todo con botón de aprobación — nunca escribe en Holded sin confirmar.
+  - Si la clasificación no es correcta, puedes corregirla; esa corrección
+    queda **aprendida** para la próxima factura del mismo proveedor.
+  - Solo administradores pueden aprobar esta escritura.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.
 - Recibir un archivo por Telegram, clasificarlo, y proponer en qué carpeta
-  archivarlo — solo lo sube si confirmas con el botón.
+  archivarlo — solo lo sube si confirmas con el botón. (Si el documento
+  resulta ser una factura/gasto, sigue en cambio el flujo de Holded de
+  arriba.)
 
 ### 📧 Correo (`asistente@wobagroup.com`)
 - Revisa el correo entrante cada hora (o al pedirlo con `/revisarcorreo`) y
   clasifica cada mensaje:
-  - Si trae un documento archivable → lo propone para Drive (mismo flujo que
-    arriba).
+  - Si trae un documento archivable → lo propone para Drive, o para Holded si
+    resulta ser una factura/gasto (mismo flujo que arriba).
   - Si necesita respuesta o parece una instrucción → te avisa con botones
     para investigar, ignorar, o darle instrucciones específicas.
   - Si es puramente informativo → lo resume en un solo mensaje agrupado.

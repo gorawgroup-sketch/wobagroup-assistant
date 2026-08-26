@@ -22,6 +22,8 @@ import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditSt
 import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
 import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
 import { revisarCostosIA } from "../core/jobs/revisarCostosIA";
+import { handleGastoCallback, continuarConCorreccionGasto } from "../core/gastos/gastoCallbackHandler";
+import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -88,6 +90,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleDraftCallback(update.callback_query);
       } else if (data.startsWith("recpago_")) {
         await handlePagoRecurrenteCallback(update.callback_query);
+      } else if (data.startsWith("gasto_")) {
+        await handleGastoCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
@@ -166,6 +170,17 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       // casi siempre un simple problema de formato del texto, no algo grave.
       await guardarPendienteMontoPago(pendienteMontoPago);
       await sendTelegramMessage(incoming.chatId, message);
+    }
+    return;
+  }
+
+  const pendienteCorreccionGasto = await consumirPendienteCorreccionGasto(incoming.chatId);
+  if (pendienteCorreccionGasto) {
+    try {
+      await continuarConCorreccionGasto(pendienteCorreccionGasto, incoming.text);
+    } catch (error) {
+      console.error("Error procesando corrección de clasificación de gasto:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando la corrección.");
     }
     return;
   }

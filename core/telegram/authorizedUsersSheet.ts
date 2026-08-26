@@ -181,7 +181,14 @@ export async function autorizarUsuario(userId: number, rol: Rol, nombre: string)
 // real (Holded, cashflow, envío de correo, subida a Drive) — solo "admin"
 // puede presionarlas. Descartar/cancelar/rechazar/pedir orientación siempre
 // queda disponible para cualquier usuario autorizado, porque no escribe nada.
-const ACCIONES_SENSIBLES = new Set(["cf_approve", "recpago_confirmar", "draft_enviar", "doc_confirm"]);
+const ACCIONES_SENSIBLES = new Set([
+  "cf_approve",
+  "recpago_confirmar",
+  "draft_enviar",
+  "doc_confirm",
+  "gasto_adjuntar",
+  "gasto_nuevo",
+]);
 
 export function esAccionSensible(callbackData: string): boolean {
   const [accion] = callbackData.split(":");

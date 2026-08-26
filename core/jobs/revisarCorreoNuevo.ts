@@ -5,9 +5,13 @@ import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore"
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { manejarClasificacion } from "../documental/processClassification";
+import { extraerDatosFactura } from "../documental/extractInvoiceData";
+import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
+
+const MIMES_LEGIBLES_COMO_FACTURA = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
 
 function sanitizarNombre(nombre: string): string {
   return nombre.replace(/[^\w.\-]+/g, "_").slice(0, 150);
@@ -70,14 +74,38 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
             const destino = join(UPLOADS_DIR, nombreArchivo);
             await writeFile(destino, bytes);
 
-            await manejarClasificacion({
-              chatId,
-              rutaLocal: destino,
-              nombreArchivoOriginal: adjunto.filename,
-              mimeType: adjunto.mimeType,
-              nombreParaClasificar: adjunto.filename,
-              captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
-            });
+            // Igual que en Telegram: antes de archivar en Drive, se lee el
+            // contenido real por si es una factura/gasto que debería ir a
+            // Holded en vez de Drive.
+            let esGasto = false;
+            if (MIMES_LEGIBLES_COMO_FACTURA.includes(adjunto.mimeType)) {
+              try {
+                const datosFactura = await extraerDatosFactura(destino, adjunto.mimeType);
+                if (datosFactura.esFacturaOGasto) {
+                  esGasto = true;
+                  await procesarGastoEntrante({
+                    chatId,
+                    rutaLocal: destino,
+                    nombreArchivoOriginal: adjunto.filename,
+                    mimeType: adjunto.mimeType,
+                    datos: datosFactura,
+                  });
+                }
+              } catch (error) {
+                console.error(`[revisarCorreoNuevo] Error leyendo "${adjunto.filename}" como factura (sigue como documento normal):`, error);
+              }
+            }
+
+            if (!esGasto) {
+              await manejarClasificacion({
+                chatId,
+                rutaLocal: destino,
+                nombreArchivoOriginal: adjunto.filename,
+                mimeType: adjunto.mimeType,
+                nombreParaClasificar: adjunto.filename,
+                captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
+              });
+            }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);

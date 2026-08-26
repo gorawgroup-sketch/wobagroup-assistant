@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type { Empresa } from "./client";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
@@ -91,6 +92,114 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
   }
 
   return undefined;
+}
+
+export interface PurchaseCandidato {
+  id: string;
+  contactName: string;
+  fecha: string;
+  total: number;
+  descripcion: string;
+}
+
+/** Los importes de Holded vienen como string en formato ES ("1.234,56"). */
+function parsearMontoHolded(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return NaN;
+  const normalizado = raw.replace(/\./g, "").replace(",", ".");
+  const n = Number(normalizado);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+const TOLERANCIA_MONTO = 0.01;
+const VENTANA_DIAS_BUSQUEDA = 10;
+const MAX_PAGINAS_PURCHASES = 10;
+
+function formatearFechaISO(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Busca gastos YA existentes en Holded que podrían corresponder a una
+ * factura entrante — mismo proveedor (coincidencia parcial), monto dentro de
+ * ±0.01, y fecha dentro de una ventana de ±10 días. Nunca decide un match
+ * "aceptable" por sí sola: devuelve TODOS los candidatos razonables para que
+ * el usuario confirme cuál es (o ninguno, si no hay), igual que
+ * buscarContactoHolded nunca inventa un contact_id.
+ */
+export async function buscarGastoSimilar(
+  empresa: Empresa,
+  criterios: { proveedor: string; monto: number; fecha: string }
+): Promise<PurchaseCandidato[]> {
+  const objetivo = normalizar(criterios.proveedor);
+  const fechaBase = new Date(criterios.fecha);
+
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - VENTANA_DIAS_BUSQUEDA);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + VENTANA_DIAS_BUSQUEDA);
+
+  const candidatos: PurchaseCandidato[] = [];
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
+    const params = new URLSearchParams({
+      limit: "100",
+      start_date: formatearFechaISO(desde),
+      end_date: formatearFechaISO(hasta),
+    });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      if (!item.contact_name || !normalizar(item.contact_name).includes(objetivo)) continue;
+      const total = parsearMontoHolded(item.total);
+      if (!Number.isFinite(total) || Math.abs(total - criterios.monto) > TOLERANCIA_MONTO) continue;
+
+      candidatos.push({
+        id: item.id,
+        contactName: item.contact_name,
+        fecha: item.date ?? "",
+        total,
+        descripcion: item.description ?? "",
+      });
+    }
+
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return candidatos;
+}
+
+/**
+ * Adjunta un comprobante (PDF/imagen) a un gasto ya existente en Holded
+ * (POST /purchases/{id}/attachments, multipart). Verificado en vivo: un
+ * cuerpo JSON vacío devuelve "File not found", confirmando que este
+ * endpoint espera un archivo real, no JSON.
+ */
+export async function adjuntarComprobanteHolded(empresa: Empresa, purchaseId: string, rutaLocal: string, nombreArchivo: string, mimeType: string | undefined): Promise<void> {
+  const apiKey = getWriteApiKey(empresa);
+  const bytes = await readFile(rutaLocal);
+
+  const formData = new FormData();
+  formData.append("file", new Blob([bytes], { type: mimeType || "application/octet-stream" }), nombreArchivo);
+
+  const response = await fetch(`${HOLDED_API_BASE}/purchases/${purchaseId}/attachments`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`Error adjuntando comprobante en Holded (${response.status}) para ${empresa}: ${errBody}`);
+  }
 }
 
 export interface NuevoGastoHolded {

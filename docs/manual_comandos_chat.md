@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (control de costos de IA).
+actualización: 2026-08-26 (conciliación de facturas/gastos con Holded).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -84,7 +84,18 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - Tras responder con el importe, aparece un mensaje de confirmación con:
   - ✅ Confirmar y registrar — crea el gasto en Holded (como borrador) y la línea en el cashflow.
   - ❌ Cancelar — descarta la propuesta, no escribe nada.
-- Nota: por ahora este flujo de escritura en Holded es exclusivo de pagos recurrentes detectados por `calendario_fiscal.json` — no hay ninguna forma de pedirle al asistente que cree un gasto en Holded fuera de este flujo.
+- Nota: este flujo de escritura en Holded es para pagos recurrentes detectados por `calendario_fiscal.json`. Para facturas/gastos puntuales, ver la sección de abajo.
+
+**Sobre facturas/gastos enviados por Telegram o recibidos por correo (con detalle y comprobante juntos — solo WOBA/EWORKS):**
+- El asistente lee el CONTENIDO real del documento (no solo el nombre) para decidir si es una factura/gasto. Si no lo es, sigue el flujo normal de archivado en Drive.
+- Si encuentra un gasto ya registrado en Holded que podría corresponder (mismo proveedor, monto y fecha cercana):
+  - ✅ Es este (#N) — adjunta el comprobante a ese gasto en Holded.
+  - ❌ Ninguno, crear nuevo — sigue al flujo de creación de abajo.
+- Si no encuentra ninguno:
+  - ✅ Crear gasto en Holded — crea el gasto (como borrador) y adjunta el comprobante.
+  - ✏️ Corregir clasificación — pide la empresa/concepto correctos por texto libre (ej. "EWORKS, servicio de limpieza") antes de crear el gasto. Esta corrección **queda aprendida**: la próxima factura del mismo proveedor se clasifica con más certeza.
+  - ❌ Cancelar — no escribe nada.
+- Solo administradores pueden aprobar la escritura (adjuntar o crear) — un colaborador recibe el mensaje de que necesita aprobación.
 
 ---
 

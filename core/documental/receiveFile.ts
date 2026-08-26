@@ -2,7 +2,17 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { downloadTelegramFile, getTelegramFile, sendTelegramMessage } from "../telegram/client";
 import { manejarClasificacion } from "./processClassification";
+import { extraerDatosFactura } from "./extractInvoiceData";
+import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import type { TelegramMessage } from "../telegram/types";
+
+const MIMES_LEGIBLES_COMO_FACTURA = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+];
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -122,12 +132,35 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
 
     await sendTelegramMessage(chatId, partes.join("\n"));
 
+    const nombreArchivoOriginal = archivo.nombreOriginal ?? nombreBase;
+
+    // Antes de mandar al clasificador de Drive, se lee el CONTENIDO real del
+    // documento para ver si es una factura/gasto — si lo es, se desvía al
+    // flujo de conciliación con Holded en vez de archivar en Drive.
+    if (archivo.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(archivo.mimeType)) {
+      try {
+        const datosFactura = await extraerDatosFactura(destino, archivo.mimeType);
+        if (datosFactura.esFacturaOGasto) {
+          await procesarGastoEntrante({
+            chatId,
+            rutaLocal: destino,
+            nombreArchivoOriginal,
+            mimeType: archivo.mimeType,
+            datos: datosFactura,
+          });
+          return;
+        }
+      } catch (error) {
+        console.error("[receiveFile] Error leyendo el documento como factura (sigue como documento normal):", error);
+      }
+    }
+
     const nombreParaClasificar = archivo.nombreOriginal ?? "(foto sin nombre de archivo)";
 
     await manejarClasificacion({
       chatId,
       rutaLocal: destino,
-      nombreArchivoOriginal: archivo.nombreOriginal ?? nombreBase,
+      nombreArchivoOriginal,
       mimeType: archivo.mimeType,
       nombreParaClasificar,
       captionEfectivo: message.caption,
