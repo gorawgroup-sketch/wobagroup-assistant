@@ -562,7 +562,7 @@ export default function CerebroWoba() {
 
           <circle cx="300" cy="300" r="62" fill="url(#coreGrad)" style={{ transformOrigin: "300px 300px", animation: "corePulse 3.2s ease-in-out infinite" }} />
           <circle cx="300" cy="300" r="29" fill={C.cream} opacity="0.96" />
-          <text x="300" y="304" textAnchor="middle" fontFamily={C.serif} fontSize="13" fill={C.ink} fontWeight="600">Claude</text>
+          <text x="300" y="304" textAnchor="middle" fontFamily={C.serif} fontSize="13" fill={C.ink} fontWeight="600">WOBI</text>
 
           {positions.map((p, i) => {
             const m = MODULES[i];
