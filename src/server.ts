@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery } from "../core/telegram/client";
 import { esUsuarioAutorizado, esAccionSensible, obtenerRolUsuario } from "../core/telegram/authorizedUsersSheet";
@@ -34,6 +35,21 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
+});
+
+/**
+ * Front estático del "cerebro" (React + Vite, build en frontend-cerebro/dist
+ * — ver la sección "build" de package.json, que compila este front como
+ * parte del build general). Servido bajo /cerebro, con base: '/cerebro/'
+ * en vite.config.js para que las referencias a assets del build coincidan
+ * con este mount point. No es un SPA con rutas propias (todo pasa dentro
+ * de un solo componente), así que basta con servir index.html en la raíz
+ * de /cerebro además de los assets estáticos — no hace falta un catch-all.
+ */
+const CEREBRO_DIST = join(process.cwd(), "frontend-cerebro", "dist");
+app.use("/cerebro", express.static(CEREBRO_DIST));
+app.get("/cerebro", (_req: Request, res: Response) => {
+  res.sendFile(join(CEREBRO_DIST, "index.html"));
 });
 
 /**
