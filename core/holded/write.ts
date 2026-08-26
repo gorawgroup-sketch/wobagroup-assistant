@@ -187,6 +187,78 @@ export async function buscarGastoSimilar(
   return candidatos;
 }
 
+export interface GastoSinComprobante {
+  id: string;
+  contactName: string;
+  total: number;
+  fecha: string;
+  descripcion: string;
+  tags: string[];
+}
+
+const MAX_GASTOS_A_REVISAR = 150;
+
+/**
+ * Busca gastos en un rango de fechas que NO tienen ningún comprobante
+ * adjunto en Holded (GET /purchases/{id}/attachments vacío). Verificado en
+ * vivo contra datos reales: de 60 gastos de WOBA, 59 tenían adjunto y 1 no
+ * — el mecanismo (list + N llamadas a /attachments) funciona y distingue
+ * ambos casos correctamente. Si `tags` trae el nombre de una persona (ej.
+ * "proyectosimon"), es la única pista disponible de quién debe el
+ * comprobante — la mayoría de los gastos no traen esa etiqueta.
+ */
+export async function buscarGastosSinComprobante(
+  empresa: Empresa,
+  desde: string,
+  hasta: string
+): Promise<{ sinComprobante: GastoSinComprobante[]; totalRevisados: number; limiteAlcanzado: boolean }> {
+  const revisados: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; tags?: string[] }> = [];
+  let cursor: string | undefined;
+  let limiteAlcanzado = false;
+
+  while (revisados.length < MAX_GASTOS_A_REVISAR) {
+    const params = new URLSearchParams({ limit: "100", start_date: desde, end_date: hasta });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; tags?: string[] }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      if (revisados.length >= MAX_GASTOS_A_REVISAR) {
+        limiteAlcanzado = true;
+        break;
+      }
+      revisados.push(item);
+    }
+
+    if (limiteAlcanzado || !data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  const sinComprobante: GastoSinComprobante[] = [];
+
+  for (const item of revisados) {
+    const attachments = (await holdedWriteCall(empresa, "GET", `/purchases/${item.id}/attachments`)) as {
+      items?: unknown[];
+    };
+    if ((attachments.items ?? []).length === 0) {
+      sinComprobante.push({
+        id: item.id,
+        contactName: item.contact_name ?? "(sin proveedor)",
+        total: parsearMontoHolded(item.total),
+        fecha: item.date ?? "",
+        descripcion: item.description ?? "",
+        tags: item.tags ?? [],
+      });
+    }
+  }
+
+  return { sinComprobante, totalRevisados: revisados.length, limiteAlcanzado };
+}
+
 /**
  * Adjunta un comprobante (PDF/imagen) a un gasto ya existente en Holded
  * (POST /purchases/{id}/attachments, multipart). Verificado en vivo: un

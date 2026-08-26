@@ -2,11 +2,18 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (Footprint integrado a Holded — sin cashflow todavía).
+actualización: 2026-08-26 (reporte de gastos sin comprobante).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
 simplemente pregúntalo en lenguaje natural.
+
+**Gastos sin comprobante** (ej. "¿qué gastos de WOBA no tienen comprobante?")
+— revisa Holded (lista de gastos + adjuntos de cada uno) y reporta cuáles no
+tienen ningún documento soporte adjunto, con el proveedor, monto, fecha y la
+etiqueta de responsable si Holded la trae (no todos los gastos la tienen).
+Solo consulta, no escribe nada — abierto a cualquier usuario autorizado.
+Por defecto revisa los últimos 90 días; se puede pedir un rango distinto.
 
 **Costo de IA** (ej. "¿cuánto ha gastado el sistema este mes?") — solo
 administradores pueden consultarlo; un colaborador recibe un mensaje diciendo

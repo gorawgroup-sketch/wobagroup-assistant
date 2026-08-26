@@ -10,6 +10,7 @@ import { alertasFiscalesTool } from "./alertasFiscales";
 import { proponerEnvioCorreoTool } from "./proposeEmail";
 import { registrarCorreccionTool } from "./registerCorrection";
 import { costosIATool } from "./costosIA";
+import { gastosSinComprobanteTool } from "./gastosSinComprobante";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -26,6 +27,7 @@ const tools: ToolDefinition[] = [
   proponerEnvioCorreoTool,
   registrarCorreccionTool,
   costosIATool,
+  gastosSinComprobanteTool,
 ];
 
 /**

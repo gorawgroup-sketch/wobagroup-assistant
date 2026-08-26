@@ -51,6 +51,10 @@ que hacer nada más.
   - Si la clasificación no es correcta, puedes corregirla; esa corrección
     queda **aprendida** para la próxima factura del mismo proveedor.
   - Solo administradores pueden aprobar esta escritura.
+- **Gastos sin comprobante**: pregúntale "¿qué gastos de WOBA/EWORKS/Footprint
+  no tienen comprobante?" y revisa Holded para decirte cuáles faltan (con el
+  proveedor, monto, fecha, y si hay una pista de a quién corresponde). Solo
+  consulta — no escribe nada.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.
