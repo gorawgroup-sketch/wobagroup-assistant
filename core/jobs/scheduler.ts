@@ -14,13 +14,24 @@ export function startScheduler(): void {
   cron.schedule(
     "0 8 * * 1",
     () => {
-      revisarHoldedVsCashflow().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarHoldedVsCashflow:", error);
+      revisarHoldedVsCashflow(new Date(), "semana_cerrada").catch((error) => {
+        console.error("[scheduler] Error ejecutando revisarHoldedVsCashflow (cierre semanal):", error);
       });
     },
     { timezone: TIMEZONE }
   );
-  console.log(`[scheduler] revisarHoldedVsCashflow programado: lunes 8:00 (${TIMEZONE})`);
+  console.log(`[scheduler] revisarHoldedVsCashflow (cierre semanal) programado: lunes 8:00 (${TIMEZONE})`);
+
+  cron.schedule(
+    "0 17 * * 5",
+    () => {
+      revisarHoldedVsCashflow(new Date(), "semana_en_curso").catch((error) => {
+        console.error("[scheduler] Error ejecutando revisarHoldedVsCashflow (chequeo preliminar viernes):", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarHoldedVsCashflow (chequeo preliminar) programado: viernes 17:00 (${TIMEZONE})`);
 
   cron.schedule(
     "0 8 * * *",

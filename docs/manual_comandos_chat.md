@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (IVA por línea al crear gastos + conciliación bancaria automática).
+actualización: 2026-08-26 (chequeo preliminar de cashflow el viernes + IVA por línea al crear gastos + conciliación bancaria automática).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -83,9 +83,10 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - ❌ Descartar — ignora la propuesta.
 - ✏️ Dar instrucciones específicas — te pide una instrucción tuya en texto libre antes de actuar.
 
-**Sobre movimientos de Holded sin registrar en el cashflow:**
+**Sobre movimientos de Holded sin registrar en el cashflow (WOBA/EWORKS):**
 - ✅ Agregar — registra el movimiento en el Sheet de cashflow.
-- ❌ Ignorar — descarta la propuesta.
+- ❌ Ignorar — descarta la propuesta (si sigue sin registrar, se vuelve a proponer en la siguiente revisión).
+- Se dispara dos veces por semana: viernes 17:00 (chequeo preliminar de la semana en curso) y lunes 8:00 (cierre de la semana anterior).
 
 **Sobre borradores de correo (después de "Proceder", una corrección de orientación, o pedir enviar algo por chat):**
 - 📤 Enviar así — envía el correo real, tal como está.

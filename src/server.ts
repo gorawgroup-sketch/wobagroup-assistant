@@ -275,7 +275,35 @@ app.post("/admin/run-holded-check", async (req: Request, res: Response) => {
   }
 
   try {
-    const resultado = await revisarHoldedVsCashflow();
+    const resultado = await revisarHoldedVsCashflow(new Date(), "semana_cerrada");
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Dispara manualmente el chequeo PRELIMINAR de revisarHoldedVsCashflow
+ * (semana en curso, lunes a la fecha de referencia) — el mismo que corre
+ * el cron de los viernes 17:00, sin esperar a que llegue el viernes.
+ * Protegido igual que /admin/run-holded-check.
+ */
+app.post("/admin/run-holded-check-preliminar", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const resultado = await revisarHoldedVsCashflow(new Date(), "semana_en_curso");
     res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

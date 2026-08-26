@@ -2,7 +2,7 @@ import { listBankMovements, listTreasuryAccounts } from "../holded/client";
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
-import { previousWeekRange, weekLabel, formatDateISO } from "../utils/isoWeek";
+import { previousWeekRange, currentWeekRangeToDate, weekLabel, formatDateISO } from "../utils/isoWeek";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 
 const TOLERANCIA_EUR = 0.01;
@@ -67,13 +67,25 @@ async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: stri
 }
 
 /**
- * Job semanal: compara movimientos bancarios de Holded (semana anterior) contra
- * lo ya registrado en DATOS, y propone por Telegram los que no encuentra
- * match. NO escribe nada — solo detecta y notifica. La escritura solo ocurre
- * si el usuario aprueba con el botón "✅ Agregar" (ver callback_query en
- * src/server.ts).
+ * Job: compara movimientos bancarios de Holded contra lo ya registrado en
+ * DATOS, y propone por Telegram los que no encuentra match. NO escribe nada
+ * — solo detecta y notifica. La escritura solo ocurre si el usuario aprueba
+ * con el botón "✅ Agregar" (ver callback_query en src/server.ts).
+ *
+ * `modo`:
+ * - "semana_cerrada" (por defecto, lunes 8:00): revisa la semana ANTERIOR
+ *   completa — es la revisión de cierre.
+ * - "semana_en_curso" (viernes 17:00): revisa lo que va de la semana ACTUAL
+ *   (lunes a la fecha de referencia) — primer punto de control, no
+ *   reemplaza la revisión de cierre del lunes siguiente. Si algo se ignora
+ *   o queda pendiente aquí, se vuelve a detectar el lunes si sigue sin
+ *   registrar (no hay lista de "ya avisado" — es intencional, ver plan de
+ *   este cron).
  */
-export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()): Promise<{
+export async function revisarHoldedVsCashflow(
+  referenceDate: Date = new Date(),
+  modo: "semana_cerrada" | "semana_en_curso" = "semana_cerrada"
+): Promise<{
   propuestasCreadas: number;
 }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
@@ -83,12 +95,16 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
     return { propuestasCreadas: 0 };
   }
 
-  const { start, end } = previousWeekRange(referenceDate);
+  const { start, end } = modo === "semana_en_curso" ? currentWeekRangeToDate(referenceDate) : previousWeekRange(referenceDate);
   const semanaLabel = weekLabel(start);
   const desde = formatDateISO(start);
   const hasta = formatDateISO(end);
+  const esChequeoPreliminar = modo === "semana_en_curso";
 
-  console.log(`[revisarHoldedVsCashflow] Revisando semana ${semanaLabel} (${desde} a ${hasta})`);
+  console.log(
+    `[revisarHoldedVsCashflow] Revisando semana ${semanaLabel} (${desde} a ${hasta})` +
+      (esChequeoPreliminar ? " [chequeo preliminar viernes]" : "")
+  );
 
   let propuestasCreadas = 0;
 
@@ -107,7 +123,9 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
       const bloqueSugerido = sugerirBloque(candidato.esIngreso ? 1 : -1);
 
       const texto = [
-        `📋 Movimiento de Holded sin registrar en el cashflow`,
+        esChequeoPreliminar
+          ? `📋 Chequeo preliminar (viernes) — movimiento de Holded sin registrar en el cashflow de esta semana`
+          : `📋 Movimiento de Holded sin registrar en el cashflow`,
         ``,
         `Empresa: ${candidato.empresa}`,
         `Fecha: ${candidato.fecha ?? "(sin fecha)"}`,
@@ -162,6 +180,9 @@ export async function revisarHoldedVsCashflow(referenceDate: Date = new Date()):
     }
   }
 
-  console.log(`[revisarHoldedVsCashflow] ${propuestasCreadas} propuesta(s) enviada(s) para la semana ${semanaLabel}.`);
+  console.log(
+    `[revisarHoldedVsCashflow] ${propuestasCreadas} propuesta(s) enviada(s) para la semana ${semanaLabel}` +
+      (esChequeoPreliminar ? " (chequeo preliminar)." : ".")
+  );
   return { propuestasCreadas };
 }

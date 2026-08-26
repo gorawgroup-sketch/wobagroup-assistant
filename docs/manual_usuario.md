@@ -30,9 +30,14 @@ que hacer nada más.
 - Consultar el resumen o el detalle del cashflow de WOBA y eWorks (por
   empresa, por semana, por bloque). Footprint no tiene cashflow en Sheets
   todavía — sí se monitorea directo en Holded (ver abajo).
-- Detecta automáticamente (cada lunes) movimientos que aparecieron en Holded
-  pero no están registrados en el cashflow, y propone agregarlos — con botón
-  de aprobación, nunca se agrega solo. Solo WOBA/EWORKS.
+- Detecta automáticamente movimientos que aparecieron en Holded pero no están
+  registrados en el cashflow, y propone agregarlos — con botón de
+  aprobación, nunca se agrega solo. Solo WOBA/EWORKS. Corre dos veces por
+  semana: el **viernes a las 17:00** como primer punto de control (revisa lo
+  que va de la semana actual, lunes a viernes) y el **lunes a las 8:00** como
+  revisión de cierre de la semana anterior completa. Si algo se ignora o
+  queda pendiente el viernes y sigue sin registrar, se vuelve a proponer el
+  lunes.
 
 ### 🏦 Holded
 - Consultar movimientos bancarios y cuentas de tesorería (solo lectura, en

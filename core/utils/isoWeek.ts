@@ -43,4 +43,18 @@ export function previousWeekRange(referenceDate: Date): { start: Date; end: Date
   return { start, end };
 }
 
+/**
+ * Rango de la semana EN CURSO (la que contiene `referenceDate`), desde el
+ * lunes hasta `referenceDate` inclusive — para el chequeo preliminar del
+ * viernes, que revisa lo que va de la semana, no la semana ya cerrada.
+ */
+export function currentWeekRangeToDate(referenceDate: Date): { start: Date; end: Date } {
+  const start = mondayOf(referenceDate);
+
+  const end = new Date(referenceDate);
+  end.setHours(23, 59, 59, 999);
+
+  return { start, end };
+}
+
 export { formatDateLocal as formatDateISO } from "./dateFormat";
