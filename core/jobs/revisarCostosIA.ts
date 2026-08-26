@@ -3,8 +3,10 @@ import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
 
 // Si el costo de ayer supera este múltiplo del promedio de los 7 días
-// anteriores, se marca como gasto inusual en el resumen.
-const UMBRAL_ANOMALIA = 2;
+// anteriores, se marca como gasto inusual en el resumen. Exportado para que
+// el endpoint /api/cerebro/estado calcule el mismo umbral dinámico sin
+// duplicar el número.
+export const UMBRAL_ANOMALIA = 2;
 
 /**
  * Job diario: manda a todos los admins un resumen del costo de IA de ayer

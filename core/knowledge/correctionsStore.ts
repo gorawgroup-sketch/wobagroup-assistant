@@ -106,3 +106,25 @@ export async function obtenerCorreccionesFormateadas(): Promise<string | null> {
     return null;
   }
 }
+
+/** Todas las correcciones crudas (sin formatear), para diagnóstico/dashboard. */
+export async function obtenerCorreccionesCrudas(): Promise<Array<{ fecha: string; contextoPrevio: string; correccion: string }>> {
+  await ensureTab();
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A2:C10000`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+
+  const filas = resp.data.values ?? [];
+  return filas
+    .filter((fila) => fila[2])
+    .map((fila) => ({
+      fecha: fila[0] ? String(fila[0]) : "",
+      contextoPrevio: fila[1] ? String(fila[1]) : "",
+      correccion: String(fila[2]),
+    }));
+}

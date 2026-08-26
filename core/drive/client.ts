@@ -180,7 +180,7 @@ export async function searchDriveFiles(rootFolderId: string, query: string): Pro
 
 const MAX_ANCESTRY_HOPS_UPLOAD = 30;
 
-async function estaDentroDelArbol(drive: drive_v3.Drive, folderId: string, rootFolderId: string): Promise<boolean> {
+export async function estaDentroDelArbol(drive: drive_v3.Drive, folderId: string, rootFolderId: string): Promise<boolean> {
   let current: string | undefined = folderId;
   let hops = 0;
 
@@ -249,6 +249,126 @@ export async function resolverCarpetaDestino(
   }
 
   return { folderId: rootFolderId, encontrada: false };
+}
+
+export interface ArchivoReciente {
+  name: string;
+  createdTime: string;
+  webViewLink: string;
+}
+
+const MAX_ANCESTRY_HOPS_RECIENTES = 30;
+const CONCURRENCIA_ANCESTRIA = 8;
+
+/**
+ * Resuelve, subiendo por la cadena de padres desde `startFolderId`, cuál (si
+ * alguna) de las `rootFolderIds` es un ancestro — con caché de carpetas
+ * compartida entre llamadas (`folderCache`), para no repetir la misma
+ * llamada a la API cuando muchos archivos comparten carpetas padre.
+ */
+async function resolverRaizAncestro(
+  drive: drive_v3.Drive,
+  startFolderId: string,
+  rootFolderIds: string[],
+  folderCache: Map<string, FolderInfo | null>
+): Promise<string | undefined> {
+  let current: string | undefined = startFolderId;
+  let hops = 0;
+
+  while (current && hops < MAX_ANCESTRY_HOPS_RECIENTES) {
+    const match = rootFolderIds.find((r) => r === current);
+    if (match) return match;
+    hops++;
+
+    if (!folderCache.has(current)) {
+      try {
+        const res = await drive.files.get({ fileId: current, fields: "name, parents", supportsAllDrives: true });
+        folderCache.set(current, { name: res.data.name ?? "", parentId: res.data.parents?.[0] });
+      } catch {
+        folderCache.set(current, null);
+      }
+    }
+
+    const info = folderCache.get(current);
+    if (!info) return undefined;
+    current = info.parentId;
+  }
+
+  return undefined;
+}
+
+async function ejecutarConConcurrenciaAcotada<T, R>(items: T[], concurrencia: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const resultados: R[] = new Array(items.length);
+  let indice = 0;
+
+  async function trabajador(): Promise<void> {
+    while (indice < items.length) {
+      const i = indice++;
+      resultados[i] = await fn(items[i]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrencia, items.length) }, trabajador));
+  return resultados;
+}
+
+/**
+ * Lista archivos (no carpetas) creados después de `sinceISODate`, agrupados
+ * por cuál de `rootFolderIds` los contiene (clave del record de vuelta) —
+ * en UNA sola búsqueda global y UNA sola resolución de ancestría por
+ * archivo (compartida entre las N carpetas raíz, con caché de carpetas),
+ * en vez de repetir la búsqueda y la ancestría una vez por empresa. La API
+ * de Drive no soporta un filtro nativo de "descendiente recursivo de X",
+ * así que sigue siendo "buscar global + verificar ancestría" (como
+ * searchDriveFiles), pero resuelto de la forma más barata posible. Solo
+ * lectura.
+ */
+export async function listarArchivosRecientesPorRaiz(
+  rootFolderIds: string[],
+  sinceISODate: string
+): Promise<Record<string, ArchivoReciente[]>> {
+  const drive = getDriveClient();
+  const q = `createdTime > '${sinceISODate}' and trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
+
+  const candidatos: drive_v3.Schema$File[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.files.list({
+      q,
+      fields: "nextPageToken, files(id, name, createdTime, webViewLink, parents)",
+      pageSize: 100,
+      pageToken,
+      orderBy: "createdTime desc",
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      corpora: "allDrives",
+    });
+
+    candidatos.push(...(res.data.files ?? []));
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  const folderCache = new Map<string, FolderInfo | null>();
+  const porRaiz: Record<string, ArchivoReciente[]> = Object.fromEntries(rootFolderIds.map((r) => [r, []]));
+
+  const asignaciones = await ejecutarConConcurrenciaAcotada(candidatos, CONCURRENCIA_ANCESTRIA, async (f) => {
+    const parentId = f.parents?.[0];
+    if (!parentId) return undefined;
+    return resolverRaizAncestro(drive, parentId, rootFolderIds, folderCache);
+  });
+
+  candidatos.forEach((f, i) => {
+    const raiz = asignaciones[i];
+    if (!raiz) return;
+    porRaiz[raiz].push({
+      name: f.name ?? "(sin nombre)",
+      createdTime: f.createdTime ?? "",
+      webViewLink: f.webViewLink ?? "",
+    });
+  });
+
+  return porRaiz;
 }
 
 export interface ArchivoSubido {

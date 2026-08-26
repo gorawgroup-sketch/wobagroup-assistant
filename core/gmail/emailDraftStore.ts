@@ -66,6 +66,18 @@ export async function actualizarCuerpoBorrador(id: string, cuerpo: string): Prom
   return todos[idx];
 }
 
+/**
+ * Cuenta los borradores pendientes de aprobación (solo lectura, para
+ * diagnóstico/dashboard). Nota: este store vive en disco local (data/), que
+ * no sobrevive un redeploy de Railway — el conteo solo refleja lo que este
+ * proceso conoce desde su último arranque, no necesariamente todo lo que se
+ * propuso antes de un deploy.
+ */
+export async function contarBorradoresPendientes(): Promise<number> {
+  const vigentes = purgarVencidos(await leerTodos());
+  return vigentes.length;
+}
+
 export async function obtenerBorradorCorreo(id: string): Promise<BorradorCorreo | undefined> {
   const vigentes = purgarVencidos(await leerTodos());
   return vigentes.find((b) => b.id === id);

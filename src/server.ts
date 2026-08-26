@@ -24,6 +24,7 @@ import { revisarCostosIA } from "../core/jobs/revisarCostosIA";
 import { handleGastoCallback, continuarConCorreccionGasto } from "../core/gastos/gastoCallbackHandler";
 import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
+import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -33,6 +34,48 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
+});
+
+/**
+ * Endpoint de datos para el front del "cerebro" (dashboard de solo lectura).
+ * Protegido por X-Cerebro-Key (no por ADMIN_SECRET — es un endpoint
+ * distinto, pensado para que lo consuma un front, no un curl manual de
+ * admin). CORS abierto SOLO en esta ruta, para que el front (en otro
+ * origen) pueda leerlo directo desde el navegador — ningún otro endpoint
+ * del sistema lo necesita. Nunca escribe nada: obtenerEstadoCerebro solo
+ * llama funciones de lectura.
+ */
+app.get("/api/cerebro/estado", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+
+  const cerebroKey = process.env.CEREBRO_API_KEY;
+  if (!cerebroKey) {
+    res.status(503).json({ error: "CEREBRO_API_KEY no configurado en el servidor." });
+    return;
+  }
+
+  if (req.get("X-Cerebro-Key") !== cerebroKey) {
+    res.status(403).json({ error: "X-Cerebro-Key inválida o ausente." });
+    return;
+  }
+
+  try {
+    const estado = await obtenerEstadoCerebro();
+    res.json(estado);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/estado] Error agregando estado:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/estado", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
 });
 
 app.post("/webhook/telegram", async (req: Request, res: Response) => {

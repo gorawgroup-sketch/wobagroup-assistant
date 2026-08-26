@@ -122,3 +122,23 @@ export function seleccionarDocumentosRelevantes(consulta: string): DocEntry[] {
 
   return buscarDocumentosRelevantes(consulta);
 }
+
+export interface ModoRetrieval {
+  modo: "carga_completa" | "scoring";
+  tamanoTotalCaracteres: number;
+  umbralCaracteres: number;
+  documentos: number;
+}
+
+/** Diagnóstico de qué modo está usando seleccionarDocumentosRelevantes ahora mismo, y por qué. */
+export function obtenerModoRetrieval(): ModoRetrieval {
+  const docs = leerTodosLosDocs();
+  const tamanoTotal = docs.reduce((acc, doc) => acc + doc.contenido.length, 0);
+
+  return {
+    modo: tamanoTotal < UMBRAL_CARGA_COMPLETA ? "carga_completa" : "scoring",
+    tamanoTotalCaracteres: tamanoTotal,
+    umbralCaracteres: UMBRAL_CARGA_COMPLETA,
+    documentos: docs.length,
+  };
+}

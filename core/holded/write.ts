@@ -271,6 +271,42 @@ export async function buscarGastosSinComprobante(
 }
 
 /**
+ * Cuenta los documentos de compra (gastos/facturas) creados en Holded en los
+ * últimos `dias` días (por `date`, no por fecha de creación en el sistema).
+ * Nota: cuenta TODO lo que hay en Holded en ese rango, no solo lo que
+ * gestionó el asistente — Holded no distingue un gasto creado por el bot de
+ * uno cargado a mano por el equipo, no hay ninguna etiqueta que los separe.
+ */
+export async function contarFacturasRecientes(empresa: Empresa, dias: number): Promise<number> {
+  const hasta = new Date();
+  const desde = new Date(hasta.getTime() - dias * 24 * 60 * 60 * 1000);
+
+  let total = 0;
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
+    const params = new URLSearchParams({
+      limit: "100",
+      start_date: formatDateLocal(desde),
+      end_date: formatDateLocal(hasta),
+    });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: unknown[];
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    total += (data.items ?? []).length;
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return total;
+}
+
+/**
  * Adjunta un comprobante (PDF/imagen) a un gasto ya existente en Holded
  * (POST /purchases/{id}/attachments, multipart). Verificado en vivo: un
  * cuerpo JSON vacío devuelve "File not found", confirmando que este
@@ -532,4 +568,57 @@ export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHol
   }
 
   return { id: data.id };
+}
+
+export interface EventoProximo {
+  titulo: string;
+  fecha: string;
+  empresa: Empresa;
+}
+
+/**
+ * Lista actividades del calendario CRM de Holded con fecha de inicio en los
+ * próximos `dias` días (hoy incluido). Solo lectura.
+ */
+const MAX_PAGINAS_EVENTOS = 15;
+
+export async function listarProximosEventosHolded(empresa: Empresa, dias: number): Promise<EventoProximo[]> {
+  const desdeStr = formatDateLocal(new Date());
+  const hastaStr = formatDateLocal(new Date(Date.now() + dias * 24 * 60 * 60 * 1000));
+
+  // Verificado en vivo: a diferencia de /purchases y /bank-movements,
+  // /events NO filtra por start_date/end_date en el servidor (una prueba
+  // real con esos parámetros devolvió eventos de 2024 sin filtrar) — hay
+  // que traer todo (el volumen real es pequeño, decenas por empresa) y
+  // filtrar la fecha aquí.
+  const eventos: Array<{ name?: string; start_date?: string }> = [];
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_EVENTOS; pagina++) {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/events?${params.toString()}`)) as {
+      items?: Array<{ name?: string; start_date?: string }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    eventos.push(...(data.items ?? []));
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return eventos
+    .filter((e) => {
+      if (!e.start_date) return false;
+      const fecha = e.start_date.slice(0, 10);
+      return fecha >= desdeStr && fecha <= hastaStr;
+    })
+    .map((e) => ({
+      titulo: e.name ?? "(sin título)",
+      fecha: e.start_date ? e.start_date.slice(0, 10) : "",
+      empresa,
+    }))
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
 }

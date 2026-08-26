@@ -1,3 +1,5 @@
+import { formatDateLocal } from "../utils/dateFormat";
+
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
 export type Empresa = "WOBA" | "EWORKS" | "Footprint";
@@ -88,4 +90,29 @@ export async function listBankMovements(
     return (data as { items: BankMovement[] }).items;
   }
   return [];
+}
+
+const MAX_CUENTAS_A_REVISAR = 10;
+
+/**
+ * Cuenta movimientos bancarios con status != "reconciled" en los últimos
+ * `dias` días, en todas las cuentas activas — mismo criterio que
+ * consultar_movimientos_sin_conciliar (core/tools/movimientosSinConciliar.ts),
+ * factorizado aquí para no duplicar la lógica de conteo.
+ */
+export async function contarMovimientosSinConciliar(empresa: Empresa, dias: number): Promise<number> {
+  const hasta = new Date();
+  const desde = new Date(hasta.getTime() - dias * 24 * 60 * 60 * 1000);
+  const desdeStr = formatDateLocal(desde);
+  const hastaStr = formatDateLocal(hasta);
+
+  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived).slice(0, MAX_CUENTAS_A_REVISAR);
+
+  let total = 0;
+  for (const cuenta of cuentas) {
+    const movimientos = await listBankMovements(empresa, cuenta.id, desdeStr, hastaStr);
+    total += movimientos.filter((m) => m.status !== "reconciled").length;
+  }
+
+  return total;
 }

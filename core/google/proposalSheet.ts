@@ -236,6 +236,13 @@ export async function actualizarMessageId(id: string, messageId: number): Promis
   });
 }
 
+/** Lista todas las propuestas pendientes SIN consumirlas (solo lectura, para diagnóstico/dashboard). */
+export async function listarPropuestasPendientes(): Promise<Propuesta[]> {
+  await purgarVencidas();
+  const todas = await leerTodas();
+  return todas.map(({ propuesta }) => propuesta);
+}
+
 export async function obtenerPropuesta(id: string): Promise<Propuesta | undefined> {
   await purgarVencidas();
   const todas = await leerTodas();

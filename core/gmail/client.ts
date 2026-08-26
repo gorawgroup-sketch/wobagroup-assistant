@@ -119,6 +119,13 @@ export async function listarMensajesNuevos(afterUnixSeconds: number): Promise<st
   return ids;
 }
 
+/** Cuenta los mensajes no leídos de la bandeja de entrada (estimado de Gmail, sin paginar todo). */
+export async function contarNoLeidos(): Promise<number> {
+  const gmail = getGmailClient();
+  const res = await gmail.users.messages.list({ userId: "me", q: "is:unread in:inbox", maxResults: 1 });
+  return res.data.resultSizeEstimate ?? 0;
+}
+
 /** Busca mensajes con una consulta arbitraria de Gmail (ej. `subject:"X" from:y@z.com`). */
 export async function buscarMensajes(query: string, maxResults = 10): Promise<string[]> {
   const gmail = getGmailClient();

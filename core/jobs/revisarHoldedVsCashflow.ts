@@ -12,7 +12,7 @@ const TOLERANCIA_EUR = 0.01;
 type EmpresaCashflow = "WOBA" | "EWORKS";
 const EMPRESAS: EmpresaCashflow[] = ["WOBA", "EWORKS"];
 
-function parseValorFormateado(valor: string): number {
+export function parseValorFormateado(valor: string): number {
   const limpio = valor.replace(/[^0-9.\-]/g, "");
   const numero = Number(limpio);
   return Number.isFinite(numero) ? numero : 0;
