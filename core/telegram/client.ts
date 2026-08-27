@@ -31,6 +31,34 @@ export function parseIncomingUpdate(update: TelegramUpdate): IncomingMessage | n
 }
 
 /**
+ * Envía un archivo (Buffer) como documento a un chat de Telegram. Se usa para
+ * entregar reportes generados (Excel/PDF) directamente en el chat — el envío
+ * a un chat ya autorizado no requiere botón de aprobación aparte, es
+ * equivalente a responder una pregunta con un archivo en vez de texto.
+ */
+export async function sendTelegramDocument(
+  chatId: number,
+  buffer: Buffer,
+  filename: string,
+  caption?: string
+): Promise<void> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/sendDocument`;
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) form.append("caption", caption);
+  form.append("document", new Blob([buffer]), filename);
+
+  const response = await fetch(url, { method: "POST", body: form });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Error enviando documento a Telegram (${response.status}): ${body}`);
+  }
+}
+
+/**
  * Envía un mensaje de texto a un chat de Telegram usando la Bot API (sendMessage).
  */
 export async function sendTelegramMessage(chatId: number, text: string): Promise<void> {

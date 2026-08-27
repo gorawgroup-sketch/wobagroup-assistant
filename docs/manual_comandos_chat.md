@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (CAPTURA ahora pregunta a qué empresa corresponde antes de guardar, y lee el correo real cuando se le pide capturar información que llegó por mail en vez de guardar la instrucción literal).
+actualización: 2026-08-27 (saldos bancarios reales y reportes de balance/P&L reconstruidos desde los datos contables de Holded, en Excel y PDF, enviables por chat o correo).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -145,6 +145,13 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - Solo administradores pueden aprobar. Si mencionaste un proveedor/cliente y
   el asistente lo encontró entre los contactos de Holded, la actividad queda
   vinculada a ese contacto; si no lo encuentra, avisa y la crea sin vincular.
+
+**Sobre el envío por correo de un reporte de balance/P&L (WOBA, EWORKS y Footprint):**
+- Pedir el reporte "aquí" o "en el chat" lo manda directo (Excel y PDF), sin botón — es solo responder con un archivo, no una escritura real.
+- Si pides que te lo mande por correo, aparece una propuesta con:
+  - 📤 Enviar así — genera el Excel y PDF con los datos más actuales de Holded en ese momento (no reutiliza nada guardado) y los manda por correo.
+  - ❌ Cancelar — no se envía nada.
+- Solo administradores pueden aprobar el envío por correo.
 
 ---
 

@@ -191,6 +191,7 @@ const ACCIONES_SENSIBLES = new Set([
   "evento_confirmar",
   "cerebroacceso_temporal",
   "cerebroacceso_maestro",
+  "reportecontable_enviar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

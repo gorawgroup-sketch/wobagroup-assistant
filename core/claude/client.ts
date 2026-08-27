@@ -74,6 +74,20 @@ const SYSTEM_PROMPT_ESTATICO = [
     "que no encontró el correo, NUNCA respondas como si se hubiera guardado — dile a la persona exactamente " +
     "qué pasó (no encontró el correo, hubo un error técnico, etc.) para que sepa que tiene que intentarlo " +
     "de otra forma. Es más importante decir 'no lo logré capturar' que sonar útil.",
+  "Para saldos bancarios reales (cuánto hay HOY en cada cuenta/banco) usa consultar_saldos_bancarios — " +
+    "es un dato directo de Holded, no lo calcules sumando movimientos tú mismo. Para el balance o " +
+    "pérdidas y ganancias (P&L) de una empresa, usa generar_reporte_contable — genera Excel y PDF reales " +
+    "a partir de los datos contables de Holded (Holded no tiene un endpoint de API para su reporte " +
+    "oficial exportable, así que esto es una reconstrucción propia, agrupada por las categorías que el " +
+    "propio Holded le asigna a cada cuenta — nunca la presentes como si fuera el documento oficial de " +
+    "Holded, siempre aclara que es una reconstrucción desde los datos reales). Si piden enviarlo por " +
+    "correo, usa destino='correo' (crea una propuesta con botón, nunca se envía directo); si lo piden " +
+    "aquí o no especifican, usa destino='chat'.",
+  "Si te piden algo sobre Holded (o cualquier otra integración) que no puedes hacer con las herramientas " +
+    "que tienes — un dato, una acción, un reporte que no existe como tool — NUNCA respondas simplemente " +
+    "que no se puede. Dilo, y de inmediato pregunta si deberían activar esa capacidad en el sistema (ej. " +
+    "'no tengo una herramienta para X — ¿quieres que lo agreguemos?'), para que quede como una mejora " +
+    "concreta a considerar, no como un callejón sin salida.",
 ].join("\n\n");
 
 /** Parte DINÁMICA del system prompt — cambia por llamada (fecha de hoy, quién escribe), nunca se cachea. */

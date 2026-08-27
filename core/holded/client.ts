@@ -45,6 +45,13 @@ async function holdedGet(empresa: Empresa, path: string, params: Record<string, 
 export interface TreasuryAccount {
   id: string;
   name?: string;
+  type?: "bank" | "card" | "gateway" | string;
+  currency?: string;
+  /** Saldo real y actualizado de la cuenta (string decimal, ej. "73.82") — confirmado en vivo contra la API real. */
+  balance?: string;
+  institution_name?: string;
+  /** Conteo directo de Holded de movimientos sin conciliar de esta cuenta — más rápido que listar y filtrar. */
+  transactions_pending_to_reconcile?: number;
   archived?: boolean;
   [key: string]: unknown;
 }

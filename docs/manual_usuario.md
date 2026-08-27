@@ -1,7 +1,8 @@
 # Manual de usuario — WOBA Copilot
 
 Guía de uso para el equipo. Explica qué es el asistente, qué puede hacer y cómo
-usarlo desde Telegram. Última actualización: 2026-08-27.
+usarlo desde Telegram. Última actualización: 2026-08-27 (saldos bancarios reales
+y reportes de balance/P&L en Excel y PDF).
 
 ---
 
@@ -50,6 +51,20 @@ que hacer nada más.
 ### 🏦 Holded
 - Consultar movimientos bancarios y cuentas de tesorería (solo lectura, en
   chat normal) — **WOBA, EWORKS y Footprint**.
+- **Saldos bancarios reales**: pregúntale "¿cuánto hay en las cuentas de
+  WOBA?" y te dice el saldo actual de cada cuenta/tarjeta directo de Holded
+  (no un cálculo propio), más cuántos movimientos de cada una están sin
+  conciliar.
+- **Balance y Pérdidas y Ganancias (P&L)**: pídele "el balance y P&L de
+  Footprint de este año" (o el rango de fechas que quieras) y genera un
+  Excel y un PDF reales, reconstruidos a partir de los datos contables de
+  Holded (Holded no tiene una vía de API para descargar su reporte oficial,
+  así que esto es una reconstrucción propia agrupada por las categorías que
+  el mismo Holded le asigna a cada cuenta — verificado cifra por cifra
+  contra el reporte real de Holded antes de activarlo). Si lo pides aquí
+  mismo, te manda los archivos directo en el chat; si pides que te lo mande
+  por correo, te muestra una propuesta con botón de aprobación antes de
+  enviar nada.
 - Registrar gastos recurrentes conocidos (seguros, IBI, Google, Salesmate,
   etc.) cuando se acerca su fecha — ver sección de Pagos recurrentes más
   abajo. WOBA, EWORKS y Footprint; para WOBA/EWORKS también se registra la

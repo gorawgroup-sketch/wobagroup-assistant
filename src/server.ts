@@ -29,6 +29,7 @@ import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
+import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
@@ -311,6 +312,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleAccesoCerebroCallback(update.callback_query);
       } else if (data.startsWith("capturaempresa_")) {
         await handleCapturaEmpresaCallback(update.callback_query);
+      } else if (data.startsWith("reportecontable_")) {
+        await handleReporteContableCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }

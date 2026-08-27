@@ -223,40 +223,81 @@ function codificarHeaderAsunto(asunto: string): string {
   return `=?UTF-8?B?${Buffer.from(asunto, "utf-8").toString("base64")}?=`;
 }
 
-function construirMimeRespuesta(params: {
+export interface AdjuntoParaEnviar {
+  filename: string;
+  mimeType: string;
+  content: Buffer;
+}
+
+/**
+ * Construye el mensaje MIME completo como Buffer (no string) — necesario en
+ * cuanto hay adjuntos binarios de por medio, para no arriesgar corromper los
+ * bytes al pasar por una conversión a UTF-8 en algún punto. Sin adjuntos,
+ * arma un mensaje simple text/plain como antes; con adjuntos, multipart/mixed
+ * con el cuerpo como primera parte y cada adjunto codificado en base64.
+ */
+function construirMimeConAdjuntos(params: {
   to: string;
   asunto: string;
   cuerpo: string;
   messageIdHeader?: string;
-}): string {
+  adjuntos?: AdjuntoParaEnviar[];
+}): Buffer {
   // Solo se antepone "Re:" cuando es respuesta a un hilo existente
   // (messageIdHeader presente) — un correo nuevo debe llevar el asunto tal cual.
   const asuntoConRe =
     !params.messageIdHeader || /^re:/i.test(params.asunto.trim()) ? params.asunto : `Re: ${params.asunto}`;
 
-  const headers = [
-    `To: ${params.to}`,
-    `Subject: ${codificarHeaderAsunto(asuntoConRe)}`,
-    `Content-Type: text/plain; charset="UTF-8"`,
-    `MIME-Version: 1.0`,
-  ];
-
+  const headerLines = [`To: ${params.to}`, `Subject: ${codificarHeaderAsunto(asuntoConRe)}`, `MIME-Version: 1.0`];
   if (params.messageIdHeader) {
-    headers.push(`In-Reply-To: ${params.messageIdHeader}`);
-    headers.push(`References: ${params.messageIdHeader}`);
+    headerLines.push(`In-Reply-To: ${params.messageIdHeader}`);
+    headerLines.push(`References: ${params.messageIdHeader}`);
   }
 
-  return `${headers.join("\r\n")}\r\n\r\n${params.cuerpo}`;
+  if (!params.adjuntos || params.adjuntos.length === 0) {
+    headerLines.push(`Content-Type: text/plain; charset="UTF-8"`);
+    return Buffer.from(`${headerLines.join("\r\n")}\r\n\r\n${params.cuerpo}`, "utf-8");
+  }
+
+  const boundary = `wobi-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  headerLines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+
+  const partes: Buffer[] = [
+    Buffer.from(`${headerLines.join("\r\n")}\r\n\r\n`, "utf-8"),
+    Buffer.from(
+      `--${boundary}\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n${params.cuerpo}\r\n\r\n`,
+      "utf-8"
+    ),
+  ];
+
+  for (const adjunto of params.adjuntos) {
+    const base64 = adjunto.content.toString("base64").replace(/(.{76})/g, "$1\r\n");
+    partes.push(
+      Buffer.from(
+        `--${boundary}\r\n` +
+          `Content-Type: ${adjunto.mimeType}; name="${adjunto.filename}"\r\n` +
+          `Content-Disposition: attachment; filename="${adjunto.filename}"\r\n` +
+          `Content-Transfer-Encoding: base64\r\n\r\n${base64}\r\n\r\n`,
+        "utf-8"
+      )
+    );
+  }
+  partes.push(Buffer.from(`--${boundary}--`, "utf-8"));
+
+  return Buffer.concat(partes);
 }
 
-function base64UrlEncode(input: string): string {
-  return Buffer.from(input, "utf-8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function base64UrlEncodeBuffer(buf: Buffer): string {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /**
- * Envía una respuesta por Gmail, enhebrada en el hilo original si se pasa
+ * Envía un correo por Gmail, opcionalmente con adjuntos (ej. reportes
+ * generados) y enhebrado en el hilo original si se pasa
  * threadId/messageIdHeader. Solo debe llamarse desde el manejador del botón
- * "📤 Enviar así" — nunca automáticamente.
+ * "📤 Enviar así" (o el flujo de reportes programados, ya aprobado de
+ * antemano al configurarlo) — nunca como reacción directa a un mensaje sin
+ * que una persona lo haya confirmado.
  */
 export async function enviarCorreo(params: {
   to: string;
@@ -264,9 +305,10 @@ export async function enviarCorreo(params: {
   cuerpo: string;
   threadId?: string;
   messageIdHeader?: string;
+  adjuntos?: AdjuntoParaEnviar[];
 }): Promise<{ id: string; threadId: string }> {
   const gmail = getGmailSendClient();
-  const raw = base64UrlEncode(construirMimeRespuesta(params));
+  const raw = base64UrlEncodeBuffer(construirMimeConAdjuntos(params));
 
   const res = await gmail.users.messages.send({
     userId: "me",
