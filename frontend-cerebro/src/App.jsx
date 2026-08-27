@@ -179,16 +179,25 @@ function NeuralField({ seed, count, size, dense = false }) {
 }
 
 /** Filas de datos reales por módulo, a partir de la respuesta del endpoint. Cada fila es [etiqueta, valor]. */
-function liveRowsForModule(id, d) {
+function liveRowsForModule(id, d, periodoCashflow = "semana") {
   if (!d) return [];
   switch (id) {
     case "cashflow": {
-      const bal = get(d, "cashflow.balanceUltimaSemana");
+      const bal =
+        periodoCashflow === "mes"
+          ? get(d, "cashflow.balanceUltimoMes")
+          : get(d, "cashflow.balanceUltimaSemana");
       const props = get(d, "cashflow.propuestasPendientes", []);
       const recurrentes = get(d, "cashflow.pagosRecurrentes", []);
       const alertas = get(d, "cashflow.alertasPagosRecurrentesProximas", []);
       const rows = [];
-      if (bal) rows.push([`Balance ${bal.semana}`, fmtMoney(bal.balanceFinal)]);
+      if (bal && periodoCashflow === "mes") {
+        rows.push([`Balance ${bal.mesLabel}`, fmtMoney(bal.balanceFinal)]);
+        rows.push([`Ingresos de ${bal.mesLabel}`, fmtMoney(bal.ingresos)]);
+        rows.push([`Gastos de ${bal.mesLabel}`, fmtMoney(bal.gastos)]);
+      } else if (bal) {
+        rows.push([`Balance ${bal.semana}`, fmtMoney(bal.balanceFinal)]);
+      }
       rows.push(["Propuestas pendientes", String(props.length)]);
       rows.push(["Pagos recurrentes catalogados", String(recurrentes.length)]);
       const ultDeteccion = get(d, "cashflow.ultimaDeteccionHolded");
@@ -879,6 +888,7 @@ export default function CerebroWoba() {
   const [verificandoSesion, setVerificandoSesion] = useState(true);
   const [esAdmin, setEsAdmin] = useState(false);
   const [nombreUsuario, setNombreUsuario] = useState("");
+  const [periodoCashflow, setPeriodoCashflow] = useState("semana");
 
   const handleEnter = () => {
     setDiving(true);
@@ -1192,9 +1202,35 @@ export default function CerebroWoba() {
               </div>
               <p style={{ fontFamily: C.sans, fontSize: 13, color: "#CBD8E6", lineHeight: 1.6, marginTop: 14, marginBottom: 0 }}>{m.desc}</p>
 
+              {m.id === "cashflow" && (
+                <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
+                  {[
+                    ["semana", "Semanal"],
+                    ["mes", "Mensual"],
+                  ].map(([valor, etiqueta]) => (
+                    <button
+                      key={valor}
+                      onClick={() => setPeriodoCashflow(valor)}
+                      style={{
+                        background: periodoCashflow === valor ? C.amber : "none",
+                        border: `1px solid ${C.amber}`,
+                        color: periodoCashflow === valor ? C.ink : C.amberBright,
+                        borderRadius: 6,
+                        padding: "5px 12px",
+                        fontFamily: C.mono,
+                        fontSize: 10.5,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {etiqueta}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {liveData ? (
                 <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
-                  {liveRowsForModule(m.id, liveData).map(([label, value], i) => (
+                  {liveRowsForModule(m.id, liveData, periodoCashflow).map(([label, value], i) => (
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12.5 }}>
                       <span style={{ fontFamily: C.sans, color: C.dim }}>{label}</span>
                       <span style={{ fontFamily: C.mono, color: C.coreBright, textAlign: "right", maxWidth: "60%" }}>{value}</span>

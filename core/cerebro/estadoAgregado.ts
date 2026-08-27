@@ -1,4 +1,4 @@
-import { fetchResumenSemanas } from "../google/cashflowSheet";
+import { fetchResumenSemanas, type ResumenSemana } from "../google/cashflowSheet";
 import { listarPropuestasPendientes } from "../google/proposalSheet";
 import { parseValorFormateado } from "../jobs/revisarHoldedVsCashflow";
 import { loadCalendarioFiscal, calcularProximasAlertas } from "../fiscal/calendario";
@@ -17,7 +17,7 @@ import { obtenerUsuariosAutorizados } from "../telegram/authorizedUsersSheet";
 import { obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
 import { UMBRAL_ANOMALIA } from "../jobs/revisarCostosIA";
 import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunStore";
-import { mondayOf } from "../utils/isoWeek";
+import { mondayOf, weekLabel } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
@@ -34,6 +34,76 @@ async function seguro<T>(etiqueta: string, fn: () => Promise<T>, fallback: T): P
     console.error(`[cerebro/estadoAgregado] Error en "${etiqueta}":`, error);
     return fallback;
   }
+}
+
+const NOMBRES_MES = [
+  "enero", "febrero", "marzo", "abril", "mayo", "junio",
+  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+];
+
+/**
+ * La hoja CASHFLOW solo guarda la etiqueta de semana ("S35"), sin año — para
+ * agrupar por mes hace falta reconstruir a qué fecha corresponde cada
+ * semana. Se asume que el número de semana pertenece al año en curso, salvo
+ * que sea mucho mayor al de la semana actual (ahí probablemente es de fin
+ * del año anterior, un caso de "rollover" al cruzar diciembre/enero) — igual
+ * que se maneja en revisarHoldedVsCashflow.ts para el chequeo semanal.
+ */
+function lunesDeEtiquetaSemana(semanaLabel: string, hoy: Date): Date | null {
+  const numeroSemana = parseInt(semanaLabel.replace(/^S/i, ""), 10);
+  if (!Number.isFinite(numeroSemana) || numeroSemana < 1 || numeroSemana > 53) return null;
+
+  const numeroSemanaHoy = parseInt(weekLabel(hoy).replace(/^S/i, ""), 10);
+  const anio = numeroSemana > numeroSemanaHoy + 10 ? hoy.getFullYear() - 1 : hoy.getFullYear();
+
+  // El 4 de enero siempre cae en la semana ISO 1 del año — desde ahí se
+  // calcula el lunes de cualquier otra semana del mismo año.
+  const lunesSemana1 = mondayOf(new Date(anio, 0, 4));
+  const lunes = new Date(lunesSemana1);
+  lunes.setDate(lunes.getDate() + (numeroSemana - 1) * 7);
+  return lunes;
+}
+
+/**
+ * Balance mensual: NUNCA se suman los "balanceFinal" semanales entre sí (son
+ * un saldo/nivel en un punto del tiempo, no un flujo) — el balance del mes
+ * es el balanceFinal de la ÚLTIMA semana que cae en ese mes. Ingresos y
+ * gastos sí se suman (son flujos reales de ese mes). Toma el mes más
+ * reciente que tenga al menos una semana con datos.
+ */
+function calcularBalanceUltimoMes(conDatos: ResumenSemana[]) {
+  if (conDatos.length === 0) return null;
+
+  const hoy = new Date();
+  const porMes = new Map<string, ResumenSemana[]>();
+
+  for (const s of conDatos) {
+    const lunes = lunesDeEtiquetaSemana(s.semana, hoy);
+    if (!lunes) continue;
+    const clave = `${lunes.getFullYear()}-${String(lunes.getMonth() + 1).padStart(2, "0")}`;
+    const arr = porMes.get(clave) ?? [];
+    arr.push(s);
+    porMes.set(clave, arr);
+  }
+
+  const claves = [...porMes.keys()].sort();
+  const claveUltimoMes = claves[claves.length - 1];
+  if (!claveUltimoMes) return null;
+
+  const semanasDelMes = porMes.get(claveUltimoMes)!;
+  const ultimaSemanaDelMes = semanasDelMes[semanasDelMes.length - 1];
+  const [anioStr, mesStr] = claveUltimoMes.split("-");
+
+  return {
+    mesLabel: `${NOMBRES_MES[Number(mesStr) - 1]} ${anioStr}`,
+    semanasIncluidas: semanasDelMes.map((s) => s.semana),
+    ingresos: semanasDelMes.reduce((acc, s) => acc + parseValorFormateado(s.income), 0),
+    gastos: semanasDelMes.reduce(
+      (acc, s) => acc + parseValorFormateado(s.projectExpenses) + parseValorFormateado(s.generalExpenses),
+      0
+    ),
+    balanceFinal: parseValorFormateado(ultimaSemanaDelMes.balanceFinal),
+  };
 }
 
 async function construirCashflow() {
@@ -54,6 +124,8 @@ async function construirCashflow() {
         balanceFinal: parseValorFormateado(ultima.balanceFinal),
       }
     : null;
+
+  const balanceUltimoMes = calcularBalanceUltimoMes(conDatos);
 
   // Catálogo de pagos recurrentes conocidos (calendario_fiscal.json) — solo
   // WOBA/EWORKS, porque este nodo es específicamente "cashflow" y Footprint
@@ -104,6 +176,7 @@ async function construirCashflow() {
   return {
     linkSheet: `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`,
     balanceUltimaSemana,
+    balanceUltimoMes,
     pagosRecurrentes,
     alertasPagosRecurrentesProximas,
     propuestasPendientes,
