@@ -76,6 +76,64 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   return candidatos;
 }
 
+export interface CandidatoSinMovimientoBancario {
+  empresa: EmpresaCashflow;
+  descripcion: string;
+  categoria: string;
+  valorAbs: number;
+}
+
+/**
+ * Dirección INVERSA de detectarNoRegistrados: en vez de "¿qué hay en el
+ * banco que no está en el cashflow?", busca "¿qué gasto está registrado en
+ * el cashflow de esta semana que NO tiene un movimiento bancario real que
+ * lo respalde?" — un pago que se anotó como hecho/programado pero el banco
+ * todavía no refleja ninguna salida de dinero equivalente. Mismo matching
+ * por monto (con tolerancia de 1 céntimo) que detectarNoRegistrados, solo
+ * que comparando en el sentido contrario. Nace de un pedido real: "para
+ * esto debes buscar que los gastos estén en el cashflow para esta semana,
+ * pero los pagos efectivamente se ven reflejados en bancos... es básicamente
+ * un cruce de info entre el área de bancos y las cuentas y el cashflow".
+ */
+export async function detectarSinMovimientoBancario(
+  empresa: EmpresaCashflow,
+  semanaLabel: string,
+  desde: string,
+  hasta: string
+): Promise<CandidatoSinMovimientoBancario[]> {
+  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived);
+
+  const movimientosHolded = (
+    await Promise.all(cuentas.map((c) => listBankMovements(empresa, c.id, desde, hasta)))
+  ).flat();
+  const valoresBanco = movimientosHolded.map((m) =>
+    Math.abs(typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0))
+  );
+
+  const registrosGastos = (await fetchDetalleRegistros()).filter(
+    (r) => r.semana.toUpperCase() === semanaLabel && (r.categoria === "PAGOS_PROYECTOS" || r.categoria === "PAGOS_EXTRAS")
+  );
+
+  const candidatos: CandidatoSinMovimientoBancario[] = [];
+
+  for (const registro of registrosGastos) {
+    const valorAbs = Math.abs(parseValorFormateado(registro.valor));
+    if (valorAbs === 0) continue;
+
+    const yaEnBanco = valoresBanco.some((v) => Math.abs(v - valorAbs) <= TOLERANCIA_EUR);
+    if (yaEnBanco) continue;
+
+    candidatos.push({
+      empresa,
+      descripcion: registro.concepto || registro.cliente || registro.proyecto || "(sin descripción)",
+      categoria: registro.categoria,
+      valorAbs,
+    });
+  }
+
+  return candidatos;
+}
+
 /**
  * Job: compara movimientos bancarios de Holded contra lo ya registrado en
  * DATOS, y propone por Telegram los que no encuentra match. NO escribe nada

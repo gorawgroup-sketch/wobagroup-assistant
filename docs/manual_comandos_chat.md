@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (directorio de personas que el sistema reconoce solo, desde Telegram y desde el correo, para resolver nombres a email antes de proponer un correo).
+actualización: 2026-08-27 (verificación de gastos del cashflow sin salida bancaria real — el cruce inverso al de "¿está actualizado el cashflow?" — y corrección de la escalación Haiku→Sonnet que a veces mostraba texto interno al usuario).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -23,6 +23,16 @@ el lado del banco, no el de los gastos ya registrados (para eso está "gastos
 sin comprobante", arriba) — sirve para detectar cargos (Uber, hoteles, etc.)
 que todavía no tienen ningún gasto/factura asociado en Holded. Solo consulta,
 no crea ni concilia nada — abierto a cualquier usuario autorizado.
+
+**Gastos del cashflow sin salida bancaria real** (ej. "¿qué pagos del cashflow
+de esta semana no se han hecho de verdad?", "cruza los gastos con el banco")
+— compara los gastos ya registrados en el cashflow de WOBA/EWORKS (semana
+actual o anterior) contra los movimientos bancarios reales de Holded, y
+reporta cuáles NO tienen un movimiento bancario que los respalde — el dinero
+sigue en la cuenta aunque esté anotado como gasto. Es el sentido CONTRARIO de
+"¿el cashflow está actualizado?" (que revisa qué hay en el banco sin
+registrar); esta consulta revisa qué está registrado sin salida real todavía.
+Solo consulta, no escribe nada.
 
 **Programar actividad en el calendario** (ej. "programa una llamada con
 [proveedor] el jueves a las 10am para WOBA", "agenda un recordatorio para

@@ -8,14 +8,29 @@ const MODEL_SONNET = "claude-sonnet-5";
 const MODEL_HAIKU = "claude-haiku-4-5";
 const MAX_TOOL_ITERATIONS = 12;
 
-// Palabra exacta que debe responder Haiku (y NADA más) cuando, en el primer
-// intento "rápido" (modoRapido: true — solo herramientas de solo lectura),
-// detecta que hace falta algo fuera de lo que tiene disponible: proponer o
-// enviar un correo, proponer un evento, registrar una corrección, capturar
-// un correo entrante, o verificar cashflow contra Holded con precisión
-// real. Nunca se le muestra al usuario — se intercepta y dispara el
-// reintento con Sonnet y el set de herramientas completo.
-const MARCADOR_ESCALAR = "ESCALAR";
+// Nombre de la tool "trampa" que se le da a Haiku en el primer intento
+// (modoRapido) para que pida escalar a Sonnet. Antes esto se hacía
+// pidiéndole que respondiera la palabra exacta "ESCALAR" y nada más — en la
+// práctica, Haiku a veces escribía una explicación larga que TERMINABA en
+// "ESCALAR" (en vez de responder solo esa palabra), y como la detección
+// exigía una coincidencia exacta, esa explicación completa se le mostraba
+// tal cual al usuario en vez de escalar de verdad (bug real visto en
+// producción). Un tool_use es una señal estructurada — Haiku no puede
+// "explicar antes" de invocar una tool, así que esto es 100% confiable sin
+// depender de que seguir instrucciones de formato al pie de la letra.
+const NOMBRE_TOOL_ESCALAR = "escalar_a_modelo_completo";
+
+const TOOL_ESCALAR: Anthropic.Tool = {
+  name: NOMBRE_TOOL_ESCALAR,
+  description:
+    "Úsala cuando, en este modo rápido/económico, necesites algo que NO tienes disponible entre tus " +
+    "herramientas de solo lectura — proponer o enviar un correo, proponer un evento, registrar una " +
+    "corrección, capturar un correo entrante, o cualquier verificación de precisión financiera real " +
+    "(cashflow contra Holded, gastos sin movimiento bancario, etc.). Llámala de inmediato, sin intentar " +
+    "responder primero con lo que tienes ni explicar por qué la necesitas — el sistema pasa la " +
+    "conversación a un modelo con más herramientas y responde desde ahí.",
+  input_schema: { type: "object", properties: {} },
+};
 
 // Parte ESTÁTICA del system prompt — idéntica en absolutamente todas las
 // llamadas, para CUALQUIER modelo (no depende de la fecha ni de quién
@@ -56,7 +71,9 @@ const SYSTEM_PROMPT_ESTATICO = [
     "estar completos en la hoja sin que reflejen la realidad del banco) — usa " +
     "verificar_cashflow_actualizado, que compara los movimientos reales de Holded contra lo ya " +
     "registrado y te dice específicamente qué falta, si falta algo. Reserva consultar_cashflow_resumen " +
-    "para preguntas de balance/cifras sin pedir verificación contra Holded.",
+    "para preguntas de balance/cifras sin pedir verificación contra Holded. Para el sentido CONTRARIO — " +
+    "qué gasto ya está en el cashflow pero el banco todavía no refleja ninguna salida real de dinero — " +
+    "usa verificar_gastos_sin_movimiento_bancario en vez de verificar_cashflow_actualizado.",
   "Tienes memoria de los mensajes recientes de esta conversación — si el usuario hace referencia a " +
     "algo mencionado antes ('ese link', 'el correo del que hablamos'), interpreta la referencia usando " +
     "ese contexto en vez de pedir que lo repita.",
@@ -125,10 +142,9 @@ const INSTRUCCION_MODO_RAPIDO =
   `Estás respondiendo en modo rápido/económico, con un set reducido de herramientas: solo las de ` +
   `consulta (lectura), ninguna que proponga, registre o escriba nada. Si para responder de verdad ` +
   `necesitas algo que no tienes disponible — enviar o proponer un correo, proponer un evento de ` +
-  `calendario, registrar una corrección, capturar un correo entrante, o verificar el cashflow contra ` +
-  `Holded con precisión real — NO lo intentes con lo que tienes ni completes con una aproximación. ` +
-  `Responde ÚNICAMENTE con la palabra "${MARCADOR_ESCALAR}" (así, sin comillas, sin nada más alrededor, ` +
-  `ni explicación) para que el sistema pase la conversación a un modelo con más herramientas. Para todo ` +
+  `calendario, registrar una corrección, capturar un correo entrante, o cualquier verificación de ` +
+  `precisión financiera real — NO lo intentes con lo que tienes, no completes con una aproximación, y no ` +
+  `expliques primero por qué hace falta: llama directo a la herramienta ${NOMBRE_TOOL_ESCALAR}. Para todo ` +
   `lo demás — saludos, consultas directas, cualquier cosa que sí puedas resolver con las herramientas ` +
   `que tienes — responde tú mismo con normalidad, sigues siendo Wobi de principio a fin.`;
 
@@ -146,17 +162,19 @@ function getClient(): Anthropic {
   return client;
 }
 
-interface ResultadoConversacion {
-  respuesta: string;
-  /** El array de mensajes completo de este intento (incluye tool_use/tool_result intermedios) — para persistir en el historial solo si el llamador decide que este es el resultado final real. */
-  messages: Anthropic.MessageParam[];
-}
+type ResultadoConversacion =
+  | { tipo: "respuesta"; respuesta: string; messages: Anthropic.MessageParam[] }
+  | { tipo: "escalar" };
 
 /**
  * Motor genérico del loop de tool-use — parametrizado por modelo y set de
  * herramientas para poder correr tanto el intento rápido (Haiku, tools
- * restringidas) como el intento completo (Sonnet, todas las tools) con el
- * mismo código, sin duplicar la lógica de iteración.
+ * restringidas + TOOL_ESCALAR) como el intento completo (Sonnet, todas las
+ * tools reales) con el mismo código, sin duplicar la lógica de iteración.
+ * `permiteEscalar` solo debe ser true en el intento rápido — activa tanto la
+ * tool_use de escalar_a_modelo_completo como el fallback de "se agotaron las
+ * iteraciones sin resolver" tratándose como escalación en vez de mostrarle
+ * al usuario un mensaje de que no se pudo responder.
  */
 async function ejecutarConversacion(
   userText: string,
@@ -164,10 +182,13 @@ async function ejecutarConversacion(
   nombreRemitente: string | undefined,
   usarHistorial: boolean,
   model: string,
-  tools: Anthropic.Tool[],
-  systemExtra: string | undefined
+  toolsBase: Anthropic.Tool[],
+  systemExtra: string | undefined,
+  permiteEscalar: boolean
 ): Promise<ResultadoConversacion> {
   const anthropic = getClient();
+
+  const tools = permiteEscalar ? [...toolsBase, TOOL_ESCALAR] : toolsBase;
 
   // Marca el último tool como punto de corte de caché — como las
   // definiciones de tools van justo antes del system prompt en el prompt
@@ -211,14 +232,22 @@ async function ejecutarConversacion(
         textBlock && textBlock.type === "text" ? textBlock.text : "No he podido generar una respuesta.";
 
       messages.push({ role: "assistant", content: response.content });
-      return { respuesta: respuestaFinal, messages };
+      return { tipo: "respuesta", respuesta: respuestaFinal, messages };
     }
-
-    messages.push({ role: "assistant", content: response.content });
 
     const toolUseBlocks = response.content.filter(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
+
+    // Señal ESTRUCTURADA de escalación — ver TOOL_ESCALAR. Se corta de
+    // inmediato sin ejecutar ni el resto de tools de esta misma respuesta ni
+    // más iteraciones: el intento completo se descarta (nunca se guarda en
+    // el historial) y orquestarTurno reinicia desde cero con Sonnet.
+    if (permiteEscalar && toolUseBlocks.some((b) => b.name === NOMBRE_TOOL_ESCALAR)) {
+      return { tipo: "escalar" };
+    }
+
+    messages.push({ role: "assistant", content: response.content });
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
@@ -239,14 +268,20 @@ async function ejecutarConversacion(
     messages.push({ role: "user", content: toolResults });
   }
 
+  // Se agotaron las iteraciones sin que el modelo concluyera. En el intento
+  // rápido esto casi siempre significa que Haiku se quedó dando vueltas con
+  // herramientas insuficientes en vez de pedir escalar — mejor tratarlo como
+  // escalación (Sonnet lo intenta de cero) que mostrarle al usuario un
+  // mensaje de derrota que ni siquiera es su respuesta real.
+  if (permiteEscalar) {
+    return { tipo: "escalar" };
+  }
+
   return {
+    tipo: "respuesta",
     respuesta: "No he podido completar la respuesta tras varios intentos de usar herramientas.",
     messages,
   };
-}
-
-function esRespuestaEscalar(respuesta: string): boolean {
-  return respuesta.trim().toUpperCase() === MARCADOR_ESCALAR;
 }
 
 function esErrorDeDisponibilidad(error: unknown): boolean {
@@ -299,10 +334,11 @@ async function orquestarTurno(
     usarHistorial,
     MODEL_HAIKU,
     getToolDefinitions(true),
-    INSTRUCCION_MODO_RAPIDO
+    INSTRUCCION_MODO_RAPIDO,
+    true
   );
 
-  if (!esRespuestaEscalar(intentoRapido.respuesta)) {
+  if (intentoRapido.tipo === "respuesta") {
     if (chatId !== undefined) guardarHistorial(chatId, intentoRapido.messages);
     return intentoRapido.respuesta;
   }
@@ -318,7 +354,8 @@ async function orquestarTurno(
       usarHistorial,
       MODEL_SONNET,
       getToolDefinitions(false),
-      undefined
+      undefined,
+      false
     );
   } catch (error) {
     if (!esErrorDeDisponibilidad(error)) throw error;
@@ -331,8 +368,15 @@ async function orquestarTurno(
       usarHistorial,
       MODEL_HAIKU,
       getToolDefinitions(false),
-      undefined
+      undefined,
+      false
     );
+  }
+
+  // resultadoFinal siempre es tipo "respuesta" acá — permiteEscalar=false
+  // garantiza que ejecutarConversacion nunca devuelva "escalar" en esta rama.
+  if (resultadoFinal.tipo !== "respuesta") {
+    throw new Error("Estado inesperado: el intento completo (Sonnet) no debería poder pedir escalar.");
   }
 
   if (chatId !== undefined) guardarHistorial(chatId, resultadoFinal.messages);
