@@ -295,7 +295,7 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
     }
     case "accesos": {
       return [
-        ["Admins / colaboradores", `${get(d, "accesos.usuariosAutorizados.admins", "—")} / ${get(d, "accesos.usuariosAutorizados.colaboradores", "—")}`],
+        ["Superadmin / admins / colaboradores", `${get(d, "accesos.usuariosAutorizados.superadmins", "—")} / ${get(d, "accesos.usuariosAutorizados.admins", "—")} / ${get(d, "accesos.usuariosAutorizados.colaboradores", "—")}`],
         ["Costo IA hoy", fmtMoney(get(d, "accesos.costoIaHoy"))],
         ["Costo IA esta semana", fmtMoney(get(d, "accesos.costoIaEstaSemana"))],
       ];
@@ -911,6 +911,7 @@ function UsuariosPanel({ apiKey }) {
                     fontSize: 10.5,
                   }}
                 >
+                  <option value="superadmin">superadmin</option>
                   <option value="admin">admin</option>
                   <option value="colaborador">colaborador</option>
                 </select>

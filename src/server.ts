@@ -6,6 +6,7 @@ import {
   esUsuarioAutorizado,
   esAccionSensible,
   obtenerRolUsuario,
+  puedeAprobarAccionSensible,
   obtenerUsuariosAutorizados,
   autorizarUsuario,
   eliminarUsuario,
@@ -318,8 +319,8 @@ app.post("/api/cerebro/cambiar-rol-usuario", async (req: Request, res: Response)
 
   const userId = Number(req.body?.userId);
   const rol = req.body?.rol as Rol;
-  if (!userId || (rol !== "admin" && rol !== "colaborador")) {
-    res.status(400).json({ error: "Falta 'userId' o 'rol' inválido (debe ser 'admin' o 'colaborador')." });
+  if (!userId || (rol !== "superadmin" && rol !== "admin" && rol !== "colaborador")) {
+    res.status(400).json({ error: "Falta 'userId' o 'rol' inválido (debe ser 'superadmin', 'admin' o 'colaborador')." });
     return;
   }
 
@@ -409,11 +410,11 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       return;
     }
 
-    if (esAccionSensible(data) && (await obtenerRolUsuario(remitente?.id)) !== "admin") {
-      console.warn(`[auth] Colaborador sin permiso intentó acción sensible — id: ${remitente?.id}, accion: ${data}`);
+    if (esAccionSensible(data) && !puedeAprobarAccionSensible(await obtenerRolUsuario(remitente?.id))) {
+      console.warn(`[auth] Usuario sin permiso de superadmin intentó acción sensible — id: ${remitente?.id}, accion: ${data}`);
       await answerCallbackQuery(
         update.callback_query.id,
-        "Esta acción requiere aprobación de un administrador."
+        "Esta acción requiere aprobación del superadministrador."
       ).catch(() => {});
       return;
     }

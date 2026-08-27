@@ -221,8 +221,8 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
   // server.ts), necesario aquí también porque este camino se dispara por
   // texto libre, no por un callback_data que ese filtro pueda interceptar.
   const rol = await obtenerRolUsuario(pendiente.chatId);
-  if (rol !== "admin") {
-    await sendTelegramMessage(pendiente.chatId, "Corregir y crear el gasto requiere aprobación de un administrador.");
+  if (rol !== "superadmin") {
+    await sendTelegramMessage(pendiente.chatId, "Corregir y crear el gasto requiere aprobación del superadministrador.");
     return;
   }
 

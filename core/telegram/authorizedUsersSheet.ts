@@ -6,7 +6,15 @@ const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_usuarios_autorizados";
 const HEADERS = ["userId", "rol", "nombre", "autorizadoEn"];
 
-export type Rol = "admin" | "colaborador";
+// "superadmin" es un rol nuevo, deliberadamente distinto de "admin": desde
+// que se creó, TODAS las acciones de escritura del sistema (Holded,
+// cashflow, eventos CRM, accesos a /cerebro, reportes por correo) y TODAS
+// las decisiones sobre correo entrante (proceder/descartar/dar
+// instrucciones/enviar respuesta) requieren superadmin específicamente —
+// "admin" por sí solo ya NO alcanza para ninguna de ellas (ver
+// ACCIONES_SENSIBLES y esAccionSensible más abajo). Pedido explícito:
+// centralizar esas decisiones en una sola persona (Carlos).
+export type Rol = "superadmin" | "admin" | "colaborador";
 
 export interface UsuarioAutorizado {
   userId: number;
@@ -85,9 +93,11 @@ async function ensureTab(): Promise<number> {
 
 function rowToUsuario(row: unknown[]): UsuarioAutorizado | null {
   if (!row[0]) return null;
+  const rolCrudo = row[1];
+  const rol: Rol = rolCrudo === "superadmin" ? "superadmin" : rolCrudo === "admin" ? "admin" : "colaborador";
   return {
     userId: Number(row[0]),
-    rol: row[1] === "admin" ? "admin" : "colaborador",
+    rol,
     nombre: row[2] ? String(row[2]) : "",
     autorizadoEn: row[3] ? String(row[3]) : "",
   };
@@ -146,9 +156,10 @@ export async function esUsuarioAutorizado(userId: number | undefined): Promise<b
   return (await obtenerRolUsuario(userId)) !== undefined;
 }
 
+/** "admin" en el sentido amplio (recibe notificaciones/resúmenes de admin) — incluye superadmin, que es un superconjunto. */
 export async function obtenerAdmins(): Promise<UsuarioAutorizado[]> {
   const usuarios = await obtenerUsuariosAutorizados();
-  return usuarios.filter((u) => u.rol === "admin");
+  return usuarios.filter((u) => u.rol === "admin" || u.rol === "superadmin");
 }
 
 /** Autoriza (o actualiza el rol/nombre de) un usuario — ver eliminarUsuario más abajo para quitar acceso. */
@@ -219,10 +230,14 @@ export async function eliminarUsuario(userId: number): Promise<boolean> {
   return true;
 }
 
-// Acciones (prefijo de callback_data antes de ":") que disparan una escritura
-// real (Holded, cashflow, envío de correo, subida a Drive) — solo "admin"
-// puede presionarlas. Descartar/cancelar/rechazar/pedir orientación siempre
-// queda disponible para cualquier usuario autorizado, porque no escribe nada.
+// Acciones (prefijo de callback_data antes de ":") que disparan una
+// escritura real (Holded, cashflow, subida a Drive) o una decisión sobre
+// correo entrante — TODAS requieren "superadmin" específicamente (ver
+// puedeAprobarAccionSensible más abajo). Las de correo (email_proceder,
+// email_descartar, email_orientar) se agregaron a propósito aunque
+// descartar/orientar no escriban nada: el pedido fue centralizar en
+// superadmin la decisión completa sobre un correo entrante, no solo el
+// envío final.
 const ACCIONES_SENSIBLES = new Set([
   "cf_approve",
   "recpago_confirmar",
@@ -234,9 +249,17 @@ const ACCIONES_SENSIBLES = new Set([
   "cerebroacceso_temporal",
   "cerebroacceso_maestro",
   "reportecontable_enviar",
+  "email_proceder",
+  "email_descartar",
+  "email_orientar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {
   const [accion] = callbackData.split(":");
   return ACCIONES_SENSIBLES.has(accion);
+}
+
+/** Las acciones sensibles requieren superadmin específicamente — "admin" ya no alcanza. */
+export function puedeAprobarAccionSensible(rol: Rol | undefined): boolean {
+  return rol === "superadmin";
 }

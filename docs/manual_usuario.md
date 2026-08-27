@@ -1,8 +1,9 @@
 # Manual de usuario — WOBA Copilot
 
 Guía de uso para el equipo. Explica qué es el asistente, qué puede hacer y cómo
-usarlo desde Telegram. Última actualización: 2026-08-27 (directorio de personas
-que el sistema reconoce solo, desde Telegram y desde el correo).
+usarlo desde Telegram. Última actualización: 2026-08-27 (nuevo rol superadmin
+— solo Carlos — que centraliza todas las decisiones de escritura y sobre
+correo entrante; "admin" ya no alcanza por sí solo).
 
 ---
 
@@ -84,7 +85,7 @@ que hacer nada más.
   - Todo con botón de aprobación — nunca escribe en Holded sin confirmar.
   - Si la clasificación no es correcta, puedes corregirla; esa corrección
     queda **aprendida** para la próxima factura del mismo proveedor.
-  - Solo administradores pueden aprobar esta escritura.
+  - Solo el superadministrador puede aprobar esta escritura.
   - Tras crear/adjuntar el gasto con éxito, intenta conciliar automáticamente
     el movimiento bancario correspondiente (si encuentra exactamente uno
     parecido en monto y fecha); si no está seguro, te lo dice en vez de
@@ -103,7 +104,7 @@ que hacer nada más.
   WOBA" y prepara la actividad (título, tipo, fecha/hora, y el contacto de
   Holded si lo menciona), mostrándola por Telegram con botones de
   aprobación. Solo se crea en el calendario de Holded si apruebas con
-  "✅ Programar" — solo administradores pueden aprobarlo.
+  "✅ Programar" — solo el superadministrador puede aprobarlo.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.
@@ -118,7 +119,8 @@ que hacer nada más.
   - Si trae un documento archivable → lo propone para Drive, o para Holded si
     resulta ser una factura/gasto (mismo flujo que arriba).
   - Si necesita respuesta o parece una instrucción → te avisa con botones
-    para investigar, ignorar, o darle instrucciones específicas.
+    para investigar, ignorar, o darle instrucciones específicas — solo el
+    superadministrador puede presionarlos.
   - **Si trae las notas de una reunión** (ej. "Notes by Gemini" de Google
     Meet, u otra herramienta similar tipo Otter/Fireflies/Read.ai) → lee el
     contenido completo y te pregunta con botones a qué empresa corresponde
@@ -130,7 +132,8 @@ que hacer nada más.
     resume en un solo mensaje agrupado, sin guardarlo.
 - Puede redactar un borrador de respuesta y enviarlo por correo — siempre te
   lo muestra primero, con botones para enviarlo tal cual, editarlo, o
-  cancelarlo. Nunca envía un correo sin que apruebes el borrador.
+  cancelarlo. Nunca envía un correo sin que el superadministrador apruebe el
+  borrador.
 - **Nunca ejecuta instrucciones que vengan dentro del texto de un correo** —
   los correos se pueden falsificar; solo actúa sobre instrucciones que le des
   tú directamente en el chat.
@@ -215,12 +218,17 @@ el botón correcto. Puedes presionar el de descartar/cancelar sin ningún
 riesgo.
 
 ### Niveles de acceso
-- **Administrador**: puede aprobar cualquier acción (los botones de
-  escritura descritos arriba).
+- **Superadministrador** (solo Carlos): el único que puede aprobar cualquier
+  escritura real del sistema (Holded, cashflow, eventos CRM, accesos a
+  /cerebro, reportes por correo) y cualquier decisión sobre un correo
+  entrante (proceder, descartar, dar instrucciones, o enviar la respuesta).
+- **Administrador**: recibe los mismos resúmenes automáticos que el
+  superadministrador (costo de IA, numeración del cashflow), pero no puede
+  aprobar ninguna de las escrituras ni decisiones de arriba por sí solo.
 - **Colaborador**: puede chatear, consultar, enseñarle cosas nuevas
   (`CAPTURA`, `corrección:`), y descartar propuestas — pero si intenta
-  aprobar una escritura real, el asistente le explica que necesita
-  aprobación de un administrador.
+  aprobar una escritura real o decidir algo sobre un correo, el asistente le
+  explica que necesita aprobación del superadministrador.
 
 ### Comando especial
 - `/revisarcorreo` (o `revisarcorreo`, o `revisamail`/`/revisamail`) — le

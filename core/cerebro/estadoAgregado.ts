@@ -401,6 +401,7 @@ async function construirAccesos() {
 
   return {
     usuariosAutorizados: {
+      superadmins: usuarios.filter((u) => u.rol === "superadmin").length,
       admins: usuarios.filter((u) => u.rol === "admin").length,
       colaboradores: usuarios.filter((u) => u.rol === "colaborador").length,
     },

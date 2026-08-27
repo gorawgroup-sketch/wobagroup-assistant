@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (alertas de pagos recurrentes ahora individuales por mensaje, exactamente a 2 días, 1 día y el mismo día del vencimiento, para exactos y aproximados por igual).
+actualización: 2026-08-27 (nuevo rol superadmin — solo Carlos — que centraliza TODAS las decisiones de escritura del sistema y las decisiones sobre correo entrante; "admin" ya no alcanza por sí solo para ninguna de ellas).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -40,7 +40,7 @@ el 15 de septiembre a las 9 para revisar el contrato de EWORKS") — prepara
 la actividad (título, tipo, fecha/hora, y el contacto de Holded si lo
 menciona) y la muestra por Telegram con botones para aprobar o cancelar.
 Solo se crea en el calendario CRM de Holded (WOBA, EWORKS o Footprint) si
-se aprueba con el botón "✅ Programar" — solo administradores pueden
+se aprueba con el botón "✅ Programar" — solo el superadministrador puede
 aprobarlo, igual que el resto de escrituras en Holded.
 
 **Costo de IA** (ej. "¿cuánto ha gastado el sistema este mes?") — solo
@@ -73,13 +73,21 @@ Telegram su nombre real y botones **✅ Colaborador / ✅ Admin / ❌ Ignorar** 
 un solo toque lo autoriza, sin tocar Railway ni revisar logs.
 
 **Niveles de acceso (rol por usuario):**
-- **admin** — acceso completo, incluye presionar los botones que disparan una
-  escritura real (✅ Agregar a cashflow, ✅ Confirmar pago recurrente,
-  📤 Enviar así, ✅ Sí, archivar aquí).
+- **superadmin** — solo Carlos. Es el ÚNICO rol que puede presionar cualquier
+  botón que dispare una escritura real (✅ Agregar a cashflow, ✅ Confirmar
+  pago recurrente, 📤 Enviar así, ✅ Sí archivar aquí, ✅ Programar evento,
+  crear/adjuntar gasto en Holded, dar acceso a /cerebro, enviar un reporte
+  contable por correo) — y también las decisiones sobre un correo entrante
+  (✅ Proceder / ❌ Descartar / ✏️ Dar instrucciones específicas). Ni siquiera
+  un usuario con rol "admin" puede aprobar estas acciones.
+- **admin** — hoy no desbloquea ninguna escritura por sí solo (todo lo
+  sensible requiere superadmin específicamente) — queda como nivel
+  intermedio disponible para el futuro. Recibe los mismos resúmenes
+  automáticos que superadmin (costo de IA, numeración del cashflow).
 - **colaborador** — puede chatear, consultar, usar `CAPTURA` y `corrección:`,
   y descartar/cancelar cualquier propuesta — pero si intenta presionar un
-  botón de escritura, recibe "Esta acción requiere aprobación de un
-  administrador." y no se ejecuta nada.
+  botón de escritura o decidir algo sobre un correo, recibe "Esta acción
+  requiere aprobación del superadministrador." y no se ejecuta nada.
 
 ---
 
@@ -118,16 +126,19 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - ✅ Proceder — investiga/ejecuta lo que corresponda con las herramientas disponibles.
 - ❌ Descartar — ignora la propuesta.
 - ✏️ Dar instrucciones específicas — te pide una instrucción tuya en texto libre antes de actuar.
+- Solo el superadministrador puede presionar cualquiera de estos 3 — la decisión completa sobre un correo entrante (incluso descartarlo) está centralizada en esa persona.
 
 **Sobre movimientos de Holded sin registrar en el cashflow (WOBA/EWORKS):**
 - ✅ Agregar — registra el movimiento en el Sheet de cashflow.
 - ❌ Ignorar — descarta la propuesta (si sigue sin registrar, se vuelve a proponer en la siguiente revisión).
 - Se dispara dos veces por semana: viernes 17:00 (chequeo preliminar de la semana en curso) y lunes 8:00 (cierre de la semana anterior).
+- Solo el superadministrador puede aprobar "✅ Agregar".
 
 **Sobre borradores de correo (después de "Proceder", una corrección de orientación, o pedir enviar algo por chat):**
 - 📤 Enviar así — envía el correo real, tal como está.
 - ✏️ Editar antes de enviar — te pide el texto de reemplazo antes de mostrar el borrador de nuevo con los mismos botones.
 - ❌ No enviar — descarta el borrador.
+- Solo el superadministrador puede presionar "📤 Enviar así".
 
 **Sobre archivos/documentos enviados por Telegram para archivar en Drive:**
 - El asistente propone una carpeta de destino con botones de aprobación (sí/no) antes de subir nada.
@@ -149,7 +160,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
   - ✅ Crear gasto en Holded — crea el gasto (como borrador) con el IVA real de cada línea (mapeado al código de impuesto correcto de Holded, nunca uno inventado) y adjunta el comprobante.
   - ✏️ Corregir clasificación — pide la empresa/concepto correctos por texto libre (ej. "EWORKS, servicio de limpieza") antes de crear el gasto. Esta corrección **queda aprendida**: la próxima factura del mismo proveedor se clasifica con más certeza.
   - ❌ Cancelar — no escribe nada.
-- Solo administradores pueden aprobar la escritura (adjuntar o crear) — un colaborador recibe el mensaje de que necesita aprobación.
+- Solo el superadministrador puede aprobar la escritura (adjuntar o crear) — un colaborador o admin recibe el mensaje de que necesita aprobación.
 - Tras crear o adjuntar el gasto con éxito, el asistente intenta cerrar el
   círculo automáticamente: busca un movimiento bancario sin conciliar de la
   misma empresa con monto y fecha cercanos. Si encuentra exactamente uno, lo
@@ -170,7 +181,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
 **Sobre actividades propuestas para el calendario CRM de Holded (WOBA, EWORKS y Footprint):**
 - ✅ Programar — crea la actividad real en el calendario de Holded.
 - ❌ Cancelar — descarta la propuesta, no escribe nada.
-- Solo administradores pueden aprobar. Si mencionaste un proveedor/cliente y
+- Solo el superadministrador puede aprobar. Si mencionaste un proveedor/cliente y
   el asistente lo encontró entre los contactos de Holded, la actividad queda
   vinculada a ese contacto; si no lo encuentra, avisa y la crea sin vincular.
 
@@ -179,7 +190,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - Si pides que te lo mande por correo, aparece una propuesta con:
   - 📤 Enviar así — genera el Excel y PDF con los datos más actuales de Holded en ese momento (no reutiliza nada guardado) y los manda por correo.
   - ❌ Cancelar — no se envía nada.
-- Solo administradores pueden aprobar el envío por correo.
+- Solo el superadministrador puede aprobar el envío por correo.
 
 ---
 
