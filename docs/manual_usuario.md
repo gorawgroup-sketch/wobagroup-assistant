@@ -136,9 +136,12 @@ que hacer nada más.
   tú directamente en el chat.
 
 ### 📅 Alertas fiscales y pagos recurrentes
-- Avisa con anticipación (3 días para vencimientos mensuales, 7 días para
-  aproximados) sobre seguridad social, créditos, seguros, impuestos, etc. —
-  WOBA, EWORKS y Footprint.
+- Avisa con anticipación sobre seguridad social, créditos, seguros,
+  impuestos, etc. — WOBA, EWORKS y Footprint. Cada pago manda su **propio
+  mensaje individual** (nunca un resumen agrupado con todo junto) exactamente
+  2 días antes, 1 día antes, y el mismo día del vencimiento — mismo esquema
+  para los pagos con día exacto (ej. Adobe el 9) y para los aproximados sin
+  día fijo (ej. "seguro del coche a mediados de agosto").
 - Para los pagos con proveedor y empresa conocidos, además ofrece
   registrarlos: pide el importe, muestra un resumen de confirmación, y solo
   al aprobar crea el gasto en Holded — con la periodicidad correcta

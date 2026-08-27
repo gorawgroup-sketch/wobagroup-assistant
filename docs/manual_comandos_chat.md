@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (notas sobre gastos/ingresos específicos del cashflow, y corrección de seguridad: el modo rápido ya no puede ejecutar herramientas de escritura que no se le ofrecieron).
+actualización: 2026-08-27 (alertas de pagos recurrentes ahora individuales por mensaje, exactamente a 2 días, 1 día y el mismo día del vencimiento, para exactos y aproximados por igual).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -132,7 +132,8 @@ registrar en cashflow) sin que presiones uno de estos botones.
 **Sobre archivos/documentos enviados por Telegram para archivar en Drive:**
 - El asistente propone una carpeta de destino con botones de aprobación (sí/no) antes de subir nada.
 
-**Sobre alertas de pagos recurrentes (seguros, IBI, Google, Salesmate, etc. con proveedor y empresa conocidos — WOBA, EWORKS y Footprint, cualquier periodicidad: mensual/trimestral/semestral/anual):**
+**Sobre alertas de pagos recurrentes (seguros, IBI, Google, Salesmate, etc. — WOBA, EWORKS y Footprint, cualquier periodicidad: mensual/trimestral/semestral/anual):**
+- Cada pago llega como un mensaje individual (nunca agrupado con otros) exactamente 2 días antes, 1 día antes, y el mismo día del vencimiento — mismo esquema para pagos con día exacto y para los aproximados sin día fijo.
 - 💰 Indicar monto y registrar — pide el importe exacto (y el proveedor, si no se conoce de antemano) por texto libre.
 - Tras responder con el importe, aparece un mensaje de confirmación con:
   - ✅ Confirmar y registrar — crea el gasto en Holded (como borrador) y, si es WOBA/EWORKS, también la línea en el cashflow. Footprint no tiene cashflow en Sheets, así que para esa empresa solo se escribe en Holded.

@@ -134,18 +134,21 @@ export interface AlertaProxima {
   proveedor?: string;
 }
 
-// Ventana de aviso por defecto: las entradas "trimestral"/"semestral"/"anual"
-// tienen fecha aproximada (no un día confirmado), así que se avisan con más
-// margen que las "mensual", cuyo día es exacto y conocido.
-const VENTANA_MENSUAL_DIAS = 3;
-const VENTANA_APROXIMADA_DIAS = 7;
+// Ventana de aviso por defecto — pedido explícito: alertar exactamente 2
+// días antes, 1 día antes, y el día del pago, IGUAL para pagos con día
+// exacto (mensual) y para los de fecha aproximada (anual/trimestral, ya
+// mapeados a un día representativo en calcularProximaFecha). Antes la
+// ventana aproximada era de 7 días — se acorta a propósito para no generar
+// avisos con una semana de anticipación que antes competían por atención
+// con lo que de verdad está por vencer.
+const VENTANA_ALERTA_DIAS = 2;
 
 /**
  * Devuelve las entradas cuya próxima fecha cae dentro de su ventana de aviso,
- * ordenadas por cercanía. Sin `diasOverride`, usa 3 días para "mensual" (día
- * exacto) y 7 días para "anual" (fecha aproximada). Con `diasOverride`, esa
- * misma ventana se aplica a todas por igual (para consultas puntuales tipo
- * "qué vence en los próximos 60 días").
+ * ordenadas por cercanía. Sin `diasOverride`, usa 2 días para todas por
+ * igual (ver VENTANA_ALERTA_DIAS). Con `diasOverride`, esa misma ventana se
+ * aplica a todas por igual (para consultas puntuales tipo "qué vence en los
+ * próximos 60 días").
  */
 export function calcularProximasAlertas(hoy: Date = new Date(), diasOverride?: number): AlertaProxima[] {
   const entradas = loadCalendarioFiscal();
@@ -154,7 +157,7 @@ export function calcularProximasAlertas(hoy: Date = new Date(), diasOverride?: n
   const alertas = entradas.map((entrada) => {
     const fecha = calcularProximaFecha(entrada, hoy);
     const diasParaVencer = Math.round((fecha.getTime() - hoyNorm.getTime()) / 86_400_000);
-    const ventana = diasOverride ?? (entrada.tipo === "mensual" ? VENTANA_MENSUAL_DIAS : VENTANA_APROXIMADA_DIAS);
+    const ventana = diasOverride ?? VENTANA_ALERTA_DIAS;
     return {
       concepto: entrada.concepto,
       tipo: entrada.tipo,

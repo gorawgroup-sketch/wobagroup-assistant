@@ -9,15 +9,20 @@ function describirCuando(diasParaVencer: number): string {
 }
 
 /**
- * Job diario: revisa /docs/calendario_fiscal.json y, si hay algún vencimiento
- * dentro de su ventana de aviso (3 días para "mensual" con día exacto, 7 días
- * para "anual" con fecha aproximada):
+ * Job diario: revisa /docs/calendario_fiscal.json y, si hay algún
+ * vencimiento dentro de su ventana de aviso (2 días para TODAS las entradas
+ * por igual, exacto o aproximado — ver VENTANA_ALERTA_DIAS en
+ * fiscal/calendario.ts), manda un mensaje INDIVIDUAL por cada una — nunca
+ * un resumen agrupado. Como el job corre una vez al día, un mismo pago
+ * genera 3 mensajes distintos en 3 días consecutivos (a 2 días, a 1 día, y
+ * el mismo día), pedido explícito para poder rastrear cada pago por
+ * separado en vez de un bloque de texto con todos juntos.
  * - las entradas SIN empresaHolded (monto desconocido, o aplican a varias
- *   empresas) se agrupan en un solo mensaje informativo, como antes.
+ *   empresas) mandan un mensaje individual simple, informativo.
  * - las entradas CON empresaHolded (candidatas a proponerse en Holded, y en
  *   cashflow también si es WOBA/EWORKS — Footprint no tiene cashflow en
- *   Sheets) mandan además un mensaje individual con botón "💰 Indicar monto
- *   y registrar" — nunca escribe nada por sí solo, solo abre el flujo de
+ *   Sheets) mandan su mensaje individual con botón "💰 Indicar monto y
+ *   registrar" — nunca escribe nada por sí solo, solo abre el flujo de
  *   confirmación (ver core/fiscal/pagoRecurrenteCallbackHandler.ts).
  */
 export async function revisarAlertasFiscales(referenceDate: Date = new Date()): Promise<{
@@ -40,13 +45,10 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
   const accionables = alertas.filter((a) => a.id && a.empresaHolded);
   const informativas = alertas.filter((a) => !(a.id && a.empresaHolded));
 
-  if (informativas.length > 0) {
-    const lineas = informativas.map(
-      (a) =>
-        `• ${a.concepto} (${a.empresa}, ${a.tipo}) — vence ${describirCuando(a.diasParaVencer)} ` +
-        `(${a.fecha.toLocaleDateString("es-ES")})`
-    );
-    const texto = [`⚠️ Alertas fiscales próximas (${informativas.length}):`, "", ...lineas].join("\n");
+  for (const a of informativas) {
+    const texto =
+      `⚠️ *${a.concepto}* (${a.empresa}, ${a.tipo}) — vence ${describirCuando(a.diasParaVencer)} ` +
+      `(${formatDateLocal(a.fecha)})`;
     await sendTelegramMessage(chatId, texto);
   }
 
@@ -68,7 +70,7 @@ export async function revisarAlertasFiscales(referenceDate: Date = new Date()): 
   }
 
   console.log(
-    `[revisarAlertasFiscales] ${informativas.length} informativa(s), ${accionables.length} accionable(s) con botón.`
+    `[revisarAlertasFiscales] ${informativas.length} mensaje(s) informativo(s) individual(es), ${accionables.length} accionable(s) con botón.`
   );
   return { alertasEnviadas: alertas.length };
 }
