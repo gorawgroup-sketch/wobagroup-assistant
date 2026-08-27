@@ -19,6 +19,7 @@ import type { ToolDefinition } from "./types";
  */
 export const knowledgeBaseTool: ToolDefinition = {
   name: "consultar_base_conocimiento",
+  seguraParaModoRapido: true,
   description:
     "Consulta el conocimiento interno del grupo (WOBA/BAE, Footprint, eWorks): responsabilidades, " +
     "procesos administrativos, domiciliaciones, recomendaciones operativas, contactos, credenciales de " +

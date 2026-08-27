@@ -7,6 +7,7 @@ const MAX_CUENTAS_A_REVISAR = 10;
 
 export const movimientosSinConciliarTool: ToolDefinition = {
   name: "consultar_movimientos_sin_conciliar",
+  seguraParaModoRapido: true,
   description:
     "Consulta qué movimientos bancarios de Holded (WOBA, EWORKS o Footprint) NO están conciliados " +
     "todavía, en un rango de días hacia atrás. A diferencia de consultar_gastos_sin_comprobante (que " +

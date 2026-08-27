@@ -8,6 +8,7 @@ import type { ToolDefinition } from "./types";
  */
 export const cashflowResumenTool: ToolDefinition = {
   name: "consultar_cashflow_resumen",
+  seguraParaModoRapido: true,
   description:
     "Consulta el resumen semanal del cashflow del grupo (balance inicial, income, project expenses, " +
     "general expenses y balance final), leyendo los valores ya calculados de la hoja CASHFLOW. Úsala " +

@@ -5,18 +5,24 @@ const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_costos_ia";
 const HEADERS = ["fecha", "chatId", "modelo", "inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens", "costoUSD"];
 
-// Tarifas oficiales de claude-sonnet-5 (el único modelo que usa el
-// sistema hoy — core/claude/client.ts MODEL; cambiado desde claude-sonnet-4-6
-// el 2026-08-27). Si el modelo cambia, hay que actualizar estas constantes —
-// si no, el reporte de /costos_ia queda calculando con la tarifa vieja.
-const MODELO = "claude-sonnet-5";
-const PRECIO_INPUT_POR_TOKEN = 2.0 / 1_000_000;
-const PRECIO_OUTPUT_POR_TOKEN = 10.0 / 1_000_000;
-// El sistema hoy no usa prompt caching (no se setea cache_control en
-// ninguna llamada), así que estos campos siempre serán 0 en la práctica —
-// se calculan de todas formas por si se activa caching más adelante.
-const PRECIO_CACHE_WRITE_POR_TOKEN = PRECIO_INPUT_POR_TOKEN * 1.25;
-const PRECIO_CACHE_READ_POR_TOKEN = PRECIO_INPUT_POR_TOKEN * 0.1;
+// Tarifas oficiales por modelo (USD por token) — el sistema ahora enruta
+// entre varios modelos (core/claude/client.ts), así que el costo ya no se
+// puede calcular con una sola tarifa fija. Si se agrega o cambia un modelo,
+// hay que actualizar esta tabla — si no, /costos_ia calcula con una tarifa
+// que no corresponde al modelo real que respondió.
+const PRECIOS_POR_MODELO: Record<string, { input: number; output: number }> = {
+  "claude-sonnet-5": { input: 2.0 / 1_000_000, output: 10.0 / 1_000_000 },
+  "claude-haiku-4-5": { input: 1.0 / 1_000_000, output: 5.0 / 1_000_000 },
+};
+
+// Tarifa de respaldo si algún día se usa un modelo que no está en la tabla
+// de arriba — mejor sobreestimar (tarifa más cara conocida) que subestimar
+// el costo real y no darse cuenta de un aumento de gasto.
+const PRECIOS_POR_DEFECTO = PRECIOS_POR_MODELO["claude-sonnet-5"];
+
+function obtenerPrecios(modelo: string): { input: number; output: number } {
+  return PRECIOS_POR_MODELO[modelo] ?? PRECIOS_POR_DEFECTO;
+}
 
 export interface UsoAnthropic {
   input_tokens: number;
@@ -25,17 +31,24 @@ export interface UsoAnthropic {
   cache_read_input_tokens?: number | null;
 }
 
-export function calcularCostoUSD(usage: UsoAnthropic): number {
+export function calcularCostoUSD(usage: UsoAnthropic, modelo: string): number {
+  const { input: precioInput, output: precioOutput } = obtenerPrecios(modelo);
+  // La escritura de caché cuesta 25% más que el input normal; la lectura de
+  // caché cuesta 10% del input normal — misma proporción para todos los
+  // modelos de Claude, solo cambia la tarifa base de la que parten.
+  const precioCacheWrite = precioInput * 1.25;
+  const precioCacheRead = precioInput * 0.1;
+
   const inputTokens = usage.input_tokens ?? 0;
   const outputTokens = usage.output_tokens ?? 0;
   const cacheCreation = usage.cache_creation_input_tokens ?? 0;
   const cacheRead = usage.cache_read_input_tokens ?? 0;
 
   return (
-    inputTokens * PRECIO_INPUT_POR_TOKEN +
-    outputTokens * PRECIO_OUTPUT_POR_TOKEN +
-    cacheCreation * PRECIO_CACHE_WRITE_POR_TOKEN +
-    cacheRead * PRECIO_CACHE_READ_POR_TOKEN
+    inputTokens * precioInput +
+    outputTokens * precioOutput +
+    cacheCreation * precioCacheWrite +
+    cacheRead * precioCacheRead
   );
 }
 
@@ -99,12 +112,12 @@ async function ensureTab(): Promise<void> {
  * factura por separado). Se llama en "fire and forget" desde askClaude para
  * no añadir la latencia de escribir en Sheets a la respuesta del usuario.
  */
-export async function registrarUsoIA(chatId: number | undefined, usage: UsoAnthropic): Promise<void> {
+export async function registrarUsoIA(chatId: number | undefined, modelo: string, usage: UsoAnthropic): Promise<void> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const costoUSD = calcularCostoUSD(usage);
+  const costoUSD = calcularCostoUSD(usage, modelo);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
@@ -116,7 +129,7 @@ export async function registrarUsoIA(chatId: number | undefined, usage: UsoAnthr
         [
           new Date().toISOString(),
           chatId ?? "",
-          MODELO,
+          modelo,
           usage.input_tokens ?? 0,
           usage.output_tokens ?? 0,
           usage.cache_creation_input_tokens ?? 0,

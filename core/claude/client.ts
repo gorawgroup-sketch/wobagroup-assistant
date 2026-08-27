@@ -4,16 +4,30 @@ import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
 import { registrarUsoIA } from "./costTracking";
 
-const MODEL = "claude-sonnet-5";
+const MODEL_SONNET = "claude-sonnet-5";
+const MODEL_HAIKU = "claude-haiku-4-5";
 const MAX_TOOL_ITERATIONS = 12;
 
+// Palabra exacta que debe responder Haiku (y NADA más) cuando, en el primer
+// intento "rápido" (modoRapido: true — solo herramientas de solo lectura),
+// detecta que hace falta algo fuera de lo que tiene disponible: proponer o
+// enviar un correo, proponer un evento, registrar una corrección, capturar
+// un correo entrante, o verificar cashflow contra Holded con precisión
+// real. Nunca se le muestra al usuario — se intercepta y dispara el
+// reintento con Sonnet y el set de herramientas completo.
+const MARCADOR_ESCALAR = "ESCALAR";
+
 // Parte ESTÁTICA del system prompt — idéntica en absolutamente todas las
-// llamadas (no depende de la fecha ni de quién escribe), así que se calcula
-// una sola vez y se manda con cache_control para que Anthropic la cachee:
-// se factura completa la primera vez (cache write, +25%) y ~90% más barata
-// en cada llamada siguiente (cache read) mientras siga vigente (~5 min desde
-// el último uso). Ver ejecutarConversacion — va como bloque separado del
-// texto dinámico (fecha + nombreRemitente), que sí cambia por llamada.
+// llamadas, para CUALQUIER modelo (no depende de la fecha ni de quién
+// escribe, y no depende de si está respondiendo Haiku o Sonnet). Esto es
+// deliberado: las reglas de "nunca escribas sin aprobación" y de prioridad
+// de fuentes son EXACTAMENTE las mismas sin importar qué modelo responda —
+// lo único que cambia entre Haiku y Sonnet es qué herramientas tiene
+// disponibles (ver getToolDefinitions(modoRapido) y buildInstruccionModoRapido
+// abajo), nunca las reglas de negocio en sí. Se calcula una sola vez y se
+// manda con cache_control para que Anthropic la cachee: se factura completa
+// la primera vez (cache write, +25%) y ~90% más barata en cada llamada
+// siguiente (cache read) mientras siga vigente (~5 min desde el último uso).
 const SYSTEM_PROMPT_ESTATICO = [
   "Eres Wobi, el asistente administrativo interno de un grupo de 3 empresas: WOBA/BAE, Footprint y eWorks.",
   "Respondes de forma clara, concisa y profesional, en español salvo que te escriban en otro idioma — " +
@@ -81,6 +95,23 @@ function buildSystemPromptDinamico(nombreRemitente?: string): string {
   ].join("\n\n");
 }
 
+// Instrucción adicional SOLO para el primer intento (Haiku, herramientas
+// restringidas a solo-lectura) — nunca cambia las reglas de negocio del
+// prompt estático de arriba, solo le explica que está en modo económico y
+// cuándo debe ceder el turno a Sonnet en vez de intentarlo con lo que
+// tiene. También es texto fijo, así que también se cachea (breakpoint
+// aparte) — Haiku recibe esta instrucción en TODAS sus llamadas.
+const INSTRUCCION_MODO_RAPIDO =
+  `Estás respondiendo en modo rápido/económico, con un set reducido de herramientas: solo las de ` +
+  `consulta (lectura), ninguna que proponga, registre o escriba nada. Si para responder de verdad ` +
+  `necesitas algo que no tienes disponible — enviar o proponer un correo, proponer un evento de ` +
+  `calendario, registrar una corrección, capturar un correo entrante, o verificar el cashflow contra ` +
+  `Holded con precisión real — NO lo intentes con lo que tienes ni completes con una aproximación. ` +
+  `Responde ÚNICAMENTE con la palabra "${MARCADOR_ESCALAR}" (así, sin comillas, sin nada más alrededor, ` +
+  `ni explicación) para que el sistema pase la conversación a un modelo con más herramientas. Para todo ` +
+  `lo demás — saludos, consultas directas, cualquier cosa que sí puedas resolver con las herramientas ` +
+  `que tienes — responde tú mismo con normalidad, sigues siendo Wobi de principio a fin.`;
+
 let client: Anthropic | null = null;
 
 function getClient(): Anthropic {
@@ -95,14 +126,208 @@ function getClient(): Anthropic {
   return client;
 }
 
+interface ResultadoConversacion {
+  respuesta: string;
+  /** El array de mensajes completo de este intento (incluye tool_use/tool_result intermedios) — para persistir en el historial solo si el llamador decide que este es el resultado final real. */
+  messages: Anthropic.MessageParam[];
+}
+
+/**
+ * Motor genérico del loop de tool-use — parametrizado por modelo y set de
+ * herramientas para poder correr tanto el intento rápido (Haiku, tools
+ * restringidas) como el intento completo (Sonnet, todas las tools) con el
+ * mismo código, sin duplicar la lógica de iteración.
+ */
+async function ejecutarConversacion(
+  userText: string,
+  chatId: number | undefined,
+  nombreRemitente: string | undefined,
+  usarHistorial: boolean,
+  model: string,
+  tools: Anthropic.Tool[],
+  systemExtra: string | undefined
+): Promise<ResultadoConversacion> {
+  const anthropic = getClient();
+
+  // Marca el último tool como punto de corte de caché — como las
+  // definiciones de tools van justo antes del system prompt en el prompt
+  // efectivo que arma Anthropic, este único breakpoint (más los del system
+  // de abajo) cachea tools + system como un solo prefijo, sin necesidad de
+  // marcar cada tool individualmente.
+  if (tools.length > 0) {
+    tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+  }
+
+  const system: Anthropic.TextBlockParam[] = [
+    { type: "text", text: SYSTEM_PROMPT_ESTATICO, cache_control: { type: "ephemeral" } },
+  ];
+  if (systemExtra) {
+    system.push({ type: "text", text: systemExtra, cache_control: { type: "ephemeral" } });
+  }
+  system.push({ type: "text", text: buildSystemPromptDinamico(nombreRemitente) });
+
+  const historial = usarHistorial && chatId !== undefined ? obtenerHistorial(chatId) : [];
+  const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
+
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const response = await anthropic.messages.create({
+      model,
+      max_tokens: 1024,
+      system,
+      tools,
+      messages,
+    });
+
+    // "Fire and forget" — no bloquea la respuesta al usuario por la latencia
+    // de escribir en Sheets. Cada llamada a la API se factura por separado,
+    // así que se registra una fila por iteración, no solo la respuesta final.
+    registrarUsoIA(chatId, model, response.usage).catch((error) =>
+      console.error("[costTracking] Error registrando uso de IA:", error)
+    );
+
+    if (response.stop_reason !== "tool_use") {
+      const textBlock = response.content.find((block) => block.type === "text");
+      const respuestaFinal =
+        textBlock && textBlock.type === "text" ? textBlock.text : "No he podido generar una respuesta.";
+
+      messages.push({ role: "assistant", content: response.content });
+      return { respuesta: respuestaFinal, messages };
+    }
+
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolUseBlocks = response.content.filter(
+      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+    );
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+    for (const block of toolUseBlocks) {
+      console.log(`[claude:${model}] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
+
+      const result = await executeTool(block.name, block.input as Record<string, unknown>, { chatId });
+
+      console.log(`[claude:${model}] tool_result <- ${block.name} (${result.length} caracteres)`);
+
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: result,
+      });
+    }
+
+    messages.push({ role: "user", content: toolResults });
+  }
+
+  return {
+    respuesta: "No he podido completar la respuesta tras varios intentos de usar herramientas.",
+    messages,
+  };
+}
+
+function esRespuestaEscalar(respuesta: string): boolean {
+  return respuesta.trim().toUpperCase() === MARCADOR_ESCALAR;
+}
+
+function esErrorDeDisponibilidad(error: unknown): boolean {
+  // 5xx / overloaded / timeouts de red del SDK — errores de que la API
+  // (o el modelo) no está disponible ahora mismo, a diferencia de un 400
+  // (mensaje mal formado, no se arregla reintentando con otro modelo) o un
+  // 401/403 (credenciales, tampoco se arregla cambiando de modelo).
+  if (error instanceof Anthropic.APIConnectionError) return true;
+  if (error instanceof Anthropic.APIError && typeof error.status === "number") {
+    return error.status >= 500 || error.status === 429;
+  }
+  return false;
+}
+
+/**
+ * Orquesta un turno completo: primer intento con Haiku (rápido y barato,
+ * solo herramientas de lectura — ver getToolDefinitions(true) y
+ * ToolDefinition.seguraParaModoRapido). Si Haiku responde el marcador
+ * ESCALAR (porque la petición necesita proponer/escribir algo o precisión
+ * financiera real), se descarta esa respuesta sin guardarla en el
+ * historial y se repite el turno con Sonnet y el set de herramientas
+ * completo. Si Sonnet no está disponible (caída/sobrecarga de la API),
+ * Haiku responde como respaldo — esta vez con el set completo de
+ * herramientas, porque ya es la única opción que queda.
+ *
+ * Las reglas de "nunca escribas sin aprobación" son IDÉNTICAS sin importar
+ * qué modelo termine respondiendo: (a) usan el mismo SYSTEM_PROMPT_ESTATICO,
+ * nunca una versión relajada para Haiku; y (b) estructuralmente, ninguna
+ * tool que Claude puede invocar — con cualquiera de los dos modelos —
+ * ejecuta una escritura real por sí sola. Las que crean una propuesta
+ * (proponer_envio_correo, proponer_evento_calendario) solo quedan
+ * pendientes hasta que una persona presiona el botón correspondiente en
+ * Telegram (ver core/gmail/emailCallbackHandler.ts, core/crm/eventoCallbackHandler.ts);
+ * la única acción "irreversible" real que puede escribir directo
+ * (registrar_correccion, capturar_correo) está deliberadamente fuera del
+ * set de Haiku en el primer intento — pero incluso si Haiku la usa en el
+ * modo de respaldo por caída de Sonnet, es la misma tool con la misma
+ * definición y las mismas reglas, no una versión distinta por modelo.
+ */
+async function orquestarTurno(
+  userText: string,
+  chatId: number | undefined,
+  nombreRemitente: string | undefined,
+  usarHistorial: boolean
+): Promise<string> {
+  const intentoRapido = await ejecutarConversacion(
+    userText,
+    chatId,
+    nombreRemitente,
+    usarHistorial,
+    MODEL_HAIKU,
+    getToolDefinitions(true),
+    INSTRUCCION_MODO_RAPIDO
+  );
+
+  if (!esRespuestaEscalar(intentoRapido.respuesta)) {
+    if (chatId !== undefined) guardarHistorial(chatId, intentoRapido.messages);
+    return intentoRapido.respuesta;
+  }
+
+  console.log(`[claude] Haiku escaló a Sonnet (chat ${chatId ?? "?"}).`);
+
+  let resultadoFinal: ResultadoConversacion;
+  try {
+    resultadoFinal = await ejecutarConversacion(
+      userText,
+      chatId,
+      nombreRemitente,
+      usarHistorial,
+      MODEL_SONNET,
+      getToolDefinitions(false),
+      undefined
+    );
+  } catch (error) {
+    if (!esErrorDeDisponibilidad(error)) throw error;
+
+    console.error("[claude] Sonnet no disponible, usando Haiku como respaldo de disponibilidad:", error);
+    resultadoFinal = await ejecutarConversacion(
+      userText,
+      chatId,
+      nombreRemitente,
+      usarHistorial,
+      MODEL_HAIKU,
+      getToolDefinitions(false),
+      undefined
+    );
+  }
+
+  if (chatId !== undefined) guardarHistorial(chatId, resultadoFinal.messages);
+  return resultadoFinal.respuesta;
+}
+
 /**
  * Envía el texto del usuario a Claude con las herramientas disponibles. Si Claude decide
  * invocar una o más, se ejecutan localmente y el resultado se le devuelve (tool_result)
- * hasta que produzca una respuesta final en texto.
+ * hasta que produzca una respuesta final en texto. Ver orquestarTurno para el enrutamiento
+ * entre Haiku (rápido/barato) y Sonnet (completo/preciso).
  */
 export async function askClaude(userText: string, chatId?: number, nombreRemitente?: string): Promise<string> {
   try {
-    return await ejecutarConversacion(userText, chatId, nombreRemitente, true);
+    return await orquestarTurno(userText, chatId, nombreRemitente, true);
   } catch (error) {
     // Salvaguarda ante un historial en memoria que la API rechaza (400
     // invalid_request_error) — la causa raíz conocida ya está corregida en
@@ -117,87 +342,6 @@ export async function askClaude(userText: string, chatId?: number, nombreRemiten
 
     console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
     limpiarHistorial(chatId!);
-    return ejecutarConversacion(userText, chatId, nombreRemitente, false);
+    return orquestarTurno(userText, chatId, nombreRemitente, false);
   }
-}
-
-async function ejecutarConversacion(
-  userText: string,
-  chatId: number | undefined,
-  nombreRemitente: string | undefined,
-  usarHistorial: boolean
-): Promise<string> {
-  const anthropic = getClient();
-  const tools = getToolDefinitions();
-
-  // Marca el último tool como punto de corte de caché — como las
-  // definiciones de tools van justo antes del system prompt en el prompt
-  // efectivo que arma Anthropic, este único breakpoint (más el de
-  // SYSTEM_PROMPT_ESTATICO abajo) cachea tools + system estático como un
-  // solo prefijo, sin necesidad de marcar cada tool individualmente.
-  if (tools.length > 0) {
-    tools[tools.length - 1].cache_control = { type: "ephemeral" };
-  }
-
-  const historial = usarHistorial && chatId !== undefined ? obtenerHistorial(chatId) : [];
-  const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
-
-  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: [
-        { type: "text", text: SYSTEM_PROMPT_ESTATICO, cache_control: { type: "ephemeral" } },
-        { type: "text", text: buildSystemPromptDinamico(nombreRemitente) },
-      ],
-      tools,
-      messages,
-    });
-
-    // "Fire and forget" — no bloquea la respuesta al usuario por la latencia
-    // de escribir en Sheets. Cada llamada a la API se factura por separado,
-    // así que se registra una fila por iteración, no solo la respuesta final.
-    registrarUsoIA(chatId, response.usage).catch((error) =>
-      console.error("[costTracking] Error registrando uso de IA:", error)
-    );
-
-    if (response.stop_reason !== "tool_use") {
-      const textBlock = response.content.find((block) => block.type === "text");
-      const respuestaFinal =
-        textBlock && textBlock.type === "text" ? textBlock.text : "No he podido generar una respuesta.";
-
-      if (chatId !== undefined) {
-        messages.push({ role: "assistant", content: response.content });
-        guardarHistorial(chatId, messages);
-      }
-
-      return respuestaFinal;
-    }
-
-    messages.push({ role: "assistant", content: response.content });
-
-    const toolUseBlocks = response.content.filter(
-      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
-    );
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const block of toolUseBlocks) {
-      console.log(`[claude] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
-
-      const result = await executeTool(block.name, block.input as Record<string, unknown>, { chatId });
-
-      console.log(`[claude] tool_result <- ${block.name} (${result.length} caracteres)`);
-
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: result,
-      });
-    }
-
-    messages.push({ role: "user", content: toolResults });
-  }
-
-  return "No he podido completar la respuesta tras varios intentos de usar herramientas.";
 }

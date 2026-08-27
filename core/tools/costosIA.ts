@@ -8,6 +8,7 @@ function inicioDelDia(d: Date): Date {
 
 export const costosIATool: ToolDefinition = {
   name: "consultar_costos_sistema",
+  seguraParaModoRapido: true,
   description:
     "Consulta cuánto ha costado (en USD) el uso del modelo de IA del asistente en un periodo — hoy, " +
     "esta semana, este mes, o un número de días. Solo lo pueden consultar administradores. Úsala " +

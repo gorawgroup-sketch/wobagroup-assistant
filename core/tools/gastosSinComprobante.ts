@@ -7,6 +7,7 @@ const DIAS_POR_DEFECTO = 90;
 
 export const gastosSinComprobanteTool: ToolDefinition = {
   name: "consultar_gastos_sin_comprobante",
+  seguraParaModoRapido: true,
   description:
     "Consulta qué gastos de Holded (WOBA, EWORKS o Footprint) NO tienen ningún comprobante/factura " +
     "adjunto todavía, en un rango de días hacia atrás. Úsala cuando pregunten qué gastos faltan de " +

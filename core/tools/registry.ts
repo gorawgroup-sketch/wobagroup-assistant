@@ -39,10 +39,16 @@ const tools: ToolDefinition[] = [
 ];
 
 /**
- * Definiciones en el formato que espera el parámetro `tools` de la API de Anthropic.
+ * Definiciones en el formato que espera el parámetro `tools` de la API de
+ * Anthropic. Con `modoRapido: true` (usado para el primer intento con Haiku
+ * — ver core/claude/client.ts), solo incluye las herramientas marcadas
+ * `seguraParaModoRapido` (solo lectura, sin ningún efecto secundario) —
+ * cualquier herramienta nueva queda excluida de ese modo por defecto hasta
+ * que alguien la marque explícitamente segura.
  */
-export function getToolDefinitions(): Anthropic.Tool[] {
-  return tools.map(({ name, description, input_schema }) => ({
+export function getToolDefinitions(modoRapido = false): Anthropic.Tool[] {
+  const disponibles = modoRapido ? tools.filter((t) => t.seguraParaModoRapido) : tools;
+  return disponibles.map(({ name, description, input_schema }) => ({
     name,
     description,
     input_schema,

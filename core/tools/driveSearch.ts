@@ -9,6 +9,7 @@ import type { ToolDefinition } from "./types";
  */
 export const driveSearchTool: ToolDefinition = {
   name: "buscar_documento_drive",
+  seguraParaModoRapido: true,
   description:
     "Busca archivos O carpetas por nombre en Google Drive dentro de la carpeta raíz de una empresa " +
     "del grupo (WOBA, EWORKS o Footprint), incluyendo subcarpetas. Devuelve dónde está cada resultado " +

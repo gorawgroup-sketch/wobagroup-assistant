@@ -8,6 +8,7 @@ import type { ToolDefinition } from "./types";
  */
 export const alertasFiscalesTool: ToolDefinition = {
   name: "consultar_proximas_alertas",
+  seguraParaModoRapido: true,
   description:
     "Consulta qué vencimientos fiscales o pagos recurrentes del grupo (seguridad social, créditos, " +
     "seguros, impuestos, controles médicos...) están próximos a vencer. Úsala cuando el usuario " +

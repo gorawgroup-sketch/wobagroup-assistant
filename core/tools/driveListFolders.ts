@@ -11,6 +11,7 @@ import type { ToolDefinition } from "./types";
  */
 export const driveListFoldersTool: ToolDefinition = {
   name: "listar_carpetas_drive",
+  seguraParaModoRapido: true,
   description:
     "Lista los nombres de las subcarpetas dentro de una ruta de Drive de una empresa del grupo " +
     "(WOBA, EWORKS o Footprint). Úsala para explorar la estructura de carpetas cuando la pregunta " +

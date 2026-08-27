@@ -17,6 +17,7 @@ import type { ToolDefinition } from "./types";
  */
 export const cashflowDetalleTool: ToolDefinition = {
   name: "consultar_cashflow_detalle",
+  seguraParaModoRapido: true,
   description:
     "Consulta el detalle de movimientos del cashflow (ingresos, pagos a proyectos, pagos extras y " +
     "aplazamientos de impuestos) desde la hoja DATOS. No incluye gastos fijos ni pagos pendientes de " +

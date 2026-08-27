@@ -15,6 +15,7 @@ function esIngreso(amount: number): boolean {
  */
 export const holdedMovimientosTool: ToolDefinition = {
   name: "consultar_movimientos_holded",
+  seguraParaModoRapido: true,
   description:
     "Consulta los movimientos bancarios (no facturas) registrados en Holded para una empresa del " +
     "grupo (WOBA, EWORKS o Footprint), en un rango de fechas. Úsala cuando el usuario pregunte por " +
