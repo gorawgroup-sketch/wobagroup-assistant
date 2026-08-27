@@ -17,7 +17,7 @@ import { obtenerUsuariosAutorizados } from "../telegram/authorizedUsersSheet";
 import { obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
 import { UMBRAL_ANOMALIA } from "../jobs/revisarCostosIA";
 import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunStore";
-import { mondayOf, lunesDeEtiquetaSemana } from "../utils/isoWeek";
+import { mondayOf, lunesDeEtiquetaSemana, weekLabel } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
@@ -42,37 +42,36 @@ const NOMBRES_MES = [
 ];
 
 /**
- * Balance mensual: NUNCA se suman los "balanceFinal" semanales entre sí (son
+ * Balance mensual del MES ACTUAL (el que contiene `hoy`) — nunca "el mes más
+ * reciente que tenga datos", porque la hoja CASHFLOW arrastra balanceFinal
+ * por fórmula hacia semanas futuras (confirmado en vivo: S44/octubre tenía
+ * balanceFinal "lleno" con income/gastos en "-", puro arrastre, mientras
+ * S35/agosto — la semana real de hoy — tenía actividad real) — así que
+ * "última semana con balanceFinal no vacío" casi siempre apunta a un mes
+ * futuro, no al actual. Se agrupa por el mes de cada semana (ver
+ * lunesDeEtiquetaSemana) y se toma explícitamente el mes de `hoy`, exista o
+ * no en la hoja. NUNCA se suman los "balanceFinal" semanales entre sí (son
  * un saldo/nivel en un punto del tiempo, no un flujo) — el balance del mes
- * es el balanceFinal de la ÚLTIMA semana que cae en ese mes. Ingresos y
- * gastos sí se suman (son flujos reales de ese mes). Toma el mes más
- * reciente que tenga al menos una semana con datos.
+ * es el balanceFinal de la última semana que cae en ese mes; ingresos y
+ * gastos sí se suman (son flujos reales de ese mes).
  */
-function calcularBalanceUltimoMes(conDatos: ResumenSemana[]) {
+function calcularBalanceMesActual(conDatos: ResumenSemana[], hoy: Date) {
   if (conDatos.length === 0) return null;
 
-  const hoy = new Date();
-  const porMes = new Map<string, ResumenSemana[]>();
+  const claveMesActual = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}`;
 
-  for (const s of conDatos) {
+  const semanasDelMes = conDatos.filter((s) => {
     const lunes = lunesDeEtiquetaSemana(s.semana, hoy);
-    if (!lunes) continue;
-    const clave = `${lunes.getFullYear()}-${String(lunes.getMonth() + 1).padStart(2, "0")}`;
-    const arr = porMes.get(clave) ?? [];
-    arr.push(s);
-    porMes.set(clave, arr);
-  }
+    if (!lunes) return false;
+    return `${lunes.getFullYear()}-${String(lunes.getMonth() + 1).padStart(2, "0")}` === claveMesActual;
+  });
 
-  const claves = [...porMes.keys()].sort();
-  const claveUltimoMes = claves[claves.length - 1];
-  if (!claveUltimoMes) return null;
+  if (semanasDelMes.length === 0) return null;
 
-  const semanasDelMes = porMes.get(claveUltimoMes)!;
   const ultimaSemanaDelMes = semanasDelMes[semanasDelMes.length - 1];
-  const [anioStr, mesStr] = claveUltimoMes.split("-");
 
   return {
-    mesLabel: `${NOMBRES_MES[Number(mesStr) - 1]} ${anioStr}`,
+    mesLabel: `${NOMBRES_MES[hoy.getMonth()]} ${hoy.getFullYear()}`,
     semanasIncluidas: semanasDelMes.map((s) => s.semana),
     ingresos: semanasDelMes.reduce((acc, s) => acc + parseValorFormateado(s.income), 0),
     gastos: semanasDelMes.reduce(
@@ -91,18 +90,31 @@ async function construirCashflow() {
   ]);
 
   const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
-  const ultima = conDatos[conDatos.length - 1];
+  const hoy = new Date();
 
-  const balanceUltimaSemana = ultima
+  // La semana ACTUAL real (no "la última con balanceFinal no vacío" — ver
+  // nota en calcularBalanceMesActual, el mismo arrastre por fórmula aplica
+  // acá). Si por lo que sea la semana de hoy todavía no tiene fila en la
+  // hoja (ej. el cron semanal no ha corrido aún), cae a la semana pasada más
+  // cercana con datos reales — nunca a una futura.
+  const etiquetaSemanaActual = weekLabel(hoy);
+  const semanaActual =
+    conDatos.find((s) => s.semana === etiquetaSemanaActual) ??
+    [...conDatos].reverse().find((s) => {
+      const lunes = lunesDeEtiquetaSemana(s.semana, hoy);
+      return lunes ? lunes <= hoy : false;
+    });
+
+  const balanceUltimaSemana = semanaActual
     ? {
-        semana: ultima.semana,
-        ingresos: parseValorFormateado(ultima.income),
-        gastos: parseValorFormateado(ultima.projectExpenses) + parseValorFormateado(ultima.generalExpenses),
-        balanceFinal: parseValorFormateado(ultima.balanceFinal),
+        semana: semanaActual.semana,
+        ingresos: parseValorFormateado(semanaActual.income),
+        gastos: parseValorFormateado(semanaActual.projectExpenses) + parseValorFormateado(semanaActual.generalExpenses),
+        balanceFinal: parseValorFormateado(semanaActual.balanceFinal),
       }
     : null;
 
-  const balanceUltimoMes = calcularBalanceUltimoMes(conDatos);
+  const balanceUltimoMes = calcularBalanceMesActual(conDatos, hoy);
 
   // Catálogo de pagos recurrentes conocidos (calendario_fiscal.json) — solo
   // WOBA/EWORKS, porque este nodo es específicamente "cashflow" y Footprint
