@@ -301,12 +301,12 @@ function KeyGate({ onUnlocked }) {
           return;
         }
         const dataEstado = await resEstado.json();
-        onUnlocked(dataEstado, json.token);
+        onUnlocked(dataEstado, json.token, nombre.trim());
       } catch {
         // error de red puntual — se reintenta en el próximo tick, no cambia de fase
       }
     },
-    [onUnlocked]
+    [onUnlocked, nombre]
   );
 
   const solicitarAcceso = async () => {
@@ -678,48 +678,53 @@ export default function CerebroWoba() {
   const [refreshing, setRefreshing] = useState(false);
   const [verificandoSesion, setVerificandoSesion] = useState(true);
   const [esAdmin, setEsAdmin] = useState(false);
+  const [nombreUsuario, setNombreUsuario] = useState("");
 
   const handleEnter = () => {
     setDiving(true);
     setTimeout(() => setEntered(true), 1100);
   };
 
-  const handleUnlocked = (json, key) => {
+  const handleUnlocked = (json, key, nombre) => {
     setLiveData(json);
     setApiKey(key);
+    setNombreUsuario(nombre || "");
     try {
-      localStorage.setItem(LOCALSTORAGE_TOKEN_KEY, key);
+      localStorage.setItem(LOCALSTORAGE_TOKEN_KEY, JSON.stringify({ token: key, nombre: nombre || "" }));
     } catch {
       // localStorage puede fallar (modo privado, storage bloqueado) — no es crítico, solo no persiste
     }
   };
 
-  // Al cargar, intenta retomar la sesión guardada — así nunca vuelve a pedir
-  // acceso mientras el token siga siendo válido en el servidor (key maestra
-  // indefinida, temporal hasta que expire o un admin lo revoque).
+  // Al cargar, intenta retomar la sesión guardada (token + nombre) — así
+  // nunca vuelve a pedir acceso ni a preguntar quién eres mientras el token
+  // siga siendo válido en el servidor (key maestra indefinida, temporal
+  // hasta que expire o un admin lo revoque).
   useEffect(() => {
     let cancelado = false;
     (async () => {
-      let tokenGuardado = null;
+      let sesionGuardada = null;
       try {
-        tokenGuardado = localStorage.getItem(LOCALSTORAGE_TOKEN_KEY);
+        const crudo = localStorage.getItem(LOCALSTORAGE_TOKEN_KEY);
+        sesionGuardada = crudo ? JSON.parse(crudo) : null;
       } catch {
-        // sin acceso a localStorage — sigue al flujo normal de solicitud
+        // sin acceso a localStorage, o dato corrupto — sigue al flujo normal de solicitud
       }
 
-      if (!tokenGuardado) {
+      if (!sesionGuardada?.token) {
         setVerificandoSesion(false);
         return;
       }
 
       try {
-        const res = await fetch(CEREBRO_ENDPOINT, { headers: { "X-Cerebro-Key": tokenGuardado } });
+        const res = await fetch(CEREBRO_ENDPOINT, { headers: { "X-Cerebro-Key": sesionGuardada.token } });
         if (cancelado) return;
 
         if (res.ok) {
           const json = await res.json();
           setLiveData(json);
-          setApiKey(tokenGuardado);
+          setApiKey(sesionGuardada.token);
+          setNombreUsuario(sesionGuardada.nombre || "");
         } else {
           // token vencido o revocado — se limpia para no reintentar con uno inválido
           try {
@@ -729,7 +734,7 @@ export default function CerebroWoba() {
           }
         }
       } catch {
-        // red caída al cargar — no borra el token guardado, se reintenta la próxima visita
+        // red caída al cargar — no borra la sesión guardada, se reintenta la próxima visita
       } finally {
         if (!cancelado) setVerificandoSesion(false);
       }
@@ -840,6 +845,11 @@ export default function CerebroWoba() {
           WOBA Group · Wobi
         </div>
         <div style={{ fontFamily: C.serif, fontSize: 32, color: C.cream, fontWeight: 500 }}>El cerebro del asistente</div>
+        {nombreUsuario && (
+          <div style={{ fontFamily: C.sans, fontSize: 14, color: C.amberBright, marginTop: 8 }}>
+            Hola, {nombreUsuario} — soy Wobi, tu asistente. Aquí tienes todo lo que necesites.
+          </div>
+        )}
         <div style={{ fontFamily: C.sans, fontSize: 13, color: C.dim, marginTop: 6, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
           Mueve el cursor sobre el campo para energizarlo. Toca un módulo para abrir su detalle.
         </div>
