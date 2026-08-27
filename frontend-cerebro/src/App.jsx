@@ -183,12 +183,25 @@ function liveRowsForModule(id, d) {
       const bal = get(d, "cashflow.balanceUltimaSemana");
       const props = get(d, "cashflow.propuestasPendientes", []);
       const recurrentes = get(d, "cashflow.pagosRecurrentes", []);
+      const alertas = get(d, "cashflow.alertasPagosRecurrentesProximas", []);
       const rows = [];
       if (bal) rows.push([`Balance ${bal.semana}`, fmtMoney(bal.balanceFinal)]);
       rows.push(["Propuestas pendientes", String(props.length)]);
-      rows.push(["Pagos recurrentes registrados", String(recurrentes.length)]);
+      rows.push(["Pagos recurrentes catalogados", String(recurrentes.length)]);
       const ultDeteccion = get(d, "cashflow.ultimaDeteccionHolded");
       if (ultDeteccion) rows.push(["Última revisión de Holded", timeAgo(ultDeteccion)]);
+
+      // Lo que Wobi ya está generando internamente (el cron diario de alertas
+      // fiscales) aunque todavía no exista ningún movimiento real en
+      // Holded/cashflow — antes era invisible en este panel.
+      if (alertas.length === 0) {
+        rows.push(["Próximas alertas de pagos recurrentes", "ninguna en ventana"]);
+      } else {
+        alertas.forEach((a) => {
+          rows.push([`⏰ ${a.concepto} (${a.empresa})`, a.diasRestantes === 0 ? "vence HOY" : `en ${a.diasRestantes} día(s)`]);
+        });
+      }
+
       return rows;
     }
     case "holded": {

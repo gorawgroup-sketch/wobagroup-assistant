@@ -79,10 +79,33 @@ async function construirCashflow() {
     detectadoEn: new Date(p.creadoEn).toISOString(),
   }));
 
+  // Alertas de pagos recurrentes que el cron diario (revisarAlertasFiscales)
+  // ya está generando/mandando por Telegram AHORA MISMO — mismo cálculo
+  // exacto (calcularProximasAlertas, sin I/O extra, solo lee el JSON local),
+  // filtrado a las que son de cashflow (WOBA/EWORKS). Antes esto era
+  // invisible en este panel: "pagosRecurrentes" solo mostraba el catálogo
+  // fijo, nunca lo que el sistema está generando internamente en este
+  // momento (Wobi ya sabe que esto vence pronto y ya lo está avisando,
+  // aunque todavía no exista ningún movimiento en Holded/cashflow).
+  const alertasPagosRecurrentesProximas = seguroSync(
+    () =>
+      calcularProximasAlertas(new Date())
+        .filter((a) => a.empresaHolded === "WOBA" || a.empresaHolded === "EWORKS")
+        .map((a) => ({
+          concepto: a.concepto,
+          empresa: a.empresaHolded as "WOBA" | "EWORKS",
+          proveedor: a.proveedor ?? null,
+          venceEn: formatDateLocal(a.fecha),
+          diasRestantes: a.diasParaVencer,
+        })),
+    []
+  );
+
   return {
     linkSheet: `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`,
     balanceUltimaSemana,
     pagosRecurrentes,
+    alertasPagosRecurrentesProximas,
     propuestasPendientes,
     // Instrumentado el 2026-08-26 (core/jobs/holdedCashflowLastRunStore.ts,
     // mismo patrón que _gmail_ultimo_check) — antes el cron solo escribía a
