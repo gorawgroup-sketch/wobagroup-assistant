@@ -28,7 +28,7 @@ import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
-import { esTokenTemporalValido } from "../core/cerebro/tempTokenStore";
+import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -159,6 +159,80 @@ app.get("/api/cerebro/solicitud/:id", async (req: Request, res: Response) => {
     console.error("[api/cerebro/solicitud] Error:", message);
     res.status(500).json({ error: message });
   }
+});
+
+/**
+ * Panel de administración del front del cerebro: lista los accesos
+ * temporales vigentes (nombre, cuándo se creó, cuándo vence) y permite
+ * revocarlos — SOLO con la key maestra, nunca con un token temporal (así
+ * el front puede usar "¿me deja entrar aquí?" para saber si quien entró
+ * tiene la key maestra o no, sin necesitar un flag aparte). La key maestra
+ * en sí no se puede revocar individualmente por persona — es un secreto
+ * compartido, no hay una fila por titular; revocarla del todo significa
+ * rotar CEREBRO_API_KEY, lo que saca a TODOS los que la tengan, incluido
+ * quien lo pida.
+ */
+function exigeKeyMaestra(req: Request, res: Response): boolean {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "GET, POST");
+
+  const cerebroKey = process.env.CEREBRO_API_KEY;
+  if (!cerebroKey) {
+    res.status(503).json({ error: "CEREBRO_API_KEY no configurado en el servidor." });
+    return false;
+  }
+  if (req.get("X-Cerebro-Key") !== cerebroKey) {
+    res.status(403).json({ error: "Requiere la key maestra." });
+    return false;
+  }
+  return true;
+}
+
+app.get("/api/cerebro/accesos-activos", async (req: Request, res: Response) => {
+  if (!exigeKeyMaestra(req, res)) return;
+
+  try {
+    const activos = await listarTokensActivos();
+    res.json({ activos });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/accesos-activos] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/accesos-activos", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+app.post("/api/cerebro/revocar-acceso", async (req: Request, res: Response) => {
+  if (!exigeKeyMaestra(req, res)) return;
+
+  const id = typeof req.body?.id === "string" ? req.body.id : "";
+  if (!id) {
+    res.status(400).json({ error: "Falta 'id'." });
+    return;
+  }
+
+  try {
+    const existia = await revocarTokenTemporal(id);
+    res.json({ ok: existia });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/revocar-acceso] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/revocar-acceso", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
 });
 
 app.post("/webhook/telegram", async (req: Request, res: Response) => {

@@ -23,7 +23,14 @@ const WOBI_IMG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAfQAAAH0CAYAAADL
 const CEREBRO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/estado";
 const SOLICITAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/solicitar-acceso";
 const SOLICITUD_ENDPOINT_BASE = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/solicitud";
+const ACCESOS_ACTIVOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/accesos-activos";
+const REVOCAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/revocar-acceso";
 const POLL_INTERVALO_MS = 3000;
+// La sesión (key maestra o token temporal, lo que se haya aprobado) se
+// guarda en localStorage para no tener que volver a pedir acceso en cada
+// visita — dura hasta que el token deje de ser válido en el servidor
+// (24h si es temporal, o hasta que un admin lo revoque).
+const LOCALSTORAGE_TOKEN_KEY = "wobi_cerebro_token";
 // Username verificado en vivo contra getMe de la Bot API (no confiar en el nombre visible, que puede cambiar).
 const TELEGRAM_BOT_URL = "https://t.me/Woba_asistente_bot";
 // Ícono oficial de Telegram (recortado del asset provisto en el proyecto), fondo transparente.
@@ -533,6 +540,133 @@ function EntryScreen({ onEnter, diving }) {
   );
 }
 
+function formatoRestante(expiraEnMs) {
+  const diffMs = expiraEnMs - Date.now();
+  if (diffMs <= 0) return "vencido";
+  const horas = Math.floor(diffMs / 3600000);
+  const mins = Math.round((diffMs % 3600000) / 60000);
+  if (horas < 1) return `vence en ${mins} min`;
+  return `vence en ${horas}h ${mins}min`;
+}
+
+/**
+ * Solo se muestra si el token con el que se entró es la key maestra (ver
+ * el probe en CerebroWoba) — lista los accesos temporales vigentes y deja
+ * revocarlos. La key maestra en sí no aparece aquí: es un secreto
+ * compartido, no hay una fila por titular que revocar individualmente.
+ */
+function AdminPanel({ apiKey }) {
+  const [activos, setActivos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [revocandoId, setRevocandoId] = useState(null);
+
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    try {
+      const res = await fetch(ACCESOS_ACTIVOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } });
+      if (res.ok) {
+        const json = await res.json();
+        setActivos(json.activos || []);
+      }
+    } catch {
+      // silencioso — se reintenta al pulsar "actualizar"
+    } finally {
+      setCargando(false);
+    }
+  }, [apiKey]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+
+  const revocar = async (id) => {
+    setRevocandoId(id);
+    try {
+      await fetch(REVOCAR_ACCESO_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
+        body: JSON.stringify({ id }),
+      });
+      await cargar();
+    } catch {
+      // silencioso — el usuario puede reintentar
+    } finally {
+      setRevocandoId(null);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        maxWidth: 560,
+        margin: "20px auto 0",
+        background: C.panel,
+        border: `1px solid ${C.line}`,
+        borderRadius: 10,
+        padding: "16px 18px",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontFamily: C.mono, fontSize: 10.5, letterSpacing: "0.08em", color: C.coreBright, textTransform: "uppercase" }}>
+          🔐 Accesos activos
+        </div>
+        <span
+          onClick={cargando ? undefined : cargar}
+          style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, cursor: cargando ? "default" : "pointer", textDecoration: "underline" }}
+        >
+          {cargando ? "actualizando…" : "actualizar"}
+        </span>
+      </div>
+
+      {activos === null && <div style={{ fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 10 }}>Cargando…</div>}
+
+      {activos !== null && activos.length === 0 && (
+        <div style={{ fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 10 }}>
+          Nadie tiene un acceso temporal vigente ahora mismo.
+        </div>
+      )}
+
+      {activos !== null && activos.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {activos.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "8px 0",
+                borderTop: `1px solid ${C.line}`,
+              }}
+            >
+              <div>
+                <div style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream }}>{a.nombre}</div>
+                <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2 }}>{formatoRestante(a.expiraEn)}</div>
+              </div>
+              <button
+                onClick={() => revocar(a.id)}
+                disabled={revocandoId === a.id}
+                style={{
+                  background: "none",
+                  border: `1px solid ${C.amber}`,
+                  color: C.amberBright,
+                  borderRadius: 6,
+                  padding: "5px 10px",
+                  fontFamily: C.mono,
+                  fontSize: 10.5,
+                  cursor: revocandoId === a.id ? "default" : "pointer",
+                }}
+              >
+                {revocandoId === a.id ? "revocando…" : "revocar"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CerebroWoba() {
   const positions = useRadialLayout(MODULES.length, 215);
   const [active, setActive] = useState(null);
@@ -542,6 +676,8 @@ export default function CerebroWoba() {
   const [liveData, setLiveData] = useState(null);
   const [apiKey, setApiKey] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [verificandoSesion, setVerificandoSesion] = useState(true);
+  const [esAdmin, setEsAdmin] = useState(false);
 
   const handleEnter = () => {
     setDiving(true);
@@ -551,7 +687,78 @@ export default function CerebroWoba() {
   const handleUnlocked = (json, key) => {
     setLiveData(json);
     setApiKey(key);
+    try {
+      localStorage.setItem(LOCALSTORAGE_TOKEN_KEY, key);
+    } catch {
+      // localStorage puede fallar (modo privado, storage bloqueado) — no es crítico, solo no persiste
+    }
   };
+
+  // Al cargar, intenta retomar la sesión guardada — así nunca vuelve a pedir
+  // acceso mientras el token siga siendo válido en el servidor (key maestra
+  // indefinida, temporal hasta que expire o un admin lo revoque).
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      let tokenGuardado = null;
+      try {
+        tokenGuardado = localStorage.getItem(LOCALSTORAGE_TOKEN_KEY);
+      } catch {
+        // sin acceso a localStorage — sigue al flujo normal de solicitud
+      }
+
+      if (!tokenGuardado) {
+        setVerificandoSesion(false);
+        return;
+      }
+
+      try {
+        const res = await fetch(CEREBRO_ENDPOINT, { headers: { "X-Cerebro-Key": tokenGuardado } });
+        if (cancelado) return;
+
+        if (res.ok) {
+          const json = await res.json();
+          setLiveData(json);
+          setApiKey(tokenGuardado);
+        } else {
+          // token vencido o revocado — se limpia para no reintentar con uno inválido
+          try {
+            localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY);
+          } catch {
+            // no crítico
+          }
+        }
+      } catch {
+        // red caída al cargar — no borra el token guardado, se reintenta la próxima visita
+      } finally {
+        if (!cancelado) setVerificandoSesion(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  // Si el token vigente es la key maestra, este endpoint responde 200 (solo
+  // ella puede verlo) — así el front sabe si mostrar el panel de admin sin
+  // necesitar un flag aparte.
+  useEffect(() => {
+    if (!apiKey) {
+      setEsAdmin(false);
+      return;
+    }
+    let cancelado = false;
+    fetch(ACCESOS_ACTIVOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } })
+      .then((res) => {
+        if (!cancelado) setEsAdmin(res.ok);
+      })
+      .catch(() => {
+        if (!cancelado) setEsAdmin(false);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [apiKey]);
 
   const refreshLiveData = async () => {
     if (!apiKey || refreshing) return;
@@ -586,7 +793,7 @@ export default function CerebroWoba() {
       }}
     >
       {!entered && <EntryScreen onEnter={handleEnter} diving={diving} />}
-      {entered && !liveData && (
+      {entered && !liveData && !verificandoSesion && (
         <div
           style={{
             position: "absolute",
@@ -841,6 +1048,8 @@ export default function CerebroWoba() {
           "toca cualquier nodo para abrir su detalle · aún con datos de referencia, pendiente de conectar al endpoint en vivo"
         )}
       </div>
+
+      {esAdmin && <AdminPanel apiKey={apiKey} />}
     </div>
   );
 }
