@@ -1,6 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { listarMensajesNuevos, obtenerResumenCorreo, obtenerCuerpoCompletoCorreo, descargarAdjunto } from "../gmail/client";
+import {
+  listarMensajesNuevos,
+  obtenerResumenCorreo,
+  obtenerCuerpoCompletoCorreo,
+  descargarAdjunto,
+  type CorreoResumen,
+} from "../gmail/client";
 import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
@@ -16,6 +22,42 @@ const MIMES_LEGIBLES_COMO_FACTURA = ["application/pdf", "image/jpeg", "image/png
 
 function sanitizarNombre(nombre: string): string {
   return nombre.replace(/[^\w.\-]+/g, "_").slice(0, 150);
+}
+
+// Detección por asunto — confirmada en vivo contra un correo real de
+// Gemini/Google Meet (reenviado por Carlos): asunto exacto 'Notas: "Rental
+// CO, gestión administrativa y contable", 27 ago 2026' (o con "Fwd: " si se
+// reenvía). No se puede confiar en el clasificador de IA para este caso: el
+// `extracto` (snippet de Gmail) de un correo reenviado es el inicio del
+// cuerpo — normalmente la firma de quien reenvía, NO el contenido real de
+// las notas, así que el snippet no trae ninguna señal de que sea Gemini.
+// "Notes by Gemini:" queda como variante en inglés (documentada por Google,
+// no confirmada en vivo todavía).
+const PATRON_ASUNTO_NOTAS_REUNION = /^(Fwd:\s*)?(Notas:|Notes by Gemini:)/i;
+
+function pareceAsuntoDeNotasReunion(asunto: string): boolean {
+  return PATRON_ASUNTO_NOTAS_REUNION.test(asunto.trim());
+}
+
+/**
+ * Lee el cuerpo completo de un correo de notas de reunión y dispara el
+ * mismo flujo de CAPTURA con botones de empresa que un CAPTURA normal
+ * (nunca se guarda hasta que alguien confirme — ver
+ * core/knowledge/capturaEmpresaCallbackHandler.ts). Se usa tanto desde la
+ * detección directa por asunto como desde el clasificador de IA.
+ */
+async function capturarNotasDeReunion(chatId: number, correo: CorreoResumen): Promise<void> {
+  try {
+    const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
+    const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
+    await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`);
+  } catch (error) {
+    console.error(`[revisarCorreoNuevo] Error capturando notas de reunión del correo ${correo.id}:`, error);
+    await sendTelegramMessage(
+      chatId,
+      `⚠️ Llegaron notas de reunión ("${correo.asunto}") pero hubo un error leyéndolas — revísalo manualmente en el correo.`
+    );
+  }
 }
 
 /**
@@ -63,6 +105,15 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
   for (const id of ids) {
     try {
       const correo = await obtenerResumenCorreo(id);
+
+      // Chequeo directo por asunto ANTES de gastar una llamada a Claude —
+      // más barato y más confiable que depender del clasificador para este
+      // caso específico (ver nota en pareceAsuntoDeNotasReunion).
+      if (pareceAsuntoDeNotasReunion(correo.asunto)) {
+        await capturarNotasDeReunion(chatId, correo);
+        continue;
+      }
+
       const analisis = await analizarCorreo(correo);
 
       if (analisis.tipo === "documento_para_archivar" && correo.adjuntos.length > 0) {
@@ -116,25 +167,7 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
       }
 
       if (analisis.tipo === "notas_reunion") {
-        try {
-          const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
-          const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join(
-            "\n"
-          );
-          // Mismo flujo gateado con botones que CAPTURA normal (nunca se
-          // guarda hasta que alguien confirme la empresa) — ver
-          // core/knowledge/capturaEmpresaCallbackHandler.ts. Así las notas
-          // de reunión quedan en la misma base de conocimiento que usa
-          // consultar_base_conocimiento, no se pierden en el resumen
-          // informativo de correos que no requieren acción.
-          await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`);
-        } catch (error) {
-          console.error(`[revisarCorreoNuevo] Error capturando notas de reunión del correo ${id}:`, error);
-          await sendTelegramMessage(
-            chatId,
-            `⚠️ Llegaron notas de reunión ("${correo.asunto}") pero hubo un error leyéndolas — revísalo manualmente en el correo.`
-          );
-        }
+        await capturarNotasDeReunion(chatId, correo);
         continue;
       }
 
