@@ -214,9 +214,14 @@ async function construirDrive() {
 
   const ultimo = todos[0];
 
+  const porEmpresa = Object.fromEntries(
+    Object.entries(ROOT_FOLDERS).map(([empresa, folderId]) => [empresa, { archivosUltimos7dias: (porRaiz[folderId] ?? []).length }])
+  ) as Record<string, { archivosUltimos7dias: number }>;
+
   return {
     archivosSubidosUltimos7dias: todos.length,
     ultimoArchivo: ultimo ? { nombre: ultimo.name, empresa: ultimo.empresa, fecha: ultimo.createdTime } : null,
+    porEmpresa,
   };
 }
 

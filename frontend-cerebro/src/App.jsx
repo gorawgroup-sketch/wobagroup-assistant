@@ -192,21 +192,41 @@ function liveRowsForModule(id, d) {
       return rows;
     }
     case "holded": {
-      const rows = [
-        ["Facturas procesadas (7 días)", String(get(d, "holded.facturasProcesadasUltimos7dias", "—"))],
-        ["Gastos sin comprobante", String(get(d, "holded.gastosSinComprobante", "—"))],
-        ["Movimientos sin conciliar", String(get(d, "holded.movimientosSinConciliar", "—"))],
-      ];
-      return rows;
+      const porEmpresa = get(d, "holded.porEmpresa", {});
+      const empresas = ["WOBA", "EWORKS", "Footprint"].filter((e) => porEmpresa[e]);
+      if (empresas.length === 0) {
+        return [
+          ["Facturas procesadas (7 días)", String(get(d, "holded.facturasProcesadasUltimos7dias", "—"))],
+          ["Gastos sin comprobante", String(get(d, "holded.gastosSinComprobante", "—"))],
+          ["Movimientos sin conciliar", String(get(d, "holded.movimientosSinConciliar", "—"))],
+        ];
+      }
+      return empresas.map((empresa) => {
+        const e = porEmpresa[empresa];
+        return [
+          empresa,
+          `${e.facturasUltimos7dias ?? "—"} facturas · ${e.gastosSinComprobante ?? "—"} sin comprobante · ${e.movimientosSinConciliar ?? "—"} sin conciliar`,
+        ];
+      });
     }
     case "crm": {
       const acts = get(d, "crm.actividadesProgramadas", []);
-      return [["Actividades programadas", acts && acts.length ? String(acts.length) : "0"]];
+      if (!acts || acts.length === 0) return [["Actividades programadas", "0"]];
+      const porEmpresa = {};
+      acts.forEach((a) => {
+        const empresa = a.empresa || "(sin empresa)";
+        porEmpresa[empresa] = (porEmpresa[empresa] || 0) + 1;
+      });
+      return Object.entries(porEmpresa).map(([empresa, n]) => [empresa, `${n} actividad(es) programada(s)`]);
     }
     case "drive": {
-      const rows = [["Archivos en las 3 empresas (7 días)", String(get(d, "drive.archivosSubidosUltimos7dias", "—"))]];
+      const porEmpresa = get(d, "drive.porEmpresa", {});
+      const empresas = ["WOBA", "EWORKS", "Footprint"].filter((e) => porEmpresa[e]);
+      const rows = empresas.length
+        ? empresas.map((empresa) => [empresa, `${porEmpresa[empresa].archivosUltimos7dias ?? "—"} archivo(s) (7 días)`])
+        : [["Archivos en las 3 empresas (7 días)", String(get(d, "drive.archivosSubidosUltimos7dias", "—"))]];
       const ult = get(d, "drive.ultimoArchivo");
-      if (ult) rows.push(["Último archivo", ult.nombre || "—"]);
+      if (ult) rows.push(["Último archivo", `${ult.nombre || "—"} (${ult.empresa || "—"})`]);
       return rows;
     }
     case "correo": {
