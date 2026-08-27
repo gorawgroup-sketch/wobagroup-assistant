@@ -189,6 +189,8 @@ const ACCIONES_SENSIBLES = new Set([
   "gasto_adjuntar",
   "gasto_nuevo",
   "evento_confirmar",
+  "cerebroacceso_temporal",
+  "cerebroacceso_maestro",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

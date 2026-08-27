@@ -26,6 +26,9 @@ import { handleGastoCallback, continuarConCorreccionGasto } from "../core/gastos
 import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
+import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
+import { esTokenTemporalValido } from "../core/cerebro/tempTokenStore";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 const app = express();
@@ -72,7 +75,12 @@ app.get("/api/cerebro/estado", async (req: Request, res: Response) => {
     return;
   }
 
-  if (req.get("X-Cerebro-Key") !== cerebroKey) {
+  const keyRecibida = req.get("X-Cerebro-Key") ?? "";
+  // Acepta la key maestra O un token temporal vigente (ver
+  // core/cerebro/tempTokenStore.ts) — el flujo de solicitud de acceso
+  // entrega uno u otro según lo que decida el admin al aprobar.
+  const esValida = keyRecibida === cerebroKey || (await esTokenTemporalValido(keyRecibida));
+  if (!esValida) {
     res.status(403).json({ error: "X-Cerebro-Key inválida o ausente." });
     return;
   }
@@ -92,6 +100,65 @@ app.options("/api/cerebro/estado", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
   res.set("Access-Control-Allow-Methods", "GET");
   res.sendStatus(204);
+});
+
+/**
+ * Solicita acceso al front del cerebro: alguien manda su nombre, se crea una
+ * solicitud pendiente y se notifica a TODOS los admins por Telegram con
+ * botones (temporal / key maestra / rechazar) — nunca entrega ningún acceso
+ * directamente. CORS abierto, igual que el resto del grupo /api/cerebro —
+ * no requiere ninguna key (es el paso ANTES de tener una).
+ */
+app.post("/api/cerebro/solicitar-acceso", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+
+  const nombre = typeof req.body?.nombre === "string" ? req.body.nombre.trim().slice(0, 100) : "";
+  if (!nombre) {
+    res.status(400).json({ error: "Falta 'nombre'." });
+    return;
+  }
+
+  try {
+    const solicitud = await crearSolicitudAcceso(nombre);
+    await notificarSolicitudAccesoCerebro(solicitud);
+    res.json({ id: solicitud.id });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/solicitar-acceso] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/solicitar-acceso", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Consulta el estado de una solicitud de acceso (polling desde el front).
+ * El propio id (UUID random, no adivinable) hace de credencial de consulta
+ * — no hace falta ninguna otra autenticación para este endpoint puntual.
+ * Nunca revela nada de otras solicitudes.
+ */
+app.get("/api/cerebro/solicitud/:id", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+
+  try {
+    const solicitud = await obtenerSolicitudAcceso(req.params.id);
+    if (!solicitud) {
+      res.status(404).json({ error: "Solicitud no encontrada o vencida." });
+      return;
+    }
+    res.json({ estado: solicitud.estado, token: solicitud.token ?? null });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/solicitud] Error:", message);
+    res.status(500).json({ error: message });
+  }
 });
 
 app.post("/webhook/telegram", async (req: Request, res: Response) => {
@@ -153,6 +220,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleGastoCallback(update.callback_query);
       } else if (data.startsWith("evento_")) {
         await handleEventoCallback(update.callback_query);
+      } else if (data.startsWith("cerebroacceso_")) {
+        await handleAccesoCerebroCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
