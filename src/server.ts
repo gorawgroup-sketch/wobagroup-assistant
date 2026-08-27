@@ -54,6 +54,13 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
 });
 
+// La raíz del dominio nunca tuvo ninguna página propia — sin esto, entrar a
+// https://copilot.wobagroup.com/ directo (sin /cerebro) muestra "Cannot GET
+// /", que parece que nada está desplegado aunque el servicio esté bien.
+app.get("/", (_req: Request, res: Response) => {
+  res.redirect("/cerebro/");
+});
+
 /**
  * Front estático del "cerebro" (React + Vite, build en frontend-cerebro/dist
  * — ver la sección "build" de package.json, que compila este front como
