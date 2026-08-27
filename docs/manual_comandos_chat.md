@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (monitoreo diario de que las semanas de la hoja CASHFLOW estén bien numeradas, más consulta bajo demanda).
+actualización: 2026-08-27 (notas sobre gastos/ingresos específicos del cashflow, y corrección de seguridad: el modo rápido ya no puede ejecutar herramientas de escritura que no se le ofrecieron).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -56,6 +56,14 @@ en la secuencia (cada una exactamente 7 días después de la anterior), y que
 la más reciente no esté a una fecha inverosímil de hoy. Además, todos los
 admins reciben un aviso automático cada mañana (8:15) SOLO si encuentra algún
 problema — si todo está bien, no llega ningún mensaje.
+
+**Notas sobre gastos/ingresos específicos del cashflow** (ej. "el gasto de
+Robar 1076,90 se paga cuando haya plata, se va moviendo semana a semana") —
+se guarda de inmediato, ligado a ese concepto y monto exactos, sin pedir
+confirmación (es información, no una escritura financiera real — mismo
+criterio que las correcciones). Cuando después preguntes "¿qué hacemos con
+el gasto de Robar?" o similar, la respuesta usa esa nota guardada en vez de
+solo los datos crudos del cashflow. Abierto a cualquier usuario autorizado.
 
 **Acceso**: solo los usuarios de Telegram autorizados (guardados en la pestaña
 oculta `_usuarios_autorizados` del Sheet de cashflow — no en una variable de

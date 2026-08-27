@@ -82,6 +82,12 @@ const SYSTEM_PROMPT_ESTATICO = [
     "— no esperes a que lo pida explícitamente. Las correcciones ya registradas son SIEMPRE la fuente " +
     "de verdad: si algo que lees en consultar_base_conocimiento contradice una corrección registrada, " +
     "la corrección gana.",
+  "Si el usuario te da una instrucción u observación sobre un gasto o ingreso ESPECÍFICO del cashflow " +
+    "(con su concepto y monto — ej. 'el gasto de Robar 1076,90 se paga cuando haya plata, se va moviendo " +
+    "semana a semana'), usa guardar_nota_cashflow de inmediato, igual que con las correcciones — no " +
+    "esperes a que lo pida explícitamente. Cuando pregunten qué hacer, qué se dijo, o cualquier cosa " +
+    "sobre un gasto/ingreso puntual del cashflow, usa consultar_notas_cashflow (por concepto y/o monto) " +
+    "ANTES de responder solo con los datos crudos — la nota guardada es lo que de verdad importa ahí.",
   "Cuando te pregunten cuándo o cómo se paga algo, con qué tarjeta está domiciliado, quién recibe la " +
     "factura, o cualquier dato operativo de una plataforma/proveedor, consulta SIEMPRE " +
     "consultar_base_conocimiento primero — ahí vive lo que el equipo ha capturado explícitamente con " +
@@ -189,6 +195,7 @@ async function ejecutarConversacion(
   const anthropic = getClient();
 
   const tools = permiteEscalar ? [...toolsBase, TOOL_ESCALAR] : toolsBase;
+  const nombresDisponibles = new Set(tools.map((t) => t.name));
 
   // Marca el último tool como punto de corte de caché — como las
   // definiciones de tools van justo antes del system prompt en el prompt
@@ -239,11 +246,33 @@ async function ejecutarConversacion(
       (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
     );
 
-    // Señal ESTRUCTURADA de escalación — ver TOOL_ESCALAR. Se corta de
+    // Bug real encontrado en producción: el modelo puede emitir un tool_use
+    // con un nombre que NO estaba en el array `tools` de esta llamada — la
+    // API de Anthropic no lo rechaza a nivel de protocolo, así que sin este
+    // chequeo, executeTool() lo ejecutaría igual buscándolo en el registro
+    // COMPLETO (sin filtrar), pasando por alto por completo la restricción
+    // de modoRapido. Pasó de verdad: Haiku, viendo en el system prompt
+    // (compartido con Sonnet) la instrucción de usar guardar_nota_cashflow
+    // — una tool de escritura excluida de su set — la invocó de todas
+    // formas aunque nunca se le ofreció su definición, y se ejecutó en
+    // silencio. Cualquier tool_use fuera de lo realmente ofrecido en ESTA
+    // llamada se trata como señal de escalación (en el intento rápido) o se
+    // rechaza sin ejecutar (si ya no hay a dónde escalar).
+    const nombreNoDisponible = toolUseBlocks.find(
+      (b) => b.name !== NOMBRE_TOOL_ESCALAR && !nombresDisponibles.has(b.name)
+    );
+
+    // Señal ESTRUCTURADA de escalación — ver TOOL_ESCALAR — o un intento de
+    // usar una tool que no tiene disponible (mismo efecto). Se corta de
     // inmediato sin ejecutar ni el resto de tools de esta misma respuesta ni
     // más iteraciones: el intento completo se descarta (nunca se guarda en
     // el historial) y orquestarTurno reinicia desde cero con Sonnet.
-    if (permiteEscalar && toolUseBlocks.some((b) => b.name === NOMBRE_TOOL_ESCALAR)) {
+    if (permiteEscalar && (toolUseBlocks.some((b) => b.name === NOMBRE_TOOL_ESCALAR) || nombreNoDisponible)) {
+      if (nombreNoDisponible) {
+        console.error(
+          `[claude:${model}] Pidió usar "${nombreNoDisponible.name}", que no estaba disponible en este modo — escalando en vez de ejecutarla.`
+        );
+      }
       return { tipo: "escalar" };
     }
 
@@ -252,6 +281,21 @@ async function ejecutarConversacion(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
     for (const block of toolUseBlocks) {
+      if (!nombresDisponibles.has(block.name)) {
+        // Defensa en profundidad — no debería llegar hasta acá (arriba ya
+        // se escala cuando es posible), pero si de todas formas pasa (ej.
+        // en el intento completo, donde ya no hay a dónde escalar), nunca
+        // se ejecuta una tool que no estaba realmente ofrecida.
+        console.error(`[claude:${model}] Tool "${block.name}" solicitada pero no disponible — no se ejecuta.`);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: `Error: la herramienta "${block.name}" no está disponible en este contexto.`,
+          is_error: true,
+        });
+        continue;
+      }
+
       console.log(`[claude:${model}] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
 
       const result = await executeTool(block.name, block.input as Record<string, unknown>, { chatId });
