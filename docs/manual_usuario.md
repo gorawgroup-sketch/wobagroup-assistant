@@ -1,7 +1,7 @@
 # Manual de usuario — WOBA Copilot
 
 Guía de uso para el equipo. Explica qué es el asistente, qué puede hacer y cómo
-usarlo desde Telegram. Última actualización: 2026-08-26.
+usarlo desde Telegram. Última actualización: 2026-08-27.
 
 ---
 
@@ -150,6 +150,12 @@ Si sabes algo que el asistente no tiene documentado, escríbele el mensaje con
 la palabra **`CAPTURA`** en cualquier parte (ej. *"CAPTURA: el certificado
 digital de Footprint vence en octubre 2026"*). Queda guardado de inmediato,
 sin pasos adicionales.
+
+Si en cambio lo que quieres capturar es **un correo que acaba de llegar** (ej.
+*"CAPTURA lo que llegó en el correo de Alejandra sobre las tarjetas"*), no
+hace falta que copies el contenido — el asistente va y lee el correo real
+(asunto, remitente y cuerpo completo) y guarda eso, no la instrucción que
+escribiste.
 
 ### Corregirlo cuando se equivoca
 Si te da un dato incorrecto, dile algo como *"corrección: eso no era así, en

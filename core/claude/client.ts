@@ -52,6 +52,12 @@ function buildSystemPrompt(nombreRemitente?: string): string {
       "— no esperes a que lo pida explícitamente. Las correcciones ya registradas son SIEMPRE la fuente " +
       "de verdad: si algo que lees en consultar_base_conocimiento contradice una corrección registrada, " +
       "la corrección gana.",
+    "Cuando te pidan 'CAPTURA' o 'guarda' información que llegó por correo (ej. 'CAPTURA lo que llegó en " +
+      "el correo de X', 'guarda la info del correo que recibimos hoy'), la información NO está en el " +
+      "mensaje — nunca inventes ni resumas de memoria lo que crees que dice el correo. Usa la herramienta " +
+      "capturar_correo, que va a leer el correo real (asunto, remitente, cuerpo completo) y lo guarda tal " +
+      "cual. Si el mensaje menciona de quién o sobre qué es el correo, pásaselo como término de búsqueda; " +
+      "si no, se toma el más reciente de la bandeja de entrada.",
   ].join("\n\n");
 }
 

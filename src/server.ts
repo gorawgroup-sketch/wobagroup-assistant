@@ -10,6 +10,18 @@ import { handleDocumentCallback } from "../core/documental/documentCallbackHandl
 import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { manejarClasificacion } from "../core/documental/processClassification";
 import { esMensajeCaptura, guardarCaptura } from "../core/knowledge/capture";
+
+// Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
+// guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
+// X" (la información NO está en el mensaje — hay que ir a leer el correo
+// real con la tool capturar_correo). Solo dispara si menciona un correo Y
+// una referencia a que llegó/se recibió, para no capturar por esta vía un
+// mensaje que solo menciona la palabra "correo" de pasada.
+const CAPTURA_REFERENCIA_CORREO = /\b(correo|email|mail)s?\b/i;
+const CAPTURA_LLEGADA = /\b(lleg[oó]|recib[ií]|recibido|entrante|acaba de llegar)\b/i;
+function esCapturaDeCorreo(texto: string): boolean {
+  return CAPTURA_REFERENCIA_CORREO.test(texto) && CAPTURA_LLEGADA.test(texto);
+}
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
@@ -351,6 +363,21 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   }
 
   if (esMensajeCaptura(incoming.text)) {
+    if (esCapturaDeCorreo(incoming.text)) {
+      // "CAPTURA lo que llegó en el correo de X" no trae la información en sí
+      // — hay que ir a leer el correo real (capturar_correo) en vez de
+      // guardar la instrucción tal cual, que es lo que hacía antes y dejaba
+      // la base de conocimiento sin nada útil.
+      try {
+        const respuesta = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
+        await sendTelegramMessage(incoming.chatId, respuesta);
+      } catch (error) {
+        console.error("Error capturando correo:", error);
+        await sendTelegramMessage(incoming.chatId, "Hubo un error leyendo el correo para capturarlo. Intenta de nuevo.");
+      }
+      return;
+    }
+
     try {
       await guardarCaptura(incoming.text, incoming.fromUsername);
       await sendTelegramMessage(incoming.chatId, "✅ Guardado, gracias.");

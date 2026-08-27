@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-26 (pagos recurrentes y alertas fiscales extendidos a Footprint, sin cashflow + programar actividades en el calendario CRM de Holded + chequeo preliminar de cashflow el viernes + IVA por línea al crear gastos + conciliación bancaria automática).
+actualización: 2026-08-27 (CAPTURA lee el correo real cuando se le pide capturar información que llegó por mail, en vez de guardar la instrucción literal).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -75,7 +75,7 @@ así que hay flexibilidad en cómo se escriben.
 
 | Palabra/frase clave | Dónde puede aparecer | Qué hace |
 |---|---|---|
-| `CAPTURA` | En cualquier parte del mensaje (mayúsculas o minúsculas) | Guarda el mensaje completo, tal cual, en la base de conocimiento — sin revisión ni aprobación adicional. Se asume que si lo escribes con CAPTURA, ya está validado. |
+| `CAPTURA` | En cualquier parte del mensaje (mayúsculas o minúsculas) | Guarda el mensaje completo, tal cual, en la base de conocimiento — sin revisión ni aprobación adicional. Se asume que si lo escribes con CAPTURA, ya está validado. **Excepción**: si el mensaje además menciona un correo (correo/email/mail) y que llegó/se recibió (ej. *"CAPTURA lo que llegó en el correo de Alejandra"*), el sistema detecta que la información NO está en el mensaje — va y lee el correo real (asunto, remitente, cuerpo completo) con la herramienta `capturar_correo` y guarda eso, en vez de guardar la instrucción literal. |
 | `corrección:` / "eso no era así, en realidad..." / "no, en realidad es..." | En cualquier mensaje de chat normal | Registra una corrección permanente (qué se creía antes vs. el dato correcto). A partir de ahí, esa corrección se incluye SIEMPRE que se consulte la base de conocimiento, sin importar el tema. |
 | "envíale un correo a...", "contesta ese correo diciendo...", "mándale ese link a Carlos por correo" | En chat normal, lenguaje natural | Prepara un borrador de correo y lo muestra por Telegram con botones de aprobación. Nunca se envía automáticamente. |
 

@@ -14,6 +14,7 @@ import { gastosSinComprobanteTool } from "./gastosSinComprobante";
 import { movimientosSinConciliarTool } from "./movimientosSinConciliar";
 import { proponerEventoCalendarioTool } from "./proponerEvento";
 import { verificarCashflowActualizadoTool } from "./verificarCashflowActualizado";
+import { capturarCorreoTool } from "./capturarCorreo";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -34,6 +35,7 @@ const tools: ToolDefinition[] = [
   movimientosSinConciliarTool,
   proponerEventoCalendarioTool,
   verificarCashflowActualizadoTool,
+  capturarCorreoTool,
 ];
 
 /**

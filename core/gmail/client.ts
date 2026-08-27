@@ -151,6 +151,71 @@ export async function obtenerResumenCorreo(id: string): Promise<CorreoResumen> {
   };
 }
 
+function decodificarBase64Url(data: string): string {
+  return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
+}
+
+/** Busca recursivamente la primera parte text/plain del cuerpo del mensaje. */
+function extraerTextoPlano(part: gmail_v1.Schema$MessagePart | undefined): string | null {
+  if (!part) return null;
+  if (part.mimeType === "text/plain" && part.body?.data) {
+    return decodificarBase64Url(part.body.data);
+  }
+  for (const sub of part.parts ?? []) {
+    const encontrado = extraerTextoPlano(sub);
+    if (encontrado) return encontrado;
+  }
+  return null;
+}
+
+/** Igual que extraerTextoPlano pero para text/html — se usa solo si no hay parte de texto plano. */
+function extraerHtml(part: gmail_v1.Schema$MessagePart | undefined): string | null {
+  if (!part) return null;
+  if (part.mimeType === "text/html" && part.body?.data) {
+    return decodificarBase64Url(part.body.data);
+  }
+  for (const sub of part.parts ?? []) {
+    const encontrado = extraerHtml(sub);
+    if (encontrado) return encontrado;
+  }
+  return null;
+}
+
+/** Conversión cruda de HTML a texto — suficiente para capturar contenido legible, no para renderizar. */
+function htmlATexto(html: string): string {
+  return html
+    .replace(/<(br|\/p|\/div|\/tr|\/li)\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Cuerpo COMPLETO del mensaje (no el snippet truncado de Gmail que usa
+ * CorreoResumen.extracto) — prioriza text/plain; si el correo solo trae
+ * HTML, lo convierte a texto plano. Se agregó porque capturar_correo
+ * (registrar el contenido real de un correo en la base de conocimiento)
+ * necesita el cuerpo entero, no un extracto de ~100 caracteres.
+ */
+export async function obtenerCuerpoCompletoCorreo(id: string): Promise<string> {
+  const gmail = getGmailClient();
+  const res = await gmail.users.messages.get({ userId: "me", id, format: "full" });
+
+  const plano = extraerTextoPlano(res.data.payload);
+  if (plano) return plano.trim();
+
+  const html = extraerHtml(res.data.payload);
+  if (html) return htmlATexto(html);
+
+  return res.data.snippet ?? "";
+}
+
 function codificarHeaderAsunto(asunto: string): string {
   // Los headers RFC 2822 deben ir en ASCII; codificamos como UTF-8 base64
   // "encoded-word" si hay caracteres no ASCII (tildes, ñ, etc.).
