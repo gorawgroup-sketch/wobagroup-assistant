@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { listarMensajesNuevos, obtenerResumenCorreo, descargarAdjunto } from "../gmail/client";
+import { listarMensajesNuevos, obtenerResumenCorreo, obtenerCuerpoCompletoCorreo, descargarAdjunto } from "../gmail/client";
 import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
@@ -8,6 +8,7 @@ import { manejarClasificacion } from "../documental/processClassification";
 import { extraerDatosFactura } from "../documental/extractInvoiceData";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
+import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -110,6 +111,29 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
             const message = error instanceof Error ? error.message : String(error);
             console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
           }
+        }
+        continue;
+      }
+
+      if (analisis.tipo === "notas_reunion") {
+        try {
+          const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
+          const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join(
+            "\n"
+          );
+          // Mismo flujo gateado con botones que CAPTURA normal (nunca se
+          // guarda hasta que alguien confirme la empresa) — ver
+          // core/knowledge/capturaEmpresaCallbackHandler.ts. Así las notas
+          // de reunión quedan en la misma base de conocimiento que usa
+          // consultar_base_conocimiento, no se pierden en el resumen
+          // informativo de correos que no requieren acción.
+          await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`);
+        } catch (error) {
+          console.error(`[revisarCorreoNuevo] Error capturando notas de reunión del correo ${id}:`, error);
+          await sendTelegramMessage(
+            chatId,
+            `⚠️ Llegaron notas de reunión ("${correo.asunto}") pero hubo un error leyéndolas — revísalo manualmente en el correo.`
+          );
         }
         continue;
       }

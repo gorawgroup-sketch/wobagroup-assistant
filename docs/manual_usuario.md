@@ -1,8 +1,8 @@
 # Manual de usuario — WOBA Copilot
 
 Guía de uso para el equipo. Explica qué es el asistente, qué puede hacer y cómo
-usarlo desde Telegram. Última actualización: 2026-08-27 (saldos bancarios reales
-y reportes de balance/P&L en Excel y PDF).
+usarlo desde Telegram. Última actualización: 2026-08-27 (captura automática de
+notas de reunión — Gemini/Google Meet u otras — que llegan por correo).
 
 ---
 
@@ -119,7 +119,15 @@ que hacer nada más.
     resulta ser una factura/gasto (mismo flujo que arriba).
   - Si necesita respuesta o parece una instrucción → te avisa con botones
     para investigar, ignorar, o darle instrucciones específicas.
-  - Si es puramente informativo → lo resume en un solo mensaje agrupado.
+  - **Si trae las notas de una reunión** (ej. "Notes by Gemini" de Google
+    Meet, u otra herramienta similar tipo Otter/Fireflies/Read.ai) → lee el
+    contenido completo y te pregunta con botones a qué empresa corresponde
+    (igual que un `CAPTURA` normal) antes de guardarlo en la base de
+    conocimiento — así las decisiones y próximos pasos de la reunión quedan
+    disponibles para consultas futuras, no se pierden como un correo
+    informativo cualquiera.
+  - Si es puramente informativo (newsletter, notificación automática) → lo
+    resume en un solo mensaje agrupado, sin guardarlo.
 - Puede redactar un borrador de respuesta y enviarlo por correo — siempre te
   lo muestra primero, con botones para enviarlo tal cual, editarlo, o
   cancelarlo. Nunca envía un correo sin que apruebes el borrador.
