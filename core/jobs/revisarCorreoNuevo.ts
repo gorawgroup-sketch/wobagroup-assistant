@@ -15,6 +15,7 @@ import { extraerDatosFactura } from "../documental/extractInvoiceData";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
+import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -105,6 +106,11 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
   for (const id of ids) {
     try {
       const correo = await obtenerResumenCorreo(id);
+
+      // No crítico — nunca debe bloquear el procesamiento real del correo.
+      registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
+        console.error("[revisarCorreoNuevo] Error registrando remitente en el directorio de personas:", error)
+      );
 
       // Chequeo directo por asunto ANTES de gastar una llamada a Claude —
       // más barato y más confiable que depender del clasificador para este

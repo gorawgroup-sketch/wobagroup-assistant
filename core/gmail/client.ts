@@ -1,5 +1,6 @@
 import { google, gmail_v1 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 
 let gmailClient: gmail_v1.Gmail | null = null;
 
@@ -317,6 +318,11 @@ export async function enviarCorreo(params: {
       threadId: params.threadId || undefined,
     },
   });
+
+  // No crítico — el correo ya se envió, esto solo alimenta el directorio.
+  registrarPersonaDesdeCorreo(params.to, "correo_saliente").catch((error) =>
+    console.error("[gmail/client] Error registrando destinatario en el directorio de personas:", error)
+  );
 
   return { id: res.data.id ?? "", threadId: res.data.threadId ?? "" };
 }

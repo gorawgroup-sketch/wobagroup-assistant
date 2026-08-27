@@ -17,6 +17,7 @@ import { verificarCashflowActualizadoTool } from "./verificarCashflowActualizado
 import { capturarCorreoTool } from "./capturarCorreo";
 import { saldosBancariosTool } from "./saldosBancarios";
 import { generarReporteContableTool } from "./generarReporteContable";
+import { directorioPersonasTool } from "./directorioPersonas";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -40,6 +41,7 @@ const tools: ToolDefinition[] = [
   capturarCorreoTool,
   saldosBancariosTool,
   generarReporteContableTool,
+  directorioPersonasTool,
 ];
 
 /**

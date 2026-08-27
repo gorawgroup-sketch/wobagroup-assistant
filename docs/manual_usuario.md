@@ -1,8 +1,8 @@
 # Manual de usuario — WOBA Copilot
 
 Guía de uso para el equipo. Explica qué es el asistente, qué puede hacer y cómo
-usarlo desde Telegram. Última actualización: 2026-08-27 (captura automática de
-notas de reunión — Gemini/Google Meet u otras — que llegan por correo).
+usarlo desde Telegram. Última actualización: 2026-08-27 (directorio de personas
+que el sistema reconoce solo, desde Telegram y desde el correo).
 
 ---
 
@@ -154,6 +154,12 @@ que hacer nada más.
 - El asistente responde con base en documentos internos (responsabilidades,
   contactos, procesos). Cualquiera puede **agregarle conocimiento nuevo** o
   **corregirlo** cuando se equivoca — ver la sección 3.
+- **Directorio de personas**: va reconociendo solo, sin que nadie lo cargue a
+  mano, a quien se autoriza para usar el asistente por Telegram y a quien se
+  cruza correo (entrante o saliente). Así, si le dices "avísale a Pep" o
+  "mándaselo a Alejandra" sin dar el email, lo busca en ese directorio antes
+  de proponer el correo — si no encuentra a la persona, te lo dice y pide el
+  email en vez de inventarlo.
 
 ### 💰 Control de costos de IA
 - Registra el costo real (en USD, según las tarifas oficiales del modelo) de

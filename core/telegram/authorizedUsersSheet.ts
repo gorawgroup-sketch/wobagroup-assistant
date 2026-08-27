@@ -1,5 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { registrarPersonaDesdeTelegram } from "../directorio/directorioPersonasSheet";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_usuarios_autorizados";
@@ -175,6 +176,12 @@ export async function autorizarUsuario(userId: number, rol: Rol, nombre: string)
   }
 
   invalidarCacheUsuariosAutorizados();
+
+  // No crítico — si falla el directorio, la autorización en sí ya quedó
+  // guardada arriba, así que no se debe tumbar todo el flujo por esto.
+  registrarPersonaDesdeTelegram(nombre, userId).catch((error) =>
+    console.error("[authorizedUsersSheet] Error registrando en el directorio de personas:", error)
+  );
 }
 
 // Acciones (prefijo de callback_data antes de ":") que disparan una escritura

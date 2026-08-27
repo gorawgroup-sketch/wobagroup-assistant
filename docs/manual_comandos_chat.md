@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (captura automática de notas de reunión que llegan por correo — Gemini/Google Meet u otras herramientas similares).
+actualización: 2026-08-27 (directorio de personas que el sistema reconoce solo, desde Telegram y desde el correo, para resolver nombres a email antes de proponer un correo).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
