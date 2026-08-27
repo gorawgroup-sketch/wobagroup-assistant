@@ -263,8 +263,24 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
     }
     case "fiscal": {
       const alertas = get(d, "fiscal.proximasAlertas", []);
-      if (!alertas.length) return [["Próximas alertas", "ninguna en ventana"]];
-      return alertas.slice(0, 4).map((a) => [`${a.concepto} · ${a.empresa}`, `en ${a.diasRestantes} días`]);
+      const catalogo = get(d, "fiscal.catalogoPagosRecurrentes", []);
+      const rows = [];
+
+      rows.push([
+        "Próximas alertas (dentro de ventana de aviso)",
+        alertas.length ? `${alertas.length}` : "ninguna ahora mismo",
+      ]);
+      alertas.slice(0, 4).forEach((a) => rows.push([`  ⏰ ${a.concepto} · ${a.empresa}`, `en ${a.diasRestantes} día(s)`]));
+
+      // El catálogo completo — sin esto, en un día sin alertas inminentes
+      // parecía que no había NINGÚN pago recurrente registrado, cuando en
+      // realidad solo es que ninguno vence pronto. Incluye Footprint (que no
+      // aparece en el catálogo del nodo Cashflow, porque ese es solo
+      // WOBA/EWORKS).
+      rows.push(["Catálogo completo de pagos recurrentes", `${catalogo.length}`]);
+      catalogo.forEach((c) => rows.push([`  ${c.concepto} · ${c.empresa}`, `próx. ${c.proximaFecha} (${c.periodicidad})`]));
+
+      return rows;
     }
     case "conocimiento": {
       return [

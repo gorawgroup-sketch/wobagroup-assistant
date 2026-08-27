@@ -1,7 +1,7 @@
 import { fetchResumenSemanas, type ResumenSemana } from "../google/cashflowSheet";
 import { listarPropuestasPendientes } from "../google/proposalSheet";
 import { parseValorFormateado } from "../jobs/revisarHoldedVsCashflow";
-import { loadCalendarioFiscal, calcularProximasAlertas } from "../fiscal/calendario";
+import { loadCalendarioFiscal, calcularProximasAlertas, calcularProximaFecha } from "../fiscal/calendario";
 import { contarFacturasRecientes, listarProximosEventosHolded, buscarGastosSinComprobante } from "../holded/write";
 import { contarMovimientosSinConciliar } from "../holded/client";
 import type { Empresa } from "../holded/client";
@@ -256,6 +256,25 @@ async function construirFiscal() {
   // campo refleje EXACTAMENTE lo que el bot ya alertó o alertará por su cuenta.
   const alertas = seguroSync(() => calcularProximasAlertas(new Date()), []);
 
+  // El catálogo COMPLETO (no solo lo que cae en ventana de aviso ahora
+  // mismo) — antes solo se veían las alertas inminentes, y en un día
+  // cualquiera eso puede ser 0 o 1 entradas de las 20+ que existen, dando la
+  // impresión de que "faltan" pagos recurrentes que en realidad sí están
+  // catalogados, solo que no vencen pronto. A diferencia del catálogo que
+  // muestra el nodo Cashflow (solo WOBA/EWORKS, porque ese nodo es
+  // específicamente cashflow en Sheets), este incluye las 3 empresas —
+  // Footprint no tiene cashflow en Sheets pero sí tiene pagos recurrentes
+  // reales catalogados (Adobe, Canva, Google Workspace, etc.).
+  const catalogoPagosRecurrentes = seguroSync(() => {
+    const hoy = new Date();
+    return loadCalendarioFiscal().map((e) => ({
+      concepto: e.concepto,
+      empresa: e.empresa,
+      periodicidad: e.tipo,
+      proximaFecha: formatDateLocal(calcularProximaFecha(e, hoy)),
+    }));
+  }, []);
+
   return {
     proximasAlertas: alertas.map((a) => ({
       concepto: a.concepto,
@@ -263,6 +282,7 @@ async function construirFiscal() {
       venceEn: formatDateLocal(a.fecha),
       diasRestantes: a.diasParaVencer,
     })),
+    catalogoPagosRecurrentes,
   };
 }
 
