@@ -49,8 +49,11 @@ que hacer nada más.
   lunes.
 
 ### 🏦 Holded
-- Consultar movimientos bancarios y cuentas de tesorería (solo lectura, en
-  chat normal) — **WOBA, EWORKS y Footprint**.
+- Consultar movimientos bancarios reales y cuentas de tesorería (solo
+  lectura, en chat normal) — **WOBA, EWORKS y Footprint**. Cada movimiento
+  viene directo del área de Bancos de Holded (sincronizado con el banco
+  real) con su estado de conciliación (conciliado o pendiente) — útil para
+  comparar lo que reporta el banco contra lo ya registrado.
 - **Saldos bancarios reales**: pregúntale "¿cuánto hay en las cuentas de
   WOBA?" y te dice el saldo actual de cada cuenta/tarjeta directo de Holded
   (no un cálculo propio), más cuántos movimientos de cada una están sin

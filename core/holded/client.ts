@@ -61,6 +61,12 @@ export interface BankMovement {
   booking_date?: string;
   description?: string;
   amount?: string | number;
+  /** Saldo de la cuenta INMEDIATAMENTE DESPUÉS de este movimiento (no el saldo actual de la cuenta). */
+  balance?: string;
+  /** "reconciled" | "pending" | otros — confirmado en vivo contra la API real. */
+  status?: string;
+  reconciled_amount?: string;
+  origin?: string;
   [key: string]: unknown;
 }
 

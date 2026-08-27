@@ -17,13 +17,16 @@ export const holdedMovimientosTool: ToolDefinition = {
   name: "consultar_movimientos_holded",
   seguraParaModoRapido: true,
   description:
-    "Consulta los movimientos bancarios (no facturas) registrados en Holded para una empresa del " +
-    "grupo (WOBA, EWORKS o Footprint), en un rango de fechas. Úsala cuando el usuario pregunte por " +
-    "cargos, abonos, ingresos o gastos reales según el banco, a diferencia del cashflow proyectado en " +
-    "Sheets. Footprint no tiene cashflow en Sheets todavía — solo esta consulta directa a Holded. " +
-    "Para saber CUÁNDO se cobra normalmente algo, con qué tarjeta, o cómo descargar la factura, usa " +
-    "primero consultar_base_conocimiento (ahí vive esa información capturada por el equipo) — esta " +
-    "herramienta sirve para confirmar cargos que ya ocurrieron, no para el calendario de pagos.",
+    "Consulta los movimientos bancarios REALES (no facturas) registrados en Holded para una empresa del " +
+    "grupo (WOBA, EWORKS o Footprint), en un rango de fechas — vienen directo del área de Bancos/Tesorería " +
+    "de Holded (sincronizados con el banco real), con su estado de conciliación (reconciliado o pendiente). " +
+    "Úsala cuando el usuario pregunte por cargos, abonos, ingresos o gastos reales según el banco, o " +
+    "quiera comparar/conciliar lo que reporta el banco contra los gastos/ingresos ya registrados, a " +
+    "diferencia del cashflow proyectado en Sheets. Footprint no tiene cashflow en Sheets todavía — solo " +
+    "esta consulta directa a Holded. Para saber CUÁNDO se cobra normalmente algo, con qué tarjeta, o cómo " +
+    "descargar la factura, usa primero consultar_base_conocimiento (ahí vive esa información capturada " +
+    "por el equipo) — esta herramienta sirve para confirmar cargos que ya ocurrieron, no para el " +
+    "calendario de pagos.",
   input_schema: {
     type: "object",
     properties: {
@@ -81,14 +84,18 @@ export const holdedMovimientosTool: ToolDefinition = {
       return `No se encontraron movimientos bancarios para ${empresa} entre ${desde} y ${hasta}.`;
     }
 
-    return filtrados
-      .map((m) => {
-        const amount = typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0);
-        const tipoMov = esIngreso(amount) ? "abono" : "cargo";
-        const fecha = m.booking_date ? m.booking_date.slice(0, 10) : "(sin fecha)";
-        const desc = m.description ?? "(sin descripción)";
-        return `${fecha} — ${desc} — ${amount} — ${tipoMov}`;
-      })
-      .join("\n");
+    const conciliados = filtrados.filter((m) => m.status === "reconciled").length;
+    const resumen = `${filtrados.length} movimiento(s) — ${conciliados} conciliado(s), ${filtrados.length - conciliados} pendiente(s).`;
+
+    const lineas = filtrados.map((m) => {
+      const amount = typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0);
+      const tipoMov = esIngreso(amount) ? "abono" : "cargo";
+      const fecha = m.booking_date ? m.booking_date.slice(0, 10) : "(sin fecha)";
+      const desc = m.description ?? "(sin descripción)";
+      const estado = m.status === "reconciled" ? "conciliado" : m.status ?? "pendiente";
+      return `${fecha} — ${desc} — ${amount} — ${tipoMov} — ${estado}`;
+    });
+
+    return [resumen, "", ...lineas].join("\n");
   },
 };
