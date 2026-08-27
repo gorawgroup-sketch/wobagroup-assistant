@@ -119,6 +119,10 @@ que hacer nada más.
   (mensual/trimestral/semestral/anual). Para WOBA/EWORKS también registra
   la línea en cashflow; Footprint no tiene cashflow en Sheets, así que ahí
   el registro se queda solo en Holded.
+- Footprint incluye las suscripciones de plataforma conocidas (Google
+  Workspace, Salesmate, Adobe, Canva, Shutterstock, Go To Webinar, y los
+  rentings de Northgate y Caixa Equipment) — cada una avisa cuando se acerca
+  su día de cobro real, no solo cuando alguien pregunta por ellas.
 
 ### 🧠 Conocimiento del equipo
 - El asistente responde con base en documentos internos (responsabilidades,
