@@ -905,6 +905,7 @@ export default function CerebroWoba() {
   const [esAdmin, setEsAdmin] = useState(false);
   const [nombreUsuario, setNombreUsuario] = useState("");
   const [periodoCashflow, setPeriodoCashflow] = useState("semana");
+  const [verPagosRecurrentes, setVerPagosRecurrentes] = useState(false);
 
   const handleEnter = () => {
     setDiving(true);
@@ -1252,6 +1253,40 @@ export default function CerebroWoba() {
                       <span style={{ fontFamily: C.mono, color: C.coreBright, textAlign: "right", maxWidth: "60%" }}>{value}</span>
                     </div>
                   ))}
+                  {m.id === "cashflow" && (
+                    <div style={{ marginTop: 6 }}>
+                      <div
+                        onClick={() => setVerPagosRecurrentes((v) => !v)}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "5px 0",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span style={{ fontFamily: C.sans, fontSize: 12, color: C.amberBright }}>
+                          {verPagosRecurrentes ? "▾" : "▸"} Ver cuáles son los pagos recurrentes catalogados
+                        </span>
+                      </div>
+                      {verPagosRecurrentes && (
+                        <div style={{ paddingLeft: 8, borderLeft: `1px solid ${C.line}` }}>
+                          {get(liveData, "cashflow.pagosRecurrentes", []).length === 0 ? (
+                            <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>
+                              Ninguno catalogado para WOBA/EWORKS.
+                            </div>
+                          ) : (
+                            get(liveData, "cashflow.pagosRecurrentes", []).map((p, i) => (
+                              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 11.5 }}>
+                                <span style={{ fontFamily: C.sans, color: C.dim }}>{p.concepto} · {p.empresa}</span>
+                                <span style={{ fontFamily: C.mono, color: C.coreBright }}>{p.periodicidad}</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {m.id === "cashflow" && get(liveData, "cashflow.linkSheet") && (
                     <a
                       href={get(liveData, "cashflow.linkSheet")}
