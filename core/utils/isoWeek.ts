@@ -57,4 +57,28 @@ export function currentWeekRangeToDate(referenceDate: Date): { start: Date; end:
   return { start, end };
 }
 
+/**
+ * Reconstruye el lunes de una etiqueta de semana tipo "S35" (formato usado
+ * en la hoja CASHFLOW, que no guarda año) — asume que pertenece al año en
+ * curso, salvo que el número sea mucho mayor al de la semana actual (ahí
+ * probablemente es de fin del año anterior, un "rollover" al cruzar
+ * diciembre/enero). Devuelve null si la etiqueta no tiene formato válido.
+ */
+export function lunesDeEtiquetaSemana(semanaLabel: string, hoy: Date = new Date()): Date | null {
+  const match = /^S(\d{1,2})$/i.exec(semanaLabel.trim());
+  if (!match) return null;
+  const numeroSemana = parseInt(match[1], 10);
+  if (numeroSemana < 1 || numeroSemana > 53) return null;
+
+  const numeroSemanaHoy = parseInt(weekLabel(hoy).replace(/^S/i, ""), 10);
+  const anio = numeroSemana > numeroSemanaHoy + 10 ? hoy.getFullYear() - 1 : hoy.getFullYear();
+
+  // El 4 de enero siempre cae en la semana ISO 1 del año — desde ahí se
+  // calcula el lunes de cualquier otra semana del mismo año.
+  const lunesSemana1 = mondayOf(new Date(anio, 0, 4));
+  const lunes = new Date(lunesSemana1);
+  lunes.setDate(lunes.getDate() + (numeroSemana - 1) * 7);
+  return lunes;
+}
+
 export { formatDateLocal as formatDateISO } from "./dateFormat";

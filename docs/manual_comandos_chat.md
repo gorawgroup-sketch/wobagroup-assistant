@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-08-27 (verificación de gastos del cashflow sin salida bancaria real — el cruce inverso al de "¿está actualizado el cashflow?" — y corrección de la escalación Haiku→Sonnet que a veces mostraba texto interno al usuario).
+actualización: 2026-08-27 (monitoreo diario de que las semanas de la hoja CASHFLOW estén bien numeradas, más consulta bajo demanda).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -48,6 +48,14 @@ administradores pueden consultarlo; un colaborador recibe un mensaje diciendo
 que esa consulta es solo para admins. Además, todos los admins reciben un
 resumen automático cada mañana (8:30) con el gasto del día anterior y una
 alerta si fue inusualmente alto comparado con el promedio de la semana.
+
+**Numeración de semanas del cashflow** (ej. "¿está bien numerado el cashflow?",
+"¿las semanas están correctas?") — verifica, leyendo directo la hoja CASHFLOW,
+que las semanas tengan formato correcto, sin duplicados, sin saltos ni huecos
+en la secuencia (cada una exactamente 7 días después de la anterior), y que
+la más reciente no esté a una fecha inverosímil de hoy. Además, todos los
+admins reciben un aviso automático cada mañana (8:15) SOLO si encuentra algún
+problema — si todo está bien, no llega ningún mensaje.
 
 **Acceso**: solo los usuarios de Telegram autorizados (guardados en la pestaña
 oculta `_usuarios_autorizados` del Sheet de cashflow — no en una variable de

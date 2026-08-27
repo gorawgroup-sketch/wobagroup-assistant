@@ -17,7 +17,7 @@ import { obtenerUsuariosAutorizados } from "../telegram/authorizedUsersSheet";
 import { obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
 import { UMBRAL_ANOMALIA } from "../jobs/revisarCostosIA";
 import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunStore";
-import { mondayOf, weekLabel } from "../utils/isoWeek";
+import { mondayOf, lunesDeEtiquetaSemana } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
@@ -40,29 +40,6 @@ const NOMBRES_MES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
   "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ];
-
-/**
- * La hoja CASHFLOW solo guarda la etiqueta de semana ("S35"), sin año — para
- * agrupar por mes hace falta reconstruir a qué fecha corresponde cada
- * semana. Se asume que el número de semana pertenece al año en curso, salvo
- * que sea mucho mayor al de la semana actual (ahí probablemente es de fin
- * del año anterior, un caso de "rollover" al cruzar diciembre/enero) — igual
- * que se maneja en revisarHoldedVsCashflow.ts para el chequeo semanal.
- */
-function lunesDeEtiquetaSemana(semanaLabel: string, hoy: Date): Date | null {
-  const numeroSemana = parseInt(semanaLabel.replace(/^S/i, ""), 10);
-  if (!Number.isFinite(numeroSemana) || numeroSemana < 1 || numeroSemana > 53) return null;
-
-  const numeroSemanaHoy = parseInt(weekLabel(hoy).replace(/^S/i, ""), 10);
-  const anio = numeroSemana > numeroSemanaHoy + 10 ? hoy.getFullYear() - 1 : hoy.getFullYear();
-
-  // El 4 de enero siempre cae en la semana ISO 1 del año — desde ahí se
-  // calcula el lunes de cualquier otra semana del mismo año.
-  const lunesSemana1 = mondayOf(new Date(anio, 0, 4));
-  const lunes = new Date(lunesSemana1);
-  lunes.setDate(lunes.getDate() + (numeroSemana - 1) * 7);
-  return lunes;
-}
 
 /**
  * Balance mensual: NUNCA se suman los "balanceFinal" semanales entre sí (son
