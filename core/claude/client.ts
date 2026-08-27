@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
-import { obtenerHistorial, guardarHistorial } from "./conversationStore";
+import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
 import { registrarUsoIA } from "./costTracking";
 
 const MODEL = "claude-sonnet-4-6";
@@ -90,10 +90,36 @@ function getClient(): Anthropic {
  * hasta que produzca una respuesta final en texto.
  */
 export async function askClaude(userText: string, chatId?: number, nombreRemitente?: string): Promise<string> {
+  try {
+    return await ejecutarConversacion(userText, chatId, nombreRemitente, true);
+  } catch (error) {
+    // Salvaguarda ante un historial en memoria que la API rechaza (400
+    // invalid_request_error) — la causa raíz conocida ya está corregida en
+    // guardarHistorial, pero esto cubre cualquier otro caso no previsto en
+    // vez de tumbar la conversación entera del chat. Se reintenta UNA vez
+    // sin historial (arranca "en limpio"); si eso también falla, el error
+    // se deja propagar tal cual para que el llamador lo reporte.
+    const esRechazoDeHistorial =
+      error instanceof Anthropic.APIError && error.status === 400 && chatId !== undefined;
+
+    if (!esRechazoDeHistorial) throw error;
+
+    console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
+    limpiarHistorial(chatId!);
+    return ejecutarConversacion(userText, chatId, nombreRemitente, false);
+  }
+}
+
+async function ejecutarConversacion(
+  userText: string,
+  chatId: number | undefined,
+  nombreRemitente: string | undefined,
+  usarHistorial: boolean
+): Promise<string> {
   const anthropic = getClient();
   const tools = getToolDefinitions();
 
-  const historial = chatId !== undefined ? obtenerHistorial(chatId) : [];
+  const historial = usarHistorial && chatId !== undefined ? obtenerHistorial(chatId) : [];
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
