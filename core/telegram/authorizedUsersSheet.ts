@@ -151,7 +151,7 @@ export async function obtenerAdmins(): Promise<UsuarioAutorizado[]> {
   return usuarios.filter((u) => u.rol === "admin");
 }
 
-/** Autoriza (o actualiza el rol de) un usuario. Nunca borra a nadie — eso se hace a mano en el Sheet. */
+/** Autoriza (o actualiza el rol/nombre de) un usuario — ver eliminarUsuario más abajo para quitar acceso. */
 export async function autorizarUsuario(userId: number, rol: Rol, nombre: string): Promise<void> {
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -182,6 +182,41 @@ export async function autorizarUsuario(userId: number, rol: Rol, nombre: string)
   registrarPersonaDesdeTelegram(nombre, userId).catch((error) =>
     console.error("[authorizedUsersSheet] Error registrando en el directorio de personas:", error)
   );
+}
+
+/**
+ * Quita el acceso de un usuario (borra la fila) — usado desde el panel de
+ * administración de /cerebro (solo con la key maestra, ver
+ * exigeKeyMaestra en server.ts). Antes esto se hacía a mano directo en el
+ * Sheet; ahora hay una vía real desde la interfaz. Devuelve false si el
+ * usuario no existía (nada que borrar), sin lanzar error.
+ */
+export async function eliminarUsuario(userId: number): Promise<boolean> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const existentes = await leerTodos();
+  const match = existentes.find((f) => f.usuario.userId === userId);
+  if (!match) return false;
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
+  const gridId = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME)?.properties?.sheetId;
+  if (gridId == null) return false;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: { sheetId: gridId, dimension: "ROWS", startIndex: match.rowIndex - 1, endIndex: match.rowIndex },
+          },
+        },
+      ],
+    },
+  });
+
+  invalidarCacheUsuariosAutorizados();
+  return true;
 }
 
 // Acciones (prefijo de callback_data antes de ":") que disparan una escritura

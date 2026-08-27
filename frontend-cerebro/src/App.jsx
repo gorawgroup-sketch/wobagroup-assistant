@@ -25,6 +25,9 @@ const SOLICITAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.rai
 const SOLICITUD_ENDPOINT_BASE = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/solicitud";
 const ACCESOS_ACTIVOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/accesos-activos";
 const REVOCAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/revocar-acceso";
+const USUARIOS_AUTORIZADOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/usuarios-autorizados";
+const CAMBIAR_ROL_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/cambiar-rol-usuario";
+const ELIMINAR_USUARIO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/eliminar-usuario";
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
 // guarda en localStorage para no tener que volver a pedir acceso en cada
@@ -700,6 +703,170 @@ function AdminPanel({ apiKey }) {
   );
 }
 
+/**
+ * Gestión de admins/colaboradores — cambiar rol o quitar acceso, desde
+ * /cerebro con la key maestra. Antes solo se podía dar de alta desde los
+ * botones que llegan a Telegram al escribirle el bot por primera vez; no
+ * había forma de reasignar rol ni quitar acceso ya dado sin entrar al
+ * Sheet a mano.
+ */
+function UsuariosPanel({ apiKey }) {
+  const [usuarios, setUsuarios] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [ocupadoId, setOcupadoId] = useState(null);
+  const [error, setError] = useState(null);
+
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      const res = await fetch(USUARIOS_AUTORIZADOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } });
+      if (res.ok) {
+        const json = await res.json();
+        setUsuarios(json.usuarios || []);
+      } else {
+        setError("No se pudo cargar la lista.");
+      }
+    } catch {
+      setError("No se pudo cargar la lista.");
+    } finally {
+      setCargando(false);
+    }
+  }, [apiKey]);
+
+  useEffect(() => {
+    cargar();
+  }, [cargar]);
+
+  const cambiarRol = async (userId, rol) => {
+    setOcupadoId(userId);
+    try {
+      const res = await fetch(CAMBIAR_ROL_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
+        body: JSON.stringify({ userId, rol }),
+      });
+      if (res.ok) await cargar();
+      else setError("No se pudo cambiar el rol.");
+    } catch {
+      setError("No se pudo cambiar el rol.");
+    } finally {
+      setOcupadoId(null);
+    }
+  };
+
+  const eliminar = async (userId, nombre) => {
+    if (!window.confirm(`¿Quitar el acceso de ${nombre || "esta persona"}? Va a dejar de poder usar el asistente.`)) return;
+    setOcupadoId(userId);
+    try {
+      const res = await fetch(ELIMINAR_USUARIO_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
+        body: JSON.stringify({ userId }),
+      });
+      if (res.ok) await cargar();
+      else setError("No se pudo quitar el acceso.");
+    } catch {
+      setError("No se pudo quitar el acceso.");
+    } finally {
+      setOcupadoId(null);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        maxWidth: 560,
+        margin: "20px auto 0",
+        background: C.panel,
+        border: `1px solid ${C.line}`,
+        borderRadius: 10,
+        padding: "16px 18px",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontFamily: C.mono, fontSize: 10.5, letterSpacing: "0.08em", color: C.coreBright, textTransform: "uppercase" }}>
+          👥 Admins / colaboradores
+        </div>
+        <span
+          onClick={cargando ? undefined : cargar}
+          style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, cursor: cargando ? "default" : "pointer", textDecoration: "underline" }}
+        >
+          {cargando ? "actualizando…" : "actualizar"}
+        </span>
+      </div>
+
+      {error && <div style={{ fontFamily: C.sans, fontSize: 12, color: C.amberBright, marginTop: 10 }}>{error}</div>}
+
+      {usuarios === null && !error && <div style={{ fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 10 }}>Cargando…</div>}
+
+      {usuarios !== null && usuarios.length === 0 && (
+        <div style={{ fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 10 }}>Nadie autorizado todavía.</div>
+      )}
+
+      {usuarios !== null && usuarios.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {usuarios.map((u) => (
+            <div
+              key={u.userId}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "8px 0",
+                borderTop: `1px solid ${C.line}`,
+                gap: 8,
+              }}
+            >
+              <div>
+                <div style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream }}>{u.nombre || "(sin nombre)"}</div>
+                <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2 }}>
+                  autorizado {u.autorizadoEn ? new Date(u.autorizadoEn).toLocaleDateString("es-ES") : "—"}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <select
+                  value={u.rol}
+                  disabled={ocupadoId === u.userId}
+                  onChange={(e) => cambiarRol(u.userId, e.target.value)}
+                  style={{
+                    background: C.void,
+                    color: C.cream,
+                    border: `1px solid ${C.line}`,
+                    borderRadius: 6,
+                    padding: "5px 6px",
+                    fontFamily: C.mono,
+                    fontSize: 10.5,
+                  }}
+                >
+                  <option value="admin">admin</option>
+                  <option value="colaborador">colaborador</option>
+                </select>
+                <button
+                  onClick={() => eliminar(u.userId, u.nombre)}
+                  disabled={ocupadoId === u.userId}
+                  style={{
+                    background: "none",
+                    border: `1px solid ${C.amber}`,
+                    color: C.amberBright,
+                    borderRadius: 6,
+                    padding: "5px 10px",
+                    fontFamily: C.mono,
+                    fontSize: 10.5,
+                    cursor: ocupadoId === u.userId ? "default" : "pointer",
+                  }}
+                >
+                  {ocupadoId === u.userId ? "…" : "quitar"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CerebroWoba() {
   const positions = useRadialLayout(MODULES.length, 215);
   const [active, setActive] = useState(null);
@@ -1093,6 +1260,7 @@ export default function CerebroWoba() {
       </div>
 
       {esAdmin && <AdminPanel apiKey={apiKey} />}
+      {esAdmin && <UsuariosPanel apiKey={apiKey} />}
     </div>
   );
 }

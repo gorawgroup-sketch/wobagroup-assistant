@@ -2,7 +2,15 @@ import "dotenv/config";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery, iniciarIndicadorEscribiendo } from "../core/telegram/client";
-import { esUsuarioAutorizado, esAccionSensible, obtenerRolUsuario } from "../core/telegram/authorizedUsersSheet";
+import {
+  esUsuarioAutorizado,
+  esAccionSensible,
+  obtenerRolUsuario,
+  obtenerUsuariosAutorizados,
+  autorizarUsuario,
+  eliminarUsuario,
+  type Rol,
+} from "../core/telegram/authorizedUsersSheet";
 import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/adminNotify";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
@@ -250,6 +258,93 @@ app.post("/api/cerebro/revocar-acceso", async (req: Request, res: Response) => {
 });
 
 app.options("/api/cerebro/revocar-acceso", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Gestión de usuarios autorizados (admins/colaboradores) desde el panel de
+ * /cerebro — cambiar rol o quitar acceso. Solo con la key maestra, igual
+ * que el resto de endpoints admin-only de este bloque. Antes esto solo se
+ * podía hacer a mano en el Sheet o desde los botones de aprobación inicial
+ * en Telegram (adminNotify.ts) — no había forma de reasignar rol ni quitar
+ * acceso ya dado.
+ */
+app.get("/api/cerebro/usuarios-autorizados", async (req: Request, res: Response) => {
+  if (!exigeKeyMaestra(req, res)) return;
+
+  try {
+    const usuarios = await obtenerUsuariosAutorizados();
+    res.json({ usuarios });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/usuarios-autorizados] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/usuarios-autorizados", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+app.post("/api/cerebro/cambiar-rol-usuario", async (req: Request, res: Response) => {
+  if (!exigeKeyMaestra(req, res)) return;
+
+  const userId = Number(req.body?.userId);
+  const rol = req.body?.rol as Rol;
+  if (!userId || (rol !== "admin" && rol !== "colaborador")) {
+    res.status(400).json({ error: "Falta 'userId' o 'rol' inválido (debe ser 'admin' o 'colaborador')." });
+    return;
+  }
+
+  try {
+    const usuarios = await obtenerUsuariosAutorizados();
+    const existente = usuarios.find((u) => u.userId === userId);
+    if (!existente) {
+      res.status(404).json({ error: "Ese usuario ya no está en la lista de autorizados." });
+      return;
+    }
+    await autorizarUsuario(userId, rol, existente.nombre);
+    res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/cambiar-rol-usuario] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/cambiar-rol-usuario", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+app.post("/api/cerebro/eliminar-usuario", async (req: Request, res: Response) => {
+  if (!exigeKeyMaestra(req, res)) return;
+
+  const userId = Number(req.body?.userId);
+  if (!userId) {
+    res.status(400).json({ error: "Falta 'userId'." });
+    return;
+  }
+
+  try {
+    const existia = await eliminarUsuario(userId);
+    res.json({ ok: existia });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/eliminar-usuario] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
