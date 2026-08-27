@@ -10,7 +10,7 @@ const TOLERANCIA_EUR = 0.01;
 // Deliberadamente acotado a WOBA/EWORKS (no el tipo Empresa completo de
 // holded/client.ts, que ya incluye Footprint) — esta reconciliación escribe
 // en el cashflow de Sheets, y Footprint no tiene acceso a cashflow todavía.
-type EmpresaCashflow = "WOBA" | "EWORKS";
+export type EmpresaCashflow = "WOBA" | "EWORKS";
 const EMPRESAS: EmpresaCashflow[] = ["WOBA", "EWORKS"];
 
 export function parseValorFormateado(valor: string): number {
@@ -23,7 +23,7 @@ function sugerirBloque(amount: number): BloqueEscritura {
   return amount > 0 ? "ingresos" : "pagos_extras";
 }
 
-interface CandidatoNoRegistrado {
+export interface CandidatoNoRegistrado {
   empresa: EmpresaCashflow;
   descripcion: string;
   fecha?: string;
@@ -31,7 +31,16 @@ interface CandidatoNoRegistrado {
   esIngreso: boolean;
 }
 
-async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: string, desde: string, hasta: string) {
+/**
+ * Compara los movimientos bancarios reales de Holded (en el rango de fechas
+ * dado) contra lo ya registrado en la hoja DATOS para `semanaLabel`, y
+ * devuelve los que no encuentran match (por monto, con tolerancia de 1
+ * céntimo) — nunca decide que algo "ya está" si hay duda razonable. Misma
+ * lógica que usa el cron revisarHoldedVsCashflow, exportada para que
+ * también la use el tool conversacional verificar_cashflow_actualizado
+ * (core/tools/verificarCashflowActualizado.ts) sin duplicarla.
+ */
+export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: string, desde: string, hasta: string) {
   const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived);
 
   const movimientosHolded = (

@@ -31,6 +31,12 @@ function buildSystemPrompt(nombreRemitente?: string): string {
       "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
       "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
       "borrador con un botón en Telegram, así que proponer uno es siempre seguro.",
+    "Cuando te pregunten si el cashflow 'está actualizado', 'está al día', o si 'falta algo por " +
+      "registrar', NO respondas solo con el resumen de consultar_cashflow_resumen (esos números pueden " +
+      "estar completos en la hoja sin que reflejen la realidad del banco) — usa " +
+      "verificar_cashflow_actualizado, que compara los movimientos reales de Holded contra lo ya " +
+      "registrado y te dice específicamente qué falta, si falta algo. Reserva consultar_cashflow_resumen " +
+      "para preguntas de balance/cifras sin pedir verificación contra Holded.",
     "Tienes memoria de los mensajes recientes de esta conversación — si el usuario hace referencia a " +
       "algo mencionado antes ('ese link', 'el correo del que hablamos'), interpreta la referencia usando " +
       "ese contexto en vez de pedir que lo repita.",

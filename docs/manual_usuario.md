@@ -30,6 +30,14 @@ que hacer nada más.
 - Consultar el resumen o el detalle del cashflow de WOBA y eWorks (por
   empresa, por semana, por bloque). Footprint no tiene cashflow en Sheets
   todavía — sí se monitorea directo en Holded (ver abajo).
+- **Verificar si está realmente actualizado**: pregúntale "¿el cashflow está
+  actualizado?" o "¿falta algo por registrar?" y compara en vivo los
+  movimientos bancarios reales de Holded contra lo ya registrado — no es
+  solo leer el resumen, cruza los datos y te dice específicamente qué
+  movimiento falta, con monto y fecha, si falta algo. Por defecto revisa lo
+  que va de la semana actual; puedes pedirle la semana anterior completa.
+  Solo consulta, no registra nada — para eso usa la detección automática de
+  abajo o pídeselo directamente.
 - Detecta automáticamente movimientos que aparecieron en Holded pero no están
   registrados en el cashflow, y propone agregarlos — con botón de
   aprobación, nunca se agrega solo. Solo WOBA/EWORKS. Corre dos veces por

@@ -13,6 +13,7 @@ import { costosIATool } from "./costosIA";
 import { gastosSinComprobanteTool } from "./gastosSinComprobante";
 import { movimientosSinConciliarTool } from "./movimientosSinConciliar";
 import { proponerEventoCalendarioTool } from "./proponerEvento";
+import { verificarCashflowActualizadoTool } from "./verificarCashflowActualizado";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -32,6 +33,7 @@ const tools: ToolDefinition[] = [
   gastosSinComprobanteTool,
   movimientosSinConciliarTool,
   proponerEventoCalendarioTool,
+  verificarCashflowActualizadoTool,
 ];
 
 /**
