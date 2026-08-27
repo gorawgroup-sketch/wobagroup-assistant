@@ -284,9 +284,11 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
     }
     case "conocimiento": {
       return [
-        ["Documentos", String(get(d, "conocimiento.documentos", "—"))],
-        ["Modo actual", get(d, "conocimiento.modoActual", "—")],
+        ["Documentos de proceso", String(get(d, "conocimiento.documentos", "—"))],
+        ["Cómo se consultan", get(d, "conocimiento.explicacionModo", "—")],
+        ["Capturas guardadas (total)", String(get(d, "conocimiento.totalCapturas", "—"))],
         ["Última captura", timeAgo(get(d, "conocimiento.ultimaCaptura")) || "sin registro"],
+        ["Correcciones registradas (total)", String(get(d, "conocimiento.totalCorrecciones", "—"))],
         ["Última corrección", timeAgo(get(d, "conocimiento.ultimaCorreccion")) || "sin registro"],
       ];
     }
@@ -610,6 +612,20 @@ function formatoRestante(expiraEnMs) {
   return `vence en ${horas}h ${mins}min`;
 }
 
+/** Bloque clicable simple para expandir/colapsar una lista de detalle dentro de un panel. */
+function Desplegable({ titulo, abierto, onToggle, children }) {
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div onClick={onToggle} style={{ display: "flex", alignItems: "center", padding: "5px 0", cursor: "pointer" }}>
+        <span style={{ fontFamily: C.sans, fontSize: 12, color: C.amberBright }}>
+          {abierto ? "▾" : "▸"} {titulo}
+        </span>
+      </div>
+      {abierto && <div style={{ paddingLeft: 8, borderLeft: `1px solid ${C.line}` }}>{children}</div>}
+    </div>
+  );
+}
+
 /**
  * Solo se muestra si el token con el que se entró es la key maestra (ver
  * el probe en CerebroWoba) — lista los accesos temporales vigentes y deja
@@ -906,6 +922,9 @@ export default function CerebroWoba() {
   const [nombreUsuario, setNombreUsuario] = useState("");
   const [periodoCashflow, setPeriodoCashflow] = useState("semana");
   const [verPagosRecurrentes, setVerPagosRecurrentes] = useState(false);
+  const [verDocumentos, setVerDocumentos] = useState(false);
+  const [verCapturasRecientes, setVerCapturasRecientes] = useState(false);
+  const [verCorreccionesRecientes, setVerCorreccionesRecientes] = useState(false);
 
   const handleEnter = () => {
     setDiving(true);
@@ -1296,6 +1315,70 @@ export default function CerebroWoba() {
                     >
                       abrir el cashflow ↗
                     </a>
+                  )}
+
+                  {m.id === "conocimiento" && (
+                    <>
+                      <Desplegable
+                        titulo={`Ver los ${get(liveData, "conocimiento.documentos", 0)} documentos de proceso`}
+                        abierto={verDocumentos}
+                        onToggle={() => setVerDocumentos((v) => !v)}
+                      >
+                        {get(liveData, "conocimiento.listaDocumentos", []).length === 0 ? (
+                          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>Sin documentos.</div>
+                        ) : (
+                          get(liveData, "conocimiento.listaDocumentos", []).map((doc, i) => (
+                            <div key={i} style={{ padding: "5px 0" }}>
+                              <div style={{ fontFamily: C.mono, fontSize: 11, color: C.coreBright }}>{doc.nombre}</div>
+                              {doc.resumen && (
+                                <div style={{ fontFamily: C.sans, fontSize: 11, color: C.dim, marginTop: 1 }}>{doc.resumen}</div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </Desplegable>
+
+                      <Desplegable
+                        titulo="Ver las últimas capturas guardadas"
+                        abierto={verCapturasRecientes}
+                        onToggle={() => setVerCapturasRecientes((v) => !v)}
+                      >
+                        {get(liveData, "conocimiento.ultimasCapturas", []).length === 0 ? (
+                          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>Ninguna todavía.</div>
+                        ) : (
+                          get(liveData, "conocimiento.ultimasCapturas", []).map((c, i) => (
+                            <div key={i} style={{ padding: "5px 0" }}>
+                              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim }}>
+                                {timeAgo(c.fecha)}{c.empresas ? ` · ${c.empresas}` : ""}{c.autor ? ` · ${c.autor}` : ""}
+                              </div>
+                              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, marginTop: 1 }}>{c.resumen}</div>
+                            </div>
+                          ))
+                        )}
+                      </Desplegable>
+
+                      <Desplegable
+                        titulo="Ver las últimas correcciones registradas"
+                        abierto={verCorreccionesRecientes}
+                        onToggle={() => setVerCorreccionesRecientes((v) => !v)}
+                      >
+                        {get(liveData, "conocimiento.ultimasCorrecciones", []).length === 0 ? (
+                          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>Ninguna todavía.</div>
+                        ) : (
+                          get(liveData, "conocimiento.ultimasCorrecciones", []).map((c, i) => (
+                            <div key={i} style={{ padding: "5px 0" }}>
+                              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim }}>{timeAgo(c.fecha)}</div>
+                              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, marginTop: 1 }}>
+                                Antes: <span style={{ color: "#B8899A" }}>{c.antes}</span>
+                              </div>
+                              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, marginTop: 1 }}>
+                                Ahora: <span style={{ color: C.coreBright }}>{c.ahora}</span>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </Desplegable>
+                    </>
                   )}
                 </div>
               ) : (

@@ -10,7 +10,7 @@ import { obtenerUltimoCheck } from "../gmail/lastCheckStore";
 import { contarBorradoresPendientes } from "../gmail/emailDraftStore";
 import { listarArchivosRecientesPorRaiz } from "../drive/client";
 import { ROOT_FOLDERS } from "../drive/rootFolders";
-import { obtenerModoRetrieval } from "../knowledge/loader";
+import { obtenerModoRetrieval, obtenerIndiceDocumentos } from "../knowledge/loader";
 import { obtenerCapturasCrudas } from "../knowledge/capturaSheet";
 import { obtenerCorreccionesCrudas } from "../knowledge/correctionsStore";
 import { obtenerUsuariosAutorizados } from "../telegram/authorizedUsersSheet";
@@ -330,6 +330,12 @@ async function construirDrive() {
   };
 }
 
+// Antes este panel solo mostraba conteos y timestamps ("5 documentos",
+// "hace 6h") sin decir de QUÉ documentos se trata ni QUÉ se capturó o
+// corrigió — el dato ya se leía completo (capturas/correcciones) pero se
+// descartaba todo menos la fecha. Ahora se expone el contenido real.
+const MAX_ITEMS_RECIENTES = 5;
+
 async function construirConocimiento() {
   const [modo, capturas, correcciones] = await Promise.all([
     seguro("conocimiento.modo", async () => obtenerModoRetrieval(), { modo: "carga_completa" as const, tamanoTotalCaracteres: 0, umbralCaracteres: 0, documentos: 0 }),
@@ -337,14 +343,39 @@ async function construirConocimiento() {
     seguro("conocimiento.correcciones", obtenerCorreccionesCrudas, []),
   ]);
 
+  const indiceDocumentos = seguroSync(() => obtenerIndiceDocumentos(), []);
+
   const ultimaCaptura = capturas.length > 0 ? capturas[capturas.length - 1].fecha : null;
   const ultimaCorreccion = correcciones.length > 0 ? correcciones[correcciones.length - 1].fecha : null;
 
+  const primeraLinea = (texto: string) => texto.split("\n").find((l) => l.trim().length > 0)?.trim().slice(0, 160) ?? "";
+
+  const ultimasCapturas = capturas
+    .slice(-MAX_ITEMS_RECIENTES)
+    .reverse()
+    .map((c) => ({ fecha: c.fecha, autor: c.autor, empresas: c.empresas, resumen: primeraLinea(c.texto) }));
+
+  const ultimasCorrecciones = correcciones
+    .slice(-MAX_ITEMS_RECIENTES)
+    .reverse()
+    .map((c) => ({ fecha: c.fecha, antes: c.contextoPrevio.slice(0, 140), ahora: c.correccion.slice(0, 200) }));
+
   return {
     documentos: modo.documentos,
+    listaDocumentos: indiceDocumentos,
     modoActual: modo.modo,
+    // "carga_completa" y "scoring" son nombres internos sin sentido para
+    // quien no programó el sistema — se traduce a una frase clara.
+    explicacionModo:
+      modo.modo === "carga_completa"
+        ? "Todos los documentos caben completos en cada consulta — no hace falta elegir cuáles son relevantes."
+        : "Hay demasiado contenido para mandarlo completo en cada consulta — se seleccionan los documentos más relevantes según palabras clave de la pregunta.",
     ultimaCaptura,
     ultimaCorreccion,
+    totalCapturas: capturas.length,
+    totalCorrecciones: correcciones.length,
+    ultimasCapturas,
+    ultimasCorrecciones,
   };
 }
 
