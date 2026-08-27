@@ -24,6 +24,7 @@ const CEREBRO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/
 const SOLICITAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/solicitar-acceso";
 const SOLICITUD_ENDPOINT_BASE = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/solicitud";
 const ACCESOS_ACTIVOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/accesos-activos";
+const ACCESOS_MAESTRO_OTORGADOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/accesos-maestro-otorgados";
 const REVOCAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/revocar-acceso";
 const USUARIOS_AUTORIZADOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/usuarios-autorizados";
 const CAMBIAR_ROL_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/cambiar-rol-usuario";
@@ -634,17 +635,19 @@ function Desplegable({ titulo, abierto, onToggle, children }) {
  */
 function AdminPanel({ apiKey }) {
   const [activos, setActivos] = useState(null);
+  const [otorgados, setOtorgados] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [revocandoId, setRevocandoId] = useState(null);
 
   const cargar = useCallback(async () => {
     setCargando(true);
     try {
-      const res = await fetch(ACCESOS_ACTIVOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } });
-      if (res.ok) {
-        const json = await res.json();
-        setActivos(json.activos || []);
-      }
+      const [resActivos, resOtorgados] = await Promise.all([
+        fetch(ACCESOS_ACTIVOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } }),
+        fetch(ACCESOS_MAESTRO_OTORGADOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } }),
+      ]);
+      if (resActivos.ok) setActivos((await resActivos.json()).activos || []);
+      if (resOtorgados.ok) setOtorgados((await resOtorgados.json()).otorgados || []);
     } catch {
       // silencioso — se reintenta al pulsar "actualizar"
     } finally {
@@ -740,6 +743,34 @@ function AdminPanel({ apiKey }) {
           ))}
         </div>
       )}
+
+      <div style={{ marginTop: 18, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+        <div style={{ fontFamily: C.mono, fontSize: 10.5, letterSpacing: "0.08em", color: C.coreBright, textTransform: "uppercase" }}>
+          🔑 Con la key maestra (histórico)
+        </div>
+        <div style={{ fontFamily: C.sans, fontSize: 11, color: C.dim, marginTop: 4 }}>
+          Acceso permanente, no un token de 24h — no se puede revocar a una persona individual, solo rotando toda la key.
+        </div>
+
+        {otorgados === null && <div style={{ fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 10 }}>Cargando…</div>}
+
+        {otorgados !== null && otorgados.length === 0 && (
+          <div style={{ fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 10 }}>
+            Nadie ha recibido la key maestra por este flujo todavía.
+          </div>
+        )}
+
+        {otorgados !== null && otorgados.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            {otorgados.map((o, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${C.line}` }}>
+                <span style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream }}>{o.nombre}</span>
+                <span style={{ fontFamily: C.mono, fontSize: 10, color: C.dim }}>{timeAgo(o.otorgadoEn)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

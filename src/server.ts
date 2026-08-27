@@ -39,6 +39,7 @@ import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/ac
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
 import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
+import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
@@ -229,6 +230,26 @@ app.get("/api/cerebro/accesos-activos", async (req: Request, res: Response) => {
     console.error("[api/cerebro/accesos-activos] Error:", message);
     res.status(500).json({ error: message });
   }
+});
+
+app.get("/api/cerebro/accesos-maestro-otorgados", async (req: Request, res: Response) => {
+  if (!exigeKeyMaestra(req, res)) return;
+
+  try {
+    const otorgados = await listarAccesosMaestroOtorgados();
+    res.json({ otorgados });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/accesos-maestro-otorgados] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/accesos-maestro-otorgados", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
 });
 
 app.options("/api/cerebro/accesos-activos", (_req: Request, res: Response) => {

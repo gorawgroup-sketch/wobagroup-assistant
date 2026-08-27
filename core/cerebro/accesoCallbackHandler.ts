@@ -8,6 +8,7 @@ import {
   type NotificacionEnviada,
 } from "./accesoSolicitudSheet";
 import { crearTokenTemporal } from "./tempTokenStore";
+import { registrarAccesoMaestroOtorgado } from "./accesoMaestroAuditSheet";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 /**
@@ -124,6 +125,7 @@ export async function handleAccesoCerebroCallback(callback: TelegramCallbackQuer
       return;
     }
     await resolverSolicitudAcceso(id, "aprobado_maestro", cerebroKey);
+    await registrarAccesoMaestroOtorgado(solicitud.nombre);
     await editarTodasLasNotificaciones(solicitud.notificaciones, `✅ Acceso con key maestra — ${solicitud.nombre}`);
     return;
   }
