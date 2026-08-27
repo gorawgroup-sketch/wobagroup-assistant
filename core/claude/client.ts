@@ -4,7 +4,7 @@ import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
 import { registrarUsoIA } from "./costTracking";
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = "claude-sonnet-5";
 const MAX_TOOL_ITERATIONS = 12;
 
 function buildSystemPrompt(nombreRemitente?: string): string {

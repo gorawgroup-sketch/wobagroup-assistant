@@ -5,12 +5,13 @@ const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_costos_ia";
 const HEADERS = ["fecha", "chatId", "modelo", "inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens", "costoUSD"];
 
-// Tarifas oficiales de claude-sonnet-4-6 (el único modelo que usa el
-// sistema hoy — core/claude/client.ts MODEL). Si el modelo cambia, hay que
-// actualizar estas constantes.
-const MODELO = "claude-sonnet-4-6";
-const PRECIO_INPUT_POR_TOKEN = 3.0 / 1_000_000;
-const PRECIO_OUTPUT_POR_TOKEN = 15.0 / 1_000_000;
+// Tarifas oficiales de claude-sonnet-5 (el único modelo que usa el
+// sistema hoy — core/claude/client.ts MODEL; cambiado desde claude-sonnet-4-6
+// el 2026-08-27). Si el modelo cambia, hay que actualizar estas constantes —
+// si no, el reporte de /costos_ia queda calculando con la tarifa vieja.
+const MODELO = "claude-sonnet-5";
+const PRECIO_INPUT_POR_TOKEN = 2.0 / 1_000_000;
+const PRECIO_OUTPUT_POR_TOKEN = 10.0 / 1_000_000;
 // El sistema hoy no usa prompt caching (no se setea cache_control en
 // ninguna llamada), así que estos campos siempre serán 0 en la práctica —
 // se calculan de todas formas por si se activa caching más adelante.
