@@ -3,7 +3,7 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_capturas";
-const HEADERS = ["fecha", "autor", "texto"];
+const HEADERS = ["fecha", "autor", "texto", "empresas"];
 
 /**
  * Conocimiento capturado por el equipo (mensajes con la palabra CAPTURA), en
@@ -46,18 +46,22 @@ async function ensureTab(): Promise<void> {
 
   const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
-  if (existing) return;
 
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: {
-      requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }],
-    },
-  });
+  if (!existing) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }],
+      },
+    });
+  }
 
+  // Siempre reescribe la fila de headers (idempotente, contenido fijo) — así
+  // una pestaña creada antes de agregar la columna "empresas" (2026-08-27)
+  // queda migrada sola en el siguiente registro, sin script aparte.
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:C1`,
+    range: `${TAB_NAME}!A1:D1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -68,7 +72,7 @@ async function ensureTab(): Promise<void> {
  * si se captura, se asume ya validado por quien la mandó. Funciona sin
  * importar quién escriba (no valida remitente ni rol).
  */
-export async function registrarCaptura(textoCompleto: string, autor?: string): Promise<void> {
+export async function registrarCaptura(textoCompleto: string, autor?: string, empresas?: string[]): Promise<void> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -77,14 +81,24 @@ export async function registrarCaptura(textoCompleto: string, autor?: string): P
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:C`,
+    range: `${TAB_NAME}!A:D`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [[fecha, autor ?? "", textoCompleto.trim()]] },
+    requestBody: { values: [[fecha, autor ?? "", textoCompleto.trim(), (empresas ?? []).join(", ")]] },
   });
 }
 
-/** Devuelve todas las capturas registradas, formateadas para incluir como contexto. */
+/**
+ * Devuelve todas las capturas registradas, formateadas para incluir como
+ * contexto. Cada captura se renderiza como un bloque delimitado (encabezado
+ * + texto tal cual, sin aplanarlo en una sola línea con guion) — un mensaje
+ * capturado de varios items (ej. varias plataformas con su propio "lo cargan
+ * el día X") suele traer sus propios saltos de línea y guiones internos; con
+ * un solo "- [...] texto" quedaba todo pegado y era fácil que el modelo
+ * mezclara o se saltara datos de un item al leerlo. El separador "---" entre
+ * capturas y el encabezado con la(s) empresa(s) ayudan a que cada bloque se
+ * lea como una unidad aparte.
+ */
 export async function obtenerCapturasFormateadas(): Promise<string | null> {
   try {
     await ensureTab();
@@ -93,7 +107,7 @@ export async function obtenerCapturasFormateadas(): Promise<string | null> {
 
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A2:C10000`,
+      range: `${TAB_NAME}!A2:D10000`,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
 
@@ -103,12 +117,13 @@ export async function obtenerCapturasFormateadas(): Promise<string | null> {
     return filas
       .filter((fila) => fila[2])
       .map((fila) => {
-        const [fecha, autor, texto] = fila;
+        const [fecha, autor, texto, empresas] = fila;
         const fechaLabel = fecha ? String(fecha).slice(0, 10) : "";
         const autorLabel = autor ? ` — ${autor}` : "";
-        return `- [${fechaLabel}${autorLabel}] ${texto}`;
+        const empresasLabel = empresas ? ` — Empresa(s): ${empresas}` : " — Empresa(s): sin especificar";
+        return `### Captura del ${fechaLabel}${empresasLabel}${autorLabel}\n${texto}`;
       })
-      .join("\n");
+      .join("\n\n---\n\n");
   } catch (error) {
     console.error("[knowledge/capturaSheet] Error leyendo capturas:", error);
     return null;
@@ -116,19 +131,26 @@ export async function obtenerCapturasFormateadas(): Promise<string | null> {
 }
 
 /** Todas las capturas crudas (sin formatear), para el endpoint de diagnóstico. */
-export async function obtenerCapturasCrudas(): Promise<Array<{ fecha: string; autor: string; texto: string }>> {
+export async function obtenerCapturasCrudas(): Promise<
+  Array<{ fecha: string; autor: string; texto: string; empresas: string }>
+> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:C10000`,
+    range: `${TAB_NAME}!A2:D10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
   const filas = resp.data.values ?? [];
   return filas
     .filter((fila) => fila[2])
-    .map((fila) => ({ fecha: fila[0] ? String(fila[0]) : "", autor: fila[1] ? String(fila[1]) : "", texto: String(fila[2]) }));
+    .map((fila) => ({
+      fecha: fila[0] ? String(fila[0]) : "",
+      autor: fila[1] ? String(fila[1]) : "",
+      texto: String(fila[2]),
+      empresas: fila[3] ? String(fila[3]) : "",
+    }));
 }

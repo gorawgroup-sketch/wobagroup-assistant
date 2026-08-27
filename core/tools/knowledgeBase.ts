@@ -21,9 +21,14 @@ export const knowledgeBaseTool: ToolDefinition = {
   name: "consultar_base_conocimiento",
   description:
     "Consulta el conocimiento interno del grupo (WOBA/BAE, Footprint, eWorks): responsabilidades, " +
-    "procesos administrativos, domiciliaciones, recomendaciones operativas, contactos, y cualquier " +
-    "corrección que se haya hecho antes sobre algo que el asistente asumió mal. Úsala cuando la " +
-    "pregunta dependa de ese contexto. No la uses para saludos o small talk.",
+    "procesos administrativos, domiciliaciones, recomendaciones operativas, contactos, credenciales de " +
+    "plataformas, y el CALENDARIO DE PAGOS RECURRENTES capturado por el equipo (cuándo se cobra cada " +
+    "suscripción/servicio, con qué tarjeta, quién recibe la factura, cómo descargarla) — y cualquier " +
+    "corrección que se haya hecho antes sobre algo que el asistente asumió mal. Para preguntas del tipo " +
+    "'cuándo/cómo se paga X', 'con qué tarjeta está domiciliado X', o cualquier dato que alguien haya " +
+    "capturado antes con CAPTURA, consulta esta herramienta SIEMPRE primero — es la fuente autoritativa, " +
+    "más confiable que inferir del historial de movimientos de Holded (que solo confirma cargos ya " +
+    "ocurridos, no el calendario ni las instrucciones de pago). No la uses para saludos o small talk.",
   input_schema: {
     type: "object",
     properties: {

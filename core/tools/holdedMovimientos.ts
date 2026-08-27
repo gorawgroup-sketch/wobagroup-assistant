@@ -19,7 +19,10 @@ export const holdedMovimientosTool: ToolDefinition = {
     "Consulta los movimientos bancarios (no facturas) registrados en Holded para una empresa del " +
     "grupo (WOBA, EWORKS o Footprint), en un rango de fechas. Úsala cuando el usuario pregunte por " +
     "cargos, abonos, ingresos o gastos reales según el banco, a diferencia del cashflow proyectado en " +
-    "Sheets. Footprint no tiene cashflow en Sheets todavía — solo esta consulta directa a Holded.",
+    "Sheets. Footprint no tiene cashflow en Sheets todavía — solo esta consulta directa a Holded. " +
+    "Para saber CUÁNDO se cobra normalmente algo, con qué tarjeta, o cómo descargar la factura, usa " +
+    "primero consultar_base_conocimiento (ahí vive esa información capturada por el equipo) — esta " +
+    "herramienta sirve para confirmar cargos que ya ocurrieron, no para el calendario de pagos.",
   input_schema: {
     type: "object",
     properties: {

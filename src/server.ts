@@ -9,20 +9,9 @@ import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { manejarClasificacion } from "../core/documental/processClassification";
-import { esMensajeCaptura, guardarCaptura } from "../core/knowledge/capture";
-
-// Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
-// guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
-// X" (la información NO está en el mensaje — hay que ir a leer el correo
-// real con la tool capturar_correo). Solo dispara si menciona un correo Y
-// una referencia a que llegó/se recibió, para no capturar por esta vía un
-// mensaje que solo menciona la palabra "correo" de pasada.
-const CAPTURA_REFERENCIA_CORREO = /\b(correo|email|mail)s?\b/i;
-const CAPTURA_LLEGADA = /\b(lleg[oó]|recib[ií]|recibido|entrante|acaba de llegar)\b/i;
-function esCapturaDeCorreo(texto: string): boolean {
-  return CAPTURA_REFERENCIA_CORREO.test(texto) && CAPTURA_LLEGADA.test(texto);
-}
+import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
+import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -42,6 +31,18 @@ import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/ac
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import type { TelegramUpdate } from "../core/telegram/types";
+
+// Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
+// guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
+// X" (la información NO está en el mensaje — hay que ir a leer el correo
+// real con la tool capturar_correo). Solo dispara si menciona un correo Y
+// una referencia a que llegó/se recibió, para no capturar por esta vía un
+// mensaje que solo menciona la palabra "correo" de pasada.
+const CAPTURA_REFERENCIA_CORREO = /\b(correo|email|mail)s?\b/i;
+const CAPTURA_LLEGADA = /\b(lleg[oó]|recib[ií]|recibido|entrante|acaba de llegar)\b/i;
+function esCapturaDeCorreo(texto: string): boolean {
+  return CAPTURA_REFERENCIA_CORREO.test(texto) && CAPTURA_LLEGADA.test(texto);
+}
 
 const app = express();
 app.use(express.json());
@@ -308,6 +309,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleEventoCallback(update.callback_query);
       } else if (data.startsWith("cerebroacceso_")) {
         await handleAccesoCerebroCallback(update.callback_query);
+      } else if (data.startsWith("capturaempresa_")) {
+        await handleCapturaEmpresaCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
@@ -323,10 +326,9 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     const caption = update.message.caption;
     if (caption && esMensajeCaptura(caption)) {
       try {
-        await guardarCaptura(caption, update.message.from?.username);
-        await sendTelegramMessage(update.message.chat.id, "✅ Guardado, gracias.");
+        await iniciarSeleccionEmpresaCaptura(update.message.chat.id, caption, update.message.from?.username);
       } catch (error) {
-        console.error("Error guardando captura de conocimiento:", error);
+        console.error("Error iniciando captura de conocimiento:", error);
         await sendTelegramMessage(update.message.chat.id, "Hubo un error guardando la captura. Intenta de nuevo.");
       }
       return;
@@ -379,10 +381,9 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     }
 
     try {
-      await guardarCaptura(incoming.text, incoming.fromUsername);
-      await sendTelegramMessage(incoming.chatId, "✅ Guardado, gracias.");
+      await iniciarSeleccionEmpresaCaptura(incoming.chatId, incoming.text, incoming.fromUsername);
     } catch (error) {
-      console.error("Error guardando captura de conocimiento:", error);
+      console.error("Error iniciando captura de conocimiento:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la captura. Intenta de nuevo.");
     }
     return;

@@ -30,10 +30,20 @@ export const capturarCorreoTool: ToolDefinition = {
           "natural o una consulta de Gmail (ej. 'from:proveedor@dominio.com', 'subject:factura'). Si no se " +
           "da o no se sabe cuál es, se omite y se toma el correo más reciente.",
       },
+      empresas: {
+        type: "array",
+        items: { type: "string", enum: ["WOBA", "EWORKS", "Footprint", "General"] },
+        description:
+          "A qué empresa(s) del grupo corresponde esta información, si se puede determinar del contexto " +
+          "de la conversación (quién lo pidió, de qué se habla). Si no es evidente, PREGÚNTALE al usuario " +
+          "a qué empresa corresponde antes de llamar esta herramienta, en vez de adivinar — así la captura " +
+          "queda correctamente etiquetada. Usa 'General' solo si de verdad aplica a las tres.",
+      },
     },
   },
   handler: async (input) => {
     const busqueda = typeof input.busqueda === "string" ? input.busqueda.trim() : "";
+    const empresas = Array.isArray(input.empresas) ? input.empresas.filter((e): e is string => typeof e === "string") : [];
     const query = busqueda ? `${busqueda} in:inbox` : "in:inbox";
 
     let ids: string[] = [];
@@ -54,11 +64,13 @@ export const capturarCorreoTool: ToolDefinition = {
 
     const contenido = [`De: ${resumen.de}`, `Asunto: ${resumen.asunto}`, `Fecha: ${resumen.fecha}`, "", cuerpo].join("\n");
 
-    await registrarCaptura(contenido, "correo entrante (capturado)");
+    await registrarCaptura(contenido, "correo entrante (capturado)", empresas);
 
+    const empresasLabel = empresas.length > 0 ? ` (${empresas.join(", ")})` : "";
     return (
-      `Capturado el correo "${resumen.asunto}" de ${resumen.de} (${cuerpo.length} caracteres del cuerpo) — ` +
-      "ya está en la base de conocimiento, disponible para futuras consultas."
+      `Capturado el correo "${resumen.asunto}" de ${resumen.de}${empresasLabel} ` +
+      `(${cuerpo.length} caracteres del cuerpo) — ya está en la base de conocimiento, disponible para ` +
+      "futuras consultas."
     );
   },
 };

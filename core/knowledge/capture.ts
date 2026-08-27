@@ -16,6 +16,6 @@ export function esMensajeCaptura(texto: string): boolean {
  * asume ya validado por quien la mandó. Funciona sin importar quién escriba
  * — no valida remitente.
  */
-export async function guardarCaptura(textoCompleto: string, autor?: string): Promise<void> {
-  await registrarCaptura(textoCompleto, autor);
+export async function guardarCaptura(textoCompleto: string, autor?: string, empresas?: string[]): Promise<void> {
+  await registrarCaptura(textoCompleto, autor, empresas);
 }

@@ -52,6 +52,12 @@ function buildSystemPrompt(nombreRemitente?: string): string {
       "— no esperes a que lo pida explícitamente. Las correcciones ya registradas son SIEMPRE la fuente " +
       "de verdad: si algo que lees en consultar_base_conocimiento contradice una corrección registrada, " +
       "la corrección gana.",
+    "Cuando te pregunten cuándo o cómo se paga algo, con qué tarjeta está domiciliado, quién recibe la " +
+      "factura, o cualquier dato operativo de una plataforma/proveedor, consulta SIEMPRE " +
+      "consultar_base_conocimiento primero — ahí vive lo que el equipo ha capturado explícitamente con " +
+      "CAPTURA, y es más confiable que inferirlo de los movimientos de Holded (esos solo confirman cargos " +
+      "que ya ocurrieron, no explican el calendario ni las instrucciones de pago). Si no encuentras ahí lo " +
+      "que buscas, dilo explícitamente en vez de inventar o completar con una suposición.",
     "Cuando te pidan 'CAPTURA' o 'guarda' información que llegó por correo (ej. 'CAPTURA lo que llegó en " +
       "el correo de X', 'guarda la info del correo que recibimos hoy'), la información NO está en el " +
       "mensaje — nunca inventes ni resumas de memoria lo que crees que dice el correo. Usa la herramienta " +

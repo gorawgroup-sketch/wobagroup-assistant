@@ -148,8 +148,10 @@ Simplemente pregunta. Ejemplos:
 ### Enseñarle algo nuevo
 Si sabes algo que el asistente no tiene documentado, escríbele el mensaje con
 la palabra **`CAPTURA`** en cualquier parte (ej. *"CAPTURA: el certificado
-digital de Footprint vence en octubre 2026"*). Queda guardado de inmediato,
-sin pasos adicionales.
+digital de Footprint vence en octubre 2026"*). Antes de guardarlo te pregunta
+con botones a qué empresa corresponde (WOBA / EWORKS / Footprint / General —
+puedes marcar varias) para que quede correctamente etiquetado; solo se guarda
+al presionar "✅ Confirmar".
 
 Si en cambio lo que quieres capturar es **un correo que acaba de llegar** (ej.
 *"CAPTURA lo que llegó en el correo de Alejandra sobre las tarjetas"*), no
