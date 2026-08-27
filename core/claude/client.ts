@@ -63,7 +63,10 @@ function buildSystemPrompt(nombreRemitente?: string): string {
       "mensaje — nunca inventes ni resumas de memoria lo que crees que dice el correo. Usa la herramienta " +
       "capturar_correo, que va a leer el correo real (asunto, remitente, cuerpo completo) y lo guarda tal " +
       "cual. Si el mensaje menciona de quién o sobre qué es el correo, pásaselo como término de búsqueda; " +
-      "si no, se toma el más reciente de la bandeja de entrada.",
+      "si no, se toma el más reciente de la bandeja de entrada. Si capturar_correo devuelve un error o dice " +
+      "que no encontró el correo, NUNCA respondas como si se hubiera guardado — dile a la persona exactamente " +
+      "qué pasó (no encontró el correo, hubo un error técnico, etc.) para que sepa que tiene que intentarlo " +
+      "de otra forma. Es más importante decir 'no lo logré capturar' que sonar útil.",
   ].join("\n\n");
 }
 

@@ -328,7 +328,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       try {
         await iniciarSeleccionEmpresaCaptura(update.message.chat.id, caption, update.message.from?.username);
       } catch (error) {
-        console.error("Error iniciando captura de conocimiento:", error);
+        console.error("Error iniciando la pregunta de empresa para la captura:", error);
         await sendTelegramMessage(update.message.chat.id, "Hubo un error guardando la captura. Intenta de nuevo.");
       }
       return;
@@ -383,7 +383,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     try {
       await iniciarSeleccionEmpresaCaptura(incoming.chatId, incoming.text, incoming.fromUsername);
     } catch (error) {
-      console.error("Error iniciando captura de conocimiento:", error);
+      console.error("Error iniciando la pregunta de empresa para la captura:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la captura. Intenta de nuevo.");
     }
     return;

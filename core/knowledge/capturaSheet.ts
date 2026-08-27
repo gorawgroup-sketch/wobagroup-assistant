@@ -68,9 +68,13 @@ async function ensureTab(): Promise<void> {
 }
 
 /**
- * Guarda el mensaje completo tal cual, sin paso de revisión ni aprobación —
+ * Guarda el mensaje completo tal cual, sin paso de revisión de contenido —
  * si se captura, se asume ya validado por quien la mandó. Funciona sin
- * importar quién escriba (no valida remitente ni rol).
+ * importar quién escriba (no valida remitente ni rol). Deja que cualquier
+ * error de la API de Sheets se propague (nunca lo atrapa en silencio) —
+ * quien llama (capturaEmpresaCallbackHandler.ts) depende de eso para poder
+ * avisar explícitamente si la captura NO se guardó, en vez de confirmar
+ * "guardado" sin haberlo verificado.
  */
 export async function registrarCaptura(textoCompleto: string, autor?: string, empresas?: string[]): Promise<void> {
   await ensureTab();

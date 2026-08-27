@@ -75,7 +75,7 @@ así que hay flexibilidad en cómo se escriben.
 
 | Palabra/frase clave | Dónde puede aparecer | Qué hace |
 |---|---|---|
-| `CAPTURA` | En cualquier parte del mensaje (mayúsculas o minúsculas) | Guarda el mensaje completo, tal cual, en la base de conocimiento. Antes de guardarlo pregunta con botones a qué empresa corresponde (WOBA / EWORKS / Footprint / General — se puede marcar más de una) — solo se guarda al presionar "✅ Confirmar"; "❌ Cancelar" descarta la captura sin guardar nada. **Excepción**: si el mensaje además menciona un correo (correo/email/mail) y que llegó/se recibió (ej. *"CAPTURA lo que llegó en el correo de Alejandra"*), el sistema detecta que la información NO está en el mensaje — va y lee el correo real (asunto, remitente, cuerpo completo) con la herramienta `capturar_correo` en vez de guardar la instrucción literal (en este caso, si hace falta, Claude pregunta la empresa por chat antes de capturar). |
+| `CAPTURA` | En cualquier parte del mensaje (mayúsculas o minúsculas) | Antes de guardar, pregunta con botones a qué empresa corresponde (WOBA / EWORKS / Footprint / General — se puede marcar más de una). El guardado real ocurre al presionar "✅ Confirmar y guardar": si se escribe correctamente en la base de conocimiento, confirma "✅ Guardado — [empresas]"; si falla (error de red, de la API de Sheets, etc.), lo dice explícitamente ("❌ No se pudo guardar...") y deja la misma selección de empresa lista para reintentar con el mismo botón — nunca confirma un guardado que no ocurrió. "❌ Cancelar" descarta la captura a propósito (no se guarda nada, y se avisa que se descartó). **Excepción**: si el mensaje además menciona un correo (correo/email/mail) y que llegó/se recibió (ej. *"CAPTURA lo que llegó en el correo de Alejandra"*), el sistema detecta que la información NO está en el mensaje — va y lee el correo real (asunto, remitente, cuerpo completo) con la herramienta `capturar_correo` en vez de guardar la instrucción literal, y si no logra leerlo o guardarlo lo dice explícitamente en vez de fingir éxito. |
 | `corrección:` / "eso no era así, en realidad..." / "no, en realidad es..." | En cualquier mensaje de chat normal | Registra una corrección permanente (qué se creía antes vs. el dato correcto). A partir de ahí, esa corrección se incluye SIEMPRE que se consulte la base de conocimiento, sin importar el tema. |
 | "envíale un correo a...", "contesta ese correo diciendo...", "mándale ese link a Carlos por correo" | En chat normal, lenguaje natural | Prepara un borrador de correo y lo muestra por Telegram con botones de aprobación. Nunca se envía automáticamente. |
 
@@ -133,9 +133,10 @@ registrar en cashflow) sin que presiones uno de estos botones.
   de "movimientos sin conciliar", arriba).
 
 **Sobre a qué empresa corresponde una captura de conocimiento (CAPTURA):**
-- Botones ✅ WOBA / ✅ EWORKS / ✅ Footprint / ✅ General — se pueden marcar varios a la vez (toggle, tocar de nuevo desmarca); "General" es excluyente con las demás (marcarlo desmarca el resto y viceversa).
-- ✅ Confirmar — recién ahí se guarda la captura, ya etiquetada con la(s) empresa(s) elegidas.
-- ❌ Cancelar — descarta la captura, no se guarda nada.
+- El guardado real ocurre al presionar "✅ Confirmar y guardar" — antes de eso no se ha escrito nada en la base de conocimiento.
+- Botones ✅ WOBA / ✅ EWORKS / ✅ Footprint / ✅ General — se pueden marcar varios a la vez (toggle, tocar de nuevo desmarca); "General" es excluyente con las demás (marcarlo desmarca el resto y viceversa). Hace falta marcar al menos una para poder confirmar.
+- ✅ Confirmar y guardar — guarda la captura con la(s) empresa(s) elegidas. Si la escritura falla, lo dice explícitamente y deja la selección lista para reintentar (no hay que volver a marcar los botones).
+- ❌ Cancelar — descarta la captura a propósito, no se guarda nada.
 - Abierto a cualquier usuario autorizado (no requiere rol admin) — es una captura de conocimiento, no una escritura financiera.
 
 **Sobre actividades propuestas para el calendario CRM de Holded (WOBA, EWORKS y Footprint):**

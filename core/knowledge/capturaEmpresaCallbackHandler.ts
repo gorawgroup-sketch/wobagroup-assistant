@@ -30,23 +30,23 @@ function construirTeclado(seleccionadas: EmpresaCaptura[]): InlineKeyboardButton
     filaEmpresas.slice(0, 2),
     filaEmpresas.slice(2),
     [
-      { text: "✅ Confirmar", callback_data: "capturaempresa_confirmar" },
+      { text: "✅ Confirmar y guardar", callback_data: "capturaempresa_confirmar" },
       { text: "❌ Cancelar", callback_data: "capturaempresa_cancelar" },
     ],
   ];
 }
 
 function mensajePregunta(): string {
-  return "📌 Guardado el texto. ¿A qué empresa corresponde? Puedes elegir varias.";
+  return "📌 Antes de guardar: ¿a qué empresa corresponde? Puedes elegir varias.";
 }
 
 /**
- * Envía el mensaje inicial con los botones de selección de empresa y guarda
- * el pendiente correspondiente — se llama justo después de detectar un
- * mensaje CAPTURA de texto/caption normal (no el flujo de lectura de correo,
- * que ya se resuelve solo vía Claude). Sin esta pregunta, las capturas
- * quedaban sin ninguna empresa asociada y era más difícil confiar en que el
- * asistente las reconociera correctamente al consultarlas después.
+ * Envía el mensaje con los botones de selección de empresa y guarda el
+ * pendiente correspondiente — el guardado real (registrarCaptura) ocurre
+ * recién al presionar "✅ Confirmar y guardar" (ver handleCapturaEmpresaCallback),
+ * nunca antes. Se llama justo después de detectar un mensaje CAPTURA de
+ * texto/caption normal (no el flujo de lectura de correo, que se resuelve
+ * solo vía Claude).
  */
 export async function iniciarSeleccionEmpresaCaptura(chatId: number, texto: string, autor?: string): Promise<void> {
   const messageId = await sendTelegramMessageWithButtons(chatId, mensajePregunta(), construirTeclado([]));
@@ -71,7 +71,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
   if (data === "capturaempresa_cancelar") {
     await eliminarPendienteCapturaEmpresa(chatId);
     await answerCallbackQuerySafe(callback.id);
-    await editTelegramMessage(chatId, pendiente.messageId, "❌ Captura descartada.", []);
+    await editTelegramMessage(chatId, pendiente.messageId, "❌ Captura descartada — no se guardó nada.", []);
     return;
   }
 
@@ -81,11 +81,16 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
       return;
     }
 
-    await eliminarPendienteCapturaEmpresa(chatId);
-    await answerCallbackQuerySafe(callback.id, "Guardado");
+    await answerCallbackQuerySafe(callback.id, "Guardando...");
 
+    // El guardado es lo único que de verdad importa acá — solo se elimina el
+    // pendiente y se confirma al usuario DESPUÉS de que registrarCaptura
+    // termine sin lanzar error. Si falla, el pendiente se deja intacto para
+    // poder reintentar con los mismos botones, y se avisa explícitamente en
+    // vez de decir "guardado" sobre algo que no se guardó.
     try {
       await registrarCaptura(pendiente.texto, pendiente.autor, pendiente.empresasSeleccionadas);
+      await eliminarPendienteCapturaEmpresa(chatId);
       await editTelegramMessage(
         chatId,
         pendiente.messageId,
@@ -93,8 +98,15 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
         []
       );
     } catch (error) {
-      console.error("Error guardando captura de conocimiento:", error);
-      await editTelegramMessage(chatId, pendiente.messageId, "⚠️ Hubo un error guardando la captura. Intenta de nuevo.", []);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Error guardando captura de conocimiento:", message);
+      await editTelegramMessage(
+        chatId,
+        pendiente.messageId,
+        `❌ No se pudo guardar la captura (error: ${message}). La selección de empresa se mantiene — puedes ` +
+          "volver a presionar Confirmar para reintentar, o escribir el CAPTURA de nuevo.",
+        construirTeclado(pendiente.empresasSeleccionadas)
+      );
     }
     return;
   }

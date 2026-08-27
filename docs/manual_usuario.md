@@ -149,9 +149,12 @@ Simplemente pregunta. Ejemplos:
 Si sabes algo que el asistente no tiene documentado, escríbele el mensaje con
 la palabra **`CAPTURA`** en cualquier parte (ej. *"CAPTURA: el certificado
 digital de Footprint vence en octubre 2026"*). Antes de guardarlo te pregunta
-con botones a qué empresa corresponde (WOBA / EWORKS / Footprint / General —
-puedes marcar varias) para que quede correctamente etiquetado; solo se guarda
-al presionar "✅ Confirmar".
+con botones a qué empresa corresponde (WOBA / EWORKS / Footprint / General,
+puedes marcar varias); al presionar "✅ Confirmar y guardar" queda guardado
+de verdad — si por alguna razón no se pudo escribir en la base de
+conocimiento, te lo dice claramente (nunca confirma un guardado que no
+ocurrió) y deja la selección lista para que vuelvas a intentarlo con el
+mismo botón.
 
 Si en cambio lo que quieres capturar es **un correo que acaba de llegar** (ej.
 *"CAPTURA lo que llegó en el correo de Alejandra sobre las tarjetas"*), no
