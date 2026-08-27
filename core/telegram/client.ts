@@ -31,6 +31,43 @@ export function parseIncomingUpdate(update: TelegramUpdate): IncomingMessage | n
 }
 
 /**
+ * Envía la acción "escribiendo..." (mismo indicador nativo de cualquier chat
+ * de Telegram) — Telegram la muestra ~5 segundos y luego la esconde sola, así
+ * que hay que reenviarla mientras dure el procesamiento (ver
+ * iniciarIndicadorEscribiendo). Falla en silencio: nunca debe tumbar el flujo
+ * real por un problema con un indicador visual.
+ */
+async function sendChatAction(chatId: number, action: "typing"): Promise<void> {
+  try {
+    const token = getBotToken();
+    const url = `${TELEGRAM_API_BASE}/bot${token}/sendChatAction`;
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action }),
+    });
+  } catch (error) {
+    console.error("[telegram] Error enviando indicador de 'escribiendo' (no crítico):", error);
+  }
+}
+
+/**
+ * Mantiene el indicador "escribiendo..." activo en un chat mientras dure una
+ * operación larga (ej. el loop de tool-use de askClaude) — se reenvía cada 4s
+ * porque Telegram lo esconde solo a los ~5s. Devuelve una función para
+ * detenerlo; SIEMPRE debe llamarse (en un finally) cuando termine la
+ * operación, incluso si falló.
+ */
+export function iniciarIndicadorEscribiendo(chatId: number): () => void {
+  sendChatAction(chatId, "typing").catch(() => {});
+  const intervalo = setInterval(() => {
+    sendChatAction(chatId, "typing").catch(() => {});
+  }, 4000);
+
+  return () => clearInterval(intervalo);
+}
+
+/**
  * Envía un archivo (Buffer) como documento a un chat de Telegram. Se usa para
  * entregar reportes generados (Excel/PDF) directamente en el chat — el envío
  * a un chat ya autorizado no requiere botón de aprobación aparte, es

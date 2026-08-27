@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
-import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery } from "../core/telegram/client";
+import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery, iniciarIndicadorEscribiendo } from "../core/telegram/client";
 import { esUsuarioAutorizado, esAccionSensible, obtenerRolUsuario } from "../core/telegram/authorizedUsersSheet";
 import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/adminNotify";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
@@ -380,12 +380,15 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       // — hay que ir a leer el correo real (capturar_correo) en vez de
       // guardar la instrucción tal cual, que es lo que hacía antes y dejaba
       // la base de conocimiento sin nada útil.
+      const detenerEscribiendo = iniciarIndicadorEscribiendo(incoming.chatId);
       try {
         const respuesta = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
         await sendTelegramMessage(incoming.chatId, respuesta);
       } catch (error) {
         console.error("Error capturando correo:", error);
         await sendTelegramMessage(incoming.chatId, "Hubo un error leyendo el correo para capturarlo. Intenta de nuevo.");
+      } finally {
+        detenerEscribiendo();
       }
       return;
     }
@@ -482,6 +485,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     return;
   }
 
+  const detenerEscribiendo = iniciarIndicadorEscribiendo(incoming.chatId);
   try {
     const reply = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
     await sendTelegramMessage(incoming.chatId, reply);
@@ -495,6 +499,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     } catch (sendError) {
       console.error("Error enviando el mensaje de error a Telegram:", sendError);
     }
+  } finally {
+    detenerEscribiendo();
   }
 });
 
