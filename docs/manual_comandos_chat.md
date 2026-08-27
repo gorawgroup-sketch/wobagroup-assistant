@@ -64,7 +64,7 @@ funciona con o sin la diagonal inicial).
 
 | Comando | Qué hace |
 |---|---|
-| `/revisarcorreo` (o `revisarcorreo`) | Dispara de inmediato una revisión de correos nuevos en `asistente@wobagroup.com`, sin esperar al cron de cada hora. |
+| `/revisarcorreo` (o `revisarcorreo`, o `revisamail`/`/revisamail`) | Dispara de inmediato una revisión de correos nuevos en `asistente@wobagroup.com`, sin esperar al cron de cada hora. |
 
 ---
 

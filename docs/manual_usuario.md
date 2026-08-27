@@ -173,9 +173,9 @@ riesgo.
   aprobación de un administrador.
 
 ### Comando especial
-- `/revisarcorreo` (o `revisarcorreo`, sin la diagonal) — le pide que revise
-  el correo entrante en ese momento, sin esperar a la revisión automática de
-  cada hora.
+- `/revisarcorreo` (o `revisarcorreo`, o `revisamail`/`/revisamail`) — le
+  pide que revise el correo entrante en ese momento, sin esperar a la
+  revisión automática de cada hora.
 
 ---
 
