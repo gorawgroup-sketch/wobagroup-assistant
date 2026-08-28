@@ -56,6 +56,12 @@ que hacer nada más.
   cashflow siempre está en euros, así que la comparación usa el equivalente
   en EUR que ya calcula Holded (el valor en gris que aparece debajo del
   monto en dólares dentro de Holded), nunca el monto nativo en dólares.
+  **Busca también por total agrupado**: si varios cargos del mismo
+  proveedor (ej. varias compras de Amazon la misma semana) no coinciden uno
+  a uno con el cashflow, suma todos los que compartan la misma descripción
+  y compara esa suma contra lo registrado — a veces no se anota cada compra
+  por separado sino un solo total (ej. "AMAZON — S35 — 65,83€" cubriendo 5
+  cargos individuales).
 - Detecta automáticamente movimientos que aparecieron en Holded pero no están
   registrados en el cashflow, y propone agregarlos — con botón de
   aprobación, nunca se agrega solo. Solo WOBA/EWORKS. Corre dos veces por

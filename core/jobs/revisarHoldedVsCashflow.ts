@@ -106,7 +106,7 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
 
   const valoresRegistrados = registrosSemana.map((r) => Math.abs(parseValorFormateado(r.valor)));
 
-  const candidatos: CandidatoNoRegistrado[] = [];
+  const sinMatchIndividual: CandidatoNoRegistrado[] = [];
 
   for (const mov of movimientosHolded) {
     if (esMovimientoInternoOConversion(mov.description)) continue;
@@ -117,13 +117,41 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     const yaExiste = valoresRegistrados.some((v) => Math.abs(v - valorAbs) <= TOLERANCIA_EUR);
     if (yaExiste) continue; // conservador: si hay duda razonable de match, no se propone
 
-    candidatos.push({
+    sinMatchIndividual.push({
       empresa,
       descripcion: mov.description ?? "(sin descripción)",
       fecha: mov.booking_date?.slice(0, 10),
       valorAbs,
       esIngreso: amountEur > 0,
     });
+  }
+
+  // Segunda pasada, pedida explícitamente: varios cargos del mismo
+  // proveedor (ej. varias compras de "Www.amazon" la misma semana) a veces
+  // no se registran uno a uno en el cashflow, sino como un solo total
+  // agrupado. Se agrupan por descripción exacta (normalizada) los que NO
+  // matchearon individualmente, y si la SUMA del grupo sí coincide con
+  // algún valor ya registrado, se da por registrado el grupo completo —
+  // mismo criterio conservador que el match individual (tolerancia de 1
+  // céntimo, nunca inventa un total que no está). Grupos de un solo
+  // movimiento no aportan nada nuevo (ya se probaron arriba), se dejan tal
+  // cual.
+  const porDescripcion = new Map<string, CandidatoNoRegistrado[]>();
+  for (const c of sinMatchIndividual) {
+    const clave = c.descripcion.trim().toLowerCase();
+    const grupo = porDescripcion.get(clave);
+    if (grupo) grupo.push(c);
+    else porDescripcion.set(clave, [c]);
+  }
+
+  const candidatos: CandidatoNoRegistrado[] = [];
+  for (const grupo of porDescripcion.values()) {
+    if (grupo.length > 1) {
+      const suma = grupo.reduce((acc, c) => acc + c.valorAbs, 0);
+      const sumaYaExiste = valoresRegistrados.some((v) => Math.abs(v - suma) <= TOLERANCIA_EUR);
+      if (sumaYaExiste) continue;
+    }
+    candidatos.push(...grupo);
   }
 
   return candidatos;
