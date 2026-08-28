@@ -13,7 +13,18 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 // Ahora se guarda en la misma hoja de Sheets que ya usan _propuestas_
 // pendientes, _correcciones, etc. — el único store de este tipo en el
 // proyecto que todavía vivía solo en memoria.
+//
+// Pedido explícito, distinto del bug de arriba: esto NO debe acumularse sin
+// límite. MAX_MESSAGES ya acota cuántos mensajes vivos guarda CADA chat,
+// pero una fila que nadie vuelve a tocar se quedaba ahí para siempre. Por
+// eso hay un TTL (TTL_HISTORIAL_MS): pasado ese tiempo sin actividad, la
+// conversación se trata como si no existiera y la fila se purga — "se
+// acuerda de la conversación reciente por un tiempo", no memoria
+// indefinida. Esto es completamente aparte de CAPTURA (core/knowledge/
+// capturaSheet.ts, pestaña _capturas): eso es conocimiento guardado a
+// propósito y a mano, permanente, sin TTL — nunca se purga.
 const MAX_MESSAGES = 20;
+const TTL_HISTORIAL_MS = 6 * 60 * 60 * 1000; // 6 horas — cubre una pausa normal (comida, una reunión), no una conversación de hace días
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_historial_conversaciones";
@@ -28,6 +39,7 @@ function assertSheetId(): string {
 
 let writeClient: sheets_v4.Sheets | null = null;
 let tabAsegurada = false;
+let tabGridId: number | null = null;
 
 function getClient(): sheets_v4.Sheets {
   if (writeClient) return writeClient;
@@ -43,20 +55,21 @@ function getClient(): sheets_v4.Sheets {
   return writeClient;
 }
 
-async function ensureTab(): Promise<void> {
-  if (tabAsegurada) return;
+async function ensureTab(): Promise<number> {
+  if (tabGridId !== null) return tabGridId;
 
   const sheetId = assertSheetId();
   const sheets = getClient();
 
   const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
-  if (existing) {
+  if (existing?.properties?.sheetId != null) {
     tabAsegurada = true;
-    return;
+    tabGridId = existing.properties.sheetId;
+    return tabGridId;
   }
 
-  await sheets.spreadsheets.batchUpdate({
+  const addResp = await sheets.spreadsheets.batchUpdate({
     spreadsheetId: sheetId,
     requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }] },
   });
@@ -69,15 +82,22 @@ async function ensureTab(): Promise<void> {
   });
 
   tabAsegurada = true;
+  tabGridId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId ?? 0;
+  return tabGridId;
 }
 
 interface FilaHistorial {
   rowIndex: number;
   chatId: number;
   mensajes: Anthropic.MessageParam[];
+  actualizadoEn: number;
 }
 
-async function leerFila(chatId: number): Promise<FilaHistorial | undefined> {
+function filaVencida(actualizadoEn: number): boolean {
+  return Date.now() - actualizadoEn > TTL_HISTORIAL_MS;
+}
+
+async function leerTodasLasFilas(): Promise<FilaHistorial[]> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -89,17 +109,58 @@ async function leerFila(chatId: number): Promise<FilaHistorial | undefined> {
   });
 
   const rows = resp.data.values ?? [];
-  const idx = rows.findIndex((row) => Number(row[0]) === chatId);
-  if (idx === -1) return undefined;
+  return rows.map((row, i) => {
+    let mensajes: Anthropic.MessageParam[] = [];
+    try {
+      mensajes = row[1] ? JSON.parse(String(row[1])) : [];
+    } catch {
+      mensajes = []; // fila corrupta — mejor arrancar en limpio que tumbar la conversación
+    }
+    const actualizadoEn = row[2] ? new Date(String(row[2])).getTime() : 0;
+    return { rowIndex: i + 2, chatId: Number(row[0]), mensajes, actualizadoEn };
+  });
+}
 
-  let mensajes: Anthropic.MessageParam[] = [];
-  try {
-    mensajes = rows[idx][1] ? JSON.parse(String(rows[idx][1])) : [];
-  } catch {
-    mensajes = []; // fila corrupta — mejor arrancar en limpio que tumbar la conversación
+async function leerFila(chatId: number): Promise<FilaHistorial | undefined> {
+  const todas = await leerTodasLasFilas();
+  return todas.find((f) => f.chatId === chatId);
+}
+
+async function eliminarFila(rowIndex1Based: number): Promise<void> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const gridId = await ensureTab();
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: { sheetId: gridId, dimension: "ROWS", startIndex: rowIndex1Based - 1, endIndex: rowIndex1Based },
+          },
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * Purga filas cuya última actividad supera el TTL — llamada en cada
+ * guardarHistorial (mismo patrón que purgarVencidas en proposalSheet.ts),
+ * así la pestaña nunca acumula conversaciones inactivas indefinidamente.
+ */
+async function purgarVencidas(): Promise<void> {
+  const todas = await leerTodasLasFilas();
+  const vencidas = todas.filter((f) => filaVencida(f.actualizadoEn));
+
+  // De abajo hacia arriba para que borrar una fila no corra los índices de las siguientes.
+  vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
+  for (const { rowIndex } of vencidas) {
+    await eliminarFila(rowIndex).catch((error) =>
+      console.error("[conversationStore] Error purgando fila vencida (no crítico):", error)
+    );
   }
-
-  return { rowIndex: idx + 2, chatId, mensajes };
 }
 
 /** Un turno nuevo siempre empieza con un mensaje de usuario en texto plano (nunca un tool_result). */
@@ -110,7 +171,12 @@ function esInicioDeTurno(mensaje: Anthropic.MessageParam): boolean {
 export async function obtenerHistorial(chatId: number): Promise<Anthropic.MessageParam[]> {
   try {
     const fila = await leerFila(chatId);
-    return fila?.mensajes ?? [];
+    if (!fila) return [];
+    // Vencida: se trata como si no existiera — "recuerda por un tiempo",
+    // no memoria indefinida. La fila en sí se limpia en la próxima purga
+    // (guardarHistorial), no hace falta borrarla aquí también.
+    if (filaVencida(fila.actualizadoEn)) return [];
+    return fila.mensajes;
   } catch (error) {
     console.error("[conversationStore] Error leyendo historial (se sigue sin contexto previo):", error);
     return [];
@@ -122,14 +188,7 @@ export async function limpiarHistorial(chatId: number): Promise<void> {
   try {
     const fila = await leerFila(chatId);
     if (!fila) return;
-    const sheetId = assertSheetId();
-    const sheets = getClient();
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!B${fila.rowIndex}:C${fila.rowIndex}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [["[]", new Date().toISOString()]] },
-    });
+    await eliminarFila(fila.rowIndex);
   } catch (error) {
     console.error("[conversationStore] Error limpiando historial (no crítico):", error);
   }
@@ -159,6 +218,11 @@ export async function guardarHistorial(chatId: number, mensajes: Anthropic.Messa
 
   try {
     await ensureTab();
+    // Purga conversaciones inactivas ANTES de escribir esta — así la
+    // pestaña nunca crece sin límite (pedido explícito: "no acumular tanta
+    // información", solo recordar la conversación reciente por un tiempo).
+    await purgarVencidas();
+
     const sheetId = assertSheetId();
     const sheets = getClient();
     const fila = await leerFila(chatId);
