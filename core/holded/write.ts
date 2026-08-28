@@ -67,11 +67,21 @@ interface HoldedContact {
   [key: string]: unknown;
 }
 
+/**
+ * Quita acentos, mayúsculas, y puntuación de razón social (comas, puntos de
+ * abreviatura, espacios repetidos). Sin esto, "OCEAN FACILITY SERVICES, S.A."
+ * (como lo lee la extracción de factura) nunca hacía match por substring con
+ * "OCEAN FACILITY SERVICES SA." (como está el contacto real en Holded) —
+ * verificado en vivo, causaba falsos "no encontré el proveedor".
+ */
 function normalizar(texto: string): string {
   return texto
     .normalize("NFD")
     .replace(new RegExp("[̀-ͯ]", "g"), "")
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 const MAX_PAGINAS_CONTACTOS = 20;
@@ -95,7 +105,11 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
       has_more?: boolean;
     };
 
-    const match = (data.items ?? []).find((c) => typeof c.name === "string" && normalizar(c.name).includes(objetivo));
+    const match = (data.items ?? []).find((c) => {
+      if (typeof c.name !== "string") return false;
+      const candidato = normalizar(c.name);
+      return candidato.includes(objetivo) || objetivo.includes(candidato);
+    });
     if (match) return match;
 
     if (!data.has_more || !data.cursor) break;
@@ -178,7 +192,9 @@ export async function buscarGastoSimilar(
     };
 
     for (const item of data.items ?? []) {
-      if (!item.contact_name || !normalizar(item.contact_name).includes(objetivo)) continue;
+      if (!item.contact_name) continue;
+      const nombreNormalizado = normalizar(item.contact_name);
+      if (!nombreNormalizado.includes(objetivo) && !objetivo.includes(nombreNormalizado)) continue;
       const total = parsearMontoHolded(item.total);
       if (!Number.isFinite(total) || Math.abs(total - criterios.monto) > TOLERANCIA_MONTO) continue;
 
