@@ -25,7 +25,7 @@ export const costosIATool: ToolDefinition = {
   },
   handler: async (input, context) => {
     const rol = await obtenerRolUsuario(context?.chatId);
-    if (rol !== "admin") {
+    if (rol !== "admin" && rol !== "superadmin") {
       return "Esta consulta solo está disponible para administradores.";
     }
 
