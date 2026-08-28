@@ -273,7 +273,7 @@ async function ejecutarConversacion(
   }
   system.push({ type: "text", text: buildSystemPromptDinamico(nombreRemitente) });
 
-  const historial = usarHistorial && chatId !== undefined ? obtenerHistorial(chatId) : [];
+  const historial = usarHistorial && chatId !== undefined ? await obtenerHistorial(chatId) : [];
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -442,7 +442,7 @@ async function orquestarTurno(
   );
 
   if (intentoRapido.tipo === "respuesta") {
-    if (chatId !== undefined) guardarHistorial(chatId, intentoRapido.messages);
+    if (chatId !== undefined) await guardarHistorial(chatId, intentoRapido.messages);
     return intentoRapido.respuesta;
   }
 
@@ -482,7 +482,7 @@ async function orquestarTurno(
     throw new Error("Estado inesperado: el intento completo (Sonnet) no debería poder pedir escalar.");
   }
 
-  if (chatId !== undefined) guardarHistorial(chatId, resultadoFinal.messages);
+  if (chatId !== undefined) await guardarHistorial(chatId, resultadoFinal.messages);
   return resultadoFinal.respuesta;
 }
 
@@ -513,7 +513,7 @@ export async function askClaude(userText: string, chatId?: number, nombreRemiten
     }
 
     console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
-    limpiarHistorial(chatId!);
+    await limpiarHistorial(chatId!);
     try {
       const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false);
       registrarEstadoClaude(true);
