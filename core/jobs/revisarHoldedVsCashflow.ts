@@ -47,10 +47,22 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     await Promise.all(cuentas.map((c) => listBankMovements(empresa, c.id, desde, hasta)))
   ).flat();
 
+  // Incluye GASTOS_FIJOS y APLAZAMIENTO_IMPUESTOS además de los 3 bloques
+  // originales — verificado en vivo que un gasto real (ej. "Sunreuse Woba",
+  // S35, 110€) vive en GASTOS_FIJOS y NO se estaba comparando contra los
+  // movimientos de Holded, generando un falso "sin registrar" para algo que
+  // ya estaba en la hoja (con el mismo monto e incluso el mismo mes).
+  // PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES se dejan fuera a propósito:
+  // son saldos pendientes sin semana asignada, no ejecución de esta semana.
+  const CATEGORIAS_EJECUCION_SEMANAL = new Set([
+    "INGRESOS",
+    "PAGOS_PROYECTOS",
+    "PAGOS_EXTRAS",
+    "GASTOS_FIJOS",
+    "APLAZAMIENTO_IMPUESTOS",
+  ]);
   const registrosSemana = (await fetchDetalleRegistros()).filter(
-    (r) =>
-      r.semana.toUpperCase() === semanaLabel &&
-      (r.categoria === "INGRESOS" || r.categoria === "PAGOS_PROYECTOS" || r.categoria === "PAGOS_EXTRAS")
+    (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_EJECUCION_SEMANAL.has(r.categoria)
   );
 
   const valoresRegistrados = registrosSemana.map((r) => Math.abs(parseValorFormateado(r.valor)));
@@ -110,8 +122,12 @@ export async function detectarSinMovimientoBancario(
     Math.abs(typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0))
   );
 
+  // Mismo ajuste que detectarNoRegistrados: incluye GASTOS_FIJOS y
+  // APLAZAMIENTO_IMPUESTOS, que también son ejecución real de la semana y
+  // antes quedaban fuera de esta comparación.
+  const CATEGORIAS_GASTO_SEMANAL = new Set(["PAGOS_PROYECTOS", "PAGOS_EXTRAS", "GASTOS_FIJOS", "APLAZAMIENTO_IMPUESTOS"]);
   const registrosGastos = (await fetchDetalleRegistros()).filter(
-    (r) => r.semana.toUpperCase() === semanaLabel && (r.categoria === "PAGOS_PROYECTOS" || r.categoria === "PAGOS_EXTRAS")
+    (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_GASTO_SEMANAL.has(r.categoria)
   );
 
   const candidatos: CandidatoSinMovimientoBancario[] = [];
