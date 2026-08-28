@@ -23,6 +23,23 @@ function sugerirBloque(amount: number): BloqueEscritura {
   return amount > 0 ? "ingresos" : "pagos_extras";
 }
 
+// El cashflow solo registra ingresos externos o pagos a externos — pedido
+// explícito de Carlos: conversiones de moneda y traslados entre cuentas
+// propias de la misma empresa NUNCA van ahí, así que nunca deben salir como
+// "sin registrar". Verificado en vivo el patrón real de Holded/Wise: una
+// conversión aparece como DOS movimientos con la MISMA descripción literal
+// "Converted Usd To Eur" (uno en cada cuenta propia — ej. "Emoney EUR" y
+// "Emoney USD" de WOBA), a veces con "(fee: XXX)" al final. No se intenta
+// detectar traslados entre cuentas propias por otros patrones de texto
+// todavía — no hay un ejemplo real confirmado del que partir; si aparece
+// uno, se agrega aquí con el mismo cuidado (verificado contra datos reales,
+// no adivinado).
+const RE_CONVERSION_MONEDA = /^converted\s+\S+\s+to\s+\S+/i;
+
+function esMovimientoInternoOConversion(descripcion: string | undefined): boolean {
+  return RE_CONVERSION_MONEDA.test(descripcion ?? "");
+}
+
 export interface CandidatoNoRegistrado {
   empresa: EmpresaCashflow;
   descripcion: string;
@@ -70,6 +87,8 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   const candidatos: CandidatoNoRegistrado[] = [];
 
   for (const mov of movimientosHolded) {
+    if (esMovimientoInternoOConversion(mov.description)) continue;
+
     const amount = typeof mov.amount === "number" ? mov.amount : Number(mov.amount ?? 0);
     const valorAbs = Math.abs(amount);
 

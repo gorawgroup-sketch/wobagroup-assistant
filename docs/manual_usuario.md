@@ -47,7 +47,11 @@ que hacer nada más.
   movimiento falta, con monto y fecha, si falta algo. Por defecto revisa lo
   que va de la semana actual; puedes pedirle la semana anterior completa.
   Solo consulta, no registra nada — para eso usa la detección automática de
-  abajo o pídeselo directamente.
+  abajo o pídeselo directamente. **Nunca marca como "falta" una conversión
+  de moneda entre cuentas propias de la misma empresa** (ej. "Converted USD
+  to EUR" entre las cuentas Emoney EUR/Emoney USD) — el cashflow solo
+  registra ingresos externos o pagos a externos, nunca movimientos internos
+  entre cuentas de la propia empresa.
 - Detecta automáticamente movimientos que aparecieron en Holded pero no están
   registrados en el cashflow, y propone agregarlos — con botón de
   aprobación, nunca se agrega solo. Solo WOBA/EWORKS. Corre dos veces por
