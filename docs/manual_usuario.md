@@ -46,8 +46,12 @@ que hacer nada más.
   solo leer el resumen, cruza los datos y te dice específicamente qué
   movimiento falta, con monto y fecha, si falta algo. Por defecto revisa lo
   que va de la semana actual; puedes pedirle la semana anterior completa.
-  Solo consulta, no registra nada — para eso usa la detección automática de
-  abajo o pídeselo directamente. **Nunca marca como "falta" una conversión
+  Esta consulta por sí sola no registra nada — pero si le dices "regístralos"
+  o "muéstramelos con botón" (o de entrada le pides que registre lo que
+  falta), dispara el mismo flujo con botones que el chequeo automático del
+  viernes/lunes, sin esperar a que llegue esa fecha: un mensaje por
+  movimiento, con categoría sugerida y opción de corregirla, para que
+  apruebes cada uno con un toque. **Nunca marca como "falta" una conversión
   de moneda entre cuentas propias de la misma empresa** (ej. "Converted USD
   to EUR" entre las cuentas Emoney EUR/Emoney USD) — el cashflow solo
   registra ingresos externos o pagos a externos, nunca movimientos internos

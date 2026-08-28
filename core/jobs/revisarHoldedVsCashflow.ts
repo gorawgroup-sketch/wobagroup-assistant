@@ -247,6 +247,88 @@ export async function detectarSinMovimientoBancario(
 }
 
 /**
+ * Crea la propuesta (fila en _propuestas_pendientes) y manda el mensaje con
+ * botones de categoría para UN candidato — extraído de revisarHoldedVsCashflow
+ * para poder reutilizarlo también desde el tool conversacional
+ * proponer_registro_cashflow (core/tools/proponerRegistroCashflow.ts), que
+ * dispara el MISMO flujo de aprobación bajo demanda en vez de esperar al
+ * cron del viernes/lunes. Nunca escribe nada por sí sola — solo propone.
+ * Devuelve true si se envió correctamente.
+ */
+export async function enviarPropuestaCandidato(
+  chatId: number,
+  candidato: CandidatoNoRegistrado,
+  semanaLabel: string,
+  esChequeoPreliminar: boolean
+): Promise<boolean> {
+  const opciones = candidato.esIngreso
+    ? [{ bloque: "ingresos" as BloqueEscritura, etiqueta: "Ingresos" }]
+    : construirOpcionesBloque(candidato.categoriasSugeridas);
+  const bloqueSugerido = opciones[0].bloque;
+
+  const mejorSugerencia = candidato.categoriasSugeridas?.[0];
+  const notaNoEscribible =
+    mejorSugerencia && mejorSugerencia.bloque === null && mejorSugerencia.score > 0
+      ? `\n\n⚠️ Por el concepto, esto se parece más a "${mejorSugerencia.etiqueta}" — esa categoría todavía no tiene ` +
+        `escritura automática, regístralo a mano en el Sheet si aplica.`
+      : "";
+
+  const texto = [
+    esChequeoPreliminar
+      ? `📋 Chequeo preliminar (viernes) — movimiento de Holded sin registrar en el cashflow de esta semana`
+      : `📋 Movimiento de Holded sin registrar en el cashflow`,
+    ``,
+    `Empresa: ${candidato.empresa}`,
+    `Fecha: ${candidato.fecha ?? "(sin fecha)"}`,
+    `Semana: ${semanaLabel}`,
+    `Concepto: ${candidato.descripcion}`,
+    `Valor: ${candidato.valorAbs.toFixed(2)} € (${candidato.esIngreso ? "abono" : "cargo"})`,
+    ``,
+    `¿A qué categoría corresponde?`,
+  ].join("\n") + notaNoEscribible;
+
+  // Se persiste primero (con messageId=0 provisional) para tener el id real
+  // antes de mandar los botones; se actualiza el messageId tras enviarlos.
+  let propuestaId: string | undefined;
+  try {
+    const propuesta = await crearPropuesta({
+      empresa: candidato.empresa,
+      bloqueSugerido,
+      clienteOConcepto: candidato.descripcion,
+      semana: semanaLabel,
+      valor: candidato.valorAbs,
+      fechaMovimiento: candidato.fecha,
+      chatId,
+      messageId: 0,
+    });
+    propuestaId = propuesta.id;
+
+    const botones = [
+      ...opciones.map((o) => [{ text: `✅ ${o.etiqueta}`, callback_data: `cf_approve:${propuesta.id}:${o.bloque}` }]),
+      [{ text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` }],
+    ];
+
+    const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);
+
+    await actualizarMessageId(propuesta.id, messageId);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[revisarHoldedVsCashflow] Error enviando propuesta a Telegram:`, message);
+
+    // Si la fila ya se creó pero el envío/actualización falló, el usuario
+    // nunca verá botones válidos para ella — se borra de inmediato en vez
+    // de dejarla como basura hasta el purgado por TTL (7 días).
+    if (propuestaId) {
+      await consumirPropuesta(propuestaId).catch((cleanupError) => {
+        console.error(`[revisarHoldedVsCashflow] Error limpiando propuesta huérfana:`, cleanupError);
+      });
+    }
+    return false;
+  }
+}
+
+/**
  * Job: compara movimientos bancarios de Holded contra lo ya registrado en
  * DATOS, y propone por Telegram los que no encuentra match. NO escribe nada
  * — solo detecta y notifica. La escritura solo ocurre si el usuario aprueba
@@ -300,70 +382,8 @@ export async function revisarHoldedVsCashflow(
     }
 
     for (const candidato of candidatos) {
-      const opciones = candidato.esIngreso
-        ? [{ bloque: "ingresos" as BloqueEscritura, etiqueta: "Ingresos" }]
-        : construirOpcionesBloque(candidato.categoriasSugeridas);
-      const bloqueSugerido = opciones[0].bloque;
-
-      const mejorSugerencia = candidato.categoriasSugeridas?.[0];
-      const notaNoEscribible =
-        mejorSugerencia && mejorSugerencia.bloque === null && mejorSugerencia.score > 0
-          ? `\n\n⚠️ Por el concepto, esto se parece más a "${mejorSugerencia.etiqueta}" — esa categoría todavía no tiene ` +
-            `escritura automática, regístralo a mano en el Sheet si aplica.`
-          : "";
-
-      const texto = [
-        esChequeoPreliminar
-          ? `📋 Chequeo preliminar (viernes) — movimiento de Holded sin registrar en el cashflow de esta semana`
-          : `📋 Movimiento de Holded sin registrar en el cashflow`,
-        ``,
-        `Empresa: ${candidato.empresa}`,
-        `Fecha: ${candidato.fecha ?? "(sin fecha)"}`,
-        `Semana: ${semanaLabel}`,
-        `Concepto: ${candidato.descripcion}`,
-        `Valor: ${candidato.valorAbs.toFixed(2)} € (${candidato.esIngreso ? "abono" : "cargo"})`,
-        ``,
-        `¿A qué categoría corresponde?`,
-      ].join("\n") + notaNoEscribible;
-
-      // Se persiste primero (con messageId=0 provisional) para tener el id real
-      // antes de mandar los botones; se actualiza el messageId tras enviarlos.
-      let propuestaId: string | undefined;
-      try {
-        const propuesta = await crearPropuesta({
-          empresa: candidato.empresa,
-          bloqueSugerido,
-          clienteOConcepto: candidato.descripcion,
-          semana: semanaLabel,
-          valor: candidato.valorAbs,
-          fechaMovimiento: candidato.fecha,
-          chatId,
-          messageId: 0,
-        });
-        propuestaId = propuesta.id;
-
-        const botones = [
-          ...opciones.map((o) => [{ text: `✅ ${o.etiqueta}`, callback_data: `cf_approve:${propuesta.id}:${o.bloque}` }]),
-          [{ text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` }],
-        ];
-
-        const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);
-
-        await actualizarMessageId(propuesta.id, messageId);
-        propuestasCreadas++;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[revisarHoldedVsCashflow] Error enviando propuesta a Telegram:`, message);
-
-        // Si la fila ya se creó pero el envío/actualización falló, el usuario
-        // nunca verá botones válidos para ella — se borra de inmediato en vez
-        // de dejarla como basura hasta el purgado por TTL (7 días).
-        if (propuestaId) {
-          await consumirPropuesta(propuestaId).catch((cleanupError) => {
-            console.error(`[revisarHoldedVsCashflow] Error limpiando propuesta huérfana:`, cleanupError);
-          });
-        }
-      }
+      const enviada = await enviarPropuestaCandidato(chatId, candidato, semanaLabel, esChequeoPreliminar);
+      if (enviada) propuestasCreadas++;
     }
   }
 

@@ -14,6 +14,7 @@ import { gastosSinComprobanteTool } from "./gastosSinComprobante";
 import { movimientosSinConciliarTool } from "./movimientosSinConciliar";
 import { proponerEventoCalendarioTool } from "./proponerEvento";
 import { verificarCashflowActualizadoTool } from "./verificarCashflowActualizado";
+import { proponerRegistroCashflowTool } from "./proponerRegistroCashflow";
 import { capturarCorreoTool } from "./capturarCorreo";
 import { saldosBancariosTool } from "./saldosBancarios";
 import { generarReporteContableTool } from "./generarReporteContable";
@@ -41,6 +42,7 @@ const tools: ToolDefinition[] = [
   movimientosSinConciliarTool,
   proponerEventoCalendarioTool,
   verificarCashflowActualizadoTool,
+  proponerRegistroCashflowTool,
   capturarCorreoTool,
   saldosBancariosTool,
   generarReporteContableTool,

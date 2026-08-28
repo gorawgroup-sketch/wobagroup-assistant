@@ -73,7 +73,12 @@ const SYSTEM_PROMPT_ESTATICO = [
     "registrado y te dice específicamente qué falta, si falta algo. Reserva consultar_cashflow_resumen " +
     "para preguntas de balance/cifras sin pedir verificación contra Holded. Para el sentido CONTRARIO — " +
     "qué gasto ya está en el cashflow pero el banco todavía no refleja ninguna salida real de dinero — " +
-    "usa verificar_gastos_sin_movimiento_bancario en vez de verificar_cashflow_actualizado.",
+    "usa verificar_gastos_sin_movimiento_bancario en vez de verificar_cashflow_actualizado. " +
+    "verificar_cashflow_actualizado SOLO reporta texto, nunca escribe nada — si el usuario además pide " +
+    "que lo registres/actualices/agregues, o dice que sí quiere verlos con botón (ej. tras preguntarle " +
+    "'¿quieres que te los muestre uno a uno con botón?'), usa proponer_registro_cashflow, que sí manda " +
+    "un mensaje con botones por cada movimiento para aprobar la categoría y registrarlo. Nunca digas que " +
+    "no tienes forma de registrar directamente — sí la tienes, es proponer_registro_cashflow.",
   "Cuando busquen un concepto o proveedor específico dentro del cashflow (ej. '¿hay facturas de " +
     "limpieza pendientes?', '¿cuánto se ha pagado de Google?'), usa consultar_cashflow_detalle con el " +
     "filtro 'contraparte' — cubre TODAS las categorías (ingresos, pagos a proyectos, pagos extras, " +
