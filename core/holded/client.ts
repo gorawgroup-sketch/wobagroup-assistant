@@ -74,7 +74,18 @@ export interface BankMovement {
   id?: string;
   booking_date?: string;
   description?: string;
+  /** Monto en la divisa NATIVA de la cuenta (`currency`) — NO siempre EUR, ver `accounting_amount`. */
   amount?: string | number;
+  currency?: string;
+  /**
+   * Equivalente en EUR ya calculado por Holded, presente cuando `currency`
+   * no es EUR (verificado en vivo: una cuenta en USD trae `amount`+`currency:
+   * "USD"` Y `accounting_amount`+`accounting_currency: "EUR"` — el segundo
+   * es el que hay que comparar contra el cashflow, que siempre está en EUR).
+   * En cuentas ya en EUR viene null porque no hace falta convertir.
+   */
+  accounting_amount?: string | number | null;
+  accounting_currency?: string | null;
   /** Saldo de la cuenta INMEDIATAMENTE DESPUÉS de este movimiento (no el saldo actual de la cuenta). */
   balance?: string;
   /** "reconciled" | "pending" | otros — confirmado en vivo contra la API real. */

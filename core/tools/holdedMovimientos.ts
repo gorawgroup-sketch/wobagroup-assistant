@@ -93,7 +93,16 @@ export const holdedMovimientosTool: ToolDefinition = {
       const fecha = m.booking_date ? m.booking_date.slice(0, 10) : "(sin fecha)";
       const desc = m.description ?? "(sin descripción)";
       const estado = m.status === "reconciled" ? "conciliado" : m.status ?? "pendiente";
-      return `${fecha} — ${desc} — ${amount} — ${tipoMov} — ${estado}`;
+      const moneda = (m.currency ?? "EUR").toUpperCase();
+      // La cuenta puede operar en una divisa distinta a EUR — mostrarlo sin
+      // etiqueta llevaba a leer, ej., "9304.05" de una cuenta en USD como si
+      // fueran euros. Si no es EUR, se muestra también el equivalente que ya
+      // trae Holded (accounting_amount), igual que se ve en el propio Holded.
+      const montoTexto =
+        moneda !== "EUR" && m.accounting_amount != null
+          ? `${amount} ${moneda} (≈ ${Number(m.accounting_amount).toFixed(2)} €)`
+          : `${amount} €`;
+      return `${fecha} — ${desc} — ${montoTexto} — ${tipoMov} — ${estado}`;
     });
 
     return [resumen, "", ...lineas].join("\n");

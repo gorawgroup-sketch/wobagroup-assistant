@@ -213,6 +213,26 @@ function parsearMontoMovimiento(raw: unknown): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
+/**
+ * Los gastos de Holded (y el cashflow) siempre están en EUR, pero una
+ * cuenta bancaria puede operar en otra divisa (USD, GBP...) — `amount`
+ * viene en la divisa nativa de la cuenta, no en EUR. Cuando `currency` no
+ * es EUR, Holded ya trae el equivalente en `accounting_amount` — mismo
+ * ajuste que se verificó en vivo para revisarHoldedVsCashflow.ts (pedido
+ * explícito de Carlos, con capturas de Holded mostrando el valor nativo
+ * arriba y el equivalente en EUR justo debajo). Sin esto, buscar un
+ * movimiento parecido para conciliar un gasto en EUR contra una cuenta en
+ * USD nunca encontraba nada, aunque el movimiento sí existiera.
+ */
+function montoEnEuros(mov: { amount?: string | number; currency?: string; accounting_amount?: string | number | null }): number {
+  const monedaNativa = (mov.currency ?? "EUR").toUpperCase();
+  if (monedaNativa !== "EUR" && mov.accounting_amount != null) {
+    const convertido = parsearMontoMovimiento(mov.accounting_amount);
+    if (Number.isFinite(convertido)) return convertido;
+  }
+  return parsearMontoMovimiento(mov.amount);
+}
+
 const TOLERANCIA_MONTO = 0.01;
 const VENTANA_DIAS_BUSQUEDA = 10;
 const MAX_PAGINAS_PURCHASES = 10;
@@ -624,12 +644,20 @@ export async function buscarMovimientoSimilar(
       "GET",
       `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
     )) as {
-      items?: Array<{ id: string; description?: string; amount?: string | number; booking_date?: string; status?: string }>;
+      items?: Array<{
+        id: string;
+        description?: string;
+        amount?: string | number;
+        currency?: string;
+        accounting_amount?: string | number | null;
+        booking_date?: string;
+        status?: string;
+      }>;
     };
 
     for (const mov of data.items ?? []) {
       if (mov.status === "reconciled") continue;
-      const monto = parsearMontoMovimiento(mov.amount);
+      const monto = montoEnEuros(mov);
       if (!Number.isFinite(monto) || Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) > TOLERANCIA_MONTO) continue;
 
       candidatos.push({

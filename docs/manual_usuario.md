@@ -51,7 +51,11 @@ que hacer nada más.
   de moneda entre cuentas propias de la misma empresa** (ej. "Converted USD
   to EUR" entre las cuentas Emoney EUR/Emoney USD) — el cashflow solo
   registra ingresos externos o pagos a externos, nunca movimientos internos
-  entre cuentas de la propia empresa.
+  entre cuentas de la propia empresa. **Convierte a euros antes de
+  comparar**: algunas cuentas (ej. Emoney USD) operan en dólares — el
+  cashflow siempre está en euros, así que la comparación usa el equivalente
+  en EUR que ya calcula Holded (el valor en gris que aparece debajo del
+  monto en dólares dentro de Holded), nunca el monto nativo en dólares.
 - Detecta automáticamente movimientos que aparecieron en Holded pero no están
   registrados en el cashflow, y propone agregarlos — con botón de
   aprobación, nunca se agrega solo. Solo WOBA/EWORKS. Corre dos veces por

@@ -42,7 +42,7 @@ export const movimientosSinConciliarTool: ToolDefinition = {
       return `No se encontraron cuentas bancarias activas en Holded para ${empresa}.`;
     }
 
-    const sinConciliar: Array<{ cuenta: string; descripcion: string; monto: number; fecha: string }> = [];
+    const sinConciliar: Array<{ cuenta: string; descripcion: string; monto: number; moneda: string; equivalenteEur: number | null; fecha: string }> = [];
     let total = 0;
 
     for (const cuenta of cuentas) {
@@ -54,6 +54,8 @@ export const movimientosSinConciliarTool: ToolDefinition = {
             cuenta: cuenta.name ?? "(sin nombre)",
             descripcion: (m.description as string) ?? "(sin descripción)",
             monto: typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0),
+            moneda: (m.currency ?? "EUR").toUpperCase(),
+            equivalenteEur: m.accounting_amount != null ? Number(m.accounting_amount) : null,
             fecha: m.booking_date ? String(m.booking_date).slice(0, 10) : "",
           });
         }
@@ -64,9 +66,19 @@ export const movimientosSinConciliarTool: ToolDefinition = {
       return `Revisé ${total} movimiento(s) bancario(s) de ${empresa} de los últimos ${dias} días — todos están conciliados.`;
     }
 
+    // La cuenta puede operar en una divisa distinta a EUR — etiquetar todo
+    // como "€" sin más era directamente incorrecto para esas cuentas
+    // (mostraba un monto en USD con símbolo de euro). Si no es EUR, se
+    // agrega también el equivalente que ya trae Holded.
     const lineas = sinConciliar
       .sort((a, b) => b.fecha.localeCompare(a.fecha))
-      .map((m) => `- [${m.cuenta}] ${m.descripcion} — ${m.monto.toFixed(2)} € (${m.fecha})`);
+      .map((m) => {
+        const montoTexto =
+          m.moneda !== "EUR" && m.equivalenteEur != null
+            ? `${m.monto.toFixed(2)} ${m.moneda} (≈ ${m.equivalenteEur.toFixed(2)} €)`
+            : `${m.monto.toFixed(2)} €`;
+        return `- [${m.cuenta}] ${m.descripcion} — ${montoTexto} (${m.fecha})`;
+      });
 
     return (
       `${sinConciliar.length} movimiento(s) bancario(s) de ${empresa} sin conciliar (de ${total} revisados, últimos ${dias} días):\n\n` +

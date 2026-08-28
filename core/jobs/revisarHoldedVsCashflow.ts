@@ -1,4 +1,4 @@
-import { listBankMovements, listTreasuryAccounts } from "../holded/client";
+import { listBankMovements, listTreasuryAccounts, type BankMovement } from "../holded/client";
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
@@ -38,6 +38,28 @@ const RE_CONVERSION_MONEDA = /^converted\s+\S+\s+to\s+\S+/i;
 
 function esMovimientoInternoOConversion(descripcion: string | undefined): boolean {
   return RE_CONVERSION_MONEDA.test(descripcion ?? "");
+}
+
+/**
+ * El cashflow SIEMPRE está en EUR, pero varias cuentas de Holded operan en
+ * otras divisas (USD, GBP...) — `amount` viene en la divisa nativa de la
+ * cuenta. Cuando `currency` no es EUR, Holded ya trae el equivalente
+ * convertido en `accounting_amount`/`accounting_currency` (visible en el
+ * propio Holded como la cifra en gris debajo del monto) — verificado en
+ * vivo (pedido explícito de Carlos, con capturas de Holded): comparar el
+ * monto nativo en USD contra el cashflow en EUR daba falsos "sin
+ * registrar" para movimientos que sí estaban, solo que registrados por su
+ * valor ya convertido a euros.
+ */
+function valorEnEuros(mov: BankMovement): number {
+  const monedaNativa = (mov.currency ?? "EUR").toUpperCase();
+  if (monedaNativa !== "EUR" && mov.accounting_amount != null) {
+    const convertido =
+      typeof mov.accounting_amount === "number" ? mov.accounting_amount : Number(mov.accounting_amount);
+    if (Number.isFinite(convertido)) return convertido;
+  }
+  const nativo = typeof mov.amount === "number" ? mov.amount : Number(mov.amount ?? 0);
+  return Number.isFinite(nativo) ? nativo : 0;
 }
 
 export interface CandidatoNoRegistrado {
@@ -89,8 +111,8 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   for (const mov of movimientosHolded) {
     if (esMovimientoInternoOConversion(mov.description)) continue;
 
-    const amount = typeof mov.amount === "number" ? mov.amount : Number(mov.amount ?? 0);
-    const valorAbs = Math.abs(amount);
+    const amountEur = valorEnEuros(mov);
+    const valorAbs = Math.abs(amountEur);
 
     const yaExiste = valoresRegistrados.some((v) => Math.abs(v - valorAbs) <= TOLERANCIA_EUR);
     if (yaExiste) continue; // conservador: si hay duda razonable de match, no se propone
@@ -100,7 +122,7 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
       descripcion: mov.description ?? "(sin descripción)",
       fecha: mov.booking_date?.slice(0, 10),
       valorAbs,
-      esIngreso: amount > 0,
+      esIngreso: amountEur > 0,
     });
   }
 
@@ -137,9 +159,7 @@ export async function detectarSinMovimientoBancario(
   const movimientosHolded = (
     await Promise.all(cuentas.map((c) => listBankMovements(empresa, c.id, desde, hasta)))
   ).flat();
-  const valoresBanco = movimientosHolded.map((m) =>
-    Math.abs(typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0))
-  );
+  const valoresBanco = movimientosHolded.map((m) => Math.abs(valorEnEuros(m)));
 
   // Mismo ajuste que detectarNoRegistrados: incluye GASTOS_FIJOS y
   // APLAZAMIENTO_IMPUESTOS, que también son ejecución real de la semana y
