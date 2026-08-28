@@ -21,6 +21,7 @@ import { manejarClasificacion } from "../core/documental/processClassification";
 import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
+import { obtenerPendienteCapturaEmpresa } from "../core/knowledge/pendienteCapturaEmpresaStore";
 import { askClaude } from "../core/claude/client";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -600,6 +601,22 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu respuesta. Intenta reenviar el archivo.");
     }
     return;
+  }
+
+  // Si hay una captura de conocimiento esperando que elijan la empresa y
+  // confirmen, y el usuario en cambio manda un mensaje normal, avisa —
+  // sin esto, la selección se pierde en silencio a los 30 min y ni el
+  // usuario ni el asistente vuelven a mencionarlo: pasó dos veces (2026-08-27
+  // y 2026-08-28) que alguien tocó una empresa pero nunca "Confirmar y
+  // guardar", y al preguntar después el asistente decía "no encontré nada"
+  // sin ninguna pista de que la captura nunca se había guardado.
+  const pendienteCapturaEmpresa = await obtenerPendienteCapturaEmpresa(incoming.chatId);
+  if (pendienteCapturaEmpresa) {
+    await sendTelegramMessage(
+      incoming.chatId,
+      "⏳ Tienes una captura de conocimiento sin confirmar (arriba) — todavía no se guardó nada. " +
+        'Pulsa "✅ Confirmar y guardar" en ese mensaje, o "❌ Cancelar" si ya no aplica.'
+    ).catch((error) => console.error("Error avisando de captura pendiente sin confirmar:", error));
   }
 
   const detenerEscribiendo = iniciarIndicadorEscribiendo(incoming.chatId);
