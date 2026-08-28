@@ -11,6 +11,31 @@ function getBotToken(): string {
 }
 
 /**
+ * fetch() con reintento SOLO para fallos de red (fetch que ni siquiera
+ * consigue conectar — ETIMEDOUT, ECONNRESET, DNS — no respuestas HTTP de
+ * error, esas se propagan tal cual en el primer intento). Verificado en vivo
+ * que esto ocurre de verdad: un ETIMEDOUT real entre Railway y
+ * api.telegram.org tumbó un guardado de captura ("TypeError: fetch failed ...
+ * ETIMEDOUT") obligando al usuario a reescribir el mensaje. 2 reintentos con
+ * espera corta — un blip de red suele resolverse en el segundo intento; si
+ * persiste, el error real se deja propagar tal cual.
+ */
+async function fetchConReintento(url: string, init: RequestInit, intentos = 3): Promise<Response> {
+  let ultimoError: unknown;
+  for (let intento = 1; intento <= intentos; intento++) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      ultimoError = error;
+      if (intento < intentos) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * intento));
+      }
+    }
+  }
+  throw ultimoError;
+}
+
+/**
  * Extrae un mensaje entrante "utilizable" de un update de Telegram.
  * Devuelve null si el update no contiene un mensaje de texto (ej. edición, sticker, etc.).
  */
@@ -87,7 +112,7 @@ export async function sendTelegramDocument(
   if (caption) form.append("caption", caption);
   form.append("document", new Blob([buffer]), filename);
 
-  const response = await fetch(url, { method: "POST", body: form });
+  const response = await fetchConReintento(url, { method: "POST", body: form });
 
   if (!response.ok) {
     const body = await response.text();
@@ -102,7 +127,7 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
 
-  const response = await fetch(url, {
+  const response = await fetchConReintento(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -129,7 +154,7 @@ export async function sendTelegramMessageWithButtons(
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
 
-  const response = await fetch(url, {
+  const response = await fetchConReintento(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -156,7 +181,7 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/answerCallbackQuery`;
 
-  const response = await fetch(url, {
+  const response = await fetchConReintento(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -194,7 +219,7 @@ export async function editTelegramMessage(
     body.reply_markup = { inline_keyboard: buttons };
   }
 
-  const response = await fetch(url, {
+  const response = await fetchConReintento(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -221,7 +246,7 @@ export async function getTelegramFile(fileId: string): Promise<TelegramFileInfo>
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`;
 
-  const response = await fetch(url);
+  const response = await fetchConReintento(url, {});
 
   if (!response.ok) {
     const body = await response.text();
@@ -240,7 +265,7 @@ export async function downloadTelegramFile(filePath: string): Promise<Buffer> {
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/file/bot${token}/${filePath}`;
 
-  const response = await fetch(url);
+  const response = await fetchConReintento(url, {});
 
   if (!response.ok) {
     throw new Error(`Error descargando el archivo de Telegram (${response.status}): ${url}`);
@@ -257,7 +282,7 @@ export async function setTelegramWebhook(webhookUrl: string): Promise<void> {
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/setWebhook`;
 
-  const response = await fetch(url, {
+  const response = await fetchConReintento(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url: webhookUrl }),
