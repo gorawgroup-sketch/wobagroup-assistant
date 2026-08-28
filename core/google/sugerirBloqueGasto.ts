@@ -14,9 +14,9 @@ const CATEGORIA_A_BLOQUE: Record<DetalleCategoria, { bloque: BloqueEscritura | n
   PAGOS_PROYECTOS: { bloque: "pagos_proyectos", etiqueta: "Pagos Proyectos" },
   PAGOS_EXTRAS: { bloque: "pagos_extras", etiqueta: "Pagos Extras" },
   GASTOS_FIJOS: { bloque: "gastos_fijos", etiqueta: "Gastos Fijos" },
-  APLAZAMIENTO_IMPUESTOS: { bloque: null, etiqueta: "Aplazamiento Impuestos" },
-  PAGOS_PENDIENTES_ALBERTO: { bloque: null, etiqueta: "Pagos Pendientes Alberto" },
-  DEUDAS_PENDIENTES: { bloque: null, etiqueta: "Deudas Pendientes Otros" },
+  APLAZAMIENTO_IMPUESTOS: { bloque: "aplazamiento_impuestos", etiqueta: "Aplazamiento Impuestos" },
+  PAGOS_PENDIENTES_ALBERTO: { bloque: "pagos_pendientes_alberto", etiqueta: "Pagos Pendientes Alberto" },
+  DEUDAS_PENDIENTES: { bloque: "deudas_pendientes", etiqueta: "Deudas Pendientes Otros" },
 };
 
 const CATEGORIAS_DE_GASTO: DetalleCategoria[] = [

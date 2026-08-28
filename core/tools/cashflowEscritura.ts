@@ -1,4 +1,9 @@
-import { registrarMovimientoEnSheet, type BloqueEscritura } from "../google/cashflowWrite";
+import {
+  registrarMovimientoEnSheet,
+  registrarPendienteEnSheet,
+  BLOQUES_SECCION_COMPARTIDA,
+  type BloqueEscritura,
+} from "../google/cashflowWrite";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -12,15 +17,22 @@ import type { ToolDefinition } from "./types";
  * propuesta concreta generada por el job de detección. Nunca lo agregues al
  * array `tools` de registry.ts ni lo llames desde ningún otro lugar.
  */
-const BLOQUES_VALIDOS: BloqueEscritura[] = ["ingresos", "pagos_proyectos", "pagos_extras", "gastos_fijos"];
+const BLOQUES_VALIDOS: BloqueEscritura[] = [
+  "ingresos",
+  "pagos_proyectos",
+  "pagos_extras",
+  "gastos_fijos",
+  "aplazamiento_impuestos",
+  "pagos_pendientes_alberto",
+  "deudas_pendientes",
+];
 
 export const cashflowEscrituraTool: ToolDefinition = {
   name: "registrar_movimiento_cashflow",
   description:
     "Registra un movimiento NUEVO (nunca modifica uno existente) en la hoja DATOS del cashflow, en " +
-    "el bloque correspondiente (ingresos, pagos_proyectos, pagos_extras o gastos_fijos). Pagos " +
-    "Pendientes Alberto, Deudas Pendientes y Aplazamiento Impuestos todavía NO son escribibles por " +
-    "aquí (columnas compartidas por título de sección, requieren registro manual). Después de " +
+    "el bloque correspondiente. 'semana' es opcional SOLO para pagos_pendientes_alberto y " +
+    "deudas_pendientes (saldos sin fecha de pago conocida) — obligatoria en el resto. Después de " +
     "escribir, verifica leyendo de vuelta la celda.",
   input_schema: {
     type: "object",
@@ -28,7 +40,7 @@ export const cashflowEscrituraTool: ToolDefinition = {
       empresa: {
         type: "string",
         enum: ["WOBA", "EWORKS"],
-        description: "Empresa dueña del movimiento.",
+        description: "Empresa dueña del movimiento. Ignorado en pagos_pendientes_alberto/deudas_pendientes (no tienen columna de empresa).",
       },
       bloque: {
         type: "string",
@@ -49,14 +61,14 @@ export const cashflowEscrituraTool: ToolDefinition = {
       },
       semana: {
         type: "string",
-        description: "Semana del movimiento, formato 'S40'.",
+        description: "Semana del movimiento, formato 'S40'. Opcional solo para pagos_pendientes_alberto/deudas_pendientes.",
       },
       valor: {
         type: "number",
         description: "Importe del movimiento (positivo, como se almacena en la hoja).",
       },
     },
-    required: ["empresa", "bloque", "cliente_o_concepto", "semana", "valor"],
+    required: ["empresa", "bloque", "cliente_o_concepto", "valor"],
   },
   handler: async (input) => {
     const empresa = input.empresa as "WOBA" | "EWORKS";
@@ -75,9 +87,21 @@ export const cashflowEscrituraTool: ToolDefinition = {
     const proyecto = typeof input.proyecto === "string" && input.proyecto.trim() ? input.proyecto.trim() : undefined;
     const banco = typeof input.banco === "string" && input.banco.trim() ? input.banco.trim() : undefined;
 
+    const esSeccionCompartida = (BLOQUES_SECCION_COMPARTIDA as string[]).includes(bloque);
+
     if (!cliente_o_concepto) return "Error: falta 'cliente_o_concepto'.";
-    if (!semana) return "Error: falta 'semana'.";
+    if (!semana && !esSeccionCompartida) return "Error: falta 'semana'.";
     if (!Number.isFinite(valor)) return "Error: 'valor' debe ser un número válido.";
+
+    if (esSeccionCompartida) {
+      const resultado = await registrarPendienteEnSheet({
+        seccion: bloque as "pagos_pendientes_alberto" | "deudas_pendientes",
+        cliente: cliente_o_concepto,
+        semana: semana || undefined,
+        valor,
+      });
+      return resultado.mensaje;
+    }
 
     const resultado = await registrarMovimientoEnSheet({
       bloque,

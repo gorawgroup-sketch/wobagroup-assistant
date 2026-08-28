@@ -4,6 +4,7 @@ import { revisarAlertasFiscales } from "./revisarAlertasFiscales";
 import { revisarCorreoNuevo } from "./revisarCorreoNuevo";
 import { revisarCostosIA } from "./revisarCostosIA";
 import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
+import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 
 const TIMEZONE = "Europe/Madrid";
 
@@ -77,4 +78,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarNumeracionCashflow programado: diario 8:15 (${TIMEZONE})`);
+
+  cron.schedule(
+    "10 8 * * *",
+    () => {
+      revisarAplazamientoImpuestos().catch((error) => {
+        console.error("[scheduler] Error ejecutando revisarAplazamientoImpuestos:", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarAplazamientoImpuestos programado: diario 8:10 (${TIMEZONE})`);
 }

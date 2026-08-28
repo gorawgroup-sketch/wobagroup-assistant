@@ -77,11 +77,16 @@ que hacer nada más.
     ofrece hasta 3 categorías candidatas como botones — tú eliges la
     correcta con un toque, no hay que corregir texto a mano. Los ingresos no
     pasan por esto, van directo a Ingresos. Si ninguna categoría tiene un
-    historial parecido, ofrece "Pagos Extras" por defecto. Hoy solo
-    Ingresos, Pagos Proyectos, Pagos Extras y Gastos Fijos son escribibles
-    automáticamente — si la mejor coincidencia es Pagos Pendientes Alberto,
-    Deudas Pendientes o Aplazamiento Impuestos, te lo dice mediante un aviso
-    y hay que registrarlo a mano en el Sheet por ahora.
+    historial parecido, ofrece "Pagos Extras" por defecto. Las 6 categorías
+    de gasto ya son escribibles automáticamente con esa misma aprobación por
+    botón — incluyendo Pagos Pendientes Alberto y Deudas Pendientes (sin
+    semana, si aún no se sabe cuándo se pagará) y Aplazamiento Impuestos.
+- **Avisos de Aplazamiento Impuestos**: revisa a diario (8:10) la columna de
+  Aplazamiento Impuestos por Pagar y manda un aviso individual (no un
+  resumen) cuando la semana registrada de una fila cae a 2 días, 1 día, o el
+  mismo día de vencer — mismo criterio de ventana que el resto de alertas
+  fiscales. Filas sin semana asignada no generan aviso (no hay fecha que
+  comparar). Solo consulta, nunca escribe nada.
 
 ### 🏦 Holded
 - Consultar movimientos bancarios reales y cuentas de tesorería (solo

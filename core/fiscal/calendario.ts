@@ -141,7 +141,7 @@ export interface AlertaProxima {
 // ventana aproximada era de 7 días — se acorta a propósito para no generar
 // avisos con una semana de anticipación que antes competían por atención
 // con lo que de verdad está por vencer.
-const VENTANA_ALERTA_DIAS = 2;
+export const VENTANA_ALERTA_DIAS = 2;
 
 /**
  * Devuelve las entradas cuya próxima fecha cae dentro de su ventana de aviso,
