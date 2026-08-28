@@ -13,6 +13,9 @@ const C = {
   dim: "#7C93AC",
   amber: "#E8A75C",
   amberBright: "#FFC98A",
+  ok: "#6FCF97",
+  danger: "#F07178",
+  dangerBright: "#FF9AA0",
   mono: "'IBM Plex Mono', ui-monospace, monospace",
   serif: "'Fraunces', Georgia, serif",
   sans: "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif",
@@ -29,6 +32,9 @@ const REVOCAR_ACCESO_ENDPOINT = "https://wobagroup-assistant-production.up.railw
 const USUARIOS_AUTORIZADOS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/usuarios-autorizados";
 const CAMBIAR_ROL_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/cambiar-rol-usuario";
 const ELIMINAR_USUARIO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/eliminar-usuario";
+const CONEXIONES_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/conexiones";
+const ARREGLAR_CONEXION_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/conexiones/arreglar";
+const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
 // guarda en localStorage para no tener que volver a pedir acceso en cada
@@ -940,6 +946,179 @@ function UsuariosPanel({ apiKey }) {
   );
 }
 
+/**
+ * Estado en vivo de las conexiones externas (Telegram, Claude, Google
+ * Sheets/Drive/Gmail, Holded x3) — lo primero visible del panel, para que
+ * una conexión caída se note de inmediato en vez de descubrirse cuando algo
+ * falla a mitad de una tarea. Cada conexión rota trae su propio botón de
+ * "arreglar": el usuario solo pulsa, el sistema hace lo necesario detrás
+ * (reintentar, o para Telegram, re-registrar el webhook) — nunca requiere
+ * que el usuario sepa qué es un webhook o una API key.
+ */
+function ConexionesPanel({ apiKey }) {
+  const [conexiones, setConexiones] = useState(null);
+  const [arreglandoId, setArreglandoId] = useState(null);
+  const [expandido, setExpandido] = useState(false);
+
+  const cargar = useCallback(() => {
+    if (!apiKey) return;
+    fetch(CONEXIONES_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (json?.conexiones) setConexiones(json.conexiones);
+      })
+      .catch(() => {
+        // silencioso: si falla el chequeo del chequeo, se sigue mostrando el último dato bueno
+      });
+  }, [apiKey]);
+
+  useEffect(() => {
+    cargar();
+    const id = setInterval(cargar, CONEXIONES_POLL_MS);
+    return () => clearInterval(id);
+  }, [cargar]);
+
+  const arreglar = async (id) => {
+    if (!apiKey || arreglandoId) return;
+    setArreglandoId(id);
+    try {
+      const res = await fetch(ARREGLAR_CONEXION_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
+        body: JSON.stringify({ id }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.conexion) {
+          setConexiones((prev) => (prev ? prev.map((c) => (c.id === id ? json.conexion : c)) : prev));
+        }
+      }
+    } catch {
+      // silencioso: el chip se queda en rojo, el usuario puede volver a intentar
+    } finally {
+      setArreglandoId(null);
+    }
+  };
+
+  if (!conexiones) return null;
+
+  const caidas = conexiones.filter((c) => !c.ok);
+  const todoBien = caidas.length === 0;
+  // Mientras algo esté caído se muestra el detalle siempre, sin depender de
+  // que alguien lo abra — el pedido explícito fue que se note "de inmediato".
+  const mostrarDetalle = expandido || !todoBien;
+
+  return (
+    <div
+      style={{
+        maxWidth: 620,
+        margin: "18px auto 0",
+        position: "relative",
+        zIndex: 2,
+        border: `1px solid ${todoBien ? C.line : C.danger}`,
+        borderRadius: 10,
+        background: todoBien ? "rgba(111, 207, 151, 0.05)" : "rgba(240, 113, 120, 0.08)",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={() => setExpandido((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "9px 14px",
+          cursor: "pointer",
+          fontFamily: C.mono,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: todoBien ? C.ok : C.dangerBright,
+              boxShadow: todoBien ? `0 0 6px ${C.ok}` : `0 0 8px ${C.dangerBright}`,
+              display: "inline-block",
+            }}
+          />
+          <span style={{ fontSize: 11, color: todoBien ? C.dim : C.dangerBright, letterSpacing: "0.04em" }}>
+            {todoBien
+              ? `Conexiones activas (${conexiones.length}/${conexiones.length})`
+              : `${caidas.length} conexión${caidas.length > 1 ? "es" : ""} con problemas — ${caidas.map((c) => c.nombre).join(", ")}`}
+          </span>
+        </div>
+        {todoBien && <span style={{ fontSize: 10, color: C.dim }}>{expandido ? "ocultar ▲" : "detalle ▼"}</span>}
+      </div>
+
+      {mostrarDetalle && (
+        <div style={{ padding: "0 14px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+          {conexiones.map((c) => (
+            <div
+              key={c.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "6px 10px",
+                background: C.voidSoft,
+                borderRadius: 6,
+                border: `1px solid ${c.ok ? C.line : C.danger}`,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: c.ok ? C.ok : C.dangerBright,
+                    flexShrink: 0,
+                  }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: C.sans, fontSize: 12, color: C.cream }}>{c.nombre}</div>
+                  {!c.ok && c.detalle && (
+                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2, wordBreak: "break-word" }}>
+                      {c.detalle}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {!c.ok && c.accionLabel && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    arreglar(c.id);
+                  }}
+                  disabled={arreglandoId === c.id}
+                  style={{
+                    flexShrink: 0,
+                    background: "none",
+                    border: `1px solid ${C.dangerBright}`,
+                    color: C.dangerBright,
+                    borderRadius: 6,
+                    padding: "5px 10px",
+                    fontFamily: C.mono,
+                    fontSize: 10.5,
+                    cursor: arreglandoId === c.id ? "default" : "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {arreglandoId === c.id ? "arreglando…" : c.accionLabel}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CerebroWoba() {
   const positions = useRadialLayout(MODULES.length, 215);
   const [active, setActive] = useState(null);
@@ -1155,6 +1334,8 @@ export default function CerebroWoba() {
           Hablar con Wobi en Telegram
         </a>
       </div>
+
+      {apiKey && <ConexionesPanel apiKey={apiKey} />}
 
       <div
         style={{

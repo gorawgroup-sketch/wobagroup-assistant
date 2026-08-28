@@ -42,6 +42,20 @@ async function holdedGet(empresa: Empresa, path: string, params: Record<string, 
   return response.json();
 }
 
+/**
+ * Chequeo mínimo de conexión: una sola cuenta de tesorería, la llamada más
+ * barata disponible que igual confirma que la API key de LECTURA todavía es
+ * válida. Nunca lanza — devuelve el resultado para el panel de conexiones.
+ */
+export async function verificarConexionHolded(empresa: Empresa): Promise<{ ok: boolean; detalle?: string }> {
+  try {
+    await holdedGet(empresa, "/treasury/accounts", { limit: "1" });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, detalle: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export interface TreasuryAccount {
   id: string;
   name?: string;

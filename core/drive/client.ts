@@ -23,6 +23,16 @@ function getDriveClient(): drive_v3.Drive {
   return driveClient;
 }
 
+/** Chequeo mínimo de conexión (about.get, sin listar archivos) para el panel de conexiones. */
+export async function verificarConexionDrive(): Promise<{ ok: boolean; detalle?: string }> {
+  try {
+    await getDriveClient().about.get({ fields: "user" });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, detalle: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 let driveWriteClient: drive_v3.Drive | null = null;
 
 /**

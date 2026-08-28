@@ -33,6 +33,16 @@ function getGmailClient(): gmail_v1.Gmail {
   return gmailClient;
 }
 
+/** Chequeo mínimo de conexión (getProfile, sin listar mensajes) para el panel de conexiones. */
+export async function verificarConexionGmail(): Promise<{ ok: boolean; detalle?: string }> {
+  try {
+    await getGmailClient().users.getProfile({ userId: "me" });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, detalle: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 let gmailSendClient: gmail_v1.Gmail | null = null;
 
 /**

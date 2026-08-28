@@ -174,6 +174,50 @@ function getClient(): Anthropic {
   return client;
 }
 
+interface EstadoClaude {
+  ok: boolean;
+  en: number;
+  detalle?: string;
+}
+
+// Estado observado del ÚLTIMO turno real de chat — para el panel de
+// conexiones. Deliberadamente pasivo (no dispara una llamada nueva en cada
+// carga del panel): un ping sintético podría dar "ok" mientras el tráfico
+// real está fallando por otra razón (límite de un modelo específico, etc.),
+// y cuesta dinero en cada refresco. Ver verificarConexionClaude para el
+// único caso en que SÍ se dispara una llamada real (botón "Reintentar").
+let ultimoEstadoClaude: EstadoClaude | null = null;
+
+function registrarEstadoClaude(ok: boolean, detalle?: string): void {
+  ultimoEstadoClaude = { ok, en: Date.now(), detalle };
+}
+
+export function obtenerUltimoEstadoClaude(): EstadoClaude | null {
+  return ultimoEstadoClaude;
+}
+
+/**
+ * Único chequeo ACTIVO de este módulo: un mensaje real de 1 token
+ * (fracción de céntimo) contra el modelo Haiku, solo para el botón
+ * "Reintentar" del panel de conexiones — nunca se dispara solo.
+ */
+export async function verificarConexionClaude(): Promise<{ ok: boolean; detalle?: string }> {
+  try {
+    const anthropic = getClient();
+    await anthropic.messages.create({
+      model: MODEL_HAIKU,
+      max_tokens: 1,
+      messages: [{ role: "user", content: "ping" }],
+    });
+    registrarEstadoClaude(true);
+    return { ok: true };
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    registrarEstadoClaude(false, detalle);
+    return { ok: false, detalle };
+  }
+}
+
 type ResultadoConversacion =
   | { tipo: "respuesta"; respuesta: string; messages: Anthropic.MessageParam[] }
   | { tipo: "escalar" };
@@ -441,7 +485,9 @@ async function orquestarTurno(
  */
 export async function askClaude(userText: string, chatId?: number, nombreRemitente?: string): Promise<string> {
   try {
-    return await orquestarTurno(userText, chatId, nombreRemitente, true);
+    const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, true);
+    registrarEstadoClaude(true);
+    return respuesta;
   } catch (error) {
     // Salvaguarda ante un historial en memoria que la API rechaza (400
     // invalid_request_error) — la causa raíz conocida ya está corregida en
@@ -452,10 +498,20 @@ export async function askClaude(userText: string, chatId?: number, nombreRemiten
     const esRechazoDeHistorial =
       error instanceof Anthropic.APIError && error.status === 400 && chatId !== undefined;
 
-    if (!esRechazoDeHistorial) throw error;
+    if (!esRechazoDeHistorial) {
+      registrarEstadoClaude(false, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
 
     console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
     limpiarHistorial(chatId!);
-    return orquestarTurno(userText, chatId, nombreRemitente, false);
+    try {
+      const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false);
+      registrarEstadoClaude(true);
+      return respuesta;
+    } catch (segundoError) {
+      registrarEstadoClaude(false, segundoError instanceof Error ? segundoError.message : String(segundoError));
+      throw segundoError;
+    }
   }
 }

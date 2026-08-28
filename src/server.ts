@@ -37,6 +37,7 @@ import { handleGastoCallback, continuarConCorreccionGasto } from "../core/gastos
 import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
 import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
@@ -131,6 +132,80 @@ app.options("/api/cerebro/estado", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
   res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+/** Igual que /api/cerebro/estado: acepta la key maestra o un token temporal vigente. */
+async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> {
+  const cerebroKey = process.env.CEREBRO_API_KEY;
+  if (!cerebroKey) {
+    res.status(503).json({ error: "CEREBRO_API_KEY no configurado en el servidor." });
+    return false;
+  }
+  const keyRecibida = req.get("X-Cerebro-Key") ?? "";
+  const esValida = keyRecibida === cerebroKey || (await esTokenTemporalValido(keyRecibida));
+  if (!esValida) {
+    res.status(403).json({ error: "X-Cerebro-Key inválida o ausente." });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Estado de las conexiones externas (Telegram, Claude, Google Sheets/Drive/
+ * Gmail, Holded x3) para el panel de conexiones — ver core/cerebro/conexiones.ts.
+ */
+app.get("/api/cerebro/conexiones", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  try {
+    const conexiones = await obtenerEstadoConexiones();
+    res.json({ conexiones });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/conexiones] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/conexiones", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  const id = typeof req.body?.id === "string" ? req.body.id : "";
+  if (!id) {
+    res.status(400).json({ error: "Falta 'id'." });
+    return;
+  }
+
+  try {
+    const conexion = await arreglarConexion(id);
+    res.json({ conexion });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/conexiones/arreglar] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/conexiones/arreglar", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
   res.sendStatus(204);
 });
 

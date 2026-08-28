@@ -293,3 +293,31 @@ export async function setTelegramWebhook(webhookUrl: string): Promise<void> {
     throw new Error(`Error configurando el webhook de Telegram (${response.status}): ${body}`);
   }
 }
+
+export interface TelegramWebhookInfo {
+  url: string;
+  lastErrorMessage?: string;
+  lastErrorDate?: number;
+}
+
+/** Consulta el estado real del webhook registrado en Telegram (para el panel de conexiones). */
+export async function getTelegramWebhookInfo(): Promise<TelegramWebhookInfo> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/getWebhookInfo`;
+
+  const response = await fetchConReintento(url, {});
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Error consultando el webhook de Telegram (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as {
+    result: { url: string; last_error_message?: string; last_error_date?: number };
+  };
+
+  return {
+    url: data.result.url,
+    lastErrorMessage: data.result.last_error_message,
+    lastErrorDate: data.result.last_error_date,
+  };
+}

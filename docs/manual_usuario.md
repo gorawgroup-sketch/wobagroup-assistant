@@ -187,6 +187,26 @@ que hacer nada más.
   de proponer el correo — si no encuentra a la persona, te lo dice y pide el
   email en vez de inventarlo.
 
+### 🔌 Panel de conexiones (front /cerebro)
+- Justo debajo del enlace a Telegram, en la parte de arriba del panel, se ve
+  en todo momento el estado real de las 8 conexiones externas que usa el
+  sistema: Telegram, Claude (Anthropic), Google Sheets, Google Drive, Gmail,
+  y Holded (WOBA / EWORKS / Footprint) — cada una verificada en vivo (Claude
+  se reporta de forma pasiva, según el último mensaje real del chat, para no
+  gastar en una llamada de prueba en cada carga del panel).
+- Mientras todo esté bien, se ve un punto verde discreto ("Conexiones activas
+  8/8") que se puede expandir para ver el detalle. Si algo se cae, el panel
+  se pone en rojo y se expande solo — no hay que buscarlo ni refrescar.
+- Cada conexión caída trae su propio botón: para Telegram literalmente
+  arregla el problema (re-registra el webhook); para el resto, reintenta la
+  verificación (arregla blips de red transitorios, que sí ocurren de verdad).
+  Si el problema es una API key revocada o un permiso retirado en el
+  proveedor externo, ningún botón puede arreglar eso — el mensaje de detalle
+  lo dice explícitamente en vez de fingir que se resolvió, y ahí sí hace
+  falta una persona (renovar la key, actualizarla en Railway).
+- Se revisa solo cada 2 minutos (no en cada carga del panel), porque varias
+  de estas APIs son de pago o tienen límite de cuota.
+
 ### 💰 Control de costos de IA
 - Registra el costo real (en USD, según las tarifas oficiales del modelo) de
   cada llamada que hace al modelo de IA.
