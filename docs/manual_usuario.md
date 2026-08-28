@@ -163,7 +163,17 @@ que hacer nada más.
   WOBA" y prepara la actividad (título, tipo, fecha/hora, y el contacto de
   Holded si lo menciona), mostrándola por Telegram con botones de
   aprobación. Solo se crea en el calendario de Holded si apruebas con
-  "✅ Programar" — solo el superadministrador puede aprobarlo.
+  "✅ Programar" — solo el superadministrador puede aprobarlo. Al crearla,
+  le asigna dueño (tu usuario de Holded, cuando existe en esa empresa) y te
+  agrega como participante para que Holded mande la notificación por
+  correo — sin esto, la actividad se creaba igual pero podía no aparecer en
+  tu vista de calendario filtrada por usuario. Después de aprobar, confirma
+  que el id existe releyéndolo — si no encuentra tu usuario en esa empresa
+  o no puede releerlo, te lo dice explícitamente en vez de callarlo.
+  **Puedes preguntarle qué hay programado** ("¿qué tengo agendado en el
+  calendario de WOBA?") para confirmar en cualquier momento qué actividades
+  existen de verdad — nunca te va a decir que no puede consultar el
+  calendario.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.

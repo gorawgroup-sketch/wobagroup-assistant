@@ -66,6 +66,10 @@ const SYSTEM_PROMPT_ESTATICO = [
     "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
     "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
     "borrador con un botón en Telegram, así que proponer uno es siempre seguro.",
+  "Sí puedes consultar el calendario CRM de Holded: usa consultar_eventos_calendario. Nunca respondas " +
+    "que no puedes verificar si algo quedó programado — después de que el usuario apruebe una actividad " +
+    "con proponer_evento_calendario, si preguntan si de verdad quedó ahí, confírmalo con " +
+    "consultar_eventos_calendario en vez de decir que no tienes visibilidad.",
   "Cuando te pregunten si el cashflow 'está actualizado', 'está al día', o si 'falta algo por " +
     "registrar', NO respondas solo con el resumen de consultar_cashflow_resumen (esos números pueden " +
     "estar completos en la hoja sin que reflejen la realidad del banco) — usa " +

@@ -726,16 +726,57 @@ export interface NuevoEventoHolded {
   fechaFin: string;
   contactId?: string;
   ubicacion?: string;
+  /** ID interno de usuario Holded (dueño del evento) — ver buscarUsuarioHoldedPorNombre. Opcional. */
+  userId?: string;
+  /** Con quién manda Holded la notificación/invitación por correo al crear el evento. */
+  participantes?: Array<{ email: string; name?: string }>;
+}
+
+/**
+ * Busca en /employees de la empresa a alguien cuyo nombre o email coincida
+ * (parcial) y que además tenga `holded_user_id` (solo los empleados con
+ * acceso real al portal de Holded lo tienen — la mayoría de registros de
+ * RRHH no) — ese es el id que espera `user_id` en POST /events. Verificado
+ * en vivo: en WOBA existe (Carlos Gonzalez, carlos@wobagroup.com), en
+ * EWORKS no aparece como empleado — en ese caso devuelve undefined y el
+ * evento se crea sin dueño asignado en vez de fallar.
+ */
+export async function buscarUsuarioHoldedPorNombre(empresa: Empresa, nombreOEmail: string): Promise<string | undefined> {
+  try {
+    const objetivo = normalizar(nombreOEmail);
+    const data = (await holdedWriteCall(empresa, "GET", "/employees?limit=100")) as {
+      items?: Array<{ full_name?: string; email?: string; holded_user_id?: string | null }>;
+    };
+
+    const match = (data.items ?? []).find((e) => {
+      if (!e.holded_user_id) return false;
+      const nombre = e.full_name ? normalizar(e.full_name) : "";
+      const email = e.email ? normalizar(e.email) : "";
+      return nombre.includes(objetivo) || email.includes(objetivo) || objetivo.includes(nombre);
+    });
+
+    return match?.holded_user_id ?? undefined;
+  } catch (error) {
+    console.error(`[buscarUsuarioHoldedPorNombre] Error buscando usuario en ${empresa} (no crítico):`, error);
+    return undefined;
+  }
 }
 
 /**
  * Crea una actividad en el calendario CRM de Holded (POST /events). Verificado
  * en vivo contra las 3 empresas: `kind` es texto libre (no hay catálogo tipo
  * /taxes, probé un valor inventado y lo aceptó sin validar), y `contact_id`
- * vincula el evento a un contacto real si se conoce. Solo debe invocarse tras
- * aprobación explícita del usuario por botón — nunca automáticamente.
+ * vincula el evento a un contacto real si se conoce. `user_id` (dueño) y
+ * `participants` (con quién manda Holded la notificación por correo) se
+ * confirmaron en la documentación oficial de Holded — antes no se enviaba
+ * ninguno de los dos, lo que dejaba el evento sin dueño asignado (podía no
+ * aparecer en la vista de calendario filtrada por usuario) y sin ninguna
+ * alerta por correo. Después de crear, relee el evento por id para
+ * confirmar que de verdad quedó accesible — nunca confía solo en que la
+ * API haya devuelto un id. Solo debe invocarse tras aprobación explícita
+ * del usuario por botón — nunca automáticamente.
  */
-export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHolded): Promise<{ id: string }> {
+export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHolded): Promise<{ id: string; verificado: boolean }> {
   const data = (await holdedWriteCall(empresa, "POST", "/events", {
     name: evento.nombre,
     kind: evento.tipo,
@@ -744,13 +785,23 @@ export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHol
     end_date: evento.fechaFin,
     contact_id: evento.contactId,
     location: evento.ubicacion ?? "",
+    user_id: evento.userId,
+    participants: evento.participantes,
   })) as { id?: string };
 
   if (!data.id) {
     throw new Error("Holded no devolvió un id para el evento creado.");
   }
 
-  return { id: data.id };
+  let verificado = false;
+  try {
+    const releido = (await holdedWriteCall(empresa, "GET", `/events/${data.id}`)) as { id?: string };
+    verificado = releido.id === data.id;
+  } catch (error) {
+    console.error("[crearEventoHolded] No se pudo releer el evento para verificar (no crítico):", error);
+  }
+
+  return { id: data.id, verificado };
 }
 
 export interface EventoProximo {

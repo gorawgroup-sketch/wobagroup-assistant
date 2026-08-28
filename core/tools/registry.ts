@@ -13,6 +13,7 @@ import { costosIATool } from "./costosIA";
 import { gastosSinComprobanteTool } from "./gastosSinComprobante";
 import { movimientosSinConciliarTool } from "./movimientosSinConciliar";
 import { proponerEventoCalendarioTool } from "./proponerEvento";
+import { consultarEventosCalendarioTool } from "./consultarEventosCalendario";
 import { verificarCashflowActualizadoTool } from "./verificarCashflowActualizado";
 import { proponerRegistroCashflowTool } from "./proponerRegistroCashflow";
 import { capturarCorreoTool } from "./capturarCorreo";
@@ -41,6 +42,7 @@ const tools: ToolDefinition[] = [
   gastosSinComprobanteTool,
   movimientosSinConciliarTool,
   proponerEventoCalendarioTool,
+  consultarEventosCalendarioTool,
   verificarCashflowActualizadoTool,
   proponerRegistroCashflowTool,
   capturarCorreoTool,
