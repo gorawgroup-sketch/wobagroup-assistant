@@ -120,11 +120,32 @@ export async function listarMensajesNuevos(afterUnixSeconds: number): Promise<st
   return ids;
 }
 
-/** Cuenta los mensajes no leídos de la bandeja de entrada (estimado de Gmail, sin paginar todo). */
+/**
+ * Cuenta los mensajes no leídos de la bandeja de entrada. `resultSizeEstimate`
+ * con `maxResults` bajo es una estimación de índice de Gmail muy poco fiable
+ * (confirmado en vivo: devolvía 201 cuando el conteo real era 2) — en vez de
+ * confiar en la estimación, se paginan los IDs reales y se cuentan.
+ */
 export async function contarNoLeidos(): Promise<number> {
   const gmail = getGmailClient();
-  const res = await gmail.users.messages.list({ userId: "me", q: "is:unread in:inbox", maxResults: 1 });
-  return res.data.resultSizeEstimate ?? 0;
+  const LIMITE_PAGINAS = 10; // hasta 5000 mensajes; suficiente para "no leídos" reales
+  let total = 0;
+  let pageToken: string | undefined;
+  let paginas = 0;
+
+  do {
+    const res = await gmail.users.messages.list({
+      userId: "me",
+      q: "is:unread in:inbox",
+      maxResults: 500,
+      pageToken,
+    });
+    total += (res.data.messages ?? []).length;
+    pageToken = res.data.nextPageToken ?? undefined;
+    paginas += 1;
+  } while (pageToken && paginas < LIMITE_PAGINAS);
+
+  return total;
 }
 
 /** Busca mensajes con una consulta arbitraria de Gmail (ej. `subject:"X" from:y@z.com`). */
