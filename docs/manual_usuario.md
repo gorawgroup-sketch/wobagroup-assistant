@@ -78,7 +78,10 @@ que hacer nada más.
   si le mandas una factura o comprobante por Telegram (o llega por correo),
   lee el documento real, y:
   - si ya existe un gasto parecido en Holded (mismo proveedor, monto y
-    fecha cercana), propone adjuntarle el comprobante ahí;
+    fecha cercana), propone adjuntarle el comprobante ahí — la comparación
+    de proveedor ignora tildes, mayúsculas y puntuación de razón social
+    ("Ocean Facility Services, S.A." reconoce a "OCEAN FACILITY SERVICES
+    SA." como el mismo contacto), igual en las tres empresas;
   - si no, propone crear un gasto nuevo, ya clasificado (empresa,
     proveedor, importe, concepto), mostrando el desglose real de IVA por
     línea (base + % leído de la factura) antes de que apruebes.
