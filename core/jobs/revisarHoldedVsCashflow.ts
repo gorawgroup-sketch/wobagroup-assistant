@@ -4,6 +4,7 @@ import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
 import { previousWeekRange, currentWeekRangeToDate, weekLabel, formatDateISO } from "../utils/isoWeek";
 import { guardarUltimoRunHoldedCashflow } from "./holdedCashflowLastRunStore";
+import { sugerirCategoriasGasto, type CategoriaSugerida } from "../google/sugerirBloqueGasto";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 
 const TOLERANCIA_EUR = 0.01;
@@ -19,8 +20,23 @@ export function parseValorFormateado(valor: string): number {
   return Number.isFinite(numero) ? numero : 0;
 }
 
-function sugerirBloque(amount: number): BloqueEscritura {
-  return amount > 0 ? "ingresos" : "pagos_extras";
+/**
+ * Convierte el ranking de sugerirCategoriasGasto en opciones de botón: solo
+ * las categorías realmente escribibles (bloque != null) con alguna
+ * coincidencia real (score > 0), hasta 3. Si ninguna categoría tuvo
+ * coincidencia (proveedor nunca visto antes), cae a "Pagos Extras" — el
+ * catch-all histórico — en vez de no ofrecer ninguna opción.
+ */
+function construirOpcionesBloque(
+  categorias: CategoriaSugerida[] | undefined
+): Array<{ bloque: BloqueEscritura; etiqueta: string }> {
+  const escribibles = (categorias ?? []).filter(
+    (c): c is CategoriaSugerida & { bloque: BloqueEscritura } => c.bloque !== null && c.score > 0
+  );
+  if (escribibles.length > 0) {
+    return escribibles.slice(0, 3).map((c) => ({ bloque: c.bloque, etiqueta: c.etiqueta }));
+  }
+  return [{ bloque: "pagos_extras", etiqueta: "Pagos Extras" }];
 }
 
 // El cashflow solo registra ingresos externos o pagos a externos — pedido
@@ -68,6 +84,8 @@ export interface CandidatoNoRegistrado {
   fecha?: string;
   valorAbs: number;
   esIngreso: boolean;
+  /** Solo para gastos (esIngreso=false) — categorías candidatas rankeadas, ver sugerirBloqueGasto.ts. */
+  categoriasSugeridas?: CategoriaSugerida[];
 }
 
 /**
@@ -100,7 +118,8 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     "GASTOS_FIJOS",
     "APLAZAMIENTO_IMPUESTOS",
   ]);
-  const registrosSemana = (await fetchDetalleRegistros()).filter(
+  const todosLosRegistros = await fetchDetalleRegistros();
+  const registrosSemana = todosLosRegistros.filter(
     (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_EJECUCION_SEMANAL.has(r.categoria)
   );
 
@@ -152,6 +171,16 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
       if (sumaYaExiste) continue;
     }
     candidatos.push(...grupo);
+  }
+
+  // Clasifica solo los gastos (los ingresos se resuelven solos por el
+  // signo) contra TODO el historial de la empresa, sin filtrar por semana —
+  // hace falta suficiente historial para que la comparación por palabras
+  // parecidas tenga con qué comparar (ver sugerirBloqueGasto.ts).
+  for (const candidato of candidatos) {
+    if (!candidato.esIngreso) {
+      candidato.categoriasSugeridas = sugerirCategoriasGasto(candidato.descripcion, todosLosRegistros);
+    }
   }
 
   return candidatos;
@@ -271,7 +300,17 @@ export async function revisarHoldedVsCashflow(
     }
 
     for (const candidato of candidatos) {
-      const bloqueSugerido = sugerirBloque(candidato.esIngreso ? 1 : -1);
+      const opciones = candidato.esIngreso
+        ? [{ bloque: "ingresos" as BloqueEscritura, etiqueta: "Ingresos" }]
+        : construirOpcionesBloque(candidato.categoriasSugeridas);
+      const bloqueSugerido = opciones[0].bloque;
+
+      const mejorSugerencia = candidato.categoriasSugeridas?.[0];
+      const notaNoEscribible =
+        mejorSugerencia && mejorSugerencia.bloque === null && mejorSugerencia.score > 0
+          ? `\n\n⚠️ Por el concepto, esto se parece más a "${mejorSugerencia.etiqueta}" — esa categoría todavía no tiene ` +
+            `escritura automática, regístralo a mano en el Sheet si aplica.`
+          : "";
 
       const texto = [
         esChequeoPreliminar
@@ -284,11 +323,8 @@ export async function revisarHoldedVsCashflow(
         `Concepto: ${candidato.descripcion}`,
         `Valor: ${candidato.valorAbs.toFixed(2)} € (${candidato.esIngreso ? "abono" : "cargo"})`,
         ``,
-        `Bloque sugerido: ${bloqueSugerido}` +
-          (bloqueSugerido === "pagos_extras"
-            ? " (no puedo distinguir si es un pago a proyecto — corrígelo si aplica)"
-            : ""),
-      ].join("\n");
+        `¿A qué categoría corresponde?`,
+      ].join("\n") + notaNoEscribible;
 
       // Se persiste primero (con messageId=0 provisional) para tener el id real
       // antes de mandar los botones; se actualiza el messageId tras enviarlos.
@@ -306,12 +342,12 @@ export async function revisarHoldedVsCashflow(
         });
         propuestaId = propuesta.id;
 
-        const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-          [
-            { text: "✅ Agregar", callback_data: `cf_approve:${propuesta.id}` },
-            { text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` },
-          ],
-        ]);
+        const botones = [
+          ...opciones.map((o) => [{ text: `✅ ${o.etiqueta}`, callback_data: `cf_approve:${propuesta.id}:${o.bloque}` }]),
+          [{ text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` }],
+        ];
+
+        const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);
 
         await actualizarMessageId(propuesta.id, messageId);
         propuestasCreadas++;

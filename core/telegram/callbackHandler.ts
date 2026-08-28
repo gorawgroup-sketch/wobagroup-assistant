@@ -31,7 +31,7 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
     return;
   }
 
-  const [accion, id] = data.split(":");
+  const [accion, id, bloqueElegido] = data.split(":");
 
   if (accion !== "cf_approve" && accion !== "cf_reject") {
     await answerCallbackQuerySafe(callback.id);
@@ -60,9 +60,16 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
   await answerCallbackQuerySafe(callback.id, "Registrando...");
 
   try {
+    // El callback_data lleva la categoría que el usuario eligió por botón
+    // (cf_approve:<id>:<bloque>) — es la fuente de verdad sobre cuál usar,
+    // no el bloqueSugerido guardado (que es solo el top-1 al momento de
+    // proponer). Se cae a bloqueSugerido solo por compatibilidad con
+    // propuestas ya creadas antes de este cambio.
+    const bloque = (bloqueElegido || propuesta.bloqueSugerido) as typeof propuesta.bloqueSugerido;
+
     const resultado = await cashflowEscrituraTool.handler({
       empresa: propuesta.empresa,
-      bloque: propuesta.bloqueSugerido,
+      bloque,
       cliente_o_concepto: propuesta.clienteOConcepto,
       semana: propuesta.semana,
       valor: propuesta.valor,

@@ -32,7 +32,7 @@ function assertSheetId(): string {
   return CASHFLOW_SHEET_ID;
 }
 
-export type BloqueEscritura = "ingresos" | "pagos_proyectos" | "pagos_extras";
+export type BloqueEscritura = "ingresos" | "pagos_proyectos" | "pagos_extras" | "gastos_fijos";
 
 interface BloqueColumnas {
   /** Columna a usar para detectar la primera fila vacía (siempre VALOR). */
@@ -42,7 +42,7 @@ interface BloqueColumnas {
   /** Rango final (letra) del bloque. */
   columnaFin: string;
   /** Orden de campos tal como se escriben en las columnas del bloque. */
-  campos: Array<"cliente" | "proyecto" | "semana" | "valor" | "empresa">;
+  campos: Array<"cliente" | "concepto" | "proyecto" | "semana" | "valor" | "empresa" | "banco">;
   tieneEmpresa: boolean;
 }
 
@@ -66,6 +66,16 @@ const BLOQUE_CONFIG: Record<BloqueEscritura, BloqueColumnas> = {
     columnaInicio: "T",
     columnaFin: "V",
     campos: ["cliente", "semana", "valor"],
+    tieneEmpresa: false,
+  },
+  // Columnas I:L de DATOS (GASTO/SEMANA/VALOR/BANCO) — mismo bloque que ya
+  // se lee para consultar_cashflow_detalle y para el comparativo contra
+  // Holded, ahora también escribible.
+  gastos_fijos: {
+    columnaChequeo: "K",
+    columnaInicio: "I",
+    columnaFin: "L",
+    campos: ["concepto", "semana", "valor", "banco"],
     tieneEmpresa: false,
   },
 };
@@ -114,6 +124,8 @@ export interface NuevoMovimiento {
   bloque: BloqueEscritura;
   cliente_o_concepto: string;
   proyecto?: string;
+  /** Solo aplica a 'gastos_fijos' (columna banco). Ignorado en el resto de bloques. */
+  banco?: string;
   semana: string;
   valor: number;
   empresa: "WOBA" | "EWORKS";
@@ -141,7 +153,9 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
 
   const valoresPorCampo: Record<string, string | number> = {
     cliente: movimiento.cliente_o_concepto,
+    concepto: movimiento.cliente_o_concepto,
     proyecto: movimiento.proyecto ?? "",
+    banco: movimiento.banco ?? "",
     semana: movimiento.semana,
     valor: movimiento.valor,
     empresa: movimiento.empresa,

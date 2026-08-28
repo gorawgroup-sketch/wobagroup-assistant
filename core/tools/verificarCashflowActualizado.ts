@@ -68,10 +68,11 @@ export const verificarCashflowActualizadoTool: ToolDefinition = {
         } else {
           algoFalta = true;
           const lineas = candidatos
-            .map(
-              (c) =>
-                `  • ${c.descripcion} — ${c.valorAbs.toFixed(2)} € (${c.esIngreso ? "abono" : "cargo"}${c.fecha ? `, ${c.fecha}` : ""})`
-            )
+            .map((c) => {
+              const categoria = c.categoriasSugeridas?.[0];
+              const sugerencia = categoria && categoria.score > 0 ? ` — probablemente ${categoria.etiqueta}` : "";
+              return `  • ${c.descripcion} — ${c.valorAbs.toFixed(2)} € (${c.esIngreso ? "abono" : "cargo"}${c.fecha ? `, ${c.fecha}` : ""})${sugerencia}`;
+            })
             .join("\n");
           partes.push(`⚠️ ${empresa}: faltan ${candidatos.length} movimiento(s) de Holded por registrar en ${semanaLabel}:\n${lineas}`);
         }

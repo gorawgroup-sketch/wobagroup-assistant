@@ -70,6 +70,18 @@ que hacer nada más.
   revisión de cierre de la semana anterior completa. Si algo se ignora o
   queda pendiente el viernes y sigue sin registrar, se vuelve a proponer el
   lunes.
+  - **Categoría sugerida por botones**: para cada gasto detectado, el
+    sistema compara el concepto contra el historial ya registrado (qué se
+    clasificó como Gastos Fijos, Pagos Proyectos, Pagos Extras, Pagos
+    Pendientes Alberto, Deudas Pendientes o Aplazamiento Impuestos antes) y
+    ofrece hasta 3 categorías candidatas como botones — tú eliges la
+    correcta con un toque, no hay que corregir texto a mano. Los ingresos no
+    pasan por esto, van directo a Ingresos. Si ninguna categoría tiene un
+    historial parecido, ofrece "Pagos Extras" por defecto. Hoy solo
+    Ingresos, Pagos Proyectos, Pagos Extras y Gastos Fijos son escribibles
+    automáticamente — si la mejor coincidencia es Pagos Pendientes Alberto,
+    Deudas Pendientes o Aplazamiento Impuestos, te lo dice mediante un aviso
+    y hay que registrarlo a mano en el Sheet por ahora.
 
 ### 🏦 Holded
 - Consultar movimientos bancarios reales y cuentas de tesorería (solo
