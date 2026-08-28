@@ -245,6 +245,7 @@ const ACCIONES_SENSIBLES = new Set([
   "doc_confirm",
   "gasto_adjuntar",
   "gasto_nuevo",
+  "gasto_usarcontacto",
   "evento_confirmar",
   "cerebroacceso_temporal",
   "cerebroacceso_maestro",

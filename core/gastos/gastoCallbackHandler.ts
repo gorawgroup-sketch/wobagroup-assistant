@@ -1,14 +1,25 @@
 import { unlink } from "node:fs/promises";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import type { InlineKeyboardButton } from "../telegram/types";
 import { consumirPropuestaGasto, obtenerPropuestaGasto, type PropuestaGasto } from "./gastoProposalSheet";
 import { guardarPendienteCorreccionGasto, type PendienteCorreccionGasto } from "./pendienteCorreccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
+import { registrarAliasProveedor } from "./proveedorAliasSheet";
+import {
+  guardarResolucionContacto,
+  consumirResolucionContacto,
+  type AlternativaContacto,
+} from "./contactoResolucionStore";
 import {
   buscarContactoHolded,
+  buscarContactosParecidos,
+  buscarComprasPorMonto,
   crearGastoHolded,
   adjuntarComprobanteHolded,
   buscarMovimientoSimilar,
   reconciliarMovimiento,
+  ContactoNoEncontradoError,
+  type HoldedContact,
 } from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import type { Empresa } from "../holded/client";
@@ -154,12 +165,65 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensaje, []);
       }
     } catch (error) {
+      if (error instanceof ContactoNoEncontradoError) {
+        await manejarContactoNoEncontrado(propuesta, propuesta.empresa, propuesta.concepto, propuesta.chatId, propuesta.messageId);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error procesando gasto:", message);
       await editTelegramMessage(
         propuesta.chatId,
         propuesta.messageId,
         `⚠️ Error procesando "${propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
+        []
+      );
+    }
+    return;
+  }
+
+  if (accion === "gasto_usarcontacto") {
+    const resolucion = await consumirResolucionContacto(propuestaId);
+    if (!resolucion) {
+      await answerCallbackQuerySafe(callback.id, "Esta selección ya no está disponible.");
+      return;
+    }
+    const alternativa = resolucion.alternativas[Number(extra)];
+    if (!alternativa) {
+      await answerCallbackQuerySafe(callback.id, "Alternativa inválida.");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Procesando...");
+    await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Procesando con "${alternativa.contactName}"...`, []);
+
+    try {
+      const mensaje = await crearGastoYReportar(resolucion.propuesta, resolucion.empresaFinal, resolucion.conceptoFinal, {
+        id: alternativa.contactId,
+        name: alternativa.contactName,
+      });
+      await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensaje, []);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[gastoCallbackHandler] Error procesando gasto con contacto alternativo:", message);
+      await editTelegramMessage(
+        resolucion.chatId,
+        resolucion.messageId,
+        `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
+        []
+      );
+    }
+    return;
+  }
+
+  if (accion === "gasto_sincontacto") {
+    const resolucion = await consumirResolucionContacto(propuestaId);
+    await answerCallbackQuerySafe(callback.id, "Ok.");
+    if (resolucion) {
+      await limpiarArchivoLocal(resolucion.propuesta.rutaLocal);
+      await editTelegramMessage(
+        resolucion.chatId,
+        resolucion.messageId,
+        `❌ Ok — crea el proveedor "${resolucion.propuesta.proveedor}" en Holded (${resolucion.empresaFinal}) y vuelve a mandar la factura.`,
         []
       );
     }
@@ -175,18 +239,23 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
  * correspondiente, y devuelve el texto final para reportar — no manda el
  * mensaje él mismo, porque lo usan dos caminos distintos (editar un mensaje
  * existente vs. mandar uno nuevo tras una corrección).
+ *
+ * Si no se pasa `contactoForzado` y no se encuentra el proveedor, lanza
+ * ContactoNoEncontradoError en vez de devolver un texto de error — quien la
+ * llame decide si ofrece alternativas (ver manejarContactoNoEncontrado) o
+ * falla directo. Cuando SÍ se pasa `contactoForzado` (el usuario confirmó
+ * una alternativa), se salta la búsqueda y además aprende el alias para que
+ * la próxima factura de este proveedor resuelva directo.
  */
 async function crearGastoYReportar(
   propuesta: PropuestaGasto,
   empresaFinal: PropuestaGasto["empresa"],
-  conceptoFinal: string
+  conceptoFinal: string,
+  contactoForzado?: { id: string; name: string }
 ): Promise<string> {
-  const contacto = await buscarContactoHolded(empresaFinal, propuesta.proveedor);
+  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuesta.proveedor));
   if (!contacto) {
-    return (
-      `⚠️ No encontré el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}). ` +
-      `Créalo primero en Holded y vuelve a mandar la factura — no quiero adivinar a qué contacto asignarlo.`
-    );
+    throw new ContactoNoEncontradoError(propuesta.proveedor, empresaFinal);
   }
 
   const lineas =
@@ -203,12 +272,123 @@ async function crearGastoYReportar(
 
   await adjuntarYLimpiar(propuesta, gasto.id);
   await registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto);
+  if (contactoForzado) {
+    await registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
+      (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
+    );
+  }
   const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha);
 
   return (
     `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${contacto.name ?? propuesta.proveedor}, como borrador) ` +
     `y comprobante adjuntado.${notaConciliacion}`
   );
+}
+
+/**
+ * Reúne alternativas cuando no se encontró el proveedor por nombre: contactos
+ * con nombre parecido, y proveedores con una factura ya registrada del MISMO
+ * importe (resolviendo cada uno a su contact_id real). Deduplica por
+ * contactId y se queda con hasta 5. Nunca decide sola cuál usar.
+ */
+async function construirAlternativasContacto(
+  propuesta: PropuestaGasto,
+  empresaFinal: PropuestaGasto["empresa"]
+): Promise<AlternativaContacto[]> {
+  const [porNombre, porMonto] = await Promise.all([
+    buscarContactosParecidos(empresaFinal, propuesta.proveedor, 5),
+    buscarComprasPorMonto(empresaFinal, propuesta.monto, propuesta.fecha, 15),
+  ]);
+
+  const alternativas: AlternativaContacto[] = [];
+  const vistos = new Set<string>();
+
+  for (const c of porNombre) {
+    if (typeof c.id !== "string" || typeof c.name !== "string" || vistos.has(c.id)) continue;
+    vistos.add(c.id);
+    alternativas.push({ contactId: c.id, contactName: c.name, motivo: "nombre_parecido" });
+  }
+
+  for (const compra of porMonto) {
+    if (vistos.size >= 5) break;
+    let contacto: HoldedContact | undefined;
+    try {
+      contacto = await buscarContactoHolded(empresaFinal, compra.contactName);
+    } catch (error) {
+      console.error("[gastoCallbackHandler] Error resolviendo contacto de alternativa por importe:", error);
+      continue;
+    }
+    if (!contacto || typeof contacto.id !== "string" || vistos.has(contacto.id)) continue;
+    vistos.add(contacto.id);
+    alternativas.push({
+      contactId: contacto.id,
+      contactName: contacto.name ?? compra.contactName,
+      motivo: "mismo_importe",
+      detalle: `factura del ${compra.fecha} por ${compra.total.toFixed(2)} €`,
+    });
+  }
+
+  return alternativas.slice(0, 5);
+}
+
+/**
+ * Cuando crearGastoYReportar lanza ContactoNoEncontradoError, en vez de solo
+ * decir "no lo encontré" busca alternativas (nombre parecido, mismo importe
+ * ya registrado) y las ofrece por botones — el usuario confirma cuál es, o
+ * "ninguna" para crear el contacto a mano en Holded. Si no hay alternativas,
+ * cae al mensaje de error de siempre. Si `messageId` viene indefinido (no
+ * hay un mensaje previo editable, ej. tras una corrección por texto libre),
+ * manda uno nuevo con los botones en vez de editar.
+ */
+async function manejarContactoNoEncontrado(
+  propuesta: PropuestaGasto,
+  empresaFinal: PropuestaGasto["empresa"],
+  conceptoFinal: string,
+  chatId: number,
+  messageId: number | undefined
+): Promise<void> {
+  const alternativas = await construirAlternativasContacto(propuesta, empresaFinal).catch((error) => {
+    console.error("[gastoCallbackHandler] Error buscando alternativas de contacto:", error);
+    return [] as AlternativaContacto[];
+  });
+
+  const encabezado =
+    `⚠️ No encontré exactamente el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}).`;
+
+  if (alternativas.length === 0) {
+    const textoFinal = `${encabezado}\n\nCréalo primero en Holded y vuelve a mandar la factura — no quiero adivinar a qué contacto asignarlo.`;
+    if (messageId != null) {
+      await editTelegramMessage(chatId, messageId, textoFinal, []);
+    } else {
+      await sendTelegramMessage(chatId, textoFinal);
+    }
+    return;
+  }
+
+  const mensajeIdFinal = messageId ?? (await sendTelegramMessageWithButtons(chatId, `${encabezado}\n\nBuscando alternativas...`, []));
+
+  const resolucion = await guardarResolucionContacto({
+    propuesta,
+    empresaFinal,
+    conceptoFinal,
+    alternativas,
+    chatId,
+    messageId: mensajeIdFinal,
+  });
+
+  const etiquetaMotivo = (a: AlternativaContacto) =>
+    a.motivo === "nombre_parecido" ? "nombre parecido" : `mismo importe — ${a.detalle}`;
+
+  const texto =
+    `${encabezado}\n\nEncontré estas alternativas — ¿alguna es la que debo registrar?\n\n` +
+    alternativas.map((a, i) => `${i + 1}. ${a.contactName} (${etiquetaMotivo(a)})`).join("\n");
+
+  const botones: InlineKeyboardButton[][] = alternativas.map((a, i) => [
+    { text: `✅ ${a.contactName}`, callback_data: `gasto_usarcontacto:${resolucion.id}:${i}` },
+  ]);
+  botones.push([{ text: "❌ Ninguna, crear en Holded", callback_data: `gasto_sincontacto:${resolucion.id}` }]);
+
+  await editTelegramMessage(chatId, mensajeIdFinal, texto, botones);
 }
 
 /**
@@ -244,6 +424,10 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     const mensaje = await crearGastoYReportar(propuesta, empresaFinal, conceptoFinal);
     await sendTelegramMessage(propuesta.chatId, mensaje);
   } catch (error) {
+    if (error instanceof ContactoNoEncontradoError) {
+      await manejarContactoNoEncontrado(propuesta, empresaFinal, conceptoFinal, propuesta.chatId, undefined);
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando corrección de gasto:", message);
     await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);

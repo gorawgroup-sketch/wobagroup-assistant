@@ -85,6 +85,15 @@ que hacer nada más.
   - si no, propone crear un gasto nuevo, ya clasificado (empresa,
     proveedor, importe, concepto), mostrando el desglose real de IVA por
     línea (base + % leído de la factura) antes de que apruebes.
+  - **Si no encuentra el proveedor** ni por nombre parecido, antes de
+    rendirse busca alternativas: contactos de Holded con nombre parecido
+    (tolera errores de lectura/OCR, plurales, abreviaturas) y facturas ya
+    registradas con el **mismo importe** en fechas cercanas — te las
+    muestra por botones para que confirmes cuál es, o "ninguna" si de
+    verdad hay que crear el contacto en Holded. La que confirmes queda
+    **aprendida** como alias de ese proveedor (mismas tres empresas), así
+    que la próxima factura del mismo proveedor con el mismo texto ya no
+    vuelve a preguntar.
   - Todo con botón de aprobación — nunca escribe en Holded sin confirmar.
   - Si la clasificación no es correcta, puedes corregirla; esa corrección
     queda **aprendida** para la próxima factura del mismo proveedor.

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
+import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -61,7 +62,7 @@ async function holdedWriteCall(
   return response.json();
 }
 
-interface HoldedContact {
+export interface HoldedContact {
   id: string;
   name?: string;
   [key: string]: unknown;
@@ -86,15 +87,9 @@ function normalizar(texto: string): string {
 
 const MAX_PAGINAS_CONTACTOS = 20;
 
-/**
- * Busca un contacto de Holded por nombre (coincidencia parcial, insensible a
- * mayúsculas/acentos). La API de Holded no soporta filtrar por nombre en el
- * servidor (el parámetro `name` no filtra), así que se pagina y se filtra
- * localmente — igual que la búsqueda de archivos en Drive. Nunca inventa un
- * contact_id: si no encuentra coincidencia, devuelve undefined.
- */
-export async function buscarContactoHolded(empresa: Empresa, nombre: string): Promise<HoldedContact | undefined> {
-  const objetivo = normalizar(nombre);
+/** Trae TODOS los contactos de Holded (paginado) — base compartida de buscarContactoHolded y buscarContactosParecidos. */
+async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact[]> {
+  const contactos: HoldedContact[] = [];
   let cursor: string | undefined;
 
   for (let pagina = 0; pagina < MAX_PAGINAS_CONTACTOS; pagina++) {
@@ -105,18 +100,86 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
       has_more?: boolean;
     };
 
-    const match = (data.items ?? []).find((c) => {
-      if (typeof c.name !== "string") return false;
-      const candidato = normalizar(c.name);
-      return candidato.includes(objetivo) || objetivo.includes(candidato);
-    });
-    if (match) return match;
+    contactos.push(...(data.items ?? []));
 
     if (!data.has_more || !data.cursor) break;
     cursor = data.cursor;
   }
 
-  return undefined;
+  return contactos;
+}
+
+/**
+ * Busca un contacto de Holded por nombre (coincidencia parcial, insensible a
+ * mayúsculas/acentos/puntuación). Primero revisa el alias aprendido (ver
+ * proveedorAliasSheet.ts) — un nombre que el usuario ya confirmó
+ * manualmente antes para este proveedor+empresa — y si no hay, pagina los
+ * contactos reales de Holded (el parámetro `name` no filtra en el servidor)
+ * y filtra localmente. Nunca inventa un contact_id: si no encuentra
+ * coincidencia, devuelve undefined.
+ */
+export async function buscarContactoHolded(empresa: Empresa, nombre: string): Promise<HoldedContact | undefined> {
+  const alias = await buscarAliasProveedor(empresa, nombre).catch(() => undefined);
+  if (alias) return { id: alias.contactId, name: alias.contactName };
+
+  const objetivo = normalizar(nombre);
+  const contactos = await obtenerTodosLosContactos(empresa);
+
+  return contactos.find((c) => {
+    if (typeof c.name !== "string") return false;
+    const candidato = normalizar(c.name);
+    return candidato.includes(objetivo) || objetivo.includes(candidato);
+  });
+}
+
+/**
+ * Dos palabras se consideran "la misma" para efectos de nombre parecido si
+ * son iguales, o si comparten un prefijo largo — cubre plural/singular
+ * ("facilities"/"facility") y variantes cortas ("oceana"/"ocean") sin
+ * exigir coincidencia exacta, que es justo lo que falla cuando el nombre
+ * viene de una extracción de factura con OCR/lectura imprecisa.
+ */
+function palabrasParecidas(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 4) return false;
+  const prefijo = Math.min(5, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
+/**
+ * Cuando buscarContactoHolded no encuentra nada, ofrece alternativas por
+ * nombre parecido en vez de solo decir "no lo encontré": compara por
+ * palabras en común (ej. "Ocean Facility" con "OCEAN FACILITY SERVICES SA."
+ * comparte "ocean" y "facility") en vez de exigir substring completo. El
+ * puntaje pesa por longitud de palabra coincidente (no solo cuenta), para
+ * que "facility"/"ocean" (específicas) pesen más que "sa"/"sl"/"service"
+ * (genéricas y compartidas por muchos contactos). Nunca decide sola — solo
+ * devuelve candidatos para que el usuario elija.
+ */
+export async function buscarContactosParecidos(empresa: Empresa, nombre: string, limite = 5): Promise<HoldedContact[]> {
+  const palabrasObjetivo = normalizar(nombre)
+    .split(" ")
+    .filter((p) => p.length >= 3);
+  if (palabrasObjetivo.length === 0) return [];
+
+  const contactos = await obtenerTodosLosContactos(empresa);
+
+  const puntuados = contactos
+    .map((c) => {
+      if (typeof c.name !== "string") return { contacto: c, score: 0 };
+      const palabrasCandidato = normalizar(c.name)
+        .split(" ")
+        .filter((p) => p.length >= 3);
+      const score = palabrasObjetivo
+        .filter((po) => palabrasCandidato.some((pc) => palabrasParecidas(po, pc)))
+        .reduce((suma, p) => suma + p.length, 0);
+      return { contacto: c, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return puntuados.slice(0, limite).map((x) => x.contacto);
 }
 
 export interface PurchaseCandidato {
@@ -212,6 +275,68 @@ export async function buscarGastoSimilar(
   }
 
   return candidatos;
+}
+
+/**
+ * Cuando ni buscarContactoHolded ni buscarContactosParecidos encuentran nada
+ * por nombre, esta es la segunda vía de alternativas: gastos YA registrados
+ * en Holded con el MISMO importe (± tolerancia) en una ventana de fechas más
+ * amplia, sin filtrar por proveedor — puede ser que la misma factura ya se
+ * haya cargado bajo un nombre de contacto distinto al que leyó la extracción.
+ * Deduplica por proveedor (se queda con el más reciente de cada uno).
+ */
+export async function buscarComprasPorMonto(
+  empresa: Empresa,
+  monto: number,
+  fecha: string,
+  ventanaDias = 15
+): Promise<PurchaseCandidato[]> {
+  const fechaBase = new Date(fecha);
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - ventanaDias);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + ventanaDias);
+
+  const porProveedor = new Map<string, PurchaseCandidato>();
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
+    const params = new URLSearchParams({
+      limit: "100",
+      start_date: formatDateLocal(desde),
+      end_date: formatDateLocal(hasta),
+    });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      if (!item.contact_name) continue;
+      const total = parsearMontoHolded(item.total);
+      if (!Number.isFinite(total) || Math.abs(total - monto) > TOLERANCIA_MONTO) continue;
+
+      const clave = normalizar(item.contact_name);
+      const existente = porProveedor.get(clave);
+      if (existente && existente.fecha >= (item.date ?? "")) continue;
+
+      porProveedor.set(clave, {
+        id: item.id,
+        contactName: item.contact_name,
+        fecha: item.date ?? "",
+        total,
+        descripcion: item.description ?? "",
+      });
+    }
+
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return Array.from(porProveedor.values());
 }
 
 export interface GastoSinComprobante {
@@ -403,6 +528,19 @@ export interface NuevoGastoHolded {
   fecha: string; // YYYY-MM-DD
   descripcion: string;
   lineas: LineaGastoHolded[];
+}
+
+/**
+ * Se lanza cuando no se encontró el contacto por nombre exacto/parecido, para
+ * que quien la capture pueda ofrecer alternativas (nombre parecido, o
+ * facturas ya registradas con el mismo importe) en vez de solo fallar — ver
+ * manejarContactoNoEncontrado en gastoCallbackHandler.ts.
+ */
+export class ContactoNoEncontradoError extends Error {
+  constructor(public proveedorBuscado: string, public empresa: Empresa) {
+    super(`No se encontró el proveedor "${proveedorBuscado}" en los contactos de Holded (${empresa}).`);
+    this.name = "ContactoNoEncontradoError";
+  }
 }
 
 /**
