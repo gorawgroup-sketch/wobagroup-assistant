@@ -2,26 +2,32 @@ import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import type { ToolDefinition } from "./types";
 
 /**
- * Lee los movimientos de detalle de la hoja DATOS (ingresos, pagos a proyectos,
- * pagos extras y aplazamientos de impuestos), filtrables por semana, empresa
- * dueña del movimiento y/o contraparte (cliente/proveedor).
+ * Lee los movimientos de detalle de la hoja DATOS: ingresos, pagos a proyectos,
+ * pagos extras, aplazamientos de impuestos, gastos fijos (nóminas, créditos,
+ * servicios, consultores, impuestos) y pendientes (Alberto / deudas con
+ * otros) — filtrables por semana, empresa dueña del movimiento y/o
+ * contraparte (cliente/proveedor/concepto).
  *
  * "empresa" y "contraparte" son conceptos distintos y no deben mezclarse:
  * - empresa: WOBA o EWORKS, la entidad del grupo dueña del movimiento (viene
- *   de la columna de tag; solo existe en Ingresos y Pagos Proyectos).
- * - contraparte: texto libre con el nombre de quien paga o cobra, que puede
+ *   de la columna de tag; solo existe en Ingresos y Pagos Proyectos — el
+ *   resto de categorías no tiene ese tag, así que filtrar por empresa las
+ *   excluye siempre).
+ * - contraparte: texto libre con el nombre de quien paga o cobra, o el
+ *   concepto del gasto (ej. "Limpieza", "Google", "Renting"), que puede
  *   incluir nombres de otras empresas del grupo (ej. "Footprint" aparece como
  *   cliente dentro del cashflow de WOBA/EWORKS).
- *
- * NO incluye gastos fijos ni pagos pendientes de Alberto / deudas pendientes.
  */
 export const cashflowDetalleTool: ToolDefinition = {
   name: "consultar_cashflow_detalle",
   seguraParaModoRapido: true,
   description:
-    "Consulta el detalle de movimientos del cashflow (ingresos, pagos a proyectos, pagos extras y " +
-    "aplazamientos de impuestos) desde la hoja DATOS. No incluye gastos fijos ni pagos pendientes de " +
-    "Alberto ni deudas pendientes. Úsala cuando el usuario pida un desglose detallado en vez de solo " +
+    "Consulta el detalle de movimientos del cashflow desde la hoja DATOS: ingresos, pagos a proyectos, " +
+    "pagos extras, aplazamientos de impuestos, gastos fijos (nóminas, créditos, servicios como limpieza/" +
+    "renting/alquiler, consultores, impuestos) y pendientes (pagos pendientes a Alberto, deudas con " +
+    "otros). Para buscar un concepto o proveedor concreto (ej. '¿hay facturas de limpieza pendientes?') " +
+    "usa el filtro 'contraparte' con ese texto — cubre TODAS las categorías, no asumas que algo 'no está' " +
+    "sin haber buscado aquí primero. Úsala cuando el usuario pida un desglose detallado en vez de solo " +
     "el resumen semanal.",
   input_schema: {
     type: "object",
@@ -78,7 +84,9 @@ export const cashflowDetalleTool: ToolDefinition = {
         const nombre = r.cliente ?? r.concepto ?? "(sin nombre)";
         const proyecto = r.proyecto ? ` / ${r.proyecto}` : "";
         const empresaTag = r.empresa ? ` [${r.empresa}]` : "";
-        return `[${r.categoria}]${empresaTag} ${nombre}${proyecto} — ${r.semana} — ${r.valor}`;
+        const bancoTag = r.banco ? ` (${r.banco})` : "";
+        const semana = r.semana || "(sin semana)";
+        return `[${r.categoria}]${empresaTag} ${nombre}${proyecto} — ${semana} — ${r.valor}${bancoTag}`;
       })
       .join("\n");
   },

@@ -74,6 +74,12 @@ const SYSTEM_PROMPT_ESTATICO = [
     "para preguntas de balance/cifras sin pedir verificación contra Holded. Para el sentido CONTRARIO — " +
     "qué gasto ya está en el cashflow pero el banco todavía no refleja ninguna salida real de dinero — " +
     "usa verificar_gastos_sin_movimiento_bancario en vez de verificar_cashflow_actualizado.",
+  "Cuando busquen un concepto o proveedor específico dentro del cashflow (ej. '¿hay facturas de " +
+    "limpieza pendientes?', '¿cuánto se ha pagado de Google?'), usa consultar_cashflow_detalle con el " +
+    "filtro 'contraparte' — cubre TODAS las categorías (ingresos, pagos a proyectos, pagos extras, " +
+    "aplazamientos, gastos fijos, pendientes de Alberto, deudas). Nunca respondas 'no encontré nada' o " +
+    "'no hay movimientos' sin haber llamado a esa herramienta primero — decir que algo no existe sin " +
+    "buscarlo primero es el error más costoso que puedes cometer aquí.",
   "Tienes memoria de los mensajes recientes de esta conversación — si el usuario hace referencia a " +
     "algo mencionado antes ('ese link', 'el correo del que hablamos'), interpreta la referencia usando " +
     "ese contexto en vez de pedir que lo repita.",

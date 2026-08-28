@@ -30,8 +30,16 @@ que hacer nada más.
 
 ### 📊 Cashflow
 - Consultar el resumen o el detalle del cashflow de WOBA y eWorks (por
-  empresa, por semana, por bloque). Footprint no tiene cashflow en Sheets
-  todavía — sí se monitorea directo en Holded (ver abajo).
+  empresa, por semana, por bloque, o por concepto/proveedor — ej. "¿hay
+  facturas de limpieza pendientes en WOBA?"). El detalle cubre TODO lo que
+  hay en la hoja DATOS: ingresos, pagos a proyectos, pagos extras,
+  aplazamientos de impuestos, gastos fijos (nóminas, créditos, servicios
+  como limpieza/renting/alquiler, consultores, impuestos) y pendientes
+  (pagos pendientes a Alberto, deudas con otros) — antes la búsqueda por
+  concepto solo cubría una parte y podía decir "no hay" aunque la fila
+  existiera en gastos fijos; ahora busca en todas las categorías antes de
+  responder. Footprint no tiene cashflow en Sheets todavía — sí se
+  monitorea directo en Holded (ver abajo).
 - **Verificar si está realmente actualizado**: pregúntale "¿el cashflow está
   actualizado?" o "¿falta algo por registrar?" y compara en vivo los
   movimientos bancarios reales de Holded contra lo ya registrado — no es

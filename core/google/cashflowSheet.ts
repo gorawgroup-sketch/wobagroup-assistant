@@ -59,7 +59,10 @@ export type DetalleCategoria =
   | "INGRESOS"
   | "PAGOS_PROYECTOS"
   | "PAGOS_EXTRAS"
-  | "APLAZAMIENTO_IMPUESTOS";
+  | "APLAZAMIENTO_IMPUESTOS"
+  | "GASTOS_FIJOS"
+  | "PAGOS_PENDIENTES_ALBERTO"
+  | "DEUDAS_PENDIENTES";
 
 export type EmpresaTag = "WOBA" | "EWORKS";
 
@@ -70,15 +73,18 @@ export interface DetalleRegistro {
   concepto?: string;
   semana: string;
   valor: string;
+  /** Solo presente en GASTOS_FIJOS — banco desde el que se paga (columna L de DATOS). */
+  banco?: string;
   /**
    * Empresa DUEÑA del movimiento (WOBA | EWORKS), leída de la columna de tag.
    * undefined cuando el bloque no tiene esa columna (Pagos Extras, Aplazamiento
-   * Impuestos) — no debe confundirse con el nombre del cliente/proveedor.
+   * Impuestos, Gastos Fijos, Pendientes) — no debe confundirse con el nombre
+   * del cliente/proveedor.
    */
   empresa?: EmpresaTag;
 }
 
-type DetalleField = "cliente" | "proyecto" | "concepto" | "semana" | "valor" | "empresa";
+type DetalleField = "cliente" | "proyecto" | "concepto" | "semana" | "valor" | "empresa" | "banco";
 
 interface DetalleBlock {
   categoria: DetalleCategoria;
@@ -86,20 +92,64 @@ interface DetalleBlock {
   fields: DetalleField[];
 }
 
-// Bloques de la hoja DATOS. Deliberadamente NO incluye Gastos Fijos ni
-// Pagos Pendientes Alberto / Deudas Pendientes (fuera de alcance de este tool).
-// Solo Ingresos y Pagos Proyectos tienen columna de tag de empresa dueña
-// (F y R respectivamente); Pagos Extras y Aplazamiento Impuestos no la tienen.
+// Bloques de columnas fijas de la hoja DATOS. Solo Ingresos y Pagos Proyectos
+// tienen columna de tag de empresa dueña (F y R respectivamente); el resto no.
+// GASTOS_FIJOS (columnas I:L — nóminas, créditos, servicios, consultores,
+// impuestos) se sumaba en "GENERAL EXPENSES" del resumen pero nunca se leía
+// como línea individual — por eso una búsqueda de "Limpieza" no encontraba
+// nada aunque la fila existiera (verificado en vivo: DATOS!I16 = "Limpieza",
+// J16 = "S35", K16 = "€393.40"). PAGOS_PENDIENTES_ALBERTO y DEUDAS_PENDIENTES
+// (columnas X:Z, dos secciones apiladas separadas por título) se parsean
+// aparte más abajo porque no tienen un rango de columnas fijo propio.
 const DETALLE_BLOCKS: DetalleBlock[] = [
   { categoria: "INGRESOS", range: "DATOS!B6:F500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
   { categoria: "PAGOS_PROYECTOS", range: "DATOS!N6:R500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
   { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:V500", fields: ["cliente", "semana", "valor"] },
   { categoria: "APLAZAMIENTO_IMPUESTOS", range: "DATOS!AC6:AE500", fields: ["concepto", "semana", "valor"] },
+  { categoria: "GASTOS_FIJOS", range: "DATOS!I6:L500", fields: ["concepto", "semana", "valor", "banco"] },
 ];
 
+// Columnas X:Z de DATOS: dos secciones apiladas bajo un título propio cada
+// una ("PAGOS PENDIENTES ALBERTO" y "DEUDAS PENDIENTES OTROS"), sin un rango
+// de filas fijo — se detecta el título para saber a qué categoría pertenece
+// cada fila de debajo, en vez de asumir números de fila que pueden correrse.
+const SECCION_PENDIENTES_RANGE = "DATOS!X1:Z300";
+const TITULOS_SECCION_PENDIENTES: Record<string, DetalleCategoria> = {
+  "PAGOS PENDIENTES ALBERTO": "PAGOS_PENDIENTES_ALBERTO",
+  "DEUDAS PENDIENTES OTROS": "DEUDAS_PENDIENTES",
+};
+
+function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
+  const registros: DetalleRegistro[] = [];
+  let categoriaActual: DetalleCategoria | null = null;
+
+  for (const row of rows) {
+    const cliente = String(row[0] ?? "").trim();
+    const semana = String(row[1] ?? "").trim();
+    const valor = String(row[2] ?? "").trim();
+
+    if (!cliente) continue;
+
+    const tituloCategoria = TITULOS_SECCION_PENDIENTES[cliente.toUpperCase()];
+    if (tituloCategoria) {
+      categoriaActual = tituloCategoria;
+      continue;
+    }
+
+    if (cliente.toUpperCase() === "CLIENTE") continue; // fila de encabezado de columna
+    if (!categoriaActual || !valor) continue;
+
+    registros.push({ categoria: categoriaActual, cliente, semana, valor });
+  }
+
+  return registros;
+}
+
 /**
- * Lee los movimientos de detalle de la hoja DATOS (ingresos, pagos a proyectos,
- * pagos extras y aplazamientos de impuestos), sin filtrar.
+ * Lee TODOS los movimientos de detalle de la hoja DATOS: ingresos, pagos a
+ * proyectos, pagos extras, aplazamientos de impuestos, gastos fijos
+ * (nóminas, créditos, servicios, consultores, impuestos) y pendientes
+ * (Alberto / deudas con otros), sin filtrar.
  */
 export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
   const sheetId = assertSheetId();
@@ -107,7 +157,7 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
 
   const resp = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: sheetId,
-    ranges: DETALLE_BLOCKS.map((b) => b.range),
+    ranges: [...DETALLE_BLOCKS.map((b) => b.range), SECCION_PENDIENTES_RANGE],
     valueRenderOption: "FORMATTED_VALUE",
   });
 
@@ -134,6 +184,9 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
       registros.push(record as DetalleRegistro);
     });
   });
+
+  const filasPendientes = valueRanges[DETALLE_BLOCKS.length]?.values ?? [];
+  registros.push(...parsearSeccionesPendientes(filasPendientes as string[][]));
 
   return registros;
 }
