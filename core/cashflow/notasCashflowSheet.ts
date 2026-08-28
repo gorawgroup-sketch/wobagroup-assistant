@@ -1,6 +1,7 @@
 import { google, sheets_v4 } from "googleapis";
 import { randomUUID } from "node:crypto";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { montosCercanos } from "../utils/montos";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_notas_cashflow";
@@ -149,7 +150,7 @@ export async function buscarNotasCashflow(query: { concepto?: string; valor?: nu
 
   return todas.filter((n) => {
     const matchConcepto = conceptoQ ? n.concepto.toLowerCase().includes(conceptoQ) : true;
-    const matchValor = query.valor !== undefined ? Math.abs(n.valor - Math.abs(query.valor)) <= TOLERANCIA_VALOR : true;
+    const matchValor = query.valor !== undefined ? montosCercanos(n.valor, Math.abs(query.valor), TOLERANCIA_VALOR) : true;
     return matchConcepto && matchValor;
   });
 }

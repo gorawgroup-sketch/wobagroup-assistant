@@ -6,8 +6,16 @@ import { previousWeekRange, currentWeekRangeToDate, weekLabel, formatDateISO } f
 import { guardarUltimoRunHoldedCashflow } from "./holdedCashflowLastRunStore";
 import { sugerirCategoriasGasto, type CategoriaSugerida } from "../google/sugerirBloqueGasto";
 import type { BloqueEscritura } from "../google/cashflowWrite";
+import { montosCercanos } from "../utils/montos";
 
 const TOLERANCIA_EUR = 0.01;
+// Tolerancia más ancha para montos que vienen de una conversión de divisa
+// (accounting_amount, ver valorEnEuros) — verificado en vivo un caso real:
+// Holded convirtió un abono en USD a 7.964,16 €, pero el cashflow lo tenía
+// registrado a mano en 7.964,17 € (redondeo de tipo de cambio distinto al
+// calcular en momentos diferentes) — la diferencia real es de un céntimo,
+// legítima, no un error de nadie.
+const TOLERANCIA_EUR_CONVERTIDO = 0.05;
 // Deliberadamente acotado a WOBA/EWORKS (no el tipo Empresa completo de
 // holded/client.ts, que ya incluye Footprint) — esta reconciliación escribe
 // en el cashflow de Sheets, y Footprint no tiene acceso a cashflow todavía.
@@ -19,6 +27,7 @@ export function parseValorFormateado(valor: string): number {
   const numero = Number(limpio);
   return Number.isFinite(numero) ? numero : 0;
 }
+
 
 /**
  * Convierte el ranking de sugerirCategoriasGasto en opciones de botón: solo
@@ -147,8 +156,10 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
 
     const amountEur = valorEnEuros(mov);
     const valorAbs = Math.abs(amountEur);
+    const esConvertido = (mov.currency ?? "EUR").toUpperCase() !== "EUR";
+    const tolerancia = esConvertido ? TOLERANCIA_EUR_CONVERTIDO : TOLERANCIA_EUR;
 
-    const yaExiste = valoresRegistrados.some((v) => Math.abs(v - valorAbs) <= TOLERANCIA_EUR);
+    const yaExiste = valoresRegistrados.some((v) => montosCercanos(v, valorAbs, tolerancia));
     if (yaExiste) continue; // conservador: si hay duda razonable de match, no se propone
 
     sinMatchIndividual.push({
@@ -182,7 +193,7 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   for (const grupo of porDescripcion.values()) {
     if (grupo.length > 1) {
       const suma = grupo.reduce((acc, c) => acc + c.valorAbs, 0);
-      const sumaYaExiste = valoresRegistrados.some((v) => Math.abs(v - suma) <= TOLERANCIA_EUR);
+      const sumaYaExiste = valoresRegistrados.some((v) => montosCercanos(v, suma, TOLERANCIA_EUR));
       if (sumaYaExiste) continue;
     }
     candidatos.push(...grupo);
@@ -247,7 +258,7 @@ export async function detectarSinMovimientoBancario(
     const valorAbs = Math.abs(parseValorFormateado(registro.valor));
     if (valorAbs === 0) continue;
 
-    const yaEnBanco = valoresBanco.some((v) => Math.abs(v - valorAbs) <= TOLERANCIA_EUR);
+    const yaEnBanco = valoresBanco.some((v) => montosCercanos(v, valorAbs, TOLERANCIA_EUR));
     if (yaEnBanco) continue;
 
     candidatos.push({

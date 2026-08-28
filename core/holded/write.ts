@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import type { Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
+import { montosCercanos } from "../utils/montos";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -279,7 +280,7 @@ export async function buscarGastoSimilar(
       const nombreNormalizado = normalizar(item.contact_name);
       if (!nombreNormalizado.includes(objetivo) && !objetivo.includes(nombreNormalizado)) continue;
       const total = parsearMontoHolded(item.total);
-      if (!Number.isFinite(total) || Math.abs(total - criterios.monto) > TOLERANCIA_MONTO) continue;
+      if (!Number.isFinite(total) || !montosCercanos(total, criterios.monto, TOLERANCIA_MONTO)) continue;
 
       candidatos.push({
         id: item.id,
@@ -337,7 +338,7 @@ export async function buscarComprasPorMonto(
     for (const item of data.items ?? []) {
       if (!item.contact_name) continue;
       const total = parsearMontoHolded(item.total);
-      if (!Number.isFinite(total) || Math.abs(total - monto) > TOLERANCIA_MONTO) continue;
+      if (!Number.isFinite(total) || !montosCercanos(total, monto, TOLERANCIA_MONTO)) continue;
 
       const clave = normalizar(item.contact_name);
       const existente = porProveedor.get(clave);
@@ -658,7 +659,7 @@ export async function buscarMovimientoSimilar(
     for (const mov of data.items ?? []) {
       if (mov.status === "reconciled") continue;
       const monto = montoEnEuros(mov);
-      if (!Number.isFinite(monto) || Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) > TOLERANCIA_MONTO) continue;
+      if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), TOLERANCIA_MONTO)) continue;
 
       candidatos.push({
         accountId: cuenta.id,

@@ -60,6 +60,10 @@ que hacer nada más.
   cashflow siempre está en euros, así que la comparación usa el equivalente
   en EUR que ya calcula Holded (el valor en gris que aparece debajo del
   monto en dólares dentro de Holded), nunca el monto nativo en dólares.
+  **Tolera el redondeo de tipo de cambio**: un monto convertido de USD/otra
+  divisa puede diferir por unos céntimos entre lo que calculó Holded y lo
+  registrado a mano (cada uno redondeó en un momento distinto) — para esos
+  casos la comparación admite hasta 5 céntimos de diferencia en vez de 1.
   **Busca también por total agrupado**: si varios cargos del mismo
   proveedor (ej. varias compras de Amazon la misma semana) no coinciden uno
   a uno con el cashflow, suma todos los que compartan la misma descripción
