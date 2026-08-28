@@ -27,16 +27,31 @@ export function parseValorFormateado(valor: string): number {
  * coincidencia (proveedor nunca visto antes), cae a "Pagos Extras" — el
  * catch-all histórico — en vez de no ofrecer ninguna opción.
  */
+// Alternativas genéricas para completar hasta 3 opciones cuando el
+// clasificador no tiene (o no tiene suficiente) coincidencia real — pedido
+// explícito: siempre sugerir una categoría PERO TAMBIÉN dar alternativa
+// para cambiarla, nunca un solo botón sin opción de corregir.
+const CATEGORIAS_ALTERNATIVA_GENERICA: Array<{ bloque: BloqueEscritura; etiqueta: string }> = [
+  { bloque: "pagos_extras", etiqueta: "Pagos Extras" },
+  { bloque: "gastos_fijos", etiqueta: "Gastos Fijos" },
+  { bloque: "pagos_proyectos", etiqueta: "Pagos Proyectos" },
+];
+
 function construirOpcionesBloque(
   categorias: CategoriaSugerida[] | undefined
 ): Array<{ bloque: BloqueEscritura; etiqueta: string }> {
-  const escribibles = (categorias ?? []).filter(
-    (c): c is CategoriaSugerida & { bloque: BloqueEscritura } => c.bloque !== null && c.score > 0
-  );
-  if (escribibles.length > 0) {
-    return escribibles.slice(0, 3).map((c) => ({ bloque: c.bloque, etiqueta: c.etiqueta }));
+  const escribibles = (categorias ?? [])
+    .filter((c): c is CategoriaSugerida & { bloque: BloqueEscritura } => c.bloque !== null && c.score > 0)
+    .slice(0, 3)
+    .map((c) => ({ bloque: c.bloque, etiqueta: c.etiqueta }));
+
+  const opciones = [...escribibles];
+  for (const alternativa of CATEGORIAS_ALTERNATIVA_GENERICA) {
+    if (opciones.length >= 3) break;
+    if (!opciones.some((o) => o.bloque === alternativa.bloque)) opciones.push(alternativa);
   }
-  return [{ bloque: "pagos_extras", etiqueta: "Pagos Extras" }];
+
+  return opciones;
 }
 
 // El cashflow solo registra ingresos externos o pagos a externos — pedido
