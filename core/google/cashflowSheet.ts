@@ -145,6 +145,17 @@ function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
   return registros;
 }
 
+// Cache muy corta (unos segundos) en memoria — pensada para colapsar las
+// MUCHAS llamadas repetidas que ocurren dentro de una sola pregunta del
+// usuario (ej. "qué está por vencer y cuánto suma" puede disparar 8-10
+// búsquedas distintas — una por palabra clave de cada vencimiento — cada
+// una releyendo la hoja completa desde cero). No es una cache de larga
+// duración: el cashflow puede cambiar por una aprobación real en cualquier
+// momento, así que se vence rápido a propósito, solo para el "ráfaga" de
+// llamadas de un mismo turno de conversación.
+const CACHE_TTL_MS = 8000;
+let cache: { en: number; datos: DetalleRegistro[] } | null = null;
+
 /**
  * Lee TODOS los movimientos de detalle de la hoja DATOS: ingresos, pagos a
  * proyectos, pagos extras, aplazamientos de impuestos, gastos fijos
@@ -152,6 +163,10 @@ function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
  * (Alberto / deudas con otros), sin filtrar.
  */
 export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
+  if (cache && Date.now() - cache.en < CACHE_TTL_MS) {
+    return cache.datos;
+  }
+
   const sheetId = assertSheetId();
   const sheets = getSheetsClient();
 
@@ -188,5 +203,11 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
   const filasPendientes = valueRanges[DETALLE_BLOCKS.length]?.values ?? [];
   registros.push(...parsearSeccionesPendientes(filasPendientes as string[][]));
 
+  cache = { en: Date.now(), datos: registros };
   return registros;
+}
+
+/** Invalida la cache de arriba — llamar justo después de escribir en DATOS para que la próxima lectura sea fresca. */
+export function invalidarCacheDetalleRegistros(): void {
+  cache = null;
 }

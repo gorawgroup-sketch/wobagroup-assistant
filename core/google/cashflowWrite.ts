@@ -1,5 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
+import { invalidarCacheDetalleRegistros } from "./cashflowSheet";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -230,6 +231,7 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
     };
   }
 
+  invalidarCacheDetalleRegistros();
   return {
     ok: true,
     mensaje: `Movimiento registrado y verificado en ${rango}.`,
@@ -361,6 +363,7 @@ export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Prom
     };
   }
 
+  invalidarCacheDetalleRegistros();
   return {
     ok: true,
     mensaje: `Movimiento registrado y verificado en ${rango}.`,
