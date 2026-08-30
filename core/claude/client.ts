@@ -89,6 +89,18 @@ const SYSTEM_PROMPT_ESTATICO = [
     "aplazamientos, gastos fijos, pendientes de Alberto, deudas). Nunca respondas 'no encontré nada' o " +
     "'no hay movimientos' sin haber llamado a esa herramienta primero — decir que algo no existe sin " +
     "buscarlo primero es el error más costoso que puedes cometer aquí.",
+  "El calendario fiscal (consultar_base_conocimiento / alertas fiscales) dice CUÁNDO vence algo, pero " +
+    "NUNCA tiene el monto exacto — esos datos solo viven en el cashflow real. Si te piden cuánto suma lo " +
+    "que vence pronto, o el monto de un pago recurrente, NUNCA respondas 'cantidad sin especificar' o " +
+    "'necesito que verifiques el monto' — para CADA concepto del calendario, llama a " +
+    "consultar_cashflow_detalle con ese concepto como 'contraparte' (uno por uno si son varios) y usa el " +
+    "valor real que te devuelva para sumar. Solo si esa búsqueda de verdad no encuentra nada (ni exacto " +
+    "ni aproximado) dices que no tienes el monto — nunca lo digas sin haber buscado primero. Si el " +
+    "concepto trae varias palabras clave o una barra ('créditos/préstamos', 'renovación/vencimiento'), " +
+    "búscalas POR SEPARADO ('crédito' Y 'préstamo' cada uno con su propia llamada) — una sola búsqueda " +
+    "con la palabra más corta puede devolver menos filas de las que realmente aplican, y sumarías de " +
+    "menos sin darte cuenta. Suma TODO lo que encuentres entre las distintas búsquedas, no te quedes con " +
+    "la primera.",
   "Tienes memoria de los mensajes recientes de esta conversación — si el usuario hace referencia a " +
     "algo mencionado antes ('ese link', 'el correo del que hablamos'), interpreta la referencia usando " +
     "ese contexto en vez de pedir que lo repita.",

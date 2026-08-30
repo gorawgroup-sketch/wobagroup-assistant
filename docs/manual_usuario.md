@@ -219,6 +219,14 @@ que hacer nada más.
   2 días antes, 1 día antes, y el mismo día del vencimiento — mismo esquema
   para los pagos con día exacto (ej. Adobe el 9) y para los aproximados sin
   día fijo (ej. "seguro del coche a mediados de agosto").
+- **Pregúntale "¿qué está por vencer?" o "¿cuánto suma lo que vence
+  pronto?"** y te da el monto real de cada vencimiento (no solo cuándo, que
+  es lo único que sabe el calendario por sí solo) — busca cada concepto en
+  el cashflow real, tolerando que el nombre no sea idéntico (ej.
+  "Créditos/préstamos" encuentra "Prestamo 36 meses WOBA", "Prestamo
+  Eworks", "Seguro Credito"...), y te da el total. Los montos que no son
+  coincidencia exacta se marcan con "~" — revísalos antes de darlos por
+  seguros.
 - Para los pagos con proveedor y empresa conocidos, además ofrece
   registrarlos: pide el importe, muestra un resumen de confirmación, y solo
   al aprobar crea el gasto en Holded — con la periodicidad correcta
