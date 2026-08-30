@@ -1,4 +1,5 @@
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
+import { textosParecidos } from "../utils/textoParecido";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -27,8 +28,10 @@ export const cashflowDetalleTool: ToolDefinition = {
     "renting/alquiler, consultores, impuestos) y pendientes (pagos pendientes a Alberto, deudas con " +
     "otros). Para buscar un concepto o proveedor concreto (ej. '¿hay facturas de limpieza pendientes?') " +
     "usa el filtro 'contraparte' con ese texto — cubre TODAS las categorías, no asumas que algo 'no está' " +
-    "sin haber buscado aquí primero. Úsala cuando el usuario pida un desglose detallado en vez de solo " +
-    "el resumen semanal.",
+    "sin haber buscado aquí primero. La búsqueda por contraparte es tolerante (encuentra 'Seguridad " +
+    "social' aunque la fila real diga 'Impuestos seg social') — si el resultado viene marcado como " +
+    "coincidencia APROXIMADA, dilo así al usuario y pregunta si es lo que buscaba, no lo des por hecho. " +
+    "Úsala cuando el usuario pida un desglose detallado en vez de solo el resumen semanal.",
   input_schema: {
     type: "object",
     properties: {
@@ -62,24 +65,39 @@ export const cashflowDetalleTool: ToolDefinition = {
     const contraparteFiltro =
       typeof input.contraparte === "string" ? input.contraparte.trim().toLowerCase() : undefined;
 
-    const filtrados = registros.filter((r) => {
+    const conFiltrosBase = registros.filter((r) => {
       if (semanaFiltro && r.semana.toUpperCase() !== semanaFiltro) return false;
-
       if (empresaFiltro && r.empresa !== empresaFiltro) return false;
-
-      if (contraparteFiltro) {
-        const texto = [r.cliente, r.proyecto, r.concepto].filter(Boolean).join(" ").toLowerCase();
-        if (!texto.includes(contraparteFiltro)) return false;
-      }
-
       return true;
     });
+
+    let filtrados = conFiltrosBase;
+    let aproximado = false;
+
+    if (contraparteFiltro) {
+      const textoDe = (r: (typeof conFiltrosBase)[number]) =>
+        [r.cliente, r.proyecto, r.concepto].filter(Boolean).join(" ").toLowerCase();
+
+      const exactos = conFiltrosBase.filter((r) => textoDe(r).includes(contraparteFiltro));
+
+      if (exactos.length > 0) {
+        filtrados = exactos;
+      } else {
+        // Sin match exacto: cae a comparación por palabras parecidas (ej.
+        // "Seguridad social" → "Impuestos seg social") en vez de decir "no
+        // encontré nada" cuando el dato sí existe con otra redacción.
+        // Nunca se afirma como certeza — se marca "aproximado" para que
+        // quien reciba la respuesta confirme antes de darlo por sentado.
+        filtrados = conFiltrosBase.filter((r) => textosParecidos(contraparteFiltro, textoDe(r)));
+        aproximado = filtrados.length > 0;
+      }
+    }
 
     if (filtrados.length === 0) {
       return "No se encontraron movimientos que coincidan con esos filtros.";
     }
 
-    return filtrados
+    const lineas = filtrados
       .map((r) => {
         const nombre = r.cliente ?? r.concepto ?? "(sin nombre)";
         const proyecto = r.proyecto ? ` / ${r.proyecto}` : "";
@@ -89,5 +107,12 @@ export const cashflowDetalleTool: ToolDefinition = {
         return `[${r.categoria}]${empresaTag} ${nombre}${proyecto} — ${semana} — ${r.valor}${bancoTag}`;
       })
       .join("\n");
+
+    if (!aproximado) return lineas;
+
+    return (
+      `⚠️ COINCIDENCIA APROXIMADA (no encontré "${input.contraparte}" tal cual — esto es lo más parecido, ` +
+      `confírmalo con el usuario antes de darlo por hecho):\n\n${lineas}`
+    );
   },
 };

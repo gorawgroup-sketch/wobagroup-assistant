@@ -39,7 +39,12 @@ que hacer nada más.
   concepto solo cubría una parte y podía decir "no hay" aunque la fila
   existiera en gastos fijos; ahora busca en todas las categorías antes de
   responder. Footprint no tiene cashflow en Sheets todavía — sí se
-  monitorea directo en Holded (ver abajo).
+  monitorea directo en Holded (ver abajo). **La búsqueda por concepto es
+  tolerante a redacción distinta**: si preguntas "¿está registrada la
+  Seguridad social?" y la fila real dice "Impuestos seg social", igual la
+  encuentra — cuando no hay coincidencia exacta, busca por palabras
+  parecidas y te avisa explícitamente que es una coincidencia aproximada,
+  para que la confirmes en vez de darla por hecha en automático.
 - **Verificar si está realmente actualizado**: pregúntale "¿el cashflow está
   actualizado?" o "¿falta algo por registrar?" y compara en vivo los
   movimientos bancarios reales de Holded contra lo ya registrado — no es
