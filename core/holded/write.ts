@@ -1052,16 +1052,30 @@ export interface MovimientoBancarioCandidato {
 const VENTANA_DIAS_MOVIMIENTO = 5;
 
 /**
- * Busca movimientos bancarios SIN conciliar (ver estaConciliado) en todas
- * las cuentas activas de la empresa, con monto (en valor absoluto) y fecha
- * cercanos a los dados. Se usa solo para el auto-conciliar tras crear o
- * adjuntar un gasto propio — nunca para crear gastos a partir de
- * movimientos huérfanos (eso queda para revisión humana, ver
- * consultar_movimientos_sin_conciliar).
+ * Busca movimientos bancarios SIN conciliar (ver estaConciliado) en TODAS
+ * las cuentas activas de la empresa (sin importar su moneda — recorre cada
+ * cuenta de tesorería y normaliza cada movimiento a euros con
+ * montoEnEuros), con monto y fecha cercanos a los dados. Se usa tanto para
+ * el auto-conciliar tras crear/adjuntar un gasto como para el chequeo
+ * PREVIO a crear uno nuevo (ver procesarGastoEntrante) — nunca para crear
+ * gastos a partir de movimientos huérfanos (eso queda para revisión
+ * humana, ver consultar_movimientos_sin_conciliar).
+ *
+ * `toleranciaEur` es opcional (por defecto TOLERANCIA_MONTO, 1 céntimo) —
+ * pedido explícito de Carlos: cuando el gasto original está en una moneda
+ * distinta al euro (puede pasar con USD, COP, cualquiera), el monto en EUR
+ * de la factura y el `accounting_amount` que calcula Holded para el
+ * movimiento bancario vienen de DOS conversiones de cambio independientes
+ * (fechas/proveedores de tipo de cambio distintos, comisión de la tarjeta),
+ * así que pueden diferir por más de un céntimo sin dejar de ser la MISMA
+ * transacción — con la tolerancia fija de 1 céntimo, un match real se
+ * perdía en silencio. El llamador decide cuándo ensanchar la tolerancia
+ * (solo en el caso de conversión de moneda, nunca para gastos ya en EUR).
  */
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string }
+  criterios: { monto: number; fecha: string },
+  toleranciaEur: number = TOLERANCIA_MONTO
 ): Promise<MovimientoBancarioCandidato[]> {
   const fechaBase = new Date(criterios.fecha);
   const desde = new Date(fechaBase);
@@ -1101,7 +1115,7 @@ export async function buscarMovimientoSimilar(
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status)) continue;
       const monto = montoEnEuros(mov);
-      if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), TOLERANCIA_MONTO)) continue;
+      if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) continue;
 
       candidatos.push({
         accountId: cuenta.id,

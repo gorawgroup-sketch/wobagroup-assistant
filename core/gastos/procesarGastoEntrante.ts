@@ -163,22 +163,42 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     // identificar el movimiento bancario — decir siempre qué se encontró
     // (uno, varios, o ninguno) y, si hace falta algo para confirmarlo,
     // preguntarlo explícitamente en vez de omitirlo en silencio.
+    // Pedido explícito de Carlos: esto puede pasar con cualquier moneda
+    // (EUR, USD...), no solo COP — cuando el gasto original no está en EUR,
+    // el monto en EUR de la factura y el que calcula Holded para el
+    // movimiento bancario vienen de dos conversiones de cambio
+    // independientes y pueden diferir sin dejar de ser la misma
+    // transacción, así que se ensancha la tolerancia (2% del monto) solo en
+    // este caso — nunca para gastos que ya estaban en EUR. Sin piso alto
+    // fijo: un piso de 1€ resultó demasiado ancho para cargos pequeños
+    // (verificado en vivo: con un movimiento real de -2,50€, un piso de 1€
+    // hacía match con 6 movimientos distintos del mismo rango de fechas en
+    // vez de solo el correcto) — 0,05€ de piso alcanza para el redondeo
+    // real sin volverse impreciso en montos chicos.
+    const toleranciaMov = esMonedaExtranjera ? Math.max(0.05, montoParaHolded * 0.02) : undefined;
+
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     try {
-      const candidatosMov = await buscarMovimientoSimilar(empresa, {
-        monto: montoParaHolded,
-        fecha: datos.fecha || new Date().toISOString().slice(0, 10),
-      });
+      const candidatosMov = await buscarMovimientoSimilar(
+        empresa,
+        { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10) },
+        toleranciaMov
+      );
       if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
     } catch (error) {
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
 
+    const notaAproximacion = esMonedaExtranjera
+      ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
+        `tipo de cambio, puede diferir unos céntimos del valor exacto)`
+      : "";
+
     const notaMovimiento = movimientoBancario
       ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
-        `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} € ` +
+        `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} €${notaAproximacion} ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
       : candidatosMovAmbiguos.length > 0
         ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
