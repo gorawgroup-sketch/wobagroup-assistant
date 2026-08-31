@@ -1,5 +1,5 @@
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
-import { buscarGastoSimilar, buscarMovimientoSimilar } from "../holded/write";
+import { buscarGastoSimilar, buscarMovimientoSimilar, inferirCuentaGasto } from "../holded/write";
 import { crearPropuestaGasto, actualizarMessageIdGasto } from "./gastoProposalSheet";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
@@ -47,6 +47,20 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     console.error("[procesarGastoEntrante] Error buscando gasto similar en Holded:", error);
   }
 
+  // Solo importa inferir la cuenta contable cuando de verdad vamos a CREAR
+  // un gasto nuevo (si ya hay un candidato para adjuntar, ese documento ya
+  // tiene su propia cuenta asignada). Pedido explícito de Carlos tras un
+  // caso real: un vuelo de Booking.com se creó bajo la cuenta genérica
+  // "Otros servicios" en vez de "Gastos de viaje", a pesar de que Footprint
+  // ya tenía 159 líneas reales de gastos de viaje bajo la misma cuenta.
+  const cuentaSugerida =
+    candidatos.length === 0
+      ? await inferirCuentaGasto(empresa, { proveedor: datos.proveedor, concepto: datos.concepto }).catch((error) => {
+          console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
+          return undefined;
+        })
+      : undefined;
+
   const propuesta = await crearPropuestaGasto({
     empresa,
     proveedor: datos.proveedor,
@@ -61,6 +75,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     lineas: datos.lineas,
     chatId,
     messageId: 0,
+    cuentaId: cuentaSugerida?.accountId,
+    cuentaTags: cuentaSugerida?.tags,
   });
 
   const desgloseIva = datos.lineas
@@ -114,6 +130,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
       : "";
 
+    const notaCuenta = cuentaSugerida
+      ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
+        ` (${cuentaSugerida.aprendidoDe === "proveedor" ? "por proveedor" : cuentaSugerida.aprendidoDe === "concepto" ? "por concepto" : "elegida por IA"})` +
+        (cuentaSugerida.tags.length > 0 ? `, tags: ${cuentaSugerida.tags.join(", ")}` : "")
+      : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto.`;
+
     texto = [
       `📄 *Factura detectada* — no encontré ningún gasto ya registrado en Holded que corresponda.`,
       ``,
@@ -126,7 +148,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       `Desglose de IVA:`,
       desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
-    ].join("\n") + notaMovimiento;
+    ].join("\n") + notaCuenta + notaMovimiento;
 
     botones = [
       [

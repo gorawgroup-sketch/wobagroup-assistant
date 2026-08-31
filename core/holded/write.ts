@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
@@ -512,6 +513,217 @@ export async function buscarDocumentosHolded(
   ).flat();
 }
 
+export interface CuentaSugerida {
+  accountId: string;
+  tags: string[];
+  ejemplo: string;
+  aprendidoDe: "proveedor" | "concepto" | "ia";
+}
+
+interface LineaConCuenta {
+  contactName: string;
+  descripcion: string;
+  lineName: string;
+  account: string;
+  tags: string[];
+}
+
+const MAX_PAGINAS_CUENTAS = 10;
+const PALABRAS_IGNORADAS_CONCEPTO = new Set(["para", "con", "del", "los", "las", "una", "por", "que", "servicio", "servicios"]);
+
+function palabrasSignificativas(texto: string): string[] {
+  return normalizar(texto)
+    .split(/\s+/)
+    .filter((p) => p.length >= 4 && !PALABRAS_IGNORADAS_CONCEPTO.has(p));
+}
+
+async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuenta[]> {
+  const lineas: LineaConCuenta[] = [];
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_CUENTAS; pagina++) {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{
+        contact_name?: string;
+        description?: string;
+        tags?: string[];
+        lines?: Array<{ name?: string; account?: string }>;
+      }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      for (const line of item.lines ?? []) {
+        if (!line.account) continue;
+        lineas.push({
+          contactName: item.contact_name ?? "",
+          descripcion: item.description ?? "",
+          lineName: line.name ?? "",
+          account: line.account,
+          tags: item.tags ?? [],
+        });
+      }
+    }
+
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return lineas;
+}
+
+function construirSugerenciaDesdeCoincidencias(
+  matches: LineaConCuenta[],
+  origen: CuentaSugerida["aprendidoDe"]
+): CuentaSugerida | undefined {
+  if (matches.length === 0) return undefined;
+
+  const conteo = new Map<string, number>();
+  for (const m of matches) conteo.set(m.account, (conteo.get(m.account) ?? 0) + 1);
+  const cuentaGanadora = Array.from(conteo.entries()).sort((a, b) => b[1] - a[1])[0][0];
+
+  const delGrupo = matches.filter((m) => m.account === cuentaGanadora);
+  const tagsFrecuentes = new Map<string, number>();
+  for (const m of delGrupo) for (const t of m.tags) tagsFrecuentes.set(t, (tagsFrecuentes.get(t) ?? 0) + 1);
+  const tags = Array.from(tagsFrecuentes.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([t]) => t);
+
+  const ejemplo = delGrupo.find((m) => m.lineName || m.descripcion);
+
+  return { accountId: cuentaGanadora, tags, ejemplo: ejemplo ? ejemplo.lineName || ejemplo.descripcion : "", aprendidoDe: origen };
+}
+
+/**
+ * Cuando varias cuentas candidatas empatan o no hay un ganador claro por
+ * palabras clave, le pide a Claude que elija la más adecuada ENTRE esas
+ * candidatas reales (nunca inventa una cuenta nueva) — pedido explícito de
+ * Carlos: "usa el modelo IA que se requiera para que esto sea preciso".
+ */
+async function elegirCuentaConIA(
+  criterios: { proveedor: string; concepto: string },
+  candidatos: LineaConCuenta[]
+): Promise<CuentaSugerida | undefined> {
+  const porCuenta = new Map<string, LineaConCuenta[]>();
+  for (const c of candidatos) {
+    const arr = porCuenta.get(c.account) ?? [];
+    if (arr.length < 3) arr.push(c);
+    porCuenta.set(c.account, arr);
+  }
+  const opciones = Array.from(porCuenta.entries()).slice(0, 6);
+  if (opciones.length < 2) return undefined;
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return undefined;
+
+  try {
+    const anthropic = new Anthropic({ apiKey });
+    const listado = opciones
+      .map(
+        ([accountId, ejemplos], i) =>
+          `${i + 1}. cuenta "${accountId}" — ejemplos ya registrados: ${ejemplos
+            .map((e) => `"${e.lineName || e.descripcion}"`)
+            .join(", ")}`
+      )
+      .join("\n");
+
+    const response = await anthropic.messages.create({
+      model: "claude-sonnet-5",
+      max_tokens: 20,
+      messages: [
+        {
+          role: "user",
+          content:
+            `Gasto nuevo — proveedor: "${criterios.proveedor}", concepto: "${criterios.concepto}". ` +
+            `¿Cuál de estas cuentas contables (identificadas solo por ejemplos reales ya registrados en Holded) ` +
+            `es la más adecuada para este gasto? Responde SOLO con el número de la opción, o "0" si ninguna encaja bien.\n\n${listado}`,
+        },
+      ],
+    });
+
+    const textBlock = response.content.find((b) => b.type === "text");
+    const numero = textBlock && textBlock.type === "text" ? parseInt(textBlock.text.trim(), 10) : NaN;
+    if (!Number.isFinite(numero) || numero < 1 || numero > opciones.length) return undefined;
+
+    const [accountId, ejemplos] = opciones[numero - 1];
+    return {
+      accountId,
+      tags: [],
+      ejemplo: ejemplos[0]?.lineName || ejemplos[0]?.descripcion || "",
+      aprendidoDe: "ia",
+    };
+  } catch (error) {
+    console.error("[write] Error eligiendo cuenta contable con IA (no crítico):", error);
+    return undefined;
+  }
+}
+
+/**
+ * Busca qué cuenta contable de Holded ya se usa en compras reales
+ * parecidas — por proveedor o por palabras clave del concepto — para no
+ * dejar que Holded caiga en su cuenta genérica por defecto en gastos que
+ * ya tienen una categoría real establecida (ej. "Gastos de viaje" para
+ * vuelos/hoteles/taxis, en vez de "Otros servicios"). Caso real que
+ * motivó esto: una factura de Booking.com (Footprint) se creó sin cuenta
+ * ni tags — verificado en vivo que Footprint ya tiene 159 líneas reales de
+ * gastos de viaje (KLM, Uber, hoteles, Booking.com, incluyendo vuelos del
+ * mismo colaborador) todas bajo la MISMA cuenta contable.
+ *
+ * Holded no expone un endpoint público para listar el plan de cuentas
+ * (verificado en vivo: /accounting/accounts, /expenseaccounts,
+ * /chartofaccounts — todos 404 o devuelven el HTML del front, no datos) —
+ * así que la única fuente confiable es lo que YA está en uso real. Nunca
+ * inventa un id de cuenta.
+ *
+ * 1) Si hay compras del MISMO proveedor (nombre parecido), usa la cuenta
+ *    más frecuente entre esas — caso fuerte y determinístico.
+ * 2) Si no, busca por palabras clave del concepto compartidas con líneas
+ *    ya registradas. Si de ahí salen varias cuentas candidatas distintas
+ *    sin un proveedor que desempate, se le pide a Claude que elija
+ *    (elegirCuentaConIA) en vez de quedarse con la primera por azar.
+ * 3) Si no hay ninguna coincidencia razonable, devuelve undefined — Holded
+ *    usa su cuenta por defecto, igual que antes de esta función existir.
+ */
+export async function inferirCuentaGasto(
+  empresa: Empresa,
+  criterios: { proveedor: string; concepto: string }
+): Promise<CuentaSugerida | undefined> {
+  const lineas = await recolectarLineasConCuenta(empresa);
+  if (lineas.length === 0) return undefined;
+
+  const objetivoProveedor = normalizar(criterios.proveedor);
+  const porNombre = objetivoProveedor
+    ? lineas.filter((l) => {
+        const nombre = normalizar(l.contactName);
+        return nombre && (nombre.includes(objetivoProveedor) || objetivoProveedor.includes(nombre));
+      })
+    : [];
+
+  const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
+  if (sugeridoPorNombre) return sugeridoPorNombre;
+
+  const palabrasConcepto = palabrasSignificativas(criterios.concepto);
+  if (palabrasConcepto.length === 0) return undefined;
+
+  const porConcepto = lineas.filter((l) => {
+    const texto = normalizar(`${l.descripcion} ${l.lineName}`);
+    return palabrasConcepto.some((p) => texto.includes(p));
+  });
+
+  const cuentasDistintas = new Set(porConcepto.map((m) => m.account));
+  if (cuentasDistintas.size > 1) {
+    const viaIA = await elegirCuentaConIA(criterios, porConcepto);
+    if (viaIA) return viaIA;
+  }
+
+  return construirSugerenciaDesdeCoincidencias(porConcepto, "concepto");
+}
+
 export interface GastoSinComprobante {
   id: string;
   contactName: string;
@@ -701,6 +913,10 @@ export interface NuevoGastoHolded {
   fecha: string; // YYYY-MM-DD
   descripcion: string;
   lineas: LineaGastoHolded[];
+  /** Cuenta contable real de Holded a asignar (ver inferirCuentaGasto) — si no se da, Holded usa su cuenta por defecto. */
+  cuentaId?: string;
+  /** Tags del documento (ej. ["avion","transporte"]) — ver inferirCuentaGasto. */
+  tags?: string[];
 }
 
 /**
@@ -751,6 +967,7 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       price: linea.base,
       tax: 0,
       taxes: taxKey ? [taxKey] : [],
+      ...(gasto.cuentaId ? { account: gasto.cuentaId } : {}),
     };
   });
 
@@ -761,6 +978,7 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       date: gasto.fecha,
       description: gasto.descripcion,
       items,
+      ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
     })) as { id?: string };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

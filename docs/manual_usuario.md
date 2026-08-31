@@ -182,6 +182,22 @@ que hacer nada más.
     fecha del vuelo de hace más de un año), no te muestra el error técnico
     crudo: te dice explícitamente que la fecha está bloqueada y te ofrece
     un botón para reintentar la creación con la fecha de hoy en su lugar.
+  - **Cuenta contable correcta, no la genérica por defecto**: antes de
+    crear un gasto nuevo, busca en compras reales ya registradas (mismo
+    proveedor, o palabras clave del concepto) qué cuenta contable ya se usa
+    para ese tipo de gasto (ej. "Gastos de viaje" para vuelos/hoteles/taxis,
+    en vez de que Holded caiga en su cuenta genérica "Otros servicios") —
+    Holded no tiene un listado público de su plan de cuentas, así que
+    siempre reutiliza una cuenta que YA está en uso real, nunca inventa una.
+    Si hay varias cuentas candidatas sin un proveedor que desempate, le pide
+    a Claude que elija la más adecuada entre esas opciones reales. Te lo
+    muestra en la propuesta antes de aprobar, y si no encuentra ninguna
+    categoría parecida, te lo dice en vez de forzar algo.
+  - **Si falla adjuntar el comprobante después de crear el gasto**, no lo
+    trata como un fallo total ni te sugiere reenviar el documento (crearía
+    un duplicado en Holded) — te dice con claridad que el gasto ya está
+    creado (con su id) pero sin comprobante, para que lo subas a mano, y
+    sigue el flujo normal hasta la pregunta de conciliación.
 - **Gastos sin comprobante**: pregúntale "¿qué gastos de WOBA/EWORKS/Footprint
   no tienen comprobante?" y revisa Holded para decirte cuáles faltan (con el
   proveedor, monto, fecha, y si hay una pista de a quién corresponde). Solo

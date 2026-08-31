@@ -25,6 +25,8 @@ const HEADERS = [
   "messageId",
   "creadoEn",
   "lineasJSON",
+  "cuentaId",
+  "cuentaTagsJSON",
 ];
 
 export interface PropuestaGasto {
@@ -44,6 +46,9 @@ export interface PropuestaGasto {
   chatId: number;
   messageId: number;
   creadoEn: number;
+  /** Cuenta contable inferida (ver inferirCuentaGasto) — se usa al crear el gasto en Holded, si se pudo inferir. */
+  cuentaId?: string;
+  cuentaTags?: string[];
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -96,7 +101,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:O1`,
+    range: `${TAB_NAME}!A1:Q1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -122,6 +127,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     lineas = [];
   }
 
+  let cuentaTags: string[] | undefined;
+  try {
+    cuentaTags = row[16] ? JSON.parse(String(row[16])) : undefined;
+  } catch {
+    cuentaTags = undefined;
+  }
+
   return {
     id: String(row[0]),
     empresa: row[1] as Empresa,
@@ -138,6 +150,8 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     chatId: Number(row[11]) || 0,
     messageId: Number(row[12]) || 0,
     creadoEn: Number(row[13]) || 0,
+    cuentaId: row[15] ? String(row[15]) : undefined,
+    cuentaTags,
   };
 }
 
@@ -158,6 +172,8 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.messageId,
     p.creadoEn,
     JSON.stringify(p.lineas),
+    p.cuentaId ?? "",
+    JSON.stringify(p.cuentaTags ?? []),
   ];
 }
 
@@ -173,7 +189,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:O10000`,
+    range: `${TAB_NAME}!A2:Q10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -227,7 +243,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:O`,
+    range: `${TAB_NAME}!A:Q`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

@@ -392,10 +392,33 @@ async function crearGastoYReportar(
     fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
     descripcion: conceptoFinal || propuesta.concepto,
     lineas,
+    cuentaId: propuesta.cuentaId,
+    tags: propuesta.cuentaTags,
   });
 
-  await adjuntarYLimpiar(propuesta, gasto.id);
-  await registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto);
+  // A partir de acá el gasto YA EXISTE en Holded — un fallo en cualquier
+  // paso siguiente (adjuntar comprobante, aprendizaje) NUNCA debe lanzar
+  // hacia arriba ni hacer parecer que no se creó nada. Bug real encontrado
+  // en vivo: adjuntarYLimpiar lanzaba (archivo local no encontrado) y el
+  // catch de más arriba mostraba "Error procesando..." con "puedes
+  // reenviarlo" — pero el gasto YA estaba creado en Holded (confirmado en
+  // Holded mismo), así que reenviar el documento habría creado un
+  // DUPLICADO. Ahora se captura acá y se reporta con claridad qué sí y qué
+  // no se logró, y el flujo sigue hasta la pregunta de conciliación.
+  let notaComprobante = "";
+  try {
+    await adjuntarYLimpiar(propuesta, gasto.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[gastoCallbackHandler] Gasto ${gasto.id} creado pero falló adjuntar el comprobante:`, message);
+    notaComprobante =
+      `\n\n⚠️ No pude adjuntar el comprobante (${message}). El gasto YA está creado en Holded (id ${gasto.id}) — ` +
+      `sube el comprobante a mano ahí, no reenvíes el documento o se duplicaría el gasto.`;
+  }
+
+  await registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto).catch(
+    (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
+  );
   if (contactoForzado) {
     await registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
       (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
@@ -403,7 +426,10 @@ async function crearGastoYReportar(
   }
 
   const nombreContacto = contacto.name ?? propuesta.proveedor;
-  const baseMensaje = `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador) y comprobante adjuntado.`;
+  const baseMensaje =
+    `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador)` +
+    (notaComprobante ? "." : " y comprobante adjuntado.") +
+    notaComprobante;
 
   if (conciliarInline) {
     const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha);
