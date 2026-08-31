@@ -7,6 +7,7 @@ import { guardarUltimoRunHoldedCashflow } from "./holdedCashflowLastRunStore";
 import { sugerirCategoriasGasto, type CategoriaSugerida } from "../google/sugerirBloqueGasto";
 import type { BloqueEscritura } from "../google/cashflowWrite";
 import { montosCercanos } from "../utils/montos";
+import { textosParecidos } from "../utils/textoParecido";
 
 const TOLERANCIA_EUR = 0.01;
 // Tolerancia más ancha para montos que vienen de una conversión de divisa
@@ -110,6 +111,36 @@ export interface CandidatoNoRegistrado {
   esIngreso: boolean;
   /** Solo para gastos (esIngreso=false) — categorías candidatas rankeadas, ver sugerirBloqueGasto.ts. */
   categoriasSugeridas?: CategoriaSugerida[];
+  /** Si hay una fila ya registrada con nombre parecido y monto cercano (no exacto) — ver POSIBLE_DUPLICADO_TOLERANCIA_EUR. */
+  posibleDuplicadoDe?: string;
+}
+
+// Un mismo proveedor a veces cambia de tarifa entre facturas (ej. "Banahosting"
+// registrado en 204,68€ una semana y el cargo real de Holded llega en
+// 208,73€ la siguiente) — la diferencia es real, no un error, pero el
+// monto no coincide dentro de la tolerancia normal (1 céntimo). Pedido
+// explícito: cuando el NOMBRE es parecido Y el monto está razonablemente
+// cerca (hasta 5€, no un porcentaje — un margen fijo pensado para gastos
+// de este tamaño, no para transferencias de miles de euros), se avisa como
+// posible duplicado en vez de proponerlo como un movimiento nuevo sin más
+// — nunca se decide sola cuál es, siempre pregunta.
+const POSIBLE_DUPLICADO_TOLERANCIA_EUR = 5;
+
+function buscarPosibleDuplicado(
+  descripcion: string,
+  valorAbs: number,
+  registrosSemana: Array<{ cliente?: string; concepto?: string; semana: string; valor: string }>
+): string | undefined {
+  const match = registrosSemana.find((r) => {
+    const textoRegistro = [r.cliente, r.concepto].filter(Boolean).join(" ");
+    if (!textoRegistro) return false;
+    if (!textosParecidos(descripcion, textoRegistro)) return false;
+    const valorRegistro = Math.abs(parseValorFormateado(r.valor));
+    return montosCercanos(valorRegistro, valorAbs, POSIBLE_DUPLICADO_TOLERANCIA_EUR) && !montosCercanos(valorRegistro, valorAbs, TOLERANCIA_EUR);
+  });
+
+  if (!match) return undefined;
+  return `${match.cliente ?? match.concepto} — ${match.semana} — ${match.valor}`;
 }
 
 /**
@@ -207,6 +238,7 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     if (!candidato.esIngreso) {
       candidato.categoriasSugeridas = sugerirCategoriasGasto(candidato.descripcion, todosLosRegistros);
     }
+    candidato.posibleDuplicadoDe = buscarPosibleDuplicado(candidato.descripcion, candidato.valorAbs, registrosSemana);
   }
 
   return candidatos;
@@ -299,6 +331,12 @@ export async function enviarPropuestaCandidato(
         `escritura automática, regístralo a mano en el Sheet si aplica.`
       : "";
 
+  const notaPosibleDuplicado = candidato.posibleDuplicadoDe
+    ? `\n\n🔎 POSIBLE DUPLICADO — ya hay una fila parecida registrada esta semana: "${candidato.posibleDuplicadoDe}". ` +
+      `El monto no es idéntico (puede ser un cambio de tarifa real, o el mismo pago con una cifra distinta) — ` +
+      `¿es el mismo pago (entonces "❌ Ignorar") o es realmente otro cargo aparte (entonces elige la categoría)?`
+    : "";
+
   const texto = [
     esChequeoPreliminar
       ? `📋 Chequeo preliminar (viernes) — movimiento de Holded sin registrar en el cashflow de esta semana`
@@ -311,7 +349,7 @@ export async function enviarPropuestaCandidato(
     `Valor: ${candidato.valorAbs.toFixed(2)} € (${candidato.esIngreso ? "abono" : "cargo"})`,
     ``,
     `¿A qué categoría corresponde?`,
-  ].join("\n") + notaNoEscribible;
+  ].join("\n") + notaPosibleDuplicado + notaNoEscribible;
 
   // Se persiste primero (con messageId=0 provisional) para tener el id real
   // antes de mandar los botones; se actualiza el messageId tras enviarlos.

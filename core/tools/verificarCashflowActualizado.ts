@@ -71,7 +71,10 @@ export const verificarCashflowActualizadoTool: ToolDefinition = {
             .map((c) => {
               const categoria = c.categoriasSugeridas?.[0];
               const sugerencia = categoria && categoria.score > 0 ? ` — probablemente ${categoria.etiqueta}` : "";
-              return `  • ${c.descripcion} — ${c.valorAbs.toFixed(2)} € (${c.esIngreso ? "abono" : "cargo"}${c.fecha ? `, ${c.fecha}` : ""})${sugerencia}`;
+              const duplicado = c.posibleDuplicadoDe
+                ? ` — 🔎 posible duplicado de "${c.posibleDuplicadoDe}" ya registrado, confirma con el usuario si es el mismo pago`
+                : "";
+              return `  • ${c.descripcion} — ${c.valorAbs.toFixed(2)} € (${c.esIngreso ? "abono" : "cargo"}${c.fecha ? `, ${c.fecha}` : ""})${sugerencia}${duplicado}`;
             })
             .join("\n");
           partes.push(`⚠️ ${empresa}: faltan ${candidatos.length} movimiento(s) de Holded por registrar en ${semanaLabel}:\n${lineas}`);
