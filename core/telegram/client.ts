@@ -142,6 +142,67 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
   }
 }
 
+const MENSAJE_TRABAJANDO = "⏳ Trabajando en tu consulta...";
+
+/**
+ * Envía un mensaje real de "Trabajando..." — a diferencia del indicador
+ * nativo "escribiendo..." (sendChatAction), Telegram no deja personalizar
+ * ese texto ni controlarlo más allá de reenviarlo cada pocos segundos.
+ * Pedido explícito: que se vea "trabajando" en el chat, en el mismo lugar
+ * de la consulta — este mensaje real cumple eso y además se puede EDITAR
+ * en el mismo lugar con la respuesta final (ver entregarRespuestaTrasTrabajar),
+ * a diferencia del indicador nativo que solo desaparece. Devuelve su
+ * message_id, o undefined si el envío falla — nunca debe tumbar el flujo
+ * real por un problema de este aviso.
+ */
+export async function avisarTrabajando(chatId: number): Promise<number | undefined> {
+  try {
+    const token = getBotToken();
+    const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
+
+    const response = await fetchConReintento(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: MENSAJE_TRABAJANDO }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Error enviando aviso de 'trabajando' (${response.status}): ${body}`);
+    }
+
+    const data = (await response.json()) as { result: { message_id: number } };
+    return data.result.message_id;
+  } catch (error) {
+    console.error("[telegram] Error enviando aviso de 'trabajando' (no crítico):", error);
+    return undefined;
+  }
+}
+
+/**
+ * Entrega la respuesta final EDITANDO en el mismo lugar el mensaje de
+ * "Trabajando..." (ver avisarTrabajando) — así el usuario ve el mismo
+ * mensaje pasar de "trabajando" a la respuesta real, sin un mensaje nuevo
+ * aparte. Si no hubo mensaje de "trabajando" (falló al enviarlo) o editarlo
+ * falla por lo que sea, cae a mandar un mensaje nuevo — la respuesta real
+ * nunca se pierde por un problema de este aviso.
+ */
+export async function entregarRespuestaTrasTrabajar(
+  chatId: number,
+  mensajeTrabajandoId: number | undefined,
+  texto: string
+): Promise<void> {
+  if (mensajeTrabajandoId !== undefined) {
+    try {
+      await editTelegramMessage(chatId, mensajeTrabajandoId, texto);
+      return;
+    } catch (error) {
+      console.error("[telegram] Error editando el aviso de 'trabajando' con la respuesta final (no crítico):", error);
+    }
+  }
+  await sendTelegramMessage(chatId, texto);
+}
+
 /**
  * Envía un mensaje con botones inline (teclado en línea). Cada fila de `buttons`
  * se renderiza como una fila de botones bajo el mensaje.
