@@ -34,16 +34,25 @@ export interface DatosFactura {
   monto: number;
   moneda: string;
   /**
-   * Solo cuando `moneda` no es EUR: el equivalente en euros, SI el propio
-   * documento lo muestra (ej. una notificación de tarjeta: "40.46 EUR |
-   * 148.346 COP"). undefined si el documento no trae ningún equivalente en
-   * euros — nunca se calcula ni se inventa un tipo de cambio. Caso real que
-   * motivó esto: un gasto de Uber en Colombia se registró por error con
-   * 148.346 (el monto en COP) tratado como si fueran EUR — la conciliación
-   * bancaria es siempre en EUR, así que hace falta este campo para
-   * registrar el monto correcto.
+   * Solo cuando `moneda` no es la moneda real de la tarjeta/cuenta que hizo
+   * el cargo: el monto equivalente, SI el propio documento o el correo lo
+   * muestra explícitamente (ej. una notificación de tarjeta: "40.46 EUR |
+   * 148.346 COP", o "6.41 USD | 109 MXN"). undefined si no hay ningún
+   * equivalente explícito — nunca se calcula ni se inventa un tipo de
+   * cambio. Va SIEMPRE junto con `monedaEquivalente` (la moneda REAL de ese
+   * monto, que puede ser EUR, USD, u otra — NUNCA asumas que es EUR, hay
+   * que leer literalmente qué código/símbolo de moneda acompaña a esa
+   * cifra). Casos reales que motivaron esto: (1) un gasto de Uber en
+   * Colombia se registró por error con 148.346 (el monto en COP) tratado
+   * como si fueran EUR; (2) un gasto de Starbucks en México ("6.41 USD |
+   * 109 MXN") se registró por error con 6.41 tratado como si fueran EUR,
+   * cuando el correo decía USD explícitamente — la conciliación bancaria
+   * necesita el monto en la moneda REAL que usó la tarjeta/cuenta, sea cual
+   * sea.
    */
-  montoEUR?: number;
+  montoEquivalente?: number;
+  /** Moneda ISO 4217 de `montoEquivalente` (ej. "EUR", "USD") — nunca asumida, siempre la que dice el documento/correo. */
+  monedaEquivalente?: string;
   /**
    * Nombre de la persona a la que corresponde este gasto en concreto (para
    * usarlo como tag en Holded), si hay evidencia clara — nunca inventado.
@@ -80,13 +89,22 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       proveedor: { type: "string", description: "Nombre del proveedor/emisor tal como aparece en el documento." },
       monto: { type: "number", description: "Importe TOTAL de la factura (base + todo el IVA), tal como aparece impreso." },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD." },
-      monto_eur: {
+      monto_equivalente: {
         type: "number",
         description:
-          "SOLO si 'moneda' no es EUR: el equivalente en euros, ÚNICAMENTE si el propio documento lo " +
-          "muestra explícitamente (ej. una notificación de tarjeta que dice '40.46 EUR | 148.346 COP', o " +
-          "un recibo con una línea 'Total (EUR)'). Si el documento NO trae ningún equivalente en euros " +
-          "impreso, omite este campo por completo — NUNCA calcules ni inventes un tipo de cambio tú mismo.",
+          "SOLO si 'moneda' no es la moneda real de la tarjeta/cuenta que hizo el cargo: el monto " +
+          "equivalente, ÚNICAMENTE si el propio documento o el correo lo muestra explícitamente (ej. una " +
+          "notificación de tarjeta '40.46 EUR | 148.346 COP', o '6.41 USD | 109 MXN'). Si no hay ningún " +
+          "equivalente explícito, omite este campo por completo — NUNCA calcules ni inventes un tipo de " +
+          "cambio tú mismo. Debes reportar SIEMPRE junto con 'moneda_equivalente'.",
+      },
+      moneda_equivalente: {
+        type: "string",
+        description:
+          "Código de moneda ISO 4217 de 'monto_equivalente' — LITERALMENTE el que aparece impreso junto a " +
+          "esa cifra (ej. 'EUR' en '40.46 EUR | 148.346 COP', pero 'USD' en '6.41 USD | 109 MXN'). NUNCA " +
+          "asumas que es EUR por defecto — algunas tarjetas están en USD, no en EUR. Lee el símbolo/código " +
+          "exacto que acompaña al número.",
       },
       persona_asociada: {
         type: "string",
@@ -149,18 +167,23 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "después con datos reales del sistema.",
     "Para decidir la empresa probable (WOBA, EWORKS o Footprint), usa consultar_base_conocimiento si " +
       "hace falta contexto sobre qué proveedores/gastos son de cada empresa.",
-    "Si 'moneda' no es EUR y el documento muestra también el equivalente en euros (típico en " +
-      "notificaciones de tarjeta por gastos en el extranjero: '40.46 EUR | 148.346 COP'), repórtalo en " +
-      "'monto_eur' — la conciliación bancaria del grupo es siempre en euros, así que ese es el monto real " +
-      "que salió de la cuenta, no el de la moneda local. Si el documento NO trae ningún equivalente en " +
-      "euros, omite 'monto_eur' — nunca calcules tú un tipo de cambio.",
+    "Si 'moneda' no es la moneda real de la tarjeta/cuenta que hizo el cargo y el documento muestra " +
+      "también un monto equivalente (típico en notificaciones de tarjeta por gastos en el extranjero: " +
+      "'40.46 EUR | 148.346 COP', o '6.41 USD | 109 MXN'), repórtalo en 'monto_equivalente' + " +
+      "'moneda_equivalente' — ese es el monto real que salió de la cuenta, no el de la moneda local del " +
+      "comercio. IMPORTANTE: 'moneda_equivalente' NUNCA se asume EUR por defecto — lee literalmente el " +
+      "código/símbolo que acompaña a esa cifra (algunas tarjetas del grupo están en USD, no en EUR; ej. " +
+      "'6.41 USD' es USD, no EUR, aunque el resto de la operación del grupo use euros). Si el documento NO " +
+      "trae ningún equivalente, omite ambos campos — nunca calcules tú un tipo de cambio.",
     "Además del documento adjunto, puede que recibas 'Contexto del correo' (asunto/cuerpo del mensaje " +
       "que traía este adjunto, ej. un reenvío de notificación bancaria). Es habitual que el recibo/factura " +
-      "en sí (ej. de Uber) NO muestre el equivalente en euros, pero el correo que lo reenvía sí lo diga en " +
-      "el asunto (ej. 'Fwd: 40.46 EUR | 148.346 COP - Uber'). En ese caso, usa ESE texto para reportar " +
-      "'monto_eur' igual que si viniera impreso en el documento — sigue siendo un dato real, no un cálculo " +
-      "tuyo. Si ni el documento ni el contexto del correo traen un equivalente en euros explícito, omite " +
-      "'monto_eur'.",
+      "en sí (ej. de Uber, Starbucks) NO muestre el monto equivalente, pero el correo que lo reenvía sí lo " +
+      "diga en el asunto (ej. 'Fwd: 40.46 EUR | 148.346 COP - Uber', o 'Fwd: 6.41USD | 109MXN - " +
+      "Starbucks'). En ese caso, usa ESE texto para reportar 'monto_equivalente'/'moneda_equivalente' " +
+      "igual que si viniera impreso en el documento — sigue siendo un dato real, no un cálculo tuyo, y la " +
+      "moneda es la que literalmente aparece ahí (EUR en el primer ejemplo, USD en el segundo — nunca " +
+      "asumas EUR sin leerlo). Si ni el documento ni el contexto del correo traen un equivalente " +
+      "explícito, omite ambos campos.",
     "Ese mismo 'Contexto del correo' también sirve para identificar 'persona_asociada' — mira si hay una " +
       "cadena de reenvío y usa el remitente ORIGINAL (el 'From:' dentro del bloque 'Forwarded message', no " +
       "quien hizo el último reenvío) como la persona a la que corresponde el gasto.",
@@ -298,7 +321,11 @@ export async function extraerDatosFactura(
         proveedor: (input.proveedor as string) ?? "",
         monto,
         moneda: (input.moneda as string) ?? "EUR",
-        montoEUR: typeof input.monto_eur === "number" ? input.monto_eur : undefined,
+        montoEquivalente: typeof input.monto_equivalente === "number" ? input.monto_equivalente : undefined,
+        monedaEquivalente:
+          typeof input.moneda_equivalente === "string" && input.moneda_equivalente.trim()
+            ? input.moneda_equivalente.trim().toUpperCase()
+            : undefined,
         personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
         fecha: (input.fecha as string) ?? "",
         concepto: (input.concepto as string) ?? "",

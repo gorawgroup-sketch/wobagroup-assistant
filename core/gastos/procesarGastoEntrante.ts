@@ -36,31 +36,35 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
 
   const empresa: Empresa = datos.empresaProbable;
 
-  // Pedido explícito de Carlos, tras un error real (un gasto de Uber en
-  // Colombia se registró con 148.346 — el monto en COP — tratado como si
-  // fueran EUR, un error de más de 148.000€): la conciliación bancaria del
-  // grupo SIEMPRE es en euros, así que si la factura viene en otra moneda,
-  // hay que usar el equivalente en EUR para crear el gasto (para que se
-  // pueda conciliar), y dejar el comprobante original tal cual está (en su
-  // moneda real) — nunca registrar el monto extranjero como si fuera EUR.
-  // Si el documento no trae el equivalente en euros impreso, se pregunta en
-  // vez de calcular un tipo de cambio inventado.
+  // Pedido explícito de Carlos, tras dos errores reales: (1) un gasto de
+  // Uber en Colombia se registró con 148.346 — el monto en COP — tratado
+  // como si fueran EUR; (2) un gasto de Starbucks en México ("6.41 USD |
+  // 109 MXN") se registró con 6.41 tratado como si fueran EUR cuando el
+  // correo decía USD explícitamente. La conciliación bancaria necesita el
+  // gasto en la moneda REAL de la tarjeta/cuenta que lo pagó — que puede
+  // ser EUR o USD según la tarjeta (el grupo tiene cuentas en ambas) — así
+  // que si la factura viene en otra moneda (la del comercio, no la de la
+  // tarjeta), hay que usar el monto+moneda equivalente que el documento o
+  // el correo declaran explícitamente, y dejar el comprobante original tal
+  // cual está. Si no hay ningún equivalente explícito, se pregunta en vez
+  // de calcular un tipo de cambio inventado.
   const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
   const esMonedaExtranjera = monedaOriginal !== "" && monedaOriginal !== "EUR";
 
-  if (esMonedaExtranjera && datos.montoEUR === undefined) {
+  if (esMonedaExtranjera && (datos.montoEquivalente === undefined || !datos.monedaEquivalente)) {
     await sendTelegramMessage(
       chatId,
       `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
         `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero el documento no trae ` +
-        `el equivalente en euros. La conciliación bancaria siempre es en euros, así que necesito el monto EXACTO ` +
-        `en euros que salió de la cuenta (no voy a calcular un tipo de cambio yo mismo) antes de registrar nada. ` +
-        `¿Cuánto fue en euros?`
+        `el monto equivalente en la moneda real de la tarjeta/cuenta (normalmente EUR o USD). Necesito el monto ` +
+        `EXACTO y la moneda que salió de la cuenta (no voy a calcular un tipo de cambio yo mismo) antes de ` +
+        `registrar nada. ¿Cuánto fue, y en qué moneda?`
     );
     return;
   }
 
-  const montoParaHolded = esMonedaExtranjera ? (datos.montoEUR as number) : datos.monto;
+  const monedaParaHolded = esMonedaExtranjera ? (datos.monedaEquivalente as string).toUpperCase().trim() : monedaOriginal;
+  const montoParaHolded = esMonedaExtranjera ? (datos.montoEquivalente as number) : datos.monto;
   const lineasParaHolded = esMonedaExtranjera
     ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
     : datos.lineas;
@@ -107,7 +111,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     empresa,
     proveedor: datos.proveedor,
     monto: montoParaHolded,
-    moneda: "EUR",
+    moneda: monedaParaHolded,
     fecha: datos.fecha,
     concepto: conceptoConMonedaOriginal,
     rutaLocal: entrada.rutaLocal,
@@ -122,11 +126,11 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
   });
 
   const desgloseIva = lineasParaHolded
-    .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} € + IVA ${l.tipoIvaPct}%`)
+    .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} ${monedaParaHolded} + IVA ${l.tipoIvaPct}%`)
     .join("\n");
 
   const importeTexto = esMonedaExtranjera
-    ? `${montoParaHolded.toFixed(2)} € (comprobante en ${datos.monto} ${monedaOriginal})`
+    ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal})`
     : `${datos.monto} ${datos.moneda}`;
 
   let texto: string;
@@ -164,17 +168,17 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     // (uno, varios, o ninguno) y, si hace falta algo para confirmarlo,
     // preguntarlo explícitamente en vez de omitirlo en silencio.
     // Pedido explícito de Carlos: esto puede pasar con cualquier moneda
-    // (EUR, USD...), no solo COP — cuando el gasto original no está en EUR,
-    // el monto en EUR de la factura y el que calcula Holded para el
-    // movimiento bancario vienen de dos conversiones de cambio
-    // independientes y pueden diferir sin dejar de ser la misma
-    // transacción, así que se ensancha la tolerancia (2% del monto) solo en
-    // este caso — nunca para gastos que ya estaban en EUR. Sin piso alto
-    // fijo: un piso de 1€ resultó demasiado ancho para cargos pequeños
-    // (verificado en vivo: con un movimiento real de -2,50€, un piso de 1€
-    // hacía match con 6 movimientos distintos del mismo rango de fechas en
-    // vez de solo el correcto) — 0,05€ de piso alcanza para el redondeo
-    // real sin volverse impreciso en montos chicos.
+    // (EUR, USD...), no solo COP — cuando el gasto original no está en la
+    // moneda real de la tarjeta, el monto equivalente de la factura y el
+    // que registra/calcula Holded para el movimiento bancario pueden
+    // diferir sin dejar de ser la misma transacción, así que se ensancha
+    // la tolerancia (2% del monto) solo en este caso — nunca para gastos
+    // que ya estaban en su moneda real. Sin piso alto fijo: un piso de 1€
+    // resultó demasiado ancho para cargos pequeños (verificado en vivo: con
+    // un movimiento real de -2,50€, un piso de 1€ hacía match con 6
+    // movimientos distintos del mismo rango de fechas en vez de solo el
+    // correcto) — 0,05 de piso alcanza para el redondeo real sin volverse
+    // impreciso en montos chicos.
     const toleranciaMov = esMonedaExtranjera ? Math.max(0.05, montoParaHolded * 0.02) : undefined;
 
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
@@ -182,7 +186,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10) },
+        { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10), moneda: monedaParaHolded },
         toleranciaMov
       );
       if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
@@ -192,18 +196,20 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     }
 
     const notaAproximacion = esMonedaExtranjera
-      ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
-        `tipo de cambio, puede diferir unos céntimos del valor exacto)`
+      ? monedaParaHolded === "EUR"
+        ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
+          `tipo de cambio, puede diferir unos céntimos del valor exacto)`
+        : ` (monto aproximado — puede diferir unos céntimos del valor exacto registrado por el banco)`
       : "";
 
     const notaMovimiento = movimientoBancario
       ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
-        `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} €${notaAproximacion} ` +
+        `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} ${movimientoBancario.moneda}${notaAproximacion} ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
       : candidatosMovAmbiguos.length > 0
         ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
           candidatosMovAmbiguos
-            .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} € (${m.fecha})`)
+            .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
             .join("\n") +
           `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
         : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} ` +

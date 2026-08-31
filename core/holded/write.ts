@@ -963,6 +963,17 @@ export interface NuevoGastoHolded {
   cuentaId?: string;
   /** Tags del documento (ej. ["avion","transporte"]) — ver inferirCuentaGasto. */
   tags?: string[];
+  /**
+   * Moneda ISO 4217 del documento (ej. "USD") — si no se da, Holded usa el
+   * default de la organización (EUR). Verificado en la documentación real
+   * de Holded (developers.holded.com): /purchases SÍ acepta un campo
+   * `currency` para crear el documento en una moneda distinta a EUR — el
+   * supuesto anterior de que solo soportaba EUR era incorrecto. Pedido
+   * explícito de Carlos: un gasto puede necesitar conciliarse en USD (no
+   * solo EUR) si la tarjeta/cuenta real que lo pagó está en USD — en ese
+   * caso el gasto debe crearse en USD, no forzarlo a EUR.
+   */
+  moneda?: string;
 }
 
 /**
@@ -1025,6 +1036,7 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       description: gasto.descripcion,
       items,
       ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
+      ...(gasto.moneda ? { currency: gasto.moneda } : {}),
     })) as { id?: string };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1046,6 +1058,8 @@ export interface MovimientoBancarioCandidato {
   movementId: string;
   descripcion: string;
   monto: number;
+  /** Moneda de `monto` — igual a `criterios.moneda` de la búsqueda ("EUR" si no se especificó). */
+  moneda: string;
   fecha: string;
 }
 
@@ -1061,22 +1075,34 @@ const VENTANA_DIAS_MOVIMIENTO = 5;
  * gastos a partir de movimientos huérfanos (eso queda para revisión
  * humana, ver consultar_movimientos_sin_conciliar).
  *
+ * `criterios.moneda` (por defecto "EUR") decide CÓMO se compara cada
+ * movimiento — pedido explícito de Carlos: la conciliación puede necesitar
+ * ser en EUR o en USD según qué tarjeta/cuenta real pagó el gasto, no
+ * siempre en EUR:
+ * - Si es "EUR" (caso más común, gastos que ya están en EUR o que se
+ *   convirtieron a EUR): se compara con montoEnEuros(mov), que ya usa el
+ *   `accounting_amount` que el propio Holded calcula para cuentas en otra
+ *   moneda — permite encontrar el gasto aunque la cuenta bancaria real sea
+ *   en otra divisa.
+ * - Si NO es "EUR" (ej. "USD", cuando el gasto se creó en esa moneda
+ *   porque la tarjeta/cuenta real que pagó está en esa moneda): solo se
+ *   compara contra movimientos cuya moneda NATIVA sea exactamente esa
+ *   misma — nunca se convierte con un tipo de cambio propio, así que un
+ *   movimiento en otra moneda simplemente no es candidato.
+ *
  * `toleranciaEur` es opcional (por defecto TOLERANCIA_MONTO, 1 céntimo) —
- * pedido explícito de Carlos: cuando el gasto original está en una moneda
- * distinta al euro (puede pasar con USD, COP, cualquiera), el monto en EUR
- * de la factura y el `accounting_amount` que calcula Holded para el
- * movimiento bancario vienen de DOS conversiones de cambio independientes
- * (fechas/proveedores de tipo de cambio distintos, comisión de la tarjeta),
- * así que pueden diferir por más de un céntimo sin dejar de ser la MISMA
- * transacción — con la tolerancia fija de 1 céntimo, un match real se
- * perdía en silencio. El llamador decide cuándo ensanchar la tolerancia
- * (solo en el caso de conversión de moneda, nunca para gastos ya en EUR).
+ * cuando el monto viene de un equivalente declarado en el documento/correo
+ * (conversión de moneda), el llamador puede ensancharla: ese monto y el que
+ * calcula/registra Holded pueden diferir por más de un céntimo sin dejar
+ * de ser la MISMA transacción — con la tolerancia fija, un match real se
+ * perdía en silencio.
  */
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string },
+  criterios: { monto: number; fecha: string; moneda?: string },
   toleranciaEur: number = TOLERANCIA_MONTO
 ): Promise<MovimientoBancarioCandidato[]> {
+  const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
   const fechaBase = new Date(criterios.fecha);
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
@@ -1114,7 +1140,17 @@ export async function buscarMovimientoSimilar(
 
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status)) continue;
-      const monto = montoEnEuros(mov);
+
+      let monto: number;
+      if (monedaObjetivo === "EUR") {
+        monto = montoEnEuros(mov);
+      } else {
+        // Nunca se inventa un tipo de cambio para monedas distintas a EUR:
+        // solo son candidatos los movimientos cuya moneda nativa coincide
+        // exactamente con la que se busca.
+        if ((mov.currency ?? "EUR").toUpperCase() !== monedaObjetivo) continue;
+        monto = parsearMontoMovimiento(mov.amount);
+      }
       if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) continue;
 
       candidatos.push({
@@ -1122,6 +1158,7 @@ export async function buscarMovimientoSimilar(
         movementId: mov.id,
         descripcion: mov.description ?? "",
         monto,
+        moneda: monedaObjetivo,
         fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
       });
     }
