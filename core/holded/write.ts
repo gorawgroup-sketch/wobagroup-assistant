@@ -5,6 +5,7 @@ import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { montosCercanos } from "../utils/montos";
 import { textosParecidos } from "../utils/textoParecido";
+import { registrarUsoIA } from "../claude/costTracking";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -681,6 +682,12 @@ async function elegirCuentaConIA(
         },
       ],
     });
+
+    // Bug real: esta llamada real a Claude nunca se registraba en
+    // _costos_ia — el gasto real de elegir cuenta contable no aparecía.
+    registrarUsoIA(undefined, "claude-sonnet-5", response.usage).catch((error) =>
+      console.error("[write] Error registrando uso de IA:", error)
+    );
 
     const textBlock = response.content.find((b) => b.type === "text");
     const numero = textBlock && textBlock.type === "text" ? parseInt(textBlock.text.trim(), 10) : NaN;

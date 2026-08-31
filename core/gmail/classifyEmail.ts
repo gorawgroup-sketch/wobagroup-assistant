@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import type { CorreoResumen } from "./client";
+import { registrarUsoIA } from "../claude/costTracking";
 
 const MODEL = "claude-sonnet-5";
 const MAX_ITERATIONS = 4;
@@ -115,6 +116,13 @@ export async function analizarCorreo(correo: CorreoResumen): Promise<AnalisisCor
       tools,
       messages,
     });
+
+    // Bug real: esta llamada real a Claude nunca se registraba en
+    // _costos_ia — el gasto real de clasificar cada correo entrante
+    // (cada hora, todos los correos nuevos) no aparecía en el panel.
+    registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
+      console.error("[classifyEmail] Error registrando uso de IA:", error)
+    );
 
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"

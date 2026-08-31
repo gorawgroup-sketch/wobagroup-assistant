@@ -13,6 +13,11 @@ const HEADERS = ["fecha", "chatId", "modelo", "inputTokens", "outputTokens", "ca
 const PRECIOS_POR_MODELO: Record<string, { input: number; output: number }> = {
   "claude-sonnet-5": { input: 2.0 / 1_000_000, output: 10.0 / 1_000_000 },
   "claude-haiku-4-5": { input: 1.0 / 1_000_000, output: 5.0 / 1_000_000 },
+  // Usado por extraerDatosFactura y classifyFile — verificado en vivo contra
+  // la tabla oficial de precios de Anthropic (bug real encontrado: estas
+  // llamadas usaban este modelo pero ni siquiera estaban en la tabla, así
+  // que ni se registraban — ver también registrarUsoIA en esos archivos).
+  "claude-sonnet-4-6": { input: 3.0 / 1_000_000, output: 15.0 / 1_000_000 },
 };
 
 // Tarifa de respaldo si algún día se usa un modelo que no está en la tabla

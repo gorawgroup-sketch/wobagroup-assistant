@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { listarSubcarpetas } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
+import { registrarUsoIA } from "../claude/costTracking";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 6;
@@ -146,6 +147,12 @@ export async function clasificarDocumento(
       tools,
       messages,
     });
+
+    // Bug real: esta llamada real a Claude nunca se registraba en
+    // _costos_ia — el gasto real de clasificar documentos no aparecía.
+    registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
+      console.error("[classifyFile] Error registrando uso de IA:", error)
+    );
 
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"

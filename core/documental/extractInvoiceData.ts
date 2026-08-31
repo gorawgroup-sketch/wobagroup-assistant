@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
+import { registrarUsoIA } from "../claude/costTracking";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 4;
@@ -200,6 +201,13 @@ export async function extraerDatosFactura(rutaLocal: string, mimeType: string | 
       tools,
       messages,
     });
+
+    // Bug real encontrado en vivo: esta llamada real a Claude nunca se
+    // registraba en _costos_ia (a diferencia de core/claude/client.ts) —
+    // el gasto real de leer facturas no aparecía en el panel de costos.
+    registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
+      console.error("[extractInvoiceData] Error registrando uso de IA:", error)
+    );
 
     const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
 
