@@ -159,8 +159,8 @@ registrar en cashflow) sin que presiones uno de estos botones.
   - ❌ Ninguno, crear nuevo — sigue al flujo de creación de abajo.
 - **Si no encuentra ninguno**, antes de proponer crear también revisa si el cargo ya está en el banco real (no solo en Compras):
   - Si encuentra un movimiento bancario sin conciliar que coincide en monto y fecha, aparecen **los dos botones juntos**: ✅ Crear, y ✅ Crear y conciliar (hace ambas cosas de una) — eliges tú según tu confianza en el match.
-  - Si no hay match bancario, solo aparece ✅ Crear gasto en Holded.
-  - Cualquiera de las dos crea el gasto (como borrador) con el IVA real de cada línea, la **cuenta contable correcta** (reutiliza una cuenta ya en uso real para proveedores/conceptos parecidos, ej. "Gastos de viaje" — nunca la cuenta genérica de Holded por defecto, ni una inventada) y adjunta el comprobante.
+  - Si no hay match bancario, solo aparece ✅ Crear gasto en Holded — y la propuesta lo dice explícitamente ("no encontré ningún movimiento que coincida"), nunca se queda callada al respecto. Si en cambio hay **varios** movimientos parecidos y no sabe cuál es el correcto, los lista todos y te pregunta directamente cuál corresponde, en vez de omitirlo.
+  - Cualquiera de las dos crea el gasto (como borrador) con el IVA real de cada línea, la **cuenta contable correcta** (reutiliza una cuenta ya en uso real para proveedores/conceptos parecidos, ej. "Gastos de viaje" — nunca la cuenta genérica de Holded por defecto, ni una inventada; si no encuentra ninguna categoría parecida, te lo dice y te pregunta si tú sabes cuál debería ser) y adjunta el comprobante.
   - ✏️ Corregir clasificación — pide la empresa/concepto correctos por texto libre (ej. "EWORKS, servicio de limpieza") antes de crear el gasto. Esta corrección **queda aprendida**: la próxima factura del mismo proveedor se clasifica con más certeza.
   - ❌ Cancelar — no escribe nada.
 - **Si no encuentra el proveedor** ni por nombre parecido al crear, busca alternativas (contactos con nombre parecido, facturas con el mismo importe) y las ofrece por botones antes de rendirse.

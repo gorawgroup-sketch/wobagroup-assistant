@@ -113,13 +113,21 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     // para ofrecer "crear y conciliar" de una — pedido explícito de Carlos
     // tras un caso real (factura de Booking.com sin match de compra, pero
     // sí había un cargo real en el banco).
+    // Pedido explícito de Carlos: nunca quedarse callado sobre si se pudo
+    // identificar el movimiento bancario — decir siempre qué se encontró
+    // (uno, varios, o ninguno) y, si hace falta algo para confirmarlo,
+    // preguntarlo explícitamente en vez de omitirlo en silencio.
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
+    let candidatosMovLength = 0;
+    let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     try {
       const candidatosMov = await buscarMovimientoSimilar(empresa, {
         monto: datos.monto,
         fecha: datos.fecha || new Date().toISOString().slice(0, 10),
       });
+      candidatosMovLength = candidatosMov.length;
       if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
+      else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
     } catch (error) {
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
@@ -128,13 +136,20 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
         `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} € ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
-      : "";
+      : candidatosMovAmbiguos.length > 0
+        ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
+          candidatosMovAmbiguos
+            .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} € (${m.fecha})`)
+            .join("\n") +
+          `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
+        : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${datos.monto} ${datos.moneda} ` +
+          `cerca del ${datos.fecha} — si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
     const notaCuenta = cuentaSugerida
       ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
         ` (${cuentaSugerida.aprendidoDe === "proveedor" ? "por proveedor" : cuentaSugerida.aprendidoDe === "concepto" ? "por concepto" : "elegida por IA"})` +
         (cuentaSugerida.tags.length > 0 ? `, tags: ${cuentaSugerida.tags.join(", ")}` : "")
-      : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto.`;
+      : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.`;
 
     texto = [
       `📄 *Factura detectada* — no encontré ningún gasto ya registrado en Holded que corresponda.`,
