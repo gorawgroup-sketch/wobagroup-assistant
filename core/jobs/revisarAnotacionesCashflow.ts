@@ -1,5 +1,9 @@
 import { obtenerAnotacionesCashflow, type AnotacionCashflow } from "../google/cashflowComments";
-import { obtenerAnotacionesYaNotificadas, marcarAnotacionNotificada } from "./anotacionesCashflowNotificadasStore";
+import {
+  obtenerAnotacionesYaNotificadas,
+  marcarAnotacionNotificada,
+  purgarAnotacionesNoActivas,
+} from "./anotacionesCashflowNotificadasStore";
 import { sendTelegramMessage } from "../telegram/client";
 import { askClaude } from "../claude/client";
 
@@ -37,6 +41,11 @@ function describirUbicacion(a: AnotacionCashflow): string {
  * para verificar si algo mencionado en la anotación ya ocurrió en la
  * práctica antes de recomendar. Cada anotación se marca notificada solo si
  * su propio envío tuvo éxito — una falla en una no bloquea a las demás.
+ *
+ * También purga del registro cualquier anotación ya notificada que haya
+ * dejado de estar activa (se resolvió o se borró en Sheets) — pedido
+ * explícito de Carlos: no tiene sentido guardarla ahí una vez que
+ * desapareció del cashflow, ver purgarAnotacionesNoActivas.
  */
 export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: number }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
@@ -47,6 +56,19 @@ export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: nu
   }
 
   const anotaciones = await obtenerAnotacionesCashflow(true);
+
+  // Purga primero lo que ya no está activo (resuelto o borrado desde la
+  // última corrida) — corre siempre, incluso si no hay anotaciones nuevas
+  // que avisar, para que el registro de notificadas no acumule basura.
+  const idsActivos = new Set(anotaciones.map((a) => a.id).filter(Boolean));
+  const purgadas = await purgarAnotacionesNoActivas(idsActivos).catch((error) => {
+    console.error("[revisarAnotacionesCashflow] Error purgando anotaciones inactivas (no crítico):", error);
+    return 0;
+  });
+  if (purgadas > 0) {
+    console.log(`[revisarAnotacionesCashflow] ${purgadas} anotación(es) purgada(s) del registro (resueltas o borradas).`);
+  }
+
   if (anotaciones.length === 0) {
     return { avisosEnviados: 0 };
   }
