@@ -1,7 +1,13 @@
 import { unlink } from "node:fs/promises";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import type { InlineKeyboardButton } from "../telegram/types";
-import { consumirPropuestaGasto, obtenerPropuestaGasto, type PropuestaGasto } from "./gastoProposalSheet";
+import {
+  consumirPropuestaGasto,
+  obtenerPropuestaGasto,
+  crearPropuestaGasto,
+  actualizarMessageIdGasto,
+  type PropuestaGasto,
+} from "./gastoProposalSheet";
 import { guardarPendienteCorreccionGasto, type PendienteCorreccionGasto } from "./pendienteCorreccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
@@ -10,6 +16,7 @@ import {
   consumirResolucionContacto,
   type AlternativaContacto,
 } from "./contactoResolucionStore";
+import { guardarConciliacionPendiente, consumirConciliacionPendiente } from "./conciliacionPendienteStore";
 import {
   buscarContactoHolded,
   buscarContactosParecidos,
@@ -19,6 +26,7 @@ import {
   buscarMovimientoSimilar,
   reconciliarMovimiento,
   ContactoNoEncontradoError,
+  FechaBloqueadaError,
   type HoldedContact,
 } from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
@@ -85,10 +93,44 @@ async function intentarConciliar(empresa: Empresa, monto: number, fecha: string)
 }
 
 /**
+ * Manda el mensaje de seguimiento preguntando si conciliar el movimiento
+ * bancario — solo se usa cuando NO se confirmó un movimiento coincidente
+ * ANTES de crear el gasto (ver procesarGastoEntrante.ts): pedido explícito
+ * de Carlos, quiere revisar el gasto recién creado en Holded antes de que
+ * se intente conciliar, en vez de que ocurra en silencio. Guarda la
+ * pregunta en conciliacionPendienteStore (Sheets, sobrevive un redeploy)
+ * hasta que se responda con el botón.
+ */
+async function preguntarSiConciliar(
+  chatId: number,
+  empresa: Empresa,
+  monto: number,
+  fecha: string,
+  descripcionGasto: string
+): Promise<void> {
+  try {
+    const pendiente = await guardarConciliacionPendiente({ empresa, monto, fecha, descripcionGasto, chatId });
+    await sendTelegramMessageWithButtons(
+      chatId,
+      `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`,
+      [
+        [
+          { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
+          { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
+        ],
+      ]
+    );
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error preguntando si conciliar (no crítico):", error);
+  }
+}
+
+/**
  * Maneja los botones de propuestas de gasto (gasto_adjuntar / gasto_nuevo /
- * gasto_corregir / gasto_cancelar). Los únicos caminos que escriben algo
- * real en Holded son gasto_adjuntar y gasto_nuevo (y la confirmación tras
- * gasto_corregir) — nunca ocurre automáticamente.
+ * gasto_nuevo_conciliar / gasto_corregir / gasto_cancelar / gasto_conciliar_si
+ * / gasto_conciliar_no). Los únicos caminos que escriben algo real en
+ * Holded son gasto_adjuntar, gasto_nuevo y gasto_nuevo_conciliar (y la
+ * confirmación tras gasto_corregir) — nunca ocurre automáticamente.
  */
 export async function handleGastoCallback(callback: TelegramCallbackQuery): Promise<void> {
   const data = callback.data;
@@ -132,7 +174,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     return;
   }
 
-  if (accion === "gasto_adjuntar" || accion === "gasto_nuevo") {
+  if (accion === "gasto_adjuntar" || accion === "gasto_nuevo" || accion === "gasto_nuevo_conciliar") {
     const propuesta = await consumirPropuestaGasto(propuestaId);
     if (!propuesta) {
       await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
@@ -161,12 +203,32 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           []
         );
       } else {
-        const mensaje = await crearGastoYReportar(propuesta, propuesta.empresa, propuesta.concepto);
-        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensaje, []);
+        // gasto_nuevo_conciliar: procesarGastoEntrante ya confirmó un
+        // movimiento bancario coincidente ANTES de proponer — suficiente
+        // confianza para conciliar de una, sin pedir revisión previa.
+        // gasto_nuevo: no había match confirmado — se crea nomás y se
+        // pregunta DESPUÉS (preguntarSiConciliar), para que se revise en
+        // Holded antes de conciliar.
+        const conciliarInline = accion === "gasto_nuevo_conciliar";
+        const resultado = await crearGastoYReportar(propuesta, propuesta.empresa, propuesta.concepto, undefined, conciliarInline);
+        await editTelegramMessage(propuesta.chatId, propuesta.messageId, resultado.mensaje, []);
+        if (resultado.conciliacionPendiente) {
+          await preguntarSiConciliar(
+            propuesta.chatId,
+            resultado.conciliacionPendiente.empresa,
+            resultado.conciliacionPendiente.monto,
+            resultado.conciliacionPendiente.fecha,
+            resultado.conciliacionPendiente.descripcionGasto
+          );
+        }
       }
     } catch (error) {
       if (error instanceof ContactoNoEncontradoError) {
         await manejarContactoNoEncontrado(propuesta, propuesta.empresa, propuesta.concepto, propuesta.chatId, propuesta.messageId);
+        return;
+      }
+      if (error instanceof FechaBloqueadaError) {
+        await manejarFechaBloqueada(propuesta, propuesta.empresa, propuesta.concepto, error, propuesta.chatId, propuesta.messageId);
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -178,6 +240,30 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         []
       );
     }
+    return;
+  }
+
+  if (accion === "gasto_conciliar_si" || accion === "gasto_conciliar_no") {
+    const pendiente = await consumirConciliacionPendiente(propuestaId);
+    if (!pendiente) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      return;
+    }
+
+    if (accion === "gasto_conciliar_no") {
+      await answerCallbackQuerySafe(callback.id, "Ok, no se concilia.");
+      await sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`);
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Conciliando...");
+    const notaConciliacion = await intentarConciliar(pendiente.empresa, pendiente.monto, pendiente.fecha);
+    await sendTelegramMessage(
+      pendiente.chatId,
+      notaConciliacion
+        ? `"${pendiente.descripcionGasto}"${notaConciliacion}`
+        : `No encontré ningún movimiento bancario sin conciliar que coincida con "${pendiente.descripcionGasto}" — revísalo a mano en Holded si crees que ya debería estar.`
+    );
     return;
   }
 
@@ -197,12 +283,32 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Procesando con "${alternativa.contactName}"...`, []);
 
     try {
-      const mensaje = await crearGastoYReportar(resolucion.propuesta, resolucion.empresaFinal, resolucion.conceptoFinal, {
+      const resultado = await crearGastoYReportar(resolucion.propuesta, resolucion.empresaFinal, resolucion.conceptoFinal, {
         id: alternativa.contactId,
         name: alternativa.contactName,
       });
-      await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensaje, []);
+      await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []);
+      if (resultado.conciliacionPendiente) {
+        await preguntarSiConciliar(
+          resolucion.chatId,
+          resultado.conciliacionPendiente.empresa,
+          resultado.conciliacionPendiente.monto,
+          resultado.conciliacionPendiente.fecha,
+          resultado.conciliacionPendiente.descripcionGasto
+        );
+      }
     } catch (error) {
+      if (error instanceof FechaBloqueadaError) {
+        await manejarFechaBloqueada(
+          resolucion.propuesta,
+          resolucion.empresaFinal,
+          resolucion.conceptoFinal,
+          error,
+          resolucion.chatId,
+          resolucion.messageId
+        );
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error procesando gasto con contacto alternativo:", message);
       await editTelegramMessage(
@@ -233,12 +339,29 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   await answerCallbackQuerySafe(callback.id);
 }
 
+interface ResultadoCrearGasto {
+  mensaje: string;
+  /** Presente solo cuando conciliarInline=false — el llamador debe preguntar con preguntarSiConciliar. */
+  conciliacionPendiente?: { empresa: Empresa; monto: number; fecha: string; descripcionGasto: string };
+}
+
 /**
  * Crea el gasto en Holded (con el desglose de IVA de la propuesta), le
- * adjunta el comprobante, intenta conciliar el movimiento bancario
- * correspondiente, y devuelve el texto final para reportar — no manda el
- * mensaje él mismo, porque lo usan dos caminos distintos (editar un mensaje
- * existente vs. mandar uno nuevo tras una corrección).
+ * adjunta el comprobante, y devuelve el texto final para reportar — no
+ * manda el mensaje él mismo, porque lo usan varios caminos distintos
+ * (editar un mensaje existente vs. mandar uno nuevo tras una corrección).
+ *
+ * `conciliarInline` controla CUÁNDO se intenta conciliar el movimiento
+ * bancario — pedido explícito de Carlos tras un caso real (factura de
+ * Booking.com sin match de compra, pero sí había un cargo real en el
+ * banco): si `procesarGastoEntrante` ya confirmó un movimiento coincidente
+ * ANTES de proponer (candidato "gasto_nuevo_conciliar"), hay confianza
+ * suficiente para conciliar de una, sin pedir revisión previa — se pasa
+ * `conciliarInline=true`. Si no había match confirmado (el caso normal de
+ * "gasto_nuevo"), se crea el gasto nomás y se devuelve
+ * `conciliacionPendiente` para que el llamador pregunte DESPUÉS
+ * (preguntarSiConciliar) — dando tiempo a revisar el gasto recién creado
+ * en Holded antes de decidir, en vez de conciliar en silencio.
  *
  * Si no se pasa `contactoForzado` y no se encuentra el proveedor, lanza
  * ContactoNoEncontradoError en vez de devolver un texto de error — quien la
@@ -251,8 +374,9 @@ async function crearGastoYReportar(
   propuesta: PropuestaGasto,
   empresaFinal: PropuestaGasto["empresa"],
   conceptoFinal: string,
-  contactoForzado?: { id: string; name: string }
-): Promise<string> {
+  contactoForzado?: { id: string; name: string },
+  conciliarInline: boolean = false
+): Promise<ResultadoCrearGasto> {
   const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuesta.proveedor));
   if (!contacto) {
     throw new ContactoNoEncontradoError(propuesta.proveedor, empresaFinal);
@@ -277,12 +401,24 @@ async function crearGastoYReportar(
       (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
     );
   }
-  const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha);
 
-  return (
-    `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${contacto.name ?? propuesta.proveedor}, como borrador) ` +
-    `y comprobante adjuntado.${notaConciliacion}`
-  );
+  const nombreContacto = contacto.name ?? propuesta.proveedor;
+  const baseMensaje = `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador) y comprobante adjuntado.`;
+
+  if (conciliarInline) {
+    const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha);
+    return { mensaje: `${baseMensaje}${notaConciliacion}` };
+  }
+
+  return {
+    mensaje: baseMensaje,
+    conciliacionPendiente: {
+      empresa: empresaFinal,
+      monto: propuesta.monto,
+      fecha: propuesta.fecha,
+      descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
+    },
+  };
 }
 
 /**
@@ -329,6 +465,52 @@ async function construirAlternativasContacto(
   }
 
   return alternativas.slice(0, 5);
+}
+
+/**
+ * Cuando crearGastoYReportar lanza FechaBloqueadaError (Holded rechaza la
+ * fecha por un periodo contable cerrado), en vez de mostrar el JSON crudo
+ * del error, ofrece reintentar con la fecha de hoy — la propuesta original
+ * ya se consumió (se borra ANTES de intentar crear, ver el flujo principal),
+ * así que se crea una nueva con la misma info pero fecha=hoy, y un botón
+ * que dispara gasto_nuevo sobre esa propuesta nueva. Si `messageId` viene
+ * indefinido (ej. tras una corrección por texto libre), manda un mensaje
+ * nuevo con los botones en vez de editar.
+ */
+async function manejarFechaBloqueada(
+  propuesta: PropuestaGasto,
+  empresaFinal: PropuestaGasto["empresa"],
+  conceptoFinal: string,
+  error: FechaBloqueadaError,
+  chatId: number,
+  messageId: number | undefined
+): Promise<void> {
+  const fechaHoy = new Date().toISOString().slice(0, 10);
+
+  const { id: _idViejo, creadoEn: _creadoEnViejo, ...datosBase } = propuesta;
+  const nuevaPropuesta = await crearPropuestaGasto({
+    ...datosBase,
+    empresa: empresaFinal,
+    concepto: conceptoFinal || propuesta.concepto,
+    fecha: fechaHoy,
+  });
+
+  const texto =
+    `⚠️ No pude crear el gasto de "${propuesta.proveedor}" — Holded dice que la fecha ${propuesta.fecha} ` +
+    `corresponde a un periodo contable ya cerrado/bloqueado.\n\n¿Lo registro con la fecha de hoy (${fechaHoy}) en su lugar?`;
+
+  const botones = [
+    [{ text: `✅ Sí, usar ${fechaHoy}`, callback_data: `gasto_nuevo:${nuevaPropuesta.id}` }],
+    [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${nuevaPropuesta.id}` }],
+  ];
+
+  if (messageId != null) {
+    await editTelegramMessage(chatId, messageId, texto, botones);
+    await actualizarMessageIdGasto(nuevaPropuesta.id, messageId);
+  } else {
+    const mensajeIdFinal = await sendTelegramMessageWithButtons(chatId, texto, botones);
+    await actualizarMessageIdGasto(nuevaPropuesta.id, mensajeIdFinal);
+  }
 }
 
 /**
@@ -421,11 +603,24 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
   await sendTelegramMessage(pendiente.chatId, `🔄 Procesando "${propuesta.proveedor}" con la corrección...`);
 
   try {
-    const mensaje = await crearGastoYReportar(propuesta, empresaFinal, conceptoFinal);
-    await sendTelegramMessage(propuesta.chatId, mensaje);
+    const resultado = await crearGastoYReportar(propuesta, empresaFinal, conceptoFinal);
+    await sendTelegramMessage(propuesta.chatId, resultado.mensaje);
+    if (resultado.conciliacionPendiente) {
+      await preguntarSiConciliar(
+        propuesta.chatId,
+        resultado.conciliacionPendiente.empresa,
+        resultado.conciliacionPendiente.monto,
+        resultado.conciliacionPendiente.fecha,
+        resultado.conciliacionPendiente.descripcionGasto
+      );
+    }
   } catch (error) {
     if (error instanceof ContactoNoEncontradoError) {
       await manejarContactoNoEncontrado(propuesta, empresaFinal, conceptoFinal, propuesta.chatId, undefined);
+      return;
+    }
+    if (error instanceof FechaBloqueadaError) {
+      await manejarFechaBloqueada(propuesta, empresaFinal, conceptoFinal, error, propuesta.chatId, undefined);
       return;
     }
     const message = error instanceof Error ? error.message : String(error);

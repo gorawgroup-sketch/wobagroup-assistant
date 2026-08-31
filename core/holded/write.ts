@@ -723,6 +723,23 @@ export class ContactoNoEncontradoError extends Error {
  * borrador/pendiente en Holded (no contabilizado en firme), tal como se
  * comportó en la prueba en vivo.
  */
+/**
+ * Holded bloquea crear/editar documentos con fecha dentro de un periodo
+ * contable ya cerrado (ej. tras presentar el IVA de ese periodo) — devuelve
+ * 422 con detail "This date has been locked". Verificado en vivo con una
+ * factura real (Booking.com, Footprint, fecha del vuelo 2025-09-06):
+ * Holded rechazó la creación con exactamente ese error. Antes esto se le
+ * mostraba a Carlos como el JSON crudo del error — ahora se detecta
+ * específicamente para poder ofrecer reintentar con otra fecha en vez de
+ * solo mostrar un error técnico sin salida.
+ */
+export class FechaBloqueadaError extends Error {
+  constructor(public readonly fecha: string) {
+    super(`La fecha ${fecha} corresponde a un periodo contable cerrado/bloqueado en Holded.`);
+    this.name = "FechaBloqueadaError";
+  }
+}
+
 export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded): Promise<{ id: string }> {
   const catalogo = await obtenerCatalogoImpuestos(empresa);
 
@@ -737,12 +754,21 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
     };
   });
 
-  const data = (await holdedWriteCall(empresa, "POST", "/purchases", {
-    contact_id: gasto.contactId,
-    date: gasto.fecha,
-    description: gasto.descripcion,
-    items,
-  })) as { id?: string };
+  let data: { id?: string };
+  try {
+    data = (await holdedWriteCall(empresa, "POST", "/purchases", {
+      contact_id: gasto.contactId,
+      date: gasto.fecha,
+      description: gasto.descripcion,
+      items,
+    })) as { id?: string };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/date has been locked/i.test(message)) {
+      throw new FechaBloqueadaError(gasto.fecha);
+    }
+    throw error;
+  }
 
   if (!data.id) {
     throw new Error("Holded no devolvió un id para el gasto creado.");

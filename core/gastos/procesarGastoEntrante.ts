@@ -1,5 +1,5 @@
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
-import { buscarGastoSimilar } from "../holded/write";
+import { buscarGastoSimilar, buscarMovimientoSimilar } from "../holded/write";
 import { crearPropuestaGasto, actualizarMessageIdGasto } from "./gastoProposalSheet";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
@@ -88,6 +88,32 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     ]);
     botones.push([{ text: "❌ Ninguno, crear nuevo", callback_data: `gasto_nuevo:${propuesta.id}` }]);
   } else {
+    // No hay un documento de compra ya cargado en Holded que coincida, pero
+    // eso no significa que el gasto sea nuevo de verdad — puede que el
+    // cargo YA esté en el banco (Holded lo sincronizó) y solo falte
+    // registrarlo en el área de Compras. Se busca ANTES de proponer, para
+    // saber si hay que pedir aprobación en dos pasos (crear, revisar, y
+    // solo DESPUÉS preguntar si conciliar) o si ya hay confianza suficiente
+    // para ofrecer "crear y conciliar" de una — pedido explícito de Carlos
+    // tras un caso real (factura de Booking.com sin match de compra, pero
+    // sí había un cargo real en el banco).
+    let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
+    try {
+      const candidatosMov = await buscarMovimientoSimilar(empresa, {
+        monto: datos.monto,
+        fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+      });
+      if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
+    } catch (error) {
+      console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
+    }
+
+    const notaMovimiento = movimientoBancario
+      ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
+        `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} € ` +
+        `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
+      : "";
+
     texto = [
       `📄 *Factura detectada* — no encontré ningún gasto ya registrado en Holded que corresponda.`,
       ``,
@@ -100,11 +126,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       `Desglose de IVA:`,
       desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
-    ].join("\n");
+    ].join("\n") + notaMovimiento;
 
     botones = [
       [
-        { text: "✅ Crear gasto en Holded", callback_data: `gasto_nuevo:${propuesta.id}` },
+        movimientoBancario
+          ? { text: "✅ Crear y conciliar", callback_data: `gasto_nuevo_conciliar:${propuesta.id}` }
+          : { text: "✅ Crear gasto en Holded", callback_data: `gasto_nuevo:${propuesta.id}` },
         { text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` },
       ],
       [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],

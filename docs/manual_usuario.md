@@ -166,10 +166,22 @@ que hacer nada más.
   - Si la clasificación no es correcta, puedes corregirla; esa corrección
     queda **aprendida** para la próxima factura del mismo proveedor.
   - Solo el superadministrador puede aprobar esta escritura.
-  - Tras crear/adjuntar el gasto con éxito, intenta conciliar automáticamente
-    el movimiento bancario correspondiente (si encuentra exactamente uno
-    parecido en monto y fecha); si no está seguro, te lo dice en vez de
-    asumir que quedó conciliado.
+  - **Conciliación bancaria — en dos pasos según la confianza**: antes de
+    proponer un gasto nuevo, también revisa si el cargo ya está en el banco
+    real (no solo si ya hay una factura cargada en Compras) — puede que el
+    dinero ya haya salido y solo falte registrar el documento. Si encuentra
+    un movimiento bancario sin conciliar que coincide en monto y fecha, el
+    botón dice **"✅ Crear y conciliar"** y hace ambas cosas de una, sin
+    pasos extra. Si no encuentra ese match, el botón dice **"✅ Crear gasto
+    en Holded"** — solo crea, y DESPUÉS, en un mensaje aparte, te pregunta
+    "¿quieres que intente conciliar el movimiento bancario?" con botones
+    Sí/No, para que puedas revisar el gasto recién creado en Holded antes
+    de decidir.
+  - **Si Holded rechaza la fecha por un periodo contable cerrado** (error
+    "This date has been locked" — le pasó a una factura de Booking.com con
+    fecha del vuelo de hace más de un año), no te muestra el error técnico
+    crudo: te dice explícitamente que la fecha está bloqueada y te ofrece
+    un botón para reintentar la creación con la fecha de hoy en su lugar.
 - **Gastos sin comprobante**: pregúntale "¿qué gastos de WOBA/EWORKS/Footprint
   no tienen comprobante?" y revisa Holded para decirte cuáles faltan (con el
   proveedor, monto, fecha, y si hay una pista de a quién corresponde). Solo
