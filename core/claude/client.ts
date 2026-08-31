@@ -291,7 +291,15 @@ async function ejecutarConversacion(
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const response = await anthropic.messages.create({
       model,
-      max_tokens: 1024,
+      // Verificado en vivo: claude-sonnet-5 emite "thinking" por defecto
+      // (sin pedirlo explícitamente) y ese consumo cuenta contra max_tokens
+      // — con 1024 se agotaba solo con el thinking en preguntas de análisis
+      // financiero (varias empresas/semanas), dejando la respuesta real sin
+      // texto y devolviendo "No he podido generar una respuesta" sin ningún
+      // error visible en los logs (stop_reason "max_tokens", content solo
+      // con un bloque "thinking"). 8192 da margen de sobra sin costo extra
+      // real, ya que solo se factura lo que el modelo realmente genera.
+      max_tokens: 8192,
       system,
       tools,
       messages,
@@ -306,8 +314,18 @@ async function ejecutarConversacion(
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((block) => block.type === "text");
+      // Si de verdad se corta por longitud (raro con max_tokens=8192, pero
+      // posible en un análisis muy largo) se lo decimos al usuario en vez
+      // de un mensaje genérico sin explicación — antes esto pasaba en
+      // silencio (sin ningún error en los logs) por el "thinking" implícito
+      // de claude-sonnet-5 consumiendo el budget entero.
+      const sinTextoPorLongitud = !textBlock && response.stop_reason === "max_tokens";
       const respuestaFinal =
-        textBlock && textBlock.type === "text" ? textBlock.text : "No he podido generar una respuesta.";
+        textBlock && textBlock.type === "text"
+          ? textBlock.text
+          : sinTextoPorLongitud
+            ? "La respuesta se cortó por longitud antes de generar texto — intenta con una pregunta más puntual (por ejemplo, una sola empresa o semana a la vez)."
+            : "No he podido generar una respuesta.";
 
       messages.push({ role: "assistant", content: response.content });
       return { tipo: "respuesta", respuesta: respuestaFinal, messages };
