@@ -185,6 +185,165 @@ function NeuralField({ seed, count, size, dense = false }) {
   );
 }
 
+/**
+ * Núcleo central animado: reemplaza el círculo estático "WOBI" por un
+ * enjambre de partículas (nanobots) orbitando en una nube esférica que
+ * gira despacio y respira (pulso de tamaño/brillo), inspirado en el efecto
+ * de referencia que pidió Carlos (video de Apex — enjambre de partículas
+ * condensándose en un núcleo). Canvas 2D, sin librerías nuevas: cada
+ * partícula tiene una posición esférica fija (theta/phi) más un jitter de
+ * radio con oscilación propia para que el conjunto se vea fluido/orgánico
+ * en vez de mecánico. La profundidad (eje Z de la esfera) controla tamaño
+ * y opacidad para dar sensación de volumen 3D con solo 2D real.
+ */
+function NanoCore({ energized = false }) {
+  const canvasRef = useRef(null);
+  const particlesRef = useRef(null);
+  const mouseRef = useRef(null); // { x, y } en el espacio lógico DRAW_SIZE, o null si el cursor no está encima
+  const DRAW_SIZE = 200; // unidades lógicas fijas — el tamaño final en pantalla lo da el CSS (%) del contenedor
+
+  const handlePointerMove = useCallback((e) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    mouseRef.current = {
+      x: ((e.clientX - rect.left) / rect.width) * DRAW_SIZE,
+      y: ((e.clientY - rect.top) / rect.height) * DRAW_SIZE,
+    };
+  }, []);
+
+  const handlePointerLeave = useCallback(() => {
+    mouseRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = DRAW_SIZE * dpr;
+    canvas.height = DRAW_SIZE * dpr;
+    ctx.scale(dpr, dpr);
+
+    const cx = DRAW_SIZE / 2;
+    const cy = DRAW_SIZE / 2;
+    const baseR = DRAW_SIZE * 0.3;
+
+    if (!particlesRef.current) {
+      const rnd = seeded(1337);
+      const COUNT = 190;
+      particlesRef.current = Array.from({ length: COUNT }, () => ({
+        theta: rnd() * Math.PI * 2,
+        phi: Math.acos(2 * rnd() - 1),
+        rJitter: 0.68 + rnd() * 0.38,
+        speed: 0.12 + rnd() * 0.3,
+        phase: rnd() * Math.PI * 2,
+        wobbleAmp: 0.05 + rnd() * 0.09,
+        size: 0.7 + rnd() * 1.5,
+        warm: rnd() > 0.88,
+        bright: rnd() > 0.5,
+      }));
+    }
+    const particles = particlesRef.current;
+
+    let raf;
+    let rot = 0;
+    const start = performance.now();
+
+    function draw(now) {
+      const t = (now - start) / 1000;
+      rot += 0.0016;
+      ctx.clearRect(0, 0, DRAW_SIZE, DRAW_SIZE);
+
+      // Núcleo cálido interior, respirando (mismo ritmo que corePulse: 3.2s).
+      const pulse = 0.86 + Math.sin((t * Math.PI * 2) / 3.2) * 0.14;
+      const coreR = baseR * 0.6 * pulse;
+      const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
+      coreGrad.addColorStop(0, "rgba(255, 201, 138, 0.95)");
+      coreGrad.addColorStop(0.55, "rgba(232, 167, 92, 0.5)");
+      coreGrad.addColorStop(1, "rgba(232, 167, 92, 0)");
+      ctx.fillStyle = coreGrad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+      ctx.fill();
+
+      const energy = energized ? 1.22 : 1;
+      const mouse = mouseRef.current;
+      // Radio de influencia del cursor: pedido explícito de Carlos, las
+      // partículas deben reaccionar visiblemente al pasar el mouse encima
+      // — mismo criterio que NeuralField (partículas cerca del cursor
+      // brillan y crecen más), aplicado acá en espacio de pantalla 2D ya
+      // proyectado (no importa la profundidad 3D para esto).
+      const HOVER_RADIUS = baseR * 0.9;
+
+      for (const p of particles) {
+        const wob = Math.sin(t * p.speed + p.phase) * p.wobbleAmp;
+        const r = baseR * p.rJitter * (1 + wob) * (energized ? 1.05 : 1);
+        const theta = p.theta + rot;
+
+        const px = Math.sin(p.phi) * Math.cos(theta);
+        const py = Math.cos(p.phi);
+        const pz = Math.sin(p.phi) * Math.sin(theta);
+        const depth = (pz + 1) / 2; // 0 = detrás, 1 = adelante
+
+        const x = cx + px * r;
+        const y = cy + py * r;
+
+        let proximity = 0;
+        if (mouse) {
+          const dist = Math.hypot(x - mouse.x, y - mouse.y);
+          proximity = Math.max(0, 1 - dist / HOVER_RADIUS);
+        }
+
+        const sz = p.size * (0.65 + depth * 0.65) * energy * (1 + proximity * 1.6);
+        const alpha = Math.min((0.3 + depth * 0.55) * energy + proximity * 0.5, 1);
+        const color = p.warm
+          ? [255, 201, 138]
+          : p.bright
+            ? [245, 240, 228]
+            : [143, 210, 245];
+
+        if (proximity > 0.04) {
+          // Halo extra alrededor de las partículas activadas por el cursor.
+          const haloGrad = ctx.createRadialGradient(x, y, 0, x, y, sz * 3.2);
+          haloGrad.addColorStop(0, `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${proximity * 0.5})`);
+          haloGrad.addColorStop(1, `rgba(${color[0]}, ${color[1]}, ${color[2]}, 0)`);
+          ctx.fillStyle = haloGrad;
+          ctx.beginPath();
+          ctx.arc(x, y, sz * 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
+        ctx.arc(x, y, sz, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      raf = requestAnimationFrame(draw);
+    }
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [energized]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={handlePointerLeave}
+      style={{
+        position: "absolute",
+        left: "50%",
+        top: "50%",
+        width: "26.7%",
+        height: "26.7%",
+        transform: "translate(-50%, -50%)",
+        pointerEvents: "auto",
+        cursor: "pointer",
+      }}
+    />
+  );
+}
+
 /** Filas de datos reales por módulo, a partir de la respuesta del endpoint. Cada fila es [etiqueta, valor]. */
 function liveRowsForModule(id, d, periodoCashflow = "semana") {
   if (!d) return [];
@@ -1271,7 +1430,6 @@ export default function CerebroWoba() {
         </div>
       )}
       <style>{`
-        @keyframes corePulse { 0%,100% { transform: scale(1); opacity: .92; } 50% { transform: scale(1.08); opacity: 1; } }
         @keyframes twinkle { 0%,100% { opacity: .25; } 50% { opacity: .95; } }
         @keyframes drift { 0%,100% { transform: translate(0,0); } 50% { transform: translate(var(--dx), var(--dy)); } }
         @keyframes nodeGlow { 0%,100% { filter: drop-shadow(0 0 2px rgba(126,193,232,.4)); } 50% { filter: drop-shadow(0 0 9px rgba(126,193,232,.8)); } }
@@ -1351,11 +1509,6 @@ export default function CerebroWoba() {
 
         <svg viewBox="0 0 600 600" style={{ width: "100%", height: "100%", display: "block", position: "relative", pointerEvents: "none" }}>
           <defs>
-            <radialGradient id="coreGrad" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor={C.coreBright} stopOpacity="0.95" />
-              <stop offset="55%" stopColor={C.core} stopOpacity="0.85" />
-              <stop offset="100%" stopColor={C.core} stopOpacity="0" />
-            </radialGradient>
             <radialGradient id="nodeGrad" cx="35%" cy="35%" r="70%">
               <stop offset="0%" stopColor={C.cream} />
               <stop offset="100%" stopColor={C.coreBright} />
@@ -1371,10 +1524,6 @@ export default function CerebroWoba() {
               <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
             </circle>
           ))}
-
-          <circle cx="300" cy="300" r="62" fill="url(#coreGrad)" style={{ transformOrigin: "300px 300px", animation: "corePulse 3.2s ease-in-out infinite" }} />
-          <circle cx="300" cy="300" r="29" fill={C.cream} opacity="0.96" />
-          <text x="300" y="304" textAnchor="middle" fontFamily={C.serif} fontSize="13" fill={C.ink} fontWeight="600">WOBI</text>
 
           {positions.map((p, i) => {
             const m = MODULES[i];
@@ -1394,6 +1543,8 @@ export default function CerebroWoba() {
             );
           })}
         </svg>
+
+        <NanoCore energized={Boolean(active || open)} />
 
         {positions.map((p, i) => {
           const m = MODULES[i];
