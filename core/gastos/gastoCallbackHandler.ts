@@ -80,11 +80,15 @@ async function intentarConciliar(empresa: Empresa, monto: number, fecha: string,
     const resultado = await reconciliarMovimiento(empresa, candidato.accountId, candidato.movementId, candidato.fecha, gastoId);
 
     if (resultado.ok) {
-      return `\n\n💳 Movimiento bancario conciliado automáticamente (${candidato.descripcion || "sin descripción"}, ${candidato.monto.toFixed(2)} €).`;
+      return (
+        `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${candidato.descripcion || "sin descripción"}, ` +
+        `${candidato.monto.toFixed(2)} €, enlazado por ${resultado.montoEnlazado.toFixed(2)} €).`
+      );
     }
     return (
       `\n\n⚠️ Encontré un movimiento bancario parecido (${candidato.descripcion || "sin descripción"}, ` +
-      `${candidato.monto.toFixed(2)} €) pero no pude confirmar que quedó conciliado (estado: ${resultado.statusFinal}) — revísalo a mano en Holded.`
+      `${candidato.monto.toFixed(2)} €) pero no pude confirmar que quedó conciliado Y enlazado al gasto ` +
+      `(estado: ${resultado.statusFinal}, monto enlazado: ${resultado.montoEnlazado.toFixed(2)} €) — revísalo a mano en Holded.`
     );
   } catch (error) {
     console.error("[gastoCallbackHandler] Error intentando conciliar movimiento bancario:", error);

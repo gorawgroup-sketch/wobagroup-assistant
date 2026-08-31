@@ -1113,12 +1113,13 @@ export async function buscarMovimientoSimilar(
  * `document_type`) está documentado en
  * holded.com/es/desarrolladores/referencia-api/cuentas-bancarias/conciliar-un-movimiento-bancario.
  *
- * Esta función SIEMPRE relee el movimiento después de llamar y solo
- * reporta éxito si quedó en un estado conciliado (estaConciliado —
- * "reconciled" o "forced_reconciled"; nunca confía en el 200 por sí solo,
- * el body de éxito es `null`) — pero el enlace real solo se puede
- * confirmar con certeza mirando `reconciled_amount` en Holded mismo si
- * hace falta verificarlo a fondo.
+ * Esta función SIEMPRE relee el movimiento después de llamar, y el éxito
+ * exige DOS cosas a la vez (nunca confía en el 200 por sí solo, el body de
+ * éxito es `null`): que el status quede en un estado conciliado
+ * (estaConciliado — "reconciled" o "forced_reconciled") Y que
+ * `reconciled_amount` sea mayor a cero — exactamente el chequeo que le
+ * faltaba antes y dejó pasar el bug real: status "conciliado" con
+ * `reconciled_amount: "0.00"` (sin ningún documento enlazado de verdad).
  */
 export async function reconciliarMovimiento(
   empresa: Empresa,
@@ -1126,7 +1127,7 @@ export async function reconciliarMovimiento(
   movementId: string,
   fechaAproximada: string,
   documentoId: string
-): Promise<{ ok: boolean; statusFinal: string }> {
+): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number }> {
   await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
     documents: [{ document_id: documentoId, document_type: "purchase" }],
   });
@@ -1149,12 +1150,20 @@ export async function reconciliarMovimiento(
     empresa,
     "GET",
     `/treasury/accounts/${accountId}/bank-movements?${params.toString()}`
-  )) as { items?: Array<{ id: string; status?: string }> };
+  )) as { items?: Array<{ id: string; status?: string; reconciled_amount?: string }> };
 
   const movimiento = (verificacion.items ?? []).find((m) => m.id === movementId);
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
+  const montoEnlazado = Math.abs(parsearMontoMovimiento(movimiento?.reconciled_amount) || 0);
 
-  return { ok: estaConciliado(movimiento?.status), statusFinal };
+  // No basta con que el status diga "conciliado" — así es exactamente como
+  // se veía el bug real que motivó este chequeo más estricto: status
+  // "forced_reconciled" pero reconciled_amount "0.00" (sin ningún documento
+  // realmente enlazado). Solo se reporta éxito si AMBAS cosas se confirman:
+  // el estado cambió Y el monto enlazado es mayor a cero.
+  const ok = estaConciliado(movimiento?.status) && montoEnlazado > 0;
+
+  return { ok, statusFinal, montoEnlazado };
 }
 
 export interface NuevoEventoHolded {
