@@ -36,11 +36,40 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
 
   const empresa: Empresa = datos.empresaProbable;
 
+  // Pedido explícito de Carlos, tras un error real (un gasto de Uber en
+  // Colombia se registró con 148.346 — el monto en COP — tratado como si
+  // fueran EUR, un error de más de 148.000€): la conciliación bancaria del
+  // grupo SIEMPRE es en euros, así que si la factura viene en otra moneda,
+  // hay que usar el equivalente en EUR para crear el gasto (para que se
+  // pueda conciliar), y dejar el comprobante original tal cual está (en su
+  // moneda real) — nunca registrar el monto extranjero como si fuera EUR.
+  // Si el documento no trae el equivalente en euros impreso, se pregunta en
+  // vez de calcular un tipo de cambio inventado.
+  const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
+  const esMonedaExtranjera = monedaOriginal !== "" && monedaOriginal !== "EUR";
+
+  if (esMonedaExtranjera && datos.montoEUR === undefined) {
+    await sendTelegramMessage(
+      chatId,
+      `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
+        `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero el documento no trae ` +
+        `el equivalente en euros. La conciliación bancaria siempre es en euros, así que necesito el monto EXACTO ` +
+        `en euros que salió de la cuenta (no voy a calcular un tipo de cambio yo mismo) antes de registrar nada. ` +
+        `¿Cuánto fue en euros?`
+    );
+    return;
+  }
+
+  const montoParaHolded = esMonedaExtranjera ? (datos.montoEUR as number) : datos.monto;
+  const lineasParaHolded = esMonedaExtranjera
+    ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
+    : datos.lineas;
+
   let candidatos: Awaited<ReturnType<typeof buscarGastoSimilar>> = [];
   try {
     candidatos = await buscarGastoSimilar(empresa, {
       proveedor: datos.proveedor,
-      monto: datos.monto,
+      monto: montoParaHolded,
       fecha: datos.fecha || new Date().toISOString().slice(0, 10),
     });
   } catch (error) {
@@ -61,35 +90,43 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
         })
       : undefined;
 
+  const conceptoConMonedaOriginal = esMonedaExtranjera
+    ? `${datos.concepto} (${datos.monto} ${monedaOriginal}, comprobante en ${monedaOriginal})`
+    : datos.concepto;
+
   const propuesta = await crearPropuestaGasto({
     empresa,
     proveedor: datos.proveedor,
-    monto: datos.monto,
-    moneda: datos.moneda || "EUR",
+    monto: montoParaHolded,
+    moneda: "EUR",
     fecha: datos.fecha,
-    concepto: datos.concepto,
+    concepto: conceptoConMonedaOriginal,
     rutaLocal: entrada.rutaLocal,
     nombreArchivoOriginal: entrada.nombreArchivoOriginal,
     mimeType: entrada.mimeType,
     candidatos,
-    lineas: datos.lineas,
+    lineas: lineasParaHolded,
     chatId,
     messageId: 0,
     cuentaId: cuentaSugerida?.accountId,
     cuentaTags: cuentaSugerida?.tags,
   });
 
-  const desgloseIva = datos.lineas
+  const desgloseIva = lineasParaHolded
     .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} € + IVA ${l.tipoIvaPct}%`)
     .join("\n");
+
+  const importeTexto = esMonedaExtranjera
+    ? `${montoParaHolded.toFixed(2)} € (comprobante en ${datos.monto} ${monedaOriginal})`
+    : `${datos.monto} ${datos.moneda}`;
 
   let texto: string;
   let botones: { text: string; callback_data: string }[][];
 
   if (candidatos.length > 0) {
     texto = [
-      `📄 *Factura detectada* — ${datos.proveedor} (${datos.monto} ${datos.moneda}, ${datos.fecha}, ${empresa})`,
-      `Concepto: ${datos.concepto}`,
+      `📄 *Factura detectada* — ${datos.proveedor} (${importeTexto}, ${datos.fecha}, ${empresa})`,
+      `Concepto: ${conceptoConMonedaOriginal}`,
       ``,
       `Encontré ${candidatos.length === 1 ? "un gasto" : "estos gastos"} ya registrado(s) en Holded que podría(n) corresponder:`,
       ...candidatos.map(
@@ -118,14 +155,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     // (uno, varios, o ninguno) y, si hace falta algo para confirmarlo,
     // preguntarlo explícitamente en vez de omitirlo en silencio.
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
-    let candidatosMovLength = 0;
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     try {
       const candidatosMov = await buscarMovimientoSimilar(empresa, {
-        monto: datos.monto,
+        monto: montoParaHolded,
         fecha: datos.fecha || new Date().toISOString().slice(0, 10),
       });
-      candidatosMovLength = candidatosMov.length;
       if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
     } catch (error) {
@@ -142,7 +177,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
             .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} € (${m.fecha})`)
             .join("\n") +
           `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
-        : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${datos.monto} ${datos.moneda} ` +
+        : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} ` +
           `cerca del ${datos.fecha} — si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
     const notaCuenta = cuentaSugerida
@@ -157,9 +192,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       `Propuesta para crear un gasto nuevo:`,
       `Empresa: ${empresa}`,
       `Proveedor: ${datos.proveedor}`,
-      `Importe: ${datos.monto} ${datos.moneda}`,
+      `Importe: ${importeTexto}`,
       `Fecha: ${datos.fecha}`,
-      `Concepto: ${datos.concepto}`,
+      `Concepto: ${conceptoConMonedaOriginal}`,
       `Desglose de IVA:`,
       desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,

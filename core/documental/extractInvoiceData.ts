@@ -33,6 +33,17 @@ export interface DatosFactura {
   /** Total real de la factura (base + todo el IVA), tal como aparece impreso — se usa para el matching. */
   monto: number;
   moneda: string;
+  /**
+   * Solo cuando `moneda` no es EUR: el equivalente en euros, SI el propio
+   * documento lo muestra (ej. una notificación de tarjeta: "40.46 EUR |
+   * 148.346 COP"). undefined si el documento no trae ningún equivalente en
+   * euros — nunca se calcula ni se inventa un tipo de cambio. Caso real que
+   * motivó esto: un gasto de Uber en Colombia se registró por error con
+   * 148.346 (el monto en COP) tratado como si fueran EUR — la conciliación
+   * bancaria es siempre en EUR, así que hace falta este campo para
+   * registrar el monto correcto.
+   */
+  montoEUR?: number;
   fecha: string; // YYYY-MM-DD, según lo que diga el documento
   concepto: string;
   /** Desglose por tipo de IVA (una o varias líneas). El % es el que aparece impreso, no un código de Holded. */
@@ -59,6 +70,14 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       proveedor: { type: "string", description: "Nombre del proveedor/emisor tal como aparece en el documento." },
       monto: { type: "number", description: "Importe TOTAL de la factura (base + todo el IVA), tal como aparece impreso." },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD." },
+      monto_eur: {
+        type: "number",
+        description:
+          "SOLO si 'moneda' no es EUR: el equivalente en euros, ÚNICAMENTE si el propio documento lo " +
+          "muestra explícitamente (ej. una notificación de tarjeta que dice '40.46 EUR | 148.346 COP', o " +
+          "un recibo con una línea 'Total (EUR)'). Si el documento NO trae ningún equivalente en euros " +
+          "impreso, omite este campo por completo — NUNCA calcules ni inventes un tipo de cambio tú mismo.",
+      },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
       lineas: {
@@ -108,6 +127,18 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "después con datos reales del sistema.",
     "Para decidir la empresa probable (WOBA, EWORKS o Footprint), usa consultar_base_conocimiento si " +
       "hace falta contexto sobre qué proveedores/gastos son de cada empresa.",
+    "Si 'moneda' no es EUR y el documento muestra también el equivalente en euros (típico en " +
+      "notificaciones de tarjeta por gastos en el extranjero: '40.46 EUR | 148.346 COP'), repórtalo en " +
+      "'monto_eur' — la conciliación bancaria del grupo es siempre en euros, así que ese es el monto real " +
+      "que salió de la cuenta, no el de la moneda local. Si el documento NO trae ningún equivalente en " +
+      "euros, omite 'monto_eur' — nunca calcules tú un tipo de cambio.",
+    "Además del documento adjunto, puede que recibas 'Contexto del correo' (asunto/cuerpo del mensaje " +
+      "que traía este adjunto, ej. un reenvío de notificación bancaria). Es habitual que el recibo/factura " +
+      "en sí (ej. de Uber) NO muestre el equivalente en euros, pero el correo que lo reenvía sí lo diga en " +
+      "el asunto (ej. 'Fwd: 40.46 EUR | 148.346 COP - Uber'). En ese caso, usa ESE texto para reportar " +
+      "'monto_eur' igual que si viniera impreso en el documento — sigue siendo un dato real, no un cálculo " +
+      "tuyo. Si ni el documento ni el contexto del correo traen un equivalente en euros explícito, omite " +
+      "'monto_eur'.",
     clasificacionesAprendidas
       ? `Además, estas son clasificaciones aprendidas de facturas anteriores del mismo proveedor — ` +
         `dales prioridad sobre cualquier suposición genérica:\n\n${clasificacionesAprendidas}`
@@ -152,7 +183,11 @@ function mimeADocumentBlock(rutaLocal: string, mimeType: string | undefined, dat
  * es_factura_o_gasto vuelve false para que el llamador siga el flujo normal
  * de archivado en Drive.
  */
-export async function extraerDatosFactura(rutaLocal: string, mimeType: string | undefined): Promise<DatosFactura> {
+export async function extraerDatosFactura(
+  rutaLocal: string,
+  mimeType: string | undefined,
+  contextoCorreo?: string
+): Promise<DatosFactura> {
   const fallback: DatosFactura = {
     esFacturaOGasto: false,
     proveedor: "",
@@ -183,13 +218,17 @@ export async function extraerDatosFactura(rutaLocal: string, mimeType: string | 
     REPORTAR_TOOL,
   ];
 
+  const textoInstruccion = contextoCorreo
+    ? `Lee este documento y reporta sus datos.\n\nContexto del correo que traía este adjunto:\n${contextoCorreo}`
+    : "Lee este documento y reporta sus datos.";
+
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
       // El cast es necesario porque el SDK instalado no declara bloques
       // "document"/"image" con source base64 en su tipo MessageParam,
       // aunque la API sí los acepta (ver DocumentOrImageBlock arriba).
-      content: [documentBlock, { type: "text", text: "Lee este documento y reporta sus datos." }] as unknown as Anthropic.MessageParam["content"],
+      content: [documentBlock, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
     },
   ];
 
@@ -234,6 +273,7 @@ export async function extraerDatosFactura(rutaLocal: string, mimeType: string | 
         proveedor: (input.proveedor as string) ?? "",
         monto,
         moneda: (input.moneda as string) ?? "EUR",
+        montoEUR: typeof input.monto_eur === "number" ? input.monto_eur : undefined,
         fecha: (input.fecha as string) ?? "",
         concepto: (input.concepto as string) ?? "",
         // Si Claude no reportó líneas (o vinieron vacías), se usa una sola

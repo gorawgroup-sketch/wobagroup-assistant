@@ -26,7 +26,7 @@ export interface DocumentoLocalEntrante {
 export async function procesarDocumentoLocal(entrada: DocumentoLocalEntrante): Promise<"gasto" | "archivo"> {
   if (entrada.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(entrada.mimeType)) {
     try {
-      const datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType);
+      const datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo);
       if (datosFactura.esFacturaOGasto) {
         await procesarGastoEntrante({
           chatId: entrada.chatId,
