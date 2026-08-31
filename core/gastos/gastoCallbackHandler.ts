@@ -197,14 +197,30 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           throw new Error(`No se encontró el candidato #${indice + 1}.`);
         }
 
-        await adjuntarYLimpiar(propuesta, candidato.id);
-        await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto);
+        // El gasto candidato YA EXISTE en Holded desde antes — un fallo al
+        // adjuntar el comprobante nunca debe verse como un error total (no
+        // se creó ni se rompió nada), mismo criterio que crearGastoYReportar
+        // aplica cuando el gasto se acaba de crear.
+        let notaComprobante = "";
+        try {
+          await adjuntarYLimpiar(propuesta, candidato.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[gastoCallbackHandler] Gasto ${candidato.id} ya existía pero falló adjuntar el comprobante:`, message);
+          notaComprobante = `\n\n⚠️ No pude adjuntar el comprobante (${message}). Súbelo a mano en Holded (id ${candidato.id}) si tienes el archivo.`;
+        }
+
+        await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto).catch(
+          (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
+        );
         const notaConciliacion = await intentarConciliar(propuesta.empresa, propuesta.monto, propuesta.fecha, candidato.id);
 
         await editTelegramMessage(
           propuesta.chatId,
           propuesta.messageId,
-          `✅ Comprobante adjuntado al gasto de ${candidato.contactName} (${candidato.total.toFixed(2)} €, ${candidato.fecha}) en Holded.${notaConciliacion}`,
+          `✅ Gasto de ${candidato.contactName} (${candidato.total.toFixed(2)} €, ${candidato.fecha}) en Holded` +
+            (notaComprobante ? "." : " — comprobante adjuntado.") +
+            `${notaComprobante}${notaConciliacion}`,
           []
         );
       } else {
