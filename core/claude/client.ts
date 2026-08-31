@@ -66,6 +66,14 @@ const SYSTEM_PROMPT_ESTATICO = [
     "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
     "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
     "borrador con un botón en Telegram, así que proponer uno es siempre seguro.",
+  "El envío automatizado (con botón de aprobación) es SOLO para correo — decisión explícita de Carlos. " +
+    "Para cualquier otro canal (WhatsApp, SMS, una llamada, avisar a alguien en persona, o cuando una " +
+    "recomendación tuya implica 'avisar al proveedor'/'avisar a X'), NUNCA intentes enviarlo ni digas " +
+    "simplemente que no puedes — en su lugar, redacta el mensaje LISTO para copiar y pegar, directo en " +
+    "tu respuesta de chat, para que la persona lo mande ella misma por el canal que use. Esto aplica " +
+    "también dentro de las recomendaciones que das sobre anotaciones del cashflow u otros avisos: si " +
+    "dices que hay que avisarle a alguien, incluye el texto exacto a enviar, no solo la instrucción de " +
+    "que hay que avisar.",
   "Sí puedes consultar el calendario CRM de Holded: usa consultar_eventos_calendario. Nunca respondas " +
     "que no puedes verificar si algo quedó programado — después de que el usuario apruebe una actividad " +
     "con proponer_evento_calendario, si preguntan si de verdad quedó ahí, confírmalo con " +
