@@ -100,6 +100,22 @@ que hacer nada más.
   mismo día de vencer — mismo criterio de ventana que el resto de alertas
   fiscales. Filas sin semana asignada no generan aviso (no hay fecha que
   comparar). Solo consulta, nunca escribe nada.
+- **Anotaciones (comentarios) del Sheet de cashflow**: el equipo deja
+  comentarios reales de Google Sheets (clic derecho > Comentar, no la
+  "nota" clásica) en la columna VALOR de Pagos Proyectos, Ingresos, etc.,
+  con contexto de cobro/pago que no está en ninguna otra parte (ej. "se
+  paga solo cuando recibamos el primer pago de X", "avisar al proveedor",
+  "cobra a finales de agosto"). Pregúntale "¿hay anotaciones pendientes en
+  el cashflow?" y te las lista con su ubicación real (categoría, cliente o
+  proyecto, semana, empresa — o te avisa si no pudo ubicar la fila, por si
+  el comentario quedó "huérfano" de una fila que ya cambió o se pagó) más
+  su propia recomendación de cómo proceder. Además, revisa a diario (8:20)
+  si hay anotaciones sin resolver **nuevas o editadas** desde el último
+  aviso y manda un mensaje individual por cada una con esa misma
+  recomendación — a diferencia de Aplazamiento Impuestos, no repite el
+  mismo aviso todos los días mientras siga sin resolver, solo cuando
+  cambia. Solo consulta, nunca escribe ni marca nada como resuelto — eso
+  se hace a mano en el propio Sheet.
 
 ### 🏦 Holded
 - Consultar movimientos bancarios reales y cuentas de tesorería (solo
