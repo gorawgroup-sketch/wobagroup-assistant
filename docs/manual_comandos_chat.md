@@ -154,23 +154,19 @@ registrar en cashflow) sin que presiones uno de estos botones.
 
 **Sobre facturas/gastos enviados por Telegram o recibidos por correo (con detalle y comprobante juntos — WOBA, EWORKS y Footprint):**
 - El asistente lee el CONTENIDO real del documento (no solo el nombre) para decidir si es una factura/gasto, incluyendo el desglose de IVA por línea (base + % de IVA leído tal cual aparece impreso, nunca inventado). Si no lo es, sigue el flujo normal de archivado en Drive.
-- Si encuentra un gasto ya registrado en Holded que podría corresponder (mismo proveedor, monto y fecha cercana):
-  - ✅ Es este (#N) — adjunta el comprobante a ese gasto en Holded.
+- **Si encuentra un gasto ya registrado en Holded que podría corresponder** (mismo proveedor — tolera razón social vs. nombre comercial — monto y fecha cercana):
+  - ✅ Es este (#N) — adjunta el comprobante a ese gasto en Holded (evita duplicarlo). Si el adjuntar falla, el gasto sigue existiendo igual — nunca hay que reenviar el documento, se duplicaría.
   - ❌ Ninguno, crear nuevo — sigue al flujo de creación de abajo.
-- Si no encuentra ninguno, la propuesta muestra el desglose de IVA línea por línea antes de aprobar:
-  - ✅ Crear gasto en Holded — crea el gasto (como borrador) con el IVA real de cada línea (mapeado al código de impuesto correcto de Holded, nunca uno inventado) y adjunta el comprobante.
+- **Si no encuentra ninguno**, antes de proponer crear también revisa si el cargo ya está en el banco real (no solo en Compras):
+  - Si encuentra un movimiento bancario sin conciliar que coincide en monto y fecha, aparecen **los dos botones juntos**: ✅ Crear, y ✅ Crear y conciliar (hace ambas cosas de una) — eliges tú según tu confianza en el match.
+  - Si no hay match bancario, solo aparece ✅ Crear gasto en Holded.
+  - Cualquiera de las dos crea el gasto (como borrador) con el IVA real de cada línea, la **cuenta contable correcta** (reutiliza una cuenta ya en uso real para proveedores/conceptos parecidos, ej. "Gastos de viaje" — nunca la cuenta genérica de Holded por defecto, ni una inventada) y adjunta el comprobante.
   - ✏️ Corregir clasificación — pide la empresa/concepto correctos por texto libre (ej. "EWORKS, servicio de limpieza") antes de crear el gasto. Esta corrección **queda aprendida**: la próxima factura del mismo proveedor se clasifica con más certeza.
   - ❌ Cancelar — no escribe nada.
+- **Si no encuentra el proveedor** ni por nombre parecido al crear, busca alternativas (contactos con nombre parecido, facturas con el mismo importe) y las ofrece por botones antes de rendirse.
 - Solo el superadministrador puede aprobar la escritura (adjuntar o crear) — un colaborador o admin recibe el mensaje de que necesita aprobación.
-- Tras crear o adjuntar el gasto con éxito, el asistente intenta cerrar el
-  círculo automáticamente: busca un movimiento bancario sin conciliar de la
-  misma empresa con monto y fecha cercanos. Si encuentra exactamente uno, lo
-  concilia y lo confirma en el mensaje ("💳 Movimiento bancario conciliado
-  automáticamente..."); si hay varios candidatos parecidos o no logra
-  confirmar la conciliación al releer el movimiento, lo dice explícitamente
-  en vez de asumir éxito, para que se revise a mano en Holded. Nunca concilia
-  movimientos huérfanos sin un gasto real detrás (para eso está la consulta
-  de "movimientos sin conciliar", arriba).
+- **Conciliación**: con "✅ Crear y conciliar" o "✅ Es este" ocurre en el mismo paso; con "✅ Crear" (solo crear) llega DESPUÉS, en un mensaje aparte, preguntando "¿quieres que intente conciliar el movimiento bancario?" con botones Sí/No — así puedes revisar el gasto recién creado en Holded antes de decidir. En todos los casos, ENLAZA de verdad el movimiento con el documento (nunca confía en que el estado diga "conciliado" sin confirmar que el monto quedó realmente emparejado); si hay varios candidatos parecidos o no logra confirmarlo, lo dice explícitamente para que se revise a mano en Holded. Nunca concilia movimientos huérfanos sin un gasto real detrás (para eso está la consulta de "movimientos sin conciliar", arriba).
+- **Si Holded rechaza la fecha** por un periodo contable ya cerrado ("This date has been locked"), no muestra el error técnico crudo — ofrece un botón para reintentar la creación con la fecha de hoy.
 
 **Sobre a qué empresa corresponde una captura de conocimiento (CAPTURA):**
 - El guardado real ocurre al presionar "✅ Confirmar y guardar" — antes de eso no se ha escrito nada en la base de conocimiento.

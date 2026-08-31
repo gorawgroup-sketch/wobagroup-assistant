@@ -143,75 +143,61 @@ que hacer nada más.
   línea en cashflow, para Footprint solo se escribe en Holded (no tiene
   cashflow en Sheets).
 - **Conciliación de facturas/gastos puntuales** (WOBA, EWORKS y Footprint):
-  si le mandas una factura o comprobante por Telegram (o llega por correo),
-  lee el documento real, y:
-  - si ya existe un gasto parecido en Holded (mismo proveedor, monto y
-    fecha cercana), propone adjuntarle el comprobante ahí — la comparación
-    de proveedor ignora tildes, mayúsculas y puntuación de razón social
-    ("Ocean Facility Services, S.A." reconoce a "OCEAN FACILITY SERVICES
-    SA." como el mismo contacto), igual en las tres empresas;
-  - si no, propone crear un gasto nuevo, ya clasificado (empresa,
-    proveedor, importe, concepto), mostrando el desglose real de IVA por
-    línea (base + % leído de la factura) antes de que apruebes.
-  - **Si no encuentra el proveedor** ni por nombre parecido, antes de
-    rendirse busca alternativas: contactos de Holded con nombre parecido
-    (tolera errores de lectura/OCR, plurales, abreviaturas) y facturas ya
-    registradas con el **mismo importe** en fechas cercanas — te las
-    muestra por botones para que confirmes cuál es, o "ninguna" si de
-    verdad hay que crear el contacto en Holded. La que confirmes queda
-    **aprendida** como alias de ese proveedor (mismas tres empresas), así
-    que la próxima factura del mismo proveedor con el mismo texto ya no
-    vuelve a preguntar.
-  - Todo con botón de aprobación — nunca escribe en Holded sin confirmar.
-  - Si la clasificación no es correcta, puedes corregirla; esa corrección
-    queda **aprendida** para la próxima factura del mismo proveedor.
-  - Solo el superadministrador puede aprobar esta escritura.
-  - **Conciliación bancaria — en dos pasos según la confianza**: antes de
-    proponer un gasto nuevo, también revisa si el cargo ya está en el banco
-    real (no solo si ya hay una factura cargada en Compras) — puede que el
-    dinero ya haya salido y solo falte registrar el documento. Si encuentra
-    un movimiento bancario sin conciliar que coincide en monto y fecha, el
-    botón dice **"✅ Crear y conciliar"** y hace ambas cosas de una, sin
-    pasos extra. Si no encuentra ese match, el botón dice **"✅ Crear gasto
-    en Holded"** — solo crea, y DESPUÉS, en un mensaje aparte, te pregunta
-    "¿quieres que intente conciliar el movimiento bancario?" con botones
-    Sí/No, para que puedas revisar el gasto recién creado en Holded antes
-    de decidir. Reconoce los DOS estados que Holded usa para "ya
-    conciliado" (`reconciled` y `forced_reconciled` — este segundo aparece
-    cuando la conciliación fue manual/forzada, incluyendo la que hace el
-    propio sistema) — antes solo reconocía el primero, así que una
-    conciliación que sí había funcionado a veces se reportaba como "no pude
-    confirmarlo". Además, ahora ENLAZA de verdad el movimiento bancario con
-    el documento del gasto (`documents: [{document_id, document_type}]`,
-    el body real que documenta Holded) — antes se llamaba al mismo endpoint
-    sin ese enlace, así que el movimiento quedaba marcado "conciliado" pero
-    sin ningún gasto realmente emparejado (`reconciled_amount` en 0),
-    aunque pareciera resuelto. Si un movimiento quedó "forzado" sin enlace
-    desde antes de este fix, la API de Holded no tiene forma de deshacerlo
-    — hay que pulsar "Restaurar" en la propia pantalla de Conciliación de
-    Holded para dejarlo pendiente de nuevo, y desde ahí sí queda bien
-    enlazado.
-  - **Si Holded rechaza la fecha por un periodo contable cerrado** (error
-    "This date has been locked" — le pasó a una factura de Booking.com con
-    fecha del vuelo de hace más de un año), no te muestra el error técnico
-    crudo: te dice explícitamente que la fecha está bloqueada y te ofrece
-    un botón para reintentar la creación con la fecha de hoy en su lugar.
-  - **Cuenta contable correcta, no la genérica por defecto**: antes de
-    crear un gasto nuevo, busca en compras reales ya registradas (mismo
-    proveedor, o palabras clave del concepto) qué cuenta contable ya se usa
-    para ese tipo de gasto (ej. "Gastos de viaje" para vuelos/hoteles/taxis,
-    en vez de que Holded caiga en su cuenta genérica "Otros servicios") —
-    Holded no tiene un listado público de su plan de cuentas, así que
-    siempre reutiliza una cuenta que YA está en uso real, nunca inventa una.
-    Si hay varias cuentas candidatas sin un proveedor que desempate, le pide
-    a Claude que elija la más adecuada entre esas opciones reales. Te lo
-    muestra en la propuesta antes de aprobar, y si no encuentra ninguna
-    categoría parecida, te lo dice en vez de forzar algo.
-  - **Si falla adjuntar el comprobante después de crear el gasto**, no lo
-    trata como un fallo total ni te sugiere reenviar el documento (crearía
-    un duplicado en Holded) — te dice con claridad que el gasto ya está
-    creado (con su id) pero sin comprobante, para que lo subas a mano, y
-    sigue el flujo normal hasta la pregunta de conciliación.
+  si le mandas una factura o comprobante por Telegram, o llega por correo
+  (adjunto o CAPTURA de un correo con PDF/imagen), lee el documento real y
+  sigue este proceso completo, verificado en vivo de punta a punta:
+  1. **¿Ya existe este gasto en Holded?** Busca por proveedor (tolera razón
+     social vs. nombre comercial — "Booking.com" reconoce a "BOOKING
+     HOLDINGS Inc. (Booking)", "Ocean Facility Services, S.A." reconoce a
+     "OCEAN FACILITY SERVICES SA.") y monto/fecha cercanos. Si encuentra un
+     candidato, propone **adjuntar el comprobante ahí** en vez de crear un
+     gasto nuevo — evita duplicados.
+  2. **Si no existe, ¿el cargo ya está en el banco?** Antes de proponer
+     crear un gasto nuevo, revisa también los movimientos bancarios reales
+     sin conciliar (no solo Compras) — puede que el dinero ya haya salido y
+     solo falte registrar el documento. Si encuentra un movimiento que
+     coincide en monto y fecha, te ofrece **los dos botones juntos** —
+     "✅ Crear" y "✅ Crear y conciliar" — para que elijas tú según tu
+     confianza en el match, en vez de que el sistema decida por ti. Si no
+     hay match, solo aparece "✅ Crear gasto en Holded".
+  3. **Cuenta contable real, no la genérica por defecto**: busca en compras
+     ya registradas (mismo proveedor, o palabras clave del concepto) qué
+     cuenta contable se usa de verdad para ese tipo de gasto (ej. "Gastos de
+     viaje" para vuelos/hoteles/taxis, en vez de que Holded caiga en
+     "Otros servicios") — Holded no tiene un listado público de su plan de
+     cuentas, así que siempre reutiliza una cuenta YA en uso real, nunca
+     inventa una; si hay varias candidatas sin un proveedor que desempate,
+     le pide a Claude que elija entre esas opciones reales. Lo muestra en
+     la propuesta antes de aprobar.
+  4. **Desglose real de IVA** por línea (base + % leído de la factura)
+     visible antes de aprobar.
+  5. **Si no encuentra el proveedor** ni por nombre parecido, busca
+     alternativas (contactos con nombre parecido, facturas ya registradas
+     con el mismo importe) y te las muestra por botones — la que confirmes
+     queda **aprendida** como alias, así la próxima factura del mismo
+     proveedor no vuelve a preguntar.
+  6. **Al aprobar "Crear"** (crea el gasto, con su cuenta/tags/IVA correctos)
+     — si falla adjuntar el comprobante o ya existía y solo faltaba
+     adjuntarlo, nunca lo trata como fallo total ni sugiere reenviar el
+     documento (crearía un duplicado): dice con claridad que el gasto ya
+     está creado (con su id) para que subas el comprobante a mano, y sigue
+     el flujo hasta la pregunta de conciliación.
+  7. **Conciliación**: al conciliar (de una con "Crear y conciliar", después
+     con la pregunta Sí/No, o al adjuntar a un gasto existente), ENLAZA de
+     verdad el movimiento bancario con el documento del gasto — nunca
+     confía en que el estado diga "conciliado" por sí solo, confirma que el
+     monto realmente quedó emparejado antes de reportar éxito.
+  8. **Si Holded rechaza la fecha** por un periodo contable ya cerrado, no
+     muestra el error técnico crudo: ofrece un botón para reintentar con la
+     fecha de hoy.
+  - Todo con botón de aprobación — nunca escribe en Holded sin confirmar, y
+    solo el superadministrador puede aprobar. Si la clasificación no es
+    correcta, puedes corregirla; queda **aprendida** para la próxima
+    factura del mismo proveedor.
+  - Un movimiento bancario que quedó "forzado" sin enlace real (de antes de
+    que este proceso quedara así de preciso) no se puede corregir por API —
+    hay que pulsar "Restaurar" en la pantalla de Conciliación de Holded
+    para dejarlo pendiente de nuevo.
 - **Gastos sin comprobante**: pregúntale "¿qué gastos de WOBA/EWORKS/Footprint
   no tienen comprobante?" y revisa Holded para decirte cuáles faltan (con el
   proveedor, monto, fecha, y si hay una pista de a quién corresponde). Solo
