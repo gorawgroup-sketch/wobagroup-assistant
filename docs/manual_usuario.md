@@ -155,11 +155,18 @@ que hacer nada más.
   2. **Si no existe, ¿el cargo ya está en el banco?** Antes de proponer
      crear un gasto nuevo, revisa también los movimientos bancarios reales
      sin conciliar (no solo Compras) — puede que el dinero ya haya salido y
-     solo falte registrar el documento. Si encuentra un movimiento que
+     solo falte registrar el documento. Revisa TODAS las cuentas de
+     tesorería sin importar su moneda (puede que el cargo caiga en una
+     cuenta en USD y no en la de EUR). Si encuentra un movimiento que
      coincide en monto y fecha, te ofrece **los dos botones juntos** —
      "✅ Crear" y "✅ Crear y conciliar" — para que elijas tú según tu
      confianza en el match, en vez de que el sistema decida por ti. Si no
-     hay match, solo aparece "✅ Crear gasto en Holded".
+     hay match, solo aparece "✅ Crear gasto en Holded". Cuando el gasto
+     original no está en euros (ver 4b más abajo), la comparación tolera
+     unos céntimos de diferencia — el monto en EUR de la factura y el que
+     calcula Holded para el movimiento vienen de dos conversiones de cambio
+     independientes y pueden no coincidir centavo a centavo sin dejar de
+     ser la misma transacción.
   3. **Cuenta contable real, no la genérica por defecto**: busca en compras
      ya registradas (mismo proveedor, o palabras clave del concepto) qué
      cuenta contable se usa de verdad para ese tipo de gasto (ej. "Gastos de
