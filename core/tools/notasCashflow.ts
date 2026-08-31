@@ -16,7 +16,18 @@ export const guardarNotaCashflowTool: ToolDefinition = {
     "gasto/ingreso más adelante. Úsala de inmediato cuando el usuario te dé una instrucción u observación " +
     "sobre un gasto o ingreso puntual (ej. 'esto se paga cuando haya plata', 'esto lo vamos moviendo " +
     "semana a semana', 'este ingreso es de un cliente que paga tarde') — no esperes a que lo pida " +
-    "explícitamente, igual que con las correcciones.",
+    "explícitamente, igual que con las correcciones. " +
+    "IMPORTANTE — pedido explícito de Carlos tras un caso real: 'considera este tipo de gastos como " +
+    "gastos de viaje' (referido a las facturas de moneda extranjera que se estaban discutiendo en ese " +
+    "momento) se guardó por error como una nota sobre 'Sunreuse' — un concepto de cashflow totalmente " +
+    "distinto que el asistente adivinó porque el mensaje no nombraba a qué gasto se refería 'este tipo'. " +
+    "El concepto+monto que identifican la fila deben salir del propio texto del mensaje actual o del " +
+    "turno inmediatamente anterior — nunca los adivines buscando en el cashflow/base de conocimiento cuál " +
+    "podría encajar. Además, esta herramienta solo sirve para una fila PUNTUAL del cashflow (un " +
+    "concepto+monto concretos) — si el usuario está dando una regla GENERAL de clasificación para un tipo " +
+    "de gasto (no una fila específica), esta no es la herramienta correcta: usa registrar_correccion en " +
+    "su lugar, o si tampoco encaja, pregunta a qué gasto concreto se refiere en vez de forzar un " +
+    "concepto/valor inventados.",
   input_schema: {
     type: "object",
     properties: {

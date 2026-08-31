@@ -14,8 +14,17 @@ export const registrarCorreccionTool: ToolDefinition = {
     "Registra una corrección que el usuario hace sobre algo que el asistente dijo o asumió antes " +
     "(ej. 'eso no era así, en realidad...', 'corrección: ...', 'no, en realidad es...'). Llama a esta " +
     "herramienta EN CUANTO detectes que el usuario está corrigiendo algo — no esperes a que lo pida " +
-    "explícitamente ni le preguntes si quiere que lo registres. Queda guardada permanentemente y se " +
-    "incluye siempre en el contexto de consultar_base_conocimiento a partir de ese momento.",
+    "explícitamente ni le preguntes si quiere que lo registres. " +
+    "IMPORTANTE — pedido explícito de Carlos tras un caso real: el mensaje 'considera este tipo de " +
+    "gastos como gastos de viaje' (referido a las facturas de moneda extranjera que se estaban " +
+    "discutiendo) se guardó por error como una corrección sobre 'Sunreuse' — un concepto de cashflow " +
+    "completamente distinto que el asistente adivinó porque el mensaje del usuario no nombraba a qué se " +
+    "refería 'este tipo'. Antes de llamar a esta herramienta, el referente (a qué gasto/proveedor/tema " +
+    "se refiere la corrección) debe estar CLARO por el propio texto del mensaje actual o del turno " +
+    "inmediatamente anterior de la conversación — nunca lo adivines buscando en la base de conocimiento " +
+    "ni tomando el último concepto que se te ocurra. Si el usuario usa una referencia ambigua ('esto', " +
+    "'este tipo', 'eso') y no es evidente a qué se refiere, PREGUNTA primero qué gasto/proveedor/tema " +
+    "específico quiere corregir — no llames a la herramienta con un referente inventado.",
   input_schema: {
     type: "object",
     properties: {
