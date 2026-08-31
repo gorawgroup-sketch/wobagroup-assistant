@@ -72,7 +72,7 @@ export const verificarCashflowActualizadoTool: ToolDefinition = {
               const categoria = c.categoriasSugeridas?.[0];
               const sugerencia = categoria && categoria.score > 0 ? ` — probablemente ${categoria.etiqueta}` : "";
               const duplicado = c.posibleDuplicadoDe
-                ? ` — 🔎 posible duplicado de "${c.posibleDuplicadoDe}" ya registrado, confirma con el usuario si es el mismo pago`
+                ? ` — 🔎 posible duplicado de "${c.posibleDuplicadoDe.descripcionRegistro}" ya registrado, confirma con el usuario si es el mismo pago`
                 : "";
               return `  • ${c.descripcion} — ${c.valorAbs.toFixed(2)} € (${c.esIngreso ? "abono" : "cargo"}${c.fecha ? `, ${c.fecha}` : ""})${sugerencia}${duplicado}`;
             })

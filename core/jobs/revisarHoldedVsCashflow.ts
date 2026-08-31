@@ -8,6 +8,7 @@ import { sugerirCategoriasGasto, type CategoriaSugerida } from "../google/sugeri
 import type { BloqueEscritura } from "../google/cashflowWrite";
 import { montosCercanos } from "../utils/montos";
 import { textosParecidos } from "../utils/textoParecido";
+import { obtenerTodosLosDuplicadosConfirmados, type FilaDuplicado } from "../cashflow/duplicadosConfirmadosSheet";
 
 const TOLERANCIA_EUR = 0.01;
 // Tolerancia más ancha para montos que vienen de una conversión de divisa
@@ -103,6 +104,14 @@ function valorEnEuros(mov: BankMovement): number {
   return Number.isFinite(nativo) ? nativo : 0;
 }
 
+export interface PosibleDuplicado {
+  descripcionRegistro: string;
+  /** Monto ya registrado en el cashflow para la fila parecida — necesario para registrarDuplicadoConfirmado si el usuario confirma. */
+  montoRegistrado: number;
+  /** true si hizo falta el margen APRENDIDO (más ancho que el genérico de 5€) para reconocerlo — ver duplicadosConfirmadosSheet.ts. */
+  aprendido: boolean;
+}
+
 export interface CandidatoNoRegistrado {
   empresa: EmpresaCashflow;
   descripcion: string;
@@ -111,8 +120,8 @@ export interface CandidatoNoRegistrado {
   esIngreso: boolean;
   /** Solo para gastos (esIngreso=false) — categorías candidatas rankeadas, ver sugerirBloqueGasto.ts. */
   categoriasSugeridas?: CategoriaSugerida[];
-  /** Si hay una fila ya registrada con nombre parecido y monto cercano (no exacto) — ver POSIBLE_DUPLICADO_TOLERANCIA_EUR. */
-  posibleDuplicadoDe?: string;
+  /** Si hay una fila ya registrada con nombre parecido y monto cercano (no exacto). */
+  posibleDuplicadoDe?: PosibleDuplicado;
 }
 
 // Un mismo proveedor a veces cambia de tarifa entre facturas (ej. "Banahosting"
@@ -120,27 +129,44 @@ export interface CandidatoNoRegistrado {
 // 208,73€ la siguiente) — la diferencia es real, no un error, pero el
 // monto no coincide dentro de la tolerancia normal (1 céntimo). Pedido
 // explícito: cuando el NOMBRE es parecido Y el monto está razonablemente
-// cerca (hasta 5€, no un porcentaje — un margen fijo pensado para gastos
-// de este tamaño, no para transferencias de miles de euros), se avisa como
-// posible duplicado en vez de proponerlo como un movimiento nuevo sin más
-// — nunca se decide sola cuál es, siempre pregunta.
+// cerca, se avisa como posible duplicado en vez de proponerlo como un
+// movimiento nuevo sin más — NUNCA se decide sola cuál es, siempre
+// pregunta con botón, sin excepción, ni siquiera cuando ya hay un caso
+// aprendido de ese mismo proveedor (el aprendizaje solo hace que dude
+// MENOS con el tiempo — más contexto en la pregunta, un margen más ancho
+// si el proveedor ya mostró antes esa variación — nunca que deje de
+// preguntar).
 const POSIBLE_DUPLICADO_TOLERANCIA_EUR = 5;
 
 function buscarPosibleDuplicado(
   descripcion: string,
+  empresa: EmpresaCashflow,
   valorAbs: number,
-  registrosSemana: Array<{ cliente?: string; concepto?: string; semana: string; valor: string }>
-): string | undefined {
+  registrosSemana: Array<{ cliente?: string; concepto?: string; semana: string; valor: string }>,
+  duplicadosAprendidos: FilaDuplicado[]
+): PosibleDuplicado | undefined {
+  const aprendidosDeEsteProveedor = duplicadosAprendidos.filter(
+    (d) => d.empresa === empresa && textosParecidos(descripcion, d.proveedor)
+  );
+  const toleranciaAprendida =
+    aprendidosDeEsteProveedor.length > 0 ? Math.max(...aprendidosDeEsteProveedor.map((d) => d.diferencia)) : 0;
+  const toleranciaEfectiva = Math.max(POSIBLE_DUPLICADO_TOLERANCIA_EUR, toleranciaAprendida);
+
   const match = registrosSemana.find((r) => {
     const textoRegistro = [r.cliente, r.concepto].filter(Boolean).join(" ");
     if (!textoRegistro) return false;
     if (!textosParecidos(descripcion, textoRegistro)) return false;
     const valorRegistro = Math.abs(parseValorFormateado(r.valor));
-    return montosCercanos(valorRegistro, valorAbs, POSIBLE_DUPLICADO_TOLERANCIA_EUR) && !montosCercanos(valorRegistro, valorAbs, TOLERANCIA_EUR);
+    return montosCercanos(valorRegistro, valorAbs, toleranciaEfectiva) && !montosCercanos(valorRegistro, valorAbs, TOLERANCIA_EUR);
   });
 
   if (!match) return undefined;
-  return `${match.cliente ?? match.concepto} — ${match.semana} — ${match.valor}`;
+
+  return {
+    descripcionRegistro: `${match.cliente ?? match.concepto} — ${match.semana} — ${match.valor}`,
+    montoRegistrado: Math.abs(parseValorFormateado(match.valor)),
+    aprendido: aprendidosDeEsteProveedor.length > 0,
+  };
 }
 
 /**
@@ -177,6 +203,10 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   const registrosSemana = todosLosRegistros.filter(
     (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_EJECUCION_SEMANAL.has(r.categoria)
   );
+  const duplicadosAprendidos = await obtenerTodosLosDuplicadosConfirmados().catch((error) => {
+    console.error("[revisarHoldedVsCashflow] Error leyendo duplicados aprendidos (no crítico):", error);
+    return [] as FilaDuplicado[];
+  });
 
   const valoresRegistrados = registrosSemana.map((r) => Math.abs(parseValorFormateado(r.valor)));
 
@@ -238,7 +268,13 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     if (!candidato.esIngreso) {
       candidato.categoriasSugeridas = sugerirCategoriasGasto(candidato.descripcion, todosLosRegistros);
     }
-    candidato.posibleDuplicadoDe = buscarPosibleDuplicado(candidato.descripcion, candidato.valorAbs, registrosSemana);
+    candidato.posibleDuplicadoDe = buscarPosibleDuplicado(
+      candidato.descripcion,
+      candidato.empresa,
+      candidato.valorAbs,
+      registrosSemana,
+      duplicadosAprendidos
+    );
   }
 
   return candidatos;
@@ -332,9 +368,12 @@ export async function enviarPropuestaCandidato(
       : "";
 
   const notaPosibleDuplicado = candidato.posibleDuplicadoDe
-    ? `\n\n🔎 POSIBLE DUPLICADO — ya hay una fila parecida registrada esta semana: "${candidato.posibleDuplicadoDe}". ` +
+    ? `\n\n🔎 POSIBLE DUPLICADO — ya hay una fila parecida registrada esta semana: "${candidato.posibleDuplicadoDe.descripcionRegistro}". ` +
       `El monto no es idéntico (puede ser un cambio de tarifa real, o el mismo pago con una cifra distinta) — ` +
-      `¿es el mismo pago (entonces "❌ Ignorar") o es realmente otro cargo aparte (entonces elige la categoría)?`
+      (candidato.posibleDuplicadoDe.aprendido
+        ? `ya has confirmado antes un caso parecido con este proveedor. `
+        : "") +
+      `¿es el mismo pago (usa "🔁 Es duplicado") o es realmente otro cargo aparte (entonces elige la categoría)?`
     : "";
 
   const texto = [
@@ -364,11 +403,15 @@ export async function enviarPropuestaCandidato(
       fechaMovimiento: candidato.fecha,
       chatId,
       messageId: 0,
+      montoDuplicado: candidato.posibleDuplicadoDe?.montoRegistrado,
     });
     propuestaId = propuesta.id;
 
     const botones = [
       ...opciones.map((o) => [{ text: `✅ ${o.etiqueta}`, callback_data: `cf_approve:${propuesta.id}:${o.bloque}` }]),
+      ...(candidato.posibleDuplicadoDe
+        ? [[{ text: "🔁 Es duplicado", callback_data: `cf_duplicado:${propuesta.id}` }]]
+        : []),
       [{ text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` }],
     ];
 

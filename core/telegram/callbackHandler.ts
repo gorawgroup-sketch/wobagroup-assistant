@@ -1,6 +1,7 @@
 import { answerCallbackQuery, editTelegramMessage } from "./client";
 import { consumirPropuesta } from "../google/proposalSheet";
 import { cashflowEscrituraTool } from "../tools/cashflowEscritura";
+import { registrarDuplicadoConfirmado } from "../cashflow/duplicadosConfirmadosSheet";
 import type { TelegramCallbackQuery } from "./types";
 
 /**
@@ -33,7 +34,7 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
 
   const [accion, id, bloqueElegido] = data.split(":");
 
-  if (accion !== "cf_approve" && accion !== "cf_reject") {
+  if (accion !== "cf_approve" && accion !== "cf_reject" && accion !== "cf_duplicado") {
     await answerCallbackQuerySafe(callback.id);
     return;
   }
@@ -51,6 +52,44 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
       propuesta.chatId,
       propuesta.messageId,
       `❌ Ignorado — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} €)`,
+      []
+    );
+    return;
+  }
+
+  // El botón "🔁 Es duplicado" solo aparece cuando revisarHoldedVsCashflow
+  // detectó una fila parecida ya registrada (guarda su monto en
+  // propuesta.montoDuplicado) — el usuario confirma que es el MISMO pago,
+  // así que no se crea nada nuevo (igual que "❌ Ignorar"), pero además se
+  // aprende el patrón de variación de monto de este proveedor en
+  // duplicadosConfirmadosSheet.ts para reconocerlo con más contexto la
+  // próxima vez. Pedido explícito: esto nunca hace que el sistema deje de
+  // preguntar en el futuro, solo reduce la duda con la que pregunta.
+  if (accion === "cf_duplicado") {
+    if (propuesta.montoDuplicado === undefined) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta no tiene un duplicado asociado.");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Anotado.");
+
+    try {
+      await registrarDuplicadoConfirmado(
+        propuesta.clienteOConcepto,
+        propuesta.empresa,
+        propuesta.valor,
+        propuesta.montoDuplicado
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[callbackHandler] Error guardando duplicado confirmado (no crítico):", message);
+    }
+
+    await editTelegramMessage(
+      propuesta.chatId,
+      propuesta.messageId,
+      `🔁 Duplicado confirmado — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} € vs ${propuesta.montoDuplicado.toFixed(2)} € ya registrado). ` +
+        `No se crea nada nuevo. Anotado para reconocer este patrón con más contexto la próxima vez.`,
       []
     );
     return;

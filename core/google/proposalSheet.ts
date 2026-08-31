@@ -18,6 +18,7 @@ const HEADERS = [
   "chatId",
   "messageId",
   "creadoEn",
+  "montoDuplicado",
 ];
 
 export interface Propuesta {
@@ -31,6 +32,8 @@ export interface Propuesta {
   chatId: number;
   messageId: number;
   creadoEn: number;
+  /** Monto ya registrado en el cashflow de la fila que el sistema detectó como posible duplicado (ver revisarHoldedVsCashflow.ts). Solo presente si hubo esa sospecha. */
+  montoDuplicado?: number;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -90,7 +93,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:J1`,
+    range: `${TAB_NAME}!A1:K1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -113,6 +116,7 @@ function rowToPropuesta(row: unknown[]): Propuesta | null {
     chatId: Number(row[7]) || 0,
     messageId: Number(row[8]) || 0,
     creadoEn: Number(row[9]) || 0,
+    montoDuplicado: row[10] !== undefined && row[10] !== "" ? Number(row[10]) : undefined,
   };
 }
 
@@ -128,6 +132,7 @@ function propuestaToRow(p: Propuesta): (string | number)[] {
     p.chatId,
     p.messageId,
     p.creadoEn,
+    p.montoDuplicado ?? "",
   ];
 }
 
@@ -143,7 +148,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:J10000`,
+    range: `${TAB_NAME}!A2:K10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -210,7 +215,7 @@ export async function crearPropuesta(datos: Omit<Propuesta, "id" | "creadoEn">):
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:J`,
+    range: `${TAB_NAME}!A:K`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

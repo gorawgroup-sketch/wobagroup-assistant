@@ -131,8 +131,9 @@ registrar en cashflow) sin que presiones uno de estos botones.
 **Sobre movimientos de Holded sin registrar en el cashflow (WOBA/EWORKS):**
 - ✅ Agregar — registra el movimiento en el Sheet de cashflow.
 - ❌ Ignorar — descarta la propuesta (si sigue sin registrar, se vuelve a proponer en la siguiente revisión).
+- 🔁 Es duplicado — solo aparece cuando el sistema encontró una fila ya registrada esa semana con nombre parecido y monto cercano (hasta 5€ de diferencia por defecto, y algo más si ese proveedor ya tuvo un caso confirmado antes) pero NO idéntico — típico de un cambio de tarifa real (ej. Banahosting €204.68 registrado vs. €208.73 real de Holded). Al presionarlo, no se crea ninguna fila nueva (igual que "❌ Ignorar") pero además queda anotado el patrón de variación de ese proveedor, para que la próxima vez el sistema lo reconozca con más contexto y dude menos. **Esto nunca hace que deje de preguntar** — por más veces que se confirme un proveedor, siempre vuelve a mostrar el botón y espera la confirmación, nunca decide solo que es un duplicado.
 - Se dispara dos veces por semana: viernes 17:00 (chequeo preliminar de la semana en curso) y lunes 8:00 (cierre de la semana anterior).
-- Solo el superadministrador puede aprobar "✅ Agregar".
+- Solo el superadministrador puede aprobar "✅ Agregar". "❌ Ignorar" y "🔁 Es duplicado" no requieren superadmin (no escriben nada en Holded ni en el cashflow).
 
 **Sobre borradores de correo (después de "Proceder", una corrección de orientación, o pedir enviar algo por chat):**
 - 📤 Enviar así — envía el correo real, tal como está.
