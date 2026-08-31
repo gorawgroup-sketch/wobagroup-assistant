@@ -4,6 +4,7 @@ import { estaConciliado, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { montosCercanos } from "../utils/montos";
+import { textosParecidos } from "../utils/textoParecido";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -558,12 +559,17 @@ interface LineaConCuenta {
 }
 
 const MAX_PAGINAS_CUENTAS = 10;
-const PALABRAS_IGNORADAS_CONCEPTO = new Set(["para", "con", "del", "los", "las", "una", "por", "que", "servicio", "servicios"]);
+// 5+ caracteres (no 4) a propósito, igual que textosParecidos — bug real
+// encontrado en vivo: con el umbral en 4, palabras genéricas cortas
+// (ej. "real", "cargo") de un concepto sintético coincidían por azar con
+// líneas de compra totalmente ajenas (una factura de suscripción de
+// Holded), llevando a una cuenta contable sin ninguna relación real.
+const PALABRAS_IGNORADAS_CONCEPTO = new Set(["para", "desde", "sobre", "hasta", "todavía", "documento", "adjunto", "generado"]);
 
 function palabrasSignificativas(texto: string): string[] {
   return normalizar(texto)
     .split(/\s+/)
-    .filter((p) => p.length >= 4 && !PALABRAS_IGNORADAS_CONCEPTO.has(p));
+    .filter((p) => p.length >= 5 && !PALABRAS_IGNORADAS_CONCEPTO.has(p));
 }
 
 async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuenta[]> {
@@ -725,12 +731,15 @@ export async function inferirCuentaGasto(
   const lineas = await recolectarLineasConCuenta(empresa);
   if (lineas.length === 0) return undefined;
 
-  const objetivoProveedor = normalizar(criterios.proveedor);
-  const porNombre = objetivoProveedor
-    ? lineas.filter((l) => {
-        const nombre = normalizar(l.contactName);
-        return nombre && (nombre.includes(objetivoProveedor) || objetivoProveedor.includes(nombre));
-      })
+  // textosParecidos (no un simple includes/substring) — bug real encontrado
+  // en vivo: "Booking.com" (como lo lee la extracción de la factura) nunca
+  // matcheaba por substring contra "BOOKING HOLDINGS Inc. (Booking)" (el
+  // nombre real del contacto en Holded), así que el match por proveedor
+  // fallaba SIEMPRE para ese caso real y caía al fallback de concepto/IA,
+  // menos confiable. Mismo criterio ya usado en el resto del sistema para
+  // razón social vs. nombre comercial.
+  const porNombre = criterios.proveedor.trim()
+    ? lineas.filter((l) => l.contactName && textosParecidos(criterios.proveedor, l.contactName))
     : [];
 
   const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
