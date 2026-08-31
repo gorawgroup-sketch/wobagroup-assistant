@@ -88,7 +88,7 @@ export interface BankMovement {
   accounting_currency?: string | null;
   /** Saldo de la cuenta INMEDIATAMENTE DESPUÉS de este movimiento (no el saldo actual de la cuenta). */
   balance?: string;
-  /** "reconciled" | "pending" | otros — confirmado en vivo contra la API real. */
+  /** "reconciled" | "forced_reconciled" | "pending" | otros — confirmado en vivo contra la API real (ver estaConciliado). */
   status?: string;
   reconciled_amount?: string;
   origin?: string;
@@ -133,8 +133,24 @@ export async function listBankMovements(
 const MAX_CUENTAS_A_REVISAR = 10;
 
 /**
- * Cuenta movimientos bancarios con status != "reconciled" en los últimos
- * `dias` días, en todas las cuentas activas — mismo criterio que
+ * Holded usa DOS estados distintos para un movimiento ya resuelto:
+ * "reconciled" (matching automático de Holded) y "forced_reconciled"
+ * (conciliación manual/forzada — ej. vía este mismo sistema al llamar
+ * POST .../reconcile, o alguien lo hizo a mano en Holded). Verificado en
+ * vivo: bug real encontrado — reconciliarMovimiento solo aceptaba
+ * "reconciled" como éxito, así que un movimiento recién conciliado por el
+ * propio sistema (que Holded marca "forced_reconciled") se reportaba como
+ * "no pude confirmar que quedó conciliado" aunque SÍ había quedado. Mismo
+ * criterio en cualquier punto del código que decida si un movimiento
+ * "todavía necesita atención" — nunca comparar contra "reconciled" a solas.
+ */
+export function estaConciliado(status: string | undefined): boolean {
+  return status === "reconciled" || status === "forced_reconciled";
+}
+
+/**
+ * Cuenta movimientos bancarios sin conciliar en los últimos `dias` días, en
+ * todas las cuentas activas — mismo criterio que
  * consultar_movimientos_sin_conciliar (core/tools/movimientosSinConciliar.ts),
  * factorizado aquí para no duplicar la lógica de conteo.
  */
@@ -149,7 +165,7 @@ export async function contarMovimientosSinConciliar(empresa: Empresa, dias: numb
   let total = 0;
   for (const cuenta of cuentas) {
     const movimientos = await listBankMovements(empresa, cuenta.id, desdeStr, hastaStr);
-    total += movimientos.filter((m) => m.status !== "reconciled").length;
+    total += movimientos.filter((m) => !estaConciliado(m.status)).length;
   }
 
   return total;

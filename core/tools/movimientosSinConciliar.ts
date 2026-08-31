@@ -1,4 +1,4 @@
-import { listTreasuryAccounts, listBankMovements, type Empresa } from "../holded/client";
+import { listTreasuryAccounts, listBankMovements, estaConciliado, type Empresa } from "../holded/client";
 import { formatDateLocal } from "../utils/dateFormat";
 import type { ToolDefinition } from "./types";
 
@@ -49,7 +49,7 @@ export const movimientosSinConciliarTool: ToolDefinition = {
       const movimientos = await listBankMovements(empresa, cuenta.id, desdeStr, hastaStr);
       for (const m of movimientos) {
         total++;
-        if (m.status !== "reconciled") {
+        if (!estaConciliado(m.status)) {
           sinConciliar.push({
             cuenta: cuenta.name ?? "(sin nombre)",
             descripcion: (m.description as string) ?? "(sin descripción)",

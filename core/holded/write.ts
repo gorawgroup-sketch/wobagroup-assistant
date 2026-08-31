@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
-import type { Empresa } from "./client";
+import { estaConciliado, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { montosCercanos } from "../utils/montos";
@@ -373,6 +373,9 @@ export interface DocumentoHoldedEstado {
   pendiente: number;
   status: string;
   draft: boolean;
+  tags: string[];
+  /** true si tiene al menos un comprobante adjunto en Holded — undefined si no se pudo verificar. */
+  tieneComprobante?: boolean;
   /** true si este resultado vino de la segunda pasada (solo monto, sin match de nombre) — ver buscarDocumentosHolded. */
   coincidenciaSoloPorMonto: boolean;
 }
@@ -416,6 +419,7 @@ async function buscarEnEndpointDocumentos(
         payments_total?: string;
         payments_pending?: string;
         draft?: boolean;
+        tags?: string[];
       }>;
       cursor?: string;
       has_more?: boolean;
@@ -449,6 +453,7 @@ async function buscarEnEndpointDocumentos(
         pendiente: parsearMontoHolded(item.payments_pending),
         status: item.status ?? "desconocido",
         draft: item.draft ?? false,
+        tags: item.tags ?? [],
         coincidenciaSoloPorMonto: !objetivo,
       });
     }
@@ -502,15 +507,39 @@ export async function buscarDocumentosHolded(
     )
   ).flat();
 
-  if (porNombre.length > 0 || criterios.monto === undefined) return porNombre;
+  if (porNombre.length > 0 || criterios.monto === undefined) return verificarComprobantes(empresa, porNombre);
 
-  return (
+  const porMonto = (
     await Promise.all(
       paths.map((p) =>
         buscarEnEndpointDocumentos(empresa, p.path, p.tipoDoc, undefined, criterios.monto, desdeStr, hastaStr)
       )
     )
   ).flat();
+  return verificarComprobantes(empresa, porMonto);
+}
+
+/**
+ * Añade tieneComprobante a cada resultado tipo "gasto" (los ingresos no
+ * pasan por el flujo de adjuntar comprobante de este sistema, se dejan sin
+ * verificar) — pensado para responder "¿este gasto ya quedó bien montado?"
+ * con la misma precisión que se usa al crear/revisar un gasto, no solo si
+ * existe. Acotado a los resultados YA filtrados (unos pocos), nunca escanea
+ * todo Holded.
+ */
+async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHoldedEstado[]): Promise<DocumentoHoldedEstado[]> {
+  await Promise.all(
+    resultados.map(async (r) => {
+      if (r.tipo !== "gasto") return;
+      try {
+        const attachments = (await holdedWriteCall(empresa, "GET", `/purchases/${r.id}/attachments`)) as { items?: unknown[] };
+        r.tieneComprobante = (attachments.items ?? []).length > 0;
+      } catch (error) {
+        console.error(`[write] Error verificando comprobante de ${r.id} (no crítico):`, error);
+      }
+    })
+  );
+  return resultados;
 }
 
 export interface CuentaSugerida {
@@ -1006,10 +1035,10 @@ export interface MovimientoBancarioCandidato {
 const VENTANA_DIAS_MOVIMIENTO = 5;
 
 /**
- * Busca movimientos bancarios SIN conciliar (status != "reconciled") en
- * todas las cuentas activas de la empresa, con monto (en valor absoluto) y
- * fecha cercanos a los dados. Se usa solo para el auto-conciliar tras crear
- * o adjuntar un gasto propio — nunca para crear gastos a partir de
+ * Busca movimientos bancarios SIN conciliar (ver estaConciliado) en todas
+ * las cuentas activas de la empresa, con monto (en valor absoluto) y fecha
+ * cercanos a los dados. Se usa solo para el auto-conciliar tras crear o
+ * adjuntar un gasto propio — nunca para crear gastos a partir de
  * movimientos huérfanos (eso queda para revisión humana, ver
  * consultar_movimientos_sin_conciliar).
  */
@@ -1053,7 +1082,7 @@ export async function buscarMovimientoSimilar(
     };
 
     for (const mov of data.items ?? []) {
-      if (mov.status === "reconciled") continue;
+      if (estaConciliado(mov.status)) continue;
       const monto = montoEnEuros(mov);
       if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), TOLERANCIA_MONTO)) continue;
 
@@ -1076,7 +1105,12 @@ export async function buscarMovimientoSimilar(
  * documentado — probado en vivo con varios cuerpos contra un movimiento ya
  * conciliado, todos devuelven 200/null sin poder confirmar el efecto real.
  * Por eso esta función SIEMPRE relee el movimiento después de llamarlo y
- * solo reporta éxito si `status` realmente pasó a "reconciled" — nunca
+ * solo reporta éxito si `status` realmente pasó a un estado conciliado
+ * (estaConciliado — "reconciled" o "forced_reconciled", verificado en vivo
+ * que POST .../reconcile deja el movimiento en "forced_reconciled", no
+ * "reconciled"; el chequeo original solo aceptaba "reconciled" y por eso
+ * reportaba "no pude confirmar" en conciliaciones que SÍ habían funcionado)
+ * — nunca
  * confía en el 200 por sí solo.
  */
 export async function reconciliarMovimiento(
@@ -1110,7 +1144,7 @@ export async function reconciliarMovimiento(
   const movimiento = (verificacion.items ?? []).find((m) => m.id === movementId);
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
 
-  return { ok: statusFinal === "reconciled", statusFinal };
+  return { ok: estaConciliado(movimiento?.status), statusFinal };
 }
 
 export interface NuevoEventoHolded {

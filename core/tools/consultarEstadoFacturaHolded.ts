@@ -17,12 +17,15 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
   description:
     "Busca si un pago/cargo concreto YA está registrado en Holded como factura (gasto vía /purchases o " +
     "ingreso vía /invoices) — aunque todavía no se haya pagado ni tenga movimiento bancario. Para cada " +
-    "coincidencia devuelve el número de documento, fecha, vencimiento, total, y cuánto está pagado vs. " +
-    "pendiente. Úsala cuando pregunten '¿ya está cargada esta factura?', '¿está pendiente de pago o falta " +
-    "registrarla?', o para verificar un cargo del cashflow que no aparece todavía en los movimientos " +
-    "bancarios (consultar_movimientos_holded) — antes de asumir que falta registrarlo, confirma acá si ya " +
-    "existe como factura pendiente. No confundir con consultar_gastos_sin_comprobante (esa verifica si " +
-    "falta el PDF/recibo adjunto, no el estado de pago).",
+    "coincidencia devuelve el número de documento, fecha, vencimiento, total, cuánto está pagado vs. " +
+    "pendiente, tags, y (para gastos) si tiene comprobante adjunto. Úsala cuando pregunten '¿ya está " +
+    "cargada esta factura?', '¿está pendiente de pago o falta registrarla?', '¿cómo va el gasto de X?', " +
+    "'¿quedó bien montado?', o para verificar un cargo del cashflow que no aparece todavía en los " +
+    "movimientos bancarios (consultar_movimientos_holded) — antes de asumir que falta registrarlo, " +
+    "confirma acá si ya existe. Para el estado COMPLETO de un gasto puntual ya creado (documento, " +
+    "comprobante, pago) esta es la herramienta correcta — no consultar_movimientos_holded, que solo ve el " +
+    "banco y no el documento de Holded. Para un BARRIDO de todos los gastos sin comprobante en un rango " +
+    "de fechas (no uno puntual) usa mejor consultar_gastos_sin_comprobante.",
   input_schema: {
     type: "object",
     properties: {
@@ -87,7 +90,16 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
         r.pendiente > 0.01
           ? `PENDIENTE de pago (${r.pendiente.toFixed(2)} € sin pagar de ${r.total.toFixed(2)} €)`
           : `ya pagada (${r.total.toFixed(2)} €)`;
-      return `- [${tipoTexto}] ${r.contactName} — doc ${r.documentNumber}, fecha ${r.fecha}${vencimiento} — ${estadoPago}${borrador}`;
+      const comprobante =
+        r.tipo === "gasto"
+          ? r.tieneComprobante === true
+            ? " — con comprobante adjunto"
+            : r.tieneComprobante === false
+              ? " — ⚠️ SIN comprobante adjunto"
+              : ""
+          : "";
+      const tags = r.tags.length > 0 ? ` — tags: ${r.tags.join(", ")}` : " — sin tags";
+      return `- [${tipoTexto}] ${r.contactName} — doc ${r.documentNumber}, fecha ${r.fecha}${vencimiento} — ${estadoPago}${borrador}${comprobante}${tags}`;
     });
 
     const huboCoincidenciaSoloPorMonto = resultados.some((r) => r.coincidenciaSoloPorMonto);

@@ -176,7 +176,12 @@ que hacer nada más.
     en Holded"** — solo crea, y DESPUÉS, en un mensaje aparte, te pregunta
     "¿quieres que intente conciliar el movimiento bancario?" con botones
     Sí/No, para que puedas revisar el gasto recién creado en Holded antes
-    de decidir.
+    de decidir. Reconoce los DOS estados que Holded usa para "ya
+    conciliado" (`reconciled` y `forced_reconciled` — este segundo aparece
+    cuando la conciliación fue manual/forzada, incluyendo la que hace el
+    propio sistema) — antes solo reconocía el primero, así que una
+    conciliación que sí había funcionado a veces se reportaba como "no pude
+    confirmarlo".
   - **Si Holded rechaza la fecha por un periodo contable cerrado** (error
     "This date has been locked" — le pasó a una factura de Booking.com con
     fecha del vuelo de hace más de un año), no te muestra el error técnico

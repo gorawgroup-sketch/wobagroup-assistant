@@ -1,4 +1,4 @@
-import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
+import { listBankMovements, listTreasuryAccounts, estaConciliado, type Empresa } from "../holded/client";
 import { formatDateLocal } from "../utils/dateFormat";
 import type { ToolDefinition } from "./types";
 
@@ -84,7 +84,7 @@ export const holdedMovimientosTool: ToolDefinition = {
       return `No se encontraron movimientos bancarios para ${empresa} entre ${desde} y ${hasta}.`;
     }
 
-    const conciliados = filtrados.filter((m) => m.status === "reconciled").length;
+    const conciliados = filtrados.filter((m) => estaConciliado(m.status)).length;
     const resumen = `${filtrados.length} movimiento(s) — ${conciliados} conciliado(s), ${filtrados.length - conciliados} pendiente(s).`;
 
     const lineas = filtrados.map((m) => {
@@ -92,7 +92,7 @@ export const holdedMovimientosTool: ToolDefinition = {
       const tipoMov = esIngreso(amount) ? "abono" : "cargo";
       const fecha = m.booking_date ? m.booking_date.slice(0, 10) : "(sin fecha)";
       const desc = m.description ?? "(sin descripción)";
-      const estado = m.status === "reconciled" ? "conciliado" : m.status ?? "pendiente";
+      const estado = estaConciliado(m.status) ? "conciliado" : m.status ?? "pendiente";
       const moneda = (m.currency ?? "EUR").toUpperCase();
       // La cuenta puede operar en una divisa distinta a EUR — mostrarlo sin
       // etiqueta llevaba a leer, ej., "9304.05" de una cuenta en USD como si
