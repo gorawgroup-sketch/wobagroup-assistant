@@ -1100,26 +1100,36 @@ export async function buscarMovimientoSimilar(
 }
 
 /**
- * Intenta conciliar un movimiento bancario contra el gasto que se le
- * asocia (POST .../reconcile). El body de este endpoint no está bien
- * documentado — probado en vivo con varios cuerpos contra un movimiento ya
- * conciliado, todos devuelven 200/null sin poder confirmar el efecto real.
- * Por eso esta función SIEMPRE relee el movimiento después de llamarlo y
- * solo reporta éxito si `status` realmente pasó a un estado conciliado
- * (estaConciliado — "reconciled" o "forced_reconciled", verificado en vivo
- * que POST .../reconcile deja el movimiento en "forced_reconciled", no
- * "reconciled"; el chequeo original solo aceptaba "reconciled" y por eso
- * reportaba "no pude confirmar" en conciliaciones que SÍ habían funcionado)
- * — nunca
- * confía en el 200 por sí solo.
+ * Concilia un movimiento bancario ENLAZÁNDOLO al documento de compra real
+ * (POST .../reconcile con `documents: [{document_id, document_type:
+ * "purchase"}]`) — no solo marca el movimiento como resuelto. Bug real
+ * encontrado en vivo: esta función llamaba al endpoint con body vacío
+ * `{}`, que Holded documenta como "marca conciliado SIN enlazar a ningún
+ * documento" — el movimiento quedaba con status "forced_reconciled" pero
+ * `reconciled_amount: "0.00"` (verificado comparando contra un movimiento
+ * conciliado de verdad por Holded, que trae `reconciled_amount` igual al
+ * monto real) — es decir, parecía conciliado pero NO estaba emparejado con
+ * el gasto. El body correcto (`documents[].document_id` +
+ * `document_type`) está documentado en
+ * holded.com/es/desarrolladores/referencia-api/cuentas-bancarias/conciliar-un-movimiento-bancario.
+ *
+ * Esta función SIEMPRE relee el movimiento después de llamar y solo
+ * reporta éxito si quedó en un estado conciliado (estaConciliado —
+ * "reconciled" o "forced_reconciled"; nunca confía en el 200 por sí solo,
+ * el body de éxito es `null`) — pero el enlace real solo se puede
+ * confirmar con certeza mirando `reconciled_amount` en Holded mismo si
+ * hace falta verificarlo a fondo.
  */
 export async function reconciliarMovimiento(
   empresa: Empresa,
   accountId: string,
   movementId: string,
-  fechaAproximada: string
+  fechaAproximada: string,
+  documentoId: string
 ): Promise<{ ok: boolean; statusFinal: string }> {
-  await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {});
+  await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
+    documents: [{ document_id: documentoId, document_type: "purchase" }],
+  });
 
   // La API no tiene un GET por id individual de movimiento documentado —
   // se relee acotando por fecha (misma ventana que la búsqueda) y se busca

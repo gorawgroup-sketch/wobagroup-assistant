@@ -66,7 +66,7 @@ async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): 
  * lo que se pudo confirmar, nunca asume éxito. Nunca lanza: un fallo aquí
  * no debe tumbar el flujo principal de creación/adjunto, que ya tuvo éxito.
  */
-async function intentarConciliar(empresa: Empresa, monto: number, fecha: string): Promise<string> {
+async function intentarConciliar(empresa: Empresa, monto: number, fecha: string, gastoId: string): Promise<string> {
   try {
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
     const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda });
@@ -77,7 +77,7 @@ async function intentarConciliar(empresa: Empresa, monto: number, fecha: string)
     }
 
     const candidato = candidatos[0];
-    const resultado = await reconciliarMovimiento(empresa, candidato.accountId, candidato.movementId, candidato.fecha);
+    const resultado = await reconciliarMovimiento(empresa, candidato.accountId, candidato.movementId, candidato.fecha, gastoId);
 
     if (resultado.ok) {
       return `\n\n💳 Movimiento bancario conciliado automáticamente (${candidato.descripcion || "sin descripción"}, ${candidato.monto.toFixed(2)} €).`;
@@ -106,10 +106,11 @@ async function preguntarSiConciliar(
   empresa: Empresa,
   monto: number,
   fecha: string,
-  descripcionGasto: string
+  descripcionGasto: string,
+  gastoId: string
 ): Promise<void> {
   try {
-    const pendiente = await guardarConciliacionPendiente({ empresa, monto, fecha, descripcionGasto, chatId });
+    const pendiente = await guardarConciliacionPendiente({ empresa, monto, fecha, descripcionGasto, chatId, gastoId });
     await sendTelegramMessageWithButtons(
       chatId,
       `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`,
@@ -194,7 +195,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 
         await adjuntarYLimpiar(propuesta, candidato.id);
         await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto);
-        const notaConciliacion = await intentarConciliar(propuesta.empresa, propuesta.monto, propuesta.fecha);
+        const notaConciliacion = await intentarConciliar(propuesta.empresa, propuesta.monto, propuesta.fecha, candidato.id);
 
         await editTelegramMessage(
           propuesta.chatId,
@@ -218,7 +219,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             resultado.conciliacionPendiente.empresa,
             resultado.conciliacionPendiente.monto,
             resultado.conciliacionPendiente.fecha,
-            resultado.conciliacionPendiente.descripcionGasto
+            resultado.conciliacionPendiente.descripcionGasto,
+            resultado.conciliacionPendiente.gastoId
           );
         }
       }
@@ -257,7 +259,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const notaConciliacion = await intentarConciliar(pendiente.empresa, pendiente.monto, pendiente.fecha);
+    const notaConciliacion = await intentarConciliar(pendiente.empresa, pendiente.monto, pendiente.fecha, pendiente.gastoId);
     await sendTelegramMessage(
       pendiente.chatId,
       notaConciliacion
@@ -294,7 +296,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           resultado.conciliacionPendiente.empresa,
           resultado.conciliacionPendiente.monto,
           resultado.conciliacionPendiente.fecha,
-          resultado.conciliacionPendiente.descripcionGasto
+          resultado.conciliacionPendiente.descripcionGasto,
+          resultado.conciliacionPendiente.gastoId
         );
       }
     } catch (error) {
@@ -342,7 +345,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 interface ResultadoCrearGasto {
   mensaje: string;
   /** Presente solo cuando conciliarInline=false — el llamador debe preguntar con preguntarSiConciliar. */
-  conciliacionPendiente?: { empresa: Empresa; monto: number; fecha: string; descripcionGasto: string };
+  conciliacionPendiente?: { empresa: Empresa; monto: number; fecha: string; descripcionGasto: string; gastoId: string };
 }
 
 /**
@@ -432,7 +435,7 @@ async function crearGastoYReportar(
     notaComprobante;
 
   if (conciliarInline) {
-    const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha);
+    const notaConciliacion = await intentarConciliar(empresaFinal, propuesta.monto, propuesta.fecha, gasto.id);
     return { mensaje: `${baseMensaje}${notaConciliacion}` };
   }
 
@@ -443,6 +446,7 @@ async function crearGastoYReportar(
       monto: propuesta.monto,
       fecha: propuesta.fecha,
       descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
+      gastoId: gasto.id,
     },
   };
 }
@@ -637,7 +641,8 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         resultado.conciliacionPendiente.empresa,
         resultado.conciliacionPendiente.monto,
         resultado.conciliacionPendiente.fecha,
-        resultado.conciliacionPendiente.descripcionGasto
+        resultado.conciliacionPendiente.descripcionGasto,
+        resultado.conciliacionPendiente.gastoId
       );
     }
   } catch (error) {

@@ -181,7 +181,16 @@ que hacer nada más.
     cuando la conciliación fue manual/forzada, incluyendo la que hace el
     propio sistema) — antes solo reconocía el primero, así que una
     conciliación que sí había funcionado a veces se reportaba como "no pude
-    confirmarlo".
+    confirmarlo". Además, ahora ENLAZA de verdad el movimiento bancario con
+    el documento del gasto (`documents: [{document_id, document_type}]`,
+    el body real que documenta Holded) — antes se llamaba al mismo endpoint
+    sin ese enlace, así que el movimiento quedaba marcado "conciliado" pero
+    sin ningún gasto realmente emparejado (`reconciled_amount` en 0),
+    aunque pareciera resuelto. Si un movimiento quedó "forzado" sin enlace
+    desde antes de este fix, la API de Holded no tiene forma de deshacerlo
+    — hay que pulsar "Restaurar" en la propia pantalla de Conciliación de
+    Holded para dejarlo pendiente de nuevo, y desde ahí sí queda bien
+    enlazado.
   - **Si Holded rechaza la fecha por un periodo contable cerrado** (error
     "This date has been locked" — le pasó a una factura de Booking.com con
     fecha del vuelo de hace más de un año), no te muestra el error técnico
