@@ -171,6 +171,17 @@ que hacer nada más.
      la propuesta antes de aprobar.
   4. **Desglose real de IVA** por línea (base + % leído de la factura)
      visible antes de aprobar.
+  4b. **Factura en moneda distinta al euro** (ej. un recibo de Uber en COP):
+     la conciliación bancaria siempre es en euros, así que el gasto se
+     registra en Holded por el monto en EUR — nunca por el monto en la
+     moneda local — y el comprobante se deja adjunto tal cual, en su moneda
+     original. Para saber el monto en euros, revisa tanto el documento como
+     el correo que lo trae (es habitual que el recibo en sí no muestre el
+     equivalente en euros, pero si te reenviaron una notificación de tarjeta
+     tipo "40.46 EUR | 148.346 COP", ese dato sí está en el asunto/cuerpo del
+     correo). Nunca calcula ni inventa un tipo de cambio: si no encuentra el
+     equivalente en euros en ningún lado, no crea nada — te pregunta el monto
+     exacto en euros antes de continuar.
   5. **Si no encuentra el proveedor** ni por nombre parecido, busca
      alternativas (contactos con nombre parecido, facturas ya registradas
      con el mismo importe) y te las muestra por botones — la que confirmes
