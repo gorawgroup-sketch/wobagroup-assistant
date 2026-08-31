@@ -90,6 +90,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
         })
       : undefined;
 
+  // Pedido explícito de Carlos, tras un caso real: un gasto de Uber de
+  // Alejandro se etiquetó "Kelly" porque cuentaSugerida.tags solo repite el
+  // tag más frecuente HISTÓRICAMENTE en esa cuenta contable, sin relación
+  // con quién hizo ESTE gasto en particular. Cuando se identifica con
+  // evidencia real la persona de ESTA transacción (remitente original de un
+  // correo reenviado, o un nombre en el propio documento), ese tag manda
+  // sobre el histórico.
+  const tagsFinal = datos.personaAsociada ? [datos.personaAsociada] : cuentaSugerida?.tags;
+
   const conceptoConMonedaOriginal = esMonedaExtranjera
     ? `${datos.concepto} (${datos.monto} ${monedaOriginal}, comprobante en ${monedaOriginal})`
     : datos.concepto;
@@ -109,7 +118,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
     chatId,
     messageId: 0,
     cuentaId: cuentaSugerida?.accountId,
-    cuentaTags: cuentaSugerida?.tags,
+    cuentaTags: tagsFinal,
   });
 
   const desgloseIva = lineasParaHolded
@@ -180,11 +189,18 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
         : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} ` +
           `cerca del ${datos.fecha} — si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
+    const notaTags = datos.personaAsociada
+      ? `, tags: ${datos.personaAsociada} (identificado en este documento/correo)`
+      : cuentaSugerida && cuentaSugerida.tags.length > 0
+        ? `, tags: ${cuentaSugerida.tags.join(", ")} (más usados históricamente en esta cuenta, no identifiqué a la persona de este gasto en concreto)`
+        : "";
+
     const notaCuenta = cuentaSugerida
       ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
         ` (${cuentaSugerida.aprendidoDe === "proveedor" ? "por proveedor" : cuentaSugerida.aprendidoDe === "concepto" ? "por concepto" : "elegida por IA"})` +
-        (cuentaSugerida.tags.length > 0 ? `, tags: ${cuentaSugerida.tags.join(", ")}` : "")
-      : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.`;
+        notaTags
+      : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.` +
+        notaTags;
 
     texto = [
       `📄 *Factura detectada* — no encontré ningún gasto ya registrado en Holded que corresponda.`,

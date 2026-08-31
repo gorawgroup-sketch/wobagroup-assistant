@@ -44,6 +44,16 @@ export interface DatosFactura {
    * registrar el monto correcto.
    */
   montoEUR?: number;
+  /**
+   * Nombre de la persona a la que corresponde este gasto en concreto (para
+   * usarlo como tag en Holded), si hay evidencia clara — nunca inventado.
+   * Caso real que motivó esto: un gasto de Uber de Alejandro se etiquetó
+   * "Kelly" porque inferirCuentaGasto solo sabe repetir el tag más frecuente
+   * históricamente en esa cuenta contable, sin ninguna relación con quién
+   * hizo ESTE gasto en particular. Cuando este campo viene informado, debe
+   * usarse en vez del tag histórico.
+   */
+  personaAsociada?: string;
   fecha: string; // YYYY-MM-DD, según lo que diga el documento
   concepto: string;
   /** Desglose por tipo de IVA (una o varias líneas). El % es el que aparece impreso, no un código de Holded. */
@@ -77,6 +87,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "muestra explícitamente (ej. una notificación de tarjeta que dice '40.46 EUR | 148.346 COP', o " +
           "un recibo con una línea 'Total (EUR)'). Si el documento NO trae ningún equivalente en euros " +
           "impreso, omite este campo por completo — NUNCA calcules ni inventes un tipo de cambio tú mismo.",
+      },
+      persona_asociada: {
+        type: "string",
+        description:
+          "Nombre de la persona a la que corresponde ESTE gasto en concreto (se usará como tag en " +
+          "Holded), SOLO si hay evidencia clara. Prioridad: (1) si el contexto del correo muestra una " +
+          "cadena de reenvío ('---------- Forwarded message --------- From: X'), usa el remitente " +
+          "ORIGINAL de esa cadena (no quien hizo el último reenvío) — normalmente es quien realmente " +
+          "incurrió en el gasto y lo está reportando hacia arriba; (2) si no hay cadena de reenvío, un " +
+          "nombre de persona específico que aparezca en el propio documento (ej. el viajero en un recibo " +
+          "de Uber/vuelo/hotel). Si no hay ninguna evidencia clara de una persona concreta, omite este " +
+          "campo — nunca inventes un nombre.",
       },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
@@ -139,6 +161,9 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "'monto_eur' igual que si viniera impreso en el documento — sigue siendo un dato real, no un cálculo " +
       "tuyo. Si ni el documento ni el contexto del correo traen un equivalente en euros explícito, omite " +
       "'monto_eur'.",
+    "Ese mismo 'Contexto del correo' también sirve para identificar 'persona_asociada' — mira si hay una " +
+      "cadena de reenvío y usa el remitente ORIGINAL (el 'From:' dentro del bloque 'Forwarded message', no " +
+      "quien hizo el último reenvío) como la persona a la que corresponde el gasto.",
     clasificacionesAprendidas
       ? `Además, estas son clasificaciones aprendidas de facturas anteriores del mismo proveedor — ` +
         `dales prioridad sobre cualquier suposición genérica:\n\n${clasificacionesAprendidas}`
@@ -274,6 +299,7 @@ export async function extraerDatosFactura(
         monto,
         moneda: (input.moneda as string) ?? "EUR",
         montoEUR: typeof input.monto_eur === "number" ? input.monto_eur : undefined,
+        personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
         fecha: (input.fecha as string) ?? "",
         concepto: (input.concepto as string) ?? "",
         // Si Claude no reportó líneas (o vinieron vacías), se usa una sola
