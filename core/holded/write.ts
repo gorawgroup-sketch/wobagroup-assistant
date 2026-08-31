@@ -360,6 +360,158 @@ export async function buscarComprasPorMonto(
   return Array.from(porProveedor.values());
 }
 
+export interface DocumentoHoldedEstado {
+  id: string;
+  tipo: "gasto" | "ingreso";
+  documentNumber: string;
+  contactName: string;
+  fecha: string;
+  dueDate?: string;
+  total: number;
+  pagado: number;
+  pendiente: number;
+  status: string;
+  draft: boolean;
+  /** true si este resultado vino de la segunda pasada (solo monto, sin match de nombre) — ver buscarDocumentosHolded. */
+  coincidenciaSoloPorMonto: boolean;
+}
+
+// Más ancha que VENTANA_DIAS_BUSQUEDA (10 días, pensada para matchear un
+// movimiento bancario recién llegado): acá se busca si una factura YA
+// EXISTE en Holded aunque no se haya pagado, y esas facturas suelen tener
+// fecha de bastante antes de cuando se pregunta por ellas (ej. servicio de
+// junio con vencimiento en agosto, factura de limpieza del mes anterior).
+const VENTANA_DIAS_BUSQUEDA_DOCUMENTOS = 120;
+const TOLERANCIA_MONTO_DOCUMENTO = 1;
+const MAX_PAGINAS_BUSQUEDA_DOCUMENTOS = 15;
+
+async function buscarEnEndpointDocumentos(
+  empresa: Empresa,
+  path: "/purchases" | "/invoices",
+  tipo: "gasto" | "ingreso",
+  // undefined = no filtra por nombre, solo por monto (ver segunda pasada en buscarDocumentosHolded).
+  contactoObjetivo: string | undefined,
+  monto: number | undefined,
+  desde: string,
+  hasta: string
+): Promise<DocumentoHoldedEstado[]> {
+  const objetivo = contactoObjetivo ? normalizar(contactoObjetivo) : undefined;
+  const resultados: DocumentoHoldedEstado[] = [];
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_BUSQUEDA_DOCUMENTOS; pagina++) {
+    const params = new URLSearchParams({ limit: "100", start_date: desde, end_date: hasta });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `${path}?${params.toString()}`)) as {
+      items?: Array<{
+        id: string;
+        document_number?: string | null;
+        contact_name?: string;
+        date?: string;
+        due_date?: string;
+        total?: string;
+        status?: string;
+        payments_total?: string;
+        payments_pending?: string;
+        draft?: boolean;
+      }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      if (!item.contact_name) continue;
+
+      if (objetivo) {
+        const nombreNormalizado = normalizar(item.contact_name);
+        const coincideNombre = nombreNormalizado.includes(objetivo) || objetivo.includes(nombreNormalizado);
+        if (!coincideNombre) continue;
+      }
+
+      const total = parsearMontoHolded(item.total);
+      if (monto !== undefined && Number.isFinite(total) && !montosCercanos(total, monto, TOLERANCIA_MONTO_DOCUMENTO)) {
+        continue;
+      }
+      // Sin nombre Y sin monto no hay ningún criterio real de búsqueda — no debería llegar acá (buscarDocumentosHolded ya lo evita), pero por si acaso no se lista todo el histórico.
+      if (!objetivo && monto === undefined) continue;
+
+      resultados.push({
+        id: item.id,
+        tipo,
+        documentNumber: item.document_number ?? "(borrador)",
+        contactName: item.contact_name,
+        fecha: item.date ?? "",
+        dueDate: item.due_date,
+        total,
+        pagado: parsearMontoHolded(item.payments_total),
+        pendiente: parsearMontoHolded(item.payments_pending),
+        status: item.status ?? "desconocido",
+        draft: item.draft ?? false,
+        coincidenciaSoloPorMonto: !objetivo,
+      });
+    }
+
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return resultados;
+}
+
+/**
+ * Busca facturas YA CARGADAS en Holded (gastos vía /purchases, ingresos vía
+ * /invoices) que coincidan con un proveedor/cliente (nombre parecido) y,
+ * opcionalmente, un monto — pensado para responder "¿ya está registrada
+ * esta factura en Holded, aunque no se haya pagado?" en vez de asumir que
+ * si no hay movimiento bancario todavía, la factura tampoco existe. Nace de
+ * un caso real: dos gastos del cashflow (limpieza, restaurante) sin salida
+ * bancaria — verificado en vivo que AMBOS ya estaban cargados en Holded
+ * como facturas "pending" (payments_pending > 0), no faltaba registrarlos,
+ * solo pagarlos.
+ *
+ * Si la búsqueda por nombre no encuentra nada Y se dio un monto, hace una
+ * segunda pasada SOLO por monto (sin filtrar nombre) — el texto que llega
+ * acá suele ser la categoría genérica del cashflow ("Limpieza",
+ * "Restaurante"), no el nombre real del contacto en Holded ("OCEAN
+ * FACILITY SERVICES SA.", "ADEL RESTAURACION SL."), así que exigir
+ * coincidencia de nombre habría dejado esto sin encontrar nada en el caso
+ * real que motivó esta herramienta.
+ */
+export async function buscarDocumentosHolded(
+  empresa: Empresa,
+  criterios: { contacto: string; monto?: number; tipo?: "gasto" | "ingreso" | "ambos"; dias?: number }
+): Promise<DocumentoHoldedEstado[]> {
+  const dias = criterios.dias && criterios.dias > 0 ? criterios.dias : VENTANA_DIAS_BUSQUEDA_DOCUMENTOS;
+  const hasta = new Date();
+  const desde = new Date(hasta.getTime() - dias * 24 * 60 * 60 * 1000);
+  const desdeStr = formatDateLocal(desde);
+  const hastaStr = formatDateLocal(hasta);
+
+  const tipo = criterios.tipo ?? "ambos";
+  const paths: Array<{ path: "/purchases" | "/invoices"; tipoDoc: "gasto" | "ingreso" }> = [];
+  if (tipo === "gasto" || tipo === "ambos") paths.push({ path: "/purchases", tipoDoc: "gasto" });
+  if (tipo === "ingreso" || tipo === "ambos") paths.push({ path: "/invoices", tipoDoc: "ingreso" });
+
+  const porNombre = (
+    await Promise.all(
+      paths.map((p) =>
+        buscarEnEndpointDocumentos(empresa, p.path, p.tipoDoc, criterios.contacto, criterios.monto, desdeStr, hastaStr)
+      )
+    )
+  ).flat();
+
+  if (porNombre.length > 0 || criterios.monto === undefined) return porNombre;
+
+  return (
+    await Promise.all(
+      paths.map((p) =>
+        buscarEnEndpointDocumentos(empresa, p.path, p.tipoDoc, undefined, criterios.monto, desdeStr, hastaStr)
+      )
+    )
+  ).flat();
+}
+
 export interface GastoSinComprobante {
   id: string;
   contactName: string;

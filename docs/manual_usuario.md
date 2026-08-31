@@ -163,6 +163,18 @@ que hacer nada más.
   para decirte cuáles no están conciliados todavía (cuenta, descripción,
   monto, fecha) — útil para detectar cargos sin ningún gasto asociado. Solo
   consulta — no escribe ni concilia nada.
+- **¿Ya está cargada esta factura en Holded, aunque no se haya pagado?**:
+  pregúntale "verifica si el pago de Limpieza de 393,40€ ya está registrado
+  en Holded" y busca directo en el módulo de facturas de Holded (gastos vía
+  /purchases, ingresos vía /invoices) — no solo en los movimientos
+  bancarios. Distingue "no está registrado todavía" de "ya está cargada
+  pero pendiente de pago", y para cada factura que encuentra dice el número
+  de documento, fecha, vencimiento, y cuánto está pagado vs. pendiente. Si
+  el nombre que le das (ej. una categoría genérica del cashflow como
+  "Limpieza") no coincide con el proveedor real en Holded, busca igual por
+  el monto y te avisa explícitamente que ese resultado coincidió solo por
+  importe, no por nombre, para que lo confirmes antes de darlo por hecho.
+  Solo consulta — no escribe ni concilia nada.
 - **Programar actividades en el calendario CRM** (WOBA, EWORKS y Footprint):
   pídele "programa una llamada con [proveedor] el jueves a las 10 para
   WOBA" y prepara la actividad (título, tipo, fecha/hora, y el contacto de
