@@ -150,15 +150,28 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
     ].join("\n") + notaCuenta + notaMovimiento;
 
-    botones = [
-      [
-        movimientoBancario
-          ? { text: "✅ Crear y conciliar", callback_data: `gasto_nuevo_conciliar:${propuesta.id}` }
-          : { text: "✅ Crear gasto en Holded", callback_data: `gasto_nuevo:${propuesta.id}` },
-        { text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` },
-      ],
-      [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
-    ];
+    // Pedido explícito de Carlos: cuando hay un movimiento bancario
+    // confirmado, mostrar SIEMPRE las dos opciones juntas ("Crear" y
+    // "Crear y conciliar") y dejar que él elija según su propia confianza
+    // en el match — antes el código decidía solo por él (o una u otra,
+    // nunca las dos). Sin movimiento confirmado, solo tiene sentido
+    // "Crear" (no hay nada que conciliar todavía).
+    botones = movimientoBancario
+      ? [
+          [
+            { text: "✅ Crear", callback_data: `gasto_nuevo:${propuesta.id}` },
+            { text: "✅ Crear y conciliar", callback_data: `gasto_nuevo_conciliar:${propuesta.id}` },
+          ],
+          [{ text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` }],
+          [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
+        ]
+      : [
+          [
+            { text: "✅ Crear gasto en Holded", callback_data: `gasto_nuevo:${propuesta.id}` },
+            { text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` },
+          ],
+          [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
+        ];
   }
 
   const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);

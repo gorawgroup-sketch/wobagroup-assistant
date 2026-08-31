@@ -125,14 +125,15 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
   const alias = await buscarAliasProveedor(empresa, nombre).catch(() => undefined);
   if (alias) return { id: alias.contactId, name: alias.contactName };
 
-  const objetivo = normalizar(nombre);
   const contactos = await obtenerTodosLosContactos(empresa);
 
-  return contactos.find((c) => {
-    if (typeof c.name !== "string") return false;
-    const candidato = normalizar(c.name);
-    return candidato.includes(objetivo) || objetivo.includes(candidato);
-  });
+  // textosParecidos, no un substring simple — mismo bug real que
+  // buscarGastoSimilar: un nombre comercial ("Booking.com") nunca es
+  // substring de la razón social real del contacto en Holded ("BOOKING
+  // HOLDINGS Inc. (Booking)") ni al revés. Antes esto solo se salvaba
+  // cuando ya existía un alias aprendido de antes — para un proveedor
+  // nuevo sin alias, fallaba en silencio.
+  return contactos.find((c) => typeof c.name === "string" && textosParecidos(nombre, c.name));
 }
 
 /**
@@ -252,7 +253,6 @@ export async function buscarGastoSimilar(
   empresa: Empresa,
   criterios: { proveedor: string; monto: number; fecha: string }
 ): Promise<PurchaseCandidato[]> {
-  const objetivo = normalizar(criterios.proveedor);
   const fechaBase = new Date(criterios.fecha);
 
   const desde = new Date(fechaBase);
@@ -279,8 +279,14 @@ export async function buscarGastoSimilar(
 
     for (const item of data.items ?? []) {
       if (!item.contact_name) continue;
-      const nombreNormalizado = normalizar(item.contact_name);
-      if (!nombreNormalizado.includes(objetivo) && !objetivo.includes(nombreNormalizado)) continue;
+      // textosParecidos, no un substring simple — bug real encontrado en
+      // vivo: "Booking.com" (nombre comercial, como lo lee la extracción de
+      // la factura) nunca es substring de "BOOKING HOLDINGS Inc. (Booking)"
+      // (razón social real del contacto en Holded) ni al revés, así que
+      // esta comprobación de "¿ya existe este gasto?" fallaba SIEMPRE para
+      // ese caso real — arriesgando crear un gasto DUPLICADO en vez de
+      // detectar el que ya existía.
+      if (!textosParecidos(criterios.proveedor, item.contact_name)) continue;
       const total = parsearMontoHolded(item.total);
       if (!Number.isFinite(total) || !montosCercanos(total, criterios.monto, TOLERANCIA_MONTO)) continue;
 
@@ -400,7 +406,6 @@ async function buscarEnEndpointDocumentos(
   desde: string,
   hasta: string
 ): Promise<DocumentoHoldedEstado[]> {
-  const objetivo = contactoObjetivo ? normalizar(contactoObjetivo) : undefined;
   const resultados: DocumentoHoldedEstado[] = [];
   let cursor: string | undefined;
 
@@ -429,18 +434,14 @@ async function buscarEnEndpointDocumentos(
     for (const item of data.items ?? []) {
       if (!item.contact_name) continue;
 
-      if (objetivo) {
-        const nombreNormalizado = normalizar(item.contact_name);
-        const coincideNombre = nombreNormalizado.includes(objetivo) || objetivo.includes(nombreNormalizado);
-        if (!coincideNombre) continue;
-      }
+      if (contactoObjetivo && !textosParecidos(contactoObjetivo, item.contact_name)) continue;
 
       const total = parsearMontoHolded(item.total);
       if (monto !== undefined && Number.isFinite(total) && !montosCercanos(total, monto, TOLERANCIA_MONTO_DOCUMENTO)) {
         continue;
       }
       // Sin nombre Y sin monto no hay ningún criterio real de búsqueda — no debería llegar acá (buscarDocumentosHolded ya lo evita), pero por si acaso no se lista todo el histórico.
-      if (!objetivo && monto === undefined) continue;
+      if (!contactoObjetivo && monto === undefined) continue;
 
       resultados.push({
         id: item.id,
@@ -455,7 +456,7 @@ async function buscarEnEndpointDocumentos(
         status: item.status ?? "desconocido",
         draft: item.draft ?? false,
         tags: item.tags ?? [],
-        coincidenciaSoloPorMonto: !objetivo,
+        coincidenciaSoloPorMonto: !contactoObjetivo,
       });
     }
 
