@@ -277,7 +277,9 @@ que hacer nada más.
     disponibles para consultas futuras, no se pierden como un correo
     informativo cualquiera.
   - Si es puramente informativo (newsletter, notificación automática) → lo
-    resume en un solo mensaje agrupado, sin guardarlo.
+    resume en un solo mensaje agrupado, sin guardarlo. El resumen de cada
+    correo se genera a partir de su contenido REAL (no del snippet corto de
+    Gmail ni del asunto) — para saber de qué trata sin tener que abrirlo.
 - Puede redactar un borrador de respuesta y enviarlo por correo — siempre te
   lo muestra primero, con botones para enviarlo tal cual, editarlo, o
   cancelarlo. Nunca envía un correo sin que el superadministrador apruebe el
