@@ -12,18 +12,29 @@ function sanitizarNombre(nombre: string): string {
 }
 
 /**
- * Bug real encontrado en vivo (2026-09-01): una búsqueda con varias
- * palabras (ej. "control de accesos") a veces devuelve muchos resultados
- * (una palabra suelta como "control" es común), y aunque el resultado
- * correcto está justo ahí en la lista (ej. "guia rapida control
- * accesos.pdf", que contiene TODAS las palabras significativas de la
- * consulta), Claude se quedaba pidiéndole al usuario que confirmara un
- * nombre que él mismo ya le había mostrado, en vez de reintentar solo.
- * Para no depender de que el modelo se acuerde de reintentar, se rankea
- * cada candidato por cuántas palabras significativas de la consulta
- * aparecen en su nombre — si hay un único candidato que contiene TODAS
- * (o claramente más que el resto), se elige automáticamente en vez de
- * preguntar.
+ * Bug real encontrado en vivo (2026-09-01), corregido dos veces la misma
+ * sesión: una búsqueda con varias palabras (ej. "control de accesos") a
+ * veces devuelve muchos resultados (una palabra suelta como "control" es
+ * común), y aunque el resultado correcto está justo ahí en la lista (ej.
+ * "guia rapida control accesos.pdf"), Claude se quedaba pidiéndole al
+ * usuario que confirmara un nombre que él mismo ya le había mostrado.
+ *
+ * Primer intento de arreglo: exigir que el mejor candidato contuviera
+ * TODAS las palabras significativas de la consulta. Se rompió en la
+ * primera prueba real: Carlos preguntó "control de accesos DE LA OFICINA"
+ * — la palabra "oficina" es significativa pero no aparece en el nombre
+ * real del archivo ("guia rapida control accesos.pdf"), así que exigir el
+ * 100% de las palabras seguía fallando aunque el archivo correcto tuviera,
+ * por lejos, más coincidencias que cualquier otro candidato.
+ *
+ * Ahora es puntaje RELATIVO (mismo principio que puntuarDistintividad en
+ * core/holded/write.ts para contactos de Holded): suma la longitud de
+ * cada palabra significativa que aparece en el nombre (no solo cuenta),
+ * y elige el candidato con más puntaje SIEMPRE que nadie más lo empate —
+ * nunca exige un match perfecto, solo un ganador claro. Verificado en vivo
+ * con la consulta real que falló ("control de accesos de la oficina"):
+ * el archivo correcto suma 14 (control+accesos) contra 7 (solo "control")
+ * de cualquier otro candidato — gana claro, sin necesitar "oficina".
  */
 function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string): DriveSearchResult | undefined {
   const palabrasConsulta = palabrasSignificativas(consulta);
@@ -31,8 +42,10 @@ function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string)
 
   const puntuados = resultados.map((r) => {
     const nombreNormalizado = r.name.toLowerCase();
-    const coincidencias = palabrasConsulta.filter((p) => nombreNormalizado.includes(p));
-    return { resultado: r, score: coincidencias.length };
+    const score = palabrasConsulta
+      .filter((p) => nombreNormalizado.includes(p))
+      .reduce((suma, p) => suma + p.length, 0);
+    return { resultado: r, score };
   });
 
   puntuados.sort((a, b) => b.score - a.score);
@@ -40,9 +53,10 @@ function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string)
   const mejor = puntuados[0];
   const segundo = puntuados[1];
 
-  // Solo elige solo si el mejor contiene TODAS las palabras significativas
-  // Y nadie más lo empata — un empate real sigue siendo ambiguo.
-  if (mejor.score === palabrasConsulta.length && (!segundo || segundo.score < mejor.score)) {
+  // Gana claro: tiene que haber al menos una palabra significativa real
+  // (score > 0) y nadie más puede empatarlo — un empate real sigue siendo
+  // ambiguo, nunca se decide al azar.
+  if (mejor.score > 0 && (!segundo || segundo.score < mejor.score)) {
     return mejor.resultado;
   }
   return undefined;
@@ -90,8 +104,8 @@ async function leerContenido(
  * archivo (nombre + link), nunca su contenido — así que Wobi no podía
  * responder la pregunta real con esa info, solo señalar que el archivo
  * existe. Esta tool cierra ese hueco: busca, y si hay un único resultado
- * claro (o si contiene TODAS las palabras significativas de la consulta,
- * ver elegirMejorCandidato), lo descarga y lee su contenido real con
+ * claro (o si hay un ganador claro por puntaje frente al resto, ver
+ * elegirMejorCandidato — nunca exige un match perfecto), lo descarga y lee su contenido real con
  * Claude vision (mismo mecanismo que transcribirParaCaptura, ya usado para
  * CAPTURA) — para que Wobi pueda responder con la información real, no
  * solo con un link para que el usuario mismo lo abra.
@@ -113,8 +127,9 @@ export const leerDocumentoDriveTool: ToolDefinition = {
     "tool con palabras clave del tema (y si no sabes la empresa, prueba con las 3) — un documento puede " +
     "estar archivado en Drive sin haber sido transcrito nunca a la base de conocimiento. Solo lee PDF o " +
     "imágenes (no Google Docs/Sheets nativos todavía). Si la búsqueda devuelve varios resultados pero " +
-    "uno de ellos coincide claramente con TODAS las palabras de tu consulta, esta tool lo elige y lee " +
-    "sola automáticamente — no hace falta que la vuelvas a llamar. Solo te pide confirmar cuando de " +
+    "uno de ellos se distingue claramente del resto (no hace falta que coincida con el 100% de tu " +
+    "consulta, solo que gane por lejos), esta tool lo elige y lee sola automáticamente — no hace falta " +
+    "que la vuelvas a llamar. Solo te pide confirmar cuando de " +
     "verdad hay ambigüedad real entre varios candidatos igual de plausibles — en ese caso SÍ debes " +
     "preguntarle al usuario cuál es (nunca elegir tú mismo), y puedes volver a llamar esta tool pasando " +
     "el nombre exacto que el usuario confirme.",
