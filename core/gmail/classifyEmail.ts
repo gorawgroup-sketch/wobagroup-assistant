@@ -4,6 +4,7 @@ import type { CorreoResumen } from "./client";
 import { registrarUsoIA } from "../claude/costTracking";
 
 const MODEL = "claude-sonnet-5";
+const MODEL_HAIKU = "claude-haiku-4-5";
 const MAX_ITERATIONS = 4;
 
 let client: Anthropic | null = null;
@@ -159,4 +160,49 @@ export async function analizarCorreo(correo: CorreoResumen): Promise<AnalisisCor
     accionSugerida: "No se pudo analizar automáticamente, revisar manualmente.",
     razon: "Se agotaron los intentos de análisis.",
   };
+}
+
+/**
+ * Pedido explícito de Carlos: para correos informativos (sin acción
+ * requerida), el resumen que se manda por Telegram debe decir de qué trata
+ * el correo de verdad, para no tener que ir a abrirlo. Antes, analizarCorreo
+ * solo veía el 'extracto' (snippet corto de Gmail) — con correos que traen
+ * poco contenido visible en el snippet, el resumen terminaba siendo un eco
+ * del propio asunto (caso real: "Control de Acceso oficina" repetido como
+ * "resumen"). Esta función lee el CUERPO REAL del correo (ya disponible via
+ * obtenerCuerpoCompletoCorreo) y pide un resumen breve y concreto a partir
+ * de ese contenido. Modelo económico (Haiku) porque es una tarea simple de
+ * resumen, sin herramientas — nunca lanza: si falla, el llamador debe usar
+ * el resumen original de analizarCorreo como respaldo.
+ */
+export async function resumirCuerpoCorreoInformativo(asunto: string, cuerpo: string): Promise<string> {
+  const anthropic = getClient();
+
+  const cuerpoRecortado = cuerpo.trim().slice(0, 4000); // suficiente para un resumen, sin gastar de más en correos larguísimos
+
+  const response = await anthropic.messages.create({
+    model: MODEL_HAIKU,
+    max_tokens: 200,
+    messages: [
+      {
+        role: "user",
+        content:
+          `Asunto: ${asunto}\n\nCuerpo del correo:\n${cuerpoRecortado}\n\n` +
+          "Resume este correo en 1-2 frases concretas, en español, para alguien que NO lo va a abrir — " +
+          "qué es y qué dice de fondo (no repitas el asunto tal cual, aporta el contenido real). " +
+          "Responde SOLO con el resumen, sin preámbulos.",
+      },
+    ],
+  });
+
+  registrarUsoIA(undefined, MODEL_HAIKU, response.usage).catch((error) =>
+    console.error("[classifyEmail] Error registrando uso de IA (resumen informativo):", error)
+  );
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  const resumen = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+  if (!resumen) {
+    throw new Error("Haiku no devolvió texto para el resumen.");
+  }
+  return resumen;
 }

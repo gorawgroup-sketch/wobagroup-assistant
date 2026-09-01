@@ -8,7 +8,7 @@ import {
   type CorreoResumen,
 } from "../gmail/client";
 import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore";
-import { analizarCorreo } from "../gmail/classifyEmail";
+import { analizarCorreo, resumirCuerpoCorreoInformativo } from "../gmail/classifyEmail";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
@@ -185,9 +185,22 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
         continue;
       }
 
-      // informativo (o cualquier otro caso sin acción concreta)
+      // informativo (o cualquier otro caso sin acción concreta) — pedido
+      // explícito de Carlos: el resumen debe decir de qué trata el correo
+      // de verdad (no repetir el asunto), para no tener que abrirlo. El
+      // resumen de analizarCorreo solo vio el snippet corto de Gmail, así
+      // que se recalcula a partir del cuerpo real; si eso falla, se usa el
+      // resumen original como respaldo (nunca se rompe la notificación por esto).
+      let resumenInformativo = analisis.resumen;
+      try {
+        const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
+        resumenInformativo = await resumirCuerpoCorreoInformativo(correo.asunto || "(sin asunto)", cuerpo);
+      } catch (error) {
+        console.error(`[revisarCorreoNuevo] Error generando resumen del cuerpo para ${id} (uso el resumen original):`, error);
+      }
+
       informativos.push(
-        [`📧 *${correo.asunto || "(sin asunto)"}*`, `De: ${correo.de}`, analisis.resumen].join("\n")
+        [`📧 *${correo.asunto || "(sin asunto)"}*`, `De: ${correo.de}`, resumenInformativo].join("\n")
       );
     } catch (error) {
       console.error(`[revisarCorreoNuevo] Error procesando mensaje ${id}:`, error);
