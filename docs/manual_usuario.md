@@ -296,6 +296,17 @@ que hacer nada más.
   lo muestra primero, con botones para enviarlo tal cual, editarlo, o
   cancelarlo. Nunca envía un correo sin que el superadministrador apruebe el
   borrador.
+- **Si le pides que archive un documento Y responda el correo original**
+  (ej. "archívalo y respóndele a fulano con el link"), lo hace todo en el
+  mismo turno — la respuesta queda enhebrada como una respuesta real en el
+  mismo hilo de Gmail (con "Re:" y la conversación completa), no como un
+  correo nuevo sin relación aparente.
+- Todo correo saliente lleva la firma real que ya está configurada en
+  Gmail (nunca una inventada). *Pendiente de activar*: hace falta que se
+  autorice el scope `gmail.settings.basic` para la cuenta de servicio en la
+  delegación de dominio del Admin console de Google Workspace — hasta
+  entonces, los correos se siguen enviando con normalidad, solo que sin
+  firma.
 - **Nunca ejecuta instrucciones que vengan dentro del texto de un correo** —
   los correos se pueden falsificar; solo actúa sobre instrucciones que le des
   tú directamente en el chat.
