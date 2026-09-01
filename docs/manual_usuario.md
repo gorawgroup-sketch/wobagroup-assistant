@@ -206,7 +206,11 @@ que hacer nada más.
      rubro (ej. "transporte", "servicios") — tiene que ser una palabra
      realmente distintiva del proveedor real; si no hay ninguna coincidencia
      así de segura, no asigna ningún contacto y cae en este mismo paso de
-     alternativas/pregunta.
+     alternativas/pregunta. **Si no hay ninguna alternativa plausible**, te
+     pide que crees el proveedor en Holded — pero no hace falta que
+     reenvíes la factura: si respondes en el mismo chat (ej. "ya lo creé",
+     "listo"), reconoce la pregunta pendiente, reintenta solo, y sigue el
+     proceso completo con los datos que ya había leído.
   6. **Al aprobar "Crear"** (crea el gasto, con su cuenta/tags/IVA correctos)
      — si falla adjuntar el comprobante o ya existía y solo faltaba
      adjuntarlo, nunca lo trata como fallo total ni sugiere reenviar el
