@@ -34,8 +34,9 @@ que hacer nada más.
   facturas de limpieza pendientes en WOBA?"). El detalle cubre TODO lo que
   hay en la hoja DATOS: ingresos, pagos a proyectos, pagos extras,
   impuestos por pagar, aplazamientos de impuestos, gastos fijos (nóminas,
-  créditos, servicios como limpieza/renting/alquiler, consultores mes
-  actual/próximo mes, impuestos) y pendientes (pagos pendientes a Alberto,
+  créditos, servicios como limpieza/renting/alquiler), gastos consultores
+  mes actual, gastos consultores próximo mes (categorías propias, separadas
+  de gastos fijos) y pendientes (pagos pendientes a Alberto,
   deudas con otros) — antes la búsqueda por
   concepto solo cubría una parte y podía decir "no hay" aunque la fila
   existiera en gastos fijos; ahora busca en todas las categorías antes de

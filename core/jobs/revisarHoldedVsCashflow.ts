@@ -193,14 +193,19 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   // IMPUESTOS_POR_PAGAR se agregó junto con la corrección de lectura de la
   // columna N (ver parsearSeccionesColumnaN en cashflowSheet.ts) — misma
   // ejecución semanal real que APLAZAMIENTO_IMPUESTOS, solo que sin
-  // aplazamiento. PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES se dejan fuera
-  // a propósito: son saldos pendientes sin semana asignada, no ejecución de
+  // aplazamiento. GASTOS_CONSULTORES_MES_ACTUAL/PROXIMO_MES se agregaron
+  // junto con la corrección de lectura de la columna I (parsearSeccionesColumnaI)
+  // — misma ejecución semanal real que GASTOS_FIJOS, solo que separadas por
+  // categoría. PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES se dejan fuera a
+  // propósito: son saldos pendientes sin semana asignada, no ejecución de
   // esta semana.
   const CATEGORIAS_EJECUCION_SEMANAL = new Set([
     "INGRESOS",
     "PAGOS_PROYECTOS",
     "PAGOS_EXTRAS",
     "GASTOS_FIJOS",
+    "GASTOS_CONSULTORES_MES_ACTUAL",
+    "GASTOS_CONSULTORES_PROXIMO_MES",
     "IMPUESTOS_POR_PAGAR",
     "APLAZAMIENTO_IMPUESTOS",
   ]);
@@ -324,6 +329,8 @@ export async function detectarSinMovimientoBancario(
     "PAGOS_PROYECTOS",
     "PAGOS_EXTRAS",
     "GASTOS_FIJOS",
+    "GASTOS_CONSULTORES_MES_ACTUAL",
+    "GASTOS_CONSULTORES_PROXIMO_MES",
     "IMPUESTOS_POR_PAGAR",
     "APLAZAMIENTO_IMPUESTOS",
   ]);

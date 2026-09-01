@@ -21,6 +21,15 @@ const CATEGORIA_A_BLOQUE: Record<DetalleCategoria, { bloque: BloqueEscritura | n
   PAGOS_PROYECTOS: { bloque: "pagos_proyectos", etiqueta: "Pagos Proyectos" },
   PAGOS_EXTRAS: { bloque: "pagos_extras", etiqueta: "Pagos Extras" },
   GASTOS_FIJOS: { bloque: "gastos_fijos", etiqueta: "Gastos Fijos" },
+  // Mapean al MISMO bloque escribible "gastos_fijos" (no null) — a
+  // diferencia de los dos de impuestos de abajo, sí viven en el rango I:L
+  // que el escritor existente ya sabe usar (encuentra el próximo hueco
+  // vacío del bloque completo). Pedido explícito de Carlos: la ubicación
+  // exacta dentro del subtítulo correcto no es crítica por ahora, él
+  // reordena a mano si hace falta — lo importante es que SÍ se pueda
+  // aprobar y escribir, no dejarlo bloqueado como los de impuestos.
+  GASTOS_CONSULTORES_MES_ACTUAL: { bloque: "gastos_fijos", etiqueta: "Gastos Consultores Mes Actual" },
+  GASTOS_CONSULTORES_PROXIMO_MES: { bloque: "gastos_fijos", etiqueta: "Gastos Consultores Próximo Mes" },
   IMPUESTOS_POR_PAGAR: { bloque: null, etiqueta: "Impuestos por Pagar" },
   APLAZAMIENTO_IMPUESTOS: { bloque: null, etiqueta: "Aplazamiento Impuestos por Pagar" },
   PAGOS_PENDIENTES_ALBERTO: { bloque: "pagos_pendientes_alberto", etiqueta: "Pagos Pendientes Alberto" },
@@ -29,6 +38,8 @@ const CATEGORIA_A_BLOQUE: Record<DetalleCategoria, { bloque: BloqueEscritura | n
 
 const CATEGORIAS_DE_GASTO: DetalleCategoria[] = [
   "GASTOS_FIJOS",
+  "GASTOS_CONSULTORES_MES_ACTUAL",
+  "GASTOS_CONSULTORES_PROXIMO_MES",
   "PAGOS_PROYECTOS",
   "PAGOS_EXTRAS",
   "PAGOS_PENDIENTES_ALBERTO",

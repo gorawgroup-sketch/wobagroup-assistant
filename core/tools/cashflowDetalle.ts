@@ -5,10 +5,10 @@ import type { ToolDefinition } from "./types";
 /**
  * Lee los movimientos de detalle de la hoja DATOS: ingresos, pagos a proyectos,
  * pagos extras, impuestos por pagar, aplazamientos de impuestos, gastos fijos
- * (nóminas, créditos, servicios, consultores mes actual/próximo mes,
- * impuestos) y pendientes (Alberto / deudas con otros) — filtrables por
- * semana, empresa dueña del movimiento y/o contraparte (cliente/proveedor/
- * concepto).
+ * (nóminas, créditos, servicios), gastos consultores mes actual, gastos
+ * consultores próximo mes, y pendientes (Alberto / deudas con otros) —
+ * filtrables por semana, empresa dueña del movimiento y/o contraparte
+ * (cliente/proveedor/concepto).
  *
  * "empresa" y "contraparte" son conceptos distintos y no deben mezclarse:
  * - empresa: WOBA o EWORKS, la entidad del grupo dueña del movimiento (viene
@@ -26,6 +26,13 @@ import type { ToolDefinition } from "./types";
  * antes se leían como si fueran filas de Pagos Proyectos, con datos
  * completamente corrompidos (ver parsearSeccionesColumnaN en
  * cashflowSheet.ts). Ya corregido — ambas se leen como su propia categoría.
+ * Corrección relacionada (misma sesión): "Gastos Consultores Mes Actual" y
+ * "Gastos Consultores Próximo Mes" son tablas propias (con su propio título
+ * fusionado y encabezado de columna) apiladas debajo de Gastos Fijos en la
+ * columna I — antes se leían mezcladas como Gastos Fijos genérico, sin poder
+ * distinguirlas (ver parsearSeccionesColumnaI). Carlos las señaló
+ * explícitamente como categorías propias — nunca asumir que "ya se
+ * entendió" la estructura de este Sheet sin verificar en vivo primero.
  */
 export const cashflowDetalleTool: ToolDefinition = {
   name: "consultar_cashflow_detalle",
@@ -33,9 +40,9 @@ export const cashflowDetalleTool: ToolDefinition = {
   description:
     "Consulta el detalle de movimientos del cashflow desde la hoja DATOS: ingresos, pagos a proyectos, " +
     "pagos extras, impuestos por pagar, aplazamientos de impuestos, gastos fijos (nóminas, créditos, " +
-    "servicios como limpieza/renting/alquiler, consultores mes actual/próximo mes, impuestos) y " +
-    "pendientes (pagos pendientes a Alberto, deudas con otros). Para buscar un concepto o proveedor " +
-    "concreto (ej. '¿hay facturas de limpieza pendientes?') " +
+    "servicios como limpieza/renting/alquiler), gastos consultores mes actual, gastos consultores " +
+    "próximo mes (categoría PROPIA, distinta de gastos fijos), y pendientes (pagos pendientes a Alberto, " +
+    "deudas con otros). Para buscar un concepto o proveedor concreto (ej. '¿hay facturas de limpieza pendientes?') " +
     "usa el filtro 'contraparte' con ese texto — cubre TODAS las categorías, no asumas que algo 'no está' " +
     "sin haber buscado aquí primero. La búsqueda por contraparte es tolerante (encuentra 'Seguridad " +
     "social' aunque la fila real diga 'Impuestos seg social') — si el resultado viene marcado como " +

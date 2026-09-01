@@ -62,6 +62,8 @@ export type DetalleCategoria =
   | "IMPUESTOS_POR_PAGAR"
   | "APLAZAMIENTO_IMPUESTOS"
   | "GASTOS_FIJOS"
+  | "GASTOS_CONSULTORES_MES_ACTUAL"
+  | "GASTOS_CONSULTORES_PROXIMO_MES"
   | "PAGOS_PENDIENTES_ALBERTO"
   | "DEUDAS_PENDIENTES";
 
@@ -97,18 +99,14 @@ interface DetalleBlock {
 
 // Bloques de columnas fijas de la hoja DATOS. Solo Ingresos y Pagos Proyectos
 // tienen columna de tag de empresa dueña (F y R respectivamente); el resto no.
-// GASTOS_FIJOS (columnas I:L — nóminas, créditos, servicios, consultores,
-// impuestos) se sumaba en "GENERAL EXPENSES" del resumen pero nunca se leía
-// como línea individual — por eso una búsqueda de "Limpieza" no encontraba
-// nada aunque la fila existiera (verificado en vivo: DATOS!I16 = "Limpieza",
-// J16 = "S35", K16 = "€393.40"). PAGOS_PROYECTOS, IMPUESTOS_POR_PAGAR,
-// APLAZAMIENTO_IMPUESTOS (columna N, tres secciones apiladas) y
-// PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES (columna X, dos apiladas) se
-// parsean aparte más abajo porque no tienen un rango de filas fijo propio.
+// GASTOS_FIJOS, GASTOS_CONSULTORES_MES_ACTUAL, GASTOS_CONSULTORES_PROXIMO_MES
+// (columna I, tres secciones apiladas), PAGOS_PROYECTOS/IMPUESTOS_POR_PAGAR/
+// APLAZAMIENTO_IMPUESTOS (columna N, tres apiladas) y PAGOS_PENDIENTES_
+// ALBERTO/DEUDAS_PENDIENTES (columna X, dos apiladas) se parsean aparte más
+// abajo porque no tienen un rango de filas fijo propio.
 const DETALLE_BLOCKS: DetalleBlock[] = [
   { categoria: "INGRESOS", range: "DATOS!B6:F500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
   { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:V500", fields: ["cliente", "semana", "valor"] },
-  { categoria: "GASTOS_FIJOS", range: "DATOS!I6:L500", fields: ["concepto", "semana", "valor", "banco"] },
 ];
 
 // Columnas X:Z de DATOS: dos secciones apiladas bajo un título propio cada
@@ -142,6 +140,63 @@ function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
     if (!categoriaActual || !valor) continue;
 
     registros.push({ categoria: categoriaActual, cliente, semana, valor });
+  }
+
+  return registros;
+}
+
+// Bug real encontrado en vivo (2026-09-01, corregido en la MISMA sesión que
+// el de la columna N de abajo — se me había pasado esta la primera vez):
+// columna I:L de DATOS NO es solo GASTOS_FIJOS de punta a punta. Carlos
+// agregó, apiladas debajo del bloque normal (que termina fila ~38, con
+// subtítulos informales "Impuestos"/"Créditos"/"Servicios" que NO son
+// secciones propias, solo texto en la columna concepto sin semana/valor —
+// se filtran solos por eso, no necesitan entrada en el mapa de títulos),
+// DOS tablas nuevas con su propio recuadro, título fusionado y fila de
+// encabezado ("CONSULTOR/SEMANA/VALOR", solo 3 columnas I:K — SIN columna
+// de banco): "GASTOS CONSULTORES MES ACTUAL" (título fusionado I40:K41,
+// datos desde fila 43) y "GASTOS CONSULTORES PROXIMO MES" (título fusionado
+// I60:K61, datos desde fila 63) — verificado en vivo contra el Sheet real,
+// incluyendo los merges reales de esas celdas. Antes se leían igual como
+// GASTOS_FIJOS genérico (los valores no se perdían, pero no se podían
+// distinguir ni comparar como su propia categoría — exactamente lo que
+// Carlos pidió reconocer desde el principio).
+const SECCION_COLUMNA_I_RANGE = "DATOS!I1:L500";
+const TITULOS_SECCION_COLUMNA_I: Record<string, DetalleCategoria> = {
+  "GASTOS FIJOS": "GASTOS_FIJOS",
+  "GASTOS CONSULTORES MES ACTUAL": "GASTOS_CONSULTORES_MES_ACTUAL",
+  "GASTOS CONSULTORES PROXIMO MES": "GASTOS_CONSULTORES_PROXIMO_MES",
+};
+const ENCABEZADOS_FILA_COLUMNA_I = new Set(["GASTO", "CONSULTOR"]);
+
+function parsearSeccionesColumnaI(rows: string[][]): DetalleRegistro[] {
+  const registros: DetalleRegistro[] = [];
+  let categoriaActual: DetalleCategoria | null = null;
+
+  for (const row of rows) {
+    const concepto = String(row[0] ?? "").trim();
+    if (!concepto) continue;
+
+    const tituloCategoria = TITULOS_SECCION_COLUMNA_I[concepto.toUpperCase().trim()];
+    if (tituloCategoria) {
+      categoriaActual = tituloCategoria;
+      continue;
+    }
+
+    if (ENCABEZADOS_FILA_COLUMNA_I.has(concepto.toUpperCase())) continue; // fila de encabezado de columna
+    if (!categoriaActual) continue;
+
+    const semana = String(row[1] ?? "").trim();
+    const valor = String(row[2] ?? "").trim();
+    if (!semana && !valor) continue; // subtítulo informal (Impuestos/Créditos/Servicios) u otra fila sin datos
+
+    registros.push({
+      categoria: categoriaActual,
+      concepto,
+      semana,
+      valor,
+      banco: String(row[3] ?? "").trim() || undefined,
+    });
   }
 
   return registros;
@@ -230,9 +285,10 @@ let cache: { en: number; datos: DetalleRegistro[] } | null = null;
 
 /**
  * Lee TODOS los movimientos de detalle de la hoja DATOS: ingresos, pagos a
- * proyectos, pagos extras, aplazamientos de impuestos, gastos fijos
- * (nóminas, créditos, servicios, consultores, impuestos) y pendientes
- * (Alberto / deudas con otros), sin filtrar.
+ * proyectos, pagos extras, impuestos por pagar, aplazamientos de impuestos,
+ * gastos fijos (nóminas, créditos, servicios), gastos consultores (mes
+ * actual y próximo mes, categorías propias) y pendientes (Alberto / deudas
+ * con otros), sin filtrar.
  */
 export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
   if (cache && Date.now() - cache.en < CACHE_TTL_MS) {
@@ -244,7 +300,12 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
 
   const resp = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: sheetId,
-    ranges: [...DETALLE_BLOCKS.map((b) => b.range), SECCION_PENDIENTES_RANGE, SECCION_COLUMNA_N_RANGE],
+    ranges: [
+      ...DETALLE_BLOCKS.map((b) => b.range),
+      SECCION_PENDIENTES_RANGE,
+      SECCION_COLUMNA_N_RANGE,
+      SECCION_COLUMNA_I_RANGE,
+    ],
     valueRenderOption: "FORMATTED_VALUE",
   });
 
@@ -277,6 +338,9 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
 
   const filasColumnaN = valueRanges[DETALLE_BLOCKS.length + 1]?.values ?? [];
   registros.push(...parsearSeccionesColumnaN(filasColumnaN as string[][]));
+
+  const filasColumnaI = valueRanges[DETALLE_BLOCKS.length + 2]?.values ?? [];
+  registros.push(...parsearSeccionesColumnaI(filasColumnaI as string[][]));
 
   cache = { en: Date.now(), datos: registros };
   return registros;
