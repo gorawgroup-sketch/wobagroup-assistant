@@ -412,6 +412,14 @@ Simplemente pregunta. Ejemplos:
 - "¿Qué vence en los próximos 15 días?"
 - "¿Quién es el contacto del centro de prácticas de eWorks?"
 
+### Responder a cualquier aviso o pregunta sin repetir el contexto
+Cualquier mensaje que el asistente te mande por Telegram (venga de una
+revisión automática, un aviso, o una pregunta con botones) queda registrado
+en la conversación — así que puedes responder en texto libre, en el mismo
+chat, sin repetir de qué se trata. El asistente reconoce a qué pregunta
+estás respondiendo y sigue el proceso desde ahí, en vez de preguntarte de
+nuevo datos que ya te mostró.
+
 ### Enseñarle algo nuevo
 Si sabes algo que el asistente no tiene documentado, escríbele el mensaje con
 la palabra **`CAPTURA`** en cualquier parte (ej. *"CAPTURA: el certificado
