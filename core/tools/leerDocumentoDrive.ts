@@ -1,6 +1,6 @@
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { searchDriveFiles, descargarArchivoDrive } from "../drive/client";
+import { searchDriveFiles, descargarArchivoDrive, palabrasSignificativas, type DriveSearchResult } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
 import type { ToolDefinition } from "./types";
@@ -12,21 +12,95 @@ function sanitizarNombre(nombre: string): string {
 }
 
 /**
+ * Bug real encontrado en vivo (2026-09-01): una búsqueda con varias
+ * palabras (ej. "control de accesos") a veces devuelve muchos resultados
+ * (una palabra suelta como "control" es común), y aunque el resultado
+ * correcto está justo ahí en la lista (ej. "guia rapida control
+ * accesos.pdf", que contiene TODAS las palabras significativas de la
+ * consulta), Claude se quedaba pidiéndole al usuario que confirmara un
+ * nombre que él mismo ya le había mostrado, en vez de reintentar solo.
+ * Para no depender de que el modelo se acuerde de reintentar, se rankea
+ * cada candidato por cuántas palabras significativas de la consulta
+ * aparecen en su nombre — si hay un único candidato que contiene TODAS
+ * (o claramente más que el resto), se elige automáticamente en vez de
+ * preguntar.
+ */
+function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string): DriveSearchResult | undefined {
+  const palabrasConsulta = palabrasSignificativas(consulta);
+  if (palabrasConsulta.length === 0) return undefined;
+
+  const puntuados = resultados.map((r) => {
+    const nombreNormalizado = r.name.toLowerCase();
+    const coincidencias = palabrasConsulta.filter((p) => nombreNormalizado.includes(p));
+    return { resultado: r, score: coincidencias.length };
+  });
+
+  puntuados.sort((a, b) => b.score - a.score);
+
+  const mejor = puntuados[0];
+  const segundo = puntuados[1];
+
+  // Solo elige solo si el mejor contiene TODAS las palabras significativas
+  // Y nadie más lo empata — un empate real sigue siendo ambiguo.
+  if (mejor.score === palabrasConsulta.length && (!segundo || segundo.score < mejor.score)) {
+    return mejor.resultado;
+  }
+  return undefined;
+}
+
+async function leerContenido(
+  resultado: DriveSearchResult,
+  empresa: EmpresaConCarpeta,
+  consulta: string
+): Promise<string> {
+  const mimesLegibles = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
+  if (!resultado.mimeType || !mimesLegibles.includes(resultado.mimeType)) {
+    return (
+      `Encontré "${resultado.name}" (${resultado.folderPath}) pero es de un tipo que no puedo leer ` +
+      `todavía (${resultado.mimeType ?? "desconocido"} — solo PDF/imagen por ahora). Link: ${resultado.webViewLink}`
+    );
+  }
+
+  let rutaLocal: string | undefined;
+  try {
+    const archivo = await descargarArchivoDrive(resultado.id);
+    await mkdir(UPLOADS_DIR, { recursive: true });
+    rutaLocal = join(UPLOADS_DIR, `${Date.now()}_${sanitizarNombre(archivo.name)}`);
+    await writeFile(rutaLocal, archivo.bytes);
+
+    const texto = await transcribirParaCaptura(
+      rutaLocal,
+      archivo.mimeType,
+      `Documento archivado en Drive (${empresa}, ${resultado.folderPath}), leído porque el usuario preguntó sobre "${consulta}".`
+    );
+
+    return `📄 Contenido de "${resultado.name}" (${resultado.folderPath}, ${resultado.webViewLink}):\n\n${texto}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Encontré "${resultado.name}" pero hubo un error leyendo su contenido: ${message}. Link para abrirlo a mano: ${resultado.webViewLink}`;
+  } finally {
+    if (rutaLocal) await unlink(rutaLocal).catch(() => {});
+  }
+}
+
+/**
  * Pedido explícito de Carlos, tras un caso real: un documento ya archivado
  * en Drive ("guía rápida de control de accesos") existía y era exactamente
  * lo que preguntaba, pero buscar_documento_drive solo dice DÓNDE está un
  * archivo (nombre + link), nunca su contenido — así que Wobi no podía
  * responder la pregunta real con esa info, solo señalar que el archivo
  * existe. Esta tool cierra ese hueco: busca, y si hay un único resultado
- * claro (o si el usuario ya dio el nombre exacto), lo descarga y lee su
- * contenido real con Claude vision (mismo mecanismo que transcribirParaCaptura,
- * ya usado para CAPTURA) — para que Wobi pueda responder con la información
- * real, no solo con un link para que el usuario mismo lo abra.
+ * claro (o si contiene TODAS las palabras significativas de la consulta,
+ * ver elegirMejorCandidato), lo descarga y lee su contenido real con
+ * Claude vision (mismo mecanismo que transcribirParaCaptura, ya usado para
+ * CAPTURA) — para que Wobi pueda responder con la información real, no
+ * solo con un link para que el usuario mismo lo abra.
  *
- * Si hay varios resultados posibles, nunca elige sola — los lista para que
- * el usuario confirme cuál, mismo principio que el resto del proyecto
- * (nunca asumir sin evidencia clara). Solo lee PDF/imagen (lo que Claude
- * vision soporta) — un Google Doc/Sheet nativo no está soportado todavía.
+ * Si de verdad hay ambigüedad real (varios candidatos igual de plausibles),
+ * nunca elige sola — los lista para que el usuario confirme cuál, mismo
+ * principio que el resto del proyecto (nunca asumir sin evidencia clara).
+ * Solo lee PDF/imagen (lo que Claude vision soporta) — un Google Doc/Sheet
+ * nativo no está soportado todavía.
  */
 export const leerDocumentoDriveTool: ToolDefinition = {
   name: "leer_documento_drive",
@@ -38,9 +112,12 @@ export const leerDocumentoDriveTool: ToolDefinition = {
     "consultar_base_conocimiento no encontró nada: antes de decir 'no tengo información', prueba esta " +
     "tool con palabras clave del tema (y si no sabes la empresa, prueba con las 3) — un documento puede " +
     "estar archivado en Drive sin haber sido transcrito nunca a la base de conocimiento. Solo lee PDF o " +
-    "imágenes (no Google Docs/Sheets nativos todavía). Si encuentra VARIOS resultados posibles, no elige " +
-    "sola — te los lista para que el usuario confirme cuál, y ahí puedes volver a llamarla pasando el " +
-    "nombre exacto en 'consulta' para leer ese en concreto.",
+    "imágenes (no Google Docs/Sheets nativos todavía). Si la búsqueda devuelve varios resultados pero " +
+    "uno de ellos coincide claramente con TODAS las palabras de tu consulta, esta tool lo elige y lee " +
+    "sola automáticamente — no hace falta que la vuelvas a llamar. Solo te pide confirmar cuando de " +
+    "verdad hay ambigüedad real entre varios candidatos igual de plausibles — en ese caso SÍ debes " +
+    "preguntarle al usuario cuál es (nunca elegir tú mismo), y puedes volver a llamar esta tool pasando " +
+    "el nombre exacto que el usuario confirme.",
   input_schema: {
     type: "object",
     properties: {
@@ -74,43 +151,20 @@ export const leerDocumentoDriveTool: ToolDefinition = {
       return `No encontré ningún archivo que coincida con "${consulta}" en la carpeta de ${empresa}.`;
     }
 
-    if (resultados.length > 1) {
-      const lista = resultados.map((r) => `- ${r.name} — ${r.folderPath}`).join("\n");
-      return (
-        `Encontré ${resultados.length} archivos que podrían coincidir con "${consulta}" en ${empresa}, ` +
-        `no voy a elegir solo — pregúntale al usuario cuál es, y vuelve a llamar esta tool con el nombre ` +
-        `exacto en 'consulta':\n${lista}`
-      );
+    if (resultados.length === 1) {
+      return leerContenido(resultados[0], empresa, consulta);
     }
 
-    const resultado = resultados[0];
-    const mimesLegibles = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
-    if (!resultado.mimeType || !mimesLegibles.includes(resultado.mimeType)) {
-      return (
-        `Encontré "${resultado.name}" (${resultado.folderPath}) pero es de un tipo que no puedo leer ` +
-        `todavía (${resultado.mimeType ?? "desconocido"} — solo PDF/imagen por ahora). Link: ${resultado.webViewLink}`
-      );
+    const mejorCandidato = elegirMejorCandidato(resultados, consulta);
+    if (mejorCandidato) {
+      return leerContenido(mejorCandidato, empresa, consulta);
     }
 
-    let rutaLocal: string | undefined;
-    try {
-      const archivo = await descargarArchivoDrive(resultado.id);
-      await mkdir(UPLOADS_DIR, { recursive: true });
-      rutaLocal = join(UPLOADS_DIR, `${Date.now()}_${sanitizarNombre(archivo.name)}`);
-      await writeFile(rutaLocal, archivo.bytes);
-
-      const texto = await transcribirParaCaptura(
-        rutaLocal,
-        archivo.mimeType,
-        `Documento archivado en Drive (${empresa}, ${resultado.folderPath}), leído porque el usuario preguntó sobre "${consulta}".`
-      );
-
-      return `📄 Contenido de "${resultado.name}" (${resultado.folderPath}, ${resultado.webViewLink}):\n\n${texto}`;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return `Encontré "${resultado.name}" pero hubo un error leyendo su contenido: ${message}. Link para abrirlo a mano: ${resultado.webViewLink}`;
-    } finally {
-      if (rutaLocal) await unlink(rutaLocal).catch(() => {});
-    }
+    const lista = resultados.map((r) => `- ${r.name} — ${r.folderPath}`).join("\n");
+    return (
+      `Encontré ${resultados.length} archivos que podrían coincidir con "${consulta}" en ${empresa}, ` +
+      `ninguno se distingue claramente del resto — no voy a elegir solo, pregúntale al usuario cuál es, ` +
+      `y vuelve a llamar esta tool con el nombre exacto en 'consulta':\n${lista}`
+    );
   },
 };

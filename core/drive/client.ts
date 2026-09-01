@@ -105,7 +105,7 @@ const MAX_ANCESTRY_HOPS = 30;
 // solo una de esas palabras aparezca literalmente en el nombre real.
 const PALABRAS_VACIAS = new Set(["de", "la", "el", "los", "las", "un", "una", "y", "en", "para", "del", "al", "con"]);
 
-function palabrasSignificativas(query: string): string[] {
+export function palabrasSignificativas(query: string): string[] {
   const palabras = query
     .toLowerCase()
     .split(/\s+/)
