@@ -31,7 +31,12 @@ export const cashflowDetalleTool: ToolDefinition = {
     "sin haber buscado aquí primero. La búsqueda por contraparte es tolerante (encuentra 'Seguridad " +
     "social' aunque la fila real diga 'Impuestos seg social') — si el resultado viene marcado como " +
     "coincidencia APROXIMADA, dilo así al usuario y pregunta si es lo que buscaba, no lo des por hecho. " +
-    "Úsala cuando el usuario pida un desglose detallado en vez de solo el resumen semanal.",
+    "Úsala cuando el usuario pida un desglose detallado en vez de solo el resumen semanal. Si en cambio " +
+    "piden verificar/comparar esto contra los movimientos bancarios reales de Holded (¿qué falta " +
+    "registrar?, ¿está al día?, para cualquier semana incluida una pasada concreta como 'S36') usa MEJOR " +
+    "verificar_cashflow_actualizado — ya hace esa comparación con tolerancias y detección de duplicados; " +
+    "no intentes cruzar esta tool con movimientos de Holded a mano, se te van a escapar coincidencias " +
+    "reales (falsos 'falta registrar').",
   input_schema: {
     type: "object",
     properties: {

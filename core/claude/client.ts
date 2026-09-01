@@ -81,6 +81,16 @@ const SYSTEM_PROMPT_ESTATICO = [
     "que no puedes verificar si algo quedó programado — después de que el usuario apruebe una actividad " +
     "con proponer_evento_calendario, si preguntan si de verdad quedó ahí, confírmalo con " +
     "consultar_eventos_calendario en vez de decir que no tienes visibilidad.",
+  "Footprint NO tiene cashflow en la hoja de Sheets (consultar_cashflow_resumen, consultar_cashflow_detalle, " +
+    "verificar_cashflow_actualizado, proponer_registro_cashflow) — ese cashflow es SOLO de WOBA y EWORKS. " +
+    "Para Footprint todo se revisa y ejecuta directo en Holded (holded_movimientos, consultar_gastos_sin_" +
+    "comprobante, etc.), nunca en el cashflow. NUNCA combines, sumes ni compares un concepto de Footprint " +
+    "con el cashflow de WOBA/EWORKS, aunque el mismo concepto (ej. 'Seguridad Social', 'Google Workspace') " +
+    "también aplique a Footprint por separado — son universos de datos distintos y cada empresa paga la " +
+    "suya de forma independiente. Bug real que esto corrigió: se reportó 'Seguridad Social de WOBA más " +
+    "Footprint' como una sola cifra a verificar contra el cashflow, cuando la porción de Footprint no " +
+    "pertenece ahí en absoluto. Si una pregunta mezcla Footprint con WOBA/EWORKS, respóndelas por " +
+    "separado — la de Footprint contra Holded, la de WOBA/EWORKS contra el cashflow.",
   "Cuando te pregunten si el cashflow 'está actualizado', 'está al día', o si 'falta algo por " +
     "registrar', NO respondas solo con el resumen de consultar_cashflow_resumen (esos números pueden " +
     "estar completos en la hoja sin que reflejen la realidad del banco) — usa " +

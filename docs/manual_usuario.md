@@ -50,8 +50,17 @@ que hacer nada más.
   movimientos bancarios reales de Holded contra lo ya registrado — no es
   solo leer el resumen, cruza los datos y te dice específicamente qué
   movimiento falta, con monto y fecha, si falta algo. Por defecto revisa lo
-  que va de la semana actual; puedes pedirle la semana anterior completa.
-  Esta consulta por sí sola no registra nada — pero si le dices "regístralos"
+  que va de la semana actual; puedes pedirle la semana anterior completa, o
+  **cualquier semana pasada por su etiqueta** (ej. "revisa S36") — la misma
+  comparación robusta (tolerancias, agrupación de cargos repetidos, aviso de
+  posible duplicado) se aplica sin importar qué tan atrás sea la semana.
+  **Es solo de WOBA y EWORKS** — Footprint no participa en esta comparación
+  bajo ningún concepto, ni siquiera cuando un mismo tipo de gasto (ej.
+  "Seguridad Social") también existe para Footprint por separado en Holded;
+  si preguntas por algo que mezcla las tres empresas, la respuesta separa
+  claramente la parte de Footprint (revisada en Holded directo) de la de
+  WOBA/EWORKS (revisada contra el cashflow). Esta consulta por sí sola no
+  registra nada — pero si le dices "regístralos"
   o "muéstramelos con botón" (o de entrada le pides que registre lo que
   falta), dispara el mismo flujo con botones que el chequeo automático del
   viernes/lunes, sin esperar a que llegue esa fecha: un mensaje por
