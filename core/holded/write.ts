@@ -113,6 +113,52 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
   return contactos;
 }
 
+// Nunca aceptar un match de buscarContactoHolded que dependa SOLO de una
+// palabra compartida por más de esta cantidad de contactos reales — ver
+// comentario en compartenPalabraDistintiva.
+const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
+
+/**
+ * true si `objetivo` y `candidatoNombre` comparten alguna palabra (5+
+ * caracteres) que sea DISTINTIVA dentro de la lista real de contactos —
+ * nunca alcanza con una palabra genérica del rubro que muchos contactos no
+ * relacionados también tienen. Bug real encontrado en vivo: un ticket de
+ * taxi en México (proveedor real impreso: "Taxistas Agremiados para el
+ * Servicio de Transportación") quedó asignado al contacto "CONSORCIO
+ * REGIONAL DE TRANSPORTES DE MADRID" — geográfica y comercialmente sin
+ * ninguna relación — solo porque ambos comparten la palabra "transporte",
+ * que en la lista real de contactos aparece en varias empresas de
+ * transporte no relacionadas entre sí. Para CONTACTOS (a diferencia de
+ * otros usos de textosParecidos, donde el candidato ya viene acotado y el
+ * costo de un falso positivo es bajo) el estándar tiene que ser más alto:
+ * asignar el proveedor equivocado a un gasto real es un error de
+ * bookkeeping — pedido explícito de Carlos: "si no tienes seguridad, lo
+ * dejas sin contacto o preguntas".
+ */
+function compartenPalabraDistintiva(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): boolean {
+  const palabrasObjetivo = normalizar(objetivo)
+    .split(" ")
+    .filter((p) => p.length >= 5);
+  const palabrasCandidato = normalizar(candidatoNombre)
+    .split(" ")
+    .filter((p) => p.length >= 3);
+
+  for (const po of palabrasObjetivo) {
+    if (!palabrasCandidato.some((pc) => palabrasParecidas(po, pc))) continue;
+
+    const contactosQueComparten = todosLosNombres.filter((otro) =>
+      normalizar(otro)
+        .split(" ")
+        .some((p) => p.length >= 3 && palabrasParecidas(po, p))
+    ).length;
+
+    if (contactosQueComparten <= MAX_CONTACTOS_COMPARTIENDO_PALABRA) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Busca un contacto de Holded por nombre (coincidencia parcial, insensible a
  * mayúsculas/acentos/puntuación). Primero revisa el alias aprendido (ver
@@ -120,13 +166,18 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
  * manualmente antes para este proveedor+empresa — y si no hay, pagina los
  * contactos reales de Holded (el parámetro `name` no filtra en el servidor)
  * y filtra localmente. Nunca inventa un contact_id: si no encuentra
- * coincidencia, devuelve undefined.
+ * coincidencia (o la única coincidencia depende de una palabra demasiado
+ * genérica, ver compartenPalabraDistintiva), devuelve undefined — el
+ * llamador cae al flujo de alternativas (buscarContactosParecidos) en vez
+ * de asignar un contacto sin verificar.
  */
 export async function buscarContactoHolded(empresa: Empresa, nombre: string): Promise<HoldedContact | undefined> {
   const alias = await buscarAliasProveedor(empresa, nombre).catch(() => undefined);
   if (alias) return { id: alias.contactId, name: alias.contactName };
 
   const contactos = await obtenerTodosLosContactos(empresa);
+  const conNombre = contactos.filter((c): c is HoldedContact & { name: string } => typeof c.name === "string");
+  const todosLosNombres = conNombre.map((c) => c.name);
 
   // textosParecidos, no un substring simple — mismo bug real que
   // buscarGastoSimilar: un nombre comercial ("Booking.com") nunca es
@@ -134,7 +185,9 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
   // HOLDINGS Inc. (Booking)") ni al revés. Antes esto solo se salvaba
   // cuando ya existía un alias aprendido de antes — para un proveedor
   // nuevo sin alias, fallaba en silencio.
-  return contactos.find((c) => typeof c.name === "string" && textosParecidos(nombre, c.name));
+  const candidatos = conNombre.filter((c) => textosParecidos(nombre, c.name));
+
+  return candidatos.find((c) => compartenPalabraDistintiva(nombre, c.name, todosLosNombres));
 }
 
 /**
