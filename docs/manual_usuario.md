@@ -267,6 +267,13 @@ que hacer nada más.
   volver a pedirte los datos que ya te mostró. Puede encadenar esto con
   otras instrucciones en el mismo mensaje (ej. redactar un correo con el
   link de Drive resultante).
+- **Si el correo/mensaje que trae el documento pide explícitamente que se
+  recuerde o quede registrado** (ej. "para que lo memorices", "que quede
+  de referencia"), además de la propuesta normal de archivo en Drive, el
+  asistente lee el contenido real (con Claude vision, no solo el nombre) y
+  propone guardarlo TAMBIÉN como conocimiento (`CAPTURA`, mismo flujo de
+  elegir empresa y confirmar) — y si vino de un correo, pregunta aparte si
+  quieres que lo responda (Sí/No) antes de redactar nada.
 
 ### 📧 Correo (`asistente@wobagroup.com`)
 - Revisa el correo entrante cada hora (o al pedirlo con `/revisarcorreo`) y
