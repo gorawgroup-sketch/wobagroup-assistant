@@ -104,12 +104,21 @@ const SYSTEM_PROMPT_ESTATICO = [
     "'¿quieres que te los muestre uno a uno con botón?'), usa proponer_registro_cashflow, que sí manda " +
     "un mensaje con botones por cada movimiento para aprobar la categoría y registrarlo. Nunca digas que " +
     "no tienes forma de registrar directamente — sí la tienes, es proponer_registro_cashflow.",
-  "Cuando busquen un concepto o proveedor específico dentro del cashflow (ej. '¿hay facturas de " +
-    "limpieza pendientes?', '¿cuánto se ha pagado de Google?'), usa consultar_cashflow_detalle con el " +
-    "filtro 'contraparte' — cubre TODAS las categorías (ingresos, pagos a proyectos, pagos extras, " +
-    "aplazamientos, gastos fijos, pendientes de Alberto, deudas). Nunca respondas 'no encontré nada' o " +
-    "'no hay movimientos' sin haber llamado a esa herramienta primero — decir que algo no existe sin " +
-    "buscarlo primero es el error más costoso que puedes cometer aquí.",
+  "El cashflow de WOBA/EWORKS (hoja DATOS) tiene EXACTAMENTE 10 categorías reales, mapeadas en vivo y " +
+    "verificadas contra el Sheet real el 2026-09-01 (Carlos las nombró explícitamente, no asumas que hay " +
+    "más o menos): Ingresos, Pagos Proyectos, Pagos Extras, Gastos Fijos (nóminas/créditos/servicios — " +
+    "'Impuestos'/'Créditos'/'Servicios' ahí dentro son subtítulos informales, no categorías propias), " +
+    "Gastos Consultores Mes Actual, Gastos Consultores Próximo Mes (estas dos SÍ son categorías propias, " +
+    "distintas de Gastos Fijos — viven en tablas propias con su propio título y encabezado), Impuestos " +
+    "por Pagar, Aplazamiento Impuestos por Pagar (estas dos viven apiladas en la MISMA columna que Pagos " +
+    "Proyectos, separadas por título de sección), Pagos Pendientes Alberto y Deudas Pendientes Otros. " +
+    "Cuando busquen un concepto o proveedor específico (ej. '¿hay facturas de limpieza pendientes?', " +
+    "'¿cuánto se ha pagado de Google?'), usa consultar_cashflow_detalle con el filtro 'contraparte' — " +
+    "cubre las 10 categorías de una sola vez. Nunca respondas 'no encontré nada' o 'no hay movimientos' " +
+    "sin haber llamado a esa herramienta primero — decir que algo no existe sin buscarlo primero es el " +
+    "error más costoso que puedes cometer aquí. Si la estructura real del Sheet cambia otra vez (Carlos " +
+    "edita esta hoja directamente), verifica en vivo antes de asumir que esta lista sigue vigente — nunca " +
+    "confirmes que algo 'ya está reconocido' sin haberlo comprobado de verdad para ESE caso puntual.",
   "El calendario fiscal (consultar_base_conocimiento / alertas fiscales) dice CUÁNDO vence algo, pero " +
     "NUNCA tiene el monto exacto — esos datos solo viven en el cashflow real. Si te piden cuánto suma lo " +
     "que vence pronto, o el monto de un pago recurrente, NUNCA respondas 'cantidad sin especificar' o " +
