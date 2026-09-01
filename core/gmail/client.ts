@@ -43,6 +43,60 @@ export async function verificarConexionGmail(): Promise<{ ok: boolean; detalle?:
   }
 }
 
+let gmailSettingsClient: gmail_v1.Gmail | null = null;
+
+/**
+ * Cliente separado con scope gmail.settings.basic — necesario para leer la
+ * firma ya configurada en Gmail (users.settings.sendAs.get). Pedido
+ * explícito de Carlos: todo correo que mande el asistente debe llevar esa
+ * firma real, nunca una inventada.
+ */
+function getGmailSettingsClient(): gmail_v1.Gmail {
+  if (gmailSettingsClient) return gmailSettingsClient;
+
+  const credentials = loadServiceAccountCredentials();
+  const impersonate = process.env.GMAIL_IMPERSONATE_EMAIL;
+
+  if (!impersonate) {
+    throw new Error("Falta la variable de entorno GMAIL_IMPERSONATE_EMAIL.");
+  }
+
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ["https://www.googleapis.com/auth/gmail.settings.basic"],
+    subject: impersonate,
+  });
+
+  gmailSettingsClient = google.gmail({ version: "v1", auth });
+  return gmailSettingsClient;
+}
+
+/**
+ * Firma HTML configurada en Gmail para GMAIL_IMPERSONATE_EMAIL. Requiere el
+ * scope gmail.settings.basic autorizado para esta cuenta de servicio en la
+ * delegación de dominio (Admin console de Google Workspace) — si todavía no
+ * está autorizado (o cualquier otro error), devuelve undefined y quien
+ * llame debe mandar el correo igual, sin firma, en vez de romper el envío.
+ */
+export async function obtenerFirmaGmail(): Promise<string | undefined> {
+  const impersonate = process.env.GMAIL_IMPERSONATE_EMAIL;
+  if (!impersonate) return undefined;
+
+  try {
+    const gmail = getGmailSettingsClient();
+    const res = await gmail.users.settings.sendAs.get({ userId: "me", sendAsEmail: impersonate });
+    return res.data.signature ?? undefined;
+  } catch (error) {
+    console.error(
+      "[gmail/client] No se pudo obtener la firma configurada (¿falta el scope gmail.settings.basic " +
+        "en la delegación de dominio del Admin console de Google Workspace?):",
+      error instanceof Error ? error.message : error
+    );
+    return undefined;
+  }
+}
+
 let gmailSendClient: gmail_v1.Gmail | null = null;
 
 /**
@@ -261,12 +315,35 @@ export interface AdjuntoParaEnviar {
   content: Buffer;
 }
 
+function escaparHtml(texto: string): string {
+  return texto
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/** Convierte texto plano a HTML básico (párrafos por línea en blanco, saltos simples como <br>) para la parte text/html. */
+function textoAHtmlBasico(texto: string): string {
+  return texto
+    .split(/\n{2,}/)
+    .map((parrafo) => `<p>${escaparHtml(parrafo).replace(/\n/g, "<br>")}</p>`)
+    .join("\n");
+}
+
 /**
  * Construye el mensaje MIME completo como Buffer (no string) — necesario en
  * cuanto hay adjuntos binarios de por medio, para no arriesgar corromper los
- * bytes al pasar por una conversión a UTF-8 en algún punto. Sin adjuntos,
- * arma un mensaje simple text/plain como antes; con adjuntos, multipart/mixed
- * con el cuerpo como primera parte y cada adjunto codificado en base64.
+ * bytes al pasar por una conversión a UTF-8 en algún punto.
+ *
+ * Sin firma disponible: mensaje simple text/plain (comportamiento previo,
+ * sin cambios) — o multipart/mixed si además hay adjuntos.
+ *
+ * Con firma disponible (pedido explícito de Carlos: todo correo debe llevar
+ * la firma real ya configurada en Gmail): el cuerpo pasa a ser
+ * multipart/alternative (text/plain con la firma convertida a texto, y
+ * text/html con la firma HTML tal cual la configuró Carlos en Gmail) — y
+ * si además hay adjuntos, esa parte alternative queda anidada dentro de un
+ * multipart/mixed junto con cada adjunto, como antes.
  */
 function construirMimeConAdjuntos(params: {
   to: string;
@@ -274,6 +351,7 @@ function construirMimeConAdjuntos(params: {
   cuerpo: string;
   messageIdHeader?: string;
   adjuntos?: AdjuntoParaEnviar[];
+  firmaHtml?: string;
 }): Buffer {
   // Solo se antepone "Re:" cuando es respuesta a un hilo existente
   // (messageIdHeader presente) — un correo nuevo debe llevar el asunto tal cual.
@@ -286,9 +364,36 @@ function construirMimeConAdjuntos(params: {
     headerLines.push(`References: ${params.messageIdHeader}`);
   }
 
+  const firma = params.firmaHtml?.trim();
+
+  // Parte(s) del cuerpo, sin los adjuntos todavía — puede ser un único
+  // Buffer text/plain (sin firma) o un multipart/alternative completo (con
+  // firma), listo para insertarse tal cual cuando no hay adjuntos, o
+  // envolverse en multipart/mixed cuando sí los hay.
+  let cuerpoContentType: string;
+  let cuerpoBuffer: Buffer;
+
+  if (!firma) {
+    cuerpoContentType = `text/plain; charset="UTF-8"`;
+    cuerpoBuffer = Buffer.from(params.cuerpo, "utf-8");
+  } else {
+    const altBoundary = `wobi-alt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const firmaTexto = htmlATexto(firma);
+    const cuerpoPlano = `${params.cuerpo}\r\n\r\n--\r\n${firmaTexto}`;
+    const cuerpoHtml = `${textoAHtmlBasico(params.cuerpo)}\n<br>\n${firma}`;
+
+    cuerpoContentType = `multipart/alternative; boundary="${altBoundary}"`;
+    cuerpoBuffer = Buffer.from(
+      `--${altBoundary}\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n${cuerpoPlano}\r\n\r\n` +
+        `--${altBoundary}\r\nContent-Type: text/html; charset="UTF-8"\r\n\r\n${cuerpoHtml}\r\n\r\n` +
+        `--${altBoundary}--`,
+      "utf-8"
+    );
+  }
+
   if (!params.adjuntos || params.adjuntos.length === 0) {
-    headerLines.push(`Content-Type: text/plain; charset="UTF-8"`);
-    return Buffer.from(`${headerLines.join("\r\n")}\r\n\r\n${params.cuerpo}`, "utf-8");
+    headerLines.push(`Content-Type: ${cuerpoContentType}`);
+    return Buffer.concat([Buffer.from(`${headerLines.join("\r\n")}\r\n\r\n`, "utf-8"), cuerpoBuffer]);
   }
 
   const boundary = `wobi-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -296,10 +401,9 @@ function construirMimeConAdjuntos(params: {
 
   const partes: Buffer[] = [
     Buffer.from(`${headerLines.join("\r\n")}\r\n\r\n`, "utf-8"),
-    Buffer.from(
-      `--${boundary}\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n${params.cuerpo}\r\n\r\n`,
-      "utf-8"
-    ),
+    Buffer.from(`--${boundary}\r\nContent-Type: ${cuerpoContentType}\r\n\r\n`, "utf-8"),
+    cuerpoBuffer,
+    Buffer.from(`\r\n\r\n`, "utf-8"),
   ];
 
   for (const adjunto of params.adjuntos) {
@@ -340,7 +444,8 @@ export async function enviarCorreo(params: {
   adjuntos?: AdjuntoParaEnviar[];
 }): Promise<{ id: string; threadId: string }> {
   const gmail = getGmailSendClient();
-  const raw = base64UrlEncodeBuffer(construirMimeConAdjuntos(params));
+  const firmaHtml = await obtenerFirmaGmail();
+  const raw = base64UrlEncodeBuffer(construirMimeConAdjuntos({ ...params, firmaHtml }));
 
   const res = await gmail.users.messages.send({
     userId: "me",

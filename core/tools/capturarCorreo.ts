@@ -120,6 +120,12 @@ export const capturarCorreoTool: ToolDefinition = {
           mimeType: adjunto.mimeType,
           nombreParaClasificar: adjunto.filename,
           captionEfectivo: `Adjunto de correo capturado. De: ${resumen.de}. Asunto: ${resumen.asunto}.`,
+          correoOrigen: {
+            de: resumen.de,
+            asunto: resumen.asunto || "(sin asunto)",
+            threadId: resumen.threadId,
+            messageIdHeader: resumen.messageIdHeader,
+          },
         });
 
         resultadosAdjuntos.push(

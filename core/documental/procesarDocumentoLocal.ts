@@ -11,6 +11,15 @@ export interface DocumentoLocalEntrante {
   mimeType?: string;
   nombreParaClasificar: string;
   captionEfectivo?: string;
+  /**
+   * Si el archivo llegó como adjunto de un correo, sus datos — para poder
+   * responder ese correo (con hilo real, no uno nuevo) después de archivar.
+   * Pedido explícito de Carlos tras un caso real: le pidió al chat que
+   * archivara un documento Y respondiera el correo original con un link,
+   * y sin esto el asistente no tenía forma de saber a qué correo/hilo
+   * contestar.
+   */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string };
 }
 
 /**
@@ -49,6 +58,7 @@ export async function procesarDocumentoLocal(entrada: DocumentoLocalEntrante): P
     mimeType: entrada.mimeType,
     nombreParaClasificar: entrada.nombreParaClasificar,
     captionEfectivo: entrada.captionEfectivo,
+    correoOrigen: entrada.correoOrigen,
   });
   return "archivo";
 }

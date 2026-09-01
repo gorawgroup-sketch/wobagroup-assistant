@@ -10,6 +10,8 @@ export interface PendienteDesambiguacion {
   captionOriginal?: string;
   preguntaFormulada: string;
   creadoEn: number;
+  /** Si el archivo vino de un correo, sus datos — para poder responderlo después de archivar. */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string };
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -31,6 +33,7 @@ const HEADERS = [
   "captionOriginal",
   "preguntaFormulada",
   "creadoEn",
+  "correoOrigenJSON",
 ];
 
 function assertSheetId(): string {
@@ -83,7 +86,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:H1`,
+    range: `${TAB_NAME}!A1:I1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -94,6 +97,14 @@ async function ensureTab(): Promise<number> {
 
 function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
   if (!row[0]) return null;
+
+  let correoOrigen: PendienteDesambiguacion["correoOrigen"];
+  try {
+    correoOrigen = row[8] ? JSON.parse(String(row[8])) : undefined;
+  } catch {
+    correoOrigen = undefined;
+  }
+
   return {
     chatId: Number(row[0]) || 0,
     rutaLocal: row[1] ? String(row[1]) : "",
@@ -103,6 +114,7 @@ function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
     captionOriginal: row[5] ? String(row[5]) : undefined,
     preguntaFormulada: row[6] ? String(row[6]) : "",
     creadoEn: Number(row[7]) || 0,
+    correoOrigen,
   };
 }
 
@@ -116,6 +128,7 @@ function pendienteToRow(p: PendienteDesambiguacion): (string | number)[] {
     p.captionOriginal ?? "",
     p.preguntaFormulada,
     p.creadoEn,
+    p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
   ];
 }
 
@@ -131,7 +144,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:H10000`,
+    range: `${TAB_NAME}!A2:I10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -205,7 +218,7 @@ export async function guardarPendienteDesambiguacion(datos: Omit<PendienteDesamb
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:H`,
+    range: `${TAB_NAME}!A:I`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [pendienteToRow(pendiente)] },

@@ -158,6 +158,12 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
               mimeType: adjunto.mimeType,
               nombreParaClasificar: adjunto.filename,
               captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
+              correoOrigen: {
+                de: correo.de,
+                asunto: correo.asunto || "(sin asunto)",
+                threadId: correo.threadId,
+                messageIdHeader: correo.messageIdHeader,
+              },
             });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

@@ -17,7 +17,10 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
     "apruebe, edite o cancele. Úsala cuando te pidan enviar, mandar o contestar algo por correo — " +
     "nunca respondas que no puedes enviar correos: en vez de eso, usa esta herramienta para proponerlo. " +
     "El envío real NUNCA ocurre al llamar esta herramienta, solo cuando el usuario aprueba el botón " +
-    "'Enviar así' después.",
+    "'Enviar así' después. Si estás RESPONDIENDO un correo real del que ya tienes thread_id y " +
+    "message_id_header (ej. porque venían en el aviso de una propuesta de archivo pendiente), pásalos — " +
+    "así el correo queda enhebrado como una respuesta real en el mismo hilo (con 'Re:' y en la misma " +
+    "conversación de Gmail), en vez de mandarse como un correo nuevo sin relación aparente.",
   input_schema: {
     type: "object",
     properties: {
@@ -29,6 +32,16 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
       cuerpo: {
         type: "string",
         description: "Cuerpo del correo en texto plano, tono profesional y conciso, en español.",
+      },
+      thread_id: {
+        type: "string",
+        description: "SOLO si es una respuesta a un correo real ya identificado: su threadId de Gmail.",
+      },
+      message_id_header: {
+        type: "string",
+        description:
+          "SOLO si es una respuesta a un correo real ya identificado: su Message-ID de correo (para " +
+          "enhebrarlo con In-Reply-To/References y anteponer 'Re:' al asunto).",
       },
     },
     required: ["destinatario", "asunto", "cuerpo"],
@@ -42,6 +55,9 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
     const destinatario = typeof input.destinatario === "string" ? input.destinatario.trim() : "";
     const asunto = typeof input.asunto === "string" ? input.asunto.trim() : "";
     const cuerpo = typeof input.cuerpo === "string" ? input.cuerpo.trim() : "";
+    const threadId = typeof input.thread_id === "string" ? input.thread_id.trim() || undefined : undefined;
+    const messageIdHeader =
+      typeof input.message_id_header === "string" ? input.message_id_header.trim() || undefined : undefined;
 
     if (!destinatario || !asunto || !cuerpo) {
       return "Error: faltan datos (destinatario, asunto o cuerpo) para preparar el borrador.";
@@ -53,6 +69,8 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
       to: destinatario,
       subject: asunto,
       cuerpo,
+      threadId,
+      messageIdHeader,
     });
 
     const texto = [`✉️ Borrador de correo para ${destinatario}:`, `Asunto: ${asunto}`, "", cuerpo].join("\n");

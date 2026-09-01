@@ -45,10 +45,17 @@ export const confirmarArchivoPendienteTool: ToolDefinition = {
       return `No se pudo archivar "${propuesta.nombreArchivoOriginal}": ${resultado.mensaje}`;
     }
 
+    const notaCorreoOrigen = propuesta.correoOrigen
+      ? ` Este documento vino de un correo — de: ${propuesta.correoOrigen.de}, asunto: "${propuesta.correoOrigen.asunto}". ` +
+        `Si el usuario pidió responderlo, usa proponer_envio_correo con destinatario="${propuesta.correoOrigen.de}", ` +
+        `thread_id="${propuesta.correoOrigen.threadId}" y message_id_header="${propuesta.correoOrigen.messageIdHeader}" ` +
+        "para que quede como una respuesta real en el mismo hilo, no un correo nuevo."
+      : "";
+
     return (
       `Archivado con éxito: "${propuesta.nombreArchivoOriginal}" (empresa ${propuesta.clasificacion.empresa}, ` +
       `carpeta "${propuesta.clasificacion.carpetaSugerida}"). ${resultado.mensaje} ` +
-      `Link de Drive: ${resultado.webViewLink ?? "(no disponible)"}.`
+      `Link de Drive: ${resultado.webViewLink ?? "(no disponible)"}.${notaCorreoOrigen}`
     );
   },
 };

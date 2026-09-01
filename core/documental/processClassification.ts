@@ -11,6 +11,8 @@ export interface ArchivoParaClasificar {
   nombreParaClasificar: string;
   /** Caption original del usuario, o el texto ya enriquecido con su aclaración. */
   captionEfectivo?: string;
+  /** Si vino de un correo, sus datos — para poder responderlo después de archivar (ver DocumentoLocalEntrante). */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string };
 }
 
 /**
@@ -37,6 +39,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       nombreParaClasificar: archivo.nombreParaClasificar,
       captionOriginal: archivo.captionEfectivo,
       preguntaFormulada: pregunta,
+      correoOrigen: archivo.correoOrigen,
     });
 
     await sendTelegramMessage(archivo.chatId, pregunta);
@@ -50,6 +53,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     clasificacion,
     chatId: archivo.chatId,
     messageId: 0,
+    correoOrigen: archivo.correoOrigen,
   });
 
   const textoPropuesta = [

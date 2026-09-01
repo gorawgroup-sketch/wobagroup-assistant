@@ -13,6 +13,8 @@ export interface PropuestaClasificacion {
   chatId: number;
   messageId: number;
   creadoEn: number;
+  /** Si el archivo vino de un correo, sus datos — para poder responderlo (con hilo real) después de archivar. */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string };
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -37,6 +39,7 @@ const HEADERS = [
   "chatId",
   "messageId",
   "creadoEn",
+  "correoOrigenJSON",
 ];
 
 function assertSheetId(): string {
@@ -89,7 +92,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:H1`,
+    range: `${TAB_NAME}!A1:I1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -109,6 +112,13 @@ function rowToPropuesta(row: unknown[]): PropuestaClasificacion | null {
   }
   if (!clasificacion) return null; // fila corrupta — mejor ignorarla que tumbar el resto
 
+  let correoOrigen: PropuestaClasificacion["correoOrigen"];
+  try {
+    correoOrigen = row[8] ? JSON.parse(String(row[8])) : undefined;
+  } catch {
+    correoOrigen = undefined;
+  }
+
   return {
     id: String(row[0]),
     nombreArchivoOriginal: row[1] ? String(row[1]) : "",
@@ -118,6 +128,7 @@ function rowToPropuesta(row: unknown[]): PropuestaClasificacion | null {
     chatId: Number(row[5]) || 0,
     messageId: Number(row[6]) || 0,
     creadoEn: Number(row[7]) || 0,
+    correoOrigen,
   };
 }
 
@@ -131,6 +142,7 @@ function propuestaToRow(p: PropuestaClasificacion): (string | number)[] {
     p.chatId,
     p.messageId,
     p.creadoEn,
+    p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
   ];
 }
 
@@ -146,7 +158,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:H10000`,
+    range: `${TAB_NAME}!A2:I10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -202,7 +214,7 @@ export async function crearPropuestaClasificacion(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:H`,
+    range: `${TAB_NAME}!A:I`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

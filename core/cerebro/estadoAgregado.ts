@@ -238,8 +238,6 @@ async function construirCorreo() {
   const [noLeidos, ultimoCheckUnix, borradoresPendientes] = await Promise.all([
     seguro("correo.noLeidos", contarNoLeidos, 0),
     seguro("correo.ultimoCheck", obtenerUltimoCheck, 0),
-    // emailDraftStore vive en disco local (ephemeral) — cuenta lo que este
-    // proceso conoce desde su último arranque, ver nota en el store mismo.
     seguro("correo.borradores", contarBorradoresPendientes, 0),
   ]);
 

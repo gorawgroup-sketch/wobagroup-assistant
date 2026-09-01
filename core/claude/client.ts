@@ -192,14 +192,18 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
       return undefined;
     });
     if (propuesta) {
+      const origenTxt = propuesta.correoOrigen
+        ? ` Vino de un correo de ${propuesta.correoOrigen.de}, asunto "${propuesta.correoOrigen.asunto}".`
+        : "";
       partes.push(
         `Hay una propuesta de archivo SIN RESPONDER en este chat: "${propuesta.nombreArchivoOriginal}" ` +
-          `(empresa ${propuesta.clasificacion.empresa}, carpeta sugerida "${propuesta.clasificacion.carpetaSugerida}"). ` +
-          "Se le mandó al usuario con botones, pero si su mensaje actual es una respuesta en texto libre a " +
-          "esa propuesta (ej. 'archívalo ahí', 'sí, guárdalo', o una instrucción compuesta como 'archívalo y " +
-          "responde el correo con el link'), usa la herramienta confirmar_archivo_pendiente para confirmarla " +
-          "— no le vuelvas a preguntar datos que ya se le mostraron en esa propuesta. Si su mensaje no tiene " +
-          "relación con esto, ignora este aviso."
+          `(empresa ${propuesta.clasificacion.empresa}, carpeta sugerida "${propuesta.clasificacion.carpetaSugerida}").` +
+          `${origenTxt} Se le mandó al usuario con botones, pero si su mensaje actual es una respuesta en ` +
+          "texto libre a esa propuesta (ej. 'archívalo ahí', 'sí, guárdalo', o una instrucción compuesta " +
+          "como 'archívalo y responde el correo con el link'), usa la herramienta confirmar_archivo_pendiente " +
+          "para confirmarla — no le vuelvas a preguntar datos que ya se le mostraron en esa propuesta " +
+          "(incluyendo quién mandó el correo, si ya se sabe). Si su mensaje no tiene relación con esto, " +
+          "ignora este aviso."
       );
     }
   }

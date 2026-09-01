@@ -675,6 +675,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
           `${pendiente.captionOriginal ?? ""}\n\n` +
           `Pregunta que se le hizo al usuario para desambiguar: ${pendiente.preguntaFormulada}\n` +
           `Respuesta del usuario: ${incoming.text}`,
+        correoOrigen: pendiente.correoOrigen,
       });
     } catch (error) {
       console.error("Error procesando respuesta de desambiguación:", error);
