@@ -29,6 +29,7 @@ import { confirmarArchivoPendienteTool } from "./confirmarArchivoPendiente";
 import { listarCorreosSinLeerTool } from "./listarCorreosSinLeer";
 import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
+import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -65,6 +66,7 @@ const tools: ToolDefinition[] = [
   listarCorreosSinLeerTool,
   reintentarContactoPendienteTool,
   fijarAliasProveedorTool,
+  reintentarGastoPendienteTool,
 ];
 
 /**

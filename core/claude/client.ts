@@ -4,6 +4,7 @@ import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
 import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
+import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { registrarUsoIA } from "./costTracking";
 
 const MODEL_SONNET = "claude-sonnet-5";
@@ -220,6 +221,25 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           "mensaje actual confirma que ya lo creó (ej. 'ya lo creé', 'listo', 'ya está', 'dale, ya lo " +
           "agregué'), usa la herramienta reintentar_contacto_pendiente — nunca le vuelvas a pedir los datos " +
           "de la factura, ya se leyeron antes. Si su mensaje no tiene relación con esto, ignora este aviso."
+      );
+    }
+
+    const gastoPendiente = await obtenerGastoPendienteDatosPorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando gasto pendiente de datos (no crítico):", error);
+      return undefined;
+    });
+    if (gastoPendiente) {
+      const queFalta =
+        gastoPendiente.motivo === "empresa"
+          ? "a qué empresa (WOBA, EWORKS o Footprint) pertenece"
+          : "el monto y moneda EXACTOS que salieron de la cuenta (la factura está en moneda extranjera sin equivalente explícito)";
+      partes.push(
+        `Hay una pregunta SIN RESPONDER en este chat sobre una factura/gasto: se detectó "${gastoPendiente.datos.proveedor}" ` +
+          `(${gastoPendiente.datos.monto} ${gastoPendiente.datos.moneda}) pero todavía NO se mandó ninguna propuesta con ` +
+          `botón — falta que el usuario confirme ${queFalta}. Si su mensaje actual responde eso, usa la herramienta ` +
+          "reintentar_gasto_pendiente con el dato que dio — nunca le pidas que reenvíe el documento, ya se leyó, y " +
+          "nunca le digas que 'ya se la mandaste' hasta que esta herramienta confirme que la propuesta salió. Si su " +
+          "mensaje no tiene relación con esto, ignora este aviso."
       );
     }
   }

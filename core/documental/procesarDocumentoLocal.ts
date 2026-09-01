@@ -32,19 +32,21 @@ export interface DocumentoLocalEntrante {
  * automático) — factorizado acá para no triplicarla al agregar un tercer
  * punto de entrada (capturar_correo bajo demanda).
  */
-export async function procesarDocumentoLocal(entrada: DocumentoLocalEntrante): Promise<"gasto" | "archivo"> {
+export async function procesarDocumentoLocal(
+  entrada: DocumentoLocalEntrante
+): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "archivo"> {
   if (entrada.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(entrada.mimeType)) {
     try {
       const datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo);
       if (datosFactura.esFacturaOGasto) {
-        await procesarGastoEntrante({
+        const resultado = await procesarGastoEntrante({
           chatId: entrada.chatId,
           rutaLocal: entrada.rutaLocal,
           nombreArchivoOriginal: entrada.nombreArchivoOriginal,
           mimeType: entrada.mimeType,
           datos: datosFactura,
         });
-        return "gasto";
+        return resultado === "propuesta_enviada" ? "gasto_propuesto" : "gasto_pendiente_datos";
       }
     } catch (error) {
       console.error("[procesarDocumentoLocal] Error leyendo el documento como factura (sigue como documento normal):", error);

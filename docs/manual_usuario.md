@@ -196,7 +196,13 @@ que hacer nada más.
      tipo "40.46 EUR | 148.346 COP", ese dato sí está en el asunto/cuerpo del
      correo). Nunca calcula ni inventa un tipo de cambio: si no encuentra el
      equivalente en euros en ningún lado, no crea nada — te pregunta el monto
-     exacto en euros antes de continuar.
+     exacto en euros antes de continuar. **Esa pregunta queda pendiente de
+     verdad** (guardada, no solo dicha) — nunca te dice "ya te mandé la
+     propuesta" cuando en realidad solo te hizo una pregunta sin ningún
+     botón; y tu respuesta en texto libre (ej. "son 17.95 USD") retoma el
+     mismo proceso desde donde quedó, sin releer el documento ni volver a
+     preguntar lo mismo. Lo mismo aplica si lo que falta es la empresa
+     (WOBA/EWORKS/Footprint) en vez de la moneda.
   5. **Si no encuentra el proveedor** ni por nombre parecido, busca
      alternativas (contactos con nombre parecido, facturas ya registradas
      con el mismo importe) y te las muestra por botones — la que confirmes

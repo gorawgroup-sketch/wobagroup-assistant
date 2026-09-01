@@ -129,9 +129,11 @@ export const capturarCorreoTool: ToolDefinition = {
         });
 
         resultadosAdjuntos.push(
-          tipo === "gasto"
-            ? `"${adjunto.filename}" — es una factura/gasto, ya te mandé la propuesta para crear el gasto en Holded con el comprobante adjunto`
-            : `"${adjunto.filename}" — no es una factura, te mandé una propuesta para archivarlo en Drive`
+          tipo === "gasto_propuesto"
+            ? `"${adjunto.filename}" — es una factura/gasto, ya te mandé la propuesta CON BOTÓN para crear el gasto en Holded con el comprobante adjunto`
+            : tipo === "gasto_pendiente_datos"
+              ? `"${adjunto.filename}" — es una factura/gasto, pero antes de proponer nada te pregunté un dato que falta (verifica el mensaje anterior) — todavía NO hay ninguna propuesta con botón para este archivo`
+              : `"${adjunto.filename}" — no es una factura, te mandé una propuesta para archivarlo en Drive`
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

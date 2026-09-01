@@ -1,6 +1,7 @@
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
 import { buscarGastoSimilar, buscarMovimientoSimilar, inferirCuentaGasto, inferirTagsCategoria } from "../holded/write";
 import { crearPropuestaGasto, actualizarMessageIdGasto } from "./gastoProposalSheet";
+import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 
@@ -12,6 +13,18 @@ export interface GastoEntrante {
   datos: DatosFactura;
 }
 
+/**
+ * Bug real encontrado en vivo: esta función tiene ramas que solo hacen una
+ * pregunta en texto plano (sin botones) y ramas que sí mandan la propuesta
+ * completa con botones — antes todas devolvían `void` por igual, así que
+ * el llamador (procesarDocumentoLocal) no podía distinguirlas y terminaba
+ * confirmándole a Carlos "ya te mandé la propuesta" cuando en realidad solo
+ * se le había hecho una pregunta sin ningún botón que aprobar. Nunca
+ * reportar un envío que no ocurrió — mismo principio que ya se aplica en
+ * reconciliarMovimiento (core/holded/write.ts).
+ */
+export type ResultadoGastoEntrante = "propuesta_enviada" | "pendiente_datos";
+
 function esEmpresaHolded(empresa: string): empresa is Empresa {
   return empresa === "WOBA" || empresa === "EWORKS" || empresa === "Footprint";
 }
@@ -22,7 +35,7 @@ function esEmpresaHolded(empresa: string): empresa is Empresa {
  * nuevo, y manda la propuesta con botones — nunca escribe nada en Holded
  * por sí sola, eso ocurre solo en gastoCallbackHandler.ts tras aprobación.
  */
-export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<void> {
+export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<ResultadoGastoEntrante> {
   const { chatId, datos } = entrada;
 
   if (!esEmpresaHolded(datos.empresaProbable)) {
@@ -31,7 +44,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
       `📄 Detecté una factura/gasto (${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${datos.moneda}) ` +
         `pero no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece si quieres que lo registre en Holded.`
     );
-    return;
+    await guardarGastoPendienteDatos({
+      chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      datos,
+      motivo: "empresa",
+    }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (empresa):", error));
+    return "pendiente_datos";
   }
 
   const empresa: Empresa = datos.empresaProbable;
@@ -60,7 +81,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
         `EXACTO y la moneda que salió de la cuenta (no voy a calcular un tipo de cambio yo mismo) antes de ` +
         `registrar nada. ¿Cuánto fue, y en qué moneda?`
     );
-    return;
+    await guardarGastoPendienteDatos({
+      chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      datos,
+      motivo: "moneda",
+    }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
+    return "pendiente_datos";
   }
 
   const monedaParaHolded = esMonedaExtranjera ? (datos.monedaEquivalente as string).toUpperCase().trim() : monedaOriginal;
@@ -276,4 +305,5 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
 
   const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);
   await actualizarMessageIdGasto(propuesta.id, messageId);
+  return "propuesta_enviada";
 }
