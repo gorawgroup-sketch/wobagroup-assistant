@@ -264,8 +264,13 @@ que hacer nada más.
 ### 📧 Correo (`asistente@wobagroup.com`)
 - Revisa el correo entrante cada hora (o al pedirlo con `/revisarcorreo`) y
   clasifica cada mensaje:
-  - Si trae un documento archivable → lo propone para Drive, o para Holded si
-    resulta ser una factura/gasto (mismo flujo que arriba).
+  - **Si trae un adjunto real, SIEMPRE lo procesa** (analiza el
+    direccionamiento del correo — qué acción hay que tomar) y lo propone
+    para Drive, o para Holded si resulta ser una factura/gasto (mismo flujo
+    que arriba) — sin depender de que la clasificación inicial del correo
+    haya acertado el tipo. Si el destino está claro, te muestra la
+    propuesta directo; si es ambiguo (ej. varias carpetas plausibles), te
+    pregunta cuál corresponde en vez de adivinar.
   - Si necesita respuesta o parece una instrucción → te avisa con botones
     para investigar, ignorar, o darle instrucciones específicas — solo el
     superadministrador puede presionarlos.
