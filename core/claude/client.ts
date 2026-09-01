@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
+import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
 import { registrarUsoIA } from "./costTracking";
 
 const MODEL_SONNET = "claude-sonnet-5";
@@ -154,11 +155,24 @@ const SYSTEM_PROMPT_ESTATICO = [
     "concreta a considerar, no como un callejón sin salida.",
 ].join("\n\n");
 
-/** Parte DINÁMICA del system prompt — cambia por llamada (fecha de hoy, quién escribe), nunca se cachea. */
-function buildSystemPromptDinamico(nombreRemitente?: string): string {
+/**
+ * Parte DINÁMICA del system prompt — cambia por llamada (fecha de hoy,
+ * quién escribe, propuestas pendientes de este chat), nunca se cachea.
+ *
+ * Pedido explícito de Carlos, tras un caso real: le mandamos una propuesta
+ * de archivar un documento con botones, pero respondió en texto libre en
+ * vez de tocarlos ("archívalo... y responde el correo con un link") — el
+ * chat normal no tenía ningún contexto de esa propuesta (vive en un store
+ * aparte, no en el historial de conversación) y le pidió de nuevo datos que
+ * ya se le habían mostrado. Ahora se avisa acá cuando hay una propuesta de
+ * archivo sin responder para este chat, con la tool confirmar_archivo_pendiente
+ * (core/tools/confirmarArchivoPendiente.ts) disponible para actuar sobre
+ * ella si el mensaje del usuario aplica.
+ */
+async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemitente?: string): Promise<string> {
   const hoy = formatDateLocal(new Date());
 
-  return [
+  const partes = [
     `La fecha de hoy es ${hoy}. Úsala como referencia al interpretar expresiones relativas de tiempo ` +
       "('este mes', 'la semana pasada', 'los últimos 30 días', etc.) al construir parámetros de fecha " +
       "para las herramientas.",
@@ -170,7 +184,27 @@ function buildSystemPromptDinamico(nombreRemitente?: string): string {
         "como lo haría un asistente que de verdad la conoce y no un sistema que solo contesta preguntas."
       : "No sabes con certeza el nombre de quien te escribe en este mensaje — no asumas que es Carlos, " +
         "pregúntalo con calidez si hace falta dirigirte a la persona por nombre.",
-  ].join("\n\n");
+  ];
+
+  if (chatId !== undefined) {
+    const propuesta = await obtenerPropuestaClasificacionPendientePorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando propuesta de archivo pendiente (no crítico):", error);
+      return undefined;
+    });
+    if (propuesta) {
+      partes.push(
+        `Hay una propuesta de archivo SIN RESPONDER en este chat: "${propuesta.nombreArchivoOriginal}" ` +
+          `(empresa ${propuesta.clasificacion.empresa}, carpeta sugerida "${propuesta.clasificacion.carpetaSugerida}"). ` +
+          "Se le mandó al usuario con botones, pero si su mensaje actual es una respuesta en texto libre a " +
+          "esa propuesta (ej. 'archívalo ahí', 'sí, guárdalo', o una instrucción compuesta como 'archívalo y " +
+          "responde el correo con el link'), usa la herramienta confirmar_archivo_pendiente para confirmarla " +
+          "— no le vuelvas a preguntar datos que ya se le mostraron en esa propuesta. Si su mensaje no tiene " +
+          "relación con esto, ignora este aviso."
+      );
+    }
+  }
+
+  return partes.join("\n\n");
 }
 
 // Instrucción adicional SOLO para el primer intento (Haiku, herramientas
@@ -291,7 +325,7 @@ async function ejecutarConversacion(
   if (systemExtra) {
     system.push({ type: "text", text: systemExtra, cache_control: { type: "ephemeral" } });
   }
-  system.push({ type: "text", text: buildSystemPromptDinamico(nombreRemitente) });
+  system.push({ type: "text", text: await buildSystemPromptDinamico(chatId, nombreRemitente) });
 
   const historial = usarHistorial && chatId !== undefined ? await obtenerHistorial(chatId) : [];
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];

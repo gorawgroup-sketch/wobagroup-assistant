@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { google, sheets_v4 } from "googleapis";
+import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import type { ClasificacionDocumento } from "./classifyFile";
 
 export interface PropuestaClasificacion {
@@ -16,76 +15,260 @@ export interface PropuestaClasificacion {
   creadoEn: number;
 }
 
-const DATA_DIR = join(process.cwd(), "data");
-const STORE_PATH = join(DATA_DIR, "propuestas_documentos.json");
+const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
+const TAB_NAME = "_propuestas_documentos";
+// Bug real encontrado en vivo: este store vivía en un archivo JSON local
+// (data/propuestas_documentos.json) — a diferencia de TODOS los demás
+// stores de propuestas pendientes del proyecto (gastos, conciliaciones,
+// correcciones, historial de chat...), que ya se migraron a Sheets
+// precisamente porque el filesystem de Railway se borra en cada redeploy.
+// Este quedó sin migrar: cualquier propuesta de archivar un documento que
+// estuviera pendiente al momento de un redeploy (algo frecuente en sesiones
+// de desarrollo activas) se perdía en silencio, sin que el usuario ni el
+// asistente se enteraran. Mismo patrón que gastoProposalSheet.ts.
+const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas, igual que antes
 
-// NOTA: esto sobrevive reinicios del proceso (crash, OOM) dentro del mismo
-// contenedor/deployment, pero NO sobrevive un redeploy real (Railway levanta
-// un contenedor nuevo con filesystem limpio). Para eso haría falta almacenar
-// en algo externo, como se hizo con las propuestas de cashflow en el Sheet.
-const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas
+const HEADERS = [
+  "id",
+  "nombreArchivoOriginal",
+  "rutaLocal",
+  "mimeType",
+  "clasificacionJSON",
+  "chatId",
+  "messageId",
+  "creadoEn",
+];
 
-async function leerTodas(): Promise<PropuestaClasificacion[]> {
-  if (!existsSync(STORE_PATH)) return [];
-
-  try {
-    const raw = await readFile(STORE_PATH, "utf-8");
-    return JSON.parse(raw) as PropuestaClasificacion[];
-  } catch {
-    return [];
+function assertSheetId(): string {
+  if (!CASHFLOW_SHEET_ID) {
+    throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
+  return CASHFLOW_SHEET_ID;
 }
 
-async function guardarTodas(propuestas: PropuestaClasificacion[]): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(STORE_PATH, JSON.stringify(propuestas, null, 2), "utf-8");
+let writeClient: sheets_v4.Sheets | null = null;
+let tabGridId: number | null = null;
+
+function getClient(): sheets_v4.Sheets {
+  if (writeClient) return writeClient;
+
+  const credentials = loadServiceAccountCredentials();
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+
+  writeClient = google.sheets({ version: "v4", auth });
+  return writeClient;
 }
 
-function purgarVencidas(propuestas: PropuestaClasificacion[]): PropuestaClasificacion[] {
+async function ensureTab(): Promise<number> {
+  if (tabGridId !== null) return tabGridId;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
+  const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
+
+  if (existing?.properties?.sheetId != null) {
+    tabGridId = existing.properties.sheetId;
+    return tabGridId;
+  }
+
+  const addResp = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }] },
+  });
+
+  const newSheetId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId;
+  if (newSheetId == null) {
+    throw new Error("No se pudo crear la pestaña de propuestas de documentos.");
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A1:H1`,
+    valueInputOption: "RAW",
+    requestBody: { values: [HEADERS] },
+  });
+
+  tabGridId = newSheetId;
+  return tabGridId;
+}
+
+function rowToPropuesta(row: unknown[]): PropuestaClasificacion | null {
+  if (!row[0]) return null;
+
+  let clasificacion: ClasificacionDocumento;
+  try {
+    clasificacion = row[4] ? JSON.parse(String(row[4])) : null;
+  } catch {
+    clasificacion = null as unknown as ClasificacionDocumento;
+  }
+  if (!clasificacion) return null; // fila corrupta — mejor ignorarla que tumbar el resto
+
+  return {
+    id: String(row[0]),
+    nombreArchivoOriginal: row[1] ? String(row[1]) : "",
+    rutaLocal: row[2] ? String(row[2]) : "",
+    mimeType: row[3] ? String(row[3]) : undefined,
+    clasificacion,
+    chatId: Number(row[5]) || 0,
+    messageId: Number(row[6]) || 0,
+    creadoEn: Number(row[7]) || 0,
+  };
+}
+
+function propuestaToRow(p: PropuestaClasificacion): (string | number)[] {
+  return [
+    p.id,
+    p.nombreArchivoOriginal,
+    p.rutaLocal,
+    p.mimeType ?? "",
+    JSON.stringify(p.clasificacion),
+    p.chatId,
+    p.messageId,
+    p.creadoEn,
+  ];
+}
+
+interface FilaConIndice {
+  rowIndex: number;
+  propuesta: PropuestaClasificacion;
+}
+
+async function leerTodas(): Promise<FilaConIndice[]> {
+  await ensureTab();
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A2:H10000`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+
+  const rows = resp.data.values ?? [];
+  const result: FilaConIndice[] = [];
+  rows.forEach((row, i) => {
+    const propuesta = rowToPropuesta(row);
+    if (propuesta) result.push({ rowIndex: i + 2, propuesta });
+  });
+  return result;
+}
+
+async function eliminarFila(rowIndex1Based: number): Promise<void> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const gridId = await ensureTab();
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: sheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: { sheetId: gridId, dimension: "ROWS", startIndex: rowIndex1Based - 1, endIndex: rowIndex1Based },
+          },
+        },
+      ],
+    },
+  });
+}
+
+async function purgarVencidas(): Promise<void> {
+  const todas = await leerTodas();
   const ahora = Date.now();
-  return propuestas.filter((p) => ahora - p.creadoEn <= TTL_MS);
+  const vencidas = todas.filter(({ propuesta }) => ahora - propuesta.creadoEn > TTL_MS);
+
+  vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
+  for (const { rowIndex } of vencidas) {
+    await eliminarFila(rowIndex);
+  }
 }
 
 export async function crearPropuestaClasificacion(
   datos: Omit<PropuestaClasificacion, "id" | "creadoEn">
 ): Promise<PropuestaClasificacion> {
-  const vigentes = purgarVencidas(await leerTodas());
+  await purgarVencidas();
 
-  const propuesta: PropuestaClasificacion = {
-    ...datos,
-    id: randomUUID().slice(0, 8),
-    creadoEn: Date.now(),
-  };
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  await ensureTab();
 
-  vigentes.push(propuesta);
-  await guardarTodas(vigentes);
+  const propuesta: PropuestaClasificacion = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A:H`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [propuestaToRow(propuesta)] },
+  });
+
   return propuesta;
 }
 
 /** Actualiza el message_id real de Telegram tras enviar el mensaje con botones. */
 export async function actualizarMessageIdClasificacion(id: string, messageId: number): Promise<void> {
   const todas = await leerTodas();
-  const idx = todas.findIndex((p) => p.id === id);
-  if (idx === -1) return;
+  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  if (!match) return;
 
-  todas[idx].messageId = messageId;
-  await guardarTodas(todas);
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!G${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[messageId]] },
+  });
 }
 
 /**
- * Devuelve la propuesta y la elimina del archivo (aprobada o redirigida, ya
- * no debe quedar pendiente). También purga cualquier propuesta vencida.
+ * Devuelve la propuesta y la elimina (aprobada o redirigida, ya no debe
+ * quedar pendiente). También purga cualquier propuesta vencida.
  */
 export async function consumirPropuestaClasificacion(id: string): Promise<PropuestaClasificacion | undefined> {
-  const vigentes = purgarVencidas(await leerTodas());
-  const idx = vigentes.findIndex((p) => p.id === id);
+  await purgarVencidas();
+  const todas = await leerTodas();
+  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  if (!match) return undefined;
 
-  if (idx === -1) {
-    await guardarTodas(vigentes); // persiste la purga aunque no se encuentre esta id
-    return undefined;
-  }
+  await eliminarFila(match.rowIndex);
+  return match.propuesta;
+}
 
-  const [propuesta] = vigentes.splice(idx, 1);
-  await guardarTodas(vigentes);
-  return propuesta;
+/**
+ * Igual que consumirPropuestaClasificacion, pero busca por chatId en vez de
+ * por id — para cuando el usuario responde en texto libre a una propuesta
+ * con botones en vez de presionarlos (ver confirmarArchivoPendiente.ts).
+ * Si hay varias pendientes del mismo chat, consume la más reciente.
+ */
+export async function consumirPropuestaClasificacionPorChat(chatId: number): Promise<PropuestaClasificacion | undefined> {
+  await purgarVencidas();
+  const todas = await leerTodas();
+  const delChat = todas.filter(({ propuesta }) => propuesta.chatId === chatId);
+  if (delChat.length === 0) return undefined;
+
+  const masReciente = delChat.reduce((a, b) => (a.propuesta.creadoEn >= b.propuesta.creadoEn ? a : b));
+  await eliminarFila(masReciente.rowIndex);
+  return masReciente.propuesta;
+}
+
+/**
+ * Solo lectura (no consume) — para que el asistente conversacional sepa que
+ * hay una propuesta de archivo esperando respuesta ANTES de decidir qué
+ * hacer con el mensaje del usuario (ver buildSystemPromptDinamico en
+ * core/claude/client.ts). Devuelve la más reciente si hay varias.
+ */
+export async function obtenerPropuestaClasificacionPendientePorChat(chatId: number): Promise<PropuestaClasificacion | undefined> {
+  const todas = await leerTodas();
+  const delChat = todas.filter(({ propuesta }) => propuesta.chatId === chatId);
+  if (delChat.length === 0) return undefined;
+
+  return delChat.reduce((a, b) => (a.propuesta.creadoEn >= b.propuesta.creadoEn ? a : b)).propuesta;
 }
