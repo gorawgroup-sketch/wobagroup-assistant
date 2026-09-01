@@ -524,19 +524,20 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   }
 
   if (update.message?.document || update.message?.photo) {
-    // Si el caption trae "CAPTURA:", se captura ese texto directo (no el
-    // archivo) — mismo comportamiento que un mensaje de texto normal.
-    const caption = update.message.caption;
-    if (caption && esMensajeCaptura(caption)) {
-      try {
-        await iniciarSeleccionEmpresaCaptura(update.message.chat.id, caption, update.message.from?.username);
-      } catch (error) {
-        console.error("Error iniciando la pregunta de empresa para la captura:", error);
-        await sendTelegramMessage(update.message.chat.id, "Hubo un error guardando la captura. Intenta de nuevo.");
-      }
-      return;
-    }
-
+    // Bug real encontrado en vivo (2026-09-01): antes, si el caption traía
+    // la palabra "CAPTURA" (ej. una foto real de un directorio de accesos
+    // con caption "captura"), este atajo guardaba el TEXTO del caption tal
+    // cual ("captura") como si fuera el conocimiento — el archivo/foto
+    // adjunto nunca se descargaba ni se leía. Carlos recibió "✅ Guardado —
+    // WOBA" (una confirmación real) y minutos después, al preguntar por esa
+    // misma información, el sistema no tenía nada útil guardado — la
+    // captura real nunca llegó a leerse. Ahora TODO documento/foto entrante
+    // pasa siempre por handleIncomingFile (que sí descarga y lee el
+    // contenido con Claude vision) — el clasificador (classifyFile.ts)
+    // reconoce la palabra "CAPTURA" en el caption como señal explícita de
+    // "recuerda esto" (parece_intencion_de_captura) y dispara el mismo
+    // flujo de transcripción + guardado que ya existía para correos con
+    // adjuntos, en vez de un atajo aparte que nunca leía el archivo.
     try {
       await handleIncomingFile(update.message);
     } catch (error) {

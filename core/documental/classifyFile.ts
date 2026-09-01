@@ -77,11 +77,15 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       parece_intencion_de_captura: {
         type: "boolean",
         description:
-          "true SOLO si el texto/caption (típicamente el cuerpo de un correo) pide explícitamente que " +
-          "se RECUERDE o quede registrado este contenido (ej. 'para que lo memorices', 'que quede de " +
-          "referencia', 'guárdalo para consultarlo después', 'anótalo'). No lo actives solo porque el " +
-          "documento sea informativo — tiene que haber una petición explícita de recordarlo/registrarlo, " +
-          "no solo de archivarlo.",
+          "true SOLO si el texto/caption (típicamente el cuerpo de un correo, o el caption de una foto/" +
+          "documento enviado por Telegram) pide explícitamente que se RECUERDE o quede registrado este " +
+          "contenido (ej. 'para que lo memorices', 'que quede de referencia', 'guárdalo para consultarlo " +
+          "después', 'anótalo') — O si el caption contiene literalmente la palabra 'CAPTURA' (mayúsculas " +
+          "o minúsculas, ej. una foto enviada con caption 'captura' o 'CAPTURA esto'), que es la palabra " +
+          "clave estándar usada en todo el sistema para pedir que algo se guarde como conocimiento — " +
+          "tratarla igual aquí que en cualquier otro mensaje. No lo actives solo porque el documento sea " +
+          "informativo sin ninguna de estas señales — tiene que haber una petición explícita de " +
+          "recordarlo/registrarlo, no solo de archivarlo.",
       },
     },
     required: ["empresa", "tipo_documento", "carpeta_sugerida", "confianza", "razon"],
@@ -129,8 +133,9 @@ const SYSTEM_PROMPT = [
   "No tienes acceso al contenido del archivo (PDF/imagen), solo al nombre y al caption — no inventes ni " +
     "asumas contenido que no esté en esas pistas.",
   "Además de decidir dónde archivarlo, revisa si el caption (el texto del correo/mensaje que trae el " +
-    "documento) pide explícitamente que se RECUERDE o quede registrado — no solo que se archive. Si es " +
-    "así, marca parece_intencion_de_captura=true.",
+    "documento) pide explícitamente que se RECUERDE o quede registrado — no solo que se archive — o si " +
+    "contiene literalmente la palabra 'CAPTURA' (la palabra clave estándar de todo el sistema para pedir " +
+    "que algo se guarde como conocimiento). Si es así, marca parece_intencion_de_captura=true.",
   `SIEMPRE debes terminar llamando a la herramienta ${REPORTAR_TOOL_NAME} con tu conclusión final.`,
 ].join("\n\n");
 

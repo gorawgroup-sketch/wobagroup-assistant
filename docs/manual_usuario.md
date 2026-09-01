@@ -486,6 +486,12 @@ hace falta que copies el contenido — el asistente va y lee el correo real
 (asunto, remitente y cuerpo completo) y guarda eso, no la instrucción que
 escribiste.
 
+Lo mismo aplica si mandas **una foto o documento por Telegram con `captura`
+como pie de foto**: no guarda la palabra "captura" tal cual, lee el
+contenido real de la imagen/PDF con IA antes de proponer guardarlo — así
+que si le mandas, por ejemplo, una captura de pantalla de un directorio de
+accesos, guarda esa información real, no solo el pie de foto.
+
 ### Corregirlo cuando se equivoca
 Si te da un dato incorrecto, dile algo como *"corrección: eso no era así, en
 realidad..."* o *"no, en realidad es..."*. La corrección queda registrada
