@@ -1,4 +1,5 @@
 import type { IncomingMessage, InlineKeyboardButton, TelegramUpdate } from "./types";
+import { registrarMensajeSaliente } from "../claude/conversationStore";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 
@@ -140,6 +141,14 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
     const body = await response.text();
     throw new Error(`Error enviando mensaje a Telegram (${response.status}): ${body}`);
   }
+
+  // "Fire and forget" — no bloquea el envío real por la latencia de Sheets.
+  // Ver registrarMensajeSaliente: pedido explícito de Carlos, cualquier
+  // pregunta/aviso que el asistente mande (venga de un cron, un callback, o
+  // el chat normal) debe quedar en el mismo historial que usa askClaude.
+  registrarMensajeSaliente(chatId, text).catch((error) =>
+    console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
+  );
 }
 
 const MENSAJE_TRABAJANDO = "⏳ Trabajando en tu consulta...";
@@ -231,6 +240,11 @@ export async function sendTelegramMessageWithButtons(
   }
 
   const data = (await response.json()) as { result: { message_id: number } };
+
+  registrarMensajeSaliente(chatId, text).catch((error) =>
+    console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
+  );
+
   return data.result.message_id;
 }
 

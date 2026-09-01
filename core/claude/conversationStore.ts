@@ -23,7 +23,10 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 // indefinida. Esto es completamente aparte de CAPTURA (core/knowledge/
 // capturaSheet.ts, pestaña _capturas): eso es conocimiento guardado a
 // propósito y a mano, permanente, sin TTL — nunca se purga.
-const MAX_MESSAGES = 20;
+// Subido de 20 a 30 al empezar a registrar TAMBIÉN los mensajes salientes
+// proactivos (cron/callbacks, ver registrarMensajeSaliente) — más volumen
+// de mensajes por chat, para no desplazar la conversación real tan rápido.
+const MAX_MESSAGES = 30;
 const TTL_HISTORIAL_MS = 6 * 60 * 60 * 1000; // 6 horas — cubre una pausa normal (comida, una reunión), no una conversación de hace días
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -191,6 +194,31 @@ export async function limpiarHistorial(chatId: number): Promise<void> {
     await eliminarFila(fila.rowIndex);
   } catch (error) {
     console.error("[conversationStore] Error limpiando historial (no crítico):", error);
+  }
+}
+
+/**
+ * Pedido explícito de Carlos: "cualquier inquietud que tú tengas yo la
+ * pueda responder desde el Chat y tú reconozcas y sigas el proceso" — no
+ * solo para flujos específicos (archivo pendiente, contacto no encontrado,
+ * ya cubiertos con stores dedicados), sino CUALQUIER pregunta/propuesta que
+ * el asistente le mande por Telegram, venga de un cron, un callback, o el
+ * chat normal. Se llama desde sendTelegramMessage/sendTelegramMessageWithButtons
+ * (ver core/telegram/client.ts) para que ese texto quede en el MISMO
+ * historial que usa askClaude — así, en el siguiente mensaje del usuario
+ * (aunque sea texto libre, no un botón), el chat ya sabe qué se le
+ * preguntó, sin necesitar un store dedicado por cada tipo de pregunta.
+ * Verificado en vivo que la API de Anthropic acepta mensajes "assistant"
+ * consecutivos y que el historial puede empezar en "assistant" — no hace
+ * falta fusionar con el turno anterior para mantener una alternancia
+ * estricta que en realidad no exige.
+ */
+export async function registrarMensajeSaliente(chatId: number, texto: string): Promise<void> {
+  try {
+    const historial = await obtenerHistorial(chatId);
+    await guardarHistorial(chatId, [...historial, { role: "assistant", content: texto }]);
+  } catch (error) {
+    console.error("[conversationStore] Error registrando mensaje saliente (no crítico):", error);
   }
 }
 
