@@ -186,23 +186,29 @@ que hacer nada más.
      ver con este gasto puntual).
   4. **Desglose real de IVA** por línea (base + % leído de la factura)
      visible antes de aprobar.
-  4b. **Factura en moneda distinta al euro** (ej. un recibo de Uber en COP):
-     la conciliación bancaria siempre es en euros, así que el gasto se
-     registra en Holded por el monto en EUR — nunca por el monto en la
-     moneda local — y el comprobante se deja adjunto tal cual, en su moneda
-     original. Para saber el monto en euros, revisa tanto el documento como
-     el correo que lo trae (es habitual que el recibo en sí no muestre el
-     equivalente en euros, pero si te reenviaron una notificación de tarjeta
-     tipo "40.46 EUR | 148.346 COP", ese dato sí está en el asunto/cuerpo del
+  4b. **Factura en una moneda que la empresa SÍ tiene como cuenta real en
+     Holded** (ej. un recibo en USD para Footprint, que tiene cuenta real
+     "FTG USD" — WOBA y EWORKS también tienen cuenta en USD, y EWORKS
+     también en GBP): se registra en esa misma moneda tal cual, sin pedir
+     ningún equivalente — no hay nada que convertir, es el monto real que
+     salió de una cuenta real. **Factura en una moneda que la empresa NO
+     tiene como cuenta real** (ej. un recibo de Uber en COP para una empresa
+     sin cuenta en COP): ahí sí hace falta el monto equivalente en alguna
+     moneda que la empresa sí tenga — revisa tanto el documento como el
+     correo que lo trae (es habitual que el recibo en sí no muestre el
+     equivalente, pero si te reenviaron una notificación de tarjeta tipo
+     "40.46 EUR | 148.346 COP", ese dato sí está en el asunto/cuerpo del
      correo). Nunca calcula ni inventa un tipo de cambio: si no encuentra el
-     equivalente en euros en ningún lado, no crea nada — te pregunta el monto
-     exacto en euros antes de continuar. **Esa pregunta queda pendiente de
-     verdad** (guardada, no solo dicha) — nunca te dice "ya te mandé la
-     propuesta" cuando en realidad solo te hizo una pregunta sin ningún
-     botón; y tu respuesta en texto libre (ej. "son 17.95 USD") retoma el
-     mismo proceso desde donde quedó, sin releer el documento ni volver a
-     preguntar lo mismo. Lo mismo aplica si lo que falta es la empresa
-     (WOBA/EWORKS/Footprint) en vez de la moneda.
+     equivalente en ningún lado, no crea nada — te pregunta el monto exacto y
+     la moneda real antes de continuar (y te dice explícitamente en cuáles
+     monedas reales tiene cuenta la empresa, para que no tengas que
+     adivinar). **Esa pregunta queda pendiente de verdad** (guardada, no solo
+     dicha) — nunca te dice "ya te mandé la propuesta" cuando en realidad
+     solo te hizo una pregunta sin ningún botón; y tu respuesta en texto
+     libre (ej. "son 17.95 USD") retoma el mismo proceso desde donde quedó,
+     sin releer el documento ni volver a preguntar lo mismo. Lo mismo aplica
+     si lo que falta es la empresa (WOBA/EWORKS/Footprint) en vez de la
+     moneda.
   5. **Si no encuentra el proveedor** ni por nombre parecido, busca
      alternativas (contactos con nombre parecido, facturas ya registradas
      con el mismo importe) y te las muestra por botones — la que confirmes

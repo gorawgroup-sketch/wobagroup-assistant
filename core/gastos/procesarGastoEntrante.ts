@@ -1,5 +1,11 @@
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
-import { buscarGastoSimilar, buscarMovimientoSimilar, inferirCuentaGasto, inferirTagsCategoria } from "../holded/write";
+import {
+  buscarGastoSimilar,
+  buscarMovimientoSimilar,
+  inferirCuentaGasto,
+  inferirTagsCategoria,
+  obtenerMonedasCuentasReales,
+} from "../holded/write";
 import { crearPropuestaGasto, actualizarMessageIdGasto } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import type { DatosFactura } from "../documental/extractInvoiceData";
@@ -62,24 +68,40 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // como si fueran EUR; (2) un gasto de Starbucks en México ("6.41 USD |
   // 109 MXN") se registró con 6.41 tratado como si fueran EUR cuando el
   // correo decía USD explícitamente. La conciliación bancaria necesita el
-  // gasto en la moneda REAL de la tarjeta/cuenta que lo pagó — que puede
-  // ser EUR o USD según la tarjeta (el grupo tiene cuentas en ambas) — así
-  // que si la factura viene en otra moneda (la del comercio, no la de la
+  // gasto en la moneda REAL de la tarjeta/cuenta que lo pagó — así que si
+  // la factura viene en otra moneda (la del comercio, no la de la
   // tarjeta), hay que usar el monto+moneda equivalente que el documento o
   // el correo declaran explícitamente, y dejar el comprobante original tal
   // cual está. Si no hay ningún equivalente explícito, se pregunta en vez
   // de calcular un tipo de cambio inventado.
+  //
+  // Bug real encontrado en vivo (caso Panamá, Footprint, MERA AEROPUERTO DE
+  // PANAMA SA): "moneda extranjera" se definía como "cualquier cosa que no
+  // sea EUR" — pero Footprint tiene cuentas de tesorería REALES en EUR, USD
+  // Y COP, así que un recibo genuino en USD (17.95 USD, cargado a la cuenta
+  // real "FTG USD") NO necesita ningún equivalente: ES el monto real. Carlos
+  // ya había confirmado "el documento trae el valor exacto en dólares", pero
+  // el código seguía pidiendo un equivalente que no existe ni tiene sentido,
+  // dejando el gasto atascado en la misma pregunta en cada reintento. Ahora
+  // solo se pide un equivalente cuando la moneda del documento NO coincide
+  // con NINGUNA cuenta real de la empresa — nunca por asumir que EUR es la
+  // única moneda "propia".
+  const monedasReales = await obtenerMonedasCuentasReales(empresa).catch((error) => {
+    console.error("[procesarGastoEntrante] Error consultando monedas de cuentas reales (asume solo EUR):", error);
+    return new Set(["EUR"]);
+  });
   const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
-  const esMonedaExtranjera = monedaOriginal !== "" && monedaOriginal !== "EUR";
+  const esMonedaExtranjera = monedaOriginal !== "" && !monedasReales.has(monedaOriginal);
 
   if (esMonedaExtranjera && (datos.montoEquivalente === undefined || !datos.monedaEquivalente)) {
+    const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
     await sendTelegramMessage(
       chatId,
       `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
-        `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero el documento no trae ` +
-        `el monto equivalente en la moneda real de la tarjeta/cuenta (normalmente EUR o USD). Necesito el monto ` +
-        `EXACTO y la moneda que salió de la cuenta (no voy a calcular un tipo de cambio yo mismo) antes de ` +
-        `registrar nada. ¿Cuánto fue, y en qué moneda?`
+        `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
+        `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), y el documento ` +
+        `no trae el monto equivalente en alguna de esas monedas. Necesito el monto EXACTO y la moneda que salió de ` +
+        `la cuenta real (no voy a calcular un tipo de cambio yo mismo) antes de registrar nada. ¿Cuánto fue, y en qué moneda?`
     );
     await guardarGastoPendienteDatos({
       chatId,

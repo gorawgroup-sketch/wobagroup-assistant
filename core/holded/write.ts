@@ -1234,6 +1234,31 @@ export interface MovimientoBancarioCandidato {
 const VENTANA_DIAS_MOVIMIENTO = 5;
 
 /**
+ * Devuelve el conjunto de monedas en las que la empresa tiene de verdad una
+ * cuenta de tesorería activa en Holded (ej. Footprint: EUR, USD Y COP — no
+ * solo EUR). Bug real encontrado en vivo: procesarGastoEntrante asumía que
+ * CUALQUIER factura que no viniera en EUR era "moneda extranjera" y exigía
+ * un monto equivalente en EUR antes de seguir — pero un recibo real de
+ * Footprint en USD (17.95 USD, MERA AEROPUERTO DE PANAMA SA) SÍ es el monto
+ * real que salió de una cuenta real de Footprint en USD ("FTG USD"), sin
+ * ninguna conversión de por medio. Carlos ya había confirmado "el documento
+ * trae el valor exacto en dólares de 17.95" — pero el código seguía
+ * pidiendo un "equivalente" que no existe ni tiene sentido pedir, dejando
+ * el gasto atascado en la misma pregunta cada vez que se reintentaba. Ahora
+ * solo se pide un equivalente cuando la moneda del documento NO coincide
+ * con ninguna cuenta real de la empresa.
+ */
+export async function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set<string>> {
+  const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+    items?: Array<{ currency?: string; archived?: boolean }>;
+  };
+  const monedas = (cuentasData.items ?? [])
+    .filter((c) => !c.archived && c.currency)
+    .map((c) => (c.currency as string).toUpperCase().trim());
+  return new Set(monedas.length > 0 ? monedas : ["EUR"]);
+}
+
+/**
  * Busca movimientos bancarios SIN conciliar (ver estaConciliado) en TODAS
  * las cuentas activas de la empresa (sin importar su moneda — recorre cada
  * cuenta de tesorería y normaliza cada movimiento a euros con
