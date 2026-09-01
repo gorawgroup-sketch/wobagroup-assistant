@@ -49,8 +49,10 @@ function fechaMasCercanaParaSemana(semanaLabel: string, hoy: Date): Date | null 
 }
 
 /**
- * Job diario: revisa la columna "Aplazamiento Impuestos por Pagar" de la
- * hoja DATOS (categoría APLAZAMIENTO_IMPUESTOS, columnas AC:AE) y avisa
+ * Job diario: revisa la sección "APLAZAMIENTO IMPUESTOS POR PAGAR" de la
+ * hoja DATOS (categoría APLAZAMIENTO_IMPUESTOS, columna N apilada bajo
+ * Pagos Proyectos e Impuestos por Pagar — ver parsearSeccionesColumnaN en
+ * cashflowSheet.ts) y avisa
  * cuando la semana registrada de una fila cae dentro de la MISMA ventana de
  * aviso que ya usa revisarAlertasFiscales para el calendario fiscal
  * (VENTANA_ALERTA_DIAS, hoy 2 días) — un mensaje individual por fila, no un

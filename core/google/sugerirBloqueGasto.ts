@@ -9,12 +9,20 @@ export interface CategoriaSugerida {
   score: number;
 }
 
+// IMPUESTOS_POR_PAGAR y APLAZAMIENTO_IMPUESTOS mapean a bloque: null a
+// propósito — ambas viven ahora en columnas apiladas compartidas con Pagos
+// Proyectos (columna N, ver parsearSeccionesColumnaN en cashflowSheet.ts),
+// y todavía no tienen su propio escritor automático (necesita manejar el
+// mismo patrón de "encontrar hueco sin invadir la sección de al lado" que
+// ya usa registrarPendienteEnSheet para X:Z, pero con columnas y esquema
+// distintos) — se construye cuando aparezca un caso real que lo necesite.
 const CATEGORIA_A_BLOQUE: Record<DetalleCategoria, { bloque: BloqueEscritura | null; etiqueta: string }> = {
   INGRESOS: { bloque: "ingresos", etiqueta: "Ingresos" },
   PAGOS_PROYECTOS: { bloque: "pagos_proyectos", etiqueta: "Pagos Proyectos" },
   PAGOS_EXTRAS: { bloque: "pagos_extras", etiqueta: "Pagos Extras" },
   GASTOS_FIJOS: { bloque: "gastos_fijos", etiqueta: "Gastos Fijos" },
-  APLAZAMIENTO_IMPUESTOS: { bloque: "aplazamiento_impuestos", etiqueta: "Aplazamiento Impuestos" },
+  IMPUESTOS_POR_PAGAR: { bloque: null, etiqueta: "Impuestos por Pagar" },
+  APLAZAMIENTO_IMPUESTOS: { bloque: null, etiqueta: "Aplazamiento Impuestos por Pagar" },
   PAGOS_PENDIENTES_ALBERTO: { bloque: "pagos_pendientes_alberto", etiqueta: "Pagos Pendientes Alberto" },
   DEUDAS_PENDIENTES: { bloque: "deudas_pendientes", etiqueta: "Deudas Pendientes Otros" },
 };
@@ -25,6 +33,7 @@ const CATEGORIAS_DE_GASTO: DetalleCategoria[] = [
   "PAGOS_EXTRAS",
   "PAGOS_PENDIENTES_ALBERTO",
   "DEUDAS_PENDIENTES",
+  "IMPUESTOS_POR_PAGAR",
   "APLAZAMIENTO_IMPUESTOS",
 ];
 

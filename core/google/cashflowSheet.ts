@@ -59,6 +59,7 @@ export type DetalleCategoria =
   | "INGRESOS"
   | "PAGOS_PROYECTOS"
   | "PAGOS_EXTRAS"
+  | "IMPUESTOS_POR_PAGAR"
   | "APLAZAMIENTO_IMPUESTOS"
   | "GASTOS_FIJOS"
   | "PAGOS_PENDIENTES_ALBERTO"
@@ -75,11 +76,13 @@ export interface DetalleRegistro {
   valor: string;
   /** Solo presente en GASTOS_FIJOS — banco desde el que se paga (columna L de DATOS). */
   banco?: string;
+  /** Solo presente en IMPUESTOS_POR_PAGAR y APLAZAMIENTO_IMPUESTOS — columna AÑO de DATOS. */
+  anio?: string;
   /**
    * Empresa DUEÑA del movimiento (WOBA | EWORKS), leída de la columna de tag.
-   * undefined cuando el bloque no tiene esa columna (Pagos Extras, Aplazamiento
-   * Impuestos, Gastos Fijos, Pendientes) — no debe confundirse con el nombre
-   * del cliente/proveedor.
+   * undefined cuando el bloque no tiene esa columna (Pagos Extras, Impuestos
+   * por Pagar, Aplazamiento Impuestos, Gastos Fijos, Pendientes) — no debe
+   * confundirse con el nombre del cliente/proveedor.
    */
   empresa?: EmpresaTag;
 }
@@ -98,14 +101,13 @@ interface DetalleBlock {
 // impuestos) se sumaba en "GENERAL EXPENSES" del resumen pero nunca se leía
 // como línea individual — por eso una búsqueda de "Limpieza" no encontraba
 // nada aunque la fila existiera (verificado en vivo: DATOS!I16 = "Limpieza",
-// J16 = "S35", K16 = "€393.40"). PAGOS_PENDIENTES_ALBERTO y DEUDAS_PENDIENTES
-// (columnas X:Z, dos secciones apiladas separadas por título) se parsean
-// aparte más abajo porque no tienen un rango de columnas fijo propio.
+// J16 = "S35", K16 = "€393.40"). PAGOS_PROYECTOS, IMPUESTOS_POR_PAGAR,
+// APLAZAMIENTO_IMPUESTOS (columna N, tres secciones apiladas) y
+// PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES (columna X, dos apiladas) se
+// parsean aparte más abajo porque no tienen un rango de filas fijo propio.
 const DETALLE_BLOCKS: DetalleBlock[] = [
   { categoria: "INGRESOS", range: "DATOS!B6:F500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
-  { categoria: "PAGOS_PROYECTOS", range: "DATOS!N6:R500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
   { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:V500", fields: ["cliente", "semana", "valor"] },
-  { categoria: "APLAZAMIENTO_IMPUESTOS", range: "DATOS!AC6:AE500", fields: ["concepto", "semana", "valor"] },
   { categoria: "GASTOS_FIJOS", range: "DATOS!I6:L500", fields: ["concepto", "semana", "valor", "banco"] },
 ];
 
@@ -145,6 +147,76 @@ function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
   return registros;
 }
 
+// Bug real encontrado en vivo (2026-09-01): la columna N de DATOS NO es solo
+// PAGOS_PROYECTOS — Carlos agregó ahí mismo, apiladas debajo, dos secciones
+// nuevas ("IMPUESTOS POR PAGAR" en fila 24, "APLAZAMIENTO IMPUESTOS POR
+// PAGAR" en fila 39, verificado en vivo contra el Sheet real). El código
+// anterior leía TODO N6:R500 como si fuera PAGOS_PROYECTOS de punta a punta
+// — las filas de impuestos (ej. "MOD 115 WOBA Q2" | "S43" | "€1,867.22" |
+// "2026") se parseaban como si "MOD 115 WOBA Q2" fuera un CLIENTE real de un
+// proyecto, con "2026" tratado como el campo EMPRESA — datos corrompidos en
+// silencio, y las dos secciones de impuestos nunca se leían como su propia
+// categoría (por eso Wobi "no las reconocía" al comparar contra Holded).
+// Además, la vieja ubicación fija de APLAZAMIENTO_IMPUESTOS (columnas
+// AC:AE) está VACÍA en el Sheet real — esa sección se movió aquí. Mismo
+// patrón de detección de título que parsearSeccionesPendientes, pero cada
+// sección tiene un esquema de columnas DISTINTO (Pagos Proyectos: cliente/
+// proyecto/semana/valor/empresa, 5 columnas; los dos bloques de impuestos:
+// impuesto/semana/valor/año, 4 columnas, sin columna de empresa).
+const SECCION_COLUMNA_N_RANGE = "DATOS!N1:R500";
+const TITULOS_SECCION_COLUMNA_N: Record<string, DetalleCategoria> = {
+  "PAGOS PROYECTOS": "PAGOS_PROYECTOS",
+  "IMPUESTOS POR PAGAR": "IMPUESTOS_POR_PAGAR",
+  "APLAZAMIENTO IMPUESTOS POR PAGAR": "APLAZAMIENTO_IMPUESTOS",
+};
+const ENCABEZADOS_FILA_COLUMNA_N = new Set(["CLIENTE", "IMPUESTO"]);
+
+function parsearSeccionesColumnaN(rows: string[][]): DetalleRegistro[] {
+  const registros: DetalleRegistro[] = [];
+  let categoriaActual: DetalleCategoria | null = null;
+
+  for (const row of rows) {
+    const primeraCol = String(row[0] ?? "").trim();
+    if (!primeraCol) continue;
+
+    const tituloCategoria = TITULOS_SECCION_COLUMNA_N[primeraCol.toUpperCase()];
+    if (tituloCategoria) {
+      categoriaActual = tituloCategoria;
+      continue;
+    }
+
+    if (ENCABEZADOS_FILA_COLUMNA_N.has(primeraCol.toUpperCase())) continue; // fila de encabezado de columna
+    if (!categoriaActual) continue;
+
+    if (categoriaActual === "PAGOS_PROYECTOS") {
+      const [cliente, proyecto, semana, valor, empresaRaw] = row;
+      if (!String(semana ?? "").trim() && !String(valor ?? "").trim()) continue;
+      const empresaNormalizada = String(empresaRaw ?? "").trim().toUpperCase();
+      registros.push({
+        categoria: categoriaActual,
+        cliente: String(cliente ?? "").trim(),
+        proyecto: String(proyecto ?? "").trim(),
+        semana: String(semana ?? "").trim(),
+        valor: String(valor ?? "").trim(),
+        empresa: empresaNormalizada === "WOBA" || empresaNormalizada === "EWORKS" ? (empresaNormalizada as EmpresaTag) : undefined,
+      });
+    } else {
+      // IMPUESTOS_POR_PAGAR / APLAZAMIENTO_IMPUESTOS: impuesto/semana/valor/año.
+      const [concepto, semana, valor, anio] = row;
+      if (!String(semana ?? "").trim() && !String(valor ?? "").trim()) continue;
+      registros.push({
+        categoria: categoriaActual,
+        concepto: String(concepto ?? "").trim(),
+        semana: String(semana ?? "").trim(),
+        valor: String(valor ?? "").trim(),
+        anio: String(anio ?? "").trim() || undefined,
+      });
+    }
+  }
+
+  return registros;
+}
+
 // Cache muy corta (unos segundos) en memoria — pensada para colapsar las
 // MUCHAS llamadas repetidas que ocurren dentro de una sola pregunta del
 // usuario (ej. "qué está por vencer y cuánto suma" puede disparar 8-10
@@ -172,7 +244,7 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
 
   const resp = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: sheetId,
-    ranges: [...DETALLE_BLOCKS.map((b) => b.range), SECCION_PENDIENTES_RANGE],
+    ranges: [...DETALLE_BLOCKS.map((b) => b.range), SECCION_PENDIENTES_RANGE, SECCION_COLUMNA_N_RANGE],
     valueRenderOption: "FORMATTED_VALUE",
   });
 
@@ -202,6 +274,9 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
 
   const filasPendientes = valueRanges[DETALLE_BLOCKS.length]?.values ?? [];
   registros.push(...parsearSeccionesPendientes(filasPendientes as string[][]));
+
+  const filasColumnaN = valueRanges[DETALLE_BLOCKS.length + 1]?.values ?? [];
+  registros.push(...parsearSeccionesColumnaN(filasColumnaN as string[][]));
 
   cache = { en: Date.now(), datos: registros };
   return registros;

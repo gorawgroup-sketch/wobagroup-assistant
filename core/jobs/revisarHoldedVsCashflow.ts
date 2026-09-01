@@ -190,13 +190,18 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
   // S35, 110€) vive en GASTOS_FIJOS y NO se estaba comparando contra los
   // movimientos de Holded, generando un falso "sin registrar" para algo que
   // ya estaba en la hoja (con el mismo monto e incluso el mismo mes).
-  // PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES se dejan fuera a propósito:
-  // son saldos pendientes sin semana asignada, no ejecución de esta semana.
+  // IMPUESTOS_POR_PAGAR se agregó junto con la corrección de lectura de la
+  // columna N (ver parsearSeccionesColumnaN en cashflowSheet.ts) — misma
+  // ejecución semanal real que APLAZAMIENTO_IMPUESTOS, solo que sin
+  // aplazamiento. PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES se dejan fuera
+  // a propósito: son saldos pendientes sin semana asignada, no ejecución de
+  // esta semana.
   const CATEGORIAS_EJECUCION_SEMANAL = new Set([
     "INGRESOS",
     "PAGOS_PROYECTOS",
     "PAGOS_EXTRAS",
     "GASTOS_FIJOS",
+    "IMPUESTOS_POR_PAGAR",
     "APLAZAMIENTO_IMPUESTOS",
   ]);
   const todosLosRegistros = await fetchDetalleRegistros();
@@ -315,7 +320,13 @@ export async function detectarSinMovimientoBancario(
   // Mismo ajuste que detectarNoRegistrados: incluye GASTOS_FIJOS y
   // APLAZAMIENTO_IMPUESTOS, que también son ejecución real de la semana y
   // antes quedaban fuera de esta comparación.
-  const CATEGORIAS_GASTO_SEMANAL = new Set(["PAGOS_PROYECTOS", "PAGOS_EXTRAS", "GASTOS_FIJOS", "APLAZAMIENTO_IMPUESTOS"]);
+  const CATEGORIAS_GASTO_SEMANAL = new Set([
+    "PAGOS_PROYECTOS",
+    "PAGOS_EXTRAS",
+    "GASTOS_FIJOS",
+    "IMPUESTOS_POR_PAGAR",
+    "APLAZAMIENTO_IMPUESTOS",
+  ]);
   const registrosGastos = (await fetchDetalleRegistros()).filter(
     (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_GASTO_SEMANAL.has(r.categoria)
   );

@@ -17,12 +17,17 @@ import type { ToolDefinition } from "./types";
  * propuesta concreta generada por el job de detección. Nunca lo agregues al
  * array `tools` de registry.ts ni lo llames desde ningún otro lugar.
  */
+// impuestos_por_pagar y aplazamiento_impuestos NO están acá a propósito —
+// esas secciones viven en columnas compartidas con Pagos Proyectos (columna
+// N, apiladas) y todavía no tienen su propio escritor automático (ver
+// cashflowWrite.ts) — sugerirBloqueGasto.ts nunca las ofrece como bloque
+// escribible, así que este tool no debería recibirlas nunca, pero se dejan
+// fuera de la lista para que la validación sea honesta si algo cambia.
 const BLOQUES_VALIDOS: BloqueEscritura[] = [
   "ingresos",
   "pagos_proyectos",
   "pagos_extras",
   "gastos_fijos",
-  "aplazamiento_impuestos",
   "pagos_pendientes_alberto",
   "deudas_pendientes",
 ];

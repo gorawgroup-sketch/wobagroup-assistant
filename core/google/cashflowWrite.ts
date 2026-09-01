@@ -38,6 +38,7 @@ export type BloqueEscritura =
   | "pagos_proyectos"
   | "pagos_extras"
   | "gastos_fijos"
+  | "impuestos_por_pagar"
   | "aplazamiento_impuestos"
   | "pagos_pendientes_alberto"
   | "deudas_pendientes";
@@ -93,15 +94,18 @@ const BLOQUE_CONFIG: Partial<Record<BloqueEscritura, BloqueColumnas>> = {
     campos: ["concepto", "semana", "valor", "banco"],
     tieneEmpresa: false,
   },
-  // Columnas AC:AE de DATOS (CONCEPTO/SEMANA/VALOR) — mismo bloque simple
-  // que gastos_fijos, sin columna de banco.
-  aplazamiento_impuestos: {
-    columnaChequeo: "AE",
-    columnaInicio: "AC",
-    columnaFin: "AE",
-    campos: ["concepto", "semana", "valor"],
-    tieneEmpresa: false,
-  },
+  // Bug real encontrado en vivo (2026-09-01): este bloque apuntaba a
+  // columnas AC:AE, que Carlos ya no usa — la sección real "APLAZAMIENTO
+  // IMPUESTOS POR PAGAR" se movió a la columna N, apilada bajo PAGOS
+  // PROYECTOS e IMPUESTOS POR PAGAR (ver parsearSeccionesColumnaN en
+  // cashflowSheet.ts, lado de LECTURA, ya corregido). Escribir con la
+  // config vieja habría creado filas huérfanas en AC:AE que nadie vuelve a
+  // leer — mejor que falle explícitamente (ver registrarMovimientoEnSheet)
+  // a que pierda datos en silencio. Escribir en la nueva ubicación
+  // apilada, de columnas compartidas con Pagos Proyectos, necesita su
+  // propio escritor (como registrarPendienteEnSheet para X:Z) — todavía no
+  // se construyó porque no hubo un caso real que lo necesitara. Constrúyelo
+  // cuando aparezca uno.
 };
 
 const PRIMERA_FILA_DATOS = 6;
@@ -123,6 +127,13 @@ async function findNextEmptyRow(bloque: BloqueEscritura): Promise<number> {
   const sheets = getSheetsWriteClient();
   const config = BLOQUE_CONFIG[bloque];
   if (!config) {
+    if (bloque === "aplazamiento_impuestos" || bloque === "impuestos_por_pagar") {
+      throw new Error(
+        `Todavía no se puede registrar automáticamente en "${bloque}" — esa sección vive en columnas ` +
+          `compartidas con Pagos Proyectos (columna N, apilada) y necesita su propio escritor, que aún no ` +
+          `se construyó. Regístralo a mano en el Sheet por ahora.`
+      );
+    }
     throw new Error(`El bloque "${bloque}" no usa findNextEmptyRow — usa registrarPendienteEnSheet.`);
   }
   const { columnaInicio, columnaFin } = config;
@@ -186,6 +197,13 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
   const sheets = getSheetsWriteClient();
   const config = BLOQUE_CONFIG[movimiento.bloque];
   if (!config) {
+    if (movimiento.bloque === "aplazamiento_impuestos" || movimiento.bloque === "impuestos_por_pagar") {
+      throw new Error(
+        `Todavía no se puede registrar automáticamente en "${movimiento.bloque}" — esa sección vive en ` +
+          `columnas compartidas con Pagos Proyectos (columna N, apilada) y necesita su propio escritor, que ` +
+          `aún no se construyó. Regístralo a mano en el Sheet por ahora.`
+      );
+    }
     throw new Error(`El bloque "${movimiento.bloque}" no usa registrarMovimientoEnSheet — usa registrarPendienteEnSheet.`);
   }
 

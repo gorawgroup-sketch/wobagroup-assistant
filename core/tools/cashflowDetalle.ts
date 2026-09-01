@@ -4,10 +4,11 @@ import type { ToolDefinition } from "./types";
 
 /**
  * Lee los movimientos de detalle de la hoja DATOS: ingresos, pagos a proyectos,
- * pagos extras, aplazamientos de impuestos, gastos fijos (nóminas, créditos,
- * servicios, consultores, impuestos) y pendientes (Alberto / deudas con
- * otros) — filtrables por semana, empresa dueña del movimiento y/o
- * contraparte (cliente/proveedor/concepto).
+ * pagos extras, impuestos por pagar, aplazamientos de impuestos, gastos fijos
+ * (nóminas, créditos, servicios, consultores mes actual/próximo mes,
+ * impuestos) y pendientes (Alberto / deudas con otros) — filtrables por
+ * semana, empresa dueña del movimiento y/o contraparte (cliente/proveedor/
+ * concepto).
  *
  * "empresa" y "contraparte" son conceptos distintos y no deben mezclarse:
  * - empresa: WOBA o EWORKS, la entidad del grupo dueña del movimiento (viene
@@ -18,15 +19,23 @@ import type { ToolDefinition } from "./types";
  *   concepto del gasto (ej. "Limpieza", "Google", "Renting"), que puede
  *   incluir nombres de otras empresas del grupo (ej. "Footprint" aparece como
  *   cliente dentro del cashflow de WOBA/EWORKS).
+ *
+ * Bug real corregido en vivo (2026-09-01): "Impuestos por Pagar" y
+ * "Aplazamiento Impuestos por Pagar" viven en la MISMA columna que Pagos
+ * Proyectos (columna N de DATOS, apiladas debajo por título de sección) —
+ * antes se leían como si fueran filas de Pagos Proyectos, con datos
+ * completamente corrompidos (ver parsearSeccionesColumnaN en
+ * cashflowSheet.ts). Ya corregido — ambas se leen como su propia categoría.
  */
 export const cashflowDetalleTool: ToolDefinition = {
   name: "consultar_cashflow_detalle",
   seguraParaModoRapido: true,
   description:
     "Consulta el detalle de movimientos del cashflow desde la hoja DATOS: ingresos, pagos a proyectos, " +
-    "pagos extras, aplazamientos de impuestos, gastos fijos (nóminas, créditos, servicios como limpieza/" +
-    "renting/alquiler, consultores, impuestos) y pendientes (pagos pendientes a Alberto, deudas con " +
-    "otros). Para buscar un concepto o proveedor concreto (ej. '¿hay facturas de limpieza pendientes?') " +
+    "pagos extras, impuestos por pagar, aplazamientos de impuestos, gastos fijos (nóminas, créditos, " +
+    "servicios como limpieza/renting/alquiler, consultores mes actual/próximo mes, impuestos) y " +
+    "pendientes (pagos pendientes a Alberto, deudas con otros). Para buscar un concepto o proveedor " +
+    "concreto (ej. '¿hay facturas de limpieza pendientes?') " +
     "usa el filtro 'contraparte' con ese texto — cubre TODAS las categorías, no asumas que algo 'no está' " +
     "sin haber buscado aquí primero. La búsqueda por contraparte es tolerante (encuentra 'Seguridad " +
     "social' aunque la fila real diga 'Impuestos seg social') — si el resultado viene marcado como " +
