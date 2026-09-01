@@ -176,6 +176,14 @@ que hacer nada más.
      inventa una; si hay varias candidatas sin un proveedor que desempate,
      le pide a Claude que elija entre esas opciones reales. Lo muestra en
      la propuesta antes de aprobar.
+  3b. **Tags del gasto**: combina el nombre de quien hizo el gasto (si se
+     identifica) CON una categoría según la naturaleza real de este gasto
+     en concreto — "alimentacion", o "transporte" + su medio específico
+     ("taxi", "tren" o "avion") — usando el mismo vocabulario que ya está
+     en uso real en Holded. Nunca inventa una categoría si no reconoce
+     ninguna palabra clave del concepto/proveedor, y nunca usa el promedio
+     histórico de tags de la cuenta contable (que puede no tener nada que
+     ver con este gasto puntual).
   4. **Desglose real de IVA** por línea (base + % leído de la factura)
      visible antes de aprobar.
   4b. **Factura en moneda distinta al euro** (ej. un recibo de Uber en COP):
