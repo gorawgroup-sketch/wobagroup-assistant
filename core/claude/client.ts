@@ -3,6 +3,7 @@ import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
 import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
+import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { registrarUsoIA } from "./costTracking";
 
 const MODEL_SONNET = "claude-sonnet-5";
@@ -204,6 +205,21 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           "para confirmarla — no le vuelvas a preguntar datos que ya se le mostraron en esa propuesta " +
           "(incluyendo quién mandó el correo, si ya se sabe). Si su mensaje no tiene relación con esto, " +
           "ignora este aviso."
+      );
+    }
+
+    const resolucionContacto = await obtenerResolucionContactoPendientePorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando resolución de contacto pendiente (no crítico):", error);
+      return undefined;
+    });
+    if (resolucionContacto) {
+      partes.push(
+        `Hay una pregunta SIN RESPONDER en este chat: se avisó que el proveedor ` +
+          `"${resolucionContacto.propuesta.proveedor}" no se encontró en los contactos de Holded ` +
+          `(${resolucionContacto.empresaFinal}) y se le pidió al usuario que lo creara y avisara. Si su ` +
+          "mensaje actual confirma que ya lo creó (ej. 'ya lo creé', 'listo', 'ya está', 'dale, ya lo " +
+          "agregué'), usa la herramienta reintentar_contacto_pendiente — nunca le vuelvas a pedir los datos " +
+          "de la factura, ya se leyeron antes. Si su mensaje no tiene relación con esto, ignora este aviso."
       );
     }
   }

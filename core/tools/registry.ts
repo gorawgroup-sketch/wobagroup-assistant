@@ -27,6 +27,7 @@ import { consultarEstadoFacturaHoldedTool } from "./consultarEstadoFacturaHolded
 import { anotacionesCashflowTool } from "./anotacionesCashflow";
 import { confirmarArchivoPendienteTool } from "./confirmarArchivoPendiente";
 import { listarCorreosSinLeerTool } from "./listarCorreosSinLeer";
+import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -61,6 +62,7 @@ const tools: ToolDefinition[] = [
   anotacionesCashflowTool,
   confirmarArchivoPendienteTool,
   listarCorreosSinLeerTool,
+  reintentarContactoPendienteTool,
 ];
 
 /**

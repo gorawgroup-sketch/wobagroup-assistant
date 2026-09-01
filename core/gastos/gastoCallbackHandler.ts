@@ -15,6 +15,7 @@ import {
   guardarResolucionContacto,
   consumirResolucionContacto,
   type AlternativaContacto,
+  type ResolucionContactoPendiente,
 } from "./contactoResolucionStore";
 import { guardarConciliacionPendiente, consumirConciliacionPendiente } from "./conciliacionPendienteStore";
 import {
@@ -312,44 +313,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     await answerCallbackQuerySafe(callback.id, "Procesando...");
     await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Procesando con "${alternativa.contactName}"...`, []);
 
-    try {
-      const resultado = await crearGastoYReportar(resolucion.propuesta, resolucion.empresaFinal, resolucion.conceptoFinal, {
-        id: alternativa.contactId,
-        name: alternativa.contactName,
-      });
-      await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []);
-      if (resultado.conciliacionPendiente) {
-        await preguntarSiConciliar(
-          resolucion.chatId,
-          resultado.conciliacionPendiente.empresa,
-          resultado.conciliacionPendiente.monto,
-          resultado.conciliacionPendiente.fecha,
-          resultado.conciliacionPendiente.descripcionGasto,
-          resultado.conciliacionPendiente.gastoId,
-          resultado.conciliacionPendiente.moneda
-        );
-      }
-    } catch (error) {
-      if (error instanceof FechaBloqueadaError) {
-        await manejarFechaBloqueada(
-          resolucion.propuesta,
-          resolucion.empresaFinal,
-          resolucion.conceptoFinal,
-          error,
-          resolucion.chatId,
-          resolucion.messageId
-        );
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("[gastoCallbackHandler] Error procesando gasto con contacto alternativo:", message);
-      await editTelegramMessage(
-        resolucion.chatId,
-        resolucion.messageId,
-        `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
-        []
-      );
-    }
+    await procesarGastoConContactoResuelto(resolucion, { id: alternativa.contactId, name: alternativa.contactName });
     return;
   }
 
@@ -575,6 +539,56 @@ async function manejarFechaBloqueada(
 }
 
 /**
+ * Crea el gasto usando un contacto YA resuelto (alternativa elegida por
+ * botón, o el propio proveedor una vez que se confirma que ya existe en
+ * Holded) — mismo camino tanto si viene de gasto_usarcontacto (botón) como
+ * de reintentar_contacto_pendiente (el usuario escribió "ya lo creé" en el
+ * chat, ver core/tools/reintentarContactoPendiente.ts). Extraído para no
+ * duplicar el manejo de FechaBloqueadaError/conciliación entre los dos
+ * caminos.
+ */
+export async function procesarGastoConContactoResuelto(
+  resolucion: ResolucionContactoPendiente,
+  contacto: { id: string; name: string }
+): Promise<void> {
+  try {
+    const resultado = await crearGastoYReportar(resolucion.propuesta, resolucion.empresaFinal, resolucion.conceptoFinal, contacto);
+    await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []);
+    if (resultado.conciliacionPendiente) {
+      await preguntarSiConciliar(
+        resolucion.chatId,
+        resultado.conciliacionPendiente.empresa,
+        resultado.conciliacionPendiente.monto,
+        resultado.conciliacionPendiente.fecha,
+        resultado.conciliacionPendiente.descripcionGasto,
+        resultado.conciliacionPendiente.gastoId,
+        resultado.conciliacionPendiente.moneda
+      );
+    }
+  } catch (error) {
+    if (error instanceof FechaBloqueadaError) {
+      await manejarFechaBloqueada(
+        resolucion.propuesta,
+        resolucion.empresaFinal,
+        resolucion.conceptoFinal,
+        error,
+        resolucion.chatId,
+        resolucion.messageId
+      );
+      return;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[gastoCallbackHandler] Error procesando gasto con contacto resuelto:", message);
+    await editTelegramMessage(
+      resolucion.chatId,
+      resolucion.messageId,
+      `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
+      []
+    );
+  }
+}
+
+/**
  * Cuando crearGastoYReportar lanza ContactoNoEncontradoError, en vez de solo
  * decir "no lo encontré" busca alternativas (nombre parecido, mismo importe
  * ya registrado) y las ofrece por botones — el usuario confirma cuál es, o
@@ -599,12 +613,28 @@ async function manejarContactoNoEncontrado(
     `⚠️ No encontré exactamente el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}).`;
 
   if (alternativas.length === 0) {
-    const textoFinal = `${encabezado}\n\nCréalo primero en Holded y vuelve a mandar la factura — no quiero adivinar a qué contacto asignarlo.`;
+    // Pedido explícito de Carlos: si respondes en este mismo chat (ej. "ya
+    // lo creé") en vez de reenviar la factura, el asistente debe reconocer
+    // la pregunta pendiente y reintentar — antes esto no quedaba guardado
+    // en ningún lado, así que una respuesta en texto libre no tenía cómo
+    // conectarse con esta propuesta. Se guarda igual que el caso CON
+    // alternativas (mismo store), solo que con alternativas=[] — el aviso
+    // de que hay una resolución de contacto pendiente (buildSystemPromptDinamico)
+    // y la tool reintentar_contacto_pendiente (core/tools/) hacen el resto.
+    const textoFinal = `${encabezado}\n\nCréalo en Holded y avísame aquí mismo (ej. "ya lo creé") — reintento solo, sin que tengas que reenviar la factura.`;
     if (messageId != null) {
       await editTelegramMessage(chatId, messageId, textoFinal, []);
     } else {
       await sendTelegramMessage(chatId, textoFinal);
     }
+    await guardarResolucionContacto({
+      propuesta,
+      empresaFinal,
+      conceptoFinal,
+      alternativas: [],
+      chatId,
+      messageId: messageId ?? 0,
+    }).catch((error) => console.error("[gastoCallbackHandler] Error guardando resolución de contacto pendiente:", error));
     return;
   }
 
