@@ -3,6 +3,11 @@ import { consumirPropuestaAccionCorreo, type PropuestaAccionCorreo } from "./ema
 import { guardarPendienteOrientacionCorreo } from "./emailOrientationStore";
 import { crearBorradorCorreo, actualizarMessageIdBorrador, actualizarCuerpoBorrador, obtenerBorradorCorreo, consumirBorradorCorreo } from "./emailDraftStore";
 import { guardarPendienteEdicionBorrador } from "./emailDraftEditStore";
+import {
+  crearOfertaResponderCorreo,
+  actualizarMessageIdOfertaResponder,
+  consumirOfertaResponderCorreo,
+} from "./emailReplyOfferStore";
 import { enviarCorreo } from "./client";
 import { askClaude } from "../claude/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
@@ -63,6 +68,44 @@ export async function generarBorradorYOfrecer(
   }
 }
 
+/**
+ * Pedido explícito de Carlos, tras un caso real: cuando un documento que
+ * llegó por correo parece pedir que se recuerde/registre (ver
+ * pareceIntencionDeCaptura en classifyFile.ts), además de proponer
+ * archivarlo y capturarlo como conocimiento, hay que preguntar explícitamente
+ * si se responde ese correo — SIN gastar todavía en redactar el borrador
+ * (eso solo ocurre si contesta que sí, ver handleEmailActionCallback). Nunca
+ * envía ni redacta nada por sí sola.
+ */
+export async function ofrecerResponderCorreo(
+  chatId: number,
+  de: string,
+  asunto: string,
+  threadId: string | undefined,
+  messageIdHeader: string | undefined,
+  contexto: string
+): Promise<void> {
+  try {
+    const oferta = await crearOfertaResponderCorreo({ chatId, messageId: 0, de, asunto, threadId, messageIdHeader, contexto });
+
+    const messageId = await sendTelegramMessageWithButtons(
+      chatId,
+      `✉️ ¿Quieres que responda el correo "${asunto}" de ${de}?`,
+      [
+        [
+          { text: "✅ Sí, responder", callback_data: `email_responder_si:${oferta.id}` },
+          { text: "❌ No", callback_data: `email_responder_no:${oferta.id}` },
+        ],
+      ]
+    );
+
+    await actualizarMessageIdOfertaResponder(oferta.id, messageId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[emailCallbackHandler] Error ofreciendo responder el correo:", message);
+  }
+}
+
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   try {
     await answerCallbackQuery(callbackQueryId, text);
@@ -91,6 +134,29 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
   }
 
   const [accion, id] = data.split(":");
+
+  // Store distinto (emailReplyOfferStore) al de las demás acciones email_* de
+  // esta función (emailActionStore) — se resuelve ANTES de tocar
+  // consumirPropuestaAccionCorreo, que no encontraría este id.
+  if (accion === "email_responder_si" || accion === "email_responder_no") {
+    const oferta = await consumirOfertaResponderCorreo(id);
+    if (!oferta) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      return;
+    }
+
+    if (accion === "email_responder_no") {
+      await answerCallbackQuerySafe(callback.id, "Ok.");
+      await editTelegramMessage(oferta.chatId, oferta.messageId, `Ok — no respondo el correo "${oferta.asunto}".`, []);
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Redactando...");
+    await editTelegramMessage(oferta.chatId, oferta.messageId, `🔄 Redactando respuesta para "${oferta.asunto}"...`, []);
+    await generarBorradorYOfrecer(oferta.chatId, oferta.de, oferta.asunto, oferta.threadId, oferta.messageIdHeader, oferta.contexto);
+    return;
+  }
+
   const propuesta = await consumirPropuestaAccionCorreo(id);
 
   if (!propuesta) {

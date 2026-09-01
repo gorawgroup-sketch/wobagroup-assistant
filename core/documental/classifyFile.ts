@@ -30,6 +30,18 @@ export interface ClasificacionDocumento {
   confianza: "alta" | "media" | "baja";
   razon: string;
   preguntaSiAmbiguo?: string;
+  /**
+   * true si el texto/caption (típicamente el cuerpo de un correo) pide
+   * explícitamente que se RECUERDE o quede registrado este contenido (ej.
+   * "para que lo memorices", "que quede de referencia", "guárdalo para
+   * consultarlo después") — señal de que además de archivar el documento,
+   * hace falta guardarlo como conocimiento (CAPTURA). Caso real que motivó
+   * esto: un colaborador mandó una lista de accesos activos por correo
+   * diciendo "para que lo memorices" y el sistema solo propuso archivarlo
+   * en Drive, sin reconocer que también pedían que quedara como
+   * conocimiento consultable.
+   */
+  pareceIntencionDeCaptura?: boolean;
 }
 
 const REPORTAR_TOOL_NAME = "reportar_clasificacion_documento";
@@ -61,6 +73,15 @@ const REPORTAR_TOOL: Anthropic.Tool = {
         description:
           "Solo si confianza='baja': la pregunta exacta para desambiguar con el usuario, en vez de " +
           "adivinar. Si hay varias carpetas reales igual de plausibles, menciónalas por su nombre real.",
+      },
+      parece_intencion_de_captura: {
+        type: "boolean",
+        description:
+          "true SOLO si el texto/caption (típicamente el cuerpo de un correo) pide explícitamente que " +
+          "se RECUERDE o quede registrado este contenido (ej. 'para que lo memorices', 'que quede de " +
+          "referencia', 'guárdalo para consultarlo después', 'anótalo'). No lo actives solo porque el " +
+          "documento sea informativo — tiene que haber una petición explícita de recordarlo/registrarlo, " +
+          "no solo de archivarlo.",
       },
     },
     required: ["empresa", "tipo_documento", "carpeta_sugerida", "confianza", "razon"],
@@ -107,6 +128,9 @@ const SYSTEM_PROMPT = [
     "(documento de responsabilidades del grupo).",
   "No tienes acceso al contenido del archivo (PDF/imagen), solo al nombre y al caption — no inventes ni " +
     "asumas contenido que no esté en esas pistas.",
+  "Además de decidir dónde archivarlo, revisa si el caption (el texto del correo/mensaje que trae el " +
+    "documento) pide explícitamente que se RECUERDE o quede registrado — no solo que se archive. Si es " +
+    "así, marca parece_intencion_de_captura=true.",
   `SIEMPRE debes terminar llamando a la herramienta ${REPORTAR_TOOL_NAME} con tu conclusión final.`,
 ].join("\n\n");
 
@@ -168,6 +192,7 @@ export async function clasificarDocumento(
         confianza: (input.confianza as ClasificacionDocumento["confianza"]) ?? "baja",
         razon: (input.razon as string) ?? "",
         preguntaSiAmbiguo: input.pregunta_si_ambiguo as string | undefined,
+        pareceIntencionDeCaptura: input.parece_intencion_de_captura === true,
       };
     }
 
