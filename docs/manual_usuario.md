@@ -260,6 +260,13 @@ que hacer nada más.
   archivarlo — solo lo sube si confirmas con el botón. (Si el documento
   resulta ser una factura/gasto, sigue en cambio el flujo de Holded de
   arriba.)
+- **Si respondes en texto en vez de tocar el botón** ("archívalo ahí",
+  "sí, guárdalo, y de paso respóndele el correo a fulano con el link"), el
+  asistente reconoce que hay una propuesta de archivo sin responder y la
+  confirma igual que si hubieras tocado "✅ Sí, archivar aquí" — sin
+  volver a pedirte los datos que ya te mostró. Puede encadenar esto con
+  otras instrucciones en el mismo mensaje (ej. redactar un correo con el
+  link de Drive resultante).
 
 ### 📧 Correo (`asistente@wobagroup.com`)
 - Revisa el correo entrante cada hora (o al pedirlo con `/revisarcorreo`) y
