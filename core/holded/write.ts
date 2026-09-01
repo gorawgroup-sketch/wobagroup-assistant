@@ -598,6 +598,59 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
   return resultados;
 }
 
+// Pedido explícito de Carlos: además del nombre de quien hizo el gasto
+// (personaAsociada, ver extractInvoiceData.ts), el tag debe reflejar la
+// naturaleza real de ESTE gasto en concreto — alimentación, o transporte
+// con su medio específico (taxi/tren/avión) — a partir de palabras clave
+// del concepto/proveedor, no del promedio histórico de tags de la cuenta
+// contable (que mezcla nombres de personas con categorías sin relación
+// real con el gasto concreto — bug real: un viaje en Uber terminó con tag
+// "alimentacion" solo porque esa cuenta contable históricamente acumulaba
+// ese tag en otras líneas). Los nombres "alimentacion"/"transporte" son
+// los mismos ya vistos en uso real en Holded (verificado en vivo).
+const PALABRAS_ALIMENTACION = ["restaurante", "almuerzo", "desayuno", "cena", "comida", "cafeteria", "brunch"];
+const PALABRAS_TAXI = ["taxi", "uber", "cabify", "bolt", "freenow"];
+const PALABRAS_TREN = ["tren", "renfe", "eurostar", "sncf", "trenitalia", "ouigo", "avanza"];
+const PALABRAS_AVION = [
+  "vuelo",
+  "aerolinea",
+  "boarding",
+  "iberia",
+  "klm",
+  "ryanair",
+  "easyjet",
+  "air europa",
+  "vueling",
+  "lufthansa",
+  "avianca",
+  "latam",
+  "emirates",
+  "qatar airways",
+  "american airlines",
+];
+
+function contienePalabraClave(texto: string, palabras: string[]): boolean {
+  const t = normalizar(texto);
+  return palabras.some((p) => t.includes(normalizar(p)));
+}
+
+/**
+ * Detecta tags de categoría a partir de la naturaleza real de ESTE gasto
+ * (concepto + proveedor tal como se leyeron de la factura) — nunca decide
+ * "a ciegas": si no reconoce ninguna palabra clave, no agrega ningún tag de
+ * categoría en vez de inventar uno.
+ */
+export function inferirTagsCategoria(concepto: string, proveedor: string): string[] {
+  const texto = `${concepto} ${proveedor}`;
+
+  if (contienePalabraClave(texto, PALABRAS_TAXI)) return ["transporte", "taxi"];
+  if (contienePalabraClave(texto, PALABRAS_TREN)) return ["transporte", "tren"];
+  if (contienePalabraClave(texto, PALABRAS_AVION)) return ["transporte", "avion"];
+  if (contienePalabraClave(texto, PALABRAS_ALIMENTACION)) return ["alimentacion"];
+
+  return [];
+}
+
 export interface CuentaSugerida {
   accountId: string;
   tags: string[];

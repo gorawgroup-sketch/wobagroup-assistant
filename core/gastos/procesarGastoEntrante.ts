@@ -1,5 +1,5 @@
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
-import { buscarGastoSimilar, buscarMovimientoSimilar, inferirCuentaGasto } from "../holded/write";
+import { buscarGastoSimilar, buscarMovimientoSimilar, inferirCuentaGasto, inferirTagsCategoria } from "../holded/write";
 import { crearPropuestaGasto, actualizarMessageIdGasto } from "./gastoProposalSheet";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
@@ -100,8 +100,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
   // con quién hizo ESTE gasto en particular. Cuando se identifica con
   // evidencia real la persona de ESTA transacción (remitente original de un
   // correo reenviado, o un nombre en el propio documento), ese tag manda
-  // sobre el histórico.
-  const tagsFinal = datos.personaAsociada ? [datos.personaAsociada] : cuentaSugerida?.tags;
+  // sobre el histórico — pero pedido explícito posterior de Carlos: eso NO
+  // debe reemplazar el tag de categoría (alimentación/transporte+medio),
+  // debe combinarse con él. La categoría se detecta de la naturaleza real
+  // de ESTE gasto (concepto/proveedor), nunca del histórico de la cuenta.
+  const tagsCategoria = inferirTagsCategoria(datos.concepto, datos.proveedor);
+  const tagsPersona = datos.personaAsociada ? [datos.personaAsociada] : (cuentaSugerida?.tags ?? []);
+  const tagsFinal = Array.from(new Set([...tagsPersona, ...tagsCategoria]));
 
   const conceptoConMonedaOriginal = esMonedaExtranjera
     ? `${datos.concepto} (${datos.monto} ${monedaOriginal}, comprobante en ${monedaOriginal})`
@@ -215,11 +220,14 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<voi
         : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} ` +
           `cerca del ${datos.fecha} — si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
-    const notaTags = datos.personaAsociada
-      ? `, tags: ${datos.personaAsociada} (identificado en este documento/correo)`
+    const notaPersonaTxt = datos.personaAsociada
+      ? `${datos.personaAsociada} (identificado en este documento/correo)`
       : cuentaSugerida && cuentaSugerida.tags.length > 0
-        ? `, tags: ${cuentaSugerida.tags.join(", ")} (más usados históricamente en esta cuenta, no identifiqué a la persona de este gasto en concreto)`
+        ? `${cuentaSugerida.tags.join(", ")} (más usados históricamente en esta cuenta, no identifiqué a la persona de este gasto en concreto)`
         : "";
+    const notaCategoriaTxt =
+      tagsCategoria.length > 0 ? tagsCategoria.join(", ") : "sin categoría reconocida por palabras clave";
+    const notaTags = `, tags: ${[notaPersonaTxt, notaCategoriaTxt].filter(Boolean).join(" + ")}`;
 
     const notaCuenta = cuentaSugerida
       ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
