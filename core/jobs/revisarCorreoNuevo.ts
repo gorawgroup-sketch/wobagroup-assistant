@@ -59,15 +59,21 @@ async function capturarNotasDeReunion(chatId: number, correo: CorreoResumen): Pr
 
 /**
  * Fase 1 del módulo de correo: revisa TODOS los correos nuevos de la
- * bandeja de entrada desde la última revisión, los clasifica, y:
- * - si traen un documento archivable, lo descarga y lo manda por el MISMO
+ * bandeja de entrada desde la última revisión, analiza el direccionamiento
+ * de cada uno (qué acción hay que tomar, si la hay), y:
+ * - si traen un adjunto real, SIEMPRE lo descarga y lo manda por el MISMO
  *   flujo de clasificación/aprobación ya existente para archivos de
- *   Telegram (nunca se sube a Drive sin aprobación explícita).
- * - si necesitan respuesta o parecen una instrucción del jefe, manda una
- *   propuesta individual con botones "✅ Proceder / ❌ Descartar / ✏️ Dar
- *   instrucciones" — "Proceder" nunca ejecuta el texto del correo
- *   directamente, dispara al asistente normal con sus tools ya existentes.
- * - los correos puramente informativos se agrupan en un solo resumen.
+ *   Telegram (nunca se sube a Drive/Holded sin aprobación explícita) — sin
+ *   depender de que el clasificador liviano de correo haya acertado el
+ *   tipo. Ese flujo YA propone el camino cuando está claro y YA pregunta
+ *   cuando es ambiguo (ver procesarDocumentoLocal/clasificarDocumento).
+ * - si (sin adjuntos) necesitan respuesta o parecen una instrucción del
+ *   jefe, manda una propuesta individual con botones "✅ Proceder / ❌
+ *   Descartar / ✏️ Dar instrucciones" — "Proceder" nunca ejecuta el texto
+ *   del correo directamente, dispara al asistente normal con sus tools ya
+ *   existentes.
+ * - los correos puramente informativos se agrupan en un solo resumen, con
+ *   el contenido real (no el asunto) de cada uno.
  * NUNCA responde correos por su cuenta, NUNCA ejecuta instrucciones del
  * correo sin que el usuario apruebe explícitamente por botón.
  */
@@ -116,9 +122,23 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
         continue;
       }
 
-      const analisis = await analizarCorreo(correo);
-
-      if (analisis.tipo === "documento_para_archivar" && correo.adjuntos.length > 0) {
+      // Pedido explícito de Carlos: analizar el direccionamiento de CADA
+      // correo (qué acción hay que tomar, y si el camino está claro,
+      // proponerlo directo; si no, preguntar) — nunca dejar caer un correo
+      // con adjunto real en el resumen informativo sin acción. Bug real
+      // encontrado en vivo: un correo con un PDF real adjunto y una
+      // instrucción explícita en el cuerpo ("para que se guarde de forma
+      // adecuada en el drive") se procesó como "informativo" porque
+      // analizarCorreo esta vez agotó sus intentos sin clasificar — y antes
+      // el procesamiento del adjunto dependía de que ese clasificador
+      // acertara con tipo="documento_para_archivar", así que el documento
+      // real quedó sin archivar y sin que nadie se enterara. Ahora, si el
+      // correo trae adjuntos reales, SIEMPRE se procesan con el mismo
+      // clasificador robusto de documentos (procesarDocumentoLocal — el
+      // mismo que usa Telegram), que YA decide el camino (Drive u Holded) y
+      // YA pregunta si la carpeta/cuenta es ambigua — sin depender de que el
+      // clasificador de correo (más liviano) haya acertado el tipo.
+      if (correo.adjuntos.length > 0) {
         for (const adjunto of correo.adjuntos) {
           try {
             const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
@@ -146,6 +166,8 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
         }
         continue;
       }
+
+      const analisis = await analizarCorreo(correo);
 
       if (analisis.tipo === "notas_reunion") {
         await capturarNotasDeReunion(chatId, correo);
