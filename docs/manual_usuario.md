@@ -216,11 +216,19 @@ que hacer nada más.
      rubro (ej. "transporte", "servicios") — tiene que ser una palabra
      realmente distintiva del proveedor real; si no hay ninguna coincidencia
      así de segura, no asigna ningún contacto y cae en este mismo paso de
-     alternativas/pregunta. **Si no hay ninguna alternativa plausible**, te
-     pide que crees el proveedor en Holded — pero no hace falta que
-     reenvíes la factura: si respondes en el mismo chat (ej. "ya lo creé",
-     "listo"), reconoce la pregunta pendiente, reintenta solo, y sigue el
-     proceso completo con los datos que ya había leído.
+     alternativas/pregunta. **Si no hay ninguna alternativa plausible** (o
+     ninguna de las que muestra es la correcta), tienes dos caminos, ambos
+     por botón: crear el proveedor en Holded y avisar en el mismo chat (ej.
+     "ya lo creé") — reconoce la pregunta pendiente, reintenta solo, y sigue
+     el proceso completo con los datos que ya había leído, sin que reenvíes
+     la factura; o **"🆗 Crear sin proveedor real"**, que registra el gasto
+     de inmediato con un contacto genérico ("PROVEEDOR SIN IDENTIFICAR",
+     uno por empresa) y deja el nombre real del proveedor al frente de la
+     descripción del gasto — nunca se pierde, solo que el contacto en Holded
+     queda genérico hasta que lo corrijas a mano. Útil cuando lo urgente es
+     conciliar el movimiento bancario ya, sin esperar a crear el proveedor
+     real primero. La API de Holded exige siempre un contacto — no existe
+     forma de crear una compra sin ninguno.
   6. **Al aprobar "Crear"** (crea el gasto, con su cuenta/tags/IVA correctos)
      — si falla adjuntar el comprobante o ya existía y solo faltaba
      adjuntarlo, nunca lo trata como fallo total ni sugiere reenviar el

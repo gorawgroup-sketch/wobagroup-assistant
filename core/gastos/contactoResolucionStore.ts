@@ -240,3 +240,25 @@ export async function obtenerResolucionContactoPendientePorChat(chatId: number):
 
   return delChat.reduce((a, b) => (a.resolucion.creadoEn >= b.resolucion.creadoEn ? a : b)).resolucion;
 }
+
+/**
+ * Actualiza el messageId de una resolución ya guardada — para el caso en
+ * que se guarda ANTES de mandar el mensaje con botones (no había un
+ * messageId previo editable) y hace falta registrar el id real después de
+ * enviarlo, igual que actualizarMessageIdGasto en gastoProposalSheet.ts.
+ */
+export async function actualizarMessageIdResolucionContacto(id: string, messageId: number): Promise<void> {
+  const todas = await leerTodas();
+  const match = todas.find(({ resolucion }) => resolucion.id === id);
+  if (!match) return;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!G${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[messageId]] },
+  });
+}
