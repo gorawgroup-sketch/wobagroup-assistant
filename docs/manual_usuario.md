@@ -193,7 +193,12 @@ que hacer nada más.
      alternativas (contactos con nombre parecido, facturas ya registradas
      con el mismo importe) y te las muestra por botones — la que confirmes
      queda **aprendida** como alias, así la próxima factura del mismo
-     proveedor no vuelve a preguntar.
+     proveedor no vuelve a preguntar. La tolerancia de nombre parecido
+     nunca asigna un contacto solo porque comparte una palabra genérica del
+     rubro (ej. "transporte", "servicios") — tiene que ser una palabra
+     realmente distintiva del proveedor real; si no hay ninguna coincidencia
+     así de segura, no asigna ningún contacto y cae en este mismo paso de
+     alternativas/pregunta.
   6. **Al aprobar "Crear"** (crea el gasto, con su cuenta/tags/IVA correctos)
      — si falla adjuntar el comprobante o ya existía y solo faltaba
      adjuntarlo, nunca lo trata como fallo total ni sugiere reenviar el
