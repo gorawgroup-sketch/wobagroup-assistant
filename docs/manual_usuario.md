@@ -438,16 +438,20 @@ que hacer nada más.
 
 ### 🔌 Panel de conexiones (front /cerebro)
 - Justo debajo del enlace a Telegram, en la parte de arriba del panel, se ve
-  en todo momento el estado real de las 8 conexiones externas que usa el
-  sistema: Telegram, Claude (Anthropic), Google Sheets, Google Drive, Gmail,
-  y Holded (WOBA / EWORKS / Footprint) — cada una verificada en vivo (Claude
-  se reporta de forma pasiva, según el último mensaje real del chat, para no
-  gastar en una llamada de prueba en cada carga del panel).
+  en todo momento el estado real de las 9 conexiones/módulos externos que
+  usa el sistema: Telegram, Claude (Anthropic), Búsqueda web, Google Sheets,
+  Google Drive, Gmail, y Holded (WOBA / EWORKS / Footprint) — cada una
+  verificada en vivo. Claude y Búsqueda web se reportan de forma pasiva,
+  según el último uso real del chat, para no gastar en una llamada (o una
+  búsqueda paga) de prueba en cada carga del panel — "sin uso reciente" ahí
+  es informativo, no una falla.
 - Mientras todo esté bien, se ve un punto verde discreto ("Conexiones activas
-  8/8") que se puede expandir para ver el detalle. Si algo se cae, el panel
+  9/9") que se puede expandir para ver el detalle. Si algo se cae, el panel
   se pone en rojo y se expande solo — no hay que buscarlo ni refrescar.
 - Cada conexión caída trae su propio botón: para Telegram literalmente
-  arregla el problema (re-registra el webhook); para el resto, reintenta la
+  arregla el problema (re-registra el webhook); para el resto (excepto
+  Búsqueda web, que no tiene un chequeo automatizado sin costo — se
+  actualiza sola la próxima vez que el chat la use de verdad), reintenta la
   verificación (arregla blips de red transitorios, que sí ocurren de verdad).
   Si el problema es una API key revocada o un permiso retirado en el
   proveedor externo, ningún botón puede arreglar eso — el mensaje de detalle

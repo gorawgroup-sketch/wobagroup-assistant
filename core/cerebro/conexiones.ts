@@ -1,5 +1,5 @@
 import { getTelegramWebhookInfo, setTelegramWebhook } from "../telegram/client";
-import { obtenerUltimoEstadoClaude, verificarConexionClaude } from "../claude/client";
+import { obtenerUltimoEstadoClaude, verificarConexionClaude, obtenerUltimoEstadoBusquedaWeb } from "../claude/client";
 import { verificarConexionSheets } from "../google/sheetsClient";
 import { verificarConexionDrive } from "../drive/client";
 import { verificarConexionGmail } from "../gmail/client";
@@ -112,7 +112,38 @@ async function verificarTodas(): Promise<ConexionEstado[]> {
         verificadoEn: new Date().toISOString(),
       };
 
-  return [claudeEstado, ...resultados];
+  // Pedido explícito de Carlos: que el front tenga visibilidad del nuevo
+  // módulo de búsqueda web. Mismo chequeo pasivo que Claude (arriba) — es
+  // una tool hospedada sin conexión propia que pingear, y una búsqueda real
+  // solo para el panel costaría dinero en cada carga sin necesidad. "No
+  // usada aún" se muestra como ok=true (informativo, no es una falla) —
+  // solo pasa a ok=false si la ÚLTIMA vez que se intentó de verdad, la API
+  // devolvió un error real (org sin la tool habilitada, límite excedido,
+  // etc.), nunca por simple falta de uso. accionLabel siempre null: a
+  // diferencia de Claude (que sí tiene un ping real y barato de 1 token
+  // para "Reintentar"), no hay ningún chequeo automatizado de bajo costo
+  // para esta — mostrar un botón que solo re-lee el mismo estado guardado,
+  // sin comprobar nada nuevo, sería fingir una acción que no hace nada real.
+  const estadoBusquedaWeb = obtenerUltimoEstadoBusquedaWeb();
+  const busquedaWebEstado: ConexionEstado = estadoBusquedaWeb
+    ? {
+        id: "web_search",
+        nombre: "Búsqueda web (Claude)",
+        ok: estadoBusquedaWeb.ok,
+        detalle: estadoBusquedaWeb.detalle,
+        accionLabel: null,
+        verificadoEn: new Date(estadoBusquedaWeb.en).toISOString(),
+      }
+    : {
+        id: "web_search",
+        nombre: "Búsqueda web (Claude)",
+        ok: true,
+        detalle: "Sin uso reciente para verificar — se confirma la primera vez que el chat necesite buscar en internet.",
+        accionLabel: null,
+        verificadoEn: new Date().toISOString(),
+      };
+
+  return [claudeEstado, busquedaWebEstado, ...resultados];
 }
 
 let cache: { en: number; datos: ConexionEstado[] } | null = null;

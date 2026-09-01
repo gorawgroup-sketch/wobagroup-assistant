@@ -363,6 +363,30 @@ export function obtenerUltimoEstadoClaude(): EstadoClaude | null {
   return ultimoEstadoClaude;
 }
 
+// Mismo patrón pasivo que ultimoEstadoClaude, para el panel de conexiones
+// (core/cerebro/conexiones.ts): web_search es una tool hospedada sin
+// "conexión" propia que pingear (viaja dentro de una llamada normal a
+// Claude) — nunca se dispara una búsqueda real solo para comprobar el
+// panel, eso costaría dinero en cada carga. Se registra el resultado de la
+// ÚLTIMA vez que de verdad se usó (éxito, o el error real que devolvió la
+// API — org sin la tool habilitada, límite de uso, etc.), null si todavía
+// no se ha necesitado ninguna.
+interface EstadoBusquedaWeb {
+  ok: boolean;
+  en: number;
+  detalle?: string;
+}
+
+let ultimoEstadoBusquedaWeb: EstadoBusquedaWeb | null = null;
+
+function registrarEstadoBusquedaWeb(ok: boolean, detalle?: string): void {
+  ultimoEstadoBusquedaWeb = { ok, en: Date.now(), detalle };
+}
+
+export function obtenerUltimoEstadoBusquedaWeb(): EstadoBusquedaWeb | null {
+  return ultimoEstadoBusquedaWeb;
+}
+
 /**
  * Único chequeo ACTIVO de este módulo: un mensaje real de 1 token
  * (fracción de céntimo) contra el modelo Haiku, solo para el botón
@@ -467,6 +491,22 @@ async function ejecutarConversacion(
     registrarUsoIA(chatId, model, response.usage).catch((error) =>
       console.error("[costTracking] Error registrando uso de IA:", error)
     );
+
+    // Registra el resultado real de la ÚLTIMA búsqueda web de esta
+    // respuesta (si hubo alguna) para el panel de conexiones — ver
+    // ultimoEstadoBusquedaWeb arriba. Un error real (org sin la tool
+    // habilitada, límite excedido, etc.) SÍ debe verse como "no ok" en el
+    // panel, no quedar invisible.
+    const resultadosBusquedaWeb = response.content.filter(
+      (block): block is Anthropic.WebSearchToolResultBlock => block.type === "web_search_tool_result"
+    );
+    for (const resultado of resultadosBusquedaWeb) {
+      if (Array.isArray(resultado.content)) {
+        registrarEstadoBusquedaWeb(true);
+      } else {
+        registrarEstadoBusquedaWeb(false, `Error de búsqueda web: ${resultado.content.error_code}`);
+      }
+    }
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((block) => block.type === "text");
