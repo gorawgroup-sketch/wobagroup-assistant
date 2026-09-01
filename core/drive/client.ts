@@ -77,10 +77,12 @@ const FRIENDLY_TYPES: Record<string, string> = {
 };
 
 export interface DriveSearchResult {
+  id: string;
   name: string;
   folderPath: string;
   friendlyType: string;
   webViewLink: string;
+  mimeType?: string;
 }
 
 interface FolderInfo {
@@ -89,6 +91,28 @@ interface FolderInfo {
 }
 
 const MAX_ANCESTRY_HOPS = 30;
+
+// Bug real encontrado en vivo (2026-09-01): "name contains '<consulta>'" en
+// la API de Drive exige la frase COMPLETA como substring contiguo del
+// nombre — una consulta de varias palabras ("control de acceso") no
+// encontraba "guia rapida control accesos.pdf" (sin "de" en el medio, y
+// "acceso"/"accesos" en singular/plural), aunque el archivo real existía y
+// era justo lo que se buscaba. Verificado en vivo: la palabra suelta
+// "acceso" SÍ lo encontraba. Ahora se descompone la consulta en palabras
+// significativas (3+ letras, sin palabras vacías como "de"/"la"/"el") y se
+// consulta cada una POR SEPARADO, uniendo los resultados (sin duplicar por
+// id) — así una consulta de varias palabras encuentra el archivo aunque
+// solo una de esas palabras aparezca literalmente en el nombre real.
+const PALABRAS_VACIAS = new Set(["de", "la", "el", "los", "las", "un", "una", "y", "en", "para", "del", "al", "con"]);
+
+function palabrasSignificativas(query: string): string[] {
+  const palabras = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 3 && !PALABRAS_VACIAS.has(p));
+  return palabras.length > 0 ? palabras : [query.trim()].filter(Boolean);
+}
 
 /**
  * Busca archivos Y carpetas por nombre en TODO lo que la cuenta de servicio
@@ -101,27 +125,33 @@ const MAX_ANCESTRY_HOPS = 30;
  */
 export async function searchDriveFiles(rootFolderId: string, query: string): Promise<DriveSearchResult[]> {
   const drive = getDriveClient();
-  const escapedQuery = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
-  const q = `name contains '${escapedQuery}' and trashed = false`;
+  const candidatosPorId = new Map<string, drive_v3.Schema$File>();
 
-  const candidatos: drive_v3.Schema$File[] = [];
-  let pageToken: string | undefined;
+  for (const palabra of palabrasSignificativas(query)) {
+    const escapedQuery = palabra.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const q = `name contains '${escapedQuery}' and trashed = false`;
 
-  do {
-    const res = await drive.files.list({
-      q,
-      fields: "nextPageToken, files(id, name, mimeType, webViewLink, parents)",
-      pageSize: 100,
-      pageToken,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-      corpora: "allDrives",
-    });
+    let pageToken: string | undefined;
+    do {
+      const res = await drive.files.list({
+        q,
+        fields: "nextPageToken, files(id, name, mimeType, webViewLink, parents)",
+        pageSize: 100,
+        pageToken,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      });
 
-    candidatos.push(...(res.data.files ?? []));
-    pageToken = res.data.nextPageToken ?? undefined;
-  } while (pageToken);
+      for (const f of res.data.files ?? []) {
+        if (f.id) candidatosPorId.set(f.id, f);
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+  }
+
+  const candidatos = Array.from(candidatosPorId.values());
 
   const folderCache = new Map<string, FolderInfo | null>();
 
@@ -178,14 +208,58 @@ export async function searchDriveFiles(rootFolderId: string, query: string): Pro
     if (ancestry === null) continue; // no está dentro del árbol de esta empresa
 
     results.push({
+      id: f.id ?? "",
       name: f.name ?? "(sin nombre)",
       folderPath: ancestry.length > 0 ? ancestry.join(" / ") : "(raíz)",
       friendlyType: (f.mimeType && FRIENDLY_TYPES[f.mimeType]) || f.mimeType || "Desconocido",
       webViewLink: f.webViewLink ?? "",
+      mimeType: f.mimeType ?? undefined,
     });
   }
 
   return results;
+}
+
+export interface ArchivoDriveDescargado {
+  bytes: Buffer;
+  mimeType: string;
+  name: string;
+}
+
+const MIMES_LEGIBLES_DRIVE = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
+
+/**
+ * Descarga el contenido real (bytes) de un archivo de Drive por su id —
+ * scope drive.readonly ya alcanza para esto (no hace falta escritura).
+ * Pedido explícito de Carlos tras un caso real: un documento ya archivado
+ * en Drive ("guía rápida de control de accesos") no se podía CONSULTAR
+ * directamente — solo se sabía que existía (buscar_documento_drive), sin
+ * poder leer su contenido para responder con la información real. Solo
+ * soporta los mismos tipos que Claude vision puede leer (PDF/imagen, ver
+ * MIMES_LEGIBLES_DRIVE) — un Google Doc/Sheet nativo necesitaría exportarse
+ * primero, no soportado todavía (nunca se ha dado un caso real).
+ */
+export async function descargarArchivoDrive(fileId: string): Promise<ArchivoDriveDescargado> {
+  const drive = getDriveClient();
+
+  const meta = await drive.files.get({
+    fileId,
+    fields: "name, mimeType",
+    supportsAllDrives: true,
+  });
+  const mimeType = meta.data.mimeType ?? "";
+  const name = meta.data.name ?? "(sin nombre)";
+
+  if (!MIMES_LEGIBLES_DRIVE.includes(mimeType)) {
+    throw new Error(
+      `El archivo "${name}" es de tipo ${mimeType || "desconocido"} — solo se puede leer el contenido de PDF o imágenes por ahora.`
+    );
+  }
+
+  const res = await drive.files.get({ fileId, alt: "media", supportsAllDrives: true }, { responseType: "arraybuffer" });
+  const bytes = Buffer.from(res.data as ArrayBuffer);
+
+  return { bytes, mimeType, name };
 }
 
 const MAX_ANCESTRY_HOPS_UPLOAD = 30;

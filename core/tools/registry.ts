@@ -6,6 +6,7 @@ import { cashflowDetalleTool } from "./cashflowDetalle";
 import { holdedMovimientosTool } from "./holdedMovimientos";
 import { driveSearchTool } from "./driveSearch";
 import { driveListFoldersTool } from "./driveListFolders";
+import { leerDocumentoDriveTool } from "./leerDocumentoDrive";
 import { alertasFiscalesTool } from "./alertasFiscales";
 import { proponerEnvioCorreoTool } from "./proposeEmail";
 import { registrarCorreccionTool } from "./registerCorrection";
@@ -42,6 +43,7 @@ const tools: ToolDefinition[] = [
   holdedMovimientosTool,
   driveSearchTool,
   driveListFoldersTool,
+  leerDocumentoDriveTool,
   alertasFiscalesTool,
   proponerEnvioCorreoTool,
   registrarCorreccionTool,

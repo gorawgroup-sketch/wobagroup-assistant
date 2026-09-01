@@ -149,8 +149,21 @@ const SYSTEM_PROMPT_ESTATICO = [
     "factura, o cualquier dato operativo de una plataforma/proveedor, consulta SIEMPRE " +
     "consultar_base_conocimiento primero — ahí vive lo que el equipo ha capturado explícitamente con " +
     "CAPTURA, y es más confiable que inferirlo de los movimientos de Holded (esos solo confirman cargos " +
-    "que ya ocurrieron, no explican el calendario ni las instrucciones de pago). Si no encuentras ahí lo " +
-    "que buscas, dilo explícitamente en vez de inventar o completar con una suposición.",
+    "que ya ocurrieron, no explican el calendario ni las instrucciones de pago).",
+  "Bug real corregido en vivo (2026-09-01): a una pregunta sobre 'claves de entrada a la oficina' y " +
+    "luego 'control de accesos', el asistente respondió que no tenía información y se quedó ahí — cuando " +
+    "en Drive SÍ existía un documento real ('guía rápida de control de accesos') con la respuesta, solo " +
+    "que nunca se había transcrito a la base de conocimiento (archivar un documento en Drive y capturarlo " +
+    "como conocimiento consultable son cosas DISTINTAS — un documento archivado no aparece en " +
+    "consultar_base_conocimiento a menos que alguien lo haya capturado explícitamente). Por eso: si " +
+    "consultar_base_conocimiento NO encuentra lo que buscas, antes de decir 'no tengo información' " +
+    "intenta leer_documento_drive con palabras clave del tema (si no sabes en qué empresa, prueba con las " +
+    "3) — busca Y LEE el contenido real de un documento archivado, no solo dice si existe. Si esa " +
+    "herramienta sí encuentra y lee algo relevante, respondé con esa información real. Prueba también con " +
+    "sinónimos o términos relacionados si la primera búsqueda no encuentra nada (ej. 'control de accesos' " +
+    "también como 'acceso', 'llaves', 'entrada oficina', 'seguridad') — nunca te quedes con un solo " +
+    "intento de una sola palabra exacta antes de responder que no hay información. Solo si de verdad no " +
+    "aparece nada en ningún intento, dilo explícitamente en vez de inventar o completar con una suposición.",
   "Cuando te pidan 'CAPTURA' o 'guarda' información que llegó por correo (ej. 'CAPTURA lo que llegó en " +
     "el correo de X', 'guarda la info del correo que recibimos hoy'), la información NO está en el " +
     "mensaje — nunca inventes ni resumas de memoria lo que crees que dice el correo. Usa la herramienta " +
