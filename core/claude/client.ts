@@ -35,6 +35,28 @@ const TOOL_ESCALAR: Anthropic.Tool = {
   input_schema: { type: "object", properties: {} },
 };
 
+/**
+ * Pedido explícito de Carlos: "si requieres debes ir a Internet y buscar la
+ * información que necesites, los manuales que requieras... o cualquier otra
+ * fuente que ayude para dar tus respuestas" — complementar (nunca
+ * reemplazar) el conocimiento interno del grupo con información pública
+ * real cuando haga falta. Tool NATIVA/hospedada de Anthropic (la ejecuta la
+ * propia API, no hace falta implementar ni pagar un proveedor de búsqueda
+ * aparte) — verificado en vivo contra la documentación oficial 2026-09-01:
+ * disponible de forma general (sin beta header), $10 USD por cada 1.000
+ * búsquedas además del costo normal de tokens (ver costTracking.ts, que
+ * registra server_tool_use.web_search_requests para que ese costo no quede
+ * invisible). Solo en el intento COMPLETO (Sonnet, o Haiku de respaldo si
+ * Sonnet no está disponible) — nunca en el modo rápido/económico de Haiku,
+ * para no disparar búsquedas pagas en cada mensaje rutinario sin que la
+ * pregunta realmente lo justifique.
+ */
+const WEB_SEARCH_TOOL: Anthropic.WebSearchTool20250305 = {
+  type: "web_search_20250305",
+  name: "web_search",
+  max_uses: 5,
+};
+
 // Parte ESTÁTICA del system prompt — idéntica en absolutamente todas las
 // llamadas, para CUALQUIER modelo (no depende de la fecha ni de quién
 // escribe, y no depende de si está respondiendo Haiku o Sonnet). Esto es
@@ -187,6 +209,16 @@ const SYSTEM_PROMPT_ESTATICO = [
     "que no se puede. Dilo, y de inmediato pregunta si deberían activar esa capacidad en el sistema (ej. " +
     "'no tengo una herramienta para X — ¿quieres que lo agreguemos?'), para que quede como una mejora " +
     "concreta a considerar, no como un callejón sin salida.",
+  "Pedido explícito de Carlos: tienes acceso a búsqueda web real (web_search) para COMPLEMENTAR tus " +
+    "respuestas con información pública — manuales de un dispositivo/sistema (ej. 'cómo se resetea el " +
+    "panel 2N Access Unit M'), documentación técnica, normativa pública, o cualquier dato externo que no " +
+    "sea información interna del grupo. Úsala cuando lo que preguntan claramente necesita eso y ni la " +
+    "base de conocimiento interna ni los documentos de Drive lo tienen — no la uses para saludos, cálculos, " +
+    "o cualquier cosa que ya puedas resolver directamente. NUNCA la uses para inventar o completar datos " +
+    "INTERNOS del grupo (montos, contactos, contraseñas de sistemas internos, decisiones del equipo) — eso " +
+    "siempre sale de las herramientas internas reales, nunca de una búsqueda externa. Cuando la uses, " +
+    "cita la fuente (la API ya incluye las citas) en vez de presentar el dato como si lo supieras de " +
+    "memoria — deja claro que viene de una búsqueda externa, no de conocimiento interno del grupo.",
 ].join("\n\n");
 
 /**
@@ -375,12 +407,22 @@ async function ejecutarConversacion(
   model: string,
   toolsBase: Anthropic.Tool[],
   systemExtra: string | undefined,
-  permiteEscalar: boolean
+  permiteEscalar: boolean,
+  incluirBusquedaWeb: boolean
 ): Promise<ResultadoConversacion> {
   const anthropic = getClient();
 
-  const tools = permiteEscalar ? [...toolsBase, TOOL_ESCALAR] : toolsBase;
-  const nombresDisponibles = new Set(tools.map((t) => t.name));
+  // web_search es una tool HOSPEDADA (la ejecuta la API de Anthropic, no
+  // executeTool()) — nunca produce un bloque "tool_use" normal (produce
+  // "server_tool_use"/"web_search_tool_result", tipos distintos), así que el
+  // loop de abajo (que solo filtra block.type === "tool_use") la ignora
+  // automáticamente sin necesitar ningún caso especial: cuando Claude solo
+  // usa web_search, la búsqueda y la respuesta final llegan en la MISMA
+  // respuesta con stop_reason "end_turn", tratada igual que cualquier
+  // respuesta final de texto. Verificado contra la documentación oficial.
+  const tools: Anthropic.ToolUnion[] = permiteEscalar ? [...toolsBase, TOOL_ESCALAR] : [...toolsBase];
+  if (incluirBusquedaWeb) tools.push(WEB_SEARCH_TOOL);
+  const nombresDisponibles = new Set(toolsBase.map((t) => t.name).concat(permiteEscalar ? [NOMBRE_TOOL_ESCALAR] : []));
 
   // Marca el último tool como punto de corte de caché — como las
   // definiciones de tools van justo antes del system prompt en el prompt
@@ -582,7 +624,8 @@ async function orquestarTurno(
     MODEL_HAIKU,
     getToolDefinitions(true),
     INSTRUCCION_MODO_RAPIDO,
-    true
+    true,
+    false // sin búsqueda web en el modo rápido/económico — ver WEB_SEARCH_TOOL
   );
 
   if (intentoRapido.tipo === "respuesta") {
@@ -602,7 +645,8 @@ async function orquestarTurno(
       MODEL_SONNET,
       getToolDefinitions(false),
       undefined,
-      false
+      false,
+      true // intento completo — búsqueda web disponible, ver WEB_SEARCH_TOOL
     );
   } catch (error) {
     if (!esErrorDeDisponibilidad(error)) throw error;
@@ -616,7 +660,8 @@ async function orquestarTurno(
       MODEL_HAIKU,
       getToolDefinitions(false),
       undefined,
-      false
+      false,
+      true // sigue siendo el intento "completo" (solo cambió el modelo por disponibilidad)
     );
   }
 

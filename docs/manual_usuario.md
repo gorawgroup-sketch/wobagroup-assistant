@@ -421,6 +421,21 @@ que hacer nada más.
   de proponer el correo — si no encuentra a la persona, te lo dice y pide el
   email en vez de inventarlo.
 
+### 🌐 Búsqueda en internet
+- Cuando lo que preguntas necesita información pública real que ni la base
+  de conocimiento interna ni los documentos de Drive tienen (un manual de
+  un dispositivo, documentación técnica, normativa pública, o cualquier
+  dato externo actualizado), el asistente busca en internet de verdad — no
+  inventa la respuesta. Siempre cita la fuente real (con link), y deja
+  claro cuando un dato viene de una búsqueda externa en vez de conocimiento
+  interno del grupo. **Nunca se usa para inventar datos internos** (montos,
+  contactos, contraseñas de sistemas del grupo) — esos siempre salen de las
+  herramientas internas reales.
+- Solo se activa cuando la pregunta de verdad lo necesita (no en cada
+  mensaje) — tiene un costo real por búsqueda, además del costo normal de
+  tokens, y ese costo queda reflejado en el control de costos de IA (ver
+  abajo).
+
 ### 🔌 Panel de conexiones (front /cerebro)
 - Justo debajo del enlace a Telegram, en la parte de arriba del panel, se ve
   en todo momento el estado real de las 8 conexiones externas que usa el

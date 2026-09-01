@@ -29,11 +29,22 @@ function obtenerPrecios(modelo: string): { input: number; output: number } {
   return PRECIOS_POR_MODELO[modelo] ?? PRECIOS_POR_DEFECTO;
 }
 
+// Bug real que esto evita repetir (mismo patrón que ya pasó con
+// claude-sonnet-4-6, ver comentario arriba): la tool de búsqueda web
+// (core/claude/client.ts, WEB_SEARCH_TOOL) se factura APARTE de los tokens
+// normales — $10 USD cada 1.000 búsquedas, verificado en vivo contra la
+// documentación oficial 2026-09-01 — y viene en un campo de `usage`
+// separado (server_tool_use.web_search_requests) que calcularCostoUSD no
+// leía. Sin esto, cada búsqueda real habría quedado invisible en
+// /costos_ia — el mismo error de "esta llamada real no se registraba".
+const PRECIO_POR_BUSQUEDA_WEB = 10 / 1000;
+
 export interface UsoAnthropic {
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  server_tool_use?: { web_search_requests?: number } | null;
 }
 
 export function calcularCostoUSD(usage: UsoAnthropic, modelo: string): number {
@@ -48,12 +59,14 @@ export function calcularCostoUSD(usage: UsoAnthropic, modelo: string): number {
   const outputTokens = usage.output_tokens ?? 0;
   const cacheCreation = usage.cache_creation_input_tokens ?? 0;
   const cacheRead = usage.cache_read_input_tokens ?? 0;
+  const busquedasWeb = usage.server_tool_use?.web_search_requests ?? 0;
 
   return (
     inputTokens * precioInput +
     outputTokens * precioOutput +
     cacheCreation * precioCacheWrite +
-    cacheRead * precioCacheRead
+    cacheRead * precioCacheRead +
+    busquedasWeb * PRECIO_POR_BUSQUEDA_WEB
   );
 }
 
