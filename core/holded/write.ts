@@ -135,7 +135,57 @@ const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
  * bookkeeping — pedido explícito de Carlos: "si no tienes seguridad, lo
  * dejas sin contacto o preguntas".
  */
-function compartenPalabraDistintiva(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): boolean {
+/**
+ * Puntúa cuánto de DISTINTIVO hay en el match entre objetivo y candidato —
+ * suma la longitud de cada palabra del objetivo (5+ caracteres) que (a)
+ * aparece parecida en el candidato Y (b) es realmente distintiva (la
+ * comparten pocos contactos reales, ver MAX_CONTACTOS_COMPARTIENDO_PALABRA).
+ * 0 si ninguna palabra compartida es distintiva.
+ *
+ * Bug real encontrado en vivo (segunda vuelta del mismo problema): con un
+ * solo booleano "¿hay AL MENOS una palabra distintiva?", buscarContactoHolded
+ * usaba .find() y se quedaba con el PRIMER candidato que pasara, sin
+ * importar si otro candidato tenía una coincidencia mucho más fuerte — caso
+ * real: buscando "INTERMODALIDAD DE LEVANTE SA", "GASTRO LEVANTE" (solo
+ * comparte "levante") ganaba por orden de aparición aunque "INTERMODALIDAD
+ * DE LEVANTE SA" comparte TANTO "intermodalidad" (palabra muy específica)
+ * COMO "levante". Puntuar por fuerza total (no solo boolean) y comparar
+ * entre TODOS los candidatos arregla esto.
+ *
+ * Bug real encontrado en vivo (tercera vuelta): el conteo de "¿cuántos
+ * contactos comparten esta palabra?" reutilizaba palabrasParecidas, el
+ * mismo matcher de prefijo corto (5 caracteres) pensado para tolerar typos
+ * de OCR en la detección de candidatos. Para una palabra larga como
+ * "intermodalidad" eso genera falsos positivos masivos: "INTERNATIONAL",
+ * "INTERAMERI", "INTERURBANOS", "Intermarche" y otros 13 contactos reales
+ * no relacionados comparten el prefijo "inter", así que "intermodalidad"
+ * aparecía como compartida por 17 contactos y se descartaba como no
+ * distintiva — dejando a "INTERMODALIDAD DE LEVANTE SA" empatada en score
+ * con "GASTRO LEVANTE" (ambas solo por "levante") en vez de ganar con
+ * claridad. El conteo de distintividad usa un prefijo más largo
+ * (palabrasParecidasEstricto) que solo tolera variantes cortas reales
+ * (plural/singular), no colisiones de prefijo entre palabras largas y no
+ * relacionadas.
+ *
+ * Segundo ajuste dentro del mismo caso real: incluso con prefijo largo,
+ * "intermodalidad" (14) seguía "compartida" con "INTER RAPIDISIMO S.A"
+ * porque la palabra candidata ahí es solo "inter" (5 caracteres) — el
+ * prefijo efectivo queda acotado por la palabra MÁS CORTA, así que comparar
+ * contra una palabra corta siempre "coincide" aunque la palabra larga no
+ * tenga relación real. Exigir que la palabra más corta de las dos tenga un
+ * largo mínimo razonable (6) antes de contarla como colisión evita esto sin
+ * perder la tolerancia a variantes reales (plural/singular) entre palabras
+ * de largo similar.
+ */
+function palabrasParecidasEstricto(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 6) return false;
+  const prefijo = Math.min(8, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
+function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
   const palabrasObjetivo = normalizar(objetivo)
     .split(" ")
     .filter((p) => p.length >= 5);
@@ -143,20 +193,21 @@ function compartenPalabraDistintiva(objetivo: string, candidatoNombre: string, t
     .split(" ")
     .filter((p) => p.length >= 3);
 
+  let score = 0;
   for (const po of palabrasObjetivo) {
     if (!palabrasCandidato.some((pc) => palabrasParecidas(po, pc))) continue;
 
     const contactosQueComparten = todosLosNombres.filter((otro) =>
       normalizar(otro)
         .split(" ")
-        .some((p) => p.length >= 3 && palabrasParecidas(po, p))
+        .some((p) => p.length >= 3 && palabrasParecidasEstricto(po, p))
     ).length;
 
     if (contactosQueComparten <= MAX_CONTACTOS_COMPARTIENDO_PALABRA) {
-      return true;
+      score += po.length;
     }
   }
-  return false;
+  return score;
 }
 
 /**
@@ -186,8 +237,19 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
   // cuando ya existía un alias aprendido de antes — para un proveedor
   // nuevo sin alias, fallaba en silencio.
   const candidatos = conNombre.filter((c) => textosParecidos(nombre, c.name));
+  if (candidatos.length === 0) return undefined;
 
-  return candidatos.find((c) => compartenPalabraDistintiva(nombre, c.name, todosLosNombres));
+  const puntuados = candidatos
+    .map((c) => ({ contacto: c, score: puntuarDistintividad(nombre, c.name, todosLosNombres) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (puntuados.length === 0) return undefined;
+  // Empate real entre el mejor y el segundo mejor -> ambiguo de verdad,
+  // mejor no adivinar (cae a buscarContactosParecidos para preguntar).
+  if (puntuados.length > 1 && puntuados[0].score === puntuados[1].score) return undefined;
+
+  return puntuados[0].contacto;
 }
 
 /**

@@ -201,7 +201,11 @@ que hacer nada más.
      alternativas (contactos con nombre parecido, facturas ya registradas
      con el mismo importe) y te las muestra por botones — la que confirmes
      queda **aprendida** como alias, así la próxima factura del mismo
-     proveedor no vuelve a preguntar. La tolerancia de nombre parecido
+     proveedor no vuelve a preguntar. Ese alias también se puede fijar de
+     antemano por chat en texto libre (ej. "cada vez que veas facturas de
+     iRyo, asígnalas a INTERMODALIDAD DE LEVANTE SA") — no hace falta
+     esperar a que aparezca una factura real primero para dejarlo dicho.
+     La tolerancia de nombre parecido
      nunca asigna un contacto solo porque comparte una palabra genérica del
      rubro (ej. "transporte", "servicios") — tiene que ser una palabra
      realmente distintiva del proveedor real; si no hay ninguna coincidencia
