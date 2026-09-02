@@ -22,7 +22,8 @@ import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendienteCapturaEmpresa } from "../core/knowledge/pendienteCapturaEmpresaStore";
-import { askClaude } from "../core/claude/client";
+import { askClaude, buscarEnInternet } from "../core/claude/client";
+import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
@@ -203,6 +204,72 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
 });
 
 app.options("/api/cerebro/conexiones/arreglar", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Resumen + historial reciente de búsquedas web reales (query, resultados,
+ * costo) — pedido explícito de Carlos: no solo saber que el módulo está
+ * conectado, sino qué se ha buscado y qué ha costado. Ver core/claude/webSearchLog.ts.
+ */
+app.get("/api/cerebro/busqueda-web", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  try {
+    const [resumen, recientes] = await Promise.all([obtenerResumenBusquedasWeb(), obtenerBusquedasRecientes(20)]);
+    res.json({ resumen, recientes });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/busqueda-web] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/busqueda-web", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+/**
+ * Buscador directo del panel /cerebro — pedido explícito de Carlos: "un
+ * pequeño panel... como un pequeño buscador opcional desde el mismo
+ * sistema". Dispara una búsqueda real (con costo real, ver
+ * core/claude/webSearchLog.ts) — nunca se llama sola, solo cuando alguien
+ * la pide explícitamente desde el front.
+ */
+app.post("/api/cerebro/buscar", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  const query = typeof req.body?.query === "string" ? req.body.query.trim() : "";
+  if (!query) {
+    res.status(400).json({ error: "Falta 'query'." });
+    return;
+  }
+
+  try {
+    const resultado = await buscarEnInternet(query);
+    res.json(resultado);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/buscar] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/buscar", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");

@@ -6,6 +6,7 @@ import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/cla
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { registrarUsoIA } from "./costTracking";
+import { registrarBusquedaWeb } from "./webSearchLog";
 
 const MODEL_SONNET = "claude-sonnet-5";
 const MODEL_HAIKU = "claude-haiku-4-5";
@@ -387,6 +388,49 @@ export function obtenerUltimoEstadoBusquedaWeb(): EstadoBusquedaWeb | null {
   return ultimoEstadoBusquedaWeb;
 }
 
+function extraerQueryDeInput(input: unknown): string {
+  if (input && typeof input === "object" && "query" in input) {
+    const query = (input as { query?: unknown }).query;
+    if (typeof query === "string" && query.trim()) return query;
+  }
+  return "(consulta desconocida)";
+}
+
+/**
+ * Detecta bloques reales de búsqueda web en una respuesta de Claude —
+ * compartido entre el loop normal de tool-use (ejecutarConversacion) y
+ * buscarEnInternet (el buscador directo del panel /cerebro), para no
+ * duplicar esta lógica en dos lugares. Actualiza el estado pasivo del
+ * panel de conexiones (ok/error) Y registra cada búsqueda real en
+ * webSearchLog.ts (query exacta, cuántos resultados, costo) — pedido
+ * explícito de Carlos: no solo "está conectado", sino qué se buscó y qué
+ * costó, de forma independiente y consultable.
+ */
+function procesarResultadosBusquedaWeb(
+  content: Anthropic.ContentBlock[],
+  chatId: number | undefined,
+  origen: "chat" | "panel"
+): void {
+  const usosDeBusqueda = content.filter(
+    (b): b is Anthropic.ServerToolUseBlock => b.type === "server_tool_use" && b.name === "web_search"
+  );
+  const resultados = content.filter(
+    (b): b is Anthropic.WebSearchToolResultBlock => b.type === "web_search_tool_result"
+  );
+
+  for (const resultado of resultados) {
+    if (Array.isArray(resultado.content)) {
+      registrarEstadoBusquedaWeb(true);
+      const query = extraerQueryDeInput(usosDeBusqueda.find((u) => u.id === resultado.tool_use_id)?.input);
+      registrarBusquedaWeb(chatId, origen, query, resultado.content.length).catch((error) =>
+        console.error("[webSearchLog] Error registrando búsqueda web (no crítico):", error)
+      );
+    } else {
+      registrarEstadoBusquedaWeb(false, `Error de búsqueda web: ${resultado.content.error_code}`);
+    }
+  }
+}
+
 /**
  * Único chequeo ACTIVO de este módulo: un mensaje real de 1 token
  * (fracción de céntimo) contra el modelo Haiku, solo para el botón
@@ -492,21 +536,9 @@ async function ejecutarConversacion(
       console.error("[costTracking] Error registrando uso de IA:", error)
     );
 
-    // Registra el resultado real de la ÚLTIMA búsqueda web de esta
-    // respuesta (si hubo alguna) para el panel de conexiones — ver
-    // ultimoEstadoBusquedaWeb arriba. Un error real (org sin la tool
-    // habilitada, límite excedido, etc.) SÍ debe verse como "no ok" en el
-    // panel, no quedar invisible.
-    const resultadosBusquedaWeb = response.content.filter(
-      (block): block is Anthropic.WebSearchToolResultBlock => block.type === "web_search_tool_result"
-    );
-    for (const resultado of resultadosBusquedaWeb) {
-      if (Array.isArray(resultado.content)) {
-        registrarEstadoBusquedaWeb(true);
-      } else {
-        registrarEstadoBusquedaWeb(false, `Error de búsqueda web: ${resultado.content.error_code}`);
-      }
-    }
+    // Registra estado + historial de cada búsqueda web real de esta
+    // respuesta (si hubo alguna) — ver procesarResultadosBusquedaWeb arriba.
+    procesarResultadosBusquedaWeb(response.content, chatId, "chat");
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((block) => block.type === "text");
@@ -752,4 +784,58 @@ export async function askClaude(userText: string, chatId?: number, nombreRemiten
       throw segundoError;
     }
   }
+}
+
+export interface CitaBusquedaWeb {
+  url: string;
+  title: string;
+}
+
+export interface ResultadoBusquedaWeb {
+  respuesta: string;
+  citas: CitaBusquedaWeb[];
+}
+
+/**
+ * Buscador directo, sin las herramientas internas del grupo — pedido
+ * explícito de Carlos: "un pequeño panel... como un pequeño buscador
+ * opcional desde el mismo sistema" en el front /cerebro. A diferencia de
+ * askClaude (que pasa por todo el enrutamiento Haiku/Sonnet + herramientas
+ * internas + historial de chat), esto es una sola llamada directa a Sonnet
+ * con SOLO web_search — más simple y más barata para un uso puntual de
+ * "busca esto en internet" sin necesitar nada del contexto del grupo.
+ * Nunca toca el historial de ningún chat de Telegram.
+ */
+export async function buscarEnInternet(query: string): Promise<ResultadoBusquedaWeb> {
+  const anthropic = getClient();
+
+  const response = await anthropic.messages.create({
+    model: MODEL_SONNET,
+    max_tokens: 2048,
+    system:
+      "Eres un buscador. Responde la consulta del usuario buscando información real y actual en internet " +
+      "(usa la herramienta web_search) — nunca inventes ni respondas solo de memoria. Sé breve y directo, " +
+      "en español salvo que la consulta esté en otro idioma.",
+    messages: [{ role: "user", content: query }],
+    tools: [WEB_SEARCH_TOOL],
+  });
+
+  registrarUsoIA(undefined, MODEL_SONNET, response.usage).catch((error) =>
+    console.error("[costTracking] Error registrando uso de IA (buscarEnInternet):", error)
+  );
+  procesarResultadosBusquedaWeb(response.content, undefined, "panel");
+
+  const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === "text");
+  const respuesta = textBlocks.map((b) => b.text).join("\n\n").trim() || "No se obtuvo una respuesta de texto.";
+
+  const citasPorUrl = new Map<string, CitaBusquedaWeb>();
+  for (const block of textBlocks) {
+    for (const cita of block.citations ?? []) {
+      if (cita.type === "web_search_result_location" && !citasPorUrl.has(cita.url)) {
+        citasPorUrl.set(cita.url, { url: cita.url, title: cita.title ?? cita.url });
+      }
+    }
+  }
+
+  return { respuesta, citas: Array.from(citasPorUrl.values()) };
 }

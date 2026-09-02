@@ -34,6 +34,8 @@ const CAMBIAR_ROL_ENDPOINT = "https://wobagroup-assistant-production.up.railway.
 const ELIMINAR_USUARIO_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/eliminar-usuario";
 const CONEXIONES_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/conexiones";
 const ARREGLAR_CONEXION_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/conexiones/arreglar";
+const BUSQUEDA_WEB_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/busqueda-web";
+const BUSCAR_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/buscar";
 const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
@@ -49,6 +51,11 @@ const TELEGRAM_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAY
 function fmtMoney(n) {
   if (n === null || n === undefined) return "—";
   return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(n);
+}
+
+function fmtUSD(n) {
+  if (n === null || n === undefined) return "—";
+  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "USD", maximumFractionDigits: 3 }).format(n);
 }
 
 function timeAgo(iso) {
@@ -1278,6 +1285,231 @@ function ConexionesPanel({ apiKey }) {
   );
 }
 
+function BusquedaWebPanel({ apiKey }) {
+  const [resumen, setResumen] = useState(null);
+  const [recientes, setRecientes] = useState(null);
+  const [expandido, setExpandido] = useState(false);
+  const [query, setQuery] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const [error, setError] = useState(null);
+
+  const cargar = useCallback(() => {
+    if (!apiKey) return;
+    fetch(BUSQUEDA_WEB_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (json?.resumen) setResumen(json.resumen);
+        if (json?.recientes) setRecientes(json.recientes);
+      })
+      .catch(() => {
+        // silencioso: si falla el refresco, se sigue mostrando el último dato bueno
+      });
+  }, [apiKey]);
+
+  useEffect(() => {
+    cargar();
+    const id = setInterval(cargar, CONEXIONES_POLL_MS);
+    return () => clearInterval(id);
+  }, [cargar]);
+
+  const buscar = async () => {
+    const q = query.trim();
+    if (!apiKey || !q || buscando) return;
+    setBuscando(true);
+    setError(null);
+    setResultado(null);
+    try {
+      const res = await fetch(BUSCAR_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
+        body: JSON.stringify({ query: q }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setResultado(json);
+        setQuery("");
+        cargar();
+      } else {
+        const json = await res.json().catch(() => null);
+        setError(json?.error || "No se pudo completar la búsqueda.");
+      }
+    } catch {
+      setError("No se pudo conectar con el servidor.");
+    } finally {
+      setBuscando(false);
+    }
+  };
+
+  if (!resumen || !recientes) return null;
+
+  return (
+    <div
+      style={{
+        maxWidth: 620,
+        margin: "10px auto 0",
+        position: "relative",
+        zIndex: 2,
+        border: `1px solid ${C.line}`,
+        borderRadius: 10,
+        background: "rgba(111, 207, 151, 0.03)",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={() => setExpandido((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          padding: "9px 14px",
+          cursor: "pointer",
+          fontFamily: C.mono,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: C.ok,
+              boxShadow: `0 0 6px ${C.ok}`,
+              display: "inline-block",
+            }}
+          />
+          <span style={{ fontSize: 11, color: C.dim, letterSpacing: "0.04em" }}>
+            Búsqueda web — {resumen.totalBusquedas} búsqueda{resumen.totalBusquedas === 1 ? "" : "s"} · {fmtUSD(resumen.costoTotalUSD)}
+            {resumen.busquedasHoy > 0 ? ` · hoy: ${resumen.busquedasHoy}` : ""}
+          </span>
+        </div>
+        <span style={{ fontSize: 10, color: C.dim }}>{expandido ? "ocultar ▲" : "abrir ▼"}</span>
+      </div>
+
+      {expandido && (
+        <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") buscar();
+              }}
+              placeholder="Buscar en internet…"
+              disabled={buscando}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                background: C.voidSoft,
+                border: `1px solid ${C.line}`,
+                borderRadius: 6,
+                padding: "7px 10px",
+                color: C.cream,
+                fontFamily: C.sans,
+                fontSize: 12,
+                outline: "none",
+              }}
+            />
+            <button
+              onClick={buscar}
+              disabled={buscando || !query.trim()}
+              style={{
+                flexShrink: 0,
+                background: "none",
+                border: `1px solid ${C.ok}`,
+                color: C.ok,
+                borderRadius: 6,
+                padding: "7px 14px",
+                fontFamily: C.mono,
+                fontSize: 10.5,
+                cursor: buscando || !query.trim() ? "default" : "pointer",
+                opacity: buscando || !query.trim() ? 0.5 : 1,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {buscando ? "buscando…" : "buscar"}
+            </button>
+          </div>
+
+          {error && (
+            <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dangerBright }}>{error}</div>
+          )}
+
+          {resultado && (
+            <div
+              style={{
+                background: C.voidSoft,
+                border: `1px solid ${C.line}`,
+                borderRadius: 6,
+                padding: "10px 12px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              <div style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream, whiteSpace: "pre-wrap" }}>
+                {resultado.respuesta}
+              </div>
+              {resultado.citas?.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {resultado.citas.map((cita, i) => (
+                    <a
+                      key={i}
+                      href={cita.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontFamily: C.mono, fontSize: 10, color: C.core, wordBreak: "break-word" }}
+                    >
+                      {cita.title || cita.url}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {recientes.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, letterSpacing: "0.04em" }}>
+                RECIENTES
+              </div>
+              {recientes.map((r, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "5px 10px",
+                    background: C.voidSoft,
+                    borderRadius: 6,
+                    border: `1px solid ${C.line}`,
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, wordBreak: "break-word" }}>
+                      {r.query}
+                    </div>
+                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2 }}>
+                      {timeAgo(r.fecha)} · {r.origen === "panel" ? "desde el panel" : "desde el chat"}
+                    </div>
+                  </div>
+                  <div style={{ flexShrink: 0, fontFamily: C.mono, fontSize: 10, color: C.dim }}>
+                    {fmtUSD(r.costoUSD)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CerebroWoba() {
   const positions = useRadialLayout(MODULES.length, 215);
   const [active, setActive] = useState(null);
@@ -1494,6 +1726,7 @@ export default function CerebroWoba() {
       </div>
 
       {apiKey && <ConexionesPanel apiKey={apiKey} />}
+      {apiKey && <BusquedaWebPanel apiKey={apiKey} />}
 
       <div
         style={{

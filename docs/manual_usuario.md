@@ -436,6 +436,23 @@ que hacer nada más.
   tokens, y ese costo queda reflejado en el control de costos de IA (ver
   abajo).
 
+### 🔎 Panel de búsqueda web (front /cerebro)
+- Justo debajo del panel de conexiones hay un segundo panel, propio de la
+  búsqueda web, con su propio historial y costo — independiente del control
+  de costos de IA general (que mezcla todo). Colapsado se ve el total de
+  búsquedas hechas y su costo acumulado (y cuántas se hicieron hoy, si hubo
+  alguna); al abrirlo se ve el detalle: cada búsqueda real, cuándo se hizo,
+  si vino de una conversación de Telegram o de este mismo panel, y su costo
+  individual.
+- El panel trae también un pequeño buscador **opcional**: un campo de texto
+  y un botón para lanzar una búsqueda real en internet directamente desde
+  el front, sin pasar por el chat de Telegram. La respuesta aparece ahí
+  mismo con sus fuentes citadas (con link), y la búsqueda queda registrada
+  en el historial igual que cualquier otra.
+- Esto es solo para consultar información pública — no reemplaza el chat de
+  Telegram para nada relacionado con datos internos del grupo (gastos,
+  contactos, cashflow).
+
 ### 🔌 Panel de conexiones (front /cerebro)
 - Justo debajo del enlace a Telegram, en la parte de arriba del panel, se ve
   en todo momento el estado real de las 9 conexiones/módulos externos que

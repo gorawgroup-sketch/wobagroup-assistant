@@ -37,7 +37,10 @@ function obtenerPrecios(modelo: string): { input: number; output: number } {
 // separado (server_tool_use.web_search_requests) que calcularCostoUSD no
 // leía. Sin esto, cada búsqueda real habría quedado invisible en
 // /costos_ia — el mismo error de "esta llamada real no se registraba".
-const PRECIO_POR_BUSQUEDA_WEB = 10 / 1000;
+// Exportado para que webSearchLog.ts (registro independiente de cada
+// búsqueda, con su query real) calcule el mismo costo por unidad sin
+// duplicar el número y arriesgar que se desincronicen.
+export const PRECIO_POR_BUSQUEDA_WEB = 10 / 1000;
 
 export interface UsoAnthropic {
   input_tokens: number;
