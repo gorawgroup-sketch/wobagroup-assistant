@@ -21,7 +21,7 @@ import { manejarClasificacion } from "../core/documental/processClassification";
 import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
-import { obtenerPendienteCapturaEmpresa } from "../core/knowledge/pendienteCapturaEmpresaStore";
+import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
 import { askClaude, buscarEnInternet } from "../core/claude/client";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { startScheduler } from "../core/jobs/scheduler";
@@ -760,13 +760,17 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   // y 2026-08-28) que alguien tocó una empresa pero nunca "Confirmar y
   // guardar", y al preguntar después el asistente decía "no encontré nada"
   // sin ninguna pista de que la captura nunca se había guardado.
-  const pendienteCapturaEmpresa = await obtenerPendienteCapturaEmpresa(incoming.chatId);
-  if (pendienteCapturaEmpresa) {
-    await sendTelegramMessage(
-      incoming.chatId,
-      "⏳ Tienes una captura de conocimiento sin confirmar (arriba) — todavía no se guardó nada. " +
-        'Pulsa "✅ Confirmar y guardar" en ese mensaje, o "❌ Cancelar" si ya no aplica.'
-    ).catch((error) => console.error("Error avisando de captura pendiente sin confirmar:", error));
+  const pendientesCapturaEmpresa = await obtenerPendientesCapturaEmpresaPorChat(incoming.chatId);
+  if (pendientesCapturaEmpresa.length > 0) {
+    const texto =
+      pendientesCapturaEmpresa.length === 1
+        ? "⏳ Tienes una captura de conocimiento sin confirmar (arriba) — todavía no se guardó nada. " +
+          'Pulsa "✅ Confirmar y guardar" en ese mensaje, o "❌ Cancelar" si ya no aplica.'
+        : `⏳ Tienes ${pendientesCapturaEmpresa.length} capturas de conocimiento sin confirmar (arriba) — todavía no ` +
+          'se guardó nada de eso. Pulsa "✅ Confirmar y guardar" en cada mensaje, o "❌ Cancelar" si ya no aplica.';
+    await sendTelegramMessage(incoming.chatId, texto).catch((error) =>
+      console.error("Error avisando de captura pendiente sin confirmar:", error)
+    );
   }
 
   const detenerEscribiendo = iniciarIndicadorEscribiendo(incoming.chatId);

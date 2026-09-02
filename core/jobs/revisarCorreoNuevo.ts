@@ -8,7 +8,7 @@ import {
   type CorreoResumen,
 } from "../gmail/client";
 import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore";
-import { analizarCorreo, resumirCuerpoCorreoInformativo } from "../gmail/classifyEmail";
+import { analizarCorreo, evaluarCorreoInformativo } from "../gmail/classifyEmail";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
@@ -219,16 +219,49 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
       // resumen de analizarCorreo solo vio el snippet corto de Gmail, así
       // que se recalcula a partir del cuerpo real; si eso falla, se usa el
       // resumen original como respaldo (nunca se rompe la notificación por esto).
+      //
+      // Segundo pedido explícito, distinto del anterior: un correo
+      // "informativo" puede traer un dato real del negocio (condiciones de
+      // un proveedor, cambio de contacto) que antes se perdía apenas se
+      // mandaba este resumen — evaluarCorreoInformativo también decide eso,
+      // y si vale la pena, se ofrece guardarlo como conocimiento permanente
+      // con el mismo flujo de botones de empresa que ya usan las notas de
+      // reunión (ver iniciarSeleccionEmpresaCaptura) — nunca se guarda solo.
       let resumenInformativo = analisis.resumen;
+      let cuerpoCompleto = "";
+      let valeLaPenaGuardar = false;
+      let razonGuardar: string | undefined;
       try {
-        const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
-        resumenInformativo = await resumirCuerpoCorreoInformativo(correo.asunto || "(sin asunto)", cuerpo);
+        cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id);
+        const evaluacion = await evaluarCorreoInformativo(correo.asunto || "(sin asunto)", cuerpoCompleto);
+        resumenInformativo = evaluacion.resumen;
+        valeLaPenaGuardar = evaluacion.valeLaPenaGuardar;
+        razonGuardar = evaluacion.razonGuardar;
       } catch (error) {
-        console.error(`[revisarCorreoNuevo] Error generando resumen del cuerpo para ${id} (uso el resumen original):`, error);
+        console.error(`[revisarCorreoNuevo] Error evaluando el cuerpo para ${id} (uso el resumen original, sin proponer guardarlo):`, error);
+      }
+
+      if (valeLaPenaGuardar && cuerpoCompleto) {
+        const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpoCompleto].join(
+          "\n"
+        );
+        const intro = `📧 Encontré algo que puede valer la pena recordar en un correo de ${correo.de} (asunto: "${correo.asunto}"): ${razonGuardar || resumenInformativo}`;
+        try {
+          await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, intro);
+        } catch (error) {
+          console.error(`[revisarCorreoNuevo] Error proponiendo captura de correo informativo ${id}:`, error);
+        }
       }
 
       informativos.push(
-        [`📧 *${correo.asunto || "(sin asunto)"}*`, `De: ${correo.de}`, resumenInformativo].join("\n")
+        [
+          `📧 *${correo.asunto || "(sin asunto)"}*`,
+          `De: ${correo.de}`,
+          resumenInformativo,
+          valeLaPenaGuardar ? "_(propuesta de guardarlo como conocimiento arriba ⬆️)_" : null,
+        ]
+          .filter((linea): linea is string => linea !== null)
+          .join("\n")
       );
     } catch (error) {
       console.error(`[revisarCorreoNuevo] Error procesando mensaje ${id}:`, error);

@@ -4,7 +4,6 @@ import type { CorreoResumen } from "./client";
 import { registrarUsoIA } from "../claude/costTracking";
 
 const MODEL = "claude-sonnet-5";
-const MODEL_HAIKU = "claude-haiku-4-5";
 const MAX_ITERATIONS = 4;
 
 let client: Anthropic | null = null;
@@ -162,6 +161,39 @@ export async function analizarCorreo(correo: CorreoResumen): Promise<AnalisisCor
   };
 }
 
+export interface EvaluacionCorreoInformativo {
+  resumen: string;
+  valeLaPenaGuardar: boolean;
+  razonGuardar?: string;
+}
+
+const EVALUAR_INFORMATIVO_TOOL_NAME = "reportar_evaluacion_informativo";
+
+const EVALUAR_INFORMATIVO_TOOL: Anthropic.Tool = {
+  name: EVALUAR_INFORMATIVO_TOOL_NAME,
+  description: "Reporta el resumen del correo y si vale la pena guardarlo como conocimiento permanente del grupo.",
+  input_schema: {
+    type: "object",
+    properties: {
+      resumen: { type: "string", description: "Resumen breve (1-2 frases) del contenido real del correo, en español." },
+      vale_la_pena_guardar: {
+        type: "boolean",
+        description:
+          "true SOLO si el correo trae información operativa real del negocio que convenga poder consultar " +
+          "después (datos o condiciones de un proveedor/cliente, un acuerdo o compromiso, un cambio de contacto " +
+          "o de proceso, una instrucción de acceso, cualquier dato que si se pierde habría que volver a pedir). " +
+          "false para newsletters, notificaciones automáticas de sistemas, confirmaciones triviales (recibos de " +
+          "lectura, 'tu pedido fue enviado'), publicidad, o cualquier cosa sin valor de referencia futura.",
+      },
+      razon_guardar: {
+        type: "string",
+        description: "Si vale_la_pena_guardar=true, en 1 frase corta qué es lo útil que trae (para mostrárselo a la persona antes de que confirme guardar).",
+      },
+    },
+    required: ["resumen", "vale_la_pena_guardar"],
+  },
+};
+
 /**
  * Pedido explícito de Carlos: para correos informativos (sin acción
  * requerida), el resumen que se manda por Telegram debe decir de qué trata
@@ -171,38 +203,66 @@ export async function analizarCorreo(correo: CorreoResumen): Promise<AnalisisCor
  * del propio asunto (caso real: "Control de Acceso oficina" repetido como
  * "resumen"). Esta función lee el CUERPO REAL del correo (ya disponible via
  * obtenerCuerpoCompletoCorreo) y pide un resumen breve y concreto a partir
- * de ese contenido. Modelo económico (Haiku) porque es una tarea simple de
- * resumen, sin herramientas — nunca lanza: si falla, el llamador debe usar
- * el resumen original de analizarCorreo como respaldo.
+ * de ese contenido.
+ *
+ * Segundo pedido explícito, distinto del anterior: "no memoriza adecuadamente
+ * lo que recibe vía mail, analizando el mail e integrando el conocimiento" —
+ * un correo "informativo" (sin acción) antes se resumía y se perdía para
+ * siempre, incluso cuando traía un dato real del negocio (condiciones de un
+ * proveedor, un cambio de contacto). Ahora esta misma llamada también
+ * decide si vale la pena proponer guardarlo (ver revisarCorreoNuevo.ts, que
+ * dispara el mismo flujo de CAPTURA con botones de empresa que ya existía
+ * para notas de reunión — nunca se guarda solo, sigue haciendo falta que
+ * una persona confirme).
+ *
+ * Modelo completo (Sonnet, no Haiku) a propósito: un falso negativo acá
+ * significa un dato del negocio perdido para siempre sin que nadie se
+ * entere — el costo de una evaluación de más ($0.01-0.02 por correo) es
+ * insignificante comparado con eso. Nunca lanza: si falla, el llamador debe
+ * usar el resumen original de analizarCorreo como respaldo y tratar
+ * valeLaPenaGuardar como false (no proponer nada en vez de arriesgar un
+ * error silencioso a mitad del flujo).
  */
-export async function resumirCuerpoCorreoInformativo(asunto: string, cuerpo: string): Promise<string> {
+export async function evaluarCorreoInformativo(asunto: string, cuerpo: string): Promise<EvaluacionCorreoInformativo> {
   const anthropic = getClient();
 
-  const cuerpoRecortado = cuerpo.trim().slice(0, 4000); // suficiente para un resumen, sin gastar de más en correos larguísimos
+  const cuerpoRecortado = cuerpo.trim().slice(0, 6000); // suficiente para juzgar contenido real, sin gastar de más en correos larguísimos
 
   const response = await anthropic.messages.create({
-    model: MODEL_HAIKU,
-    max_tokens: 200,
+    model: MODEL,
+    max_tokens: 400,
+    tools: [EVALUAR_INFORMATIVO_TOOL],
+    tool_choice: { type: "tool", name: EVALUAR_INFORMATIVO_TOOL_NAME },
     messages: [
       {
         role: "user",
         content:
           `Asunto: ${asunto}\n\nCuerpo del correo:\n${cuerpoRecortado}\n\n` +
-          "Resume este correo en 1-2 frases concretas, en español, para alguien que NO lo va a abrir — " +
-          "qué es y qué dice de fondo (no repitas el asunto tal cual, aporta el contenido real). " +
-          "Responde SOLO con el resumen, sin preámbulos.",
+          `Evalúa este correo y llama a ${EVALUAR_INFORMATIVO_TOOL_NAME} con tu conclusión.`,
       },
     ],
   });
 
-  registrarUsoIA(undefined, MODEL_HAIKU, response.usage).catch((error) =>
-    console.error("[classifyEmail] Error registrando uso de IA (resumen informativo):", error)
+  registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
+    console.error("[classifyEmail] Error registrando uso de IA (evaluación informativo):", error)
   );
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  const resumen = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
-  if (!resumen) {
-    throw new Error("Haiku no devolvió texto para el resumen.");
+  const tool = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === EVALUAR_INFORMATIVO_TOOL_NAME
+  );
+  if (!tool) {
+    throw new Error("Sonnet no devolvió la evaluación esperada.");
   }
-  return resumen;
+
+  const input = tool.input as Record<string, unknown>;
+  const resumen = typeof input.resumen === "string" ? input.resumen.trim() : "";
+  if (!resumen) {
+    throw new Error("La evaluación no trajo resumen.");
+  }
+
+  return {
+    resumen,
+    valeLaPenaGuardar: input.vale_la_pena_guardar === true,
+    razonGuardar: typeof input.razon_guardar === "string" ? input.razon_guardar.trim() : undefined,
+  };
 }

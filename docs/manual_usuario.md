@@ -361,10 +361,17 @@ que hacer nada más.
     conocimiento — así las decisiones y próximos pasos de la reunión quedan
     disponibles para consultas futuras, no se pierden como un correo
     informativo cualquiera.
-  - Si es puramente informativo (newsletter, notificación automática) → lo
-    resume en un solo mensaje agrupado, sin guardarlo. El resumen de cada
-    correo se genera a partir de su contenido REAL (no del snippet corto de
-    Gmail ni del asunto) — para saber de qué trata sin tener que abrirlo.
+  - Si es puramente informativo (newsletter, notificación automática,
+    correo sin acción concreta) → lo resume en un solo mensaje agrupado. El
+    resumen de cada correo se genera a partir de su contenido REAL (no del
+    snippet corto de Gmail ni del asunto) — para saber de qué trata sin
+    tener que abrirlo. **Además**, si ese contenido trae un dato real del
+    negocio que valga la pena poder consultar después (condiciones de un
+    proveedor, un cambio de contacto, un acuerdo mencionado de pasada), te
+    ofrece guardarlo como conocimiento con el mismo flujo de botones de
+    empresa que las notas de reunión — antes esto se perdía apenas se
+    mandaba el resumen; nunca se guarda solo, sigue haciendo falta que
+    confirmes.
 - Puede redactar un borrador de respuesta y enviarlo por correo — siempre te
   lo muestra primero, con botones para enviarlo tal cual, editarlo, o
   cancelarlo. Nunca envía un correo sin que el superadministrador apruebe el

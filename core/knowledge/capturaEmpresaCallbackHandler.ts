@@ -47,29 +47,43 @@ function mensajePregunta(): string {
  * nunca antes. Se llama justo después de detectar un mensaje CAPTURA de
  * texto/caption normal (no el flujo de lectura de correo, que se resuelve
  * solo vía Claude).
+ *
+ * `mensajeIntro` es opcional: para un CAPTURA manual (la persona acaba de
+ * escribir o mandar exactamente lo que se va a guardar) no hace falta,
+ * pero para una propuesta AUTOMÁTICA (ver revisarCorreoNuevo.ts, correos
+ * informativos que Claude marca como "vale la pena guardar") hay que
+ * decirle a la persona QUÉ se propone guardar y por qué, porque ella nunca
+ * pidió esto explícitamente.
  */
-export async function iniciarSeleccionEmpresaCaptura(chatId: number, texto: string, autor?: string): Promise<void> {
-  const messageId = await sendTelegramMessageWithButtons(chatId, mensajePregunta(), construirTeclado([]));
+export async function iniciarSeleccionEmpresaCaptura(
+  chatId: number,
+  texto: string,
+  autor?: string,
+  mensajeIntro?: string
+): Promise<void> {
+  const pregunta = mensajeIntro ? `${mensajeIntro}\n\n${mensajePregunta()}` : mensajePregunta();
+  const messageId = await sendTelegramMessageWithButtons(chatId, pregunta, construirTeclado([]));
   await guardarPendienteCapturaEmpresa({ chatId, messageId, texto, autor, empresasSeleccionadas: [] });
 }
 
 export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQuery): Promise<void> {
   const data = callback.data;
   const chatId = callback.message?.chat.id;
+  const messageId = callback.message?.message_id;
 
-  if (!data || !chatId) {
+  if (!data || !chatId || !messageId) {
     await answerCallbackQuerySafe(callback.id);
     return;
   }
 
-  const pendiente = await obtenerPendienteCapturaEmpresa(chatId);
+  const pendiente = await obtenerPendienteCapturaEmpresa(chatId, messageId);
   if (!pendiente) {
     await answerCallbackQuerySafe(callback.id, "Esta selección ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 
   if (data === "capturaempresa_cancelar") {
-    await eliminarPendienteCapturaEmpresa(chatId);
+    await eliminarPendienteCapturaEmpresa(chatId, messageId);
     await answerCallbackQuerySafe(callback.id);
     await editTelegramMessage(chatId, pendiente.messageId, "❌ Captura descartada — no se guardó nada.", []);
     return;
@@ -90,7 +104,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
     // vez de decir "guardado" sobre algo que no se guardó.
     try {
       await registrarCaptura(pendiente.texto, pendiente.autor, pendiente.empresasSeleccionadas);
-      await eliminarPendienteCapturaEmpresa(chatId);
+      await eliminarPendienteCapturaEmpresa(chatId, messageId);
       await editTelegramMessage(
         chatId,
         pendiente.messageId,

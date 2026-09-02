@@ -318,15 +318,34 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
 // cuándo debe ceder el turno a Sonnet en vez de intentarlo con lo que
 // tiene. También es texto fijo, así que también se cachea (breakpoint
 // aparte) — Haiku recibe esta instrucción en TODAS sus llamadas.
+//
+// Pedido explícito de Carlos: "todavía no me da por el chat respuestas
+// inteligentes y robustas que ayuden a los usuarios". La versión anterior
+// de esta instrucción solo hacía escalar por herramientas de ESCRITURA que
+// faltaban (correo, evento, corrección) — cualquier "consulta directa" se
+// quedaba en Haiku sin más criterio, aunque la pregunta en realidad pidiera
+// análisis, recomendación o cruzar varias fuentes para llegar a una
+// conclusión (el tipo de respuesta que sí demuestran los ejemplos reales de
+// Sonnet en las anotaciones de cashflow — ver registrarMensajeSaliente).
+// Como es el propio Haiku quien decide si escala, y Haiku es el modelo más
+// débil de los dos, hay que ser explícito sobre CUÁNDO una "consulta"
+// simple en realidad necesita razonamiento — y decirle que ante la duda
+// escale, en vez de dejarle margen para decidir que sí puede solo.
 const INSTRUCCION_MODO_RAPIDO =
   `Estás respondiendo en modo rápido/económico, con un set reducido de herramientas: solo las de ` +
-  `consulta (lectura), ninguna que proponga, registre o escriba nada. Si para responder de verdad ` +
-  `necesitas algo que no tienes disponible — enviar o proponer un correo, proponer un evento de ` +
-  `calendario, registrar una corrección, capturar un correo entrante, o cualquier verificación de ` +
-  `precisión financiera real — NO lo intentes con lo que tienes, no completes con una aproximación, y no ` +
-  `expliques primero por qué hace falta: llama directo a la herramienta ${NOMBRE_TOOL_ESCALAR}. Para todo ` +
-  `lo demás — saludos, consultas directas, cualquier cosa que sí puedas resolver con las herramientas ` +
-  `que tienes — responde tú mismo con normalidad, sigues siendo Wobi de principio a fin.`;
+  `consulta (lectura), ninguna que proponga, registre o escriba nada. Este modo es SOLO para preguntas de ` +
+  `dato simple y directo — un saludo, un saldo, un estado, una fecha, "¿tengo algo pendiente de X" — que se ` +
+  `responden con una o dos consultas de lectura y sin tener que interpretar ni razonar nada. Si para ` +
+  `responder de verdad necesitas algo que no tienes disponible — enviar o proponer un correo, proponer un ` +
+  `evento de calendario, registrar una corrección, capturar un correo entrante, o cualquier verificación de ` +
+  `precisión financiera real — O si la pregunta en el fondo pide análisis, recomendación, opinión, comparar ` +
+  `opciones, interpretar una situación o cruzar información de varias fuentes para llegar a una conclusión ` +
+  `(no solo reportar un dato tal cual sale de la fuente) — NO lo intentes con lo que tienes, no completes ` +
+  `con una aproximación superficial, y no expliques primero por qué hace falta: llama directo a la ` +
+  `herramienta ${NOMBRE_TOOL_ESCALAR}. Ante la duda de si es un dato simple o si de verdad requiere ` +
+  `razonamiento, ESCALA — cuesta un poco más, pero una respuesta superficial en algo que sí importaba sale ` +
+  `más cara. Solo para lo que sí es puramente un dato — responde tú mismo con normalidad, sigues siendo ` +
+  `Wobi de principio a fin.`;
 
 let client: Anthropic | null = null;
 
