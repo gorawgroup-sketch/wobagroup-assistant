@@ -4,8 +4,9 @@ import {
   marcarAnotacionNotificada,
   purgarAnotacionesNoActivas,
 } from "./anotacionesCashflowNotificadasStore";
-import { sendTelegramMessage } from "../telegram/client";
+import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { askClaude } from "../claude/client";
+import { crearPropuestaAccionAnotacion, actualizarMessageIdAccionAnotacion } from "./cashflowAnnotationActionStore";
 
 function describirUbicacion(a: AnotacionCashflow): string {
   if (!a.registro) return "⚠️ fila no ubicada (el valor de la celda ya no coincide con ningún registro actual)";
@@ -46,6 +47,18 @@ function describirUbicacion(a: AnotacionCashflow): string {
  * dejado de estar activa (se resolvió o se borró en Sheets) — pedido
  * explícito de Carlos: no tiene sentido guardarla ahí una vez que
  * desapareció del cashflow, ver purgarAnotacionesNoActivas.
+ *
+ * Segundo pedido explícito, distinto del anterior: la recomendación no
+ * puede quedar en texto plano sin forma de actuar — "debería dejarme un
+ * espacio para aplicar las acciones que me recomiendas... o para que te
+ * haga alguna anotación de qué deberías hacer o simplemente dejarlo como
+ * informativo". Cada mensaje trae tres botones (ver
+ * cashflowAnnotationActionStore.ts / cashflowAnnotationCallbackHandler.ts,
+ * mismo patrón que ya existía para correos que necesitan acción): "✅ Hazlo
+ * tú" (Claude investiga y ejecuta con sus herramientas normales, mismas
+ * reglas de aprobación para cualquier escritura real), "✏️ Dar
+ * instrucciones" (espera una respuesta libre de Carlos), o "ℹ️ Dejar como
+ * informativo" (no hace nada más).
  */
 export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: number }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
@@ -101,7 +114,24 @@ export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: nu
     }
 
     try {
-      await sendTelegramMessage(chatId, `📝 Anotación en el cashflow:\n\n${respuesta}`);
+      const ubicacion = describirUbicacion(a);
+      const propuesta = await crearPropuestaAccionAnotacion({
+        chatId,
+        messageId: 0,
+        ubicacion,
+        detalle,
+        recomendacion: respuesta,
+      });
+
+      const messageId = await sendTelegramMessageWithButtons(chatId, `📝 Anotación en el cashflow:\n\n${respuesta}`, [
+        [
+          { text: "✅ Hazlo tú", callback_data: `anotcf_proceder:${propuesta.id}` },
+          { text: "✏️ Dar instrucciones", callback_data: `anotcf_orientar:${propuesta.id}` },
+        ],
+        [{ text: "ℹ️ Dejar como informativo", callback_data: `anotcf_descartar:${propuesta.id}` }],
+      ]);
+
+      await actualizarMessageIdAccionAnotacion(propuesta.id, messageId);
     } catch (error) {
       console.error("[revisarAnotacionesCashflow] Error enviando aviso a Telegram (se reintenta mañana):", error);
       continue; // no se marca como notificado — se reintenta en la próxima corrida

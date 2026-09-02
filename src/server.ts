@@ -30,6 +30,8 @@ import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
+import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
+import { consumirPendienteOrientacionAnotacion } from "../core/jobs/cashflowAnnotationOrientationStore";
 import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditStore";
 import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
 import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
@@ -579,6 +581,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleAccesoCerebroCallback(update.callback_query);
       } else if (data.startsWith("capturaempresa_")) {
         await handleCapturaEmpresaCallback(update.callback_query);
+      } else if (data.startsWith("anotcf_")) {
+        await handleCashflowAnnotationActionCallback(update.callback_query);
       } else if (data.startsWith("reportecontable_")) {
         await handleReporteContableCallback(update.callback_query);
       } else {
@@ -725,6 +729,23 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       );
     } catch (error) {
       console.error("Error procesando orientación específica de correo:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
+    }
+    return;
+  }
+
+  const pendienteOrientacionAnotacion = await consumirPendienteOrientacionAnotacion(incoming.chatId);
+  if (pendienteOrientacionAnotacion) {
+    try {
+      await continuarConOrientacionAnotacion(
+        pendienteOrientacionAnotacion.chatId,
+        pendienteOrientacionAnotacion.ubicacion,
+        pendienteOrientacionAnotacion.detalle,
+        pendienteOrientacionAnotacion.recomendacion,
+        incoming.text
+      );
+    } catch (error) {
+      console.error("Error procesando orientación específica de anotación de cashflow:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
     }
     return;

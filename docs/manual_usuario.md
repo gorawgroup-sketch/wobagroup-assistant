@@ -125,8 +125,14 @@ que hacer nada más.
   aviso y manda un mensaje individual por cada una con esa misma
   recomendación — a diferencia de Aplazamiento Impuestos, no repite el
   mismo aviso todos los días mientras siga sin resolver, solo cuando
-  cambia. Solo consulta, nunca escribe ni marca nada como resuelto — eso
-  se hace a mano en el propio Sheet.
+  cambia. Cada aviso trae tres botones: **"✅ Hazlo tú"** (el asistente
+  investiga y ejecuta lo que corresponda con sus herramientas normales —
+  Holded, cashflow, correo — con las mismas reglas de aprobación de
+  siempre para cualquier escritura real), **"✏️ Dar instrucciones"**
+  (espera que le digas qué hacer en tus propias palabras, incluyendo
+  cuándo — ej. "hazlo cuando confirmen el pago de X"), o **"ℹ️ Dejar como
+  informativo"** (no hace nada más). Nunca marca nada como resuelto en el
+  propio Sheet por su cuenta — eso se sigue haciendo a mano ahí.
 
 ### 🏦 Holded
 - Consultar movimientos bancarios reales y cuentas de tesorería (solo
