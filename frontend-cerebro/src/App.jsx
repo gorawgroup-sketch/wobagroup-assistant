@@ -2042,16 +2042,20 @@ export default function CerebroWoba() {
                 width: 44,
                 height: 44,
                 borderRadius: "50%",
-                border: `1px solid ${C.amber}`,
-                background: "radial-gradient(circle at 35% 35%, rgba(255,201,138,0.22), rgba(232,167,92,0.06))",
+                border: `1px solid ${C.amberBright}`,
+                // Fondo SÓLIDO oscuro (no translúcido) — antes se perdía contra el
+                // propio enjambre de nanobots del núcleo, ámbar sobre ámbar sin
+                // contraste. Necesita leerse como un disco de control aparte, no
+                // camuflarse con las partículas que tiene detrás.
+                background: C.void,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 fontFamily: C.mono,
-                fontSize: 17,
+                fontSize: 18,
                 color: C.amberBright,
                 animation: "nodeGlow 3s ease-in-out infinite",
-                boxShadow: active === "__volver" ? `0 0 16px ${C.amberBright}` : `0 0 10px rgba(232,167,92,0.4)`,
+                boxShadow: active === "__volver" ? `0 0 18px ${C.amberBright}` : `0 0 12px rgba(232,167,92,0.55)`,
                 transition: "box-shadow .2s",
               }}
             >
@@ -2063,6 +2067,9 @@ export default function CerebroWoba() {
                 fontFamily: C.mono,
                 fontSize: 9.5,
                 letterSpacing: "0.03em",
+                background: C.void,
+                padding: "1px 6px",
+                borderRadius: 4,
                 color: active === "__volver" ? C.amberBright : C.dim,
                 textAlign: "center",
                 whiteSpace: "nowrap",
