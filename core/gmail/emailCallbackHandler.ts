@@ -8,9 +8,10 @@ import {
   actualizarMessageIdOfertaResponder,
   consumirOfertaResponderCorreo,
 } from "./emailReplyOfferStore";
-import { enviarCorreo } from "./client";
+import { enviarCorreo, obtenerCuerpoCompletoCorreo } from "./client";
 import { askClaude } from "../claude/client";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
+import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 /** Extrae la dirección pura de un header "From" tipo `Nombre <correo@dominio.com>`. */
@@ -174,6 +175,30 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       []
     );
     await avanzarColaCorreoSiActivo(propuesta.chatId);
+    return;
+  }
+
+  if (accion === "email_guardar") {
+    await answerCallbackQuerySafe(callback.id, "Leyendo el correo...");
+    try {
+      const cuerpo = await obtenerCuerpoCompletoCorreo(propuesta.mensajeId);
+      const contenido = [`De: ${propuesta.de}`, `Asunto: ${propuesta.asunto}`, "", cuerpo].join("\n");
+      await editTelegramMessage(propuesta.chatId, propuesta.messageId, "🧠 Guardando como conocimiento — elige la empresa abajo.", []);
+      // deColaCorreo: true — PropuestaAccionCorreo solo se crea desde
+      // procesarSiguienteCorreoActivo (la cola de revisión), así que
+      // siempre corresponde al correo activo — mismo criterio que
+      // email_proceder/descartar, que tampoco necesitan verificarlo.
+      await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.de, undefined, true);
+    } catch (error) {
+      console.error("[emailCallbackHandler] Error preparando la captura de un correo:", error);
+      await editTelegramMessage(
+        propuesta.chatId,
+        propuesta.messageId,
+        `⚠️ No pude leer "${propuesta.asunto}" para guardarlo como conocimiento.`,
+        []
+      );
+      await avanzarColaCorreoSiActivo(propuesta.chatId);
+    }
     return;
   }
 

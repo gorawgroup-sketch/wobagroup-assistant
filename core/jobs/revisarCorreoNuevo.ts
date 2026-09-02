@@ -7,14 +7,12 @@ import {
   obtenerCuerpoCompletoCorreo,
   descargarAdjunto,
   marcarHiloComoLeido,
-  type CorreoResumen,
 } from "../gmail/client";
-import { analizarCorreo, evaluarCorreoInformativo } from "../gmail/classifyEmail";
+import { analizarCorreo } from "../gmail/classifyEmail";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
-import { sendTelegramMessage, sendTelegramMessageWithButtons, editTelegramMessage, answerCallbackQuery } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
-import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 import {
   encolarCorreos,
@@ -26,7 +24,6 @@ import {
   obtenerActivoEstancado,
   descartarActivoEstancado,
 } from "../gmail/colaRevisionStore";
-import type { TelegramCallbackQuery } from "../telegram/types";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
 // "principales" del sistema: suficiente margen para un día de trabajo largo
@@ -37,49 +34,6 @@ const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
 function sanitizarNombre(nombre: string): string {
   return nombre.replace(/[^\w.\-]+/g, "_").slice(0, 150);
-}
-
-// Detección por asunto — confirmada en vivo contra un correo real de
-// Gemini/Google Meet (reenviado por Carlos): asunto exacto 'Notas: "Rental
-// CO, gestión administrativa y contable", 27 ago 2026' (o con "Fwd: " si se
-// reenvía). No se puede confiar en el clasificador de IA para este caso: el
-// `extracto` (snippet de Gmail) de un correo reenviado es el inicio del
-// cuerpo — normalmente la firma de quien reenvía, NO el contenido real de
-// las notas, así que el snippet no trae ninguna señal de que sea Gemini.
-// "Notes by Gemini:" queda como variante en inglés (documentada por Google,
-// no confirmada en vivo todavía).
-const PATRON_ASUNTO_NOTAS_REUNION = /^(Fwd:\s*)?(Notas:|Notes by Gemini:)/i;
-
-function pareceAsuntoDeNotasReunion(asunto: string): boolean {
-  return PATRON_ASUNTO_NOTAS_REUNION.test(asunto.trim());
-}
-
-/**
- * Lee el cuerpo completo de un correo de notas de reunión y dispara el
- * mismo flujo de CAPTURA con botones de empresa que un CAPTURA normal
- * (nunca se guarda hasta que alguien confirme — ver
- * core/knowledge/capturaEmpresaCallbackHandler.ts). Se usa tanto desde la
- * detección directa por asunto como desde el clasificador de IA.
- */
-async function capturarNotasDeReunion(chatId: number, correo: CorreoResumen): Promise<void> {
-  try {
-    const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
-    const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
-    // Bug real encontrado en vivo: sin este intro, la pregunta de "¿a qué
-    // empresa corresponde?" llegaba SOLA — en el flujo de antes (todo junto
-    // en un resumen) Carlos podía deducir de qué correo se trataba por el
-    // contexto alrededor; en la cola uno a uno esto es lo ÚNICO que ve para
-    // ese correo, así que sin decir de qué se trata no tiene forma de saber
-    // qué está aprobando.
-    const intro = `📝 Notas de reunión de ${correo.de} (asunto: "${correo.asunto}")`;
-    await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`, intro, true);
-  } catch (error) {
-    console.error(`[revisarCorreoNuevo] Error capturando notas de reunión del correo ${correo.id}:`, error);
-    await sendTelegramMessage(
-      chatId,
-      `⚠️ Llegaron notas de reunión ("${correo.asunto}") pero hubo un error leyéndolas — revísalo manualmente en el correo.`
-    );
-  }
 }
 
 /**
@@ -215,15 +169,6 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
       console.error("[revisarCorreoNuevo] Error registrando remitente en el directorio de personas:", error)
     );
 
-    // Chequeo directo por asunto ANTES de gastar una llamada a Claude —
-    // más barato y más confiable que depender del clasificador para este
-    // caso específico (ver nota en pareceAsuntoDeNotasReunion).
-    if (pareceAsuntoDeNotasReunion(correo.asunto)) {
-      await establecerPendientesActivo(chatId, activo.id, 1);
-      await capturarNotasDeReunion(chatId, correo);
-      return;
-    }
-
     // Pedido explícito de Carlos: analizar el direccionamiento de CADA
     // correo (qué acción hay que tomar, y si el camino está claro,
     // proponerlo directo; si no, preguntar) — nunca dejar caer un correo
@@ -285,90 +230,57 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
       return;
     }
 
-    const analisis = await analizarCorreo(correo);
-
-    if (analisis.tipo === "notas_reunion") {
-      await establecerPendientesActivo(chatId, activo.id, 1);
-      await capturarNotasDeReunion(chatId, correo);
-      return;
-    }
-
-    if (analisis.tipo === "necesita_respuesta" || analisis.tipo === "instruccion_jefe") {
-      await establecerPendientesActivo(chatId, activo.id, 1);
-
-      const propuesta = await crearPropuestaAccionCorreo({
-        chatId,
-        messageId: 0,
-        de: correo.de,
-        asunto: correo.asunto || "(sin asunto)",
-        tipo: analisis.tipo,
-        resumen: analisis.resumen,
-        accionSugerida: analisis.accionSugerida,
-        threadId: correo.threadId,
-        messageIdHeader: correo.messageIdHeader,
-      });
-
-      const texto = [
-        `📧 *${propuesta.asunto}*`,
-        `De: ${propuesta.de}`,
-        `Tipo: ${propuesta.tipo}`,
-        propuesta.resumen,
-        `→ ${propuesta.accionSugerida}`,
-      ].join("\n");
-
-      const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-        [
-          { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
-          { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
-        ],
-        [{ text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` }],
-      ]);
-
-      await actualizarMessageIdAccionCorreo(propuesta.id, messageId);
-      return;
-    }
-
-    // informativo (o cualquier otro caso sin acción concreta) — pedido
-    // explícito de Carlos: el resumen debe decir de qué trata el correo de
-    // verdad (no repetir el asunto), y SIEMPRE debe quedar la opción de
-    // guardarlo como conocimiento a mano ("puede ser que integres la
-    // información de este correo a tu conocimiento para próximas
-    // consultas") aunque el evaluador automático decida que no vale la
-    // pena — nunca decide en su nombre.
+    // Pedido explícito de Carlos, tras un caso real ("no sé darte respuesta
+    // porque no sé de qué MAIL me hablas" / "debes leer todos y cada uno de
+    // los mails, así podrás preguntar qué hacer con la información...si es
+    // para hacer un gasto, si es para guardar la información, si es para
+    // dejarlo en tu base de conocimiento, si es para guardar un archivo, si
+    // es para mandar un correo, si es para guardar una alerta"): TODO correo
+    // sin adjunto pasa por el mismo análisis con el CUERPO COMPLETO (no solo
+    // el extracto), y recibe el MISMO tratamiento sin importar su tipo —
+    // antes notas_reunion iba directo a "¿qué empresa?" sin decir de qué
+    // correo se trataba, e informativo tenía su propia pregunta binaria
+    // aparte; ahora es una sola propuesta con resumen real + acción concreta
+    // sugerida + 4 opciones, igual que ya funcionaba bien para
+    // necesita_respuesta/instruccion_jefe.
     await establecerPendientesActivo(chatId, activo.id, 1);
 
-    let resumenInformativo = analisis.resumen;
-    let cuerpoCompleto = "";
-    let valeLaPenaGuardar = false;
-    let razonGuardar: string | undefined;
-    try {
-      cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id);
-      const evaluacion = await evaluarCorreoInformativo(correo.asunto || "(sin asunto)", cuerpoCompleto);
-      resumenInformativo = evaluacion.resumen;
-      valeLaPenaGuardar = evaluacion.valeLaPenaGuardar;
-      razonGuardar = evaluacion.razonGuardar;
-    } catch (error) {
-      console.error(`[revisarCorreoNuevo] Error evaluando el cuerpo de ${activo.id} (uso el resumen original):`, error);
-    }
+    const cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id).catch((error) => {
+      console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
+      return "";
+    });
 
-    if (valeLaPenaGuardar && cuerpoCompleto) {
-      const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpoCompleto].join(
-        "\n"
-      );
-      const intro = `📧 Encontré algo que puede valer la pena recordar en un correo de ${correo.de} (asunto: "${correo.asunto}"): ${razonGuardar || resumenInformativo}`;
-      await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, intro, true);
-      return;
-    }
+    const analisis = await analizarCorreo(correo, cuerpoCompleto);
 
-    const texto = [`📧 *${correo.asunto || "(sin asunto)"}*`, `De: ${correo.de}`, resumenInformativo, "", "Sin acción requerida — ¿lo guardo como conocimiento igual?"].join(
+    const propuesta = await crearPropuestaAccionCorreo({
+      chatId,
+      messageId: 0,
+      de: correo.de,
+      asunto: correo.asunto || "(sin asunto)",
+      tipo: analisis.tipo,
+      resumen: analisis.resumen,
+      accionSugerida: analisis.accionSugerida,
+      threadId: correo.threadId,
+      messageIdHeader: correo.messageIdHeader,
+      mensajeId: correo.id,
+    });
+
+    const texto = [`📧 *${propuesta.asunto}*`, `De: ${propuesta.de}`, propuesta.resumen, `→ ${propuesta.accionSugerida}`].join(
       "\n"
     );
-    await sendTelegramMessageWithButtons(chatId, texto, [
+
+    const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
       [
-        { text: "🧠 Guardar como conocimiento", callback_data: `correoinfo_guardar:${activo.mensajeId}` },
-        { text: "➡️ Siguiente, no hace falta", callback_data: `correoinfo_siguiente:${activo.mensajeId}` },
+        { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
+        { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuesta.id}` },
+      ],
+      [
+        { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
+        { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` },
       ],
     ]);
+
+    await actualizarMessageIdAccionCorreo(propuesta.id, messageId);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error procesando correo activo ${activo.id}:`, error);
     await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — lo salto y sigo con el siguiente.`).catch(
@@ -413,46 +325,6 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
   }
 
   await procesarSiguienteCorreoActivo(chatId);
-}
-
-/**
- * Botones de un correo puramente informativo sin nada que valga la pena
- * guardar según el evaluador automático — "🧠 Guardar como conocimiento" usa
- * el mismo flujo de selección de empresa de siempre (nunca se guarda sin
- * confirmar); "➡️ Siguiente" avanza la cola sin guardar nada.
- */
-export async function handleCorreoInfoCallback(callback: TelegramCallbackQuery): Promise<void> {
-  const data = callback.data;
-  const chatId = callback.message?.chat.id;
-  const messageId = callback.message?.message_id;
-  if (!data || !chatId || !messageId) {
-    await answerCallbackQuery(callback.id).catch(() => {});
-    return;
-  }
-
-  const [accion, mensajeId] = data.split(":");
-
-  if (accion === "correoinfo_siguiente") {
-    await answerCallbackQuery(callback.id, "Ok, siguiente.").catch(() => {});
-    await editTelegramMessage(chatId, messageId, "➡️ Sin acción — marcado como leído.", []).catch(() => {});
-    await avanzarColaCorreoSiActivo(chatId);
-    return;
-  }
-
-  if (accion === "correoinfo_guardar") {
-    await answerCallbackQuery(callback.id, "Leyendo el correo...").catch(() => {});
-    try {
-      const correo = await obtenerResumenCorreo(mensajeId);
-      const cuerpo = await obtenerCuerpoCompletoCorreo(mensajeId);
-      const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
-      await editTelegramMessage(chatId, messageId, "🧠 Guardando como conocimiento — elige la empresa abajo.", []).catch(() => {});
-      await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, undefined, true);
-    } catch (error) {
-      console.error("[revisarCorreoNuevo] Error preparando la captura de un correo informativo:", error);
-      await sendTelegramMessage(chatId, "⚠️ No pude leer el correo para guardarlo como conocimiento.").catch(() => {});
-      await avanzarColaCorreoSiActivo(chatId);
-    }
-  }
 }
 
 /**

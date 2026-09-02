@@ -31,7 +31,7 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
-import { revisarCorreoNuevo, handleCorreoInfoCallback } from "../core/jobs/revisarCorreoNuevo";
+import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
@@ -64,6 +64,27 @@ const CAPTURA_LLEGADA = /\b(lleg[oó]|recib[ií]|recibido|entrante|acaba de lleg
 function esCapturaDeCorreo(texto: string): boolean {
   return CAPTURA_REFERENCIA_CORREO.test(texto) && CAPTURA_LLEGADA.test(texto);
 }
+
+// Bug real encontrado en vivo (2026-09-02): un correo con adjunto se quedó
+// "activo" para siempre en la cola de revisión (core/jobs/revisarCorreoNuevo.ts)
+// sin ningún mensaje de error en Telegram y sin nada en los logs — el patrón
+// exacto de una excepción no capturada en algún punto de la cadena de
+// promesas (procesarDocumentoLocal → extraerDatosFactura → Holded/Drive),
+// que por defecto en Node.js >=15 TERMINA todo el proceso en silencio en vez
+// de solo fallar esa request. Mismo tipo de causa raíz ya identificado antes
+// en esta sesión para el caso de "Alberto no recibía respuesta". En vez de
+// perseguir cada punto de la cadena que podría faltarle un catch, esto
+// neutraliza la CLASE completa de bug: cualquier promesa no manejada queda
+// solo registrada en logs, el proceso sigue vivo, y como mucho esa request
+// puntual queda sin respuesta (recuperable) en vez de tumbar el servidor
+// entero (no recuperable sin que Railway lo reinicie, perdiendo cualquier
+// otro request en curso al mismo tiempo).
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] unhandledRejection (el proceso sigue vivo, no se cae):", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("[server] uncaughtException (el proceso sigue vivo, no se cae):", error);
+});
 
 const app = express();
 app.use(express.json());
@@ -622,8 +643,6 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleAccionProgramadaCallback(update.callback_query);
       } else if (data.startsWith("reportecontable_")) {
         await handleReporteContableCallback(update.callback_query);
-      } else if (data.startsWith("correoinfo_")) {
-        await handleCorreoInfoCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }

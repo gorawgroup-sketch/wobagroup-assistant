@@ -254,6 +254,10 @@ const ACCIONES_SENSIBLES = new Set([
   "email_proceder",
   "email_descartar",
   "email_orientar",
+  // Mismo criterio: "Guardar como conocimiento" es una de las 4 decisiones
+  // posibles sobre un correo entrante (junto a proceder/descartar/dar
+  // instrucciones) — ver core/jobs/revisarCorreoNuevo.ts.
+  "email_guardar",
   // Mismo criterio que las decisiones sobre correo entrante (arriba) —
   // "Hazlo tú" investiga y actúa, "Dar instrucciones" y "Dejar como
   // informativo" son decisiones sobre esa acción — encontrado como gap
@@ -268,12 +272,6 @@ const ACCIONES_SENSIBLES = new Set([
   // (pudo haberse programado algo con efecto financiero) — mismo criterio
   // que email_descartar.
   "accprog_cancelar",
-  // Mismo criterio que email_proceder/descartar/orientar: decidir qué hacer
-  // con un correo entrante (acá, si vale la pena guardarlo como conocimiento
-  // o pasar al siguiente) es parte de la misma decisión centralizada en
-  // superadmin — ver core/jobs/revisarCorreoNuevo.ts.
-  "correoinfo_guardar",
-  "correoinfo_siguiente",
   // Gap real encontrado en auditoría (2026-09-02): estas tres se agregaron
   // el mismo día que "Enseñar regla"/"Crear alerta"/"Guardar como
   // conocimiento" para documentos, pero quedaron fuera de este set —

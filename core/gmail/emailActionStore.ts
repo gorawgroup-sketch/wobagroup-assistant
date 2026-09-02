@@ -15,6 +15,8 @@ export interface PropuestaAccionCorreo {
   threadId: string;
   messageIdHeader: string;
   creadoEn: number;
+  /** Gmail message id (interno, no el header Message-ID) — para poder releer el cuerpo completo si se elige "Guardar como conocimiento". */
+  mensajeId: string;
 }
 
 const TAB_NAME = "_propuestas_correo";
@@ -30,6 +32,7 @@ const HEADERS = [
   "threadId",
   "messageIdHeader",
   "creadoEn",
+  "mensajeId",
 ];
 const NUM_COLS = HEADERS.length;
 const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas
@@ -47,6 +50,7 @@ function filaAObjeto(valores: string[]): PropuestaAccionCorreo {
     threadId: valores[8],
     messageIdHeader: valores[9],
     creadoEn: Number(valores[10]),
+    mensajeId: valores[11] || "",
   };
 }
 
@@ -63,6 +67,7 @@ function objetoAFila(p: PropuestaAccionCorreo): (string | number)[] {
     p.threadId,
     p.messageIdHeader,
     p.creadoEn,
+    p.mensajeId,
   ];
 }
 
