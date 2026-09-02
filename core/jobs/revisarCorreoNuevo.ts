@@ -65,7 +65,14 @@ async function capturarNotasDeReunion(chatId: number, correo: CorreoResumen): Pr
   try {
     const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
     const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
-    await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`, undefined, true);
+    // Bug real encontrado en vivo: sin este intro, la pregunta de "¿a qué
+    // empresa corresponde?" llegaba SOLA — en el flujo de antes (todo junto
+    // en un resumen) Carlos podía deducir de qué correo se trataba por el
+    // contexto alrededor; en la cola uno a uno esto es lo ÚNICO que ve para
+    // ese correo, así que sin decir de qué se trata no tiene forma de saber
+    // qué está aprobando.
+    const intro = `📝 Notas de reunión de ${correo.de} (asunto: "${correo.asunto}")`;
+    await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`, intro, true);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error capturando notas de reunión del correo ${correo.id}:`, error);
     await sendTelegramMessage(
