@@ -511,31 +511,6 @@ function useRadialLayout(count, radius) {
   }, [count, radius]);
 }
 
-/**
- * Posiciones de las neuronas hijas de un grupo abierto — en anillo
- * completo alrededor del nodo del grupo (no un abanico angosto hacia
- * afuera). Bug real encontrado en vivo, dos veces seguidas: primero un
- * abanico angosto (58°) sacaba a las hijas por encima del lienzo cuando el
- * grupo estaba muy arriba; ya arreglado el radio, CUATRO etiquetas de
- * texto anchas ("Accesos y Costos", etc.) seguían pisándose entre sí
- * porque un arco de solo 58-90° no tiene ancho de sobra para 4 etiquetas
- * de ~118px cada una. Un anillo completo (360° repartidos parejo) da la
- * separación angular máxima posible para cualquier cantidad de hijas, y
- * empieza justo en la dirección "hacia afuera" del grupo (mismo ángulo
- * que ya tiene respecto al núcleo) para que al menos una quede alineada
- * con esa sensación de "salir" de él.
- */
-function fanOutChildren(groupPos, count) {
-  if (count === 0) return [];
-  const angleBase = Math.atan2(groupPos.y - 300, groupPos.x - 300);
-  const margenAlBorde = Math.min(groupPos.x, 600 - groupPos.x, groupPos.y, 600 - groupPos.y);
-  const fanRadius = Math.max(45, Math.min(105, margenAlBorde - 35));
-  return Array.from({ length: count }, (_, i) => {
-    const angle = count === 1 ? angleBase : angleBase + (i / count) * Math.PI * 2;
-    return { x: groupPos.x + fanRadius * Math.cos(angle), y: groupPos.y + fanRadius * Math.sin(angle) };
-  });
-}
-
 /** Pantalla de acceso: pide la key directo al usuario, nunca queda guardada en el código. */
 /**
  * Pantalla de acceso: en vez de pedir una clave directo, pide el nombre de
@@ -1623,7 +1598,18 @@ function MiniCalendario({ apiKey }) {
 }
 
 export default function CerebroWoba() {
-  const groupPositions = useRadialLayout(GROUPS.length, 175);
+  // Al abrir un grupo, deja de mostrarse la vista de 3 grupos y se
+  // "entra" en él — sus módulos usan exactamente el mismo layout radial
+  // (mismo radio, todo el lienzo disponible) que ya usaban los 3 grupos,
+  // en vez de amontonarse en abanico junto al nodo del grupo (bug real,
+  // visto en vivo dos veces: un abanico angosto siempre se queda corto de
+  // espacio para etiquetas de texto anchas, sin importar cuánto se ajuste
+  // el radio o el ángulo — la solución real es darle a los hijos el mismo
+  // espacio generoso que ya tenían los grupos, no pelear por el espacio
+  // sobrante junto al padre).
+  const openGroupObj = openGroup ? GROUPS.find((g) => g.id === openGroup) : null;
+  const currentItems = openGroupObj ? openGroupObj.children.map((id) => MODULES.find((m) => m.id === id)) : GROUPS;
+  const itemPositions = useRadialLayout(currentItems.length, 175);
   const [active, setActive] = useState(null);
   const [open, setOpen] = useState(null);
   const [openGroup, setOpenGroup] = useState(null);
@@ -1811,8 +1797,36 @@ export default function CerebroWoba() {
           </div>
         )}
         <div style={{ fontFamily: C.sans, fontSize: 13, color: C.dim, marginTop: 6, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
-          Mueve el cursor sobre el campo para energizarlo. Toca un módulo para abrir su detalle.
+          {openGroup
+            ? "Toca una neurona para abrir su detalle, o vuelve para ver los otros grupos."
+            : "Mueve el cursor sobre el campo para energizarlo. Toca un grupo para abrir sus módulos."}
         </div>
+
+        {openGroup && (
+          <div
+            onClick={() => {
+              setOpen(null);
+              setOpenGroup(null);
+            }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 12,
+              fontFamily: C.mono,
+              fontSize: 11,
+              letterSpacing: "0.04em",
+              color: C.amberBright,
+              cursor: "pointer",
+              border: `1px solid ${C.amber}`,
+              borderRadius: 999,
+              padding: "6px 14px",
+            }}
+          >
+            ← Todos los grupos <span style={{ color: C.dim }}>· {GROUPS.find((g) => g.id === openGroup)?.name}</span>
+          </div>
+        )}
+
         <a
           href={TELEGRAM_BOT_URL}
           target="_blank"
@@ -1859,121 +1873,95 @@ export default function CerebroWoba() {
             </radialGradient>
           </defs>
 
-          {groupPositions.map((p, i) => (
+          {itemPositions.map((p, i) => (
             <line key={`core-${i}`} x1="300" y1="300" x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1.1" strokeDasharray="1 7" />
           ))}
-          {groupPositions.map((p, i) => (
+          {itemPositions.map((p, i) => (
             <circle key={`core-spark-${i}`} r="2.6" fill={C.amberBright}>
               <animateMotion path={`M 300 300 L ${p.x} ${p.y}`} dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
               <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
             </circle>
           ))}
 
-          {groupPositions.map((p, i) => {
-            const g = GROUPS[i];
-            const isActive = active === g.id || openGroup === g.id;
+          {itemPositions.map((p, i) => {
+            const it = currentItems[i];
+            const isActive = active === it.id || open === it.id || openGroup === it.id;
             return (
               <circle
-                key={g.id}
+                key={it.id}
                 cx={p.x}
                 cy={p.y}
-                r={isActive ? 22 : 18}
+                r={openGroupObj ? (isActive ? 15 : 11) : isActive ? 22 : 18}
                 fill="url(#nodeGrad)"
-                onMouseEnter={() => setActive(g.id)}
+                onMouseEnter={() => setActive(it.id)}
                 onMouseLeave={() => setActive(null)}
                 onClick={() => {
-                  setOpen(null);
-                  setOpenGroup((cur) => (cur === g.id ? null : g.id));
+                  if (openGroupObj) {
+                    setOpen((cur) => (cur === it.id ? null : it.id));
+                  } else {
+                    setOpen(null);
+                    setOpenGroup((cur) => (cur === it.id ? null : it.id));
+                  }
                 }}
                 style={{ cursor: "pointer", pointerEvents: "auto", animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + i * 0.3}s ease-in-out infinite`, transition: "r .15s" }}
               />
             );
           })}
-
-          {/* Neuronas hijas del grupo abierto — en abanico, más lejos del núcleo que su grupo. */}
-          {openGroup &&
-            (() => {
-              const g = GROUPS.find((x) => x.id === openGroup);
-              const gPos = groupPositions[GROUPS.findIndex((x) => x.id === openGroup)];
-              const childPositions = fanOutChildren(gPos, g.children.length);
-              return (
-                <>
-                  {childPositions.map((p, i) => (
-                    <line key={`child-line-${g.children[i]}`} x1={gPos.x} y1={gPos.y} x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1" strokeDasharray="1 6" />
-                  ))}
-                  {childPositions.map((p, i) => {
-                    const childId = g.children[i];
-                    const m = MODULES.find((x) => x.id === childId);
-                    const isActive = active === m.id || open === m.id;
-                    return (
-                      <circle
-                        key={m.id}
-                        cx={p.x}
-                        cy={p.y}
-                        r={isActive ? 14 : 10}
-                        fill="url(#nodeGrad)"
-                        onMouseEnter={() => setActive(m.id)}
-                        onMouseLeave={() => setActive(null)}
-                        onClick={() => setOpen((cur) => (cur === m.id ? null : m.id))}
-                        style={{ cursor: "pointer", pointerEvents: "auto", animation: "nodeGlow 3s ease-in-out infinite", transition: "r .15s" }}
-                      />
-                    );
-                  })}
-                </>
-              );
-            })()}
         </svg>
 
         <NanoCore energized={Boolean(active || open || openGroup)} />
 
-        {groupPositions.map((p, i) => {
-          const g = GROUPS[i];
-          const isActive = active === g.id || openGroup === g.id;
+        {itemPositions.map((p, i) => {
+          const it = currentItems[i];
+          const isActive = active === it.id || open === it.id || openGroup === it.id;
           return (
             <div
-              key={g.id}
-              onMouseEnter={() => setActive(g.id)}
+              key={it.id}
+              onMouseEnter={() => setActive(it.id)}
               onMouseLeave={() => setActive(null)}
               onClick={() => {
-                setOpen(null);
-                setOpenGroup((cur) => (cur === g.id ? null : g.id));
+                if (openGroupObj) {
+                  setOpen((cur) => (cur === it.id ? null : it.id));
+                } else {
+                  setOpen(null);
+                  setOpenGroup((cur) => (cur === it.id ? null : it.id));
+                }
               }}
-              style={{ position: "absolute", left: `${(p.x / 600) * 100}%`, top: `${(p.y / 600) * 100}%`, transform: "translate(-50%, 20px)", textAlign: "center", cursor: "pointer", width: 140, pointerEvents: "auto" }}
+              style={{
+                position: "absolute",
+                left: `${(p.x / 600) * 100}%`,
+                top: `${(p.y / 600) * 100}%`,
+                transform: `translate(-50%, ${openGroupObj ? 14 : 20}px)`,
+                textAlign: "center",
+                cursor: "pointer",
+                width: openGroupObj ? 130 : 140,
+                pointerEvents: "auto",
+              }}
             >
-              <div style={{ fontFamily: C.serif, fontSize: 15, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{g.name}</div>
-              {isActive && (
-                <div style={{ fontFamily: C.mono, fontSize: 10, color: C.amber, marginTop: 2 }}>{g.note}</div>
+              <div
+                style={{
+                  fontFamily: openGroupObj ? C.sans : C.serif,
+                  fontSize: openGroupObj ? 12.5 : 15,
+                  fontWeight: 600,
+                  color: isActive ? C.amberBright : C.cream,
+                }}
+              >
+                {it.name}
+              </div>
+              {((openGroupObj && active === it.id && !open) || (!openGroupObj && isActive)) && (
+                <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
+                  {openGroupObj && it.detail && (
+                    <>
+                      {it.detail}
+                      <br />
+                    </>
+                  )}
+                  <span style={{ color: C.amber }}>{it.note}</span>
+                </div>
               )}
             </div>
           );
         })}
-
-        {/* Etiquetas de las neuronas hijas del grupo abierto */}
-        {openGroup &&
-          (() => {
-            const g = GROUPS.find((x) => x.id === openGroup);
-            const gPos = groupPositions[GROUPS.findIndex((x) => x.id === openGroup)];
-            const childPositions = fanOutChildren(gPos, g.children.length);
-            return childPositions.map((p, i) => {
-              const childId = g.children[i];
-              const m = MODULES.find((x) => x.id === childId);
-              const isActive = active === m.id || open === m.id;
-              return (
-                <div
-                  key={m.id}
-                  onMouseEnter={() => setActive(m.id)}
-                  onMouseLeave={() => setActive(null)}
-                  onClick={() => setOpen((cur) => (cur === m.id ? null : m.id))}
-                  style={{ position: "absolute", left: `${(p.x / 600) * 100}%`, top: `${(p.y / 600) * 100}%`, transform: "translate(-50%, 13px)", textAlign: "center", cursor: "pointer", width: 118, pointerEvents: "auto" }}
-                >
-                  <div style={{ fontFamily: C.sans, fontSize: 11.5, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{m.name}</div>
-                  {active === m.id && !open && (
-                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.amber, marginTop: 2 }}>{m.note}</div>
-                  )}
-                </div>
-              );
-            });
-          })()}
       </div>
 
       {/* Panel de detalle del módulo abierto, con su propio campo neuronal */}
