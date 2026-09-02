@@ -24,6 +24,7 @@ import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "..
 import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
 import { askClaude, buscarEnInternet } from "../core/claude/client";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
+import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
@@ -236,6 +237,36 @@ app.get("/api/cerebro/busqueda-web", async (req: Request, res: Response) => {
 });
 
 app.options("/api/cerebro/busqueda-web", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+/**
+ * Pedido explícito de Carlos: el módulo de calendario del front debe
+ * mostrar "un pequeño calendario en donde vea si hay cosas programadas" —
+ * lee la misma cola que revisarAccionesProgramadas.ts (Sheets), no un
+ * calendario aparte.
+ */
+app.get("/api/cerebro/acciones-programadas", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  try {
+    const pendientes = await obtenerAccionesPendientes();
+    res.json({ pendientes });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/acciones-programadas] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/acciones-programadas", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
   res.set("Access-Control-Allow-Methods", "GET");

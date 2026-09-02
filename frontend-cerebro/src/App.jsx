@@ -36,6 +36,7 @@ const CONEXIONES_ENDPOINT = "https://wobagroup-assistant-production.up.railway.a
 const ARREGLAR_CONEXION_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/conexiones/arreglar";
 const BUSQUEDA_WEB_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/busqueda-web";
 const BUSCAR_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/buscar";
+const ACCIONES_PROGRAMADAS_ENDPOINT = "https://wobagroup-assistant-production.up.railway.app/api/cerebro/acciones-programadas";
 const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
@@ -87,6 +88,9 @@ const MODULES = [
   { id: "fiscal", name: "Fiscal y Alertas", detail: "Calendario recurrente", note: "solo lectura", desc: "Avisa con antelación de domiciliaciones, impuestos y seguros recurrentes, leyendo el calendario fiscal del grupo — nunca escribe nada." },
   { id: "conocimiento", name: "Conocimiento", detail: "5 documentos · capturas · correcciones", note: "núcleo de memoria", desc: "La memoria compartida del sistema: documentos de proceso, capturas de conocimiento del equipo y correcciones, siempre con prioridad sobre cualquier otro dato." },
   { id: "accesos", name: "Accesos y Costos", detail: "Allowlist · gasto IA diario", note: "gobierno del sistema", desc: "Controla quién puede usar el bot y quién puede aprobar escrituras, y registra el gasto real de IA con alerta ante consumo inusual." },
+  { id: "busqueda_web", name: "Búsqueda Web", detail: "Historial · costo · buscador", note: "complementa, no reemplaza", desc: "Complementa las respuestas con información pública real cuando el conocimiento interno no alcanza — cada búsqueda queda registrada con su costo. Trae un buscador propio, opcional, para lanzar una consulta directa sin pasar por el chat." },
+  { id: "calendario", name: "Calendario", detail: "Acciones programadas", note: "Google Calendar + cola propia", desc: "Cuando algo hay que hacerlo más adelante (una fecha, o una condición que todavía no se cumple), queda programado acá — Wobi lo dispara solo en su momento, sin volver a pedir aprobación para investigar." },
+  { id: "conexiones", name: "Conexiones", detail: "Estado de las integraciones", note: "monitoreo en vivo", desc: "El estado real de cada integración externa (Telegram, Google, Holded, Claude, Búsqueda web) — verificado en vivo, no solo si la variable de entorno existe." },
 ];
 
 const STATS = [
@@ -1121,10 +1125,17 @@ function UsuariosPanel({ apiKey }) {
  * (reintentar, o para Telegram, re-registrar el webhook) — nunca requiere
  * que el usuario sepa qué es un webhook o una API key.
  */
-function ConexionesPanel({ apiKey }) {
+/**
+ * Contenido del nodo "Conexiones" — antes vivía como una barra propia,
+ * siempre visible, encima de la constelación. Pedido explícito de Carlos:
+ * "el tema de conexiones activas que se ven arriba debería ser una bola o
+ * un botón de estos... que no creemos un menú adicional, sino que todo
+ * sean las neuronas". Ahora solo existe DENTRO del panel de detalle del
+ * nodo — se monta (y sondea) únicamente mientras ese nodo está abierto.
+ */
+function ConexionesContenido({ apiKey }) {
   const [conexiones, setConexiones] = useState(null);
   const [arreglandoId, setArreglandoId] = useState(null);
-  const [expandido, setExpandido] = useState(false);
 
   const cargar = useCallback(() => {
     if (!apiKey) return;
@@ -1166,129 +1177,86 @@ function ConexionesPanel({ apiKey }) {
     }
   };
 
-  if (!conexiones) return null;
+  if (!conexiones) {
+    return <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, marginTop: 14 }}>cargando estado…</div>;
+  }
 
   const caidas = conexiones.filter((c) => !c.ok);
   const todoBien = caidas.length === 0;
-  // Mientras algo esté caído se muestra el detalle siempre, sin depender de
-  // que alguien lo abra — el pedido explícito fue que se note "de inmediato".
-  const mostrarDetalle = expandido || !todoBien;
 
   return (
-    <div
-      style={{
-        maxWidth: 620,
-        margin: "18px auto 0",
-        position: "relative",
-        zIndex: 2,
-        border: `1px solid ${todoBien ? C.line : C.danger}`,
-        borderRadius: 10,
-        background: todoBien ? "rgba(111, 207, 151, 0.05)" : "rgba(240, 113, 120, 0.08)",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        onClick={() => setExpandido((v) => !v)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          padding: "9px 14px",
-          cursor: "pointer",
-          fontFamily: C.mono,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: todoBien ? C.ok : C.dangerBright,
-              boxShadow: todoBien ? `0 0 6px ${C.ok}` : `0 0 8px ${C.dangerBright}`,
-              display: "inline-block",
-            }}
-          />
-          <span style={{ fontSize: 11, color: todoBien ? C.dim : C.dangerBright, letterSpacing: "0.04em" }}>
-            {todoBien
-              ? `Conexiones activas (${conexiones.length}/${conexiones.length})`
-              : `${caidas.length} conexión${caidas.length > 1 ? "es" : ""} con problemas — ${caidas.map((c) => c.nombre).join(", ")}`}
-          </span>
-        </div>
-        {todoBien && <span style={{ fontSize: 10, color: C.dim }}>{expandido ? "ocultar ▲" : "detalle ▼"}</span>}
+    <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
+      <div style={{ fontFamily: C.mono, fontSize: 10.5, color: todoBien ? C.ok : C.dangerBright, marginBottom: 8 }}>
+        {todoBien ? `Todo activo (${conexiones.length}/${conexiones.length})` : `${caidas.length} con problemas`}
       </div>
-
-      {mostrarDetalle && (
-        <div style={{ padding: "0 14px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-          {conexiones.map((c) => (
-            <div
-              key={c.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 10,
-                padding: "6px 10px",
-                background: C.voidSoft,
-                borderRadius: 6,
-                border: `1px solid ${c.ok ? C.line : C.danger}`,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: c.ok ? C.ok : C.dangerBright,
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: C.sans, fontSize: 12, color: C.cream }}>{c.nombre}</div>
-                  {!c.ok && c.detalle && (
-                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2, wordBreak: "break-word" }}>
-                      {c.detalle}
-                    </div>
-                  )}
-                </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {conexiones.map((c) => (
+          <div
+            key={c.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              padding: "6px 10px",
+              background: C.voidSoft,
+              borderRadius: 6,
+              border: `1px solid ${c.ok ? C.line : C.danger}`,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: c.ok ? C.ok : C.dangerBright,
+                  flexShrink: 0,
+                }}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: C.sans, fontSize: 12, color: C.cream }}>{c.nombre}</div>
+                {!c.ok && c.detalle && (
+                  <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2, wordBreak: "break-word" }}>
+                    {c.detalle}
+                  </div>
+                )}
               </div>
-              {!c.ok && c.accionLabel && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    arreglar(c.id);
-                  }}
-                  disabled={arreglandoId === c.id}
-                  style={{
-                    flexShrink: 0,
-                    background: "none",
-                    border: `1px solid ${C.dangerBright}`,
-                    color: C.dangerBright,
-                    borderRadius: 6,
-                    padding: "5px 10px",
-                    fontFamily: C.mono,
-                    fontSize: 10.5,
-                    cursor: arreglandoId === c.id ? "default" : "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {arreglandoId === c.id ? "arreglando…" : c.accionLabel}
-                </button>
-              )}
             </div>
-          ))}
-        </div>
-      )}
+            {!c.ok && c.accionLabel && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  arreglar(c.id);
+                }}
+                disabled={arreglandoId === c.id}
+                style={{
+                  flexShrink: 0,
+                  background: "none",
+                  border: `1px solid ${C.dangerBright}`,
+                  color: C.dangerBright,
+                  borderRadius: 6,
+                  padding: "5px 10px",
+                  fontFamily: C.mono,
+                  fontSize: 10.5,
+                  cursor: arreglandoId === c.id ? "default" : "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {arreglandoId === c.id ? "arreglando…" : c.accionLabel}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-function BusquedaWebPanel({ apiKey }) {
+/** Contenido del nodo "Búsqueda Web" — mismo motivo que ConexionesContenido: deja de ser una barra propia, ahora vive dentro del panel de detalle de su nodo. */
+function BusquedaWebContenido({ apiKey }) {
   const [resumen, setResumen] = useState(null);
   const [recientes, setRecientes] = useState(null);
-  const [expandido, setExpandido] = useState(false);
   const [query, setQuery] = useState("");
   const [buscando, setBuscando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -1341,169 +1309,268 @@ function BusquedaWebPanel({ apiKey }) {
     }
   };
 
-  if (!resumen || !recientes) return null;
+  if (!resumen || !recientes) {
+    return <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, marginTop: 14 }}>cargando historial…</div>;
+  }
 
   return (
-    <div
-      style={{
-        maxWidth: 620,
-        margin: "10px auto 0",
-        position: "relative",
-        zIndex: 2,
-        border: `1px solid ${C.line}`,
-        borderRadius: 10,
-        background: "rgba(111, 207, 151, 0.03)",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        onClick={() => setExpandido((v) => !v)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 10,
-          padding: "9px 14px",
-          cursor: "pointer",
-          fontFamily: C.mono,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: C.ok,
-              boxShadow: `0 0 6px ${C.ok}`,
-              display: "inline-block",
-            }}
-          />
-          <span style={{ fontSize: 11, color: C.dim, letterSpacing: "0.04em" }}>
-            Búsqueda web — {resumen.totalBusquedas} búsqueda{resumen.totalBusquedas === 1 ? "" : "s"} · {fmtUSD(resumen.costoTotalUSD)}
-            {resumen.busquedasHoy > 0 ? ` · hoy: ${resumen.busquedasHoy}` : ""}
-          </span>
-        </div>
-        <span style={{ fontSize: 10, color: C.dim }}>{expandido ? "ocultar ▲" : "abrir ▼"}</span>
+    <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim }}>
+        {resumen.totalBusquedas} búsqueda{resumen.totalBusquedas === 1 ? "" : "s"} · {fmtUSD(resumen.costoTotalUSD)}
+        {resumen.busquedasHoy > 0 ? ` · hoy: ${resumen.busquedasHoy}` : ""}
       </div>
 
-      {expandido && (
-        <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") buscar();
-              }}
-              placeholder="Buscar en internet…"
-              disabled={buscando}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                background: C.voidSoft,
-                border: `1px solid ${C.line}`,
-                borderRadius: 6,
-                padding: "7px 10px",
-                color: C.cream,
-                fontFamily: C.sans,
-                fontSize: 12,
-                outline: "none",
-              }}
-            />
-            <button
-              onClick={buscar}
-              disabled={buscando || !query.trim()}
-              style={{
-                flexShrink: 0,
-                background: "none",
-                border: `1px solid ${C.ok}`,
-                color: C.ok,
-                borderRadius: 6,
-                padding: "7px 14px",
-                fontFamily: C.mono,
-                fontSize: 10.5,
-                cursor: buscando || !query.trim() ? "default" : "pointer",
-                opacity: buscando || !query.trim() ? 0.5 : 1,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {buscando ? "buscando…" : "buscar"}
-            </button>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") buscar();
+          }}
+          placeholder="Buscar en internet…"
+          disabled={buscando}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: C.voidSoft,
+            border: `1px solid ${C.line}`,
+            borderRadius: 6,
+            padding: "7px 10px",
+            color: C.cream,
+            fontFamily: C.sans,
+            fontSize: 12,
+            outline: "none",
+          }}
+        />
+        <button
+          onClick={buscar}
+          disabled={buscando || !query.trim()}
+          style={{
+            flexShrink: 0,
+            background: "none",
+            border: `1px solid ${C.amber}`,
+            color: C.amberBright,
+            borderRadius: 6,
+            padding: "7px 14px",
+            fontFamily: C.mono,
+            fontSize: 10.5,
+            cursor: buscando || !query.trim() ? "default" : "pointer",
+            opacity: buscando || !query.trim() ? 0.5 : 1,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {buscando ? "buscando…" : "buscar"}
+        </button>
+      </div>
+
+      {error && <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dangerBright }}>{error}</div>}
+
+      {resultado && (
+        <div
+          style={{
+            background: C.voidSoft,
+            border: `1px solid ${C.line}`,
+            borderRadius: 6,
+            padding: "10px 12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          <div style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream, whiteSpace: "pre-wrap" }}>
+            {resultado.respuesta}
           </div>
-
-          {error && (
-            <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dangerBright }}>{error}</div>
-          )}
-
-          {resultado && (
-            <div
-              style={{
-                background: C.voidSoft,
-                border: `1px solid ${C.line}`,
-                borderRadius: 6,
-                padding: "10px 12px",
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              <div style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream, whiteSpace: "pre-wrap" }}>
-                {resultado.respuesta}
-              </div>
-              {resultado.citas?.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  {resultado.citas.map((cita, i) => (
-                    <a
-                      key={i}
-                      href={cita.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ fontFamily: C.mono, fontSize: 10, color: C.core, wordBreak: "break-word" }}
-                    >
-                      {cita.title || cita.url}
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {recientes.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, letterSpacing: "0.04em" }}>
-                RECIENTES
-              </div>
-              {recientes.map((r, i) => (
-                <div
+          {resultado.citas?.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {resultado.citas.map((cita, i) => (
+                <a
                   key={i}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 10,
-                    padding: "5px 10px",
-                    background: C.voidSoft,
-                    borderRadius: 6,
-                    border: `1px solid ${C.line}`,
-                  }}
+                  href={cita.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontFamily: C.mono, fontSize: 10, color: C.coreBright, wordBreak: "break-word" }}
                 >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, wordBreak: "break-word" }}>
-                      {r.query}
-                    </div>
-                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2 }}>
-                      {timeAgo(r.fecha)} · {r.origen === "panel" ? "desde el panel" : "desde el chat"}
-                    </div>
-                  </div>
-                  <div style={{ flexShrink: 0, fontFamily: C.mono, fontSize: 10, color: C.dim }}>
-                    {fmtUSD(r.costoUSD)}
-                  </div>
-                </div>
+                  {cita.title || cita.url}
+                </a>
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {recientes.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, letterSpacing: "0.04em" }}>RECIENTES</div>
+          {recientes.map((r, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                padding: "5px 10px",
+                background: C.voidSoft,
+                borderRadius: 6,
+                border: `1px solid ${C.line}`,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, wordBreak: "break-word" }}>{r.query}</div>
+                <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2 }}>
+                  {timeAgo(r.fecha)} · {r.origen === "panel" ? "desde el panel" : "desde el chat"}
+                </div>
+              </div>
+              <div style={{ flexShrink: 0, fontFamily: C.mono, fontSize: 10, color: C.dim }}>{fmtUSD(r.costoUSD)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Contenido del nodo "Calendario" — pedido explícito de Carlos: "me
+ * muestre un pequeño calendario en donde vea si hay cosas programadas".
+ * Mes actual, con un punto en cada día que tiene una acción programada por
+ * fecha; debajo, las de tipo condición (sin fecha fija) por separado.
+ */
+function MiniCalendario({ apiKey }) {
+  const [pendientes, setPendientes] = useState(null);
+  const [mesOffset, setMesOffset] = useState(0);
+
+  useEffect(() => {
+    if (!apiKey) return;
+    fetch(ACCIONES_PROGRAMADAS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (json?.pendientes) setPendientes(json.pendientes);
+      })
+      .catch(() => {
+        // silencioso: si falla, se sigue mostrando el último dato bueno (o el estado de carga)
+      });
+  }, [apiKey]);
+
+  if (!pendientes) {
+    return <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, marginTop: 14 }}>cargando cola…</div>;
+  }
+
+  const porFecha = pendientes.filter((a) => a.tipo === "fecha" && a.fechaObjetivo);
+  const porCondicion = pendientes.filter((a) => a.tipo === "condicion");
+
+  const hoy = new Date();
+  const base = new Date(hoy.getFullYear(), hoy.getMonth() + mesOffset, 1);
+  const anio = base.getFullYear();
+  const mes = base.getMonth();
+  const nombreMes = base.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+  const primerDiaSemana = (new Date(anio, mes, 1).getDay() + 6) % 7; // lunes=0
+  const diasEnMes = new Date(anio, mes + 1, 0).getDate();
+
+  const itemsPorDia = {};
+  porFecha.forEach((a) => {
+    const f = new Date(a.fechaObjetivo);
+    if (f.getFullYear() === anio && f.getMonth() === mes) {
+      const dia = f.getDate();
+      (itemsPorDia[dia] = itemsPorDia[dia] || []).push(a);
+    }
+  });
+
+  const celdas = [];
+  for (let i = 0; i < primerDiaSemana; i++) celdas.push(null);
+  for (let d = 1; d <= diasEnMes; d++) celdas.push(d);
+
+  const esHoy = (d) => d === hoy.getDate() && mes === hoy.getMonth() && anio === hoy.getFullYear();
+
+  return (
+    <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <button
+          onClick={() => setMesOffset((v) => v - 1)}
+          style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 13, padding: 4 }}
+        >
+          ‹
+        </button>
+        <div style={{ fontFamily: C.mono, fontSize: 11, color: C.cream, textTransform: "capitalize" }}>{nombreMes}</div>
+        <button
+          onClick={() => setMesOffset((v) => v + 1)}
+          style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 13, padding: 4 }}
+        >
+          ›
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 4 }}>
+        {["L", "M", "X", "J", "V", "S", "D"].map((d, i) => (
+          <div key={i} style={{ textAlign: "center", fontFamily: C.mono, fontSize: 9.5, color: C.dim }}>
+            {d}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 }}>
+        {celdas.map((d, i) => (
+          <div
+            key={i}
+            style={{
+              aspectRatio: "1",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 5,
+              background: d && esHoy(d) ? "rgba(232, 167, 92, 0.18)" : "transparent",
+              border: d && esHoy(d) ? `1px solid ${C.amber}` : "1px solid transparent",
+            }}
+          >
+            {d && (
+              <>
+                <span style={{ fontFamily: C.sans, fontSize: 10.5, color: itemsPorDia[d] ? C.cream : C.dim }}>{d}</span>
+                {itemsPorDia[d] && (
+                  <span
+                    style={{
+                      width: 4,
+                      height: 4,
+                      borderRadius: "50%",
+                      background: C.amberBright,
+                      boxShadow: `0 0 4px ${C.amberBright}`,
+                      marginTop: 1,
+                    }}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {porFecha.length === 0 && porCondicion.length === 0 ? (
+        <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, marginTop: 12 }}>Nada programado por ahora.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 12 }}>
+          {porFecha.length > 0 && (
+            <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, letterSpacing: "0.04em" }}>CON FECHA</div>
+          )}
+          {porFecha
+            .sort((a, b) => (a.fechaObjetivo > b.fechaObjetivo ? 1 : -1))
+            .map((a) => (
+              <div key={a.id} style={{ padding: "5px 10px", background: C.voidSoft, borderRadius: 6, border: `1px solid ${C.line}` }}>
+                <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.amberBright }}>{a.fechaObjetivo.replace("T", " ")}</div>
+                <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, marginTop: 1 }}>{a.contexto}</div>
+              </div>
+            ))}
+          {porCondicion.length > 0 && (
+            <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, letterSpacing: "0.04em", marginTop: 4 }}>
+              A LA ESPERA DE UNA CONDICIÓN
+            </div>
+          )}
+          {porCondicion.map((a) => (
+            <div key={a.id} style={{ padding: "5px 10px", background: C.voidSoft, borderRadius: 6, border: `1px solid ${C.line}` }}>
+              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream }}>{a.contexto}</div>
+              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 1 }}>{a.condicion}</div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1725,8 +1792,6 @@ export default function CerebroWoba() {
         </a>
       </div>
 
-      {apiKey && <ConexionesPanel apiKey={apiKey} />}
-      {apiKey && <BusquedaWebPanel apiKey={apiKey} />}
 
       <div
         style={{
@@ -1983,6 +2048,12 @@ export default function CerebroWoba() {
                   estado en vivo no disponible todavía
                 </div>
               )}
+
+              {/* Estos tres módulos no dependen del bloque agregado (5 min de caché) — tienen su propio
+                  endpoint, así que se montan (y sondean) solo mientras su nodo está abierto. */}
+              {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
+              {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} />}
+              {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} />}
             </div>
           </div>
         );
