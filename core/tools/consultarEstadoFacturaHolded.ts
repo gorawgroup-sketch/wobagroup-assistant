@@ -25,7 +25,12 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
     "confirma acá si ya existe. Para el estado COMPLETO de un gasto puntual ya creado (documento, " +
     "comprobante, pago) esta es la herramienta correcta — no consultar_movimientos_holded, que solo ve el " +
     "banco y no el documento de Holded. Para un BARRIDO de todos los gastos sin comprobante en un rango " +
-    "de fechas (no uno puntual) usa mejor consultar_gastos_sin_comprobante.",
+    "de fechas (no uno puntual) usa mejor consultar_gastos_sin_comprobante. IMPORTANTE: 'contacto' también " +
+    "sirve para buscar una MARCA o PRODUCTO (ej. 'Logitech', 'Booking.com') — si no coincide con ningún " +
+    "nombre de proveedor/cliente, esta herramienta también revisa las líneas de concepto/producto de cada " +
+    "documento antes de rendirse, porque el proveedor real puede ser un intermediario (ej. se compró un " +
+    "producto Logitech a través de Amazon o un distribuidor, no a Logitech directamente) — el resultado " +
+    "indica claramente si la coincidencia fue por proveedor o por línea de producto.",
   input_schema: {
     type: "object",
     properties: {
@@ -76,9 +81,13 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
 
     if (resultados.length === 0) {
       const montoTexto = monto !== undefined ? ` con monto cercano a ${monto.toFixed(2)} €` : "";
+      const ventanaTexto = dias ?? 120;
       return (
-        `No encontré ninguna factura de "${contacto}"${montoTexto} en Holded (${empresa}) en la ventana ` +
-        `buscada — parece que todavía no se ha registrado, no solo que falte pagarla.`
+        `No encontré ninguna factura de "${contacto}"${montoTexto} en Holded (${empresa}) en los últimos ` +
+        `${ventanaTexto} días — ni por nombre de proveedor/cliente, ni como palabra dentro de una línea de ` +
+        `concepto/producto de otro documento. Parece que todavía no se ha registrado, no solo que falte ` +
+        `pagarla — o que la compra es más antigua que la ventana buscada (puedes reintentar con un "dias" ` +
+        `mayor si el usuario cree que fue hace más tiempo).`
       );
     }
 
@@ -99,7 +108,10 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
               : ""
           : "";
       const tags = r.tags.length > 0 ? ` — tags: ${r.tags.join(", ")}` : " — sin tags";
-      return `- [${tipoTexto}] ${r.contactName} — doc ${r.documentNumber}, fecha ${r.fecha}${vencimiento} — ${estadoPago}${borrador}${comprobante}${tags}`;
+      const porLinea = r.coincidenciaPorLinea
+        ? ` — 🔎 el proveedor NO se llama "${contacto}", coincide porque una línea de este documento dice "${r.lineaCoincidente}"`
+        : "";
+      return `- [${tipoTexto}] ${r.contactName} — doc ${r.documentNumber}, fecha ${r.fecha}${vencimiento} — ${estadoPago}${borrador}${comprobante}${tags}${porLinea}`;
     });
 
     const huboCoincidenciaSoloPorMonto = resultados.some((r) => r.coincidenciaSoloPorMonto);

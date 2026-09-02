@@ -501,6 +501,21 @@ export interface DocumentoHoldedEstado {
   tieneComprobante?: boolean;
   /** true si este resultado vino de la segunda pasada (solo monto, sin match de nombre) — ver buscarDocumentosHolded. */
   coincidenciaSoloPorMonto: boolean;
+  /**
+   * true si NO coincidió por nombre de contacto, sino porque el texto
+   * buscado aparece en una línea de producto/concepto del documento — ver
+   * `lineaCoincidente`. Caso real que motivó esto: Alberto preguntó "¿a qué
+   * proveedor le compramos lo último de Logitech?" — "Logitech" es una
+   * marca, no necesariamente el nombre del contacto en Holded (se pudo
+   * comprar vía Amazon, un distribuidor, etc.), así que buscar solo por
+   * contact_name daba un falso negativo aunque la compra sí estuviera
+   * registrada. El endpoint de LISTA de Holded ya trae `lines[].name` sin
+   * necesitar una llamada aparte por documento (confirmado en
+   * recolectarLineasConCuenta, más abajo), así que este chequeo es gratis.
+   */
+  coincidenciaPorLinea?: boolean;
+  /** La línea de producto/concepto que matcheó, cuando coincidenciaPorLinea es true. */
+  lineaCoincidente?: string;
 }
 
 // Más ancha que VENTANA_DIAS_BUSQUEDA (10 días, pensada para matchear un
@@ -542,6 +557,7 @@ async function buscarEnEndpointDocumentos(
         payments_pending?: string;
         draft?: boolean;
         tags?: string[];
+        lines?: Array<{ name?: string }>;
       }>;
       cursor?: string;
       has_more?: boolean;
@@ -550,7 +566,20 @@ async function buscarEnEndpointDocumentos(
     for (const item of data.items ?? []) {
       if (!item.contact_name) continue;
 
-      if (contactoObjetivo && !textosParecidos(contactoObjetivo, item.contact_name)) continue;
+      let coincidenciaPorLinea = false;
+      let lineaCoincidente: string | undefined;
+
+      if (contactoObjetivo && !textosParecidos(contactoObjetivo, item.contact_name)) {
+        // No coincide el nombre del contacto — antes de descartar, revisa si
+        // el texto buscado aparece en alguna línea de producto/concepto (ej.
+        // "Logitech" comprado vía Amazon: el contacto es "Amazon", no
+        // "Logitech", pero la línea sí lo menciona). El endpoint de lista ya
+        // trae `lines[].name`, así que no hace falta una llamada aparte.
+        const lineaMatch = (item.lines ?? []).find((l) => l.name && textosParecidos(contactoObjetivo, l.name));
+        if (!lineaMatch) continue;
+        coincidenciaPorLinea = true;
+        lineaCoincidente = lineaMatch.name;
+      }
 
       const total = parsearMontoHolded(item.total);
       if (monto !== undefined && Number.isFinite(total) && !montosCercanos(total, monto, TOLERANCIA_MONTO_DOCUMENTO)) {
@@ -573,6 +602,8 @@ async function buscarEnEndpointDocumentos(
         draft: item.draft ?? false,
         tags: item.tags ?? [],
         coincidenciaSoloPorMonto: !contactoObjetivo,
+        coincidenciaPorLinea,
+        lineaCoincidente,
       });
     }
 
