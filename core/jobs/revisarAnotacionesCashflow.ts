@@ -4,7 +4,7 @@ import {
   marcarAnotacionNotificada,
   purgarAnotacionesNoActivas,
 } from "./anotacionesCashflowNotificadasStore";
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessageExpandable } from "../telegram/client";
 import { askClaude } from "../claude/client";
 import { crearPropuestaAccionAnotacion, actualizarMessageIdAccionAnotacion } from "./cashflowAnnotationActionStore";
 
@@ -123,7 +123,7 @@ export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: nu
         recomendacion: respuesta,
       });
 
-      const messageId = await sendTelegramMessageWithButtons(chatId, `📝 Anotación en el cashflow:\n\n${respuesta}`, [
+      const messageId = await sendTelegramMessageExpandable(chatId, `📝 ${ubicacion}`, respuesta, [
         [
           { text: "✅ Hazlo tú", callback_data: `anotcf_proceder:${propuesta.id}` },
           { text: "✏️ Dar instrucciones", callback_data: `anotcf_orientar:${propuesta.id}` },

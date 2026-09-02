@@ -189,6 +189,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
   vinculada a ese contacto; si no lo encuentra, avisa y la crea sin vincular.
 
 **Sobre anotaciones (comentarios) del Sheet de cashflow:**
+- El mensaje trae un título siempre visible (ubicación de la anotación) y el análisis completo colapsado debajo — toca el bloque para expandirlo. Pedido explícito de Carlos: poder ver varias anotaciones largas a la vez sin hacer scroll constante, y decidir cuál atender solo mirando los títulos.
 - ✅ Hazlo tú — Wobi investiga y ejecuta lo que corresponda con sus herramientas normales (Holded, cashflow, correo). Cualquier escritura real que haga falta sigue pasando por su propio botón de aprobación aparte — esto no le da ningún poder nuevo, solo la vía libre para actuar sobre esa anotación en concreto.
 - ✏️ Dar instrucciones — espera una respuesta en texto libre con qué hacer (incluyendo cuándo, ver `programar_accion_futura` arriba) y actúa igual que "Hazlo tú" pero con esa guía.
 - ℹ️ Dejar como informativo — no hace nada más.

@@ -133,6 +133,10 @@ que hacer nada más.
   cuándo — ej. "hazlo cuando confirmen el pago de X"), o **"ℹ️ Dejar como
   informativo"** (no hace nada más). Nunca marca nada como resuelto en el
   propio Sheet por su cuenta — eso se sigue haciendo a mano ahí.
+- El mensaje trae un **título siempre visible** (ubicación de la anotación)
+  y el análisis completo **colapsado** debajo (toca para expandir) — para
+  no tener que hacer scroll por varias anotaciones largas a la vez y poder
+  decidir cuál atender solo mirando los títulos.
 
 ### ⏰ Acciones programadas
 - Pedido explícito de Carlos: cuando algo hay que hacerlo más adelante — en

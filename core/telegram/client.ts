@@ -248,6 +248,66 @@ export async function sendTelegramMessageWithButtons(
   return data.result.message_id;
 }
 
+function escaparHTML(texto: string): string {
+  return texto.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real (una recomendación de
+ * anotación de cashflow tan larga que obligaba a hacer scroll constante):
+ * "es posible que cada una venga con un título... y que sea desplegable de
+ * tal manera que yo pueda haber varias al mismo tiempo e ir decidiendo cuál
+ * voy a gestionar, sin tener que estar dando scroll". Usa el "expandable
+ * blockquote" nativo de Telegram (`<blockquote expandable>`, parse_mode
+ * HTML — verificado contra la documentación oficial 2026-09-02, entity type
+ * `expandable_blockquote`, colapsado por defecto) — el título queda SIEMPRE
+ * visible en negrita, y el cuerpo largo queda colapsado hasta que la
+ * persona lo toca, así varios mensajes de este tipo caben en pantalla a la
+ * vez sin scroll. `titulo` y `cuerpo` se escapan como HTML (nunca se
+ * interpretan como tags) — si alguno trae '<', '>' o '&' reales (ej. un
+ * monto "< 5.000"), no rompe el parseo.
+ */
+export async function sendTelegramMessageExpandable(
+  chatId: number,
+  titulo: string,
+  cuerpo: string,
+  buttons?: InlineKeyboardButton[][]
+): Promise<number> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
+
+  const text = `<b>${escaparHTML(titulo)}</b>\n<blockquote expandable>${escaparHTML(cuerpo)}</blockquote>`;
+
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+  };
+  if (buttons) body.reply_markup = { inline_keyboard: buttons };
+
+  const response = await fetchConReintento(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const respBody = await response.text();
+    throw new Error(`Error enviando mensaje expandible a Telegram (${response.status}): ${respBody}`);
+  }
+
+  const data = (await response.json()) as { result: { message_id: number } };
+
+  // Se guarda en el historial en texto plano (sin las tags HTML) — es lo
+  // mismo que vería la persona si expandiera el bloque, y evita que el
+  // historial de conversación quede lleno de marcado que Claude no necesita.
+  registrarMensajeSaliente(chatId, `${titulo}\n\n${cuerpo}`).catch((error) =>
+    console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
+  );
+
+  return data.result.message_id;
+}
+
 /**
  * Responde a un callback_query (pulsación de botón inline) para que Telegram
  * quite el estado de "cargando" del botón. `text` es opcional (toast breve).
@@ -303,6 +363,42 @@ export async function editTelegramMessage(
   if (!response.ok) {
     const errBody = await response.text();
     throw new Error(`Error editando mensaje de Telegram (${response.status}): ${errBody}`);
+  }
+}
+
+/** Igual que editTelegramMessage, pero con título fijo + cuerpo largo colapsado — ver sendTelegramMessageExpandable. */
+export async function editTelegramMessageExpandable(
+  chatId: number,
+  messageId: number,
+  titulo: string,
+  cuerpo: string,
+  buttons?: InlineKeyboardButton[][]
+): Promise<void> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageText`;
+
+  const text = `<b>${escaparHTML(titulo)}</b>\n<blockquote expandable>${escaparHTML(cuerpo)}</blockquote>`;
+
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: "HTML",
+  };
+
+  if (buttons !== undefined) {
+    body.reply_markup = { inline_keyboard: buttons };
+  }
+
+  const response = await fetchConReintento(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`Error editando mensaje expandible de Telegram (${response.status}): ${errBody}`);
   }
 }
 

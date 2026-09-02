@@ -1,4 +1,4 @@
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, editTelegramMessageExpandable, sendTelegramMessage } from "../telegram/client";
 import { consumirPropuestaAccionAnotacion } from "./cashflowAnnotationActionStore";
 import { guardarPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
 import { askClaude } from "../claude/client";
@@ -88,10 +88,11 @@ export async function handleCashflowAnnotationActionCallback(callback: TelegramC
 
     const respuesta = await askClaude(instruccion, propuesta.chatId);
 
-    await editTelegramMessage(
+    await editTelegramMessageExpandable(
       propuesta.chatId,
       propuesta.messageId,
-      `✅ Procesado — ${propuesta.ubicacion}\n\n${respuesta}`,
+      `✅ Procesado — ${propuesta.ubicacion}`,
+      respuesta,
       []
     );
   } catch (error) {
