@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
-import { parseIncomingUpdate, sendTelegramMessage, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
+import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
 import {
   esUsuarioAutorizado,
   esAccionSensible,
@@ -17,6 +17,9 @@ import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
+import { consumirPendienteReglaClasificacion } from "../core/documental/pendienteReglaClasificacionStore";
+import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStore";
+import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAlertaDocumentoStore";
 import { manejarClasificacion } from "../core/documental/processClassification";
 import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
@@ -781,6 +784,44 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     } catch (error) {
       console.error("Error procesando orientación específica de anotación de cashflow:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
+    }
+    return;
+  }
+
+  const pendienteRegla = await consumirPendienteReglaClasificacion(incoming.chatId);
+  if (pendienteRegla) {
+    try {
+      await registrarReglaClasificacion({
+        empresa: pendienteRegla.empresa,
+        criterio: incoming.text.trim(),
+        tipoDocumento: pendienteRegla.tipoDocumento,
+        carpetaDestino: pendienteRegla.carpetaDestino,
+      });
+      await sendTelegramMessage(
+        incoming.chatId,
+        `✅ Aprendido — la próxima vez que un documento de ${pendienteRegla.empresa} coincida con "${incoming.text.trim()}", lo archivo directo en "${pendienteRegla.carpetaDestino}" sin preguntar.`
+      );
+    } catch (error) {
+      console.error("Error registrando regla de clasificación:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la regla. Intenta de nuevo.");
+    }
+    return;
+  }
+
+  const pendienteAlertaDoc = await consumirPendienteAlertaDocumento(incoming.chatId);
+  if (pendienteAlertaDoc) {
+    try {
+      const instruccion =
+        `El usuario quiere programar una alerta/recordatorio relacionado con un documento que se está ` +
+        `archivando ahora mismo. Documento: "${pendienteAlertaDoc.nombreArchivoOriginal}" (${pendienteAlertaDoc.empresa}, ` +
+        `${pendienteAlertaDoc.tipoDocumento}). Lo que pide el usuario: "${incoming.text}". Usa la herramienta ` +
+        `programar_accion_futura para dejarlo programado (interpreta la fecha o condición que haya dado) — no lo ` +
+        `hagas ahora mismo, solo prográmalo.`;
+      const respuesta = await askClaude(instruccion, incoming.chatId);
+      await sendTelegramMessageSmart(incoming.chatId, respuesta);
+    } catch (error) {
+      console.error("Error programando alerta de documento:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error programando la alerta. Intenta de nuevo.");
     }
     return;
   }

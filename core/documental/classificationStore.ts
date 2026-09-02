@@ -272,6 +272,17 @@ export async function consumirPropuestaClasificacionPorChat(chatId: number): Pro
 }
 
 /**
+ * Solo lectura (no consume) — para los botones "📚 Enseñar regla" / "⏰ Crear
+ * alerta" (ver documentCallbackHandler.ts), que necesitan los datos de la
+ * clasificación SIN quitarle la propuesta de archivo a la persona — "✅ Sí,
+ * archivar aquí" / "✏️ Elegir otra carpeta" deben seguir funcionando después.
+ */
+export async function obtenerPropuestaClasificacion(id: string): Promise<PropuestaClasificacion | undefined> {
+  const todas = await leerTodas();
+  return todas.find(({ propuesta }) => propuesta.id === id)?.propuesta;
+}
+
+/**
  * Solo lectura (no consume) — para que el asistente conversacional sepa que
  * hay una propuesta de archivo esperando respuesta ANTES de decidir qué
  * hacer con el mensaje del usuario (ver buildSystemPromptDinamico en

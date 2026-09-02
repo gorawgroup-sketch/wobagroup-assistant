@@ -3,6 +3,7 @@ import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { listarSubcarpetas } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { registrarUsoIA } from "../claude/costTracking";
+import { buscarReglaClasificacion } from "./carpetaReglaStore";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 6;
@@ -149,6 +150,23 @@ export async function clasificarDocumento(
   nombreArchivo: string,
   caption: string | undefined
 ): Promise<ClasificacionDocumento> {
+  // Regla aprendida (ver carpetaReglaStore.ts / botón "📚 Enseñar regla") —
+  // se revisa ANTES de gastar una llamada a Claude. Si coincide, la
+  // clasificación sale directa y determinista, sin volver a preguntar.
+  const regla = await buscarReglaClasificacion(nombreArchivo, caption).catch((error) => {
+    console.error("[classifyFile] Error consultando reglas aprendidas (se sigue con clasificación normal):", error);
+    return undefined;
+  });
+  if (regla) {
+    return {
+      empresa: regla.empresa as EmpresaDocumento,
+      tipoDocumento: regla.tipoDocumento,
+      carpetaSugerida: regla.carpetaDestino,
+      confianza: "alta",
+      razon: `Coincide con una regla aprendida antes: "${regla.criterio}" → ${regla.carpetaDestino}.`,
+    };
+  }
+
   const anthropic = getClient();
 
   const tools: Anthropic.Tool[] = [

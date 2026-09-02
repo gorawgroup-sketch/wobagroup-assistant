@@ -128,6 +128,15 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       { text: "✅ Sí, archivar aquí", callback_data: `doc_confirm:${propuesta.id}` },
       { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}` },
     ],
+    // Pedido explícito de Carlos, tras un caso real: el análisis solo
+    // ofrecía archivar o corregir la carpeta, "no hay forma de enseñarle
+    // una regla para el futuro ni crear una alerta". Estos dos NO consumen
+    // la propuesta (a diferencia de los de arriba) — solo la leen, así que
+    // "Sí, archivar aquí"/"Elegir otra carpeta" siguen disponibles después.
+    [
+      { text: "📚 Enseñar regla", callback_data: `doc_regla:${propuesta.id}` },
+      { text: "⏰ Crear alerta", callback_data: `doc_alerta:${propuesta.id}` },
+    ],
   ]);
 
   await actualizarMessageIdClasificacion(propuesta.id, messageId);

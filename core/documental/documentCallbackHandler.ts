@@ -1,6 +1,8 @@
-import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
-import { consumirPropuestaClasificacion } from "./classificationStore";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
+import { consumirPropuestaClasificacion, obtenerPropuestaClasificacion } from "./classificationStore";
 import { archivarDocumentoEnDrive } from "./archiveFile";
+import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacionStore";
+import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -25,6 +27,46 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   }
 
   const [accion, id] = data.split(":");
+
+  // "📚 Enseñar regla" / "⏰ Crear alerta" NO consumen la propuesta — solo la
+  // leen. "✅ Sí, archivar aquí" / "✏️ Elegir otra carpeta" siguen
+  // disponibles después de usar cualquiera de estos dos.
+  if (accion === "doc_regla" || accion === "doc_alerta") {
+    const propuestaPeek = await obtenerPropuestaClasificacion(id);
+    if (!propuestaPeek) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id);
+
+    if (accion === "doc_regla") {
+      await guardarPendienteReglaClasificacion({
+        chatId: propuestaPeek.chatId,
+        empresa: propuestaPeek.clasificacion.empresa,
+        tipoDocumento: propuestaPeek.clasificacion.tipoDocumento,
+        carpetaDestino: propuestaPeek.clasificacion.carpetaSugerida,
+        nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
+      });
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        `📚 Ok — respóndeme con la palabra o frase clave que identifica este tipo de documento (ej. un fragmento del nombre de archivo, del remitente, o del asunto). La próxima vez que un documento de ${propuestaPeek.clasificacion.empresa} coincida con eso, lo archivo directo en "${propuestaPeek.clasificacion.carpetaSugerida}" sin volver a preguntar.`
+      );
+    } else {
+      await guardarPendienteAlertaDocumento({
+        chatId: propuestaPeek.chatId,
+        nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
+        empresa: propuestaPeek.clasificacion.empresa,
+        tipoDocumento: propuestaPeek.clasificacion.tipoDocumento,
+      });
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        `⏰ Ok — respóndeme qué quieres que te recuerde sobre "${propuestaPeek.nombreArchivoOriginal}" y cuándo (ej. "avísame en 3 días si no se ha enviado a aduana", o "recuérdame el jueves confirmar con Alberto").`
+      );
+    }
+    return;
+  }
+
   const propuesta = await consumirPropuestaClasificacion(id);
 
   if (!propuesta) {

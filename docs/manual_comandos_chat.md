@@ -148,6 +148,9 @@ registrar en cashflow) sin que presiones uno de estos botones.
 
 **Sobre archivos/documentos enviados por Telegram para archivar en Drive:**
 - El asistente propone una carpeta de destino con botones de aprobación (sí/no) antes de subir nada.
+- ✅ Sí, archivar aquí / ✏️ Elegir otra carpeta — las dos acciones de siempre, terminan la propuesta.
+- 📚 Enseñar regla — pide una palabra o frase clave (ej. parte del nombre del archivo o del remitente); la próxima vez que un documento de esa empresa coincida, se archiva directo en la misma carpeta **sin volver a preguntar** — es una regla determinista (se revisa antes de gastar una llamada a Claude), no una sugerencia que el asistente pueda olvidar. No consume la propuesta — "Sí, archivar aquí" sigue disponible después.
+- ⏰ Crear alerta — pide qué recordar y cuándo (fecha o condición, en lenguaje natural); usa el mismo programador de acciones futuras del sistema (ver sección de Calendario). Tampoco consume la propuesta.
 
 **Sobre alertas de pagos recurrentes (seguros, IBI, Google, Salesmate, etc. — WOBA, EWORKS y Footprint, cualquier periodicidad: mensual/trimestral/semestral/anual):**
 - Cada pago llega como un mensaje individual (nunca agrupado con otros) exactamente 2 días antes, 1 día antes, y el mismo día del vencimiento — mismo esquema para pagos con día exacto y para los aproximados sin día fijo.
