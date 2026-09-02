@@ -374,6 +374,41 @@ function NanoCore({ energized = false }) {
   );
 }
 
+/**
+ * Ráfaga breve de "nanobots" en una posición del lienzo — dispersándose
+ * (`outward`) cuando un nodo se desvanece, o condensándose hacia el punto
+ * (`!outward`) cuando uno nuevo aparece. Puramente decorativo, ver
+ * TRANSICION_MS en CerebroWoba — pedido explícito de Carlos: "un efecto de
+ * deconstrucción y construcción de nanobots" al entrar/salir de una neurona.
+ */
+function ParticleBurst({ pos, seed, outward }) {
+  const rnd = seeded(Math.round(pos.x * 11 + pos.y * 17 + seed * 31 + 1));
+  const dots = Array.from({ length: 5 }, (_, i) => {
+    const angle = rnd() * Math.PI * 2;
+    const dist = 14 + rnd() * 20;
+    const dx = dist * Math.cos(angle);
+    const dy = dist * Math.sin(angle);
+    return {
+      key: i,
+      x1: outward ? pos.x : pos.x + dx,
+      y1: outward ? pos.y : pos.y + dy,
+      x2: outward ? pos.x + dx : pos.x,
+      y2: outward ? pos.y + dy : pos.y,
+      delay: rnd() * 0.1,
+    };
+  });
+  return (
+    <>
+      {dots.map((d) => (
+        <circle key={d.key} r="1.6" fill={d.key % 2 === 0 ? C.amberBright : C.coreBright}>
+          <animateMotion path={`M ${d.x1} ${d.y1} L ${d.x2} ${d.y2}`} dur="0.38s" begin={`${d.delay}s`} fill="freeze" />
+          <animate attributeName="opacity" values={outward ? "1;0" : "0;1"} dur="0.38s" begin={`${d.delay}s`} fill="freeze" />
+        </circle>
+      ))}
+    </>
+  );
+}
+
 /** Filas de datos reales por módulo, a partir de la respuesta del endpoint. Cada fila es [etiqueta, valor]. */
 function liveRowsForModule(id, d, periodoCashflow = "semana") {
   if (!d) return [];
@@ -1613,7 +1648,48 @@ export default function CerebroWoba() {
   // sobrante junto al padre).
   const openGroupObj = openGroup ? GROUPS.find((g) => g.id === openGroup) : null;
   const currentItems = openGroupObj ? openGroupObj.children.map((id) => MODULES.find((m) => m.id === id)) : GROUPS;
-  const itemPositions = useRadialLayout(currentItems.length, 175);
+
+  // Transición al cambiar de nivel (grupos ↔ hijas de un grupo abierto) —
+  // pedido explícito de Carlos: "un efecto de deconstrucción y
+  // construcción de nanobots" en vez de un salto seco. `displayedItems` es
+  // lo que de verdad se dibuja; `currentItems` (arriba) es lo que
+  // DEBERÍA mostrarse según openGroup. Cuando difieren, lo viejo
+  // (`leavingItems`) se desvanece con su propia animación durante
+  // TRANSICION_MS, y recién entonces se cambia displayedItems al nuevo
+  // set — que al montar por primera vez toca su propia animación de
+  // "ensamblado" (ver nodeAssemble/nodeDissolve en el <style> de abajo).
+  const TRANSICION_MS = 360;
+  const [displayedItems, setDisplayedItems] = useState(GROUPS);
+  const [leavingItems, setLeavingItems] = useState(null);
+  const [leavingIsGroupLevel, setLeavingIsGroupLevel] = useState(true);
+  const displayedItemsRef = useRef(GROUPS);
+  const displayedIsGroupLevelRef = useRef(true);
+  const prevOpenGroupRef = useRef(openGroup);
+
+  useEffect(() => {
+    if (prevOpenGroupRef.current === openGroup) return;
+    prevOpenGroupRef.current = openGroup;
+    setLeavingItems(displayedItemsRef.current);
+    setLeavingIsGroupLevel(displayedIsGroupLevelRef.current);
+    const t = setTimeout(() => {
+      displayedItemsRef.current = currentItems;
+      displayedIsGroupLevelRef.current = !openGroupObj;
+      setDisplayedItems(currentItems);
+      setLeavingItems(null);
+    }, TRANSICION_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openGroup]);
+
+  const displayedPositions = useRadialLayout(displayedItems.length, 175);
+  const leavingPositions = useRadialLayout(leavingItems?.length ?? 0, 175);
+  // Posiciones del set DESTINO (currentItems, el que se va a mostrar apenas
+  // termine la transición) — distinto de displayedPositions, que durante la
+  // transición todavía apunta al set VIEJO. La ráfaga de "condensación"
+  // tiene que apuntar a dónde van a APARECER los nodos nuevos, no a donde
+  // están los que se están yendo.
+  const targetPositions = useRadialLayout(currentItems.length, 175);
+
   const [entered, setEntered] = useState(false);
   const [diving, setDiving] = useState(false);
   const [liveData, setLiveData] = useState(null);
@@ -1773,6 +1849,18 @@ export default function CerebroWoba() {
           100% { transform: scale(7.5); opacity: 0; filter: blur(14px); }
         }
         @keyframes ctaPulse { 0%,100% { opacity: 0.75; } 50% { opacity: 1; } }
+        /* Transición al entrar/salir de un grupo — pedido explícito de Carlos: "un efecto de
+           deconstrucción y construcción de nanobots" en vez de un corte seco. Solo anima opacity
+           (nunca transform/filter) porque los nodos ya tienen nodeGlow+floatSlow corriendo sobre
+           esas mismas propiedades — dos animaciones distintas tocando la misma propiedad se pisan
+           entre sí, opacity queda libre. El efecto de "partículas" real lo dan las chispas nuevas
+           (ver burstParticles más abajo), esto solo desvanece/materializa el nodo en sí. */
+        @keyframes nodeDissolve { from { opacity: 1; } to { opacity: 0; } }
+        @keyframes nodeAssemble { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes particleBurst {
+          0% { opacity: 1; }
+          100% { opacity: 0; }
+        }
         @keyframes brainLanding {
           from { opacity: 0; transform: scale(1.08); filter: blur(6px); }
           to { opacity: 1; transform: scale(1); filter: blur(0px); }
@@ -1874,18 +1962,38 @@ export default function CerebroWoba() {
             </radialGradient>
           </defs>
 
-          {itemPositions.map((p, i) => (
+          {displayedPositions.map((p, i) => (
             <line key={`core-${i}`} x1="300" y1="300" x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1.1" strokeDasharray="1 7" />
           ))}
-          {itemPositions.map((p, i) => (
+          {displayedPositions.map((p, i) => (
             <circle key={`core-spark-${i}`} r="2.6" fill={C.amberBright}>
               <animateMotion path={`M 300 300 L ${p.x} ${p.y}`} dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
               <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
             </circle>
           ))}
 
-          {itemPositions.map((p, i) => {
-            const it = currentItems[i];
+          {/* Nanobots dispersándose desde las posiciones que se van — solo durante la transición. */}
+          {leavingItems && leavingPositions.map((p, i) => <ParticleBurst key={`burst-out-${leavingItems[i].id}`} pos={p} seed={i} outward />)}
+          {/* Nanobots condensándose en las posiciones nuevas — solo la primera vez que aparecen (mount). */}
+          {leavingItems && targetPositions.map((p, i) => <ParticleBurst key={`burst-in-${currentItems[i].id}`} pos={p} seed={i + 50} outward={false} />)}
+
+          {leavingItems &&
+            leavingPositions.map((p, i) => {
+              const it = leavingItems[i];
+              return (
+                <circle
+                  key={`leaving-${it.id}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={leavingIsGroupLevel ? 18 : 11}
+                  fill="url(#nodeGrad)"
+                  style={{ pointerEvents: "none", animation: `nodeDissolve ${TRANSICION_MS}ms ease-in forwards` }}
+                />
+              );
+            })}
+
+          {displayedPositions.map((p, i) => {
+            const it = displayedItems[i];
             const isActive = active === it.id || open === it.id || openGroup === it.id;
             return (
               <circle
@@ -1904,7 +2012,12 @@ export default function CerebroWoba() {
                     setOpenGroup((cur) => (cur === it.id ? null : it.id));
                   }
                 }}
-                style={{ cursor: "pointer", pointerEvents: "auto", animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + i * 0.3}s ease-in-out infinite`, transition: "r .15s" }}
+                style={{
+                  cursor: "pointer",
+                  pointerEvents: "auto",
+                  animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + i * 0.3}s ease-in-out infinite, nodeAssemble ${TRANSICION_MS}ms ease-out`,
+                  transition: "r .15s",
+                }}
               />
             );
           })}
@@ -1912,8 +2025,32 @@ export default function CerebroWoba() {
 
         <NanoCore energized={Boolean(active || open || openGroup)} />
 
-        {itemPositions.map((p, i) => {
-          const it = currentItems[i];
+        {leavingItems &&
+          leavingPositions.map((p, i) => {
+            const it = leavingItems[i];
+            return (
+              <div
+                key={`leaving-${it.id}`}
+                style={{
+                  position: "absolute",
+                  left: `${(p.x / 600) * 100}%`,
+                  top: `${(p.y / 600) * 100}%`,
+                  transform: `translate(-50%, ${leavingIsGroupLevel ? 20 : 14}px)`,
+                  textAlign: "center",
+                  width: leavingIsGroupLevel ? 140 : 130,
+                  pointerEvents: "none",
+                  animation: `nodeDissolve ${TRANSICION_MS}ms ease-in forwards`,
+                }}
+              >
+                <div style={{ fontFamily: leavingIsGroupLevel ? C.serif : C.sans, fontSize: leavingIsGroupLevel ? 15 : 12.5, fontWeight: 600, color: C.cream }}>
+                  {it.name}
+                </div>
+              </div>
+            );
+          })}
+
+        {displayedPositions.map((p, i) => {
+          const it = displayedItems[i];
           const isActive = active === it.id || open === it.id || openGroup === it.id;
           return (
             <div
@@ -1937,6 +2074,7 @@ export default function CerebroWoba() {
                 cursor: "pointer",
                 width: openGroupObj ? 130 : 140,
                 pointerEvents: "auto",
+                animation: `nodeAssemble ${TRANSICION_MS}ms ease-out`,
               }}
             >
               <div
