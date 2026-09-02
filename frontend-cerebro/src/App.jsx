@@ -383,9 +383,9 @@ function NanoCore({ energized = false }) {
  */
 function ParticleBurst({ pos, seed, outward }) {
   const rnd = seeded(Math.round(pos.x * 11 + pos.y * 17 + seed * 31 + 1));
-  const dots = Array.from({ length: 5 }, (_, i) => {
+  const dots = Array.from({ length: 8 }, (_, i) => {
     const angle = rnd() * Math.PI * 2;
-    const dist = 14 + rnd() * 20;
+    const dist = 20 + rnd() * 34;
     const dx = dist * Math.cos(angle);
     const dy = dist * Math.sin(angle);
     return {
@@ -394,15 +394,16 @@ function ParticleBurst({ pos, seed, outward }) {
       y1: outward ? pos.y : pos.y + dy,
       x2: outward ? pos.x + dx : pos.x,
       y2: outward ? pos.y + dy : pos.y,
-      delay: rnd() * 0.1,
+      delay: rnd() * 0.22,
+      dur: 0.32 + rnd() * 0.22,
     };
   });
   return (
     <>
       {dots.map((d) => (
         <circle key={d.key} r="1.6" fill={d.key % 2 === 0 ? C.amberBright : C.coreBright}>
-          <animateMotion path={`M ${d.x1} ${d.y1} L ${d.x2} ${d.y2}`} dur="0.38s" begin={`${d.delay}s`} fill="freeze" />
-          <animate attributeName="opacity" values={outward ? "1;0" : "0;1"} dur="0.38s" begin={`${d.delay}s`} fill="freeze" />
+          <animateMotion path={`M ${d.x1} ${d.y1} L ${d.x2} ${d.y2}`} dur={`${d.dur}s`} begin={`${d.delay}s`} fill="freeze" />
+          <animate attributeName="opacity" values={outward ? "1;0" : "0;1"} dur={`${d.dur}s`} begin={`${d.delay}s`} fill="freeze" />
         </circle>
       ))}
     </>
@@ -1658,7 +1659,7 @@ export default function CerebroWoba() {
   // TRANSICION_MS, y recién entonces se cambia displayedItems al nuevo
   // set — que al montar por primera vez toca su propia animación de
   // "ensamblado" (ver nodeAssemble/nodeDissolve en el <style> de abajo).
-  const TRANSICION_MS = 360;
+  const TRANSICION_MS = 520;
   const [displayedItems, setDisplayedItems] = useState(GROUPS);
   const [leavingItems, setLeavingItems] = useState(null);
   const [leavingIsGroupLevel, setLeavingIsGroupLevel] = useState(true);
@@ -1669,14 +1670,25 @@ export default function CerebroWoba() {
   useEffect(() => {
     if (prevOpenGroupRef.current === openGroup) return;
     prevOpenGroupRef.current = openGroup;
+
+    // Bug real que hacía la transición invisible: antes, displayedItems
+    // (el set "estable", SIN animación) seguía apuntando al contenido
+    // VIEJO durante toda la ventana de transición, exactamente superpuesto
+    // sobre la copia que sí se estaba disolviendo (leavingItems) — dos
+    // copias idénticas en el mismo lugar, una animándose y otra sólida
+    // tapándola, así que la disolución quedaba invisible. Y recién al
+    // final, displayedItems saltaba de golpe al set nuevo. La corrección:
+    // lo viejo pasa a leavingItems (se disuelve), y lo NUEVO entra a
+    // displayedItems YA MISMO (se materializa) — ambas animaciones corren
+    // EN PARALELO, cruzándose, en vez de una después de la otra.
     setLeavingItems(displayedItemsRef.current);
     setLeavingIsGroupLevel(displayedIsGroupLevelRef.current);
-    const t = setTimeout(() => {
-      displayedItemsRef.current = currentItems;
-      displayedIsGroupLevelRef.current = !openGroupObj;
-      setDisplayedItems(currentItems);
-      setLeavingItems(null);
-    }, TRANSICION_MS);
+
+    displayedItemsRef.current = currentItems;
+    displayedIsGroupLevelRef.current = !openGroupObj;
+    setDisplayedItems(currentItems);
+
+    const t = setTimeout(() => setLeavingItems(null), TRANSICION_MS);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openGroup]);
