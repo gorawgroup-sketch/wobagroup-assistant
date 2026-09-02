@@ -516,11 +516,21 @@ function useRadialLayout(count, radius) {
  * abanico MÁS ALLÁ del nodo del grupo (más lejos del núcleo, no encima),
  * centradas en el mismo ángulo que ya tiene el grupo respecto al núcleo,
  * así el abanico se siente como que "sale" del grupo hacia afuera.
+ *
+ * Bug real encontrado en vivo: con un radio de abanico fijo, el grupo
+ * "Administración" (arriba del todo del lienzo de 600×600) empujaba a sus
+ * hijos por ENCIMA del lienzo, tapando el encabezado de la página — el
+ * radio no puede ser el mismo para todos los grupos, depende de cuánto
+ * margen le quede a CADA UNO hasta el borde más cercano. Se calcula ese
+ * margen real y se limita el radio a lo que quepa (con tope superior para
+ * no alejar demasiado cuando el grupo está muy centrado).
  */
-function fanOutChildren(groupPos, count, fanRadius = 92, fanSpreadDeg = 58) {
+function fanOutChildren(groupPos, count, fanSpreadDeg = 58) {
   if (count === 0) return [];
   const angleBase = Math.atan2(groupPos.y - 300, groupPos.x - 300);
   const spread = (fanSpreadDeg * Math.PI) / 180;
+  const margenAlBorde = Math.min(groupPos.x, 600 - groupPos.x, groupPos.y, 600 - groupPos.y);
+  const fanRadius = Math.max(35, Math.min(70, margenAlBorde - 40));
   return Array.from({ length: count }, (_, i) => {
     const t = count === 1 ? 0 : i / (count - 1) - 0.5;
     const angle = angleBase + t * spread;
