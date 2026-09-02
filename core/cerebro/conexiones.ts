@@ -3,6 +3,7 @@ import { obtenerUltimoEstadoClaude, verificarConexionClaude, obtenerUltimoEstado
 import { verificarConexionSheets } from "../google/sheetsClient";
 import { verificarConexionDrive } from "../drive/client";
 import { verificarConexionGmail } from "../gmail/client";
+import { verificarConexionCalendar } from "../google/calendarClient";
 import { verificarConexionHolded } from "../holded/client";
 import type { Empresa } from "../holded/client";
 
@@ -87,6 +88,7 @@ async function verificarTodas(): Promise<ConexionEstado[]> {
     chequearUno("google_sheets", "Google Sheets", verificarConexionSheets, "🔄 Reintentar"),
     chequearUno("google_drive", "Google Drive", verificarConexionDrive, "🔄 Reintentar"),
     chequearUno("gmail", "Gmail", verificarConexionGmail, "🔄 Reintentar"),
+    chequearUno("google_calendar", "Google Calendar", verificarConexionCalendar, "🔄 Reintentar"),
     ...EMPRESAS_HOLDED.map((empresa) =>
       chequearUno(`holded_${empresa.toLowerCase()}`, `Holded (${empresa})`, () => verificarConexionHolded(empresa), "🔄 Reintentar")
     ),

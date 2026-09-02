@@ -32,6 +32,7 @@ import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
 import { consumirPendienteOrientacionAnotacion } from "../core/jobs/cashflowAnnotationOrientationStore";
+import { handleAccionProgramadaCallback } from "../core/jobs/accionesProgramadasCallbackHandler";
 import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditStore";
 import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
 import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
@@ -583,6 +584,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleCapturaEmpresaCallback(update.callback_query);
       } else if (data.startsWith("anotcf_")) {
         await handleCashflowAnnotationActionCallback(update.callback_query);
+      } else if (data.startsWith("accprog_")) {
+        await handleAccionProgramadaCallback(update.callback_query);
       } else if (data.startsWith("reportecontable_")) {
         await handleReporteContableCallback(update.callback_query);
       } else {

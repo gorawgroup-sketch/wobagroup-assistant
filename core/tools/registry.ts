@@ -31,6 +31,7 @@ import { listarCorreosSinLeerTool } from "./listarCorreosSinLeer";
 import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
+import { programarAccionFuturaTool } from "./programarAccion";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -69,6 +70,7 @@ const tools: ToolDefinition[] = [
   reintentarContactoPendienteTool,
   fijarAliasProveedorTool,
   reintentarGastoPendienteTool,
+  programarAccionFuturaTool,
 ];
 
 /**

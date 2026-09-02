@@ -6,12 +6,17 @@ import { revisarCostosIA } from "./revisarCostosIA";
 import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
+import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
 
 const TIMEZONE = "Europe/Madrid";
 
 /**
- * Registra los crons del sistema. Todos son de solo lectura/notificación —
- * ninguno escribe/actúa nada por su cuenta sin aprobación explícita.
+ * Registra los crons del sistema. La mayoría son de solo lectura/notificación
+ * — ninguno escribe en Holded/cashflow/correo sin aprobación explícita. La
+ * excepción es revisarAccionesProgramadas: SÍ actúa por su cuenta cuando le
+ * toca (pedido explícito de Carlos, "WOBI debe encargarse"), pero solo sobre
+ * acciones que un humano ya pidió programar — y cualquier escritura real que
+ * termine haciendo falta sigue pasando por su propio flujo de propuesta+botón.
  */
 export function startScheduler(): void {
   cron.schedule(
@@ -101,4 +106,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarAnotacionesCashflow programado: diario 8:20 (${TIMEZONE})`);
+
+  cron.schedule(
+    "5 * * * *",
+    () => {
+      revisarAccionesProgramadas().catch((error) => {
+        console.error("[scheduler] Error ejecutando revisarAccionesProgramadas:", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarAccionesProgramadas programado: cada hora, minuto 5 (${TIMEZONE})`);
 }

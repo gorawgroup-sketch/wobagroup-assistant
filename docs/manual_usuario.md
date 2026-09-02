@@ -134,6 +134,30 @@ que hacer nada más.
   informativo"** (no hace nada más). Nunca marca nada como resuelto en el
   propio Sheet por su cuenta — eso se sigue haciendo a mano ahí.
 
+### ⏰ Acciones programadas
+- Pedido explícito de Carlos: cuando algo hay que hacerlo más adelante — en
+  una fecha futura ("hazlo el jueves", "avísame el 15") o cuando se cumpla
+  una condición ("cuando confirmen el pago de X") — el asistente lo programa
+  y se encarga solo en su momento, en vez de dejártelo a ti. Se dispara
+  desde cualquier conversación normal, o al responder "✏️ Dar
+  instrucciones" sobre una anotación de cashflow o un correo.
+- Revisa la cola cada hora: si es una fecha, dispara apenas llega; si es una
+  condición, verifica con sus propias herramientas si ya se cumplió (sin
+  molestarte mientras no haya pasado nada).
+- Al dispararse, investiga y actúa con sus herramientas normales — **sin
+  volver a pedirte aprobar que lo haga** (esa aprobación ya la diste al
+  pedir que se programe). Si de verdad hace falta una escritura real
+  (crear algo en Holded, enviar un correo), esa escritura sigue con su
+  propio botón de aprobación aparte, como siempre — programar no le da al
+  asistente ningún poder nuevo, solo pospone cuándo investiga y propone.
+- Si tiene fecha concreta, además crea un evento visible en el calendario
+  de Google de Wobi (asistente@wobagroup.com, con tu correo invitado) como
+  recordatorio — si el calendario no está disponible por algún motivo, la
+  acción se programa igual, solo sin el evento (revisa "Google Calendar" en
+  el panel de conexiones si nunca aparece).
+- Botón "❌ Cancelar programación" en la confirmación, por si el asistente
+  entendió mal qué o cuándo programar.
+
 ### 🏦 Holded
 - Consultar movimientos bancarios reales y cuentas de tesorería (solo
   lectura, en chat normal) — **WOBA, EWORKS y Footprint**. Cada movimiento
@@ -468,15 +492,15 @@ que hacer nada más.
 
 ### 🔌 Panel de conexiones (front /cerebro)
 - Justo debajo del enlace a Telegram, en la parte de arriba del panel, se ve
-  en todo momento el estado real de las 9 conexiones/módulos externos que
+  en todo momento el estado real de las 10 conexiones/módulos externos que
   usa el sistema: Telegram, Claude (Anthropic), Búsqueda web, Google Sheets,
-  Google Drive, Gmail, y Holded (WOBA / EWORKS / Footprint) — cada una
-  verificada en vivo. Claude y Búsqueda web se reportan de forma pasiva,
-  según el último uso real del chat, para no gastar en una llamada (o una
-  búsqueda paga) de prueba en cada carga del panel — "sin uso reciente" ahí
-  es informativo, no una falla.
+  Google Drive, Gmail, Google Calendar, y Holded (WOBA / EWORKS / Footprint)
+  — cada una verificada en vivo. Claude y Búsqueda web se reportan de forma
+  pasiva, según el último uso real del chat, para no gastar en una llamada
+  (o una búsqueda paga) de prueba en cada carga del panel — "sin uso
+  reciente" ahí es informativo, no una falla.
 - Mientras todo esté bien, se ve un punto verde discreto ("Conexiones activas
-  9/9") que se puede expandir para ver el detalle. Si algo se cae, el panel
+  10/10") que se puede expandir para ver el detalle. Si algo se cae, el panel
   se pone en rojo y se expande solo — no hay que buscarlo ni refrescar.
 - Cada conexión caída trae su propio botón: para Telegram literalmente
   arregla el problema (re-registra el webhook); para el resto (excepto
