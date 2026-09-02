@@ -530,7 +530,7 @@ function fanOutChildren(groupPos, count, fanSpreadDeg = 58) {
   const angleBase = Math.atan2(groupPos.y - 300, groupPos.x - 300);
   const spread = (fanSpreadDeg * Math.PI) / 180;
   const margenAlBorde = Math.min(groupPos.x, 600 - groupPos.x, groupPos.y, 600 - groupPos.y);
-  const fanRadius = Math.max(35, Math.min(70, margenAlBorde - 40));
+  const fanRadius = Math.max(45, Math.min(105, margenAlBorde - 35));
   return Array.from({ length: count }, (_, i) => {
     const t = count === 1 ? 0 : i / (count - 1) - 0.5;
     const angle = angleBase + t * spread;
@@ -1625,7 +1625,7 @@ function MiniCalendario({ apiKey }) {
 }
 
 export default function CerebroWoba() {
-  const groupPositions = useRadialLayout(GROUPS.length, 215);
+  const groupPositions = useRadialLayout(GROUPS.length, 175);
   const [active, setActive] = useState(null);
   const [open, setOpen] = useState(null);
   const [openGroup, setOpenGroup] = useState(null);
@@ -1970,9 +1970,7 @@ export default function CerebroWoba() {
                 >
                   <div style={{ fontFamily: C.sans, fontSize: 11.5, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{m.name}</div>
                   {active === m.id && !open && (
-                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
-                      {m.detail}<br /><span style={{ color: C.amber }}>{m.note}</span>
-                    </div>
+                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.amber, marginTop: 2 }}>{m.note}</div>
                   )}
                 </div>
               );
