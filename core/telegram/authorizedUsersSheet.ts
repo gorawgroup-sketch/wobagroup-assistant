@@ -254,6 +254,20 @@ const ACCIONES_SENSIBLES = new Set([
   "email_proceder",
   "email_descartar",
   "email_orientar",
+  // Mismo criterio que las decisiones sobre correo entrante (arriba) —
+  // "Hazlo tú" investiga y actúa, "Dar instrucciones" y "Dejar como
+  // informativo" son decisiones sobre esa acción — encontrado como gap
+  // real en auditoría (2026-09-02): estas tres se agregaron el mismo día
+  // que las decisiones de correo, pero quedaron fuera de este set por
+  // descuido, así que cualquier usuario autorizado (no solo superadmin)
+  // podía disparar una investigación/escritura real sobre el cashflow.
+  "anotcf_proceder",
+  "anotcf_orientar",
+  "anotcf_descartar",
+  // Cancelar una acción YA programada es también una decisión de negocio
+  // (pudo haberse programado algo con efecto financiero) — mismo criterio
+  // que email_descartar.
+  "accprog_cancelar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

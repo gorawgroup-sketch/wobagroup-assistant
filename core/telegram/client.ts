@@ -133,7 +133,8 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text,
+      text: formatearParaTelegram(text),
+      parse_mode: "HTML",
     }),
   });
 
@@ -146,6 +147,8 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
   // Ver registrarMensajeSaliente: pedido explícito de Carlos, cualquier
   // pregunta/aviso que el asistente mande (venga de un cron, un callback, o
   // el chat normal) debe quedar en el mismo historial que usa askClaude.
+  // Se guarda el texto ORIGINAL (markdown crudo, sin tags HTML) — es lo que
+  // Claude espera ver si retoma el hilo, no el marcado pensado para Telegram.
   registrarMensajeSaliente(chatId, text).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
@@ -229,7 +232,8 @@ export async function sendTelegramMessageWithButtons(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text,
+      text: formatearParaTelegram(text),
+      parse_mode: "HTML",
       reply_markup: { inline_keyboard: buttons },
     }),
   });
@@ -250,6 +254,29 @@ export async function sendTelegramMessageWithButtons(
 
 function escaparHTML(texto: string): string {
   return texto.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Encontrado en auditoría (2026-09-02), visible en capturas reales de
+ * Carlos: NINGÚN envío de este archivo pasaba `parse_mode` a Telegram, así
+ * que el markdown que Claude produce naturalmente (**negrita**) se veía
+ * como asteriscos literales en el chat real — no era un problema nuevo del
+ * formato colapsable, ya pasaba en TODOS los mensajes desde siempre. Esta
+ * función convierte el único patrón de markdown que este proyecto usa de
+ * forma consistente (**negrita**) al HTML real que Telegram sabe renderizar;
+ * el resto del texto se escapa como HTML normal, así que cualquier
+ * '<'/'>'/'&' real en el contenido (un monto, un email) nunca rompe el
+ * parseo. Se usa en TODOS los envíos/ediciones de este archivo (parse_mode
+ * HTML en todos, no solo en los colapsables) para que el texto se vea
+ * consistente en cualquier mensaje que mande Wobi.
+ */
+function formatearParaTelegram(texto: string): string {
+  return escaparHTML(texto).replace(/\*\*([^*]+?)\*\*/g, "<b>$1</b>");
+}
+
+/** Para títulos que ya van envueltos en <b>...</b> por fuera — quita los marcadores ** en vez de convertirlos (evitar <b><b>). */
+function limpiarTitulo(texto: string): string {
+  return escaparHTML(texto).replace(/\*\*/g, "");
 }
 
 /**
@@ -276,7 +303,7 @@ export async function sendTelegramMessageExpandable(
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
 
-  const text = `<b>${escaparHTML(titulo)}</b>\n<blockquote expandable>${escaparHTML(cuerpo)}</blockquote>`;
+  const text = `<b>${limpiarTitulo(titulo)}</b>\n<blockquote expandable>${formatearParaTelegram(cuerpo)}</blockquote>`;
 
   const body: Record<string, unknown> = {
     chat_id: chatId,
@@ -339,29 +366,38 @@ export async function sendTelegramMessageSmart(
   titulo?: string
 ): Promise<number> {
   if (texto.length <= UMBRAL_COLAPSABLE) {
-    const textoConTitulo = titulo ? `${titulo}\n\n${texto}` : texto;
-    const token = getBotToken();
-    const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
-    const body: Record<string, unknown> = { chat_id: chatId, text: textoConTitulo };
-    if (buttons) body.reply_markup = { inline_keyboard: buttons };
-
-    const response = await fetchConReintento(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const respBody = await response.text();
-      throw new Error(`Error enviando mensaje a Telegram (${response.status}): ${respBody}`);
-    }
-    const data = (await response.json()) as { result: { message_id: number } };
-    registrarMensajeSaliente(chatId, textoConTitulo).catch((error) =>
-      console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
-    );
-    return data.result.message_id;
+    // "**titulo**" en vez de construir <b> a mano: formatearParaTelegram (ya
+    // aplicado dentro de sendTelegramMessage/sendTelegramMessageWithButtons)
+    // lo convierte igual que cualquier negrita que venga de Claude — un solo
+    // camino de formato, no dos implementaciones separadas.
+    const textoConTitulo = titulo ? `**${titulo}**\n\n${texto}` : texto;
+    return buttons
+      ? sendTelegramMessageWithButtons(chatId, textoConTitulo, buttons)
+      : sendTelegramMessagePlain(chatId, textoConTitulo);
   }
 
   return sendTelegramMessageExpandable(chatId, titulo || tituloAutomatico(texto), texto, buttons);
+}
+
+/** sendTelegramMessage pero devolviendo el message_id (necesario para sendTelegramMessageSmart sin botones). */
+async function sendTelegramMessagePlain(chatId: number, text: string): Promise<number> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
+
+  const response = await fetchConReintento(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: formatearParaTelegram(text), parse_mode: "HTML" }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Error enviando mensaje a Telegram (${response.status}): ${body}`);
+  }
+  const data = (await response.json()) as { result: { message_id: number } };
+  registrarMensajeSaliente(chatId, text).catch((error) =>
+    console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
+  );
+  return data.result.message_id;
 }
 
 /**
@@ -403,7 +439,8 @@ export async function editTelegramMessage(
   const body: Record<string, unknown> = {
     chat_id: chatId,
     message_id: messageId,
-    text,
+    text: formatearParaTelegram(text),
+    parse_mode: "HTML",
   };
 
   if (buttons !== undefined) {
@@ -433,7 +470,7 @@ export async function editTelegramMessageExpandable(
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageText`;
 
-  const text = `<b>${escaparHTML(titulo)}</b>\n<blockquote expandable>${escaparHTML(cuerpo)}</blockquote>`;
+  const text = `<b>${limpiarTitulo(titulo)}</b>\n<blockquote expandable>${formatearParaTelegram(cuerpo)}</blockquote>`;
 
   const body: Record<string, unknown> = {
     chat_id: chatId,
@@ -467,7 +504,7 @@ export async function editTelegramMessageSmart(
   titulo?: string
 ): Promise<void> {
   if (texto.length <= UMBRAL_COLAPSABLE) {
-    await editTelegramMessage(chatId, messageId, titulo ? `${titulo}\n\n${texto}` : texto, buttons);
+    await editTelegramMessage(chatId, messageId, titulo ? `**${titulo}**\n\n${texto}` : texto, buttons);
     return;
   }
   await editTelegramMessageExpandable(chatId, messageId, titulo || tituloAutomatico(texto), texto, buttons);
