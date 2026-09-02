@@ -512,28 +512,26 @@ function useRadialLayout(count, radius) {
 }
 
 /**
- * Posiciones de las neuronas hijas de un grupo abierto — se abren en
- * abanico MÁS ALLÁ del nodo del grupo (más lejos del núcleo, no encima),
- * centradas en el mismo ángulo que ya tiene el grupo respecto al núcleo,
- * así el abanico se siente como que "sale" del grupo hacia afuera.
- *
- * Bug real encontrado en vivo: con un radio de abanico fijo, el grupo
- * "Administración" (arriba del todo del lienzo de 600×600) empujaba a sus
- * hijos por ENCIMA del lienzo, tapando el encabezado de la página — el
- * radio no puede ser el mismo para todos los grupos, depende de cuánto
- * margen le quede a CADA UNO hasta el borde más cercano. Se calcula ese
- * margen real y se limita el radio a lo que quepa (con tope superior para
- * no alejar demasiado cuando el grupo está muy centrado).
+ * Posiciones de las neuronas hijas de un grupo abierto — en anillo
+ * completo alrededor del nodo del grupo (no un abanico angosto hacia
+ * afuera). Bug real encontrado en vivo, dos veces seguidas: primero un
+ * abanico angosto (58°) sacaba a las hijas por encima del lienzo cuando el
+ * grupo estaba muy arriba; ya arreglado el radio, CUATRO etiquetas de
+ * texto anchas ("Accesos y Costos", etc.) seguían pisándose entre sí
+ * porque un arco de solo 58-90° no tiene ancho de sobra para 4 etiquetas
+ * de ~118px cada una. Un anillo completo (360° repartidos parejo) da la
+ * separación angular máxima posible para cualquier cantidad de hijas, y
+ * empieza justo en la dirección "hacia afuera" del grupo (mismo ángulo
+ * que ya tiene respecto al núcleo) para que al menos una quede alineada
+ * con esa sensación de "salir" de él.
  */
-function fanOutChildren(groupPos, count, fanSpreadDeg = 58) {
+function fanOutChildren(groupPos, count) {
   if (count === 0) return [];
   const angleBase = Math.atan2(groupPos.y - 300, groupPos.x - 300);
-  const spread = (fanSpreadDeg * Math.PI) / 180;
   const margenAlBorde = Math.min(groupPos.x, 600 - groupPos.x, groupPos.y, 600 - groupPos.y);
   const fanRadius = Math.max(45, Math.min(105, margenAlBorde - 35));
   return Array.from({ length: count }, (_, i) => {
-    const t = count === 1 ? 0 : i / (count - 1) - 0.5;
-    const angle = angleBase + t * spread;
+    const angle = count === 1 ? angleBase : angleBase + (i / count) * Math.PI * 2;
     return { x: groupPos.x + fanRadius * Math.cos(angle), y: groupPos.y + fanRadius * Math.sin(angle) };
   });
 }
