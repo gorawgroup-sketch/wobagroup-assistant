@@ -18,6 +18,8 @@ export interface GastoEntrante {
   nombreArchivoOriginal: string;
   mimeType?: string;
   datos: DatosFactura;
+  /** true si este adjunto vino de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
+  deColaCorreo?: boolean;
 }
 
 /**
@@ -180,6 +182,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     messageId: 0,
     cuentaId: cuentaSugerida?.accountId,
     cuentaTags: tagsFinal,
+    deColaCorreo: entrada.deColaCorreo,
   });
 
   const desgloseIva = lineasParaHolded
@@ -303,9 +306,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
               .join("\n") +
             `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
-          : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} — ni exacto ni ` +
-            `aproximado por nombre y monto cercano — cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta ` +
-            `del cargo o revísalo en Holded.`;
+          : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
+            (datos.proveedor ? " — ni exacto ni aproximado por nombre y monto cercano" : " (búsqueda exacta — no hay nombre de proveedor para buscar aproximado)") +
+            ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
     // igual que uno exacto — ya pasó el filtro de nombre+monto, y el texto

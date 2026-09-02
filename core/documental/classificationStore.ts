@@ -14,7 +14,7 @@ export interface PropuestaClasificacion {
   messageId: number;
   creadoEn: number;
   /** Si el archivo vino de un correo, sus datos — para poder responderlo (con hilo real) después de archivar. */
-  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string };
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean };
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;

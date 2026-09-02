@@ -60,11 +60,16 @@ export async function iniciarSeleccionEmpresaCaptura(
   chatId: number,
   texto: string,
   autor?: string,
-  mensajeIntro?: string
+  mensajeIntro?: string,
+  // Solo core/jobs/revisarCorreoNuevo.ts pasa true acá — marca que esta
+  // captura pertenece al correo activo de la cola de revisión uno a uno,
+  // para que confirmar/cancelar la avance (ver deColaCorreo en
+  // pendienteCapturaEmpresaStore.ts).
+  deColaCorreo?: boolean
 ): Promise<void> {
   const pregunta = mensajeIntro ? `${mensajeIntro}\n\n${mensajePregunta()}` : mensajePregunta();
   const messageId = await sendTelegramMessageWithButtons(chatId, pregunta, construirTeclado([]));
-  await guardarPendienteCapturaEmpresa({ chatId, messageId, texto, autor, empresasSeleccionadas: [] });
+  await guardarPendienteCapturaEmpresa({ chatId, messageId, texto, autor, empresasSeleccionadas: [], deColaCorreo });
 }
 
 export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQuery): Promise<void> {
@@ -87,7 +92,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
     await eliminarPendienteCapturaEmpresa(chatId, messageId);
     await answerCallbackQuerySafe(callback.id);
     await editTelegramMessage(chatId, pendiente.messageId, "❌ Captura descartada — no se guardó nada.", []);
-    await avanzarColaCorreoSiActivo(chatId);
+    if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
     return;
   }
 
@@ -113,7 +118,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
         `✅ Guardado — ${pendiente.empresasSeleccionadas.join(", ")}.`,
         []
       );
-      await avanzarColaCorreoSiActivo(chatId);
+      if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("Error guardando captura de conocimiento:", message);

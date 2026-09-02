@@ -171,9 +171,37 @@ export async function iniciarSiguienteActivo(chatId: number): Promise<ItemColaCo
   if (enCola.length === 0) return undefined;
 
   const siguiente = enCola.reduce((a, b) => (a.item.fechaOrden <= b.item.fechaOrden ? a : b));
-  const actualizado: ItemColaCorreo = { ...siguiente.item, estado: "activo", pendientesRestantes: 0 };
+  // agregadoEn se reutiliza acá como "activado en" (no se usaba para nada
+  // más una vez encolado) — necesario para detectar un correo activo
+  // estancado (ver obtenerActivoEstancado) sin agregar una columna nueva.
+  const actualizado: ItemColaCorreo = { ...siguiente.item, estado: "activo", pendientesRestantes: 0, agregadoEn: Date.now() };
   await actualizarFila(TAB_NAME, siguiente.rowIndex, NUM_COLS, objetoAFila(actualizado));
   return actualizado;
+}
+
+/**
+ * Pedido implícito por el propio diseño de la cola: si el correo activo
+ * queda esperando algo que nunca llega (ej. una pregunta de desambiguación
+ * de 24h que expira sin respuesta, o un botón "Enseñar regla"/"Corregir
+ * clasificación" que Carlos nunca termina de resolver), no hay ningún
+ * mecanismo que lo destrabe — se queda "activo" para siempre y CUALQUIER
+ * correo nuevo se acumula detrás de él en silencio. Esto detecta ese caso
+ * (activo desde hace más de `umbralMs`) para que revisarCorreoNuevo.ts lo
+ * salte con aviso en vez de bloquear la cola indefinidamente.
+ */
+export async function obtenerActivoEstancado(chatId: number, umbralMs: number): Promise<ItemColaCorreo | undefined> {
+  const todas = await leerTodas();
+  const activo = todas.find((f) => f.item.chatId === chatId && f.item.estado === "activo");
+  if (!activo) return undefined;
+  return Date.now() - activo.item.agregadoEn > umbralMs ? activo.item : undefined;
+}
+
+/** Elimina el correo activo sin marcarlo resuelto-normal (ver obtenerActivoEstancado) — no lo registra como "ya resuelto", por si de verdad hace falta revisarlo a mano después. */
+export async function descartarActivoEstancado(chatId: number, gmailId: string): Promise<void> {
+  const todas = await leerTodas();
+  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
+  if (!fila) return;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
 }
 
 /** Fija cuántas decisiones independientes hacen falta para dar por resuelto el correo activo. */

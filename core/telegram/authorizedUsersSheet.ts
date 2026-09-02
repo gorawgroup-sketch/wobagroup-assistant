@@ -274,6 +274,16 @@ const ACCIONES_SENSIBLES = new Set([
   // superadmin — ver core/jobs/revisarCorreoNuevo.ts.
   "correoinfo_guardar",
   "correoinfo_siguiente",
+  // Gap real encontrado en auditoría (2026-09-02): estas tres se agregaron
+  // el mismo día que "Enseñar regla"/"Crear alerta"/"Guardar como
+  // conocimiento" para documentos, pero quedaron fuera de este set —
+  // "doc_regla" y "doc_alerta" escriben estado persistente (una regla de
+  // clasificación automática, una acción programada), y "doc_conocimiento"
+  // dispara el flujo de captura — mismo criterio que "doc_confirm", que sí
+  // estaba protegido.
+  "doc_regla",
+  "doc_alerta",
+  "doc_conocimiento",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

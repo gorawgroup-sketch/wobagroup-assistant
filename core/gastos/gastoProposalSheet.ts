@@ -27,6 +27,7 @@ const HEADERS = [
   "lineasJSON",
   "cuentaId",
   "cuentaTagsJSON",
+  "deColaCorreo",
 ];
 
 export interface PropuestaGasto {
@@ -49,6 +50,17 @@ export interface PropuestaGasto {
   /** Cuenta contable inferida (ver inferirCuentaGasto) — se usa al crear el gasto en Holded, si se pudo inferir. */
   cuentaId?: string;
   cuentaTags?: string[];
+  /**
+   * true si este gasto vino de un adjunto de la cola de revisión de correo
+   * uno a uno (ver core/gmail/colaRevisionStore.ts) — gastoCallbackHandler.ts
+   * lo usa para decidir si avanzar esa cola al resolverse. Bug real
+   * encontrado en auditoría: sin este marcador, resolver un gasto CUALQUIERA
+   * (ej. una foto de un recibo mandada por Telegram, sin relación con
+   * ningún correo) hacía avanzar/marcar-como-leído el correo activo de la
+   * cola si había uno en curso — dos flujos totalmente independientes que
+   * comparten el mismo chat, sin ninguna relación real entre sí.
+   */
+  deColaCorreo?: boolean;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -101,7 +113,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:Q1`,
+    range: `${TAB_NAME}!A1:R1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -152,6 +164,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     creadoEn: Number(row[13]) || 0,
     cuentaId: row[15] ? String(row[15]) : undefined,
     cuentaTags,
+    deColaCorreo: row[17] === true || row[17] === "true",
   };
 }
 
@@ -174,6 +187,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     JSON.stringify(p.lineas),
     p.cuentaId ?? "",
     JSON.stringify(p.cuentaTags ?? []),
+    p.deColaCorreo === true ? "true" : "",
   ];
 }
 
@@ -189,7 +203,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:Q10000`,
+    range: `${TAB_NAME}!A2:R10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -243,7 +257,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:Q`,
+    range: `${TAB_NAME}!A:R`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

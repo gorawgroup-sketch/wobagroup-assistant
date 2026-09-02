@@ -214,7 +214,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         `❌ Cancelado — ${propuesta.proveedor} (${propuesta.monto} ${propuesta.moneda})`,
         []
       );
-      await avanzarColaCorreoSiActivo(propuesta.chatId);
+      if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
     }
     return;
   }
@@ -328,10 +328,12 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         `⚠️ Error procesando "${propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
         []
       );
-      await avanzarColaCorreoSiActivo(propuesta.chatId);
+      // No avanza la cola en el error — mejor dejarlo "activo" (visible,
+      // pendiente) que marcar leído un correo cuyo gasto en realidad nunca
+      // se creó. Mismo criterio que documentCallbackHandler.ts.
       return;
     }
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
     return;
   }
 
@@ -529,13 +531,20 @@ async function crearGastoYReportar(
     notaPlaceholder;
 
   if (conciliarInline) {
+    // propuesta.proveedor (el texto real leído de la factura/correo, ej.
+    // "Uber"), NO nombreContacto — bug real encontrado en auditoría:
+    // nombreContacto puede ser el contacto genérico "PROVEEDOR SIN
+    // IDENTIFICAR" (cuando no se encontró en Holded), que nunca va a
+    // aparecer en la descripción de ningún movimiento bancario real, así
+    // que la búsqueda aproximada nunca encontraba nada aunque el nombre
+    // real (que sí se conocía) hubiera hecho match.
     const notaConciliacion = await intentarConciliar(
       empresaFinal,
       propuesta.monto,
       propuesta.fecha,
       gasto.id,
       propuesta.moneda,
-      nombreContacto
+      propuesta.proveedor
     );
     return { mensaje: `${baseMensaje}${notaConciliacion}` };
   }
@@ -549,7 +558,8 @@ async function crearGastoYReportar(
       descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
       gastoId: gasto.id,
       moneda: propuesta.moneda,
-      proveedor: nombreContacto,
+      // propuesta.proveedor, no nombreContacto — mismo motivo que arriba.
+      proveedor: propuesta.proveedor,
     },
   };
 }
@@ -682,7 +692,7 @@ export async function procesarGastoConContactoResuelto(
         resultado.conciliacionPendiente.proveedor
       );
     }
-    await avanzarColaCorreoSiActivo(resolucion.chatId);
+    if (resolucion.propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(resolucion.chatId);
   } catch (error) {
     if (error instanceof FechaBloqueadaError) {
       await manejarFechaBloqueada(
@@ -703,7 +713,7 @@ export async function procesarGastoConContactoResuelto(
       `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
       []
     );
-    await avanzarColaCorreoSiActivo(resolucion.chatId);
+    // No avanza la cola en el error — mismo criterio que arriba.
   }
 }
 
@@ -851,7 +861,7 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         resultado.conciliacionPendiente.proveedor
       );
     }
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
   } catch (error) {
     if (error instanceof ContactoNoEncontradoError) {
       await manejarContactoNoEncontrado(propuesta, empresaFinal, conceptoFinal, propuesta.chatId, undefined);
@@ -864,6 +874,6 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando corrección de gasto:", message);
     await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    // No avanza la cola en el error — mismo criterio que arriba.
   }
 }

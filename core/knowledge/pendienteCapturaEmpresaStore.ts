@@ -9,11 +9,21 @@ export interface PendienteCapturaEmpresa {
   autor?: string;
   empresasSeleccionadas: EmpresaCaptura[];
   creadoEn: number;
+  /**
+   * true si esta captura vino de la cola de revisión de correo uno a uno
+   * (ver core/gmail/colaRevisionStore.ts) — capturaEmpresaCallbackHandler.ts
+   * lo usa para decidir si avanzar esa cola al confirmar/cancelar. Bug real
+   * encontrado en auditoría: sin este marcador, confirmar/cancelar
+   * CUALQUIER captura (ej. un "CAPTURA ..." escrito a mano, sin relación
+   * con ningún correo) avanzaba/marcaba-como-leído el correo activo de la
+   * cola si había uno en curso.
+   */
+  deColaCorreo?: boolean;
 }
 
 /** Sheets, no un archivo local — mismo bug real de fondo que cashflowAnnotationActionStore.ts (ver ese archivo para el detalle). */
 const TAB_NAME = "_pendientes_captura_empresa";
-const HEADERS = ["chatId", "messageId", "texto", "autor", "empresasSeleccionadas", "creadoEn"];
+const HEADERS = ["chatId", "messageId", "texto", "autor", "empresasSeleccionadas", "creadoEn", "deColaCorreo"];
 const NUM_COLS = HEADERS.length;
 
 // Pedido explícito de Carlos, tras un caso real: procesa el correo/documentos
@@ -31,11 +41,20 @@ function filaAObjeto(valores: string[]): PendienteCapturaEmpresa {
     autor: valores[3] || undefined,
     empresasSeleccionadas: valores[4] ? (JSON.parse(valores[4]) as EmpresaCaptura[]) : [],
     creadoEn: Number(valores[5]),
+    deColaCorreo: valores[6] === "true",
   };
 }
 
 function objetoAFila(p: PendienteCapturaEmpresa): (string | number)[] {
-  return [p.chatId, p.messageId, p.texto, p.autor ?? "", JSON.stringify(p.empresasSeleccionadas), p.creadoEn];
+  return [
+    p.chatId,
+    p.messageId,
+    p.texto,
+    p.autor ?? "",
+    JSON.stringify(p.empresasSeleccionadas),
+    p.creadoEn,
+    p.deColaCorreo === true ? "true" : "",
+  ];
 }
 
 async function leerVigentes(): Promise<{ rowIndex: number; pendiente: PendienteCapturaEmpresa }[]> {

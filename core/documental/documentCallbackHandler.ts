@@ -121,10 +121,17 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // La decisión ya está tomada (eligió corregir en vez de archivar tal
     // cual) — el archivado real ocurre después por texto libre
     // (confirmar_archivo_pendiente), pero eso ya es un detalle de
-    // ejecución, no una decisión pendiente de revisión. Ver
-    // avanzarColaCorreoSiActivo (no-op si este documento no vino de la cola
-    // de revisión de correo).
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    // ejecución, no una decisión pendiente de revisión.
+    //
+    // Solo avanza si esta propuesta vino de la cola de revisión de correo
+    // (correoOrigen.deColaCorreo) — bug real encontrado en auditoría: antes
+    // se llamaba siempre, así que resolver un documento CUALQUIERA (subido
+    // por Telegram, o traído por capturar_correo bajo demanda, ninguno
+    // relacionado con la cola) avanzaba/marcaba-como-leído el correo activo
+    // de otra revisión en curso, sin ninguna relación real entre ambos.
+    if (propuesta.correoOrigen?.deColaCorreo) {
+      await avanzarColaCorreoSiActivo(propuesta.chatId);
+    }
     return;
   }
 
@@ -140,6 +147,12 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       `✅ Archivado — ${propuesta.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`,
       []
     );
+    // Solo avanza la cola si de verdad se archivó — si falló, mejor dejarlo
+    // "activo" (visible, pendiente) que marcarlo leído sobre un documento
+    // que en realidad nunca quedó guardado en ningún lado.
+    if (propuesta.correoOrigen?.deColaCorreo) {
+      await avanzarColaCorreoSiActivo(propuesta.chatId);
+    }
   } else {
     await editTelegramMessage(
       propuesta.chatId,
@@ -148,5 +161,4 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       []
     );
   }
-  await avanzarColaCorreoSiActivo(propuesta.chatId);
 }

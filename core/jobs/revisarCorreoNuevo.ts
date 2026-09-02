@@ -9,6 +9,7 @@ import {
   type CorreoResumen,
 } from "../gmail/client";
 import { analizarCorreo, evaluarCorreoInformativo } from "../gmail/classifyEmail";
+import { guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, editTelegramMessage, answerCallbackQuery } from "../telegram/client";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
@@ -21,8 +22,15 @@ import {
   iniciarSiguienteActivo,
   establecerPendientesActivo,
   resolverUnoActivo,
+  obtenerActivoEstancado,
+  descartarActivoEstancado,
 } from "../gmail/colaRevisionStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
+
+// 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
+// "principales" del sistema: suficiente margen para un día de trabajo largo
+// o una respuesta demorada, sin dejar la cola trabada indefinidamente.
+const UMBRAL_ACTIVO_ESTANCADO_MS = 48 * 60 * 60 * 1000;
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -56,7 +64,7 @@ async function capturarNotasDeReunion(chatId: number, correo: CorreoResumen): Pr
   try {
     const cuerpo = await obtenerCuerpoCompletoCorreo(correo.id);
     const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
-    await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`);
+    await iniciarSeleccionEmpresaCaptura(chatId, contenido, `notas de reunión (${correo.de})`, undefined, true);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error capturando notas de reunión del correo ${correo.id}:`, error);
     await sendTelegramMessage(
@@ -93,6 +101,27 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
     return { correosRevisados: 0 };
   }
 
+  // Antes de encolar nada: si el correo activo lleva más de 48h esperando
+  // algo que nunca llegó (una pregunta de desambiguación vencida, una
+  // corrección de gasto que se quedó a medias...), lo salta con aviso en
+  // vez de dejar toda la cola bloqueada detrás de él indefinidamente — ver
+  // obtenerActivoEstancado.
+  const estancado = await obtenerActivoEstancado(chatId, UMBRAL_ACTIVO_ESTANCADO_MS).catch((error) => {
+    console.error("[revisarCorreoNuevo] Error revisando si el correo activo está estancado:", error);
+    return undefined;
+  });
+  if (estancado) {
+    await descartarActivoEstancado(chatId, estancado.id).catch((error) =>
+      console.error("[revisarCorreoNuevo] Error descartando correo activo estancado:", error)
+    );
+    await sendTelegramMessage(
+      chatId,
+      `⚠️ "${estancado.asunto}" (de ${estancado.de}) llevaba más de 48h abierto sin resolverse — lo salto para no ` +
+        `trabar el resto de la cola. Sigue sin marcar como leído en Gmail; revísalo a mano si todavía hace falta.`
+    ).catch(() => {});
+    await procesarSiguienteCorreoActivo(chatId);
+  }
+
   let ids: string[] = [];
   try {
     ids = await listarNoLeidos();
@@ -103,10 +132,17 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
 
   console.log(`[revisarCorreoNuevo] ${ids.length} correo(s) sin leer en la bandeja`);
 
+  // Ya no se usa para filtrar (is:unread real reemplazó la ventana de
+  // tiempo) — se guarda solo para que estadoAgregado.ts (panel /cerebro)
+  // pueda mostrar "última vez que se revisó el correo" sin quedar
+  // congelado en el valor de antes de este cambio.
+  guardarUltimoCheck(Math.floor(Date.now() / 1000)).catch((error) =>
+    console.error("[revisarCorreoNuevo] Error guardando el último check (no crítico):", error)
+  );
+
   if (ids.length === 0) return { correosRevisados: 0 };
 
-  const habiaActivoAntes = await hayActivo(chatId);
-  const totalAntesDeEncolar = await contarPendientesTotal(chatId);
+  const [habiaActivoAntes, totalAntesDeEncolar] = await Promise.all([hayActivo(chatId), contarPendientesTotal(chatId)]);
 
   const itemsParaEncolar: Array<{ id: string; de: string; asunto: string; fechaOrden: number }> = [];
   for (const id of ids) {
@@ -205,11 +241,21 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
             mimeType: adjunto.mimeType,
             nombreParaClasificar: adjunto.filename,
             captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
+            // deColaCorreo: true — permite a documentCallbackHandler.ts y
+            // gastoCallbackHandler.ts distinguir esta propuesta (que sí debe
+            // avanzar la cola de revisión al resolverse) de una propuesta
+            // creada por CUALQUIER otro camino no relacionado (una foto
+            // subida por Telegram, capturar_correo bajo demanda...) — bug
+            // real encontrado en auditoría: sin este marcador, resolver
+            // CUALQUIER propuesta de gasto/documento en el mismo chat hacía
+            // avanzar/marcar-como-leído el correo activo de esta cola,
+            // aunque no tuviera ninguna relación real con él.
             correoOrigen: {
               de: correo.de,
               asunto: correo.asunto || "(sin asunto)",
               threadId: correo.threadId,
               messageIdHeader: correo.messageIdHeader,
+              deColaCorreo: true,
             },
           });
         } catch (error) {
@@ -299,7 +345,7 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
         "\n"
       );
       const intro = `📧 Encontré algo que puede valer la pena recordar en un correo de ${correo.de} (asunto: "${correo.asunto}"): ${razonGuardar || resumenInformativo}`;
-      await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, intro);
+      await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, intro, true);
       return;
     }
 
@@ -389,7 +435,7 @@ export async function handleCorreoInfoCallback(callback: TelegramCallbackQuery):
       const cuerpo = await obtenerCuerpoCompletoCorreo(gmailId);
       const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
       await editTelegramMessage(chatId, messageId, "🧠 Guardando como conocimiento — elige la empresa abajo.", []).catch(() => {});
-      await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`);
+      await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, undefined, true);
     } catch (error) {
       console.error("[revisarCorreoNuevo] Error preparando la captura de un correo informativo:", error);
       await sendTelegramMessage(chatId, "⚠️ No pude leer el correo para guardarlo como conocimiento.").catch(() => {});

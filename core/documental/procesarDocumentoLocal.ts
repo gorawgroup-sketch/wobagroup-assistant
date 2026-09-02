@@ -19,7 +19,7 @@ export interface DocumentoLocalEntrante {
    * y sin esto el asistente no tenía forma de saber a qué correo/hilo
    * contestar.
    */
-  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string };
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean };
 }
 
 /**
@@ -45,6 +45,7 @@ export async function procesarDocumentoLocal(
           nombreArchivoOriginal: entrada.nombreArchivoOriginal,
           mimeType: entrada.mimeType,
           datos: datosFactura,
+          deColaCorreo: entrada.correoOrigen?.deColaCorreo,
         });
         return resultado === "propuesta_enviada" ? "gasto_propuesto" : "gasto_pendiente_datos";
       }
