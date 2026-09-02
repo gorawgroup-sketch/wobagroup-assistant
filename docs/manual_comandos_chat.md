@@ -193,10 +193,11 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - ✅ Hazlo tú — Wobi investiga y ejecuta lo que corresponda con sus herramientas normales (Holded, cashflow, correo). Cualquier escritura real que haga falta sigue pasando por su propio botón de aprobación aparte — esto no le da ningún poder nuevo, solo la vía libre para actuar sobre esa anotación en concreto.
 - ✏️ Dar instrucciones — espera una respuesta en texto libre con qué hacer (incluyendo cuándo, ver `programar_accion_futura` arriba) y actúa igual que "Hazlo tú" pero con esa guía.
 - ℹ️ Dejar como informativo — no hace nada más.
+- Solo el superadministrador puede presionar cualquiera de estos 3 — mismo criterio que las decisiones sobre correo entrante.
 - Nunca marca nada como resuelto en el propio Sheet — eso se sigue haciendo a mano ahí.
 
 **Sobre una acción programada (fecha futura o condición a verificar):**
-- ❌ Cancelar programación — la retira de la cola antes de que se dispare; no hace falta que ya haya pasado la fecha.
+- ❌ Cancelar programación — la retira de la cola antes de que se dispare; no hace falta que ya haya pasado la fecha. Solo el superadministrador puede presionarlo.
 - Cuando se dispara sola (llegó la fecha, o se cumplió la condición), no hay botón — Wobi ya avisa directamente con el resultado.
 
 **Sobre el envío por correo de un reporte de balance/P&L (WOBA, EWORKS y Footprint):**
