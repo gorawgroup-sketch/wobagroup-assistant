@@ -1,11 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  listarNoLeidos,
+  listarHilosNoLeidos,
+  obtenerUltimoMensajeDeHilo,
   obtenerResumenCorreo,
   obtenerCuerpoCompletoCorreo,
   descargarAdjunto,
-  marcarCorreoComoLeido,
+  marcarHiloComoLeido,
   type CorreoResumen,
 } from "../gmail/client";
 import { analizarCorreo, evaluarCorreoInformativo } from "../gmail/classifyEmail";
@@ -88,7 +89,8 @@ async function capturarNotasDeReunion(chatId: number, correo: CorreoResumen): Pr
  * clasificación de documento/gasto ya existentes en el resto del sistema).
  *
  * A diferencia de antes, la fuente de verdad de "correo nuevo" es is:unread
- * real de Gmail (listarNoLeidos), no una marca de tiempo propia — así
+ * real de Gmail, por HILO (listarHilosNoLeidos), no una marca de tiempo
+ * propia ni un conteo por mensaje individual — así
  * "cuántos correos sin leer quedan" siempre refleja el estado real de la
  * bandeja, y un correo que Carlos ya leyó a mano en Gmail no vuelve a
  * aparecer en la cola.
@@ -124,13 +126,13 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
 
   let ids: string[] = [];
   try {
-    ids = await listarNoLeidos();
+    ids = await listarHilosNoLeidos();
   } catch (error) {
-    console.error("[revisarCorreoNuevo] Error listando mensajes sin leer:", error);
+    console.error("[revisarCorreoNuevo] Error listando hilos sin leer:", error);
     return { correosRevisados: 0 };
   }
 
-  console.log(`[revisarCorreoNuevo] ${ids.length} correo(s) sin leer en la bandeja`);
+  console.log(`[revisarCorreoNuevo] ${ids.length} hilo(s) sin leer en la bandeja`);
 
   // Ya no se usa para filtrar (is:unread real reemplazó la ventana de
   // tiempo) — se guarda solo para que estadoAgregado.ts (panel /cerebro)
@@ -144,19 +146,21 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
 
   const [habiaActivoAntes, totalAntesDeEncolar] = await Promise.all([hayActivo(chatId), contarPendientesTotal(chatId)]);
 
-  const itemsParaEncolar: Array<{ id: string; de: string; asunto: string; fechaOrden: number }> = [];
-  for (const id of ids) {
+  const itemsParaEncolar: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }> = [];
+  for (const threadId of ids) {
     try {
-      const correo = await obtenerResumenCorreo(id);
-      const fechaOrden = Date.parse(correo.fecha);
+      const ultimo = await obtenerUltimoMensajeDeHilo(threadId);
+      if (!ultimo) continue;
+      const fechaOrden = Date.parse(ultimo.fecha);
       itemsParaEncolar.push({
-        id,
-        de: correo.de,
-        asunto: correo.asunto || "(sin asunto)",
+        id: threadId,
+        mensajeId: ultimo.messageId,
+        de: ultimo.de,
+        asunto: ultimo.asunto || "(sin asunto)",
         fechaOrden: Number.isFinite(fechaOrden) ? fechaOrden : Date.now(),
       });
     } catch (error) {
-      console.error(`[revisarCorreoNuevo] Error leyendo metadatos de ${id} (se omite de la cola):`, error);
+      console.error(`[revisarCorreoNuevo] Error leyendo metadatos del hilo ${threadId} (se omite de la cola):`, error);
     }
   }
 
@@ -197,7 +201,7 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
   if (!activo) return; // cola vacía — nada más que revisar.
 
   try {
-    const correo = await obtenerResumenCorreo(activo.id);
+    const correo = await obtenerResumenCorreo(activo.mensajeId);
 
     // No crítico — nunca debe bloquear el procesamiento real del correo.
     registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
@@ -354,8 +358,8 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
     );
     await sendTelegramMessageWithButtons(chatId, texto, [
       [
-        { text: "🧠 Guardar como conocimiento", callback_data: `correoinfo_guardar:${activo.id}` },
-        { text: "➡️ Siguiente, no hace falta", callback_data: `correoinfo_siguiente:${activo.id}` },
+        { text: "🧠 Guardar como conocimiento", callback_data: `correoinfo_guardar:${activo.mensajeId}` },
+        { text: "➡️ Siguiente, no hace falta", callback_data: `correoinfo_siguiente:${activo.mensajeId}` },
       ],
     ]);
   } catch (error) {
@@ -390,8 +394,8 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
   if (!resultado.terminado) return;
 
   if (resultado.gmailIdResuelto) {
-    marcarCorreoComoLeido(resultado.gmailIdResuelto).catch((error) =>
-      console.error("[revisarCorreoNuevo] Error marcando correo como leído (no crítico):", error)
+    marcarHiloComoLeido(resultado.gmailIdResuelto).catch((error: unknown) =>
+      console.error("[revisarCorreoNuevo] Error marcando el hilo como leído (no crítico):", error)
     );
   }
 
@@ -419,7 +423,7 @@ export async function handleCorreoInfoCallback(callback: TelegramCallbackQuery):
     return;
   }
 
-  const [accion, gmailId] = data.split(":");
+  const [accion, mensajeId] = data.split(":");
 
   if (accion === "correoinfo_siguiente") {
     await answerCallbackQuery(callback.id, "Ok, siguiente.").catch(() => {});
@@ -431,8 +435,8 @@ export async function handleCorreoInfoCallback(callback: TelegramCallbackQuery):
   if (accion === "correoinfo_guardar") {
     await answerCallbackQuery(callback.id, "Leyendo el correo...").catch(() => {});
     try {
-      const correo = await obtenerResumenCorreo(gmailId);
-      const cuerpo = await obtenerCuerpoCompletoCorreo(gmailId);
+      const correo = await obtenerResumenCorreo(mensajeId);
+      const cuerpo = await obtenerCuerpoCompletoCorreo(mensajeId);
       const contenido = [`De: ${correo.de}`, `Asunto: ${correo.asunto}`, `Fecha: ${correo.fecha}`, "", cuerpo].join("\n");
       await editTelegramMessage(chatId, messageId, "🧠 Guardando como conocimiento — elige la empresa abajo.", []).catch(() => {});
       await iniciarSeleccionEmpresaCaptura(chatId, contenido, `correo informativo (${correo.de})`, undefined, true);

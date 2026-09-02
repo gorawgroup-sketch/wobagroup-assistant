@@ -31,7 +31,16 @@ import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/
 export type EstadoColaCorreo = "cola" | "activo";
 
 export interface ItemColaCorreo {
-  id: string; // Gmail message id
+  /**
+   * Gmail THREAD id, no de mensaje individual — bug real encontrado en
+   * vivo: Gmail cuenta y muestra "correos sin leer" por hilo (conversación),
+   * no por mensaje suelto (un hilo puede tener 2+ mensajes sin leer). Se usa
+   * para marcar leído (marcarHiloComoLeido) y para deduplicar contra el
+   * estado real de Gmail.
+   */
+  id: string;
+  /** El mensaje MÁS RECIENTE de ese hilo — con éste se trabaja el contenido real (obtenerResumenCorreo, adjuntos, etc, que siguen operando por mensaje). */
+  mensajeId: string;
   chatId: number;
   de: string;
   asunto: string;
@@ -42,11 +51,14 @@ export interface ItemColaCorreo {
 }
 
 const TAB_NAME = "_cola_revision_correo";
-const HEADERS = ["id", "chatId", "de", "asunto", "fechaOrden", "estado", "pendientesRestantes", "agregadoEn"];
+// mensajeId al FINAL (no reordenado en el medio) — para que una fila ya
+// escrita antes de este cambio (id = message id, no thread id) no quede
+// desalineada al leerse; se limpia a mano cualquier fila vieja que quede.
+const HEADERS = ["id", "chatId", "de", "asunto", "fechaOrden", "estado", "pendientesRestantes", "agregadoEn", "mensajeId"];
 const NUM_COLS = HEADERS.length;
 
 // Guarda, por 7 días, los ids de correos YA resueltos en el chat — necesario
-// porque marcarCorreoComoLeido requiere el scope gmail.modify (ver
+// porque marcarHiloComoLeido requiere el scope gmail.modify (ver
 // core/gmail/client.ts), que Carlos todavía puede no haber autorizado en
 // Workspace Admin: hasta que lo autorice, un correo resuelto en el chat
 // puede seguir apareciendo como is:unread en Gmail de verdad. Sin este
@@ -70,11 +82,24 @@ function filaAObjeto(valores: string[]): ItemColaCorreo {
     estado: valores[5] === "activo" ? "activo" : "cola",
     pendientesRestantes: Number(valores[6]) || 0,
     agregadoEn: Number(valores[7]) || 0,
+    // Filas de antes de este cambio no tienen mensajeId — se cae al id
+    // (antes era un message id) para no dejar el campo vacío.
+    mensajeId: valores[8] || valores[0],
   };
 }
 
 function objetoAFila(item: ItemColaCorreo): (string | number)[] {
-  return [item.id, item.chatId, item.de, item.asunto, item.fechaOrden, item.estado, item.pendientesRestantes, item.agregadoEn];
+  return [
+    item.id,
+    item.chatId,
+    item.de,
+    item.asunto,
+    item.fechaOrden,
+    item.estado,
+    item.pendientesRestantes,
+    item.agregadoEn,
+    item.mensajeId,
+  ];
 }
 
 async function leerTodas(): Promise<{ rowIndex: number; item: ItemColaCorreo }[]> {
@@ -125,7 +150,7 @@ async function registrarResuelto(chatId: number, gmailId: string): Promise<void>
  */
 export async function encolarCorreos(
   chatId: number,
-  items: Array<{ id: string; de: string; asunto: string; fechaOrden: number }>
+  items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>
 ): Promise<number> {
   const [existentes, resueltos] = await Promise.all([leerTodas(), leerResueltos()]);
   const idsExistentes = new Set(existentes.filter((f) => f.item.chatId === chatId).map((f) => f.item.id));
@@ -142,6 +167,7 @@ export async function encolarCorreos(
       "cola",
       0,
       Date.now(),
+      item.mensajeId,
     ]);
   }
   return nuevos.length;

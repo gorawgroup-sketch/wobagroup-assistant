@@ -135,7 +135,7 @@ let gmailModifyClient: gmail_v1.Gmail | null = null;
  * "cuántos correos sin leer quedan" (is:unread real de Gmail, no un contador
  * propio) refleje el progreso real. Requiere agregar este scope a la
  * Delegación de todo el dominio en Google Workspace Admin para el mismo
- * client_id que ya usan Calendar/Gmail/Drive — sin eso, marcarCorreoComoLeido
+ * client_id que ya usan Calendar/Gmail/Drive — sin eso, marcarHiloComoLeido
  * falla con "insufficient authentication scopes" (mismo patrón que se vivió
  * al agregar Calendar).
  */
@@ -160,47 +160,91 @@ function getGmailModifyClient(): gmail_v1.Gmail {
   return gmailModifyClient;
 }
 
-/** Quita la etiqueta UNREAD de un mensaje — nunca lanza, solo registra el error (no debe tumbar el flujo de revisión). */
-export async function marcarCorreoComoLeido(messageId: string): Promise<boolean> {
+/**
+ * Quita la etiqueta UNREAD de TODO el hilo (conversación) — no solo un
+ * mensaje suelto. Bug real encontrado en vivo: Gmail cuenta "correos sin
+ * leer" por HILO (el contador "Recibidos" de la bandeja, y el que Carlos ve
+ * a simple vista), no por mensaje individual — un mismo hilo puede tener
+ * varios mensajes sin leer (ej. un ida y vuelta reciente), así que marcar
+ * solo el último mensaje dejaría el hilo entero marcado "sin leer" todavía,
+ * y volvería a aparecer como pendiente en la próxima revisión. Nunca lanza,
+ * solo registra el error (no debe tumbar el flujo de revisión).
+ */
+export async function marcarHiloComoLeido(threadId: string): Promise<boolean> {
   try {
-    await getGmailModifyClient().users.messages.modify({
+    await getGmailModifyClient().users.threads.modify({
       userId: "me",
-      id: messageId,
+      id: threadId,
       requestBody: { removeLabelIds: ["UNREAD"] },
     });
     return true;
   } catch (error) {
-    console.error(`[gmail] Error marcando ${messageId} como leído:`, error);
+    console.error(`[gmail] Error marcando el hilo ${threadId} como leído:`, error);
     return false;
   }
 }
 
 /**
- * Lista los IDs de mensajes SIN LEER de la bandeja de entrada — a diferencia
- * de listarMensajesNuevos (ventana de tiempo desde el último check), esto
- * usa el estado real is:unread de Gmail, que es lo que importa para el flujo
- * de revisión uno a uno (ver core/jobs/revisarCorreoNuevo.ts): un correo que
- * Carlos ya leyó a mano en Gmail no debe volver a aparecer en la cola.
+ * Lista los IDs de HILOS (conversaciones) SIN LEER de la bandeja de entrada
+ * — no de mensajes individuales. Bug real encontrado en vivo: contar/listar
+ * por mensaje individual (como se hacía antes) no coincide con lo que
+ * Carlos ve en Gmail ("Recibidos: 10") cuando un mismo hilo tiene más de un
+ * mensaje sin leer — Gmail cuenta y muestra por HILO, así que la cola de
+ * revisión (core/jobs/revisarCorreoNuevo.ts) también debe procesar un hilo
+ * completo como una sola decisión, no una por cada mensaje suelto dentro de
+ * él. Un correo que Carlos ya leyó a mano en Gmail no vuelve a aparecer acá.
  */
-export async function listarNoLeidos(): Promise<string[]> {
+export async function listarHilosNoLeidos(): Promise<string[]> {
   const gmail = getGmailClient();
   const ids: string[] = [];
   let pageToken: string | undefined;
   let paginas = 0;
 
   do {
-    const res = await gmail.users.messages.list({
+    const res = await gmail.users.threads.list({
       userId: "me",
       q: "is:unread in:inbox",
       maxResults: 500,
       pageToken,
     });
-    (res.data.messages ?? []).forEach((m) => m.id && ids.push(m.id));
+    (res.data.threads ?? []).forEach((t) => t.id && ids.push(t.id));
     pageToken = res.data.nextPageToken ?? undefined;
     paginas += 1;
   } while (pageToken && paginas < 10);
 
   return ids;
+}
+
+/**
+ * Devuelve el id, fecha, remitente y asunto del mensaje MÁS RECIENTE de un
+ * hilo — solo metadata (headers), no el cuerpo/adjuntos completos, así que
+ * es barato usarlo durante el encolado (ver revisarCorreoNuevo.ts) sin
+ * pagar el costo de un fetch completo por cada correo sin leer; el fetch
+ * completo (obtenerResumenCorreo) recién se hace cuando el correo se activa
+ * de verdad en la cola. undefined si el hilo no tiene mensajes (no debería
+ * pasar en la práctica).
+ */
+export async function obtenerUltimoMensajeDeHilo(
+  threadId: string
+): Promise<{ messageId: string; fecha: string; de: string; asunto: string } | undefined> {
+  const gmail = getGmailClient();
+  const res = await gmail.users.threads.get({
+    userId: "me",
+    id: threadId,
+    format: "metadata",
+    metadataHeaders: ["Date", "From", "Subject"],
+  });
+
+  const mensajes = res.data.messages ?? [];
+  const ultimo = mensajes[mensajes.length - 1];
+  if (!ultimo?.id) return undefined;
+
+  return {
+    messageId: ultimo.id,
+    fecha: leerHeader(ultimo.payload?.headers, "Date"),
+    de: leerHeader(ultimo.payload?.headers, "From"),
+    asunto: leerHeader(ultimo.payload?.headers, "Subject"),
+  };
 }
 
 export interface AdjuntoCorreo {
@@ -268,26 +312,19 @@ export async function listarMensajesNuevos(afterUnixSeconds: number): Promise<st
  * (confirmado en vivo: devolvía 201 cuando el conteo real era 2) — en vez de
  * confiar en la estimación, se paginan los IDs reales y se cuentan.
  */
+/**
+ * Cuenta los HILOS (conversaciones) sin leer de la bandeja — no mensajes
+ * individuales. Bug real encontrado en vivo: esto antes contaba mensajes
+ * (paginando messages.list), y Carlos veía "14" acá contra un "10" real en
+ * el contador de Gmail ("Recibidos") — Gmail cuenta por hilo, y un mismo
+ * hilo puede tener más de un mensaje sin leer. El label INBOX ya trae este
+ * número directo (threadsUnread), así que además de ser el número correcto
+ * es una sola llamada en vez de paginar cientos de mensajes.
+ */
 export async function contarNoLeidos(): Promise<number> {
   const gmail = getGmailClient();
-  const LIMITE_PAGINAS = 10; // hasta 5000 mensajes; suficiente para "no leídos" reales
-  let total = 0;
-  let pageToken: string | undefined;
-  let paginas = 0;
-
-  do {
-    const res = await gmail.users.messages.list({
-      userId: "me",
-      q: "is:unread in:inbox",
-      maxResults: 500,
-      pageToken,
-    });
-    total += (res.data.messages ?? []).length;
-    pageToken = res.data.nextPageToken ?? undefined;
-    paginas += 1;
-  } while (pageToken && paginas < LIMITE_PAGINAS);
-
-  return total;
+  const res = await gmail.users.labels.get({ userId: "me", id: "INBOX" });
+  return res.data.threadsUnread ?? 0;
 }
 
 /** Busca mensajes con una consulta arbitraria de Gmail (ej. `subject:"X" from:y@z.com`). */
