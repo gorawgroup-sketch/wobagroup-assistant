@@ -11,21 +11,28 @@ function getBotToken(): string {
   return token;
 }
 
+// Causa raíz real, encontrada en vivo (2026-09-02): "el Chat está pegado"
+// tras /revisarcorreo — el fetch a Telegram no tenía timeout, así que un
+// blip de red dejaba la promesa sin resolver NI rechazar para siempre, y el
+// .catch() que avisa el error nunca llegaba a dispararse. Mismo timeout que
+// core/google/globalOptions.ts, mismo motivo.
+const TIMEOUT_MS = 20_000;
+
 /**
  * fetch() con reintento SOLO para fallos de red (fetch que ni siquiera
- * consigue conectar — ETIMEDOUT, ECONNRESET, DNS — no respuestas HTTP de
- * error, esas se propagan tal cual en el primer intento). Verificado en vivo
- * que esto ocurre de verdad: un ETIMEDOUT real entre Railway y
- * api.telegram.org tumbó un guardado de captura ("TypeError: fetch failed ...
- * ETIMEDOUT") obligando al usuario a reescribir el mensaje. 2 reintentos con
- * espera corta — un blip de red suele resolverse en el segundo intento; si
- * persiste, el error real se deja propagar tal cual.
+ * consigue conectar — ETIMEDOUT, ECONNRESET, DNS, o ahora un timeout propio —
+ * no respuestas HTTP de error, esas se propagan tal cual en el primer
+ * intento). Verificado en vivo que esto ocurre de verdad: un ETIMEDOUT real
+ * entre Railway y api.telegram.org tumbó un guardado de captura ("TypeError:
+ * fetch failed ... ETIMEDOUT") obligando al usuario a reescribir el mensaje.
+ * 2 reintentos con espera corta — un blip de red suele resolverse en el
+ * segundo intento; si persiste, el error real se deja propagar tal cual.
  */
 async function fetchConReintento(url: string, init: RequestInit, intentos = 3): Promise<Response> {
   let ultimoError: unknown;
   for (let intento = 1; intento <= intentos; intento++) {
     try {
-      return await fetch(url, init);
+      return await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
     } catch (error) {
       ultimoError = error;
       if (intento < intentos) {
@@ -71,6 +78,7 @@ async function sendChatAction(chatId: number, action: "typing"): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, action }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (error) {
     console.error("[telegram] Error enviando indicador de 'escribiendo' (no crítico):", error);

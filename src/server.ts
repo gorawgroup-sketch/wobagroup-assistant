@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "../core/google/globalOptions";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
