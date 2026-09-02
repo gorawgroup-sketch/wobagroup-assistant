@@ -9,7 +9,7 @@ import {
 } from "../gmail/client";
 import { obtenerUltimoCheck, guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { analizarCorreo, evaluarCorreoInformativo } from "../gmail/classifyEmail";
-import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons } from "../telegram/client";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
@@ -269,10 +269,9 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
   }
 
   if (informativos.length > 0) {
-    const texto = [`📬 ${informativos.length} correo(s) informativo(s), sin acción requerida:`, "", ...informativos].join(
-      "\n\n"
-    );
-    await sendTelegramMessage(chatId, texto);
+    const titulo = `📬 ${informativos.length} correo(s) informativo(s), sin acción requerida`;
+    const texto = informativos.join("\n\n");
+    await sendTelegramMessageSmart(chatId, texto, undefined, titulo);
   }
 
   await guardarUltimoCheck(ahora);

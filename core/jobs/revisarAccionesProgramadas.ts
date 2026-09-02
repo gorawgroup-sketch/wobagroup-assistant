@@ -1,5 +1,5 @@
 import { obtenerAccionesPendientes, marcarAccionCompletada, type AccionProgramada } from "./accionesProgramadasStore";
-import { sendTelegramMessage } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageSmart } from "../telegram/client";
 import { askClaude } from "../claude/client";
 
 /**
@@ -82,7 +82,7 @@ async function dispararAccion(accion: AccionProgramada): Promise<void> {
       `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
     const respuesta = await askClaude(instruccionCompleta, accion.chatId);
-    await sendTelegramMessage(accion.chatId, `✅ ${accion.contexto}\n\n${respuesta}`);
+    await sendTelegramMessageSmart(accion.chatId, respuesta, undefined, `✅ ${accion.contexto}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[revisarAccionesProgramadas] Error ejecutando acción ${accion.id}:`, message);

@@ -1,4 +1,4 @@
-import { answerCallbackQuery, editTelegramMessage, editTelegramMessageExpandable, sendTelegramMessage } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, editTelegramMessageExpandable, sendTelegramMessage, sendTelegramMessageSmart } from "../telegram/client";
 import { consumirPropuestaAccionAnotacion } from "./cashflowAnnotationActionStore";
 import { guardarPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
 import { askClaude } from "../claude/client";
@@ -131,5 +131,5 @@ export async function continuarConOrientacionAnotacion(
     `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
   const respuesta = await askClaude(instruccion, chatId);
-  await sendTelegramMessage(chatId, respuesta);
+  await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${ubicacion}`);
 }

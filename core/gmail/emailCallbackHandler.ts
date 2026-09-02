@@ -1,4 +1,4 @@
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, editTelegramMessageSmart, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons } from "../telegram/client";
 import { consumirPropuestaAccionCorreo, type PropuestaAccionCorreo } from "./emailActionStore";
 import { guardarPendienteOrientacionCorreo } from "./emailOrientationStore";
 import { crearBorradorCorreo, actualizarMessageIdBorrador, actualizarCuerpoBorrador, obtenerBorradorCorreo, consumirBorradorCorreo } from "./emailDraftStore";
@@ -213,11 +213,12 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
 
     const respuesta = await askClaude(instruccion, propuesta.chatId);
 
-    await editTelegramMessage(
+    await editTelegramMessageSmart(
       propuesta.chatId,
       propuesta.messageId,
-      `✅ Procesado — ${propuesta.asunto} (${propuesta.de})\n\n${respuesta}`,
-      []
+      respuesta,
+      [],
+      `✅ Procesado — ${propuesta.asunto} (${propuesta.de})`
     );
 
     if (propuesta.tipo === "necesita_respuesta" || propuesta.tipo === "instruccion_jefe") {
@@ -268,7 +269,7 @@ export async function continuarConOrientacion(
     `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
   const respuesta = await askClaude(instruccion, chatId);
-  await sendTelegramMessage(chatId, respuesta);
+  await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${asunto} (${de})`);
 
   const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);
   if (pareceRespuesta) {

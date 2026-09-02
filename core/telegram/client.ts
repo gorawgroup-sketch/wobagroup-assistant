@@ -203,13 +203,13 @@ export async function entregarRespuestaTrasTrabajar(
 ): Promise<void> {
   if (mensajeTrabajandoId !== undefined) {
     try {
-      await editTelegramMessage(chatId, mensajeTrabajandoId, texto);
+      await editTelegramMessageSmart(chatId, mensajeTrabajandoId, texto);
       return;
     } catch (error) {
       console.error("[telegram] Error editando el aviso de 'trabajando' con la respuesta final (no crítico):", error);
     }
   }
-  await sendTelegramMessage(chatId, texto);
+  await sendTelegramMessageSmart(chatId, texto);
 }
 
 /**
@@ -308,6 +308,62 @@ export async function sendTelegramMessageExpandable(
   return data.result.message_id;
 }
 
+// Pedido explícito de Carlos: "asegúrate que todo se pueda colapsar
+// incluyendo tus respuestas, así que no quedan textos tan largos ocupando
+// el scroll" — esto no es solo para las anotaciones de cashflow (donde ya
+// hay un título natural, la ubicación), sino para CUALQUIER respuesta larga
+// que mande Wobi, incluidas las respuestas normales del chat, que no
+// tienen un título natural. Un texto corto (un saludo, un dato de una
+// línea) NO debe colapsarse — sería peor UX obligar a tocar algo tan
+// corto — así que solo se activa sobre un umbral real de longitud.
+const UMBRAL_COLAPSABLE = 400;
+
+/** Primera línea (o los primeros `maxChars`) del texto — usado como título cuando no hay uno natural (ej. respuestas de chat normal). */
+function tituloAutomatico(texto: string, maxChars = 70): string {
+  const primeraLinea = texto.split("\n")[0].trim();
+  if (primeraLinea.length <= maxChars) return primeraLinea || "Respuesta";
+  return primeraLinea.slice(0, maxChars).trim() + "…";
+}
+
+/**
+ * Envía un mensaje nuevo, colapsado automáticamente si es largo (ver
+ * UMBRAL_COLAPSABLE) — para texto corto, se manda igual que
+ * sendTelegramMessage/sendTelegramMessageWithButtons, sin ningún cambio
+ * visual. Devuelve siempre el message_id (a diferencia de
+ * sendTelegramMessage, que no lo necesitaba antes de existir esta función).
+ */
+export async function sendTelegramMessageSmart(
+  chatId: number,
+  texto: string,
+  buttons?: InlineKeyboardButton[][],
+  titulo?: string
+): Promise<number> {
+  if (texto.length <= UMBRAL_COLAPSABLE) {
+    const textoConTitulo = titulo ? `${titulo}\n\n${texto}` : texto;
+    const token = getBotToken();
+    const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
+    const body: Record<string, unknown> = { chat_id: chatId, text: textoConTitulo };
+    if (buttons) body.reply_markup = { inline_keyboard: buttons };
+
+    const response = await fetchConReintento(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const respBody = await response.text();
+      throw new Error(`Error enviando mensaje a Telegram (${response.status}): ${respBody}`);
+    }
+    const data = (await response.json()) as { result: { message_id: number } };
+    registrarMensajeSaliente(chatId, textoConTitulo).catch((error) =>
+      console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
+    );
+    return data.result.message_id;
+  }
+
+  return sendTelegramMessageExpandable(chatId, titulo || tituloAutomatico(texto), texto, buttons);
+}
+
 /**
  * Responde a un callback_query (pulsación de botón inline) para que Telegram
  * quite el estado de "cargando" del botón. `text` es opcional (toast breve).
@@ -400,6 +456,21 @@ export async function editTelegramMessageExpandable(
     const errBody = await response.text();
     throw new Error(`Error editando mensaje expandible de Telegram (${response.status}): ${errBody}`);
   }
+}
+
+/** Igual que sendTelegramMessageSmart pero editando un mensaje existente (ver entregarRespuestaTrasTrabajar). */
+export async function editTelegramMessageSmart(
+  chatId: number,
+  messageId: number,
+  texto: string,
+  buttons?: InlineKeyboardButton[][],
+  titulo?: string
+): Promise<void> {
+  if (texto.length <= UMBRAL_COLAPSABLE) {
+    await editTelegramMessage(chatId, messageId, titulo ? `${titulo}\n\n${texto}` : texto, buttons);
+    return;
+  }
+  await editTelegramMessageExpandable(chatId, messageId, titulo || tituloAutomatico(texto), texto, buttons);
 }
 
 export interface TelegramFileInfo {
