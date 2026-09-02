@@ -7,7 +7,7 @@ const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_conciliaciones_pendientes";
 const TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 días — se espera que se revise en Holded y se responda pronto, no semanas después
 
-const HEADERS = ["id", "empresa", "monto", "fecha", "descripcionGasto", "chatId", "creadoEn", "gastoId", "moneda"];
+const HEADERS = ["id", "empresa", "monto", "fecha", "descripcionGasto", "chatId", "creadoEn", "gastoId", "moneda", "proveedor"];
 
 /**
  * Cuando se crea un gasto SIN que antes se haya confirmado un movimiento
@@ -63,7 +63,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:I1`,
+    range: `${TAB_NAME}!A1:J1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -83,6 +83,12 @@ export interface ConciliacionPendiente {
   gastoId: string;
   /** Moneda en la que se creó el gasto (ej. "EUR", "USD") — determina en qué moneda buscar el movimiento bancario a conciliar. */
   moneda: string;
+  /**
+   * Nombre del proveedor/contacto — usado como ancla de nombre si el match
+   * exacto por monto no encuentra nada y hace falta un fallback aproximado
+   * (ver buscarMovimientoAproximado en core/holded/write.ts).
+   */
+  proveedor: string;
 }
 
 interface FilaConIndice {
@@ -97,7 +103,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:I10000`,
+    range: `${TAB_NAME}!A2:J10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -117,6 +123,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
         creadoEn: Number(row[6]) || 0,
         gastoId: row[7] ? String(row[7]) : "",
         moneda: row[8] ? String(row[8]) : "EUR",
+        proveedor: row[9] ? String(row[9]) : "",
       },
     });
   });
@@ -165,7 +172,7 @@ export async function guardarConciliacionPendiente(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:I`,
+    range: `${TAB_NAME}!A:J`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -180,6 +187,7 @@ export async function guardarConciliacionPendiente(
           pendiente.creadoEn,
           pendiente.gastoId,
           pendiente.moneda,
+          pendiente.proveedor,
         ],
       ],
     },

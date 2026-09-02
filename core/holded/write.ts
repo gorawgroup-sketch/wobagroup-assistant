@@ -1391,6 +1391,126 @@ export async function buscarMovimientoSimilar(
   return candidatos;
 }
 
+export interface MovimientoBancarioAproximado extends MovimientoBancarioCandidato {
+  /** Diferencia absoluta, en la moneda de `monto`, entre el importe buscado y el de este movimiento. */
+  diferenciaMonto: number;
+}
+
+const TOLERANCIA_APROXIMADA_PORCENTAJE = 0.15;
+// Nunca menos de 1 (unidad de la moneda buscada): con montos chicos un
+// porcentaje solo sería demasiado angosto para cubrir redondeos reales de
+// conversión de moneda.
+const TOLERANCIA_APROXIMADA_PISO = 1;
+
+/**
+ * true si `proveedor` parece estar mencionado en `descripcion` (o viceversa)
+ * — substring en cualquier dirección (cubre "Uber" ⊂ "Dlo Uberrides") además
+ * de textosParecidos (cubre variantes de más de una palabra, ej.
+ * "Booking.com" vs "BOOKING HOLDINGS Inc."). Deliberadamente más permisivo
+ * que textosParecidos solo (que exige palabras de 5+ letras, y "Uber" tiene
+ * 4) — el riesgo de falso positivo es bajo porque quien llama a esto YA
+ * filtró por monto cercano antes, así que hace falta que AMBAS señales
+ * coincidan, nunca el nombre solo.
+ */
+function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
+  const p = normalizar(proveedor).trim();
+  const d = normalizar(descripcion).trim();
+  if (p.length < 3 || d.length < 3) return false;
+  if (d.includes(p) || p.includes(d)) return true;
+  return textosParecidos(proveedor, descripcion);
+}
+
+/**
+ * Fallback cuando buscarMovimientoSimilar (match exacto, 1 céntimo de
+ * tolerancia) no encuentra nada — pedido explícito de Carlos tras un caso
+ * real: un gasto de Uber llegó por correo como "9.74 EUR" pero el
+ * movimiento bancario real que YA estaba en Holded era "Dlo Uberrides"
+ * -9.24 € (diferencia de 0.50€, típico de una conversión MXN→EUR estimada a
+ * mano en vez del tipo de cambio exacto que usa el banco) — con tolerancia
+ * de 1 céntimo esto nunca aparecía, y el sistema decía "no encontré nada"
+ * aunque el movimiento sí estuviera ahí, con un nombre reconociblemente
+ * parecido y un monto casi idéntico. Exige AMBAS señales a la vez (monto
+ * DENTRO de una banda ancha Y nombre parecido en la descripción) para no
+ * proponer coincidencias falsas — nunca se concilia sola, solo se sugiere
+ * (ver procesarGastoEntrante.ts / gastoCallbackHandler.ts).
+ */
+export async function buscarMovimientoAproximado(
+  empresa: Empresa,
+  criterios: { monto: number; fecha: string; moneda?: string; proveedor: string }
+): Promise<MovimientoBancarioAproximado[]> {
+  if (!criterios.proveedor.trim()) return [];
+
+  const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
+  const fechaBase = new Date(criterios.fecha);
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
+
+  const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+    items?: Array<{ id: string; archived?: boolean }>;
+  };
+  const cuentas = (cuentasData.items ?? []).filter((c) => !c.archived);
+
+  const tolerancia = Math.max(TOLERANCIA_APROXIMADA_PISO, Math.abs(criterios.monto) * TOLERANCIA_APROXIMADA_PORCENTAJE);
+
+  const candidatos: MovimientoBancarioAproximado[] = [];
+
+  for (const cuenta of cuentas) {
+    const params = new URLSearchParams({
+      start_date: formatDateLocal(desde),
+      end_date: formatDateLocal(hasta),
+      limit: "100",
+    });
+    const data = (await holdedWriteCall(
+      empresa,
+      "GET",
+      `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
+    )) as {
+      items?: Array<{
+        id: string;
+        description?: string;
+        amount?: string | number;
+        currency?: string;
+        accounting_amount?: string | number | null;
+        booking_date?: string;
+        status?: string;
+      }>;
+    };
+
+    for (const mov of data.items ?? []) {
+      if (estaConciliado(mov.status)) continue;
+      if (!mov.description || !proveedorPareceEnDescripcion(criterios.proveedor, mov.description)) continue;
+
+      let monto: number;
+      if (monedaObjetivo === "EUR") {
+        monto = montoEnEuros(mov);
+      } else {
+        if ((mov.currency ?? "EUR").toUpperCase() !== monedaObjetivo) continue;
+        monto = parsearMontoMovimiento(mov.amount);
+      }
+      if (!Number.isFinite(monto)) continue;
+
+      const diferencia = Math.abs(Math.abs(monto) - Math.abs(criterios.monto));
+      if (diferencia > tolerancia) continue;
+      // Un match EXACTO lo habría encontrado ya buscarMovimientoSimilar — no lo dupliques acá como "aproximado".
+      if (montosCercanos(Math.abs(monto), Math.abs(criterios.monto), TOLERANCIA_MONTO)) continue;
+
+      candidatos.push({
+        accountId: cuenta.id,
+        movementId: mov.id,
+        descripcion: mov.description ?? "",
+        monto,
+        moneda: monedaObjetivo,
+        fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
+        diferenciaMonto: diferencia,
+      });
+    }
+  }
+
+  return candidatos.sort((a, b) => a.diferenciaMonto - b.diferenciaMonto);
+}
+
 /**
  * Concilia un movimiento bancario ENLAZÁNDOLO al documento de compra real
  * (POST .../reconcile con `documents: [{document_id, document_type:

@@ -2,6 +2,7 @@ import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram
 import {
   buscarGastoSimilar,
   buscarMovimientoSimilar,
+  buscarMovimientoAproximado,
   inferirCuentaGasto,
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
@@ -239,6 +240,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
 
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
+    let movimientoAproximado: Awaited<ReturnType<typeof buscarMovimientoAproximado>>[number] | undefined;
+    let otrosAproximados = 0;
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
@@ -247,6 +250,30 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       );
       if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
+      else if (datos.proveedor) {
+        // Pedido explícito de Carlos tras un caso real: el match exacto (1
+        // céntimo de tolerancia) no encuentra nada cuando el equivalente en
+        // EUR de la factura es una estimación (ej. conversión desde MXN) y
+        // difiere unos céntimos del monto real que calculó el banco — antes
+        // de rendirse, busca algo con nombre parecido y monto cercano (no
+        // exacto) en vez de decir sin más "no encontré nada". Si hay varios
+        // (ej. la misma persona con varios viajes de Uber esa semana), se
+        // recomienda el más cercano en monto (ya viene ordenado así) en vez
+        // de obligar a elegir entre una lista — "aplicar toda la
+        // inteligencia... para llegar a una CONCLUSIÓN y recomendar un gasto
+        // aproximado", pedido explícito — y se avisa que hay otros por si
+        // ese no es el correcto.
+        const candidatosAprox = await buscarMovimientoAproximado(empresa, {
+          monto: montoParaHolded,
+          fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+          moneda: monedaParaHolded,
+          proveedor: datos.proveedor,
+        });
+        if (candidatosAprox.length > 0) {
+          movimientoAproximado = candidatosAprox[0];
+          otrosAproximados = candidatosAprox.length - 1;
+        }
+      }
     } catch (error) {
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
@@ -262,14 +289,30 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
         `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} ${movimientoBancario.moneda}${notaAproximacion} ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
-      : candidatosMovAmbiguos.length > 0
-        ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
-          candidatosMovAmbiguos
-            .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
-            .join("\n") +
-          `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
-        : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} ` +
-          `cerca del ${datos.fecha} — si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
+      : movimientoAproximado
+        ? `\n\n💳 No encontré un movimiento EXACTO, pero sí uno parecido — nombre reconocible y monto cercano (diferencia de ` +
+          `${movimientoAproximado.diferenciaMonto.toFixed(2)} ${movimientoAproximado.moneda}, probablemente por cómo se calculó el ` +
+          `equivalente): "${movimientoAproximado.descripcion || "(sin descripción)"}" — ${movimientoAproximado.monto.toFixed(2)} ` +
+          `${movimientoAproximado.moneda} (${movimientoAproximado.fecha}). Si es el mismo cargo, aprueba "Crear y conciliar" — revísalo antes si no estás seguro.` +
+          (otrosAproximados > 0
+            ? ` (hay ${otrosAproximados} movimiento(s) parecido(s) más de estos días — si este no es el correcto, dímelo y busco entre esos.)`
+            : "")
+        : candidatosMovAmbiguos.length > 0
+          ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
+            candidatosMovAmbiguos
+              .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+              .join("\n") +
+            `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
+          : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto} — ni exacto ni ` +
+            `aproximado por nombre y monto cercano — cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta ` +
+            `del cargo o revísalo en Holded.`;
+
+    // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
+    // igual que uno exacto — ya pasó el filtro de nombre+monto, y el texto
+    // de arriba ya deja claro que es una sugerencia a confirmar, no un
+    // hecho. gasto_nuevo_conciliar vuelve a buscar (exacto y luego
+    // aproximado) al momento de conciliar, así que encuentra lo mismo.
+    if (movimientoAproximado) movimientoBancario = movimientoAproximado;
 
     const notaPersonaTxt = datos.personaAsociada
       ? `${datos.personaAsociada} (identificado en este documento/correo)`
