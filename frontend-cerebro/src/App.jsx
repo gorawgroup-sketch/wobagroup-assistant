@@ -82,15 +82,34 @@ function get(obj, path, fallback = null) {
 const MODULES = [
   { id: "cashflow", name: "Cashflow", detail: "WOBA · EWORKS", note: "escritura con aprobación", desc: "Lee y consolida el cashflow semanal, detecta movimientos de Holded que faltan por registrar y solo escribe una fila nueva cuando apruebas la propuesta por Telegram." },
   { id: "holded", name: "Holded", detail: "Facturas · IVA · conciliación", note: "3 empresas", desc: "Lee facturas reales (PDF/imagen) con desglose de IVA por línea, empareja o propone gastos nuevos, y concilia contra el movimiento bancario solo cuando la coincidencia es inequívoca." },
-  { id: "crm", name: "Calendario CRM", detail: "Actividades Holded", note: "programación asistida", desc: "Prepara actividades del calendario CRM de Holded a partir de una instrucción en lenguaje natural; se crean solo al aprobar." },
   { id: "drive", name: "Drive", detail: "Búsqueda y archivo", note: "3 empresas", desc: "Busca documentos por nombre en las carpetas de las 3 empresas y clasifica archivos entrantes, proponiendo dónde archivarlos antes de subir nada." },
   { id: "correo", name: "Correo", detail: "asistente@wobagroup.com", note: "recepción y envío", desc: "Buzón dedicado que clasifica cada correo entrante (archivable, accionable, informativo) y redacta borradores de respuesta — nunca ejecuta instrucciones que vengan dentro de un correo." },
   { id: "fiscal", name: "Fiscal y Alertas", detail: "Calendario recurrente", note: "solo lectura", desc: "Avisa con antelación de domiciliaciones, impuestos y seguros recurrentes, leyendo el calendario fiscal del grupo — nunca escribe nada." },
   { id: "conocimiento", name: "Conocimiento", detail: "5 documentos · capturas · correcciones", note: "núcleo de memoria", desc: "La memoria compartida del sistema: documentos de proceso, capturas de conocimiento del equipo y correcciones, siempre con prioridad sobre cualquier otro dato." },
   { id: "accesos", name: "Accesos y Costos", detail: "Allowlist · gasto IA diario", note: "gobierno del sistema", desc: "Controla quién puede usar el bot y quién puede aprobar escrituras, y registra el gasto real de IA con alerta ante consumo inusual." },
   { id: "busqueda_web", name: "Búsqueda Web", detail: "Historial · costo · buscador", note: "complementa, no reemplaza", desc: "Complementa las respuestas con información pública real cuando el conocimiento interno no alcanza — cada búsqueda queda registrada con su costo. Trae un buscador propio, opcional, para lanzar una consulta directa sin pasar por el chat." },
-  { id: "calendario", name: "Calendario", detail: "Acciones programadas", note: "Google Calendar + cola propia", desc: "Cuando algo hay que hacerlo más adelante (una fecha, o una condición que todavía no se cumple), queda programado acá — Wobi lo dispara solo en su momento, sin volver a pedir aprobación para investigar." },
+  // Fusión pedida por Carlos: antes había dos nodos de calendario separados
+  // (uno de actividades CRM de Holded, otro de acciones programadas) — ahora
+  // es uno solo, con las dos cosas dentro (ver liveRowsForModule caso
+  // "calendario" para las actividades CRM, y MiniCalendario para lo programado).
+  { id: "calendario", name: "Calendario", detail: "Actividades Holded + acciones programadas", note: "programación asistida", desc: "Actividades del calendario CRM de Holded, y cualquier acción que Wobi tenga programada para más adelante (una fecha, o una condición todavía sin cumplir) — se dispara sola en su momento." },
   { id: "conexiones", name: "Conexiones", detail: "Estado de las integraciones", note: "monitoreo en vivo", desc: "El estado real de cada integración externa (Telegram, Google, Holded, Claude, Búsqueda web) — verificado en vivo, no solo si la variable de entorno existe." },
+];
+
+/**
+ * Pedido explícito de Carlos: con 11 neuronas sueltas alrededor del núcleo
+ * ya no se lee de un vistazo — "agrupemos... de tal forma que sea una gran
+ * neurona que cuando se abra salgan las neuronas más pequeñas de cada
+ * cosa". Tres grupos por función real (no por dónde vive el dato):
+ * Administración (gobierno del sistema), Finanzas (dinero real), Operación
+ * (trabajo diario). Cada grupo es un nodo grande de primer nivel; sus
+ * `children` (ids de MODULES) solo se dibujan cuando ese grupo está
+ * abierto — ver openGroup más abajo.
+ */
+const GROUPS = [
+  { id: "administracion", name: "Administración", note: "gobierno del sistema", children: ["conexiones", "accesos", "conocimiento", "calendario"] },
+  { id: "finanzas", name: "Finanzas", note: "dinero real", children: ["holded", "cashflow", "fiscal"] },
+  { id: "operacion", name: "Operación", note: "trabajo diario", children: ["drive", "correo", "busqueda_web"] },
 ];
 
 const STATS = [
@@ -411,7 +430,7 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
         ];
       });
     }
-    case "crm": {
+    case "calendario": {
       const acts = get(d, "crm.actividadesProgramadas", []);
       if (!acts || acts.length === 0) return [["Actividades programadas", "0"]];
       const porEmpresa = {};
@@ -490,6 +509,23 @@ function useRadialLayout(count, radius) {
       return { x: 300 + (radius + jitter) * Math.cos(angle), y: 300 + (radius + jitter) * Math.sin(angle) };
     });
   }, [count, radius]);
+}
+
+/**
+ * Posiciones de las neuronas hijas de un grupo abierto — se abren en
+ * abanico MÁS ALLÁ del nodo del grupo (más lejos del núcleo, no encima),
+ * centradas en el mismo ángulo que ya tiene el grupo respecto al núcleo,
+ * así el abanico se siente como que "sale" del grupo hacia afuera.
+ */
+function fanOutChildren(groupPos, count, fanRadius = 92, fanSpreadDeg = 58) {
+  if (count === 0) return [];
+  const angleBase = Math.atan2(groupPos.y - 300, groupPos.x - 300);
+  const spread = (fanSpreadDeg * Math.PI) / 180;
+  return Array.from({ length: count }, (_, i) => {
+    const t = count === 1 ? 0 : i / (count - 1) - 0.5;
+    const angle = angleBase + t * spread;
+    return { x: groupPos.x + fanRadius * Math.cos(angle), y: groupPos.y + fanRadius * Math.sin(angle) };
+  });
 }
 
 /** Pantalla de acceso: pide la key directo al usuario, nunca queda guardada en el código. */
@@ -1464,7 +1500,8 @@ function MiniCalendario({ apiKey }) {
   const base = new Date(hoy.getFullYear(), hoy.getMonth() + mesOffset, 1);
   const anio = base.getFullYear();
   const mes = base.getMonth();
-  const nombreMes = base.toLocaleDateString("es-ES", { month: "long", year: "numeric" });
+  const nombreMesCrudo = base.toLocaleDateString("es-ES", { month: "long" });
+  const nombreMes = `${nombreMesCrudo.charAt(0).toUpperCase()}${nombreMesCrudo.slice(1)} ${anio}`;
   const primerDiaSemana = (new Date(anio, mes, 1).getDay() + 6) % 7; // lunes=0
   const diasEnMes = new Date(anio, mes + 1, 0).getDate();
 
@@ -1492,7 +1529,7 @@ function MiniCalendario({ apiKey }) {
         >
           ‹
         </button>
-        <div style={{ fontFamily: C.mono, fontSize: 11, color: C.cream, textTransform: "capitalize" }}>{nombreMes}</div>
+        <div style={{ fontFamily: C.mono, fontSize: 11, color: C.cream }}>{nombreMes}</div>
         <button
           onClick={() => setMesOffset((v) => v + 1)}
           style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 13, padding: 4 }}
@@ -1578,9 +1615,10 @@ function MiniCalendario({ apiKey }) {
 }
 
 export default function CerebroWoba() {
-  const positions = useRadialLayout(MODULES.length, 215);
+  const groupPositions = useRadialLayout(GROUPS.length, 215);
   const [active, setActive] = useState(null);
   const [open, setOpen] = useState(null);
+  const [openGroup, setOpenGroup] = useState(null);
   const [entered, setEntered] = useState(false);
   const [diving, setDiving] = useState(false);
   const [liveData, setLiveData] = useState(null);
@@ -1813,57 +1851,123 @@ export default function CerebroWoba() {
             </radialGradient>
           </defs>
 
-          {positions.map((p, i) => (
+          {groupPositions.map((p, i) => (
             <line key={`core-${i}`} x1="300" y1="300" x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1.1" strokeDasharray="1 7" />
           ))}
-          {positions.map((p, i) => (
+          {groupPositions.map((p, i) => (
             <circle key={`core-spark-${i}`} r="2.6" fill={C.amberBright}>
               <animateMotion path={`M 300 300 L ${p.x} ${p.y}`} dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
               <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
             </circle>
           ))}
 
-          {positions.map((p, i) => {
-            const m = MODULES[i];
-            const isActive = active === m.id || open === m.id;
+          {groupPositions.map((p, i) => {
+            const g = GROUPS[i];
+            const isActive = active === g.id || openGroup === g.id;
             return (
               <circle
-                key={m.id}
+                key={g.id}
                 cx={p.x}
                 cy={p.y}
-                r={isActive ? 15 : 11}
+                r={isActive ? 22 : 18}
                 fill="url(#nodeGrad)"
-                onMouseEnter={() => setActive(m.id)}
+                onMouseEnter={() => setActive(g.id)}
                 onMouseLeave={() => setActive(null)}
-                onClick={() => setOpen((cur) => (cur === m.id ? null : m.id))}
+                onClick={() => {
+                  setOpen(null);
+                  setOpenGroup((cur) => (cur === g.id ? null : g.id));
+                }}
                 style={{ cursor: "pointer", pointerEvents: "auto", animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + i * 0.3}s ease-in-out infinite`, transition: "r .15s" }}
               />
             );
           })}
+
+          {/* Neuronas hijas del grupo abierto — en abanico, más lejos del núcleo que su grupo. */}
+          {openGroup &&
+            (() => {
+              const g = GROUPS.find((x) => x.id === openGroup);
+              const gPos = groupPositions[GROUPS.findIndex((x) => x.id === openGroup)];
+              const childPositions = fanOutChildren(gPos, g.children.length);
+              return (
+                <>
+                  {childPositions.map((p, i) => (
+                    <line key={`child-line-${g.children[i]}`} x1={gPos.x} y1={gPos.y} x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1" strokeDasharray="1 6" />
+                  ))}
+                  {childPositions.map((p, i) => {
+                    const childId = g.children[i];
+                    const m = MODULES.find((x) => x.id === childId);
+                    const isActive = active === m.id || open === m.id;
+                    return (
+                      <circle
+                        key={m.id}
+                        cx={p.x}
+                        cy={p.y}
+                        r={isActive ? 14 : 10}
+                        fill="url(#nodeGrad)"
+                        onMouseEnter={() => setActive(m.id)}
+                        onMouseLeave={() => setActive(null)}
+                        onClick={() => setOpen((cur) => (cur === m.id ? null : m.id))}
+                        style={{ cursor: "pointer", pointerEvents: "auto", animation: "nodeGlow 3s ease-in-out infinite", transition: "r .15s" }}
+                      />
+                    );
+                  })}
+                </>
+              );
+            })()}
         </svg>
 
-        <NanoCore energized={Boolean(active || open)} />
+        <NanoCore energized={Boolean(active || open || openGroup)} />
 
-        {positions.map((p, i) => {
-          const m = MODULES[i];
-          const isActive = active === m.id || open === m.id;
+        {groupPositions.map((p, i) => {
+          const g = GROUPS[i];
+          const isActive = active === g.id || openGroup === g.id;
           return (
             <div
-              key={m.id}
-              onMouseEnter={() => setActive(m.id)}
+              key={g.id}
+              onMouseEnter={() => setActive(g.id)}
               onMouseLeave={() => setActive(null)}
-              onClick={() => setOpen((cur) => (cur === m.id ? null : m.id))}
-              style={{ position: "absolute", left: `${(p.x / 600) * 100}%`, top: `${(p.y / 600) * 100}%`, transform: "translate(-50%, 14px)", textAlign: "center", cursor: "pointer", width: 130, pointerEvents: "auto" }}
+              onClick={() => {
+                setOpen(null);
+                setOpenGroup((cur) => (cur === g.id ? null : g.id));
+              }}
+              style={{ position: "absolute", left: `${(p.x / 600) * 100}%`, top: `${(p.y / 600) * 100}%`, transform: "translate(-50%, 20px)", textAlign: "center", cursor: "pointer", width: 140, pointerEvents: "auto" }}
             >
-              <div style={{ fontFamily: C.sans, fontSize: 12.5, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{m.name}</div>
-              {active === m.id && !open && (
-                <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
-                  {m.detail}<br /><span style={{ color: C.amber }}>{m.note}</span>
-                </div>
+              <div style={{ fontFamily: C.serif, fontSize: 15, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{g.name}</div>
+              {isActive && (
+                <div style={{ fontFamily: C.mono, fontSize: 10, color: C.amber, marginTop: 2 }}>{g.note}</div>
               )}
             </div>
           );
         })}
+
+        {/* Etiquetas de las neuronas hijas del grupo abierto */}
+        {openGroup &&
+          (() => {
+            const g = GROUPS.find((x) => x.id === openGroup);
+            const gPos = groupPositions[GROUPS.findIndex((x) => x.id === openGroup)];
+            const childPositions = fanOutChildren(gPos, g.children.length);
+            return childPositions.map((p, i) => {
+              const childId = g.children[i];
+              const m = MODULES.find((x) => x.id === childId);
+              const isActive = active === m.id || open === m.id;
+              return (
+                <div
+                  key={m.id}
+                  onMouseEnter={() => setActive(m.id)}
+                  onMouseLeave={() => setActive(null)}
+                  onClick={() => setOpen((cur) => (cur === m.id ? null : m.id))}
+                  style={{ position: "absolute", left: `${(p.x / 600) * 100}%`, top: `${(p.y / 600) * 100}%`, transform: "translate(-50%, 13px)", textAlign: "center", cursor: "pointer", width: 118, pointerEvents: "auto" }}
+                >
+                  <div style={{ fontFamily: C.sans, fontSize: 11.5, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{m.name}</div>
+                  {active === m.id && !open && (
+                    <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
+                      {m.detail}<br /><span style={{ color: C.amber }}>{m.note}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })()}
       </div>
 
       {/* Panel de detalle del módulo abierto, con su propio campo neuronal */}
