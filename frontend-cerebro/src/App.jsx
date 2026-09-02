@@ -1598,6 +1598,10 @@ function MiniCalendario({ apiKey }) {
 }
 
 export default function CerebroWoba() {
+  const [active, setActive] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [openGroup, setOpenGroup] = useState(null);
+
   // Al abrir un grupo, deja de mostrarse la vista de 3 grupos y se
   // "entra" en él — sus módulos usan exactamente el mismo layout radial
   // (mismo radio, todo el lienzo disponible) que ya usaban los 3 grupos,
@@ -1610,9 +1614,6 @@ export default function CerebroWoba() {
   const openGroupObj = openGroup ? GROUPS.find((g) => g.id === openGroup) : null;
   const currentItems = openGroupObj ? openGroupObj.children.map((id) => MODULES.find((m) => m.id === id)) : GROUPS;
   const itemPositions = useRadialLayout(currentItems.length, 175);
-  const [active, setActive] = useState(null);
-  const [open, setOpen] = useState(null);
-  const [openGroup, setOpenGroup] = useState(null);
   const [entered, setEntered] = useState(false);
   const [diving, setDiving] = useState(false);
   const [liveData, setLiveData] = useState(null);
