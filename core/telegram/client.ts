@@ -219,11 +219,29 @@ export async function entregarRespuestaTrasTrabajar(
  * Envía un mensaje con botones inline (teclado en línea). Cada fila de `buttons`
  * se renderiza como una fila de botones bajo el mensaje.
  */
+/**
+ * Pedido explícito de Carlos, tras varios casos reales (propuestas de
+ * gasto/documento con botones que ocupaban toda la pantalla, obligando a
+ * hacer scroll — "me sigues enviando mensajes... que no son colapsables"):
+ * cualquier mensaje CON botones que sea largo se manda colapsado, igual
+ * criterio y mismo umbral (UMBRAL_COLAPSABLE) que sendTelegramMessageSmart
+ * ya aplicaba a los mensajes SIN botones. Antes esta función nunca
+ * colapsaba nada, así que cualquier llamador que la usara directo (la
+ * mayoría de las propuestas del sistema: clasificación de documentos,
+ * gastos, acciones de correo) se salteaba el colapso aunque el texto fuera
+ * larguísimo — centralizar el chequeo acá, en vez de exigir que cada
+ * llamador use sendTelegramMessageSmart, corrige todos esos casos de una
+ * sola vez.
+ */
 export async function sendTelegramMessageWithButtons(
   chatId: number,
   text: string,
   buttons: InlineKeyboardButton[][]
 ): Promise<number> {
+  if (text.length > UMBRAL_COLAPSABLE) {
+    return sendTelegramMessageExpandable(chatId, tituloAutomatico(text), text, buttons);
+  }
+
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
 
