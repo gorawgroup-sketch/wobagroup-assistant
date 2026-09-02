@@ -5,6 +5,7 @@ import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacio
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
+import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -117,6 +118,13 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       `✏️ Ok — respóndeme con la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}".`,
       []
     );
+    // La decisión ya está tomada (eligió corregir en vez de archivar tal
+    // cual) — el archivado real ocurre después por texto libre
+    // (confirmar_archivo_pendiente), pero eso ya es un detalle de
+    // ejecución, no una decisión pendiente de revisión. Ver
+    // avanzarColaCorreoSiActivo (no-op si este documento no vino de la cola
+    // de revisión de correo).
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
     return;
   }
 
@@ -140,4 +148,5 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       []
     );
   }
+  await avanzarColaCorreoSiActivo(propuesta.chatId);
 }

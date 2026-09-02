@@ -125,6 +125,84 @@ function getGmailSendClient(): gmail_v1.Gmail {
   return gmailSendClient;
 }
 
+let gmailModifyClient: gmail_v1.Gmail | null = null;
+
+/**
+ * Cliente separado con scope gmail.modify — el único con permiso para
+ * cambiar etiquetas (ej. quitar UNREAD). Pedido explícito de Carlos: el
+ * flujo de revisión de correo uno a uno (ver core/jobs/revisarCorreoNuevo.ts)
+ * necesita marcar como leído cada correo YA resuelto en el chat, para que
+ * "cuántos correos sin leer quedan" (is:unread real de Gmail, no un contador
+ * propio) refleje el progreso real. Requiere agregar este scope a la
+ * Delegación de todo el dominio en Google Workspace Admin para el mismo
+ * client_id que ya usan Calendar/Gmail/Drive — sin eso, marcarCorreoComoLeido
+ * falla con "insufficient authentication scopes" (mismo patrón que se vivió
+ * al agregar Calendar).
+ */
+function getGmailModifyClient(): gmail_v1.Gmail {
+  if (gmailModifyClient) return gmailModifyClient;
+
+  const credentials = loadServiceAccountCredentials();
+  const impersonate = process.env.GMAIL_IMPERSONATE_EMAIL;
+
+  if (!impersonate) {
+    throw new Error("Falta la variable de entorno GMAIL_IMPERSONATE_EMAIL.");
+  }
+
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ["https://www.googleapis.com/auth/gmail.modify"],
+    subject: impersonate,
+  });
+
+  gmailModifyClient = google.gmail({ version: "v1", auth });
+  return gmailModifyClient;
+}
+
+/** Quita la etiqueta UNREAD de un mensaje — nunca lanza, solo registra el error (no debe tumbar el flujo de revisión). */
+export async function marcarCorreoComoLeido(messageId: string): Promise<boolean> {
+  try {
+    await getGmailModifyClient().users.messages.modify({
+      userId: "me",
+      id: messageId,
+      requestBody: { removeLabelIds: ["UNREAD"] },
+    });
+    return true;
+  } catch (error) {
+    console.error(`[gmail] Error marcando ${messageId} como leído:`, error);
+    return false;
+  }
+}
+
+/**
+ * Lista los IDs de mensajes SIN LEER de la bandeja de entrada — a diferencia
+ * de listarMensajesNuevos (ventana de tiempo desde el último check), esto
+ * usa el estado real is:unread de Gmail, que es lo que importa para el flujo
+ * de revisión uno a uno (ver core/jobs/revisarCorreoNuevo.ts): un correo que
+ * Carlos ya leyó a mano en Gmail no debe volver a aparecer en la cola.
+ */
+export async function listarNoLeidos(): Promise<string[]> {
+  const gmail = getGmailClient();
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  let paginas = 0;
+
+  do {
+    const res = await gmail.users.messages.list({
+      userId: "me",
+      q: "is:unread in:inbox",
+      maxResults: 500,
+      pageToken,
+    });
+    (res.data.messages ?? []).forEach((m) => m.id && ids.push(m.id));
+    pageToken = res.data.nextPageToken ?? undefined;
+    paginas += 1;
+  } while (pageToken && paginas < 10);
+
+  return ids;
+}
+
 export interface AdjuntoCorreo {
   filename: string;
   mimeType: string;

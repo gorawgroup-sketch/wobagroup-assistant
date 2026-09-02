@@ -31,7 +31,7 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
-import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
+import { revisarCorreoNuevo, handleCorreoInfoCallback } from "../core/jobs/revisarCorreoNuevo";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
@@ -622,6 +622,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleAccionProgramadaCallback(update.callback_query);
       } else if (data.startsWith("reportecontable_")) {
         await handleReporteContableCallback(update.callback_query);
+      } else if (data.startsWith("correoinfo_")) {
+        await handleCorreoInfoCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }

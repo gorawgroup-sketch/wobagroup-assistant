@@ -10,6 +10,7 @@ import {
 } from "./emailReplyOfferStore";
 import { enviarCorreo } from "./client";
 import { askClaude } from "../claude/client";
+import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 /** Extrae la dirección pura de un header "From" tipo `Nombre <correo@dominio.com>`. */
@@ -172,6 +173,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `❌ Descartado — ${propuesta.asunto} (${propuesta.de})`,
       []
     );
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
     return;
   }
 
@@ -231,6 +233,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
         respuesta
       );
     }
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[emailCallbackHandler] Error procediendo con la acción:", message);
@@ -240,6 +243,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `⚠️ Error al procesar — ${propuesta.asunto} (${propuesta.de})\n\n${message}`,
       []
     );
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
   }
 }
 
@@ -275,6 +279,7 @@ export async function continuarConOrientacion(
   if (pareceRespuesta) {
     await generarBorradorYOfrecer(chatId, de, asunto, threadId, messageIdHeader, respuesta);
   }
+  await avanzarColaCorreoSiActivo(chatId);
 }
 
 /**

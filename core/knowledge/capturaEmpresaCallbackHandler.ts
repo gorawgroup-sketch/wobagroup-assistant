@@ -8,6 +8,7 @@ import {
 } from "./pendienteCapturaEmpresaStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import type { InlineKeyboardButton } from "../telegram/types";
+import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 
 const EMPRESAS: EmpresaCaptura[] = ["WOBA", "EWORKS", "Footprint", "General"];
 
@@ -86,6 +87,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
     await eliminarPendienteCapturaEmpresa(chatId, messageId);
     await answerCallbackQuerySafe(callback.id);
     await editTelegramMessage(chatId, pendiente.messageId, "❌ Captura descartada — no se guardó nada.", []);
+    await avanzarColaCorreoSiActivo(chatId);
     return;
   }
 
@@ -111,6 +113,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
         `✅ Guardado — ${pendiente.empresasSeleccionadas.join(", ")}.`,
         []
       );
+      await avanzarColaCorreoSiActivo(chatId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("Error guardando captura de conocimiento:", message);

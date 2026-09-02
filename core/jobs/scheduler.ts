@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import { revisarHoldedVsCashflow } from "./revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "./revisarAlertasFiscales";
-import { revisarCorreoNuevo } from "./revisarCorreoNuevo";
+import { revisarCorreoNuevo, avisarPendientesCorreo7pm } from "./revisarCorreoNuevo";
 import { revisarCostosIA } from "./revisarCostosIA";
 import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
@@ -62,6 +62,17 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarCorreoNuevo programado: cada hora (${TIMEZONE})`);
+
+  cron.schedule(
+    "0 19 * * *",
+    () => {
+      avisarPendientesCorreo7pm().catch((error) => {
+        console.error("[scheduler] Error ejecutando avisarPendientesCorreo7pm:", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] avisarPendientesCorreo7pm programado: diario 19:00 (${TIMEZONE})`);
 
   cron.schedule(
     "30 8 * * *",

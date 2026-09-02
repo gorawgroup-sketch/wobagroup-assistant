@@ -33,6 +33,7 @@ import {
   type HoldedContact,
 } from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
+import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
@@ -213,6 +214,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         `❌ Cancelado — ${propuesta.proveedor} (${propuesta.monto} ${propuesta.moneda})`,
         []
       );
+      await avanzarColaCorreoSiActivo(propuesta.chatId);
     }
     return;
   }
@@ -326,7 +328,10 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         `⚠️ Error procesando "${propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
         []
       );
+      await avanzarColaCorreoSiActivo(propuesta.chatId);
+      return;
     }
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
     return;
   }
 
@@ -677,6 +682,7 @@ export async function procesarGastoConContactoResuelto(
         resultado.conciliacionPendiente.proveedor
       );
     }
+    await avanzarColaCorreoSiActivo(resolucion.chatId);
   } catch (error) {
     if (error instanceof FechaBloqueadaError) {
       await manejarFechaBloqueada(
@@ -697,6 +703,7 @@ export async function procesarGastoConContactoResuelto(
       `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
       []
     );
+    await avanzarColaCorreoSiActivo(resolucion.chatId);
   }
 }
 
@@ -844,6 +851,7 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         resultado.conciliacionPendiente.proveedor
       );
     }
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
   } catch (error) {
     if (error instanceof ContactoNoEncontradoError) {
       await manejarContactoNoEncontrado(propuesta, empresaFinal, conceptoFinal, propuesta.chatId, undefined);
@@ -856,5 +864,6 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando corrección de gasto:", message);
     await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);
+    await avanzarColaCorreoSiActivo(propuesta.chatId);
   }
 }

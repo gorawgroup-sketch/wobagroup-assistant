@@ -268,6 +268,12 @@ const ACCIONES_SENSIBLES = new Set([
   // (pudo haberse programado algo con efecto financiero) — mismo criterio
   // que email_descartar.
   "accprog_cancelar",
+  // Mismo criterio que email_proceder/descartar/orientar: decidir qué hacer
+  // con un correo entrante (acá, si vale la pena guardarlo como conocimiento
+  // o pasar al siguiente) es parte de la misma decisión centralizada en
+  // superadmin — ver core/jobs/revisarCorreoNuevo.ts.
+  "correoinfo_guardar",
+  "correoinfo_siguiente",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

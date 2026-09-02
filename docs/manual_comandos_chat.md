@@ -127,11 +127,24 @@ Aparecen debajo de ciertos mensajes del asistente cuando hace falta tu aprobaci�
 para algo. Nunca se ejecuta una acción irreversible (enviar correo, subir archivo,
 registrar en cashflow) sin que presiones uno de estos botones.
 
+**Revisión de correo: uno a uno, del más antiguo al más nuevo:**
+- Pedido explícito de Carlos: antes, la revisión horaria mandaba una propuesta por cada correo nuevo de esa hora — con varios correos a la vez, eso eran varias propuestas de golpe, imposibles de procesar todas.
+- Ahora, cuando hay correos nuevos SIN LEER (estado real `is:unread` de Gmail, no una marca de tiempo propia), se manda un solo aviso ("📬 Tienes N correo(s) nuevo(s) sin leer. Empezamos por el más antiguo:") y se muestra solo el más antiguo.
+- Cada correo se resuelve en el chat (con los botones/flujos ya descritos en esta sección) antes de mostrar el siguiente — nunca se muestran dos a la vez. Un correo con varios adjuntos necesita resolver todos sus adjuntos antes de pasar al siguiente correo.
+- Al resolverse, el correo se marca como leído en Gmail de verdad (requiere el scope `gmail.modify` autorizado en Workspace Admin — sin eso, la marca falla en silencio pero la cola sigue avanzando igual).
+- Si no hay nada que decidir (correo puramente informativo, sin adjunto ni respuesta pendiente), igual se muestra uno a uno — con los botones "🧠 Guardar como conocimiento" / "➡️ Siguiente, no hace falta" (ver más abajo), porque la decisión de guardarlo como conocimiento sigue siendo tuya, no del evaluador automático.
+- Todos los días a las 19:00 (hora Madrid), si queda algo sin resolver, llega un aviso con el total pendiente — no interrumpe con nada más, solo informa.
+
 **Sobre correos entrantes que requieren acción:**
 - ✅ Proceder — investiga/ejecuta lo que corresponda con las herramientas disponibles.
 - ❌ Descartar — ignora la propuesta.
 - ✏️ Dar instrucciones específicas — te pide una instrucción tuya en texto libre antes de actuar.
 - Solo el superadministrador puede presionar cualquiera de estos 3 — la decisión completa sobre un correo entrante (incluso descartarlo) está centralizada en esa persona.
+
+**Sobre correos puramente informativos (sin adjunto, sin necesidad de respuesta):**
+- Si el evaluador automático detecta algo que vale la pena recordar, se ofrece directo el flujo normal de captura (selección de empresa + "✅ Confirmar y guardar").
+- Si no, igual se muestra el correo con dos botones: 🧠 Guardar como conocimiento (arranca el mismo flujo de captura) / ➡️ Siguiente, no hace falta (lo marca leído y pasa al siguiente sin guardar nada).
+- Solo el superadministrador puede presionar cualquiera de los dos — mismo criterio que las decisiones sobre correo entrante.
 
 **Sobre movimientos de Holded sin registrar en el cashflow (WOBA/EWORKS):**
 - ✅ Agregar — registra el movimiento en el Sheet de cashflow.
