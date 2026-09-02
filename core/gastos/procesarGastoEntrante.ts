@@ -95,8 +95,23 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   });
   const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
   const esMonedaExtranjera = monedaOriginal !== "" && !monedasReales.has(monedaOriginal);
+  const hayEquivalenteExplicito = datos.montoEquivalente !== undefined && Boolean(datos.monedaEquivalente);
 
-  if (esMonedaExtranjera && (datos.montoEquivalente === undefined || !datos.monedaEquivalente)) {
+  // Pedido explícito de Carlos, tras un caso real: un Uber en Bogotá se
+  // pagó con la tarjeta en EUR (el correo de reenvío decía "11.98 euros"
+  // en el asunto), pero el comprobante trae el monto en COP — y Footprint
+  // SÍ tiene una cuenta real en COP (para otros gastos locales), así que
+  // esMonedaExtranjera daba false y el sistema iba a registrar el gasto en
+  // COP sin más. "A pesar de que el comprobante está en pesos, el gasto
+  // fue hecho en euros" — cuando hay un equivalente EXPLÍCITO (documento o
+  // correo), ese es el monto real que salió de la cuenta, con prioridad
+  // sobre la moneda del comprobante SIEMPRE que exista — no solo cuando la
+  // moneda del comprobante no es válida para NINGUNA cuenta de la empresa.
+  // Que la empresa tenga una cuenta real en esa moneda no significa que
+  // ESTA tarjeta en particular sea esa cuenta.
+  const usarEquivalente = hayEquivalenteExplicito || esMonedaExtranjera;
+
+  if (esMonedaExtranjera && !hayEquivalenteExplicito) {
     const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
     await sendTelegramMessage(
       chatId,
@@ -117,9 +132,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return "pendiente_datos";
   }
 
-  const monedaParaHolded = esMonedaExtranjera ? (datos.monedaEquivalente as string).toUpperCase().trim() : monedaOriginal;
-  const montoParaHolded = esMonedaExtranjera ? (datos.montoEquivalente as number) : datos.monto;
-  const lineasParaHolded = esMonedaExtranjera
+  const monedaParaHolded = usarEquivalente ? (datos.monedaEquivalente as string).toUpperCase().trim() : monedaOriginal;
+  const montoParaHolded = usarEquivalente ? (datos.montoEquivalente as number) : datos.monto;
+  const lineasParaHolded = usarEquivalente
     ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
     : datos.lineas;
 
@@ -162,7 +177,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   const tagsPersona = datos.personaAsociada ? [datos.personaAsociada] : (cuentaSugerida?.tags ?? []);
   const tagsFinal = Array.from(new Set([...tagsPersona, ...tagsCategoria]));
 
-  const conceptoConMonedaOriginal = esMonedaExtranjera
+  const conceptoConMonedaOriginal = usarEquivalente
     ? `${datos.concepto} (${datos.monto} ${monedaOriginal}, comprobante en ${monedaOriginal})`
     : datos.concepto;
 
@@ -189,7 +204,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} ${monedaParaHolded} + IVA ${l.tipoIvaPct}%`)
     .join("\n");
 
-  const importeTexto = esMonedaExtranjera
+  const importeTexto = usarEquivalente
     ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal})`
     : `${datos.monto} ${datos.moneda}`;
 
@@ -239,7 +254,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // movimientos distintos del mismo rango de fechas en vez de solo el
     // correcto) — 0,05 de piso alcanza para el redondeo real sin volverse
     // impreciso en montos chicos.
-    const toleranciaMov = esMonedaExtranjera ? Math.max(0.05, montoParaHolded * 0.02) : undefined;
+    const toleranciaMov = usarEquivalente ? Math.max(0.05, montoParaHolded * 0.02) : undefined;
 
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
@@ -281,7 +296,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
 
-    const notaAproximacion = esMonedaExtranjera
+    const notaAproximacion = usarEquivalente
       ? monedaParaHolded === "EUR"
         ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
           `tipo de cambio, puede diferir unos céntimos del valor exacto)`

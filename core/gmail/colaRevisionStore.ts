@@ -57,21 +57,6 @@ const TAB_NAME = "_cola_revision_correo";
 const HEADERS = ["id", "chatId", "de", "asunto", "fechaOrden", "estado", "pendientesRestantes", "agregadoEn", "mensajeId"];
 const NUM_COLS = HEADERS.length;
 
-// Guarda, por 7 días, los ids de correos YA resueltos en el chat — necesario
-// porque marcarHiloComoLeido requiere el scope gmail.modify (ver
-// core/gmail/client.ts), que Carlos todavía puede no haber autorizado en
-// Workspace Admin: hasta que lo autorice, un correo resuelto en el chat
-// puede seguir apareciendo como is:unread en Gmail de verdad. Sin este
-// historial, la próxima corrida del cron (encolarCorreos) lo volvería a ver
-// como "nuevo" (ya no está en la cola, se borró al resolverse) y se lo
-// volvería a mostrar a Carlos — un correo que ya decidió, preguntado otra
-// vez. 7 días es de sobra para que Carlos autorice el scope; pasado eso, se
-// purga solo (no debe crecer sin límite).
-const TAB_RESUELTOS = "_cola_revision_correo_resueltos";
-const HEADERS_RESUELTOS = ["id", "chatId", "resueltoEn"];
-const NUM_COLS_RESUELTOS = HEADERS_RESUELTOS.length;
-const TTL_RESUELTOS_MS = 7 * 24 * 60 * 60 * 1000;
-
 function filaAObjeto(valores: string[]): ItemColaCorreo {
   return {
     id: valores[0],
@@ -107,56 +92,29 @@ async function leerTodas(): Promise<{ rowIndex: number; item: ItemColaCorreo }[]
   return filas.map((f) => ({ rowIndex: f.rowIndex, item: filaAObjeto(f.valores) }));
 }
 
-async function leerResueltos(): Promise<{ rowIndex: number; id: string; chatId: number; resueltoEn: number }[]> {
-  const filas = await leerFilas(TAB_RESUELTOS, NUM_COLS_RESUELTOS, HEADERS_RESUELTOS);
-  return filas.map((f) => ({
-    rowIndex: f.rowIndex,
-    id: f.valores[0],
-    chatId: Number(f.valores[1]) || 0,
-    resueltoEn: Number(f.valores[2]) || 0,
-  }));
-}
-
-async function purgarResueltosVencidos(): Promise<void> {
-  const todos = await leerResueltos();
-  const ahora = Date.now();
-  const vencidos = todos.filter((f) => ahora - f.resueltoEn > TTL_RESUELTOS_MS);
-  vencidos.sort((a, b) => b.rowIndex - a.rowIndex);
-  for (const { rowIndex } of vencidos) {
-    await eliminarFila(TAB_RESUELTOS, rowIndex, HEADERS_RESUELTOS).catch((error) =>
-      console.error("[colaRevisionStore] Error purgando resuelto vencido (no crítico):", error)
-    );
-  }
-}
-
-/** Registra un correo como ya resuelto (ver comentario de TAB_RESUELTOS arriba) — no crítico si falla. */
-async function registrarResuelto(chatId: number, gmailId: string): Promise<void> {
-  try {
-    await purgarResueltosVencidos();
-    await agregarFila(TAB_RESUELTOS, NUM_COLS_RESUELTOS, HEADERS_RESUELTOS, [gmailId, chatId, Date.now()]);
-  } catch (error) {
-    console.error("[colaRevisionStore] Error registrando correo resuelto (no crítico):", error);
-  }
-}
-
 /**
  * Agrega correos nuevos a la cola (estado "cola") — omite en silencio los
- * que ya estén en la cola, activos, o YA resueltos recientemente (ver
- * TAB_RESUELTOS), así una corrida del cron mientras hay un backlog en curso
- * no duplica nada, y un correo que Gmail todavía marca is:unread (porque
- * Carlos no autorizó gmail.modify todavía) no vuelve a preguntarse dos
- * veces. Devuelve cuántos se agregaron de verdad (para decidir si avisar
- * "tienes N correos nuevos").
+ * que ya estén en la cola o activos, así una corrida del cron mientras hay
+ * un backlog en curso no duplica nada. Devuelve cuántos se agregaron de
+ * verdad (para decidir si avisar "tienes N correos nuevos").
+ *
+ * Pedido explícito de Carlos: Gmail (is:unread real) es SIEMPRE la única
+ * fuente de verdad de qué correo hace falta revisar — si un hilo ya
+ * resuelto vuelve a marcarse sin leer (a mano, o porque llegó un mensaje
+ * nuevo en el mismo hilo), debe volver a aparecer y analizarse de nuevo,
+ * sin ningún historial propio que lo bloquee. (Este store SÍ tuvo antes un
+ * "ya resuelto, no lo repreguntes por 7 días" — se sacó a propósito: existía
+ * solo para el período en que marcarHiloComoLeido todavía no tenía el scope
+ * gmail.modify autorizado, ahora confirmado funcionando en vivo.)
  */
 export async function encolarCorreos(
   chatId: number,
   items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>
 ): Promise<number> {
-  const [existentes, resueltos] = await Promise.all([leerTodas(), leerResueltos()]);
+  const existentes = await leerTodas();
   const idsExistentes = new Set(existentes.filter((f) => f.item.chatId === chatId).map((f) => f.item.id));
-  const idsResueltos = new Set(resueltos.filter((f) => f.chatId === chatId).map((f) => f.id));
 
-  const nuevos = items.filter((i) => !idsExistentes.has(i.id) && !idsResueltos.has(i.id));
+  const nuevos = items.filter((i) => !idsExistentes.has(i.id));
   for (const item of nuevos) {
     await agregarFila(TAB_NAME, NUM_COLS, HEADERS, [
       item.id,
@@ -263,7 +221,6 @@ export async function resolverUnoActivo(chatId: number): Promise<ResultadoResolv
   const restantes = fila.item.pendientesRestantes - 1;
   if (restantes <= 0) {
     await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
-    await registrarResuelto(chatId, fila.item.id);
     return { terminado: true, gmailIdResuelto: fila.item.id };
   }
 
