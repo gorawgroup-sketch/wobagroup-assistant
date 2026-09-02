@@ -35,7 +35,9 @@ export interface GastoPendienteDatos {
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_gastos_pendientes_datos";
-const TTL_MS = 30 * 60 * 1000; // 30 min, mismo criterio que contactoResolucionStore.ts
+// 24h — pedido explícito de Carlos (mismo criterio en todos los
+// "pendiente_*", ver pendienteCapturaEmpresaStore.ts), igual que contactoResolucionStore.ts.
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 const HEADERS = ["id", "chatId", "rutaLocal", "nombreArchivoOriginal", "mimeType", "datosJSON", "motivo", "creadoEn"];
 

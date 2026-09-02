@@ -13,7 +13,10 @@ export interface PendienteReglaClasificacion {
 const TAB_NAME = "_pendientes_regla_clasificacion";
 const HEADERS = ["chatId", "empresa", "tipoDocumento", "carpetaDestino", "nombreArchivoOriginal", "creadoEn"];
 const NUM_COLS = HEADERS.length;
-const TTL_MS = 30 * 60 * 1000;
+// 24h — pedido explícito de Carlos (mismo criterio en todos los
+// "pendiente_*", ver pendienteCapturaEmpresaStore.ts): procesa el correo/
+// documentos entrantes por lotes, no de inmediato.
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 function filaAObjeto(valores: string[]): PendienteReglaClasificacion {
   return {

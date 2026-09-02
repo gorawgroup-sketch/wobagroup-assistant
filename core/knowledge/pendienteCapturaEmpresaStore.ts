@@ -16,9 +16,12 @@ const TAB_NAME = "_pendientes_captura_empresa";
 const HEADERS = ["chatId", "messageId", "texto", "autor", "empresasSeleccionadas", "creadoEn"];
 const NUM_COLS = HEADERS.length;
 
-// Corta a propósito (30 min): se espera que la persona toque los botones casi
-// de inmediato después de mandar el CAPTURA, no que vuelva días después.
-const TTL_MS = 30 * 60 * 1000;
+// Pedido explícito de Carlos, tras un caso real: procesa el correo/documentos
+// entrantes por lotes y puede tardar horas en llegar a cada propuesta — con
+// 30 min, botones de hace rato ya aparecían "expirados" antes de que le diera
+// tiempo a tocarlos. 24 horas cubre un día completo de trabajo sin dejar
+// crecer la pestaña indefinidamente (se sigue purgando después).
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 function filaAObjeto(valores: string[]): PendienteCapturaEmpresa {
   return {

@@ -13,7 +13,9 @@ export interface PendienteOrientacionAnotacion {
 const TAB_NAME = "_pendientes_orientacion_anotacion_cashflow";
 const HEADERS = ["chatId", "messageId", "ubicacion", "detalle", "recomendacion", "creadoEn"];
 const NUM_COLS = HEADERS.length;
-const TTL_MS = 30 * 60 * 1000; // 30 min — se espera respuesta casi inmediata
+// 24h — pedido explícito de Carlos (mismo criterio en todos los
+// "pendiente_*", ver pendienteCapturaEmpresaStore.ts).
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 function filaAObjeto(valores: string[]): PendienteOrientacionAnotacion {
   return {

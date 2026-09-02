@@ -17,7 +17,9 @@ export interface PendienteMontoPago {
 const TAB_NAME = "_pendientes_monto_pago";
 const HEADERS = ["chatId", "messageId", "entradaId", "concepto", "tipo", "empresaHolded", "proveedor", "fechaVencimiento", "creadoEn"];
 const NUM_COLS = HEADERS.length;
-const TTL_MS = 30 * 60 * 1000; // 30 min — se espera respuesta casi inmediata, igual que otros "pendiente_*"
+// 24h — pedido explícito de Carlos (mismo criterio en todos los
+// "pendiente_*", ver pendienteCapturaEmpresaStore.ts).
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 function filaAObjeto(valores: string[]): PendienteMontoPago {
   return {

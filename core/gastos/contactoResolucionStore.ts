@@ -27,7 +27,9 @@ const TAB_NAME = "_resoluciones_contacto_gasto";
 // Bug real encontrado en vivo (mismo patrón que classificationStore.ts,
 // disambiguationStore.ts y emailDraftStore.ts): este store vivía en un
 // archivo JSON local, que se pierde en cada redeploy. Migrado a Sheets.
-const TTL_MS = 30 * 60 * 1000; // 30 min, igual que antes
+// 24h — pedido explícito de Carlos (mismo criterio en todos los
+// "pendiente_*", ver pendienteCapturaEmpresaStore.ts).
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 const HEADERS = ["id", "propuestaJSON", "empresaFinal", "conceptoFinal", "alternativasJSON", "chatId", "messageId", "creadoEn"];
 

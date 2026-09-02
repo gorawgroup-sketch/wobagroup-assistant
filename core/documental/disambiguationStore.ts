@@ -20,9 +20,11 @@ const TAB_NAME = "_pendientes_desambiguacion_docs";
 // vivía en un archivo JSON local, que se pierde en cada redeploy — migrado
 // a Sheets para que sobreviva, mismo patrón que el resto del proyecto.
 
-// Corta a propósito (30 min): se espera una respuesta casi inmediata a la
-// pregunta de desambiguación, no días después.
-const TTL_MS = 30 * 60 * 1000;
+// Pedido explícito de Carlos: procesa el correo/documentos entrantes por
+// lotes y puede tardar horas en llegar a cada pregunta pendiente — 24h
+// cubre un día completo de trabajo (mismo criterio en todos los
+// "pendiente_*" de 30 min, ver pendienteCapturaEmpresaStore.ts).
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 const HEADERS = [
   "chatId",

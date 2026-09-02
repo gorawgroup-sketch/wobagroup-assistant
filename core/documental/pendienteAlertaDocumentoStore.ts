@@ -12,7 +12,10 @@ export interface PendienteAlertaDocumento {
 const TAB_NAME = "_pendientes_alerta_documento";
 const HEADERS = ["chatId", "nombreArchivoOriginal", "empresa", "tipoDocumento", "creadoEn"];
 const NUM_COLS = HEADERS.length;
-const TTL_MS = 30 * 60 * 1000;
+// 24h — pedido explícito de Carlos (mismo criterio en todos los
+// "pendiente_*", ver pendienteCapturaEmpresaStore.ts): procesa el correo/
+// documentos entrantes por lotes, no de inmediato.
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 function filaAObjeto(valores: string[]): PendienteAlertaDocumento {
   return {
