@@ -90,7 +90,7 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
     ids = await listarHilosNoLeidos();
   } catch (error) {
     console.error("[revisarCorreoNuevo] Error listando hilos sin leer:", error);
-    return { correosRevisados: 0 };
+    ids = [];
   }
 
   console.log(`[revisarCorreoNuevo] ${ids.length} hilo(s) sin leer en la bandeja`);
@@ -102,8 +102,6 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
   guardarUltimoCheck(Math.floor(Date.now() / 1000)).catch((error) =>
     console.error("[revisarCorreoNuevo] Error guardando el último check (no crítico):", error)
   );
-
-  if (ids.length === 0) return { correosRevisados: 0 };
 
   const [habiaActivoAntes, totalAntesDeEncolar] = await Promise.all([hayActivo(chatId), contarPendientesTotal(chatId)]);
 
@@ -125,21 +123,28 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
     }
   }
 
-  const nuevos = await encolarCorreos(chatId, itemsParaEncolar);
-  if (nuevos === 0) return { correosRevisados: 0 };
+  const nuevos = itemsParaEncolar.length > 0 ? await encolarCorreos(chatId, itemsParaEncolar) : 0;
 
   // Pedido explícito de Carlos: el aviso de "tienes correos nuevos" es solo
   // al EMPEZAR una revisión desde cero — si ya hay un backlog en curso
   // (algo activo o en cola de una corrida anterior), los nuevos se suman en
   // silencio a la cola en vez de interrumpir con otro aviso cada hora.
-  if (totalAntesDeEncolar === 0) {
+  if (nuevos > 0 && totalAntesDeEncolar === 0) {
     await sendTelegramMessage(
       chatId,
       `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer. Empezamos por el más antiguo:`
     ).catch((error) => console.error("[revisarCorreoNuevo] Error avisando de correos nuevos:", error));
   }
 
-  if (!habiaActivoAntes) {
+  // Bug real encontrado en vivo: esto antes vivía DENTRO del `if (nuevos ===
+  // 0) return` de arriba — un "revisarcorreo" manual con la cola ya llena
+  // pero SIN nada "activo" (ej. justo después de resetear un correo
+  // atascado) no encontraba nada NUEVO que encolar, así que la función
+  // terminaba ahí ("0 correos revisados") sin nunca retomar lo que ya
+  // estaba esperando. Ahora, sin importar si esta corrida encontró algo
+  // nuevo, si no hay nada activo y sí hay algo pendiente (nuevo o de antes),
+  // se retoma.
+  if (!habiaActivoAntes && totalAntesDeEncolar + nuevos > 0) {
     await procesarSiguienteCorreoActivo(chatId);
   }
 
