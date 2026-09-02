@@ -1903,31 +1903,6 @@ export default function CerebroWoba() {
             : "Mueve el cursor sobre el campo para energizarlo. Toca un grupo para abrir sus módulos."}
         </div>
 
-        {openGroup && (
-          <div
-            onClick={() => {
-              setOpen(null);
-              setOpenGroup(null);
-            }}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              marginTop: 12,
-              fontFamily: C.mono,
-              fontSize: 11,
-              letterSpacing: "0.04em",
-              color: C.amberBright,
-              cursor: "pointer",
-              border: `1px solid ${C.amber}`,
-              borderRadius: 999,
-              padding: "6px 14px",
-            }}
-          >
-            ← Todos los grupos <span style={{ color: C.dim }}>· {GROUPS.find((g) => g.id === openGroup)?.name}</span>
-          </div>
-        )}
-
         <a
           href={TELEGRAM_BOT_URL}
           target="_blank"
@@ -2036,6 +2011,67 @@ export default function CerebroWoba() {
         </svg>
 
         <NanoCore energized={Boolean(active || open || openGroup)} />
+
+        {/* Pedido explícito de Carlos: el botón de volver a todos los grupos va en el centro,
+            sobre el propio núcleo de nanobots — no como un botón de chrome aparte arriba de la
+            página. Mismo lenguaje visual que cualquier neurona (círculo con glow ámbar), solo que
+            este vive en el centro exacto en vez de alrededor. */}
+        {openGroupObj && (
+          <div
+            onClick={() => {
+              setOpen(null);
+              setOpenGroup(null);
+            }}
+            onMouseEnter={() => setActive("__volver")}
+            onMouseLeave={() => setActive(null)}
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 3,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              cursor: "pointer",
+              pointerEvents: "auto",
+            }}
+          >
+            <div
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: "50%",
+                border: `1px solid ${C.amber}`,
+                background: "radial-gradient(circle at 35% 35%, rgba(255,201,138,0.22), rgba(232,167,92,0.06))",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontFamily: C.mono,
+                fontSize: 17,
+                color: C.amberBright,
+                animation: "nodeGlow 3s ease-in-out infinite",
+                boxShadow: active === "__volver" ? `0 0 16px ${C.amberBright}` : `0 0 10px rgba(232,167,92,0.4)`,
+                transition: "box-shadow .2s",
+              }}
+            >
+              ←
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontFamily: C.mono,
+                fontSize: 9.5,
+                letterSpacing: "0.03em",
+                color: active === "__volver" ? C.amberBright : C.dim,
+                textAlign: "center",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Todos los grupos
+            </div>
+          </div>
+        )}
 
         {leavingItems &&
           leavingPositions.map((p, i) => {
