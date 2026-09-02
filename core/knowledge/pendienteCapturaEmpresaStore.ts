@@ -1,6 +1,4 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { leerFilas, agregarFila, eliminarFila } from "../google/sheetsKeyValueStore";
 
 export type EmpresaCaptura = "WOBA" | "EWORKS" | "Footprint" | "General";
 
@@ -13,31 +11,36 @@ export interface PendienteCapturaEmpresa {
   creadoEn: number;
 }
 
-const DATA_DIR = join(process.cwd(), "data");
-const STORE_PATH = join(DATA_DIR, "pendientes_captura_empresa.json");
+/** Sheets, no un archivo local — mismo bug real de fondo que cashflowAnnotationActionStore.ts (ver ese archivo para el detalle). */
+const TAB_NAME = "_pendientes_captura_empresa";
+const HEADERS = ["chatId", "messageId", "texto", "autor", "empresasSeleccionadas", "creadoEn"];
+const NUM_COLS = HEADERS.length;
 
 // Corta a propósito (30 min): se espera que la persona toque los botones casi
 // de inmediato después de mandar el CAPTURA, no que vuelva días después.
 const TTL_MS = 30 * 60 * 1000;
 
-async function leerTodas(): Promise<PendienteCapturaEmpresa[]> {
-  if (!existsSync(STORE_PATH)) return [];
-  try {
-    const raw = await readFile(STORE_PATH, "utf-8");
-    return JSON.parse(raw) as PendienteCapturaEmpresa[];
-  } catch {
-    return [];
-  }
+function filaAObjeto(valores: string[]): PendienteCapturaEmpresa {
+  return {
+    chatId: Number(valores[0]),
+    messageId: Number(valores[1]),
+    texto: valores[2],
+    autor: valores[3] || undefined,
+    empresasSeleccionadas: valores[4] ? (JSON.parse(valores[4]) as EmpresaCaptura[]) : [],
+    creadoEn: Number(valores[5]),
+  };
 }
 
-async function guardarTodas(pendientes: PendienteCapturaEmpresa[]): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(STORE_PATH, JSON.stringify(pendientes, null, 2), "utf-8");
+function objetoAFila(p: PendienteCapturaEmpresa): (string | number)[] {
+  return [p.chatId, p.messageId, p.texto, p.autor ?? "", JSON.stringify(p.empresasSeleccionadas), p.creadoEn];
 }
 
-function purgarVencidas(pendientes: PendienteCapturaEmpresa[]): PendienteCapturaEmpresa[] {
+async function leerVigentes(): Promise<{ rowIndex: number; pendiente: PendienteCapturaEmpresa }[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const ahora = Date.now();
-  return pendientes.filter((p) => ahora - p.creadoEn <= TTL_MS);
+  return filas
+    .map((f) => ({ rowIndex: f.rowIndex, pendiente: filaAObjeto(f.valores) }))
+    .filter((f) => ahora - f.pendiente.creadoEn <= TTL_MS);
 }
 
 /**
@@ -57,11 +60,12 @@ function purgarVencidas(pendientes: PendienteCapturaEmpresa[]): PendienteCaptura
 export async function guardarPendienteCapturaEmpresa(
   datos: Omit<PendienteCapturaEmpresa, "creadoEn">
 ): Promise<void> {
-  const vigentes = purgarVencidas(await leerTodas()).filter(
-    (p) => !(p.chatId === datos.chatId && p.messageId === datos.messageId)
-  );
-  vigentes.push({ ...datos, creadoEn: Date.now() });
-  await guardarTodas(vigentes);
+  const vigentes = await leerVigentes();
+  const previo = vigentes.find((f) => f.pendiente.chatId === datos.chatId && f.pendiente.messageId === datos.messageId);
+  if (previo) {
+    await eliminarFila(TAB_NAME, previo.rowIndex, HEADERS);
+  }
+  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, objetoAFila({ ...datos, creadoEn: Date.now() }));
 }
 
 /** Lee el pendiente de ESE mensaje sin consumirlo (para toggles intermedios). undefined si no hay o venció. */
@@ -69,22 +73,20 @@ export async function obtenerPendienteCapturaEmpresa(
   chatId: number,
   messageId: number
 ): Promise<PendienteCapturaEmpresa | undefined> {
-  const vigentes = purgarVencidas(await leerTodas());
-  await guardarTodas(vigentes);
-  return vigentes.find((p) => p.chatId === chatId && p.messageId === messageId);
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.pendiente.chatId === chatId && f.pendiente.messageId === messageId)?.pendiente;
 }
 
 /** Todos los pendientes vigentes de un chat (puede haber más de uno) — para el aviso de "te quedó algo sin confirmar". */
 export async function obtenerPendientesCapturaEmpresaPorChat(chatId: number): Promise<PendienteCapturaEmpresa[]> {
-  const vigentes = purgarVencidas(await leerTodas());
-  await guardarTodas(vigentes);
-  return vigentes.filter((p) => p.chatId === chatId);
+  const vigentes = await leerVigentes();
+  return vigentes.filter((f) => f.pendiente.chatId === chatId).map((f) => f.pendiente);
 }
 
 /** Elimina el pendiente de ESE mensaje (al confirmar o cancelar) sin devolverlo. */
 export async function eliminarPendienteCapturaEmpresa(chatId: number, messageId: number): Promise<void> {
-  const vigentes = purgarVencidas(await leerTodas()).filter(
-    (p) => !(p.chatId === chatId && p.messageId === messageId)
-  );
-  await guardarTodas(vigentes);
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.pendiente.chatId === chatId && f.pendiente.messageId === messageId);
+  if (!fila) return;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
 }

@@ -1,9 +1,8 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/sheetsKeyValueStore";
 import type { Empresa } from "../holded/client";
 
+/** Sheets, no un archivo local — ver core/jobs/cashflowAnnotationActionStore.ts para el bug real que esto corrige. */
 export interface PropuestaReporteContable {
   id: string;
   chatId: number;
@@ -15,8 +14,9 @@ export interface PropuestaReporteContable {
   creadoEn: number;
 }
 
-const DATA_DIR = join(process.cwd(), "data");
-const STORE_PATH = join(DATA_DIR, "propuestas_reporte_contable.json");
+const TAB_NAME = "_propuestas_reporte_contable";
+const HEADERS = ["id", "chatId", "messageId", "empresa", "desde", "hasta", "correoDestino", "creadoEn"];
+const NUM_COLS = HEADERS.length;
 
 // El archivo NUNCA se persiste aquí (solo los parámetros) — al aprobar, se
 // regenera el Excel/PDF en el momento, así que no hace falta guardar
@@ -24,54 +24,51 @@ const STORE_PATH = join(DATA_DIR, "propuestas_reporte_contable.json");
 // notificación y confirme, sin quedar viva indefinidamente.
 const TTL_MS = 60 * 60 * 1000;
 
-async function leerTodas(): Promise<PropuestaReporteContable[]> {
-  if (!existsSync(STORE_PATH)) return [];
-  try {
-    const raw = await readFile(STORE_PATH, "utf-8");
-    return JSON.parse(raw) as PropuestaReporteContable[];
-  } catch {
-    return [];
-  }
+function filaAObjeto(valores: string[]): PropuestaReporteContable {
+  return {
+    id: valores[0],
+    chatId: Number(valores[1]),
+    messageId: Number(valores[2]),
+    empresa: valores[3] as Empresa,
+    desde: valores[4],
+    hasta: valores[5],
+    correoDestino: valores[6],
+    creadoEn: Number(valores[7]),
+  };
 }
 
-async function guardarTodas(propuestas: PropuestaReporteContable[]): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(STORE_PATH, JSON.stringify(propuestas, null, 2), "utf-8");
+function objetoAFila(p: PropuestaReporteContable): (string | number)[] {
+  return [p.id, p.chatId, p.messageId, p.empresa, p.desde, p.hasta, p.correoDestino, p.creadoEn];
 }
 
-function purgarVencidas(propuestas: PropuestaReporteContable[]): PropuestaReporteContable[] {
+async function leerVigentes(): Promise<{ rowIndex: number; propuesta: PropuestaReporteContable }[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const ahora = Date.now();
-  return propuestas.filter((p) => ahora - p.creadoEn <= TTL_MS);
+  return filas
+    .map((f) => ({ rowIndex: f.rowIndex, propuesta: filaAObjeto(f.valores) }))
+    .filter((f) => ahora - f.propuesta.creadoEn <= TTL_MS);
 }
 
 export async function crearPropuestaReporteContable(
   datos: Omit<PropuestaReporteContable, "id" | "creadoEn">
 ): Promise<PropuestaReporteContable> {
-  const vigentes = purgarVencidas(await leerTodas());
   const propuesta: PropuestaReporteContable = { ...datos, id: randomUUID(), creadoEn: Date.now() };
-  vigentes.push(propuesta);
-  await guardarTodas(vigentes);
+  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, objetoAFila(propuesta));
   return propuesta;
 }
 
 export async function actualizarMessageIdReporteContable(id: string, messageId: number): Promise<void> {
-  const vigentes = purgarVencidas(await leerTodas());
-  const idx = vigentes.findIndex((p) => p.id === id);
-  if (idx !== -1) {
-    vigentes[idx].messageId = messageId;
-    await guardarTodas(vigentes);
-  }
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.propuesta.id === id);
+  if (!fila) return;
+  await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.propuesta, messageId }));
 }
 
 /** Consume (lee y elimina) una propuesta por id. undefined si no existe o venció. */
 export async function consumirPropuestaReporteContable(id: string): Promise<PropuestaReporteContable | undefined> {
-  const vigentes = purgarVencidas(await leerTodas());
-  const idx = vigentes.findIndex((p) => p.id === id);
-  if (idx === -1) {
-    await guardarTodas(vigentes);
-    return undefined;
-  }
-  const [propuesta] = vigentes.splice(idx, 1);
-  await guardarTodas(vigentes);
-  return propuesta;
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.propuesta.id === id);
+  if (!fila) return undefined;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return fila.propuesta;
 }

@@ -1,7 +1,6 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { leerFilas, agregarFila, eliminarFila } from "../google/sheetsKeyValueStore";
 
+/** Sheets, no un archivo local — ver core/jobs/cashflowAnnotationActionStore.ts para el bug real que esto corrige. */
 export interface PendienteOrientacionCorreo {
   chatId: number;
   messageId: number;
@@ -13,48 +12,53 @@ export interface PendienteOrientacionCorreo {
   creadoEn: number;
 }
 
-const DATA_DIR = join(process.cwd(), "data");
-const STORE_PATH = join(DATA_DIR, "pendientes_orientacion_correo.json");
+const TAB_NAME = "_pendientes_orientacion_correo";
+const HEADERS = ["chatId", "messageId", "de", "asunto", "resumen", "threadId", "messageIdHeader", "creadoEn"];
+const NUM_COLS = HEADERS.length;
 const TTL_MS = 30 * 60 * 1000; // 30 min — se espera respuesta casi inmediata
 
-async function leerTodas(): Promise<PendienteOrientacionCorreo[]> {
-  if (!existsSync(STORE_PATH)) return [];
-  try {
-    const raw = await readFile(STORE_PATH, "utf-8");
-    return JSON.parse(raw) as PendienteOrientacionCorreo[];
-  } catch {
-    return [];
-  }
+function filaAObjeto(valores: string[]): PendienteOrientacionCorreo {
+  return {
+    chatId: Number(valores[0]),
+    messageId: Number(valores[1]),
+    de: valores[2],
+    asunto: valores[3],
+    resumen: valores[4],
+    threadId: valores[5] || undefined,
+    messageIdHeader: valores[6] || undefined,
+    creadoEn: Number(valores[7]),
+  };
 }
 
-async function guardarTodas(pendientes: PendienteOrientacionCorreo[]): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(STORE_PATH, JSON.stringify(pendientes, null, 2), "utf-8");
+function objetoAFila(p: PendienteOrientacionCorreo): (string | number)[] {
+  return [p.chatId, p.messageId, p.de, p.asunto, p.resumen, p.threadId ?? "", p.messageIdHeader ?? "", p.creadoEn];
 }
 
-function purgarVencidas(pendientes: PendienteOrientacionCorreo[]): PendienteOrientacionCorreo[] {
+async function leerVigentes(): Promise<{ rowIndex: number; pendiente: PendienteOrientacionCorreo }[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const ahora = Date.now();
-  return pendientes.filter((p) => ahora - p.creadoEn <= TTL_MS);
+  return filas
+    .map((f) => ({ rowIndex: f.rowIndex, pendiente: filaAObjeto(f.valores) }))
+    .filter((f) => ahora - f.pendiente.creadoEn <= TTL_MS);
 }
 
 export async function guardarPendienteOrientacionCorreo(
   datos: Omit<PendienteOrientacionCorreo, "creadoEn">
 ): Promise<void> {
-  const vigentes = purgarVencidas(await leerTodas()).filter((p) => p.chatId !== datos.chatId);
-  vigentes.push({ ...datos, creadoEn: Date.now() });
-  await guardarTodas(vigentes);
+  const vigentes = await leerVigentes();
+  const previo = vigentes.find((f) => f.pendiente.chatId === datos.chatId);
+  if (previo) {
+    await eliminarFila(TAB_NAME, previo.rowIndex, HEADERS);
+  }
+  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, objetoAFila({ ...datos, creadoEn: Date.now() }));
 }
 
 export async function consumirPendienteOrientacionCorreo(
   chatId: number
 ): Promise<PendienteOrientacionCorreo | undefined> {
-  const vigentes = purgarVencidas(await leerTodas());
-  const idx = vigentes.findIndex((p) => p.chatId === chatId);
-  if (idx === -1) {
-    await guardarTodas(vigentes);
-    return undefined;
-  }
-  const [pendiente] = vigentes.splice(idx, 1);
-  await guardarTodas(vigentes);
-  return pendiente;
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.pendiente.chatId === chatId);
+  if (!fila) return undefined;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return fila.pendiente;
 }

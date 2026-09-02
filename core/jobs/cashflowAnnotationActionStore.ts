@@ -1,16 +1,20 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/sheetsKeyValueStore";
 
 /**
  * Pedido explícito de Carlos: cuando revisarAnotacionesCashflow.ts le manda
  * una recomendación sobre una anotación del cashflow, antes no había ninguna
  * forma de actuar sobre eso — solo texto plano, sin botones. Este store
  * (y cashflowAnnotationCallbackHandler.ts) le agregan el mismo patrón de
- * "✅ Hazlo tú / ✏️ Dar instrucciones / ℹ️ Dejar como informativo" que ya
- * existía para correos que necesitan acción (ver emailActionStore.ts, del
- * que este archivo es un espejo deliberado — misma forma, mismo TTL).
+ * "✅ Hazlo tú / ✏️ Dar instrucciones / ℹ️ Dejar como informativo".
+ *
+ * Sheets, no un archivo local — bug real encontrado en vivo (2026-09-02):
+ * la versión anterior de este store vivía en data/*.json, y el botón
+ * "Dar instrucciones" pulsado más tarde no encontró la propuesta porque se
+ * creó en un proceso con disco efímero distinto (ver
+ * core/google/sheetsKeyValueStore.ts para el detalle completo). Un
+ * redeploy real durante desarrollo activo habría causado exactamente lo
+ * mismo en producción.
  */
 export interface PropuestaAccionAnotacion {
   id: string;
@@ -22,57 +26,56 @@ export interface PropuestaAccionAnotacion {
   creadoEn: number;
 }
 
-const DATA_DIR = join(process.cwd(), "data");
-const STORE_PATH = join(DATA_DIR, "propuestas_anotacion_cashflow.json");
-const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas — mismo criterio que emailActionStore
+const TAB_NAME = "_propuestas_anotacion_cashflow";
+const HEADERS = ["id", "chatId", "messageId", "ubicacion", "detalle", "recomendacion", "creadoEn"];
+const NUM_COLS = HEADERS.length;
+const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas
 
-async function leerTodas(): Promise<PropuestaAccionAnotacion[]> {
-  if (!existsSync(STORE_PATH)) return [];
-  try {
-    const raw = await readFile(STORE_PATH, "utf-8");
-    return JSON.parse(raw) as PropuestaAccionAnotacion[];
-  } catch {
-    return [];
-  }
+function filaAObjeto(valores: string[]): PropuestaAccionAnotacion {
+  return {
+    id: valores[0],
+    chatId: Number(valores[1]),
+    messageId: Number(valores[2]),
+    ubicacion: valores[3],
+    detalle: valores[4],
+    recomendacion: valores[5],
+    creadoEn: Number(valores[6]),
+  };
 }
 
-async function guardarTodas(propuestas: PropuestaAccionAnotacion[]): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(STORE_PATH, JSON.stringify(propuestas, null, 2), "utf-8");
+function objetoAFila(p: PropuestaAccionAnotacion): (string | number)[] {
+  return [p.id, p.chatId, p.messageId, p.ubicacion, p.detalle, p.recomendacion, p.creadoEn];
 }
 
-function purgarVencidas(propuestas: PropuestaAccionAnotacion[]): PropuestaAccionAnotacion[] {
+async function leerVigentes(): Promise<{ rowIndex: number; propuesta: PropuestaAccionAnotacion }[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const ahora = Date.now();
-  return propuestas.filter((p) => ahora - p.creadoEn <= TTL_MS);
+  return filas
+    .map((f) => ({ rowIndex: f.rowIndex, propuesta: filaAObjeto(f.valores) }))
+    .filter((f) => ahora - f.propuesta.creadoEn <= TTL_MS);
 }
 
 export async function crearPropuestaAccionAnotacion(
   datos: Omit<PropuestaAccionAnotacion, "id" | "creadoEn">
 ): Promise<PropuestaAccionAnotacion> {
-  const vigentes = purgarVencidas(await leerTodas());
   const propuesta: PropuestaAccionAnotacion = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
-  vigentes.push(propuesta);
-  await guardarTodas(vigentes);
+  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, objetoAFila(propuesta));
   return propuesta;
 }
 
 export async function actualizarMessageIdAccionAnotacion(id: string, messageId: number): Promise<void> {
-  const todas = await leerTodas();
-  const idx = todas.findIndex((p) => p.id === id);
-  if (idx === -1) return;
-  todas[idx].messageId = messageId;
-  await guardarTodas(todas);
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.propuesta.id === id);
+  if (!fila) return;
+  const actualizada = { ...fila.propuesta, messageId };
+  await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila(actualizada));
 }
 
 /** Devuelve la propuesta y la elimina (se llama al descartar o proceder). */
 export async function consumirPropuestaAccionAnotacion(id: string): Promise<PropuestaAccionAnotacion | undefined> {
-  const vigentes = purgarVencidas(await leerTodas());
-  const idx = vigentes.findIndex((p) => p.id === id);
-  if (idx === -1) {
-    await guardarTodas(vigentes);
-    return undefined;
-  }
-  const [propuesta] = vigentes.splice(idx, 1);
-  await guardarTodas(vigentes);
-  return propuesta;
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.propuesta.id === id);
+  if (!fila) return undefined;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return fila.propuesta;
 }
