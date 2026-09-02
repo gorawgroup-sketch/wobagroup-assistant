@@ -130,13 +130,23 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     ],
     // Pedido explícito de Carlos, tras un caso real: el análisis solo
     // ofrecía archivar o corregir la carpeta, "no hay forma de enseñarle
-    // una regla para el futuro ni crear una alerta". Estos dos NO consumen
+    // una regla para el futuro ni crear una alerta". Estos NO consumen
     // la propuesta (a diferencia de los de arriba) — solo la leen, así que
     // "Sí, archivar aquí"/"Elegir otra carpeta" siguen disponibles después.
     [
       { text: "📚 Enseñar regla", callback_data: `doc_regla:${propuesta.id}` },
       { text: "⏰ Crear alerta", callback_data: `doc_alerta:${propuesta.id}` },
     ],
+    // Segundo pedido explícito, distinto del anterior: "que me permita
+    // decirle que tome este conocimiento y lo integre a su matriz de
+    // conocimiento en caso de que se requiera preguntar sobre esto" — a
+    // diferencia de "Enseñar regla" (dónde archivar la próxima vez, NO el
+    // contenido), esto guarda el CONTENIDO real del documento como
+    // conocimiento consultable — mismo flujo de CAPTURA que ya existe para
+    // cuando el clasificador detecta la intención automáticamente
+    // (pareceIntencionDeCaptura, arriba), pero disponible a pedido en
+    // cualquier documento, no solo cuando el caption lo pide explícito.
+    [{ text: "🧠 Guardar como conocimiento", callback_data: `doc_conocimiento:${propuesta.id}` }],
   ]);
 
   await actualizarMessageIdClasificacion(propuesta.id, messageId);

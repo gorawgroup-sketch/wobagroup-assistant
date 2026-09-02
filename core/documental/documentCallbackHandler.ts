@@ -3,6 +3,8 @@ import { consumirPropuestaClasificacion, obtenerPropuestaClasificacion } from ".
 import { archivarDocumentoEnDrive } from "./archiveFile";
 import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacionStore";
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
+import { transcribirParaCaptura } from "./transcribeForCapture";
+import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -62,6 +64,39 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       await sendTelegramMessage(
         propuestaPeek.chatId,
         `⏰ Ok — respóndeme qué quieres que te recuerde sobre "${propuestaPeek.nombreArchivoOriginal}" y cuándo (ej. "avísame en 3 días si no se ha enviado a aduana", o "recuérdame el jueves confirmar con Alberto").`
+      );
+    }
+    return;
+  }
+
+  // "🧠 Guardar como conocimiento" — tampoco consume la propuesta. Lee el
+  // contenido real del documento (Claude vision, mismo transcriptor que ya
+  // usa la captura automática cuando el clasificador detecta la intención
+  // en el caption) y ofrece guardarlo con el flujo normal de CAPTURA
+  // (botones de empresa, nunca se guarda sin "✅ Confirmar y guardar").
+  if (accion === "doc_conocimiento") {
+    const propuestaPeek = await obtenerPropuestaClasificacion(id);
+    if (!propuestaPeek) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Leyendo el documento...");
+
+    try {
+      const transcripcion = await transcribirParaCaptura(propuestaPeek.rutaLocal, propuestaPeek.mimeType, undefined);
+      const contenido = [
+        `Documento: ${propuestaPeek.nombreArchivoOriginal} (${propuestaPeek.clasificacion.empresa} — ${propuestaPeek.clasificacion.tipoDocumento})`,
+        "",
+        transcripcion,
+      ].join("\n");
+      await iniciarSeleccionEmpresaCaptura(propuestaPeek.chatId, contenido, propuestaPeek.nombreArchivoOriginal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[documentCallbackHandler] Error leyendo documento para guardar como conocimiento:", message);
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        `⚠️ No se pudo leer "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}`
       );
     }
     return;
