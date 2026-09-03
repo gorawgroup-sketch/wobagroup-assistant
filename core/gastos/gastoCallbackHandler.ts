@@ -716,18 +716,28 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
 
   await answerCallbackQuerySafe(callback.id, "Aplicando...");
 
-  // Se limpia de inmediato — evita que un futuro "Aprobar selección" (ej.
-  // tras decidir Crear más tarde) vuelva a disparar responder/guardarconocimiento
-  // una SEGUNDA vez, y repinta el teclado ya sin checks para la próxima ronda.
+  // Pedido explícito de Carlos, tras el aviso de que un doble-toque en este
+  // botón podría disparar dos veces algo sin texto: el botón queda INACTIVO
+  // de inmediato — se le quita el teclado (editTelegramMessageReplyMarkup,
+  // nunca toca el texto original de la propuesta, así no hace falta guardarlo
+  // para restaurarlo después) ANTES de cualquier otro await, así que un
+  // segundo toque sobre el mismo mensaje ya no tiene ningún botón que
+  // presionar — cierra la ventana de la condición de carrera en vez de solo
+  // avisar de que existe. El aviso de "procesando" va en un mensaje NUEVO
+  // (no reemplaza el texto de la propuesta, que Carlos puede querer seguir
+  // viendo con su desglose completo).
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+    console.error("[gastoCallbackHandler] Error quitando el teclado antes de aplicar (no crítico):", error)
+  );
+  await sendTelegramMessage(propuesta.chatId, "🔄 Aplicando tu selección...").catch((error) =>
+    console.error("[gastoCallbackHandler] Error avisando que se está procesando (no crítico):", error)
+  );
+
+  // Se limpia de inmediato — evita que una futura aprobación (ej. tras
+  // decidir Crear más tarde, con el teclado ya repuesto) vuelva a disparar
+  // responder/guardarconocimiento una SEGUNDA vez.
   await actualizarSeleccionAccionesGasto(propuesta.id, []).catch((error) =>
     console.error("[gastoCallbackHandler] Error limpiando la selección aplicada (no crítico):", error)
-  );
-  const tecladoLimpio = construirTecladoGasto(
-    { ...propuesta, seleccionAcciones: [] },
-    { numCandidatos: propuesta.candidatos.length > 0 ? propuesta.candidatos.length : undefined, hayMovimientoBancario: propuesta.hayMovimientoBancario }
-  );
-  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, tecladoLimpio).catch((error) =>
-    console.error("[gastoCallbackHandler] Error repintando el teclado tras aprobar (no crítico):", error)
   );
 
   const resumen: string[] = [];
@@ -775,7 +785,26 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
   }
 
   if (decisionFinal) {
+    // dispararDecisionFinal ya reemplaza el texto Y los botones del mensaje
+    // original con el resultado final (vía consumirPropuestaGasto/editTelegramMessage
+    // en gasto_nuevo/gasto_cancelar/etc.) — nunca hay que reponer el teclado acá.
     await dispararDecisionFinal(propuesta, decisionFinal);
+    return;
+  }
+
+  // Nada quedó pendiente (ni cola de texto, ni decisión final) — la propuesta
+  // sigue viva para que Carlos pueda marcar más acciones después (ej. decidir
+  // "Crear" más tarde), así que se repone el teclado interactivo, ya sin
+  // ningún check marcado.
+  const propuestaFresca = await obtenerPropuestaGasto(propuesta.id);
+  if (propuestaFresca) {
+    const teclado = construirTecladoGasto(propuestaFresca, {
+      numCandidatos: propuestaFresca.candidatos.length > 0 ? propuestaFresca.candidatos.length : undefined,
+      hayMovimientoBancario: propuestaFresca.hayMovimientoBancario,
+    });
+    await editTelegramMessageReplyMarkup(propuestaFresca.chatId, propuestaFresca.messageId, teclado).catch((error) =>
+      console.error("[gastoCallbackHandler] Error reponiendo el teclado tras aplicar (no crítico):", error)
+    );
   }
 }
 
@@ -826,6 +855,19 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
 
   if (!pendiente.decisionFinal) {
     await sendTelegramMessage(pendiente.chatId, "✅ Listo — apliqué todo lo que marcaste.");
+    // Nada de decisión final — la propuesta original sigue viva (su teclado
+    // quedó vacío desde "Aprobar selección", ver handleGastoAprobarCallback)
+    // y hay que reponerlo para que Carlos pueda marcar más acciones después.
+    const propuestaFinal = await obtenerPropuestaGasto(pendiente.propuestaId);
+    if (propuestaFinal) {
+      const teclado = construirTecladoGasto(propuestaFinal, {
+        numCandidatos: propuestaFinal.candidatos.length > 0 ? propuestaFinal.candidatos.length : undefined,
+        hayMovimientoBancario: propuestaFinal.hayMovimientoBancario,
+      });
+      await editTelegramMessageReplyMarkup(propuestaFinal.chatId, propuestaFinal.messageId, teclado).catch((error) =>
+        console.error("[gastoCallbackHandler] Error reponiendo el teclado tras la cola de selección (no crítico):", error)
+      );
+    }
     return;
   }
 
