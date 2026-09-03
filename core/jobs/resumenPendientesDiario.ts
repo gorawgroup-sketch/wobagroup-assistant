@@ -7,6 +7,7 @@ import { marcarHiloComoLeido } from "../gmail/client";
 import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
+import { obtenerPendientesEdicionCompraHoldedPorChat } from "../holded/pendienteEdicionCompraHoldedStore";
 import { obtenerPendienteReclasificacionPorChat, consumirPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
 import { obtenerPendientesCapturaEmpresaPorChat, eliminarPendienteCapturaEmpresa } from "../knowledge/pendienteCapturaEmpresaStore";
 import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocumento } from "../documental/pendienteAlertaDocumentoStore";
@@ -132,6 +133,21 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando gasto pendiente de datos (no crítico):", error);
+  }
+
+  try {
+    const ediciones = await obtenerPendientesEdicionCompraHoldedPorChat(chatId);
+    for (const e of ediciones) {
+      // "🗑️ Descartar todo" NO toca esto — cambios.montoNuevo puede traer un
+      // monto real ya extraído, mismo criterio que resolucionContactoPendientePorChat/
+      // gastoPendienteDatosPorChat arriba.
+      items.push({
+        descripcion: `✏️ Edición de Holded sin aprobar: "${e.resumenAntes}" — revisar individual, no se borra con "Descartar todo"`,
+        creadoEn: e.creadoEn,
+      });
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando ediciones de compra en Holded (no crítico):", error);
   }
 
   try {

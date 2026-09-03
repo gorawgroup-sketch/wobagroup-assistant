@@ -86,3 +86,16 @@ export async function consumirPendienteEdicionCompraHolded(id: string): Promise<
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   return fila.pendiente;
 }
+
+/**
+ * Lectura sin consumir, TODAS las de un chat (a diferencia de los demás
+ * "pendiente_*" de un solo slot por chat, acá puede haber varias propuestas
+ * de edición vivas a la vez) — para el resumen diario de pendientes (ver
+ * core/jobs/resumenPendientesDiario.ts). Bug real de auditoría: este store
+ * se agregó sin conectarlo al resumen diario, así que una edición de Holded
+ * sin aprobar podía quedar días sin ninguna visibilidad.
+ */
+export async function obtenerPendientesEdicionCompraHoldedPorChat(chatId: number): Promise<PendienteEdicionCompraHolded[]> {
+  const vigentes = await leerVigentes();
+  return vigentes.filter((f) => f.pendiente.chatId === chatId).map((f) => f.pendiente);
+}

@@ -328,12 +328,24 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id);
+    // Bug real de auditoría (2026-09-03): este botón (mensaje VIEJO, ya en
+    // vuelo desde antes del teclado de selección) dejaba los DEMÁS botones
+    // del mismo mensaje intactos — incluido "✏️ Corregir clasificación",
+    // que SÍ crea el gasto de inmediato al responder. Si Carlos tocaba los
+    // dos y luego respondía un monto, la respuesta podía caer en el
+    // pendiente de corrección equivocado (server.ts revisa esa cola
+    // primero) y crear el gasto con un concepto basura. Se quita el
+    // teclado de este mensaje al usar cualquiera de sus botones — mismo
+    // criterio que gasto_corregir, para que solo uno pueda usarse por
+    // mensaje viejo.
+    await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+      console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
+    );
     await guardarPendienteAjusteMontoGasto(propuesta.chatId, propuesta.id);
     await sendTelegramMessage(
       propuesta.chatId,
       `💰 Ok — dime el monto real a registrar para "${propuesta.proveedor}" (ej. "251.30", o "la mitad" de ` +
-        `${propuesta.monto} ${propuesta.moneda}). Los botones de la propuesta original siguen arriba — cuando ` +
-        `ajuste el monto, ya lo usan directo.`
+        `${propuesta.monto} ${propuesta.moneda}).`
     );
     return;
   }
@@ -353,6 +365,12 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Redactando...");
+    // Mismo criterio que gasto_ajustarmonto arriba — se quita el teclado del
+    // mensaje viejo al usar cualquiera de sus botones, para que no queden
+    // dos pendientes de texto libre vivos a la vez sobre la misma propuesta.
+    await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+      console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
+    );
     await ejecutarResponderCorreo(propuesta);
     return;
   }
@@ -364,6 +382,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Leyendo el correo...");
+    await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+      console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
+    );
     await ejecutarGuardarConocimiento(propuesta);
     return;
   }
@@ -375,6 +396,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id);
+    await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+      console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
+    );
     await sendTelegramMessage(
       propuesta.chatId,
       `✏️ Ok — dime qué más quieres hacer con el correo "${propuesta.correoOrigen.asunto}" de ${propuesta.correoOrigen.de} ` +
