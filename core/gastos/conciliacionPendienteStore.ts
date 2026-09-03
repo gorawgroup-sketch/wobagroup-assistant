@@ -5,7 +5,15 @@ import type { Empresa } from "../holded/client";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_conciliaciones_pendientes";
-const TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 días — se espera que se revise en Holded y se responda pronto, no semanas después
+// Bug real encontrado en la auditoría: esto era 3 días, más largo que el
+// umbral de 48h con el que revisarCorreoNuevo.ts da por "atascado" y salta
+// el correo activo (UMBRAL_ACTIVO_ESTANCADO_MS) — una respuesta tardía a
+// "¿conciliar?" (después de esas 48h pero dentro del TTL viejo de 3 días)
+// resolvía/avanzaba la cola sobre un correo completamente distinto, el que
+// para entonces ya estaba activo. 24h, igual que el resto de los
+// "pendiente_*" de la familia, deja margen real de sobra para revisar en
+// Holded sin cruzar ese umbral.
+const TTL_MS = 24 * 60 * 60 * 1000;
 
 const HEADERS = ["id", "empresa", "monto", "fecha", "descripcionGasto", "chatId", "creadoEn", "gastoId", "moneda", "proveedor", "deColaCorreo"];
 

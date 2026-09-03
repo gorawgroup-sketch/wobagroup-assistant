@@ -389,6 +389,18 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   }
 
   const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);
-  await actualizarMessageIdGasto(propuesta.id, messageId);
+  // Bug real encontrado en la auditoría: si esta escritura (solo guarda el
+  // id del mensaje real, para poder editarlo después) fallaba, la excepción
+  // se propagaba hacia arriba como si la propuesta NUNCA se hubiera
+  // mandado — pero el mensaje con botones YA está en Telegram, es real e
+  // irreversible. Un llamador que reacciona a ese error (ej.
+  // revisarCorreoNuevo.ts, que cae al análisis genérico de correo si esto
+  // lanza) terminaría mandando una SEGUNDA propuesta para el mismo correo,
+  // dos botones vivos apuntando al mismo "pendiente" — la misma
+  // contaminación cruzada que ya se corrigió para otros casos. Un fallo acá
+  // nunca debe hacer parecer que la propuesta no se envió.
+  await actualizarMessageIdGasto(propuesta.id, messageId).catch((error) =>
+    console.error("[procesarGastoEntrante] Error guardando el messageId real de la propuesta (no crítico — la propuesta ya se mandó):", error)
+  );
   return "propuesta_enviada";
 }

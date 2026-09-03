@@ -83,7 +83,34 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       return;
     }
 
+    const deColaCorreo = propuestaPeek.correoOrigen?.deColaCorreo === true;
+
     await answerCallbackQuerySafe(callback.id, "Leyendo el documento...");
+
+    // Bug real encontrado en la auditoría: esta rama nunca consumía la
+    // propuesta de clasificación (a propósito, para poder "Guardar como
+    // conocimiento" Y "Archivar aquí" para el mismo documento fuera de la
+    // cola) — pero si el documento SÍ viene de la cola de revisión de
+    // correo, eso dejaba "Archivar aquí"/"Elegir otra carpeta" clicables
+    // durante TODA la transcripción (varios segundos, Claude vision), así
+    // que un doble-tap podía resolver el mismo adjunto dos veces (avanzando
+    // la cola dos veces, la segunda sobre un correo que ya no es este).
+    // Ahora, si viene de la cola, se le quitan los botones al mensaje
+    // original YA MISMO, antes de arrancar la transcripción — no elimina la
+    // ventana de carrera al 100% (un tap que ya estaba en camino en
+    // Telegram puede llegar de todas formas, mismo límite que ya existe en
+    // cualquier botón de este sistema) pero la reduce de "varios segundos"
+    // a la latencia de una sola llamada a Telegram. Fuera de la cola
+    // (documento subido por Telegram) se deja intacta — ahí sí tiene
+    // sentido poder guardar como conocimiento Y archivar el original.
+    if (deColaCorreo) {
+      await editTelegramMessage(
+        propuestaPeek.chatId,
+        propuestaPeek.messageId,
+        `🧠 Leyendo "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento...`,
+        []
+      ).catch((error) => console.error("[documentCallbackHandler] No se pudo limpiar los botones del mensaje original (no crítico):", error));
+    }
 
     let capturaIniciada = false;
     try {
@@ -93,7 +120,6 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
         "",
         transcripcion,
       ].join("\n");
-      const deColaCorreo = propuestaPeek.correoOrigen?.deColaCorreo === true;
       await iniciarSeleccionEmpresaCaptura(propuestaPeek.chatId, contenido, propuestaPeek.nombreArchivoOriginal, undefined, deColaCorreo);
       capturaIniciada = true;
     } catch (error) {
@@ -101,39 +127,20 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       console.error("[documentCallbackHandler] Error leyendo documento para guardar como conocimiento:", message);
       await sendTelegramMessage(
         propuestaPeek.chatId,
-        `⚠️ No se pudo leer "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}`
+        `⚠️ No se pudo leer "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}` +
+          (deColaCorreo ? " Si igual quieres archivarlo en Drive, reenvíalo — esta propuesta ya no tiene botones activos." : "")
       );
     }
 
-    // Bug real encontrado al verificar el sistema: esta rama nunca consumía
-    // la propuesta de clasificación (a propósito, para poder "Guardar como
-    // conocimiento" Y "Archivar aquí" para el mismo documento fuera de la
-    // cola) — pero si el documento SÍ viene de la cola de revisión de
-    // correo, eso deja abierta la posibilidad de que "Archivar aquí"/
-    // "Elegir otra carpeta" TAMBIÉN se presionen después y avancen la cola
-    // una segunda vez, sobre el correo que para entonces ya es otro (misma
-    // contaminación cruzada que ya se corrigió en la auditoría, en un botón
-    // que entonces no existía). Solo cuando la captura arrancó bien Y viene
-    // de la cola: se consume la propuesta acá (esta captura YA es la
-    // resolución completa de este adjunto) y se le quitan los botones al
-    // mensaje original para que no quede uno viejo, clicable, sin efecto
-    // real — en un try/catch aparte porque para este punto ya se le mandó
-    // al usuario el mensaje real de captura, un fallo acá nunca debe
-    // aparentar que la lectura del documento falló. Fuera de la cola
-    // (documento subido por Telegram) se deja intacta — ahí sí tiene
-    // sentido poder hacer ambas cosas.
-    if (capturaIniciada && propuestaPeek.correoOrigen?.deColaCorreo) {
-      try {
-        await consumirPropuestaClasificacion(id);
-        await editTelegramMessage(
-          propuestaPeek.chatId,
-          propuestaPeek.messageId,
-          `🧠 Guardando "${propuestaPeek.nombreArchivoOriginal}" como conocimiento (elige la empresa abajo).`,
-          []
-        );
-      } catch (error) {
-        console.error("[documentCallbackHandler] No se pudo consumir la propuesta / limpiar botones tras guardar como conocimiento (no crítico):", error);
-      }
+    // Se consume la propuesta de clasificación al final (best-effort — los
+    // botones ya están fuera desde arriba, esto solo evita que quede una
+    // fila huérfana en el Sheet) solo cuando la captura arrancó bien Y viene
+    // de la cola — esta captura YA es la resolución completa de este
+    // adjunto.
+    if (capturaIniciada && deColaCorreo) {
+      await consumirPropuestaClasificacion(id).catch((error) =>
+        console.error("[documentCallbackHandler] No se pudo consumir la propuesta de clasificación tras guardar como conocimiento (no crítico):", error)
+      );
     }
     return;
   }
@@ -147,12 +154,6 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
 
   if (accion === "doc_reroute") {
     await answerCallbackQuerySafe(callback.id);
-    await editTelegramMessage(
-      propuesta.chatId,
-      propuesta.messageId,
-      `✏️ Ok — respóndeme con la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}".`,
-      []
-    );
 
     // Bug real encontrado al verificar el sistema: esta rama borraba la
     // propuesta (consumirPropuestaClasificacion, arriba) y preguntaba la
@@ -161,15 +162,50 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // ni propuesta reales a los que aplicarse, así que "Elegir otra
     // carpeta" no completaba el archivado. Ahora se guarda lo necesario
     // (reclasificarDocumentoPendiente.ts, tool, retoma esto cuando el
-    // usuario responda) para poder terminarlo de verdad.
-    await guardarPendienteReclasificacion({
+    // usuario responda) para poder terminarlo de verdad — y se guarda ANTES
+    // de decirle a Carlos que responda (no después): si el guardado falla,
+    // hace falta saberlo YA, en vez de pedirle una respuesta que no va a
+    // tener dónde aterrizar (bug real encontrado en la auditoría — el orden
+    // original notificaba primero).
+    const guardado = await guardarPendienteReclasificacion({
       chatId: propuesta.chatId,
       rutaLocal: propuesta.rutaLocal,
       nombreArchivoOriginal: propuesta.nombreArchivoOriginal,
       mimeType: propuesta.mimeType,
       tipoDocumentoOriginal: propuesta.clasificacion.tipoDocumento,
       correoOrigen: propuesta.correoOrigen,
-    }).catch((error) => console.error("[documentCallbackHandler] Error guardando el pendiente de reclasificación:", error));
+    })
+      .then(() => true)
+      .catch((error) => {
+        console.error("[documentCallbackHandler] Error guardando el pendiente de reclasificación:", error);
+        return false;
+      });
+
+    if (!guardado) {
+      // Nada quedó pendiente de verdad (la propuesta original ya se borró
+      // arriba) — dejarlo "activo" solo bloquearía el resto de la cola
+      // esperando una respuesta que nunca va a completar nada. Se avisa con
+      // claridad y se avanza, igual que cualquier otro error irreversible
+      // de este flujo (mismo criterio que preguntarSiConciliar en
+      // gastoCallbackHandler.ts).
+      await editTelegramMessage(
+        propuesta.chatId,
+        propuesta.messageId,
+        `⚠️ No pude preparar "${propuesta.nombreArchivoOriginal}" para elegir otra carpeta (error guardando el pendiente). Reenvía el archivo si todavía quieres archivarlo.`,
+        []
+      );
+      if (propuesta.correoOrigen?.deColaCorreo) {
+        await avanzarColaCorreoSiActivo(propuesta.chatId);
+      }
+      return;
+    }
+
+    await editTelegramMessage(
+      propuesta.chatId,
+      propuesta.messageId,
+      `✏️ Ok — respóndeme con la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}".`,
+      []
+    );
 
     // Ya NO avanza la cola acá — "elegir otra carpeta" todavía no resolvió
     // nada, solo pospuso la decisión hasta que reclasificarDocumentoPendiente

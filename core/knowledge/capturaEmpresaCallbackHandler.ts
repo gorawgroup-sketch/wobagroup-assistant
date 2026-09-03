@@ -61,10 +61,15 @@ export async function iniciarSeleccionEmpresaCaptura(
   texto: string,
   autor?: string,
   mensajeIntro?: string,
-  // Solo core/jobs/revisarCorreoNuevo.ts pasa true acá — marca que esta
-  // captura pertenece al correo activo de la cola de revisión uno a uno,
-  // para que confirmar/cancelar la avance (ver deColaCorreo en
-  // pendienteCapturaEmpresaStore.ts).
+  // true marca que esta captura pertenece al correo activo de la cola de
+  // revisión uno a uno, para que confirmar/cancelar la avance (ver
+  // deColaCorreo en pendienteCapturaEmpresaStore.ts). Lo pasan: el camino
+  // de correo sin adjunto en core/jobs/revisarCorreoNuevo.ts, el botón
+  // "🧠 Guardar como conocimiento" de un correo (emailCallbackHandler.ts,
+  // siempre true — solo se crea desde la cola) y el mismo botón sobre un
+  // documento adjunto (documentCallbackHandler.ts, condicional según de
+  // dónde vino el documento) — comentario corregido en la auditoría, antes
+  // decía "solo" un único lugar y ya no era cierto.
   deColaCorreo?: boolean
 ): Promise<void> {
   const pregunta = mensajeIntro ? `${mensajeIntro}\n\n${mensajePregunta()}` : mensajePregunta();

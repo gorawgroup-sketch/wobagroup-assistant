@@ -20,5 +20,14 @@ import { google } from "googleapis";
  * archivo ni acordarse de repetir esto la próxima vez. Al fallar rápido en
  * vez de colgarse, el try/catch que ya existe en cada llamador (rutas HTTP,
  * revisarCorreoNuevo, etc.) puede hacer su trabajo normal.
+ *
+ * 45s, no 20s (ajustado en la auditoría posterior): el mismo timeout se
+ * aplica a TODA llamada a Google, incluida la subida real de archivos a
+ * Drive (subirArchivoADrive) — un PDF/imagen grande por conexión lenta
+ * puede legítimamente tardar más de 20s sin estar colgado, y 20s convertía
+ * esa subida lenta-pero-real en un falso error. 45s sigue siendo muchísimo
+ * menos que el cuelgue real de 184s que motivó este archivo, así que
+ * protege igual contra ese caso, con más margen para subidas grandes
+ * genuinas.
  */
-google.options({ timeout: 20_000 });
+google.options({ timeout: 45_000 });
