@@ -13,6 +13,8 @@ import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocument
 import { obtenerPendienteCorreccionGastoPorChat, consumirPendienteCorreccionGasto } from "../gastos/pendienteCorreccionGastoStore";
 import { obtenerPendienteAjusteMontoGastoPorChat, consumirPendienteAjusteMontoGasto } from "../gastos/pendienteAjusteMontoGastoStore";
 import { obtenerPendienteAccionGastoPorChat, consumirPendienteAccionGasto } from "../gastos/pendienteAccionGastoStore";
+import { obtenerPendienteSeleccionGastoPorChat, consumirPendienteSeleccionGasto } from "../gastos/pendienteSeleccionGastoStore";
+import { etiquetaAccion } from "../gastos/gastoTeclado";
 import { obtenerPendienteDesambiguacionPorChat, consumirPendienteDesambiguacion } from "../documental/disambiguationStore";
 import { obtenerPendienteEdicionBorradorPorChat, consumirPendienteEdicionBorrador } from "../gmail/emailDraftEditStore";
 import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "../fiscal/pendienteMontoStore";
@@ -177,6 +179,19 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   }
 
   try {
+    const sg = await obtenerPendienteSeleccionGastoPorChat(chatId);
+    if (sg) {
+      const [siguiente] = sg.colaAcciones;
+      items.push({
+        descripcion: `▶️ Falta tu respuesta para aplicar "${siguiente ? etiquetaAccion(siguiente) : "una acción"}" de una selección aprobada en una propuesta de gasto`,
+        creadoEn: sg.creadoEn,
+      });
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando la cola de selección de gasto (no crítico):", error);
+  }
+
+  try {
     const d = await obtenerPendienteDesambiguacionPorChat(chatId);
     if (d) items.push({ descripcion: `❓ Falta aclarar: "${truncar(d.preguntaFormulada, 60)}"`, creadoEn: d.creadoEn });
   } catch (error) {
@@ -327,6 +342,7 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
     () => consumirPendienteCorreccionGasto(chatId),
     () => consumirPendienteAjusteMontoGasto(chatId),
     () => consumirPendienteAccionGasto(chatId),
+    () => consumirPendienteSeleccionGasto(chatId),
     () => consumirPendienteEdicionBorrador(chatId),
     () => consumirPendienteMontoPago(chatId),
     () => consumirPendienteOrientacionAnotacion(chatId),

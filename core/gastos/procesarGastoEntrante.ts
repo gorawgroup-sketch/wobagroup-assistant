@@ -7,8 +7,14 @@ import {
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
 } from "../holded/write";
-import { crearPropuestaGasto, actualizarMessageIdGasto, buscarPropuestaGastoPendiente } from "./gastoProposalSheet";
+import {
+  crearPropuestaGasto,
+  actualizarMessageIdGasto,
+  buscarPropuestaGastoPendiente,
+  actualizarFlagMovimientoBancarioGasto,
+} from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
+import { construirTecladoGasto } from "./gastoTeclado";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 
@@ -50,26 +56,6 @@ export type ResultadoGastoEntrante = "propuesta_enviada" | "pendiente_datos" | "
 
 function esEmpresaHolded(empresa: string): empresa is Empresa {
   return empresa === "WOBA" || empresa === "EWORKS" || empresa === "Footprint";
-}
-
-/**
- * Pedido explícito de Carlos, tras un caso real (INDUBUILDING LUARCA): un
- * correo con una factura solo dejaba registrar el gasto y después conciliar
- * — sin poder, además, responder ese mismo correo o guardarlo como
- * conocimiento o dejar un recordatorio, aunque quisiera hacer varias cosas
- * a la vez ("puede ser 1 sola cosa... o pueden ser varias"). Solo se
- * agregan cuando el gasto vino de un correo real (entrada.correoOrigen) —
- * no tiene sentido "responder el correo" de una foto mandada por Telegram.
- * No consumen la propuesta — mismo criterio que "💰 Ajustar monto".
- */
-function construirBotonesAccionCorreo(propuestaId: string): { text: string; callback_data: string }[][] {
-  return [
-    [
-      { text: "✉️ Responder correo", callback_data: `gasto_responder:${propuestaId}` },
-      { text: "🧠 Guardar como conocimiento", callback_data: `gasto_guardarconocimiento:${propuestaId}` },
-    ],
-    [{ text: "✏️ Otras acciones (recordatorio, instrucciones...)", callback_data: `gasto_otrasacciones:${propuestaId}` }],
-  ];
 }
 
 /**
@@ -288,16 +274,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`,
     ].join("\n");
 
-    botones = candidatos.map((c, i) => [
-      { text: `✅ Es este (#${i + 1})`, callback_data: `gasto_adjuntar:${propuesta.id}:${i}` },
-    ]);
-    botones.push([{ text: "❌ Ninguno, crear nuevo", callback_data: `gasto_nuevo:${propuesta.id}` }]);
-    // Pedido explícito de Carlos: no consume la propuesta — igual que
-    // "Enseñar regla"/"Crear alerta" en documentos, para poder combinar
-    // ajustar el monto CON cualquiera de los botones de arriba, en el orden
-    // que haga falta (ver gastoCallbackHandler.ts, gasto_ajustarmonto).
-    botones.push([{ text: "💰 Ajustar monto", callback_data: `gasto_ajustarmonto:${propuesta.id}` }]);
-    if (entrada.correoOrigen) botones.push(...construirBotonesAccionCorreo(propuesta.id));
+    botones = construirTecladoGasto(propuesta, { numCandidatos: candidatos.length });
   } else {
     // No hay un documento de compra ya cargado en Holded que coincida, pero
     // eso no significa que el gasto sea nuevo de verdad — puede que el
@@ -402,6 +379,10 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // aproximado) al momento de conciliar, así que encuentra lo mismo.
     if (movimientoAproximado) movimientoBancario = movimientoAproximado;
 
+    await actualizarFlagMovimientoBancarioGasto(propuesta.id, Boolean(movimientoBancario)).catch((error) =>
+      console.error("[procesarGastoEntrante] Error guardando el flag de movimiento bancario (no crítico):", error)
+    );
+
     const notaPersonaTxt = datos.personaAsociada
       ? `${datos.personaAsociada} (identificado en este documento/correo)`
       : cuentaSugerida && cuentaSugerida.tags.length > 0
@@ -438,34 +419,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // en el match — antes el código decidía solo por él (o una u otra,
     // nunca las dos). Sin movimiento confirmado, solo tiene sentido
     // "Crear" (no hay nada que conciliar todavía).
-    // Pedido explícito de Carlos, tras un caso real: una cuota de comunidad
-    // se paga a medias con otra parte, así que el monto real a registrar es
-    // solo una fracción de lo que dice la factura — "💰 Ajustar monto" NO
-    // consume la propuesta (igual que "Enseñar regla"/"Crear alerta" en
-    // documentos), así que se puede combinar con cualquiera de los botones
-    // de arriba en cualquier orden.
-    const filaAjusteMonto = [{ text: "💰 Ajustar monto", callback_data: `gasto_ajustarmonto:${propuesta.id}` }];
-    const filasAccionCorreo = entrada.correoOrigen ? construirBotonesAccionCorreo(propuesta.id) : [];
-    botones = movimientoBancario
-      ? [
-          [
-            { text: "✅ Crear", callback_data: `gasto_nuevo:${propuesta.id}` },
-            { text: "✅ Crear y conciliar", callback_data: `gasto_nuevo_conciliar:${propuesta.id}` },
-          ],
-          [{ text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` }],
-          filaAjusteMonto,
-          ...filasAccionCorreo,
-          [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
-        ]
-      : [
-          [
-            { text: "✅ Crear gasto en Holded", callback_data: `gasto_nuevo:${propuesta.id}` },
-            { text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` },
-          ],
-          filaAjusteMonto,
-          ...filasAccionCorreo,
-          [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
-        ];
+    botones = construirTecladoGasto(propuesta, { hayMovimientoBancario: Boolean(movimientoBancario) });
   }
 
   const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);

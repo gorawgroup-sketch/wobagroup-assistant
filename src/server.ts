@@ -48,10 +48,12 @@ import {
   continuarConCorreccionGasto,
   continuarConAjusteMonto,
   continuarConAccionGasto,
+  continuarConSeleccionGasto,
 } from "../core/gastos/gastoCallbackHandler";
 import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
 import { consumirPendienteAjusteMontoGasto } from "../core/gastos/pendienteAjusteMontoGastoStore";
 import { consumirPendienteAccionGasto } from "../core/gastos/pendienteAccionGastoStore";
+import { consumirPendienteSeleccionGasto } from "../core/gastos/pendienteSeleccionGastoStore";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
@@ -815,6 +817,17 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     } catch (error) {
       console.error("Error procesando otras acciones sobre una propuesta de gasto:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
+    }
+    return;
+  }
+
+  const pendienteSeleccionGasto = await consumirPendienteSeleccionGasto(incoming.chatId);
+  if (pendienteSeleccionGasto) {
+    try {
+      await continuarConSeleccionGasto(pendienteSeleccionGasto, incoming.text);
+    } catch (error) {
+      console.error("Error procesando la cola de selección de una propuesta de gasto:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu respuesta.");
     }
     return;
   }

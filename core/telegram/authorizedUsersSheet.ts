@@ -245,6 +245,16 @@ const ACCIONES_SENSIBLES = new Set([
   "doc_confirm",
   "gasto_adjuntar",
   "gasto_nuevo",
+  // Gap real encontrado en la auditoría del teclado de selección (2026-09-03):
+  // "Crear y conciliar" escribe en Holded exactamente igual que "gasto_nuevo"
+  // (de hecho comparte el mismo crearGastoYReportar) pero nunca se agregó acá
+  // — cualquier usuario autorizado, no solo superadmin, podía crearlo y
+  // conciliarlo directo. "Cancelar" no escribe nada, pero se agrega por el
+  // mismo criterio que email_descartar/doc_descartar: es una de las
+  // decisiones posibles sobre el gasto, se centraliza en superadmin igual
+  // que las demás, no solo la que escribe.
+  "gasto_nuevo_conciliar",
+  "gasto_cancelar",
   "gasto_usarcontacto",
   "gasto_crearsinproveedor",
   "evento_confirmar",
@@ -312,6 +322,17 @@ const ACCIONES_SENSIBLES = new Set([
   "gasto_responder",
   "gasto_guardarconocimiento",
   "gasto_otrasacciones",
+  // "▶️ Aprobar selección" (teclado de selección múltiple, ver
+  // gastoTeclado.ts) puede terminar disparando gasto_nuevo/gasto_nuevo_conciliar/
+  // gasto_cancelar/gasto_adjuntar tal cual (dispararDecisionFinal en
+  // gastoCallbackHandler.ts arma ese callback_data internamente y lo procesa
+  // de nuevo) — sin este gate, cualquier usuario autorizado podría marcar
+  // "Crear gasto" y aprobar, saltándose por completo el filtro de superadmin
+  // que protege esas acciones cuando se tocan directo. "gasto_toggle"
+  // (marcar/desmarcar un check) NO se agrega — no ejecuta nada por sí solo,
+  // mismo criterio que gasto_corregir/gasto_ajustarmonto (pre-pasos, no
+  // decisiones ni escrituras).
+  "gasto_aprobar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

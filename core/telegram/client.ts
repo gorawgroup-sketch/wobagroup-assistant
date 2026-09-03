@@ -485,6 +485,42 @@ export async function editTelegramMessage(
   }
 }
 
+/**
+ * Cambia SOLO los botones de un mensaje ya enviado, sin tocar su texto —
+ * usa editMessageReplyMarkup (distinto de editMessageText), pedido
+ * explícito de Carlos para el teclado de selección de acciones de gasto
+ * (ver gastoTeclado.ts): marcar/desmarcar un check no debe reescribir ni
+ * reformatear el texto original de la propuesta, solo repintar los botones.
+ */
+export async function editTelegramMessageReplyMarkup(
+  chatId: number,
+  messageId: number,
+  buttons: InlineKeyboardButton[][]
+): Promise<void> {
+  const token = getBotToken();
+  const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageReplyMarkup`;
+
+  const response = await fetchConReintento(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: buttons },
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    // Telegram devuelve 400 "message is not modified" cuando el teclado
+    // mandado es idéntico al que ya está — no es un error real, pasa cada
+    // vez que una selección vuelve al mismo estado que ya se había pintado
+    // (ej. marcar y desmarcar el mismo check dos veces seguidas).
+    if (response.status === 400 && /message is not modified/i.test(errBody)) return;
+    throw new Error(`Error editando los botones de un mensaje de Telegram (${response.status}): ${errBody}`);
+  }
+}
+
 /** Igual que editTelegramMessage, pero con título fijo + cuerpo largo colapsado — ver sendTelegramMessageExpandable. */
 export async function editTelegramMessageExpandable(
   chatId: number,

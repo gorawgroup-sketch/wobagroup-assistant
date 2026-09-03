@@ -34,6 +34,8 @@ const HEADERS = [
   "numeroDocumento",
   "montoOriginal",
   "correoOrigenJSON",
+  "seleccionAccionesJSON",
+  "hayMovimientoBancario",
 ];
 
 export interface PropuestaGasto {
@@ -106,6 +108,26 @@ export interface PropuestaGasto {
    * foto mandada por Telegram).
    */
   correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
+  /**
+   * Acciones actualmente marcadas (☑️) en el teclado de selección — ver
+   * gastoTeclado.ts. Pedido explícito de Carlos: "activar una o varias y
+   * luego aprobar" — tocar un check solo cambia este campo (no ejecuta
+   * nada); solo "▶️ Aprobar selección" (gasto_aprobar en
+   * gastoCallbackHandler.ts) lee esto y ejecuta todo lo marcado junto.
+   * Estado puramente de UI, no de negocio — vacío/undefined = nada
+   * marcado todavía.
+   */
+  seleccionAcciones?: string[];
+  /**
+   * true si al mandar la propuesta se encontró un movimiento bancario real
+   * sin conciliar que coincide — decide si el teclado de selección
+   * (gastoTeclado.ts) ofrece "Crear y conciliar" además de "Crear". Se
+   * guarda acá (en vez de recalcularlo) porque el teclado se REPINTA en
+   * cada toque de un check (ver gasto_toggle, gastoCallbackHandler.ts) y
+   * repetir la búsqueda de movimiento bancario en cada toque sería trabajo
+   * repetido para un dato que no cambia mientras la propuesta esté viva.
+   */
+  hayMovimientoBancario?: boolean;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -158,7 +180,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:V1`,
+    range: `${TAB_NAME}!A1:X1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -205,6 +227,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     correoOrigen = undefined;
   }
 
+  let seleccionAcciones: string[] | undefined;
+  try {
+    seleccionAcciones = row[22] ? JSON.parse(String(row[22])) : undefined;
+  } catch {
+    seleccionAcciones = undefined;
+  }
+
   return {
     id: String(row[0]),
     empresa: row[1] as Empresa,
@@ -228,6 +257,8 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     numeroDocumento: row[19] ? String(row[19]) : undefined,
     montoOriginal: row[20] !== undefined && row[20] !== "" ? Number(row[20]) : undefined,
     correoOrigen,
+    seleccionAcciones,
+    hayMovimientoBancario: row[23] === true || row[23] === "true",
   };
 }
 
@@ -255,6 +286,8 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.numeroDocumento ?? "",
     p.montoOriginal ?? "",
     p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
+    p.seleccionAcciones && p.seleccionAcciones.length > 0 ? JSON.stringify(p.seleccionAcciones) : "",
+    p.hayMovimientoBancario === true ? "true" : "",
   ];
 }
 
@@ -270,7 +303,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:V10000`,
+    range: `${TAB_NAME}!A2:X10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -327,7 +360,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:V`,
+    range: `${TAB_NAME}!A:X`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },
@@ -385,6 +418,83 @@ export async function actualizarMontoPropuestaGasto(id: string, nuevoMonto: numb
     range: `${TAB_NAME}!O${match.rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [[JSON.stringify(nuevasLineas)]] },
+  });
+  return true;
+}
+
+/**
+ * Marca/desmarca acciones en el teclado de selección (ver gastoTeclado.ts)
+ * — puramente estado de UI, no dispara nada por sí sola. No consume la
+ * propuesta (mismo criterio que actualizarMontoPropuestaGasto).
+ */
+export async function actualizarSeleccionAccionesGasto(id: string, acciones: string[]): Promise<boolean> {
+  const todas = await leerTodas();
+  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!W${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[acciones.length > 0 ? JSON.stringify(acciones) : ""]] },
+  });
+  return true;
+}
+
+/**
+ * El resultado de la búsqueda de movimiento bancario ocurre DESPUÉS de
+ * crearPropuestaGasto (solo aplica en la rama sin candidatos de Holded, ver
+ * procesarGastoEntrante.ts) — se guarda con esta escritura de un solo campo
+ * en vez de reordenar esa función, para no arriesgar el resto de su lógica.
+ */
+export async function actualizarFlagMovimientoBancarioGasto(id: string, hayMovimiento: boolean): Promise<boolean> {
+  const todas = await leerTodas();
+  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!X${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[hayMovimiento ? "true" : ""]] },
+  });
+  return true;
+}
+
+/**
+ * Pedido explícito de Carlos: "Corregir clasificación" pasa a ser un
+ * ajuste de campos NO consumidor — antes creaba el gasto de inmediato con
+ * la corrección (ver el comentario histórico en continuarConCorreccionGasto,
+ * gastoCallbackHandler.ts), lo que impedía combinarla con otras acciones
+ * (ej. corregir Y ajustar el monto Y DESPUÉS crear, todo en una sola
+ * aprobación). Mismo patrón que actualizarMontoPropuestaGasto: actualiza en
+ * el lugar, deja la propuesta viva para que "Crear gasto" (más tarde, en la
+ * misma aprobación o después) la relea ya corregida.
+ */
+export async function actualizarClasificacionPropuestaGasto(id: string, empresa: Empresa, concepto: string): Promise<boolean> {
+  const todas = await leerTodas();
+  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const actual = match.propuesta;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!B${match.rowIndex}:G${match.rowIndex}`,
+    valueInputOption: "RAW",
+    // B..G en orden: empresa, proveedor, monto, moneda, fecha, concepto —
+    // Sheets reemplaza el rango COMPLETO que se le pasa (no solo las celdas
+    // que cambian), así que se relee la fila actual para no pisar
+    // proveedor/monto/moneda/fecha con un update parcial.
+    requestBody: { values: [[empresa, actual.proveedor, actual.monto, actual.moneda, actual.fecha, concepto]] },
   });
   return true;
 }

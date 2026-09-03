@@ -2,6 +2,7 @@ import { unlink } from "node:fs/promises";
 import {
   answerCallbackQuery,
   editTelegramMessage,
+  editTelegramMessageReplyMarkup,
   sendTelegramMessage,
   sendTelegramMessageSmart,
   sendTelegramMessageWithButtons,
@@ -13,8 +14,11 @@ import {
   crearPropuestaGasto,
   actualizarMessageIdGasto,
   actualizarMontoPropuestaGasto,
+  actualizarSeleccionAccionesGasto,
+  actualizarClasificacionPropuestaGasto,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
+import { construirTecladoGasto, esAccionFinal, necesitaTexto, indiceCandidato, etiquetaAccion } from "./gastoTeclado";
 import { guardarPendienteCorreccionGasto, type PendienteCorreccionGasto } from "./pendienteCorreccionGastoStore";
 import {
   guardarPendienteAjusteMontoGasto,
@@ -26,6 +30,7 @@ import {
   consumirPendienteAccionGasto,
   type PendienteAccionGasto,
 } from "./pendienteAccionGastoStore";
+import { guardarPendienteSeleccionGasto, type PendienteSeleccionGasto } from "./pendienteSeleccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
 import {
@@ -336,10 +341,11 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   // Pedido explícito de Carlos, tras un caso real (INDUBUILDING LUARCA): una
   // factura por correo solo dejaba registrar el gasto, sin poder ADEMÁS
   // responder ese correo, guardarlo como conocimiento o dejar un
-  // recordatorio — "puede ser 1 sola cosa... o pueden ser varias". Los tres
-  // botones de abajo son side-actions no consumidoras (mismo criterio que
-  // "💰 Ajustar monto") — solo existen cuando propuesta.correoOrigen viene
-  // seteado (ver construirBotonesAccionCorreo en procesarGastoEntrante.ts).
+  // recordatorio — "puede ser 1 sola cosa... o pueden ser varias". Estas tres
+  // ramas quedan para mensajes VIEJOS ya en vuelo con los botones standalone
+  // de antes del teclado de selección — solo existían cuando
+  // propuesta.correoOrigen venía seteado (ver construirTecladoGasto en
+  // gastoTeclado.ts para el teclado nuevo, que ya no manda estos botones).
   if (accion === "gasto_responder") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta || !propuesta.correoOrigen) {
@@ -347,17 +353,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Redactando...");
-    const contexto =
-      `Factura/gasto detectado en este correo: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ` +
-      `${propuesta.fecha}, concepto: ${propuesta.concepto}.`;
-    await generarBorradorYOfrecer(
-      propuesta.chatId,
-      propuesta.correoOrigen.de,
-      propuesta.correoOrigen.asunto,
-      propuesta.correoOrigen.threadId,
-      propuesta.correoOrigen.messageIdHeader,
-      contexto
-    );
+    await ejecutarResponderCorreo(propuesta);
     return;
   }
 
@@ -368,21 +364,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Leyendo el correo...");
-    try {
-      const cuerpo = propuesta.correoOrigen.mensajeIdGmail
-        ? await obtenerCuerpoCompletoCorreo(propuesta.correoOrigen.mensajeIdGmail)
-        : "(no se pudo releer el cuerpo completo — sin id de mensaje de Gmail)";
-      const contenido = [`De: ${propuesta.correoOrigen.de}`, `Asunto: ${propuesta.correoOrigen.asunto}`, "", cuerpo].join("\n");
-      // false: esto es una side-action sobre una propuesta de gasto, no una
-      // de las 4 decisiones de la cola de revisión de correo — el avance de
-      // esa cola ya lo maneja la resolución del gasto en sí (deColaCorreo),
-      // pasar true acá la avanzaría DOS veces.
-      await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.correoOrigen.de, undefined, false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("[gastoCallbackHandler] Error preparando la captura del correo de un gasto:", message);
-      await sendTelegramMessage(propuesta.chatId, `⚠️ No pude leer "${propuesta.correoOrigen.asunto}" para guardarlo como conocimiento.`);
-    }
+    await ejecutarGuardarConocimiento(propuesta);
     return;
   }
 
@@ -399,6 +381,16 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         `(ej. "prográmame un recordatorio para conciliar mañana", o combina varias cosas en el mismo mensaje).`
     );
     await guardarPendienteAccionGasto(propuesta.chatId, propuesta.id);
+    return;
+  }
+
+  if (accion === "gasto_toggle") {
+    await handleGastoToggleCallback(callback, propuestaId, extra);
+    return;
+  }
+
+  if (accion === "gasto_aprobar") {
+    await handleGastoAprobarCallback(callback, propuestaId);
     return;
   }
 
@@ -585,6 +577,264 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   }
 
   await answerCallbackQuerySafe(callback.id);
+}
+
+/**
+ * Marca/desmarca un check del teclado de selección (ver gastoTeclado.ts) —
+ * pedido explícito de Carlos, tras probar la primera versión con botones
+ * que actuaban al toque: "al presionar una [alternativa] ya se elimina la
+ * posibilidad de irse por otra... deberás dejar la posibilidad de activar
+ * una o varias y luego aprobar". NUNCA ejecuta nada — solo actualiza
+ * seleccionAcciones y repinta el MISMO mensaje (editTelegramMessageReplyMarkup,
+ * nunca editTelegramMessage, para no tocar el texto original de la propuesta).
+ */
+async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propuestaId: string, key: string | undefined): Promise<void> {
+  if (!key) {
+    await answerCallbackQuerySafe(callback.id);
+    return;
+  }
+
+  const propuesta = await obtenerPropuestaGasto(propuestaId);
+  if (!propuesta) {
+    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+    return;
+  }
+
+  const seleccion = new Set(propuesta.seleccionAcciones ?? []);
+  if (esAccionFinal(key)) {
+    // Grupo mutuamente excluyente (crear/crearconciliar/cancelar/nuevo/adjuntar_<i>)
+    // — marcar uno desmarca cualquier otro del mismo grupo, como un radio button.
+    if (seleccion.has(key)) {
+      seleccion.delete(key);
+    } else {
+      for (const k of Array.from(seleccion)) if (esAccionFinal(k)) seleccion.delete(k);
+      seleccion.add(key);
+    }
+  } else if (seleccion.has(key)) {
+    seleccion.delete(key);
+  } else {
+    seleccion.add(key);
+  }
+
+  const nuevaSeleccion = Array.from(seleccion);
+  await actualizarSeleccionAccionesGasto(propuesta.id, nuevaSeleccion);
+  await answerCallbackQuerySafe(callback.id);
+
+  const propuestaActualizada: PropuestaGasto = { ...propuesta, seleccionAcciones: nuevaSeleccion };
+  const teclado = construirTecladoGasto(propuestaActualizada, {
+    numCandidatos: propuesta.candidatos.length > 0 ? propuesta.candidatos.length : undefined,
+    hayMovimientoBancario: propuesta.hayMovimientoBancario,
+  });
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, teclado).catch((error) =>
+    console.error("[gastoCallbackHandler] Error repintando el teclado de selección (no crítico):", error)
+  );
+}
+
+/**
+ * Pregunta a mostrar para cada acción que necesita texto libre — reutilizada
+ * tanto por "▶️ Aprobar selección" (primera pregunta) como por
+ * continuarConSeleccionGasto (preguntas siguientes en la misma cola).
+ */
+function preguntaParaAccion(key: string, propuesta: PropuestaGasto): string {
+  switch (key) {
+    case "corregir":
+      return `✏️ Corregir clasificación — dime la empresa y el concepto correctos (ej. "EWORKS, servicio de limpieza").`;
+    case "ajustarmonto":
+      return (
+        `💰 Ajustar monto — dime el monto real a registrar para "${propuesta.proveedor}" (ej. "251.30", o "la mitad" ` +
+        `de ${propuesta.monto} ${propuesta.moneda}).`
+      );
+    case "otrasacciones":
+      return (
+        `✏️ Otras acciones — dime qué más quieres hacer con el correo "${propuesta.correoOrigen?.asunto ?? ""}" ` +
+        `(ej. "prográmame un recordatorio para conciliar mañana", o combina varias cosas en el mismo mensaje).`
+      );
+    default:
+      return `Dime lo que falta para "${etiquetaAccion(key)}".`;
+  }
+}
+
+/**
+ * "Dispara" una decisión final (crear/crear y conciliar/cancelar/adjuntar a
+ * un candidato/crear nuevo) RECICLANDO tal cual el código ya existente y
+ * auditado de gasto_nuevo/gasto_nuevo_conciliar/gasto_cancelar/gasto_adjuntar
+ * — arma un callback_data equivalente y lo pasa por handleGastoCallback de
+ * nuevo, en vez de reimplementar esa lógica (manejo de contacto no
+ * encontrado, fecha bloqueada, pregunta de conciliar, avance de la cola de
+ * correo...) por segunda vez. `from`/`id` son placeholders: handleGastoCallback
+ * nunca los lee (solo lee `data`), y un segundo answerCallbackQuery con un id
+ * que no corresponde a un callback real de Telegram simplemente falla y se
+ * ignora (ver answerCallbackQuerySafe) — no tiene efecto visible.
+ */
+async function dispararDecisionFinal(propuesta: PropuestaGasto, decisionKey: string): Promise<void> {
+  const indice = indiceCandidato(decisionKey);
+  const data =
+    decisionKey === "crear" || decisionKey === "nuevo"
+      ? `gasto_nuevo:${propuesta.id}`
+      : decisionKey === "crearconciliar"
+        ? `gasto_nuevo_conciliar:${propuesta.id}`
+        : decisionKey === "cancelar"
+          ? `gasto_cancelar:${propuesta.id}`
+          : indice !== undefined
+            ? `gasto_adjuntar:${propuesta.id}:${indice}`
+            : undefined;
+  if (!data) return;
+
+  await handleGastoCallback({
+    id: `seleccion_${propuesta.id}_${Date.now()}`,
+    from: { id: propuesta.chatId, is_bot: false },
+    data,
+  });
+}
+
+/**
+ * "▶️ Aprobar selección" — ejecuta TODO lo marcado en el teclado de
+ * selección, junto. Pedido explícito de Carlos: "activar una o varias y
+ * luego aprobar para que la inteligencia del sistema proceda". Orden fijo,
+ * pensado para que una decisión final (Crear/Cancelar) siempre use los
+ * datos YA corregidos/ajustados, nunca los originales:
+ * 1) Side-actions sin texto (responder/guardarconocimiento) — se disparan
+ *    ya mismo, no dependen de ningún otro campo de la propuesta.
+ * 2) Side-actions con texto (corregir, ajustarmonto, otrasacciones) — se
+ *    piden de a una, nunca todas juntas (ver pendienteSeleccionGastoStore.ts).
+ * 3) Decisión final (crear/crear y conciliar/cancelar/adjuntar/nuevo) — se
+ *    dispara AL FINAL, una vez vacía la cola de texto (o de inmediato si no
+ *    había ninguna acción de texto marcada).
+ */
+async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propuestaId: string): Promise<void> {
+  const propuesta = await obtenerPropuestaGasto(propuestaId);
+  if (!propuesta) {
+    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+    return;
+  }
+
+  const seleccion = propuesta.seleccionAcciones ?? [];
+  if (seleccion.length === 0) {
+    await answerCallbackQuerySafe(callback.id, "No marcaste ninguna acción todavía — marca al menos una y vuelve a aprobar.");
+    return;
+  }
+
+  await answerCallbackQuerySafe(callback.id, "Aplicando...");
+
+  // Se limpia de inmediato — evita que un futuro "Aprobar selección" (ej.
+  // tras decidir Crear más tarde) vuelva a disparar responder/guardarconocimiento
+  // una SEGUNDA vez, y repinta el teclado ya sin checks para la próxima ronda.
+  await actualizarSeleccionAccionesGasto(propuesta.id, []).catch((error) =>
+    console.error("[gastoCallbackHandler] Error limpiando la selección aplicada (no crítico):", error)
+  );
+  const tecladoLimpio = construirTecladoGasto(
+    { ...propuesta, seleccionAcciones: [] },
+    { numCandidatos: propuesta.candidatos.length > 0 ? propuesta.candidatos.length : undefined, hayMovimientoBancario: propuesta.hayMovimientoBancario }
+  );
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, tecladoLimpio).catch((error) =>
+    console.error("[gastoCallbackHandler] Error repintando el teclado tras aprobar (no crítico):", error)
+  );
+
+  const resumen: string[] = [];
+
+  // propuesta.correoOrigen: por el teclado real (construirTecladoGasto) estos
+  // dos checks solo existen cuando hay correoOrigen — el guard es defensivo
+  // (ej. un callback_data armado a mano) para no reportar "ya en camino"
+  // cuando ejecutarResponderCorreo/ejecutarGuardarConocimiento en realidad
+  // no hicieron nada (las dos ya no-opean en silencio sin correoOrigen).
+  if (seleccion.includes("responder") && propuesta.correoOrigen) {
+    await ejecutarResponderCorreo(propuesta).catch((error) =>
+      console.error("[gastoCallbackHandler] Error ejecutando 'Responder correo' desde Aprobar selección:", error)
+    );
+    resumen.push("✉️ Responder correo — ya en camino.");
+  }
+  if (seleccion.includes("guardarconocimiento") && propuesta.correoOrigen) {
+    await ejecutarGuardarConocimiento(propuesta).catch((error) =>
+      console.error("[gastoCallbackHandler] Error ejecutando 'Guardar como conocimiento' desde Aprobar selección:", error)
+    );
+    resumen.push("🧠 Guardar como conocimiento — en curso.");
+  }
+
+  const colaTexto = ["corregir", "ajustarmonto", "otrasacciones"].filter((k) => necesitaTexto(k) && seleccion.includes(k));
+  const decisionFinal = seleccion.find((k) => esAccionFinal(k));
+
+  if (colaTexto.length > 0) {
+    await guardarPendienteSeleccionGasto(propuesta.chatId, propuesta.id, colaTexto, decisionFinal);
+    const restantes = colaTexto.slice(1).map((k) => etiquetaAccion(k));
+    await sendTelegramMessage(
+      propuesta.chatId,
+      [
+        ...resumen,
+        `Marcaste ${colaTexto.map((k) => etiquetaAccion(k)).join(", ")}${decisionFinal ? ` y "${etiquetaAccion(decisionFinal)}"` : ""} — voy preguntando de a una, en orden.`,
+        preguntaParaAccion(colaTexto[0], propuesta),
+        restantes.length > 0 ? `(Después te pregunto lo que falte para: ${restantes.join(", ")}.)` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    );
+    return;
+  }
+
+  if (resumen.length > 0) {
+    await sendTelegramMessage(propuesta.chatId, resumen.join("\n"));
+  }
+
+  if (decisionFinal) {
+    await dispararDecisionFinal(propuesta, decisionFinal);
+  }
+}
+
+/**
+ * Continúa la cola secuencial de texto libre tras "▶️ Aprobar selección"
+ * (ver handleGastoAprobarCallback) — aplica UNA acción por mensaje, nunca
+ * intenta repartir un solo texto entre varias preguntas distintas. Al
+ * vaciarse la cola, dispara la decisión final marcada (si había una), ya
+ * con las correcciones/ajustes aplicados.
+ */
+export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGasto, textoUsuario: string): Promise<void> {
+  const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
+  if (!propuesta) {
+    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    return;
+  }
+
+  const [actual, ...resto] = pendiente.colaAcciones;
+  if (!actual) return;
+
+  const resultado =
+    actual === "corregir"
+      ? await aplicarTextoCorreccion(propuesta, textoUsuario)
+      : actual === "ajustarmonto"
+        ? await aplicarTextoAjusteMonto(propuesta, textoUsuario)
+        : await aplicarTextoOtrasAcciones(propuesta, textoUsuario);
+
+  if (!resultado.ok && resultado.reintentable) {
+    await guardarPendienteSeleccionGasto(pendiente.chatId, pendiente.propuestaId, pendiente.colaAcciones, pendiente.decisionFinal);
+    await sendTelegramMessage(pendiente.chatId, resultado.mensaje);
+    return;
+  }
+
+  await sendTelegramMessage(pendiente.chatId, resultado.mensaje);
+
+  if (!resultado.ok) {
+    // No reintentable (ej. la propuesta ya no existe) — no tiene sentido
+    // seguir pidiendo el resto de la cola ni disparar la decisión final.
+    return;
+  }
+
+  if (resto.length > 0) {
+    await guardarPendienteSeleccionGasto(pendiente.chatId, pendiente.propuestaId, resto, pendiente.decisionFinal);
+    const propuestaFresca = (await obtenerPropuestaGasto(pendiente.propuestaId)) ?? propuesta;
+    await sendTelegramMessage(pendiente.chatId, preguntaParaAccion(resto[0], propuestaFresca));
+    return;
+  }
+
+  if (!pendiente.decisionFinal) {
+    await sendTelegramMessage(pendiente.chatId, "✅ Listo — apliqué todo lo que marcaste.");
+    return;
+  }
+
+  const propuestaFresca = await obtenerPropuestaGasto(pendiente.propuestaId);
+  if (!propuestaFresca) {
+    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible para la decisión final que habías marcado.");
+    return;
+  }
+  await dispararDecisionFinal(propuestaFresca, pendiente.decisionFinal);
 }
 
 interface ResultadoCrearGasto {
@@ -1049,6 +1299,33 @@ async function manejarContactoNoEncontrado(
 }
 
 /**
+ * Interpreta "empresa, concepto" de texto libre — usado tanto por la
+ * corrección clásica (continuarConCorreccionGasto, que crea el gasto de
+ * inmediato) como por la nueva "Corregir clasificación" del teclado de
+ * selección (aplicarTextoCorreccion, que solo actualiza campos). Bug real
+ * encontrado al extraer esta función a un solo lugar: el chequeo original
+ * solo reconocía "WOBA"/"EWORKS" — escribir "Footprint, concepto..." se
+ * ignoraba en silencio y la empresa quedaba sin corregir, sin ningún aviso.
+ */
+function parsearCorreccionClasificacion(
+  texto: string,
+  empresaActual: PropuestaGasto["empresa"]
+): { empresa: PropuestaGasto["empresa"]; concepto: string } {
+  const [empresaRaw, ...resto] = texto.split(",");
+  const empresaTexto = empresaRaw.trim().toUpperCase();
+  const empresa: PropuestaGasto["empresa"] =
+    empresaTexto === "WOBA"
+      ? "WOBA"
+      : empresaTexto === "EWORKS"
+        ? "EWORKS"
+        : empresaTexto === "FOOTPRINT"
+          ? "Footprint"
+          : empresaActual;
+  const concepto = resto.join(",").trim() || texto.trim();
+  return { empresa, concepto };
+}
+
+/**
  * Continúa el flujo cuando el usuario responde con la corrección tras
  * pulsar "✏️ Corregir clasificación".
  */
@@ -1069,11 +1346,7 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     return;
   }
 
-  const [empresaRaw, ...resto] = textoUsuario.split(",");
-  const empresaCorregidaTexto = empresaRaw.trim().toUpperCase();
-  const empresaFinal: PropuestaGasto["empresa"] =
-    empresaCorregidaTexto === "WOBA" || empresaCorregidaTexto === "EWORKS" ? (empresaCorregidaTexto as PropuestaGasto["empresa"]) : propuesta.empresa;
-  const conceptoFinal = resto.join(",").trim() || textoUsuario.trim();
+  const { empresa: empresaFinal, concepto: conceptoFinal } = parsearCorreccionClasificacion(textoUsuario, propuesta.empresa);
 
   await sendTelegramMessage(pendiente.chatId, `🔄 Procesando "${propuesta.proveedor}" con la corrección...`);
 
@@ -1177,23 +1450,26 @@ function interpretarNuevoMonto(texto: string, montoOriginal: number): number | u
   return numero !== undefined && numero > 0 ? numero : undefined;
 }
 
-export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGasto, textoUsuario: string): Promise<void> {
-  const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
-  if (!propuesta) {
-    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
-    return;
-  }
+interface ResultadoAplicarTexto {
+  ok: boolean;
+  /** Solo cuando ok=false: si true, la MISMA pregunta se puede repetir (texto no entendido); si false, no tiene sentido reintentar (ej. la propuesta ya no existe). */
+  reintentable?: boolean;
+  mensaje: string;
+}
 
+/**
+ * Núcleo de "💰 Ajustar monto", sin enviar ningún mensaje por sí solo —
+ * usado tanto por el botón standalone (continuarConAjusteMonto, abajo) como
+ * por la cola secuencial de "▶️ Aprobar selección" (continuarConSeleccionGasto).
+ */
+async function aplicarTextoAjusteMonto(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
   const nuevoMonto = interpretarNuevoMonto(textoUsuario, propuesta.monto);
   if (nuevoMonto === undefined) {
-    // Se reinserta para poder reintentar — mismo criterio que
-    // pendienteMontoStore.ts para errores de formato del texto.
-    await guardarPendienteAjusteMontoGasto(pendiente.chatId, pendiente.propuestaId);
-    await sendTelegramMessage(
-      pendiente.chatId,
-      `No entendí "${textoUsuario}" como un monto — dime un número (ej. "251.30") o "la mitad".`
-    );
-    return;
+    return {
+      ok: false,
+      reintentable: true,
+      mensaje: `No entendí "${textoUsuario}" como un monto — dime un número (ej. "251.30") o "la mitad".`,
+    };
   }
 
   // Bug real encontrado en auditoría: con propuesta.monto <= 0, un factor de
@@ -1207,18 +1483,73 @@ export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGas
       ? propuesta.lineas.map((l) => ({ ...l, base: (l.base * nuevoMonto) / propuesta.monto }))
       : [{ concepto: propuesta.concepto, base: nuevoMonto, tipoIvaPct: 0 }];
 
-  const actualizado = await actualizarMontoPropuestaGasto(pendiente.propuestaId, nuevoMonto, nuevasLineas);
+  const actualizado = await actualizarMontoPropuestaGasto(propuesta.id, nuevoMonto, nuevasLineas);
   if (!actualizado) {
+    return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
+  }
+
+  return {
+    ok: true,
+    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.`,
+  };
+}
+
+export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGasto, textoUsuario: string): Promise<void> {
+  const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
+  if (!propuesta) {
     await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    return;
+  }
+
+  const resultado = await aplicarTextoAjusteMonto(propuesta, textoUsuario);
+  if (!resultado.ok && resultado.reintentable) {
+    // Se reinserta para poder reintentar — mismo criterio que
+    // pendienteMontoStore.ts para errores de formato del texto.
+    await guardarPendienteAjusteMontoGasto(pendiente.chatId, pendiente.propuestaId);
+    await sendTelegramMessage(pendiente.chatId, resultado.mensaje);
     return;
   }
 
   await sendTelegramMessage(
     pendiente.chatId,
-    `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ` +
-      `${nuevoMonto.toFixed(2)} ${propuesta.moneda}. Los botones de la propuesta original arriba ya usan este ` +
-      `monto — usa "✅ Crear gasto en Holded" cuando quieras, o "💰 Ajustar monto" de nuevo si hace falta corregirlo otra vez.`
+    resultado.ok
+      ? `${resultado.mensaje} Los botones de la propuesta original arriba ya usan este monto — usa "✅ Crear gasto en Holded" ` +
+        `cuando quieras, o "💰 Ajustar monto" de nuevo si hace falta corregirlo otra vez.`
+      : resultado.mensaje
   );
+}
+
+/**
+ * Continúa el flujo tras pulsar "✏️ Otras acciones" en una propuesta de
+ * gasto que vino de un correo (ver gasto_otrasacciones arriba). Mismo
+ * camino seguro que continuarConOrientacion (emailCallbackHandler.ts):
+ * pasa por askClaude con su registro de tools ya existente (proponer envío
+ * de correo, proponer evento/recordatorio...), nunca ejecuta nada fuera de
+ * eso — así "responde el correo Y prográmame un recordatorio" en un solo
+ * mensaje puede resolver las dos cosas en la misma llamada. A diferencia de
+ * continuarConOrientacion, NUNCA llama avanzarColaCorreoSiActivo — esto es
+ * una side-action sobre una propuesta de gasto todavía pendiente, no una
+ * decisión que resuelva el correo activo de la cola (eso lo hace
+ * gasto_nuevo/gasto_cancelar, que sí avanzan cuando deColaCorreo).
+ */
+/** Núcleo de "✏️ Otras acciones" — ver continuarConAccionGasto/continuarConSeleccionGasto (reutilizado por los dos). */
+async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
+  if (!propuesta.correoOrigen) {
+    return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
+  }
+
+  const instruccion =
+    `El usuario dio instrucciones adicionales sobre un correo del que se detectó una factura/gasto. ` +
+    `Correo — De: ${propuesta.correoOrigen.de}. Asunto: ${propuesta.correoOrigen.asunto}. ` +
+    `Factura/gasto detectado: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ${propuesta.fecha}, ` +
+    `concepto: ${propuesta.concepto} (el registro del gasto en Holded ya se maneja aparte, con sus propios botones — ` +
+    `no hace falta que tú lo registres). Instrucción del usuario: ${textoUsuario}. Si es para responder el correo, ` +
+    `usa el threadId "${propuesta.correoOrigen.threadId}" y el message_id_header "${propuesta.correoOrigen.messageIdHeader}" ` +
+    `para que quede enhebrado como una respuesta real. Investiga y ejecuta lo que corresponda con las herramientas ` +
+    `disponibles, y reporta el resultado.`;
+
+  const respuesta = await askClaude(instruccion, propuesta.chatId);
+  return { ok: true, mensaje: respuesta };
 }
 
 /**
@@ -1245,16 +1576,62 @@ export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, t
     (error) => console.error("[gastoCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error)
   );
 
-  const instruccion =
-    `El usuario dio instrucciones adicionales sobre un correo del que se detectó una factura/gasto. ` +
-    `Correo — De: ${propuesta.correoOrigen.de}. Asunto: ${propuesta.correoOrigen.asunto}. ` +
-    `Factura/gasto detectado: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ${propuesta.fecha}, ` +
-    `concepto: ${propuesta.concepto} (el registro del gasto en Holded ya se maneja aparte, con sus propios botones — ` +
-    `no hace falta que tú lo registres). Instrucción del usuario: ${textoUsuario}. Si es para responder el correo, ` +
-    `usa el threadId "${propuesta.correoOrigen.threadId}" y el message_id_header "${propuesta.correoOrigen.messageIdHeader}" ` +
-    `para que quede enhebrado como una respuesta real. Investiga y ejecuta lo que corresponda con las herramientas ` +
-    `disponibles, y reporta el resultado.`;
+  const resultado = await aplicarTextoOtrasAcciones(propuesta, textoUsuario);
+  await sendTelegramMessageSmart(pendiente.chatId, resultado.mensaje, undefined, `✅ ${propuesta.correoOrigen.asunto} (${propuesta.correoOrigen.de})`);
+}
 
-  const respuesta = await askClaude(instruccion, pendiente.chatId);
-  await sendTelegramMessageSmart(pendiente.chatId, respuesta, undefined, `✅ ${propuesta.correoOrigen.asunto} (${propuesta.correoOrigen.de})`);
+/**
+ * Núcleo de "✏️ Corregir clasificación" en su forma NO consumidora (teclado
+ * de selección) — a diferencia de continuarConCorreccionGasto (el botón
+ * standalone viejo, que crea el gasto de inmediato), esto SOLO actualiza
+ * empresa/concepto y deja la propuesta viva.
+ */
+async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
+  const { empresa, concepto } = parsearCorreccionClasificacion(textoUsuario, propuesta.empresa);
+  const actualizado = await actualizarClasificacionPropuestaGasto(propuesta.id, empresa, concepto);
+  if (!actualizado) {
+    return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
+  }
+  return { ok: true, mensaje: `✏️ Clasificación corregida — empresa: ${empresa}, concepto: ${concepto}.` };
+}
+
+/**
+ * "✉️ Responder correo" y "🧠 Guardar como conocimiento" extraídos a
+ * funciones reutilizables — las usan tanto los botones standalone
+ * (gasto_responder/gasto_guardarconocimiento) como "▶️ Aprobar selección"
+ * (handleGastoAprobarCallback). Ninguna necesita texto del usuario, así que
+ * se disparan de inmediato al aprobar, sin entrar en la cola secuencial.
+ */
+async function ejecutarResponderCorreo(propuesta: PropuestaGasto): Promise<void> {
+  if (!propuesta.correoOrigen) return;
+  const contexto =
+    `Factura/gasto detectado en este correo: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ` +
+    `${propuesta.fecha}, concepto: ${propuesta.concepto}.`;
+  await generarBorradorYOfrecer(
+    propuesta.chatId,
+    propuesta.correoOrigen.de,
+    propuesta.correoOrigen.asunto,
+    propuesta.correoOrigen.threadId,
+    propuesta.correoOrigen.messageIdHeader,
+    contexto
+  );
+}
+
+async function ejecutarGuardarConocimiento(propuesta: PropuestaGasto): Promise<void> {
+  if (!propuesta.correoOrigen) return;
+  try {
+    const cuerpo = propuesta.correoOrigen.mensajeIdGmail
+      ? await obtenerCuerpoCompletoCorreo(propuesta.correoOrigen.mensajeIdGmail)
+      : "(no se pudo releer el cuerpo completo — sin id de mensaje de Gmail)";
+    const contenido = [`De: ${propuesta.correoOrigen.de}`, `Asunto: ${propuesta.correoOrigen.asunto}`, "", cuerpo].join("\n");
+    // false: esto es una side-action sobre una propuesta de gasto, no una
+    // de las 4 decisiones de la cola de revisión de correo — el avance de
+    // esa cola ya lo maneja la resolución del gasto en sí (deColaCorreo),
+    // pasar true acá la avanzaría DOS veces.
+    await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.correoOrigen.de, undefined, false);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[gastoCallbackHandler] Error preparando la captura del correo de un gasto:", message);
+    await sendTelegramMessage(propuesta.chatId, `⚠️ No pude leer "${propuesta.correoOrigen.asunto}" para guardarlo como conocimiento.`);
+  }
 }
