@@ -12,7 +12,7 @@ import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
-import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
@@ -514,6 +514,7 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
  */
 export async function handleColaCorreoSiguienteCallback(callback: TelegramCallbackQuery): Promise<void> {
   const chatId = callback.message?.chat.id;
+  const messageId = callback.message?.message_id;
 
   try {
     await answerCallbackQuery(callback.id);
@@ -522,6 +523,19 @@ export async function handleColaCorreoSiguienteCallback(callback: TelegramCallba
   }
 
   if (chatId === undefined) return;
+
+  // Pedido explícito de Carlos (mismo criterio que "▶️ Aprobar selección" en
+  // gastoCallbackHandler.ts): el botón queda inactivo de inmediato — se le
+  // quita el teclado a ESTE mensaje (nunca toca su texto) ANTES de procesar
+  // el siguiente correo, que puede tardar unos segundos (leer Gmail +
+  // clasificar) — así un segundo toque impaciente ya no tiene ningún botón
+  // que presionar, en vez de arriesgar mostrar el mismo correo dos veces.
+  if (messageId !== undefined) {
+    await editTelegramMessageReplyMarkup(chatId, messageId, []).catch((error) =>
+      console.error("[revisarCorreoNuevo] Error quitando el teclado antes de procesar (no crítico):", error)
+    );
+  }
+  await sendTelegramMessage(chatId, "🔄 Revisando el siguiente correo...").catch(() => {});
 
   await procesarSiguienteCorreoActivo(chatId);
 }
