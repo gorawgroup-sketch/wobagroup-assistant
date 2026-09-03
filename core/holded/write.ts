@@ -1301,7 +1301,18 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       items,
       ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
       ...(gasto.moneda ? { currency: gasto.moneda } : {}),
-      document_number: gasto.numeroDocumento || "00000",
+      // Bug real de gravedad alta encontrado en vivo (2026-09-03, gasto de
+      // "Santo Suadero", Footprint): el campo que de verdad acepta POST
+      // /purchases para el número de documento es "number", NO
+      // "document_number" (ese es el nombre que Holded usa al DEVOLVER el
+      // dato en un GET, pero no el que espera al crear/actualizar — mismo
+      // desajuste ya confirmado en vivo para PUT /purchases/{id}, ver
+      // editarCompraHolded). "document_number" es un campo desconocido para
+      // Holded que se ignora en silencio (sin error) — así que NINGÚN gasto
+      // creado por este sistema hasta ahora quedó con su número de
+      // documento real, sin importar que se hubiera extraído correctamente
+      // ni que se mandara "00000" de placeholder.
+      number: gasto.numeroDocumento || "00000",
     })) as { id?: string };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
