@@ -1570,7 +1570,34 @@ export interface MovimientoBancarioCandidato {
   fecha: string;
 }
 
+// Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
+// documento casi nunca pasa de verdad (procesamiento del banco, unos pocos
+// días) — se mantiene angosto para no arriesgar falsos positivos.
 const VENTANA_DIAS_MOVIMIENTO = 5;
+/**
+ * Hacia ATRÁS: bug real encontrado en vivo (billete de avión AeroMexico,
+ * Kelly Correales — vuelo 20 oct 2026, cargo real en el banco el 02 sep
+ * 2026, 48 días antes): "fecha" en una compra de viaje es la fecha del
+ * SERVICIO (el vuelo/la estadía), no la del pago — el cargo real en el
+ * banco sale semanas o meses antes. Con ±5 días hacia atrás, tanto la
+ * búsqueda exacta como la aproximada (buscarMovimientoAproximado) NUNCA
+ * podían encontrar ese movimiento real, aunque existiera sin conciliar —
+ * "conciliar" respondía que no encontraba nada cuando sí había un match
+ * clarísimo. Se ensancha SOLO hacia atrás (no hacia adelante, donde sí
+ * aplica el mismo criterio angosto de arriba) — mismo orden de magnitud
+ * que VENTANA_DIAS_BUSQUEDA_DOCUMENTOS (facturas ya viejas).
+ */
+const VENTANA_DIAS_MOVIMIENTO_ATRAS = 90;
+
+/** Ventana de búsqueda de movimientos bancarios para una fecha de compra/documento — ver comentario de las constantes arriba. */
+function ventanaBusquedaMovimiento(fecha: string): { desde: Date; hasta: Date } {
+  const fechaBase = new Date(fecha);
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO_ATRAS);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
+  return { desde, hasta };
+}
 
 /**
  * Devuelve el conjunto de monedas en las que la empresa tiene de verdad una
@@ -1635,11 +1662,7 @@ export async function buscarMovimientoSimilar(
   toleranciaEur: number = TOLERANCIA_MONTO
 ): Promise<MovimientoBancarioCandidato[]> {
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
-  const fechaBase = new Date(criterios.fecha);
-  const desde = new Date(fechaBase);
-  desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
-  const hasta = new Date(fechaBase);
-  hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
+  const { desde, hasta } = ventanaBusquedaMovimiento(criterios.fecha);
 
   const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
     items?: Array<{ id: string; archived?: boolean }>;
@@ -1749,11 +1772,7 @@ export async function buscarMovimientoAproximado(
   if (!criterios.proveedor.trim()) return [];
 
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
-  const fechaBase = new Date(criterios.fecha);
-  const desde = new Date(fechaBase);
-  desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
-  const hasta = new Date(fechaBase);
-  hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
+  const { desde, hasta } = ventanaBusquedaMovimiento(criterios.fecha);
 
   const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
     items?: Array<{ id: string; archived?: boolean }>;
