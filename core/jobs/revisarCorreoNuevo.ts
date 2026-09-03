@@ -214,7 +214,19 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
     // con 3 adjuntos necesita 3 resoluciones antes de darse por leído.
     if (correo.adjuntos.length > 0) {
       await establecerPendientesActivo(chatId, activo.id, correo.adjuntos.length);
+      let indiceAdjunto = 0;
       for (const adjunto of correo.adjuntos) {
+        indiceAdjunto += 1;
+        // Pedido explícito de Carlos, tras un caso real: un correo con 2
+        // adjuntos distintos (mismo expediente de envío marítimo) generó 2
+        // propuestas seguidas y pareció que había llegado duplicado — eran
+        // documentos reales distintos, cada uno con su propia decisión, pero
+        // nada en el mensaje lo aclaraba. Solo se agrega la nota cuando hay
+        // más de un adjunto — un correo con uno solo no la necesita.
+        const notaAdjunto =
+          correo.adjuntos.length > 1
+            ? `📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
+            : undefined;
         try {
           const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
           await mkdir(UPLOADS_DIR, { recursive: true });
@@ -259,6 +271,7 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
               mensajeIdGmail: correo.id,
               attachmentIdGmail: adjunto.attachmentId,
             },
+            notaAdjunto,
           });
 
           // Bug real encontrado en vivo: cuando procesarDocumentoLocal

@@ -16,7 +16,7 @@ import {
 import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/adminNotify";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleIncomingFile } from "../core/documental/receiveFile";
-import { handleDocumentCallback } from "../core/documental/documentCallbackHandler";
+import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { consumirPendienteReglaClasificacion } from "../core/documental/pendienteReglaClasificacionStore";
 import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStore";
@@ -624,6 +624,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     try {
       if (data.startsWith("doc_")) {
         await handleDocumentCallback(update.callback_query);
+      } else if (data.startsWith("desamb_")) {
+        await handleDesambiguacionCallback(update.callback_query);
       } else if (data.startsWith("email_")) {
         await handleEmailActionCallback(update.callback_query);
       } else if (data.startsWith("draft_")) {

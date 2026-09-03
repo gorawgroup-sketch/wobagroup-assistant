@@ -1,4 +1,4 @@
-import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { clasificarDocumento, type ClasificacionDocumento } from "./classifyFile";
 import { crearPropuestaClasificacion, actualizarMessageIdClasificacion } from "./classificationStore";
 import { guardarPendienteDesambiguacion } from "./disambiguationStore";
@@ -23,6 +23,16 @@ export interface ArchivoParaClasificar {
    * la carpeta).
    */
   esContinuacionDesambiguacion?: boolean;
+  /**
+   * Pedido explícito de Carlos, tras un caso real: un correo con 2 adjuntos
+   * distintos (una Loading Instruction y un EAD, ambos del mismo expediente
+   * de envío marítimo) mandó 2 propuestas seguidas y pareció "llegó
+   * duplicado" — no era un duplicado, eran 2 documentos reales distintos,
+   * pero nada en el mensaje lo aclaraba. Cuando el correo trae más de un
+   * adjunto, esto trae una nota tipo "Adjunto 2 de 2 de este correo" para
+   * que quede claro que son decisiones independientes, no un error.
+   */
+  notaAdjunto?: string;
 }
 
 /**
@@ -111,7 +121,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
   if (clasificacion.confianza === "baja" && !archivo.esContinuacionDesambiguacion) {
     const pregunta = clasificacion.preguntaSiAmbiguo ?? "¿A qué empresa y carpeta pertenece este documento?";
 
-    await guardarPendienteDesambiguacion({
+    const pendiente = await guardarPendienteDesambiguacion({
       chatId: archivo.chatId,
       rutaLocal: archivo.rutaLocal,
       nombreArchivoOriginal: archivo.nombreArchivoOriginal,
@@ -122,7 +132,17 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       correoOrigen: archivo.correoOrigen,
     });
 
-    await sendTelegramMessage(archivo.chatId, pregunta);
+    const textoPregunta = archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${pregunta}` : pregunta;
+
+    // Pedido explícito de Carlos: siempre debe haber forma de decir "no
+    // hagas nada con esto" en vez de verse forzado a responder o quedar
+    // atrapado. Antes esta pregunta se mandaba sin ningún botón. El id va en
+    // el callback_data (bug real de auditoría: sin id, un botón viejo de una
+    // pregunta ya reemplazada por un documento más reciente del mismo chat
+    // podía descartar el documento ACTUAL sin relación con ese botón).
+    await sendTelegramMessageWithButtons(archivo.chatId, textoPregunta, [
+      [{ text: "❌ Descartar, no hacer nada", callback_data: `desamb_descartar:${pendiente.id}` }],
+    ]);
     return;
   }
 
@@ -136,7 +156,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     correoOrigen: archivo.correoOrigen,
   });
 
-  const textoPropuesta =
+  const textoPropuestaBase =
     clasificacion.confianza === "baja"
       ? [
           `Ya te pregunté una vez y sigo sin poder ubicar con certeza dónde archivar "${archivo.nombreArchivoOriginal}" ` +
@@ -158,6 +178,8 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
           ``,
           `(${clasificacion.razon})`,
         ].join("\n");
+
+  const textoPropuesta = archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${textoPropuestaBase}` : textoPropuestaBase;
 
   const messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, [
     [
@@ -183,6 +205,11 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     // (pareceIntencionDeCaptura, arriba), pero disponible a pedido en
     // cualquier documento, no solo cuando el caption lo pide explícito.
     [{ text: "🧠 Guardar como conocimiento", callback_data: `doc_conocimiento:${propuesta.id}` }],
+    // Tercer pedido explícito de Carlos: siempre debe haber una opción de
+    // "no hagas nada con esto" — antes no existía ninguna forma de
+    // descartar un documento propuesto (a diferencia de los correos sin
+    // adjunto, que sí tienen "❌ Descartar").
+    [{ text: "❌ Descartar, no archivar", callback_data: `doc_descartar:${propuesta.id}` }],
   ]);
 
   await actualizarMessageIdClasificacion(propuesta.id, messageId);

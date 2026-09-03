@@ -1,9 +1,11 @@
+import { unlink } from "node:fs/promises";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
 import { consumirPropuestaClasificacion, obtenerPropuestaClasificacion } from "./classificationStore";
 import { archivarDocumentoEnDrive } from "./archiveFile";
 import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacionStore";
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "./pendienteReclasificacionStore";
+import { consumirPendienteDesambiguacion, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
@@ -168,6 +170,27 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     return;
   }
 
+  // Pedido explícito de Carlos: siempre debe haber una forma real de decir
+  // "no hagas nada con esto" — antes no existía ningún botón de descarte
+  // para documentos (a diferencia de los correos sin adjunto, que sí tienen
+  // "❌ Descartar"). Borra el archivo temporal local (best-effort — si ya no
+  // está, no importa) y avanza la cola si venía de ahí, igual que cualquier
+  // otro punto terminal de este flujo.
+  if (accion === "doc_descartar") {
+    await answerCallbackQuerySafe(callback.id);
+    await unlink(propuesta.rutaLocal).catch(() => {});
+    await editTelegramMessage(
+      propuesta.chatId,
+      propuesta.messageId,
+      `❌ Descartado — "${propuesta.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`,
+      []
+    );
+    if (propuesta.correoOrigen?.deColaCorreo) {
+      await avanzarColaCorreoSiActivo(propuesta.chatId);
+    }
+    return;
+  }
+
   if (accion === "doc_reroute") {
     await answerCallbackQuerySafe(callback.id);
 
@@ -256,5 +279,60 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       `⚠️ No se pudo archivar — ${propuesta.nombreArchivoOriginal}\n\n${resultado.mensaje}`,
       []
     );
+  }
+}
+
+/**
+ * Maneja el botón "❌ Descartar, no hacer nada" de la pregunta de
+ * desambiguación (ver processClassification.ts) — pedido explícito de
+ * Carlos: siempre debe existir una forma de decir "no hagas nada con esto"
+ * en vez de verse forzado a responder con empresa/carpeta o quedar
+ * atrapado. PendienteDesambiguacion no guarda messageId (a diferencia de
+ * las propuestas de clasificación), así que la confirmación se manda como
+ * mensaje nuevo en vez de editar el original.
+ *
+ * Bug real encontrado en auditoría: el callback_data trae el id del
+ * pendiente que existía cuando se mandó ESE mensaje — se verifica con
+ * obtenerPendienteDesambiguacionPorChat (lectura, sin consumir) ANTES de
+ * tocar nada, porque este store solo guarda un pendiente por chat: si un
+ * documento nuevo reemplazó al que este botón preguntaba (el usuario nunca
+ * respondió el primero y llegó un segundo antes), tocar un botón viejo no
+ * debe poder descartar el pendiente ACTUAL sin relación con ese botón.
+ */
+export async function handleDesambiguacionCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+  if (chatId === undefined) {
+    await answerCallbackQuerySafe(callback.id);
+    return;
+  }
+
+  const [, idBoton] = (callback.data ?? "").split(":");
+  await answerCallbackQuerySafe(callback.id);
+
+  const actual = await obtenerPendienteDesambiguacionPorChat(chatId);
+  if (!actual) {
+    await sendTelegramMessage(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+    return;
+  }
+
+  if (idBoton && actual.id !== idBoton) {
+    await sendTelegramMessage(
+      chatId,
+      `Ese botón ya no corresponde a la pregunta pendiente actual — hay una más reciente sin responder ("${actual.nombreArchivoOriginal}"), arriba en el chat.`
+    );
+    return;
+  }
+
+  const pendiente = await consumirPendienteDesambiguacion(chatId);
+  if (!pendiente) {
+    await sendTelegramMessage(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+    return;
+  }
+
+  await unlink(pendiente.rutaLocal).catch(() => {});
+  await sendTelegramMessage(chatId, `❌ Descartado — "${pendiente.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`);
+
+  if (pendiente.correoOrigen?.deColaCorreo) {
+    await avanzarColaCorreoSiActivo(chatId);
   }
 }

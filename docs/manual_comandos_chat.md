@@ -156,12 +156,15 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - ❌ No enviar — descarta el borrador.
 - Solo el superadministrador puede presionar "📤 Enviar así".
 
-**Sobre archivos/documentos enviados por Telegram para archivar en Drive:**
+**Sobre archivos/documentos enviados por Telegram (o adjuntos de correo) para archivar en Drive:**
 - El asistente propone una carpeta de destino con botones de aprobación (sí/no) antes de subir nada.
 - ✅ Sí, archivar aquí / ✏️ Elegir otra carpeta — las dos acciones de siempre, terminan la propuesta.
-- 📚 Enseñar regla — pide una palabra o frase clave (ej. parte del nombre del archivo o del remitente); la próxima vez que un documento de esa empresa coincida, se archiva directo en la misma carpeta **sin volver a preguntar** — es una regla determinista (se revisa antes de gastar una llamada a Claude), no una sugerencia que el asistente pueda olvidar. No consume la propuesta — "Sí, archivar aquí" sigue disponible después.
+- 📚 Enseñar regla — pide una palabra o frase clave (ej. parte del nombre del archivo o del remitente); la próxima vez que un documento de esa empresa coincida, se archiva directo en la misma carpeta **sin volver a preguntar** — es una regla determinista (se revisa antes de gastar una llamada a Claude), no una sugerencia que el asistente pueda olvidar. No consume la propuesta — "Sí, archivar aquí" sigue disponible después. No se ofrece si el sistema todavía no tiene ni siquiera la empresa clara (evita aprender una regla sobre un dato que ni el propio sistema identificó).
 - ⏰ Crear alerta — pide qué recordar y cuándo (fecha o condición, en lenguaje natural); usa el mismo programador de acciones futuras del sistema (ver sección de Calendario). Tampoco consume la propuesta.
 - 🧠 Guardar como conocimiento — a diferencia de "Enseñar regla" (que solo aprende DÓNDE archivar la próxima vez, no el contenido), este lee el documento con Claude vision, lo transcribe, y ofrece guardar ese CONTENIDO como conocimiento consultable — mismo flujo de captura con selección de empresa que el resto del sistema, nunca se guarda sin confirmar. Tampoco consume la propuesta.
+- ❌ Descartar, no archivar — no hace nada con el documento (no lo sube a Drive ni lo guarda como conocimiento); borra la copia local temporal. Termina la propuesta.
+- Si el análisis automático no logra ubicar el documento con confianza ni siquiera después de que el usuario responda una vez a la pregunta de "¿a qué empresa y carpeta pertenece?", ya NO se repite esa pregunta en texto libre indefinidamente — pasa directo a estos mismos botones (con un aviso de que ya se preguntó antes), para no quedar atrapado en un ciclo. Esa primera pregunta en texto libre también trae ahora un botón "❌ Descartar, no hacer nada" por si no hace falta archivarlo.
+- Si un correo trae **más de un adjunto**, cada uno es una propuesta independiente y trae la nota "📎 Adjunto N de M de este correo" — no es que el mismo documento haya llegado duplicado.
 
 **Sobre alertas de pagos recurrentes (seguros, IBI, Google, Salesmate, etc. — WOBA, EWORKS y Footprint, cualquier periodicidad: mensual/trimestral/semestral/anual):**
 - Cada pago llega como un mensaje individual (nunca agrupado con otros) exactamente 2 días antes, 1 día antes, y el mismo día del vencimiento — mismo esquema para pagos con día exacto y para los aproximados sin día fijo.

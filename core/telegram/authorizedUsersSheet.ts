@@ -282,6 +282,12 @@ const ACCIONES_SENSIBLES = new Set([
   "doc_regla",
   "doc_alerta",
   "doc_conocimiento",
+  // Mismo criterio que email_descartar/anotcf_descartar: "❌ Descartar" es
+  // una de las decisiones posibles sobre un documento entrante (junto a
+  // archivar/reclasificar/guardar como conocimiento) — se centraliza en
+  // superadmin igual que las demás, no solo la que escribe en Drive.
+  "doc_descartar",
+  "desamb_descartar",
   // Gap real encontrado en la auditoría del 2026-09-03: "¿Quieres
   // conciliar?" (preguntarSiConciliar en gastoCallbackHandler.ts) se agregó
   // el mismo día que se corrigió cuándo avanza la cola, pero quedó fuera de

@@ -1,7 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
 export interface PendienteDesambiguacion {
+  /**
+   * Bug real encontrado en auditoría (2026-09-03): el botón "❌ Descartar" se
+   * agregó primero SIN id (callback_data "desamb_descartar" a secas), porque
+   * este store solo guarda un pendiente por chat — parecía inambiguo. Pero
+   * un botón de una pregunta VIEJA (ya reemplazada por un documento más
+   * reciente del mismo chat) sigue visible y tocable en el historial de
+   * Telegram, y sin id no había forma de distinguir "el usuario quiere
+   * descartar ESTA pregunta" de "el usuario tocó un botón viejo" — podía
+   * descartar el documento ACTUAL sin relación con el botón. El id permite
+   * verificar que el botón tocado corresponde de verdad al pendiente vigente
+   * antes de descartar nada.
+   */
+  id: string;
   chatId: number;
   rutaLocal: string;
   nombreArchivoOriginal: string;
@@ -27,6 +41,7 @@ const TAB_NAME = "_pendientes_desambiguacion_docs";
 const TTL_MS = 24 * 60 * 60 * 1000;
 
 const HEADERS = [
+  "id",
   "chatId",
   "rutaLocal",
   "nombreArchivoOriginal",
@@ -88,7 +103,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:I1`,
+    range: `${TAB_NAME}!A1:J1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -98,30 +113,35 @@ async function ensureTab(): Promise<number> {
 }
 
 function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
-  if (!row[0]) return null;
+  if (!row[1]) return null;
 
   let correoOrigen: PendienteDesambiguacion["correoOrigen"];
   try {
-    correoOrigen = row[8] ? JSON.parse(String(row[8])) : undefined;
+    correoOrigen = row[9] ? JSON.parse(String(row[9])) : undefined;
   } catch {
     correoOrigen = undefined;
   }
 
   return {
-    chatId: Number(row[0]) || 0,
-    rutaLocal: row[1] ? String(row[1]) : "",
-    nombreArchivoOriginal: row[2] ? String(row[2]) : "",
-    mimeType: row[3] ? String(row[3]) : undefined,
-    nombreParaClasificar: row[4] ? String(row[4]) : "",
-    captionOriginal: row[5] ? String(row[5]) : undefined,
-    preguntaFormulada: row[6] ? String(row[6]) : "",
-    creadoEn: Number(row[7]) || 0,
+    // Filas de antes de agregar esta columna no tienen id — se cae al
+    // chatId+creadoEn como identificador estable de todas formas único para
+    // esa fila, en vez de dejarlo vacío.
+    id: row[0] ? String(row[0]) : `${row[1]}-${row[8]}`,
+    chatId: Number(row[1]) || 0,
+    rutaLocal: row[2] ? String(row[2]) : "",
+    nombreArchivoOriginal: row[3] ? String(row[3]) : "",
+    mimeType: row[4] ? String(row[4]) : undefined,
+    nombreParaClasificar: row[5] ? String(row[5]) : "",
+    captionOriginal: row[6] ? String(row[6]) : undefined,
+    preguntaFormulada: row[7] ? String(row[7]) : "",
+    creadoEn: Number(row[8]) || 0,
     correoOrigen,
   };
 }
 
 function pendienteToRow(p: PendienteDesambiguacion): (string | number)[] {
   return [
+    p.id,
     p.chatId,
     p.rutaLocal,
     p.nombreArchivoOriginal,
@@ -146,7 +166,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:I10000`,
+    range: `${TAB_NAME}!A2:J10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -201,9 +221,15 @@ async function purgarVencidas(todas: FilaConIndice[]): Promise<FilaConIndice[]> 
 /**
  * Guarda (reemplazando cualquier pendiente previo del mismo chat) la
  * pregunta de desambiguación que se le acaba de mandar al usuario, para
- * poder conectarla con su próxima respuesta de texto.
+ * poder conectarla con su próxima respuesta de texto. Devuelve el objeto
+ * creado (con su `id` nuevo) para que el llamador pueda incluirlo en el
+ * callback_data del botón "❌ Descartar" — así un botón viejo (de una
+ * pregunta ya reemplazada) nunca puede descartar el pendiente ACTUAL de ese
+ * chat por error (ver el comentario en la interfaz, arriba).
  */
-export async function guardarPendienteDesambiguacion(datos: Omit<PendienteDesambiguacion, "creadoEn">): Promise<void> {
+export async function guardarPendienteDesambiguacion(
+  datos: Omit<PendienteDesambiguacion, "creadoEn" | "id">
+): Promise<PendienteDesambiguacion> {
   const todas = await leerTodas();
   const vigentes = await purgarVencidas(todas);
 
@@ -216,15 +242,17 @@ export async function guardarPendienteDesambiguacion(datos: Omit<PendienteDesamb
   const sheets = getClient();
   await ensureTab();
 
-  const pendiente: PendienteDesambiguacion = { ...datos, creadoEn: Date.now() };
+  const pendiente: PendienteDesambiguacion = { ...datos, id: randomUUID(), creadoEn: Date.now() };
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:I`,
+    range: `${TAB_NAME}!A:J`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [pendienteToRow(pendiente)] },
   });
+
+  return pendiente;
 }
 
 /**

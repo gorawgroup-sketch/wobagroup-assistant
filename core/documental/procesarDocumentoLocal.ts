@@ -20,6 +20,14 @@ export interface DocumentoLocalEntrante {
    * contestar.
    */
   correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string };
+  /**
+   * Pedido explícito de Carlos, tras un caso real: un correo con 2 adjuntos
+   * distintos (mismo expediente de envío marítimo) mandó 2 propuestas
+   * seguidas y pareció que había llegado duplicado — eran 2 documentos
+   * reales distintos, pero nada lo aclaraba. Se propaga hasta el mensaje
+   * final para que quede explícito ("Adjunto 2 de 2 de este correo").
+   */
+  notaAdjunto?: string;
 }
 
 /**
@@ -68,6 +76,7 @@ export async function procesarDocumentoLocal(
     nombreParaClasificar: entrada.nombreParaClasificar,
     captionEfectivo: entrada.captionEfectivo,
     correoOrigen: entrada.correoOrigen,
+    notaAdjunto: entrada.notaAdjunto,
   });
   return "archivo";
 }
