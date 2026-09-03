@@ -48,3 +48,9 @@ export async function consumirPendienteEdicionBorrador(
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   return fila.pendiente;
 }
+
+/** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
+export async function obtenerPendienteEdicionBorradorPorChat(chatId: number): Promise<PendienteEdicionBorrador | undefined> {
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.pendiente.chatId === chatId)?.pendiente;
+}

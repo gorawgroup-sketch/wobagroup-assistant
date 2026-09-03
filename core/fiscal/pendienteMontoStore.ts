@@ -63,3 +63,9 @@ export async function consumirPendienteMontoPago(chatId: number): Promise<Pendie
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   return fila.pendiente;
 }
+
+/** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
+export async function obtenerPendienteMontoPagoPorChat(chatId: number): Promise<PendienteMontoPago | undefined> {
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.pendiente.chatId === chatId)?.pendiente;
+}

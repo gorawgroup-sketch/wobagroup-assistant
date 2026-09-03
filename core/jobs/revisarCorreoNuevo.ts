@@ -447,21 +447,3 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
   await procesarSiguienteCorreoActivo(chatId);
 }
 
-/**
- * Pedido explícito de Carlos: al final del día (7pm), si todavía queda algo
- * sin resolver en la cola de revisión de correo, avisa cuántos — para que
- * sepa el tamaño real del backlog sin tener que contarlo él mismo. No avisa
- * nada si ya está al día (quedan 0).
- */
-export async function avisarPendientesCorreo7pm(): Promise<void> {
-  const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
-  if (!chatId) return;
-
-  const quedan = await contarPendientesTotal(chatId);
-  if (quedan === 0) return;
-
-  await sendTelegramMessage(
-    chatId,
-    `🕖 Fin del día — quedan ${quedan} correo${quedan === 1 ? "" : "s"} sin leer por resolver.`
-  ).catch((error) => console.error("[revisarCorreoNuevo] Error mandando el aviso de las 7pm:", error));
-}

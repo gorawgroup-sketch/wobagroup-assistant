@@ -158,6 +158,20 @@ export async function contarPendientesTotal(chatId: number): Promise<number> {
 }
 
 /**
+ * Combina contarPendientesTotal + obtenerActivoActual en una sola lectura de
+ * la hoja — para el resumen diario (core/jobs/resumenPendientesDiario.ts),
+ * que antes las llamaba por separado y leía la misma pestaña dos veces.
+ */
+export async function obtenerResumenColaPorChat(
+  chatId: number
+): Promise<{ total: number; activo: ItemColaCorreo | undefined }> {
+  const todas = await leerTodas();
+  const deEsteChat = todas.filter((f) => f.item.chatId === chatId);
+  const activo = deEsteChat.find((f) => f.item.estado === "activo")?.item;
+  return { total: deEsteChat.length, activo };
+}
+
+/**
  * Toma el correo más antiguo de la cola (fechaOrden ascendente) y lo pasa a
  * "activo" — el llamador todavía debe fijar pendientesRestantes (ver
  * establecerPendientesActivo) una vez que sepa cuántas decisiones hacen

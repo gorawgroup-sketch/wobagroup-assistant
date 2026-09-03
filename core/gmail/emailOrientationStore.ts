@@ -64,3 +64,11 @@ export async function consumirPendienteOrientacionCorreo(
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   return fila.pendiente;
 }
+
+/** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
+export async function obtenerPendienteOrientacionCorreoPorChat(
+  chatId: number
+): Promise<PendienteOrientacionCorreo | undefined> {
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.pendiente.chatId === chatId)?.pendiente;
+}

@@ -62,3 +62,11 @@ export async function consumirPendienteOrientacionAnotacion(
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   return fila.pendiente;
 }
+
+/** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
+export async function obtenerPendienteOrientacionAnotacionPorChat(
+  chatId: number
+): Promise<PendienteOrientacionAnotacion | undefined> {
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.pendiente.chatId === chatId)?.pendiente;
+}

@@ -242,3 +242,10 @@ export async function consumirPendienteDesambiguacion(chatId: number): Promise<P
   await eliminarFila(match.rowIndex);
   return match.pendiente;
 }
+
+/** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
+export async function obtenerPendienteDesambiguacionPorChat(chatId: number): Promise<PendienteDesambiguacion | undefined> {
+  const todas = await leerTodas();
+  const vigentes = await purgarVencidas(todas);
+  return vigentes.find(({ pendiente }) => pendiente.chatId === chatId)?.pendiente;
+}
