@@ -1,5 +1,11 @@
 import { unlink } from "node:fs/promises";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import {
+  answerCallbackQuery,
+  editTelegramMessage,
+  sendTelegramMessage,
+  sendTelegramMessageSmart,
+  sendTelegramMessageWithButtons,
+} from "../telegram/client";
 import type { InlineKeyboardButton } from "../telegram/types";
 import {
   consumirPropuestaGasto,
@@ -15,6 +21,11 @@ import {
   consumirPendienteAjusteMontoGasto,
   type PendienteAjusteMontoGasto,
 } from "./pendienteAjusteMontoGastoStore";
+import {
+  guardarPendienteAccionGasto,
+  consumirPendienteAccionGasto,
+  type PendienteAccionGasto,
+} from "./pendienteAccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
 import {
@@ -41,6 +52,10 @@ import {
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
+import { generarBorradorYOfrecer } from "../gmail/emailCallbackHandler";
+import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
+import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
+import { askClaude } from "../claude/client";
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
@@ -315,6 +330,75 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         `${propuesta.monto} ${propuesta.moneda}). Los botones de la propuesta original siguen arriba — cuando ` +
         `ajuste el monto, ya lo usan directo.`
     );
+    return;
+  }
+
+  // Pedido explícito de Carlos, tras un caso real (INDUBUILDING LUARCA): una
+  // factura por correo solo dejaba registrar el gasto, sin poder ADEMÁS
+  // responder ese correo, guardarlo como conocimiento o dejar un
+  // recordatorio — "puede ser 1 sola cosa... o pueden ser varias". Los tres
+  // botones de abajo son side-actions no consumidoras (mismo criterio que
+  // "💰 Ajustar monto") — solo existen cuando propuesta.correoOrigen viene
+  // seteado (ver construirBotonesAccionCorreo en procesarGastoEntrante.ts).
+  if (accion === "gasto_responder") {
+    const propuesta = await obtenerPropuestaGasto(propuestaId);
+    if (!propuesta || !propuesta.correoOrigen) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id, "Redactando...");
+    const contexto =
+      `Factura/gasto detectado en este correo: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ` +
+      `${propuesta.fecha}, concepto: ${propuesta.concepto}.`;
+    await generarBorradorYOfrecer(
+      propuesta.chatId,
+      propuesta.correoOrigen.de,
+      propuesta.correoOrigen.asunto,
+      propuesta.correoOrigen.threadId,
+      propuesta.correoOrigen.messageIdHeader,
+      contexto
+    );
+    return;
+  }
+
+  if (accion === "gasto_guardarconocimiento") {
+    const propuesta = await obtenerPropuestaGasto(propuestaId);
+    if (!propuesta || !propuesta.correoOrigen) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id, "Leyendo el correo...");
+    try {
+      const cuerpo = propuesta.correoOrigen.mensajeIdGmail
+        ? await obtenerCuerpoCompletoCorreo(propuesta.correoOrigen.mensajeIdGmail)
+        : "(no se pudo releer el cuerpo completo — sin id de mensaje de Gmail)";
+      const contenido = [`De: ${propuesta.correoOrigen.de}`, `Asunto: ${propuesta.correoOrigen.asunto}`, "", cuerpo].join("\n");
+      // false: esto es una side-action sobre una propuesta de gasto, no una
+      // de las 4 decisiones de la cola de revisión de correo — el avance de
+      // esa cola ya lo maneja la resolución del gasto en sí (deColaCorreo),
+      // pasar true acá la avanzaría DOS veces.
+      await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.correoOrigen.de, undefined, false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[gastoCallbackHandler] Error preparando la captura del correo de un gasto:", message);
+      await sendTelegramMessage(propuesta.chatId, `⚠️ No pude leer "${propuesta.correoOrigen.asunto}" para guardarlo como conocimiento.`);
+    }
+    return;
+  }
+
+  if (accion === "gasto_otrasacciones") {
+    const propuesta = await obtenerPropuestaGasto(propuestaId);
+    if (!propuesta || !propuesta.correoOrigen) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id);
+    await sendTelegramMessage(
+      propuesta.chatId,
+      `✏️ Ok — dime qué más quieres hacer con el correo "${propuesta.correoOrigen.asunto}" de ${propuesta.correoOrigen.de} ` +
+        `(ej. "prográmame un recordatorio para conciliar mañana", o combina varias cosas en el mismo mensaje).`
+    );
+    await guardarPendienteAccionGasto(propuesta.chatId, propuesta.id);
     return;
   }
 
@@ -1124,4 +1208,42 @@ export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGas
       `${nuevoMonto.toFixed(2)} ${propuesta.moneda}. Los botones de la propuesta original arriba ya usan este ` +
       `monto — usa "✅ Crear gasto en Holded" cuando quieras, o "💰 Ajustar monto" de nuevo si hace falta corregirlo otra vez.`
   );
+}
+
+/**
+ * Continúa el flujo tras pulsar "✏️ Otras acciones" en una propuesta de
+ * gasto que vino de un correo (ver gasto_otrasacciones arriba). Mismo
+ * camino seguro que continuarConOrientacion (emailCallbackHandler.ts):
+ * pasa por askClaude con su registro de tools ya existente (proponer envío
+ * de correo, proponer evento/recordatorio...), nunca ejecuta nada fuera de
+ * eso — así "responde el correo Y prográmame un recordatorio" en un solo
+ * mensaje puede resolver las dos cosas en la misma llamada. A diferencia de
+ * continuarConOrientacion, NUNCA llama avanzarColaCorreoSiActivo — esto es
+ * una side-action sobre una propuesta de gasto todavía pendiente, no una
+ * decisión que resuelva el correo activo de la cola (eso lo hace
+ * gasto_nuevo/gasto_cancelar, que sí avanzan cuando deColaCorreo).
+ */
+export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, textoUsuario: string): Promise<void> {
+  const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
+  if (!propuesta || !propuesta.correoOrigen) {
+    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    return;
+  }
+
+  await sendTelegramMessage(pendiente.chatId, "🔄 Procesando tu instrucción — esto puede tardar uno o dos minutos...").catch(
+    (error) => console.error("[gastoCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error)
+  );
+
+  const instruccion =
+    `El usuario dio instrucciones adicionales sobre un correo del que se detectó una factura/gasto. ` +
+    `Correo — De: ${propuesta.correoOrigen.de}. Asunto: ${propuesta.correoOrigen.asunto}. ` +
+    `Factura/gasto detectado: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ${propuesta.fecha}, ` +
+    `concepto: ${propuesta.concepto} (el registro del gasto en Holded ya se maneja aparte, con sus propios botones — ` +
+    `no hace falta que tú lo registres). Instrucción del usuario: ${textoUsuario}. Si es para responder el correo, ` +
+    `usa el threadId "${propuesta.correoOrigen.threadId}" y el message_id_header "${propuesta.correoOrigen.messageIdHeader}" ` +
+    `para que quede enhebrado como una respuesta real. Investiga y ejecuta lo que corresponda con las herramientas ` +
+    `disponibles, y reporta el resultado.`;
+
+  const respuesta = await askClaude(instruccion, pendiente.chatId);
+  await sendTelegramMessageSmart(pendiente.chatId, respuesta, undefined, `✅ ${propuesta.correoOrigen.asunto} (${propuesta.correoOrigen.de})`);
 }

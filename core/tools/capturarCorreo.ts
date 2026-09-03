@@ -125,6 +125,13 @@ export const capturarCorreoTool: ToolDefinition = {
             asunto: resumen.asunto || "(sin asunto)",
             threadId: resumen.threadId,
             messageIdHeader: resumen.messageIdHeader,
+            // Bug real encontrado en auditoría: sin esto, si el adjunto
+            // resultaba ser una factura/gasto, "🧠 Guardar como
+            // conocimiento" (gasto_guardarconocimiento) no podía releer el
+            // cuerpo completo del correo — mismo id ya usado arriba para
+            // descargar el adjunto (resumen.id = Gmail interno).
+            mensajeIdGmail: resumen.id,
+            attachmentIdGmail: adjunto.attachmentId,
           },
         });
 

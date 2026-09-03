@@ -304,6 +304,14 @@ const ACCIONES_SENSIBLES = new Set([
   // no), no solo la que escribe, para centralizar la decisión completa.
   "gasto_conciliar_si",
   "gasto_conciliar_no",
+  // Mismo criterio que email_guardar/email_orientar: responder el correo,
+  // guardarlo como conocimiento, o dar instrucciones adicionales (recordatorio,
+  // etc.) sobre el correo de origen de una propuesta de gasto son también
+  // decisiones sobre ese correo entrante — se centralizan en superadmin igual
+  // que las demás, no solo el registro del gasto en sí (gasto_nuevo).
+  "gasto_responder",
+  "gasto_guardarconocimiento",
+  "gasto_otrasacciones",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

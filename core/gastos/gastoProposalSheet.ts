@@ -33,6 +33,7 @@ const HEADERS = [
   "origenAdjuntoGmailJSON",
   "numeroDocumento",
   "montoOriginal",
+  "correoOrigenJSON",
 ];
 
 export interface PropuestaGasto {
@@ -93,6 +94,18 @@ export interface PropuestaGasto {
    * solo en filas viejas creadas antes de este campo.
    */
   montoOriginal?: number;
+  /**
+   * Datos del correo del que vino esta factura/gasto — permite ofrecer, como
+   * acciones ADICIONALES a registrar el gasto, responder ese correo o
+   * guardarlo como conocimiento (ver gastoCallbackHandler.ts,
+   * gasto_responder/gasto_guardarconocimiento/gasto_otrasacciones). Pedido
+   * explícito de Carlos, tras un caso real (INDUBUILDING LUARCA): "no solo
+   * registrar el gasto... deberíamos poder responder el mail o dejar como
+   * conocimiento o programar un recordatorio... puede ser 1 sola cosa o
+   * pueden ser varias". undefined si el gasto no vino de un correo (ej. una
+   * foto mandada por Telegram).
+   */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -145,7 +158,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:U1`,
+    range: `${TAB_NAME}!A1:V1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -185,6 +198,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     origenAdjuntoGmail = undefined;
   }
 
+  let correoOrigen: PropuestaGasto["correoOrigen"];
+  try {
+    correoOrigen = row[21] ? JSON.parse(String(row[21])) : undefined;
+  } catch {
+    correoOrigen = undefined;
+  }
+
   return {
     id: String(row[0]),
     empresa: row[1] as Empresa,
@@ -207,6 +227,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     origenAdjuntoGmail,
     numeroDocumento: row[19] ? String(row[19]) : undefined,
     montoOriginal: row[20] !== undefined && row[20] !== "" ? Number(row[20]) : undefined,
+    correoOrigen,
   };
 }
 
@@ -233,6 +254,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.origenAdjuntoGmail ? JSON.stringify(p.origenAdjuntoGmail) : "",
     p.numeroDocumento ?? "",
     p.montoOriginal ?? "",
+    p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
   ];
 }
 
@@ -248,7 +270,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:U10000`,
+    range: `${TAB_NAME}!A2:V10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -305,7 +327,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:U`,
+    range: `${TAB_NAME}!A:V`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

@@ -40,6 +40,17 @@ export interface GastoPendienteDatos {
    * dejaba la cola esperando una respuesta que nunca la iba a destrabar.
    */
   deColaCorreo?: boolean;
+  /**
+   * Bug real encontrado en auditoría: sin este campo, una factura por correo
+   * con empresa/moneda poco clara (ej. Panamá, MERA AEROPUERTO DE PANAMA SA)
+   * perdía el correoOrigen al pasar por este store — reintentarGastoPendiente.ts
+   * volvía a llamar procesarGastoEntrante SIN él, así que la propuesta final
+   * (ya con el dato correcto) se mandaba sin los botones "Responder correo"/
+   * "Guardar como conocimiento"/"Otras acciones", justo para el tipo de
+   * factura ambigua que motivó el pedido original de Carlos. Ver
+   * PropuestaGasto.correoOrigen (gastoProposalSheet.ts).
+   */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -48,7 +59,18 @@ const TAB_NAME = "_gastos_pendientes_datos";
 // "pendiente_*", ver pendienteCapturaEmpresaStore.ts), igual que contactoResolucionStore.ts.
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-const HEADERS = ["id", "chatId", "rutaLocal", "nombreArchivoOriginal", "mimeType", "datosJSON", "motivo", "creadoEn", "deColaCorreo"];
+const HEADERS = [
+  "id",
+  "chatId",
+  "rutaLocal",
+  "nombreArchivoOriginal",
+  "mimeType",
+  "datosJSON",
+  "motivo",
+  "creadoEn",
+  "deColaCorreo",
+  "correoOrigenJSON",
+];
 
 function assertSheetId(): string {
   if (!CASHFLOW_SHEET_ID) {
@@ -100,7 +122,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:I1`,
+    range: `${TAB_NAME}!A1:J1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -122,6 +144,13 @@ function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
 
   const motivo = row[6] === "empresa" || row[6] === "moneda" ? row[6] : "moneda";
 
+  let correoOrigen: GastoPendienteDatos["correoOrigen"];
+  try {
+    correoOrigen = row[9] ? JSON.parse(String(row[9])) : undefined;
+  } catch {
+    correoOrigen = undefined;
+  }
+
   return {
     id: String(row[0]),
     chatId: Number(row[1]) || 0,
@@ -132,6 +161,7 @@ function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
     motivo,
     creadoEn: Number(row[7]) || 0,
     deColaCorreo: row[8] === true || row[8] === "true",
+    correoOrigen,
   };
 }
 
@@ -146,6 +176,7 @@ function pendienteToRow(p: GastoPendienteDatos): (string | number)[] {
     p.motivo,
     p.creadoEn,
     p.deColaCorreo === true ? "true" : "",
+    p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
   ];
 }
 
@@ -161,7 +192,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:I10000`,
+    range: `${TAB_NAME}!A2:J10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -217,7 +248,7 @@ export async function guardarGastoPendienteDatos(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:I`,
+    range: `${TAB_NAME}!A:J`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [pendienteToRow(pendiente)] },

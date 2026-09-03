@@ -27,6 +27,13 @@ export interface GastoEntrante {
    * en Holded. Ver core/gmail/reDescargarAdjunto.ts.
    */
   origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
+  /**
+   * Datos del correo del que vino esta factura/gasto — ver
+   * PropuestaGasto.correoOrigen (gastoProposalSheet.ts) para el porqué:
+   * permite ofrecer, además de registrar el gasto, responder ese correo o
+   * guardarlo como conocimiento.
+   */
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
 }
 
 /**
@@ -43,6 +50,26 @@ export type ResultadoGastoEntrante = "propuesta_enviada" | "pendiente_datos" | "
 
 function esEmpresaHolded(empresa: string): empresa is Empresa {
   return empresa === "WOBA" || empresa === "EWORKS" || empresa === "Footprint";
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real (INDUBUILDING LUARCA): un
+ * correo con una factura solo dejaba registrar el gasto y después conciliar
+ * — sin poder, además, responder ese mismo correo o guardarlo como
+ * conocimiento o dejar un recordatorio, aunque quisiera hacer varias cosas
+ * a la vez ("puede ser 1 sola cosa... o pueden ser varias"). Solo se
+ * agregan cuando el gasto vino de un correo real (entrada.correoOrigen) —
+ * no tiene sentido "responder el correo" de una foto mandada por Telegram.
+ * No consumen la propuesta — mismo criterio que "💰 Ajustar monto".
+ */
+function construirBotonesAccionCorreo(propuestaId: string): { text: string; callback_data: string }[][] {
+  return [
+    [
+      { text: "✉️ Responder correo", callback_data: `gasto_responder:${propuestaId}` },
+      { text: "🧠 Guardar como conocimiento", callback_data: `gasto_guardarconocimiento:${propuestaId}` },
+    ],
+    [{ text: "✏️ Otras acciones (recordatorio, instrucciones...)", callback_data: `gasto_otrasacciones:${propuestaId}` }],
+  ];
 }
 
 /**
@@ -68,6 +95,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "empresa",
       deColaCorreo: entrada.deColaCorreo,
+      correoOrigen: entrada.correoOrigen,
     }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (empresa):", error));
     return "pendiente_datos";
   }
@@ -137,6 +165,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "moneda",
       deColaCorreo: entrada.deColaCorreo,
+      correoOrigen: entrada.correoOrigen,
     }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
     return "pendiente_datos";
   }
@@ -232,6 +261,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     cuentaTags: tagsFinal,
     deColaCorreo: entrada.deColaCorreo,
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+    correoOrigen: entrada.correoOrigen,
   });
 
   const desgloseIva = lineasParaHolded
@@ -267,6 +297,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // ajustar el monto CON cualquiera de los botones de arriba, en el orden
     // que haga falta (ver gastoCallbackHandler.ts, gasto_ajustarmonto).
     botones.push([{ text: "💰 Ajustar monto", callback_data: `gasto_ajustarmonto:${propuesta.id}` }]);
+    if (entrada.correoOrigen) botones.push(...construirBotonesAccionCorreo(propuesta.id));
   } else {
     // No hay un documento de compra ya cargado en Holded que coincida, pero
     // eso no significa que el gasto sea nuevo de verdad — puede que el
@@ -414,6 +445,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // documentos), así que se puede combinar con cualquiera de los botones
     // de arriba en cualquier orden.
     const filaAjusteMonto = [{ text: "💰 Ajustar monto", callback_data: `gasto_ajustarmonto:${propuesta.id}` }];
+    const filasAccionCorreo = entrada.correoOrigen ? construirBotonesAccionCorreo(propuesta.id) : [];
     botones = movimientoBancario
       ? [
           [
@@ -422,6 +454,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           ],
           [{ text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` }],
           filaAjusteMonto,
+          ...filasAccionCorreo,
           [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
         ]
       : [
@@ -430,6 +463,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             { text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` },
           ],
           filaAjusteMonto,
+          ...filasAccionCorreo,
           [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
         ];
   }

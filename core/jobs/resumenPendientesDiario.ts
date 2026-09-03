@@ -12,6 +12,7 @@ import { obtenerPendientesCapturaEmpresaPorChat, eliminarPendienteCapturaEmpresa
 import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocumento } from "../documental/pendienteAlertaDocumentoStore";
 import { obtenerPendienteCorreccionGastoPorChat, consumirPendienteCorreccionGasto } from "../gastos/pendienteCorreccionGastoStore";
 import { obtenerPendienteAjusteMontoGastoPorChat, consumirPendienteAjusteMontoGasto } from "../gastos/pendienteAjusteMontoGastoStore";
+import { obtenerPendienteAccionGastoPorChat, consumirPendienteAccionGasto } from "../gastos/pendienteAccionGastoStore";
 import { obtenerPendienteDesambiguacionPorChat, consumirPendienteDesambiguacion } from "../documental/disambiguationStore";
 import { obtenerPendienteEdicionBorradorPorChat, consumirPendienteEdicionBorrador } from "../gmail/emailDraftEditStore";
 import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "../fiscal/pendienteMontoStore";
@@ -169,6 +170,13 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   }
 
   try {
+    const aa = await obtenerPendienteAccionGastoPorChat(chatId);
+    if (aa) items.push({ descripcion: `✏️ Falta tu instrucción sobre el correo de una propuesta de gasto`, creadoEn: aa.creadoEn });
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando otras acciones de gasto (no crítico):", error);
+  }
+
+  try {
     const d = await obtenerPendienteDesambiguacionPorChat(chatId);
     if (d) items.push({ descripcion: `❓ Falta aclarar: "${truncar(d.preguntaFormulada, 60)}"`, creadoEn: d.creadoEn });
   } catch (error) {
@@ -318,6 +326,7 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
     () => consumirPendienteAlertaDocumento(chatId),
     () => consumirPendienteCorreccionGasto(chatId),
     () => consumirPendienteAjusteMontoGasto(chatId),
+    () => consumirPendienteAccionGasto(chatId),
     () => consumirPendienteEdicionBorrador(chatId),
     () => consumirPendienteMontoPago(chatId),
     () => consumirPendienteOrientacionAnotacion(chatId),

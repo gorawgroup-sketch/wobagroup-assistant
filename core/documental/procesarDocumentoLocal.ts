@@ -58,6 +58,15 @@ export async function procesarDocumentoLocal(
             entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
               ? { mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail }
               : undefined,
+          correoOrigen: entrada.correoOrigen
+            ? {
+                de: entrada.correoOrigen.de,
+                asunto: entrada.correoOrigen.asunto,
+                threadId: entrada.correoOrigen.threadId,
+                messageIdHeader: entrada.correoOrigen.messageIdHeader,
+                mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
+              }
+            : undefined,
         });
         if (resultado === "propuesta_enviada") return "gasto_propuesto";
         if (resultado === "propuesta_duplicada") return "gasto_duplicado";

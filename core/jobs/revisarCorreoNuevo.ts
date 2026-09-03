@@ -400,6 +400,13 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
           mimeType: "application/pdf",
           datos: datosConNota,
           deColaCorreo: true,
+          correoOrigen: {
+            de: correo.de,
+            asunto: correo.asunto || "(sin asunto)",
+            threadId: correo.threadId,
+            messageIdHeader: correo.messageIdHeader,
+            mensajeIdGmail: correo.id,
+          },
         });
         return;
       } catch (error) {
