@@ -253,18 +253,27 @@ export async function descartarActivoEstancado(chatId: number, gmailId: string):
  * Pedido explícito de Carlos, tras un caso real: "esto ya lo gestioné" — la
  * cola marcaba un correo como bloqueando la revisión, pero él ya lo había
  * resuelto por su cuenta (a mano, fuera del chat). Vacía TODA la cola de
- * este chat (activo + en cola) sin intentar resolver nada — ningún correo
- * queda marcado leído en Gmail (eso sigue siendo responsabilidad del
- * llamador si hace falta), simplemente deja de aparecer como pendiente acá.
- * Devuelve cuántas filas se eliminaron.
+ * este chat (activo + en cola) sin intentar resolver nada. Devuelve los ids
+ * de hilo (Gmail thread id, ver ItemColaCorreo.id) de las filas eliminadas
+ * — bug real de auditoría, encontrado en vivo (2026-09-03): esto NO marca
+ * nada como leído en Gmail por sí solo (sigue siendo responsabilidad del
+ * llamador, que sí tiene acceso a la API de Gmail — este store no), pero
+ * antes ningún llamador lo hacía tampoco, así que Gmail seguía contando el
+ * hilo como "sin leer" para siempre — is:unread es la única fuente de
+ * verdad de la cola (ver revisarCorreoNuevo.ts), así que el hilo
+ * "descartado" volvía a aparecer solo en la siguiente revisión horaria,
+ * deshaciendo el descarte sin avisar. Devolver los ids permite que el
+ * llamador SÍ los marque leídos cuando el descarte es una decisión
+ * explícita del usuario (no un salto automático por 48h estancado, donde sí
+ * tiene sentido dejarlo sin marcar por si de verdad hace falta revisarlo).
  */
-export async function vaciarColaCorreoDelChat(chatId: number): Promise<number> {
+export async function vaciarColaCorreoDelChat(chatId: number): Promise<string[]> {
   const todas = await leerTodas();
   const delChat = todas.filter((f) => f.item.chatId === chatId);
   for (const { rowIndex } of delChat.slice().sort((a, b) => b.rowIndex - a.rowIndex)) {
     await eliminarFila(TAB_NAME, rowIndex, HEADERS);
   }
-  return delChat.length;
+  return delChat.map((f) => f.item.id);
 }
 
 /** Fija cuántas decisiones independientes hacen falta para dar por resuelto el correo activo. */

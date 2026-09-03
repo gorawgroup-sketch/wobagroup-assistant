@@ -29,7 +29,6 @@ import {
   obtenerActivoEstancado,
   descartarActivoEstancado,
   obtenerActivoActual,
-  vaciarColaCorreoDelChat,
 } from "../gmail/colaRevisionStore";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
@@ -549,10 +548,27 @@ export async function handleDescartarActivoCallback(callback: TelegramCallbackQu
   }
 
   const borrado = await descartarActivoEstancado(chatId, activo.id);
+
+  // Bug real encontrado en vivo (2026-09-03): esto NO marcaba el hilo como
+  // leído en Gmail — que es SIEMPRE la única fuente de verdad de qué falta
+  // revisar (is:unread real, ver revisarCorreoNuevo) — así que el hilo
+  // "descartado" seguía contando como sin leer ahí, y la siguiente revisión
+  // horaria lo volvía a encolar solo, deshaciendo el descarte sin avisar
+  // (Carlos lo notó: la cola decía "quedan 7" pero Gmail seguía mostrando
+  // 8 sin leer). A diferencia del salto automático por 48h estancado (donde
+  // sí tiene sentido no marcarlo, por si de verdad hace falta revisarlo),
+  // acá es una decisión EXPLÍCITA del usuario ("esto ya lo gestioné") — se
+  // marca leído para que de verdad quede resuelto, no solo oculto un rato.
+  if (borrado) {
+    marcarHiloComoLeido(activo.id).catch((error: unknown) =>
+      console.error("[revisarCorreoNuevo] Error marcando el hilo como leído tras descartar (no crítico):", error)
+    );
+  }
+
   await sendTelegramMessage(
     chatId,
     borrado
-      ? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). Sigue sin marcar como leído en Gmail; si en realidad todavía hace falta algo, revísalo a mano.`
+      ? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.`
       : "Ya se había resuelto por otro camino justo antes — nada que descartar."
   ).catch(() => {});
 
@@ -565,17 +581,4 @@ export async function handleDescartarActivoCallback(callback: TelegramCallbackQu
   }
 }
 
-/**
- * Maneja el botón "🗑️ Descartar todo" del resumen diario de pendientes
- * (core/jobs/resumenPendientesDiario.ts) — pedido explícito de Carlos: si
- * al final del día quedan cosas pendientes que ya no hacen falta, poder
- * "dejar todo libre" desde ahí mismo, sin tener que ir mensaje por mensaje.
- * Solo vacía la cola de correo (activo + en cola) — el resto de los tipos
- * de pendiente listados en el resumen se descartan cada uno con su propio
- * botón (ver descartarTodosLosPendientes en resumenPendientesDiario.ts,
- * que llama a esto Y a los demás).
- */
-export async function vaciarColaCorreoParaDescartarTodo(chatId: number): Promise<number> {
-  return vaciarColaCorreoDelChat(chatId);
-}
 

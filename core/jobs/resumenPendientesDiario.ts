@@ -3,6 +3,7 @@ import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { obtenerResumenColaPorChat, vaciarColaCorreoDelChat } from "../gmail/colaRevisionStore";
+import { marcarHiloComoLeido } from "../gmail/client";
 import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
@@ -259,11 +260,21 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
   // bug real de auditoría: antes sumaba el conteo crudo de filas, que podía
   // no coincidir para nada con "cuántas cosas" decía el resumen justo
   // arriba de este mismo botón.
-  const filasCorreoBorradas = await vaciarColaCorreoDelChat(chatId).catch((error) => {
+  const hilosCorreoBorrados = await vaciarColaCorreoDelChat(chatId).catch((error) => {
     console.error("[resumenPendientesDiario] Error vaciando la cola de correo (no crítico):", error);
-    return 0;
+    return [] as string[];
   });
-  if (filasCorreoBorradas > 0) n += 1;
+  if (hilosCorreoBorrados.length > 0) n += 1;
+  // Bug real encontrado en vivo (2026-09-03): sin esto, Gmail seguía
+  // contando estos hilos como sin leer para siempre (is:unread es la única
+  // fuente de verdad de la cola) y la siguiente revisión horaria los volvía
+  // a encolar solos, deshaciendo el "Descartar todo" sin avisar — es una
+  // decisión explícita del usuario, se marcan leídos de verdad.
+  for (const threadId of hilosCorreoBorrados) {
+    marcarHiloComoLeido(threadId).catch((error: unknown) =>
+      console.error(`[resumenPendientesDiario] Error marcando el hilo ${threadId} como leído (no crítico):`, error)
+    );
+  }
 
   try {
     // Puede haber varias propuestas de archivo pendientes del mismo chat —
