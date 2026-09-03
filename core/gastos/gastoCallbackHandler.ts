@@ -159,6 +159,12 @@ async function intentarConciliar(
  * se intente conciliar, en vez de que ocurra en silencio. Guarda la
  * pregunta en conciliacionPendienteStore (Sheets, sobrevive un redeploy)
  * hasta que se responda con el botón.
+ *
+ * Devuelve true si la pregunta quedó guardada y enviada de verdad — el
+ * llamador (ver deColaCorreo abajo) la usa para decidir si debe esperar la
+ * respuesta antes de avanzar la cola de revisión de correo, o si el aviso
+ * falló y hay que avanzar de una vez para no dejar la cola esperando una
+ * pregunta que nunca llegó.
  */
 async function preguntarSiConciliar(
   chatId: number,
@@ -168,10 +174,11 @@ async function preguntarSiConciliar(
   descripcionGasto: string,
   gastoId: string,
   moneda: string = "EUR",
-  proveedor: string = ""
-): Promise<void> {
+  proveedor: string = "",
+  deColaCorreo: boolean = false
+): Promise<boolean> {
   try {
-    const pendiente = await guardarConciliacionPendiente({ empresa, monto, fecha, descripcionGasto, chatId, gastoId, moneda, proveedor });
+    const pendiente = await guardarConciliacionPendiente({ empresa, monto, fecha, descripcionGasto, chatId, gastoId, moneda, proveedor, deColaCorreo });
     await sendTelegramMessageWithButtons(
       chatId,
       `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`,
@@ -182,8 +189,10 @@ async function preguntarSiConciliar(
         ],
       ]
     );
+    return true;
   } catch (error) {
     console.error("[gastoCallbackHandler] Error preguntando si conciliar (no crítico):", error);
+    return false;
   }
 }
 
@@ -247,6 +256,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     await answerCallbackQuerySafe(callback.id, "Procesando...");
     await editTelegramMessage(propuesta.chatId, propuesta.messageId, `🔄 Procesando "${propuesta.proveedor}"...`, []);
 
+    let preguntaConciliacionPendiente = false;
     try {
       if (accion === "gasto_adjuntar") {
         const indice = Number(extra);
@@ -299,7 +309,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         const resultado = await crearGastoYReportar(propuesta, propuesta.empresa, propuesta.concepto, undefined, conciliarInline);
         await editTelegramMessage(propuesta.chatId, propuesta.messageId, resultado.mensaje, []);
         if (resultado.conciliacionPendiente) {
-          await preguntarSiConciliar(
+          preguntaConciliacionPendiente = await preguntarSiConciliar(
             propuesta.chatId,
             resultado.conciliacionPendiente.empresa,
             resultado.conciliacionPendiente.monto,
@@ -307,7 +317,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             resultado.conciliacionPendiente.descripcionGasto,
             resultado.conciliacionPendiente.gastoId,
             resultado.conciliacionPendiente.moneda,
-            resultado.conciliacionPendiente.proveedor
+            resultado.conciliacionPendiente.proveedor,
+            propuesta.deColaCorreo === true
           );
         }
       }
@@ -333,7 +344,15 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       // se creó. Mismo criterio que documentCallbackHandler.ts.
       return;
     }
-    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
+    // Si se acaba de mandar la pregunta "¿conciliar?" (preguntaConciliacionPendiente=true),
+    // crear el gasto es solo el primer paso — falta la decisión de conciliar
+    // o no, así que la cola espera esa respuesta (ver gasto_conciliar_si/no
+    // abajo) en vez de avanzar aquí. Pedido explícito de Carlos: verificar
+    // que "crear el gasto y luego conciliar" cuenta como los dos pasos que
+    // hacen falta para dar el correo por resuelto, no solo el primero — bug
+    // real encontrado al revisar el código: antes avanzaba apenas se creaba
+    // el gasto, dejando la pregunta de conciliación desconectada de la cola.
+    if (propuesta.deColaCorreo && !preguntaConciliacionPendiente) await avanzarColaCorreoSiActivo(propuesta.chatId);
     return;
   }
 
@@ -347,6 +366,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     if (accion === "gasto_conciliar_no") {
       await answerCallbackQuerySafe(callback.id, "Ok, no se concilia.");
       await sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`);
+      if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(pendiente.chatId);
       return;
     }
 
@@ -365,6 +385,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         ? `"${pendiente.descripcionGasto}"${notaConciliacion}`
         : `No encontré ningún movimiento bancario sin conciliar que coincida con "${pendiente.descripcionGasto}" — revísalo a mano en Holded si crees que ya debería estar.`
     );
+    if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(pendiente.chatId);
     return;
   }
 
@@ -680,8 +701,9 @@ export async function procesarGastoConContactoResuelto(
       aprenderAlias
     );
     await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []);
+    let preguntaConciliacionPendiente = false;
     if (resultado.conciliacionPendiente) {
-      await preguntarSiConciliar(
+      preguntaConciliacionPendiente = await preguntarSiConciliar(
         resolucion.chatId,
         resultado.conciliacionPendiente.empresa,
         resultado.conciliacionPendiente.monto,
@@ -689,10 +711,12 @@ export async function procesarGastoConContactoResuelto(
         resultado.conciliacionPendiente.descripcionGasto,
         resultado.conciliacionPendiente.gastoId,
         resultado.conciliacionPendiente.moneda,
-        resultado.conciliacionPendiente.proveedor
+        resultado.conciliacionPendiente.proveedor,
+        resolucion.propuesta.deColaCorreo === true
       );
     }
-    if (resolucion.propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(resolucion.chatId);
+    // Ver comentario equivalente en el handler principal (handleGastoCallback) — crear el gasto no basta si todavía falta la decisión de conciliar.
+    if (resolucion.propuesta.deColaCorreo && !preguntaConciliacionPendiente) await avanzarColaCorreoSiActivo(resolucion.chatId);
   } catch (error) {
     if (error instanceof FechaBloqueadaError) {
       await manejarFechaBloqueada(
@@ -849,8 +873,9 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
   try {
     const resultado = await crearGastoYReportar(propuesta, empresaFinal, conceptoFinal);
     await sendTelegramMessage(propuesta.chatId, resultado.mensaje);
+    let preguntaConciliacionPendiente = false;
     if (resultado.conciliacionPendiente) {
-      await preguntarSiConciliar(
+      preguntaConciliacionPendiente = await preguntarSiConciliar(
         propuesta.chatId,
         resultado.conciliacionPendiente.empresa,
         resultado.conciliacionPendiente.monto,
@@ -858,10 +883,12 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         resultado.conciliacionPendiente.descripcionGasto,
         resultado.conciliacionPendiente.gastoId,
         resultado.conciliacionPendiente.moneda,
-        resultado.conciliacionPendiente.proveedor
+        resultado.conciliacionPendiente.proveedor,
+        propuesta.deColaCorreo === true
       );
     }
-    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
+    // Ver comentario equivalente en el handler principal (handleGastoCallback) — crear el gasto no basta si todavía falta la decisión de conciliar.
+    if (propuesta.deColaCorreo && !preguntaConciliacionPendiente) await avanzarColaCorreoSiActivo(propuesta.chatId);
   } catch (error) {
     if (error instanceof ContactoNoEncontradoError) {
       await manejarContactoNoEncontrado(propuesta, empresaFinal, conceptoFinal, propuesta.chatId, undefined);

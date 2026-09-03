@@ -7,7 +7,7 @@ const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_conciliaciones_pendientes";
 const TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 días — se espera que se revise en Holded y se responda pronto, no semanas después
 
-const HEADERS = ["id", "empresa", "monto", "fecha", "descripcionGasto", "chatId", "creadoEn", "gastoId", "moneda", "proveedor"];
+const HEADERS = ["id", "empresa", "monto", "fecha", "descripcionGasto", "chatId", "creadoEn", "gastoId", "moneda", "proveedor", "deColaCorreo"];
 
 /**
  * Cuando se crea un gasto SIN que antes se haya confirmado un movimiento
@@ -63,7 +63,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:J1`,
+    range: `${TAB_NAME}!A1:K1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -89,6 +89,8 @@ export interface ConciliacionPendiente {
    * (ver buscarMovimientoAproximado en core/holded/write.ts).
    */
   proveedor: string;
+  /** true si el gasto que originó esta pregunta viene de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
+  deColaCorreo?: boolean;
 }
 
 interface FilaConIndice {
@@ -103,7 +105,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:J10000`,
+    range: `${TAB_NAME}!A2:K10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -124,6 +126,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
         gastoId: row[7] ? String(row[7]) : "",
         moneda: row[8] ? String(row[8]) : "EUR",
         proveedor: row[9] ? String(row[9]) : "",
+        deColaCorreo: row[10] === true || row[10] === "true",
       },
     });
   });
@@ -172,7 +175,7 @@ export async function guardarConciliacionPendiente(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:J`,
+    range: `${TAB_NAME}!A:K`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -188,6 +191,7 @@ export async function guardarConciliacionPendiente(
           pendiente.gastoId,
           pendiente.moneda,
           pendiente.proveedor,
+          pendiente.deColaCorreo === true ? "true" : "",
         ],
       ],
     },
