@@ -282,6 +282,15 @@ const ACCIONES_SENSIBLES = new Set([
   "doc_regla",
   "doc_alerta",
   "doc_conocimiento",
+  // Gap real encontrado en la auditoría del 2026-09-03: "¿Quieres
+  // conciliar?" (preguntarSiConciliar en gastoCallbackHandler.ts) se agregó
+  // el mismo día que se corrigió cuándo avanza la cola, pero quedó fuera de
+  // este set — cualquier usuario autorizado (no solo superadmin) podía
+  // confirmar una conciliación real en Holded. Mismo criterio que
+  // email_descartar/anotcf_descartar: se protegen las dos opciones (sí y
+  // no), no solo la que escribe, para centralizar la decisión completa.
+  "gasto_conciliar_si",
+  "gasto_conciliar_no",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

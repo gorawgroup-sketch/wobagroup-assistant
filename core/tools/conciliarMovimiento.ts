@@ -1,4 +1,6 @@
-import { buscarGastoSimilar, buscarMovimientoSimilar, buscarMovimientoAproximado, reconciliarMovimiento } from "../holded/write";
+import { buscarGastoSimilar } from "../holded/write";
+import { guardarConciliacionPendiente } from "../gastos/conciliacionPendienteStore";
+import { sendTelegramMessageWithButtons } from "../telegram/client";
 import type { Empresa } from "../holded/client";
 import type { ToolDefinition } from "./types";
 
@@ -12,29 +14,32 @@ import type { ToolDefinition } from "./types";
  * "No tengo una herramienta que ejecute la conciliación directamente en
  * Holded" era honesto, no un bug, pero era una capacidad real que faltaba.
  *
- * Misma lógica de matching que ya usa procesarGastoEntrante.ts/
- * gastoCallbackHandler.ts al conciliar automáticamente tras crear un gasto
- * (match exacto por monto/fecha, y si no hay, aproximado por nombre+monto;
- * nunca elige sola entre varios candidatos; siempre relee el estado real en
- * vez de asumir éxito) — reimplementada acá en vez de importada desde
- * gastoCallbackHandler.ts a propósito: importar ese archivo desde un tool
- * (cargado por core/tools/registry.ts, que a su vez carga core/claude/
- * client.ts) cerraba un ciclo de módulos real (ReferenceError: Cannot
- * access 'conciliarMovimientoTool' before initialization, verificado en
- * vivo) — esta tool solo depende de core/holded/write.ts, sin ciclo.
+ * Diseño corregido tras auditoría (2026-09-03): la primera versión buscaba
+ * el movimiento y llamaba reconciliarMovimiento directo, sin ningún botón
+ * de por medio — la auditoría encontró que esto rompía un invariante real
+ * de TODO el resto del sistema (crear/adjuntar/conciliar un gasto SIEMPRE
+ * pasa por un botón que muestra el match exacto antes de escribir en
+ * Holded, nunca se ejecuta solo porque el modelo decidió que el match
+ * alcanzaba) — más grave todavía para el caso de match APROXIMADO, que el
+ * propio buscarMovimientoAproximado documenta como "nunca se concilia sola,
+ * solo se sugiere". Ahora esta tool solo busca el GASTO (único paso que no
+ * tiene ya un flujo con botón) y reutiliza el flujo de confirmación que YA
+ * existe (preguntarSiConciliar/gasto_conciliar_si, protegido en
+ * ACCIONES_SENSIBLES) para el resto — la búsqueda del movimiento, el
+ * match aproximado, y la escritura real quedan exactamente donde ya
+ * estaban probados, sin duplicar esa lógica ni saltarse el botón.
  */
 export const conciliarMovimientoTool: ToolDefinition = {
   name: "conciliar_movimiento_bancario",
   description:
-    "Concilia (enlaza) de verdad un movimiento bancario de Holded con un gasto ya registrado — la acción " +
-    "real, no solo consultar. Úsala cuando el usuario pida conciliar/vincular/enlazar un movimiento con un " +
-    "gasto (típicamente después de identificarlos con consultar_movimientos_sin_conciliar y/o " +
+    "Prepara la conciliación de un gasto ya registrado en Holded con su movimiento bancario — manda una " +
+    "pregunta con botones (Sí/No) para que el usuario confirme antes de escribir nada, igual que el resto " +
+    "de las escrituras de este sistema. Úsala cuando el usuario pida conciliar/vincular/enlazar un gasto " +
+    "con un movimiento (típicamente después de identificarlos con consultar_movimientos_sin_conciliar y/o " +
     "consultar_gastos_sin_comprobante, o porque el usuario ya te dio los datos). Necesita el proveedor/" +
-    "concepto del gasto tal como aparece en Holded, su monto, su fecha y la empresa — busca el gasto y el " +
-    "movimiento correspondientes por su cuenta y, si ambos son un match único y claro, los enlaza de " +
-    "verdad. Si hay ambigüedad en cualquiera de los dos lados (varios candidatos parecidos, o ninguno), " +
-    "NUNCA elige sola — te dice exactamente qué encontró para que confirmes cuál es, en vez de adivinar en " +
-    "un tema financiero.",
+    "concepto del gasto tal como aparece en Holded, su monto, su fecha y la empresa — busca el gasto por " +
+    "su cuenta y, si es un match único y claro, manda la pregunta. Si hay varios gastos parecidos, NUNCA " +
+    "elige solo — te dice exactamente cuáles encontró para que confirmes cuál es.",
   input_schema: {
     type: "object",
     properties: {
@@ -43,13 +48,18 @@ export const conciliarMovimientoTool: ToolDefinition = {
         type: "string",
         description: "Proveedor/contacto del gasto en Holded, tal como aparece ahí (ej. 'UBER COLOMBIA').",
       },
-      monto: { type: "number", description: "Importe del gasto/movimiento (deben coincidir)." },
+      monto: { type: "number", description: "Importe del gasto." },
       fecha: { type: "string", description: "Fecha del gasto en formato YYYY-MM-DD." },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD. Opcional, por defecto EUR." },
     },
     required: ["empresa", "proveedor", "monto", "fecha"],
   },
-  handler: async (input) => {
+  handler: async (input, context) => {
+    const chatId = context?.chatId;
+    if (chatId === undefined) {
+      return "Error: no se pudo determinar el chat — no se puede preparar ninguna conciliación.";
+    }
+
     const empresa = input.empresa as Empresa;
     if (empresa !== "WOBA" && empresa !== "EWORKS" && empresa !== "Footprint") {
       return "Error: 'empresa' debe ser WOBA, EWORKS o Footprint.";
@@ -83,52 +93,30 @@ export const conciliarMovimientoTool: ToolDefinition = {
     }
 
     const gasto = candidatosGasto[0];
+    const descripcionGasto = `${gasto.contactName} — ${gasto.total.toFixed(2)} ${moneda}`;
 
-    let candidatosMov: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     try {
-      candidatosMov = await buscarMovimientoSimilar(empresa, { monto, fecha, moneda });
+      const pendiente = await guardarConciliacionPendiente({
+        empresa,
+        monto: gasto.total,
+        fecha: gasto.fecha || fecha,
+        descripcionGasto,
+        chatId,
+        gastoId: gasto.id,
+        moneda,
+        proveedor,
+      });
+      await sendTelegramMessageWithButtons(chatId, `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`, [
+        [
+          { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
+          { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
+        ],
+      ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return `Encontré el gasto (${gasto.contactName} — ${gasto.total.toFixed(2)} €) pero hubo un error buscando el movimiento bancario: ${message}`;
+      return `Encontré el gasto (${descripcionGasto}) pero hubo un error preparando la pregunta de confirmación: ${message}`;
     }
 
-    let candidato: (typeof candidatosMov)[number] | undefined;
-    let esAproximado = false;
-
-    if (candidatosMov.length === 1) {
-      candidato = candidatosMov[0];
-    } else if (candidatosMov.length > 1) {
-      const lista = candidatosMov.map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`).join("\n");
-      return `Encontré el gasto (${gasto.contactName} — ${gasto.total.toFixed(2)} €), pero hay ${candidatosMov.length} movimientos bancarios parecidos sin conciliar — dime cuál es:\n${lista}`;
-    } else {
-      const aproximados = await buscarMovimientoAproximado(empresa, { monto, fecha, moneda, proveedor }).catch(() => []);
-      if (aproximados.length === 1) {
-        candidato = aproximados[0];
-        esAproximado = true;
-      } else if (aproximados.length > 1) {
-        const lista = aproximados.map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`).join("\n");
-        return `Encontré el gasto (${gasto.contactName} — ${gasto.total.toFixed(2)} €), pero hay ${aproximados.length} movimientos parecidos (no exactos) — dime cuál es:\n${lista}`;
-      }
-    }
-
-    if (!candidato) {
-      return `Encontré el gasto (${gasto.contactName} — ${gasto.total.toFixed(2)} €, ${gasto.fecha}) pero no encontré ningún movimiento bancario sin conciliar que coincida — revísalo a mano en Holded.`;
-    }
-
-    const resultado = await reconciliarMovimiento(empresa, candidato.accountId, candidato.movementId, candidato.fecha, gasto.id);
-    const notaAprox = esAproximado ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded" : "";
-
-    if (resultado.ok) {
-      return (
-        `Conciliado — gasto "${gasto.contactName}" (${gasto.total.toFixed(2)} €) enlazado al movimiento bancario ` +
-        `"${candidato.descripcion || "(sin descripción)"}" (${candidato.monto.toFixed(2)} ${candidato.moneda}, ` +
-        `enlazado por ${resultado.montoEnlazado.toFixed(2)} ${candidato.moneda})${notaAprox}.`
-      );
-    }
-    return (
-      `Encontré un movimiento parecido ("${candidato.descripcion || "(sin descripción)"}", ${candidato.monto.toFixed(2)} ${candidato.moneda}) ` +
-      `pero no pude confirmar que quedó conciliado Y enlazado (estado: ${resultado.statusFinal}, monto enlazado: ` +
-      `${resultado.montoEnlazado.toFixed(2)} ${candidato.moneda}) — revísalo a mano en Holded.`
-    );
+    return `Encontré el gasto (${descripcionGasto}) y ya le mandé al usuario la pregunta de confirmación por Telegram con botones — no hace falta que la repitas ni que digas que ya se concilió, todavía falta que confirme.`;
   },
 };
