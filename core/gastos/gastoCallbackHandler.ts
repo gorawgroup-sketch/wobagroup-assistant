@@ -693,6 +693,16 @@ async function crearGastoYReportar(
       `(la próxima vez que aparezca algo parecido, ya la usaré directo).`
     : "";
 
+  // Pedido explícito de Carlos, tras un caso real (recibo de Uber sin
+  // ningún folio/número visible): "recuerda que si no lo identificas en el
+  // anexo lo rellenas con 00000" — crearGastoHolded ya rellena el campo
+  // con ese placeholder cuando no hay número real, pero nunca en silencio:
+  // se avisa acá para que quede claro que es un relleno, no un número real
+  // leído del documento.
+  const notaNumeroDocumento = !propuesta.numeroDocumento
+    ? `\n\n📄 No identifiqué un número de documento en el comprobante — quedó como "00000" en Holded. Corrígelo a mano si el documento sí trae uno.`
+    : "";
+
   const gasto = await crearGastoHolded(empresaFinal, {
     contactId: contacto.id,
     fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
@@ -745,7 +755,8 @@ async function crearGastoYReportar(
     notaComprobante +
     notaPlaceholder +
     notaDescuadre +
-    notaCuentaSinInferir;
+    notaCuentaSinInferir +
+    notaNumeroDocumento;
 
   if (conciliarInline) {
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.

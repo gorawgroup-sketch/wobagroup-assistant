@@ -1206,11 +1206,20 @@ export interface NuevoGastoHolded {
   /**
    * Pedido explícito de Carlos: "Número de documento" debe quedar
    * diligenciado con el número real de la factura/recibo cuando se conoce
-   * — NUNCA un número inventado. Si no se pudo identificar con claridad, se
-   * omite (Holded lo deja en blanco), en vez de mandar un valor falso.
-   * Mismo campo que ya se lee de vuelta en buscarEnEndpointDocumentos/
-   * consultarEstadoFacturaHolded (`document_number`, confirmado real ahí
-   * contra datos reales de Holded) — se usa el mismo nombre para escribir.
+   * — NUNCA un número inventado. Mismo campo que ya se lee de vuelta en
+   * buscarEnEndpointDocumentos/consultarEstadoFacturaHolded
+   * (`document_number`, confirmado real ahí contra datos reales de
+   * Holded) — se usa el mismo nombre para escribir.
+   *
+   * Pedido explícito de Carlos, tras un caso real (recibo de Uber, viaje en
+   * Ciudad de México — un recibo de trayecto, sin ningún folio/número de
+   * documento visible en ningún lado): antes, cuando no se identificaba
+   * ninguno, este campo simplemente se omitía y Holded lo dejaba en blanco
+   * — "recuerda que si no lo identificas en el anexo lo rellenas con
+   * 00000". Ahora crearGastoHolded (más abajo) siempre manda algo: el
+   * número real si se identificó, o el placeholder literal "00000" si no
+   * — nunca deja el campo vacío, mismo criterio que el contacto
+   * placeholder "PROVEEDOR SIN IDENTIFICAR" cuando no hay proveedor real.
    */
   numeroDocumento?: string;
 }
@@ -1281,7 +1290,7 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       items,
       ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
       ...(gasto.moneda ? { currency: gasto.moneda } : {}),
-      ...(gasto.numeroDocumento ? { document_number: gasto.numeroDocumento } : {}),
+      document_number: gasto.numeroDocumento || "00000",
     })) as { id?: string };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
