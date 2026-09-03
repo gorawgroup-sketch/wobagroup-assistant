@@ -54,7 +54,7 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
       },
       dias: {
         type: "number",
-        description: "Ventana de búsqueda hacia atrás, en días. Opcional, por defecto 120 (las facturas ya cargadas pueden ser de varias semanas atrás).",
+        description: "Ventana de búsqueda hacia atrás Y hacia adelante, en días (las facturas ya cargadas pueden ser de varias semanas atrás, o tener fecha futura — ej. un viaje reservado con antelación). Opcional, por defecto 120.",
       },
     },
     required: ["empresa", "contacto"],

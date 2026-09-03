@@ -638,8 +638,19 @@ export async function buscarDocumentosHolded(
   criterios: { contacto: string; monto?: number; tipo?: "gasto" | "ingreso" | "ambos"; dias?: number }
 ): Promise<DocumentoHoldedEstado[]> {
   const dias = criterios.dias && criterios.dias > 0 ? criterios.dias : VENTANA_DIAS_BUSQUEDA_DOCUMENTOS;
-  const hasta = new Date();
-  const desde = new Date(hasta.getTime() - dias * 24 * 60 * 60 * 1000);
+  const ahora = new Date();
+  const desde = new Date(ahora.getTime() - dias * 24 * 60 * 60 * 1000);
+  // Bug real encontrado en vivo (2026-09-03): "hasta" era HOY sin ningún
+  // margen hacia adelante — un billete de avión comprado hoy para un vuelo
+  // del 20 de octubre (fecha del documento = fecha del viaje, no de la
+  // compra) quedaba INVISIBLE para esta búsqueda (Holded filtra
+  // start_date/end_date server-side), aunque la compra sí existiera y
+  // estuviera bien registrada. Cualquier documento con fecha futura
+  // (viajes reservados con antelación, suscripciones facturadas por
+  // adelantado, depósitos) tenía el mismo problema — se ensancha la
+  // ventana simétricamente hacia adelante, mismo número de días que hacia
+  // atrás.
+  const hasta = new Date(ahora.getTime() + dias * 24 * 60 * 60 * 1000);
   const desdeStr = formatDateLocal(desde);
   const hastaStr = formatDateLocal(hasta);
 

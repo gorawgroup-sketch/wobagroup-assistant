@@ -79,7 +79,7 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
     const encontrados = await buscarDocumentosHolded(empresa, { contacto, monto: montoActualAprox, tipo: "gasto", dias: 365 });
 
     if (encontrados.length === 0) {
-      return `No encontré ninguna compra de "${contacto}" en Holded (${empresa}) en el último año — verifica el nombre del proveedor, o si es de otra empresa.`;
+      return `No encontré ninguna compra de "${contacto}" en Holded (${empresa}) en el último año (ni con fecha pasada ni futura) — verifica el nombre del proveedor, o si es de otra empresa.`;
     }
 
     if (encontrados.length > 1) {
