@@ -26,6 +26,19 @@ export interface LineaFactura {
   concepto: string;
   base: number;
   tipoIvaPct: number;
+  /**
+   * Porcentaje de retención de IRPF de esta línea, SI la factura lo muestra
+   * (típico en alquileres/arrendamientos y servicios profesionales en
+   * España — ej. "I.R.P.F. (19%)" restando del total, no sumando como el
+   * IVA). 0/undefined si no aplica. Bug real encontrado en vivo: una
+   * factura de alquiler (base 3.380,66€ + IVA 21% = 4.090,60€) tenía además
+   * una retención de IRPF del 19% (-642,32€), así que el "Total a Ingresar"
+   * real era 3.448,28€ — pero el gasto se registró en Holded sin la
+   * retención, con un total (4.090,60€) que NO coincidía con lo que de
+   * verdad salió del banco, aunque la conciliación bancaria sí había usado
+   * el monto correcto.
+   */
+  retencionPct?: number;
 }
 
 export interface DatosFactura {
@@ -88,7 +101,15 @@ const REPORTAR_TOOL: Anthropic.Tool = {
         description: "true si el documento es una factura, recibo, ticket o comprobante de gasto/pago.",
       },
       proveedor: { type: "string", description: "Nombre del proveedor/emisor tal como aparece en el documento." },
-      monto: { type: "number", description: "Importe TOTAL de la factura (base + todo el IVA), tal como aparece impreso." },
+      monto: {
+        type: "number",
+        description:
+          "Importe FINAL real de la factura (base + IVA, MENOS cualquier retención de IRPF si la hay) — el " +
+          "que de verdad sale de la cuenta, normalmente etiquetado 'Total a pagar', 'Total a ingresar' o " +
+          "similar. NUNCA el subtotal antes de la retención, aunque también aparezca impreso — si hay una " +
+          "línea de IRPF/retención, réstala tú de cabeza para reportar el total real (base+IVA-retención), " +
+          "tal como aparece impreso en el total final del documento.",
+      },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD." },
       monto_equivalente: {
         type: "number",
@@ -134,10 +155,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           type: "object",
           properties: {
             concepto: { type: "string", description: "Descripción de esta línea/concepto." },
-            base: { type: "number", description: "Base imponible de esta línea (sin IVA)." },
+            base: { type: "number", description: "Base imponible de esta línea (sin IVA, sin restar la retención)." },
             tipo_iva_pct: {
               type: "number",
               description: "Porcentaje de IVA de esta línea tal como aparece impreso (ej. 21, 10, 0). NUNCA un código de Holded.",
+            },
+            retencion_pct: {
+              type: "number",
+              description:
+                "Porcentaje de retención de IRPF de esta línea, SI la factura lo muestra (ej. 'I.R.P.F. " +
+                "(19%)' — típico en alquileres/arrendamientos y servicios profesionales en España, resta " +
+                "del total en vez de sumar como el IVA). Omite este campo si la factura no muestra ninguna " +
+                "retención — nunca la inventes.",
             },
           },
           required: ["concepto", "base", "tipo_iva_pct"],
@@ -169,6 +198,14 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "total sin desglose, repórtalo como una sola línea. El porcentaje de IVA es el que está impreso " +
       "en el documento (un número como 21 o 10) — nunca un código interno de Holded, eso se resuelve " +
       "después con datos reales del sistema.",
+    "IMPORTANTE — retención de IRPF: muchas facturas de alquiler/arrendamiento de local y de " +
+      "profesionales autónomos en España incluyen, además del IVA (que SUMA), una retención de IRPF que " +
+      "RESTA del total (ej. 'I.R.P.F. (19%) sobre B.I.: -642,32€'), dejando un 'Total a Ingresar'/'Total " +
+      "a pagar' final menor que base+IVA. Si ves una línea así, repórtala en 'retencion_pct' de la línea " +
+      "correspondiente (el % tal como aparece, ej. 19), y asegúrate de que 'monto' (el total general) sea " +
+      "el importe FINAL real (base+IVA-retención), no el subtotal antes de restarla — de lo contrario el " +
+      "gasto se registra por un importe que nunca salió realmente del banco. Si la factura no muestra " +
+      "ninguna retención, omite 'retencion_pct' — nunca la inventes ni asumas que aplica.",
     "Para decidir la empresa probable (WOBA, EWORKS o Footprint), usa consultar_base_conocimiento si " +
       "hace falta contexto sobre qué proveedores/gastos son de cada empresa.",
     "Si el documento o el correo muestran un monto equivalente al que trae el propio comprobante (típico " +
@@ -299,6 +336,7 @@ export async function extraerDatosFactura(
             concepto: typeof linea.concepto === "string" ? linea.concepto : "",
             base: typeof linea.base === "number" ? linea.base : 0,
             tipoIvaPct: typeof linea.tipo_iva_pct === "number" ? linea.tipo_iva_pct : 0,
+            retencionPct: typeof linea.retencion_pct === "number" && linea.retencion_pct > 0 ? linea.retencion_pct : undefined,
           };
         })
         .filter((l): l is LineaFactura => l !== null);

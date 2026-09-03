@@ -536,6 +536,26 @@ async function crearGastoYReportar(
       ? propuesta.lineas
       : [{ concepto: descripcionFinal, base: propuesta.monto, tipoIvaPct: 0 }];
 
+  // Pedido explícito de Carlos, tras un caso real: una factura de alquiler
+  // con retención de IRPF se registró en Holded sin la retención — el
+  // gasto quedó con un total que no coincidía con el de la factura real
+  // (ni con lo que de verdad salió del banco), y el chat lo reportó como
+  // "conciliado" sin avisar del descuadre. Se calcula acá el total que
+  // debería dar Holded a partir de las mismas líneas que se le mandan
+  // (base + IVA - retención de cada una) y se compara contra el total real
+  // de la propuesta — si no coincide, se avisa explícitamente en vez de
+  // reportar éxito sin más, para que se pueda corregir a mano en Holded.
+  const totalCalculado = lineas.reduce(
+    (acc, l) => acc + l.base * (1 + l.tipoIvaPct / 100 - (l.retencionPct ?? 0) / 100),
+    0
+  );
+  const notaDescuadre =
+    Math.abs(totalCalculado - propuesta.monto) > 0.05
+      ? `\n\n⚠️ El total que va a quedar registrado en Holded (${totalCalculado.toFixed(2)} ${propuesta.moneda}, según las líneas) ` +
+        `NO coincide con el total real de la factura (${propuesta.monto.toFixed(2)} ${propuesta.moneda}) — revísalo y corrígelo a mano en Holded ` +
+        `(puede ser una retención de IRPF u otro descuento que no se haya interpretado bien).`
+      : "";
+
   const gasto = await crearGastoHolded(empresaFinal, {
     contactId: contacto.id,
     fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
@@ -585,7 +605,8 @@ async function crearGastoYReportar(
     `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador)` +
     (notaComprobante ? "." : " y comprobante adjuntado.") +
     notaComprobante +
-    notaPlaceholder;
+    notaPlaceholder +
+    notaDescuadre;
 
   if (conciliarInline) {
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.

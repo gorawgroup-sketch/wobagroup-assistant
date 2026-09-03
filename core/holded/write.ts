@@ -1147,10 +1147,40 @@ export function mapearPorcentajeATaxKey(catalogo: TaxCatalogEntry[], pct: number
   return catalogo.find((t) => t.amount === pct)?.key;
 }
 
+/**
+ * Bug real encontrado en vivo: una factura de alquiler de nave con
+ * retención de IRPF (19%) se registró en Holded SIN la retención — el
+ * total quedó en base+IVA (4.090,60€) en vez del "Total a Ingresar" real
+ * (3.448,28€), aunque la conciliación bancaria sí había usado el monto
+ * correcto. Holded modela la retención como un código de impuesto más
+ * (verificado en vivo contra /taxes: "p_ret_19" con amount=-19, junto a
+ * variantes por tipo de retención — "p_retrent_19" para alquileres/rentas
+ * de inmuebles, que tributan en un modelo de Hacienda distinto al de
+ * retenciones de servicios profesionales) — se puede pasar en el mismo
+ * array `taxes` que el IVA, sumando ambos efectos en la misma línea.
+ * `concepto` decide la familia de código (alquiler vs. genérica) por
+ * palabras clave — no hay forma de saberlo del porcentaje solo, que es
+ * igual (19%) en varios tipos de retención distintos.
+ */
+export function mapearRetencionATaxKey(catalogo: TaxCatalogEntry[], pct: number, concepto: string): string | undefined {
+  const esAlquiler = /alquiler|arrendamiento|\brenta\b/i.test(concepto);
+  const familias = esAlquiler ? ["p_retrent_", "p_ret_"] : ["p_ret_", "p_retrent_"];
+
+  for (const prefijo of familias) {
+    const claveDirecta = `${prefijo}${String(Math.round(pct)).replace(".", "")}`;
+    const directo = catalogo.find((t) => t.key === claveDirecta);
+    if (directo) return directo.key;
+  }
+
+  return catalogo.find((t) => t.amount === -pct)?.key;
+}
+
 export interface LineaGastoHolded {
   concepto: string;
   base: number;
   tipoIvaPct: number;
+  /** Porcentaje de retención de IRPF de esta línea (ver mapearRetencionATaxKey) — 0/undefined si no aplica. */
+  retencionPct?: number;
 }
 
 export interface NuevoGastoHolded {
@@ -1217,12 +1247,17 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
 
   const items = gasto.lineas.map((linea) => {
     const taxKey = mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
+    const retencionKey =
+      linea.retencionPct && linea.retencionPct > 0
+        ? mapearRetencionATaxKey(catalogo, linea.retencionPct, linea.concepto || gasto.descripcion)
+        : undefined;
+    const taxes = [taxKey, retencionKey].filter((k): k is string => Boolean(k));
     return {
       name: linea.concepto || gasto.descripcion,
       units: 1,
       price: linea.base,
       tax: 0,
-      taxes: taxKey ? [taxKey] : [],
+      taxes,
       ...(gasto.cuentaId ? { account: gasto.cuentaId } : {}),
     };
   });
