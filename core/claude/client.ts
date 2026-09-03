@@ -237,7 +237,11 @@ const SYSTEM_PROMPT_ESTATICO = [
  * (core/tools/confirmarArchivoPendiente.ts) disponible para actuar sobre
  * ella si el mensaje del usuario aplica.
  */
-async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemitente?: string): Promise<string> {
+async function buildSystemPromptDinamico(
+  chatId: number | undefined,
+  nombreRemitente?: string,
+  pendientesPrefetch?: PendientesSensibles
+): Promise<string> {
   const hoy = formatDateLocal(new Date());
 
   const partes = [
@@ -255,10 +259,11 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
   ];
 
   if (chatId !== undefined) {
-    const propuesta = await obtenerPropuestaClasificacionPendientePorChat(chatId).catch((error) => {
-      console.error("[claude/client] Error consultando propuesta de archivo pendiente (no crítico):", error);
-      return undefined;
-    });
+    // Reutiliza la lectura ya hecha en orquestarTurno (obtenerPendientesSensibles) cuando
+    // viene provista — evita repetir las mismas 4 lecturas de Sheets dos veces por turno.
+    // Solo se vuelve a consultar acá si por algún motivo no llegó prefetch (defensivo).
+    const pendientes = pendientesPrefetch ?? (await obtenerPendientesSensibles(chatId));
+    const { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente } = pendientes;
     if (propuesta) {
       const origenTxt = propuesta.correoOrigen
         ? ` Vino de un correo de ${propuesta.correoOrigen.de}, asunto "${propuesta.correoOrigen.asunto}".`
@@ -270,15 +275,14 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           "texto libre a esa propuesta (ej. 'archívalo ahí', 'sí, guárdalo', o una instrucción compuesta " +
           "como 'archívalo y responde el correo con el link'), usa la herramienta confirmar_archivo_pendiente " +
           "para confirmarla — no le vuelvas a preguntar datos que ya se le mostraron en esa propuesta " +
-          "(incluyendo quién mandó el correo, si ya se sabe). Si su mensaje no tiene relación con esto, " +
-          "ignora este aviso."
+          "(incluyendo quién mandó el correo, si ya se sabe). Si su mensaje pide algo distinto (programar " +
+          "un recordatorio, guardar algo en la memoria del sistema, o cualquier otra instrucción), atiende " +
+          "esa petición con la herramienta que corresponda — no repitas esta pregunta de archivo ni " +
+          "inventes una aclaración propia sobre el pendiente; los botones de la propuesta original siguen " +
+          "arriba en el chat por si luego quiere usarlos."
       );
     }
 
-    const resolucionContacto = await obtenerResolucionContactoPendientePorChat(chatId).catch((error) => {
-      console.error("[claude/client] Error consultando resolución de contacto pendiente (no crítico):", error);
-      return undefined;
-    });
     if (resolucionContacto) {
       partes.push(
         `Hay una pregunta SIN RESPONDER en este chat: se avisó que el proveedor ` +
@@ -286,14 +290,13 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           `(${resolucionContacto.empresaFinal}) y se le pidió al usuario que lo creara y avisara. Si su ` +
           "mensaje actual confirma que ya lo creó (ej. 'ya lo creé', 'listo', 'ya está', 'dale, ya lo " +
           "agregué'), usa la herramienta reintentar_contacto_pendiente — nunca le vuelvas a pedir los datos " +
-          "de la factura, ya se leyeron antes. Si su mensaje no tiene relación con esto, ignora este aviso."
+          "de la factura, ya se leyeron antes. Si su mensaje pide algo distinto (programar un recordatorio, " +
+          "guardar algo en la memoria del sistema, o cualquier otra instrucción), atiende esa petición con " +
+          "la herramienta que corresponda — no repitas esta pregunta ni inventes una aclaración propia " +
+          "sobre el pendiente."
       );
     }
 
-    const gastoPendiente = await obtenerGastoPendienteDatosPorChat(chatId).catch((error) => {
-      console.error("[claude/client] Error consultando gasto pendiente de datos (no crítico):", error);
-      return undefined;
-    });
     if (gastoPendiente) {
       const queFalta =
         gastoPendiente.motivo === "empresa"
@@ -305,14 +308,12 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           `botón — falta que el usuario confirme ${queFalta}. Si su mensaje actual responde eso, usa la herramienta ` +
           "reintentar_gasto_pendiente con el dato que dio — nunca le pidas que reenvíe el documento, ya se leyó, y " +
           "nunca le digas que 'ya se la mandaste' hasta que esta herramienta confirme que la propuesta salió. Si su " +
-          "mensaje no tiene relación con esto, ignora este aviso."
+          "mensaje pide algo distinto (programar un recordatorio, guardar algo en la memoria del sistema, o " +
+          "cualquier otra instrucción), atiende esa petición con la herramienta que corresponda — no repitas " +
+          "esta pregunta ni inventes una aclaración propia sobre el pendiente."
       );
     }
 
-    const reclasificacionPendiente = await obtenerPendienteReclasificacionPorChat(chatId).catch((error) => {
-      console.error("[claude/client] Error consultando reclasificación de documento pendiente (no crítico):", error);
-      return undefined;
-    });
     if (reclasificacionPendiente) {
       partes.push(
         `Hay una pregunta SIN RESPONDER en este chat: se le pidió al usuario la empresa y carpeta correctas ` +
@@ -320,7 +321,9 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           `propuesta original). Si su mensaje actual responde eso (ej. "EWORKS, en Colaboradores/Alejandra", ` +
           `"es de Footprint", "en la carpeta de Facturas"), usa la herramienta reclasificar_documento_pendiente ` +
           "con esos datos — el archivo ya está guardado localmente, nunca le pidas que lo reenvíe. Si su mensaje " +
-          "no tiene relación con esto, ignora este aviso."
+          "pide algo distinto (programar un recordatorio, guardar algo en la memoria del sistema, o cualquier " +
+          "otra instrucción), atiende esa petición con la herramienta que corresponda — no repitas esta " +
+          "pregunta de carpeta ni inventes una aclaración propia sobre el pendiente."
       );
     }
   }
@@ -511,7 +514,8 @@ async function ejecutarConversacion(
   toolsBase: Anthropic.Tool[],
   systemExtra: string | undefined,
   permiteEscalar: boolean,
-  incluirBusquedaWeb: boolean
+  incluirBusquedaWeb: boolean,
+  pendientesPrefetch?: PendientesSensibles
 ): Promise<ResultadoConversacion> {
   const anthropic = getClient();
 
@@ -542,7 +546,7 @@ async function ejecutarConversacion(
   if (systemExtra) {
     system.push({ type: "text", text: systemExtra, cache_control: { type: "ephemeral" } });
   }
-  system.push({ type: "text", text: await buildSystemPromptDinamico(chatId, nombreRemitente) });
+  system.push({ type: "text", text: await buildSystemPromptDinamico(chatId, nombreRemitente, pendientesPrefetch) });
 
   const historial = usarHistorial && chatId !== undefined ? await obtenerHistorial(chatId) : [];
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
@@ -695,13 +699,16 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
 /**
  * Orquesta un turno completo: primer intento con Haiku (rápido y barato,
  * solo herramientas de lectura — ver getToolDefinitions(true) y
- * ToolDefinition.seguraParaModoRapido). Si Haiku responde el marcador
- * ESCALAR (porque la petición necesita proponer/escribir algo o precisión
- * financiera real), se descarta esa respuesta sin guardarla en el
- * historial y se repite el turno con Sonnet y el set de herramientas
- * completo. Si Sonnet no está disponible (caída/sobrecarga de la API),
- * Haiku responde como respaldo — esta vez con el set completo de
- * herramientas, porque ya es la única opción que queda.
+ * ToolDefinition.seguraParaModoRapido) — EXCEPTO si el chat tiene alguna de
+ * las cuatro preguntas sensibles pendientes (ver obtenerPendientesSensibles),
+ * en cuyo caso el intento con Haiku se salta directo y se va a Sonnet (ver
+ * el comentario sobre obtenerPendientesSensibles para el porqué). Si Haiku sí
+ * corre y responde el marcador ESCALAR (porque la petición necesita
+ * proponer/escribir algo o precisión financiera real), se descarta esa
+ * respuesta sin guardarla en el historial y se repite el turno con Sonnet y
+ * el set de herramientas completo. Si Sonnet no está disponible (caída/
+ * sobrecarga de la API), Haiku responde como respaldo — esta vez con el set
+ * completo de herramientas, porque ya es la única opción que queda.
  *
  * Las reglas de "nunca escribas sin aprobación" son IDÉNTICAS sin importar
  * qué modelo termine respondiendo: (a) usan el mismo SYSTEM_PROMPT_ESTATICO,
@@ -717,30 +724,103 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
  * modo de respaldo por caída de Sonnet, es la misma tool con la misma
  * definición y las mismas reglas, no una versión distinta por modelo.
  */
+
+/**
+ * Bug real encontrado en vivo (2026-09-03): con una reclasificación de
+ * documento pendiente ("Elegir otra carpeta" sin terminar), Carlos escribió
+ * una instrucción totalmente distinta y sin relación ("programa en el
+ * calendario un correo de seguimiento para el lunes") — Haiku, en modo
+ * rápido, la vio junto con el aviso de "pregunta sin responder" del system
+ * prompt dinámico y respondió en texto plano insistiendo en la pregunta de
+ * carpeta, en vez de reconocer que necesitaba programar_accion_futura (una
+ * tool de escritura fuera de su set) y escalar — el propio
+ * INSTRUCCION_MODO_RAPIDO le dice "ante la duda, escala", pero Haiku no
+ * "dudó": entendió mal la relación y contestó directo, sin pasar por
+ * ninguna tool (así que el chequeo de nombreNoDisponible en
+ * ejecutarConversacion nunca se activó). Estas cuatro preguntas pendientes
+ * son las únicas que dependen de que el modelo interprete texto libre para
+ * decidir una acción real (a diferencia de otros pendientes, que Server.ts
+ * intercepta directo sin pasar por Claude) — así que en vez de otro parche
+ * de texto en el prompt, se salta Haiku por completo en esos turnos y se va
+ * directo a Sonnet: más caro solo en esos casos puntuales, pero confiable.
+ *
+ * Se lee UNA sola vez por turno (acá) y el resultado se reutiliza tanto para
+ * decidir si saltar el modo rápido como para construir el aviso en
+ * buildSystemPromptDinamico — evita leer las mismas 4 hojas de Sheets dos
+ * veces (bug encontrado en la auditoría de este mismo cambio). A diferencia
+ * del chequeo anterior, los errores de lectura SÍ se registran (antes se
+ * descartaban en silencio con .catch(() => undefined), lo que podía hacer
+ * que un error transitorio de Sheets se interpretara como "no hay nada
+ * pendiente" y dejara pasar el turno por Haiku sin ningún rastro en los logs
+ * de por qué el chequeo no se activó).
+ */
+export interface PendientesSensibles {
+  propuesta: Awaited<ReturnType<typeof obtenerPropuestaClasificacionPendientePorChat>>;
+  resolucionContacto: Awaited<ReturnType<typeof obtenerResolucionContactoPendientePorChat>>;
+  gastoPendiente: Awaited<ReturnType<typeof obtenerGastoPendienteDatosPorChat>>;
+  reclasificacionPendiente: Awaited<ReturnType<typeof obtenerPendienteReclasificacionPorChat>>;
+}
+
+async function obtenerPendientesSensibles(chatId: number): Promise<PendientesSensibles> {
+  const [propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente] = await Promise.all([
+    obtenerPropuestaClasificacionPendientePorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando propuesta de archivo pendiente (no crítico):", error);
+      return undefined;
+    }),
+    obtenerResolucionContactoPendientePorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando resolución de contacto pendiente (no crítico):", error);
+      return undefined;
+    }),
+    obtenerGastoPendienteDatosPorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando gasto pendiente de datos (no crítico):", error);
+      return undefined;
+    }),
+    obtenerPendienteReclasificacionPorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando reclasificación de documento pendiente (no crítico):", error);
+      return undefined;
+    }),
+  ]);
+  return { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente };
+}
+
+function haySensiblePendiente(p: PendientesSensibles): boolean {
+  return Boolean(p.propuesta || p.resolucionContacto || p.gastoPendiente || p.reclasificacionPendiente);
+}
+
 async function orquestarTurno(
   userText: string,
   chatId: number | undefined,
   nombreRemitente: string | undefined,
   usarHistorial: boolean
 ): Promise<string> {
-  const intentoRapido = await ejecutarConversacion(
-    userText,
-    chatId,
-    nombreRemitente,
-    usarHistorial,
-    MODEL_HAIKU,
-    getToolDefinitions(true),
-    INSTRUCCION_MODO_RAPIDO,
-    true,
-    false // sin búsqueda web en el modo rápido/económico — ver WEB_SEARCH_TOOL
-  );
+  const pendientes = chatId !== undefined ? await obtenerPendientesSensibles(chatId) : undefined;
+  const saltarModoRapido = pendientes !== undefined && haySensiblePendiente(pendientes);
 
-  if (intentoRapido.tipo === "respuesta") {
-    if (chatId !== undefined) await guardarHistorial(chatId, intentoRapido.messages);
-    return intentoRapido.respuesta;
+  if (!saltarModoRapido) {
+    const intentoRapido = await ejecutarConversacion(
+      userText,
+      chatId,
+      nombreRemitente,
+      usarHistorial,
+      MODEL_HAIKU,
+      getToolDefinitions(true),
+      INSTRUCCION_MODO_RAPIDO,
+      true,
+      false, // sin búsqueda web en el modo rápido/económico — ver WEB_SEARCH_TOOL
+      pendientes
+    );
+
+    if (intentoRapido.tipo === "respuesta") {
+      if (chatId !== undefined) await guardarHistorial(chatId, intentoRapido.messages);
+      return intentoRapido.respuesta;
+    }
+
+    console.log(`[claude] Haiku escaló a Sonnet (chat ${chatId ?? "?"}).`);
+  } else {
+    console.log(
+      `[claude] Se salta el modo rápido (chat ${chatId ?? "?"}) — hay una pregunta sin responder que necesita razonamiento completo.`
+    );
   }
-
-  console.log(`[claude] Haiku escaló a Sonnet (chat ${chatId ?? "?"}).`);
 
   let resultadoFinal: ResultadoConversacion;
   try {
@@ -753,7 +833,8 @@ async function orquestarTurno(
       getToolDefinitions(false),
       undefined,
       false,
-      true // intento completo — búsqueda web disponible, ver WEB_SEARCH_TOOL
+      true, // intento completo — búsqueda web disponible, ver WEB_SEARCH_TOOL
+      pendientes
     );
   } catch (error) {
     if (!esErrorDeDisponibilidad(error)) throw error;
@@ -768,7 +849,8 @@ async function orquestarTurno(
       getToolDefinitions(false),
       undefined,
       false,
-      true // sigue siendo el intento "completo" (solo cambió el modelo por disponibilidad)
+      true, // sigue siendo el intento "completo" (solo cambió el modelo por disponibilidad)
+      pendientes
     );
   }
 
