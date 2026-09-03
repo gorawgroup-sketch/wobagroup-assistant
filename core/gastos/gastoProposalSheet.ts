@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { textosParecidos } from "../utils/textoParecido";
+import { montosCercanos } from "../utils/montos";
 import type { Empresa } from "../holded/client";
 import type { PurchaseCandidato } from "../holded/write";
 import type { LineaFactura } from "../documental/extractInvoiceData";
@@ -314,4 +316,36 @@ export async function consumirPropuestaGasto(id: string): Promise<PropuestaGasto
 
   await eliminarFila(match.rowIndex);
   return match.propuesta;
+}
+
+/**
+ * Busca, entre las propuestas de gasto TODAVÍA sin resolver (no consumidas
+ * — nadie tocó "Crear"/"Cancelar" todavía), una que ya sea del mismo
+ * proveedor y monto — para evitar mandar una SEGUNDA propuesta de "Crear
+ * gasto" cuando la primera sigue viva. Bug real encontrado en vivo
+ * (2026-09-03): un correo se volvió a marcar como no leído (pedido
+ * explícito de Carlos: eso SIEMPRE debe re-analizarse) y el sistema mandó
+ * una propuesta nueva sin darse cuenta de que la de un día antes seguía
+ * sin resolver — dos botones "Crear" vivos para la MISMA factura (LUARCA
+ * JULIO 2026, 3.448,28€), con el riesgo real de duplicar el gasto en
+ * Holded si se tocan los dos. El chequeo de duplicados existente
+ * (buscarGastoSimilar, en core/holded/write.ts) solo mira lo que YA está
+ * creado en Holded — nunca las propuestas que siguen pendientes de
+ * aprobación, que es exactamente el hueco que esto cierra. Mismo criterio
+ * de similitud (textosParecidos + montosCercanos) que el resto del
+ * sistema usa para detectar duplicados.
+ */
+export async function buscarPropuestaGastoPendiente(
+  empresa: Empresa,
+  proveedor: string,
+  monto: number
+): Promise<PropuestaGasto | undefined> {
+  const todas = await leerTodas();
+  const match = todas.find(
+    ({ propuesta }) =>
+      propuesta.empresa === empresa &&
+      textosParecidos(proveedor, propuesta.proveedor) &&
+      montosCercanos(monto, propuesta.monto, 0.05)
+  );
+  return match?.propuesta;
 }

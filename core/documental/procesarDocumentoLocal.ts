@@ -34,7 +34,7 @@ export interface DocumentoLocalEntrante {
  */
 export async function procesarDocumentoLocal(
   entrada: DocumentoLocalEntrante
-): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "archivo"> {
+): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "gasto_duplicado" | "archivo"> {
   if (entrada.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(entrada.mimeType)) {
     try {
       const datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo);
@@ -51,7 +51,9 @@ export async function procesarDocumentoLocal(
               ? { mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail }
               : undefined,
         });
-        return resultado === "propuesta_enviada" ? "gasto_propuesto" : "gasto_pendiente_datos";
+        if (resultado === "propuesta_enviada") return "gasto_propuesto";
+        if (resultado === "propuesta_duplicada") return "gasto_duplicado";
+        return "gasto_pendiente_datos";
       }
     } catch (error) {
       console.error("[procesarDocumentoLocal] Error leyendo el documento como factura (sigue como documento normal):", error);

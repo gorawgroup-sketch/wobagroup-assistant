@@ -223,7 +223,7 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
           const destino = join(UPLOADS_DIR, nombreArchivo);
           await writeFile(destino, bytes);
 
-          await procesarDocumentoLocal({
+          const resultadoDocumento = await procesarDocumentoLocal({
             chatId,
             rutaLocal: destino,
             nombreArchivoOriginal: adjunto.filename,
@@ -260,6 +260,18 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
               attachmentIdGmail: adjunto.attachmentId,
             },
           });
+
+          // Bug real encontrado en vivo: cuando procesarDocumentoLocal
+          // detecta que ya hay una propuesta de "Crear gasto" pendiente para
+          // la misma factura (ver buscarPropuestaGastoPendiente), no manda
+          // ninguna propuesta NUEVA con botones — así que nada más iba a
+          // resolver este "pendiente" de la cola, dejándolo trabado
+          // esperando algo que nunca iba a llegar. Se avanza acá mismo,
+          // igual que el resto de los caminos que terminan sin mandar
+          // ninguna propuesta real (ver el catch de abajo).
+          if (resultadoDocumento === "gasto_duplicado") {
+            await avanzarColaCorreoSiActivo(chatId);
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);

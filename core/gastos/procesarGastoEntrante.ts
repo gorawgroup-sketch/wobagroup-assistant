@@ -7,7 +7,7 @@ import {
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
 } from "../holded/write";
-import { crearPropuestaGasto, actualizarMessageIdGasto } from "./gastoProposalSheet";
+import { crearPropuestaGasto, actualizarMessageIdGasto, buscarPropuestaGastoPendiente } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
@@ -39,7 +39,7 @@ export interface GastoEntrante {
  * reportar un envío que no ocurrió — mismo principio que ya se aplica en
  * reconciliarMovimiento (core/holded/write.ts).
  */
-export type ResultadoGastoEntrante = "propuesta_enviada" | "pendiente_datos";
+export type ResultadoGastoEntrante = "propuesta_enviada" | "pendiente_datos" | "propuesta_duplicada";
 
 function esEmpresaHolded(empresa: string): empresa is Empresa {
   return empresa === "WOBA" || empresa === "EWORKS" || empresa === "Footprint";
@@ -156,6 +156,29 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     });
   } catch (error) {
     console.error("[procesarGastoEntrante] Error buscando gasto similar en Holded:", error);
+  }
+
+  // Bug real encontrado en vivo (2026-09-03): buscarGastoSimilar (arriba)
+  // solo mira lo que YA está creado en Holded — nunca las propuestas de
+  // "Crear gasto" que siguen pendientes de aprobación. Un correo que se
+  // vuelve a marcar como no leído (pedido explícito de Carlos: eso SIEMPRE
+  // debe re-analizarse) mandaba una SEGUNDA propuesta sin darse cuenta de
+  // que la primera seguía sin resolver — dos botones "Crear" vivos para la
+  // MISMA factura, con riesgo real de duplicar el gasto en Holded si se
+  // tocan los dos. Antes de mandar una propuesta nueva, se revisa si ya
+  // hay una viva para el mismo proveedor/monto.
+  const propuestaYaPendiente = await buscarPropuestaGastoPendiente(empresa, datos.proveedor, montoParaHolded).catch((error) => {
+    console.error("[procesarGastoEntrante] Error buscando propuesta de gasto ya pendiente (no crítico, sigue igual):", error);
+    return undefined;
+  });
+  if (propuestaYaPendiente) {
+    await sendTelegramMessage(
+      chatId,
+      `📄 "${entrada.nombreArchivoOriginal}" parece la MISMA factura de una propuesta que ya te mandé antes y sigue sin resolver ` +
+        `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto} ${propuestaYaPendiente.moneda}) — revisa esa antes, no mandé una segunda ` +
+        `para no arriesgar un gasto duplicado en Holded.`
+    );
+    return "propuesta_duplicada";
   }
 
   // Solo importa inferir la cuenta contable cuando de verdad vamos a CREAR
