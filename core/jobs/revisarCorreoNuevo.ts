@@ -221,6 +221,19 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
               threadId: correo.threadId,
               messageIdHeader: correo.messageIdHeader,
               deColaCorreo: true,
+              // Causa raíz real, encontrada en vivo: un gasto se creó en
+              // Holded SIN su comprobante ("ENOENT: no such file or
+              // directory, open '/app/tmp/uploads/...'") — el archivo local
+              // no sobrevive un redeploy de Railway, pero la propuesta en
+              // Sheets sí, así que un adjunto que queda pendiente durante
+              // CUALQUIER redeploy (frecuente en desarrollo activo, y ahora
+              // más probable con los TTLs largos de hoy) pierde su copia de
+              // trabajo aunque el original siga intacto en Gmail. Guardar el
+              // messageId+attachmentId reales permite volver a descargarlo
+              // de la fuente durable si la copia local desaparece (ver
+              // reDescargarAdjuntoSiFalta.ts).
+              mensajeIdGmail: correo.id,
+              attachmentIdGmail: adjunto.attachmentId,
             },
           });
         } catch (error) {

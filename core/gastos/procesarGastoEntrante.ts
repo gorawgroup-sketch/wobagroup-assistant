@@ -20,6 +20,13 @@ export interface GastoEntrante {
   datos: DatosFactura;
   /** true si este adjunto vino de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
   deColaCorreo?: boolean;
+  /**
+   * Si rutaLocal viene de un adjunto real de Gmail, sus ids — permite volver
+   * a descargarlo de la fuente durable si la copia local (tmp/uploads, no
+   * sobrevive un redeploy de Railway) se pierde antes de adjuntarlo al gasto
+   * en Holded. Ver core/gmail/reDescargarAdjunto.ts.
+   */
+  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
 }
 
 /**
@@ -200,6 +207,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     cuentaId: cuentaSugerida?.accountId,
     cuentaTags: tagsFinal,
     deColaCorreo: entrada.deColaCorreo,
+    origenAdjuntoGmail: entrada.origenAdjuntoGmail,
   });
 
   const desgloseIva = lineasParaHolded

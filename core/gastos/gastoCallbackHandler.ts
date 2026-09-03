@@ -34,6 +34,7 @@ import {
 } from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
+import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
@@ -72,15 +73,50 @@ async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
   await unlink(rutaLocal).catch(() => {}); // no crítico si ya no existe
 }
 
-/** Adjunta el comprobante a un gasto de Holded y borra la copia local temporal (solo si tuvo éxito). */
+/**
+ * Adjunta el comprobante a un gasto de Holded y borra la copia local
+ * temporal (solo si tuvo éxito).
+ *
+ * Pedido explícito de Carlos, tras un caso real: un gasto se creó en Holded
+ * SIN su comprobante ("ENOENT: no such file or directory, open
+ * '/app/tmp/uploads/...'") — "no hay gastos en la contabilidad que puedan
+ * ser creados sin soporte, es ilegal". Causa raíz: la copia local del
+ * adjunto no sobrevive un redeploy de Railway, pero la propuesta en Sheets
+ * sí — así que un gasto que queda pendiente durante CUALQUIER redeploy
+ * pierde su copia de trabajo, aunque el original siga intacto en Gmail. Si
+ * el primer intento falla Y se sabe de qué mensaje/adjunto de Gmail vino
+ * (origenAdjuntoGmail), se descarga de nuevo desde ahí antes de rendirse —
+ * Gmail es la fuente durable, tmp/uploads solo una copia de trabajo. Si el
+ * segundo intento también falla (o no hay origen de Gmail que reintentar,
+ * ej. una foto subida por Telegram), se propaga el error tal cual, para que
+ * el gasto que ya se creó quede claramente marcado como pendiente de
+ * comprobante (ver revisarGastosSinComprobante.ts) en vez de darse por
+ * cerrado sin serlo.
+ */
 async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): Promise<void> {
-  await adjuntarComprobanteHolded(
-    propuesta.empresa,
-    purchaseId,
-    propuesta.rutaLocal,
-    propuesta.nombreArchivoOriginal,
-    propuesta.mimeType
-  );
+  try {
+    await adjuntarComprobanteHolded(
+      propuesta.empresa,
+      purchaseId,
+      propuesta.rutaLocal,
+      propuesta.nombreArchivoOriginal,
+      propuesta.mimeType
+    );
+  } catch (error) {
+    const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
+      mensajeIdGmail: propuesta.origenAdjuntoGmail?.mensajeIdGmail,
+      attachmentIdGmail: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
+    });
+    if (!recuperado) throw error;
+
+    await adjuntarComprobanteHolded(
+      propuesta.empresa,
+      purchaseId,
+      propuesta.rutaLocal,
+      propuesta.nombreArchivoOriginal,
+      propuesta.mimeType
+    );
+  }
   await limpiarArchivoLocal(propuesta.rutaLocal);
 }
 

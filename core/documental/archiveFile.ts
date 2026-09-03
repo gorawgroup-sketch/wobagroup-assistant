@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises";
 import { resolverCarpetaDestino, subirArchivoADrive } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
+import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import type { PropuestaClasificacion } from "./classificationStore";
 
 export interface ResultadoArchivado {
@@ -45,12 +46,24 @@ export async function archivarDocumentoEnDrive(propuesta: PropuestaClasificacion
     const candidatos = extraerCandidatosCarpeta(propuesta.clasificacion.carpetaSugerida);
     const destino = await resolverCarpetaDestino(rootFolderId, candidatos);
 
-    const subida = await subirArchivoADrive(
-      propuesta.rutaLocal,
-      propuesta.nombreArchivoOriginal,
-      propuesta.mimeType,
-      destino.folderId
-    );
+    // Pedido explícito de Carlos, mismo caso real que motivó el reintento
+    // equivalente en gastoCallbackHandler.ts: la copia local del adjunto no
+    // sobrevive un redeploy de Railway, pero la propuesta en Sheets sí — un
+    // documento que queda pendiente durante un redeploy pierde su copia de
+    // trabajo aunque el original siga intacto en Gmail. Si la subida falla
+    // y se sabe de qué mensaje/adjunto vino, se reintenta una vez tras
+    // volver a descargarlo de la fuente durable.
+    let subida: Awaited<ReturnType<typeof subirArchivoADrive>>;
+    try {
+      subida = await subirArchivoADrive(propuesta.rutaLocal, propuesta.nombreArchivoOriginal, propuesta.mimeType, destino.folderId);
+    } catch (error) {
+      const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
+        mensajeIdGmail: propuesta.correoOrigen?.mensajeIdGmail,
+        attachmentIdGmail: propuesta.correoOrigen?.attachmentIdGmail,
+      });
+      if (!recuperado) throw error;
+      subida = await subirArchivoADrive(propuesta.rutaLocal, propuesta.nombreArchivoOriginal, propuesta.mimeType, destino.folderId);
+    }
 
     await unlink(propuesta.rutaLocal);
 

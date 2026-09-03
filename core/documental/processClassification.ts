@@ -15,7 +15,7 @@ export interface ArchivoParaClasificar {
   /** Caption original del usuario, o el texto ya enriquecido con su aclaración. */
   captionEfectivo?: string;
   /** Si vino de un correo, sus datos — para poder responderlo después de archivar (ver DocumentoLocalEntrante). */
-  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean };
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string };
   /**
    * true cuando esta llamada es la continuación tras responder una pregunta
    * de desambiguación (ver server.ts) — evita ofrecer captura/respuesta una

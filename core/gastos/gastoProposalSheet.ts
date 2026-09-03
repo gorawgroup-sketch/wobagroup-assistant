@@ -28,6 +28,7 @@ const HEADERS = [
   "cuentaId",
   "cuentaTagsJSON",
   "deColaCorreo",
+  "origenAdjuntoGmailJSON",
 ];
 
 export interface PropuestaGasto {
@@ -61,6 +62,15 @@ export interface PropuestaGasto {
    * comparten el mismo chat, sin ninguna relación real entre sí.
    */
   deColaCorreo?: boolean;
+  /**
+   * Si rutaLocal viene de un adjunto real de Gmail, sus ids — permite volver
+   * a descargarlo de la fuente durable si la copia local (tmp/uploads, no
+   * sobrevive un redeploy de Railway) se pierde antes de adjuntarlo al gasto
+   * en Holded. Bug real encontrado en vivo (2026-09-03): un gasto se creó
+   * SIN su comprobante porque la propuesta en Sheets sobrevivió un redeploy
+   * pero la copia local no. Ver core/gmail/reDescargarAdjunto.ts.
+   */
+  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -113,7 +123,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:R1`,
+    range: `${TAB_NAME}!A1:S1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -146,6 +156,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     cuentaTags = undefined;
   }
 
+  let origenAdjuntoGmail: PropuestaGasto["origenAdjuntoGmail"];
+  try {
+    origenAdjuntoGmail = row[18] ? JSON.parse(String(row[18])) : undefined;
+  } catch {
+    origenAdjuntoGmail = undefined;
+  }
+
   return {
     id: String(row[0]),
     empresa: row[1] as Empresa,
@@ -165,6 +182,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     cuentaId: row[15] ? String(row[15]) : undefined,
     cuentaTags,
     deColaCorreo: row[17] === true || row[17] === "true",
+    origenAdjuntoGmail,
   };
 }
 
@@ -188,6 +206,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.cuentaId ?? "",
     JSON.stringify(p.cuentaTags ?? []),
     p.deColaCorreo === true ? "true" : "",
+    p.origenAdjuntoGmail ? JSON.stringify(p.origenAdjuntoGmail) : "",
   ];
 }
 
@@ -203,7 +222,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:R10000`,
+    range: `${TAB_NAME}!A2:S10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -257,7 +276,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:R`,
+    range: `${TAB_NAME}!A:S`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

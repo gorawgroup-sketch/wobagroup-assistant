@@ -19,7 +19,7 @@ export interface DocumentoLocalEntrante {
    * y sin esto el asistente no tenía forma de saber a qué correo/hilo
    * contestar.
    */
-  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean };
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string };
 }
 
 /**
@@ -46,6 +46,10 @@ export async function procesarDocumentoLocal(
           mimeType: entrada.mimeType,
           datos: datosFactura,
           deColaCorreo: entrada.correoOrigen?.deColaCorreo,
+          origenAdjuntoGmail:
+            entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
+              ? { mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail }
+              : undefined,
         });
         return resultado === "propuesta_enviada" ? "gasto_propuesto" : "gasto_pendiente_datos";
       }

@@ -7,6 +7,7 @@ import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
 import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
+import { revisarGastosSinComprobante } from "./revisarGastosSinComprobante";
 
 const TIMEZONE = "Europe/Madrid";
 
@@ -128,4 +129,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarAccionesProgramadas programado: cada hora, minuto 5 (${TIMEZONE})`);
+
+  cron.schedule(
+    "35 8 * * *",
+    () => {
+      revisarGastosSinComprobante().catch((error) => {
+        console.error("[scheduler] Error ejecutando revisarGastosSinComprobante:", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarGastosSinComprobante programado: diario 8:35 (${TIMEZONE})`);
 }
