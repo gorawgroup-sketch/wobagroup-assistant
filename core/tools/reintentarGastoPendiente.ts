@@ -72,6 +72,7 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
         nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
         mimeType: pendiente.mimeType,
         datos,
+        deColaCorreo: pendiente.deColaCorreo,
       });
     } catch (error) {
       // Se reinserta el pendiente para no perderlo por un error transitorio.

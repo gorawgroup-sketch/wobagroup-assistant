@@ -31,6 +31,15 @@ export interface GastoPendienteDatos {
   datos: DatosFactura;
   motivo: "empresa" | "moneda";
   creadoEn: number;
+  /**
+   * true si el gasto que originó esta pregunta viene de la cola de revisión
+   * de correo uno a uno — ver PropuestaGasto.deColaCorreo. Bug real
+   * encontrado al construir el camino de gasto-desde-cuerpo-de-correo: este
+   * store era el único de la familia de gasto que todavía no lo tenía, así
+   * que una factura (por adjunto o por cuerpo) con empresa/moneda poco clara
+   * dejaba la cola esperando una respuesta que nunca la iba a destrabar.
+   */
+  deColaCorreo?: boolean;
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -39,7 +48,7 @@ const TAB_NAME = "_gastos_pendientes_datos";
 // "pendiente_*", ver pendienteCapturaEmpresaStore.ts), igual que contactoResolucionStore.ts.
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-const HEADERS = ["id", "chatId", "rutaLocal", "nombreArchivoOriginal", "mimeType", "datosJSON", "motivo", "creadoEn"];
+const HEADERS = ["id", "chatId", "rutaLocal", "nombreArchivoOriginal", "mimeType", "datosJSON", "motivo", "creadoEn", "deColaCorreo"];
 
 function assertSheetId(): string {
   if (!CASHFLOW_SHEET_ID) {
@@ -91,7 +100,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:H1`,
+    range: `${TAB_NAME}!A1:I1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -122,6 +131,7 @@ function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
     datos,
     motivo,
     creadoEn: Number(row[7]) || 0,
+    deColaCorreo: row[8] === true || row[8] === "true",
   };
 }
 
@@ -135,6 +145,7 @@ function pendienteToRow(p: GastoPendienteDatos): (string | number)[] {
     JSON.stringify(p.datos),
     p.motivo,
     p.creadoEn,
+    p.deColaCorreo === true ? "true" : "",
   ];
 }
 
@@ -150,7 +161,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:H10000`,
+    range: `${TAB_NAME}!A2:I10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -206,7 +217,7 @@ export async function guardarGastoPendienteDatos(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:H`,
+    range: `${TAB_NAME}!A:I`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [pendienteToRow(pendiente)] },

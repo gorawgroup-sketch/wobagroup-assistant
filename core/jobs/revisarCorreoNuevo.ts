@@ -9,9 +9,13 @@ import {
   marcarHiloComoLeido,
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
+import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
+import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
+import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
+import type { DatosFactura } from "../documental/extractInvoiceData";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 import {
@@ -254,6 +258,68 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
       console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
       return "";
     });
+
+    // Pedido explícito de Carlos, tras un caso real: un correo sin adjunto
+    // puede describir un gasto real igual que uno con adjunto (ej. una
+    // notificación de tarjeta pegada como texto/HTML en el cuerpo, sin
+    // ningún PDF/imagen real) — "solo te das cuenta si es un gasto cuando no
+    // tiene anexo... si lees todos los correos, cuando lo leas identificas,
+    // me preguntas". Antes de caer al análisis genérico, se intenta leer el
+    // cuerpo como gasto exactamente con el mismo criterio que un adjunto
+    // real (mismo patrón que procesarDocumentoLocal.ts: primero factura/
+    // gasto, si no lo es cae al camino normal). Si sí es un gasto, se genera
+    // un PDF con los datos + el cuerpo completo como comprobante (no hay
+    // ningún archivo real que adjuntar) y sigue por el MISMO camino que un
+    // adjunto real (procesarGastoEntrante) — reutiliza tal cual el matching
+    // de Holded/banco, la moneda equivalente, y la pregunta de conciliar,
+    // sin duplicar nada de esa lógica.
+    let gastoDetectado: DatosFactura | undefined;
+    try {
+      gastoDetectado = await extraerGastoDeCorreo(cuerpoCompleto, {
+        de: correo.de,
+        asunto: correo.asunto,
+        fecha: correo.fecha,
+      });
+    } catch (error) {
+      console.error(`[revisarCorreoNuevo] Error intentando leer el correo ${correo.id} como gasto (sigue como correo normal):`, error);
+    }
+
+    if (gastoDetectado?.esFacturaOGasto) {
+      try {
+        const bytes = await generarComprobantePDF(
+          { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto },
+          gastoDetectado
+        );
+        await mkdir(UPLOADS_DIR, { recursive: true });
+        const nombreArchivo = `${Date.now()}_comprobante_${sanitizarNombre(correo.asunto || "correo")}.pdf`;
+        const destino = join(UPLOADS_DIR, nombreArchivo);
+        await writeFile(destino, bytes);
+
+        // Nota honesta en el concepto — para que la propuesta que ve Carlos
+        // deje claro que el "comprobante" es un PDF generado a partir del
+        // cuerpo, no el recibo original, sin tocar procesarGastoEntrante.ts.
+        const datosConNota: DatosFactura = {
+          ...gastoDetectado,
+          concepto: gastoDetectado.concepto
+            ? `${gastoDetectado.concepto} (comprobante generado desde el cuerpo del correo, sin adjunto original)`
+            : "Gasto detectado en el cuerpo del correo (sin adjunto original)",
+        };
+
+        await procesarGastoEntrante({
+          chatId,
+          rutaLocal: destino,
+          nombreArchivoOriginal: nombreArchivo,
+          mimeType: "application/pdf",
+          datos: datosConNota,
+          deColaCorreo: true,
+        });
+        return;
+      } catch (error) {
+        console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id} (sigue como correo normal):`, error);
+        // Cae al análisis genérico de abajo en vez de perder el correo —
+        // mejor preguntar de forma genérica que no decir nada.
+      }
+    }
 
     const analisis = await analizarCorreo(correo, cuerpoCompleto);
 

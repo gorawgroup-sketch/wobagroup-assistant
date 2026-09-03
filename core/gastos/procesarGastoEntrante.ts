@@ -60,6 +60,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       mimeType: entrada.mimeType,
       datos,
       motivo: "empresa",
+      deColaCorreo: entrada.deColaCorreo,
     }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (empresa):", error));
     return "pendiente_datos";
   }
@@ -128,6 +129,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       mimeType: entrada.mimeType,
       datos,
       motivo: "moneda",
+      deColaCorreo: entrada.deColaCorreo,
     }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
     return "pendiente_datos";
   }
