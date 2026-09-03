@@ -686,10 +686,19 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     revisarCorreoNuevo()
       .then((resultado) => {
-        sendTelegramMessage(
-          incoming.chatId,
-          `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`
-        ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+        // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
+        // con varios correos reales sin leer en Gmail, y el sistema
+        // respondió "0 correos revisados" sin más — la causa real era un
+        // correo "activo" con una pregunta sin responder desde horas antes
+        // (bloqueando el resto de la cola), pero el aviso no lo decía. Ahora,
+        // si ese es el caso, se avisa explícitamente qué es lo que falta
+        // resolver en vez de dar a entender que no había nada pendiente.
+        const texto = resultado.activoBloqueando
+          ? `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`
+          : `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`;
+        sendTelegramMessage(incoming.chatId, texto).catch((error) =>
+          console.error("Error enviando confirmación de revisión de correo:", error)
+        );
       })
       .catch((error) => {
         console.error("Error en revisión extraordinaria de correo:", error);

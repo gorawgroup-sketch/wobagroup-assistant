@@ -27,6 +27,7 @@ import {
   resolverUnoActivo,
   obtenerActivoEstancado,
   descartarActivoEstancado,
+  obtenerActivoActual,
 } from "../gmail/colaRevisionStore";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
@@ -60,7 +61,22 @@ function sanitizarNombre(nombre: string): string {
  * bandeja, y un correo que Carlos ya leyó a mano en Gmail no vuelve a
  * aparecer en la cola.
  */
-export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }> {
+export interface ResultadoRevisarCorreo {
+  correosRevisados: number;
+  /**
+   * Cuando correosRevisados=0 porque ya había un correo "activo" sin
+   * resolver (no porque no hubiera nada pendiente) — para que el llamador
+   * (comando manual /revisarcorreo) pueda avisar QUÉ es lo que está
+   * bloqueando, en vez de decir "0 correos revisados" sin explicación.
+   * Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo con
+   * varios correos reales sin leer, y el sistema respondió así sin ninguna
+   * pista de que la causa real era una pregunta de conciliación pendiente
+   * desde horas antes.
+   */
+  activoBloqueando?: { asunto: string; de: string };
+}
+
+export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
 
   if (!chatId) {
@@ -150,6 +166,14 @@ export async function revisarCorreoNuevo(): Promise<{ correosRevisados: number }
   // se retoma.
   if (!habiaActivoAntes && totalAntesDeEncolar + nuevos > 0) {
     await procesarSiguienteCorreoActivo(chatId);
+    return { correosRevisados: nuevos };
+  }
+
+  if (habiaActivoAntes) {
+    const activo = await obtenerActivoActual(chatId).catch(() => undefined);
+    if (activo) {
+      return { correosRevisados: nuevos, activoBloqueando: { asunto: activo.asunto, de: activo.de } };
+    }
   }
 
   return { correosRevisados: nuevos };

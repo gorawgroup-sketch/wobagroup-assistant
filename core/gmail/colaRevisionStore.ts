@@ -137,6 +137,20 @@ export async function hayActivo(chatId: number): Promise<boolean> {
   return todas.some((f) => f.item.chatId === chatId && f.item.estado === "activo");
 }
 
+/**
+ * Igual que hayActivo, pero devuelve el correo activo en sí (sin mutar nada)
+ * — para poder avisar QUÉ es lo que está bloqueando el resto de la cola.
+ * Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo con 9
+ * correos reales sin leer en Gmail, y el sistema respondió "0 correos
+ * revisados" sin explicación — el motivo real era que ya había un correo
+ * "activo" esperando una respuesta (una pregunta de conciliación) desde
+ * hacía horas, y sin este dato el aviso no tenía cómo decírselo.
+ */
+export async function obtenerActivoActual(chatId: number): Promise<ItemColaCorreo | undefined> {
+  const todas = await leerTodas();
+  return todas.find((f) => f.item.chatId === chatId && f.item.estado === "activo")?.item;
+}
+
 /** Cuántos correos quedan en total (en cola + el activo) — para el aviso de las 7pm. */
 export async function contarPendientesTotal(chatId: number): Promise<number> {
   const todas = await leerTodas();
