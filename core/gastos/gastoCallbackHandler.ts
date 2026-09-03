@@ -556,6 +556,23 @@ async function crearGastoYReportar(
         `(puede ser una retención de IRPF u otro descuento que no se haya interpretado bien).`
       : "";
 
+  // Pedido explícito de Carlos, tras un caso real: un billete de tren OUIGO
+  // se registró con la cuenta contable por defecto de Holded ("Compras de
+  // mercaderías") en vez de algo relacionado con viajes — inferirCuentaGasto
+  // (core/holded/write.ts) SOLO puede sugerir una cuenta que YA esté en uso
+  // real en otra compra parecida (Holded no expone su plan de cuentas
+  // completo por API, así que nunca puede inventar un id) — cuando no
+  // encuentra ninguna coincidencia razonable (ej. el primer gasto de este
+  // tipo para esta empresa), deja que Holded use su cuenta genérica en
+  // silencio. Ahora se avisa explícitamente en vez de dejarlo pasar sin
+  // decir nada — "buscar en Holded o preguntar": ya se buscó y no había
+  // nada parecido, así que toca preguntar/corregir a mano.
+  const notaCuentaSinInferir = !propuesta.cuentaId
+    ? `\n\n⚠️ No encontré ninguna compra parecida ya registrada para elegir la cuenta contable — Holded lo dejó en su ` +
+      `cuenta genérica por defecto. Revisa y corrige la "Cuenta contable" a mano en Holded si no es la correcta ` +
+      `(la próxima vez que aparezca algo parecido, ya la usaré directo).`
+    : "";
+
   const gasto = await crearGastoHolded(empresaFinal, {
     contactId: contacto.id,
     fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
@@ -607,7 +624,8 @@ async function crearGastoYReportar(
     (notaComprobante ? "." : " y comprobante adjuntado.") +
     notaComprobante +
     notaPlaceholder +
-    notaDescuadre;
+    notaDescuadre +
+    notaCuentaSinInferir;
 
   if (conciliarInline) {
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.

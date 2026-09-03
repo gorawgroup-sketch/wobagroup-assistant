@@ -157,14 +157,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       numero_documento: {
         type: "string",
         description:
-          "El número real del documento tal como aparece impreso, EXCLUSIVAMENTE junto a una etiqueta que " +
-          "lo identifique como tal (ej. 'Número de recibo', 'Nº factura', 'Invoice number', 'Ticket nº', " +
-          "'Nº de documento'). Cópialo LITERAL, con ceros a la izquierda y guiones si los trae. NO uses " +
-          "ningún otro número que aparezca en el documento aunque parezca un identificador (ej. número de " +
-          "cliente, número de pedido/reserva, NIF/CIF, teléfono, IBAN, código de terminal o autorización de " +
-          "tarjeta) — esos NO son el número de documento. Omite este campo por completo si no hay ninguno " +
-          "etiquetado con claridad como número de factura/recibo/documento — NUNCA inventes ni adivines uno, " +
-          "y nunca uses un número parecido a falta de uno real.",
+          "El número real del documento tal como aparece impreso, junto a una etiqueta que lo identifique " +
+          "como tal (ej. 'Número de recibo', 'Nº factura', 'Invoice number', 'Ticket nº/Nº billete', " +
+          "'Nº de documento', 'Localizador/Booking reference/PNR'). Cópialo LITERAL, con ceros a la " +
+          "izquierda y guiones si los trae. Si el documento cubre VARIAS líneas/tramos con su PROPIO " +
+          "número cada uno (ej. billete de ida y billete de vuelta, cada uno con su propio 'Nº billete') " +
+          "y no hay un único número que sirva para las dos, usa en su lugar el localizador/número de " +
+          "reserva COMPARTIDO que identifica la compra completa — sí cuenta como número de documento en " +
+          "ese caso, a diferencia de un número de cliente/cuenta que no identifica esta compra en concreto. " +
+          "NO uses NUNCA: número de cliente/cuenta, NIF/CIF, teléfono, IBAN, o código de terminal/" +
+          "autorización de tarjeta — esos no identifican el documento. Omite este campo por completo si no " +
+          "hay ningún número (de documento o de reserva/localizador) que identifique la compra con claridad " +
+          "— NUNCA inventes ni adivines uno, y nunca uses un número parecido a falta de uno real.",
       },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
       lineas: {

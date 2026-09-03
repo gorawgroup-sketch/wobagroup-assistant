@@ -69,12 +69,14 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       numero_documento: {
         type: "string",
         description:
-          "Número de recibo/factura/autorización tal como aparece en el correo, EXCLUSIVAMENTE junto a una " +
-          "etiqueta que lo identifique como tal (ej. 'Nº de recibo', 'Referencia', 'Authorization code'). " +
-          "Cópialo literal. NO uses ningún otro número del correo aunque parezca un identificador (ej. " +
-          "número de cliente, de pedido, teléfono, últimos dígitos de tarjeta) — eso NO es el número de " +
-          "documento. Omite este campo si el correo no trae ninguno etiquetado con claridad — NUNCA " +
-          "inventes ni adivines uno, y nunca uses un número parecido a falta de uno real.",
+          "Número de recibo/factura/autorización/localizador tal como aparece en el correo, junto a una " +
+          "etiqueta que lo identifique como tal (ej. 'Nº de recibo', 'Referencia', 'Authorization code', " +
+          "'Localizador/Booking reference'). Cópialo literal. Si hay varios tramos/líneas cada uno con su " +
+          "propio número y ninguno cubre todo, usa el localizador/número de reserva COMPARTIDO de toda la " +
+          "compra — sí cuenta como número de documento en ese caso. NO uses NUNCA: número de cliente/" +
+          "cuenta, teléfono, o últimos dígitos de tarjeta — eso no identifica el documento. Omite este " +
+          "campo si el correo no trae ningún número (de documento o de reserva) que identifique la compra " +
+          "con claridad — NUNCA inventes ni adivines uno, y nunca uses un número parecido a falta de uno real.",
       },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
       empresa_probable: {
