@@ -564,6 +564,7 @@ async function crearGastoYReportar(
     cuentaId: propuesta.cuentaId,
     tags: propuesta.cuentaTags,
     moneda: propuesta.moneda,
+    numeroDocumento: propuesta.numeroDocumento,
   });
 
   // A partir de acá el gasto YA EXISTE en Holded — un fallo en cualquier

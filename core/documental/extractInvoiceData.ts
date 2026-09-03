@@ -79,6 +79,16 @@ export interface DatosFactura {
   personaAsociada?: string;
   fecha: string; // YYYY-MM-DD, según lo que diga el documento
   concepto: string;
+  /**
+   * Pedido explícito de Carlos: al crear el gasto en Holded, "Número de
+   * documento" debe quedar diligenciado con el número real de la factura/
+   * recibo/ticket tal como aparece impreso (ej. "Número de recibo",
+   * "Nº factura", "Invoice number") — NUNCA un número inventado o adivinado.
+   * undefined si el documento no muestra ninguno con claridad (Holded
+   * simplemente lo deja en blanco/genera el suyo propio en ese caso, en vez
+   * de recibir un dato falso).
+   */
+  numeroDocumento?: string;
   /** Desglose por tipo de IVA (una o varias líneas). El % es el que aparece impreso, no un código de Holded. */
   lineas: LineaFactura[];
   empresaProbable: EmpresaGasto;
@@ -144,6 +154,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "campo — nunca inventes un nombre.",
       },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
+      numero_documento: {
+        type: "string",
+        description:
+          "El número real del documento tal como aparece impreso, EXCLUSIVAMENTE junto a una etiqueta que " +
+          "lo identifique como tal (ej. 'Número de recibo', 'Nº factura', 'Invoice number', 'Ticket nº', " +
+          "'Nº de documento'). Cópialo LITERAL, con ceros a la izquierda y guiones si los trae. NO uses " +
+          "ningún otro número que aparezca en el documento aunque parezca un identificador (ej. número de " +
+          "cliente, número de pedido/reserva, NIF/CIF, teléfono, IBAN, código de terminal o autorización de " +
+          "tarjeta) — esos NO son el número de documento. Omite este campo por completo si no hay ninguno " +
+          "etiquetado con claridad como número de factura/recibo/documento — NUNCA inventes ni adivines uno, " +
+          "y nunca uses un número parecido a falta de uno real.",
+      },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
       lineas: {
         type: "array",
@@ -353,6 +375,7 @@ export async function extraerDatosFactura(
             : undefined,
         personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
         fecha: (input.fecha as string) ?? "",
+        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
         concepto: (input.concepto as string) ?? "",
         // Si Claude no reportó líneas (o vinieron vacías), se usa una sola
         // línea con el total completo a 0% en vez de perder el importe —

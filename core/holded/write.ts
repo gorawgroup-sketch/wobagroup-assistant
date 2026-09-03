@@ -1203,6 +1203,16 @@ export interface NuevoGastoHolded {
    * caso el gasto debe crearse en USD, no forzarlo a EUR.
    */
   moneda?: string;
+  /**
+   * Pedido explícito de Carlos: "Número de documento" debe quedar
+   * diligenciado con el número real de la factura/recibo cuando se conoce
+   * — NUNCA un número inventado. Si no se pudo identificar con claridad, se
+   * omite (Holded lo deja en blanco), en vez de mandar un valor falso.
+   * Mismo campo que ya se lee de vuelta en buscarEnEndpointDocumentos/
+   * consultarEstadoFacturaHolded (`document_number`, confirmado real ahí
+   * contra datos reales de Holded) — se usa el mismo nombre para escribir.
+   */
+  numeroDocumento?: string;
 }
 
 /**
@@ -1271,6 +1281,7 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       items,
       ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
       ...(gasto.moneda ? { currency: gasto.moneda } : {}),
+      ...(gasto.numeroDocumento ? { document_number: gasto.numeroDocumento } : {}),
     })) as { id?: string };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

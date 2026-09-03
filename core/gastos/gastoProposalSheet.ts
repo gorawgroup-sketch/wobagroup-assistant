@@ -31,6 +31,7 @@ const HEADERS = [
   "cuentaTagsJSON",
   "deColaCorreo",
   "origenAdjuntoGmailJSON",
+  "numeroDocumento",
 ];
 
 export interface PropuestaGasto {
@@ -73,6 +74,13 @@ export interface PropuestaGasto {
    * pero la copia local no. Ver core/gmail/reDescargarAdjunto.ts.
    */
   origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
+  /**
+   * Pedido explícito de Carlos: el número real del documento (factura/
+   * recibo/ticket), tal como aparece impreso — se usa para diligenciar
+   * "Número de documento" al crear el gasto en Holded. undefined si no se
+   * pudo identificar con claridad (nunca un número inventado).
+   */
+  numeroDocumento?: string;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -125,7 +133,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:S1`,
+    range: `${TAB_NAME}!A1:T1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -185,6 +193,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     cuentaTags,
     deColaCorreo: row[17] === true || row[17] === "true",
     origenAdjuntoGmail,
+    numeroDocumento: row[19] ? String(row[19]) : undefined,
   };
 }
 
@@ -209,6 +218,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     JSON.stringify(p.cuentaTags ?? []),
     p.deColaCorreo === true ? "true" : "",
     p.origenAdjuntoGmail ? JSON.stringify(p.origenAdjuntoGmail) : "",
+    p.numeroDocumento ?? "",
   ];
 }
 
@@ -224,7 +234,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:S10000`,
+    range: `${TAB_NAME}!A2:T10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -278,7 +288,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:S`,
+    range: `${TAB_NAME}!A:T`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },

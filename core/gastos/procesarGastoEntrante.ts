@@ -219,6 +219,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     monto: montoParaHolded,
     moneda: monedaParaHolded,
     fecha: datos.fecha,
+    numeroDocumento: datos.numeroDocumento,
     concepto: conceptoConMonedaOriginal,
     rutaLocal: entrada.rutaLocal,
     nombreArchivoOriginal: entrada.nombreArchivoOriginal,

@@ -66,6 +66,16 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "---------- From: X'), no quien hizo el último reenvío. Omite si no hay evidencia clara.",
       },
       fecha: { type: "string", description: "Fecha del gasto en formato YYYY-MM-DD." },
+      numero_documento: {
+        type: "string",
+        description:
+          "Número de recibo/factura/autorización tal como aparece en el correo, EXCLUSIVAMENTE junto a una " +
+          "etiqueta que lo identifique como tal (ej. 'Nº de recibo', 'Referencia', 'Authorization code'). " +
+          "Cópialo literal. NO uses ningún otro número del correo aunque parezca un identificador (ej. " +
+          "número de cliente, de pedido, teléfono, últimos dígitos de tarjeta) — eso NO es el número de " +
+          "documento. Omite este campo si el correo no trae ninguno etiquetado con claridad — NUNCA " +
+          "inventes ni adivines uno, y nunca uses un número parecido a falta de uno real.",
+      },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
       empresa_probable: {
         type: "string",
@@ -201,6 +211,7 @@ export async function extraerGastoDeCorreo(
             ? input.persona_asociada.trim()
             : undefined,
         fecha: (input.fecha as string) ?? "",
+        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
         concepto,
         // Un correo describiendo un gasto casi nunca trae un desglose de IVA
         // limpio por tipo — una sola línea con el total, igual que hace
