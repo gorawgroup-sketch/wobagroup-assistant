@@ -2,7 +2,7 @@ import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
-import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
+import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
 import {
   esUsuarioAutorizado,
   esAccionSensible,
@@ -32,7 +32,8 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
-import { revisarCorreoNuevo } from "../core/jobs/revisarCorreoNuevo";
+import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
+import { handleDescartarTodoPendienteCallback } from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
@@ -626,6 +627,14 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleDocumentCallback(update.callback_query);
       } else if (data.startsWith("desamb_")) {
         await handleDesambiguacionCallback(update.callback_query);
+      } else if (data.startsWith("colacorreo_")) {
+        if (data === "colacorreo_descartaractivo") {
+          await handleDescartarActivoCallback(update.callback_query);
+        } else {
+          await handleColaCorreoSiguienteCallback(update.callback_query);
+        }
+      } else if (data === "resumen_descartar_todo") {
+        await handleDescartarTodoPendienteCallback(update.callback_query);
       } else if (data.startsWith("email_")) {
         await handleEmailActionCallback(update.callback_query);
       } else if (data.startsWith("draft_")) {
@@ -695,12 +704,23 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         // (bloqueando el resto de la cola), pero el aviso no lo decía. Ahora,
         // si ese es el caso, se avisa explícitamente qué es lo que falta
         // resolver en vez de dar a entender que no había nada pendiente.
-        const texto = resultado.activoBloqueando
-          ? `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`
-          : `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`;
-        sendTelegramMessage(incoming.chatId, texto).catch((error) =>
-          console.error("Error enviando confirmación de revisión de correo:", error)
-        );
+        if (resultado.activoBloqueando) {
+          // Pedido explícito de Carlos, tras un caso real: "esto ya lo
+          // gestioné" — a veces el correo activo ya está resuelto por su
+          // cuenta (fuera del chat), y antes la única salida era esperar
+          // 48h o encontrar el mensaje original. El botón lo libera ya
+          // mismo (ver handleDescartarActivoCallback).
+          sendTelegramMessageWithButtons(
+            incoming.chatId,
+            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`,
+            [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
+          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+        } else {
+          sendTelegramMessage(
+            incoming.chatId,
+            `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`
+          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+        }
       })
       .catch((error) => {
         console.error("Error en revisión extraordinaria de correo:", error);

@@ -164,11 +164,19 @@ export async function contarPendientesTotal(chatId: number): Promise<number> {
  */
 export async function obtenerResumenColaPorChat(
   chatId: number
-): Promise<{ total: number; activo: ItemColaCorreo | undefined }> {
+): Promise<{ total: number; activo: ItemColaCorreo | undefined; masAntiguo: ItemColaCorreo | undefined }> {
   const todas = await leerTodas();
   const deEsteChat = todas.filter((f) => f.item.chatId === chatId);
   const activo = deEsteChat.find((f) => f.item.estado === "activo")?.item;
-  return { total: deEsteChat.length, activo };
+  // Bug real encontrado en auditoría: con la cola en pausa (nada "activo",
+  // esperando el botón "▶️ Sí, siguiente") no hay ningún item.agregadoEn
+  // útil para calcular antigüedad real — masAntiguo (por fechaOrden, la
+  // fecha REAL de llegada) cubre ese caso además del caso normal.
+  const masAntiguo =
+    deEsteChat.length > 0
+      ? deEsteChat.reduce((a, b) => (a.item.fechaOrden <= b.item.fechaOrden ? a : b)).item
+      : undefined;
+  return { total: deEsteChat.length, activo, masAntiguo };
 }
 
 /**
@@ -179,6 +187,21 @@ export async function obtenerResumenColaPorChat(
  */
 export async function iniciarSiguienteActivo(chatId: number): Promise<ItemColaCorreo | undefined> {
   const todas = await leerTodas();
+
+  // Defensa en profundidad encontrada en auditoría: si por algún motivo ya
+  // hay un "activo" para este chat (ej. un doble tap del botón "▶️ Sí,
+  // siguiente", o dos avisos de confirmación mandados por error), activar
+  // OTRO más encima corrompería el estado — resolverUnoActivo/
+  // establecerPendientesActivo usan .find() (primer match), así que
+  // terminarían operando sobre el ítem equivocado. Devolver el ya-activo
+  // (en vez de undefined) haría que procesarSiguienteCorreoActivo lo
+  // reprocese desde cero — re-descargando adjuntos y mandando propuestas
+  // NUEVAS duplicadas para un correo que ya las tiene — peor que el bug
+  // original. undefined es el no-op seguro: no debería pasar nunca en el
+  // flujo normal, pero es gratis blindarlo.
+  const yaActivo = todas.some((f) => f.item.chatId === chatId && f.item.estado === "activo");
+  if (yaActivo) return undefined;
+
   const enCola = todas.filter((f) => f.item.chatId === chatId && f.item.estado === "cola");
   if (enCola.length === 0) return undefined;
 
@@ -208,12 +231,40 @@ export async function obtenerActivoEstancado(chatId: number, umbralMs: number): 
   return Date.now() - activo.item.agregadoEn > umbralMs ? activo.item : undefined;
 }
 
-/** Elimina el correo activo sin marcarlo resuelto-normal (ver obtenerActivoEstancado) — no lo registra como "ya resuelto", por si de verdad hace falta revisarlo a mano después. */
-export async function descartarActivoEstancado(chatId: number, gmailId: string): Promise<void> {
+/**
+ * Elimina el correo activo sin marcarlo resuelto-normal (ver
+ * obtenerActivoEstancado, y handleDescartarActivoCallback en
+ * revisarCorreoNuevo.ts para el disparo manual) — no lo registra como "ya
+ * resuelto", por si de verdad hace falta revisarlo a mano después.
+ * Devuelve true si de verdad había algo que borrar — bug real de auditoría:
+ * antes devolvía void y el llamador confirmaba "descartado" aunque la fila
+ * ya no existiera (ej. dos taps seguidos del mismo botón, o resuelto por
+ * otro camino justo antes).
+ */
+export async function descartarActivoEstancado(chatId: number, gmailId: string): Promise<boolean> {
   const todas = await leerTodas();
   const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
-  if (!fila) return;
+  if (!fila) return false;
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return true;
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real: "esto ya lo gestioné" — la
+ * cola marcaba un correo como bloqueando la revisión, pero él ya lo había
+ * resuelto por su cuenta (a mano, fuera del chat). Vacía TODA la cola de
+ * este chat (activo + en cola) sin intentar resolver nada — ningún correo
+ * queda marcado leído en Gmail (eso sigue siendo responsabilidad del
+ * llamador si hace falta), simplemente deja de aparecer como pendiente acá.
+ * Devuelve cuántas filas se eliminaron.
+ */
+export async function vaciarColaCorreoDelChat(chatId: number): Promise<number> {
+  const todas = await leerTodas();
+  const delChat = todas.filter((f) => f.item.chatId === chatId);
+  for (const { rowIndex } of delChat.slice().sort((a, b) => b.rowIndex - a.rowIndex)) {
+    await eliminarFila(TAB_NAME, rowIndex, HEADERS);
+  }
+  return delChat.length;
 }
 
 /** Fija cuántas decisiones independientes hacen falta para dar por resuelto el correo activo. */

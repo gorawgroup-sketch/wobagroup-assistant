@@ -12,7 +12,8 @@ import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
-import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
+import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import type { DatosFactura } from "../documental/extractInvoiceData";
@@ -28,6 +29,7 @@ import {
   obtenerActivoEstancado,
   descartarActivoEstancado,
   obtenerActivoActual,
+  vaciarColaCorreoDelChat,
 } from "../gmail/colaRevisionStore";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
@@ -76,6 +78,26 @@ export interface ResultadoRevisarCorreo {
   activoBloqueando?: { asunto: string; de: string };
 }
 
+/**
+ * Pedido explícito de Carlos, tras un caso real: usa el MISMO chat para
+ * hacer otras preguntas/averiguaciones mientras revisa el correo, y el
+ * siguiente correo de la cola aparecía de golpe (con su propia propuesta y
+ * botones) en medio de esas consultas, cruzándose con ellas — sin importar
+ * si el avance venía de resolver el correo anterior, de saltar uno
+ * estancado, o de retomar un backlog en la revisión horaria automática.
+ * Los TRES puntos donde este archivo antes llamaba a
+ * procesarSiguienteCorreoActivo directamente ahora pasan por acá: se
+ * manda un aviso con un botón "▶️ Sí, siguiente" y NUNCA se muestra el
+ * contenido real del siguiente correo hasta que se presiona — la cola
+ * simplemente se queda sin nada "activo" mientras tanto (sin TTL propio;
+ * el resumen diario de pendientes ya la reporta si se olvida).
+ */
+async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string): Promise<void> {
+  await sendTelegramMessageWithButtons(chatId, mensaje, [
+    [{ text: "▶️ Sí, siguiente", callback_data: "colacorreo_siguiente" }],
+  ]);
+}
+
 export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
 
@@ -102,7 +124,13 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
       `⚠️ "${estancado.asunto}" (de ${estancado.de}) llevaba más de 48h abierto sin resolverse — lo salto para no ` +
         `trabar el resto de la cola. Sigue sin marcar como leído en Gmail; revísalo a mano si todavía hace falta.`
     ).catch(() => {});
-    await procesarSiguienteCorreoActivo(chatId);
+    // Bug real encontrado en auditoría: acá antes también se mandaba su
+    // propio aviso de "¿seguimos con el siguiente?" — pero más abajo, la
+    // rama unificada (!habiaActivoAntes && quedan pendientes) SIEMPRE se
+    // cumple justo después de esto (ya no queda nada "activo" tras el
+    // descarte), así que Carlos recibía DOS avisos casi idénticos seguidos
+    // por la misma razón. Se deja que sea la rama de abajo, única, la que
+    // mande el aviso — ya contempla este caso sin necesidad de duplicar.
   }
 
   let ids: string[] = [];
@@ -145,17 +173,6 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
 
   const nuevos = itemsParaEncolar.length > 0 ? await encolarCorreos(chatId, itemsParaEncolar) : 0;
 
-  // Pedido explícito de Carlos: el aviso de "tienes correos nuevos" es solo
-  // al EMPEZAR una revisión desde cero — si ya hay un backlog en curso
-  // (algo activo o en cola de una corrida anterior), los nuevos se suman en
-  // silencio a la cola en vez de interrumpir con otro aviso cada hora.
-  if (nuevos > 0 && totalAntesDeEncolar === 0) {
-    await sendTelegramMessage(
-      chatId,
-      `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer. Empezamos por el más antiguo:`
-    ).catch((error) => console.error("[revisarCorreoNuevo] Error avisando de correos nuevos:", error));
-  }
-
   // Bug real encontrado en vivo: esto antes vivía DENTRO del `if (nuevos ===
   // 0) return` de arriba — un "revisarcorreo" manual con la cola ya llena
   // pero SIN nada "activo" (ej. justo después de resetear un correo
@@ -163,9 +180,19 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
   // terminaba ahí ("0 correos revisados") sin nunca retomar lo que ya
   // estaba esperando. Ahora, sin importar si esta corrida encontró algo
   // nuevo, si no hay nada activo y sí hay algo pendiente (nuevo o de antes),
-  // se retoma.
-  if (!habiaActivoAntes && totalAntesDeEncolar + nuevos > 0) {
-    await procesarSiguienteCorreoActivo(chatId);
+  // se avisa (con botón — nunca se muestra el siguiente correo directo, ver
+  // pedirConfirmacionSiguienteCorreo).
+  const totalPendienteTrasEncolar = totalAntesDeEncolar + nuevos;
+  if (!habiaActivoAntes && totalPendienteTrasEncolar > 0) {
+    // Pedido explícito de Carlos: el aviso trae el conteo de "nuevos" solo
+    // al EMPEZAR una revisión desde cero — si ya hay un backlog en curso, el
+    // mensaje es más genérico (no repite "nuevo" sobre algo que ya se sabía
+    // de una corrida anterior).
+    const mensaje =
+      nuevos > 0 && totalAntesDeEncolar === 0
+        ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
+        : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
+    await pedirConfirmacionSiguienteCorreo(chatId, mensaje);
     return { correosRevisados: nuevos };
   }
 
@@ -434,8 +461,9 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
  * si no hay ningún correo activo para este chat (el caso normal, la
  * inmensa mayoría de acciones NO vienen de esta cola), esto no hace nada.
  * Cuando el correo activo queda resuelto (pendientesRestantes llega a 0),
- * lo marca como leído en Gmail y sigue con el siguiente de la cola — o
- * avisa que ya no queda ninguno.
+ * lo marca como leído en Gmail — y avisa que ya no queda ninguno, o pide
+ * confirmación antes de mostrar el siguiente (ver el comentario de
+ * handleColaCorreoSiguienteCallback más abajo para el porqué).
  */
 export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
   const resultado = await resolverUnoActivo(chatId).catch((error) => {
@@ -457,6 +485,97 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
     return;
   }
 
+  // Pedido explícito de Carlos, tras un caso real: antes esto pasaba
+  // directo al siguiente correo apenas se resolvía el anterior — pero él
+  // usa el MISMO chat para hacer otras preguntas/averiguaciones al mismo
+  // tiempo, y el siguiente correo aparecía de golpe en medio de esas
+  // consultas, cruzándose con ellas. Ahora se pide confirmación explícita
+  // en vez de avanzar solo (ver pedirConfirmacionSiguienteCorreo) — si no
+  // la da, la cola se queda tal cual (nada "activo") hasta que la apruebe,
+  // use /revisarcorreo, o llegue la siguiente revisión horaria automática
+  // (que vuelve a preguntar, nunca muestra el correo directo — mismo
+  // criterio acá que ahí).
+  await pedirConfirmacionSiguienteCorreo(
+    chatId,
+    `✅ Resuelto. Quedan ${quedan} correo${quedan === 1 ? "" : "s"} más en la cola — ¿seguimos con el siguiente?`
+  );
+}
+
+/**
+ * Maneja el botón "▶️ Sí, siguiente" (ver el aviso al final de
+ * avanzarColaCorreoSiActivo) — recién ahí se muestra de verdad el próximo
+ * correo de la cola, nunca antes.
+ */
+export async function handleColaCorreoSiguienteCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+
+  try {
+    await answerCallbackQuery(callback.id);
+  } catch (error) {
+    console.error("[revisarCorreoNuevo] No se pudo responder el callback_query (no crítico):", error);
+  }
+
+  if (chatId === undefined) return;
+
   await procesarSiguienteCorreoActivo(chatId);
+}
+
+/**
+ * Maneja el botón "🗑️ Descartar y liberar" — pedido explícito de Carlos,
+ * tras un caso real: le avisamos que un correo activo seguía bloqueando el
+ * resto de la cola, pero él ya lo había resuelto por su cuenta (fuera del
+ * chat) — sin este botón, la única forma de destrabarlo era esperar 48h
+ * (ver obtenerActivoEstancado/UMBRAL_ACTIVO_ESTANCADO_MS) o encontrar el
+ * mensaje original y usar sus botones. Reutiliza el mismo mecanismo que ya
+ * usa el auto-salto de 48h (descartarActivoEstancado) — no marca nada como
+ * leído en Gmail (Carlos puede haberlo resuelto sin marcarlo), solo deja de
+ * bloquear la cola.
+ */
+export async function handleDescartarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+
+  try {
+    await answerCallbackQuery(callback.id);
+  } catch (error) {
+    console.error("[revisarCorreoNuevo] No se pudo responder el callback_query (no crítico):", error);
+  }
+
+  if (chatId === undefined) return;
+
+  const activo = await obtenerActivoActual(chatId);
+  if (!activo) {
+    await sendTelegramMessage(chatId, "Ya no hay ningún correo activo esperando — nada que descartar.").catch(() => {});
+    return;
+  }
+
+  const borrado = await descartarActivoEstancado(chatId, activo.id);
+  await sendTelegramMessage(
+    chatId,
+    borrado
+      ? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). Sigue sin marcar como leído en Gmail; si en realidad todavía hace falta algo, revísalo a mano.`
+      : "Ya se había resuelto por otro camino justo antes — nada que descartar."
+  ).catch(() => {});
+
+  const quedan = await contarPendientesTotal(chatId);
+  if (quedan > 0) {
+    await pedirConfirmacionSiguienteCorreo(
+      chatId,
+      `Quedan ${quedan} correo${quedan === 1 ? "" : "s"} más en la cola — ¿seguimos con el siguiente?`
+    );
+  }
+}
+
+/**
+ * Maneja el botón "🗑️ Descartar todo" del resumen diario de pendientes
+ * (core/jobs/resumenPendientesDiario.ts) — pedido explícito de Carlos: si
+ * al final del día quedan cosas pendientes que ya no hacen falta, poder
+ * "dejar todo libre" desde ahí mismo, sin tener que ir mensaje por mensaje.
+ * Solo vacía la cola de correo (activo + en cola) — el resto de los tipos
+ * de pendiente listados en el resumen se descartan cada uno con su propio
+ * botón (ver descartarTodosLosPendientes en resumenPendientesDiario.ts,
+ * que llama a esto Y a los demás).
+ */
+export async function vaciarColaCorreoParaDescartarTodo(chatId: number): Promise<number> {
+  return vaciarColaCorreoDelChat(chatId);
 }
 

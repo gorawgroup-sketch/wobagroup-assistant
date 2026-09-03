@@ -288,6 +288,13 @@ const ACCIONES_SENSIBLES = new Set([
   // superadmin igual que las demás, no solo la que escribe en Drive.
   "doc_descartar",
   "desamb_descartar",
+  // Mismo criterio que el resto de decisiones sobre la cola de revisión de
+  // correo (email_proceder/descartar) — avanzar a mostrar el siguiente
+  // correo, o descartar el que está bloqueando, son parte de esa misma
+  // decisión centralizada en superadmin.
+  "colacorreo_siguiente",
+  "colacorreo_descartaractivo",
+  "resumen_descartar_todo",
   // Gap real encontrado en la auditoría del 2026-09-03: "¿Quieres
   // conciliar?" (preguntarSiConciliar en gastoCallbackHandler.ts) se agregó
   // el mismo día que se corrigió cuándo avanza la cola, pero quedó fuera de

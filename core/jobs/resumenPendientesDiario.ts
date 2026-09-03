@@ -1,19 +1,21 @@
+import { unlink } from "node:fs/promises";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
-import { sendTelegramMessage } from "../telegram/client";
-import { obtenerResumenColaPorChat } from "../gmail/colaRevisionStore";
-import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
+import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
+import type { TelegramCallbackQuery } from "../telegram/types";
+import { obtenerResumenColaPorChat, vaciarColaCorreoDelChat } from "../gmail/colaRevisionStore";
+import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
-import { obtenerPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
-import { obtenerPendientesCapturaEmpresaPorChat } from "../knowledge/pendienteCapturaEmpresaStore";
-import { obtenerPendienteAlertaDocumentoPorChat } from "../documental/pendienteAlertaDocumentoStore";
-import { obtenerPendienteCorreccionGastoPorChat } from "../gastos/pendienteCorreccionGastoStore";
-import { obtenerPendienteDesambiguacionPorChat } from "../documental/disambiguationStore";
-import { obtenerPendienteEdicionBorradorPorChat } from "../gmail/emailDraftEditStore";
-import { obtenerPendienteMontoPagoPorChat } from "../fiscal/pendienteMontoStore";
-import { obtenerPendienteOrientacionAnotacionPorChat } from "./cashflowAnnotationOrientationStore";
-import { obtenerPendienteOrientacionCorreoPorChat } from "../gmail/emailOrientationStore";
-import { obtenerPendienteReglaClasificacionPorChat } from "../documental/pendienteReglaClasificacionStore";
+import { obtenerPendienteReclasificacionPorChat, consumirPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
+import { obtenerPendientesCapturaEmpresaPorChat, eliminarPendienteCapturaEmpresa } from "../knowledge/pendienteCapturaEmpresaStore";
+import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocumento } from "../documental/pendienteAlertaDocumentoStore";
+import { obtenerPendienteCorreccionGastoPorChat, consumirPendienteCorreccionGasto } from "../gastos/pendienteCorreccionGastoStore";
+import { obtenerPendienteDesambiguacionPorChat, consumirPendienteDesambiguacion } from "../documental/disambiguationStore";
+import { obtenerPendienteEdicionBorradorPorChat, consumirPendienteEdicionBorrador } from "../gmail/emailDraftEditStore";
+import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "../fiscal/pendienteMontoStore";
+import { obtenerPendienteOrientacionAnotacionPorChat, consumirPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
+import { obtenerPendienteOrientacionCorreoPorChat, consumirPendienteOrientacionCorreo } from "../gmail/emailOrientationStore";
+import { obtenerPendienteReglaClasificacionPorChat, consumirPendienteReglaClasificacion } from "../documental/pendienteReglaClasificacionStore";
 
 interface ItemPendiente {
   descripcion: string;
@@ -70,20 +72,23 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   const items: ItemPendiente[] = [];
 
   try {
-    const { total, activo } = await obtenerResumenColaPorChat(chatId);
+    const { total, activo, masAntiguo } = await obtenerResumenColaPorChat(chatId);
     if (total > 0) {
       items.push({
         descripcion: activo
           ? `📧 Correo esperando respuesta: "${truncar(activo.asunto, 60)}" (de ${activo.de})` +
             (total > 1 ? ` — quedan ${total} en la cola` : "")
-          : `📧 ${total} correo(s) en la cola de revisión`,
+          : `📧 ${total} correo(s) en la cola de revisión — en pausa, esperando "▶️ Sí, siguiente"`,
         // fechaOrden es la fecha REAL de llegada del correo (ver
         // colaRevisionStore.ts) — a diferencia de agregadoEn, que en el
         // correo "activo" se reescribe a "cuándo se activó" (para detectar
         // estancamiento), no a cuándo llegó de verdad. Usar agregadoEn acá
         // mostraba "hace menos de 1h" para un correo real de hace 3 días
-        // que recién pasó a activo.
-        creadoEn: activo?.fechaOrden ?? Date.now(),
+        // que recién pasó a activo. Bug real de auditoría: con la cola en
+        // pausa (nada activo, esperando el botón) esto caía en Date.now()
+        // y SIEMPRE mostraba "hace menos de 1h" sin importar la antigüedad
+        // real — masAntiguo (por fechaOrden) cubre también ese caso.
+        creadoEn: activo?.fechaOrden ?? masAntiguo?.fechaOrden ?? Date.now(),
       });
     }
   } catch (error) {
@@ -101,7 +106,9 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     const r = await obtenerResolucionContactoPendientePorChat(chatId);
     if (r) {
       items.push({
-        descripcion: `👤 Contacto sin crear en Holded: "${r.propuesta.proveedor}" (${r.empresaFinal})`,
+        // "🗑️ Descartar todo" NO toca esto — trae una PropuestaGasto real
+        // adentro (dinero ya extraído, solo falta el contacto en Holded).
+        descripcion: `👤 Contacto sin crear en Holded: "${r.propuesta.proveedor}" (${r.empresaFinal}) — revisar individual, no se borra con "Descartar todo"`,
         creadoEn: r.creadoEn,
       });
     }
@@ -114,7 +121,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     if (g) {
       const queFalta = g.motivo === "empresa" ? "empresa" : "monto/moneda exactos";
       items.push({
-        descripcion: `💸 Gasto sin confirmar (falta ${queFalta}): "${g.datos.proveedor}" — ${g.datos.monto} ${g.datos.moneda}`,
+        descripcion: `💸 Gasto sin confirmar (falta ${queFalta}): "${g.datos.proveedor}" — ${g.datos.monto} ${g.datos.moneda} — revisar individual, no se borra con "Descartar todo"`,
         creadoEn: g.creadoEn,
       });
     }
@@ -216,9 +223,125 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
         ...items.map((it) => `• ${it.descripcion} (${formatAntiguedad(it.creadoEn)})`),
       ].join("\n");
 
-      await sendTelegramMessage(admin.userId, texto);
+      // Pedido explícito de Carlos: si al final del día algo ya no hace
+      // falta (lo resolvió por su cuenta, o ya no aplica), poder "dejar
+      // todo libre" desde acá mismo en vez de ir mensaje por mensaje.
+      await sendTelegramMessageWithButtons(admin.userId, texto, [
+        [{ text: "🗑️ Descartar todo", callback_data: "resumen_descartar_todo" }],
+      ]);
     } catch (error) {
       console.error(`[resumenPendientesDiario] Error generando/enviando el resumen para ${admin.userId}:`, error);
     }
   }
+}
+
+/**
+ * Maneja el botón "🗑️ Descartar todo" del resumen diario — pedido explícito
+ * de Carlos. Descarta la cola de correo completa, las propuestas de archivo
+ * (puede haber varias por chat — se drenan una por una hasta que no quede
+ * ninguna) y los "pendiente_*" de un solo cupo por chat que NO tienen datos
+ * financieros reales adentro. Deliberadamente NO toca nada que represente
+ * dinero real ya extraído: ni las propuestas de GASTO
+ * (core/gastos/gastoProposalSheet.ts, que ya no se listan en este resumen),
+ * ni resolucionContactoPendientePorChat (auditoría: encontrado en vivo que
+ * ESTE guarda una PropuestaGasto completa adentro — solo falta crear el
+ * contacto en Holded, no es un simple recordatorio), ni
+ * gastoPendienteDatosPorChat (ya trae proveedor/monto reales extraídos de
+ * una factura real, solo falta la empresa o el monto exacto) — esos dos se
+ * quedan fuera del descarte masivo por el mismo criterio que las propuestas
+ * de gasto: siempre revisión individual, nunca en bloque.
+ */
+async function descartarTodosLosPendientes(chatId: number): Promise<number> {
+  let n = 0;
+
+  // Se cuenta como "1 cosa menos" (igual que el resumen la muestra como una
+  // sola línea), no como la cantidad real de filas de correo eliminadas —
+  // bug real de auditoría: antes sumaba el conteo crudo de filas, que podía
+  // no coincidir para nada con "cuántas cosas" decía el resumen justo
+  // arriba de este mismo botón.
+  const filasCorreoBorradas = await vaciarColaCorreoDelChat(chatId).catch((error) => {
+    console.error("[resumenPendientesDiario] Error vaciando la cola de correo (no crítico):", error);
+    return 0;
+  });
+  if (filasCorreoBorradas > 0) n += 1;
+
+  try {
+    // Puede haber varias propuestas de archivo pendientes del mismo chat —
+    // se drena una por una (consumirPropuestaClasificacionPorChat siempre
+    // toma la más reciente) hasta que no quede ninguna.
+    let propuesta = await consumirPropuestaClasificacionPorChat(chatId);
+    while (propuesta) {
+      await unlink(propuesta.rutaLocal).catch(() => {});
+      n += 1;
+      propuesta = await consumirPropuestaClasificacionPorChat(chatId);
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error descartando propuestas de archivo (no crítico):", error);
+  }
+
+  const conArchivoLocal: Array<() => Promise<{ rutaLocal: string } | undefined>> = [
+    () => consumirPendienteReclasificacionPorChat(chatId),
+    () => consumirPendienteDesambiguacion(chatId),
+  ];
+  for (const consumir of conArchivoLocal) {
+    try {
+      const pendiente = await consumir();
+      if (pendiente) {
+        await unlink(pendiente.rutaLocal).catch(() => {});
+        n += 1;
+      }
+    } catch (error) {
+      console.error("[resumenPendientesDiario] Error descartando un pendiente con archivo local (no crítico):", error);
+    }
+  }
+
+  const sinArchivoLocal: Array<() => Promise<unknown>> = [
+    () => consumirPendienteAlertaDocumento(chatId),
+    () => consumirPendienteCorreccionGasto(chatId),
+    () => consumirPendienteEdicionBorrador(chatId),
+    () => consumirPendienteMontoPago(chatId),
+    () => consumirPendienteOrientacionAnotacion(chatId),
+    () => consumirPendienteOrientacionCorreo(chatId),
+    () => consumirPendienteReglaClasificacion(chatId),
+  ];
+  for (const consumir of sinArchivoLocal) {
+    try {
+      const pendiente = await consumir();
+      if (pendiente) n += 1;
+    } catch (error) {
+      console.error("[resumenPendientesDiario] Error descartando un pendiente (no crítico):", error);
+    }
+  }
+
+  try {
+    const capturas = await obtenerPendientesCapturaEmpresaPorChat(chatId);
+    for (const c of capturas) {
+      await eliminarPendienteCapturaEmpresa(chatId, c.messageId);
+      n += 1;
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error descartando capturas sin confirmar (no crítico):", error);
+  }
+
+  return n;
+}
+
+export async function handleDescartarTodoPendienteCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+
+  try {
+    await answerCallbackQuery(callback.id);
+  } catch (error) {
+    console.error("[resumenPendientesDiario] No se pudo responder el callback_query (no crítico):", error);
+  }
+
+  if (chatId === undefined) return;
+
+  const n = await descartarTodosLosPendientes(chatId);
+  await sendTelegramMessage(
+    chatId,
+    n > 0
+      ? `🗑️ Descartado — ${n} cosa${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} menos (las propuestas de gasto NO se tocaron, esas siguen una por una).`
+      : "Ya no quedaba nada pendiente para descartar."
+  ).catch(() => {});
 }
