@@ -42,7 +42,7 @@ function getWriteApiKey(empresa: Empresa): string {
 
 async function holdedWriteCall(
   empresa: Empresa,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   path: string,
   body?: unknown
 ): Promise<unknown> {
@@ -1305,6 +1305,248 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
   }
 
   return { id: data.id };
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real (un gasto de McDonald's ya
+ * creado en Holded con el monto y el número de documento mal): "necesito que
+ * hagas lo que dices que no puedes hacer" — hasta ahora, un gasto YA creado
+ * en Holded solo podía corregirse a mano en la web de Holded, o borrarse y
+ * recrearse desde cero (perdiendo el id real y cualquier conciliación ya
+ * hecha contra él). Verificado en vivo contra la documentación real de
+ * Holded (developers.holded.com → PUT /api/v2/purchases/{id}): el endpoint
+ * de actualización hace un REEMPLAZO COMPLETO del documento — "Reemplaza
+ * todos los campos editables de una factura de compra existente" — así que
+ * NUNCA se puede mandar solo el campo que cambia; hay que releer el
+ * documento entero primero y reenviar TODAS sus líneas tal cual, con el
+ * cambio ya aplicado encima. Sin esto, corregir por ejemplo solo el número
+ * de documento borraría sin querer el resto de las líneas.
+ */
+/**
+ * Se lanza SOLO cuando el PUT ya se envió y Holded respondió 200 OK, pero la
+ * relectura posterior no muestra el resultado esperado — a diferencia de un
+ * error ANTES del PUT (red, id inválido), acá el documento SÍ pudo haber
+ * cambiado (parcialmente o de forma inesperada). Quien la capture nunca debe
+ * decir "no se tocó nada" — debe decir que hace falta revisar Holded a mano.
+ */
+export class EdicionNoVerificadaError extends Error {
+  constructor(message: string, public readonly purchaseId: string) {
+    super(message);
+    this.name = "EdicionNoVerificadaError";
+  }
+}
+
+export interface LineaCompraHoldedCruda {
+  line_id?: string;
+  name?: string;
+  type?: string;
+  description?: string | null;
+  product_id?: string | null;
+  units?: string | number | null;
+  price?: string | number | null;
+  discount?: string | number | null;
+  tax?: string | number;
+  taxes?: string[] | null;
+  tags?: string[];
+  sku?: string | null;
+  account?: string | null;
+  project_id?: string | null;
+  retention?: string | number | null;
+  unit_type?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CompraHoldedCruda {
+  id: string;
+  document_number?: string | null;
+  contact_id?: string;
+  description?: string | null;
+  date?: string;
+  due_date?: string | null;
+  currency?: string;
+  total?: string | number;
+  design_id?: string | null;
+  lines?: LineaCompraHoldedCruda[];
+  [key: string]: unknown;
+}
+
+/** Lee tal cual una compra existente de Holded, sin transformar nada — base para editarCompraHolded (releer completo antes de reemplazar). */
+export async function obtenerCompraHoldedPorId(empresa: Empresa, purchaseId: string): Promise<CompraHoldedCruda> {
+  const data = (await holdedWriteCall(empresa, "GET", `/purchases/${purchaseId}`)) as CompraHoldedCruda;
+  if (!data?.id) {
+    throw new Error(`No se encontró la compra ${purchaseId} en Holded (${empresa}).`);
+  }
+  return data;
+}
+
+/**
+ * Convierte un número "a la española" (ej. "4,10", o "3.380,67" con punto de
+ * miles) que Holded devuelve en sus respuestas GET a un number real — nunca
+ * asume que ya viene como number (verificado en vivo: Holded devuelve estos
+ * campos como STRING con coma decimal, y SÍ usa punto de miles en montos
+ * grandes, ej. un alquiler real de 3.380,67€ visto en producción).
+ *
+ * Bug real encontrado en auditoría: la versión anterior solo hacía
+ * `.replace(",", ".")` — con "3.380,67" eso da "3.380.67" (dos puntos),
+ * Number() lo parsea como NaN, y el fallback a 0 lo convertía en un CERO
+ * silencioso. Con un total de 0, el resto de editarCompraHolded trataba la
+ * factura como "sin línea previa con total real" y la reemplazaba entera
+ * por una sola línea sin IVA — cualquier edición (incluso corregir solo el
+ * número de documento) habría borrado el desglose real de una factura de
+ * más de 999€. Ahora se quitan TODOS los puntos (miles) antes de convertir
+ * la coma (decimal) a punto.
+ */
+function numeroDesdeHolded(valor: string | number | null | undefined): number {
+  if (typeof valor === "number") return valor;
+  if (!valor) return 0;
+  const limpio = String(valor).replace(/\./g, "").replace(",", ".");
+  const parsed = Number(limpio);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export interface CambiosCompraHolded {
+  numeroDocumento?: string;
+  fecha?: string;
+  /** Si se da, REEMPLAZA todas las líneas (mismo criterio de monto/IVA que crearGastoHolded). Si no se da, se reenvían las líneas actuales tal cual (Holded exige el array completo en cada PUT, nunca un delta). */
+  lineas?: LineaGastoHolded[];
+  /**
+   * Escala el precio de cada línea EXISTENTE proporcionalmente al nuevo
+   * total, preservando sus taxes/cuenta/etc. tal cual venían de Holded (sin
+   * necesitar volver a mapear el % de IVA a un tax_key) — pensado para
+   * corregir un monto mal registrado sin tener que reconstruir el desglose
+   * de IVA desde cero. Ignorado si también se da `lineas`.
+   */
+  montoNuevo?: number;
+}
+
+/**
+ * Edita una compra YA CREADA en Holded — nunca borra ni recrea (conserva el
+ * id real y cualquier conciliación/pago ya registrado contra ella). Relee el
+ * documento completo, aplica SOLO los cambios pedidos sobre esa copia, y
+ * reenvía TODO (a este endpoint no se le puede mandar un cambio parcial —
+ * ver comentario de CompraHoldedCruda). Verifica releyendo después del PUT
+ * que el cambio realmente quedó — un "200 OK" de Holded no es suficiente
+ * prueba dado el reemplazo completo del recurso.
+ */
+/**
+ * Reconstruye UNA línea cruda de Holded (ver LineaCompraHoldedCruda) al
+ * shape que espera el PUT — bug real de auditoría: la versión anterior
+ * copiaba sku/account/project_id/unit_type/discount/units/taxes de la línea
+ * real pero se OLVIDABA de `tags` y `retention` (ambos presentes en la
+ * respuesta real de Holded) — como el PUT reemplaza el documento entero,
+ * CUALQUIER edición (incluso corregir solo el número de documento) borraba
+ * en silencio las etiquetas de categorización y el % de retención de IRPF
+ * de cada línea. `priceOverride`, si se da, reemplaza el precio (para el
+ * escalado proporcional de montoNuevo); si no, se usa el precio real tal
+ * cual viene de Holded.
+ */
+function lineaCrudaAItem(l: LineaCompraHoldedCruda, priceOverride?: number): Record<string, unknown> {
+  return {
+    name: l.name ?? "(línea)",
+    type: l.type ?? "product",
+    description: l.description ?? undefined,
+    product_id: l.product_id ?? undefined,
+    units: numeroDesdeHolded(l.units) || 1,
+    price: priceOverride ?? numeroDesdeHolded(l.price),
+    discount: numeroDesdeHolded(l.discount) || undefined,
+    taxes: l.taxes ?? [],
+    tags: l.tags ?? [],
+    sku: l.sku ?? undefined,
+    account: l.account ?? undefined,
+    project_id: l.project_id ?? undefined,
+    retention: numeroDesdeHolded(l.retention) || undefined,
+    unit_type: l.unit_type ?? undefined,
+  };
+}
+
+export async function editarCompraHolded(empresa: Empresa, purchaseId: string, cambios: CambiosCompraHolded): Promise<CompraHoldedCruda> {
+  const actual = await obtenerCompraHoldedPorId(empresa, purchaseId);
+
+  const catalogo = cambios.lineas ? await obtenerCatalogoImpuestos(empresa) : undefined;
+
+  const lineasCrudasActuales = actual.lines ?? [];
+  const totalActual = numeroDesdeHolded(actual.total);
+
+  const items = cambios.lineas
+    ? cambios.lineas.map((linea) => {
+        const taxKey = catalogo ? mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct) : undefined;
+        const retencionKey =
+          catalogo && linea.retencionPct && linea.retencionPct > 0
+            ? mapearRetencionATaxKey(catalogo, linea.retencionPct, linea.concepto)
+            : undefined;
+        return {
+          name: linea.concepto || "(línea)",
+          type: "product",
+          units: 1,
+          price: linea.base,
+          taxes: [taxKey, retencionKey].filter((k): k is string => Boolean(k)),
+        };
+      })
+    : cambios.montoNuevo !== undefined
+      ? totalActual > 0 && lineasCrudasActuales.length > 0
+        ? // Bug real de auditoría (aplicarTextoAjusteMonto, gastoCallbackHandler.ts):
+          // escalar proporcionalmente (nunca reemplazar por el total completo
+          // en cada línea) — de otro modo varias líneas reales quedarían
+          // todas con el monto NUEVO completo en vez de repartirlo entre ellas.
+          lineasCrudasActuales.map((l) => lineaCrudaAItem(l, (numeroDesdeHolded(l.price) * cambios.montoNuevo!) / totalActual))
+        : // Sin línea previa con total real (0€ o sin líneas) — no hay proporción
+          // que escalar, se reemplaza por una única línea limpia con el monto
+          // nuevo, mismo criterio que el caso degenerado de aplicarTextoAjusteMonto.
+          [{ name: actual.description ?? "(línea)", type: "product", units: 1, price: cambios.montoNuevo, taxes: [] }]
+      : lineasCrudasActuales.map((l) => lineaCrudaAItem(l));
+
+  const body: Record<string, unknown> = {
+    number: cambios.numeroDocumento ?? actual.document_number ?? "00000",
+    date: cambios.fecha ?? actual.date,
+    due_date: actual.due_date ?? null,
+    // design_id SÍ es un campo editable documentado de este PUT (verificado
+    // en vivo contra la API real) — se preserva tal cual, igual que due_date.
+    ...(actual.design_id ? { design_id: actual.design_id } : {}),
+    items,
+  };
+
+  try {
+    await holdedWriteCall(empresa, "PUT", `/purchases/${purchaseId}`, body);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/date has been locked/i.test(message)) {
+      throw new FechaBloqueadaError(cambios.fecha ?? actual.date ?? "");
+    }
+    throw error;
+  }
+
+  // Verificación post-escritura: dado que el endpoint reemplaza el
+  // documento entero, un 200 OK no confirma que el resultado sea el
+  // esperado (ej. una línea mal formada podría quedar vacía en silencio).
+  const releido = await obtenerCompraHoldedPorId(empresa, purchaseId);
+  if (cambios.numeroDocumento && releido.document_number !== cambios.numeroDocumento) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero el número de documento quedó en "${releido.document_number}", no en "${cambios.numeroDocumento}" — revisar a mano en Holded.`,
+      purchaseId
+    );
+  }
+  if ((releido.lines?.length ?? 0) === 0 && items.length > 0) {
+    throw new EdicionNoVerificadaError("Holded aceptó la edición pero la compra quedó SIN líneas — revisar a mano en Holded antes de dar esto por corregido.", purchaseId);
+  }
+  if (cambios.montoNuevo !== undefined && Math.abs(numeroDesdeHolded(releido.total) - cambios.montoNuevo) > 0.05) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero el total quedó en ${releido.total}, no en ${cambios.montoNuevo.toFixed(2)} — revisar a mano en Holded.`,
+      purchaseId
+    );
+  }
+  // Bug real de auditoría: sin este chequeo, cuando NI lineas NI montoNuevo
+  // se pidieron (ej. solo corregir el número de documento), nada verificaba
+  // que el total siguiera igual — un bug de parseo en numeroDesdeHolded
+  // (ya corregido, pero esto es la red de seguridad) podría haber colapsado
+  // una factura real a 0€ y el "✅ Editado" habría salido igual.
+  if (cambios.montoNuevo === undefined && cambios.lineas === undefined && Math.abs(numeroDesdeHolded(releido.total) - totalActual) > 0.05) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero el total cambió de ${totalActual.toFixed(2)} a ${releido.total} sin que se pidiera — revisar a mano en Holded, no se tocó el monto a propósito.`,
+      purchaseId
+    );
+  }
+
+  return releido;
 }
 
 export interface MovimientoBancarioCandidato {

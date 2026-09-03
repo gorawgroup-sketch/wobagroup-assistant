@@ -34,6 +34,7 @@ import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
 import { reclasificarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
 import { conciliarMovimientoTool } from "./conciliarMovimiento";
 import { programarAccionFuturaTool } from "./programarAccion";
+import { proponerEdicionCompraHoldedTool } from "./editarCompraHolded";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -75,6 +76,7 @@ const tools: ToolDefinition[] = [
   reclasificarDocumentoPendienteTool,
   conciliarMovimientoTool,
   programarAccionFuturaTool,
+  proponerEdicionCompraHoldedTool,
 ];
 
 /**

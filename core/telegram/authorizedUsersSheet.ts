@@ -333,6 +333,13 @@ const ACCIONES_SENSIBLES = new Set([
   // mismo criterio que gasto_corregir/gasto_ajustarmonto (pre-pasos, no
   // decisiones ni escrituras).
   "gasto_aprobar",
+  // Pedido explícito de Carlos: editar una compra YA CREADA en Holded (ver
+  // proponerEdicionCompraHoldedTool/editarCompraHolded) — el PUT real
+  // reemplaza el documento completo, así que se protege igual que crear un
+  // gasto nuevo. "Cancelar" también, mismo criterio que gasto_cancelar
+  // (centralizar la decisión completa en superadmin, no solo la escritura).
+  "edicioncompra_confirmar",
+  "edicioncompra_cancelar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {
