@@ -88,7 +88,27 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     });
   }
 
-  if (clasificacion.confianza === "baja") {
+  // Bug real encontrado en vivo (2026-09-03): si esto YA es la continuación
+  // de una desambiguación (el usuario acaba de responder la pregunta de
+  // "¿a qué empresa/carpeta pertenece?") y el clasificador SIGUE sin llegar
+  // a confianza alta/media — porque el documento de verdad no encaja limpio
+  // en ninguna carpeta real, o porque en realidad no es un archivo para
+  // archivar sino contenido para guardar como conocimiento (caso real:
+  // Carlos respondiendo "esta información debe hacer parte de WOBA, no es
+  // un documento, es conocimiento") — antes esto volvía a guardar OTRA
+  // pregunta de desambiguación en texto libre y a mandarla de nuevo, sin
+  // límite de reintentos. Como server.ts intercepta CUALQUIER mensaje de
+  // texto siguiente como respuesta a esa pregunta (ver
+  // consumirPendienteDesambiguacion), un documento que nunca logra
+  // clasificarse con confianza podía atrapar la conversación indefinidamente
+  // — incluso preguntas del usuario totalmente distintas se interpretaban
+  // como un nuevo intento de responder "empresa y carpeta". Ahora, en la
+  // continuación, nunca se repite el ciclo de texto libre: se pasa directo
+  // a la propuesta con botones de abajo (que YA incluye "🧠 Guardar como
+  // conocimiento" y "✏️ Elegir otra carpeta" como alternativas reales),
+  // cortando el ciclo en el primer reintento fallido en vez de dejarlo
+  // abierto para siempre.
+  if (clasificacion.confianza === "baja" && !archivo.esContinuacionDesambiguacion) {
     const pregunta = clasificacion.preguntaSiAmbiguo ?? "¿A qué empresa y carpeta pertenece este documento?";
 
     await guardarPendienteDesambiguacion({
@@ -116,12 +136,28 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     correoOrigen: archivo.correoOrigen,
   });
 
-  const textoPropuesta = [
-    `Este documento parece ser de **${clasificacion.empresa}**, tipo **${clasificacion.tipoDocumento}**.`,
-    `¿Lo archivo en "${clasificacion.carpetaSugerida}"?`,
-    ``,
-    `(${clasificacion.razon})`,
-  ].join("\n");
+  const textoPropuesta =
+    clasificacion.confianza === "baja"
+      ? [
+          `Ya te pregunté una vez y sigo sin poder ubicar con certeza dónde archivar "${archivo.nombreArchivoOriginal}" ` +
+            `(${clasificacion.razon}).`,
+          clasificacion.empresa !== "desconocida" && clasificacion.carpetaSugerida !== "(sin sugerencia)"
+            ? // Bug real encontrado en auditoría: sin mostrar la mejor suposición
+              // acá, "✅ Sí, archivar aquí" quedaba como un botón "a ciegas" —
+              // el texto anterior nunca decía a dónde apuntaba ese botón.
+              `Mi mejor suposición es **${clasificacion.empresa}**, en "${clasificacion.carpetaSugerida}" — "✅ Sí, ` +
+                `archivar aquí" usaría ESO exactamente. Si no es correcto, usa "✏️ Elegir otra carpeta" en vez de confirmar a ciegas.`
+            : `No tengo ni siquiera una empresa clara para sugerir — "✅ Sí, archivar aquí" fallaría. Usa "✏️ Elegir ` +
+                `otra carpeta" para decírmelo directo.`,
+          `También puedes guardarlo como conocimiento en vez de archivo si no es un documento para Drive, o enseñarme ` +
+            `una regla una vez que quede claro dónde va.`,
+        ].join("\n")
+      : [
+          `Este documento parece ser de **${clasificacion.empresa}**, tipo **${clasificacion.tipoDocumento}**.`,
+          `¿Lo archivo en "${clasificacion.carpetaSugerida}"?`,
+          ``,
+          `(${clasificacion.razon})`,
+        ].join("\n");
 
   const messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, [
     [

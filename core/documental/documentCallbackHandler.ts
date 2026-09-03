@@ -44,6 +44,22 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
 
     await answerCallbackQuerySafe(callback.id);
 
+    // Bug real encontrado en auditoría (2026-09-03): tras el fix de la
+    // desambiguación que se cuelga en bucle, un documento que sigue sin
+    // clasificarse con confianza también puede llegar hasta acá —
+    // "Enseñar regla" guardaría una regla con empresa "desconocida"/carpeta
+    // "(sin sugerencia)" como si fuera un dato real, y buscarReglaClasificacion
+    // la aplica con confianza ALTA a cualquier documento futuro que coincida
+    // con el criterio, sin volver a pasar por el clasificador — peor que no
+    // aprender nada. Se rechaza acá en vez de dejar que se guarde basura.
+    if (accion === "doc_regla" && (propuestaPeek.clasificacion.empresa === "desconocida" || propuestaPeek.clasificacion.carpetaSugerida === "(sin sugerencia)")) {
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        `📚 Todavía no tengo claro a qué empresa/carpeta pertenece "${propuestaPeek.nombreArchivoOriginal}" — no puedo aprender una regla sobre algo que ni yo mismo tengo identificado. Usa "✏️ Elegir otra carpeta" para decírmelo directo, y una vez archivado ahí sí puedes enseñarme la regla en otro documento parecido.`
+      );
+      return;
+    }
+
     if (accion === "doc_regla") {
       await guardarPendienteReglaClasificacion({
         chatId: propuestaPeek.chatId,
