@@ -146,7 +146,18 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 800,
+      // Bug real encontrado en vivo (2026-09-03, dos correos seguidos:
+      // "3G/LOGITECH" y "Kmino Sales"): claude-sonnet-5 emite "thinking" por
+      // defecto (sin pedirlo explícitamente) y ese consumo cuenta contra
+      // max_tokens — con 800 se agotaba solo con el thinking, dejando
+      // response.content sin ningún tool_use real, así que este correo caía
+      // directo en el fallback genérico ("No se pudo analizar
+      // automáticamente") en la primera vuelta, sin haber razonado nada de
+      // verdad. Mismo diagnóstico y mismo arreglo que ya se hizo en
+      // core/claude/client.ts (ver ahí el comentario completo) — 8192 da
+      // margen de sobra sin costo extra real, solo se factura lo que el
+      // modelo realmente genera.
+      max_tokens: 8192,
       system: SYSTEM_PROMPT,
       tools,
       messages,

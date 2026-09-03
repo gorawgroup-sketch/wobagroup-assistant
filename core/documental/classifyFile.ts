@@ -189,7 +189,14 @@ export async function clasificarDocumento(
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      // Preventivo — mismo patrón que ya causó un bug real confirmado en vivo
+      // en core/gmail/classifyEmail.ts (dos correos seguidos cayeron en el
+      // fallback genérico porque el modelo se quedaba sin presupuesto antes
+      // de llegar a llamar la tool de reportar). Este archivo comparte la
+      // misma estructura (tool-calling con razonamiento) con un techo
+      // igual de ajustado — 8192 es el estándar ya establecido en este
+      // proyecto para este tipo de llamada (ver core/claude/client.ts).
+      max_tokens: 8192,
       system: SYSTEM_PROMPT,
       tools,
       messages,
