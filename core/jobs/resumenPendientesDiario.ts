@@ -11,6 +11,7 @@ import { obtenerPendienteReclasificacionPorChat, consumirPendienteReclasificacio
 import { obtenerPendientesCapturaEmpresaPorChat, eliminarPendienteCapturaEmpresa } from "../knowledge/pendienteCapturaEmpresaStore";
 import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocumento } from "../documental/pendienteAlertaDocumentoStore";
 import { obtenerPendienteCorreccionGastoPorChat, consumirPendienteCorreccionGasto } from "../gastos/pendienteCorreccionGastoStore";
+import { obtenerPendienteAjusteMontoGastoPorChat, consumirPendienteAjusteMontoGasto } from "../gastos/pendienteAjusteMontoGastoStore";
 import { obtenerPendienteDesambiguacionPorChat, consumirPendienteDesambiguacion } from "../documental/disambiguationStore";
 import { obtenerPendienteEdicionBorradorPorChat, consumirPendienteEdicionBorrador } from "../gmail/emailDraftEditStore";
 import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "../fiscal/pendienteMontoStore";
@@ -158,6 +159,13 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     if (cg) items.push({ descripcion: `✏️ Falta el detalle de una corrección de gasto`, creadoEn: cg.creadoEn });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando corrección de gasto (no crítico):", error);
+  }
+
+  try {
+    const am = await obtenerPendienteAjusteMontoGastoPorChat(chatId);
+    if (am) items.push({ descripcion: `💰 Falta el monto ajustado de una propuesta de gasto`, creadoEn: am.creadoEn });
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando ajuste de monto de gasto (no crítico):", error);
   }
 
   try {
@@ -309,6 +317,7 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
   const sinArchivoLocal: Array<() => Promise<unknown>> = [
     () => consumirPendienteAlertaDocumento(chatId),
     () => consumirPendienteCorreccionGasto(chatId),
+    () => consumirPendienteAjusteMontoGasto(chatId),
     () => consumirPendienteEdicionBorrador(chatId),
     () => consumirPendienteMontoPago(chatId),
     () => consumirPendienteOrientacionAnotacion(chatId),

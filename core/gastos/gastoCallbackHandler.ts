@@ -6,9 +6,15 @@ import {
   obtenerPropuestaGasto,
   crearPropuestaGasto,
   actualizarMessageIdGasto,
+  actualizarMontoPropuestaGasto,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarPendienteCorreccionGasto, type PendienteCorreccionGasto } from "./pendienteCorreccionGastoStore";
+import {
+  guardarPendienteAjusteMontoGasto,
+  consumirPendienteAjusteMontoGasto,
+  type PendienteAjusteMontoGasto,
+} from "./pendienteAjusteMontoGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
 import {
@@ -279,6 +285,36 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       []
     );
     await guardarPendienteCorreccionGasto(propuesta.chatId, propuesta.id);
+    return;
+  }
+
+  // Pedido explícito de Carlos, tras un caso real: una cuota de comunidad
+  // se paga a medias con otra parte, así que el gasto a registrar es solo
+  // la MITAD del importe real de la factura — no había ninguna forma de
+  // ajustar el monto antes de crear el gasto. A diferencia de
+  // "gasto_corregir" (que SÍ le quita los botones al mensaje original,
+  // porque ahí la respuesta de texto libre reemplaza tanto empresa como
+  // concepto), esto NO le toca los botones — solo LEE la propuesta
+  // (obtenerPropuestaGasto, sin consumir) y actualiza el monto/líneas
+  // guardados. "✅ Crear gasto en Holded" sigue arriba y funciona igual de
+  // bien después: como crea el gasto releyendo la propuesta por su id en
+  // el momento del click (consumirPropuestaGasto), automáticamente recoge
+  // el monto ya corregido sin que haga falta reenviar nada.
+  if (accion === "gasto_ajustarmonto") {
+    const propuesta = await obtenerPropuestaGasto(propuestaId);
+    if (!propuesta) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id);
+    await guardarPendienteAjusteMontoGasto(propuesta.chatId, propuesta.id);
+    await sendTelegramMessage(
+      propuesta.chatId,
+      `💰 Ok — dime el monto real a registrar para "${propuesta.proveedor}" (ej. "251.30", o "la mitad" de ` +
+        `${propuesta.monto} ${propuesta.moneda}). Los botones de la propuesta original siguen arriba — cuando ` +
+        `ajuste el monto, ya lo usan directo.`
+    );
     return;
   }
 
@@ -979,4 +1015,113 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);
     // No avanza la cola en el error — mismo criterio que arriba.
   }
+}
+
+/**
+ * Convierte un número escrito en texto libre (formato ES "1.234,56" o
+ * normal "1234.56"/"251.30") a un valor real — si trae los dos separadores,
+ * el que aparece AL FINAL es el decimal de verdad (el otro es de miles).
+ * undefined si el texto no es un número reconocible — nunca adivina.
+ */
+function parsearNumeroLibre(texto: string): number | undefined {
+  const limpio = texto.trim();
+  if (!/^-?[\d.,]+$/.test(limpio)) return undefined;
+
+  const tieneComa = limpio.includes(",");
+  const tienePunto = limpio.includes(".");
+
+  let normalizado: string;
+  if (tieneComa && tienePunto) {
+    normalizado =
+      limpio.lastIndexOf(",") > limpio.lastIndexOf(".")
+        ? limpio.replace(/\./g, "").replace(",", ".")
+        : limpio.replace(/,/g, "");
+  } else if (tieneComa) {
+    // Bug real encontrado en auditoría: con MÁS de una coma (ej. "1,234,567",
+    // agrupación de miles al estilo US sin decimales) reemplazar solo la
+    // PRIMERA coma dejaba una coma suelta que rompía el parseo — un número
+    // válido se rechazaba como si no lo fuera. Con una sola coma, es
+    // decimal (criterio ES); con varias, son separadores de miles.
+    const comas = (limpio.match(/,/g) ?? []).length;
+    normalizado = comas === 1 ? limpio.replace(",", ".") : limpio.replace(/,/g, "");
+  } else {
+    normalizado = limpio;
+  }
+
+  const valor = Number(normalizado);
+  return Number.isFinite(valor) ? valor : undefined;
+}
+
+/**
+ * Interpreta la respuesta a "💰 Ajustar monto" (ver handleGastoCallback) —
+ * NUNCA calcula un monto por su cuenta a partir de suposiciones: solo
+ * entiende una fracción explícita ("la mitad", "50%") aplicada al monto
+ * ORIGINAL de la propuesta, o un monto nuevo escrito literal. Si el texto
+ * no encaja en ninguno de los dos, no adivina — vuelve a preguntar.
+ */
+function interpretarNuevoMonto(texto: string, montoOriginal: number): number | undefined {
+  const limpio = texto.trim().toLowerCase();
+
+  // Bug real encontrado en auditoría: sin el guard de montoOriginal > 0,
+  // una propuesta degenerada (monto 0 o negativo) podía devolver 0/negativo
+  // como "nuevo monto" sin que interpretarNuevoMonto lo rechazara — a
+  // diferencia del camino de número literal, que sí exige > 0. El "50%"
+  // literal se quitó (redundante — el regex de porcentaje de abajo ya lo
+  // cubre exactamente igual).
+  if (/^(la\s+)?mitad$/.test(limpio)) return montoOriginal > 0 ? montoOriginal / 2 : undefined;
+
+  const porcentaje = limpio.match(/^(\d+([.,]\d+)?)\s*%$/);
+  if (porcentaje) {
+    const pct = parsearNumeroLibre(porcentaje[1]);
+    return pct !== undefined && pct > 0 && montoOriginal > 0 ? montoOriginal * (pct / 100) : undefined;
+  }
+
+  // Un número literal se toma como el monto NUEVO absoluto, no como
+  // fracción del original.
+  const numero = parsearNumeroLibre(limpio);
+  return numero !== undefined && numero > 0 ? numero : undefined;
+}
+
+export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGasto, textoUsuario: string): Promise<void> {
+  const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
+  if (!propuesta) {
+    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    return;
+  }
+
+  const nuevoMonto = interpretarNuevoMonto(textoUsuario, propuesta.monto);
+  if (nuevoMonto === undefined) {
+    // Se reinserta para poder reintentar — mismo criterio que
+    // pendienteMontoStore.ts para errores de formato del texto.
+    await guardarPendienteAjusteMontoGasto(pendiente.chatId, pendiente.propuestaId);
+    await sendTelegramMessage(
+      pendiente.chatId,
+      `No entendí "${textoUsuario}" como un monto — dime un número (ej. "251.30") o "la mitad".`
+    );
+    return;
+  }
+
+  // Bug real encontrado en auditoría: con propuesta.monto <= 0, un factor de
+  // reserva de "1" dejaba las líneas SIN escalar (base ~0) mientras la
+  // columna monto sí se sobrescribía al nuevo valor — Holded crea el gasto
+  // a partir de las líneas, no de monto, así que el gasto real habría
+  // quedado en 0€ aunque Telegram reportara el monto correcto. Si no hay
+  // línea previa con base real, se reemplaza todo por una línea limpia.
+  const nuevasLineas =
+    propuesta.monto > 0 && propuesta.lineas.length > 0
+      ? propuesta.lineas.map((l) => ({ ...l, base: (l.base * nuevoMonto) / propuesta.monto }))
+      : [{ concepto: propuesta.concepto, base: nuevoMonto, tipoIvaPct: 0 }];
+
+  const actualizado = await actualizarMontoPropuestaGasto(pendiente.propuestaId, nuevoMonto, nuevasLineas);
+  if (!actualizado) {
+    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    return;
+  }
+
+  await sendTelegramMessage(
+    pendiente.chatId,
+    `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ` +
+      `${nuevoMonto.toFixed(2)} ${propuesta.moneda}. Los botones de la propuesta original arriba ya usan este ` +
+      `monto — usa "✅ Crear gasto en Holded" cuando quieras, o "💰 Ajustar monto" de nuevo si hace falta corregirlo otra vez.`
+  );
 }

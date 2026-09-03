@@ -262,6 +262,11 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       { text: `✅ Es este (#${i + 1})`, callback_data: `gasto_adjuntar:${propuesta.id}:${i}` },
     ]);
     botones.push([{ text: "❌ Ninguno, crear nuevo", callback_data: `gasto_nuevo:${propuesta.id}` }]);
+    // Pedido explícito de Carlos: no consume la propuesta — igual que
+    // "Enseñar regla"/"Crear alerta" en documentos, para poder combinar
+    // ajustar el monto CON cualquiera de los botones de arriba, en el orden
+    // que haga falta (ver gastoCallbackHandler.ts, gasto_ajustarmonto).
+    botones.push([{ text: "💰 Ajustar monto", callback_data: `gasto_ajustarmonto:${propuesta.id}` }]);
   } else {
     // No hay un documento de compra ya cargado en Holded que coincida, pero
     // eso no significa que el gasto sea nuevo de verdad — puede que el
@@ -402,6 +407,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // en el match — antes el código decidía solo por él (o una u otra,
     // nunca las dos). Sin movimiento confirmado, solo tiene sentido
     // "Crear" (no hay nada que conciliar todavía).
+    // Pedido explícito de Carlos, tras un caso real: una cuota de comunidad
+    // se paga a medias con otra parte, así que el monto real a registrar es
+    // solo una fracción de lo que dice la factura — "💰 Ajustar monto" NO
+    // consume la propuesta (igual que "Enseñar regla"/"Crear alerta" en
+    // documentos), así que se puede combinar con cualquiera de los botones
+    // de arriba en cualquier orden.
+    const filaAjusteMonto = [{ text: "💰 Ajustar monto", callback_data: `gasto_ajustarmonto:${propuesta.id}` }];
     botones = movimientoBancario
       ? [
           [
@@ -409,6 +421,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             { text: "✅ Crear y conciliar", callback_data: `gasto_nuevo_conciliar:${propuesta.id}` },
           ],
           [{ text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` }],
+          filaAjusteMonto,
           [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
         ]
       : [
@@ -416,6 +429,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             { text: "✅ Crear gasto en Holded", callback_data: `gasto_nuevo:${propuesta.id}` },
             { text: "✏️ Corregir clasificación", callback_data: `gasto_corregir:${propuesta.id}` },
           ],
+          filaAjusteMonto,
           [{ text: "❌ Cancelar", callback_data: `gasto_cancelar:${propuesta.id}` }],
         ];
   }

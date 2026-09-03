@@ -32,6 +32,7 @@ const HEADERS = [
   "deColaCorreo",
   "origenAdjuntoGmailJSON",
   "numeroDocumento",
+  "montoOriginal",
 ];
 
 export interface PropuestaGasto {
@@ -81,6 +82,17 @@ export interface PropuestaGasto {
    * pudo identificar con claridad (nunca un número inventado).
    */
   numeroDocumento?: string;
+  /**
+   * Monto real extraído de la factura al crear la propuesta, NUNCA tocado
+   * por actualizarMontoPropuestaGasto — permite que buscarPropuestaGastoPendiente
+   * siga detectando un reenvío del MISMO correo aunque "monto" ya se haya
+   * ajustado (ej. a la mitad). Bug real de auditoría: sin este campo, un
+   * reenvío del correo original de INDUBUILDING LUARCA tras ajustar el
+   * monto a la mitad ya no coincidía dentro del margen de montosCercanos,
+   * generando una propuesta duplicada para la misma factura. undefined
+   * solo en filas viejas creadas antes de este campo.
+   */
+  montoOriginal?: number;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -133,7 +145,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:T1`,
+    range: `${TAB_NAME}!A1:U1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -194,6 +206,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     deColaCorreo: row[17] === true || row[17] === "true",
     origenAdjuntoGmail,
     numeroDocumento: row[19] ? String(row[19]) : undefined,
+    montoOriginal: row[20] !== undefined && row[20] !== "" ? Number(row[20]) : undefined,
   };
 }
 
@@ -219,6 +232,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.deColaCorreo === true ? "true" : "",
     p.origenAdjuntoGmail ? JSON.stringify(p.origenAdjuntoGmail) : "",
     p.numeroDocumento ?? "",
+    p.montoOriginal ?? "",
   ];
 }
 
@@ -234,7 +248,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:T10000`,
+    range: `${TAB_NAME}!A2:U10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -284,11 +298,14 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
   const sheets = getClient();
   await ensureTab();
 
-  const propuesta: PropuestaGasto = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+  // montoOriginal siempre se fija al monto real de creación, ignorando
+  // cualquier valor que venga en datos — solo actualizarMontoPropuestaGasto
+  // puede cambiar "monto" después, y nunca toca este campo.
+  const propuesta: PropuestaGasto = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now(), montoOriginal: datos.monto };
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:T`,
+    range: `${TAB_NAME}!A:U`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },
@@ -316,6 +333,38 @@ export async function actualizarMessageIdGasto(id: string, messageId: number): P
 export async function obtenerPropuestaGasto(id: string): Promise<PropuestaGasto | undefined> {
   const todas = await leerTodas();
   return todas.find(({ propuesta }) => propuesta.id === id)?.propuesta;
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real: una cuota de comunidad se
+ * paga a medias con otra parte, así que el gasto a registrar en Holded es
+ * la MITAD del importe real de la factura — y no había ninguna forma de
+ * ajustar el monto antes de crear el gasto (solo empresa/concepto, ver
+ * continuarConCorreccionGasto). Actualiza monto y líneas de una propuesta
+ * TODAVÍA pendiente (sin consumirla) — el llamador debe recalcular las
+ * líneas manteniendo los mismos % de IVA/retención, solo escalando la base.
+ */
+export async function actualizarMontoPropuestaGasto(id: string, nuevoMonto: number, nuevasLineas: LineaFactura[]): Promise<boolean> {
+  const todas = await leerTodas();
+  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!D${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[nuevoMonto]] },
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!O${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[JSON.stringify(nuevasLineas)]] },
+  });
+  return true;
 }
 
 /** Devuelve la propuesta y ELIMINA su fila de inmediato (aprobada o descartada). */
@@ -355,7 +404,7 @@ export async function buscarPropuestaGastoPendiente(
     ({ propuesta }) =>
       propuesta.empresa === empresa &&
       textosParecidos(proveedor, propuesta.proveedor) &&
-      montosCercanos(monto, propuesta.monto, 0.05)
+      montosCercanos(monto, propuesta.montoOriginal ?? propuesta.monto, 0.05)
   );
   return match?.propuesta;
 }

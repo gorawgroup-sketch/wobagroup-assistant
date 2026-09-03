@@ -43,8 +43,9 @@ import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditSt
 import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
 import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
 import { revisarCostosIA } from "../core/jobs/revisarCostosIA";
-import { handleGastoCallback, continuarConCorreccionGasto } from "../core/gastos/gastoCallbackHandler";
+import { handleGastoCallback, continuarConCorreccionGasto, continuarConAjusteMonto } from "../core/gastos/gastoCallbackHandler";
 import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
+import { consumirPendienteAjusteMontoGasto } from "../core/gastos/pendienteAjusteMontoGastoStore";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
@@ -786,6 +787,17 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     } catch (error) {
       console.error("Error procesando corrección de clasificación de gasto:", error);
       await sendTelegramMessage(incoming.chatId, "Hubo un error procesando la corrección.");
+    }
+    return;
+  }
+
+  const pendienteAjusteMontoGasto = await consumirPendienteAjusteMontoGasto(incoming.chatId);
+  if (pendienteAjusteMontoGasto) {
+    try {
+      await continuarConAjusteMonto(pendienteAjusteMontoGasto, incoming.text);
+    } catch (error) {
+      console.error("Error procesando ajuste de monto de gasto:", error);
+      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando el ajuste de monto.");
     }
     return;
   }
