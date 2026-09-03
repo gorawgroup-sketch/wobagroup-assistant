@@ -121,11 +121,16 @@ export const leerDocumentoDriveTool: ToolDefinition = {
   seguraParaModoRapido: true,
   description:
     "Busca un documento en Drive por nombre/tema Y LEE SU CONTENIDO REAL (no solo dónde está) — úsala " +
-    "cuando alguien pregunte algo cuya respuesta podría estar en un documento ya archivado (ej. 'guía de " +
-    "control de accesos', 'política de vacaciones', 'contrato de X'), especialmente si " +
-    "consultar_base_conocimiento no encontró nada: antes de decir 'no tengo información', prueba esta " +
-    "tool con palabras clave del tema (y si no sabes la empresa, prueba con las 3) — un documento puede " +
-    "estar archivado en Drive sin haber sido transcrito nunca a la base de conocimiento. Solo lee PDF o " +
+    "cuando alguien pregunte algo cuya respuesta podría estar DENTRO de un documento ya archivado (ej. " +
+    "'guía de control de accesos', 'política de vacaciones', 'contrato de X', 'cuál es el NIF de la " +
+    "empresa', cualquier dato/condición/número concreto), especialmente si consultar_base_conocimiento " +
+    "no encontró nada: antes de decir 'no tengo información' o 'necesito más herramientas', prueba " +
+    "esta tool con palabras clave del tema (y si no sabes la empresa, prueba con las 3) — un documento " +
+    "puede estar archivado en Drive sin haber sido transcrito nunca a la base de conocimiento. IMPORTANTE: " +
+    "si ya usaste buscar_documento_drive/listar_carpetas_drive y solo tienes el NOMBRE de un archivo " +
+    "(no su contenido), eso NO es suficiente para responder una pregunta de contenido — sigue con esta " +
+    "tool pasando ese mismo nombre como consulta, en vez de responder con el link o pedir escalar. " +
+    "Solo lee PDF o " +
     "imágenes (no Google Docs/Sheets nativos todavía). Si la búsqueda devuelve varios resultados pero " +
     "uno de ellos se distingue claramente del resto (no hace falta que coincida con el 100% de tu " +
     "consulta, solo que gane por lejos), esta tool lo elige y lee sola automáticamente — no hace falta " +

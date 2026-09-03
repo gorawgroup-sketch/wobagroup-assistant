@@ -12,11 +12,14 @@ export const driveSearchTool: ToolDefinition = {
   seguraParaModoRapido: true,
   description:
     "Busca archivos O carpetas por nombre en Google Drive dentro de la carpeta raíz de una empresa " +
-    "del grupo (WOBA, EWORKS o Footprint), incluyendo subcarpetas. Devuelve dónde está cada resultado " +
-    "y un link para abrirlo, no su contenido. Úsala cuando el usuario pregunte dónde encontrar un " +
-    "documento, contrato, factura escaneada, o una carpeta por nombre (ej. 'la carpeta de normatividad " +
-    "España'). Para explorar qué hay dentro de una carpeta sin saber el nombre exacto, usa en cambio " +
-    "listar_carpetas_drive.",
+    "del grupo (WOBA, EWORKS o Footprint), incluyendo subcarpetas. Devuelve SOLO dónde está cada " +
+    "resultado y un link para abrirlo, NUNCA su contenido. Úsala solo cuando el usuario pregunte " +
+    "dónde encontrar un documento o una carpeta (ej. 'la carpeta de normatividad España'). Si en " +
+    "cambio la pregunta es sobre información/datos que podrían estar DENTRO de un documento (ej. un " +
+    "NIF, una condición, una fecha, un monto — cualquier pregunta de contenido, no de ubicación), NO " +
+    "te quedes solo con el nombre/link que esta tool te da — usa leer_documento_drive en su lugar (o " +
+    "después de esta), que sí lee el contenido real. Para explorar qué hay dentro de una carpeta sin " +
+    "saber el nombre exacto, usa en cambio listar_carpetas_drive.",
   input_schema: {
     type: "object",
     properties: {

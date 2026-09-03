@@ -32,6 +32,7 @@ import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
 import { reclasificarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
+import { conciliarMovimientoTool } from "./conciliarMovimiento";
 import { programarAccionFuturaTool } from "./programarAccion";
 
 /**
@@ -72,6 +73,7 @@ const tools: ToolDefinition[] = [
   fijarAliasProveedorTool,
   reintentarGastoPendienteTool,
   reclasificarDocumentoPendienteTool,
+  conciliarMovimientoTool,
   programarAccionFuturaTool,
 ];
 
