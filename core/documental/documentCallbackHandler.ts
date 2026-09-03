@@ -3,6 +3,7 @@ import { consumirPropuestaClasificacion, obtenerPropuestaClasificacion } from ".
 import { archivarDocumentoEnDrive } from "./archiveFile";
 import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacionStore";
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
+import { guardarPendienteReclasificacion } from "./pendienteReclasificacionStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
@@ -84,6 +85,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
 
     await answerCallbackQuerySafe(callback.id, "Leyendo el documento...");
 
+    let capturaIniciada = false;
     try {
       const transcripcion = await transcribirParaCaptura(propuestaPeek.rutaLocal, propuestaPeek.mimeType, undefined);
       const contenido = [
@@ -91,7 +93,9 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
         "",
         transcripcion,
       ].join("\n");
-      await iniciarSeleccionEmpresaCaptura(propuestaPeek.chatId, contenido, propuestaPeek.nombreArchivoOriginal);
+      const deColaCorreo = propuestaPeek.correoOrigen?.deColaCorreo === true;
+      await iniciarSeleccionEmpresaCaptura(propuestaPeek.chatId, contenido, propuestaPeek.nombreArchivoOriginal, undefined, deColaCorreo);
+      capturaIniciada = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error leyendo documento para guardar como conocimiento:", message);
@@ -99,6 +103,37 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
         propuestaPeek.chatId,
         `⚠️ No se pudo leer "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}`
       );
+    }
+
+    // Bug real encontrado al verificar el sistema: esta rama nunca consumía
+    // la propuesta de clasificación (a propósito, para poder "Guardar como
+    // conocimiento" Y "Archivar aquí" para el mismo documento fuera de la
+    // cola) — pero si el documento SÍ viene de la cola de revisión de
+    // correo, eso deja abierta la posibilidad de que "Archivar aquí"/
+    // "Elegir otra carpeta" TAMBIÉN se presionen después y avancen la cola
+    // una segunda vez, sobre el correo que para entonces ya es otro (misma
+    // contaminación cruzada que ya se corrigió en la auditoría, en un botón
+    // que entonces no existía). Solo cuando la captura arrancó bien Y viene
+    // de la cola: se consume la propuesta acá (esta captura YA es la
+    // resolución completa de este adjunto) y se le quitan los botones al
+    // mensaje original para que no quede uno viejo, clicable, sin efecto
+    // real — en un try/catch aparte porque para este punto ya se le mandó
+    // al usuario el mensaje real de captura, un fallo acá nunca debe
+    // aparentar que la lectura del documento falló. Fuera de la cola
+    // (documento subido por Telegram) se deja intacta — ahí sí tiene
+    // sentido poder hacer ambas cosas.
+    if (capturaIniciada && propuestaPeek.correoOrigen?.deColaCorreo) {
+      try {
+        await consumirPropuestaClasificacion(id);
+        await editTelegramMessage(
+          propuestaPeek.chatId,
+          propuestaPeek.messageId,
+          `🧠 Guardando "${propuestaPeek.nombreArchivoOriginal}" como conocimiento (elige la empresa abajo).`,
+          []
+        );
+      } catch (error) {
+        console.error("[documentCallbackHandler] No se pudo consumir la propuesta / limpiar botones tras guardar como conocimiento (no crítico):", error);
+      }
     }
     return;
   }
@@ -118,20 +153,29 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       `✏️ Ok — respóndeme con la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}".`,
       []
     );
-    // La decisión ya está tomada (eligió corregir en vez de archivar tal
-    // cual) — el archivado real ocurre después por texto libre
-    // (confirmar_archivo_pendiente), pero eso ya es un detalle de
-    // ejecución, no una decisión pendiente de revisión.
-    //
-    // Solo avanza si esta propuesta vino de la cola de revisión de correo
-    // (correoOrigen.deColaCorreo) — bug real encontrado en auditoría: antes
-    // se llamaba siempre, así que resolver un documento CUALQUIERA (subido
-    // por Telegram, o traído por capturar_correo bajo demanda, ninguno
-    // relacionado con la cola) avanzaba/marcaba-como-leído el correo activo
-    // de otra revisión en curso, sin ninguna relación real entre ambos.
-    if (propuesta.correoOrigen?.deColaCorreo) {
-      await avanzarColaCorreoSiActivo(propuesta.chatId);
-    }
+
+    // Bug real encontrado al verificar el sistema: esta rama borraba la
+    // propuesta (consumirPropuestaClasificacion, arriba) y preguntaba la
+    // empresa/carpeta correctas, pero no guardaba ese pendiente en ningún
+    // lado — la respuesta de Carlos en texto libre no tenía ningún archivo
+    // ni propuesta reales a los que aplicarse, así que "Elegir otra
+    // carpeta" no completaba el archivado. Ahora se guarda lo necesario
+    // (reclasificarDocumentoPendiente.ts, tool, retoma esto cuando el
+    // usuario responda) para poder terminarlo de verdad.
+    await guardarPendienteReclasificacion({
+      chatId: propuesta.chatId,
+      rutaLocal: propuesta.rutaLocal,
+      nombreArchivoOriginal: propuesta.nombreArchivoOriginal,
+      mimeType: propuesta.mimeType,
+      tipoDocumentoOriginal: propuesta.clasificacion.tipoDocumento,
+      correoOrigen: propuesta.correoOrigen,
+    }).catch((error) => console.error("[documentCallbackHandler] Error guardando el pendiente de reclasificación:", error));
+
+    // Ya NO avanza la cola acá — "elegir otra carpeta" todavía no resolvió
+    // nada, solo pospuso la decisión hasta que reclasificarDocumentoPendiente
+    // termine el archivado real con el dato correcto (ver ahí el avance,
+    // gated igual que en cualquier otro punto terminal: solo si viene de la
+    // cola Y el archivado tuvo éxito).
     return;
   }
 

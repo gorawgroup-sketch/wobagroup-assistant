@@ -5,6 +5,7 @@ import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversa
 import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
+import { obtenerPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
 import { registrarUsoIA } from "./costTracking";
 import { registrarBusquedaWeb } from "./webSearchLog";
 
@@ -305,6 +306,21 @@ async function buildSystemPromptDinamico(chatId: number | undefined, nombreRemit
           "reintentar_gasto_pendiente con el dato que dio — nunca le pidas que reenvíe el documento, ya se leyó, y " +
           "nunca le digas que 'ya se la mandaste' hasta que esta herramienta confirme que la propuesta salió. Si su " +
           "mensaje no tiene relación con esto, ignora este aviso."
+      );
+    }
+
+    const reclasificacionPendiente = await obtenerPendienteReclasificacionPorChat(chatId).catch((error) => {
+      console.error("[claude/client] Error consultando reclasificación de documento pendiente (no crítico):", error);
+      return undefined;
+    });
+    if (reclasificacionPendiente) {
+      partes.push(
+        `Hay una pregunta SIN RESPONDER en este chat: se le pidió al usuario la empresa y carpeta correctas ` +
+          `para archivar "${reclasificacionPendiente.nombreArchivoOriginal}" (pulsó "Elegir otra carpeta" en la ` +
+          `propuesta original). Si su mensaje actual responde eso (ej. "EWORKS, en Colaboradores/Alejandra", ` +
+          `"es de Footprint", "en la carpeta de Facturas"), usa la herramienta reclasificar_documento_pendiente ` +
+          "con esos datos — el archivo ya está guardado localmente, nunca le pidas que lo reenvíe. Si su mensaje " +
+          "no tiene relación con esto, ignora este aviso."
       );
     }
   }

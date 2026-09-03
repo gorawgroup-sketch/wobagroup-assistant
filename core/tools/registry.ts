@@ -31,6 +31,7 @@ import { listarCorreosSinLeerTool } from "./listarCorreosSinLeer";
 import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
+import { reclasificarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
 import { programarAccionFuturaTool } from "./programarAccion";
 
 /**
@@ -70,6 +71,7 @@ const tools: ToolDefinition[] = [
   reintentarContactoPendienteTool,
   fijarAliasProveedorTool,
   reintentarGastoPendienteTool,
+  reclasificarDocumentoPendienteTool,
   programarAccionFuturaTool,
 ];
 
