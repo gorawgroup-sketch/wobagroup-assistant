@@ -107,10 +107,14 @@ const MODULES = [
  * abierto — ver openGroups más abajo (varios grupos pueden estar
  * abiertos a la vez, cada uno sin ocultar a los demás).
  */
+// Pedido explícito de Carlos: si abre las 3 células principales a la vez, quiere poder distinguir
+// SIEMPRE a cuál pertenece cada célula pequeña — cada grupo tiene su propio color de rama y de
+// "nanobot" viajero (ver el bloque "Grupo → sus módulos" más abajo), igual que el núcleo→grupo ya
+// tenía su propia chispa ambar.
 const GROUPS = [
-  { id: "administracion", name: "Administración", note: "gobierno del sistema", children: ["conexiones", "accesos", "conocimiento", "calendario"] },
-  { id: "finanzas", name: "Finanzas", note: "dinero real", children: ["holded", "cashflow", "fiscal"] },
-  { id: "operacion", name: "Operación", note: "trabajo diario", children: ["drive", "correo", "busqueda_web"] },
+  { id: "administracion", name: "Administración", note: "gobierno del sistema", children: ["conexiones", "accesos", "conocimiento", "calendario"], accent: "#FFC98A" },
+  { id: "finanzas", name: "Finanzas", note: "dinero real", children: ["holded", "cashflow", "fiscal"], accent: "#7EE2C0" },
+  { id: "operacion", name: "Operación", note: "trabajo diario", children: ["drive", "correo", "busqueda_web"], accent: "#B7A6FF" },
 ];
 
 const STATS = [
@@ -1977,7 +1981,9 @@ export default function CerebroWoba() {
             </circle>
           ))}
 
-          {/* Grupo → sus módulos — solo para los grupos que están abiertos (puede ser 1, 2 o los 3). */}
+          {/* Grupo → sus módulos — solo para los grupos que están abiertos (puede ser 1, 2 o los 3). Cada
+              rama usa el color propio del grupo (g.accent) para que, con las 3 células abiertas a la
+              vez, siempre se vea a simple vista de cuál célula principal cuelga cada módulo. */}
           {GROUPS.map((g, gi) =>
             openGroups.includes(g.id)
               ? modulePositionsByGroup[gi].map((p, mi) => (
@@ -1987,10 +1993,30 @@ export default function CerebroWoba() {
                     y1={groupPositions[gi].y}
                     x2={p.x}
                     y2={p.y}
-                    stroke={C.line}
-                    strokeWidth="1"
+                    stroke={g.accent}
+                    strokeWidth="1.2"
+                    strokeOpacity="0.8"
                     strokeDasharray="1 6"
                   />
+                ))
+              : null
+          )}
+
+          {/* "Nanobots" — chispas que viajan por cada rama grupo→módulo, mismo tratamiento que ya
+              tenía núcleo→grupo (core-spark) pero con el color propio del grupo, para reforzar
+              visualmente el vínculo cuando hay varios grupos abiertos a la vez. */}
+          {GROUPS.map((g, gi) =>
+            openGroups.includes(g.id)
+              ? modulePositionsByGroup[gi].map((p, mi) => (
+                  <circle key={`branch-spark-${g.id}-${g.children[mi]}`} r="2.6" fill={g.accent}>
+                    <animateMotion
+                      path={`M ${groupPositions[gi].x} ${groupPositions[gi].y} L ${p.x} ${p.y}`}
+                      dur="2s"
+                      begin={`${mi * 0.4}s`}
+                      repeatCount="indefinite"
+                    />
+                    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2s" begin={`${mi * 0.4}s`} repeatCount="indefinite" />
+                  </circle>
                 ))
               : null
           )}
