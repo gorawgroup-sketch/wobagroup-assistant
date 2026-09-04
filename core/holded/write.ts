@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { estaConciliado, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
@@ -6,6 +7,7 @@ import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { montosCercanos } from "../utils/montos";
 import { textosParecidos } from "../utils/textoParecido";
 import { registrarUsoIA } from "../claude/costTracking";
+import { transcribirParaCaptura } from "../documental/transcribeForCapture";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -1050,6 +1052,130 @@ export async function buscarGastosSinComprobante(
   }
 
   return { sinComprobante, totalRevisados: revisados.length, limiteAlcanzado };
+}
+
+const MAX_GASTOS_A_REVISAR_ETIQUETA = 2000;
+
+export type GastoConEtiqueta = GastoSinComprobante;
+
+/**
+ * Pedido explícito de Carlos, tras un caso real: pidió los gastos de viaje de una persona en
+ * Footprint "busca el hashtag que debe estar como Jorge o como Jácome" — investigué a mano (script
+ * descartable) y encontré que el hashtag SÍ existía ("jorge", en minúsculas, sin "jácome"), pero
+ * Wobi no tenía ninguna herramienta para buscarlo — solo podía listar TODO un rango de fechas
+ * (consultar_movimientos_holded) o buscar un documento puntual por monto/fecha, nada por etiqueta.
+ * Esta función cierra ese hueco: recorre /purchases paginado en un rango de fechas y filtra por
+ * coincidencia EXACTA (normalizada: sin acentos, minúsculas) contra las etiquetas del documento —
+ * las etiquetas de Holded son la única pista fiable de a quién/qué corresponde un gasto genérico
+ * (mismo principio que buscarGastosSinComprobante, arriba).
+ */
+export async function buscarGastosPorEtiquetaHolded(
+  empresa: Empresa,
+  etiqueta: string,
+  desde: string,
+  hasta: string
+): Promise<{ resultados: GastoConEtiqueta[]; totalRevisados: number; limiteAlcanzado: boolean }> {
+  const etiquetaNorm = normalizar(etiqueta);
+  const revisados: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; tags?: string[] }> = [];
+  let cursor: string | undefined;
+  let limiteAlcanzado = false;
+
+  while (revisados.length < MAX_GASTOS_A_REVISAR_ETIQUETA) {
+    const params = new URLSearchParams({ limit: "100", start_date: desde, end_date: hasta });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; tags?: string[] }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      if (revisados.length >= MAX_GASTOS_A_REVISAR_ETIQUETA) {
+        limiteAlcanzado = true;
+        break;
+      }
+      revisados.push(item);
+    }
+
+    if (limiteAlcanzado || !data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  const resultados: GastoConEtiqueta[] = revisados
+    .filter((item) => (item.tags ?? []).some((t) => normalizar(t) === etiquetaNorm))
+    .map((item) => ({
+      id: item.id,
+      contactName: item.contact_name ?? "(sin proveedor)",
+      total: parsearMontoHolded(item.total),
+      fecha: item.date ?? "",
+      descripcion: item.description ?? "",
+      tags: item.tags ?? [],
+    }));
+
+  return { resultados, totalRevisados: revisados.length, limiteAlcanzado };
+}
+
+/**
+ * Descarga y lee (transcribe con Claude vision, ver transcribirParaCaptura) todos los adjuntos de
+ * un gasto/compra ya existente en Holded — mismo hueco encontrado junto con
+ * buscarGastosPorEtiquetaHolded: Wobi podía SABER que un gasto tiene un adjunto
+ * (GET /purchases/{id}/attachments, ya usado en buscarGastosSinComprobante) pero no tenía forma de
+ * leer su CONTENIDO real, solo el nombre del archivo. Verificado en vivo: el endpoint de descarga es
+ * GET /purchases/{id}/attachments/{filename} (el "id" que devuelve la lista de adjuntos es en
+ * realidad el nombre de archivo, no un id opaco) — devuelve el binario directo (application/pdf o
+ * imagen), no JSON.
+ */
+export async function leerAdjuntosCompraHolded(
+  empresa: Empresa,
+  purchaseId: string
+): Promise<Array<{ nombreArchivo: string; contenido: string }>> {
+  const apiKey = getWriteApiKey(empresa);
+  const attachments = (await holdedWriteCall(empresa, "GET", `/purchases/${purchaseId}/attachments`)) as {
+    items?: Array<{ id: string }>;
+  };
+  const nombres = (attachments.items ?? []).map((a) => a.id);
+  if (nombres.length === 0) return [];
+
+  const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
+  await mkdir(UPLOADS_DIR, { recursive: true });
+
+  const resultados: Array<{ nombreArchivo: string; contenido: string }> = [];
+
+  for (const nombreArchivo of nombres) {
+    let rutaLocal: string | undefined;
+    try {
+      const response = await fetch(
+        `${HOLDED_API_BASE}/purchases/${purchaseId}/attachments/${encodeURIComponent(nombreArchivo)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } }
+      );
+      if (!response.ok) {
+        resultados.push({ nombreArchivo, contenido: `(No se pudo descargar: HTTP ${response.status})` });
+        continue;
+      }
+      // Solo el tipo MIME, sin parámetros (ej. "; charset=...") — mimeADocumentBlock compara con
+      // igualdad estricta ("application/pdf"), así que un sufijo inesperado lo haría fallar aunque
+      // el archivo sí fuera un PDF/imagen soportado.
+      const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() || undefined;
+      const bytes = Buffer.from(await response.arrayBuffer());
+      rutaLocal = join(UPLOADS_DIR, `${Date.now()}_${nombreArchivo.replace(/[^\w.\-]+/g, "_")}`);
+      await writeFile(rutaLocal, bytes);
+
+      const contenido = await transcribirParaCaptura(
+        rutaLocal,
+        contentType,
+        `Adjunto de un gasto ya registrado en Holded (${empresa}, compra ${purchaseId}).`
+      );
+      resultados.push({ nombreArchivo, contenido });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      resultados.push({ nombreArchivo, contenido: `(Error leyendo el adjunto: ${message})` });
+    } finally {
+      if (rutaLocal) await unlink(rutaLocal).catch(() => {});
+    }
+  }
+
+  return resultados;
 }
 
 /**
