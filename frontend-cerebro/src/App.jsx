@@ -104,7 +104,8 @@ const MODULES = [
  * Administración (gobierno del sistema), Finanzas (dinero real), Operación
  * (trabajo diario). Cada grupo es un nodo grande de primer nivel; sus
  * `children` (ids de MODULES) solo se dibujan cuando ese grupo está
- * abierto — ver openGroup más abajo.
+ * abierto — ver openGroups más abajo (varios grupos pueden estar
+ * abiertos a la vez, cada uno sin ocultar a los demás).
  */
 const GROUPS = [
   { id: "administracion", name: "Administración", note: "gobierno del sistema", children: ["conexiones", "accesos", "conocimiento", "calendario"] },
@@ -374,42 +375,6 @@ function NanoCore({ energized = false }) {
   );
 }
 
-/**
- * Ráfaga breve de "nanobots" en una posición del lienzo — dispersándose
- * (`outward`) cuando un nodo se desvanece, o condensándose hacia el punto
- * (`!outward`) cuando uno nuevo aparece. Puramente decorativo, ver
- * TRANSICION_MS en CerebroWoba — pedido explícito de Carlos: "un efecto de
- * deconstrucción y construcción de nanobots" al entrar/salir de una neurona.
- */
-function ParticleBurst({ pos, seed, outward }) {
-  const rnd = seeded(Math.round(pos.x * 11 + pos.y * 17 + seed * 31 + 1));
-  const dots = Array.from({ length: 8 }, (_, i) => {
-    const angle = rnd() * Math.PI * 2;
-    const dist = 20 + rnd() * 34;
-    const dx = dist * Math.cos(angle);
-    const dy = dist * Math.sin(angle);
-    return {
-      key: i,
-      x1: outward ? pos.x : pos.x + dx,
-      y1: outward ? pos.y : pos.y + dy,
-      x2: outward ? pos.x + dx : pos.x,
-      y2: outward ? pos.y + dy : pos.y,
-      delay: rnd() * 0.22,
-      dur: 0.32 + rnd() * 0.22,
-    };
-  });
-  return (
-    <>
-      {dots.map((d) => (
-        <circle key={d.key} r="1.6" fill={d.key % 2 === 0 ? C.amberBright : C.coreBright}>
-          <animateMotion path={`M ${d.x1} ${d.y1} L ${d.x2} ${d.y2}`} dur={`${d.dur}s`} begin={`${d.delay}s`} fill="freeze" />
-          <animate attributeName="opacity" values={outward ? "1;0" : "0;1"} dur={`${d.dur}s`} begin={`${d.delay}s`} fill="freeze" />
-        </circle>
-      ))}
-    </>
-  );
-}
-
 /** Filas de datos reales por módulo, a partir de la respuesta del endpoint. Cada fila es [etiqueta, valor]. */
 function liveRowsForModule(id, d, periodoCashflow = "semana") {
   if (!d) return [];
@@ -545,6 +510,36 @@ function useRadialLayout(count, radius) {
       return { x: 300 + (radius + jitter) * Math.cos(angle), y: 300 + (radius + jitter) * Math.sin(angle) };
     });
   }, [count, radius]);
+}
+
+/**
+ * Posiciones de los módulos de UN grupo, en abanico alrededor del propio
+ * ángulo del grupo (más lejos del núcleo que el grupo mismo) — pedido
+ * explícito de Carlos: "necesito que todo se maneje en una sola pantalla...
+ * si necesito que despliegue las tres, las tres deberían desplegar". Antes,
+ * abrir un grupo REEMPLAZABA la vista de los 3 grupos por sus módulos (un
+ * cambio de "pantalla" real, aunque técnicamente siguiera siendo el mismo
+ * componente) — ahora los 3 grupos son SIEMPRE visibles y cada uno puede
+ * abrir sus propios módulos como ramas adicionales, sin tapar a los demás.
+ * Cada grupo tiene su propio sector angular (360°/3 = 120°) — un abanico de
+ * 100° centrado en el ángulo del grupo dentro deja margen de sobra a los
+ * grupos vecinos, así que los 3 pueden estar abiertos a la vez sin que sus
+ * ramas se crucen.
+ */
+function useGroupBranchPositions(groupIndex, totalGroups, moduleCount) {
+  return useMemo(() => {
+    if (moduleCount === 0) return [];
+    const baseAngle = (groupIndex / totalGroups) * Math.PI * 2 - Math.PI / 2;
+    const outerRadius = 252;
+    const fanRad = (100 * Math.PI) / 180;
+    const rnd = seeded(11 + groupIndex);
+    return Array.from({ length: moduleCount }, (_, i) => {
+      const t = moduleCount === 1 ? 0 : i / (moduleCount - 1) - 0.5;
+      const jitter = (rnd() - 0.5) * 8;
+      const angle = baseAngle + t * fanRad;
+      return { x: 300 + (outerRadius + jitter) * Math.cos(angle), y: 300 + (outerRadius + jitter) * Math.sin(angle) };
+    });
+  }, [groupIndex, totalGroups, moduleCount]);
 }
 
 /** Pantalla de acceso: pide la key directo al usuario, nunca queda guardada en el código. */
@@ -1639,71 +1634,28 @@ export default function CerebroWoba() {
   // (antes un solo valor `open`) — ver el comentario de "cerebro-layout" más
   // abajo para el porqué.
   const [openIds, setOpenIds] = useState([]);
-  const [openGroup, setOpenGroup] = useState(null);
 
-  // Al abrir un grupo, deja de mostrarse la vista de 3 grupos y se
-  // "entra" en él — sus módulos usan exactamente el mismo layout radial
-  // (mismo radio, todo el lienzo disponible) que ya usaban los 3 grupos,
-  // en vez de amontonarse en abanico junto al nodo del grupo (bug real,
-  // visto en vivo dos veces: un abanico angosto siempre se queda corto de
-  // espacio para etiquetas de texto anchas, sin importar cuánto se ajuste
-  // el radio o el ángulo — la solución real es darle a los hijos el mismo
-  // espacio generoso que ya tenían los grupos, no pelear por el espacio
-  // sobrante junto al padre).
-  const openGroupObj = openGroup ? GROUPS.find((g) => g.id === openGroup) : null;
-  const currentItems = openGroupObj ? openGroupObj.children.map((id) => MODULES.find((m) => m.id === id)) : GROUPS;
-
-  // Transición al cambiar de nivel (grupos ↔ hijas de un grupo abierto) —
-  // pedido explícito de Carlos: "un efecto de deconstrucción y
-  // construcción de nanobots" en vez de un salto seco. `displayedItems` es
-  // lo que de verdad se dibuja; `currentItems` (arriba) es lo que
-  // DEBERÍA mostrarse según openGroup. Cuando difieren, lo viejo
-  // (`leavingItems`) se desvanece con su propia animación durante
-  // TRANSICION_MS, y recién entonces se cambia displayedItems al nuevo
-  // set — que al montar por primera vez toca su propia animación de
-  // "ensamblado" (ver nodeAssemble/nodeDissolve en el <style> de abajo).
-  const TRANSICION_MS = 520;
-  const [displayedItems, setDisplayedItems] = useState(GROUPS);
-  const [leavingItems, setLeavingItems] = useState(null);
-  const [leavingIsGroupLevel, setLeavingIsGroupLevel] = useState(true);
-  const displayedItemsRef = useRef(GROUPS);
-  const displayedIsGroupLevelRef = useRef(true);
-  const prevOpenGroupRef = useRef(openGroup);
-
-  useEffect(() => {
-    if (prevOpenGroupRef.current === openGroup) return;
-    prevOpenGroupRef.current = openGroup;
-
-    // Bug real que hacía la transición invisible: antes, displayedItems
-    // (el set "estable", SIN animación) seguía apuntando al contenido
-    // VIEJO durante toda la ventana de transición, exactamente superpuesto
-    // sobre la copia que sí se estaba disolviendo (leavingItems) — dos
-    // copias idénticas en el mismo lugar, una animándose y otra sólida
-    // tapándola, así que la disolución quedaba invisible. Y recién al
-    // final, displayedItems saltaba de golpe al set nuevo. La corrección:
-    // lo viejo pasa a leavingItems (se disuelve), y lo NUEVO entra a
-    // displayedItems YA MISMO (se materializa) — ambas animaciones corren
-    // EN PARALELO, cruzándose, en vez de una después de la otra.
-    setLeavingItems(displayedItemsRef.current);
-    setLeavingIsGroupLevel(displayedIsGroupLevelRef.current);
-
-    displayedItemsRef.current = currentItems;
-    displayedIsGroupLevelRef.current = !openGroupObj;
-    setDisplayedItems(currentItems);
-
-    const t = setTimeout(() => setLeavingItems(null), TRANSICION_MS);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openGroup]);
-
-  const displayedPositions = useRadialLayout(displayedItems.length, 175);
-  const leavingPositions = useRadialLayout(leavingItems?.length ?? 0, 175);
-  // Posiciones del set DESTINO (currentItems, el que se va a mostrar apenas
-  // termine la transición) — distinto de displayedPositions, que durante la
-  // transición todavía apunta al set VIEJO. La ráfaga de "condensación"
-  // tiene que apuntar a dónde van a APARECER los nodos nuevos, no a donde
-  // están los que se están yendo.
-  const targetPositions = useRadialLayout(currentItems.length, 175);
+  // Pedido explícito de Carlos, tras ver que abrir un grupo REEMPLAZABA la
+  // vista de los 3 grupos por sus módulos (sentía que "cambiaba de
+  // pantalla" y perdía de vista el resto): "necesito que todo se maneje en
+  // una sola pantalla... si necesito que despliegue las tres, las tres
+  // deberían desplegar". Los 3 grupos son ahora SIEMPRE visibles, en
+  // posiciones fijas — abrir uno (o los tres a la vez) solo AGREGA sus
+  // módulos como ramas más lejos del núcleo (ver useGroupBranchPositions),
+  // nunca oculta ni reemplaza nada. Antes `openGroup` era un solo valor (un
+  // grupo abierto a la vez, con toda la vista reemplazada); ahora
+  // `openGroups` es un array — cada grupo se abre/cierra de forma
+  // independiente tocándolo de nuevo (ya no hace falta un botón "volver").
+  const [openGroups, setOpenGroups] = useState([]);
+  const groupPositions = useRadialLayout(GROUPS.length, 175);
+  // Hooks con llamadas fijas (siempre 3, GROUPS.length es constante) — nunca
+  // condicionales ni en un .map(), para no romper las reglas de hooks de
+  // React. Cuáles de estas posiciones se USAN de verdad depende de
+  // openGroups, pero se calculan las 3 siempre (memoizado, barato).
+  const modulePositionsGroup0 = useGroupBranchPositions(0, GROUPS.length, GROUPS[0].children.length);
+  const modulePositionsGroup1 = useGroupBranchPositions(1, GROUPS.length, GROUPS[1].children.length);
+  const modulePositionsGroup2 = useGroupBranchPositions(2, GROUPS.length, GROUPS[2].children.length);
+  const modulePositionsByGroup = [modulePositionsGroup0, modulePositionsGroup1, modulePositionsGroup2];
 
   const [entered, setEntered] = useState(false);
   const [diving, setDiving] = useState(false);
@@ -1864,18 +1816,12 @@ export default function CerebroWoba() {
           100% { transform: scale(7.5); opacity: 0; filter: blur(14px); }
         }
         @keyframes ctaPulse { 0%,100% { opacity: 0.75; } 50% { opacity: 1; } }
-        /* Transición al entrar/salir de un grupo — pedido explícito de Carlos: "un efecto de
+        /* Al aparecer un grupo o módulo nuevo — pedido explícito de Carlos: "un efecto de
            deconstrucción y construcción de nanobots" en vez de un corte seco. Solo anima opacity
            (nunca transform/filter) porque los nodos ya tienen nodeGlow+floatSlow corriendo sobre
            esas mismas propiedades — dos animaciones distintas tocando la misma propiedad se pisan
-           entre sí, opacity queda libre. El efecto de "partículas" real lo dan las chispas nuevas
-           (ver burstParticles más abajo), esto solo desvanece/materializa el nodo en sí. */
-        @keyframes nodeDissolve { from { opacity: 1; } to { opacity: 0; } }
+           entre sí, opacity queda libre. */
         @keyframes nodeAssemble { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes particleBurst {
-          0% { opacity: 1; }
-          100% { opacity: 0; }
-        }
         @keyframes brainLanding {
           from { opacity: 0; transform: scale(1.08); filter: blur(6px); }
           to { opacity: 1; transform: scale(1); filter: blur(0px); }
@@ -1937,8 +1883,8 @@ export default function CerebroWoba() {
           </div>
         )}
         <div style={{ fontFamily: C.sans, fontSize: 13, color: C.dim, marginTop: 6, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
-          {openGroup
-            ? "Toca una neurona para abrir su detalle, o vuelve para ver los otros grupos."
+          {openGroups.length > 0
+            ? "Toca un módulo para abrir su detalle, o toca el grupo de nuevo para cerrarlo."
             : "Mueve el cursor sobre el campo para energizarlo. Toca un grupo para abrir sus módulos."}
         </div>
 
@@ -1968,19 +1914,17 @@ export default function CerebroWoba() {
       </div>
 
 
-      {/* Pedido explícito de Carlos, tras ver un ejemplo de referencia (conducting.ai): no le
-          gustaba que el panel de detalle apareciera DEBAJO del universo (obligando a hacer scroll
-          para verlo) ni que solo se pudiera tener uno abierto a la vez. "cerebro-layout" pone el
-          universo y los paneles de detalle LADO A LADO (usando todo el ancho disponible) en
-          pantallas anchas, y los apila en columna en celular (ahí sí hace falta scroll, pedido
-          explícito de Carlos: "para despliegue en celular vas a tener que adaptarlo"). Se puede
-          tener VARIOS módulos abiertos al mismo tiempo (openIds, antes un solo valor `open`) —
-          "cerebro-panels" es un grid que los redimensiona automáticamente para que quepan sin
-          superponerse, sin importar cuántos estén abiertos. Los 3 grupos principales (neuronas) se
-          siguen navegando de a uno (openGroup), eso no cambió — ver la pregunta que se le hizo a
-          Carlos antes de este cambio: reconstruir el grafo para expandir los 3 grupos a la vez con
-          zoom/paneo real (como el video) es un motor de layout de fuerzas completo, fuera de
-          alcance por ahora. */}
+      {/* Pedido explícito de Carlos, tras ver un ejemplo de referencia (conducting.ai) y luego
+          insistir en que ni el panel de módulo NI los 3 grupos principales pueden "cambiar de
+          pantalla": "necesito que todo se maneje en una sola pantalla... si necesito que despliegue
+          las tres, las tres deberían desplegar... sin perder de vista el todo". "cerebro-layout"
+          pone el universo y los paneles de detalle LADO A LADO (todo el ancho disponible) en
+          pantallas anchas, apilados en columna en celular (pedido explícito: "para despliegue en
+          celular vas a tener que adaptarlo"). Se pueden tener VARIOS módulos abiertos a la vez
+          (openIds) — "cerebro-panels" es un grid que los redimensiona solo para que quepan sin
+          superponerse. Los 3 grupos (neuronas) son SIEMPRE visibles (ya no se reemplazan entre sí,
+          ver openGroups y useGroupBranchPositions más abajo) — se pueden abrir los 3 a la vez, cada
+          uno agregando sus módulos como ramas propias sin tapar a los demás. */}
       <div className="cerebro-layout">
       <div
         style={{
@@ -2003,213 +1947,163 @@ export default function CerebroWoba() {
             </radialGradient>
           </defs>
 
-          {displayedPositions.map((p, i) => (
-            <line key={`core-${i}`} x1="300" y1="300" x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1.1" strokeDasharray="1 7" />
+          {/* Núcleo → cada grupo — los 3 grupos son siempre visibles, en posiciones fijas. */}
+          {groupPositions.map((p, gi) => (
+            <line key={`core-${GROUPS[gi].id}`} x1="300" y1="300" x2={p.x} y2={p.y} stroke={C.lineBright} strokeWidth="1.1" strokeDasharray="1 7" />
           ))}
-          {displayedPositions.map((p, i) => (
-            <circle key={`core-spark-${i}`} r="2.6" fill={C.amberBright}>
-              <animateMotion path={`M 300 300 L ${p.x} ${p.y}`} dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
-              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2.4s" begin={`${i * 0.55}s`} repeatCount="indefinite" />
+          {groupPositions.map((p, gi) => (
+            <circle key={`core-spark-${GROUPS[gi].id}`} r="2.6" fill={C.amberBright}>
+              <animateMotion path={`M 300 300 L ${p.x} ${p.y}`} dur="2.4s" begin={`${gi * 0.55}s`} repeatCount="indefinite" />
+              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="2.4s" begin={`${gi * 0.55}s`} repeatCount="indefinite" />
             </circle>
           ))}
 
-          {/* Nanobots dispersándose desde las posiciones que se van — solo durante la transición. */}
-          {leavingItems && leavingPositions.map((p, i) => <ParticleBurst key={`burst-out-${leavingItems[i].id}`} pos={p} seed={i} outward />)}
-          {/* Nanobots condensándose en las posiciones nuevas — solo la primera vez que aparecen (mount). */}
-          {leavingItems && targetPositions.map((p, i) => <ParticleBurst key={`burst-in-${currentItems[i].id}`} pos={p} seed={i + 50} outward={false} />)}
+          {/* Grupo → sus módulos — solo para los grupos que están abiertos (puede ser 1, 2 o los 3). */}
+          {GROUPS.map((g, gi) =>
+            openGroups.includes(g.id)
+              ? modulePositionsByGroup[gi].map((p, mi) => (
+                  <line
+                    key={`branch-${g.id}-${g.children[mi]}`}
+                    x1={groupPositions[gi].x}
+                    y1={groupPositions[gi].y}
+                    x2={p.x}
+                    y2={p.y}
+                    stroke={C.line}
+                    strokeWidth="1"
+                    strokeDasharray="1 6"
+                  />
+                ))
+              : null
+          )}
 
-          {leavingItems &&
-            leavingPositions.map((p, i) => {
-              const it = leavingItems[i];
-              return (
-                <circle
-                  key={`leaving-${it.id}`}
-                  cx={p.x}
-                  cy={p.y}
-                  r={leavingIsGroupLevel ? 18 : 11}
-                  fill="url(#nodeGrad)"
-                  style={{ pointerEvents: "none", animation: `nodeDissolve ${TRANSICION_MS}ms ease-in forwards` }}
-                />
-              );
-            })}
-
-          {displayedPositions.map((p, i) => {
-            const it = displayedItems[i];
-            const isActive = active === it.id || openIds.includes(it.id) || openGroup === it.id;
+          {/* Nodos de los 3 grupos, siempre. */}
+          {groupPositions.map((p, gi) => {
+            const g = GROUPS[gi];
+            const isActive = active === g.id || openGroups.includes(g.id);
             return (
               <circle
-                key={it.id}
+                key={g.id}
                 cx={p.x}
                 cy={p.y}
-                r={openGroupObj ? (isActive ? 15 : 11) : isActive ? 22 : 18}
+                r={isActive ? 22 : 18}
                 fill="url(#nodeGrad)"
-                onMouseEnter={() => setActive(it.id)}
+                onMouseEnter={() => setActive(g.id)}
                 onMouseLeave={() => setActive(null)}
-                onClick={() => {
-                  if (openGroupObj) {
-                    setOpenIds((cur) => (cur.includes(it.id) ? cur.filter((id) => id !== it.id) : [...cur, it.id]));
-                  } else {
-                    setOpenIds([]);
-                    setOpenGroup((cur) => (cur === it.id ? null : it.id));
-                  }
-                }}
+                onClick={() => setOpenGroups((cur) => (cur.includes(g.id) ? cur.filter((id) => id !== g.id) : [...cur, g.id]))}
                 style={{
                   cursor: "pointer",
                   pointerEvents: "auto",
-                  animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + i * 0.3}s ease-in-out infinite, nodeAssemble ${TRANSICION_MS}ms ease-out`,
+                  animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + gi * 0.3}s ease-in-out infinite, nodeAssemble 520ms ease-out`,
                   transition: "r .15s",
                 }}
               />
             );
           })}
+
+          {/* Nodos de módulos — solo para los grupos abiertos. */}
+          {GROUPS.map((g, gi) =>
+            openGroups.includes(g.id)
+              ? modulePositionsByGroup[gi].map((p, mi) => {
+                  const m = MODULES.find((x) => x.id === g.children[mi]);
+                  const isActive = active === m.id || openIds.includes(m.id);
+                  return (
+                    <circle
+                      key={m.id}
+                      cx={p.x}
+                      cy={p.y}
+                      r={isActive ? 15 : 11}
+                      fill="url(#nodeGrad)"
+                      onMouseEnter={() => setActive(m.id)}
+                      onMouseLeave={() => setActive(null)}
+                      onClick={() => setOpenIds((cur) => (cur.includes(m.id) ? cur.filter((id) => id !== m.id) : [...cur, m.id]))}
+                      style={{
+                        cursor: "pointer",
+                        pointerEvents: "auto",
+                        animation: `nodeGlow 3s ease-in-out infinite, floatSlow ${4 + mi * 0.3}s ease-in-out infinite, nodeAssemble 420ms ease-out`,
+                        transition: "r .15s",
+                      }}
+                    />
+                  );
+                })
+              : null
+          )}
         </svg>
 
-        <NanoCore energized={Boolean(active || openIds.length > 0 || openGroup)} />
+        <NanoCore energized={Boolean(active || openIds.length > 0 || openGroups.length > 0)} />
 
-        {/* Pedido explícito de Carlos: el botón de volver a todos los grupos va en el centro,
-            sobre el propio núcleo de nanobots — no como un botón de chrome aparte arriba de la
-            página. Mismo lenguaje visual que cualquier neurona (círculo con glow ámbar), solo que
-            este vive en el centro exacto en vez de alrededor. */}
-        {openGroupObj && (
-          <div
-            onClick={() => {
-              setOpenIds([]);
-              setOpenGroup(null);
-            }}
-            onMouseEnter={() => setActive("__volver")}
-            onMouseLeave={() => setActive(null)}
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              transform: "translate(-50%, -50%)",
-              zIndex: 3,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              cursor: "pointer",
-              pointerEvents: "auto",
-            }}
-          >
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: "50%",
-                border: `1px solid ${C.amberBright}`,
-                // Fondo SÓLIDO oscuro (no translúcido) — antes se perdía contra el
-                // propio enjambre de nanobots del núcleo, ámbar sobre ámbar sin
-                // contraste. Necesita leerse como un disco de control aparte, no
-                // camuflarse con las partículas que tiene detrás.
-                background: C.void,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontFamily: C.mono,
-                fontSize: 18,
-                color: C.amberBright,
-                animation: "nodeGlow 3s ease-in-out infinite",
-                boxShadow: active === "__volver" ? `0 0 18px ${C.amberBright}` : `0 0 12px rgba(232,167,92,0.55)`,
-                transition: "box-shadow .2s",
-              }}
-            >
-              ←
-            </div>
-            <div
-              style={{
-                marginTop: 6,
-                fontFamily: C.mono,
-                fontSize: 9.5,
-                letterSpacing: "0.03em",
-                background: C.void,
-                padding: "1px 6px",
-                borderRadius: 4,
-                color: active === "__volver" ? C.amberBright : C.dim,
-                textAlign: "center",
-                whiteSpace: "nowrap",
-              }}
-            >
-              Todos los grupos
-            </div>
-          </div>
-        )}
-
-        {leavingItems &&
-          leavingPositions.map((p, i) => {
-            const it = leavingItems[i];
-            return (
-              <div
-                key={`leaving-${it.id}`}
-                style={{
-                  position: "absolute",
-                  left: `${(p.x / 600) * 100}%`,
-                  top: `${(p.y / 600) * 100}%`,
-                  transform: `translate(-50%, ${leavingIsGroupLevel ? 20 : 14}px)`,
-                  textAlign: "center",
-                  width: leavingIsGroupLevel ? 140 : 130,
-                  pointerEvents: "none",
-                  animation: `nodeDissolve ${TRANSICION_MS}ms ease-in forwards`,
-                }}
-              >
-                <div style={{ fontFamily: leavingIsGroupLevel ? C.serif : C.sans, fontSize: leavingIsGroupLevel ? 15 : 12.5, fontWeight: 600, color: C.cream }}>
-                  {it.name}
-                </div>
-              </div>
-            );
-          })}
-
-        {displayedPositions.map((p, i) => {
-          const it = displayedItems[i];
-          const isActive = active === it.id || openIds.includes(it.id) || openGroup === it.id;
+        {/* Etiquetas de los 3 grupos, siempre. */}
+        {groupPositions.map((p, gi) => {
+          const g = GROUPS[gi];
+          const isActive = active === g.id || openGroups.includes(g.id);
           return (
             <div
-              key={it.id}
-              onMouseEnter={() => setActive(it.id)}
+              key={g.id}
+              onMouseEnter={() => setActive(g.id)}
               onMouseLeave={() => setActive(null)}
-              onClick={() => {
-                if (openGroupObj) {
-                  setOpenIds((cur) => (cur.includes(it.id) ? cur.filter((id) => id !== it.id) : [...cur, it.id]));
-                } else {
-                  setOpenIds([]);
-                  setOpenGroup((cur) => (cur === it.id ? null : it.id));
-                }
-              }}
+              onClick={() => setOpenGroups((cur) => (cur.includes(g.id) ? cur.filter((id) => id !== g.id) : [...cur, g.id]))}
               style={{
                 position: "absolute",
                 left: `${(p.x / 600) * 100}%`,
                 top: `${(p.y / 600) * 100}%`,
-                transform: `translate(-50%, ${openGroupObj ? 14 : 20}px)`,
+                transform: "translate(-50%, 20px)",
                 textAlign: "center",
                 cursor: "pointer",
-                width: openGroupObj ? 130 : 140,
+                width: 140,
                 pointerEvents: "auto",
-                animation: `nodeAssemble ${TRANSICION_MS}ms ease-out`,
+                animation: "nodeAssemble 520ms ease-out",
               }}
             >
-              <div
-                style={{
-                  fontFamily: openGroupObj ? C.sans : C.serif,
-                  fontSize: openGroupObj ? 12.5 : 15,
-                  fontWeight: 600,
-                  color: isActive ? C.amberBright : C.cream,
-                }}
-              >
-                {it.name}
-              </div>
-              {((openGroupObj && active === it.id && openIds.length === 0) || (!openGroupObj && isActive)) && (
+              <div style={{ fontFamily: C.serif, fontSize: 15, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{g.name}</div>
+              {isActive && (
                 <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
-                  {openGroupObj && it.detail && (
-                    <>
-                      {it.detail}
-                      <br />
-                    </>
-                  )}
-                  <span style={{ color: C.amber }}>{it.note}</span>
+                  <span style={{ color: C.amber }}>{g.note}</span>
                 </div>
               )}
             </div>
           );
         })}
+
+        {/* Etiquetas de módulos — solo para los grupos abiertos. */}
+        {GROUPS.map((g, gi) =>
+          openGroups.includes(g.id)
+            ? modulePositionsByGroup[gi].map((p, mi) => {
+                const m = MODULES.find((x) => x.id === g.children[mi]);
+                const isActive = active === m.id || openIds.includes(m.id);
+                return (
+                  <div
+                    key={m.id}
+                    onMouseEnter={() => setActive(m.id)}
+                    onMouseLeave={() => setActive(null)}
+                    onClick={() => setOpenIds((cur) => (cur.includes(m.id) ? cur.filter((id) => id !== m.id) : [...cur, m.id]))}
+                    style={{
+                      position: "absolute",
+                      left: `${(p.x / 600) * 100}%`,
+                      top: `${(p.y / 600) * 100}%`,
+                      transform: "translate(-50%, 14px)",
+                      textAlign: "center",
+                      cursor: "pointer",
+                      width: 128,
+                      pointerEvents: "auto",
+                      animation: "nodeAssemble 420ms ease-out",
+                    }}
+                  >
+                    <div style={{ fontFamily: C.sans, fontSize: 12.5, fontWeight: 600, color: isActive ? C.amberBright : C.cream }}>{m.name}</div>
+                    {active === m.id && (
+                      <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
+                        {m.detail && (
+                          <>
+                            {m.detail}
+                            <br />
+                          </>
+                        )}
+                        <span style={{ color: C.amber }}>{m.note}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            : null
+        )}
       </div>
 
       {/* Paneles de detalle de los módulos abiertos — uno por cada id en openIds
