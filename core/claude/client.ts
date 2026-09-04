@@ -492,7 +492,7 @@ export async function verificarConexionClaude(): Promise<{ ok: boolean; detalle?
 }
 
 type ResultadoConversacion =
-  | { tipo: "respuesta"; respuesta: string; messages: Anthropic.MessageParam[] }
+  | { tipo: "respuesta"; respuesta: string; messages: Anthropic.MessageParam[]; historialInicialLength: number }
   | { tipo: "escalar" };
 
 /**
@@ -595,7 +595,7 @@ async function ejecutarConversacion(
             : "No he podido generar una respuesta.";
 
       messages.push({ role: "assistant", content: response.content });
-      return { tipo: "respuesta", respuesta: respuestaFinal, messages };
+      return { tipo: "respuesta", respuesta: respuestaFinal, messages, historialInicialLength: historial.length };
     }
 
     const toolUseBlocks = response.content.filter(
@@ -681,6 +681,7 @@ async function ejecutarConversacion(
     tipo: "respuesta",
     respuesta: "No he podido completar la respuesta tras varios intentos de usar herramientas.",
     messages,
+    historialInicialLength: historial.length,
   };
 }
 
@@ -811,7 +812,12 @@ async function orquestarTurno(
     );
 
     if (intentoRapido.tipo === "respuesta") {
-      if (chatId !== undefined) await guardarHistorial(chatId, intentoRapido.messages);
+      // Solo los mensajes NUEVOS de este turno (no el array completo, que arranca con un historial
+      // leído al empezar y quedaría stale para cuando esto se guarda) — ver el comentario de
+      // guardarHistorial en conversationStore.ts.
+      if (chatId !== undefined) {
+        await guardarHistorial(chatId, intentoRapido.messages.slice(intentoRapido.historialInicialLength));
+      }
       return intentoRapido.respuesta;
     }
 
@@ -860,7 +866,9 @@ async function orquestarTurno(
     throw new Error("Estado inesperado: el intento completo (Sonnet) no debería poder pedir escalar.");
   }
 
-  if (chatId !== undefined) await guardarHistorial(chatId, resultadoFinal.messages);
+  if (chatId !== undefined) {
+    await guardarHistorial(chatId, resultadoFinal.messages.slice(resultadoFinal.historialInicialLength));
+  }
   return resultadoFinal.respuesta;
 }
 

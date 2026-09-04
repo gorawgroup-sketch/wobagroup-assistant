@@ -44,6 +44,26 @@ let writeClient: sheets_v4.Sheets | null = null;
 let tabAsegurada = false;
 let tabGridId: number | null = null;
 
+// Serializa TODAS las lecturas+escrituras del historial de un chat — necesario porque dos
+// operaciones concurrentes (un turno largo de askClaude terminando de guardar, y un aviso saliente
+// de un cron/callback en medio) hacían un read-modify-write clásico: la que escribe último pisaba
+// a la otra sin enterarse, perdiendo en silencio el mensaje que quedó en medio. Bug real: un cron
+// mandó "tienes 7 correos nuevos" mientras una consulta larga seguía en curso — el aviso del cron
+// quedó guardado un momento, pero al terminar la consulta esta lo borró sin saberlo (ver
+// guardarHistorial más abajo). Con esto, guardarHistorial y limpiarHistorial de un mismo chat nunca
+// corren en paralelo — cada uno ve el resultado ya confirmado del anterior.
+const colasPorChat = new Map<number, Promise<unknown>>();
+
+function conLockDeChat<T>(chatId: number, tarea: () => Promise<T>): Promise<T> {
+  const anterior = colasPorChat.get(chatId) ?? Promise.resolve();
+  const actual = anterior.then(tarea, tarea);
+  colasPorChat.set(
+    chatId,
+    actual.catch(() => undefined)
+  );
+  return actual;
+}
+
 function getClient(): sheets_v4.Sheets {
   if (writeClient) return writeClient;
 
@@ -186,15 +206,19 @@ export async function obtenerHistorial(chatId: number): Promise<Anthropic.Messag
   }
 }
 
-/** Descarta el historial de un chat — vía de escape si algo lo deja en un estado que la API rechaza. */
+/** Descarta el historial de un chat — vía de escape si algo lo deja en un estado que la API rechaza.
+ *  Pasa por el mismo conLockDeChat que guardarHistorial para que no se cruce con una escritura
+ *  concurrente del mismo chat. */
 export async function limpiarHistorial(chatId: number): Promise<void> {
-  try {
-    const fila = await leerFila(chatId);
-    if (!fila) return;
-    await eliminarFila(fila.rowIndex);
-  } catch (error) {
-    console.error("[conversationStore] Error limpiando historial (no crítico):", error);
-  }
+  await conLockDeChat(chatId, async () => {
+    try {
+      const fila = await leerFila(chatId);
+      if (!fila) return;
+      await eliminarFila(fila.rowIndex);
+    } catch (error) {
+      console.error("[conversationStore] Error limpiando historial (no crítico):", error);
+    }
+  });
 }
 
 /**
@@ -215,35 +239,27 @@ export async function limpiarHistorial(chatId: number): Promise<void> {
  */
 export async function registrarMensajeSaliente(chatId: number, texto: string): Promise<void> {
   try {
-    const historial = await obtenerHistorial(chatId);
-    await guardarHistorial(chatId, [...historial, { role: "assistant", content: texto }]);
+    await guardarHistorial(chatId, [{ role: "assistant", content: texto }]);
   } catch (error) {
     console.error("[conversationStore] Error registrando mensaje saliente (no crítico):", error);
   }
 }
 
-export async function guardarHistorial(chatId: number, mensajes: Anthropic.MessageParam[]): Promise<void> {
-  let recortados = mensajes;
+/** Agrega `nuevosMensajes` al historial ya guardado del chat — nunca reemplaza el historial con un
+ *  array armado de antemano. Caso real: una consulta larga (varias llamadas a Holded, minutos de
+ *  trabajo) en curso y a mitad de camino el cron horario de correo avisando "tienes 7 correos
+ *  nuevos" en el MISMO chat (ver registrarMensajeSaliente arriba) — antes esta función recibía el
+ *  array COMPLETO que el llamador había armado empezando con el historial leído AL INICIO de su
+ *  propio turno (ver ejecutarConversacion en client.ts), así que cuando la consulta larga terminaba
+ *  pisaba sin enterarse el aviso del cron que se había guardado en el medio. Serializada con
+ *  conLockDeChat (ver arriba) para que, además de leer fresco, nunca corran dos escrituras del
+ *  mismo chat en paralelo. */
+export async function guardarHistorial(chatId: number, nuevosMensajes: Anthropic.MessageParam[]): Promise<void> {
+  if (nuevosMensajes.length === 0) return;
+  await conLockDeChat(chatId, () => guardarHistorialInterno(chatId, nuevosMensajes));
+}
 
-  if (mensajes.length > MAX_MESSAGES) {
-    // No se puede cortar en cualquier índice: un turno con herramientas deja
-    // varios mensajes intermedios (assistant con tool_use + user con
-    // tool_result) que dependen unos de otros — cortar a mitad de eso deja un
-    // tool_result "huérfano" al principio del array, y la API de Anthropic lo
-    // rechaza con 400 invalid_request_error (bug real visto en producción).
-    // Por eso se busca el inicio de turno más cercano al límite en vez de
-    // cortar por índice fijo.
-    const candidato = mensajes.length - MAX_MESSAGES;
-    let inicio = candidato;
-    while (inicio < mensajes.length && !esInicioDeTurno(mensajes[inicio])) {
-      inicio++;
-    }
-    // Si no hay ningún inicio de turno válido en la cola candidata (un solo
-    // turno con herramientas ocupó todo el margen), se conserva el array
-    // completo — mejor un historial más largo de lo ideal que uno corrupto.
-    recortados = inicio < mensajes.length ? mensajes.slice(inicio) : mensajes;
-  }
-
+async function guardarHistorialInterno(chatId: number, nuevosMensajes: Anthropic.MessageParam[]): Promise<void> {
   try {
     await ensureTab();
     // Purga conversaciones inactivas ANTES de escribir esta — así la
@@ -253,7 +269,30 @@ export async function guardarHistorial(chatId: number, mensajes: Anthropic.Messa
 
     const sheetId = assertSheetId();
     const sheets = getClient();
-    const fila = await leerFila(chatId);
+    const fila = await leerFila(chatId); // lectura fresca, ya dentro del lock del chat
+    const previos = fila && !filaVencida(fila.actualizadoEn) ? fila.mensajes : [];
+    const combinados = [...previos, ...nuevosMensajes];
+
+    let recortados = combinados;
+    if (combinados.length > MAX_MESSAGES) {
+      // No se puede cortar en cualquier índice: un turno con herramientas deja
+      // varios mensajes intermedios (assistant con tool_use + user con
+      // tool_result) que dependen unos de otros — cortar a mitad de eso deja un
+      // tool_result "huérfano" al principio del array, y la API de Anthropic lo
+      // rechaza con 400 invalid_request_error (bug real visto en producción).
+      // Por eso se busca el inicio de turno más cercano al límite en vez de
+      // cortar por índice fijo.
+      const candidato = combinados.length - MAX_MESSAGES;
+      let inicio = candidato;
+      while (inicio < combinados.length && !esInicioDeTurno(combinados[inicio])) {
+        inicio++;
+      }
+      // Si no hay ningún inicio de turno válido en la cola candidata (un solo
+      // turno con herramientas ocupó todo el margen), se conserva el array
+      // completo — mejor un historial más largo de lo ideal que uno corrupto.
+      recortados = inicio < combinados.length ? combinados.slice(inicio) : combinados;
+    }
+
     const valores = [chatId, JSON.stringify(recortados), new Date().toISOString()];
 
     if (fila) {
