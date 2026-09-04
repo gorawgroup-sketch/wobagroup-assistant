@@ -22,6 +22,7 @@ import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "..
 import { obtenerPendienteOrientacionAnotacionPorChat, consumirPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
 import { obtenerPendienteOrientacionCorreoPorChat, consumirPendienteOrientacionCorreo } from "../gmail/emailOrientationStore";
 import { obtenerPendienteReglaClasificacionPorChat, consumirPendienteReglaClasificacion } from "../documental/pendienteReglaClasificacionStore";
+import { obtenerPendientesHiloAutorespuestaPorChat } from "../gmail/hiloAutorespuestaStore";
 
 interface ItemPendiente {
   descripcion: string;
@@ -171,6 +172,15 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     if (a) items.push({ descripcion: `⏰ Falta indicar cuándo avisar sobre: "${truncar(a.nombreArchivoOriginal, 60)}"`, creadoEn: a.creadoEn });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando alerta de documento (no crítico):", error);
+  }
+
+  try {
+    const hilos = await obtenerPendientesHiloAutorespuestaPorChat(chatId);
+    for (const h of hilos) {
+      items.push({ descripcion: `🤖 Falta decidir si es automática la conversación con ${h.de} ("${truncar(h.asunto, 60)}")`, creadoEn: h.creadoEn });
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando hilos de conversación automática sin decidir (no crítico):", error);
   }
 
   try {

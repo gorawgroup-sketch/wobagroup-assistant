@@ -61,6 +61,7 @@ import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conex
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
 import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
+import { handleAutorespuestaHiloCallback } from "../core/gmail/autorespuestaHiloCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import type { TelegramUpdate } from "../core/telegram/types";
@@ -667,6 +668,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleAccionProgramadaCallback(update.callback_query);
       } else if (data.startsWith("reportecontable_")) {
         await handleReporteContableCallback(update.callback_query);
+      } else if (data.startsWith("autohilo_")) {
+        await handleAutorespuestaHiloCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }

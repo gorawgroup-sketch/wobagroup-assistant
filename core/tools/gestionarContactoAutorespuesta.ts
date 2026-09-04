@@ -8,23 +8,29 @@ import type { ToolDefinition } from "./types";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
- * Pedido explícito de Carlos: gestionar por chat la lista de contactos con
- * los que Wobi sostiene una conversación automática por correo (lee,
- * redacta y ENVÍA sin botón — ver revisarConversacionesAutomaticas.ts).
- * Cada agregado es una decisión explícita y consciente de Carlos — esta
- * tool nunca decide sola a quién agregar, solo ejecuta lo que él pida
- * literalmente.
+ * Pedido explícito de Carlos: gestionar por chat la lista de contactos
+ * ELEGIBLES para conversación automática por correo (Wobi les puede
+ * responder solo, sin pedir aprobación por mensaje — a diferencia de todo el
+ * resto de correo). Agregar a alguien acá NO activa automáticamente todos
+ * sus correos: cada HILO/conversación de ese contacto todavía se pregunta
+ * una sola vez (ver hiloAutorespuestaStore.ts / revisarConversacionesAutomaticas.ts)
+ * antes de tratarse como automático — pedido explícito de Carlos, tras
+ * usarlo: "puedes recibir varios e-mails de la misma persona y no en todos
+ * debes responder automáticamente". Cada agregado a esta lista es una
+ * decisión explícita y consciente de Carlos — esta tool nunca decide sola a
+ * quién agregar, solo ejecuta lo que él pida literalmente.
  */
 export const gestionarContactoAutorespuestaTool: ToolDefinition = {
   name: "gestionar_contacto_autorespuesta",
   seguraParaModoRapido: true,
   description:
-    "Agrega, quita o lista los contactos aprobados para conversación automática por correo (Wobi les " +
-    "responde solo, sin pedir aprobación por mensaje — a diferencia de todo el resto de correo). Úsala " +
-    "SOLO cuando el usuario pida explícitamente agregar/quitar a alguien de esta lista o preguntar " +
-    "quién está en ella — nunca agregues a nadie por tu cuenta ni infieras que alguien debería estar. " +
-    "Si el usuario da un nombre sin el email exacto, pídeselo antes de llamar esta herramienta (no " +
-    "adivines el dominio/dirección).",
+    "Agrega, quita o lista los contactos ELEGIBLES para conversación automática por correo. Agregar a " +
+    "alguien no responde automáticamente TODOS sus correos — cada conversación/hilo específico de ese " +
+    "contacto se pregunta una sola vez por Telegram antes de volverse automática, así que un mismo " +
+    "contacto puede tener algunos hilos automáticos y otros no. Úsala SOLO cuando el usuario pida " +
+    "explícitamente agregar/quitar a alguien de esta lista o preguntar quién está en ella — nunca " +
+    "agregues a nadie por tu cuenta ni infieras que alguien debería estar. Si el usuario da un nombre " +
+    "sin el email exacto, pídeselo antes de llamar esta herramienta (no adivines el dominio/dirección).",
   input_schema: {
     type: "object",
     properties: {
@@ -50,7 +56,7 @@ export const gestionarContactoAutorespuestaTool: ToolDefinition = {
     if (accion === "agregar") {
       const nombre = typeof input.nombre === "string" ? input.nombre.trim() : "";
       await agregarContactoAutorespuesta(email, nombre);
-      return `✅ Agregado — a partir de ahora respondo automáticamente (sin pedirte aprobación) los correos de ${nombre || email} (${email}), con la leyenda de respuesta automática al final.`;
+      return `✅ Agregado — ${nombre || email} (${email}) ya es elegible. Cuando llegue una conversación nueva de esta persona, te pregunto una sola vez si esa conversación en particular debe ser automática (con la leyenda de respuesta automática al final) — no se activa todo de una.`;
     }
 
     if (accion === "quitar") {

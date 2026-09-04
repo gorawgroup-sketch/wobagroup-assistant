@@ -340,6 +340,15 @@ const ACCIONES_SENSIBLES = new Set([
   // (centralizar la decisión completa en superadmin, no solo la escritura).
   "edicioncompra_confirmar",
   "edicioncompra_cancelar",
+  // Pedido explícito de Carlos: aprobar un hilo para conversación automática
+  // (ver hiloAutorespuestaStore.ts / revisarConversacionesAutomaticas.ts) es
+  // la decisión MÁS sensible de todo el flujo de correo — a diferencia de
+  // email_proceder (una decisión puntual sobre ESTE correo), esto da
+  // autorización PERMANENTE para que Wobi envíe correos reales sin volver a
+  // pedir aprobación en ese hilo, indefinidamente. "Rechazar" también se
+  // protege, mismo criterio que el resto de pares sí/no de este set.
+  "autohilo_aprobar",
+  "autohilo_rechazar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

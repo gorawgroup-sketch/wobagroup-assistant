@@ -15,6 +15,7 @@ import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { esContactoAutorespuesta } from "../gmail/autorespuestaContactoStore";
+import { obtenerEstadoHiloAutorespuesta } from "../gmail/hiloAutorespuestaStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
@@ -161,12 +162,20 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
       const ultimo = await obtenerUltimoMensajeDeHilo(threadId);
       if (!ultimo) continue;
 
-      // Pedido explícito de Carlos: los contactos de conversación automática
-      // (ver autorespuestaContactoStore.ts / revisarConversacionesAutomaticas.ts)
-      // NUNCA deben pasar por acá — su propio job, más frecuente, ya los
-      // atiende solo. Sin este filtro, el mismo correo aparecería DOS veces:
-      // respondido automáticamente Y pidiéndole a Carlos que lo revise a mano.
-      if (await esContactoAutorespuesta(ultimo.de)) continue;
+      // Pedido explícito de Carlos: la aprobación de conversación automática
+      // (ver autorespuestaContactoStore.ts) es por CONTACTO, pero un mismo
+      // contacto puede tener hilos que SÍ son automáticos y otros que no —
+      // "no en todos debes responder automáticamente, solamente en el
+      // identificado". Por eso la exclusión de acá es por HILO, no por
+      // contacto entero: solo se excluye si ese hilo puntual está aprobado o
+      // recién preguntándose (ver hiloAutorespuestaStore.ts) — su propio job,
+      // más frecuente, ya lo está atendiendo. Un hilo del mismo contacto que
+      // Carlos ya rechazó (o que todavía no se le preguntó) sigue entrando
+      // acá con normalidad, para no dejarlo sin revisar nunca.
+      if (await esContactoAutorespuesta(ultimo.de)) {
+        const estadoHilo = await obtenerEstadoHiloAutorespuesta(threadId);
+        if (estadoHilo?.estado === "aprobado" || estadoHilo?.estado === "pendiente") continue;
+      }
 
       const fechaOrden = Date.parse(ultimo.fecha);
       itemsParaEncolar.push({
