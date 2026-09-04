@@ -16,6 +16,8 @@ import { crearEventoRecordatorio, eliminarEventoRecordatorio } from "../google/c
 export type TipoAccionProgramada = "fecha" | "condicion";
 export type EstadoAccionProgramada = "pendiente" | "completada" | "cancelada";
 
+export type RecurrenciaAccionProgramada = "mensual";
+
 export interface AccionProgramada {
   id: string;
   chatId: number;
@@ -28,6 +30,9 @@ export interface AccionProgramada {
   estado: EstadoAccionProgramada;
   creadoEn: string;
   completadoEn?: string;
+  /** Solo para tipo="fecha". Si es "mensual", al dispararse no se marca completada — se reprograma
+   *  para el mismo día del mes siguiente (ver reprogramarParaSiguienteOcurrencia). */
+  recurrencia?: RecurrenciaAccionProgramada;
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -44,6 +49,7 @@ const HEADERS = [
   "estado",
   "creadoEn",
   "completadoEn",
+  "recurrencia",
 ];
 
 function assertSheetId(): string {
@@ -90,7 +96,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:K1`,
+    range: `${TAB_NAME}!A1:L1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -110,7 +116,7 @@ async function leerTodasLasFilas(): Promise<FilaAccion[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:K10000`,
+    range: `${TAB_NAME}!A2:L10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -131,6 +137,7 @@ async function leerTodasLasFilas(): Promise<FilaAccion[]> {
         estado: (row[8] === "completada" || row[8] === "cancelada" ? row[8] : "pendiente") as EstadoAccionProgramada,
         creadoEn: String(row[9] || ""),
         completadoEn: row[10] ? String(row[10]) : undefined,
+        recurrencia: row[11] === "mensual" ? "mensual" : undefined,
       },
     }));
 }
@@ -166,7 +173,7 @@ export async function programarAccion(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:K`,
+    range: `${TAB_NAME}!A:L`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -183,6 +190,7 @@ export async function programarAccion(
           accion.estado,
           accion.creadoEn,
           "",
+          accion.recurrencia ?? "",
         ],
       ],
     },
@@ -227,4 +235,71 @@ export async function marcarAccionCompletada(id: string): Promise<void> {
 
 export async function marcarAccionCancelada(id: string): Promise<void> {
   await actualizarEstado(id, "cancelada");
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Misma fecha/hora, un mes después — respeta el mismo formato "YYYY-MM-DDTHH:mm" que usa el resto
+ *  del store (evita que toISOString() introduzca segundos/Z y desalinee el formato guardado). Si el
+ *  día no existe en el mes destino (p.ej. 31 en un mes de 30 días), cae en el último día de ese mes. */
+function siguienteOcurrenciaMensual(fechaISO: string): string {
+  const original = new Date(fechaISO);
+  const anioDestino = original.getFullYear() + Math.floor((original.getMonth() + 1) / 12);
+  const mesDestino = (original.getMonth() + 1) % 12;
+  const ultimoDiaMesDestino = new Date(anioDestino, mesDestino + 1, 0).getDate();
+  const diaFinal = Math.min(original.getDate(), ultimoDiaMesDestino);
+
+  const siguiente = new Date(original);
+  siguiente.setFullYear(anioDestino, mesDestino, diaFinal);
+
+  return (
+    `${siguiente.getFullYear()}-${pad2(siguiente.getMonth() + 1)}-${pad2(siguiente.getDate())}` +
+    `T${pad2(siguiente.getHours())}:${pad2(siguiente.getMinutes())}`
+  );
+}
+
+/**
+ * Para acciones con recurrencia="mensual": en vez de marcarla "completada" para siempre (lo que
+ * rompería la promesa hecha al usuario de que se avisará cada mes), la reprograma en la MISMA fila
+ * para el mismo día del mes siguiente y recrea el evento de calendario. El botón "Cancelar
+ * programación" original sigue funcionando para toda la serie, porque el id no cambia.
+ * Devuelve undefined si la acción ya no existe o no tiene fechaObjetivo (no debería pasar para
+ * tipo="fecha", pero por si acaso el llamador decide qué hacer).
+ */
+export async function reprogramarParaSiguienteOcurrencia(id: string): Promise<AccionProgramada | undefined> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const todas = await leerTodasLasFilas();
+  const fila = todas.find((f) => f.accion.id === id);
+  if (!fila || !fila.accion.fechaObjetivo) return undefined;
+
+  if (fila.accion.calendarEventId) {
+    await eliminarEventoRecordatorio(fila.accion.calendarEventId);
+  }
+
+  const nuevaFecha = siguienteOcurrenciaMensual(fila.accion.fechaObjetivo);
+  const evento = await crearEventoRecordatorio({
+    resumen: `Wobi: ${fila.accion.contexto}`,
+    descripcion: fila.accion.instruccion,
+    fechaHoraInicioISO: nuevaFecha,
+    invitados: process.env.GOOGLE_IMPERSONATE_EMAIL ? [process.env.GOOGLE_IMPERSONATE_EMAIL] : undefined,
+  });
+  const nuevoCalendarEventId = evento?.id;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!D${fila.rowIndex}:D${fila.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[nuevaFecha]] },
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!H${fila.rowIndex}:H${fila.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[nuevoCalendarEventId ?? ""]] },
+  });
+
+  return { ...fila.accion, fechaObjetivo: nuevaFecha, calendarEventId: nuevoCalendarEventId };
 }

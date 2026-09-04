@@ -42,6 +42,15 @@ export const programarAccionFuturaTool: ToolDefinition = {
           "Requerido si tipo='fecha'. Formato YYYY-MM-DD o YYYY-MM-DDTHH:mm (hora local de Madrid) — interpreta " +
           "'el jueves', 'mañana', 'en 3 días' contra la fecha actual. Si no dan hora, usa las 09:00.",
       },
+      repetir_mensualmente: {
+        type: "boolean",
+        description:
+          "Solo aplica si tipo='fecha'. Ponlo en true SOLO si el usuario pide algo que se repite cada mes " +
+          "('cada día 11', 'avísame todos los meses', 'recuérdamelo mensualmente') — en ese caso, cuando se " +
+          "dispare, esta acción se reprograma sola para el mismo día del mes siguiente en vez de terminar. Si " +
+          "es un aviso de una sola vez, omite este campo o ponlo en false — no prometas recurrencia que no vas " +
+          "a marcar aquí, porque el sistema solo repite lo que se marca así.",
+      },
       condicion: {
         type: "string",
         description:
@@ -94,11 +103,15 @@ export const programarAccionFuturaTool: ToolDefinition = {
       return "Error: falta 'condicion' para una acción de tipo condicion.";
     }
 
-    const accion = await programarAccion({ chatId, tipo, fechaObjetivo, condicion, instruccion, contexto });
+    // recurrencia solo tiene sentido para tipo="fecha" — se ignora en tipo="condicion" en vez de fallar,
+    // por si Claude lo marca por error.
+    const recurrencia = tipo === "fecha" && input.repetir_mensualmente === true ? "mensual" : undefined;
+
+    const accion = await programarAccion({ chatId, tipo, fechaObjetivo, condicion, instruccion, contexto, recurrencia });
 
     const cuando =
       tipo === "fecha"
-        ? `Programado para ${fechaObjetivo}`
+        ? `Programado para ${fechaObjetivo}${recurrencia === "mensual" ? " (se repite cada mes, mismo día)" : ""}`
         : `Se revisará periódicamente: ${condicion}`;
 
     await sendTelegramMessageWithButtons(

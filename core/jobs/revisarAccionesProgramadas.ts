@@ -1,4 +1,9 @@
-import { obtenerAccionesPendientes, marcarAccionCompletada, type AccionProgramada } from "./accionesProgramadasStore";
+import {
+  obtenerAccionesPendientes,
+  marcarAccionCompletada,
+  reprogramarParaSiguienteOcurrencia,
+  type AccionProgramada,
+} from "./accionesProgramadasStore";
 import { sendTelegramMessage, sendTelegramMessageSmart } from "../telegram/client";
 import { askClaude } from "../claude/client";
 
@@ -90,6 +95,25 @@ async function dispararAccion(accion: AccionProgramada): Promise<void> {
       (e) => console.error("[revisarAccionesProgramadas] No se pudo avisar del error (no crítico):", e)
     );
     return; // no se marca completada — se reintenta en la próxima corrida
+  }
+
+  if (accion.recurrencia === "mensual") {
+    const siguiente = await reprogramarParaSiguienteOcurrencia(accion.id).catch((error) => {
+      console.error(`[revisarAccionesProgramadas] Error reprogramando ${accion.id} para el mes que viene (no crítico):`, error);
+      return undefined;
+    });
+    if (siguiente) return; // sigue "pendiente" con la nueva fecha — no se marca completada
+
+    // No se pudo reprogramar: para no dejarla eternamente "pendiente" con una fecha ya pasada
+    // (lo que la dispararía sin parar en cada corrida), se marca completada y se avisa del corte.
+    await marcarAccionCompletada(accion.id).catch((error) =>
+      console.error(`[revisarAccionesProgramadas] Error marcando ${accion.id} como completada (no crítico):`, error)
+    );
+    await sendTelegramMessage(
+      accion.chatId,
+      `⚠️ No pude reprogramar el aviso mensual (${accion.contexto}) para el mes que viene — este fue el último. Avísame si quieres que lo vuelva a programar.`
+    ).catch((e) => console.error("[revisarAccionesProgramadas] No se pudo avisar del corte de recurrencia (no crítico):", e));
+    return;
   }
 
   await marcarAccionCompletada(accion.id).catch((error) =>
