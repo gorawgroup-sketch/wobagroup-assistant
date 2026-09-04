@@ -7,6 +7,8 @@ import {
   obtenerCuerpoCompletoCorreo,
   descargarAdjunto,
   marcarHiloComoLeido,
+  buscarMensajes,
+  type CorreoResumen,
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
@@ -206,15 +208,256 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
 }
 
 /**
+ * Núcleo de decisión para UN correo ya localizado (adjuntos reales →
+ * clasificación de documento/gasto; sin adjuntos, primero intenta leerlo
+ * como gasto en el cuerpo; si no, análisis genérico con propuesta+botones)
+ * — usado tanto por el correo activo de la cola (procesarSiguienteCorreoActivo,
+ * deColaCorreo=true) como por un correo puntual fuera de ella (pedido
+ * explícito de Carlos: "vamos al correo de X, léelo" sin pasar por la cola
+ * de más antiguo a más nuevo — ver revisarCorreoPuntual.ts,
+ * deColaCorreo=false). `deColaCorreo` decide si las propuestas resultantes
+ * avanzan colaRevisionStore al resolverse (ver deColaCorreo en
+ * PropuestaGasto/PropuestaAccionCorreo/correoOrigen) — así un correo puntual
+ * nunca toca ni confunde el correo activo real de la cola, si hay uno en
+ * curso al mismo tiempo. El llamador es responsable de SU PROPIA bookkeeping
+ * de cola (establecerPendientesActivo con el activo.id real) y de reportar
+ * un error si esto lanza — acá solo se avanza la cola en los puntos donde
+ * una rama termina SIN mandar ninguna propuesta real (gasto duplicado, error
+ * leyendo un adjunto), y solo si deColaCorreo=true.
+ */
+async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, deColaCorreo: boolean): Promise<void> {
+  // No crítico — nunca debe bloquear el procesamiento real del correo.
+  registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
+    console.error("[revisarCorreoNuevo] Error registrando remitente en el directorio de personas:", error)
+  );
+
+  // Pedido explícito de Carlos: analizar el direccionamiento de CADA
+  // correo (qué acción hay que tomar, y si el camino está claro,
+  // proponerlo directo; si no, preguntar) — nunca dejar caer un correo
+  // con adjunto real sin acción. Si trae adjuntos reales, SIEMPRE se
+  // procesan con el mismo clasificador robusto de documentos
+  // (procesarDocumentoLocal — el mismo que usa Telegram), que YA decide
+  // el camino (Drive, Holded como gasto, o ambigüedad a preguntar) sin
+  // depender de que el clasificador liviano de correo haya acertado el
+  // tipo. Cada adjunto es su propia decisión independiente — un correo
+  // con 3 adjuntos necesita 3 resoluciones antes de darse por leído.
+  if (correo.adjuntos.length > 0) {
+    let indiceAdjunto = 0;
+    for (const adjunto of correo.adjuntos) {
+      indiceAdjunto += 1;
+      // Pedido explícito de Carlos, tras un caso real: un correo con 2
+      // adjuntos distintos (mismo expediente de envío marítimo) generó 2
+      // propuestas seguidas y pareció que había llegado duplicado — eran
+      // documentos reales distintos, cada uno con su propia decisión, pero
+      // nada en el mensaje lo aclaraba. Solo se agrega la nota cuando hay
+      // más de un adjunto — un correo con uno solo no la necesita.
+      const notaAdjunto =
+        correo.adjuntos.length > 1
+          ? `📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
+          : undefined;
+      try {
+        const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
+        await mkdir(UPLOADS_DIR, { recursive: true });
+
+        const nombreArchivo = `${Date.now()}_${sanitizarNombre(adjunto.filename)}`;
+        const destino = join(UPLOADS_DIR, nombreArchivo);
+        await writeFile(destino, bytes);
+
+        const resultadoDocumento = await procesarDocumentoLocal({
+          chatId,
+          rutaLocal: destino,
+          nombreArchivoOriginal: adjunto.filename,
+          mimeType: adjunto.mimeType,
+          nombreParaClasificar: adjunto.filename,
+          captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
+          // deColaCorreo real del llamador — permite a documentCallbackHandler.ts y
+          // gastoCallbackHandler.ts distinguir esta propuesta (que sí debe
+          // avanzar la cola de revisión al resolverse) de una propuesta
+          // creada por CUALQUIER otro camino no relacionado (una foto
+          // subida por Telegram, capturar_correo bajo demanda, un correo
+          // puntual fuera de la cola...) — bug real encontrado en auditoría:
+          // sin este marcador, resolver CUALQUIER propuesta de gasto/documento
+          // en el mismo chat hacía avanzar/marcar-como-leído el correo activo
+          // de esta cola, aunque no tuviera ninguna relación real con él.
+          correoOrigen: {
+            de: correo.de,
+            asunto: correo.asunto || "(sin asunto)",
+            threadId: correo.threadId,
+            messageIdHeader: correo.messageIdHeader,
+            deColaCorreo,
+            // Causa raíz real, encontrada en vivo: un gasto se creó en
+            // Holded SIN su comprobante ("ENOENT: no such file or
+            // directory, open '/app/tmp/uploads/...'") — el archivo local
+            // no sobrevive un redeploy de Railway, pero la propuesta en
+            // Sheets sí, así que un adjunto que queda pendiente durante
+            // CUALQUIER redeploy (frecuente en desarrollo activo, y ahora
+            // más probable con los TTLs largos de hoy) pierde su copia de
+            // trabajo aunque el original siga intacto en Gmail. Guardar el
+            // messageId+attachmentId reales permite volver a descargarlo
+            // de la fuente durable si la copia local desaparece (ver
+            // reDescargarAdjuntoSiFalta.ts).
+            mensajeIdGmail: correo.id,
+            attachmentIdGmail: adjunto.attachmentId,
+          },
+          notaAdjunto,
+        });
+
+        // Bug real encontrado en vivo: cuando procesarDocumentoLocal
+        // detecta que ya hay una propuesta de "Crear gasto" pendiente para
+        // la misma factura (ver buscarPropuestaGastoPendiente), no manda
+        // ninguna propuesta NUEVA con botones — así que nada más iba a
+        // resolver este "pendiente" de la cola, dejándolo trabado
+        // esperando algo que nunca iba a llegar. Se avanza acá mismo,
+        // igual que el resto de los caminos que terminan sin mandar
+        // ninguna propuesta real (ver el catch de abajo) — solo si esto
+        // sí vino de la cola.
+        if (resultadoDocumento === "gasto_duplicado" && deColaCorreo) {
+          await avanzarColaCorreoSiActivo(chatId);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
+        // Este adjunto nunca mandó ninguna propuesta — nada lo va a
+        // resolver por su cuenta, así que se resuelve acá mismo (con
+        // aviso) para no dejar la cola trabada esperando algo que nunca va a llegar.
+        await sendTelegramMessage(
+          chatId,
+          `⚠️ Hubo un error leyendo el adjunto "${adjunto.filename}" de "${correo.asunto}" — lo salto.`
+        ).catch(() => {});
+        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+      }
+    }
+    return;
+  }
+
+  // Pedido explícito de Carlos, tras un caso real ("no sé darte respuesta
+  // porque no sé de qué MAIL me hablas" / "debes leer todos y cada uno de
+  // los mails, así podrás preguntar qué hacer con la información...si es
+  // para hacer un gasto, si es para guardar la información, si es para
+  // dejarlo en tu base de conocimiento, si es para guardar un archivo, si
+  // es para mandar un correo, si es para guardar una alerta"): TODO correo
+  // sin adjunto pasa por el mismo análisis con el CUERPO COMPLETO (no solo
+  // el extracto), y recibe el MISMO tratamiento sin importar su tipo —
+  // antes notas_reunion iba directo a "¿qué empresa?" sin decir de qué
+  // correo se trataba, e informativo tenía su propia pregunta binaria
+  // aparte; ahora es una sola propuesta con resumen real + acción concreta
+  // sugerida + 4 opciones, igual que ya funcionaba bien para
+  // necesita_respuesta/instruccion_jefe.
+  const cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id).catch((error) => {
+    console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
+    return "";
+  });
+
+  // Pedido explícito de Carlos, tras un caso real: un correo sin adjunto
+  // puede describir un gasto real igual que uno con adjunto (ej. una
+  // notificación de tarjeta pegada como texto/HTML en el cuerpo, sin
+  // ningún PDF/imagen real) — "solo te das cuenta si es un gasto cuando no
+  // tiene anexo... si lees todos los correos, cuando lo leas identificas,
+  // me preguntas". Antes de caer al análisis genérico, se intenta leer el
+  // cuerpo como gasto exactamente con el mismo criterio que un adjunto
+  // real (mismo patrón que procesarDocumentoLocal.ts: primero factura/
+  // gasto, si no lo es cae al camino normal). Si sí es un gasto, se genera
+  // un PDF con los datos + el cuerpo completo como comprobante (no hay
+  // ningún archivo real que adjuntar) y sigue por el MISMO camino que un
+  // adjunto real (procesarGastoEntrante) — reutiliza tal cual el matching
+  // de Holded/banco, la moneda equivalente, y la pregunta de conciliar,
+  // sin duplicar nada de esa lógica.
+  let gastoDetectado: DatosFactura | undefined;
+  try {
+    gastoDetectado = await extraerGastoDeCorreo(cuerpoCompleto, {
+      de: correo.de,
+      asunto: correo.asunto,
+      fecha: correo.fecha,
+    });
+  } catch (error) {
+    console.error(`[revisarCorreoNuevo] Error intentando leer el correo ${correo.id} como gasto (sigue como correo normal):`, error);
+  }
+
+  if (gastoDetectado?.esFacturaOGasto) {
+    try {
+      const bytes = await generarComprobantePDF(
+        { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto },
+        gastoDetectado
+      );
+      await mkdir(UPLOADS_DIR, { recursive: true });
+      const nombreArchivo = `${Date.now()}_comprobante_${sanitizarNombre(correo.asunto || "correo")}.pdf`;
+      const destino = join(UPLOADS_DIR, nombreArchivo);
+      await writeFile(destino, bytes);
+
+      // Nota honesta en el concepto — para que la propuesta que ve Carlos
+      // deje claro que el "comprobante" es un PDF generado a partir del
+      // cuerpo, no el recibo original, sin tocar procesarGastoEntrante.ts.
+      const datosConNota: DatosFactura = {
+        ...gastoDetectado,
+        concepto: gastoDetectado.concepto
+          ? `${gastoDetectado.concepto} (comprobante generado desde el cuerpo del correo, sin adjunto original)`
+          : "Gasto detectado en el cuerpo del correo (sin adjunto original)",
+      };
+
+      await procesarGastoEntrante({
+        chatId,
+        rutaLocal: destino,
+        nombreArchivoOriginal: nombreArchivo,
+        mimeType: "application/pdf",
+        datos: datosConNota,
+        deColaCorreo,
+        correoOrigen: {
+          de: correo.de,
+          asunto: correo.asunto || "(sin asunto)",
+          threadId: correo.threadId,
+          messageIdHeader: correo.messageIdHeader,
+          mensajeIdGmail: correo.id,
+        },
+      });
+      return;
+    } catch (error) {
+      console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id} (sigue como correo normal):`, error);
+      // Cae al análisis genérico de abajo en vez de perder el correo —
+      // mejor preguntar de forma genérica que no decir nada.
+    }
+  }
+
+  const analisis = await analizarCorreo(correo, cuerpoCompleto);
+
+  const propuesta = await crearPropuestaAccionCorreo({
+    chatId,
+    messageId: 0,
+    de: correo.de,
+    asunto: correo.asunto || "(sin asunto)",
+    tipo: analisis.tipo,
+    resumen: analisis.resumen,
+    accionSugerida: analisis.accionSugerida,
+    threadId: correo.threadId,
+    messageIdHeader: correo.messageIdHeader,
+    mensajeId: correo.id,
+    deColaCorreo,
+  });
+
+  const texto = [`📧 *${propuesta.asunto}*`, `De: ${propuesta.de}`, propuesta.resumen, `→ ${propuesta.accionSugerida}`].join(
+    "\n"
+  );
+
+  const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+    [
+      { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
+      { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuesta.id}` },
+    ],
+    [
+      { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
+      { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` },
+    ],
+  ]);
+
+  await actualizarMessageIdAccionCorreo(propuesta.id, messageId);
+}
+
+/**
  * Procesa el correo que acaba de pasar a "activo" en la cola (el más
- * antiguo pendiente) — mismo análisis por correo que existía antes
- * (adjuntos → clasificación de documento/gasto; necesita respuesta/
- * instrucción del jefe → propuesta con botones; notas de reunión/
- * informativo → captura), pero para UNO solo, fijando cuántas decisiones
- * hacen falta para darlo por resuelto (ver establecerPendientesActivo) antes
- * de mandar la(s) propuesta(s). Si algo se rompe antes de llegar a mandar
- * ninguna propuesta, se resuelve igual (con aviso) para no dejar la cola
- * trabada en un correo roto para siempre.
+ * antiguo pendiente) — fija cuántas decisiones hacen falta para darlo por
+ * resuelto (ver establecerPendientesActivo) y delega el análisis real en
+ * procesarCorreoLocalizado (deColaCorreo=true). Si algo se rompe antes de
+ * llegar a mandar ninguna propuesta, se resuelve igual (con aviso) para no
+ * dejar la cola trabada en un correo roto para siempre.
  */
 export async function procesarSiguienteCorreoActivo(chatId: number): Promise<void> {
   const activo = await iniciarSiguienteActivo(chatId);
@@ -222,231 +465,8 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
 
   try {
     const correo = await obtenerResumenCorreo(activo.mensajeId);
-
-    // No crítico — nunca debe bloquear el procesamiento real del correo.
-    registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
-      console.error("[revisarCorreoNuevo] Error registrando remitente en el directorio de personas:", error)
-    );
-
-    // Pedido explícito de Carlos: analizar el direccionamiento de CADA
-    // correo (qué acción hay que tomar, y si el camino está claro,
-    // proponerlo directo; si no, preguntar) — nunca dejar caer un correo
-    // con adjunto real sin acción. Si trae adjuntos reales, SIEMPRE se
-    // procesan con el mismo clasificador robusto de documentos
-    // (procesarDocumentoLocal — el mismo que usa Telegram), que YA decide
-    // el camino (Drive, Holded como gasto, o ambigüedad a preguntar) sin
-    // depender de que el clasificador liviano de correo haya acertado el
-    // tipo. Cada adjunto es su propia decisión independiente — un correo
-    // con 3 adjuntos necesita 3 resoluciones antes de darse por leído.
-    if (correo.adjuntos.length > 0) {
-      await establecerPendientesActivo(chatId, activo.id, correo.adjuntos.length);
-      let indiceAdjunto = 0;
-      for (const adjunto of correo.adjuntos) {
-        indiceAdjunto += 1;
-        // Pedido explícito de Carlos, tras un caso real: un correo con 2
-        // adjuntos distintos (mismo expediente de envío marítimo) generó 2
-        // propuestas seguidas y pareció que había llegado duplicado — eran
-        // documentos reales distintos, cada uno con su propia decisión, pero
-        // nada en el mensaje lo aclaraba. Solo se agrega la nota cuando hay
-        // más de un adjunto — un correo con uno solo no la necesita.
-        const notaAdjunto =
-          correo.adjuntos.length > 1
-            ? `📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
-            : undefined;
-        try {
-          const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
-          await mkdir(UPLOADS_DIR, { recursive: true });
-
-          const nombreArchivo = `${Date.now()}_${sanitizarNombre(adjunto.filename)}`;
-          const destino = join(UPLOADS_DIR, nombreArchivo);
-          await writeFile(destino, bytes);
-
-          const resultadoDocumento = await procesarDocumentoLocal({
-            chatId,
-            rutaLocal: destino,
-            nombreArchivoOriginal: adjunto.filename,
-            mimeType: adjunto.mimeType,
-            nombreParaClasificar: adjunto.filename,
-            captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
-            // deColaCorreo: true — permite a documentCallbackHandler.ts y
-            // gastoCallbackHandler.ts distinguir esta propuesta (que sí debe
-            // avanzar la cola de revisión al resolverse) de una propuesta
-            // creada por CUALQUIER otro camino no relacionado (una foto
-            // subida por Telegram, capturar_correo bajo demanda...) — bug
-            // real encontrado en auditoría: sin este marcador, resolver
-            // CUALQUIER propuesta de gasto/documento en el mismo chat hacía
-            // avanzar/marcar-como-leído el correo activo de esta cola,
-            // aunque no tuviera ninguna relación real con él.
-            correoOrigen: {
-              de: correo.de,
-              asunto: correo.asunto || "(sin asunto)",
-              threadId: correo.threadId,
-              messageIdHeader: correo.messageIdHeader,
-              deColaCorreo: true,
-              // Causa raíz real, encontrada en vivo: un gasto se creó en
-              // Holded SIN su comprobante ("ENOENT: no such file or
-              // directory, open '/app/tmp/uploads/...'") — el archivo local
-              // no sobrevive un redeploy de Railway, pero la propuesta en
-              // Sheets sí, así que un adjunto que queda pendiente durante
-              // CUALQUIER redeploy (frecuente en desarrollo activo, y ahora
-              // más probable con los TTLs largos de hoy) pierde su copia de
-              // trabajo aunque el original siga intacto en Gmail. Guardar el
-              // messageId+attachmentId reales permite volver a descargarlo
-              // de la fuente durable si la copia local desaparece (ver
-              // reDescargarAdjuntoSiFalta.ts).
-              mensajeIdGmail: correo.id,
-              attachmentIdGmail: adjunto.attachmentId,
-            },
-            notaAdjunto,
-          });
-
-          // Bug real encontrado en vivo: cuando procesarDocumentoLocal
-          // detecta que ya hay una propuesta de "Crear gasto" pendiente para
-          // la misma factura (ver buscarPropuestaGastoPendiente), no manda
-          // ninguna propuesta NUEVA con botones — así que nada más iba a
-          // resolver este "pendiente" de la cola, dejándolo trabado
-          // esperando algo que nunca iba a llegar. Se avanza acá mismo,
-          // igual que el resto de los caminos que terminan sin mandar
-          // ninguna propuesta real (ver el catch de abajo).
-          if (resultadoDocumento === "gasto_duplicado") {
-            await avanzarColaCorreoSiActivo(chatId);
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
-          // Este adjunto nunca mandó ninguna propuesta — nada lo va a
-          // resolver por su cuenta, así que se resuelve acá mismo (con
-          // aviso) para no dejar la cola trabada esperando algo que nunca va a llegar.
-          await sendTelegramMessage(
-            chatId,
-            `⚠️ Hubo un error leyendo el adjunto "${adjunto.filename}" de "${correo.asunto}" — lo salto.`
-          ).catch(() => {});
-          await avanzarColaCorreoSiActivo(chatId);
-        }
-      }
-      return;
-    }
-
-    // Pedido explícito de Carlos, tras un caso real ("no sé darte respuesta
-    // porque no sé de qué MAIL me hablas" / "debes leer todos y cada uno de
-    // los mails, así podrás preguntar qué hacer con la información...si es
-    // para hacer un gasto, si es para guardar la información, si es para
-    // dejarlo en tu base de conocimiento, si es para guardar un archivo, si
-    // es para mandar un correo, si es para guardar una alerta"): TODO correo
-    // sin adjunto pasa por el mismo análisis con el CUERPO COMPLETO (no solo
-    // el extracto), y recibe el MISMO tratamiento sin importar su tipo —
-    // antes notas_reunion iba directo a "¿qué empresa?" sin decir de qué
-    // correo se trataba, e informativo tenía su propia pregunta binaria
-    // aparte; ahora es una sola propuesta con resumen real + acción concreta
-    // sugerida + 4 opciones, igual que ya funcionaba bien para
-    // necesita_respuesta/instruccion_jefe.
-    await establecerPendientesActivo(chatId, activo.id, 1);
-
-    const cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id).catch((error) => {
-      console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
-      return "";
-    });
-
-    // Pedido explícito de Carlos, tras un caso real: un correo sin adjunto
-    // puede describir un gasto real igual que uno con adjunto (ej. una
-    // notificación de tarjeta pegada como texto/HTML en el cuerpo, sin
-    // ningún PDF/imagen real) — "solo te das cuenta si es un gasto cuando no
-    // tiene anexo... si lees todos los correos, cuando lo leas identificas,
-    // me preguntas". Antes de caer al análisis genérico, se intenta leer el
-    // cuerpo como gasto exactamente con el mismo criterio que un adjunto
-    // real (mismo patrón que procesarDocumentoLocal.ts: primero factura/
-    // gasto, si no lo es cae al camino normal). Si sí es un gasto, se genera
-    // un PDF con los datos + el cuerpo completo como comprobante (no hay
-    // ningún archivo real que adjuntar) y sigue por el MISMO camino que un
-    // adjunto real (procesarGastoEntrante) — reutiliza tal cual el matching
-    // de Holded/banco, la moneda equivalente, y la pregunta de conciliar,
-    // sin duplicar nada de esa lógica.
-    let gastoDetectado: DatosFactura | undefined;
-    try {
-      gastoDetectado = await extraerGastoDeCorreo(cuerpoCompleto, {
-        de: correo.de,
-        asunto: correo.asunto,
-        fecha: correo.fecha,
-      });
-    } catch (error) {
-      console.error(`[revisarCorreoNuevo] Error intentando leer el correo ${correo.id} como gasto (sigue como correo normal):`, error);
-    }
-
-    if (gastoDetectado?.esFacturaOGasto) {
-      try {
-        const bytes = await generarComprobantePDF(
-          { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto },
-          gastoDetectado
-        );
-        await mkdir(UPLOADS_DIR, { recursive: true });
-        const nombreArchivo = `${Date.now()}_comprobante_${sanitizarNombre(correo.asunto || "correo")}.pdf`;
-        const destino = join(UPLOADS_DIR, nombreArchivo);
-        await writeFile(destino, bytes);
-
-        // Nota honesta en el concepto — para que la propuesta que ve Carlos
-        // deje claro que el "comprobante" es un PDF generado a partir del
-        // cuerpo, no el recibo original, sin tocar procesarGastoEntrante.ts.
-        const datosConNota: DatosFactura = {
-          ...gastoDetectado,
-          concepto: gastoDetectado.concepto
-            ? `${gastoDetectado.concepto} (comprobante generado desde el cuerpo del correo, sin adjunto original)`
-            : "Gasto detectado en el cuerpo del correo (sin adjunto original)",
-        };
-
-        await procesarGastoEntrante({
-          chatId,
-          rutaLocal: destino,
-          nombreArchivoOriginal: nombreArchivo,
-          mimeType: "application/pdf",
-          datos: datosConNota,
-          deColaCorreo: true,
-          correoOrigen: {
-            de: correo.de,
-            asunto: correo.asunto || "(sin asunto)",
-            threadId: correo.threadId,
-            messageIdHeader: correo.messageIdHeader,
-            mensajeIdGmail: correo.id,
-          },
-        });
-        return;
-      } catch (error) {
-        console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id} (sigue como correo normal):`, error);
-        // Cae al análisis genérico de abajo en vez de perder el correo —
-        // mejor preguntar de forma genérica que no decir nada.
-      }
-    }
-
-    const analisis = await analizarCorreo(correo, cuerpoCompleto);
-
-    const propuesta = await crearPropuestaAccionCorreo({
-      chatId,
-      messageId: 0,
-      de: correo.de,
-      asunto: correo.asunto || "(sin asunto)",
-      tipo: analisis.tipo,
-      resumen: analisis.resumen,
-      accionSugerida: analisis.accionSugerida,
-      threadId: correo.threadId,
-      messageIdHeader: correo.messageIdHeader,
-      mensajeId: correo.id,
-    });
-
-    const texto = [`📧 *${propuesta.asunto}*`, `De: ${propuesta.de}`, propuesta.resumen, `→ ${propuesta.accionSugerida}`].join(
-      "\n"
-    );
-
-    const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-      [
-        { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
-        { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuesta.id}` },
-      ],
-      [
-        { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
-        { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` },
-      ],
-    ]);
-
-    await actualizarMessageIdAccionCorreo(propuesta.id, messageId);
+    await establecerPendientesActivo(chatId, activo.id, correo.adjuntos.length > 0 ? correo.adjuntos.length : 1);
+    await procesarCorreoLocalizado(chatId, correo, true);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error procesando correo activo ${activo.id}:`, error);
     await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — lo salto y sigo con el siguiente.`).catch(
@@ -455,6 +475,44 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
     await establecerPendientesActivo(chatId, activo.id, 1);
     await avanzarColaCorreoSiActivo(chatId);
   }
+}
+
+/**
+ * Pedido explícito de Carlos: poder decirle "vamos al correo de X, léelo"
+ * (urgente, fuera de orden) sin pasar por la cola de más antiguo a más
+ * nuevo ni confundirla — busca en Gmail el correo más reciente que
+ * coincida con `busqueda` (remitente/asunto/tema, lenguaje natural o
+ * consulta real de Gmail) y lo procesa con la MISMA lógica que un correo de
+ * la cola (procesarCorreoLocalizado), pero con deColaCorreo=false: nunca
+ * toca colaRevisionStore, así que si hay un correo activo de la cola en
+ * curso al mismo tiempo, sigue exactamente donde estaba cuando esto
+ * termine. Nunca marca el correo como leído por su cuenta (a diferencia de
+ * la cola) — eso ya lo hace, si corresponde, la resolución de la propuesta
+ * resultante a través del mecanismo normal.
+ */
+export async function procesarCorreoPuntual(
+  chatId: number,
+  busqueda: string
+): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean }> {
+  const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "in:inbox";
+  const ids = await buscarMensajes(query, 1);
+  if (ids.length === 0) return { encontrado: false };
+
+  const correo = await obtenerResumenCorreo(ids[0]);
+
+  // Hallazgo real de la auditoría: si el correo que se encuentra acá es JUSTO el mismo que ya está
+  // "activo" en la cola en este momento, procesarlo también por este camino (deColaCorreo=false)
+  // crearía una SEGUNDA propuesta/gasto para el mismo correo, sin que ninguna de las dos se entere
+  // de la otra — confuso (dos mensajes con botones para lo mismo) y, en el peor caso, un intento de
+  // gasto duplicado. En ese caso exacto, mejor avisar y dejar que se resuelva desde la propuesta que
+  // la cola ya mandó, en vez de duplicar el trabajo.
+  const activo = await obtenerActivoActual(chatId).catch(() => undefined);
+  if (activo && activo.mensajeId === correo.id) {
+    return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
+  }
+
+  await procesarCorreoLocalizado(chatId, correo, false);
+  return { encontrado: true, de: correo.de, asunto: correo.asunto };
 }
 
 /**

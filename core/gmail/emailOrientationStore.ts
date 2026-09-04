@@ -10,10 +10,13 @@ export interface PendienteOrientacionCorreo {
   threadId?: string;
   messageIdHeader?: string;
   creadoEn: number;
+  /** Ver PropuestaAccionCorreo.deColaCorreo — se propaga hasta acá para que continuarConOrientacion
+   *  sepa si debe avanzar la cola al terminar. */
+  deColaCorreo: boolean;
 }
 
 const TAB_NAME = "_pendientes_orientacion_correo";
-const HEADERS = ["chatId", "messageId", "de", "asunto", "resumen", "threadId", "messageIdHeader", "creadoEn"];
+const HEADERS = ["chatId", "messageId", "de", "asunto", "resumen", "threadId", "messageIdHeader", "creadoEn", "deColaCorreo"];
 const NUM_COLS = HEADERS.length;
 // 24h — pedido explícito de Carlos (mismo criterio en todos los
 // "pendiente_*", ver pendienteCapturaEmpresaStore.ts).
@@ -29,11 +32,22 @@ function filaAObjeto(valores: string[]): PendienteOrientacionCorreo {
     threadId: valores[5] || undefined,
     messageIdHeader: valores[6] || undefined,
     creadoEn: Number(valores[7]),
+    deColaCorreo: valores[8] === "true",
   };
 }
 
 function objetoAFila(p: PendienteOrientacionCorreo): (string | number)[] {
-  return [p.chatId, p.messageId, p.de, p.asunto, p.resumen, p.threadId ?? "", p.messageIdHeader ?? "", p.creadoEn];
+  return [
+    p.chatId,
+    p.messageId,
+    p.de,
+    p.asunto,
+    p.resumen,
+    p.threadId ?? "",
+    p.messageIdHeader ?? "",
+    p.creadoEn,
+    p.deColaCorreo ? "true" : "",
+  ];
 }
 
 async function leerVigentes(): Promise<{ rowIndex: number; pendiente: PendienteOrientacionCorreo }[]> {

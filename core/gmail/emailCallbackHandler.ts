@@ -174,7 +174,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `❌ Descartado — ${propuesta.asunto} (${propuesta.de})`,
       []
     );
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
     return;
   }
 
@@ -184,11 +184,10 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       const cuerpo = await obtenerCuerpoCompletoCorreo(propuesta.mensajeId);
       const contenido = [`De: ${propuesta.de}`, `Asunto: ${propuesta.asunto}`, "", cuerpo].join("\n");
       await editTelegramMessage(propuesta.chatId, propuesta.messageId, "🧠 Guardando como conocimiento — elige la empresa abajo.", []);
-      // deColaCorreo: true — PropuestaAccionCorreo solo se crea desde
-      // procesarSiguienteCorreoActivo (la cola de revisión), así que
-      // siempre corresponde al correo activo — mismo criterio que
-      // email_proceder/descartar, que tampoco necesitan verificarlo.
-      await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.de, undefined, true);
+      // Pedido explícito de Carlos: revisar_correo_puntual (fuera de la cola) también puede crear
+      // PropuestaAccionCorreo — ya no es cierto que "solo se crea desde la cola", así que esto sigue
+      // el deColaCorreo real de la propuesta en vez de asumir true.
+      await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.de, undefined, propuesta.deColaCorreo);
     } catch (error) {
       console.error("[emailCallbackHandler] Error preparando la captura de un correo:", error);
       await editTelegramMessage(
@@ -197,7 +196,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
         `⚠️ No pude leer "${propuesta.asunto}" para guardarlo como conocimiento.`,
         []
       );
-      await avanzarColaCorreoSiActivo(propuesta.chatId);
+      if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
     }
     return;
   }
@@ -218,6 +217,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       resumen: propuesta.resumen,
       threadId: propuesta.threadId,
       messageIdHeader: propuesta.messageIdHeader,
+      deColaCorreo: propuesta.deColaCorreo,
     });
     return;
   }
@@ -258,7 +258,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
         respuesta
       );
     }
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[emailCallbackHandler] Error procediendo con la acción:", message);
@@ -268,7 +268,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `⚠️ Error al procesar — ${propuesta.asunto} (${propuesta.de})\n\n${message}`,
       []
     );
-    await avanzarColaCorreoSiActivo(propuesta.chatId);
+    if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
   }
 }
 
@@ -285,7 +285,8 @@ export async function continuarConOrientacion(
   resumen: string,
   instruccionUsuario: string,
   threadId?: string,
-  messageIdHeader?: string
+  messageIdHeader?: string,
+  deColaCorreo = false
 ): Promise<void> {
   await sendTelegramMessage(chatId, "🔄 Procesando tu instrucción — esto puede tardar uno o dos minutos...").catch(
     (error) => console.error("[emailCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error)
@@ -304,7 +305,7 @@ export async function continuarConOrientacion(
   if (pareceRespuesta) {
     await generarBorradorYOfrecer(chatId, de, asunto, threadId, messageIdHeader, respuesta);
   }
-  await avanzarColaCorreoSiActivo(chatId);
+  if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
 }
 
 /**

@@ -17,6 +17,17 @@ export interface PropuestaAccionCorreo {
   creadoEn: number;
   /** Gmail message id (interno, no el header Message-ID) — para poder releer el cuerpo completo si se elige "Guardar como conocimiento". */
   mensajeId: string;
+  /**
+   * true SOLO si esta propuesta viene de procesarSiguienteCorreoActivo (la cola de revisión
+   * horaria) — decide si, al resolverse (email_proceder/descartar/guardar/orientar), se avanza
+   * colaRevisionStore (ver avanzarColaCorreoSiActivo en emailCallbackHandler.ts). Antes este
+   * campo no existía porque PropuestaAccionCorreo SOLO se creaba desde ahí — pedido explícito de
+   * Carlos: poder decirle "vamos al correo de X, léelo" fuera de la cola (revisar_correo_puntual)
+   * creó un segundo origen real, y sin este campo esa propuesta puntual avanzaría/rompería el
+   * correo activo de la cola si hubiera uno en curso al mismo tiempo — mismo patrón ya usado por
+   * PropuestaGasto.deColaCorreo.
+   */
+  deColaCorreo: boolean;
 }
 
 const TAB_NAME = "_propuestas_correo";
@@ -33,6 +44,7 @@ const HEADERS = [
   "messageIdHeader",
   "creadoEn",
   "mensajeId",
+  "deColaCorreo",
 ];
 const NUM_COLS = HEADERS.length;
 const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas
@@ -51,6 +63,7 @@ function filaAObjeto(valores: string[]): PropuestaAccionCorreo {
     messageIdHeader: valores[9],
     creadoEn: Number(valores[10]),
     mensajeId: valores[11] || "",
+    deColaCorreo: valores[12] === "true",
   };
 }
 
@@ -68,6 +81,7 @@ function objetoAFila(p: PropuestaAccionCorreo): (string | number)[] {
     p.messageIdHeader,
     p.creadoEn,
     p.mensajeId,
+    p.deColaCorreo ? "true" : "",
   ];
 }
 

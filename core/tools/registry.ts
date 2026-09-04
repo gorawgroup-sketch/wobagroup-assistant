@@ -37,6 +37,7 @@ import { programarAccionFuturaTool } from "./programarAccion";
 import { proponerEdicionCompraHoldedTool } from "./editarCompraHolded";
 import { buscarGastosPorEtiquetaTool } from "./buscarGastosPorEtiqueta";
 import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
+import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -81,6 +82,7 @@ const tools: ToolDefinition[] = [
   proponerEdicionCompraHoldedTool,
   buscarGastosPorEtiquetaTool,
   leerAdjuntosCompraHoldedTool,
+  revisarCorreoPuntualTool,
 ];
 
 /**

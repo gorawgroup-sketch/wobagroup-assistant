@@ -860,7 +860,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         pendienteOrientacion.resumen,
         incoming.text,
         pendienteOrientacion.threadId,
-        pendienteOrientacion.messageIdHeader
+        pendienteOrientacion.messageIdHeader,
+        pendienteOrientacion.deColaCorreo
       );
     } catch (error) {
       console.error("Error procesando orientación específica de correo:", error);
