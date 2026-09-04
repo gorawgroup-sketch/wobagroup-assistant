@@ -1647,6 +1647,25 @@ export default function CerebroWoba() {
   // `openGroups` es un array — cada grupo se abre/cierra de forma
   // independiente tocándolo de nuevo (ya no hace falta un botón "volver").
   const [openGroups, setOpenGroups] = useState([]);
+
+  // Pedido explícito de Carlos: al cerrar una célula principal, las tarjetas de detalle de SUS
+  // módulos deben cerrarse con ella (antes quedaban huérfanas: sus openIds seguían activos aunque
+  // ya no hubiera módulo visible que las abriera, y el gráfico no volvía a su tamaño/centro
+  // original porque `.cerebro-panels` seguía renderizando por esos ids sueltos). Un solo toggle
+  // atómico para los dos onClick (círculo SVG y etiqueta HTML) evita que se desincronicen.
+  const toggleGroup = useCallback((groupId) => {
+    setOpenGroups((cur) => {
+      if (cur.includes(groupId)) {
+        const grupo = GROUPS.find((g) => g.id === groupId);
+        if (grupo) {
+          setOpenIds((curIds) => curIds.filter((id) => !grupo.children.includes(id)));
+        }
+        return cur.filter((id) => id !== groupId);
+      }
+      return [...cur, groupId];
+    });
+  }, []);
+
   const groupPositions = useRadialLayout(GROUPS.length, 175);
   // Hooks con llamadas fijas (siempre 3, GROUPS.length es constante) — nunca
   // condicionales ni en un .map(), para no romper las reglas de hooks de
@@ -1989,7 +2008,7 @@ export default function CerebroWoba() {
                 fill="url(#nodeGrad)"
                 onMouseEnter={() => setActive(g.id)}
                 onMouseLeave={() => setActive(null)}
-                onClick={() => setOpenGroups((cur) => (cur.includes(g.id) ? cur.filter((id) => id !== g.id) : [...cur, g.id]))}
+                onClick={() => toggleGroup(g.id)}
                 style={{
                   cursor: "pointer",
                   pointerEvents: "auto",
@@ -2040,7 +2059,7 @@ export default function CerebroWoba() {
               key={g.id}
               onMouseEnter={() => setActive(g.id)}
               onMouseLeave={() => setActive(null)}
-              onClick={() => setOpenGroups((cur) => (cur.includes(g.id) ? cur.filter((id) => id !== g.id) : [...cur, g.id]))}
+              onClick={() => toggleGroup(g.id)}
               style={{
                 position: "absolute",
                 left: `${(p.x / 600) * 100}%`,
