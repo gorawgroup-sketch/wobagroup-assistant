@@ -964,3 +964,96 @@ export async function buscarEnInternet(query: string): Promise<ResultadoBusqueda
 
   return { respuesta, citas: Array.from(citasPorUrl.values()) };
 }
+
+const SYSTEM_PROMPT_RESPUESTA_AUTOMATICA =
+  "Eres Wobi, el asistente de WOBA Group, respondiendo AUTOMÁTICAMENTE (sin que Carlos González, CAO, " +
+  "revise ni apruebe este mensaje antes de enviarse) un correo de una conversación con un contacto que " +
+  "Carlos aprobó de antemano, uno por uno, para este trato. Tu única tarea es redactar el cuerpo de la " +
+  "respuesta que continúa esta conversación con fluidez y naturalidad, como lo haría alguien del equipo " +
+  "que conoce el contexto.\n\n" +
+  "Tienes SOLO herramientas de consulta (lectura) — Drive, cashflow, Holded, base de conocimiento, etc. " +
+  "Úsalas para verificar cualquier dato real (montos, fechas, estados) antes de mencionarlo — nunca " +
+  "inventes ni asumas una cifra. NO tienes ninguna herramienta que escriba, cree, envíe dinero o " +
+  "modifique nada — si la respuesta correcta a esta persona requeriría una acción real de ese tipo, " +
+  "NUNCA la des por hecha ni prometas que ya se hizo: dilo con honestidad ('lo reviso con el equipo y te " +
+  "confirmo', 'dejo esto anotado para gestionarlo') y sigue con el resto de la respuesta con naturalidad.\n\n" +
+  "Responde en el mismo idioma del hilo. No reveles información interna que no sea directamente " +
+  "relevante para esta persona o este tema. Devuelve ÚNICAMENTE el cuerpo del correo de respuesta, listo " +
+  "para enviar — sin firma (se agrega aparte), sin asunto, sin explicarle a nadie que eres una IA dentro " +
+  "del cuerpo (eso ya lo indica una leyenda que se agrega al final del correo, aparte de tu texto).";
+
+/**
+ * Redacta la respuesta de un correo para la conversación automática con un
+ * contacto pre-aprobado (ver revisarConversacionesAutomaticas.ts) — pedido
+ * explícito de Carlos: "solo toca Drive, cashflow u otros para revisar y
+ * extrae información... pero no debes cambiar nada sin mi autorización".
+ * Por eso esta función SOLO expone las tools marcadas seguraParaModoRapido
+ * (de solo lectura, sin ningún efecto secundario — mismo criterio ya usado
+ * para el primer intento económico con Haiku) — nunca las de escritura,
+ * aunque el registro completo las tenga. Mismo chequeo de defensa en
+ * profundidad que ejecutarConversacion: si el modelo pide una tool que no
+ * estaba en el set ofrecido, nunca se ejecuta.
+ */
+export async function responderCorreoAutomatico(params: {
+  remitente: string;
+  asunto: string;
+  hiloTexto: string;
+}): Promise<string> {
+  const anthropic = getClient();
+  const tools = getToolDefinitions(true); // solo las de solo lectura — ver comentario arriba
+  const nombresDisponibles = new Set(tools.map((t) => t.name));
+
+  const userText =
+    `Remitente: ${params.remitente}\nAsunto: ${params.asunto}\n\n` +
+    `Hilo completo de la conversación (más antiguo primero):\n\n${params.hiloTexto}\n\n` +
+    `Redacta la respuesta a enviar ahora, continuando la conversación.`;
+
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
+
+  for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const response = await anthropic.messages.create({
+      model: MODEL_SONNET,
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT_RESPUESTA_AUTOMATICA,
+      tools,
+      messages,
+    });
+
+    registrarUsoIA(undefined, MODEL_SONNET, response.usage).catch((error) =>
+      console.error("[costTracking] Error registrando uso de IA (responderCorreoAutomatico):", error)
+    );
+
+    if (response.stop_reason !== "tool_use") {
+      const textBlock = response.content.find((block) => block.type === "text");
+      return textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+    }
+
+    const toolUseBlocks = response.content.filter(
+      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+    );
+
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const block of toolUseBlocks) {
+      if (!nombresDisponibles.has(block.name)) {
+        // Defensa en profundidad — igual que ejecutarConversacion: nunca ejecutar una tool que no
+        // estaba realmente ofrecida en esta llamada, aunque exista en el registro completo.
+        console.error(`[claude:respuesta-automatica] Tool "${block.name}" solicitada pero no disponible — no se ejecuta.`);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: `Error: la herramienta "${block.name}" no está disponible en este contexto.`,
+          is_error: true,
+        });
+        continue;
+      }
+      const result = await executeTool(block.name, block.input as Record<string, unknown>, {});
+      toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
+    }
+
+    messages.push({ role: "user", content: toolResults });
+  }
+
+  return "";
+}

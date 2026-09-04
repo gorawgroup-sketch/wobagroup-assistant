@@ -14,6 +14,7 @@ import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
+import { esContactoAutorespuesta } from "../gmail/autorespuestaContactoStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
@@ -159,6 +160,14 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
     try {
       const ultimo = await obtenerUltimoMensajeDeHilo(threadId);
       if (!ultimo) continue;
+
+      // Pedido explícito de Carlos: los contactos de conversación automática
+      // (ver autorespuestaContactoStore.ts / revisarConversacionesAutomaticas.ts)
+      // NUNCA deben pasar por acá — su propio job, más frecuente, ya los
+      // atiende solo. Sin este filtro, el mismo correo aparecería DOS veces:
+      // respondido automáticamente Y pidiéndole a Carlos que lo revise a mano.
+      if (await esContactoAutorespuesta(ultimo.de)) continue;
+
       const fechaOrden = Date.parse(ultimo.fecha);
       itemsParaEncolar.push({
         id: threadId,

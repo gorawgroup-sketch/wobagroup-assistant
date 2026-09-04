@@ -8,17 +8,11 @@ import {
   actualizarMessageIdOfertaResponder,
   consumirOfertaResponderCorreo,
 } from "./emailReplyOfferStore";
-import { enviarCorreo, obtenerCuerpoCompletoCorreo } from "./client";
+import { enviarCorreo, obtenerCuerpoCompletoCorreo, extraerDireccionCorreo } from "./client";
 import { askClaude } from "../claude/client";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import type { TelegramCallbackQuery } from "../telegram/types";
-
-/** Extrae la dirección pura de un header "From" tipo `Nombre <correo@dominio.com>`. */
-function extraerDireccion(de: string): string {
-  const match = de.match(/<([^>]+)>/);
-  return match ? match[1] : de.trim();
-}
 
 /**
  * Genera un borrador de respuesta y lo ofrece por Telegram con botones de
@@ -40,7 +34,7 @@ export async function generarBorradorYOfrecer(
       `Tono profesional y conciso, en español. Devuelve únicamente el texto del cuerpo del correo.`;
 
     const cuerpo = await askClaude(promptBorrador);
-    const to = extraerDireccion(de);
+    const to = extraerDireccionCorreo(de);
 
     const borrador = await crearBorradorCorreo({
       chatId,

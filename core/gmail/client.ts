@@ -216,6 +216,85 @@ export async function listarHilosNoLeidos(): Promise<string[]> {
 }
 
 /**
+ * Igual que listarHilosNoLeidos, pero acotado a un remitente/dirección
+ * exacta — pedido explícito de Carlos: la conversación automática con
+ * contactos específicos (ver revisarConversacionesAutomaticas.ts) no debe
+ * escanear TODO lo sin leer (caro e innecesario), solo lo de la lista de
+ * contactos aprobados. Si `remitentes` viene vacío, devuelve [] sin llamar
+ * a la API — nunca cae a "todo lo sin leer" por accidente.
+ */
+export async function listarHilosNoLeidosDe(remitentes: string[]): Promise<string[]> {
+  if (remitentes.length === 0) return [];
+
+  const gmail = getGmailClient();
+  const filtroRemitentes = remitentes.map((r) => `from:${r}`).join(" OR ");
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  let paginas = 0;
+
+  do {
+    const res = await gmail.users.threads.list({
+      userId: "me",
+      q: `is:unread in:inbox (${filtroRemitentes})`,
+      maxResults: 100,
+      pageToken,
+    });
+    (res.data.threads ?? []).forEach((t) => t.id && ids.push(t.id));
+    pageToken = res.data.nextPageToken ?? undefined;
+    paginas += 1;
+  } while (pageToken && paginas < 5);
+
+  return ids;
+}
+
+export interface MensajeDeHilo {
+  de: string;
+  fecha: string;
+  cuerpo: string;
+}
+
+/**
+ * Lee un hilo COMPLETO (todos los mensajes, no solo el más reciente) en
+ * orden cronológico — pedido explícito de Carlos: la conversación
+ * automática debe sostenerse "de forma fluida", así que necesita ver todo
+ * el intercambio anterior, no solo el último mensaje suelto. `ultimoDeMi`
+ * distingue qué mensajes son de asistente@wobagroup.com (nuestras propias
+ * respuestas ya enviadas) para dar contexto de quién dijo qué.
+ */
+export async function obtenerHiloCompleto(threadId: string): Promise<{
+  asunto: string;
+  mensajes: Array<MensajeDeHilo & { esNuestro: boolean }>;
+  ultimoMensajeId: string;
+  ultimoMessageIdHeader: string;
+  ultimoDe: string;
+}> {
+  const gmail = getGmailClient();
+  const res = await gmail.users.threads.get({ userId: "me", id: threadId, format: "full" });
+  const mensajesCrudos = res.data.messages ?? [];
+  // Igualdad exacta sobre la dirección real, no subcadena del header completo — ver
+  // extraerDireccionCorreo, hallazgo real de auditoría.
+  const impersonate = extraerDireccionCorreo(process.env.GMAIL_IMPERSONATE_EMAIL ?? "");
+
+  const mensajes = mensajesCrudos.map((msg) => {
+    const de = leerHeader(msg.payload?.headers, "From");
+    const plano = extraerTextoPlano(msg.payload);
+    const cuerpo = plano ? plano.trim() : htmlATexto(extraerHtml(msg.payload) ?? msg.snippet ?? "");
+    return { de, fecha: leerHeader(msg.payload?.headers, "Date"), cuerpo, esNuestro: extraerDireccionCorreo(de) === impersonate };
+  });
+
+  const ultimo = mensajesCrudos[mensajesCrudos.length - 1];
+  const asunto = leerHeader(mensajesCrudos[0]?.payload?.headers, "Subject");
+
+  return {
+    asunto,
+    mensajes,
+    ultimoMensajeId: ultimo?.id ?? "",
+    ultimoMessageIdHeader: leerHeader(ultimo?.payload?.headers, "Message-ID"),
+    ultimoDe: mensajes[mensajes.length - 1]?.de ?? "",
+  };
+}
+
+/**
  * Devuelve el id, fecha, remitente y asunto del mensaje MÁS RECIENTE de un
  * hilo — solo metadata (headers), no el cuerpo/adjuntos completos, así que
  * es barato usarlo durante el encolado (ver revisarCorreoNuevo.ts) sin
@@ -267,6 +346,22 @@ export interface CorreoResumen {
 
 function leerHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, nombre: string): string {
   return headers?.find((h) => h.name?.toLowerCase() === nombre.toLowerCase())?.value ?? "";
+}
+
+/**
+ * Extrae la dirección PURA de un header "From" tipo `Nombre <correo@dominio.com>` — nunca la
+ * subcadena cruda. Hallazgo real de auditoría: comparar por subcadena contra el header completo
+ * (`de.includes(email)`) es explotable — cualquiera puede poner el email que sea DENTRO de su propio
+ * nombre visible (ej. `"alberto@wobagroup.com" <atacante@otrodominio.com>`), y ese texto arbitrario
+ * queda dentro del From igual que si fuera la dirección real. Usado tanto para decidir si un correo
+ * es de un contacto de la lista blanca de conversación automática (esContactoAutorespuesta) como
+ * para detectar "es nuestro propio mensaje" (obtenerHiloCompleto) — en ambos casos la comparación
+ * debe ser sobre la dirección real extraída, con igualdad exacta, nunca por subcadena del texto
+ * completo del remitente.
+ */
+export function extraerDireccionCorreo(de: string): string {
+  const match = de.match(/<([^>]+)>/);
+  return (match ? match[1] : de).trim().toLowerCase();
 }
 
 function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
@@ -546,9 +641,16 @@ function base64UrlEncodeBuffer(buf: Buffer): string {
  * Envía un correo por Gmail, opcionalmente con adjuntos (ej. reportes
  * generados) y enhebrado en el hilo original si se pasa
  * threadId/messageIdHeader. Solo debe llamarse desde el manejador del botón
- * "📤 Enviar así" (o el flujo de reportes programados, ya aprobado de
- * antemano al configurarlo) — nunca como reacción directa a un mensaje sin
- * que una persona lo haya confirmado.
+ * "📤 Enviar así", el flujo de reportes programados, o la conversación
+ * automática con contactos pre-aprobados (revisarConversacionesAutomaticas.ts
+ * — pedido explícito de Carlos, aprobación dada UNA VEZ al agregar el
+ * contacto a la lista, no por mensaje) — nunca como reacción directa a un
+ * mensaje sin que una persona lo haya confirmado o pre-aprobado así.
+ *
+ * `firmaOverride`: si se pasa, reemplaza la firma real de Gmail configurada
+ * en la cuenta (obtenerFirmaGmail) — usado por la conversación automática
+ * para llevar su propia leyenda ("🤖 Respuesta automática") en vez de la
+ * firma personal de Carlos, que implicaría que él la escribió a mano.
  */
 export async function enviarCorreo(params: {
   to: string;
@@ -557,9 +659,10 @@ export async function enviarCorreo(params: {
   threadId?: string;
   messageIdHeader?: string;
   adjuntos?: AdjuntoParaEnviar[];
+  firmaOverride?: string;
 }): Promise<{ id: string; threadId: string }> {
   const gmail = getGmailSendClient();
-  const firmaHtml = await obtenerFirmaGmail();
+  const firmaHtml = params.firmaOverride ?? (await obtenerFirmaGmail());
   const raw = base64UrlEncodeBuffer(construirMimeConAdjuntos({ ...params, firmaHtml }));
 
   const res = await gmail.users.messages.send({
