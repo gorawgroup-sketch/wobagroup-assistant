@@ -1635,7 +1635,10 @@ function MiniCalendario({ apiKey }) {
 
 export default function CerebroWoba() {
   const [active, setActive] = useState(null);
-  const [open, setOpen] = useState(null);
+  // Pedido explícito de Carlos: poder tener varios módulos abiertos a la vez
+  // (antes un solo valor `open`) — ver el comentario de "cerebro-layout" más
+  // abajo para el porqué.
+  const [openIds, setOpenIds] = useState([]);
   const [openGroup, setOpenGroup] = useState(null);
 
   // Al abrir un grupo, deja de mostrarse la vista de 3 grupos y se
@@ -1877,6 +1880,42 @@ export default function CerebroWoba() {
           from { opacity: 0; transform: scale(1.08); filter: blur(6px); }
           to { opacity: 1; transform: scale(1); filter: blur(0px); }
         }
+
+        /* Pedido explícito de Carlos: el universo y los paneles de detalle van LADO A LADO
+           (todo el ancho disponible), nunca uno debajo del otro obligando a hacer scroll — salvo
+           en celular, donde no entran de costado y toca apilarlos ("para despliegue en celular
+           vas a tener que adaptarlo", pedido explícito). 900px alcanza para el universo (620px)
+           + un panel angosto sin apretarse; por debajo de eso se apila en columna. */
+        .cerebro-layout {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 24px;
+          width: 100%;
+          max-width: 1400px;
+          margin: 10px auto 0;
+        }
+        @media (min-width: 900px) {
+          .cerebro-layout {
+            flex-direction: row;
+            align-items: flex-start;
+            justify-content: center;
+          }
+        }
+        /* Grid, no flex — pedido explícito de Carlos: "redimensionar cada célula para que quepa
+           perfectamente" cuando hay varios módulos abiertos a la vez (1, 2 o los 3), sin que se
+           superpongan y con espacio suficiente. auto-fit + minmax hace exactamente eso solo: con
+           un panel abierto ocupa el ancho disponible completo, con varios se reparte entre ellos. */
+        .cerebro-panels {
+          flex: 1 1 380px;
+          min-width: 0;
+          width: 100%;
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+          gap: 16px;
+          align-content: start;
+        }
       `}</style>
 
       <div
@@ -1929,12 +1968,27 @@ export default function CerebroWoba() {
       </div>
 
 
+      {/* Pedido explícito de Carlos, tras ver un ejemplo de referencia (conducting.ai): no le
+          gustaba que el panel de detalle apareciera DEBAJO del universo (obligando a hacer scroll
+          para verlo) ni que solo se pudiera tener uno abierto a la vez. "cerebro-layout" pone el
+          universo y los paneles de detalle LADO A LADO (usando todo el ancho disponible) en
+          pantallas anchas, y los apila en columna en celular (ahí sí hace falta scroll, pedido
+          explícito de Carlos: "para despliegue en celular vas a tener que adaptarlo"). Se puede
+          tener VARIOS módulos abiertos al mismo tiempo (openIds, antes un solo valor `open`) —
+          "cerebro-panels" es un grid que los redimensiona automáticamente para que quepan sin
+          superponerse, sin importar cuántos estén abiertos. Los 3 grupos principales (neuronas) se
+          siguen navegando de a uno (openGroup), eso no cambió — ver la pregunta que se le hizo a
+          Carlos antes de este cambio: reconstruir el grafo para expandir los 3 grupos a la vez con
+          zoom/paneo real (como el video) es un motor de layout de fuerzas completo, fuera de
+          alcance por ahora. */}
+      <div className="cerebro-layout">
       <div
         style={{
           position: "relative",
           width: "100%",
           maxWidth: 620,
-          margin: "10px auto 0",
+          flexShrink: 0,
+          margin: "10px 0 0",
           aspectRatio: "1 / 1",
           animation: entered ? "brainLanding 0.85s ease-out 0.05s both" : undefined,
         }}
@@ -1981,7 +2035,7 @@ export default function CerebroWoba() {
 
           {displayedPositions.map((p, i) => {
             const it = displayedItems[i];
-            const isActive = active === it.id || open === it.id || openGroup === it.id;
+            const isActive = active === it.id || openIds.includes(it.id) || openGroup === it.id;
             return (
               <circle
                 key={it.id}
@@ -1993,9 +2047,9 @@ export default function CerebroWoba() {
                 onMouseLeave={() => setActive(null)}
                 onClick={() => {
                   if (openGroupObj) {
-                    setOpen((cur) => (cur === it.id ? null : it.id));
+                    setOpenIds((cur) => (cur.includes(it.id) ? cur.filter((id) => id !== it.id) : [...cur, it.id]));
                   } else {
-                    setOpen(null);
+                    setOpenIds([]);
                     setOpenGroup((cur) => (cur === it.id ? null : it.id));
                   }
                 }}
@@ -2010,7 +2064,7 @@ export default function CerebroWoba() {
           })}
         </svg>
 
-        <NanoCore energized={Boolean(active || open || openGroup)} />
+        <NanoCore energized={Boolean(active || openIds.length > 0 || openGroup)} />
 
         {/* Pedido explícito de Carlos: el botón de volver a todos los grupos va en el centro,
             sobre el propio núcleo de nanobots — no como un botón de chrome aparte arriba de la
@@ -2019,7 +2073,7 @@ export default function CerebroWoba() {
         {openGroupObj && (
           <div
             onClick={() => {
-              setOpen(null);
+              setOpenIds([]);
               setOpenGroup(null);
             }}
             onMouseEnter={() => setActive("__volver")}
@@ -2106,7 +2160,7 @@ export default function CerebroWoba() {
 
         {displayedPositions.map((p, i) => {
           const it = displayedItems[i];
-          const isActive = active === it.id || open === it.id || openGroup === it.id;
+          const isActive = active === it.id || openIds.includes(it.id) || openGroup === it.id;
           return (
             <div
               key={it.id}
@@ -2114,9 +2168,9 @@ export default function CerebroWoba() {
               onMouseLeave={() => setActive(null)}
               onClick={() => {
                 if (openGroupObj) {
-                  setOpen((cur) => (cur === it.id ? null : it.id));
+                  setOpenIds((cur) => (cur.includes(it.id) ? cur.filter((id) => id !== it.id) : [...cur, it.id]));
                 } else {
-                  setOpen(null);
+                  setOpenIds([]);
                   setOpenGroup((cur) => (cur === it.id ? null : it.id));
                 }
               }}
@@ -2142,7 +2196,7 @@ export default function CerebroWoba() {
               >
                 {it.name}
               </div>
-              {((openGroupObj && active === it.id && !open) || (!openGroupObj && isActive)) && (
+              {((openGroupObj && active === it.id && openIds.length === 0) || (!openGroupObj && isActive)) && (
                 <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2, lineHeight: 1.4 }}>
                   {openGroupObj && it.detail && (
                     <>
@@ -2158,21 +2212,26 @@ export default function CerebroWoba() {
         })}
       </div>
 
-      {/* Panel de detalle del módulo abierto, con su propio campo neuronal */}
-      {open && (() => {
-        const m = MODULES.find((x) => x.id === open);
-        return (
-          <div
-            style={{
-              maxWidth: 560,
-              margin: "22px auto 0",
-              position: "relative",
-              borderRadius: 12,
-              overflow: "hidden",
-              border: `1px solid ${C.line}`,
-              animation: "panelIn 0.25s ease-out",
-            }}
-          >
+      {/* Paneles de detalle de los módulos abiertos — uno por cada id en openIds
+          (antes un solo panel para `open`), cada uno con su propio campo neuronal.
+          "cerebro-panels" (grid, ver <style> más abajo) los redimensiona solo para
+          que quepan todos sin superponerse, sea que haya 1, 2 o los 3 abiertos. */}
+      {openIds.length > 0 && (
+        <div className="cerebro-panels">
+          {openIds.map((open) => {
+            const m = MODULES.find((x) => x.id === open);
+            return (
+              <div
+                key={open}
+                style={{
+                  width: "100%",
+                  position: "relative",
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  border: `1px solid ${C.line}`,
+                  animation: "panelIn 0.25s ease-out",
+                }}
+              >
             <div style={{ position: "absolute", inset: 0, background: C.panel }}>
               <NeuralField seed={open.length * 13 + open.charCodeAt(0)} count={18} size={300} dense />
             </div>
@@ -2184,7 +2243,7 @@ export default function CerebroWoba() {
                   <div style={{ fontFamily: C.mono, fontSize: 11, color: C.coreBright, marginTop: 2 }}>{m.detail}</div>
                 </div>
                 <button
-                  onClick={() => setOpen(null)}
+                  onClick={() => setOpenIds((cur) => cur.filter((id) => id !== open))}
                   style={{ background: "none", border: `1px solid ${C.line}`, color: C.dim, borderRadius: 6, width: 26, height: 26, cursor: "pointer", fontSize: 14, lineHeight: 1 }}
                 >
                   ×
@@ -2347,9 +2406,12 @@ export default function CerebroWoba() {
               {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} />}
               {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} />}
             </div>
-          </div>
-        );
-      })()}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      </div>
 
       <div
         style={{
