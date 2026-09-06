@@ -1,7 +1,6 @@
 import { obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
-import { esDiaHabilEspana } from "../utils/diaHabil";
 
 // Si el costo de ayer supera este múltiplo del promedio de los 7 días
 // anteriores, se marca como gasto inusual en el resumen. Exportado para que
@@ -16,18 +15,12 @@ export const UMBRAL_ANOMALIA = 2;
  * escribe ni modifica nada, solo informa.
  */
 /**
- * `forzarAviso`: true SOLO cuando se disparó a mano (ej. /admin/run-costos-check) — el cron
- * (scheduler.ts) llama esto sin forzar. Pedido explícito de Carlos: "no envíes avisos en fin de
- * semana... solo avisos en días hábiles españoles" — este es un aviso informativo (no una alerta con
- * plazo real), así que se salta por completo en fin de semana para no gastar de más ni molestar en
- * descanso.
+ * Pedido explícito de Carlos: "sí sigue controlando el tema de costos todos los días" — a
+ * diferencia del resto de avisos informativos (que se saltan en fin de semana), este SÍ corre los 7
+ * días: sirve para detectar un gasto de IA anormal (posible bug/loop consumiendo de más) el mismo
+ * día que pasa, no el lunes siguiente — mismo criterio que las alertas fiscales/de plazos reales.
  */
-export async function revisarCostosIA(referenceDate: Date = new Date(), forzarAviso = false): Promise<{ costoAyerUSD: number }> {
-  if (!forzarAviso && !esDiaHabilEspana(referenceDate)) {
-    console.log("[revisarCostosIA] Fin de semana, no se envía el aviso.");
-    return { costoAyerUSD: 0 };
-  }
-
+export async function revisarCostosIA(referenceDate: Date = new Date()): Promise<{ costoAyerUSD: number }> {
   const admins = await obtenerAdmins();
   if (admins.length === 0) {
     console.error("[revisarCostosIA] No hay ningún admin registrado, no se puede notificar.");

@@ -1156,7 +1156,7 @@ app.post("/admin/run-costos-check", async (req: Request, res: Response) => {
   }
 
   try {
-    const resultado = await revisarCostosIA(new Date(), true); // forzarAviso: se disparó a mano vía este endpoint admin
+    const resultado = await revisarCostosIA();
     res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
