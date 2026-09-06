@@ -3,6 +3,7 @@ import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
 import { formatDateLocal } from "../utils/dateFormat";
 import type { Empresa } from "../holded/client";
+import { esDiaHabilEspana } from "../utils/diaHabil";
 
 const EMPRESAS: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 const DIAS_HACIA_ATRAS = 7;
@@ -24,7 +25,13 @@ const DIAS_HACIA_ATRAS = 7;
  * único que puede perderse en el chat, este se repite todos los días
  * mientras el gasto siga sin comprobante, hasta que se resuelva a mano.
  */
+/** Pedido explícito de Carlos: "no envíes avisos en fin de semana... solo avisos en días hábiles españoles". */
 export async function revisarGastosSinComprobante(): Promise<{ sinComprobante: number }> {
+  if (!esDiaHabilEspana()) {
+    console.log("[revisarGastosSinComprobante] Fin de semana, no se envía el aviso.");
+    return { sinComprobante: 0 };
+  }
+
   const admins = await obtenerAdmins();
   if (admins.length === 0) {
     console.error("[revisarGastosSinComprobante] No hay ningún admin registrado, no se puede notificar.");

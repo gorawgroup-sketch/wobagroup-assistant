@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
+import { esDiaHabilEspana } from "../utils/diaHabil";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { obtenerResumenColaPorChat, vaciarColaCorreoDelChat } from "../gmail/colaRevisionStore";
@@ -262,7 +263,13 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   return items;
 }
 
+/** Pedido explícito de Carlos: "no envíes avisos en fin de semana... solo avisos en días hábiles españoles". */
 export async function enviarResumenPendientesDiario(): Promise<void> {
+  if (!esDiaHabilEspana()) {
+    console.log("[resumenPendientesDiario] Fin de semana, no se envía el resumen.");
+    return;
+  }
+
   const admins = await obtenerAdmins();
   if (admins.length === 0) {
     console.error("[resumenPendientesDiario] No hay ningún admin registrado, no se puede notificar.");

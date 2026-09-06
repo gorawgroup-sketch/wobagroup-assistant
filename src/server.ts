@@ -710,7 +710,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
 
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
-    revisarCorreoNuevo()
+    revisarCorreoNuevo(true) // forzarAviso: lo pidió Carlos ahora mismo, sin importar el día ni si ya se avisó hoy
       .then((resultado) => {
         // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
         // con varios correos reales sin leer en Gmail, y el sistema
@@ -1133,7 +1133,7 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
 
   res.json({ ok: true, mensaje: "Revisión de correo iniciada en segundo plano." });
 
-  revisarCorreoNuevo().catch((error) => {
+  revisarCorreoNuevo(true).catch((error) => { // forzarAviso: se disparó a mano vía este endpoint admin
     console.error("[admin/run-gmail-check] Error:", error);
   });
 });
@@ -1156,7 +1156,7 @@ app.post("/admin/run-costos-check", async (req: Request, res: Response) => {
   }
 
   try {
-    const resultado = await revisarCostosIA();
+    const resultado = await revisarCostosIA(new Date(), true); // forzarAviso: se disparó a mano vía este endpoint admin
     res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

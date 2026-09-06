@@ -16,6 +16,8 @@ import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { esContactoAutorespuesta } from "../gmail/autorespuestaContactoStore";
 import { obtenerEstadoHiloAutorespuesta } from "../gmail/hiloAutorespuestaStore";
+import { esDiaHabilEspana } from "../utils/diaHabil";
+import { yaSeAvisoHoy, marcarAvisadoHoy } from "./avisoUnicoPorDiaStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
@@ -41,6 +43,8 @@ import {
 const UMBRAL_ACTIVO_ESTANCADO_MS = 48 * 60 * 60 * 1000;
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
+
+const TEMA_AVISO_CORREO_PENDIENTE = "correo_nuevo_pendiente";
 
 function sanitizarNombre(nombre: string): string {
   return nombre.replace(/[^\w.\-]+/g, "_").slice(0, 150);
@@ -101,7 +105,17 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
   ]);
 }
 
-export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
+/**
+ * `forzarAviso`: true SOLO cuando Carlos (u otro admin) disparó esta revisión él mismo (comando
+ * /revisarcorreo, o el endpoint /admin/run-gmail-check) — en ese caso el aviso de "tienes correos
+ * sin leer" se manda siempre, sin importar el día ni si ya se avisó hoy, porque lo pidió a propósito
+ * ahora mismo. El cron horario (scheduler.ts) llama esto SIN forzar: pedido explícito de Carlos,
+ * "he recibido muchos avisos de que tengo mails sin revisar y no es necesario, con 1 al día es
+ * suficiente... no envíes avisos en fin de semana" — la cola sigue actualizándose cada hora igual
+ * (para que /revisarcorreo o la conversación automática siempre vean el estado real), solo el AVISO
+ * proactivo de "¿empezamos?" se limita a una vez por día hábil.
+ */
+export async function revisarCorreoNuevo(forzarAviso = false): Promise<ResultadoRevisarCorreo> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
 
   if (!chatId) {
@@ -203,15 +217,20 @@ export async function revisarCorreoNuevo(): Promise<ResultadoRevisarCorreo> {
   // pedirConfirmacionSiguienteCorreo).
   const totalPendienteTrasEncolar = totalAntesDeEncolar + nuevos;
   if (!habiaActivoAntes && totalPendienteTrasEncolar > 0) {
-    // Pedido explícito de Carlos: el aviso trae el conteo de "nuevos" solo
-    // al EMPEZAR una revisión desde cero — si ya hay un backlog en curso, el
-    // mensaje es más genérico (no repite "nuevo" sobre algo que ya se sabía
-    // de una corrida anterior).
-    const mensaje =
-      nuevos > 0 && totalAntesDeEncolar === 0
-        ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
-        : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
-    await pedirConfirmacionSiguienteCorreo(chatId, mensaje);
+    const debeAvisar = forzarAviso || (esDiaHabilEspana() && !(await yaSeAvisoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId)));
+
+    if (debeAvisar) {
+      // Pedido explícito de Carlos: el aviso trae el conteo de "nuevos" solo
+      // al EMPEZAR una revisión desde cero — si ya hay un backlog en curso, el
+      // mensaje es más genérico (no repite "nuevo" sobre algo que ya se sabía
+      // de una corrida anterior).
+      const mensaje =
+        nuevos > 0 && totalAntesDeEncolar === 0
+          ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
+          : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
+      await pedirConfirmacionSiguienteCorreo(chatId, mensaje);
+      if (!forzarAviso) await marcarAvisadoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId);
+    }
     return { correosRevisados: nuevos };
   }
 

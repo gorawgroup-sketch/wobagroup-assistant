@@ -2,6 +2,7 @@ import { fetchResumenSemanas } from "../google/cashflowSheet";
 import { validarNumeracionSemanas } from "../google/validarNumeracionCashflow";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
+import { esDiaHabilEspana } from "../utils/diaHabil";
 
 /**
  * Job diario: valida que las semanas de la hoja CASHFLOW estén bien
@@ -14,7 +15,17 @@ import { sendTelegramMessage } from "../telegram/client";
  * esto" tras construir la vista mensual, que depende de que la numeración
  * sea correcta para agrupar bien las semanas por mes.
  */
+/**
+ * Pedido explícito de Carlos: "no envíes avisos en fin de semana... solo avisos en días hábiles
+ * españoles" — es un aviso informativo de calidad de datos, no una alerta con plazo real, así que se
+ * salta por completo en fin de semana.
+ */
 export async function revisarNumeracionCashflow(referenceDate: Date = new Date()): Promise<{ problemas: number }> {
+  if (!esDiaHabilEspana(referenceDate)) {
+    console.log("[revisarNumeracionCashflow] Fin de semana, no se envía el aviso.");
+    return { problemas: 0 };
+  }
+
   const admins = await obtenerAdmins();
   if (admins.length === 0) {
     console.error("[revisarNumeracionCashflow] No hay ningún admin registrado, no se puede notificar.");

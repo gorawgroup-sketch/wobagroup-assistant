@@ -7,6 +7,7 @@ import {
 import { sendTelegramMessageExpandable } from "../telegram/client";
 import { askClaude } from "../claude/client";
 import { crearPropuestaAccionAnotacion, actualizarMessageIdAccionAnotacion } from "./cashflowAnnotationActionStore";
+import { esDiaHabilEspana } from "../utils/diaHabil";
 
 function describirUbicacion(a: AnotacionCashflow): string {
   if (!a.registro) return "⚠️ fila no ubicada (el valor de la celda ya no coincide con ningún registro actual)";
@@ -60,7 +61,13 @@ function describirUbicacion(a: AnotacionCashflow): string {
  * instrucciones" (espera una respuesta libre de Carlos), o "ℹ️ Dejar como
  * informativo" (no hace nada más).
  */
+/** Pedido explícito de Carlos: "no envíes avisos en fin de semana... solo avisos en días hábiles españoles". */
 export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: number }> {
+  if (!esDiaHabilEspana()) {
+    console.log("[revisarAnotacionesCashflow] Fin de semana, no se envía el aviso.");
+    return { avisosEnviados: 0 };
+  }
+
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
 
   if (!chatId) {
