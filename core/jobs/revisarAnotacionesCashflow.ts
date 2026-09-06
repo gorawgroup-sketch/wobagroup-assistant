@@ -61,13 +61,7 @@ function describirUbicacion(a: AnotacionCashflow): string {
  * instrucciones" (espera una respuesta libre de Carlos), o "ℹ️ Dejar como
  * informativo" (no hace nada más).
  */
-/** Pedido explícito de Carlos: "no envíes avisos en fin de semana... solo avisos en días hábiles españoles". */
 export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: number }> {
-  if (!esDiaHabilEspana()) {
-    console.log("[revisarAnotacionesCashflow] Fin de semana, no se envía el aviso.");
-    return { avisosEnviados: 0 };
-  }
-
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
 
   if (!chatId) {
@@ -78,8 +72,12 @@ export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: nu
   const anotaciones = await obtenerAnotacionesCashflow(true);
 
   // Purga primero lo que ya no está activo (resuelto o borrado desde la
-  // última corrida) — corre siempre, incluso si no hay anotaciones nuevas
-  // que avisar, para que el registro de notificadas no acumule basura.
+  // última corrida) — corre siempre, incluso en fin de semana y aunque no
+  // haya anotaciones nuevas que avisar, para que el registro de
+  // notificadas no acumule basura. Hallazgo real de auditoría: el filtro
+  // de fin de semana (ver más abajo) debe cortar SOLO el envío de avisos,
+  // nunca esta limpieza — ponerlo antes de acá dejaba el registro sin
+  // depurar dos días de cada siete.
   const idsActivos = new Set(anotaciones.map((a) => a.id).filter(Boolean));
   const purgadas = await purgarAnotacionesNoActivas(idsActivos).catch((error) => {
     console.error("[revisarAnotacionesCashflow] Error purgando anotaciones inactivas (no crítico):", error);
@@ -90,6 +88,13 @@ export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: nu
   }
 
   if (anotaciones.length === 0) {
+    return { avisosEnviados: 0 };
+  }
+
+  // Pedido explícito de Carlos: "no envíes avisos en fin de semana... solo avisos en días hábiles
+  // españoles" — DESPUÉS de la purga de arriba, que sí debe correr todos los días.
+  if (!esDiaHabilEspana()) {
+    console.log("[revisarAnotacionesCashflow] Fin de semana, no se envían avisos (la purga de arriba sí corrió).");
     return { avisosEnviados: 0 };
   }
 

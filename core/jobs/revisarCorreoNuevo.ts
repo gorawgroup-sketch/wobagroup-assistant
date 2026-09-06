@@ -229,7 +229,12 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
           ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
           : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
       await pedirConfirmacionSiguienteCorreo(chatId, mensaje);
-      if (!forzarAviso) await marcarAvisadoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId);
+      // Se marca SIEMPRE, incluso si este envío fue forzado (/revisarcorreo, endpoint admin) — el
+      // objetivo real es "nunca el mismo aviso dos veces el mismo día" sin importar qué lo disparó
+      // primero. Hallazgo real de auditoría: antes solo se marcaba en el camino sin forzar, así que
+      // un /revisarcorreo manual seguido más tarde por el cron horario (sin que Carlos llegara a
+      // interactuar con la cola) podía mandar el MISMO aviso dos veces el mismo día.
+      await marcarAvisadoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId);
     }
     return { correosRevisados: nuevos };
   }
