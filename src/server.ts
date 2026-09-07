@@ -760,7 +760,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
       const detenerEscribiendo = iniciarIndicadorEscribiendo(incoming.chatId);
       const mensajeTrabajandoId = await avisarTrabajando(incoming.chatId);
       try {
-        const respuesta = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
+        const respuesta = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre, "capturar_correo_chat");
         await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, respuesta);
       } catch (error) {
         console.error("Error capturando correo:", error);
@@ -926,7 +926,7 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         `${pendienteAlertaDoc.tipoDocumento}). Lo que pide el usuario: "${incoming.text}". Usa la herramienta ` +
         `programar_accion_futura para dejarlo programado (interpreta la fecha o condición que haya dado) — no lo ` +
         `hagas ahora mismo, solo prográmalo.`;
-      const respuesta = await askClaude(instruccion, incoming.chatId);
+      const respuesta = await askClaude(instruccion, incoming.chatId, undefined, "resolver_alerta_documento");
       await sendTelegramMessageSmart(incoming.chatId, respuesta);
     } catch (error) {
       console.error("Error programando alerta de documento:", error);

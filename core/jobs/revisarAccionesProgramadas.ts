@@ -66,7 +66,7 @@ async function verificarCondicion(accion: AccionProgramada): Promise<boolean> {
     `sin explicación adicional.`;
 
   try {
-    const respuesta = await askClaude(prompt);
+    const respuesta = await askClaude(prompt, undefined, undefined, "evaluar_condicion_programada");
     return respuesta.trim().toUpperCase().startsWith("SI");
   } catch (error) {
     console.error(`[revisarAccionesProgramadas] Error verificando condición de ${accion.id} (se trata como no cumplida):`, error);
@@ -86,7 +86,7 @@ async function dispararAccion(accion: AccionProgramada): Promise<void> {
       `Contexto original: ${accion.contexto}. Instrucción: ${accion.instruccion}. ` +
       `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
-    const respuesta = await askClaude(instruccionCompleta, accion.chatId);
+    const respuesta = await askClaude(instruccionCompleta, accion.chatId, undefined, "ejecutar_accion_programada");
     await sendTelegramMessageSmart(accion.chatId, respuesta, undefined, `✅ ${accion.contexto}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

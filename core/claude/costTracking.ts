@@ -3,7 +3,22 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_costos_ia";
-const HEADERS = ["fecha", "chatId", "modelo", "inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens", "costoUSD"];
+const HEADERS = [
+  "fecha",
+  "chatId",
+  "modelo",
+  "inputTokens",
+  "outputTokens",
+  "cacheCreationTokens",
+  "cacheReadTokens",
+  "costoUSD",
+  "proceso",
+  "autenticacion",
+  "ejecucionId",
+  "llamadaNumero",
+  "costoEquivalenteSuscripcionUSD",
+  "gastoRealApiUSD",
+];
 
 // Tarifas oficiales por modelo (USD por token) — el sistema ahora enruta
 // entre varios modelos (core/claude/client.ts), así que el costo ya no se
@@ -106,6 +121,15 @@ async function ensureTab(): Promise<void> {
   const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
   if (existing) {
+    // Migración aditiva: las ocho columnas históricas conservan exactamente
+    // su posición. Las nuevas solo añaden atribución y separación entre
+    // valor equivalente y gasto real, sin guardar prompts ni resultados.
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A1:N1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [HEADERS] },
+    });
     tabAsegurada = true;
     return;
   }
@@ -119,7 +143,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:H1`,
+    range: `${TAB_NAME}!A1:N1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -133,16 +157,33 @@ async function ensureTab(): Promise<void> {
  * factura por separado). Se llama en "fire and forget" desde askClaude para
  * no añadir la latencia de escribir en Sheets a la respuesta del usuario.
  */
-export async function registrarUsoIA(chatId: number | undefined, modelo: string, usage: UsoAnthropic): Promise<void> {
+export type AutenticacionIA = "anthropic_api_key" | "claude_subscription" | "chatgpt_subscription";
+
+export interface MetadatosUsoIA {
+  proceso: string;
+  autenticacion?: AutenticacionIA;
+  ejecucionId?: string;
+  llamadaNumero?: number;
+}
+
+export async function registrarUsoIA(
+  chatId: number | undefined,
+  modelo: string,
+  usage: UsoAnthropic,
+  metadata: MetadatosUsoIA = { proceso: "sin_atribuir" }
+): Promise<void> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
 
   const costoUSD = calcularCostoUSD(usage, modelo);
+  const autenticacion = metadata.autenticacion ?? "anthropic_api_key";
+  const gastoRealApiUSD = autenticacion === "anthropic_api_key" ? costoUSD : 0;
+  const costoEquivalenteSuscripcionUSD = autenticacion === "anthropic_api_key" ? 0 : costoUSD;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:H`,
+    range: `${TAB_NAME}!A:N`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -156,6 +197,12 @@ export async function registrarUsoIA(chatId: number | undefined, modelo: string,
           usage.cache_creation_input_tokens ?? 0,
           usage.cache_read_input_tokens ?? 0,
           costoUSD,
+          metadata.proceso,
+          autenticacion,
+          metadata.ejecucionId ?? "",
+          metadata.llamadaNumero ?? 1,
+          costoEquivalenteSuscripcionUSD,
+          gastoRealApiUSD,
         ],
       ],
     },
@@ -167,6 +214,8 @@ export interface ResumenCostos {
   inputTokens: number;
   outputTokens: number;
   costoUSD: number;
+  costoEquivalenteSuscripcionUSD: number;
+  gastoRealApiUSD: number;
 }
 
 interface FilaUso {
@@ -174,6 +223,12 @@ interface FilaUso {
   costoUSD: number;
   inputTokens: number;
   outputTokens: number;
+  proceso: string;
+  autenticacion: string;
+  ejecucionId: string;
+  llamadaNumero: number;
+  costoEquivalenteSuscripcionUSD: number;
+  gastoRealApiUSD: number;
 }
 
 async function leerFilas(): Promise<FilaUso[]> {
@@ -183,7 +238,7 @@ async function leerFilas(): Promise<FilaUso[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:H200000`,
+    range: `${TAB_NAME}!A2:N200000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -195,7 +250,72 @@ async function leerFilas(): Promise<FilaUso[]> {
       inputTokens: Number(row[3]) || 0,
       outputTokens: Number(row[4]) || 0,
       costoUSD: Number(row[7]) || 0,
+      proceso: String(row[8] || "sin_atribuir"),
+      autenticacion: String(row[9] || "anthropic_api_key"),
+      ejecucionId: String(row[10] || ""),
+      llamadaNumero: Number(row[11]) || 1,
+      costoEquivalenteSuscripcionUSD: Number(row[12]) || 0,
+      gastoRealApiUSD: row[13] === undefined ? Number(row[7]) || 0 : Number(row[13]) || 0,
     }));
+}
+
+export interface ResumenProcesoIA extends ResumenCostos {
+  proceso: string;
+}
+
+/** Atribución agregada sin exponer prompts, resultados, chat IDs ni secretos. */
+export async function obtenerResumenPorProceso(desde: Date, hasta: Date): Promise<ResumenProcesoIA[]> {
+  const filas = (await leerFilas()).filter((f) => f.fecha >= desde && f.fecha < hasta);
+  const porProceso = new Map<string, ResumenProcesoIA>();
+
+  for (const fila of filas) {
+    const actual = porProceso.get(fila.proceso) ?? {
+      proceso: fila.proceso,
+      llamadas: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costoUSD: 0,
+      costoEquivalenteSuscripcionUSD: 0,
+      gastoRealApiUSD: 0,
+    };
+    actual.llamadas++;
+    actual.inputTokens += fila.inputTokens;
+    actual.outputTokens += fila.outputTokens;
+    actual.costoUSD += fila.costoUSD;
+    actual.costoEquivalenteSuscripcionUSD += fila.costoEquivalenteSuscripcionUSD;
+    actual.gastoRealApiUSD += fila.gastoRealApiUSD;
+    porProceso.set(fila.proceso, actual);
+  }
+
+  return [...porProceso.values()].sort((a, b) => b.gastoRealApiUSD - a.gastoRealApiUSD);
+}
+
+export interface DiagnosticoRepeticionesIA {
+  ejecucionesConMuchasLlamadas: Array<{ ejecucionId: string; proceso: string; llamadas: number }>;
+}
+
+/** Detecta loops por ejecución usando solo metadatos; el contenido nunca se lee ni se registra. */
+export async function diagnosticarRepeticionesIA(
+  desde: Date,
+  hasta: Date,
+  maxLlamadasPorEjecucion = 12
+): Promise<DiagnosticoRepeticionesIA> {
+  const filas = (await leerFilas()).filter(
+    (f) => f.fecha >= desde && f.fecha < hasta && Boolean(f.ejecucionId)
+  );
+  const grupos = new Map<string, { ejecucionId: string; proceso: string; llamadas: number }>();
+  for (const fila of filas) {
+    const actual = grupos.get(fila.ejecucionId) ?? {
+      ejecucionId: fila.ejecucionId,
+      proceso: fila.proceso,
+      llamadas: 0,
+    };
+    actual.llamadas++;
+    grupos.set(fila.ejecucionId, actual);
+  }
+  return {
+    ejecucionesConMuchasLlamadas: [...grupos.values()].filter((g) => g.llamadas > maxLlamadasPorEjecucion),
+  };
 }
 
 /** Resume el costo entre `desde` (inclusive) y `hasta` (exclusive). */
@@ -209,8 +329,18 @@ export async function obtenerResumenCostos(desde: Date, hasta: Date): Promise<Re
       inputTokens: acc.inputTokens + f.inputTokens,
       outputTokens: acc.outputTokens + f.outputTokens,
       costoUSD: acc.costoUSD + f.costoUSD,
+      costoEquivalenteSuscripcionUSD:
+        acc.costoEquivalenteSuscripcionUSD + f.costoEquivalenteSuscripcionUSD,
+      gastoRealApiUSD: acc.gastoRealApiUSD + f.gastoRealApiUSD,
     }),
-    { llamadas: 0, inputTokens: 0, outputTokens: 0, costoUSD: 0 }
+    {
+      llamadas: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costoUSD: 0,
+      costoEquivalenteSuscripcionUSD: 0,
+      gastoRealApiUSD: 0,
+    }
   );
 }
 
@@ -228,7 +358,7 @@ export async function obtenerCostoPorDia(dias: number, referencia: Date = new Da
 
     const total = filas
       .filter((f) => f.fecha >= inicio && f.fecha < fin)
-      .reduce((acc, f) => acc + f.costoUSD, 0);
+      .reduce((acc, f) => acc + f.gastoRealApiUSD, 0);
     costos.push(total);
   }
   return costos;

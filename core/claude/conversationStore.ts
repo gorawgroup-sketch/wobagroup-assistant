@@ -144,6 +144,69 @@ async function leerTodasLasFilas(): Promise<FilaHistorial[]> {
   });
 }
 
+export interface DiagnosticoMemoriaConversacional {
+  ok: boolean;
+  filas: number;
+  filasCorruptas: number;
+  filasVencidas: number;
+  ultimaActualizacion?: string;
+  error?: string;
+}
+
+/**
+ * Control de integridad sin devolver mensajes ni identificadores de chat.
+ * Sirve al chequeo diario para detectar permisos rotos y JSON corrupto sin
+ * copiar memoria conversacional a logs, alertas o prompts.
+ */
+export async function diagnosticarMemoriaConversacional(): Promise<DiagnosticoMemoriaConversacional> {
+  try {
+    await ensureTab();
+    const sheets = getClient();
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A2:C10000`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const rows = resp.data.values ?? [];
+    let filasCorruptas = 0;
+    let filasVencidas = 0;
+    let ultimaActualizacion = 0;
+
+    for (const row of rows) {
+      let filaCorrupta = false;
+      try {
+        const mensajes = row[1] ? JSON.parse(String(row[1])) : [];
+        if (!Array.isArray(mensajes)) filaCorrupta = true;
+      } catch {
+        filaCorrupta = true;
+      }
+      const actualizadoEn = row[2] ? new Date(String(row[2])).getTime() : 0;
+      if (!Number.isFinite(actualizadoEn) || actualizadoEn <= 0) filaCorrupta = true;
+      else {
+        if (filaVencida(actualizadoEn)) filasVencidas++;
+        ultimaActualizacion = Math.max(ultimaActualizacion, actualizadoEn);
+      }
+      if (filaCorrupta) filasCorruptas++;
+    }
+
+    return {
+      ok: filasCorruptas === 0,
+      filas: rows.length,
+      filasCorruptas,
+      filasVencidas,
+      ultimaActualizacion: ultimaActualizacion ? new Date(ultimaActualizacion).toISOString() : undefined,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      filas: 0,
+      filasCorruptas: 0,
+      filasVencidas: 0,
+      error: error instanceof Error ? error.name : "Error desconocido",
+    };
+  }
+}
+
 async function leerFila(chatId: number): Promise<FilaHistorial | undefined> {
   const todas = await leerTodasLasFilas();
   return todas.find((f) => f.chatId === chatId);
