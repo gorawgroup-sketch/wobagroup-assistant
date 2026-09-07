@@ -1,3 +1,4 @@
+import { unlink } from "node:fs/promises";
 import { consumirPendienteReclasificacionPorChat, guardarPendienteReclasificacion } from "../documental/pendienteReclasificacionStore";
 import { archivarDocumentoEnDrive } from "../documental/archiveFile";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
@@ -115,5 +116,43 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
       `Archivado con éxito: "${pendiente.nombreArchivoOriginal}" (empresa ${empresa}, carpeta "${carpeta}"). ` +
       `${resultado.mensaje} Link de Drive: ${resultado.webViewLink ?? "(no disponible)"}. No hace falta que lo repitas, ya se le puede confirmar al usuario.`
     );
+  },
+};
+
+/**
+ * Hallazgo real de auditoría: el flujo de "Elegir otra carpeta" solo tenía la tool de arriba
+ * (archivar), ninguna forma de decir "no lo archives, descártalo" una vez que la propuesta original
+ * ya se reemplazó por este pendiente — si el usuario respondía "descártalo" en texto libre, el
+ * modelo no tenía ninguna herramienta real para cumplirlo. Mismo comportamiento que el botón "❌
+ * Descartar, no archivar" de la propuesta original (documentCallbackHandler.ts, doc_descartar): no
+ * sube nada a Drive, no guarda nada, borra la copia local.
+ */
+export const descartarDocumentoPendienteTool: ToolDefinition = {
+  name: "descartar_documento_pendiente",
+  description:
+    "Descarta (sin archivar en Drive ni guardar nada) un documento que quedó pendiente de reclasificar " +
+    "tras 'Elegir otra carpeta' — úsala cuando el usuario responda en texto libre que NO hace falta " +
+    "archivarlo (ej. 'descártalo', 'no es nada, ignóralo', 'era solo la firma del correo'). No pidas " +
+    "confirmación adicional, es una acción reversible en el sentido de que no borra nada real, solo la " +
+    "copia local temporal del archivo.",
+  input_schema: { type: "object", properties: {} },
+  handler: async (_input, context) => {
+    const chatId = context?.chatId;
+    if (chatId === undefined) {
+      return "Error: no se pudo determinar el chat — no se puede descartar ningún documento pendiente.";
+    }
+
+    const pendiente = await consumirPendienteReclasificacionPorChat(chatId);
+    if (!pendiente) {
+      return "No hay ningún documento pendiente de reclasificar para este chat (puede que ya se haya procesado, o que haya expirado).";
+    }
+
+    await unlink(pendiente.rutaLocal).catch(() => {});
+
+    if (pendiente.correoOrigen?.deColaCorreo) {
+      await avanzarColaCorreoSiActivo(chatId);
+    }
+
+    return `Descartado: "${pendiente.nombreArchivoOriginal}" — no se archivó ni se guardó nada. No hace falta que lo repitas, ya se le puede confirmar al usuario.`;
   },
 };

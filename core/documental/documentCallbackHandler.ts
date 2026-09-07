@@ -240,15 +240,17 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     }
 
     // Hallazgo real de auditoría: este mensaje pedía la empresa/carpeta a ciegas, sin decir que se
-    // puede pedir ver las carpetas que ya existen o crear una nueva — Carlos no tiene por qué saber
-    // de memoria la estructura real de Drive. Ambas cosas ya son posibles (listar_carpetas_drive y el
-    // flag crearCarpetaSiNoExiste de reclasificar_documento_pendiente), solo hacía falta decirlo.
+    // puede pedir ver las carpetas que ya existen, crear una nueva, o simplemente descartarlo —
+    // Carlos no tiene por qué saber de memoria la estructura real de Drive. Las tres ya son posibles
+    // (listar_carpetas_drive, crearCarpetaSiNoExiste y descartar_documento_pendiente), solo hacía
+    // falta decirlo.
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
       `✏️ Ok — dime la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}" (ej. "EWORKS, en Colaboradores/Alejandra"). ` +
         `Si no sabes qué carpetas existen, dime "muéstrame las carpetas de [empresa]" y te las listo. ` +
-        `Si la carpeta que quieres no existe todavía, dime que la cree ("créala") y la armo yo.`,
+        `Si la carpeta que quieres no existe todavía, dime que la cree ("créala") y la armo yo. ` +
+        `Si en realidad no hace falta archivarlo, dime "descártalo".`,
       []
     );
 
