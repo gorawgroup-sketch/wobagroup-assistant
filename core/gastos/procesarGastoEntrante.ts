@@ -262,7 +262,14 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // mensaje que jamás existió — sin ninguna vía real para resolverlo. Ahora, si la propuesta
     // encontrada nunca se entregó (messageId=0), se reenvía de una vez en vez de señalar hacia la
     // nada — mismo mecanismo que reenviarBotonesPropuestaGasto.ts (tool conversacional).
-    if (propuestaYaPendiente.messageId === 0) {
+    //
+    // comparacionPendiente !== "distinto": hallazgo real de auditoría — sin este chequeo, un
+    // documento REALMENTE distinto (mismo proveedor+monto, número de documento diferente — el caso
+    // real que compararNumeroDocumento existe para distinguir) llegaba acá, se descartaba en
+    // silencio, y en su lugar se reenviaba la propuesta huérfana VIEJA como si fuera "esta factura".
+    // Cuando el número de documento SÍ difiere, cae al aviso normal de abajo (nunca asume que son la
+    // misma solo porque una de las dos está huérfana).
+    if (propuestaYaPendiente.messageId === 0 && comparacionPendiente !== "distinto") {
       await reenviarPropuestaGasto(
         propuestaYaPendiente,
         `📄 "${entrada.nombreArchivoOriginal}" — encontré una propuesta ya calculada para esta factura que nunca llegué a mostrarte (se interrumpió el proceso antes de mandarla). Aquí está:`

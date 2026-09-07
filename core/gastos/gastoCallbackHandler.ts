@@ -1070,13 +1070,22 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
         `✅ Listo — apliqué todo lo que marcaste. "${propuestaFinal.proveedor}" (${propuestaFinal.monto.toFixed(2)} ${propuestaFinal.moneda}) sigue esperando tu decisión — toca una opción:`,
         teclado
       ).catch((error) => {
-        console.error("[gastoCallbackHandler] Error reenviando el teclado tras la cola de selección (no crítico):", error);
+        console.error("[gastoCallbackHandler] Error reenviando el teclado tras la cola de selección:", error);
         return undefined;
       });
       if (messageId !== undefined) {
         await actualizarMessageIdGasto(propuestaFinal.id, messageId).catch((error) =>
           console.error("[gastoCallbackHandler] Error actualizando el messageId tras reenviar el teclado (no crítico):", error)
         );
+      } else {
+        // Hallazgo real de auditoría: si el reenvío con botones falla (ej. caída transitoria de
+        // Telegram), esto se quedaba en silencio total — exactamente el mismo síntoma ("no veo nada
+        // para aprobar") que este mismo cambio existe para eliminar, solo que disparado por otro
+        // punto de fallo. Un aviso en texto plano, aunque sin botones, es mejor que nada.
+        await sendTelegramMessage(
+          propuestaFinal.chatId,
+          `✅ Apliqué todo lo que marcaste, pero no pude reenviar los botones de "${propuestaFinal.proveedor}" (${propuestaFinal.monto.toFixed(2)} ${propuestaFinal.moneda}) — probablemente un fallo transitorio de Telegram. Dímelo en texto libre (ej. "créalo y concilia") y lo reintento.`
+        ).catch(() => {});
       }
     } else {
       await sendTelegramMessage(pendiente.chatId, "✅ Listo — apliqué todo lo que marcaste.");

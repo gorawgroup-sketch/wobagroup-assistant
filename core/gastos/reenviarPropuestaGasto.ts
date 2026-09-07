@@ -1,4 +1,9 @@
-import { actualizarMessageIdGasto, actualizarFlagMovimientoBancarioGasto, type PropuestaGasto } from "./gastoProposalSheet";
+import {
+  actualizarMessageIdGasto,
+  actualizarFlagMovimientoBancarioGasto,
+  actualizarMovimientosAmbiguosPropuestaGasto,
+  type PropuestaGasto,
+} from "./gastoProposalSheet";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { buscarMovimientoSimilar, buscarMovimientoAproximado } from "../holded/write";
@@ -36,6 +41,12 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
 
   if (propuesta.hayMovimientoBancario === undefined && propuesta.candidatos.length === 0) {
     let movimientoEncontrado = false;
+    // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
+    // matches" — cuando hay VARIOS matches exactos igual de parecidos (ninguno único), ninguna de
+    // las dos ramas aplicaba, así que se perdían en silencio en vez de ofrecerse como "Conciliar con
+    // #N" — mismo criterio que ya usa aplicarCorreccionMoneda (gastoCallbackHandler.ts) y el flujo
+    // original (procesarGastoEntrante.ts) para este mismo caso.
+    let movimientosAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     try {
       const exactos = await buscarMovimientoSimilar(propuesta.empresa, {
         monto: propuesta.monto,
@@ -44,7 +55,9 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       });
       if (exactos.length === 1) {
         movimientoEncontrado = true;
-      } else if (exactos.length === 0 && propuesta.proveedor) {
+      } else if (exactos.length > 1) {
+        movimientosAmbiguos = exactos;
+      } else if (propuesta.proveedor) {
         const aproximados = await buscarMovimientoAproximado(propuesta.empresa, {
           monto: propuesta.monto,
           fecha: propuesta.fecha,
@@ -59,7 +72,12 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
       console.error("[reenviarPropuestaGasto] Error guardando el flag de movimiento bancario (no crítico):", error)
     );
-    propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado };
+    if (movimientosAmbiguos.length > 0) {
+      await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosAmbiguos).catch((error) =>
+        console.error("[reenviarPropuestaGasto] Error guardando los movimientos ambiguos (no crítico):", error)
+      );
+    }
+    propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos };
   }
 
   const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));
