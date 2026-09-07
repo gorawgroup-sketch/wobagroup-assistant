@@ -2,10 +2,10 @@ import { unlink } from "node:fs/promises";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { esDiaHabilEspana } from "../utils/diaHabil";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
-import type { TelegramCallbackQuery } from "../telegram/types";
+import type { TelegramCallbackQuery, InlineKeyboardButton } from "../telegram/types";
 import { obtenerResumenColaPorChat, vaciarColaCorreoDelChat } from "../gmail/colaRevisionStore";
 import { marcarHiloComoLeido } from "../gmail/client";
-import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat } from "../documental/classificationStore";
+import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat, consumirPropuestaClasificacion } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { obtenerPendientesEdicionCompraHoldedPorChat } from "../holded/pendienteEdicionCompraHoldedStore";
@@ -17,7 +17,7 @@ import { obtenerPendienteAjusteMontoGastoPorChat, consumirPendienteAjusteMontoGa
 import { obtenerPendienteAccionGastoPorChat, consumirPendienteAccionGasto } from "../gastos/pendienteAccionGastoStore";
 import { obtenerPendienteSeleccionGastoPorChat, consumirPendienteSeleccionGasto } from "../gastos/pendienteSeleccionGastoStore";
 import { etiquetaAccion } from "../gastos/gastoTeclado";
-import { obtenerPendienteDesambiguacionPorChat, consumirPendienteDesambiguacion } from "../documental/disambiguationStore";
+import { obtenerPendienteDesambiguacionPorChat, consumirPendienteDesambiguacion, consumirPendienteDesambiguacionPorId } from "../documental/disambiguationStore";
 import { obtenerPendienteEdicionBorradorPorChat, consumirPendienteEdicionBorrador } from "../gmail/emailDraftEditStore";
 import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "../fiscal/pendienteMontoStore";
 import { obtenerPendienteOrientacionAnotacionPorChat, consumirPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
@@ -26,10 +26,70 @@ import { obtenerPendienteReglaClasificacionPorChat, consumirPendienteReglaClasif
 import { obtenerPendientesHiloAutorespuestaPorChat } from "../gmail/hiloAutorespuestaStore";
 import { obtenerPendientesAutorrepairPorChat } from "../github/autorrepairPendienteStore";
 
+/**
+ * Caso real reportado por Carlos: el resumen de fin de día solo traía "🗑️ Descartar todo" — sin
+ * forma de descartar UNO de los pendientes opcionales y dejar los demás para seguir revisando. Sus
+ * palabras: "Debería yo tener todas las alternativas para descartar lo necesario y continuar con lo
+ * que requiera continuar." `tipo` (+ `subId` cuando puede haber varios del mismo tipo a la vez, ej.
+ * desambiguación) identifica a cuál store/consumir-function apunta el botón individual de cada línea
+ * — ver TIPOS_DESCARTABLES y descartarUnPendiente más abajo. Los tipos SIN `tipo` (contacto/gasto con
+ * datos reales, edición de Holded, hilo de autorespuesta, autorrepair) se quedan sin botón individual
+ * a propósito — mismo criterio que ya excluye a esos de "Descartar todo": son dinero o decisiones
+ * demasiado consecuentes para un descarte casual, siempre se revisan de verdad.
+ */
 interface ItemPendiente {
   descripcion: string;
   creadoEn: number;
+  tipo?: TipoPendienteDescartable;
+  subId?: string;
 }
+
+type TipoPendienteDescartable =
+  | "cola_correo_activo"
+  | "propuesta_archivo"
+  | "reclasificacion"
+  | "captura_empresa"
+  | "alerta_documento"
+  | "correccion_gasto"
+  | "ajuste_monto_gasto"
+  | "accion_gasto"
+  | "seleccion_gasto"
+  | "desambiguacion"
+  | "edicion_borrador"
+  | "monto_pago"
+  | "orientacion_anotacion"
+  | "orientacion_correo"
+  | "regla_clasificacion";
+
+/**
+ * Hallazgo CRÍTICO de auditoría: el callback_data de Telegram tiene un límite de 64 bytes. Con el
+ * nombre completo del tipo (ej. "resumen_descartar_item:desambiguacion:" + un id completo de
+ * disambiguationStore.ts, un randomUUID() de 36 caracteres) el botón sale con 75 bytes — Telegram
+ * rechaza el mensaje ENTERO (los 14 tipos posibles, no solo ese botón), así que ningún día con una
+ * desambiguación pendiente habría mandado el resumen — exactamente el "algo queda bloqueado en
+ * silencio" que esta función existe para evitar. Un código corto de 2 letras por tipo (nunca visible,
+ * solo va en el callback_data) deja margen de sobra incluso con el id más largo posible.
+ */
+const CODIGO_POR_TIPO: Record<Exclude<TipoPendienteDescartable, "cola_correo_activo">, string> = {
+  propuesta_archivo: "pa",
+  reclasificacion: "rc",
+  captura_empresa: "ce",
+  alerta_documento: "ad",
+  correccion_gasto: "cg",
+  ajuste_monto_gasto: "am",
+  accion_gasto: "ag",
+  seleccion_gasto: "sg",
+  desambiguacion: "db",
+  edicion_borrador: "eb",
+  monto_pago: "mp",
+  orientacion_anotacion: "oa",
+  orientacion_correo: "oc",
+  regla_clasificacion: "rg",
+};
+
+const TIPO_POR_CODIGO: Record<string, Exclude<TipoPendienteDescartable, "cola_correo_activo">> = Object.fromEntries(
+  Object.entries(CODIGO_POR_TIPO).map(([tipo, codigo]) => [codigo, tipo])
+) as Record<string, Exclude<TipoPendienteDescartable, "cola_correo_activo">>;
 
 /**
  * Pedido explícito de Carlos, tras el caso real de Dylo (2026-09-03): "cómo
@@ -98,6 +158,11 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
         // y SIEMPRE mostraba "hace menos de 1h" sin importar la antigüedad
         // real — masAntiguo (por fechaOrden) cubre también ese caso.
         creadoEn: activo?.fechaOrden ?? masAntiguo?.fechaOrden ?? Date.now(),
+        // Solo cuando hay un correo ACTIVO puntual tiene sentido "descartar este" — reutiliza el
+        // mismo botón/callback que ya existe (colacorreo_descartaractivo, ver revisarCorreoNuevo.ts)
+        // en vez de uno nuevo; con la cola en pausa (nada activo todavía) no hay un ítem puntual que
+        // saltar, solo "▶️ Sí, siguiente" tiene sentido ahí.
+        tipo: activo ? "cola_correo_activo" : undefined,
       });
     }
   } catch (error) {
@@ -106,7 +171,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
 
   try {
     const p = await obtenerPropuestaClasificacionPendientePorChat(chatId);
-    if (p) items.push({ descripcion: `📁 Propuesta de archivo sin responder: "${truncar(p.nombreArchivoOriginal, 60)}"`, creadoEn: p.creadoEn });
+    if (p) items.push({ descripcion: `📁 Propuesta de archivo sin responder: "${truncar(p.nombreArchivoOriginal, 60)}"`, creadoEn: p.creadoEn, tipo: "propuesta_archivo", subId: p.id });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando propuesta de archivo (no crítico):", error);
   }
@@ -155,7 +220,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
 
   try {
     const rc = await obtenerPendienteReclasificacionPorChat(chatId);
-    if (rc) items.push({ descripcion: `🗂️ Falta elegir carpeta para: "${truncar(rc.nombreArchivoOriginal, 60)}"`, creadoEn: rc.creadoEn });
+    if (rc) items.push({ descripcion: `🗂️ Falta elegir carpeta para: "${truncar(rc.nombreArchivoOriginal, 60)}"`, creadoEn: rc.creadoEn, tipo: "reclasificacion" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando reclasificación de documento (no crítico):", error);
   }
@@ -163,7 +228,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   try {
     const capturas = await obtenerPendientesCapturaEmpresaPorChat(chatId);
     for (const c of capturas) {
-      items.push({ descripcion: `📌 Captura sin confirmar: "${truncar(c.texto, 60)}"`, creadoEn: c.creadoEn });
+      items.push({ descripcion: `📌 Captura sin confirmar: "${truncar(c.texto, 60)}"`, creadoEn: c.creadoEn, tipo: "captura_empresa", subId: String(c.messageId) });
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando capturas sin confirmar (no crítico):", error);
@@ -171,7 +236,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
 
   try {
     const a = await obtenerPendienteAlertaDocumentoPorChat(chatId);
-    if (a) items.push({ descripcion: `⏰ Falta indicar cuándo avisar sobre: "${truncar(a.nombreArchivoOriginal, 60)}"`, creadoEn: a.creadoEn });
+    if (a) items.push({ descripcion: `⏰ Falta indicar cuándo avisar sobre: "${truncar(a.nombreArchivoOriginal, 60)}"`, creadoEn: a.creadoEn, tipo: "alerta_documento" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando alerta de documento (no crítico):", error);
   }
@@ -196,21 +261,21 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
 
   try {
     const cg = await obtenerPendienteCorreccionGastoPorChat(chatId);
-    if (cg) items.push({ descripcion: `✏️ Falta el detalle de una corrección de gasto`, creadoEn: cg.creadoEn });
+    if (cg) items.push({ descripcion: `✏️ Falta el detalle de una corrección de gasto`, creadoEn: cg.creadoEn, tipo: "correccion_gasto" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando corrección de gasto (no crítico):", error);
   }
 
   try {
     const am = await obtenerPendienteAjusteMontoGastoPorChat(chatId);
-    if (am) items.push({ descripcion: `💰 Falta el monto ajustado de una propuesta de gasto`, creadoEn: am.creadoEn });
+    if (am) items.push({ descripcion: `💰 Falta el monto ajustado de una propuesta de gasto`, creadoEn: am.creadoEn, tipo: "ajuste_monto_gasto" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando ajuste de monto de gasto (no crítico):", error);
   }
 
   try {
     const aa = await obtenerPendienteAccionGastoPorChat(chatId);
-    if (aa) items.push({ descripcion: `✏️ Falta tu instrucción sobre el correo de una propuesta de gasto`, creadoEn: aa.creadoEn });
+    if (aa) items.push({ descripcion: `✏️ Falta tu instrucción sobre el correo de una propuesta de gasto`, creadoEn: aa.creadoEn, tipo: "accion_gasto" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando otras acciones de gasto (no crítico):", error);
   }
@@ -222,6 +287,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
       items.push({
         descripcion: `▶️ Falta tu respuesta para aplicar "${siguiente ? etiquetaAccion(siguiente) : "una acción"}" de una selección aprobada en una propuesta de gasto`,
         creadoEn: sg.creadoEn,
+        tipo: "seleccion_gasto",
       });
     }
   } catch (error) {
@@ -232,7 +298,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     // Puede haber varias a la vez (una por adjunto ambiguo, ver disambiguationStore.ts) — una línea por cada una.
     const desambiguaciones = await obtenerPendienteDesambiguacionPorChat(chatId);
     for (const d of desambiguaciones) {
-      items.push({ descripcion: `❓ Falta aclarar: "${truncar(d.preguntaFormulada, 60)}"`, creadoEn: d.creadoEn });
+      items.push({ descripcion: `❓ Falta aclarar: "${truncar(d.preguntaFormulada, 60)}"`, creadoEn: d.creadoEn, tipo: "desambiguacion", subId: d.id });
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando desambiguación (no crítico):", error);
@@ -240,35 +306,35 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
 
   try {
     const eb = await obtenerPendienteEdicionBorradorPorChat(chatId);
-    if (eb) items.push({ descripcion: `✉️ Falta el texto de una edición de borrador de correo`, creadoEn: eb.creadoEn });
+    if (eb) items.push({ descripcion: `✉️ Falta el texto de una edición de borrador de correo`, creadoEn: eb.creadoEn, tipo: "edicion_borrador" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando edición de borrador (no crítico):", error);
   }
 
   try {
     const mp = await obtenerPendienteMontoPagoPorChat(chatId);
-    if (mp) items.push({ descripcion: `💳 Falta el monto de: "${mp.concepto}" (${mp.empresaHolded})`, creadoEn: mp.creadoEn });
+    if (mp) items.push({ descripcion: `💳 Falta el monto de: "${mp.concepto}" (${mp.empresaHolded})`, creadoEn: mp.creadoEn, tipo: "monto_pago" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando monto de pago recurrente (no crítico):", error);
   }
 
   try {
     const oa = await obtenerPendienteOrientacionAnotacionPorChat(chatId);
-    if (oa) items.push({ descripcion: `📝 Falta tu instrucción sobre una anotación de cashflow: "${truncar(oa.ubicacion, 60)}"`, creadoEn: oa.creadoEn });
+    if (oa) items.push({ descripcion: `📝 Falta tu instrucción sobre una anotación de cashflow: "${truncar(oa.ubicacion, 60)}"`, creadoEn: oa.creadoEn, tipo: "orientacion_anotacion" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando orientación de anotación (no crítico):", error);
   }
 
   try {
     const oc = await obtenerPendienteOrientacionCorreoPorChat(chatId);
-    if (oc) items.push({ descripcion: `📨 Falta tu instrucción sobre el correo: "${truncar(oc.asunto, 60)}" (de ${oc.de})`, creadoEn: oc.creadoEn });
+    if (oc) items.push({ descripcion: `📨 Falta tu instrucción sobre el correo: "${truncar(oc.asunto, 60)}" (de ${oc.de})`, creadoEn: oc.creadoEn, tipo: "orientacion_correo" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando orientación de correo (no crítico):", error);
   }
 
   try {
     const rg = await obtenerPendienteReglaClasificacionPorChat(chatId);
-    if (rg) items.push({ descripcion: `📚 Falta el criterio de una regla de clasificación para: "${truncar(rg.nombreArchivoOriginal, 60)}"`, creadoEn: rg.creadoEn });
+    if (rg) items.push({ descripcion: `📚 Falta el criterio de una regla de clasificación para: "${truncar(rg.nombreArchivoOriginal, 60)}"`, creadoEn: rg.creadoEn, tipo: "regla_clasificacion" });
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando regla de clasificación (no crítico):", error);
   }
@@ -298,13 +364,33 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
       const texto = [
         `🕖 Fin del día — te quedan ${items.length} cosa${items.length === 1 ? "" : "s"} pendiente${items.length === 1 ? "" : "s"} sin resolver:`,
         "",
-        ...items.map((it) => `• ${it.descripcion} (${formatAntiguedad(it.creadoEn)})`),
+        ...items.map((it, i) => `${i + 1}. ${it.descripcion} (${formatAntiguedad(it.creadoEn)})`),
       ].join("\n");
+
+      // Caso real reportado por Carlos: antes SOLO había "Descartar todo" — sin forma de descartar
+      // uno solo de los opcionales y seguir revisando el resto. Un botón por cada línea descartable
+      // (numerado igual que la lista de arriba, para que se entienda a cuál corresponde cada uno),
+      // más "Descartar todo" para cuando de verdad no queda nada por revisar. Los tipos sin `tipo`
+      // (dinero real, ediciones de Holded, hilos de autorespuesta, autorrepair) no traen botón
+      // individual a propósito — mismo criterio que ya los excluye de "Descartar todo".
+      const botonesIndividuales: InlineKeyboardButton[][] = items
+        .map((it, i) => ({ it, indice: i + 1 }))
+        .filter(({ it }) => it.tipo !== undefined)
+        .map(({ it, indice }) => [
+          {
+            text: `🗑️ Descartar #${indice}`,
+            callback_data:
+              it.tipo === "cola_correo_activo"
+                ? "colacorreo_descartaractivo"
+                : `resumen_descartar_item:${CODIGO_POR_TIPO[it.tipo as Exclude<TipoPendienteDescartable, "cola_correo_activo">]}:${it.subId ?? ""}`,
+          },
+        ]);
 
       // Pedido explícito de Carlos: si al final del día algo ya no hace
       // falta (lo resolvió por su cuenta, o ya no aplica), poder "dejar
       // todo libre" desde acá mismo en vez de ir mensaje por mensaje.
       await sendTelegramMessageWithButtons(admin.userId, texto, [
+        ...botonesIndividuales,
         [{ text: "🗑️ Descartar todo", callback_data: "resumen_descartar_todo" }],
       ]);
     } catch (error) {
@@ -430,6 +516,102 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
   }
 
   return n;
+}
+
+/**
+ * Descarta UN SOLO pendiente (una línea del resumen de fin de día), identificado por `tipo` (+
+ * `subId` cuando ese tipo puede tener varios a la vez, ver ItemPendiente arriba) — pedido explícito
+ * de Carlos: "debería yo tener todas las alternativas para descartar lo necesario y continuar con lo
+ * que requiera continuar", en vez de solo "Descartar todo". Reutiliza exactamente las mismas
+ * funciones consumir_* que ya usa descartarTodosLosPendientes, solo que apuntadas a UN registro en
+ * vez de vaciar el store entero. Devuelve true si de verdad había algo que descartar.
+ */
+async function descartarUnPendiente(chatId: number, tipo: TipoPendienteDescartable, subId: string): Promise<boolean> {
+  switch (tipo) {
+    case "cola_correo_activo":
+      // No debería llegar acá — este tipo usa el botón/callback existente colacorreo_descartaractivo
+      // directamente (ver enviarResumenPendientesDiario), nunca este dispatcher.
+      return false;
+    case "propuesta_archivo": {
+      const p = subId ? await consumirPropuestaClasificacion(subId) : undefined;
+      if (p) await unlink(p.rutaLocal).catch(() => {});
+      return Boolean(p);
+    }
+    case "reclasificacion": {
+      const p = await consumirPendienteReclasificacionPorChat(chatId);
+      if (p) await unlink(p.rutaLocal).catch(() => {});
+      return Boolean(p);
+    }
+    case "captura_empresa": {
+      // Hallazgo real de auditoría: eliminarPendienteCapturaEmpresa devuelve void y no-opea en
+      // silencio si ya no existe (ej. doble tap del mismo botón) — se verifica antes de borrar para
+      // reportar de verdad si había algo que descartar, en vez de "true" siempre.
+      const idNumerico = Number(subId);
+      if (!subId || !Number.isFinite(idNumerico)) return false;
+      const capturas = await obtenerPendientesCapturaEmpresaPorChat(chatId);
+      const existe = capturas.some((c) => c.messageId === idNumerico);
+      if (!existe) return false;
+      await eliminarPendienteCapturaEmpresa(chatId, idNumerico);
+      return true;
+    }
+    case "alerta_documento":
+      return Boolean(await consumirPendienteAlertaDocumento(chatId));
+    case "correccion_gasto":
+      return Boolean(await consumirPendienteCorreccionGasto(chatId));
+    case "ajuste_monto_gasto":
+      return Boolean(await consumirPendienteAjusteMontoGasto(chatId));
+    case "accion_gasto":
+      return Boolean(await consumirPendienteAccionGasto(chatId));
+    case "seleccion_gasto":
+      return Boolean(await consumirPendienteSeleccionGasto(chatId));
+    case "desambiguacion": {
+      if (!subId) return false;
+      const p = await consumirPendienteDesambiguacionPorId(subId, chatId);
+      if (p) await unlink(p.rutaLocal).catch(() => {});
+      return Boolean(p);
+    }
+    case "edicion_borrador":
+      return Boolean(await consumirPendienteEdicionBorrador(chatId));
+    case "monto_pago":
+      return Boolean(await consumirPendienteMontoPago(chatId));
+    case "orientacion_anotacion":
+      return Boolean(await consumirPendienteOrientacionAnotacion(chatId));
+    case "orientacion_correo":
+      return Boolean(await consumirPendienteOrientacionCorreo(chatId));
+    case "regla_clasificacion":
+      return Boolean(await consumirPendienteReglaClasificacion(chatId));
+  }
+}
+
+/** Maneja "🗑️ Descartar #N" del resumen de fin de día — ver descartarUnPendiente. */
+export async function handleDescartarItemPendienteCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+
+  try {
+    await answerCallbackQuery(callback.id);
+  } catch (error) {
+    console.error("[resumenPendientesDiario] No se pudo responder el callback_query (no crítico):", error);
+  }
+
+  if (chatId === undefined) return;
+
+  const [, codigoRaw, subId] = (callback.data ?? "").split(":");
+  const tipo = codigoRaw ? TIPO_POR_CODIGO[codigoRaw] : undefined;
+  if (!tipo) {
+    await sendTelegramMessage(chatId, "No reconozco qué pendiente descartar — puede que el botón esté corrupto.").catch(() => {});
+    return;
+  }
+
+  try {
+    const borrado = await descartarUnPendiente(chatId, tipo, subId ?? "");
+    await sendTelegramMessage(
+      chatId,
+      borrado ? "🗑️ Descartado." : "Ya no estaba pendiente — puede que ya lo hayas resuelto por otro camino."
+    ).catch(() => {});
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error descartando un pendiente individual (no crítico):", error);
+    await sendTelegramMessage(chatId, "Hubo un error descartándolo — puedes intentar de nuevo.").catch(() => {});
+  }
 }
 
 export async function handleDescartarTodoPendienteCallback(callback: TelegramCallbackQuery): Promise<void> {

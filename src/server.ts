@@ -33,7 +33,7 @@ import { startScheduler } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
-import { handleDescartarTodoPendienteCallback } from "../core/jobs/resumenPendientesDiario";
+import { handleDescartarTodoPendienteCallback, handleDescartarItemPendienteCallback } from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
@@ -649,6 +649,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         }
       } else if (data === "resumen_descartar_todo") {
         await handleDescartarTodoPendienteCallback(update.callback_query);
+      } else if (data.startsWith("resumen_descartar_item:")) {
+        await handleDescartarItemPendienteCallback(update.callback_query);
       } else if (data.startsWith("email_")) {
         await handleEmailActionCallback(update.callback_query);
       } else if (data.startsWith("draft_")) {

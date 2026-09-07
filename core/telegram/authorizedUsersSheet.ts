@@ -305,6 +305,10 @@ const ACCIONES_SENSIBLES = new Set([
   "colacorreo_siguiente",
   "colacorreo_descartaractivo",
   "resumen_descartar_todo",
+  // Mismo criterio: descartar UN pendiente individual del resumen de fin de día (ver
+  // resumenPendientesDiario.ts) es la misma clase de decisión que "Descartar todo", solo que a
+  // menor escala — se centraliza igual en superadmin.
+  "resumen_descartar_item",
   // Gap real encontrado en la auditoría del 2026-09-03: "¿Quieres
   // conciliar?" (preguntarSiConciliar en gastoCallbackHandler.ts) se agregó
   // el mismo día que se corrigió cuándo avanza la cola, pero quedó fuera de
