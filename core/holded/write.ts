@@ -310,6 +310,8 @@ export interface PurchaseCandidato {
   fecha: string;
   total: number;
   descripcion: string;
+  /** Número de documento/comprobante tal como está en Holded (document_number) — undefined si Holded no tiene ninguno registrado (borrador sin número). */
+  documentNumber?: string;
 }
 
 /** Los importes de /purchases vienen como string en formato ES ("1.234,56"). */
@@ -366,6 +368,15 @@ const MAX_PAGINAS_PURCHASES = 10;
  * "aceptable" por sí sola: devuelve TODOS los candidatos razonables para que
  * el usuario confirme cuál es (o ninguno, si no hay), igual que
  * buscarContactoHolded nunca inventa un contact_id.
+ *
+ * Cada candidato trae también su `documentNumber` (número de
+ * factura/comprobante ya registrado en Holded, si tiene uno) — pedido
+ * explícito de Carlos: proveedor+monto+fecha cercana por sí solos no
+ * alcanzan para distinguir "es el mismo gasto que ya registré" de "son dos
+ * gastos reales distintos por la misma cantidad" (ej. dos taxis de 20€ en
+ * días seguidos con el mismo proveedor). El número de documento es la señal
+ * más fuerte disponible para esa distinción — ver cómo se usa en
+ * procesarGastoEntrante.ts.
  */
 export async function buscarGastoSimilar(
   empresa: Empresa,
@@ -390,7 +401,7 @@ export async function buscarGastoSimilar(
     if (cursor) params.set("cursor", cursor);
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string }>;
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; document_number?: string | null }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -414,6 +425,7 @@ export async function buscarGastoSimilar(
         fecha: item.date ?? "",
         total,
         descripcion: item.description ?? "",
+        documentNumber: item.document_number || undefined,
       });
     }
 
@@ -1978,8 +1990,17 @@ export async function buscarMovimientoAproximado(
 /**
  * Concilia un movimiento bancario ENLAZÁNDOLO al documento de compra real
  * (POST .../reconcile con `documents: [{document_id, document_type:
- * "purchase"}]`) — no solo marca el movimiento como resuelto. Bug real
- * encontrado en vivo: esta función llamaba al endpoint con body vacío
+ * "purchase"}]`) — no solo marca el movimiento como resuelto.
+ *
+ * Nota sobre "conciliar la misma operación dos veces" (pedido explícito de
+ * Carlos, ver procesarGastoEntrante.ts): esta parte ya está protegida sin
+ * necesitar el mismo mecanismo de número de documento — buscarMovimientoSimilar/
+ * buscarMovimientoAproximado filtran con estaConciliado(mov.status) ANTES de
+ * ofrecer un movimiento como candidato, así que un movimiento ya conciliado
+ * nunca vuelve a aparecer para conciliarlo de nuevo, sin importar cuántas
+ * veces se pida.
+ *
+ * Bug real encontrado en vivo: esta función llamaba al endpoint con body vacío
  * `{}`, que Holded documenta como "marca conciliado SIN enlazar a ningún
  * documento" — el movimiento quedaba con status "forced_reconciled" pero
  * `reconciled_amount: "0.00"` (verificado comparando contra un movimiento

@@ -59,6 +59,59 @@ function esEmpresaHolded(empresa: string): empresa is Empresa {
 }
 
 /**
+ * Normaliza un número de documento para comparar — SOLO mayúsculas y recorta
+ * espacios repetidos, nunca quita guiones/puntuación. Corrección real de
+ * auditoría: una primera versión quitaba TODA la puntuación ("H5R3-KL" y
+ * "h5r3 kl" iguales, deseado), pero eso también igualaba números realmente
+ * DISTINTOS cuyo formato solo difiere en dónde va el separador (ej.
+ * "2024-001" y "202-4001" quedaban ambos "2024001") — exactamente el caso
+ * que esta comparación existe para distinguir. Preferible quedarse corto
+ * (algunos números con formato distinto que sí son el mismo no calzan) que
+ * decir "es el mismo gasto" de dos gastos reales distintos.
+ */
+function normalizarNumeroDocumento(n: string | undefined): string {
+  return (n ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+// "00000" es el placeholder literal que este proyecto escribe en Holded cuando ninguna factura trae
+// un número real (ver crearGastoHolded en core/holded/write.ts: `number: gasto.numeroDocumento ||
+// "00000"`) — hallazgo real de auditoría: sin excluirlo, DOS gastos que NINGUNO tiene número real
+// terminaban comparados como "coincide" (mismo "00000"), diciendo "es el mismo gasto" entre dos
+// gastos que en realidad no se pueden distinguir por esta vía en absoluto.
+const PLACEHOLDER_SIN_NUMERO = "00000";
+
+function esNumeroDocumentoUtilizable(normalizado: string): boolean {
+  return normalizado !== "" && normalizado !== PLACEHOLDER_SIN_NUMERO;
+}
+
+/**
+ * Compara el número de documento de la factura entrante contra el de un
+ * candidato ya registrado en Holded, o contra el de otra propuesta pendiente
+ * — pedido explícito de Carlos: proveedor + monto + fecha cercana por sí
+ * solos no bastan para distinguir "ya registré este MISMO gasto" de "son dos
+ * gastos reales distintos por el mismo importe" (ej. dos taxis de 20€ en
+ * días seguidos, mismo proveedor). "coincide" solo cuando AMBOS números
+ * existen (ninguno es el placeholder "00000") y son iguales tras normalizar
+ * — la señal más fuerte posible de que es el mismo comprobante. "distinto"
+ * cuando ambos existen pero NO coinciden. "desconocido" cuando falta (o es
+ * el placeholder) el número de alguno de los dos lados — no hay suficiente
+ * evidencia para decidir por esta vía.
+ *
+ * Esta señal es SOLO informativa — nunca decide sola si bloquear o no una
+ * propuesta (ver procesarGastoEntrante.ts): un número mal leído por OCR
+ * puede dar "distinto" en la MISMA factura, y una diferencia real de
+ * formato puede dar "coincide" entre facturas realmente distintas. Sirve
+ * para avisar con más contexto, la decisión final siempre la confirma un
+ * humano.
+ */
+function compararNumeroDocumento(numeroEntrante: string | undefined, candidato: string | undefined): "coincide" | "distinto" | "desconocido" {
+  const a = normalizarNumeroDocumento(numeroEntrante);
+  const b = normalizarNumeroDocumento(candidato);
+  if (!esNumeroDocumentoUtilizable(a) || !esNumeroDocumentoUtilizable(b)) return "desconocido";
+  return a === b ? "coincide" : "distinto";
+}
+
+/**
  * A partir de una factura/gasto ya leído (extraerDatosFactura), busca si
  * corresponde a un gasto ya existente en Holded o si hay que proponer uno
  * nuevo, y manda la propuesta con botones — nunca escribe nada en Holded
@@ -186,12 +239,32 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     console.error("[procesarGastoEntrante] Error buscando propuesta de gasto ya pendiente (no crítico, sigue igual):", error);
     return undefined;
   });
+  // Pedido explícito de Carlos: proveedor+monto parecido NO basta para asumir que es la misma
+  // factura — compara también el número de documento para que el aviso sea más inteligente. A
+  // propósito, esta comparación SOLO informa, nunca decide si bloquear — hallazgo real de
+  // auditoría: un número mal leído por OCR puede dar "distinto" en la MISMA factura (dejaría pasar
+  // un duplicado real si eso solo bastara para saltarse el bloqueo), y un formato distinto puede
+  // dar "coincide" entre facturas realmente distintas. Sigue bloqueando SIEMPRE que haya una
+  // propuesta parecida sin resolver — lo único que cambia es cuánto contexto trae el aviso.
+  const comparacionPendiente = propuestaYaPendiente
+    ? compararNumeroDocumento(datos.numeroDocumento, propuestaYaPendiente.numeroDocumento)
+    : undefined;
+
   if (propuestaYaPendiente) {
+    const notaNumeroDocumento =
+      comparacionPendiente === "distinto"
+        ? ` El número de documento de ESTA factura (${datos.numeroDocumento}) es DISTINTO al de esa propuesta ` +
+          `(${propuestaYaPendiente.numeroDocumento}) — podría tratarse de dos gastos reales diferentes por el ` +
+          `mismo importe, no necesariamente un duplicado. Resuelve esa propuesta primero (apruébala o descártala) ` +
+          `y, si de verdad es un gasto distinto, dímelo explícitamente y me encargo de registrarlo aparte.`
+        : comparacionPendiente === "coincide"
+          ? ` Además, el número de documento coincide (${datos.numeroDocumento}) — es casi con toda seguridad la misma factura.`
+          : "";
     await sendTelegramMessage(
       chatId,
       `📄 "${entrada.nombreArchivoOriginal}" parece la MISMA factura de una propuesta que ya te mandé antes y sigue sin resolver ` +
-        `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto} ${propuestaYaPendiente.moneda}) — revisa esa antes, no mandé una segunda ` +
-        `para no arriesgar un gasto duplicado en Holded.`
+        `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}) — revisa esa antes, no mandé una segunda ` +
+        `para no arriesgar un gasto duplicado en Holded.${notaNumeroDocumento}`
     );
     return "propuesta_duplicada";
   }
@@ -262,17 +335,46 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   let botones: { text: string; callback_data: string }[][];
 
   if (candidatos.length > 0) {
-    texto = [
+    // Pedido explícito de Carlos: proveedor+monto+fecha cercana solos no bastan para distinguir "ya
+    // registré este MISMO gasto" de "son dos gastos reales distintos por el mismo importe" — compara
+    // también el número de documento/comprobante contra cada candidato (ver compararNumeroDocumento).
+    // Señal SOLO informativa, nunca decide sola (ver compararNumeroDocumento) — el aviso siempre
+    // queda con margen para que un OCR mal leído en cualquiera de los dos lados invierta el
+    // resultado, así que ninguna de las dos frases suena 100% categórica.
+    const comparaciones = candidatos.map((c) => compararNumeroDocumento(datos.numeroDocumento, c.documentNumber));
+    const algunaCoincide = comparaciones.some((r) => r === "coincide");
+    const algunaDistinta = comparaciones.some((r) => r === "distinto");
+
+    const avisoNumeroDocumento = algunaCoincide
+      ? `⚠️ El número de documento coincide con uno de estos — probablemente sea el MISMO gasto, no uno distinto por el mismo importe (aunque un OCR mal leído también podría coincidir por casualidad). Revísalo bien antes de crear uno nuevo.`
+      : algunaDistinta
+        ? `${candidatos.length === 1 ? "Este tiene" : "Al menos uno de estos tiene"} un número de documento DISTINTO al de esta factura (${datos.numeroDocumento}) — podría ser un gasto real distinto por el mismo importe, aunque también podría ser el mismo con el número mal leído por OCR en alguno de los dos lados. Revísalo con atención antes de decidir.`
+        : "";
+
+    const lineasTexto = [
       `📄 *Factura detectada* — ${datos.proveedor} (${importeTexto}, ${datos.fecha}, ${empresa})`,
       `Concepto: ${conceptoConMonedaOriginal}`,
+    ];
+    if (datos.numeroDocumento) lineasTexto.push(`Número de documento: ${datos.numeroDocumento}`);
+    lineasTexto.push(
       ``,
       `Encontré ${candidatos.length === 1 ? "un gasto" : "estos gastos"} ya registrado(s) en Holded que podría(n) corresponder:`,
-      ...candidatos.map(
-        (c, i) => `${i + 1}. ${c.contactName} — ${c.total.toFixed(2)} € (${c.fecha}) — ${c.descripcion}`
-      ),
-      ``,
-      `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`,
-    ].join("\n");
+      ...candidatos.map((c, i) => {
+        const notaDoc =
+          comparaciones[i] === "coincide"
+            ? ` [mismo número de documento: ${c.documentNumber}]`
+            : comparaciones[i] === "distinto"
+              ? ` [número de documento distinto: ${c.documentNumber}]`
+              : c.documentNumber
+                ? ` [documento: ${c.documentNumber}]`
+                : "";
+        return `${i + 1}. ${c.contactName} — ${c.total.toFixed(2)} € (${c.fecha}) — ${c.descripcion}${notaDoc}`;
+      })
+    );
+    if (avisoNumeroDocumento) lineasTexto.push(``, avisoNumeroDocumento);
+    lineasTexto.push(``, `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`);
+
+    texto = lineasTexto.join("\n");
 
     botones = construirTecladoGasto(propuesta, { numCandidatos: candidatos.length });
   } else {
