@@ -844,7 +844,7 @@ export interface CuentaSugerida {
   accountId: string;
   tags: string[];
   ejemplo: string;
-  aprendidoDe: "proveedor" | "concepto" | "ia";
+  aprendidoDe: "proveedor" | "concepto" | "categoria" | "ia";
 }
 
 interface LineaConCuenta {
@@ -1055,8 +1055,26 @@ async function elegirCuentaConIA(
  *    varias cuentas candidatas distintas sin un proveedor que desempate,
  *    se le pide a Claude que elija (elegirCuentaConIA) en vez de quedarse
  *    con la primera por azar.
- * 3) Si no hay ninguna coincidencia razonable, devuelve undefined — Holded
- *    usa su cuenta por defecto, igual que antes de esta función existir.
+ * 3) Si tampoco hay match por concepto, busca por la ETIQUETA DE CATEGORÍA
+ *    (ver inferirTagsCategoria más abajo — "alimentacion", "transporte"+
+ *    "taxi", "hospedaje"...), comparando contra las etiquetas YA puestas en
+ *    compras reales anteriores. Caso real que motivó este tercer nivel: un
+ *    pedido de Uber Eats de un restaurante nunca antes visto ("Taquearte
+ *    Turbo") no comparte NINGUNA palabra real con un pedido anterior de OTRO
+ *    restaurante ("Teikit Del Valle") — el nivel 1 (proveedor) nunca
+ *    coincide porque cada pedido trae el nombre del restaurante, distinto
+ *    cada vez; el nivel 2 (concepto) tampoco, por el mismo motivo — así que
+ *    Holded caía en su cuenta genérica por defecto ("Otros servicios") para
+ *    CUALQUIER restaurante nuevo, aunque Footprint ya tuviera pedidos de
+ *    Uber Eats de sobra bajo la cuenta real de alimentación. La etiqueta de
+ *    categoría, en cambio, es la MISMA sin importar el restaurante — es
+ *    exactamente la señal que sí generaliza, y ya se calcula de forma
+ *    confiable (inferirTagsCategoria no mira nombres de proveedor/persona,
+ *    solo la naturaleza real del gasto). Exige coincidencia de TODAS las
+ *    etiquetas de categoría (no solo una) para no confundir, ej., un taxi
+ *    con un tren solo porque ambos comparten "transporte".
+ * 4) Si tampoco hay match por categoría, devuelve undefined — Holded usa su
+ *    cuenta por defecto, igual que antes de esta función existir.
  */
 export async function inferirCuentaGasto(
   empresa: Empresa,
@@ -1089,20 +1107,28 @@ export async function inferirCuentaGasto(
   // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
   const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
   const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
-  if (palabrasConcepto.length === 0) return undefined;
 
-  const porConcepto = lineas.filter((l) => {
-    const texto = normalizar(`${l.descripcion} ${l.lineName}`);
-    return palabrasConcepto.some((p) => texto.includes(p));
-  });
+  if (palabrasConcepto.length > 0) {
+    const porConcepto = lineas.filter((l) => {
+      const texto = normalizar(`${l.descripcion} ${l.lineName}`);
+      return palabrasConcepto.some((p) => texto.includes(p));
+    });
 
-  const cuentasDistintas = new Set(porConcepto.map((m) => m.account));
-  if (cuentasDistintas.size > 1) {
-    const viaIA = await elegirCuentaConIA(criterios, porConcepto);
-    if (viaIA) return viaIA;
+    const cuentasDistintas = new Set(porConcepto.map((m) => m.account));
+    if (cuentasDistintas.size > 1) {
+      const viaIA = await elegirCuentaConIA(criterios, porConcepto);
+      if (viaIA) return viaIA;
+    }
+
+    const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
+    if (sugeridoPorConcepto) return sugeridoPorConcepto;
   }
 
-  return construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
+  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
+  if (tagsCategoria.length === 0) return undefined;
+
+  const porCategoria = lineas.filter((l) => tagsCategoria.every((t) => l.tags.includes(t)));
+  return construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
 }
 
 export interface GastoSinComprobante {
