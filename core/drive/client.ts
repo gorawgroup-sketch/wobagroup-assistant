@@ -2,6 +2,11 @@ import { createReadStream } from "node:fs";
 import { google, drive_v3 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
+/** Escapa un valor para usarlo dentro de una consulta de Drive (name = '...' / name contains '...') — compartido por todas las búsquedas de este archivo, antes 4 copias independientes de la misma línea. */
+function escaparParaConsultaDrive(nombre: string): string {
+  return nombre.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 let driveClient: drive_v3.Drive | null = null;
 
 /**
@@ -129,7 +134,7 @@ export async function searchDriveFiles(rootFolderId: string, query: string): Pro
   const candidatosPorId = new Map<string, drive_v3.Schema$File>();
 
   for (const palabra of palabrasSignificativas(query)) {
-    const escapedQuery = palabra.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const escapedQuery = escaparParaConsultaDrive(palabra);
     const q = `name contains '${escapedQuery}' and trashed = false`;
 
     let pageToken: string | undefined;
@@ -310,7 +315,7 @@ export async function resolverCarpetaDestino(
       const limpio = nombre.trim();
       if (!limpio) continue;
 
-      const escapado = limpio.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const escapado = escaparParaConsultaDrive(limpio);
       const condicionNombre = modo === "exacta" ? `name = '${escapado}'` : `name contains '${escapado}'`;
       const q = `mimeType = 'application/vnd.google-apps.folder' and ${condicionNombre} and trashed = false`;
 
@@ -333,6 +338,85 @@ export async function resolverCarpetaDestino(
   }
 
   return { folderId: rootFolderId, encontrada: false };
+}
+
+/**
+ * Caso real reportado por Carlos: al pedir "✏️ Elegir otra carpeta" en un documento, el sistema solo
+ * podía encontrar una carpeta YA EXISTENTE o, si no, archivar en la raíz sin decir que la carpeta que
+ * pidió no existe ni ofrecer crearla — "debes... mostrarme la alternativa para crear una carpeta
+ * nueva, pedirme nombre, crearla y archivarlo ahí". A diferencia de resolverCarpetaDestino (búsqueda
+ * global entre nombres candidatos, nunca crea, cae a la raíz si no encuentra), esto DESCIENDE la ruta
+ * dada, nivel por nivel, y CREA cada segmento que no exista todavía — solo se usa cuando el usuario
+ * pidió explícitamente crear la carpeta, nunca automáticamente.
+ *
+ * Hallazgo real de auditoría: la primera versión buscaba solo por nombre EXACTO en cada nivel — a
+ * diferencia de resolverCarpetaDestino, que ya prueba una segunda pasada con "contains" precisamente
+ * porque nombres reales de carpetas en este Drive traen variaciones (ej. "SEGUROS📜" en vez de
+ * "Seguros"). Sin esa segunda pasada, pedir crear "Seguros" habría creado una carpeta DUPLICADA junto
+ * a la real — y esta cuenta de servicio no puede borrar ni mandar a la papelera nada que crea (sin
+ * permiso en este Drive compartido), así que un duplicado así queda para siempre. Ahora prueba exacta
+ * y luego parcial en cada nivel, igual que resolverCarpetaDestino, ANTES de crear. La búsqueda usa
+ * getDriveClient() (misma identidad de solo-lectura que listar_carpetas_drive) para que "¿ya existe?"
+ * responda lo mismo sin importar qué tool la pregunte — solo la creación en sí usa el cliente de
+ * escritura.
+ */
+export async function resolverOCrearCarpeta(
+  rootFolderId: string,
+  ruta: string[]
+): Promise<{ folderId: string; encontrada: boolean; creada: boolean; rutaEncontrada: string }> {
+  const lector = getDriveClient();
+  let parentId = rootFolderId;
+  let huboCreacion = false;
+  const segmentosFinales: string[] = [];
+
+  for (const segmentoRaw of ruta) {
+    const nombre = segmentoRaw.trim();
+    if (!nombre) continue;
+
+    const escapado = escaparParaConsultaDrive(nombre);
+    let existenteId: string | undefined;
+    let nombreReal = nombre;
+
+    for (const modo of ["exacta", "parcial"] as const) {
+      const condicionNombre = modo === "exacta" ? `name = '${escapado}'` : `name contains '${escapado}'`;
+      const q = `mimeType = 'application/vnd.google-apps.folder' and ${condicionNombre} and '${parentId}' in parents and trashed = false`;
+      const res = await lector.files.list({
+        q,
+        fields: "files(id, name)",
+        pageSize: 5,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      });
+      const match = res.data.files?.[0];
+      if (match?.id) {
+        existenteId = match.id;
+        nombreReal = match.name ?? nombre;
+        break;
+      }
+    }
+
+    if (existenteId) {
+      parentId = existenteId;
+      segmentosFinales.push(nombreReal);
+      continue;
+    }
+
+    const escritor = getDriveWriteClient();
+    const creada = await escritor.files.create({
+      requestBody: { name: nombre, mimeType: "application/vnd.google-apps.folder", parents: [parentId] },
+      fields: "id",
+      supportsAllDrives: true,
+    });
+    if (!creada.data.id) {
+      throw new Error(`No se pudo crear la carpeta "${nombre}" en Drive.`);
+    }
+    parentId = creada.data.id;
+    segmentosFinales.push(nombre);
+    huboCreacion = true;
+  }
+
+  return { folderId: parentId, encontrada: true, creada: huboCreacion, rutaEncontrada: segmentosFinales.join(" / ") };
 }
 
 export interface ArchivoReciente {
@@ -514,7 +598,7 @@ export async function listarCarpetasEnRuta(rootFolderId: string, ruta: string[])
     const limpio = segmento.trim();
     if (!limpio) continue;
 
-    const escapado = limpio.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const escapado = escaparParaConsultaDrive(limpio);
     const q =
       `'${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' ` +
       `and name contains '${escapado}' and trashed = false`;

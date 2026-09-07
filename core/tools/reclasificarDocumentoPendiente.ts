@@ -20,8 +20,10 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
   description:
     "Archiva en Drive un documento que quedó pendiente porque el usuario pidió 'Elegir otra carpeta' — " +
     "úsala cuando el usuario responda en texto libre con la empresa y/o carpeta correctas (ej. 'EWORKS, " +
-    "en Colaboradores/Alejandra', 'es de Footprint', 'en la carpeta de Facturas'). Nunca vuelvas a pedir " +
-    "que reenvíen el archivo — ya está guardado localmente, solo falta saber dónde archivarlo.",
+    "en Colaboradores/Alejandra', 'es de Footprint', 'en la carpeta de Facturas'). Si el usuario no está " +
+    "seguro de qué carpetas existen, usa PRIMERO listar_carpetas_drive para mostrárselas — no adivines " +
+    "un nombre de carpeta que no verificaste. Nunca vuelvas a pedir que reenvíen el archivo — ya está " +
+    "guardado localmente, solo falta saber dónde archivarlo.",
   input_schema: {
     type: "object",
     properties: {
@@ -37,6 +39,15 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
           "'Colaboradores/Alejandra', o solo 'Facturas'). Si no especificó ninguna carpeta en particular, " +
           "usa el tipo de documento original o algo genérico como 'Otros'.",
       },
+      crearCarpetaSiNoExiste: {
+        type: "boolean",
+        description:
+          "true SOLO si el usuario pidió explícitamente crear una carpeta nueva (ej. 'créala', 'no existe, " +
+          "hazla tú') — crea de verdad cada carpeta de la ruta que no exista todavía en Drive. Si el " +
+          "usuario solo te dio un nombre de carpeta sin decir que la crees, deja esto en false — usa " +
+          "listar_carpetas_drive primero para ver si ya existe con otro nombre parecido antes de asumir " +
+          "que hace falta crearla.",
+      },
     },
     required: ["empresa", "carpeta"],
   },
@@ -48,6 +59,7 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
 
     const empresa = typeof input.empresa === "string" ? input.empresa : undefined;
     const carpeta = typeof input.carpeta === "string" ? input.carpeta.trim() : "";
+    const crearCarpetaSiNoExiste = input.crearCarpetaSiNoExiste === true;
     if (!empresa || !(EMPRESAS as readonly string[]).includes(empresa) || !carpeta) {
       return "Error: hace falta una empresa válida (WOBA, EWORKS o Footprint) y una carpeta — pregúntale al usuario cuál falta.";
     }
@@ -77,7 +89,7 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
 
     let resultado: Awaited<ReturnType<typeof archivarDocumentoEnDrive>>;
     try {
-      resultado = await archivarDocumentoEnDrive(propuestaCorregida);
+      resultado = await archivarDocumentoEnDrive(propuestaCorregida, crearCarpetaSiNoExiste);
     } catch (error) {
       // Se reinserta el pendiente para no perderlo por un error transitorio.
       await guardarPendienteReclasificacion({ ...pendiente }).catch(() => {});

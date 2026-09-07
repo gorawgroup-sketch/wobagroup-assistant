@@ -1,5 +1,5 @@
 import { unlink } from "node:fs/promises";
-import { resolverCarpetaDestino, subirArchivoADrive } from "../drive/client";
+import { resolverCarpetaDestino, resolverOCrearCarpeta, subirArchivoADrive } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import type { PropuestaClasificacion } from "./classificationStore";
@@ -10,16 +10,17 @@ export interface ResultadoArchivado {
   webViewLink?: string;
 }
 
-/**
- * Convierte "BAE / Colaboradores / Alejandra" en ["Alejandra", "Colaboradores", "BAE"]
- * — se prueba primero el segmento más específico (el último).
- */
-function extraerCandidatosCarpeta(carpetaSugerida: string): string[] {
+/** Convierte "BAE / Colaboradores / Alejandra" en ["BAE", "Colaboradores", "Alejandra"] — orden padre→hijo, tal como se escribió. */
+function extraerRutaCarpeta(carpetaSugerida: string): string[] {
   return carpetaSugerida
     .split("/")
     .map((s) => s.trim())
-    .filter(Boolean)
-    .reverse();
+    .filter(Boolean);
+}
+
+/** La misma ruta pero invertida — se prueba primero el segmento más específico (el último), para la búsqueda de resolverCarpetaDestino (nunca crea, solo busca en todo el árbol). */
+function extraerCandidatosCarpeta(carpetaSugerida: string): string[] {
+  return extraerRutaCarpeta(carpetaSugerida).reverse();
 }
 
 /**
@@ -28,8 +29,18 @@ function extraerCandidatosCarpeta(carpetaSugerida: string): string[] {
  * sube archivos a Drive — se invoca exclusivamente desde el callback del
  * botón "✅ Sí, archivar aquí" (ver documentCallbackHandler.ts), nunca
  * automáticamente.
+ *
+ * `crearCarpetaSiNoExiste`: caso real reportado por Carlos — al corregir la clasificación de un
+ * documento, si la carpeta que pidió no existe, el sistema archivaba en la raíz en silencio en vez de
+ * ofrecer crearla. Con este flag en true (solo cuando el usuario lo pidió explícitamente, ver
+ * reclasificarDocumentoPendiente.ts), la ruta completa se CREA en vez de solo buscarse — nunca se usa
+ * en el flujo normal de "✅ Sí, archivar aquí", que nunca debe crear carpetas sin que el usuario lo
+ * pida directamente.
  */
-export async function archivarDocumentoEnDrive(propuesta: PropuestaClasificacion): Promise<ResultadoArchivado> {
+export async function archivarDocumentoEnDrive(
+  propuesta: PropuestaClasificacion,
+  crearCarpetaSiNoExiste: boolean = false
+): Promise<ResultadoArchivado> {
   const empresa = propuesta.clasificacion.empresa as EmpresaConCarpeta;
   const rootFolderId = ROOT_FOLDERS[empresa];
 
@@ -43,8 +54,9 @@ export async function archivarDocumentoEnDrive(propuesta: PropuestaClasificacion
   }
 
   try {
-    const candidatos = extraerCandidatosCarpeta(propuesta.clasificacion.carpetaSugerida);
-    const destino = await resolverCarpetaDestino(rootFolderId, candidatos);
+    const destino = crearCarpetaSiNoExiste
+      ? await resolverOCrearCarpeta(rootFolderId, extraerRutaCarpeta(propuesta.clasificacion.carpetaSugerida))
+      : { ...(await resolverCarpetaDestino(rootFolderId, extraerCandidatosCarpeta(propuesta.clasificacion.carpetaSugerida))), creada: false };
 
     // Pedido explícito de Carlos, mismo caso real que motivó el reintento
     // equivalente en gastoCallbackHandler.ts: la copia local del adjunto no
@@ -67,9 +79,11 @@ export async function archivarDocumentoEnDrive(propuesta: PropuestaClasificacion
 
     await unlink(propuesta.rutaLocal);
 
-    const notaCarpeta = destino.encontrada
-      ? `la carpeta "${destino.rutaEncontrada}"`
-      : `la carpeta raíz de ${empresa} (no encontré una subcarpeta exacta para "${propuesta.clasificacion.carpetaSugerida}")`;
+    const notaCarpeta = destino.creada
+      ? `la carpeta nueva "${destino.rutaEncontrada}" (recién creada)`
+      : destino.encontrada
+        ? `la carpeta "${destino.rutaEncontrada}"`
+        : `la carpeta raíz de ${empresa} (no encontré una subcarpeta exacta para "${propuesta.clasificacion.carpetaSugerida}")`;
 
     return {
       ok: true,
