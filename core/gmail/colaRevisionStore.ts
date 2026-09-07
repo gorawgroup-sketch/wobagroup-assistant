@@ -106,29 +106,65 @@ async function leerTodas(): Promise<{ rowIndex: number; item: ItemColaCorreo }[]
  * "ya resuelto, no lo repreguntes por 7 días" — se sacó a propósito: existía
  * solo para el período en que marcarHiloComoLeido todavía no tenía el scope
  * gmail.modify autorizado, ahora confirmado funcionando en vivo.)
+ *
+ * Caso real reportado por Carlos (2026-09-07): un hilo se encoló con el
+ * mensaje más reciente de ESE momento (ej. "vie 4 sept"), pero con un
+ * backlog grande esperó DÍAS en estado "cola" antes de activarse — mientras
+ * tanto, el hilo real siguió recibiendo respuestas nuevas en Gmail (hasta
+ * "hoy 12:27"). Como este store solo omitía re-agregar el hilo (nunca lo
+ * actualizaba), la fila se quedó con el snapshot viejo — al activarse por
+ * fin, Wobi mostró contenido de hace días como si fuera "lo próximo por
+ * revisar", sin ninguna pista de que la conversación ya había avanzado.
+ * Ahora, si el mensaje más reciente cambió desde que se encoló (mismo
+ * thread id, mensajeId distinto), se REFRESCA la fila en vez de omitirla —
+ * pero solo mientras sigue en "cola" (nunca toca una fila ya "activa": esa
+ * ya se le está mostrando a Carlos, refrescarla a mitad de camino sería más
+ * confuso, no menos).
  */
 export async function encolarCorreos(
   chatId: number,
   items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>
 ): Promise<number> {
   const existentes = await leerTodas();
-  const idsExistentes = new Set(existentes.filter((f) => f.item.chatId === chatId).map((f) => f.item.id));
+  const delChat = existentes.filter((f) => f.item.chatId === chatId);
+  const filaPorId = new Map(delChat.map((f) => [f.item.id, f]));
 
-  const nuevos = items.filter((i) => !idsExistentes.has(i.id));
-  for (const item of nuevos) {
-    await agregarFila(TAB_NAME, NUM_COLS, HEADERS, [
-      item.id,
-      chatId,
-      item.de,
-      item.asunto,
-      item.fechaOrden,
-      "cola",
-      0,
-      Date.now(),
-      item.mensajeId,
-    ]);
+  let agregados = 0;
+  for (const item of items) {
+    const existente = filaPorId.get(item.id);
+
+    if (!existente) {
+      await agregarFila(TAB_NAME, NUM_COLS, HEADERS, [
+        item.id,
+        chatId,
+        item.de,
+        item.asunto,
+        item.fechaOrden,
+        "cola",
+        0,
+        Date.now(),
+        item.mensajeId,
+      ]);
+      agregados += 1;
+      continue;
+    }
+
+    if (existente.item.estado === "cola" && existente.item.mensajeId !== item.mensajeId) {
+      // fechaOrden NUNCA se actualiza acá a propósito: sigue reflejando cuándo empezó a esperar sin
+      // leer (lo que de verdad importa para "más antiguo primero") — solo el CONTENIDO (de quién es,
+      // asunto, y sobre todo mensajeId, que es lo que procesarSiguienteCorreoActivo usa para traer el
+      // texto real) se refresca, para que al activarse por fin muestre la conversación tal como está
+      // AHORA, no como estaba cuando se encoló.
+      const actualizado: ItemColaCorreo = {
+        ...existente.item,
+        mensajeId: item.mensajeId,
+        de: item.de,
+        asunto: item.asunto,
+      };
+      await actualizarFila(TAB_NAME, existente.rowIndex, NUM_COLS, objetoAFila(actualizado));
+    }
   }
-  return nuevos.length;
+  return agregados;
 }
 
 /** true si hay un correo "activo" (mostrado, esperando resolución) para este chat. */
