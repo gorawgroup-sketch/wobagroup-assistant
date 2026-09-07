@@ -1181,3 +1181,120 @@ export async function revisarCodigoAutonomamente(params: {
     contenidoNuevoCompleto,
   };
 }
+
+const NOMBRE_TOOL_CORRECCION_GASTO = "reportar_correccion_gasto";
+
+const TOOL_CORRECCION_GASTO: Anthropic.Tool = {
+  name: NOMBRE_TOOL_CORRECCION_GASTO,
+  description:
+    "Reporta cómo interpretar la respuesta del usuario a 'dime el monto real a registrar' para " +
+    "corregir un gasto. Llámala siempre al terminar, nunca respondas solo en texto.",
+  input_schema: {
+    type: "object",
+    properties: {
+      tipo: {
+        type: "string",
+        enum: ["monto_nuevo", "fraccion", "moneda_incorrecta", "no_entendido"],
+        description:
+          "monto_nuevo: dio un número absoluto nuevo, en la MISMA moneda que ya tenía el gasto. " +
+          "fraccion: dio una fracción/porcentaje del monto original (ej. 'la mitad', '30%'), " +
+          "también en la misma moneda. moneda_incorrecta: dijo explícitamente que la MONEDA " +
+          "original estaba mal e indicó cuál es la correcta — el número puede quedarse igual (el " +
+          "caso típico: dijeron un monto en la moneda equivocada por error) o también cambiar si lo " +
+          "dio explícito. no_entendido: no puedes interpretar con confianza real ninguno de los " +
+          "anteriores — ante cualquier duda genuina usa esto, NUNCA inventes ni asumas.",
+      },
+      monto: {
+        type: "number",
+        description:
+          "El número EXACTO que escribió el usuario — solo si tipo es monto_nuevo, o si tipo es " +
+          "moneda_incorrecta Y además dio un monto nuevo explícito (no el que ya tenía la propuesta). " +
+          "Nunca inventado, nunca convertido entre monedas.",
+      },
+      fraccion: {
+        type: "number",
+        description: "Solo si tipo es fraccion — de 0 a 1 (ej. 0.5 para 'la mitad', 0.3 para '30%').",
+      },
+      monedaCorrecta: {
+        type: "string",
+        description:
+          "Solo si tipo es moneda_incorrecta — código ISO de 3 letras (EUR, USD, GBP, MXN, COP, etc.) " +
+          "de la moneda que el usuario dice que es la correcta, tal como se puede inferir de sus " +
+          "palabras (ej. 'euros'→EUR, 'dólares'→USD, 'libras'→GBP).",
+      },
+    },
+    required: ["tipo"],
+  },
+};
+
+const SYSTEM_PROMPT_CORRECCION_GASTO =
+  "Interpretas la respuesta de un usuario a la pregunta 'dime el monto real a registrar' para " +
+  "corregir un gasto pendiente de aprobar. El usuario puede estar corrigiendo el MONTO (un número " +
+  "nuevo, una fracción del original como 'la mitad', o un porcentaje) — o corrigiendo la MONEDA " +
+  "(diciendo que la moneda original estaba mal y cuál es la correcta, con o sin repetir el monto). " +
+  "NUNCA inventes ni conviertas un valor que el usuario no dio explícitamente — si tienes cualquier " +
+  "duda real de qué quiso decir, reporta 'no_entendido' en vez de adivinar. Reporta SIEMPRE con la " +
+  "tool, nunca en texto plano.";
+
+export type CorreccionGasto =
+  | { tipo: "monto_nuevo"; monto: number }
+  | { tipo: "fraccion"; fraccion: number }
+  | { tipo: "moneda_incorrecta"; monedaCorrecta: string; monto?: number }
+  | { tipo: "no_entendido" };
+
+/**
+ * Fallback inteligente para "💰 Ajustar monto" (ver gastoCallbackHandler.ts) — cuando el parser
+ * rápido/determinista (interpretarNuevoMonto, solo entiende un número literal o "la mitad"/"N%") no
+ * reconoce el texto, esto intenta interpretarlo con Claude antes de rendirse. Pedido explícito de
+ * Carlos, tras un caso real: el correo de Kelly decía "$12.71" pero el cargo real había sido en
+ * euros — Carlos respondió "12.71 Euros, en lugar de dólares, la moneda estaba equivocada" y el
+ * parser rígido nunca lo entendió como una corrección de moneda, solo como un intento fallido de dar
+ * un número ("No entendí... dime un número"). Un solo mensaje de texto libre, sin herramientas — solo
+ * clasifica, nunca inventa ni convierte un valor no dado explícitamente (ver TOOL_CORRECCION_GASTO).
+ */
+export async function interpretarCorreccionGasto(params: {
+  textoUsuario: string;
+  montoOriginal: number;
+  monedaOriginal: string;
+}): Promise<CorreccionGasto> {
+  const anthropic = getClient();
+
+  const userText =
+    `El gasto original es ${params.montoOriginal} ${params.monedaOriginal}. El usuario respondió a ` +
+    `"dime el monto real a registrar" con: "${params.textoUsuario}". ¿Qué quiso decir?`;
+
+  const response = await anthropic.messages.create({
+    model: MODEL_HAIKU,
+    max_tokens: 512,
+    system: SYSTEM_PROMPT_CORRECCION_GASTO,
+    tools: [TOOL_CORRECCION_GASTO],
+    tool_choice: { type: "tool", name: NOMBRE_TOOL_CORRECCION_GASTO },
+    messages: [{ role: "user", content: userText }],
+  });
+
+  registrarUsoIA(undefined, MODEL_HAIKU, response.usage).catch((error) =>
+    console.error("[costTracking] Error registrando uso de IA (interpretarCorreccionGasto):", error)
+  );
+
+  const reportar = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === NOMBRE_TOOL_CORRECCION_GASTO
+  );
+  if (!reportar) return { tipo: "no_entendido" };
+
+  const input = reportar.input as Record<string, unknown>;
+
+  if (input.tipo === "monto_nuevo" && typeof input.monto === "number" && input.monto > 0) {
+    return { tipo: "monto_nuevo", monto: input.monto };
+  }
+  if (input.tipo === "fraccion" && typeof input.fraccion === "number" && input.fraccion > 0) {
+    return { tipo: "fraccion", fraccion: input.fraccion };
+  }
+  if (input.tipo === "moneda_incorrecta" && typeof input.monedaCorrecta === "string" && input.monedaCorrecta.trim()) {
+    return {
+      tipo: "moneda_incorrecta",
+      monedaCorrecta: input.monedaCorrecta.trim().toUpperCase(),
+      monto: typeof input.monto === "number" && input.monto > 0 ? input.monto : undefined,
+    };
+  }
+  return { tipo: "no_entendido" };
+}

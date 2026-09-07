@@ -2062,6 +2062,50 @@ export async function buscarMovimientoAproximado(
   return candidatos.sort((a, b) => a.diferenciaMonto - b.diferenciaMonto);
 }
 
+export interface MovimientoMonedaAlternativa extends MovimientoBancarioCandidato {
+  /** true si además coincide el nombre del proveedor en la descripción — mucha más confianza que solo el monto. */
+  coincideProveedor: boolean;
+  /** Cuántos candidatos MÁS (además del elegido) coincidían igual de bien en esta misma moneda — 0 si este fue el único. Hallazgo real de auditoría: sin esto, un match ambiguo se reportaba con la misma confianza que uno único. */
+  otrosCandidatos: number;
+}
+
+/**
+ * Busca un movimiento con EXACTAMENTE el mismo número (el mismo monto, sin
+ * convertir nada) pero en OTRA moneda real de la empresa — pedido explícito
+ * de Carlos, tras un caso real: Kelly reportó por correo un gasto de Uber
+ * Eats como "12.71 dólares", no había ningún movimiento de $12.71 sin
+ * conciliar, pero SÍ había uno de exactamente 12.71 € el mismo día — el
+ * monto que Kelly reportó era correcto, la MONEDA que dijo estaba mal.
+ * Solo tiene sentido llamarla cuando la búsqueda normal (buscarMovimientoSimilar/
+ * buscarMovimientoAproximado) en la moneda declarada ya no encontró nada —
+ * esto NUNCA decide sola ni concilia nada, solo señala la posibilidad para
+ * que un humano la confirme antes de crear el gasto (ver
+ * procesarGastoEntrante.ts).
+ */
+export async function buscarMovimientoEnMonedaAlternativa(
+  empresa: Empresa,
+  criterios: { monto: number; fecha: string; proveedor?: string },
+  monedasAlternativas: string[]
+): Promise<MovimientoMonedaAlternativa | undefined> {
+  for (const moneda of monedasAlternativas) {
+    let candidatos: MovimientoBancarioCandidato[];
+    try {
+      candidatos = await buscarMovimientoSimilar(empresa, { monto: criterios.monto, fecha: criterios.fecha, moneda });
+    } catch (error) {
+      console.error(`[write] Error buscando movimiento en moneda alternativa ${moneda} (no crítico, sigue con la siguiente):`, error);
+      continue;
+    }
+    if (candidatos.length === 0) continue;
+
+    const conProveedor = criterios.proveedor
+      ? candidatos.find((c) => proveedorPareceEnDescripcion(criterios.proveedor as string, c.descripcion))
+      : undefined;
+    const elegido = conProveedor ?? candidatos[0];
+    return { ...elegido, coincideProveedor: Boolean(conProveedor), otrosCandidatos: candidatos.length - 1 };
+  }
+  return undefined;
+}
+
 /**
  * Concilia un movimiento bancario ENLAZÁNDOLO al documento de compra real
  * (POST .../reconcile con `documents: [{document_id, document_type:

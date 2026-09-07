@@ -3,6 +3,7 @@ import {
   buscarGastoSimilar,
   buscarMovimientoSimilar,
   buscarMovimientoAproximado,
+  buscarMovimientoEnMonedaAlternativa,
   inferirCuentaGasto,
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
@@ -456,6 +457,27 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
 
+    // Pedido explícito de Carlos, tras un caso real: Kelly reportó por correo un gasto de Uber Eats
+    // como "12.71 dólares" — no había ningún movimiento sin conciliar en USD, pero SÍ había uno de
+    // exactamente 12.71 € el mismo día. El monto que reportó era correcto, la MONEDA que dijo estaba
+    // mal. Solo se prueba cuando la búsqueda normal (exacta y aproximada) ya no encontró nada —
+    // nunca reemplaza ni concilia sola, solo avisa para que se confirme antes de crear el gasto.
+    let movimientoMonedaAlternativa: Awaited<ReturnType<typeof buscarMovimientoEnMonedaAlternativa>> | undefined;
+    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0) {
+      const otrasMonedas = Array.from(monedasReales).filter((m) => m !== monedaParaHolded);
+      if (otrasMonedas.length > 0) {
+        try {
+          movimientoMonedaAlternativa = await buscarMovimientoEnMonedaAlternativa(
+            empresa,
+            { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10), proveedor: datos.proveedor },
+            otrasMonedas
+          );
+        } catch (error) {
+          console.error("[procesarGastoEntrante] Error buscando movimiento en moneda alternativa:", error);
+        }
+      }
+    }
+
     const notaAproximacion = usarEquivalente
       ? monedaParaHolded === "EUR"
         ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
@@ -481,9 +503,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
               .join("\n") +
             `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
-          : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
-            (datos.proveedor ? " — ni exacto ni aproximado por nombre y monto cercano" : " (búsqueda exacta — no hay nombre de proveedor para buscar aproximado)") +
-            ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
+          : movimientoMonedaAlternativa
+            ? `\n\n💱 OJO — posible error de moneda: no encontré ningún movimiento de ${importeTexto}, pero SÍ hay uno de ` +
+              `EXACTAMENTE ${movimientoMonedaAlternativa.monto.toFixed(2)} ${movimientoMonedaAlternativa.moneda} el ` +
+              `${movimientoMonedaAlternativa.fecha}${movimientoMonedaAlternativa.coincideProveedor ? ` con un proveedor parecido a "${datos.proveedor}"` : ""} ` +
+              `("${movimientoMonedaAlternativa.descripcion || "(sin descripción)"}"). El monto reportado parece correcto, pero probablemente la moneda ` +
+              `no — es más probable que el cargo real haya sido en ${movimientoMonedaAlternativa.moneda}, no en ${monedaParaHolded}.` +
+              (movimientoMonedaAlternativa.otrosCandidatos > 0
+                ? ` Ojo: hay ${movimientoMonedaAlternativa.otrosCandidatos} movimiento(s) más en ${movimientoMonedaAlternativa.moneda} igual de parecido(s) — no es un match único, revísalo con más cuidado.`
+                : "") +
+              ` Confirma la moneda real antes de crear el gasto (no lo crees ni concilies todavía si no estás seguro).`
+            : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
+              (datos.proveedor ? " — ni exacto ni aproximado por nombre y monto cercano" : " (búsqueda exacta — no hay nombre de proveedor para buscar aproximado)") +
+              ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
     // igual que uno exacto — ya pasó el filtro de nombre+monto, y el texto

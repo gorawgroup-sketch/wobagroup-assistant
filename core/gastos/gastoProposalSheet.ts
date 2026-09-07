@@ -385,9 +385,14 @@ export async function actualizarMessageIdGasto(id: string, messageId: number): P
   });
 }
 
-export async function obtenerPropuestaGasto(id: string): Promise<PropuestaGasto | undefined> {
+/** Busca una fila por id de propuesta — helper compartido, evita repetir leerTodas()+find() en cada actualización (hallazgo real de auditoría). */
+async function buscarFilaPropuesta(id: string): Promise<FilaConIndice | undefined> {
   const todas = await leerTodas();
-  return todas.find(({ propuesta }) => propuesta.id === id)?.propuesta;
+  return todas.find(({ propuesta }) => propuesta.id === id);
+}
+
+export async function obtenerPropuestaGasto(id: string): Promise<PropuestaGasto | undefined> {
+  return (await buscarFilaPropuesta(id))?.propuesta;
 }
 
 /**
@@ -400,8 +405,7 @@ export async function obtenerPropuestaGasto(id: string): Promise<PropuestaGasto 
  * líneas manteniendo los mismos % de IVA/retención, solo escalando la base.
  */
 export async function actualizarMontoPropuestaGasto(id: string, nuevoMonto: number, nuevasLineas: LineaFactura[]): Promise<boolean> {
-  const todas = await leerTodas();
-  const match = todas.find(({ propuesta }) => propuesta.id === id);
+  const match = await buscarFilaPropuesta(id);
   if (!match) return false;
 
   const sheetId = assertSheetId();
@@ -412,6 +416,35 @@ export async function actualizarMontoPropuestaGasto(id: string, nuevoMonto: numb
     range: `${TAB_NAME}!D${match.rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [[nuevoMonto]] },
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!O${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[JSON.stringify(nuevasLineas)]] },
+  });
+  return true;
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real: un correo reportó un gasto de Uber Eats como
+ * "$12.71" pero el cargo real había sido en euros — la MONEDA que reportaron estaba mal, no el
+ * número. Actualiza moneda (y monto/líneas si también cambian, mismo criterio que
+ * actualizarMontoPropuestaGasto) de una propuesta TODAVÍA pendiente — ver interpretarCorreccionGasto
+ * en core/claude/client.ts para cómo se detecta esto a partir de una respuesta en texto libre.
+ */
+export async function actualizarMonedaPropuestaGasto(id: string, nuevaMoneda: string, nuevoMonto: number, nuevasLineas: LineaFactura[]): Promise<boolean> {
+  const match = await buscarFilaPropuesta(id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!D${match.rowIndex}:E${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[nuevoMonto, nuevaMoneda]] },
   });
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,

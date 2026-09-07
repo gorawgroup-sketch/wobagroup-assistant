@@ -14,6 +14,8 @@ import {
   crearPropuestaGasto,
   actualizarMessageIdGasto,
   actualizarMontoPropuestaGasto,
+  actualizarMonedaPropuestaGasto,
+  actualizarFlagMovimientoBancarioGasto,
   actualizarSeleccionAccionesGasto,
   actualizarClasificacionPropuestaGasto,
   type PropuestaGasto,
@@ -49,6 +51,7 @@ import {
   adjuntarComprobanteHolded,
   buscarMovimientoSimilar,
   buscarMovimientoAproximado,
+  obtenerMonedasCuentasReales,
   reconciliarMovimiento,
   ContactoNoEncontradoError,
   FechaBloqueadaError,
@@ -60,9 +63,10 @@ import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import { generarBorradorYOfrecer } from "../gmail/emailCallbackHandler";
 import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
-import { askClaude } from "../claude/client";
+import { askClaude, interpretarCorreccionGasto, type CorreccionGasto } from "../claude/client";
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
+import type { LineaFactura } from "../documental/extractInvoiceData";
 
 /**
  * Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE PANAMA
@@ -666,7 +670,8 @@ function preguntaParaAccion(key: string, propuesta: PropuestaGasto): string {
     case "ajustarmonto":
       return (
         `💰 Ajustar monto — dime el monto real a registrar para "${propuesta.proveedor}" (ej. "251.30", o "la mitad" ` +
-        `de ${propuesta.monto} ${propuesta.moneda}).`
+        `de ${propuesta.monto} ${propuesta.moneda}) — o, si la MONEDA es la que está mal (ej. "esto fue en euros, no ` +
+        `dólares"), dímelo así también.`
       );
     case "otrasacciones":
       return (
@@ -1523,33 +1528,20 @@ interface ResultadoAplicarTexto {
   mensaje: string;
 }
 
-/**
- * Núcleo de "💰 Ajustar monto", sin enviar ningún mensaje por sí solo —
- * usado tanto por el botón standalone (continuarConAjusteMonto, abajo) como
- * por la cola secuencial de "▶️ Aprobar selección" (continuarConSeleccionGasto).
- */
-async function aplicarTextoAjusteMonto(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
-  const nuevoMonto = interpretarNuevoMonto(textoUsuario, propuesta.monto);
-  if (nuevoMonto === undefined) {
-    return {
-      ok: false,
-      reintentable: true,
-      mensaje: `No entendí "${textoUsuario}" como un monto — dime un número (ej. "251.30") o "la mitad".`,
-    };
-  }
+// Bug real encontrado en auditoría: con propuesta.monto <= 0, un factor de
+// reserva de "1" dejaba las líneas SIN escalar (base ~0) mientras la
+// columna monto sí se sobrescribía al nuevo valor — Holded crea el gasto
+// a partir de las líneas, no de monto, así que el gasto real habría
+// quedado en 0€ aunque Telegram reportara el monto correcto. Si no hay
+// línea previa con base real, se reemplaza todo por una línea limpia.
+function reescalarLineas(propuesta: PropuestaGasto, nuevoMonto: number): LineaFactura[] {
+  return propuesta.monto > 0 && propuesta.lineas.length > 0
+    ? propuesta.lineas.map((l) => ({ ...l, base: (l.base * nuevoMonto) / propuesta.monto }))
+    : [{ concepto: propuesta.concepto, base: nuevoMonto, tipoIvaPct: 0 }];
+}
 
-  // Bug real encontrado en auditoría: con propuesta.monto <= 0, un factor de
-  // reserva de "1" dejaba las líneas SIN escalar (base ~0) mientras la
-  // columna monto sí se sobrescribía al nuevo valor — Holded crea el gasto
-  // a partir de las líneas, no de monto, así que el gasto real habría
-  // quedado en 0€ aunque Telegram reportara el monto correcto. Si no hay
-  // línea previa con base real, se reemplaza todo por una línea limpia.
-  const nuevasLineas =
-    propuesta.monto > 0 && propuesta.lineas.length > 0
-      ? propuesta.lineas.map((l) => ({ ...l, base: (l.base * nuevoMonto) / propuesta.monto }))
-      : [{ concepto: propuesta.concepto, base: nuevoMonto, tipoIvaPct: 0 }];
-
-  const actualizado = await actualizarMontoPropuestaGasto(propuesta.id, nuevoMonto, nuevasLineas);
+async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {
+  const actualizado = await actualizarMontoPropuestaGasto(propuesta.id, nuevoMonto, reescalarLineas(propuesta, nuevoMonto));
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
@@ -1557,6 +1549,159 @@ async function aplicarTextoAjusteMonto(propuesta: PropuestaGasto, textoUsuario: 
   return {
     ok: true,
     mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.`,
+  };
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real: el correo de Kelly reportó un gasto de Uber Eats
+ * como "$12.71" pero el cargo real había sido en euros — el NÚMERO estaba bien, la MONEDA no. Tras
+ * corregir moneda/monto, vuelve a buscar un movimiento bancario real en la moneda ya corregida (antes
+ * no se encontraba nada porque se buscaba en la moneda equivocada) — exacto y luego aproximado, mismo
+ * criterio que procesarGastoEntrante.ts — y, si el resultado cambia, refresca los botones del mensaje
+ * original para que "Crear y conciliar" aparezca si ahora corresponde. Solo distingue "Crear y
+ * conciliar" con confianza cuando hay UN match, nunca con varios ambiguos — mismo criterio que
+ * procesarGastoEntrante.ts (candidatosMovAmbiguos), hallazgo real de auditoría: un único match
+ * verdadero no es lo mismo que "encontré algo", y ofrecer el botón con varios candidatos posibles
+ * prometería una conciliación que después se rechaza sola al intentarla.
+ *
+ * Si la propuesta ya tenía candidatos de Holded (documento ya cargado que podría corresponder,
+ * encontrados con el monto/moneda ANTERIOR), esos candidatos no se vuelven a buscar acá — hallazgo
+ * real de auditoría: buscarGastoSimilar no filtra por moneda (compara solo el número), así que
+ * mientras el NÚMERO no cambie los candidatos siguen siendo válidos; si sí cambia, se avisa
+ * explícitamente que conviene revisarlos de nuevo en vez de fingir que ya se hizo.
+ */
+async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta: string, montoFinal: number): Promise<ResultadoAplicarTexto> {
+  // Hallazgo real de auditoría: a diferencia de la detección original (procesarGastoEntrante.ts,
+  // que valida contra monedasReales antes de aceptar una moneda), esta corrección por IA no tenía
+  // ninguna validación — un código de moneda mal inferido por el modelo se escribía directo. Mismo
+  // criterio de respaldo que procesarGastoEntrante.ts: si la consulta falla, asume solo EUR en vez
+  // de saltarse la validación.
+  const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa).catch((error) => {
+    console.error("[gastoCallbackHandler] Error consultando monedas reales de la empresa (asume solo EUR):", error);
+    return new Set(["EUR"]);
+  });
+  if (!monedasReales.has(monedaCorrecta)) {
+    const monedasTxt = Array.from(monedasReales).sort().join(", ");
+    return {
+      ok: false,
+      reintentable: true,
+      mensaje:
+        `Entendí que la moneda correcta sería ${monedaCorrecta}, pero ${propuesta.empresa} no tiene ninguna cuenta ` +
+        `real en esa moneda (sí tiene: ${monedasTxt}) — ¿cuál es la moneda real? Dime el nombre o el código (ej. "euros").`,
+    };
+  }
+
+  const cambioMonto = montoFinal !== propuesta.monto;
+  const nuevasLineas = reescalarLineas(propuesta, montoFinal);
+  const actualizado = await actualizarMonedaPropuestaGasto(propuesta.id, monedaCorrecta, montoFinal, nuevasLineas);
+  if (!actualizado) {
+    return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
+  }
+
+  let notaMovimiento = "";
+  if (propuesta.candidatos.length === 0) {
+    let movimientoEncontrado = false;
+    let movimientoAmbiguo = false;
+    try {
+      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta });
+      if (candidatosMov.length === 1) {
+        movimientoEncontrado = true;
+      } else if (candidatosMov.length > 1) {
+        movimientoAmbiguo = true;
+      } else if (propuesta.proveedor) {
+        const aproximados = await buscarMovimientoAproximado(propuesta.empresa, {
+          monto: montoFinal,
+          fecha: propuesta.fecha,
+          moneda: monedaCorrecta,
+          proveedor: propuesta.proveedor,
+        });
+        if (aproximados.length > 0) movimientoEncontrado = true;
+      }
+    } catch (error) {
+      console.error("[gastoCallbackHandler] Error buscando movimiento tras corregir moneda (no crítico):", error);
+    }
+
+    if (movimientoEncontrado !== Boolean(propuesta.hayMovimientoBancario)) {
+      await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
+        console.error("[gastoCallbackHandler] Error actualizando el flag de movimiento bancario (no crítico):", error)
+      );
+      try {
+        const botones = construirTecladoGasto({ ...propuesta, moneda: monedaCorrecta, monto: montoFinal }, { hayMovimientoBancario: movimientoEncontrado });
+        await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones);
+      } catch (error) {
+        console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir moneda (no crítico):", error);
+      }
+    }
+
+    notaMovimiento = movimientoEncontrado
+      ? ` Ahora que la moneda es correcta, SÍ encontré un movimiento bancario real sin conciliar que coincide — usa "✅ Crear y conciliar" en el mensaje original.`
+      : movimientoAmbiguo
+        ? ` Encontré varios movimientos bancarios parecidos en ${monedaCorrecta}, no sé cuál es el correcto — revísalo a mano antes de conciliar.`
+        : ` Seguí sin encontrar un movimiento bancario en ${monedaCorrecta} que coincida — revísalo a mano en Holded si ya salió del banco.`;
+  } else if (cambioMonto) {
+    notaMovimiento = ` Ojo: esta propuesta ya tenía candidatos de Holded encontrados con el monto anterior — revísalos de nuevo arriba, podrían ya no ser los correctos con el monto corregido.`;
+  }
+
+  return {
+    ok: true,
+    mensaje: `💱 Moneda corregida — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${montoFinal.toFixed(2)} ${monedaCorrecta}.${notaMovimiento}`,
+  };
+}
+
+/**
+ * Núcleo de "💰 Ajustar monto", sin enviar ningún mensaje por sí solo —
+ * usado tanto por el botón standalone (continuarConAjusteMonto, abajo) como
+ * por la cola secuencial de "▶️ Aprobar selección" (continuarConSeleccionGasto).
+ * El parser rápido/determinista (interpretarNuevoMonto) va primero — cubre los
+ * casos comunes sin ningún costo de IA. Solo si no lo entiende, se intenta con
+ * Claude (interpretarCorreccionGasto), que además de un monto nuevo puede
+ * reconocer una corrección de MONEDA — pedido explícito de Carlos, tras un
+ * caso real donde el parser rígido nunca entendió "12.71 Euros, en lugar de
+ * dólares, la moneda estaba equivocada" como lo que era, y solo insistía en
+ * pedir "un número".
+ */
+async function aplicarTextoAjusteMonto(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
+  const nuevoMontoRapido = interpretarNuevoMonto(textoUsuario, propuesta.monto);
+  if (nuevoMontoRapido !== undefined) {
+    return aplicarNuevoMonto(propuesta, nuevoMontoRapido);
+  }
+
+  let correccion: CorreccionGasto;
+  try {
+    correccion = await interpretarCorreccionGasto({
+      textoUsuario,
+      montoOriginal: propuesta.monto,
+      monedaOriginal: propuesta.moneda,
+    });
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error interpretando corrección de gasto con IA (no crítico, se pide de nuevo):", error);
+    correccion = { tipo: "no_entendido" };
+  }
+
+  if (correccion.tipo === "monto_nuevo") return aplicarNuevoMonto(propuesta, correccion.monto);
+  if (correccion.tipo === "fraccion") {
+    // Hallazgo real de auditoría: interpretarNuevoMonto (el parser rápido) exige montoOriginal > 0
+    // antes de aplicar una fracción — esta misma protección faltaba acá, así que una propuesta
+    // degenerada (monto <= 0) podía terminar con un monto 0/negativo escrito sin ningún aviso.
+    if (propuesta.monto <= 0) {
+      return {
+        ok: false,
+        reintentable: true,
+        mensaje: `El monto actual de la propuesta no es válido (${propuesta.monto}) — no puedo calcular una fracción de eso. Dime el monto real como un número absoluto (ej. "251.30").`,
+      };
+    }
+    return aplicarNuevoMonto(propuesta, propuesta.monto * correccion.fraccion);
+  }
+  if (correccion.tipo === "moneda_incorrecta") {
+    return aplicarCorreccionMoneda(propuesta, correccion.monedaCorrecta, correccion.monto ?? propuesta.monto);
+  }
+
+  return {
+    ok: false,
+    reintentable: true,
+    mensaje:
+      `No entendí "${textoUsuario}" — dime un número (ej. "251.30"), "la mitad", o si la MONEDA era ` +
+      `la equivocada (ej. "en realidad fue en euros, no dólares").`,
   };
 }
 
