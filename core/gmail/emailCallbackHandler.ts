@@ -33,7 +33,7 @@ export async function generarBorradorYOfrecer(
       `Contexto e investigación ya realizada: ${contextoInvestigacion}. ` +
       `Tono profesional y conciso, en español. Devuelve únicamente el texto del cuerpo del correo.`;
 
-    const cuerpo = await askClaude(promptBorrador);
+    const cuerpo = await askClaude(promptBorrador, undefined, undefined, "redactar_borrador_correo");
     const to = extraerDireccionCorreo(de);
 
     const borrador = await crearBorradorCorreo({
@@ -232,7 +232,7 @@ export async function handleEmailActionCallback(callback: TelegramCallbackQuery)
       `Acción a realizar: ${propuesta.accionSugerida}. ` +
       `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
-    const respuesta = await askClaude(instruccion, propuesta.chatId);
+    const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_correo");
 
     await editTelegramMessageSmart(
       propuesta.chatId,
@@ -292,7 +292,7 @@ export async function continuarConOrientacion(
     `Instrucción del usuario: ${instruccionUsuario}. ` +
     `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
-  const respuesta = await askClaude(instruccion, chatId);
+  const respuesta = await askClaude(instruccion, chatId, undefined, "orientacion_correo");
   await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${asunto} (${de})`);
 
   const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);

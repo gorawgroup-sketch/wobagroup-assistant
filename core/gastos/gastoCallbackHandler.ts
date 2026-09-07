@@ -1998,7 +1998,7 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
     `para que quede enhebrado como una respuesta real. Investiga y ejecuta lo que corresponda con las herramientas ` +
     `disponibles, y reporta el resultado.`;
 
-  const respuesta = await askClaude(instruccion, propuesta.chatId);
+  const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
   return { ok: true, mensaje: respuesta };
 }
 

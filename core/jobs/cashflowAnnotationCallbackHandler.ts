@@ -86,7 +86,7 @@ export async function handleCashflowAnnotationActionCallback(callback: TelegramC
       `Investiga y ejecuta lo que corresponda con las herramientas disponibles (Holded, cashflow, correo si hace ` +
       `falta), y reporta el resultado.`;
 
-    const respuesta = await askClaude(instruccion, propuesta.chatId);
+    const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_anotacion_cashflow");
 
     await editTelegramMessageExpandable(
       propuesta.chatId,
@@ -130,6 +130,6 @@ export async function continuarConOrientacionAnotacion(
     `Instrucción del usuario: ${instruccionUsuario}. ` +
     `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
-  const respuesta = await askClaude(instruccion, chatId);
+  const respuesta = await askClaude(instruccion, chatId, undefined, "orientacion_anotacion_cashflow");
   await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${ubicacion}`);
 }

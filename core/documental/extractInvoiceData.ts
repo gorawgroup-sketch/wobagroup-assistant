@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
-import { registrarUsoIA } from "../claude/costTracking";
+import { crearMensajeAnthropic } from "../ai/anthropicGateway";
+import { crearEjecucionIA } from "../ai/policy";
 import { mimeADocumentBlock, type DocumentOrImageBlock } from "./documentBlock";
 
 const MODEL = "claude-sonnet-4-6";
@@ -309,6 +310,7 @@ export async function extraerDatosFactura(
   }
 
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("extraer_factura");
   const clasificacionesAprendidas = await obtenerClasificacionesAprendidas().catch(() => null);
 
   const tools: Anthropic.Tool[] = [
@@ -331,7 +333,7 @@ export async function extraerDatosFactura(
   ];
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const response = await anthropic.messages.create({
+    const response = await crearMensajeAnthropic(anthropic, ejecucion, {
       model: MODEL,
       // Preventivo — mismo patrón que ya causó un bug real confirmado en vivo
       // en core/gmail/classifyEmail.ts (dos correos seguidos cayeron en el
@@ -342,17 +344,18 @@ export async function extraerDatosFactura(
       // proyecto para este tipo de llamada (ver core/claude/client.ts). Acá
       // el riesgo es más serio todavía: esto extrae datos de FACTURAS reales.
       max_tokens: 8192,
-      system: buildSystemPrompt(clasificacionesAprendidas),
+      // Las reglas aprendidas cambian rara vez y se repiten entre adjuntos
+      // del mismo lote. El PDF/imagen nunca se incluye en este breakpoint.
+      system: [
+        {
+          type: "text",
+          text: buildSystemPrompt(clasificacionesAprendidas),
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       tools,
       messages,
     });
-
-    // Bug real encontrado en vivo: esta llamada real a Claude nunca se
-    // registraba en _costos_ia (a diferencia de core/claude/client.ts) —
-    // el gasto real de leer facturas no aparecía en el panel de costos.
-    registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
-      console.error("[extractInvoiceData] Error registrando uso de IA:", error)
-    );
 
     const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
 

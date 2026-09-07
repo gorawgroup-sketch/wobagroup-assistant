@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
-import { registrarUsoIA } from "../claude/costTracking";
+import { crearMensajeAnthropic } from "../ai/anthropicGateway";
+import { crearEjecucionIA } from "../ai/policy";
 import { mimeADocumentBlock } from "./documentBlock";
 
 const MODEL = "claude-sonnet-4-6";
@@ -37,6 +38,7 @@ export async function transcribirParaCaptura(
   contexto: string | undefined
 ): Promise<string> {
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("transcribir_captura");
 
   const data = await readFile(rutaLocal);
   const documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
@@ -50,7 +52,7 @@ export async function transcribirParaCaptura(
     .filter(Boolean)
     .join("\n\n");
 
-  const response = await anthropic.messages.create({
+  const response = await crearMensajeAnthropic(anthropic, ejecucion, {
     model: MODEL,
     max_tokens: 1500,
     messages: [
@@ -60,10 +62,6 @@ export async function transcribirParaCaptura(
       },
     ],
   });
-
-  registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
-    console.error("[transcribeForCapture] Error registrando uso de IA:", error)
-  );
 
   const textBlock = response.content.find((b) => b.type === "text");
   const texto = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";

@@ -119,7 +119,7 @@ export async function revisarAnotacionesCashflow(): Promise<{ avisosEnviados: nu
 
     let respuesta: string;
     try {
-      respuesta = await askClaude(prompt, undefined, "Carlos");
+      respuesta = await askClaude(prompt, undefined, "Carlos", "orientar_anotacion_cashflow");
     } catch (error) {
       console.error("[revisarAnotacionesCashflow] Error generando recomendación con Claude:", error);
       respuesta = detalle; // fallback: manda el detalle crudo en vez de no avisar nada

@@ -6,8 +6,9 @@ import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/cla
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { obtenerPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
-import { registrarUsoIA } from "./costTracking";
 import { registrarBusquedaWeb } from "./webSearchLog";
+import { crearMensajeAnthropic } from "../ai/anthropicGateway";
+import { crearEjecucionIA, type EjecucionIA } from "../ai/policy";
 
 const MODEL_SONNET = "claude-sonnet-5";
 const MODEL_HAIKU = "claude-haiku-4-5";
@@ -483,7 +484,7 @@ function procesarResultadosBusquedaWeb(
 export async function verificarConexionClaude(): Promise<{ ok: boolean; detalle?: string }> {
   try {
     const anthropic = getClient();
-    await anthropic.messages.create({
+    await crearMensajeAnthropic(anthropic, crearEjecucionIA("healthcheck_claude_manual"), {
       model: MODEL_HAIKU,
       max_tokens: 1,
       messages: [{ role: "user", content: "ping" }],
@@ -521,6 +522,7 @@ async function ejecutarConversacion(
   systemExtra: string | undefined,
   permiteEscalar: boolean,
   incluirBusquedaWeb: boolean,
+  ejecucion: EjecucionIA,
   pendientesPrefetch?: PendientesSensibles
 ): Promise<ResultadoConversacion> {
   const anthropic = getClient();
@@ -558,7 +560,7 @@ async function ejecutarConversacion(
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-    const response = await anthropic.messages.create({
+    const response = await crearMensajeAnthropic(anthropic, ejecucion, {
       model,
       // Verificado en vivo: claude-sonnet-5 emite "thinking" por defecto
       // (sin pedirlo explícitamente) y ese consumo cuenta contra max_tokens
@@ -572,14 +574,7 @@ async function ejecutarConversacion(
       system,
       tools,
       messages,
-    });
-
-    // "Fire and forget" — no bloquea la respuesta al usuario por la latencia
-    // de escribir en Sheets. Cada llamada a la API se factura por separado,
-    // así que se registra una fila por iteración, no solo la respuesta final.
-    registrarUsoIA(chatId, model, response.usage).catch((error) =>
-      console.error("[costTracking] Error registrando uso de IA:", error)
-    );
+    }, chatId);
 
     // Registra estado + historial de cada búsqueda web real de esta
     // respuesta (si hubo alguna) — ver procesarResultadosBusquedaWeb arriba.
@@ -658,7 +653,10 @@ async function ejecutarConversacion(
         continue;
       }
 
-      console.log(`[claude:${model}] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
+      // Solo metadatos estructurales: los valores pueden contener datos
+      // personales, financieros o secretos aportados por una integración.
+      const claves = Object.keys(block.input as Record<string, unknown>);
+      console.log(`[claude:${model}] tool_use -> ${block.name} (campos: ${claves.join(",") || "ninguno"})`);
 
       const result = await executeTool(block.name, block.input as Record<string, unknown>, { chatId });
 
@@ -798,7 +796,8 @@ async function orquestarTurno(
   userText: string,
   chatId: number | undefined,
   nombreRemitente: string | undefined,
-  usarHistorial: boolean
+  usarHistorial: boolean,
+  ejecucion: EjecucionIA
 ): Promise<string> {
   const pendientes = chatId !== undefined ? await obtenerPendientesSensibles(chatId) : undefined;
   const saltarModoRapido = pendientes !== undefined && haySensiblePendiente(pendientes);
@@ -814,6 +813,7 @@ async function orquestarTurno(
       INSTRUCCION_MODO_RAPIDO,
       true,
       false, // sin búsqueda web en el modo rápido/económico — ver WEB_SEARCH_TOOL
+      ejecucion,
       pendientes
     );
 
@@ -846,6 +846,7 @@ async function orquestarTurno(
       undefined,
       false,
       true, // intento completo — búsqueda web disponible, ver WEB_SEARCH_TOOL
+      ejecucion,
       pendientes
     );
   } catch (error) {
@@ -862,6 +863,7 @@ async function orquestarTurno(
       undefined,
       false,
       true, // sigue siendo el intento "completo" (solo cambió el modelo por disponibilidad)
+      ejecucion,
       pendientes
     );
   }
@@ -884,9 +886,15 @@ async function orquestarTurno(
  * hasta que produzca una respuesta final en texto. Ver orquestarTurno para el enrutamiento
  * entre Haiku (rápido/barato) y Sonnet (completo/preciso).
  */
-export async function askClaude(userText: string, chatId?: number, nombreRemitente?: string): Promise<string> {
+export async function askClaude(
+  userText: string,
+  chatId?: number,
+  nombreRemitente?: string,
+  proceso = "chat_conversacional"
+): Promise<string> {
+  const ejecucion = crearEjecucionIA(proceso);
   try {
-    const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, true);
+    const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, true, ejecucion);
     registrarEstadoClaude(true);
     return respuesta;
   } catch (error) {
@@ -907,7 +915,7 @@ export async function askClaude(userText: string, chatId?: number, nombreRemiten
     console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
     await limpiarHistorial(chatId!);
     try {
-      const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false);
+      const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false, ejecucion);
       registrarEstadoClaude(true);
       return respuesta;
     } catch (segundoError) {
@@ -939,8 +947,9 @@ export interface ResultadoBusquedaWeb {
  */
 export async function buscarEnInternet(query: string): Promise<ResultadoBusquedaWeb> {
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("busqueda_web_panel");
 
-  const response = await anthropic.messages.create({
+  const response = await crearMensajeAnthropic(anthropic, ejecucion, {
     model: MODEL_SONNET,
     max_tokens: 2048,
     system:
@@ -951,9 +960,6 @@ export async function buscarEnInternet(query: string): Promise<ResultadoBusqueda
     tools: [WEB_SEARCH_TOOL],
   });
 
-  registrarUsoIA(undefined, MODEL_SONNET, response.usage).catch((error) =>
-    console.error("[costTracking] Error registrando uso de IA (buscarEnInternet):", error)
-  );
   procesarResultadosBusquedaWeb(response.content, undefined, "panel");
 
   const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === "text");
@@ -1006,6 +1012,7 @@ export async function responderCorreoAutomatico(params: {
   hiloTexto: string;
 }): Promise<string> {
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("respuesta_correo_automatica");
   const tools = getToolDefinitions(true); // solo las de solo lectura — ver comentario arriba
   const nombresDisponibles = new Set(tools.map((t) => t.name));
 
@@ -1017,17 +1024,13 @@ export async function responderCorreoAutomatico(params: {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-    const response = await anthropic.messages.create({
+    const response = await crearMensajeAnthropic(anthropic, ejecucion, {
       model: MODEL_SONNET,
       max_tokens: 4096,
       system: SYSTEM_PROMPT_RESPUESTA_AUTOMATICA,
       tools,
       messages,
     });
-
-    registrarUsoIA(undefined, MODEL_SONNET, response.usage).catch((error) =>
-      console.error("[costTracking] Error registrando uso de IA (responderCorreoAutomatico):", error)
-    );
 
     if (response.stop_reason !== "tool_use") {
       const textBlock = response.content.find((block) => block.type === "text");
@@ -1129,6 +1132,7 @@ export async function revisarCodigoAutonomamente(params: {
   contenidoActual: string;
 }): Promise<{ encontroProblema: boolean; resumen?: string; diagnostico?: string; contenidoNuevoCompleto?: string }> {
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("autorrevision_codigo");
 
   const messages: Anthropic.MessageParam[] = [
     {
@@ -1137,23 +1141,29 @@ export async function revisarCodigoAutonomamente(params: {
     },
   ];
 
-  const response = await anthropic.messages.create({
+  const response = await crearMensajeAnthropic(anthropic, ejecucion, {
     model: MODEL_SONNET,
     // Más alto que el estándar del proyecto (8192): acá la respuesta no es solo texto, es el ARCHIVO
     // COMPLETO reescrito (hasta 400 líneas, ver MAX_LINEAS_ARCHIVO en autorrevisionCodigo.ts) más el
     // resumen/diagnóstico — un techo ajustado cortaría la reescritura a mitad de archivo.
     max_tokens: 16384,
-    system: SYSTEM_PROMPT_AUTORREVISION_CODIGO,
+    // El trabajo nocturno revisa tres archivos seguidos con las mismas
+    // instrucciones y el mismo esquema de salida. El breakpoint cubre
+    // tools + system, pero deja fuera el archivo (contenido único), por lo
+    // que reduce coste/latencia sin cambiar la revisión ni su contexto.
+    system: [
+      {
+        type: "text",
+        text: SYSTEM_PROMPT_AUTORREVISION_CODIGO,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
     tools: [REPORTAR_HALLAZGO_TOOL],
     // Forzado (no "auto"): sin esto, el modelo podría responder solo en texto y quedaría
     // indistinguible de un "sin problema" real — hallazgo real de auditoría.
     tool_choice: { type: "tool", name: REPORTAR_HALLAZGO_TOOL_NAME },
     messages,
   });
-
-  registrarUsoIA(undefined, MODEL_SONNET, response.usage).catch((error) =>
-    console.error("[costTracking] Error registrando uso de IA (revisarCodigoAutonomamente):", error)
-  );
 
   // Si la respuesta se cortó por el límite de tokens, el "archivo completo" que reporte puede estar
   // truncado a mitad de línea aunque pase el chequeo de longitud del llamador — hallazgo real de
@@ -1258,12 +1268,13 @@ export async function interpretarCorreccionGasto(params: {
   monedaOriginal: string;
 }): Promise<CorreccionGasto> {
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("interpretar_correccion_gasto");
 
   const userText =
     `El gasto original es ${params.montoOriginal} ${params.monedaOriginal}. El usuario respondió a ` +
     `"dime el monto real a registrar" con: "${params.textoUsuario}". ¿Qué quiso decir?`;
 
-  const response = await anthropic.messages.create({
+  const response = await crearMensajeAnthropic(anthropic, ejecucion, {
     model: MODEL_HAIKU,
     max_tokens: 512,
     system: SYSTEM_PROMPT_CORRECCION_GASTO,
@@ -1271,10 +1282,6 @@ export async function interpretarCorreccionGasto(params: {
     tool_choice: { type: "tool", name: NOMBRE_TOOL_CORRECCION_GASTO },
     messages: [{ role: "user", content: userText }],
   });
-
-  registrarUsoIA(undefined, MODEL_HAIKU, response.usage).catch((error) =>
-    console.error("[costTracking] Error registrando uso de IA (interpretarCorreccionGasto):", error)
-  );
 
   const reportar = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === NOMBRE_TOOL_CORRECCION_GASTO

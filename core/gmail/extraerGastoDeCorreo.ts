@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
-import { registrarUsoIA } from "../claude/costTracking";
+import { crearMensajeAnthropic } from "../ai/anthropicGateway";
+import { crearEjecucionIA } from "../ai/policy";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 
 const MODEL = "claude-sonnet-4-6";
@@ -162,6 +163,7 @@ export async function extraerGastoDeCorreo(
   if (!cuerpoRecortado) return fallback;
 
   const anthropic = getClient();
+  const ejecucion = crearEjecucionIA("extraer_gasto_correo");
   const clasificacionesAprendidas = await obtenerClasificacionesAprendidas().catch(() => null);
 
   const tools: Anthropic.Tool[] = [
@@ -179,7 +181,7 @@ export async function extraerGastoDeCorreo(
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const response = await anthropic.messages.create({
+    const response = await crearMensajeAnthropic(anthropic, ejecucion, {
       model: MODEL,
       // Preventivo — mismo patrón que ya causó un bug real confirmado en vivo
       // en core/gmail/classifyEmail.ts (dos correos seguidos cayeron en el
@@ -195,10 +197,6 @@ export async function extraerGastoDeCorreo(
       tools,
       messages,
     });
-
-    registrarUsoIA(undefined, MODEL, response.usage).catch((error) =>
-      console.error("[extraerGastoDeCorreo] Error registrando uso de IA:", error)
-    );
 
     const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
     const reportar = toolUseBlocks.find((b) => b.name === REPORTAR_TOOL_NAME);
