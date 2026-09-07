@@ -4,16 +4,21 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
 export interface PendienteDesambiguacion {
   /**
-   * Bug real encontrado en auditoría (2026-09-03): el botón "❌ Descartar" se
-   * agregó primero SIN id (callback_data "desamb_descartar" a secas), porque
-   * este store solo guarda un pendiente por chat — parecía inambiguo. Pero
-   * un botón de una pregunta VIEJA (ya reemplazada por un documento más
-   * reciente del mismo chat) sigue visible y tocable en el historial de
-   * Telegram, y sin id no había forma de distinguir "el usuario quiere
-   * descartar ESTA pregunta" de "el usuario tocó un botón viejo" — podía
-   * descartar el documento ACTUAL sin relación con el botón. El id permite
-   * verificar que el botón tocado corresponde de verdad al pendiente vigente
-   * antes de descartar nada.
+   * Bug real encontrado en vivo (2026-09-07): este store guardaba UN SOLO pendiente por chat, y
+   * guardarPendienteDesambiguacion BORRABA cualquier pendiente previo del mismo chat al guardar uno
+   * nuevo. Cuando un correo trae varios adjuntos ambiguos (ej. 2 invitaciones .ics),
+   * processClassification.ts manda una pregunta de desambiguación POR CADA UNO, cada una diciendo
+   * explícitamente "cada uno es una decisión independiente" — pero la segunda pregunta borraba el
+   * pendiente de la primera, dejando su botón "❌ Descartar" apuntando a un id que ya no existe ("Ese
+   * botón ya no corresponde..."), justo lo que ese texto decía que NO iba a pasar. Ahora el store
+   * guarda TODOS los pendientes de un chat a la vez — cada botón "Descartar" usa
+   * consumirPendienteDesambiguacionPorId (por id Y chatId, nunca solo por chat) así que SIEMPRE
+   * funciona sin importar en qué orden se respondan; una respuesta de texto libre (que no trae id)
+   * resuelve la más antigua primero (ver consumirPendienteDesambiguacion).
+   *
+   * El campo `id` en sí viene de un bug anterior (2026-09-03): antes de existir, un botón de una
+   * pregunta VIEJA ya reemplazada podía descartar el pendiente ACTUAL sin relación con ese botón —
+   * el id permite verificar que el botón tocado corresponde de verdad a SU pregunta, nunca a otra.
    */
   id: string;
   chatId: number;
@@ -219,24 +224,17 @@ async function purgarVencidas(todas: FilaConIndice[]): Promise<FilaConIndice[]> 
 }
 
 /**
- * Guarda (reemplazando cualquier pendiente previo del mismo chat) la
- * pregunta de desambiguación que se le acaba de mandar al usuario, para
- * poder conectarla con su próxima respuesta de texto. Devuelve el objeto
- * creado (con su `id` nuevo) para que el llamador pueda incluirlo en el
- * callback_data del botón "❌ Descartar" — así un botón viejo (de una
- * pregunta ya reemplazada) nunca puede descartar el pendiente ACTUAL de ese
- * chat por error (ver el comentario en la interfaz, arriba).
+ * Guarda una pregunta MÁS de desambiguación para este chat — YA NO reemplaza pendientes previos del
+ * mismo chat (ver el comentario en la interfaz, arriba): pueden coexistir varias a la vez, una por
+ * cada adjunto ambiguo de un mismo correo. Devuelve el objeto creado (con su `id` nuevo) para que el
+ * llamador lo incluya en el callback_data del botón "❌ Descartar" — ese botón siempre resuelve por
+ * id (consumirPendienteDesambiguacionPorId), nunca por chat, así que funciona sin importar cuántas
+ * otras preguntas sigan pendientes o en qué orden se respondan.
  */
 export async function guardarPendienteDesambiguacion(
   datos: Omit<PendienteDesambiguacion, "creadoEn" | "id">
 ): Promise<PendienteDesambiguacion> {
-  const todas = await leerTodas();
-  const vigentes = await purgarVencidas(todas);
-
-  const delMismoChat = vigentes.filter(({ pendiente }) => pendiente.chatId === datos.chatId);
-  for (const { rowIndex } of delMismoChat.sort((a, b) => b.rowIndex - a.rowIndex)) {
-    await eliminarFila(rowIndex);
-  }
+  await purgarVencidas(await leerTodas());
 
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -255,25 +253,49 @@ export async function guardarPendienteDesambiguacion(
   return pendiente;
 }
 
+/** Las pendientes de un chat, de más antigua a más reciente — orden que usan tanto el consumo por texto libre como la lectura para el resumen diario. */
+function porAntiguedad(filas: FilaConIndice[], chatId: number): FilaConIndice[] {
+  return filas.filter(({ pendiente }) => pendiente.chatId === chatId).sort((a, b) => a.pendiente.creadoEn - b.pendiente.creadoEn);
+}
+
 /**
- * Si hay una pregunta de desambiguación pendiente para este chat, la
- * devuelve y la elimina (se consume con la respuesta). undefined si no hay
- * ninguna o ya venció.
+ * Resuelve una respuesta de TEXTO LIBRE (no trae id, ver server.ts) — como puede haber varias
+ * preguntas pendientes a la vez para el mismo chat, se consume siempre la MÁS ANTIGUA (a diferencia
+ * de classificationStore.ts, que resuelve la más RECIENTE para sus propios botones — acá aplica
+ * porque el texto libre responde una cola de preguntas en el orden en que se hicieron, no la última
+ * propuesta vista). undefined si no hay ninguna o todas vencieron.
  */
 export async function consumirPendienteDesambiguacion(chatId: number): Promise<PendienteDesambiguacion | undefined> {
   const todas = await leerTodas();
   const vigentes = await purgarVencidas(todas);
 
-  const match = vigentes.find(({ pendiente }) => pendiente.chatId === chatId);
+  const match = porAntiguedad(vigentes, chatId)[0];
   if (!match) return undefined;
 
   await eliminarFila(match.rowIndex);
   return match.pendiente;
 }
 
-/** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
-export async function obtenerPendienteDesambiguacionPorChat(chatId: number): Promise<PendienteDesambiguacion | undefined> {
+/**
+ * Resuelve el botón "❌ Descartar" de UNA pregunta específica — por id Y chatId (hallazgo real de
+ * auditoría: sin exigir también el chatId del chat que tocó el botón, el id por sí solo no garantiza
+ * que la pregunta sea de ESE chat; con varios admins cada uno con sus propios pendientes, un id que
+ * se filtrara o colisionara entre chats podría dejar que uno borre/avance la cola de otro).
+ */
+export async function consumirPendienteDesambiguacionPorId(id: string, chatId: number): Promise<PendienteDesambiguacion | undefined> {
   const todas = await leerTodas();
   const vigentes = await purgarVencidas(todas);
-  return vigentes.find(({ pendiente }) => pendiente.chatId === chatId)?.pendiente;
+
+  const match = vigentes.find(({ pendiente }) => pendiente.id === id && pendiente.chatId === chatId);
+  if (!match) return undefined;
+
+  await eliminarFila(match.rowIndex);
+  return match.pendiente;
+}
+
+/** Lectura sin consumir de TODAS las pendientes de este chat (más antigua primero) — para el resumen diario (ver core/jobs/resumenPendientesDiario.ts). */
+export async function obtenerPendienteDesambiguacionPorChat(chatId: number): Promise<PendienteDesambiguacion[]> {
+  const todas = await leerTodas();
+  const vigentes = await purgarVencidas(todas);
+  return porAntiguedad(vigentes, chatId).map(({ pendiente }) => pendiente);
 }

@@ -1,7 +1,7 @@
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { clasificarDocumento, type ClasificacionDocumento } from "./classifyFile";
 import { crearPropuestaClasificacion, actualizarMessageIdClasificacion } from "./classificationStore";
-import { guardarPendienteDesambiguacion } from "./disambiguationStore";
+import { guardarPendienteDesambiguacion, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { ofrecerResponderCorreo } from "../gmail/emailCallbackHandler";
@@ -121,6 +121,13 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
   if (clasificacion.confianza === "baja" && !archivo.esContinuacionDesambiguacion) {
     const pregunta = clasificacion.preguntaSiAmbiguo ?? "¿A qué empresa y carpeta pertenece este documento?";
 
+    // Hallazgo real de auditoría: si YA hay otra(s) pregunta(s) de desambiguación sin responder para
+    // este chat (ver disambiguationStore.ts — ahora pueden coexistir varias), una respuesta de texto
+    // libre siempre resuelve la más antigua primero — sin avisarlo, no queda claro a cuál de las
+    // preguntas visibles en el chat le está respondiendo el usuario. Pedido explícito de Carlos: los
+    // avisos deben ser comprensibles y no dejar duda de qué hacer.
+    const otrasPendientes = await obtenerPendienteDesambiguacionPorChat(archivo.chatId).catch(() => []);
+
     const pendiente = await guardarPendienteDesambiguacion({
       chatId: archivo.chatId,
       rutaLocal: archivo.rutaLocal,
@@ -132,7 +139,11 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       correoOrigen: archivo.correoOrigen,
     });
 
-    const textoPregunta = archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${pregunta}` : pregunta;
+    const notaVariasPendientes =
+      otrasPendientes.length > 0
+        ? `\n\n(Ojo: si respondes por texto en vez de tocar un botón, tu respuesta se aplica a la pregunta MÁS ANTIGUA sin responder de las ${otrasPendientes.length + 1} que tienes pendientes — para descartar esta en particular, usa el botón de abajo.)`
+        : "";
+    const textoPregunta = (archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${pregunta}` : pregunta) + notaVariasPendientes;
 
     // Pedido explícito de Carlos: siempre debe haber forma de decir "no
     // hagas nada con esto" en vez de verse forzado a responder o quedar

@@ -5,7 +5,7 @@ import { archivarDocumentoEnDrive } from "./archiveFile";
 import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacionStore";
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "./pendienteReclasificacionStore";
-import { consumirPendienteDesambiguacion, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
+import { consumirPendienteDesambiguacionPorId, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
@@ -291,13 +291,10 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
  * las propuestas de clasificación), así que la confirmación se manda como
  * mensaje nuevo en vez de editar el original.
  *
- * Bug real encontrado en auditoría: el callback_data trae el id del
- * pendiente que existía cuando se mandó ESE mensaje — se verifica con
- * obtenerPendienteDesambiguacionPorChat (lectura, sin consumir) ANTES de
- * tocar nada, porque este store solo guarda un pendiente por chat: si un
- * documento nuevo reemplazó al que este botón preguntaba (el usuario nunca
- * respondió el primero y llegó un segundo antes), tocar un botón viejo no
- * debe poder descartar el pendiente ACTUAL sin relación con ese botón.
+ * Caso real (2026-09-07): con varios adjuntos ambiguos del mismo correo, cada uno manda su propia
+ * pregunta — resuelve SIEMPRE por id (consumirPendienteDesambiguacionPorId), nunca comparando
+ * contra "la" pendiente del chat, porque ahora pueden coexistir varias a la vez (ver
+ * disambiguationStore.ts) y cada botón debe poder resolverse en cualquier orden.
  */
 export async function handleDesambiguacionCallback(callback: TelegramCallbackQuery): Promise<void> {
   const chatId = callback.message?.chat.id;
@@ -309,23 +306,17 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
   const [, idBoton] = (callback.data ?? "").split(":");
   await answerCallbackQuerySafe(callback.id);
 
-  const actual = await obtenerPendienteDesambiguacionPorChat(chatId);
-  if (!actual) {
-    await sendTelegramMessage(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
-    return;
-  }
-
-  if (idBoton && actual.id !== idBoton) {
-    await sendTelegramMessage(
-      chatId,
-      `Ese botón ya no corresponde a la pregunta pendiente actual — hay una más reciente sin responder ("${actual.nombreArchivoOriginal}"), arriba en el chat.`
-    );
-    return;
-  }
-
-  const pendiente = await consumirPendienteDesambiguacion(chatId);
+  const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;
   if (!pendiente) {
-    await sendTelegramMessage(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+    // Pedido explícito de Carlos: los avisos siempre deben decir claramente qué hacer, nunca dejar
+    // duda — si esta pregunta ya no está pero quedan otras pendientes para este chat, lo dice, en vez
+    // de solo "ya no está disponible" sin ninguna pista de qué sigue.
+    const otras = await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []);
+    const aviso =
+      otras.length > 0
+        ? `Esta pregunta ya no está disponible (expiró o ya se respondió) — todavía tienes ${otras.length === 1 ? "una pregunta pendiente" : `${otras.length} preguntas pendientes`} sin responder, arriba en el chat.`
+        : "Esta pregunta ya no está disponible (expiró o ya se respondió).";
+    await sendTelegramMessage(chatId, aviso);
     return;
   }
 

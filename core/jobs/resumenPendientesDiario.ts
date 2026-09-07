@@ -229,8 +229,11 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   }
 
   try {
-    const d = await obtenerPendienteDesambiguacionPorChat(chatId);
-    if (d) items.push({ descripcion: `❓ Falta aclarar: "${truncar(d.preguntaFormulada, 60)}"`, creadoEn: d.creadoEn });
+    // Puede haber varias a la vez (una por adjunto ambiguo, ver disambiguationStore.ts) — una línea por cada una.
+    const desambiguaciones = await obtenerPendienteDesambiguacionPorChat(chatId);
+    for (const d of desambiguaciones) {
+      items.push({ descripcion: `❓ Falta aclarar: "${truncar(d.preguntaFormulada, 60)}"`, creadoEn: d.creadoEn });
+    }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando desambiguación (no crítico):", error);
   }
@@ -364,9 +367,24 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
     console.error("[resumenPendientesDiario] Error descartando propuestas de archivo (no crítico):", error);
   }
 
+  try {
+    // Puede haber varias preguntas de desambiguación pendientes del mismo chat a la vez (una por
+    // adjunto ambiguo, ver disambiguationStore.ts) — se drena una por una hasta que no quede ninguna,
+    // mismo bucle que las propuestas de archivo arriba (el orden de consumo difiere entre ambas —
+    // acá siempre la más antigua, arriba siempre la más reciente — pero no importa para un drenado
+    // completo: al final las dos dejan la lista vacía igual).
+    let pendiente = await consumirPendienteDesambiguacion(chatId);
+    while (pendiente) {
+      await unlink(pendiente.rutaLocal).catch(() => {});
+      n += 1;
+      pendiente = await consumirPendienteDesambiguacion(chatId);
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error descartando preguntas de desambiguación (no crítico):", error);
+  }
+
   const conArchivoLocal: Array<() => Promise<{ rutaLocal: string } | undefined>> = [
     () => consumirPendienteReclasificacionPorChat(chatId),
-    () => consumirPendienteDesambiguacion(chatId),
   ];
   for (const consumir of conArchivoLocal) {
     try {
