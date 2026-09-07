@@ -293,8 +293,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // debe reemplazar el tag de categoría (alimentación/transporte+medio),
   // debe combinarse con él. La categoría se detecta de la naturaleza real
   // de ESTE gasto (concepto/proveedor), nunca del histórico de la cuenta.
+  // Hallazgo real de auditoría: cuentaSugerida.tags trae el tag HISTÓRICO de esa cuenta contable —
+  // para hospedaje/alquiler de coche eso puede seguir siendo la variante vieja ("alojamiento"/
+  // "coche") de antes de estandarizar en "hospedaje"/"alquilercoche" (ver inferirTagsCategoria en
+  // core/holded/write.ts). Sin filtrarla, un gasto de hotel terminaba con AMBAS variantes juntas
+  // ("alojamiento" Y "hospedaje") — justo la duplicación que se quería evitar al estandarizar. Se
+  // descarta la variante vieja cuando la nueva ya viene de tagsCategoria para ESTE gasto.
+  const TAGS_REEMPLAZADOS: Record<string, string> = { alojamiento: "hospedaje", coche: "alquilercoche" };
   const tagsCategoria = inferirTagsCategoria(datos.concepto, datos.proveedor);
-  const tagsPersona = datos.personaAsociada ? [datos.personaAsociada] : (cuentaSugerida?.tags ?? []);
+  const tagsPersonaCrudo = datos.personaAsociada ? [datos.personaAsociada] : (cuentaSugerida?.tags ?? []);
+  const tagsPersona = tagsPersonaCrudo.filter((t) => {
+    const reemplazo = TAGS_REEMPLAZADOS[t];
+    return !(reemplazo && tagsCategoria.includes(reemplazo));
+  });
   const tagsFinal = Array.from(new Set([...tagsPersona, ...tagsCategoria]));
 
   const conceptoConMonedaOriginal = usarEquivalente

@@ -718,14 +718,29 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 
 // Pedido explícito de Carlos: además del nombre de quien hizo el gasto
 // (personaAsociada, ver extractInvoiceData.ts), el tag debe reflejar la
-// naturaleza real de ESTE gasto en concreto — alimentación, o transporte
-// con su medio específico (taxi/tren/avión) — a partir de palabras clave
-// del concepto/proveedor, no del promedio histórico de tags de la cuenta
-// contable (que mezcla nombres de personas con categorías sin relación
-// real con el gasto concreto — bug real: un viaje en Uber terminó con tag
-// "alimentacion" solo porque esa cuenta contable históricamente acumulaba
-// ese tag en otras líneas). Los nombres "alimentacion"/"transporte" son
-// los mismos ya vistos en uso real en Holded (verificado en vivo).
+// naturaleza real de ESTE gasto en concreto — alimentación, hospedaje, o
+// transporte con su medio específico (taxi/tren/avión/coche de alquiler/
+// gasolina/peaje/barco) — a partir de palabras clave del concepto/proveedor,
+// no del promedio histórico de tags de la cuenta contable (que mezcla
+// nombres de personas con categorías sin relación real con el gasto
+// concreto — bug real: un viaje en Uber terminó con tag "alimentacion" solo
+// porque esa cuenta contable históricamente acumulaba ese tag en otras
+// líneas). Todos los nombres de tag de este archivo son los mismos ya
+// vistos en uso real en Holded (verificado en vivo, miles de compras reales
+// revisadas en las 3 empresas) — nunca uno inventado.
+//
+// Segundo hallazgo real de esa misma revisión en vivo: varios gastos de
+// hospedaje reales (hoteles, Airbnb, Booking.com) estaban creados sin
+// NINGÚN tag de categoría — "hospedaje" no existía todavía en esta lista,
+// así que ese tipo de gasto siempre caía en el "no reconozco nada" de abajo.
+// Historicamente en Holded se usaron indistintamente "hospedaje" y
+// "alojamiento" para lo mismo — de acá en adelante se usa siempre
+// "hospedaje" (el que Carlos usa al pedir esto) para no seguir sumando una
+// tercera variante. Mismo criterio con "coche" (2 usos históricos reales)
+// vs. "alquilercoche" (6 usos históricos reales, más frecuente) para
+// alquiler de coche — se estandariza en el más usado. Ver
+// procesarGastoEntrante.ts (tagsFinal) para cómo se evita escribir las dos
+// variantes juntas cuando la cuenta contable sugerida trae la vieja.
 const PALABRAS_ALIMENTACION = ["restaurante", "almuerzo", "desayuno", "cena", "comida", "cafeteria", "brunch"];
 const PALABRAS_TAXI = ["taxi", "uber", "cabify", "bolt", "freenow"];
 const PALABRAS_TREN = ["tren", "renfe", "eurostar", "sncf", "trenitalia", "ouigo", "avanza"];
@@ -746,10 +761,54 @@ const PALABRAS_AVION = [
   "qatar airways",
   "american airlines",
 ];
+// "rent a car"/"car rental" cubre la mayoría de los proveedores reales vistos (Europcar, Class Rent
+// A Car, Sixt, Record Go) sin depender de una lista interminable de marcas — deliberadamente sin
+// "avis"/"sixt" (marcas reales de alquiler de coches, pero "avis" es substring de "aviso"/"avisar", y
+// "sixt" de "sixth" en inglés — el límite izquierdo de contienePalabraClave (ver más abajo) no basta
+// para descartar "sixt" dentro de "sixth" porque "sixt" también puede aparecer al inicio mismo del
+// texto, que siempre cuenta como límite válido; más seguro dejarlo fuera del todo, ninguna de las dos
+// apareció en los gastos reales revisados en vivo de todas formas).
+const PALABRAS_ALQUILER_COCHE = ["rent a car", "rentacar", "car rental", "alquiler de coche", "alquiler coche", "europcar"];
+// Deliberadamente SIN el tag "transporte" — a diferencia de taxi/tren/avión/alquilercoche/peaje/
+// barco, en los gastos reales de gasolina revisados en vivo (12 de 12 casos) casi ninguno traía
+// "transporte" además de "gasolina" — se sigue ese mismo patrón real en vez de uno inventado.
+const PALABRAS_GASOLINA = ["gasolina", "combustible", "repsol", "cepsa", "estacion de servicio", "gas station", "avia station"];
+const PALABRAS_PEAJE = ["peaje", "pagatelia", "toll road", "telepeaje"];
+const PALABRAS_BARCO = ["ferry", "barco", "naviera", "balearia", "cruise"];
+// Igual que gasolina — el único caso real de "parking" revisado en vivo no traía "transporte".
+const PALABRAS_PARKING = ["parking", "aparcamiento"];
+const PALABRAS_HOSPEDAJE = [
+  "hotel",
+  "hostal",
+  "airbnb",
+  "booking.com",
+  "hospedaje",
+  "resort",
+  "apartamento",
+  "holiday inn",
+  "hilton",
+  "marriott",
+  "melia",
+  "ibis",
+  "nh hotel",
+];
+// NOTA: el orden de estas comprobaciones importa (retorna en el primer match, nunca combina
+// categorías) — hospedaje se revisa ANTES que alimentación a propósito, porque una factura de hotel
+// puede mencionar comida (desayuno incluido) sin que el gasto en sí sea de alimentación.
 
 function contienePalabraClave(texto: string, palabras: string[]): boolean {
   const t = normalizar(texto);
-  return palabras.some((p) => t.includes(normalizar(p)));
+  // Coincidencia con límite IZQUIERDO (nunca a mitad de otra palabra) — hallazgo real de auditoría:
+  // una coincidencia de substring simple hacía que "melia" matcheara dentro de "Amelia"/"Camelia",
+  // "barco" dentro de "desembarco"/"abarcó", y "shell" dentro de "PowerShell". Deliberadamente SOLO
+  // el límite izquierdo (no también el derecho): así "hotel" sigue matcheando "hoteles" y
+  // "aerolinea" sigue matcheando "aerolineas" (plural), que son la mayoría de los casos reales.
+  return palabras.some((p) => {
+    const normalizada = normalizar(p);
+    if (!normalizada) return false;
+    const escapada = normalizada.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9])${escapada}`).test(t);
+  });
 }
 
 /**
@@ -764,6 +823,12 @@ export function inferirTagsCategoria(concepto: string, proveedor: string): strin
   if (contienePalabraClave(texto, PALABRAS_TAXI)) return ["transporte", "taxi"];
   if (contienePalabraClave(texto, PALABRAS_TREN)) return ["transporte", "tren"];
   if (contienePalabraClave(texto, PALABRAS_AVION)) return ["transporte", "avion"];
+  if (contienePalabraClave(texto, PALABRAS_ALQUILER_COCHE)) return ["transporte", "alquilercoche"];
+  if (contienePalabraClave(texto, PALABRAS_GASOLINA)) return ["gasolina"];
+  if (contienePalabraClave(texto, PALABRAS_PEAJE)) return ["transporte", "peaje"];
+  if (contienePalabraClave(texto, PALABRAS_BARCO)) return ["transporte", "barco"];
+  if (contienePalabraClave(texto, PALABRAS_PARKING)) return ["parking"];
+  if (contienePalabraClave(texto, PALABRAS_HOSPEDAJE)) return ["hospedaje"];
   if (contienePalabraClave(texto, PALABRAS_ALIMENTACION)) return ["alimentacion"];
 
   return [];
@@ -1081,6 +1146,15 @@ export type GastoConEtiqueta = GastoSinComprobante;
  * las etiquetas de Holded son la única pista fiable de a quién/qué corresponde un gasto genérico
  * (mismo principio que buscarGastosSinComprobante, arriba).
  */
+// Sinónimos históricos del mismo tag — ver inferirTagsCategoria más arriba: Holded tiene gastos
+// reales etiquetados "alojamiento" (antes de estandarizar en "hospedaje") y "coche" (antes de
+// estandarizar en "alquilercoche"). Sin esto, buscar "hospedaje" reportaría de menos — dejando fuera
+// todo lo que sigue etiquetado "alojamiento" desde antes de estandarizar.
+const SINONIMOS_ETIQUETA: Record<string, string[]> = {
+  hospedaje: ["alojamiento"],
+  alquilercoche: ["coche"],
+};
+
 export async function buscarGastosPorEtiquetaHolded(
   empresa: Empresa,
   etiqueta: string,
@@ -1088,6 +1162,7 @@ export async function buscarGastosPorEtiquetaHolded(
   hasta: string
 ): Promise<{ resultados: GastoConEtiqueta[]; totalRevisados: number; limiteAlcanzado: boolean }> {
   const etiquetaNorm = normalizar(etiqueta);
+  const sinonimosNorm = (SINONIMOS_ETIQUETA[etiquetaNorm] ?? []).map(normalizar);
   const revisados: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; tags?: string[] }> = [];
   let cursor: string | undefined;
   let limiteAlcanzado = false;
@@ -1115,7 +1190,7 @@ export async function buscarGastosPorEtiquetaHolded(
   }
 
   const resultados: GastoConEtiqueta[] = revisados
-    .filter((item) => (item.tags ?? []).some((t) => normalizar(t) === etiquetaNorm))
+    .filter((item) => (item.tags ?? []).some((t) => { const tNorm = normalizar(t); return tNorm === etiquetaNorm || sinonimosNorm.includes(tNorm); }))
     .map((item) => ({
       id: item.id,
       contactName: item.contact_name ?? "(sin proveedor)",

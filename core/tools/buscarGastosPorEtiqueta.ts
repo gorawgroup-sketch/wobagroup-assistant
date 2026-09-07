@@ -12,7 +12,9 @@ export const buscarGastosPorEtiquetaTool: ToolDefinition = {
     "Busca gastos de Holded (WOBA, EWORKS o Footprint) por ETIQUETA/hashtag exacta (ej. 'jorge', " +
     "'transporte', 'proyectosimon') — úsala cuando pregunten por los gastos de una persona, proyecto o " +
     "categoría concreta usando su hashtag. La etiqueta se compara sin distinguir mayúsculas ni acentos, " +
-    "pero debe ser exacta (no una palabra parecida) — si no sabes el hashtag exacto, primero puedes " +
+    "pero debe ser exacta (no una palabra parecida) — con dos excepciones ya conocidas por variantes " +
+    "históricas del mismo tag: 'hospedaje' también encuentra lo etiquetado 'alojamiento', y " +
+    "'alquilercoche' también encuentra lo etiquetado 'coche'. Si no sabes el hashtag exacto, primero puedes " +
     "listar unos cuantos gastos con consultar_movimientos_holded para ver qué etiquetas existen. Solo " +
     "encuentra coincidencias por ETIQUETA, no por proveedor ni descripción — si buscas por el nombre de " +
     "un proveedor usa otra herramienta.",
