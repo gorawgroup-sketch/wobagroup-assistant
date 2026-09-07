@@ -4,13 +4,19 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
 import type { Empresa } from "../holded/client";
-import type { PurchaseCandidato } from "../holded/write";
+import type { PurchaseCandidato, MovimientoBancarioCandidato } from "../holded/write";
 import type { LineaFactura } from "../documental/extractInvoiceData";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_gastos_pendientes";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las demás propuestas
 
+// Bug real de auditoría (agregar movimientosAmbiguosJSON como columna Y): el rango de columnas
+// (A1:__1 en ensureTab, A2:__10000 en leerTodas, A:__ en crearPropuestaGasto) está hardcodeado por
+// letra, NO se calcula de HEADERS.length — agregar una columna nueva a HEADERS sin extender los TRES
+// rangos deja la columna nueva escribible pero NUNCA legible (values.get con un rango explícito
+// nunca trae columnas fuera de él, así que row[n] de esa columna siempre sale undefined, sin ningún
+// error). La próxima columna que se agregue DEBE extender los tres rangos a la letra siguiente.
 const HEADERS = [
   "id",
   "empresa",
@@ -36,6 +42,7 @@ const HEADERS = [
   "correoOrigenJSON",
   "seleccionAccionesJSON",
   "hayMovimientoBancario",
+  "movimientosAmbiguosJSON",
 ];
 
 export interface PropuestaGasto {
@@ -128,6 +135,14 @@ export interface PropuestaGasto {
    * repetido para un dato que no cambia mientras la propuesta esté viva.
    */
   hayMovimientoBancario?: boolean;
+  /**
+   * Pedido explícito de Carlos, tras un caso real: cuando hay VARIOS movimientos bancarios parecidos
+   * (ninguno exacto y único), antes solo se podía elegir cuál respondiendo en texto libre — pero eso
+   * no se puede combinar con los checks del teclado ("no tengo la posibilidad de darte las dos
+   * respuestas al mismo tiempo"). Se guardan acá los candidatos para que gastoTeclado.ts pueda ofrecer
+   * un check "Conciliar con #N" por cada uno, y así elegir empresa + conciliar en la MISMA aprobación.
+   */
+  movimientosAmbiguos?: MovimientoBancarioCandidato[];
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -180,7 +195,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:X1`,
+    range: `${TAB_NAME}!A1:Y1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -234,6 +249,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     seleccionAcciones = undefined;
   }
 
+  let movimientosAmbiguos: MovimientoBancarioCandidato[] | undefined;
+  try {
+    movimientosAmbiguos = row[24] ? JSON.parse(String(row[24])) : undefined;
+  } catch {
+    movimientosAmbiguos = undefined;
+  }
+
   return {
     id: String(row[0]),
     empresa: row[1] as Empresa,
@@ -259,6 +281,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     correoOrigen,
     seleccionAcciones,
     hayMovimientoBancario: row[23] === true || row[23] === "true",
+    movimientosAmbiguos,
   };
 }
 
@@ -288,6 +311,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
     p.seleccionAcciones && p.seleccionAcciones.length > 0 ? JSON.stringify(p.seleccionAcciones) : "",
     p.hayMovimientoBancario === true ? "true" : "",
+    p.movimientosAmbiguos && p.movimientosAmbiguos.length > 0 ? JSON.stringify(p.movimientosAmbiguos) : "",
   ];
 }
 
@@ -303,7 +327,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:X10000`,
+    range: `${TAB_NAME}!A2:Y10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -360,7 +384,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:X`,
+    range: `${TAB_NAME}!A:Y`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },
@@ -496,6 +520,27 @@ export async function actualizarFlagMovimientoBancarioGasto(id: string, hayMovim
     range: `${TAB_NAME}!X${match.rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [[hayMovimiento ? "true" : ""]] },
+  });
+  return true;
+}
+
+/**
+ * Guarda los movimientos bancarios ambiguos (varios parecidos, ninguno único) para que
+ * gastoTeclado.ts pueda ofrecer un check "Conciliar con #N" por cada uno — ver
+ * PropuestaGasto.movimientosAmbiguos.
+ */
+export async function actualizarMovimientosAmbiguosPropuestaGasto(id: string, movimientos: MovimientoBancarioCandidato[]): Promise<boolean> {
+  const match = await buscarFilaPropuesta(id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!Y${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[JSON.stringify(movimientos)]] },
   });
   return true;
 }

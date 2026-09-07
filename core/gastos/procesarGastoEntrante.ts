@@ -13,6 +13,7 @@ import {
   actualizarMessageIdGasto,
   buscarPropuestaGastoPendiente,
   actualizarFlagMovimientoBancarioGasto,
+  actualizarMovimientosAmbiguosPropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import { construirTecladoGasto } from "./gastoTeclado";
@@ -278,7 +279,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // ya tenía 159 líneas reales de gastos de viaje bajo la misma cuenta.
   const cuentaSugerida =
     candidatos.length === 0
-      ? await inferirCuentaGasto(empresa, { proveedor: datos.proveedor, concepto: datos.concepto }).catch((error) => {
+      ? await inferirCuentaGasto(empresa, { proveedor: datos.proveedor, concepto: datos.concepto, personaAsociada: datos.personaAsociada }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;
         })
@@ -500,9 +501,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : candidatosMovAmbiguos.length > 0
           ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
             candidatosMovAmbiguos
-              .map((m) => `  • "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
               .join("\n") +
-            `\n¿Cuál corresponde? Dímelo y lo concilio contra ese.`
+            `\nMarca "🔗 Conciliar con #N" abajo (o "Crear (sin conciliar)" si ninguno es) y aprueba tu selección.`
           : movimientoMonedaAlternativa
             ? `\n\n💱 OJO — posible error de moneda: no encontré ningún movimiento de ${importeTexto}, pero SÍ hay uno de ` +
               `EXACTAMENTE ${movimientoMonedaAlternativa.monto.toFixed(2)} ${movimientoMonedaAlternativa.moneda} el ` +
@@ -527,6 +528,11 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     await actualizarFlagMovimientoBancarioGasto(propuesta.id, Boolean(movimientoBancario)).catch((error) =>
       console.error("[procesarGastoEntrante] Error guardando el flag de movimiento bancario (no crítico):", error)
     );
+    if (candidatosMovAmbiguos.length > 0) {
+      await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, candidatosMovAmbiguos).catch((error) =>
+        console.error("[procesarGastoEntrante] Error guardando los movimientos ambiguos (no crítico):", error)
+      );
+    }
 
     const notaPersonaTxt = datos.personaAsociada
       ? `${datos.personaAsociada} (identificado en este documento/correo)`
@@ -564,7 +570,10 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // en el match — antes el código decidía solo por él (o una u otra,
     // nunca las dos). Sin movimiento confirmado, solo tiene sentido
     // "Crear" (no hay nada que conciliar todavía).
-    botones = construirTecladoGasto(propuesta, { hayMovimientoBancario: Boolean(movimientoBancario) });
+    botones = construirTecladoGasto(propuesta, {
+      hayMovimientoBancario: Boolean(movimientoBancario),
+      numMovimientosAmbiguos: candidatosMovAmbiguos.length > 0 ? candidatosMovAmbiguos.length : undefined,
+    });
   }
 
   const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);

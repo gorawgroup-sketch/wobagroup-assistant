@@ -861,7 +861,22 @@ const MAX_PAGINAS_CUENTAS = 10;
 // (ej. "real", "cargo") de un concepto sintético coincidían por azar con
 // líneas de compra totalmente ajenas (una factura de suscripción de
 // Holded), llevando a una cuenta contable sin ninguna relación real.
-const PALABRAS_IGNORADAS_CONCEPTO = new Set(["para", "desde", "sobre", "hasta", "todavía", "documento", "adjunto", "generado"]);
+// Hallazgo real (caso Kelly Correales, Uber Eats — Green House Churubusco): "comprobante" es parte
+// del mismo tipo de relleno automático que ya se excluía acá ("(250.25 MXN, comprobante en MXN)",
+// "comprobante generado desde el cuerpo del correo...", ver procesarGastoEntrante.ts/
+// revisarCorreoNuevo.ts) — aparece en la gran mayoría de los conceptos con conversión de moneda sin
+// decir nada sobre la NATURALEZA del gasto, y sin excluirla arrastraba coincidencias falsas hacia
+// cuentas totalmente ajenas.
+// "correo"/"cuerpo"/"original" — mismo hallazgo, esta vez del relleno automático que usa
+// revisarCorreoNuevo.ts cuando un gasto se detecta en el cuerpo de un correo sin adjunto: "(...,
+// comprobante generado desde el cuerpo del correo, sin adjunto original)".
+const PALABRAS_IGNORADAS_CONCEPTO = new Set([
+  "para", "desde", "sobre", "hasta", "todavía", "documento", "adjunto", "generado",
+  "comprobante", "correo", "cuerpo", "original",
+]);
+// Umbral mínimo de evidencia para confiar en un match por CONCEPTO (señal más débil que por
+// proveedor, ver construirSugerenciaDesdeCoincidencias) — una sola línea histórica nunca basta.
+const MIN_EVIDENCIA_CONCEPTO = 2;
 
 function palabrasSignificativas(texto: string): string[] {
   return normalizar(texto)
@@ -908,15 +923,25 @@ async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuen
   return lineas;
 }
 
+/**
+ * minEvidencia — hallazgo real de auditoría: si TODAS las coincidencias por concepto apuntan (por
+ * casualidad) a la MISMA cuenta, nunca hay ambigüedad que dispare elegirCuentaConIA (eso solo pasa
+ * si hay VARIAS cuentas distintas) — así que una sola línea histórica mal archivada podía decidir la
+ * cuenta con "toda la confianza" aunque la evidencia real fuera mínima. El match por proveedor (señal
+ * fuerte y determinística por diseño) usa el valor por defecto (1); el match por concepto (señal más
+ * débil, la que causó el caso real Kelly Correales/Uber Eats) exige más de una coincidencia real.
+ */
 function construirSugerenciaDesdeCoincidencias(
   matches: LineaConCuenta[],
-  origen: CuentaSugerida["aprendidoDe"]
+  origen: CuentaSugerida["aprendidoDe"],
+  minEvidencia = 1
 ): CuentaSugerida | undefined {
   if (matches.length === 0) return undefined;
 
   const conteo = new Map<string, number>();
   for (const m of matches) conteo.set(m.account, (conteo.get(m.account) ?? 0) + 1);
-  const cuentaGanadora = Array.from(conteo.entries()).sort((a, b) => b[1] - a[1])[0][0];
+  const [cuentaGanadora, votos] = Array.from(conteo.entries()).sort((a, b) => b[1] - a[1])[0];
+  if (votos < minEvidencia) return undefined;
 
   const delGrupo = matches.filter((m) => m.account === cuentaGanadora);
   const tagsFrecuentes = new Map<string, number>();
@@ -1020,16 +1045,22 @@ async function elegirCuentaConIA(
  *
  * 1) Si hay compras del MISMO proveedor (nombre parecido), usa la cuenta
  *    más frecuente entre esas — caso fuerte y determinístico.
- * 2) Si no, busca por palabras clave del concepto compartidas con líneas
- *    ya registradas. Si de ahí salen varias cuentas candidatas distintas
- *    sin un proveedor que desempate, se le pide a Claude que elija
- *    (elegirCuentaConIA) en vez de quedarse con la primera por azar.
+ * 2) Si no, busca por palabras clave del concepto (excluyendo primero las
+ *    que coincidan con el nombre de personaAsociada, si se dio — el nombre
+ *    de una persona aparece en TODOS sus gastos sin importar la categoría,
+ *    así que nunca debe decidir la cuenta contable, caso real: Kelly
+ *    Correales + Uber Eats terminó en "Servicios de profesionales
+ *    independientes" solo por compartir su nombre con una factura no
+ *    relacionada) compartidas con líneas ya registradas. Si de ahí salen
+ *    varias cuentas candidatas distintas sin un proveedor que desempate,
+ *    se le pide a Claude que elija (elegirCuentaConIA) en vez de quedarse
+ *    con la primera por azar.
  * 3) Si no hay ninguna coincidencia razonable, devuelve undefined — Holded
  *    usa su cuenta por defecto, igual que antes de esta función existir.
  */
 export async function inferirCuentaGasto(
   empresa: Empresa,
-  criterios: { proveedor: string; concepto: string }
+  criterios: { proveedor: string; concepto: string; personaAsociada?: string }
 ): Promise<CuentaSugerida | undefined> {
   const lineas = await recolectarLineasConCuenta(empresa);
   if (lineas.length === 0) return undefined;
@@ -1048,7 +1079,16 @@ export async function inferirCuentaGasto(
   const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
   if (sugeridoPorNombre) return sugeridoPorNombre;
 
-  const palabrasConcepto = palabrasSignificativas(criterios.concepto);
+  // Hallazgo real de auditoría (caso Kelly Correales, Uber Eats — Green House Churubusco): el
+  // concepto casi siempre trae el nombre de la persona ("... — Kelly Correales — 2 sep 2026..."), y
+  // esa persona tiene gastos reales de TODO tipo (vuelos, comida, taxis) — sin excluir su nombre, la
+  // coincidencia por palabras del concepto terminaba arrastrando la cuenta contable de un gasto
+  // TOTALMENTE distinto (ej. "Servicios de profesionales independientes" de otra factura suya) solo
+  // porque compartían su nombre, no la naturaleza del gasto. El nombre es señal fuerte para el TAG de
+  // persona (ver inferirTagsCategoria/tagsPersona en procesarGastoEntrante.ts) pero nunca debe decidir
+  // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
+  const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
+  const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
   if (palabrasConcepto.length === 0) return undefined;
 
   const porConcepto = lineas.filter((l) => {
@@ -1062,7 +1102,7 @@ export async function inferirCuentaGasto(
     if (viaIA) return viaIA;
   }
 
-  return construirSugerenciaDesdeCoincidencias(porConcepto, "concepto");
+  return construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
 }
 
 export interface GastoSinComprobante {
@@ -2143,20 +2183,18 @@ export async function buscarMovimientoEnMonedaAlternativa(
  * faltaba antes y dejó pasar el bug real: status "conciliado" con
  * `reconciled_amount: "0.00"` (sin ningún documento enlazado de verdad).
  */
-export async function reconciliarMovimiento(
+/**
+ * Relee el estado actual de UN movimiento bancario puntual. La API no tiene un GET por id
+ * individual documentado — se acota por fecha (misma ventana que la búsqueda) y se busca el id
+ * dentro de esos resultados. Compartida por reconciliarMovimiento (verificación post-llamada) y
+ * estaMovimientoYaConciliado (chequeo previo antes de conciliar un candidato ya elegido).
+ */
+async function leerEstadoMovimiento(
   empresa: Empresa,
   accountId: string,
   movementId: string,
-  fechaAproximada: string,
-  documentoId: string
-): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number }> {
-  await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
-    documents: [{ document_id: documentoId, document_type: "purchase" }],
-  });
-
-  // La API no tiene un GET por id individual de movimiento documentado —
-  // se relee acotando por fecha (misma ventana que la búsqueda) y se busca
-  // el id dentro de esos resultados.
+  fechaAproximada: string
+): Promise<{ status?: string; reconciled_amount?: string } | undefined> {
   const fechaBase = new Date(fechaAproximada);
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
@@ -2168,13 +2206,45 @@ export async function reconciliarMovimiento(
     end_date: formatDateLocal(hasta),
     limit: "100",
   });
-  const verificacion = (await holdedWriteCall(
+  const respuesta = (await holdedWriteCall(
     empresa,
     "GET",
     `/treasury/accounts/${accountId}/bank-movements?${params.toString()}`
   )) as { items?: Array<{ id: string; status?: string; reconciled_amount?: string }> };
 
-  const movimiento = (verificacion.items ?? []).find((m) => m.id === movementId);
+  return (respuesta.items ?? []).find((m) => m.id === movementId);
+}
+
+/**
+ * Chequeo previo, pedido por auditoría: buscarMovimientoSimilar/buscarMovimientoAproximado
+ * filtran movimientos ya conciliados en el momento de OFRECERLOS como candidato, pero
+ * conciliarContraMovimientoEspecifico (gastoCallbackHandler.ts) concilia contra un candidato
+ * capturado hasta 7 días antes (mientras la propuesta de gasto esperaba aprobación) — en esa
+ * ventana alguien pudo haber conciliado ese mismo movimiento por otra vía. Releer el estado justo
+ * antes de conciliar evita reintentar sobre un movimiento que ya no está libre.
+ */
+export async function estaMovimientoYaConciliado(
+  empresa: Empresa,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string
+): Promise<boolean> {
+  const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
+  return estaConciliado(movimiento?.status);
+}
+
+export async function reconciliarMovimiento(
+  empresa: Empresa,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string,
+  documentoId: string
+): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number }> {
+  await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
+    documents: [{ document_id: documentoId, document_type: "purchase" }],
+  });
+
+  const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
   const montoEnlazado = Math.abs(parsearMontoMovimiento(movimiento?.reconciled_amount) || 0);
 

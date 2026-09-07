@@ -23,6 +23,29 @@ export interface OpcionesTecladoGasto {
   numCandidatos?: number;
   /** Solo aplica en modo "final" (numCandidatos undefined): si ya se encontró un movimiento bancario real sin conciliar, aparece "Crear y conciliar" además de "Crear". */
   hayMovimientoBancario?: boolean;
+  /**
+   * Solo aplica en modo "final": cuántos movimientos bancarios AMBIGUOS (varios parecidos, ninguno
+   * único) se ofrecen — uno por cada uno, para poder elegir CUÁL conciliar en la misma aprobación
+   * (ver PropuestaGasto.movimientosAmbiguos). Mutuamente excluyente con hayMovimientoBancario (nunca
+   * hay match único Y ambiguo a la vez).
+   */
+  numMovimientosAmbiguos?: number;
+}
+
+/**
+ * Deriva las opciones del teclado directamente de la propuesta — hallazgo real de auditoría: cada
+ * sitio que REPINTA el teclado (tras marcar un check, tras aplicar una acción de texto, tras
+ * corregir la moneda...) recalculaba estos 3 campos a mano, y más de uno se quedó corto al agregar
+ * numMovimientosAmbiguos (el check "🔗 Conciliar con #N" desaparecía en cuanto se repintaba el
+ * teclado por CUALQUIER otro motivo). Un solo lugar que sepa leer la propuesta evita que un futuro
+ * campo nuevo se olvide en alguno de los varios sitios que llaman a construirTecladoGasto.
+ */
+export function opcionesTecladoDesdePropuesta(propuesta: PropuestaGasto): OpcionesTecladoGasto {
+  return {
+    numCandidatos: propuesta.candidatos.length > 0 ? propuesta.candidatos.length : undefined,
+    hayMovimientoBancario: propuesta.hayMovimientoBancario,
+    numMovimientosAmbiguos: propuesta.movimientosAmbiguos && propuesta.movimientosAmbiguos.length > 0 ? propuesta.movimientosAmbiguos.length : undefined,
+  };
 }
 
 /**
@@ -33,7 +56,14 @@ export interface OpcionesTecladoGasto {
  * otra lateral y con como mucho UNA final.
  */
 export function esAccionFinal(key: AccionGastoKey): boolean {
-  return key === "crear" || key === "crearconciliar" || key === "cancelar" || key === "nuevo" || key.startsWith("adjuntar_");
+  return (
+    key === "crear" ||
+    key === "crearconciliar" ||
+    key === "cancelar" ||
+    key === "nuevo" ||
+    key.startsWith("adjuntar_") ||
+    key.startsWith("crearconciliar_")
+  );
 }
 
 /** true para las que necesitan una respuesta de texto libre antes de poder aplicarse. */
@@ -48,10 +78,19 @@ export function indiceCandidato(key: AccionGastoKey): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** Índice del movimiento ambiguo para una clave "crearconciliar_<i>" — undefined si la clave no es de ese tipo. */
+export function indiceMovimientoAmbiguo(key: AccionGastoKey): number | undefined {
+  if (!key.startsWith("crearconciliar_")) return undefined;
+  const n = Number(key.slice("crearconciliar_".length));
+  return Number.isFinite(n) ? n : undefined;
+}
+
 /** Texto humano de cada acción — usado tanto en los botones como en los mensajes de progreso de "Aprobar selección". */
 export function etiquetaAccion(key: AccionGastoKey): string {
   const indice = indiceCandidato(key);
   if (indice !== undefined) return `Es este (#${indice + 1})`;
+  const indiceMov = indiceMovimientoAmbiguo(key);
+  if (indiceMov !== undefined) return `Conciliar con #${indiceMov + 1}`;
   switch (key) {
     case "nuevo":
       return "Ninguno, crear nuevo";
@@ -78,6 +117,7 @@ export function etiquetaAccion(key: AccionGastoKey): string {
 
 function icono(key: AccionGastoKey): string {
   if (indiceCandidato(key) !== undefined) return "✅";
+  if (indiceMovimientoAmbiguo(key) !== undefined) return "🔗";
   switch (key) {
     case "nuevo":
       return "❌";
@@ -117,7 +157,18 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
     filas.push([boton("nuevo")]);
     filas.push([boton("ajustarmonto")]);
   } else {
-    filas.push(opciones.hayMovimientoBancario ? [boton("crear", "Crear"), boton("crearconciliar")] : [boton("crear")]);
+    const hayMovimientosAmbiguos = opciones.numMovimientosAmbiguos !== undefined && opciones.numMovimientosAmbiguos > 0;
+    if (hayMovimientosAmbiguos) {
+      // Pedido explícito de Carlos, tras un caso real: antes, con varios movimientos parecidos, la
+      // única forma de elegir cuál era responder en texto libre — pero eso no se puede combinar con
+      // marcar "Crear" en el mismo paso ("no tengo la posibilidad de darte las dos respuestas al
+      // mismo tiempo"). Un check por candidato, igual que "adjuntar_<i>", para poder elegir crear +
+      // CUÁL conciliar en la misma aprobación.
+      filas.push([boton("crear", "Crear (sin conciliar)")]);
+      for (let i = 0; i < (opciones.numMovimientosAmbiguos as number); i++) filas.push([boton(`crearconciliar_${i}`)]);
+    } else {
+      filas.push(opciones.hayMovimientoBancario ? [boton("crear", "Crear"), boton("crearconciliar")] : [boton("crear")]);
+    }
     filas.push([boton("corregir"), boton("ajustarmonto")]);
     filas.push([boton("cancelar")]);
   }
