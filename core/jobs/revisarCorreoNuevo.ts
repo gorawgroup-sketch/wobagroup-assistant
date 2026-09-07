@@ -651,21 +651,21 @@ export async function handleColaCorreoSiguienteCallback(callback: TelegramCallba
  * leído en Gmail (Carlos puede haberlo resuelto sin marcarlo), solo deja de
  * bloquear la cola.
  */
-export async function handleDescartarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {
-  const chatId = callback.message?.chat.id;
-
-  try {
-    await answerCallbackQuery(callback.id);
-  } catch (error) {
-    console.error("[revisarCorreoNuevo] No se pudo responder el callback_query (no crítico):", error);
-  }
-
-  if (chatId === undefined) return;
-
+/**
+ * Descarta el correo ACTIVO de la cola (el que está bloqueando la revisión) y libera la cola para
+ * seguir con el siguiente — cuerpo compartido entre el botón "🗑️ Descartar y liberar" y
+ * saltarCorreoActivoTool (core/tools/saltarCorreoActivo.ts). Pedido explícito de Carlos: "asegúrate
+ * de que cuando algo se bloquee pueda continuar con la revisión de correos sin tener que venir a
+ * esta instancia" — antes esto SOLO era alcanzable tocando un botón específico (el de la pregunta
+ * "¿conciliar?" estancada, o esperando 48h); ahora también se puede pedir en texto libre en
+ * cualquier momento ("sáltate este correo", "este está atascado, sigue con el siguiente").
+ * Devuelve un texto describiendo lo que pasó, para que el llamador lo relaye (tool) o lo mande
+ * directo (callback).
+ */
+export async function saltarCorreoActivo(chatId: number): Promise<string> {
   const activo = await obtenerActivoActual(chatId);
   if (!activo) {
-    await sendTelegramMessage(chatId, "Ya no hay ningún correo activo esperando — nada que descartar.").catch(() => {});
-    return;
+    return "Ya no hay ningún correo activo esperando — nada que saltar.";
   }
 
   const borrado = await descartarActivoEstancado(chatId, activo.id);
@@ -686,12 +686,9 @@ export async function handleDescartarActivoCallback(callback: TelegramCallbackQu
     );
   }
 
-  await sendTelegramMessage(
-    chatId,
-    borrado
-      ? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.`
-      : "Ya se había resuelto por otro camino justo antes — nada que descartar."
-  ).catch(() => {});
+  const notaDescartado = borrado
+    ? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.`
+    : "Ya se había resuelto por otro camino justo antes — nada que descartar.";
 
   const quedan = await contarPendientesTotal(chatId);
   if (quedan > 0) {
@@ -700,6 +697,23 @@ export async function handleDescartarActivoCallback(callback: TelegramCallbackQu
       `Quedan ${quedan} correo${quedan === 1 ? "" : "s"} más en la cola — ¿seguimos con el siguiente?`
     );
   }
+
+  return notaDescartado;
+}
+
+export async function handleDescartarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+
+  try {
+    await answerCallbackQuery(callback.id);
+  } catch (error) {
+    console.error("[revisarCorreoNuevo] No se pudo responder el callback_query (no crítico):", error);
+  }
+
+  if (chatId === undefined) return;
+
+  const resultado = await saltarCorreoActivo(chatId);
+  await sendTelegramMessage(chatId, resultado).catch(() => {});
 }
 
 
