@@ -1057,3 +1057,121 @@ export async function responderCorreoAutomatico(params: {
 
   return "";
 }
+
+const REPORTAR_HALLAZGO_TOOL_NAME = "reportar_hallazgo_autorrevision";
+
+const REPORTAR_HALLAZGO_TOOL: Anthropic.Tool = {
+  name: REPORTAR_HALLAZGO_TOOL_NAME,
+  description: "Reporta el resultado de la revisión de este archivo. Debes llamarla siempre al terminar — nunca respondas solo en texto.",
+  input_schema: {
+    type: "object",
+    properties: {
+      encontro_problema: {
+        type: "boolean",
+        description:
+          "true SOLO si encontraste un bug real y concreto (no una preferencia de estilo, no una " +
+          "posible mejora, no una duda) — algo que produce un resultado incorrecto, un crash, o un " +
+          "comportamiento distinto al que el resto del código claramente pretende. Si tienes cualquier " +
+          "duda razonable de que sea un bug real, reporta false.",
+      },
+      resumen: {
+        type: "string",
+        description: "Una frase breve (para un mensaje de Telegram) describiendo el bug encontrado. Omite si encontro_problema es false.",
+      },
+      diagnostico: {
+        type: "string",
+        description:
+          "2-4 frases: qué línea(s), qué entrada/estado dispara el bug, y qué arreglaste. Omite si encontro_problema es false.",
+      },
+      contenido_nuevo_completo: {
+        type: "string",
+        description:
+          "El archivo COMPLETO ya corregido, de la primera a la última línea — nunca un fragmento ni un " +
+          "diff. El arreglo debe ser MÍNIMO (solo lo necesario para corregir el bug reportado, sin " +
+          "refactors, sin cambiar estilo/nombres/comentarios ajenos al bug). Omite este campo por " +
+          "completo si encontro_problema es false.",
+      },
+    },
+    required: ["encontro_problema"],
+  },
+};
+
+const SYSTEM_PROMPT_AUTORREVISION_CODIGO =
+  "Eres un revisor de código sénior haciendo la autorrevisión nocturna, desatendida, de un archivo " +
+  "TypeScript de este proyecto (WOBA Copilot / Wobi) — NADIE va a curar tu resultado antes de que se " +
+  "convierta en un Pull Request real con un botón de un solo tap para desplegarlo, así que tu prioridad " +
+  "es NUNCA reportar un falso positivo. Es preferible reportar 'sin problema' diez veces de más que " +
+  "proponer un arreglo de algo que en realidad no es un bug, o un arreglo que cambia el comportamiento " +
+  "más allá del bug concreto.\n\n" +
+  "Solo reporta un problema si puedes nombrar la entrada/estado exacto que lo dispara y el resultado " +
+  "incorrecto o crash que produce — el mismo estándar que 'CONFIRMED' en una auditoría de código de " +
+  "este proyecto. Ignora: preferencias de estilo, posibles mejoras, abstracciones, manejo de errores " +
+  "adicional 'por si acaso', o cualquier cosa que no sea un bug real y concreto ya presente en el código.\n\n" +
+  "Si encuentras un bug real, tu arreglo debe ser el mínimo cambio que lo corrige — preserva el resto " +
+  "del archivo EXACTAMENTE igual (mismo estilo, mismos nombres, mismos comentarios, sin refactors ni " +
+  "limpieza adicional), y devuelve el archivo COMPLETO corregido.";
+
+/**
+ * Revisión autónoma de un solo archivo (ver core/jobs/autorrevisionCodigo.ts) — pedido explícito de
+ * Carlos: "que el sistema se autorrevise y autorrepare lo necesario de manera inteligente". Nunca
+ * usa herramientas (no necesita leer nada más: recibe el archivo completo) y nunca decide desplegar
+ * nada por sí sola — solo diagnostica y, si encuentra un bug real, redacta el arreglo; desplegarlo
+ * siempre pasa por la aprobación de un tap en Telegram (ver autorrepairCallbackHandler.ts).
+ */
+export async function revisarCodigoAutonomamente(params: {
+  ruta: string;
+  contenidoActual: string;
+}): Promise<{ encontroProblema: boolean; resumen?: string; diagnostico?: string; contenidoNuevoCompleto?: string }> {
+  const anthropic = getClient();
+
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content: `Archivo: ${params.ruta}\n\n\`\`\`typescript\n${params.contenidoActual}\n\`\`\`\n\nRevisa este archivo y reporta tu conclusión.`,
+    },
+  ];
+
+  const response = await anthropic.messages.create({
+    model: MODEL_SONNET,
+    // Más alto que el estándar del proyecto (8192): acá la respuesta no es solo texto, es el ARCHIVO
+    // COMPLETO reescrito (hasta 400 líneas, ver MAX_LINEAS_ARCHIVO en autorrevisionCodigo.ts) más el
+    // resumen/diagnóstico — un techo ajustado cortaría la reescritura a mitad de archivo.
+    max_tokens: 16384,
+    system: SYSTEM_PROMPT_AUTORREVISION_CODIGO,
+    tools: [REPORTAR_HALLAZGO_TOOL],
+    // Forzado (no "auto"): sin esto, el modelo podría responder solo en texto y quedaría
+    // indistinguible de un "sin problema" real — hallazgo real de auditoría.
+    tool_choice: { type: "tool", name: REPORTAR_HALLAZGO_TOOL_NAME },
+    messages,
+  });
+
+  registrarUsoIA(undefined, MODEL_SONNET, response.usage).catch((error) =>
+    console.error("[costTracking] Error registrando uso de IA (revisarCodigoAutonomamente):", error)
+  );
+
+  // Si la respuesta se cortó por el límite de tokens, el "archivo completo" que reporte puede estar
+  // truncado a mitad de línea aunque pase el chequeo de longitud del llamador — hallazgo real de
+  // auditoría. Mejor perder este hallazgo que abrir un PR con TypeScript inválido.
+  if (response.stop_reason === "max_tokens") {
+    console.error(`[revisarCodigoAutonomamente] Respuesta cortada por max_tokens revisando ${params.ruta} — se descarta.`);
+    return { encontroProblema: false };
+  }
+
+  const reportar = response.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === REPORTAR_HALLAZGO_TOOL_NAME
+  );
+  if (!reportar) return { encontroProblema: false };
+
+  const input = reportar.input as Record<string, unknown>;
+  if (input.encontro_problema !== true) return { encontroProblema: false };
+
+  const contenidoNuevoCompleto = typeof input.contenido_nuevo_completo === "string" ? input.contenido_nuevo_completo : "";
+  if (!contenidoNuevoCompleto.trim()) return { encontroProblema: false };
+
+  return {
+    encontroProblema: true,
+    resumen: typeof input.resumen === "string" ? input.resumen : "Bug encontrado durante la autorrevisión.",
+    diagnostico: typeof input.diagnostico === "string" ? input.diagnostico : "",
+    contenidoNuevoCompleto,
+  };
+}

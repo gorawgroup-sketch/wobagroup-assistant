@@ -65,6 +65,8 @@ import { handleAutorespuestaHiloCallback } from "../core/gmail/autorespuestaHilo
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import { verificarGithubToken } from "../core/github/client";
+import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
+import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
@@ -671,6 +673,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleReporteContableCallback(update.callback_query);
       } else if (data.startsWith("autohilo_")) {
         await handleAutorespuestaHiloCallback(update.callback_query);
+      } else if (data.startsWith("autorrepair_")) {
+        await handleAutorrepairCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
@@ -1189,6 +1193,33 @@ app.get("/admin/verificar-github-token", async (req: Request, res: Response) => 
   try {
     const resultado = await verificarGithubToken();
     res.json(resultado);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Dispara manualmente la autorrevisión nocturna de código, sin esperar al
+ * cron. Protegido por ADMIN_SECRET. Nunca despliega nada por sí sola — como
+ * mucho abre PR(s) y manda mensaje(s) de aprobación a Telegram.
+ */
+app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const resultado = await autorrevisionCodigo();
+    res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     res.status(500).json({ ok: false, error: message });

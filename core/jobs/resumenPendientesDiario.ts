@@ -24,6 +24,7 @@ import { obtenerPendienteOrientacionAnotacionPorChat, consumirPendienteOrientaci
 import { obtenerPendienteOrientacionCorreoPorChat, consumirPendienteOrientacionCorreo } from "../gmail/emailOrientationStore";
 import { obtenerPendienteReglaClasificacionPorChat, consumirPendienteReglaClasificacion } from "../documental/pendienteReglaClasificacionStore";
 import { obtenerPendientesHiloAutorespuestaPorChat } from "../gmail/hiloAutorespuestaStore";
+import { obtenerPendientesAutorrepairPorChat } from "../github/autorrepairPendienteStore";
 
 interface ItemPendiente {
   descripcion: string;
@@ -182,6 +183,15 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando hilos de conversación automática sin decidir (no crítico):", error);
+  }
+
+  try {
+    const autorrepairs = await obtenerPendientesAutorrepairPorChat(chatId);
+    for (const a of autorrepairs) {
+      items.push({ descripcion: `🔧 Falta aprobar/descartar un arreglo de código propuesto en \`${a.ruta}\` (${a.urlPR})`, creadoEn: a.creadoEn });
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando propuestas de autorrepación (no crítico):", error);
   }
 
   try {

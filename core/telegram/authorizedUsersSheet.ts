@@ -349,6 +349,14 @@ const ACCIONES_SENSIBLES = new Set([
   // protege, mismo criterio que el resto de pares sí/no de este set.
   "autohilo_aprobar",
   "autohilo_rechazar",
+  // Pedido explícito de Carlos: la autorrevisión nocturna de código (ver
+  // core/jobs/autorrevisionCodigo.ts) puede proponer un arreglo real sobre
+  // el propio código en producción — la decisión de desplegarlo (fusiona a
+  // main, dispara redeploy) es la más sensible de todo el sistema, se
+  // centraliza en superadmin igual que el resto. "Descartar" también, mismo
+  // criterio que el resto de pares sí/no de este set.
+  "autorrepair_desplegar",
+  "autorrepair_descartar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

@@ -10,6 +10,7 @@ import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
 import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
 import { revisarGastosSinComprobante } from "./revisarGastosSinComprobante";
 import { revisarConversacionesAutomaticas } from "./revisarConversacionesAutomaticas";
+import { autorrevisionCodigo } from "./autorrevisionCodigo";
 
 const TIMEZONE = "Europe/Madrid";
 
@@ -23,7 +24,10 @@ const TIMEZONE = "Europe/Madrid";
  * revisarConversacionesAutomaticas SÍ manda correos reales sin botón por
  * mensaje, pero solo a contactos que Carlos aprobó uno por uno de antemano
  * (ver autorespuestaContactoStore.ts) — la aprobación existe, solo que es
- * por contacto y no por mensaje.
+ * por contacto y no por mensaje. autorrevisionCodigo SÍ escribe en GitHub
+ * sin aprobación previa (rama + commit + PR), pero nunca fusiona nada a
+ * main por su cuenta — desplegar el arreglo siempre pasa por un tap de
+ * aprobación en Telegram (ver autorrepairCallbackHandler.ts).
  */
 export function startScheduler(): void {
   cron.schedule(
@@ -162,4 +166,17 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarConversacionesAutomaticas programado: cada 15 minutos (${TIMEZONE})`);
+
+  // "Al final del día" — pedido explícito de Carlos. 22:00, después de todos los demás avisos del
+  // día (el más tardío hasta ahora es el resumen de pendientes a las 19:00).
+  cron.schedule(
+    "0 22 * * *",
+    () => {
+      autorrevisionCodigo().catch((error) => {
+        console.error("[scheduler] Error ejecutando autorrevisionCodigo:", error);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] autorrevisionCodigo programado: diario 22:00 (${TIMEZONE})`);
 }

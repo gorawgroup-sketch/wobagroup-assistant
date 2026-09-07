@@ -242,6 +242,18 @@ registrar en cashflow) sin que presiones uno de estos botones.
   - ❌ Cancelar — no se envía nada.
 - Solo el superadministrador puede aprobar el envío por correo.
 
+**Sobre una conversación automática por correo (contactos pre-aprobados):**
+- Cuando llega un mensaje nuevo en un hilo de un contacto ya aprobado para conversación automática (ver `gestionar_contacto_autorespuesta`) pero ese HILO en concreto nunca se vio antes, se pregunta con botones antes de responder solo — la aprobación es por contacto, pero por hilo se pide una sola vez.
+  - ✅ Sí, automática — a partir de ahí, Wobi responde solo en ese hilo, sin volver a pedir aprobación (autorización PERMANENTE para ese hilo). Cada respuesta lleva una leyenda al final indicando que es automática.
+  - ❌ No, normal — ese hilo queda en el flujo normal de correo (con los botones de siempre), nunca se responde solo.
+- Solo el superadministrador puede presionar cualquiera de los dos — es la decisión más sensible de todo el flujo de correo, da autorización permanente de envío sin revisión.
+
+**Sobre un hallazgo de la autorrevisión nocturna de código:**
+- Todas las noches (días hábiles, 22:00 hora Madrid), Wobi rota unos pocos archivos no sensibles del propio código, y si encuentra un bug real y concreto, redacta el arreglo y abre un Pull Request en GitHub — nunca toca el código en producción directamente.
+- ✅ Desplegar — fusiona el Pull Request a la rama principal, lo que dispara el despliegue normal de Railway.
+- ❌ Descartar — cierra el Pull Request sin fusionar, el código queda como estaba.
+- Solo el superadministrador puede presionar cualquiera de los dos — es la decisión más sensible de todo el sistema (Wobi modificando su propio código). Nunca se propone nada que toque dinero, seguridad/acceso, o el envío de comunicaciones externas — eso siempre se deja para revisión manual.
+
 ---
 
 ## Notas para quien mantiene este documento
