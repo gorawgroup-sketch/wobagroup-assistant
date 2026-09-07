@@ -1,6 +1,5 @@
-import { obtenerPropuestasGastoPorChat, actualizarMessageIdGasto } from "../gastos/gastoProposalSheet";
-import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "../gastos/gastoTeclado";
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { obtenerPropuestasGastoPorChat } from "../gastos/gastoProposalSheet";
+import { reenviarPropuestaGasto } from "../gastos/reenviarPropuestaGasto";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -64,14 +63,7 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
     }
 
     const propuesta = pendientes[0];
-    const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));
-
-    const messageId = await sendTelegramMessageWithButtons(
-      chatId,
-      `🔁 Botones renovados para "${propuesta.proveedor}" (${propuesta.monto.toFixed(2)} ${propuesta.moneda}, ${propuesta.fecha}) — toca la decisión que quieras aplicar.`,
-      teclado
-    );
-    await actualizarMessageIdGasto(propuesta.id, messageId);
+    await reenviarPropuestaGasto(propuesta, "🔁 Botones renovados — toca la decisión que quieras aplicar.");
 
     return (
       `Listo — reenvié los botones reales de la propuesta de "${propuesta.proveedor}" (${propuesta.monto.toFixed(2)} ${propuesta.moneda}) ` +

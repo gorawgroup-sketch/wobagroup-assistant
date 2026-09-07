@@ -17,6 +17,7 @@ import {
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import { construirTecladoGasto } from "./gastoTeclado";
+import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 
@@ -253,6 +254,22 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     : undefined;
 
   if (propuestaYaPendiente) {
+    // Bug real encontrado en vivo (2026-09-07, y confirmado que ya había pasado el 2026-09-02 con
+    // otra factura): crearPropuestaGasto guarda la propuesta en Sheets con messageId=0 ANTES de
+    // mandar el mensaje real de Telegram (más abajo en esta función) — si algo interrumpe el proceso
+    // entre esos dos pasos, la propuesta queda huérfana: existe completa, pero nunca se le mostró
+    // nada a Carlos. Sin este chequeo, este mismo bloque le decía "revisa esa antes" señalando un
+    // mensaje que jamás existió — sin ninguna vía real para resolverlo. Ahora, si la propuesta
+    // encontrada nunca se entregó (messageId=0), se reenvía de una vez en vez de señalar hacia la
+    // nada — mismo mecanismo que reenviarBotonesPropuestaGasto.ts (tool conversacional).
+    if (propuestaYaPendiente.messageId === 0) {
+      await reenviarPropuestaGasto(
+        propuestaYaPendiente,
+        `📄 "${entrada.nombreArchivoOriginal}" — encontré una propuesta ya calculada para esta factura que nunca llegué a mostrarte (se interrumpió el proceso antes de mandarla). Aquí está:`
+      );
+      return "propuesta_enviada";
+    }
+
     const notaNumeroDocumento =
       comparacionPendiente === "distinto"
         ? ` El número de documento de ESTA factura (${datos.numeroDocumento}) es DISTINTO al de esa propuesta ` +

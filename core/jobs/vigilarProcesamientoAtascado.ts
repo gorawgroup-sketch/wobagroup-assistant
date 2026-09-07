@@ -100,7 +100,13 @@ async function huboSenalDeEntrega(chatId: number, mensajeId: string): Promise<bo
     reclasifs.some((p) => coincide(p.correoOrigen)) ||
     gastosDatos.some((p) => coincide(p.correoOrigen)) ||
     contactos.some((c) => coincide(c.propuesta.correoOrigen)) ||
-    gastos.some((g) => coincide(g.correoOrigen)) ||
+    // messageId !== 0 — hallazgo real en vivo (2026-09-07): crearPropuestaGasto guarda la propuesta
+    // en Sheets con messageId=0 ANTES de mandar el mensaje real de Telegram; si algo interrumpe el
+    // proceso justo entre esos dos pasos, la propuesta queda huérfana — existe, referencia este
+    // mismo correo, pero Carlos nunca vio nada. Contar esa existencia sola como "señal de entrega"
+    // le habría dicho al vigilante "no está atascado, solo espera respuesta" sobre algo que en
+    // realidad nunca llegó a mostrarse — exactamente el caso real que esto existe para atrapar.
+    gastos.some((g) => coincide(g.correoOrigen) && g.messageId !== 0) ||
     accionesCorreo.some((a) => a.mensajeId === mensajeId)
   );
 }
