@@ -314,6 +314,12 @@ const ACCIONES_SENSIBLES = new Set([
   // no), no solo la que escribe, para centralizar la decisión completa.
   "gasto_conciliar_si",
   "gasto_conciliar_no",
+  // Mismo criterio y mismo día: cuando "¿Quieres conciliar?" encuentra varios movimientos
+  // parecidos, ahora se pregunta CUÁL con botones (ver ofrecerEleccionMovimientosAmbiguos en
+  // gastoCallbackHandler.ts) en vez del texto muerto de antes — esa elección concilia de verdad en
+  // Holded, así que se protege igual que gasto_conciliar_si (y "no" igual que gasto_conciliar_no).
+  "gasto_conciliar_elegir",
+  "gasto_conciliar_elegir_no",
   // Mismo criterio que email_guardar/email_orientar: responder el correo,
   // guardarlo como conocimiento, o dar instrucciones adicionales (recordatorio,
   // etc.) sobre el correo de origen de una propuesta de gasto son también
