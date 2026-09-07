@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buscarMensajes, obtenerResumenCorreo, obtenerCuerpoCompletoCorreo, descargarAdjunto } from "../gmail/client";
+import { buscarMensajes, obtenerResumenCorreo, obtenerCuerpoCompletoCorreo, descargarAdjunto, marcarHiloComoLeido } from "../gmail/client";
 import { registrarCaptura } from "../knowledge/capturaSheet";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import type { ToolDefinition } from "./types";
@@ -87,11 +87,16 @@ export const capturarCorreoTool: ToolDefinition = {
 
     await registrarCaptura(contenido, "correo entrante (capturado)", empresas);
 
+    // Pedido explícito de Carlos: al capturar un correo, queda procesado — que también se marque
+    // leído en Gmail automáticamente, en vez de quedar sin leer aunque Wobi ya lo guardó. No crítico
+    // (best-effort): si falla, la captura en sí ya se guardó bien, no hace falta avisar del error acá.
+    const marcadoLeido = await marcarHiloComoLeido(resumen.threadId).catch(() => false);
+
     const empresasLabel = empresas.length > 0 ? ` (${empresas.join(", ")})` : "";
     const baseTexto =
       `Capturado el correo "${resumen.asunto}" de ${resumen.de}${empresasLabel} ` +
       `(${cuerpo.length} caracteres del cuerpo) — ya está en la base de conocimiento, disponible para ` +
-      "futuras consultas.";
+      `futuras consultas${marcadoLeido ? ", y lo marqué como leído" : ""}.`;
 
     if (resumen.adjuntos.length === 0) {
       return baseTexto;
