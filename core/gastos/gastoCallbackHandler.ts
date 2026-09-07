@@ -1049,16 +1049,37 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
   }
 
   if (!pendiente.decisionFinal) {
-    await sendTelegramMessage(pendiente.chatId, "✅ Listo — apliqué todo lo que marcaste.");
     // Nada de decisión final — la propuesta original sigue viva (su teclado
-    // quedó vacío desde "Aprobar selección", ver handleGastoAprobarCallback)
-    // y hay que reponerlo para que Carlos pueda marcar más acciones después.
+    // quedó vacío desde "Aprobar selección", ver handleGastoAprobarCallback).
+    // Caso real (2026-09-07): reponer el teclado en el mensaje ORIGINAL (ya
+    // arriba en el chat, detrás de "🔄 Aplicando tu selección...", la
+    // pregunta del ajuste, y esta misma respuesta) lo dejaba fuera de vista
+    // — Carlos no vio que los botones habían vuelto y terminó escribiendo
+    // "sí, créalo y concilia" en texto libre, que el asistente conversacional
+    // no tenía forma de completar (esa escritura SIEMPRE requiere un botón
+    // real, nunca se dispara por interpretación de texto — ver
+    // conciliarMovimiento.ts). Ahora se manda un mensaje NUEVO, visible al
+    // final del chat, con los mismos botones reales — y se repunta la
+    // propuesta a ESE mensaje (actualizarMessageIdGasto) para que tocarlos
+    // edite el mensaje correcto.
     const propuestaFinal = await obtenerPropuestaGasto(pendiente.propuestaId);
     if (propuestaFinal) {
       const teclado = construirTecladoGasto(propuestaFinal, opcionesTecladoDesdePropuesta(propuestaFinal));
-      await editTelegramMessageReplyMarkup(propuestaFinal.chatId, propuestaFinal.messageId, teclado).catch((error) =>
-        console.error("[gastoCallbackHandler] Error reponiendo el teclado tras la cola de selección (no crítico):", error)
-      );
+      const messageId = await sendTelegramMessageWithButtons(
+        propuestaFinal.chatId,
+        `✅ Listo — apliqué todo lo que marcaste. "${propuestaFinal.proveedor}" (${propuestaFinal.monto.toFixed(2)} ${propuestaFinal.moneda}) sigue esperando tu decisión — toca una opción:`,
+        teclado
+      ).catch((error) => {
+        console.error("[gastoCallbackHandler] Error reenviando el teclado tras la cola de selección (no crítico):", error);
+        return undefined;
+      });
+      if (messageId !== undefined) {
+        await actualizarMessageIdGasto(propuestaFinal.id, messageId).catch((error) =>
+          console.error("[gastoCallbackHandler] Error actualizando el messageId tras reenviar el teclado (no crítico):", error)
+        );
+      }
+    } else {
+      await sendTelegramMessage(pendiente.chatId, "✅ Listo — apliqué todo lo que marcaste.");
     }
     return;
   }
