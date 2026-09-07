@@ -743,6 +743,11 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 // variantes juntas cuando la cuenta contable sugerida trae la vieja.
 const PALABRAS_ALIMENTACION = ["restaurante", "almuerzo", "desayuno", "cena", "comida", "cafeteria", "brunch"];
 const PALABRAS_TAXI = ["taxi", "uber", "cabify", "bolt", "freenow"];
+// Hallazgo real (caso Kelly Correales, Uber Eats — 12.71 USD/€, Green House Churubusco): "uber" solo
+// coincide con Uber Eats tanto como con Uber el taxi/rideshare, la misma marca opera los dos
+// servicios — sin este chequeo ANTES de PALABRAS_TAXI, un pedido de comida quedaba con tag
+// "transporte, taxi" en vez de "alimentacion".
+const PALABRAS_UBER_EATS = ["uber eats", "ubereats"];
 const PALABRAS_TREN = ["tren", "renfe", "eurostar", "sncf", "trenitalia", "ouigo", "avanza"];
 const PALABRAS_AVION = [
   "vuelo",
@@ -820,6 +825,7 @@ function contienePalabraClave(texto: string, palabras: string[]): boolean {
 export function inferirTagsCategoria(concepto: string, proveedor: string): string[] {
   const texto = `${concepto} ${proveedor}`;
 
+  if (contienePalabraClave(texto, PALABRAS_UBER_EATS)) return ["alimentacion"];
   if (contienePalabraClave(texto, PALABRAS_TAXI)) return ["transporte", "taxi"];
   if (contienePalabraClave(texto, PALABRAS_TREN)) return ["transporte", "tren"];
   if (contienePalabraClave(texto, PALABRAS_AVION)) return ["transporte", "avion"];
