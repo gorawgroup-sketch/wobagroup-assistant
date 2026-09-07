@@ -419,6 +419,12 @@ export async function obtenerPropuestaGasto(id: string): Promise<PropuestaGasto 
   return (await buscarFilaPropuesta(id))?.propuesta;
 }
 
+/** Todas las propuestas de gasto vigentes de un chat — para vigilarProcesamientoAtascado.ts, que necesita saber si ALGO ya se generó para un correo activo antes de considerarlo atascado. */
+export async function obtenerPropuestasGastoPorChat(chatId: number): Promise<PropuestaGasto[]> {
+  const todas = await leerTodas();
+  return todas.filter(({ propuesta }) => propuesta.chatId === chatId).map(({ propuesta }) => propuesta);
+}
+
 /**
  * Pedido explícito de Carlos, tras un caso real: una cuota de comunidad se
  * paga a medias con otra parte, así que el gasto a registrar en Holded es
