@@ -1242,10 +1242,22 @@ async function crearGastoYReportar(
   }
 
   const nombreContacto = contacto.name ?? propuesta.proveedor;
+  // Bug real encontrado en vivo (2026-09-07): el mismo contacto placeholder ("PROVEEDOR SIN
+  // IDENTIFICAR") se reutiliza en TODOS los gastos sin proveedor identificado de una empresa — Carlos,
+  // al querer corregir el proveedor de UN gasto puntual desde Holded, renombró este contacto compartido
+  // directamente (dos veces seguidas: a "Aeropuerto de panama" primero, luego a "Kyriad Creteil") en vez
+  // de crear un contacto nuevo y separado — sin darse cuenta, eso cambió el nombre mostrado en TODOS los
+  // demás gastos (pasados y futuros) que usan el mismo placeholder, generando confusión real ("¿por qué
+  // dice Aeropuerto de Panamá si esto es un hotel en Francia?"). El aviso original ("corrige el contacto
+  // a mano en Holded") no dejaba claro que renombrarlo ahí lo afecta a TODOS — ahora se dice explícito.
   const notaPlaceholder =
     !aprenderAlias && contactoForzado
       ? `\n\n⚠️ Se usó el contacto genérico "${nombreContacto}" porque "${propuesta.proveedor}" no está en Holded — ` +
-        `el nombre real quedó en la descripción del gasto. Corrige el contacto a mano en Holded cuando exista.`
+        `el nombre real quedó en la descripción del gasto, nunca se pierde. Para corregirlo: NUNCA renombres este ` +
+        `contacto genérico directamente en Holded — es el MISMO contacto compartido por todos los gastos sin ` +
+        `proveedor identificado, así que renombrarlo cambia el nombre mostrado en todos los demás (pasados y ` +
+        `futuros), no solo en este. En su lugar, crea un contacto NUEVO y separado con el nombre real del ` +
+        `proveedor en Holded, y avísame por chat para reasignar SOLO este gasto a ese contacto nuevo.`
       : "";
   const baseMensaje =
     `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador)` +
