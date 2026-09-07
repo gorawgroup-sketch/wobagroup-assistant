@@ -364,12 +364,35 @@ export function extraerDireccionCorreo(de: string): string {
   return (match ? match[1] : de).trim().toLowerCase();
 }
 
+/**
+ * Bug real encontrado en vivo (2026-09-07): un correo reenviado de un recibo de Booking.com (hotel
+ * Guadalajara, 204.65€) traía TODA la información legible en el cuerpo (proveedor, importe, fechas,
+ * número de reserva) — pero Gmail reporta 2 partes "image/png filename=noname" (el logo de
+ * Booking.com incrustado en el HTML) con `part.filename && part.body.attachmentId`, así que
+ * extraerAdjuntos las contaba como adjuntos reales. Eso hacía que el correo NUNCA entrara al camino
+ * de "sin adjunto → leer el cuerpo como gasto" (revisarCorreoNuevo.ts) — en su lugar, intentaba
+ * leer esos logos diminutos (2969 y 935 bytes, ni de lejos el tamaño de un recibo real) como si
+ * fueran el comprobante, y la extracción por visión reportaba (correctamente, para ESA imagen)
+ * "documento ilegible" — perdiendo el cuerpo del correo, que sí tenía todo. Verificado en vivo contra
+ * la API real de Gmail: ambas partes traían `Content-Disposition: inline` + `Content-ID` — la firma
+ * estándar de una imagen decorativa referenciada por `cid:` dentro del HTML (ej. un logo), NUNCA de
+ * un archivo que alguien adjuntó de verdad (que en la práctica siempre trae `Content-Disposition:
+ * attachment`, o ningún Content-Disposition en absoluto — nunca "inline" explícito). Se excluyen acá,
+ * en el único lugar que arma esta lista, para que TODOS los consumidores (revisarCorreoNuevo.ts,
+ * capturarCorreo.ts, listarCorreosSinLeer.ts) vean el conteo real de adjuntos que sí hay que
+ * procesar, sin volver a filtrar esto en cada uno por separado.
+ */
+function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
+  const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
+  return disposicion.toLowerCase().startsWith("inline");
+}
+
 function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
   const adjuntos: AdjuntoCorreo[] = [];
 
   function recorrer(part: gmail_v1.Schema$MessagePart | undefined): void {
     if (!part) return;
-    if (part.filename && part.body?.attachmentId) {
+    if (part.filename && part.body?.attachmentId && !esParteDecorativaInline(part)) {
       adjuntos.push({
         filename: part.filename,
         mimeType: part.mimeType ?? "application/octet-stream",
