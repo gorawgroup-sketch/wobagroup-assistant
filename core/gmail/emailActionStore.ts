@@ -113,6 +113,12 @@ export async function obtenerPropuestaAccionCorreo(id: string): Promise<Propuest
   return vigentes.find((f) => f.propuesta.id === id)?.propuesta;
 }
 
+/** Todas las propuestas vigentes de un chat — para vigilarProcesamientoAtascado.ts, que necesita saber si ALGO ya se generó para un correo activo antes de considerarlo atascado (este es el store del camino MÁS común: un correo sin adjuntos que solo necesita "Proceder/Descartar/Guardar/Dar instrucciones"). */
+export async function obtenerPropuestasAccionCorreoPorChat(chatId: number): Promise<PropuestaAccionCorreo[]> {
+  const vigentes = await leerVigentes();
+  return vigentes.filter((f) => f.propuesta.chatId === chatId).map((f) => f.propuesta);
+}
+
 /** Devuelve la propuesta y la elimina (se llama al descartar o proceder). */
 export async function consumirPropuestaAccionCorreo(id: string): Promise<PropuestaAccionCorreo | undefined> {
   const vigentes = await leerVigentes();

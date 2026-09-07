@@ -243,6 +243,12 @@ export async function obtenerResolucionContactoPendientePorChat(chatId: number):
   return delChat.reduce((a, b) => (a.resolucion.creadoEn >= b.resolucion.creadoEn ? a : b)).resolucion;
 }
 
+/** Todas las resoluciones vigentes de un chat (no solo la más reciente) — ver el comentario equivalente en classificationStore.ts, mismo motivo: vigilarProcesamientoAtascado.ts. */
+export async function obtenerResolucionesContactoPorChat(chatId: number): Promise<ResolucionContactoPendiente[]> {
+  const todas = await leerTodas();
+  return todas.filter(({ resolucion }) => resolucion.chatId === chatId).map(({ resolucion }) => resolucion);
+}
+
 /**
  * Actualiza el messageId de una resolución ya guardada — para el caso en
  * que se guarda ANTES de mandar el mensaje con botones (no había un

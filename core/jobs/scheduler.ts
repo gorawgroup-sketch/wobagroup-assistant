@@ -11,8 +11,22 @@ import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
 import { revisarGastosSinComprobante } from "./revisarGastosSinComprobante";
 import { revisarConversacionesAutomaticas } from "./revisarConversacionesAutomaticas";
 import { autorrevisionCodigo } from "./autorrevisionCodigo";
+import { vigilarProcesamientoAtascado } from "./vigilarProcesamientoAtascado";
 
 const TIMEZONE = "Europe/Madrid";
+const jobsEnCurso = new Set<string>();
+
+/** Evita duplicar trabajo, gasto o acciones si una corrida tarda más que su intervalo. */
+function ejecutarSinSolapamiento(nombre: string, tarea: () => Promise<unknown>): void {
+  if (jobsEnCurso.has(nombre)) {
+    console.warn(`[scheduler] ${nombre} sigue en curso; se omite esta repetición.`);
+    return;
+  }
+  jobsEnCurso.add(nombre);
+  tarea()
+    .catch((error) => console.error(`[scheduler] Error ejecutando ${nombre}:`, error))
+    .finally(() => jobsEnCurso.delete(nombre));
+}
 
 /**
  * Registra los crons del sistema. La mayoría son de solo lectura/notificación
@@ -33,9 +47,7 @@ export function startScheduler(): void {
   cron.schedule(
     "0 8 * * 1",
     () => {
-      revisarHoldedVsCashflow(new Date(), "semana_cerrada").catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarHoldedVsCashflow (cierre semanal):", error);
-      });
+      ejecutarSinSolapamiento("revisarHoldedVsCashflow_cierre", () => revisarHoldedVsCashflow(new Date(), "semana_cerrada"));
     },
     { timezone: TIMEZONE }
   );
@@ -44,9 +56,7 @@ export function startScheduler(): void {
   cron.schedule(
     "0 17 * * 5",
     () => {
-      revisarHoldedVsCashflow(new Date(), "semana_en_curso").catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarHoldedVsCashflow (chequeo preliminar viernes):", error);
-      });
+      ejecutarSinSolapamiento("revisarHoldedVsCashflow_preliminar", () => revisarHoldedVsCashflow(new Date(), "semana_en_curso"));
     },
     { timezone: TIMEZONE }
   );
@@ -55,9 +65,7 @@ export function startScheduler(): void {
   cron.schedule(
     "0 8 * * *",
     () => {
-      revisarAlertasFiscales().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarAlertasFiscales:", error);
-      });
+      ejecutarSinSolapamiento("revisarAlertasFiscales", () => revisarAlertasFiscales());
     },
     { timezone: TIMEZONE }
   );
@@ -66,9 +74,7 @@ export function startScheduler(): void {
   cron.schedule(
     "0 * * * *",
     () => {
-      revisarCorreoNuevo().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarCorreoNuevo:", error);
-      });
+      ejecutarSinSolapamiento("revisarCorreoNuevo", () => revisarCorreoNuevo());
     },
     { timezone: TIMEZONE }
   );
@@ -77,9 +83,7 @@ export function startScheduler(): void {
   cron.schedule(
     "0 19 * * *",
     () => {
-      enviarResumenPendientesDiario().catch((error) => {
-        console.error("[scheduler] Error ejecutando enviarResumenPendientesDiario:", error);
-      });
+      ejecutarSinSolapamiento("enviarResumenPendientesDiario", () => enviarResumenPendientesDiario());
     },
     { timezone: TIMEZONE }
   );
@@ -88,9 +92,7 @@ export function startScheduler(): void {
   cron.schedule(
     "30 8 * * *",
     () => {
-      revisarCostosIA().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarCostosIA:", error);
-      });
+      ejecutarSinSolapamiento("revisarCostosIA", () => revisarCostosIA());
     },
     { timezone: TIMEZONE }
   );
@@ -99,9 +101,7 @@ export function startScheduler(): void {
   cron.schedule(
     "15 8 * * *",
     () => {
-      revisarNumeracionCashflow().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarNumeracionCashflow:", error);
-      });
+      ejecutarSinSolapamiento("revisarNumeracionCashflow", () => revisarNumeracionCashflow());
     },
     { timezone: TIMEZONE }
   );
@@ -110,9 +110,7 @@ export function startScheduler(): void {
   cron.schedule(
     "10 8 * * *",
     () => {
-      revisarAplazamientoImpuestos().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarAplazamientoImpuestos:", error);
-      });
+      ejecutarSinSolapamiento("revisarAplazamientoImpuestos", () => revisarAplazamientoImpuestos());
     },
     { timezone: TIMEZONE }
   );
@@ -121,9 +119,7 @@ export function startScheduler(): void {
   cron.schedule(
     "20 8 * * *",
     () => {
-      revisarAnotacionesCashflow().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarAnotacionesCashflow:", error);
-      });
+      ejecutarSinSolapamiento("revisarAnotacionesCashflow", () => revisarAnotacionesCashflow());
     },
     { timezone: TIMEZONE }
   );
@@ -132,9 +128,7 @@ export function startScheduler(): void {
   cron.schedule(
     "5 * * * *",
     () => {
-      revisarAccionesProgramadas().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarAccionesProgramadas:", error);
-      });
+      ejecutarSinSolapamiento("revisarAccionesProgramadas", () => revisarAccionesProgramadas());
     },
     { timezone: TIMEZONE }
   );
@@ -143,9 +137,7 @@ export function startScheduler(): void {
   cron.schedule(
     "35 8 * * *",
     () => {
-      revisarGastosSinComprobante().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarGastosSinComprobante:", error);
-      });
+      ejecutarSinSolapamiento("revisarGastosSinComprobante", () => revisarGastosSinComprobante());
     },
     { timezone: TIMEZONE }
   );
@@ -159,9 +151,7 @@ export function startScheduler(): void {
   cron.schedule(
     "*/15 * * * *",
     () => {
-      revisarConversacionesAutomaticas().catch((error) => {
-        console.error("[scheduler] Error ejecutando revisarConversacionesAutomaticas:", error);
-      });
+      ejecutarSinSolapamiento("revisarConversacionesAutomaticas", () => revisarConversacionesAutomaticas());
     },
     { timezone: TIMEZONE }
   );
@@ -172,11 +162,24 @@ export function startScheduler(): void {
   cron.schedule(
     "0 22 * * *",
     () => {
-      autorrevisionCodigo().catch((error) => {
-        console.error("[scheduler] Error ejecutando autorrevisionCodigo:", error);
-      });
+      ejecutarSinSolapamiento("autorrevisionCodigo", () => autorrevisionCodigo());
     },
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] autorrevisionCodigo programado: diario 22:00 (${TIMEZONE})`);
+
+  // Pedido explícito de Carlos, tras un caso real: un correo quedó "activo" 7+ minutos sin que Wobi
+  // mandara nada al chat ni registrara ningún error — atascado en silencio, solo detectado porque
+  // Carlos avisó y hubo que diagnosticarlo a mano. "Asegúrate que el sistema identifica todos estos
+  // errores... de manera inmediata... y lo corrija inmediatamente para que no nos quedemos esperando
+  // una respuesta." Cada 2 minutos es suficientemente frecuente para reaccionar rápido sin generar
+  // carga real (son lecturas de Sheets, no llamadas a Claude, salvo que de verdad haya algo atascado).
+  cron.schedule(
+    "*/2 * * * *",
+    () => {
+      ejecutarSinSolapamiento("vigilarProcesamientoAtascado", () => vigilarProcesamientoAtascado());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] vigilarProcesamientoAtascado programado: cada 2 minutos (${TIMEZONE})`);
 }

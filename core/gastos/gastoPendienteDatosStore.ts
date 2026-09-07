@@ -280,3 +280,9 @@ export async function obtenerGastoPendienteDatosPorChat(chatId: number): Promise
 
   return delChat.reduce((a, b) => (a.pendiente.creadoEn >= b.pendiente.creadoEn ? a : b)).pendiente;
 }
+
+/** Todas las pendientes de un chat (no solo la más reciente) — ver el comentario equivalente en classificationStore.ts, mismo motivo: vigilarProcesamientoAtascado.ts. */
+export async function obtenerGastosPendienteDatosPorChat(chatId: number): Promise<GastoPendienteDatos[]> {
+  const todas = await leerTodas();
+  return todas.filter(({ pendiente }) => pendiente.chatId === chatId).map(({ pendiente }) => pendiente);
+}

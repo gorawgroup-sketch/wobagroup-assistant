@@ -295,3 +295,16 @@ export async function obtenerPropuestaClasificacionPendientePorChat(chatId: numb
 
   return delChat.reduce((a, b) => (a.propuesta.creadoEn >= b.propuesta.creadoEn ? a : b)).propuesta;
 }
+
+/**
+ * Todas las propuestas vigentes de un chat (no solo la más reciente) — hallazgo real de auditoría:
+ * vigilarProcesamientoAtascado.ts necesita saber si ALGUNA propuesta (no necesariamente la más
+ * reciente) corresponde al correo activo que está revisando; si el chat tiene más de una pendiente a
+ * la vez (ej. una nueva llegó por otro camino mientras la de la cola sigue esperando respuesta),
+ * quedarse solo con "la más reciente" podía mirar la propuesta equivocada y concluir "no hay
+ * evidencia" sobre una que en realidad sí se mandó y sigue esperando.
+ */
+export async function obtenerPropuestasClasificacionPorChat(chatId: number): Promise<PropuestaClasificacion[]> {
+  const todas = await leerTodas();
+  return todas.filter(({ propuesta }) => propuesta.chatId === chatId).map(({ propuesta }) => propuesta);
+}

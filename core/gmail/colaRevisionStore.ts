@@ -286,6 +286,40 @@ export async function descartarActivoEstancado(chatId: number, gmailId: string):
 }
 
 /**
+ * Caso real reportado por Carlos: un correo se quedó "activo" varios minutos sin que Wobi mandara
+ * nada, atascado a mitad de proceso (ver vigilarProcesamientoAtascado.ts) — para reintentarlo, hacía
+ * falta sacarlo de "activo" y volver a encolarlo. Hallazgo real de auditoría: hacerlo en DOS pasos
+ * (descartarActivoEstancado + encolarCorreos, como hacía la primera versión) deja una ventana real,
+ * aunque breve, en la que la fila no existe en NINGÚN estado — si el cron horario de
+ * revisarCorreoNuevo.ts corre justo en esa ventana, is:unread sigue viendo el hilo como sin leer y lo
+ * vuelve a encolar por su cuenta, y al terminar este reintento se agregaría una SEGUNDA fila para el
+ * mismo hilo. Esta función hace el mismo cambio en UN solo paso (actualizarFila sobre la misma fila,
+ * nunca borra-y-recrea), así nunca hay un instante en que el hilo esté ausente de la cola.
+ */
+export async function reencolarActivoParaReintento(
+  chatId: number,
+  gmailId: string,
+  actualizacion: { mensajeId: string; de: string; asunto: string }
+): Promise<boolean> {
+  const todas = await leerTodas();
+  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
+  if (!fila) return false;
+
+  const actualizado: ItemColaCorreo = {
+    ...fila.item,
+    estado: "cola",
+    pendientesRestantes: 0,
+    mensajeId: actualizacion.mensajeId,
+    de: actualizacion.de,
+    asunto: actualizacion.asunto,
+    // fechaOrden NUNCA se toca — sigue reflejando desde cuándo espera sin leer, para no perder su
+    // lugar en la prioridad "más antiguo primero" (mismo criterio que encolarCorreos).
+  };
+  await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila(actualizado));
+  return true;
+}
+
+/**
  * Pedido explícito de Carlos, tras un caso real: "esto ya lo gestioné" — la
  * cola marcaba un correo como bloqueando la revisión, pero él ya lo había
  * resuelto por su cuenta (a mano, fuera del chat). Vacía TODA la cola de
