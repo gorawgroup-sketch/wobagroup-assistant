@@ -64,6 +64,7 @@ import { handleReporteContableCallback } from "../core/reportes/reporteContableC
 import { handleAutorespuestaHiloCallback } from "../core/gmail/autorespuestaHiloCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
+import { verificarGithubToken } from "../core/github/client";
 import type { TelegramUpdate } from "../core/telegram/types";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
@@ -1158,6 +1159,36 @@ app.post("/admin/run-costos-check", async (req: Request, res: Response) => {
   try {
     const resultado = await revisarCostosIA();
     res.json({ ok: true, ...resultado });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Diagnóstico de una sola vez: confirma que GITHUB_TOKEN (recién configurado
+ * para la futura autorrevisión nocturna) es válido y tiene los permisos
+ * necesarios — sin exponer el valor del token en ningún momento. La prueba de
+ * escritura crea y borra en el acto una rama de prueba (mismo commit que ya
+ * existe, sin archivos ni commits nuevos). Protegido igual que los demás
+ * endpoints admin.
+ */
+app.get("/admin/verificar-github-token", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.query.secret !== adminSecret) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  try {
+    const resultado = await verificarGithubToken();
+    res.json(resultado);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     res.status(500).json({ ok: false, error: message });
