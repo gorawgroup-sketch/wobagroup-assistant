@@ -31,6 +31,7 @@ import { listarCorreosSinLeerTool } from "./listarCorreosSinLeer";
 import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
+import { reenviarBotonesPropuestaGastoTool } from "./reenviarBotonesPropuestaGasto";
 import { reclasificarDocumentoPendienteTool, descartarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
 import { saltarCorreoActivoTool } from "./saltarCorreoActivo";
 import { conciliarMovimientoTool } from "./conciliarMovimiento";
@@ -79,6 +80,7 @@ const tools: ToolDefinition[] = [
   reintentarContactoPendienteTool,
   fijarAliasProveedorTool,
   reintentarGastoPendienteTool,
+  reenviarBotonesPropuestaGastoTool,
   reclasificarDocumentoPendienteTool,
   descartarDocumentoPendienteTool,
   saltarCorreoActivoTool,
