@@ -60,6 +60,15 @@ export interface PropuestaGasto {
   /** Desglose de IVA leído de la factura — se usa al crear el gasto en Holded. */
   lineas: LineaFactura[];
   chatId: number;
+  /**
+   * Id real del mensaje de Telegram con los botones — se guarda en 0 al crear la propuesta (antes de
+   * mandar el mensaje) y se actualiza al id real una vez enviado. 0 es un sentinel válido: Telegram
+   * nunca asigna message_id=0 a un mensaje real (ver sendTelegramMessageWithButtons), así que
+   * messageId===0 significa de forma confiable "esta propuesta nunca llegó a mostrarse" — usado por
+   * el chequeo de "propuesta huérfana" (procesarGastoEntrante.ts) y por el vigilante automático
+   * (vigilarProcesamientoAtascado.ts) para no confundir una propuesta que existe en Sheets con una
+   * que Carlos de verdad llegó a ver.
+   */
   messageId: number;
   creadoEn: number;
   /** Cuenta contable inferida (ver inferirCuentaGasto) — se usa al crear el gasto en Holded, si se pudo inferir. */
@@ -280,7 +289,13 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     montoOriginal: row[20] !== undefined && row[20] !== "" ? Number(row[20]) : undefined,
     correoOrigen,
     seleccionAcciones,
-    hayMovimientoBancario: row[23] === true || row[23] === "true",
+    // Hallazgo real de auditoría (2026-09-07): row[23]==="" NUNCA distinguía "nunca se calculó
+    // todavía" (undefined) de "se calculó y dio false" — ambos se escribían/leían como la misma
+    // cadena vacía. reenviarPropuestaGasto.ts necesita esa distinción exacta para saber si vale la
+    // pena repetir la búsqueda de movimiento bancario en vivo (solo cuando de verdad nunca se
+    // completó) — sin ella, ese chequeo (=== undefined) nunca era true para ninguna propuesta leída
+    // de Sheets, así que la búsqueda en vivo nunca se disparaba.
+    hayMovimientoBancario: row[23] === "" || row[23] == null ? undefined : row[23] === true || row[23] === "true",
     movimientosAmbiguos,
   };
 }
@@ -310,7 +325,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.montoOriginal ?? "",
     p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
     p.seleccionAcciones && p.seleccionAcciones.length > 0 ? JSON.stringify(p.seleccionAcciones) : "",
-    p.hayMovimientoBancario === true ? "true" : "",
+    p.hayMovimientoBancario === undefined ? "" : p.hayMovimientoBancario ? "true" : "false",
     p.movimientosAmbiguos && p.movimientosAmbiguos.length > 0 ? JSON.stringify(p.movimientosAmbiguos) : "",
   ];
 }
@@ -525,7 +540,9 @@ export async function actualizarFlagMovimientoBancarioGasto(id: string, hayMovim
     spreadsheetId: sheetId,
     range: `${TAB_NAME}!X${match.rowIndex}`,
     valueInputOption: "RAW",
-    requestBody: { values: [[hayMovimiento ? "true" : ""]] },
+    // "false" explícito, nunca "" — "" significa "todavía no se calculó" (ver rowToPropuesta), y esta
+    // función siempre recibe un boolean real (la búsqueda de movimiento ya se hizo, con o sin match).
+    requestBody: { values: [[hayMovimiento ? "true" : "false"]] },
   });
   return true;
 }
