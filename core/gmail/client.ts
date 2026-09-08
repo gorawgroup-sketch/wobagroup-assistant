@@ -375,16 +375,38 @@ export function extraerDireccionCorreo(de: string): string {
  * fueran el comprobante, y la extracción por visión reportaba (correctamente, para ESA imagen)
  * "documento ilegible" — perdiendo el cuerpo del correo, que sí tenía todo. Verificado en vivo contra
  * la API real de Gmail: ambas partes traían `Content-Disposition: inline` + `Content-ID` — la firma
- * estándar de una imagen decorativa referenciada por `cid:` dentro del HTML (ej. un logo), NUNCA de
- * un archivo que alguien adjuntó de verdad (que en la práctica siempre trae `Content-Disposition:
- * attachment`, o ningún Content-Disposition en absoluto — nunca "inline" explícito). Se excluyen acá,
- * en el único lugar que arma esta lista, para que TODOS los consumidores (revisarCorreoNuevo.ts,
- * capturarCorreo.ts, listarCorreosSinLeer.ts) vean el conteo real de adjuntos que sí hay que
- * procesar, sin volver a filtrar esto en cada uno por separado.
+ * estándar de una imagen decorativa referenciada por `cid:` dentro del HTML (ej. un logo). Se
+ * excluyen acá, en el único lugar que arma esta lista, para que TODOS los consumidores
+ * (revisarCorreoNuevo.ts, capturarCorreo.ts, listarCorreosSinLeer.ts) vean el conteo real de
+ * adjuntos que sí hay que procesar, sin volver a filtrar esto en cada uno por separado.
+ *
+ * IMPORTANTE (actualizado 2026-09-08, ver esParteDecorativaInline más abajo): "inline" por sí solo
+ * NO basta para distinguir un logo decorativo de un recibo real pegado en el cuerpo — un usuario que
+ * pega/arrastra una foto directo en el editor de Gmail (en vez de adjuntarla) genera exactamente el
+ * mismo `Content-Disposition: inline` que un logo. El criterio real es el TAMAÑO: se excluye solo
+ * cuando además es pequeño (ver TAMANIO_MAXIMO_INLINE_DECORATIVO).
  */
+// Hallazgo real de auditoría (Carlos, 2026-09-08): varios correos de Jorge Jácome ("Business Trip
+// GDL") traen el comprobante REAL pegado directo en el cuerpo — Gmail codifica eso exactamente
+// igual que el logo decorativo del caso Booking.com (`Content-Disposition: inline` + Content-ID),
+// así que con solo la disposición como criterio estos recibos reales quedaban EXCLUIDOS de
+// `adjuntos` igual que un logo — el correo entraba al camino "sin adjunto → cuerpo como
+// comprobante" (revisarCorreoNuevo.ts), que solo lee TEXTO (generarComprobantePDF), perdiendo la
+// imagen real por completo. Verificado en vivo contra los mensajes reales de Gmail: los logos
+// decorativos del caso Booking.com pesan 935 y 2969 bytes; los recibos reales pegados en el cuerpo
+// (Polipay, comprobantes de restaurante/hotel) pesan entre 554.255 y 1.452.541 bytes — tres órdenes
+// de magnitud de diferencia, sin ningún caso real visto en la zona intermedia. Un umbral de 30KB
+// separa ambos clusters con margen amplio de sobra: por debajo, "inline" sigue significando
+// decorativo (firma, logo); por encima, es contenido real que hay que procesar como cualquier
+// adjunto (mismo camino robusto de extraerDatosFactura/procesarDocumentoLocal, con visión real
+// sobre la imagen real — no solo el texto del cuerpo).
+const TAMANIO_MAXIMO_INLINE_DECORATIVO = 30000;
+
 function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
-  return disposicion.toLowerCase().startsWith("inline");
+  if (!disposicion.toLowerCase().startsWith("inline")) return false;
+  const tamano = part.body?.size ?? 0;
+  return tamano <= TAMANIO_MAXIMO_INLINE_DECORATIVO;
 }
 
 function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
