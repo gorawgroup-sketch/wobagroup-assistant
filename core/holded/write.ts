@@ -1213,6 +1213,74 @@ export async function buscarGastosSinComprobante(
   return { sinComprobante, totalRevisados: revisados.length, limiteAlcanzado };
 }
 
+export interface CompraDelDia {
+  id: string;
+  contactName: string;
+  total: number;
+  /** Moneda REAL del total — nunca asumir EUR: WOBA/EWORKS/Footprint tienen cuentas de tesorería en varias monedas. */
+  moneda: string;
+  fecha: string;
+  descripcion: string;
+  tags: string[];
+  /** Nombres de línea (concepto de cada línea de la compra) — para revisar si el nombre del contacto asignado aparece de verdad en algún lado del texto real del gasto. */
+  nombresLinea: string[];
+}
+
+const MAX_GASTOS_AUDITORIA_DIARIA = 300;
+
+/**
+ * Pedido explícito de Carlos, tras varios casos reales la misma noche (Uber Colombia en un viaje de
+ * México, Uber Eats en "Otros servicios", GoTo facturado a nombre de LinkedIn): "auto audítate tu
+ * trabajo diariamente" — trae TODAS las compras de un rango de fechas (sin filtrar por proveedor ni
+ * monto, a diferencia de buscarGastosSinComprobante/buscarDocumentosHolded) para que
+ * autoAuditarOperaciones.ts pueda revisar cada una contra el resto del histórico, buscando patrones
+ * que ya causaron un error real esta noche — nunca decide ni corrige sola, solo junta los datos
+ * crudos para que esa auditoría pueda comparar.
+ */
+export async function obtenerComprasDelDia(empresa: Empresa, desde: string, hasta: string = desde): Promise<CompraDelDia[]> {
+  const compras: CompraDelDia[] = [];
+  let cursor: string | undefined;
+
+  while (compras.length < MAX_GASTOS_AUDITORIA_DIARIA) {
+    const params = new URLSearchParams({ limit: "100", start_date: desde, end_date: hasta });
+    if (cursor) params.set("cursor", cursor);
+
+    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{
+        id: string;
+        contact_name?: string;
+        date?: string;
+        total?: string;
+        currency?: string;
+        description?: string;
+        tags?: string[];
+        lines?: Array<{ name?: string }>;
+      }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+
+    for (const item of data.items ?? []) {
+      compras.push({
+        id: item.id,
+        contactName: item.contact_name ?? "(sin proveedor)",
+        total: parsearMontoHolded(item.total),
+        moneda: (item.currency ?? "EUR").toUpperCase(),
+        fecha: item.date ?? "",
+        descripcion: item.description ?? "",
+        tags: item.tags ?? [],
+        nombresLinea: (item.lines ?? []).map((l) => l.name ?? "").filter(Boolean),
+      });
+      if (compras.length >= MAX_GASTOS_AUDITORIA_DIARIA) break;
+    }
+
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  return compras;
+}
+
 const MAX_GASTOS_A_REVISAR_ETIQUETA = 2000;
 
 export type GastoConEtiqueta = GastoSinComprobante;
