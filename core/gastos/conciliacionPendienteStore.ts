@@ -15,7 +15,20 @@ const TAB_NAME = "_conciliaciones_pendientes";
 // Holded sin cruzar ese umbral.
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-const HEADERS = ["id", "empresa", "monto", "fecha", "descripcionGasto", "chatId", "creadoEn", "gastoId", "moneda", "proveedor", "deColaCorreo"];
+const HEADERS = [
+  "id",
+  "empresa",
+  "monto",
+  "fecha",
+  "descripcionGasto",
+  "chatId",
+  "creadoEn",
+  "gastoId",
+  "moneda",
+  "proveedor",
+  "deColaCorreo",
+  "mensajeIdGmail",
+];
 
 /**
  * Cuando se crea un gasto SIN que antes se haya confirmado un movimiento
@@ -71,7 +84,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:K1`,
+    range: `${TAB_NAME}!A1:L1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -99,6 +112,16 @@ export interface ConciliacionPendiente {
   proveedor: string;
   /** true si el gasto que originó esta pregunta viene de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
   deColaCorreo?: boolean;
+  /**
+   * Id del mensaje de Gmail que originó el gasto — hallazgo real de auditoría: sin esto,
+   * vigilarProcesamientoAtascado.ts no tenía forma de saber que un correo "activo" seguía vivo
+   * esperando la respuesta de ESTA pregunta (Sí/No conciliar), así que un caso real donde Carlos
+   * tardaba más de UMBRAL_ATASCADO_MS en contestar (revisando un lote largo de gastos) hacía que el
+   * vigilante lo diera por atascado y forzara un reintento — reprocesando el mismo correo mientras la
+   * pregunta original seguía sin responder, generándole una pregunta duplicada de "¿conciliar?" y
+   * dejando la primera huérfana. Ver huboSenalDeEntrega en vigilarProcesamientoAtascado.ts.
+   */
+  mensajeIdGmail?: string;
 }
 
 interface FilaConIndice {
@@ -113,7 +136,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:K10000`,
+    range: `${TAB_NAME}!A2:L10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -135,6 +158,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
         moneda: row[8] ? String(row[8]) : "EUR",
         proveedor: row[9] ? String(row[9]) : "",
         deColaCorreo: row[10] === true || row[10] === "true",
+        mensajeIdGmail: row[11] ? String(row[11]) : undefined,
       },
     });
   });
@@ -171,6 +195,26 @@ async function purgarVencidas(): Promise<void> {
   for (const { rowIndex } of vencidas) await eliminarFila(rowIndex);
 }
 
+/**
+ * Nunca usar values.append con un rango de columnas (ver el mismo hallazgo, mucho más grave, en
+ * crearPropuestaGasto de gastoProposalSheet.ts): la fila de encabezados de este tab quedó
+ * desactualizada (7 columnas reales contra las 12 que ya tiene ConciliacionPendiente), y esa forma
+ * irregular puede hacer que Sheets adivine mal en qué columna empieza la fila nueva — la fila se
+ * escribe completa, sin ningún error, pero termina invisible para cualquier lectura posterior. Se
+ * calcula la fila libre a mano y se escribe con un rango explícito, igual que allá.
+ */
+async function siguienteFilaLibre(): Promise<number> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A:L`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
+  return rows.length + 1;
+}
+
 export async function guardarConciliacionPendiente(
   datos: Omit<ConciliacionPendiente, "id" | "creadoEn">
 ): Promise<ConciliacionPendiente> {
@@ -181,11 +225,11 @@ export async function guardarConciliacionPendiente(
 
   const pendiente: ConciliacionPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 
-  await sheets.spreadsheets.values.append({
+  const fila = await siguienteFilaLibre();
+  await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:K`,
+    range: `${TAB_NAME}!A${fila}:L${fila}`,
     valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
     requestBody: {
       values: [
         [
@@ -200,12 +244,19 @@ export async function guardarConciliacionPendiente(
           pendiente.moneda,
           pendiente.proveedor,
           pendiente.deColaCorreo === true ? "true" : "",
+          pendiente.mensajeIdGmail ?? "",
         ],
       ],
     },
   });
 
   return pendiente;
+}
+
+/** Todas las conciliaciones pendientes de un chat — usado por vigilarProcesamientoAtascado.ts para saber si un correo "activo" sigue vivo esperando esta pregunta, en vez de darlo por atascado. */
+export async function obtenerConciliacionesPendientesPorChat(chatId: number): Promise<ConciliacionPendiente[]> {
+  const todas = await leerTodas();
+  return todas.filter(({ pendiente }) => pendiente.chatId === chatId).map(({ pendiente }) => pendiente);
 }
 
 /** Devuelve la pendiente y ELIMINA su fila (respondida, ya no debe quedar registro). */

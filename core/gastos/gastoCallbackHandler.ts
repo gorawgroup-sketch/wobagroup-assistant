@@ -360,10 +360,22 @@ async function preguntarSiConciliar(
   gastoId: string,
   moneda: string = "EUR",
   proveedor: string = "",
-  deColaCorreo: boolean = false
+  deColaCorreo: boolean = false,
+  mensajeIdGmail?: string
 ): Promise<boolean> {
   try {
-    const pendiente = await guardarConciliacionPendiente({ empresa, monto, fecha, descripcionGasto, chatId, gastoId, moneda, proveedor, deColaCorreo });
+    const pendiente = await guardarConciliacionPendiente({
+      empresa,
+      monto,
+      fecha,
+      descripcionGasto,
+      chatId,
+      gastoId,
+      moneda,
+      proveedor,
+      deColaCorreo,
+      mensajeIdGmail,
+    });
     await sendTelegramMessageWithButtons(
       chatId,
       `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`,
@@ -626,7 +638,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             resultado.conciliacionPendiente.gastoId,
             resultado.conciliacionPendiente.moneda,
             resultado.conciliacionPendiente.proveedor,
-            propuesta.deColaCorreo === true
+            propuesta.deColaCorreo === true,
+            propuesta.correoOrigen?.mensajeIdGmail
           );
         } else if (resultado.esperandoEleccionConciliacion) {
           preguntaConciliacionPendiente = true;
@@ -1478,7 +1491,8 @@ export async function procesarGastoConContactoResuelto(
         resultado.conciliacionPendiente.gastoId,
         resultado.conciliacionPendiente.moneda,
         resultado.conciliacionPendiente.proveedor,
-        resolucion.propuesta.deColaCorreo === true
+        resolucion.propuesta.deColaCorreo === true,
+        resolucion.propuesta.correoOrigen?.mensajeIdGmail
       );
     }
     // Ver comentario equivalente en el handler principal (handleGastoCallback) — crear el gasto no basta si todavía falta la decisión de conciliar.
@@ -1673,7 +1687,8 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         resultado.conciliacionPendiente.gastoId,
         resultado.conciliacionPendiente.moneda,
         resultado.conciliacionPendiente.proveedor,
-        propuesta.deColaCorreo === true
+        propuesta.deColaCorreo === true,
+        propuesta.correoOrigen?.mensajeIdGmail
       );
     }
     // Ver comentario equivalente en el handler principal (handleGastoCallback) — crear el gasto no basta si todavía falta la decisión de conciliar.

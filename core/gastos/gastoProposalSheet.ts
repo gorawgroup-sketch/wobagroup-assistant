@@ -385,6 +385,42 @@ async function purgarVencidas(): Promise<void> {
   }
 }
 
+/**
+ * Bug real de gravedad alta encontrado en vivo (2026-09-08, caso MARNAPA SA DE CV/GDL Pastriva,
+ * 4.96€): `values.append` con un rango de columnas (`A:Y`) le pide a Sheets que ADIVINE en qué fila Y
+ * EN QUÉ COLUMNA empieza "la tabla" — y esa heurística puede fallar en silencio. Verificado en vivo:
+ * 5 propuestas reales seguidas se escribieron completas SIN error, pero todas terminaron con sus
+ * datos empezando en la columna U en vez de la A (el resto de la fila, A:T, quedó vacío) — probablemente
+ * porque la fila de encabezados (row 1) solo tiene datos hasta la columna N (quedó desactualizada
+ * cuando se agregaron más campos a HEADERS después, sin nunca reescribirla), y esa forma irregular
+ * confundió la detección de "tabla" de append. El efecto real: leerTodas() lee row[0] esperando "id",
+ * lo encuentra vacío (porque el id real está en la columna U), y descarta la fila como si no
+ * existiera — la propuesta se manda a Telegram con botones reales, pero CUALQUIER búsqueda posterior
+ * por id (incluyendo el propio botón "Crear" que Carlos toca) no encuentra nada: "Esta propuesta ya
+ * no está disponible." Cada reintento repetía el mismo problema, generando una propuesta nueva
+ * igualmente invisible cada vez — "leíste y me enviaste 2 mails al mismo tiempo y uno ha quedado
+ * inactivo" es exactamente este bug visto desde el chat.
+ *
+ * La corrección de fondo: nunca dejar que Sheets adivine la fila/columna de un `append` — se calcula
+ * la fila libre real a mano (ver siguienteFilaLibre) y se escribe con `values.update` sobre un rango
+ * EXPLÍCITO (`A{fila}:Y{fila}`), que Sheets no puede reinterpretar ni desplazar.
+ */
+async function siguienteFilaLibre(): Promise<number> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  // Rango ancho (A:Y, no solo A:A) a propósito: una fila ya rota por este mismo bug puede tener la
+  // columna A vacía pero datos reales más a la derecha — hay que contarla igual para no escribir
+  // encima de ella. values.get recorta las filas vacías al final, así que rows.length ya es "la
+  // última fila con algo, en cualquier columna del rango".
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A:Y`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
+  return rows.length + 1;
+}
+
 export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "creadoEn">): Promise<PropuestaGasto> {
   await purgarVencidas();
 
@@ -397,11 +433,11 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
   // puede cambiar "monto" después, y nunca toca este campo.
   const propuesta: PropuestaGasto = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now(), montoOriginal: datos.monto };
 
-  await sheets.spreadsheets.values.append({
+  const fila = await siguienteFilaLibre();
+  await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:Y`,
+    range: `${TAB_NAME}!A${fila}:Y${fila}`,
     valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
     requestBody: { values: [propuestaToRow(propuesta)] },
   });
 
