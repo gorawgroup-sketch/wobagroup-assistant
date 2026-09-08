@@ -826,14 +826,30 @@ const SINONIMOS_ETIQUETA: Record<string, string[]> = {
   alquilercoche: ["coche"],
 };
 
-/** true si algún tag de `a` coincide con algún tag de `b`, considerando sinónimos históricos (ver SINONIMOS_ETIQUETA) — nunca por igualdad estricta sola, para no fallar sobre datos con nomenclatura vieja. */
+/**
+ * true si algún tag de `a` coincide con algún tag de `b`, considerando sinónimos históricos (ver
+ * SINONIMOS_ETIQUETA) — nunca por igualdad estricta sola, para no fallar sobre datos con
+ * nomenclatura vieja.
+ *
+ * Hallazgo real de auditoría xhigh de este mismo cambio: `SINONIMOS_ETIQUETA[n]` en un objeto plano
+ * resuelve por la cadena de prototipos si `n` coincide con un miembro heredado de Object.prototype
+ * ("constructor", "tostring", "hasownproperty", "__proto__"...) — verificado en vivo con Node que
+ * `SINONIMOS_ETIQUETA["constructor"]` devuelve la función Object (no undefined), y como no es
+ * iterable el `for...of` de abajo lanza un TypeError. Los tags de Holded son texto libre que
+ * cualquiera puede escribir (ver buscarGastosPorEtiquetaHolded más abajo, "busca el hashtag que
+ * debe estar como Jorge o como Jácome") — un solo gasto histórico etiquetado alguna vez, por
+ * ejemplo, "Constructor" (una reforma/obra) rompería esta función para SIEMPRE en cualquier línea
+ * que la contenga, y como el error queda atrapado más arriba (procesarGastoEntrante.ts), el efecto
+ * real sería una desactivación silenciosa y permanente de los tiers 2/3 de categorización para toda
+ * la empresa, visible solo en logs. Object.hasOwn evita tocar la cadena de prototipos.
+ */
 function tagsConSinonimosSeSolapan(a: string[], b: string[]): boolean {
   const expandir = (tags: string[]): Set<string> => {
     const set = new Set<string>();
     for (const t of tags) {
       const n = normalizar(t);
       set.add(n);
-      for (const sin of SINONIMOS_ETIQUETA[n] ?? []) set.add(sin);
+      if (Object.hasOwn(SINONIMOS_ETIQUETA, n)) for (const sin of SINONIMOS_ETIQUETA[n]) set.add(sin);
     }
     return set;
   };
@@ -1213,10 +1229,27 @@ export async function inferirCuentaGasto(
         const tagsDelGrupoIA = porConcepto.filter((m) => m.account === viaIA.accountId).flatMap((m) => m.tags);
         if (!contradiceCategoria(tagsDelGrupoIA)) return viaIA;
       }
+      // Hallazgo real de auditoría xhigh de este mismo cambio: si el empate es real y la IA no devolvió
+      // nada usable (sin API key, o vetada por contradecir la categoría), NUNCA se debe caer al voto por
+      // mayoría de abajo — con un empate genuino, "la cuenta más votada" no tiene ningún significado real,
+      // construirSugerenciaDesdeCoincidencias solo desempataría por orden de aparición en `lineas` (un
+      // artefacto de paginación de Holded, no evidencia). Eso reintroducía exactamente el tipo de
+      // elección arbitraria que este mismo tier de empate existe para evitar — pedido explícito de Carlos
+      // ya aplicado una vez a esta función ("solo tiene sentido pedirle a Claude que decida cuando el
+      // voto está genuinamente empatado"). Se cae directo al tier 3 (categoría) en vez de al voto por
+      // mayoría de acá.
+    } else {
+      const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
+      if (sugeridoPorConcepto) {
+        // tags COMPLETOS del grupo ganador (no los 3 más frecuentes de sugeridoPorConcepto.tags, pensados
+        // solo para el texto de la propuesta) — hallazgo real de auditoría xhigh: truncar a 3 acá podía
+        // dejar fuera justo la etiqueta de categoría real si la cuenta tiene más de 3 etiquetas distintas
+        // (ej. varias personas + categoría), vetando de más un match tier-2 correcto. Mismo criterio ya
+        // usado arriba para el desempate por IA (tagsDelGrupoIA) — consistente entre los dos caminos.
+        const tagsDelGrupo = porConcepto.filter((m) => m.account === sugeridoPorConcepto.accountId).flatMap((m) => m.tags);
+        if (!contradiceCategoria(tagsDelGrupo)) return sugeridoPorConcepto;
+      }
     }
-
-    const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
-    if (sugeridoPorConcepto && !contradiceCategoria(sugeridoPorConcepto.tags)) return sugeridoPorConcepto;
   }
 
   if (tagsCategoria.length === 0) return undefined;
@@ -1395,8 +1428,6 @@ export async function buscarGastosPorEtiquetaHolded(
   desde: string,
   hasta: string
 ): Promise<{ resultados: GastoConEtiqueta[]; totalRevisados: number; limiteAlcanzado: boolean }> {
-  const etiquetaNorm = normalizar(etiqueta);
-  const sinonimosNorm = (SINONIMOS_ETIQUETA[etiquetaNorm] ?? []).map(normalizar);
   const revisados: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; tags?: string[] }> = [];
   let cursor: string | undefined;
   let limiteAlcanzado = false;
@@ -1423,8 +1454,13 @@ export async function buscarGastosPorEtiquetaHolded(
     cursor = data.cursor;
   }
 
+  // Hallazgo real de auditoría xhigh: la comparación anterior (a mano, solo `SINONIMOS_ETIQUETA[etiquetaNorm]`)
+  // era de un solo sentido — buscar "alojamiento" (el nombre viejo) no encontraba nada etiquetado
+  // "hospedaje" (el estandarizado), porque el mapa solo tiene "hospedaje" como llave. Reutiliza
+  // tagsConSinonimosSeSolapan (misma fuente de verdad que inferirCuentaGasto), que expande AMBOS
+  // lados antes de comparar — buscar por cualquiera de los dos nombres encuentra todo.
   const resultados: GastoConEtiqueta[] = revisados
-    .filter((item) => (item.tags ?? []).some((t) => { const tNorm = normalizar(t); return tNorm === etiquetaNorm || sinonimosNorm.includes(tNorm); }))
+    .filter((item) => tagsConSinonimosSeSolapan([etiqueta], item.tags ?? []))
     .map((item) => ({
       id: item.id,
       contactName: item.contact_name ?? "(sin proveedor)",
