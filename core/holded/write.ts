@@ -1109,8 +1109,23 @@ export async function inferirCuentaGasto(
       return palabrasConcepto.some((p) => texto.includes(p));
     });
 
-    const cuentasDistintas = new Set(porConcepto.map((m) => m.account));
-    if (cuentasDistintas.size > 1) {
+    // Hallazgo real de auditoría (caso Uber Braga/Portugal, WOBA, 2026-09-08): "viaje" es una palabra
+    // ≥5 caracteres genuinamente relacionada con el gasto, no un relleno como "comprobante"/"correo"
+    // (ver PALABRAS_IGNORADAS_CONCEPTO) — pero es tan común en CUALQUIER concepto de viaje que
+    // aparece en líneas de naturaleza totalmente distinta. Acá matcheó 7 líneas reales: 6 bajo la
+    // cuenta real de viajes/transporte, 1 sola bajo "Servicios de profesionales independientes"
+    // (una factura de servicios ligada a un viaje, no un gasto de viaje en sí). Antes, CUALQUIER
+    // conteo de cuentas distintas ≥2 disparaba elegirCuentaConIA — con un voto tan desbalanceado
+    // (6 contra 1), el voto por mayoría ya tiene una respuesta clara y confiable; solo tiene sentido
+    // pedirle a Claude que decida cuando el voto está genuinamente empatado en el primer lugar (ningún
+    // recuento real le gana al otro), no cada vez que aparece una segunda cuenta con un solo ejemplo
+    // suelto.
+    const conteoPorCuenta = new Map<string, number>();
+    for (const m of porConcepto) conteoPorCuenta.set(m.account, (conteoPorCuenta.get(m.account) ?? 0) + 1);
+    const conteosOrdenados = Array.from(conteoPorCuenta.values()).sort((a, b) => b - a);
+    const hayEmpateEnElPrimerLugar = conteosOrdenados.length > 1 && conteosOrdenados[0] === conteosOrdenados[1];
+
+    if (hayEmpateEnElPrimerLugar) {
       const viaIA = await elegirCuentaConIA(criterios, porConcepto);
       if (viaIA) return viaIA;
     }
