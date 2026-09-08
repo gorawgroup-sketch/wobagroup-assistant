@@ -421,6 +421,18 @@ async function siguienteFilaLibre(): Promise<number> {
   return rows.length + 1;
 }
 
+const MAX_INTENTOS_ESCRITURA = 3;
+
+/**
+ * Calcular la fila libre y escribir ahí son dos llamadas separadas (values.get + values.update) —
+ * sin ninguna transacción real de Sheets de por medio, dos llamadas a crearPropuestaGasto casi
+ * simultáneas (ej. vigilarProcesamientoAtascado reintentando justo cuando revisarCorreoNuevo también
+ * está procesando, el patrón real que motivó los bugs de esta misma noche) podrían calcular la MISMA
+ * fila libre y que la segunda escritura pise a la primera en silencio — perdiendo una propuesta real
+ * en vez de solo dejarla invisible, un resultado peor que el bug que esto corrige. Tras escribir, se
+ * relee esa misma fila y se confirma que el id en la columna A es el que se acaba de escribir; si no
+ * lo es, alguien más escribió ahí primero y se reintenta en una fila nueva.
+ */
 export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "creadoEn">): Promise<PropuestaGasto> {
   await purgarVencidas();
 
@@ -433,15 +445,28 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
   // puede cambiar "monto" después, y nunca toca este campo.
   const propuesta: PropuestaGasto = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now(), montoOriginal: datos.monto };
 
-  const fila = await siguienteFilaLibre();
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A${fila}:Y${fila}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [propuestaToRow(propuesta)] },
-  });
+  for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+    const fila = await siguienteFilaLibre();
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A${fila}:Y${fila}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [propuestaToRow(propuesta)] },
+    });
 
-  return propuesta;
+    const verificacion = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A${fila}`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    if (verificacion.data.values?.[0]?.[0] === propuesta.id) return propuesta;
+
+    console.error(
+      `[gastoProposalSheet] Colisión al escribir la propuesta ${propuesta.id} en la fila ${fila} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+    );
+  }
+
+  throw new Error(`No se pudo guardar la propuesta ${propuesta.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
 }
 
 export async function actualizarMessageIdGasto(id: string, messageId: number): Promise<void> {
