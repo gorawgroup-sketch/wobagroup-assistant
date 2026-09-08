@@ -215,6 +215,11 @@ async function siguienteFilaLibre(): Promise<number> {
   return rows.length + 1;
 }
 
+const MAX_INTENTOS_ESCRITURA = 3;
+
+/** Ver crearPropuestaGasto en gastoProposalSheet.ts — misma protección contra colisión: dos llamadas
+ * casi simultáneas podrían calcular la misma fila libre y que la segunda pise a la primera. Tras
+ * escribir se relee esa fila y se confirma el id; si no coincide, se reintenta en una fila nueva. */
 export async function guardarConciliacionPendiente(
   datos: Omit<ConciliacionPendiente, "id" | "creadoEn">
 ): Promise<ConciliacionPendiente> {
@@ -224,33 +229,43 @@ export async function guardarConciliacionPendiente(
   await ensureTab();
 
   const pendiente: ConciliacionPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+  const fila_valores = [
+    pendiente.id,
+    pendiente.empresa,
+    pendiente.monto,
+    pendiente.fecha,
+    pendiente.descripcionGasto,
+    pendiente.chatId,
+    pendiente.creadoEn,
+    pendiente.gastoId,
+    pendiente.moneda,
+    pendiente.proveedor,
+    pendiente.deColaCorreo === true ? "true" : "",
+    pendiente.mensajeIdGmail ?? "",
+  ];
 
-  const fila = await siguienteFilaLibre();
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A${fila}:L${fila}`,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [
-        [
-          pendiente.id,
-          pendiente.empresa,
-          pendiente.monto,
-          pendiente.fecha,
-          pendiente.descripcionGasto,
-          pendiente.chatId,
-          pendiente.creadoEn,
-          pendiente.gastoId,
-          pendiente.moneda,
-          pendiente.proveedor,
-          pendiente.deColaCorreo === true ? "true" : "",
-          pendiente.mensajeIdGmail ?? "",
-        ],
-      ],
-    },
-  });
+  for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+    const fila = await siguienteFilaLibre();
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A${fila}:L${fila}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [fila_valores] },
+    });
 
-  return pendiente;
+    const verificacion = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A${fila}`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    if (verificacion.data.values?.[0]?.[0] === pendiente.id) return pendiente;
+
+    console.error(
+      `[conciliacionPendienteStore] Colisión al escribir la pendiente ${pendiente.id} en la fila ${fila} — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+    );
+  }
+
+  throw new Error(`No se pudo guardar la conciliación pendiente ${pendiente.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
 }
 
 /** Todas las conciliaciones pendientes de un chat — usado por vigilarProcesamientoAtascado.ts para saber si un correo "activo" sigue vivo esperando esta pregunta, en vez de darlo por atascado. */
