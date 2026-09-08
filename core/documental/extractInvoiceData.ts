@@ -109,7 +109,14 @@ const REPORTAR_TOOL: Anthropic.Tool = {
     properties: {
       es_factura_o_gasto: {
         type: "boolean",
-        description: "true si el documento es una factura, recibo, ticket o comprobante de gasto/pago.",
+        description:
+          "true SOLO si el documento es una factura, recibo, ticket o comprobante de un GASTO real — " +
+          "dinero que SALE del grupo. false si es cualquier otra cosa (contrato, certificado, documento " +
+          "de RRHH), y también false si describe dinero que ENTRA al grupo: una factura de VENTA que el " +
+          "grupo emite a un cliente, una certificación de obra/avance de proyecto (la contrapartida " +
+          "habitual de esa venta), o cualquier documento donde el grupo es quien COBRA en vez de quien " +
+          "paga. El grupo también factura y cobra a sus propios clientes en muchos proyectos — antes de " +
+          "reportar true, confirma que el grupo es quien PAGA en esta transacción, no quien la emite/cobra.",
       },
       proveedor: { type: "string", description: "Nombre del proveedor/emisor tal como aparece en el documento." },
       monto: {
@@ -215,9 +222,15 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
   return [
     "Eres el lector de facturas/gastos entrantes del grupo (WOBA/BAE, Footprint, eWorks).",
     "Recibes el contenido REAL de un documento (PDF o imagen) — léelo con atención, no adivines.",
-    "Primero decide si es una factura, recibo, ticket o comprobante de gasto/pago. Si es cualquier otra " +
-      "cosa (contrato, certificado, documento de RRHH, etc.), reporta es_factura_o_gasto=false y no " +
-      "sigas extrayendo los demás campos.",
+    "Primero decide si es una factura, recibo, ticket o comprobante de un GASTO real (dinero que SALE " +
+      "del grupo). Si es cualquier otra cosa (contrato, certificado, documento de RRHH, etc.), reporta " +
+      "es_factura_o_gasto=false y no sigas extrayendo los demás campos.",
+    "IMPORTANTE — dirección del dinero: el grupo también FACTURA y COBRA a sus propios clientes en " +
+      "muchos proyectos. Una factura de VENTA que el grupo emite, o una certificación de obra/avance de " +
+      "proyecto (la contrapartida habitual de esa venta), es un INGRESO — nunca es_factura_o_gasto=true, " +
+      "aunque tenga toda la forma de una factura real con monto y proveedor identificables. Antes de " +
+      "concluir que es un gasto, confirma que el grupo es quien PAGA en esa transacción, no quien la " +
+      "emite/cobra.",
     "Si sí es un gasto, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
       "aparecen en el documento — no inventes ni redondees.",
     "Extrae también el desglose de IVA en 'lineas': si la factura muestra bases y tipos de IVA " +
