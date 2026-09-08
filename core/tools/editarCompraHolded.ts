@@ -84,7 +84,7 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
 
     if (encontrados.length > 1) {
       const listado = encontrados
-        .map((d, i) => `${i + 1}. id ${d.id} — ${d.contactName}, ${d.total.toFixed(2)} €, doc "${d.documentNumber || "(sin número)"}", ${d.fecha}`)
+        .map((d, i) => `${i + 1}. id ${d.id} — ${d.contactName}, ${d.total.toFixed(2)} ${d.moneda}, doc "${d.documentNumber || "(sin número)"}", ${d.fecha}`)
         .join("\n");
       return (
         `Encontré ${encontrados.length} compras de "${contacto}" — dime cuál corresponde (o dame el monto exacto/fecha para acotar):\n${listado}`
@@ -92,10 +92,16 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
     }
 
     const compra = encontrados[0];
-    const resumenAntes = `${compra.contactName} — ${compra.total.toFixed(2)} €, doc "${compra.documentNumber || "(sin número)"}", ${compra.fecha}`;
+    // Hallazgo real de auditoría: esto mostraba "€" fijo aunque la compra
+    // real fuera en USD (u otra moneda) — antes era inofensivo porque
+    // editarCompraHolded reseteaba la moneda a EUR en silencio de todas
+    // formas (ver ese archivo); con ese bug ya corregido, mostrar "€" acá
+    // sería mostrarle a Carlos una propuesta de edición ya equivocada antes
+    // de que la apruebe.
+    const resumenAntes = `${compra.contactName} — ${compra.total.toFixed(2)} ${compra.moneda}, doc "${compra.documentNumber || "(sin número)"}", ${compra.fecha}`;
     const cambiosTexto = [
       numeroDocumentoNuevo !== undefined ? `número de documento → "${numeroDocumentoNuevo}"` : undefined,
-      montoNuevo !== undefined ? `monto total → ${montoNuevo.toFixed(2)} €` : undefined,
+      montoNuevo !== undefined ? `monto total → ${montoNuevo.toFixed(2)} ${compra.moneda}` : undefined,
     ]
       .filter(Boolean)
       .join(", ");

@@ -44,11 +44,19 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
   try {
     const resultado = await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, pendiente.cambios);
     const totalDespues = typeof resultado.total === "number" ? resultado.total.toFixed(2) : String(resultado.total ?? "");
+    // Hallazgo real de auditoría: esto mandaba "€" fijo sin importar la
+    // moneda real del documento — inofensivo mientras editarCompraHolded
+    // reseteaba todo a EUR en silencio (ver ese archivo), pero con ese bug ya
+    // corregido, un gasto en USD ahora sí queda en USD en Holded y este
+    // mensaje reportaría "€" de todas formas, reproduciendo en el chat la
+    // misma confusión ("parece euros, es dólares") que el fix de fondo
+    // elimina de Holded.
+    const monedaDespues = (resultado.currency ?? "EUR").toUpperCase().trim();
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
       `✅ Editado en Holded — antes: ${pendiente.resumenAntes}\n` +
-        `Ahora: ${totalDespues} €, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).`,
+        `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).`,
       []
     );
   } catch (error) {

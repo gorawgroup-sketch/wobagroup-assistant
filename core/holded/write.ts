@@ -507,6 +507,17 @@ export interface DocumentoHoldedEstado {
   fecha: string;
   dueDate?: string;
   total: number;
+  /**
+   * Moneda ISO 4217 del documento (ej. "USD"), normalizada en mayúsculas —
+   * "EUR" si Holded no la trae explícita (documento EUR implícito, mismo
+   * criterio que el resto de este archivo). Hallazgo real de auditoría:
+   * antes este tipo no traía moneda y proponerEdicionCompraHoldedTool
+   * (core/tools/editarCompraHolded.ts) mostraba SIEMPRE "€" al proponer una
+   * edición, aunque el gasto real fuera en USD — mismo síntoma que el bug de
+   * fondo ya corregido en editarCompraHolded, solo que en el texto de la
+   * propuesta en vez de en Holded.
+   */
+  moneda: string;
   pagado: number;
   pendiente: number;
   status: string;
@@ -572,6 +583,7 @@ async function buscarEnEndpointDocumentos(
         payments_pending?: string;
         draft?: boolean;
         tags?: string[];
+        currency?: string;
         lines?: Array<{ name?: string }>;
       }>;
       cursor?: string;
@@ -611,6 +623,7 @@ async function buscarEnEndpointDocumentos(
         fecha: item.date ?? "",
         dueDate: item.due_date,
         total,
+        moneda: (item.currency ?? "EUR").toUpperCase().trim(),
         pagado: parsearMontoHolded(item.payments_total),
         pendiente: parsearMontoHolded(item.payments_pending),
         status: item.status ?? "desconocido",
@@ -1920,6 +1933,15 @@ export interface CompraHoldedCruda {
   date?: string;
   due_date?: string | null;
   currency?: string;
+  /**
+   * Tipo de cambio aplicado cuando `currency` es distinta a la moneda de la
+   * cuenta (confirmado en el spec real de Holded — api.holded.com/openapi/api2.json
+   * — como campo real de este documento, aunque el PUT documentado de
+   * /purchases no lo liste explícito, mismo patrón ya visto acá con
+   * "currency", "tags" y "retention"). Viene como string decimal en el GET
+   * (ej. "1.16") — usar numeroDesdeHolded para parsearlo.
+   */
+  currency_change?: string | number;
   total?: string | number;
   design_id?: string | null;
   lines?: LineaCompraHoldedCruda[];
@@ -1960,6 +1982,24 @@ function numeroDesdeHolded(valor: string | number | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * Parsea un decimal "plano" (punto como separador decimal, SIN miles) — a
+ * diferencia de numeroDesdeHolded (formato "a la española", para
+ * total/price). Bug real encontrado en vivo al verificar el fix de
+ * currency_change contra un gasto real (Google Workspace, Footprint):
+ * currency_change viene de Holded como "1.16" (decimal simple, no "a la
+ * española") — numeroDesdeHolded("1.16") lo trataba como "1.16" con el punto
+ * de miles, dando 116 en vez de 1.16, y disparaba un falso positivo de
+ * EdicionNoVerificadaError en la verificación post-escritura (que sí hizo su
+ * trabajo: detectó el desajuste antes de dar el gasto por corregido).
+ */
+function numeroDecimalPlano(valor: string | number | null | undefined): number {
+  if (typeof valor === "number") return valor;
+  if (!valor) return 0;
+  const parsed = Number(valor);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export interface CambiosCompraHolded {
   numeroDocumento?: string;
   fecha?: string;
@@ -1973,6 +2013,16 @@ export interface CambiosCompraHolded {
    * de IVA desde cero. Ignorado si también se da `lineas`.
    */
   montoNuevo?: number;
+  /**
+   * Corrige el tipo de cambio (currency_change) guardado en el documento —
+   * pensado para REPARAR un valor ya corrompido (ver el comentario de
+   * currency_change en el body de editarCompraHolded), nunca para inventar
+   * una conversión: solo debe usarse con el tipo de cambio real ya conocido
+   * (ej. el que Holded calculó él mismo antes de que se corrompiera). Si no
+   * se da, se preserva tal cual el que ya tenía el documento — el
+   * comportamiento normal de esta función.
+   */
+  tasaCambioNueva?: number;
 }
 
 /**
@@ -2051,10 +2101,64 @@ export async function editarCompraHolded(empresa: Empresa, purchaseId: string, c
           [{ name: actual.description ?? "(línea)", type: "product", units: 1, price: cambios.montoNuevo, taxes: [] }]
       : lineasCrudasActuales.map((l) => lineaCrudaAItem(l));
 
+  // Bug real de gravedad alta encontrado en vivo (2026-09-08, gasto de Google
+  // Workspace en USD, Footprint — reporte explícito de Carlos): este PUT
+  // nunca mandaba "currency", y como el endpoint reemplaza el documento
+  // ENTERO (ver comentario de arriba), cualquier edición de una compra en
+  // moneda distinta a EUR (ajustar el número de documento, el monto, o las
+  // líneas — exactamente lo que este mismo módulo ofrece corregir) la
+  // reseteaba en silencio a EUR, dejando el monto nativo en dólares
+  // reinterpretado como si fueran euros — justo el síntoma que Carlos
+  // reportó ("queda como si estuviera en euros con el valor en dólares") y
+  // la causa real de los "faltantes" al conciliar. Se preserva tal cual la
+  // moneda actual, igual que due_date/design_id — esta función nunca cambia
+  // la moneda de una compra, solo corrige lo que se le pida.
+  //
+  // Se normaliza en mayúsculas/sin espacios, mismo criterio que CUALQUIER
+  // otra lectura de "currency" de Holded en este archivo (ver montoEnEuros,
+  // buscarDocumentosHolded, buscarMovimientoSimilar/Aproximado) — Holded
+  // puede omitir "currency" por completo en el GET de un documento EUR
+  // implícito (el mismo motivo por el que el "?? EUR" se repite en todo este
+  // archivo), así que la verificación post-escritura de más abajo trata esa
+  // ausencia IGUAL en los dos lados de la comparación (antes y después del
+  // PUT) — hallazgo real de auditoría: comparar un lado normalizado contra
+  // el otro sin normalizar habría disparado un falso positivo en la mayoría
+  // de las ediciones reales (gastos en EUR, el caso más común), no solo en
+  // las de moneda distinta a EUR que este chequeo existe para proteger.
+  // "||" (no "??"): un "" vacío de Holded debe tratarse igual que ausente
+  // (documento EUR implícito), no preservarse tal cual — hallazgo real de
+  // auditoría.
+  const monedaActual = (actual.currency || "EUR").toUpperCase().trim();
+  // Hallazgo real de auditoría (contra el spec real de Holded,
+  // api.holded.com/openapi/api2.json): "currency" por sí sola NO basta —
+  // "currency_change" (el tipo de cambio real que Holded aplicó, ej. "1.16"
+  // para USD→EUR) es un campo DISTINTO y, si tampoco se reenvía, este mismo
+  // PUT de reemplazo completo también lo resetearía en silencio a su default
+  // (probablemente "1.00" — paridad ficticia). El resultado sería sutil:
+  // "currency" quedaría correcta y el monto nativo también, pero el
+  // equivalente en EUR que Holded calcula internamente para la
+  // contabilidad quedaría mal igual — el mismo tipo de daño que motivó este
+  // fix, solo que invisible en el monto que se ve a simple vista. Nunca 0
+  // (colapsaría cualquier conversión futura): si no se puede leer, 1 (sin
+  // conversión) es el default neutro.
+  // `cambios.tasaCambioNueva` permite REPARAR un tipo de cambio ya
+  // corrompido (ver su comentario en CambiosCompraHolded) — fuera de eso,
+  // esta función nunca inventa una conversión, solo preserva la que ya
+  // había.
+  const tasaCambioActual = cambios.tasaCambioNueva ?? (numeroDecimalPlano(actual.currency_change) || 1);
+
   const body: Record<string, unknown> = {
     number: cambios.numeroDocumento ?? actual.document_number ?? "00000",
     date: cambios.fecha ?? actual.date,
     due_date: actual.due_date ?? null,
+    currency: monedaActual,
+    currency_change: tasaCambioActual,
+    // contact_id (el proveedor real del gasto) tampoco está en el PUT
+    // documentado de Holded, pero si se omitiera y el reemplazo completo lo
+    // resetea, un gasto quedaría atribuido a ningún proveedor (o al
+    // genérico) sin ningún aviso — se preserva tal cual, esta función nunca
+    // reasigna el proveedor por sí sola.
+    ...(actual.contact_id ? { contact_id: actual.contact_id } : {}),
     // design_id SÍ es un campo editable documentado de este PUT (verificado
     // en vivo contra la API real) — se preserva tal cual, igual que due_date.
     ...(actual.design_id ? { design_id: actual.design_id } : {}),
@@ -2083,6 +2187,41 @@ export async function editarCompraHolded(empresa: Empresa, purchaseId: string, c
   }
   if ((releido.lines?.length ?? 0) === 0 && items.length > 0) {
     throw new EdicionNoVerificadaError("Holded aceptó la edición pero la compra quedó SIN líneas — revisar a mano en Holded antes de dar esto por corregido.", purchaseId);
+  }
+  // Red de seguridad para el bug de moneda de arriba: si a pesar de mandarla
+  // explícita la moneda quedó distinta de la que tenía el documento, el
+  // monto nativo ya no es de fiar (ver comentario de "currency" en body) —
+  // nunca reportar "✅ Editado" con la contabilidad potencialmente rota.
+  // Mismo `monedaActual` normalizado de arriba en ambos lados (ver su
+  // comentario) — sin esto, la mayoría de las ediciones reales (gastos en
+  // EUR) habría disparado este error por un falso desajuste de formato, no
+  // por un problema real de moneda.
+  const monedaReleida = (releido.currency || "EUR").toUpperCase().trim();
+  if (monedaReleida !== monedaActual) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero la moneda quedó en "${monedaReleida}", no en "${monedaActual}" — el monto puede estar mal interpretado, revisar a mano en Holded antes de dar esto por corregido.`,
+      purchaseId
+    );
+  }
+  // Misma red de seguridad para "currency_change" (ver su comentario en
+  // body): la moneda por sí sola puede quedar correcta y el equivalente en
+  // EUR seguir mal si el tipo de cambio se resetea en silencio. Tolerancia
+  // de 0.01 — Holded devuelve esto redondeado a 2 decimales.
+  const tasaReleida = numeroDecimalPlano(releido.currency_change) || 1;
+  if (Math.abs(tasaReleida - tasaCambioActual) > 0.01) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero el tipo de cambio quedó en ${tasaReleida}, no en ${tasaCambioActual} — el equivalente en EUR puede estar mal calculado, revisar a mano en Holded antes de dar esto por corregido.`,
+      purchaseId
+    );
+  }
+  // Misma red de seguridad para el proveedor (contact_id): esta función
+  // nunca reasigna el proveedor por sí sola, así que si quedó distinto del
+  // que tenía el documento, algo salió mal en el reemplazo completo.
+  if (actual.contact_id && releido.contact_id !== actual.contact_id) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero el proveedor (contact_id) quedó en "${releido.contact_id}", no en "${actual.contact_id}" — revisar a mano en Holded antes de dar esto por corregido.`,
+      purchaseId
+    );
   }
   if (cambios.montoNuevo !== undefined && Math.abs(numeroDesdeHolded(releido.total) - cambios.montoNuevo) > 0.05) {
     throw new EdicionNoVerificadaError(
