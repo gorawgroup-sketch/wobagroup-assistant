@@ -71,7 +71,7 @@ import {
 } from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
-import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
+import { reDescargarAdjuntoSiFalta, regenerarComprobanteDesdeCuerpoSiFalta } from "../gmail/reDescargarAdjunto";
 import { generarBorradorYOfrecer } from "../gmail/emailCallbackHandler";
 import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
@@ -136,28 +136,25 @@ async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
  * cerrado sin serlo.
  */
 async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): Promise<void> {
+  const intentarAdjuntar = () =>
+    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, propuesta.nombreArchivoOriginal, propuesta.mimeType);
+
   try {
-    await adjuntarComprobanteHolded(
-      propuesta.empresa,
-      purchaseId,
-      propuesta.rutaLocal,
-      propuesta.nombreArchivoOriginal,
-      propuesta.mimeType
-    );
+    await intentarAdjuntar();
   } catch (error) {
+    // Primer respaldo: era un adjunto REAL de Gmail (tiene attachmentId) — se vuelve a descargar
+    // igual. Segundo respaldo (hallazgo real de auditoría, caso MARNAPA/GDL Pastriva): era un PDF
+    // SINTÉTICO generado del cuerpo del correo (nunca tuvo attachmentId que recuperar) — se regenera
+    // desde cero con el cuerpo fresco de Gmail y los datos ya extraídos en la propuesta. Solo se
+    // propaga el error si NINGUNA de las dos vías logra reponer el archivo.
     const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
       mensajeIdGmail: propuesta.origenAdjuntoGmail?.mensajeIdGmail,
       attachmentIdGmail: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
     });
-    if (!recuperado) throw error;
+    const regenerado = recuperado || (await regenerarComprobanteDesdeCuerpoSiFalta(propuesta.rutaLocal, propuesta));
+    if (!regenerado) throw error;
 
-    await adjuntarComprobanteHolded(
-      propuesta.empresa,
-      purchaseId,
-      propuesta.rutaLocal,
-      propuesta.nombreArchivoOriginal,
-      propuesta.mimeType
-    );
+    await intentarAdjuntar();
   }
   await limpiarArchivoLocal(propuesta.rutaLocal);
 }
