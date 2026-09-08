@@ -1,7 +1,7 @@
 import { answerCallbackQuery, editTelegramMessage, editTelegramMessageSmart, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons } from "../telegram/client";
 import { consumirPropuestaAccionCorreo, type PropuestaAccionCorreo } from "./emailActionStore";
 import { guardarPendienteOrientacionCorreo } from "./emailOrientationStore";
-import { crearBorradorCorreo, actualizarMessageIdBorrador, actualizarCuerpoBorrador, obtenerBorradorCorreo, consumirBorradorCorreo } from "./emailDraftStore";
+import { crearBorradorCorreo, actualizarMessageIdBorrador, actualizarCuerpoBorrador, obtenerBorradorCorreo, consumirBorradorCorreo, huboBorradorCreadoDesde } from "./emailDraftStore";
 import { guardarPendienteEdicionBorrador } from "./emailDraftEditStore";
 import {
   crearOfertaResponderCorreo,
@@ -292,12 +292,28 @@ export async function continuarConOrientacion(
     `Instrucción del usuario: ${instruccionUsuario}. ` +
     `Investiga y ejecuta lo que corresponda con las herramientas disponibles, y reporta el resultado.`;
 
+  // Bug real encontrado en vivo (2026-09-08, caso DYLO/Alberto Comolli): el chequeo de abajo decidía
+  // si generar un SEGUNDO borrador aparte (generarBorradorYOfrecer) mirando si la instrucción del
+  // usuario MENCIONA la palabra "correo"/"responder" — "envío correo a Alberto..." la contiene, así
+  // que disparaba el segundo borrador SIEMPRE, sin fijarse en si askClaude ya había cumplido el
+  // pedido usando proponer_envio_correo (que ya deja su propio borrador real, con sus propios
+  // botones). Carlos terminó con dos borradores distintos y contradictorios para la misma
+  // instrucción. Ahora se marca el instante ANTES de llamar a askClaude y, después, se revisa el
+  // store real de borradores — si askClaude ya creó uno para este chat mientras corría, no hace falta
+  // (ni se debe) generar otro.
+  const antesDeAskClaude = Date.now();
   const respuesta = await askClaude(instruccion, chatId, undefined, "orientacion_correo");
   await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${asunto} (${de})`);
 
   const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);
   if (pareceRespuesta) {
-    await generarBorradorYOfrecer(chatId, de, asunto, threadId, messageIdHeader, respuesta);
+    const yaHayBorrador = await huboBorradorCreadoDesde(chatId, antesDeAskClaude).catch((error) => {
+      console.error("[emailCallbackHandler] Error revisando si ya hay borrador (se genera uno igual, por seguridad):", error);
+      return false;
+    });
+    if (!yaHayBorrador) {
+      await generarBorradorYOfrecer(chatId, de, asunto, threadId, messageIdHeader, respuesta);
+    }
   }
   if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
 }
