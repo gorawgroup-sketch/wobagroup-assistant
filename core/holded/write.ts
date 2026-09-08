@@ -315,6 +315,19 @@ export interface PurchaseCandidato {
   documentNumber?: string;
 }
 
+/**
+ * Formato de línea compartido por los dos llamadores que muestran
+ * candidatos de posible duplicado a Carlos (gastoCallbackHandler.ts y
+ * pagoRecurrenteCallbackHandler.ts) — hallazgo real de auditoría: cada uno
+ * lo reconstruía por su cuenta, con riesgo real de que un ajuste de formato
+ * futuro se aplicara a uno y se olvidara en el otro.
+ */
+export function formatearCandidatosDuplicado(candidatos: PurchaseCandidato[]): string {
+  return candidatos
+    .map((c) => `• ${c.contactName} — ${c.total.toFixed(2)}€ (${c.fecha}, doc "${c.documentNumber ?? "sin número"}")`)
+    .join("\n");
+}
+
 /** Los importes de /purchases vienen como string en formato ES ("1.234,56"). */
 function parsearMontoHolded(raw: unknown): number {
   if (typeof raw === "number") return raw;
@@ -1792,6 +1805,55 @@ export class ContactoNoEncontradoError extends Error {
   constructor(public proveedorBuscado: string, public empresa: Empresa) {
     super(`No se encontró el proveedor "${proveedorBuscado}" en los contactos de Holded (${empresa}).`);
     this.name = "ContactoNoEncontradoError";
+  }
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real (Booking.com — Hospedaje
+ * Hotel Plaza Diana, Footprint, 204,65€): un gasto YA CREADO y YA
+ * CONCILIADO se volvió a proponer y a crear en Holded como duplicado, sin
+ * ninguna advertencia. Causa real: buscarGastoSimilar solo corría UNA vez,
+ * al procesar el correo (procesarGastoEntrante.ts), para armar la
+ * propuesta — pero la propuesta puede quedar pendiente de aprobación hasta
+ * 7 días (TTL_MS real de crearPropuestaGasto), y crearGastoYReportar (acá
+ * abajo) nunca volvía a comprobar justo antes de escribir en Holded. Un TOCTOU clásico
+ * (mismo tipo de bug ya cerrado esta noche para las colisiones de Sheets):
+ * si el gasto real llega a existir en Holded DESPUÉS de que la propuesta se
+ * mostró (Carlos lo registra a mano, u otro correo lo crea primero) pero
+ * ANTES de que se apruebe el botón, nada volvía a mirar. Se lanza cuando
+ * crearGastoYReportar encuentra, justo antes de escribir, un candidato que
+ * NO estaba entre los que ya se le mostraron a Carlos en la propuesta
+ * original (`propuesta.candidatos`) — así que un candidato ya visto y
+ * descartado explícitamente (botón "🆕 Crear gasto nuevo" con candidatos a
+ * la vista) nunca vuelve a bloquear la misma decisión ya tomada.
+ */
+export class PosibleDuplicadoGastoError extends Error {
+  constructor(public candidatos: PurchaseCandidato[]) {
+    super(`Posible gasto duplicado detectado justo antes de crear: ${formatearCandidatosDuplicado(candidatos)}`);
+    this.name = "PosibleDuplicadoGastoError";
+  }
+}
+
+/**
+ * Hallazgo real de auditoría xhigh (mismo día, sobre el propio fix de
+ * PosibleDuplicadoGastoError): la re-verificación de duplicados
+ * (buscarGastoSimilar, justo antes de crear) fallaba EN SILENCIO — si la
+ * búsqueda misma daba error (Holded caído, rate limit, timeout), el código
+ * lo tragaba y seguía como si no hubiera ningún duplicado, exactamente el
+ * mismo "fallar en silencio" que Carlos ha pedido eliminar toda la noche
+ * (ver notaDescuadre/notaCuentaSinInferir/notaNumeroDocumento en
+ * gastoCallbackHandler.ts — avisar explícito en vez de dejar pasar). Y
+ * conciliarMovimiento.ts, el OTRO llamador real de buscarGastoSimilar en
+ * este sistema, ya falla cerrado (no reconciliar) ante el mismo tipo de
+ * error — la nueva verificación pre-escritura, siendo la última línea de
+ * defensa antes de un gasto irreversible, debe fallar cerrado también:
+ * nunca crear el gasto si no se pudo confirmar que no es un duplicado.
+ */
+export class VerificacionDuplicadoFallidaError extends Error {
+  constructor(public causaOriginal: unknown) {
+    const detalle = causaOriginal instanceof Error ? causaOriginal.message : String(causaOriginal);
+    super(`No se pudo verificar si el gasto ya existe en Holded antes de crearlo: ${detalle}`);
+    this.name = "VerificacionDuplicadoFallidaError";
   }
 }
 
