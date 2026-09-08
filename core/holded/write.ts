@@ -5,7 +5,7 @@ import { estaConciliado, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { montosCercanos } from "../utils/montos";
-import { textosParecidos } from "../utils/textoParecido";
+import { textosParecidos, palabrasDe } from "../utils/textoParecido";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
@@ -1022,6 +1022,27 @@ async function elegirCuentaConIA(
 }
 
 /**
+ * Hallazgo real de auditoría (caso Uber México/Guadalajara, Footprint, 2026-09-08): textosParecidos
+ * exige que la palabra del OBJETIVO tenga 5+ caracteres para contar como "distintiva" — diseñado para
+ * no engancharse con rellenos genéricos dentro de una frase larga. Pero cuando el proveedor completo
+ * ES una marca corta de una sola palabra ("Uber", 4 caracteres — también aplicaría a "Ikea", "Aldi",
+ * "Grab", "Bolt"...), esa palabra nunca pasa el filtro y el match por proveedor (tier 1, la señal más
+ * fuerte y determinística) queda desactivado SIEMPRE para esa marca, sin importar cuántas compras
+ * reales de "UBER MEXICO"/"UBER COLOMBIA" ya existan — cae directo al tier 2 (concepto), más frágil.
+ * Verificado en vivo: Footprint ya tenía 15+ líneas reales de Uber bajo la cuenta correcta de viajes,
+ * pero nunca se usaban porque "Uber" (el valor exacto de `proveedor`) jamás superaba el umbral de 5
+ * caracteres de textosParecidos. Esto es distinto del riesgo que ese umbral evita: ahí el objetivo es
+ * una frase/oración ruidosa donde una palabra corta suelta podría ser relleno; acá el objetivo YA es
+ * el nombre exacto y completo del proveedor (una sola palabra, sin ruido) — coincidencia exacta de esa
+ * palabra completa contra una palabra completa del contacto es una señal fuerte, no ruido.
+ */
+function coincideProveedorCorto(proveedor: string, contactName: string): boolean {
+  const [proveedorNorm] = palabrasDe(proveedor, 1);
+  if (!proveedorNorm || palabrasDe(proveedor, 1).length !== 1) return false; // solo aplica si el proveedor entero es una sola palabra
+  return palabrasDe(contactName, 1).includes(proveedorNorm);
+}
+
+/**
  * Busca qué cuenta contable de Holded ya se usa en compras reales
  * parecidas — por proveedor o por palabras clave del concepto — para no
  * dejar que Holded caiga en su cuenta genérica por defecto en gastos que
@@ -1038,8 +1059,11 @@ async function elegirCuentaConIA(
  * así que la única fuente confiable es lo que YA está en uso real. Nunca
  * inventa un id de cuenta.
  *
- * 1) Si hay compras del MISMO proveedor (nombre parecido), usa la cuenta
- *    más frecuente entre esas — caso fuerte y determinístico.
+ * 1) Si hay compras del MISMO proveedor (nombre parecido, o coincidencia
+ *    exacta de marca corta de una sola palabra — ver coincideProveedorCorto,
+ *    caso real Uber México/Guadalajara: "Uber" nunca pasaba el filtro de 5+
+ *    caracteres de textosParecidos), usa la cuenta más frecuente entre esas
+ *    — caso fuerte y determinístico.
  * 2) Si no, busca por palabras clave del concepto (excluyendo primero las
  *    que coincidan con el nombre de personaAsociada, si se dio — el nombre
  *    de una persona aparece en TODOS sus gastos sin importar la categoría,
@@ -1086,7 +1110,9 @@ export async function inferirCuentaGasto(
   // menos confiable. Mismo criterio ya usado en el resto del sistema para
   // razón social vs. nombre comercial.
   const porNombre = criterios.proveedor.trim()
-    ? lineas.filter((l) => l.contactName && textosParecidos(criterios.proveedor, l.contactName))
+    ? lineas.filter(
+        (l) => l.contactName && (textosParecidos(criterios.proveedor, l.contactName) || coincideProveedorCorto(criterios.proveedor, l.contactName))
+      )
     : [];
 
   const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
@@ -1102,6 +1128,10 @@ export async function inferirCuentaGasto(
   // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
   const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
   const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
+
+  // Se calcula ANTES del tier 2 (no solo como fallback del tier 3) para poder usarse como veto —
+  // ver más abajo, caso real Ke Rico NichoT1/Uber México GDL.
+  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
 
   if (palabrasConcepto.length > 0) {
     const porConcepto = lineas.filter((l) => {
@@ -1130,11 +1160,29 @@ export async function inferirCuentaGasto(
       if (viaIA) return viaIA;
     }
 
+    // Hallazgo real de auditoría (casos Uber México/Guadalajara y Ke Rico NichoT1, Footprint,
+    // 2026-09-08 — mismo gasto de viaje, dos líneas del correo): "business" es una palabra ≥5
+    // caracteres genuinamente presente en el concepto ("Business Trip GDL", texto que Jorge/Carlos
+    // repiten en TODOS los gastos de ese viaje) pero también es, por pura coincidencia, parte del
+    // nombre legal de la propia empresa ("BUSINESS FOOTPRINT EU SL") — que aparece en TODAS las
+    // facturas recurrentes de software de la empresa (Holded, Canva...). Esas facturas administrativas
+    // son muchas y repetidas, así que ganan el voto por mayoría con facilidad, arrastrando un taxi o
+    // una comida hacia la cuenta de "Gastos de marketing y Herramienta" sin que exista ningún empate
+    // que dispare elegirCuentaConIA. No alcanza con añadir "business" a PALABRAS_IGNORADAS_CONCEPTO —
+    // cualquier otra palabra del concepto podría coincidir por casualidad con el nombre de la empresa o
+    // con un documento administrativo genérico. La corrección de fondo: si ya existe una señal de
+    // categoría independiente y confiable (tagsCategoria, ver inferirTagsCategoria — no depende de
+    // palabras sueltas del concepto, sino de la naturaleza real del gasto) y la cuenta ganadora del
+    // tier 2 no tiene NINGUNA línea histórica de respaldo con esa etiqueta, la evidencia del tier 2 se
+    // descarta como sospechosa y se cae al tier 3 (categoría), que si tiene suficiente evidencia real
+    // (ver MIN_EVIDENCIA_CONCEPTO) apunta a la cuenta correcta.
     const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
-    if (sugeridoPorConcepto) return sugeridoPorConcepto;
+    if (sugeridoPorConcepto) {
+      const contradiceCategoria = tagsCategoria.length > 0 && !tagsCategoria.some((t) => sugeridoPorConcepto.tags.includes(t));
+      if (!contradiceCategoria) return sugeridoPorConcepto;
+    }
   }
 
-  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
   if (tagsCategoria.length === 0) return undefined;
 
   const porCategoria = lineas.filter((l) => tagsCategoria.every((t) => l.tags.includes(t)));
