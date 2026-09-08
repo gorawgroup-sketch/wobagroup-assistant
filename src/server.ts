@@ -56,8 +56,9 @@ import { consumirPendienteAccionGasto } from "../core/gastos/pendienteAccionGast
 import { consumirPendienteSeleccionGasto } from "../core/gastos/pendienteSeleccionGastoStore";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
-import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
+import { obtenerRevisionCerebro, publicarCambioCerebro, suscribirCambiosCerebro } from "../core/cerebro/realtime";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
 import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
@@ -103,7 +104,61 @@ process.on("uncaughtException", (error) => {
 });
 
 const app = express();
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+app.use((_req: Request, res: Response, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-Frame-Options", "DENY");
+  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.set(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://wobagroup-assistant-production.up.railway.app; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+  );
+  next();
+});
 app.use(express.json());
+
+interface VentanaLimite {
+  inicio: number;
+  usos: number;
+}
+
+/** Defensa simple en proceso; los límites globales de IA siguen aplicándose aparte. */
+function crearLimitador(maximo: number, ventanaMs: number) {
+  const ventanas = new Map<string, VentanaLimite>();
+  return (clave: string): { permitido: boolean; reintentarEnSegundos: number } => {
+    const ahora = Date.now();
+    if (ventanas.size >= 5_000 && !ventanas.has(clave)) {
+      const primera = ventanas.keys().next().value;
+      if (primera) ventanas.delete(primera);
+    }
+    const actual = ventanas.get(clave);
+    if (!actual || ahora - actual.inicio >= ventanaMs) {
+      ventanas.set(clave, { inicio: ahora, usos: 1 });
+      return { permitido: true, reintentarEnSegundos: 0 };
+    }
+    if (actual.usos >= maximo) {
+      return { permitido: false, reintentarEnSegundos: Math.max(1, Math.ceil((ventanaMs - (ahora - actual.inicio)) / 1000)) };
+    }
+    actual.usos += 1;
+    return { permitido: true, reintentarEnSegundos: 0 };
+  };
+}
+
+const limitarSolicitudesAcceso = crearLimitador(5, 10 * 60 * 1000);
+const limitarBusquedasPanel = crearLimitador(30, 60 * 60 * 1000);
+
+let invalidacionTelegramPendiente: NodeJS.Timeout | null = null;
+function programarActualizacionCerebroDesdeTelegram(): void {
+  if (invalidacionTelegramPendiente) clearTimeout(invalidacionTelegramPendiente);
+  invalidacionTelegramPendiente = setTimeout(() => {
+    invalidacionTelegramPendiente = null;
+    invalidarEstadoCerebro();
+    publicarCambioCerebro("telegram");
+  }, 12_000);
+  invalidacionTelegramPendiente.unref();
+}
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -128,7 +183,18 @@ app.get("/", (_req: Request, res: Response) => {
  * de /cerebro además de los assets estáticos — no hace falta un catch-all.
  */
 const CEREBRO_DIST = join(process.cwd(), "frontend-cerebro", "dist");
-app.use("/cerebro", express.static(CEREBRO_DIST));
+app.use(
+  "/cerebro",
+  express.static(CEREBRO_DIST, {
+    setHeaders: (res, path) => {
+      if (path.includes(`${join("cerebro", "assets")}`) || path.includes("/assets/")) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    },
+  })
+);
 app.get("/cerebro", (_req: Request, res: Response) => {
   res.sendFile(join(CEREBRO_DIST, "index.html"));
 });
@@ -197,6 +263,48 @@ async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> 
 }
 
 /**
+ * Canal de invalidación en tiempo real. Envía solo metadatos; los datos de
+ * negocio se siguen leyendo por /estado, con autenticación y caché propios.
+ * fetch streaming permite conservar X-Cerebro-Key sin ponerla en la URL.
+ */
+app.get("/api/cerebro/stream", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  res.status(200);
+  res.set("Content-Type", "text/event-stream; charset=utf-8");
+  res.set("Cache-Control", "no-cache, no-transform");
+  res.set("Connection", "keep-alive");
+  res.set("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const escribir = (evento: string, data: unknown) => {
+    if (!res.writableEnded) res.write(`event: ${evento}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  escribir("listo", { revision: obtenerRevisionCerebro(), en: new Date().toISOString() });
+  const cancelar = suscribirCambiosCerebro((evento) => escribir("actualizar", evento));
+  const ping = setInterval(() => {
+    if (!res.writableEnded) res.write(`: ping ${Date.now()}\n\n`);
+  }, 20_000);
+  ping.unref();
+
+  req.on("close", () => {
+    clearInterval(ping);
+    cancelar();
+  });
+});
+
+app.options("/api/cerebro/stream", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
+/**
  * Estado de las conexiones externas (Telegram, Claude, Google Sheets/Drive/
  * Gmail, Holded x3) para el panel de conexiones — ver core/cerebro/conexiones.ts.
  */
@@ -229,7 +337,9 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
 
-  if (!(await exigeAccesoValido(req, res))) return;
+  // Reconfigurar un webhook o forzar un ping de Claude no es una lectura:
+  // solo la sesión maestra puede hacerlo.
+  if (!exigeKeyMaestra(req, res)) return;
 
   const id = typeof req.body?.id === "string" ? req.body.id : "";
   if (!id) {
@@ -239,6 +349,7 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
 
   try {
     const conexion = await arreglarConexion(id);
+    publicarCambioCerebro(`conexion:${id}`);
     res.json({ conexion });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -333,8 +444,17 @@ app.post("/api/cerebro/buscar", async (req: Request, res: Response) => {
     return;
   }
 
+  const limite = limitarBusquedasPanel(req.ip || req.socket.remoteAddress || "desconocido");
+  if (!limite.permitido) {
+    res.set("Retry-After", String(limite.reintentarEnSegundos));
+    res.status(429).json({ error: "Límite de búsquedas del panel alcanzado. Intenta más tarde." });
+    return;
+  }
+
   try {
     const resultado = await buscarEnInternet(query);
+    invalidarEstadoCerebro();
+    publicarCambioCerebro("busqueda_web");
     res.json(resultado);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -361,6 +481,13 @@ app.post("/api/cerebro/solicitar-acceso", async (req: Request, res: Response) =>
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
+
+  const limite = limitarSolicitudesAcceso(req.ip || req.socket.remoteAddress || "desconocido");
+  if (!limite.permitido) {
+    res.set("Retry-After", String(limite.reintentarEnSegundos));
+    res.status(429).json({ error: "Demasiadas solicitudes de acceso. Espera unos minutos." });
+    return;
+  }
 
   const nombre = typeof req.body?.nombre === "string" ? req.body.nombre.trim().slice(0, 100) : "";
   if (!nombre) {
@@ -488,6 +615,7 @@ app.post("/api/cerebro/revocar-acceso", async (req: Request, res: Response) => {
 
   try {
     const existia = await revocarTokenTemporal(id);
+    if (existia) publicarCambioCerebro("acceso_revocado");
     res.json({ ok: existia });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -549,6 +677,8 @@ app.post("/api/cerebro/cambiar-rol-usuario", async (req: Request, res: Response)
       return;
     }
     await autorizarUsuario(userId, rol, existente.nombre);
+    invalidarEstadoCerebro();
+    publicarCambioCerebro("usuario_rol_actualizado");
     res.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -575,6 +705,10 @@ app.post("/api/cerebro/eliminar-usuario", async (req: Request, res: Response) =>
 
   try {
     const existia = await eliminarUsuario(userId);
+    if (existia) {
+      invalidarEstadoCerebro();
+      publicarCambioCerebro("usuario_eliminado");
+    }
     res.json({ ok: existia });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -618,6 +752,11 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
     }
     return;
   }
+
+  // La mayoría de los cambios visibles del panel nacen en Telegram. Se
+  // agrupan durante 12 s para esperar a que termine el flujo y evitar una
+  // reconstrucción costosa por cada mensaje o botón consecutivo.
+  programarActualizacionCerebroDesdeTelegram();
 
   if (update.callback_query) {
     const data = update.callback_query.data ?? "";
