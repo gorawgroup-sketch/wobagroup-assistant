@@ -308,9 +308,21 @@ async function conciliarContraMovimientoEspecifico(
     const resultado = await reconciliarMovimiento(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha, gastoId);
 
     if (resultado.ok) {
+      // Hallazgo real de auditoría (caso Salesmate/RapidOps, Footprint): el movimiento bancario puede
+      // quedar marcado como conciliado por completo (esto de arriba) mientras la COMPRA misma, del
+      // lado de Holded, queda con un saldo pendiente ficticio — comportamiento real de Holded al
+      // aplicar el equivalente en EUR en vez del monto nativo para documentos en otra moneda. Nunca se
+      // reporta éxito sin más cuando eso pasa — se avisa explícitamente para que se revise a mano.
+      const notaPendiente =
+        resultado.pendienteEnCompra !== undefined
+          ? `\n\n⚠️ OJO: el movimiento quedó conciliado por completo, pero la compra en Holded sigue mostrando ` +
+            `${resultado.pendienteEnCompra.toFixed(2)} pendiente de pago — es un comportamiento conocido de Holded con ` +
+            `documentos en moneda distinta a EUR (aplica el equivalente en EUR en vez del monto real). Revísalo a mano ` +
+            `en Holded (sección Pagos del documento) para corregir el saldo.`
+          : "";
       return (
         `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${movimiento.descripcion || "sin descripción"}, ` +
-        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.`
+        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}`
       );
     }
     return (
