@@ -1150,14 +1150,59 @@ export async function inferirCuentaGasto(
   // fallaba SIEMPRE para ese caso real y caía al fallback de concepto/IA,
   // menos confiable. Mismo criterio ya usado en el resto del sistema para
   // razón social vs. nombre comercial.
+  // Se calcula ANTES de cualquier tier (no solo como fallback del tier 3) — ver más abajo.
+  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
+
+  // Hallazgo real de auditoría (caso Greengrass/GRUPO PRACAR DE RL DE CV, Kelly Correales, Footprint,
+  // 2026-09-08): un veto que solo compara TAGS (¿el grupo ganador tiene esta etiqueta?) no detecta el
+  // caso real donde una compra ya quedó mal archivada en "Otros servicios" (la cuenta genérica de
+  // Holded) pero SÍ con el tag correcto puesto a mano/por el propio sistema — ahí no hay ninguna
+  // "contradicción de tags" que detectar, el tag es correcto, es la CUENTA la que está mal. La próxima
+  // vez que aparece el MISMO proveedor, el tier 1 encuentra esa única línea histórica y la repite con
+  // total confianza ("fuerte y determinístico"), perpetuando el error para siempre en vez de
+  // corregirse solo — exactamente lo que Carlos reportó en vivo.
+  //
+  // La corrección de fondo: en vez de preguntar "¿esta cuenta tiene el tag correcto?", se pregunta
+  // "¿esta cuenta es la MISMA que ya usan, con evidencia real e independiente, el resto de los gastos
+  // de esta categoría?" — se calcula el tier 3 (categoría) PRIMERO, no al final como último recurso, y
+  // se usa como el juez de referencia para los demás tiers: analiza TODAS las líneas reales de esta
+  // categoría (no solo las del mismo proveedor) y solo se acepta un match por proveedor/concepto
+  // cuando SEÑALA A LA MISMA CUENTA que esa evidencia agregada — si señalan a cuentas distintas, gana
+  // la evidencia de categoría (más amplia, menos manipulable por un solo historial contaminado). Si
+  // tagsCategoria no reconoce ninguna categoría, o no hay evidencia suficiente para el tier 3 todavía,
+  // no hay nada con qué cruzar — tiers 1/2 quedan intactos (ej. "Uber", cuyas líneas reales están
+  // etiquetadas "uber" y no "taxi", nunca alcanza el mínimo de evidencia del tier 3 con tagsCategoria
+  // estricto — sigue resolviendo por proveedor, sin cambios).
+  const porCategoria = tagsCategoria.length > 0 ? lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags))) : [];
+  const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
+
+  const contradiceCategoria = (accountId: string): boolean =>
+    sugeridoPorCategoria !== undefined && sugeridoPorCategoria.accountId !== accountId;
+
+  // Hallazgo real de auditoría (caso "RESTAURANTE... SA DE CV" vs. "ADEL RESTAURACION SL", Footprint,
+  // 2026-09-08): textosParecidos por sí solo no exige que la palabra compartida sea DISTINTIVA — solo
+  // que tenga 5+ caracteres — así que "restaurante" y "restauracion" (mismo prefijo de 6, ninguna
+  // relación real entre las dos empresas) contaban como "el mismo proveedor". Ya existe exactamente
+  // esta protección para contactos de Holded (puntuarDistintividad + MAX_CONTACTOS_COMPARTIENDO_PALABRA,
+  // caso real GoTo/LinkedIn) — se reutiliza acá: una coincidencia de textosParecidos solo cuenta si
+  // ADEMÁS es distintiva dentro de `lineas` (pocas líneas reales comparten esa palabra). coincideProveedorCorto
+  // (marca corta de una sola palabra, ej. "Uber") sigue sin necesitar esto — ya es una coincidencia exacta.
+  const nombresContactosLineas = lineas.map((l) => l.contactName);
   const porNombre = criterios.proveedor.trim()
-    ? lineas.filter(
-        (l) => l.contactName && (textosParecidos(criterios.proveedor, l.contactName) || coincideProveedorCorto(criterios.proveedor, l.contactName))
-      )
+    ? lineas.filter((l) => {
+        if (!l.contactName) return false;
+        if (coincideProveedorCorto(criterios.proveedor, l.contactName)) return true;
+        return (
+          textosParecidos(criterios.proveedor, l.contactName) &&
+          puntuarDistintividad(criterios.proveedor, l.contactName, nombresContactosLineas) > 0
+        );
+      })
     : [];
 
   const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
-  if (sugeridoPorNombre) return sugeridoPorNombre;
+  if (sugeridoPorNombre) {
+    if (!contradiceCategoria(sugeridoPorNombre.accountId)) return sugeridoPorNombre;
+  }
 
   // Hallazgo real de auditoría (caso Kelly Correales, Uber Eats — Green House Churubusco): el
   // concepto casi siempre trae el nombre de la persona ("... — Kelly Correales — 2 sep 2026..."), y
@@ -1169,10 +1214,6 @@ export async function inferirCuentaGasto(
   // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
   const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
   const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
-
-  // Se calcula ANTES del tier 2 (no solo como fallback del tier 3) para poder usarse como veto —
-  // ver más abajo, caso real Ke Rico NichoT1/Uber México GDL.
-  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
 
   if (palabrasConcepto.length > 0) {
     const porConcepto = lineas.filter((l) => {
@@ -1211,27 +1252,15 @@ export async function inferirCuentaGasto(
     // palabras sueltas del concepto, sino de la naturaleza real del gasto) y la cuenta ganadora del
     // tier 2 no tiene NINGUNA línea histórica de respaldo con esa etiqueta (considerando sinónimos, ver
     // tagsConSinonimosSeSolapan — sin esto una cuenta con historial etiquetado "alojamiento" en vez de
-    // "hospedaje" se vetaba igual que una realmente ajena), la evidencia del tier 2 se descarta como
-    // sospechosa y se cae al tier 3 (categoría), que si tiene suficiente evidencia real (ver
-    // MIN_EVIDENCIA_CONCEPTO) apunta a la cuenta correcta. Cuando la cuenta ganadora NO tiene ningún tag
-    // registrado (líneas viejas o cargadas a mano, sin ningún tag) esto NO se trata como contradicción —
-    // ausencia de evidencia no es evidencia de lo contrario, y vetar ahí solo perdería un match real sin
-    // ganar ninguna protección real (hallazgo real de auditoría xhigh de este mismo cambio).
-    // Auditoría xhigh de este mismo cambio también encontró que el desempate por IA (elegirCuentaConIA,
-    // arriba) usaba exactamente el mismo `porConcepto` contaminado sin pasar por este veto — mismo
-    // riesgo, ahora cubierto con el mismo criterio.
-    const contradiceCategoria = (tags: string[]): boolean =>
-      tagsCategoria.length > 0 && tags.length > 0 && !tagsConSinonimosSeSolapan(tagsCategoria, tags);
-
+    // "hospedaje" también cuenta como evidencia real de esa cuenta), la evidencia del tier 2 se
+    // descarta como sospechosa y gana el tier 3 (ya calculado arriba, con evidencia agregada de TODA
+    // la categoría — más confiable que el historial de un solo proveedor/concepto).
     if (hayEmpateEnElPrimerLugar) {
       const viaIA = await elegirCuentaConIA(criterios, porConcepto);
-      if (viaIA) {
-        const tagsDelGrupoIA = porConcepto.filter((m) => m.account === viaIA.accountId).flatMap((m) => m.tags);
-        if (!contradiceCategoria(tagsDelGrupoIA)) return viaIA;
-      }
-      // Hallazgo real de auditoría xhigh de este mismo cambio: si el empate es real y la IA no devolvió
-      // nada usable (sin API key, o vetada por contradecir la categoría), NUNCA se debe caer al voto por
-      // mayoría de abajo — con un empate genuino, "la cuenta más votada" no tiene ningún significado real,
+      if (viaIA && !contradiceCategoria(viaIA.accountId)) return viaIA;
+      // Hallazgo real de auditoría xhigh: si el empate es real y la IA no devolvió nada usable (sin
+      // API key, vetada, o inexistente), NUNCA se debe caer al voto por mayoría de abajo — con un
+      // empate genuino, "la cuenta más votada" no tiene ningún significado real,
       // construirSugerenciaDesdeCoincidencias solo desempataría por orden de aparición en `lineas` (un
       // artefacto de paginación de Holded, no evidencia). Eso reintroducía exactamente el tipo de
       // elección arbitraria que este mismo tier de empate existe para evitar — pedido explícito de Carlos
@@ -1240,22 +1269,24 @@ export async function inferirCuentaGasto(
       // mayoría de acá.
     } else {
       const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
-      if (sugeridoPorConcepto) {
-        // tags COMPLETOS del grupo ganador (no los 3 más frecuentes de sugeridoPorConcepto.tags, pensados
-        // solo para el texto de la propuesta) — hallazgo real de auditoría xhigh: truncar a 3 acá podía
-        // dejar fuera justo la etiqueta de categoría real si la cuenta tiene más de 3 etiquetas distintas
-        // (ej. varias personas + categoría), vetando de más un match tier-2 correcto. Mismo criterio ya
-        // usado arriba para el desempate por IA (tagsDelGrupoIA) — consistente entre los dos caminos.
-        const tagsDelGrupo = porConcepto.filter((m) => m.account === sugeridoPorConcepto.accountId).flatMap((m) => m.tags);
-        if (!contradiceCategoria(tagsDelGrupo)) return sugeridoPorConcepto;
-      }
+      if (sugeridoPorConcepto && !contradiceCategoria(sugeridoPorConcepto.accountId)) return sugeridoPorConcepto;
     }
   }
 
-  if (tagsCategoria.length === 0) return undefined;
+  if (sugeridoPorCategoria) return sugeridoPorCategoria;
 
-  const porCategoria = lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags)));
-  return construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
+  // Último recurso — pedido explícito de Carlos, tras varios casos reales (Uber México/Guadalajara,
+  // Ke Rico NichoT1, Greengrass, ADP GDL Aeromarket): "crea un agente que analice todas las
+  // categorías que tiene Holded y analice los gastos parecidos al que estás creando en el momento en
+  // que lo creas". Hasta acá, si tagsCategoria no reconoció ninguna categoría por palabra clave (ej.
+  // "Consumo ADP GDL Aeromarket" — ni "restaurante" ni ninguna otra palabra de PALABRAS_ALIMENTACION),
+  // no había NADA con qué cruzar el resultado de los tiers 1/2, y una compra sin ningún historial
+  // fiable de proveedor/concepto caía directo en la cuenta genérica de Holded sin que Claude llegara
+  // a intentar nada. Se le muestran las cuentas REALES más usadas (con ejemplos reales, nunca
+  // inventadas — mismo mecanismo ya probado en elegirCuentaConIA, ver arriba) junto con el concepto y
+  // proveedor de este gasto, y decide con sentido — o dice que ninguna encaja, en cuyo caso Holded
+  // sigue usando su cuenta por defecto igual que antes de esto existir.
+  return await elegirCuentaConIA(criterios, lineas);
 }
 
 export interface GastoSinComprobante {
