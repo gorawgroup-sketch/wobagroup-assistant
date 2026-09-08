@@ -33,11 +33,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       es_factura_o_gasto: {
         type: "boolean",
         description:
-          "true SOLO si el cuerpo del correo describe un pago/cargo/recibo REAL ya ocurrido, con monto y " +
-          "proveedor identificables (ej. una notificación de tarjeta pegada como texto/HTML, un recibo " +
-          "incrustado en el cuerpo, una confirmación de pago de una plataforma). false para cualquier otra " +
-          "cosa — incluida una simple MENCIÓN de un gasto sin datos concretos, una pregunta sobre gastos, o " +
-          "una instrucción para hacer un pago en el futuro (eso no es un gasto YA ocurrido).",
+          "true SOLO si el cuerpo del correo describe un GASTO real — dinero que SALE del grupo — ya " +
+          "ocurrido, con monto y proveedor identificables (ej. una notificación de tarjeta pegada como " +
+          "texto/HTML, un recibo incrustado en el cuerpo, una confirmación de pago de una plataforma). " +
+          "false para cualquier otra cosa: una simple MENCIÓN de un gasto sin datos concretos, una " +
+          "pregunta sobre gastos, una instrucción para hacer un pago en el futuro (eso no es un gasto YA " +
+          "ocurrido), un contrato/certificado/documento de RRHH/aprobación de proyecto, O CUALQUIER COSA " +
+          "que describa dinero que ENTRA al grupo en vez de salir (una factura de VENTA que el grupo " +
+          "emite, una certificación de obra/proyecto que es la contrapartida de esa venta, un aviso de " +
+          "cobro, un pago que un cliente nos hace a nosotros). El grupo es proveedor de sus clientes en " +
+          "muchos proyectos — un documento donde el grupo aparece como quien EMITE la factura o CERTIFICA " +
+          "un avance de obra a un cliente es un INGRESO, nunca un gasto, aunque mencione un monto real y " +
+          "un 'proveedor' con toda la pinta de una transacción real.",
       },
       proveedor: { type: "string", description: "Nombre del proveedor/comercio tal como aparece en el correo." },
       monto: { type: "number", description: "Importe TOTAL del gasto, tal como aparece en el correo." },
@@ -95,12 +102,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
 function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
   return [
     "Eres el lector de gastos entrantes del grupo (WOBA/BAE, Footprint, eWorks).",
-    "Vas a recibir el CUERPO COMPLETO de un correo SIN ningún adjunto real. Si describe un pago/cargo/" +
-      "recibo YA ocurrido, con monto y proveedor identificables (ej. una notificación de tarjeta pegada " +
-      "como texto, un recibo en HTML incrustado en el cuerpo, una confirmación de pago), es un gasto real " +
-      "y hay que extraer sus datos exactamente igual que si fuera un documento adjunto. Si el correo solo " +
-      "MENCIONA un gasto sin datos concretos, o pide autorización para un pago futuro, o es cualquier otra " +
-      "cosa, es_factura_o_gasto=false.",
+    "Vas a recibir el CUERPO COMPLETO de un correo SIN ningún adjunto real. Si describe un GASTO real ya " +
+      "ocurrido — dinero que SALE del grupo — con monto y proveedor identificables (ej. una notificación " +
+      "de tarjeta pegada como texto, un recibo en HTML incrustado en el cuerpo, una confirmación de " +
+      "pago), extrae sus datos exactamente igual que si fuera un documento adjunto. Si el correo solo " +
+      "MENCIONA un gasto sin datos concretos, o pide autorización para un pago futuro, o es un " +
+      "contrato/certificado/documento de RRHH/aprobación de proyecto, es_factura_o_gasto=false.",
+    "IMPORTANTE — dirección del dinero: el grupo también FACTURA y COBRA a sus propios clientes en " +
+      "muchos proyectos. Un correo que describe una factura de VENTA que el grupo emite, una " +
+      "certificación de obra/avance de proyecto (la contrapartida habitual de esa venta), o cualquier " +
+      "aviso de que un cliente nos va a pagar o ya nos pagó a NOSOTROS, es un INGRESO — nunca " +
+      "es_factura_o_gasto=true, aunque mencione un monto real y algo que parezca un 'proveedor'. Antes de " +
+      "concluir que es un gasto, confirma que el grupo es quien PAGA en esa transacción, no quien cobra.",
     "Si sí es un gasto real, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
       "aparecen en el correo — no inventes ni redondees.",
     "Para decidir la empresa probable (WOBA, EWORKS o Footprint), usa consultar_base_conocimiento si hace " +
