@@ -1224,6 +1224,8 @@ export interface CompraDelDia {
   tags: string[];
   /** Nombres de línea (concepto de cada línea de la compra) — para revisar si el nombre del contacto asignado aparece de verdad en algún lado del texto real del gasto. */
   nombresLinea: string[];
+  pagosTotal: number;
+  pagosPendiente: number;
 }
 
 const MAX_GASTOS_AUDITORIA_DIARIA = 300;
@@ -1255,6 +1257,8 @@ export async function obtenerComprasDelDia(empresa: Empresa, desde: string, hast
         description?: string;
         tags?: string[];
         lines?: Array<{ name?: string }>;
+        payments_total?: string;
+        payments_pending?: string;
       }>;
       cursor?: string;
       has_more?: boolean;
@@ -1270,6 +1274,8 @@ export async function obtenerComprasDelDia(empresa: Empresa, desde: string, hast
         descripcion: item.description ?? "",
         tags: item.tags ?? [],
         nombresLinea: (item.lines ?? []).map((l) => l.name ?? "").filter(Boolean),
+        pagosTotal: parsearMontoHolded(item.payments_total),
+        pagosPendiente: parsearMontoHolded(item.payments_pending),
       });
       if (compras.length >= MAX_GASTOS_AUDITORIA_DIARIA) break;
     }
