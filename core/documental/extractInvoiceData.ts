@@ -278,6 +278,20 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       ? `Además, estas son clasificaciones aprendidas de facturas anteriores del mismo proveedor — ` +
         `dales prioridad sobre cualquier suposición genérica:\n\n${clasificacionesAprendidas}`
       : "",
+    "IMPORTANTE — estados de cuenta con 'saldo inicial'/'saldo final' (ej. los resúmenes semanales de " +
+      "Google Workspace 'Transactions'): estos NO son una factura simple — muestran un PAGO real (línea " +
+      "'Automatic payment: ...', con signo negativo) que salda un saldo ACUMULADO de antes, y por separado " +
+      "el USO NUEVO acumulado en ESTE período (que se cobrará en el PRÓXIMO pago, todavía no en este). Caso " +
+      "real que motivó esto: un estado de cuenta mostraba 'Starting balance: $789.09' → 'Automatic payment: " +
+      "-$789.09' → dos líneas de uso nuevo que suman '$157.68' → 'Ending balance: $157.68' — el pago real " +
+      "que salió del banco fue $789.09 (el 'monto' correcto de este gasto, y lo que de verdad conciliará " +
+      "contra el banco), pero las líneas de $157.68 describen uso de un período DISTINTO y NO son el " +
+      "desglose de ese pago — usarlas como 'lineas' habría registrado un gasto de $789.09 con un desglose " +
+      "que solo suma $157.68, un descuadre real. Cuando veas este patrón (saldo inicial + pago automático + " +
+      "uso nuevo del período + saldo final): 'monto' es el importe de la línea de PAGO (el saldo inicial que " +
+      "está saldando), y 'lineas' debe ser una única línea por ese mismo monto total — el documento no " +
+      "muestra el desglose real de qué compone ESE pago (viene de un período anterior no detallado acá), así " +
+      "que no lo inventes ni uses el desglose del período nuevo, que es para un cobro futuro distinto.",
     "Si no tienes certeza de la empresa o algún dato clave, usa confianza='baja' o 'media' en vez de " +
       "inventar — es preferible preguntar que asumir mal en un tema de dinero.",
     `SIEMPRE debes terminar llamando a la herramienta ${REPORTAR_TOOL_NAME} con tu conclusión final.`,
