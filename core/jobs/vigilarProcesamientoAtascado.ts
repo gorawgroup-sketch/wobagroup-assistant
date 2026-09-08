@@ -10,6 +10,7 @@ import { obtenerGastosPendienteDatosPorChat } from "../gastos/gastoPendienteDato
 import { obtenerResolucionesContactoPorChat } from "../gastos/contactoResolucionStore";
 import { obtenerPropuestasGastoPorChat } from "../gastos/gastoProposalSheet";
 import { obtenerPropuestasAccionCorreoPorChat } from "../gmail/emailActionStore";
+import { obtenerConciliacionesPendientesPorChat } from "../gastos/conciliacionPendienteStore";
 
 /**
  * Caso real reportado por Carlos (2026-09-07): un correo quedó "activo" más de 7 minutos sin que
@@ -80,11 +81,20 @@ async function huboSenalDeEntrega(chatId: number, mensajeId: string): Promise<bo
     // CUALQUIER correo simple ya resuelto/esperando respuesta por este camino se habría marcado
     // "atascado" por error, generando una propuesta duplicada real cada vez que este vigilante corriera.
     obtenerPropuestasAccionCorreoPorChat(chatId).catch(() => NO_VERIFICADO),
+    // Caso real reportado por Carlos (2026-09-08): un gasto YA creado (así que su propuesta en
+    // gastoProposalSheet ya se consumió/borró) puede quedar esperando SOLO la respuesta a "¿Quieres
+    // que intente conciliar...?" — si Carlos tarda más de UMBRAL_ATASCADO_MS en contestar (revisando
+    // un lote largo de correos, uno por uno), el vigilante no veía ninguna señal de entrega para ese
+    // correo y lo daba por atascado, forzando un reintento que reprocesaba el mismo correo y generaba
+    // una SEGUNDA pregunta de conciliación duplicada — la primera quedaba huérfana (sus botones ya no
+    // corresponden a nada activo) justo cuando Carlos estaba por contestarla. "leíste y me enviaste 2
+    // mails al mismo tiempo y uno ha quedado inactivo."
+    obtenerConciliacionesPendientesPorChat(chatId).catch(() => NO_VERIFICADO),
   ]);
 
   if (resultados.some((r) => r === NO_VERIFICADO)) return undefined;
 
-  const [clasifs, desambiguaciones, reclasifs, gastosDatos, contactos, gastos, accionesCorreo] = resultados as [
+  const [clasifs, desambiguaciones, reclasifs, gastosDatos, contactos, gastos, accionesCorreo, conciliaciones] = resultados as [
     Awaited<ReturnType<typeof obtenerPropuestasClasificacionPorChat>>,
     Awaited<ReturnType<typeof obtenerPendienteDesambiguacionPorChat>>,
     Awaited<ReturnType<typeof obtenerPendientesReclasificacionPorChat>>,
@@ -92,6 +102,7 @@ async function huboSenalDeEntrega(chatId: number, mensajeId: string): Promise<bo
     Awaited<ReturnType<typeof obtenerResolucionesContactoPorChat>>,
     Awaited<ReturnType<typeof obtenerPropuestasGastoPorChat>>,
     Awaited<ReturnType<typeof obtenerPropuestasAccionCorreoPorChat>>,
+    Awaited<ReturnType<typeof obtenerConciliacionesPendientesPorChat>>,
   ];
 
   return (
@@ -107,7 +118,8 @@ async function huboSenalDeEntrega(chatId: number, mensajeId: string): Promise<bo
     // le habría dicho al vigilante "no está atascado, solo espera respuesta" sobre algo que en
     // realidad nunca llegó a mostrarse — exactamente el caso real que esto existe para atrapar.
     gastos.some((g) => coincide(g.correoOrigen) && g.messageId !== 0) ||
-    accionesCorreo.some((a) => a.mensajeId === mensajeId)
+    accionesCorreo.some((a) => a.mensajeId === mensajeId) ||
+    conciliaciones.some((c) => c.mensajeIdGmail === mensajeId)
   );
 }
 
