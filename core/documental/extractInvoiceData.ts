@@ -166,17 +166,25 @@ const REPORTAR_TOOL: Anthropic.Tool = {
         type: "string",
         description:
           "El número real del documento tal como aparece impreso, junto a una etiqueta que lo identifique " +
-          "como tal (ej. 'Número de recibo', 'Nº factura', 'Invoice number', 'Ticket nº/Nº billete', " +
-          "'Nº de documento', 'Localizador/Booking reference/PNR'). Cópialo LITERAL, con ceros a la " +
-          "izquierda y guiones si los trae. Si el documento cubre VARIAS líneas/tramos con su PROPIO " +
-          "número cada uno (ej. billete de ida y billete de vuelta, cada uno con su propio 'Nº billete') " +
-          "y no hay un único número que sirva para las dos, usa en su lugar el localizador/número de " +
-          "reserva COMPARTIDO que identifica la compra completa — sí cuenta como número de documento en " +
-          "ese caso, a diferencia de un número de cliente/cuenta que no identifica esta compra en concreto. " +
-          "NO uses NUNCA: número de cliente/cuenta, NIF/CIF, teléfono, IBAN, o código de terminal/" +
-          "autorización de tarjeta — esos no identifican el documento. Omite este campo por completo si no " +
-          "hay ningún número (de documento o de reserva/localizador) que identifique la compra con claridad " +
-          "— NUNCA inventes ni adivines uno, y nunca uses un número parecido a falta de uno real.",
+          "como tal. PRIORIDAD 1 — un número de documento propiamente dicho: 'Número de recibo', 'Nº " +
+          "factura', 'Invoice number', 'Ticket nº/Nº billete', 'Nº de documento', 'Localizador/Booking " +
+          "reference/PNR'. PRIORIDAD 2 (hallazgo real de auditoría: quedaba '00000' en Holded en casi TODOS " +
+          "los tickets/recibos simples, aunque casi siempre traen ALGUNA referencia real impresa) — si no " +
+          "hay un número de documento propiamente dicho, usa la MEJOR referencia real que el ticket/recibo " +
+          "sí traiga, en este orden: folio ('Folio', 'Nº de operación/transacción', 'ID de pedido/venta'), " +
+          "luego autorización/referencia de pago ('Autorización', 'AUT', 'Referencia', 'REF', 'ID de sesión'). " +
+          "Cualquiera de estos identifica DE VERDAD esta compra puntual — es preferible usar uno de estos a " +
+          "dejar el campo vacío (y que Holded quede con '00000', un placeholder sin ningún valor real para " +
+          "encontrar el ticket después). Cópialo LITERAL, con ceros a la izquierda y guiones si los trae. Si " +
+          "el documento trae VARIOS de estos (ej. folio Y autorización), prefiere el que tenga la etiqueta " +
+          "más específica de 'documento/operación/pedido' sobre la de 'autorización de pago' pura. Si el " +
+          "documento cubre VARIAS líneas/tramos con su PROPIO número cada uno (ej. billete de ida y billete " +
+          "de vuelta) y no hay un único número que sirva para las dos, usa el localizador/número de reserva " +
+          "COMPARTIDO que identifica la compra completa. NO uses NUNCA (estos NO identifican esta compra en " +
+          "concreto, identifican a la PERSONA/cuenta en general): número de cliente/cuenta, NIF/CIF, " +
+          "teléfono, IBAN, o los últimos dígitos de la tarjeta. Omite este campo por completo solo si el " +
+          "documento genuinamente no trae NINGÚN número/folio/referencia identificable — NUNCA inventes ni " +
+          "adivines uno, y nunca uses un número parecido a falta de uno real.",
       },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
       lineas: {
