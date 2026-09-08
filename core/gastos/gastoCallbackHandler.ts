@@ -1,4 +1,5 @@
 import { unlink } from "node:fs/promises";
+import { conMutex } from "../utils/asyncMutex";
 import {
   answerCallbackQuery,
   editTelegramMessage,
@@ -57,6 +58,8 @@ import {
   buscarContactoHolded,
   buscarContactosParecidos,
   buscarComprasPorMonto,
+  buscarGastoSimilar,
+  formatearCandidatosDuplicado,
   crearGastoHolded,
   adjuntarComprobanteHolded,
   buscarMovimientoSimilar,
@@ -66,8 +69,11 @@ import {
   estaMovimientoYaConciliado,
   ContactoNoEncontradoError,
   FechaBloqueadaError,
+  PosibleDuplicadoGastoError,
+  VerificacionDuplicadoFallidaError,
   type HoldedContact,
   type MovimientoBancarioCandidato,
+  type PurchaseCandidato,
 } from "../holded/write";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
@@ -660,6 +666,14 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         await manejarFechaBloqueada(propuesta, propuesta.empresa, propuesta.concepto, error, propuesta.chatId, propuesta.messageId);
         return;
       }
+      if (error instanceof PosibleDuplicadoGastoError) {
+        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeDuplicadoDetectado(error.candidatos), []);
+        return;
+      }
+      if (error instanceof VerificacionDuplicadoFallidaError) {
+        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeVerificacionDuplicadoFallida(error), []);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error procesando gasto:", message);
       await editTelegramMessage(
@@ -1182,6 +1196,39 @@ interface ResultadoCrearGasto {
  * de ese proveedor pegada al placeholder para siempre, incluso después de
  * crear el contacto real).
  */
+/**
+ * Texto compartido por los 3 llamadores de crearGastoYReportar para cuando
+ * lanza PosibleDuplicadoGastoError — nunca dice "puedes reenviarlo" tal cual
+ * (el mensaje genérico de error de más abajo) porque eso invitaría a repetir
+ * justo la acción que causó el duplicado que se acaba de evitar. Hallazgo
+ * real de auditoría: la versión anterior decía "dímelo explícitamente para
+ * que lo cree de todas formas" — pero no hay ninguna herramienta conectada
+ * que reconozca esa frase y fuerce la creación; era una promesa vacía. El
+ * camino real que SÍ funciona: volver a mandar/reenviar el documento
+ * original hace que procesarGastoEntrante arme una propuesta NUEVA, cuyos
+ * candidatos ya van a incluir esta compra (porque ahora sí existe en
+ * Holded) — con eso, el botón normal "🆕 Crear gasto nuevo" (que ya ofrece
+ * candidatos.length > 0) queda disponible sin volver a bloquearse.
+ */
+export function mensajeDuplicadoDetectado(candidatos: PosibleDuplicadoGastoError["candidatos"]): string {
+  const listado = formatearCandidatosDuplicado(candidatos);
+  return (
+    `⛔ No creé el gasto — encontré en Holded ${candidatos.length === 1 ? "una compra" : candidatos.length + " compras"} que podría(n) ` +
+    `ser este mismo, y que no te había mostrado antes:\n${listado}\n\n` +
+    `Si es el mismo, descarta esta propuesta — no hace falta hacer nada más. Si de verdad es un gasto NUEVO y distinto (no el mismo importe ` +
+    `repetido), vuelve a mandarme el documento/correo original — te armo una propuesta nueva que ya tiene en cuenta esta compra y te deja elegir ` +
+    `"🆕 Crear gasto nuevo" sin que se vuelva a bloquear.`
+  );
+}
+
+/** Mismo criterio de mensaje que mensajeDuplicadoDetectado, pero para cuando la verificación misma falló (ver VerificacionDuplicadoFallidaError) — nunca decir "puedes reenviarlo" acá tampoco, ya que Holded pudo haber creado el gasto o no según dónde falló exactamente. */
+function mensajeVerificacionDuplicadoFallida(error: VerificacionDuplicadoFallidaError): string {
+  return (
+    `⚠️ No pude confirmar que este gasto no esté ya duplicado en Holded (${error.message}) — por seguridad, NO lo creé. ` +
+    `Revisa en Holded a mano si ya existe, y si Holded parece estar bien, vuelve a intentar en un momento.`
+  );
+}
+
 async function crearGastoYReportar(
   propuesta: PropuestaGasto,
   empresaFinal: PropuestaGasto["empresa"],
@@ -1262,15 +1309,63 @@ async function crearGastoYReportar(
     ? `\n\n📄 No identifiqué un número de documento en el comprobante — quedó como "00000" en Holded. Corrígelo a mano si el documento sí trae uno.`
     : "";
 
-  const gasto = await crearGastoHolded(empresaFinal, {
-    contactId: contacto.id,
-    fecha: propuesta.fecha || new Date().toISOString().slice(0, 10),
-    descripcion: descripcionFinal,
-    lineas,
-    cuentaId: propuesta.cuentaId,
-    tags: propuesta.cuentaTags,
-    moneda: propuesta.moneda,
-    numeroDocumento: propuesta.numeroDocumento,
+  // Pedido explícito de Carlos, tras un caso real (Booking.com — Hospedaje
+  // Hotel Plaza Diana, Footprint, 204,65€): un gasto ya creado y ya
+  // conciliado se volvió a crear como duplicado sin ninguna advertencia.
+  // buscarGastoSimilar ya corrió una vez al procesar el correo original
+  // (procesarGastoEntrante.ts), pero la propuesta puede quedar pendiente de
+  // aprobación hasta 7 días (TTL_MS real de crearPropuestaGasto — el "hasta
+  // 24h" de una versión anterior de este comentario subestimaba la ventana
+  // real) — se vuelve a comprobar acá, justo antes de escribir en Holded,
+  // contra el estado REAL más actual, no el que había cuando se armó la
+  // propuesta. Solo bloquea si aparece un candidato NUEVO que Carlos no vio
+  // ya en la propuesta original (ver PosibleDuplicadoGastoError) — así que
+  // aprobar "🆕 Crear gasto nuevo" con candidatos ya mostrados y descartados
+  // nunca vuelve a bloquearse por la misma decisión que ya tomó.
+  //
+  // Todo el bloque (verificar + crear) va dentro de conMutex, con la MISMA
+  // clave para cualquier gasto del mismo proveedor+monto+empresa — hallazgo
+  // real de auditoría: sin esto, dos aprobaciones casi simultáneas del mismo
+  // gasto (dos propuestas para el mismo correo reenviado, o un doble-tap del
+  // botón) podían pasar AMBAS la verificación antes de que cualquiera de las
+  // dos terminara de escribir en Holded — el mismo tipo de carrera
+  // verificar-y-luego-actuar que conMutex ya cierra para las escrituras de
+  // Sheets en esta misma sesión, aplicado acá por el mismo motivo.
+  //
+  // La verificación en sí ahora falla CERRADO: si buscarGastoSimilar mismo
+  // da error (Holded caído, rate limit), NUNCA se crea el gasto a ciegas —
+  // se avisa explícito y hay que reintentar. Antes fallaba abierto (creaba
+  // igual), justo el "pasar en silencio" que este fix existe para eliminar.
+  const claveMutexDuplicado = `${empresaFinal}:${propuesta.proveedor.trim().toLowerCase()}:${propuesta.monto.toFixed(2)}`;
+  const fechaBusqueda = propuesta.fecha || new Date().toISOString().slice(0, 10);
+
+  const gasto = await conMutex(claveMutexDuplicado, async () => {
+    let candidatosJustoAntes: PurchaseCandidato[];
+    try {
+      candidatosJustoAntes = await buscarGastoSimilar(empresaFinal, {
+        proveedor: propuesta.proveedor,
+        monto: propuesta.monto,
+        fecha: fechaBusqueda,
+      });
+    } catch (error) {
+      throw new VerificacionDuplicadoFallidaError(error);
+    }
+    const idsYaVistos = new Set(propuesta.candidatos.map((c) => c.id));
+    const candidatosNuevos = candidatosJustoAntes.filter((c) => !idsYaVistos.has(c.id));
+    if (candidatosNuevos.length > 0) {
+      throw new PosibleDuplicadoGastoError(candidatosNuevos);
+    }
+
+    return crearGastoHolded(empresaFinal, {
+      contactId: contacto.id,
+      fecha: fechaBusqueda,
+      descripcion: descripcionFinal,
+      lineas,
+      cuentaId: propuesta.cuentaId,
+      tags: propuesta.cuentaTags,
+      moneda: propuesta.moneda,
+      numeroDocumento: propuesta.numeroDocumento,
+    });
   });
 
   // A partir de acá el gasto YA EXISTE en Holded — un fallo en cualquier
@@ -1515,6 +1610,14 @@ export async function procesarGastoConContactoResuelto(
       );
       return;
     }
+    if (error instanceof PosibleDuplicadoGastoError) {
+      await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensajeDuplicadoDetectado(error.candidatos), []);
+      return;
+    }
+    if (error instanceof VerificacionDuplicadoFallidaError) {
+      await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensajeVerificacionDuplicadoFallida(error), []);
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando gasto con contacto resuelto:", message);
     await editTelegramMessage(
@@ -1706,6 +1809,14 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     }
     if (error instanceof FechaBloqueadaError) {
       await manejarFechaBloqueada(propuesta, empresaFinal, conceptoFinal, error, propuesta.chatId, undefined);
+      return;
+    }
+    if (error instanceof PosibleDuplicadoGastoError) {
+      await sendTelegramMessage(propuesta.chatId, mensajeDuplicadoDetectado(error.candidatos));
+      return;
+    }
+    if (error instanceof VerificacionDuplicadoFallidaError) {
+      await sendTelegramMessage(propuesta.chatId, mensajeVerificacionDuplicadoFallida(error));
       return;
     }
     const message = error instanceof Error ? error.message : String(error);

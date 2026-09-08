@@ -2,6 +2,7 @@ import { answerCallbackQuery, editTelegramMessage, sendTelegramMessageWithButton
 import { obtenerEntradaPorId, calcularProximaFecha } from "./calendario";
 import { formatDateLocal } from "../utils/dateFormat";
 import { weekLabel } from "../utils/isoWeek";
+import { conMutex } from "../utils/asyncMutex";
 import { guardarPendienteMontoPago, type PendienteMontoPago } from "./pendienteMontoStore";
 import {
   crearPropuestaPagoRecurrente,
@@ -9,7 +10,14 @@ import {
   consumirPropuestaPagoRecurrente,
   type PropuestaPagoRecurrente,
 } from "./pagoRecurrenteProposalSheet";
-import { buscarContactoHolded, crearGastoHolded } from "../holded/write";
+import {
+  buscarContactoHolded,
+  buscarGastoSimilar,
+  formatearCandidatosDuplicado,
+  crearGastoHolded,
+  PosibleDuplicadoGastoError,
+  VerificacionDuplicadoFallidaError,
+} from "../holded/write";
 import { registrarMovimientoEnSheet } from "../google/cashflowWrite";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
@@ -130,14 +138,57 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
 
       const conceptoEtiquetado = conEtiquetaRecurrencia(propuesta.concepto, propuesta.tipo);
 
-      const gasto = await crearGastoHolded(propuesta.empresaHolded, {
-        contactId: contacto.id,
-        fecha: propuesta.fechaVencimiento,
-        descripcion: conceptoEtiquetado,
-        // Pagos recurrentes no traen desglose de IVA (el monto lo da el
-        // usuario a mano, no una factura leída) — una sola línea al 0%,
-        // igual que el comportamiento anterior.
-        lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
+      // Pedido explícito de Carlos, tras un caso real (Booking.com duplicado
+      // en Holded sin ninguna advertencia): nunca crear un gasto sin
+      // reverificar justo antes de escribir si ya existe algo igual —
+      // mismo chequeo que crearGastoYReportar (gastoCallbackHandler.ts).
+      // Acá no hay una lista de "candidatos ya mostrados" que descartar (los
+      // pagos recurrentes no pasan por esa propuesta) — cualquier coincidencia
+      // real (mismo proveedor+monto+fecha cercana) bloquea, ya que un pago
+      // recurrente NUNCA debería coincidir por casualidad con uno del mes
+      // pasado (30 días de diferencia, fuera de la ventana de 10 días).
+      //
+      // Hallazgo real de auditoría: `propuesta.fechaVencimiento` puede venir
+      // vacía si la fila de Sheets quedó corrupta/incompleta (mismo tipo de
+      // edición a mano que Carlos hace en otras pestañas) — sin fallback,
+      // una fecha vacía rompe el rango de búsqueda que se le manda a Holded.
+      // Mismo fallback que crearGastoYReportar (gastoCallbackHandler.ts).
+      //
+      // Todo el bloque (verificar + crear) va dentro de conMutex — mismo
+      // motivo que en crearGastoYReportar: sin esto, dos confirmaciones casi
+      // simultáneas del mismo pago (doble-tap del botón, o un callback_query
+      // reintentado por Telegram) podían pasar AMBAS la verificación antes de
+      // que cualquiera terminara de escribir en Holded.
+      //
+      // La verificación ahora falla CERRADO: si buscarGastoSimilar mismo da
+      // error, NUNCA se registra el pago a ciegas.
+      const fechaBusqueda = propuesta.fechaVencimiento || new Date().toISOString().slice(0, 10);
+      const claveMutexDuplicado = `${propuesta.empresaHolded}:${propuesta.proveedor.trim().toLowerCase()}:${propuesta.monto.toFixed(2)}`;
+
+      const gasto = await conMutex(claveMutexDuplicado, async () => {
+        let posiblesDuplicados: Awaited<ReturnType<typeof buscarGastoSimilar>>;
+        try {
+          posiblesDuplicados = await buscarGastoSimilar(propuesta.empresaHolded, {
+            proveedor: propuesta.proveedor,
+            monto: propuesta.monto,
+            fecha: fechaBusqueda,
+          });
+        } catch (error) {
+          throw new VerificacionDuplicadoFallidaError(error);
+        }
+        if (posiblesDuplicados.length > 0) {
+          throw new PosibleDuplicadoGastoError(posiblesDuplicados);
+        }
+
+        return crearGastoHolded(propuesta.empresaHolded, {
+          contactId: contacto.id,
+          fecha: propuesta.fechaVencimiento,
+          descripcion: conceptoEtiquetado,
+          // Pagos recurrentes no traen desglose de IVA (el monto lo da el
+          // usuario a mano, no una factura leída) — una sola línea al 0%,
+          // igual que el comportamiento anterior.
+          lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
+        });
       });
 
       // Footprint no tiene cashflow en Sheets (ver revisarHoldedVsCashflow.ts
@@ -164,6 +215,33 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
         []
       );
     } catch (error) {
+      // Hallazgo real de auditoría: a diferencia del flujo de gastos por
+      // correo, acá la propuesta YA se consumió (línea 102, antes de
+      // llegar aquí) y no existe ninguna herramienta que reconozca "créalo
+      // de todas formas" en texto libre para este flujo — así que el
+      // mensaje nunca debe prometer un reintento automático que no existe.
+      if (error instanceof PosibleDuplicadoGastoError) {
+        const listado = formatearCandidatosDuplicado(error.candidatos);
+        await editTelegramMessage(
+          propuesta.chatId,
+          propuesta.messageId,
+          `⛔ No registré el pago — ya existe en Holded ${error.candidatos.length === 1 ? "algo" : "algo (varios)"} que coincide en proveedor, ` +
+            `monto y fecha cercana:\n${listado}\n\nSi es el mismo pago, no hace falta hacer nada más. Si de verdad es un pago nuevo distinto, ` +
+            `regístralo directo en Holded a mano — esta propuesta ya se consumió y no hay un reintento automático desde aquí.`,
+          []
+        );
+        return;
+      }
+      if (error instanceof VerificacionDuplicadoFallidaError) {
+        await editTelegramMessage(
+          propuesta.chatId,
+          propuesta.messageId,
+          `⚠️ No pude confirmar que este pago no esté ya duplicado en Holded (${error.message}) — por seguridad, NO lo registré. ` +
+            `Revisa en Holded a mano si ya existe; esta propuesta ya se consumió, así que si hace falta regístralo directo ahí.`,
+          []
+        );
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("[pagoRecurrenteCallbackHandler] Error registrando pago recurrente:", message);
       await editTelegramMessage(

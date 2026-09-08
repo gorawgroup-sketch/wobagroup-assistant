@@ -104,6 +104,14 @@ function rowToResolucion(row: unknown[]): ResolucionContactoPendiente | null {
     return null; // fila corrupta — mejor ignorarla que tumbar el resto
   }
   if (!propuesta) return null;
+  // Hallazgo real de auditoría: a diferencia de rowToPropuesta
+  // (gastoProposalSheet.ts), esto no defendía "candidatos" — un
+  // propuestaJSON guardado antes de que ese campo existiera (o corrupto a
+  // mano) dejaría propuesta.candidatos undefined, y crearGastoYReportar
+  // (gastoCallbackHandler.ts, la verificación de posible duplicado) hace
+  // `propuesta.candidatos.map(...)` sin comprobarlo — un TypeError sin
+  // capturar en vez de simplemente tratarlo como "sin candidatos vistos".
+  if (!Array.isArray(propuesta.candidatos)) propuesta.candidatos = [];
 
   return {
     id: String(row[0]),

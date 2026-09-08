@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 import type { TipoRecurrencia } from "./calendario";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -183,26 +184,69 @@ async function purgarVencidas(): Promise<void> {
   }
 }
 
+async function siguienteFilaLibre(): Promise<number> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A:J`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
+  return rows.length + 1;
+}
+
+const MAX_INTENTOS_ESCRITURA = 3;
+
+/**
+ * Hallazgo real de auditoría (misma noche, mismo bug ya cerrado en
+ * gastoProposalSheet.ts/conciliacionPendienteStore.ts para otras dos hojas
+ * de este mismo sistema, pero nunca aplicado acá): `values.append` con rango
+ * de columnas deja que Sheets ADIVINE la fila/columna real — puede fallar en
+ * silencio si el encabezado quedó desactualizado. Y `consumirPropuestaPagoRecurrente`
+ * borra filas (desplaza todo hacia arriba) sin ningún lock — un doble-tap del
+ * mismo botón de Telegram, o el reintento de un callback_query, puede leer la
+ * MISMA propuesta dos veces antes de que la primera eliminación se refleje,
+ * dejando pasar DOS pagos recurrentes reales por una sola confirmación. Mismo
+ * conMutex y mismo patrón fila-libre-con-verificación ya usados en
+ * gastoProposalSheet.ts — se aplica acá por el mismo motivo: proteger la
+ * contabilidad de un gasto duplicado.
+ */
 export async function crearPropuestaPagoRecurrente(
   datos: Omit<PropuestaPagoRecurrente, "id" | "creadoEn">
 ): Promise<PropuestaPagoRecurrente> {
-  await purgarVencidas();
+  return conMutex(TAB_NAME, async () => {
+    await purgarVencidas();
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  const propuesta: PropuestaPagoRecurrente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+    const propuesta: PropuestaPagoRecurrente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:J`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [propuestaToRow(propuesta)] },
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const fila = await siguienteFilaLibre();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}:J${fila}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [propuestaToRow(propuesta)] },
+      });
+
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      if (verificacion.data.values?.[0]?.[0] === propuesta.id) return propuesta;
+
+      console.error(
+        `[pagoRecurrenteProposalSheet] Colisión al escribir la propuesta ${propuesta.id} en la fila ${fila} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+      );
+    }
+
+    throw new Error(`No se pudo guardar la propuesta ${propuesta.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
   });
-
-  return propuesta;
 }
 
 export async function actualizarMessageIdPagoRecurrente(id: string, messageId: number): Promise<void> {
@@ -221,12 +265,21 @@ export async function actualizarMessageIdPagoRecurrente(id: string, messageId: n
   });
 }
 
-/** Devuelve la propuesta y ELIMINA su fila de inmediato (aprobada o descartada). */
+/**
+ * Devuelve la propuesta y ELIMINA su fila de inmediato (aprobada o
+ * descartada). Bajo el mismo conMutex que crearPropuestaPagoRecurrente (ver
+ * su comentario) — nunca puede correr a la vez que una escritura esté
+ * calculando/usando "la próxima fila libre" de esta misma hoja, y un
+ * doble-tap del mismo botón ya no puede leer la misma fila dos veces antes
+ * de que la primera eliminación se refleje.
+ */
 export async function consumirPropuestaPagoRecurrente(id: string): Promise<PropuestaPagoRecurrente | undefined> {
-  const todas = await leerTodas();
-  const match = todas.find(({ propuesta }) => propuesta.id === id);
-  if (!match) return undefined;
+  return conMutex(TAB_NAME, async () => {
+    const todas = await leerTodas();
+    const match = todas.find(({ propuesta }) => propuesta.id === id);
+    if (!match) return undefined;
 
-  await eliminarFila(match.rowIndex);
-  return match.propuesta;
+    await eliminarFila(match.rowIndex);
+    return match.propuesta;
+  });
 }
