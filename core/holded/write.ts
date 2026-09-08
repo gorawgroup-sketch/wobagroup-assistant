@@ -1133,8 +1133,19 @@ function coincideProveedorCorto(proveedor: string, contactName: string): boolean
  *    solo la naturaleza real del gasto). Exige coincidencia de TODAS las
  *    etiquetas de categoría (no solo una) para no confundir, ej., un taxi
  *    con un tren solo porque ambos comparten "transporte".
- * 4) Si tampoco hay match por categoría, devuelve undefined — Holded usa su
- *    cuenta por defecto, igual que antes de esta función existir.
+ * 4) Si tampoco hay match por categoría, es el ÚLTIMO recurso: se le muestran a Claude las cuentas
+ *    reales más usadas (con ejemplos reales, ver elegirCuentaConIA) junto con el concepto/proveedor de
+ *    este gasto — decide con sentido, o dice que ninguna encaja, en cuyo caso recién ahí Holded usa su
+ *    cuenta por defecto (undefined), igual que antes de esta función existir.
+ *
+ * IMPORTANTE (actualizado 2026-09-08, caso real Greengrass/GRUPO PRACAR DE RL DE CV): el orden real de
+ * ejecución NO es estrictamente 1→2→3→4 de arriba abajo. El nivel 3 (categoría) se calcula PRIMERO,
+ * antes de intentar el 1 y el 2, y se usa como JUEZ DE REFERENCIA para ambos — un match por proveedor o
+ * concepto solo se acepta si además coincide con lo que la categoría (evidencia agregada de TODA la
+ * empresa, no solo de este proveedor) también señala; si señalan a cuentas distintas, gana la
+ * categoría. Esto evita que una compra ya mal archivada (ej. en "Otros servicios", con el tag correcto
+ * pero la cuenta equivocada) se repita para siempre solo porque el mismo proveedor vuelve a aparecer.
+ * Ver contradiceCategoria dentro de la función.
  */
 export async function inferirCuentaGasto(
   empresa: Empresa,
@@ -1187,7 +1198,16 @@ export async function inferirCuentaGasto(
   // caso real GoTo/LinkedIn) — se reutiliza acá: una coincidencia de textosParecidos solo cuenta si
   // ADEMÁS es distintiva dentro de `lineas` (pocas líneas reales comparten esa palabra). coincideProveedorCorto
   // (marca corta de una sola palabra, ej. "Uber") sigue sin necesitar esto — ya es una coincidencia exacta.
-  const nombresContactosLineas = lineas.map((l) => l.contactName);
+  //
+  // Hallazgo real de auditoría xhigh de este mismo cambio: MAX_CONTACTOS_COMPARTIENDO_PALABRA se
+  // calibró para `obtenerTodosLosContactos()` (la lista de CONTACTOS de Holded, cada proveedor real
+  // aparece una sola vez) — pasar `lineas` (líneas de COMPRA, sin deduplicar) rompe esa calibración:
+  // un proveedor real y bien establecido con solo 3+ compras propias ya "comparte la palabra consigo
+  // mismo" más de MAX_CONTACTOS_COMPARTIENDO_PALABRA veces y se auto-veta — justo los proveedores
+  // frecuentes para los que el tier 1 debería ser más fuerte (confirmado con Booking.com, citado en el
+  // propio comentario de más abajo: 159 líneas reales). Se deduplica antes de pasarlo, restaurando el
+  // significado real de la constante ("cuántos PROVEEDORES DISTINTOS comparten esta palabra").
+  const nombresContactosLineas = Array.from(new Set(lineas.map((l) => l.contactName)));
   const porNombre = criterios.proveedor.trim()
     ? lineas.filter((l) => {
         if (!l.contactName) return false;
