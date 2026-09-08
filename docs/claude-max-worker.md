@@ -15,6 +15,8 @@ El workflow `.github/workflows/claude-max-shadow-autoreview.yml`:
 - usa únicamente `Read`, `Glob` y `Grep`;
 - no conserva credenciales de Git, no tiene permiso de escritura y no puede
   usar Bash, editar, navegar por internet ni delegar tareas;
+- entrega a la Action solo el token efímero integrado de GitHub con permiso
+  `contents: read`, evitando un intercambio OIDC o token de aplicación amplio;
 - no recibe `ANTHROPIC_API_KEY`, Google, Holded, Telegram ni Railway;
 - guarda durante 30 días solo un JSON sanitizado con proceso, proveedor,
   autenticación, turnos, tokens, coste API-equivalente, gasto API real y
@@ -31,9 +33,7 @@ log ni variable de Railway.
 2. Ejecutar `claude setup-token` localmente.
 3. En GitHub, abrir `Settings > Secrets and variables > Actions` y crear el
    secret `CLAUDE_CODE_OAUTH_TOKEN` con el valor generado.
-4. Instalar la Claude GitHub App para el repositorio si todavía no está
-   instalada, siguiendo la guía oficial de la Action.
-5. Ejecutar manualmente `Claude Max - autorrevision en sombra` desde la pestaña
+4. Ejecutar manualmente `Claude Max - autorrevision en sombra` desde la pestaña
    Actions. Confirmar que aparece un artefacto `claude-max-shadow-*`.
 
 El workflow omite limpiamente la invocación si el secret falta. No existe un

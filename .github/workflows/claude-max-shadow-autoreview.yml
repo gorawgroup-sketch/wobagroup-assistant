@@ -50,6 +50,9 @@ jobs:
         id: review
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
+          # Evita el intercambio OIDC de la Claude GitHub App. Este token es
+          # efímero y hereda exclusivamente `contents: read` de este workflow.
+          github_token: ${{ github.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           show_full_output: false
           display_report: false
