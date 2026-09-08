@@ -1,0 +1,94 @@
+name: Claude Max - autorrevision en sombra
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Después de la revisión histórica de Railway. GitHub cron usa UTC.
+    - cron: "30 21 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-max-shadow-autoreview
+  cancel-in-progress: true
+
+jobs:
+  shadow-review:
+    name: Revision segura y de solo lectura
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Comprobar configuracion privada
+        id: preflight
+        shell: bash
+        env:
+          CLAUDE_MAX_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "${CLAUDE_MAX_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "### Claude Max aun no esta activado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Falta el secret CLAUDE_CODE_OAUTH_TOKEN. No se invoco ningun modelo ni API." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Descargar codigo sin credenciales persistentes
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Seleccionar tres archivos seguros
+        if: steps.preflight.outputs.configured == 'true'
+        id: select
+        run: node scripts/claude-max/shadow-review.mjs select
+
+      - name: Revisar con Claude Code Max
+        if: steps.preflight.outputs.configured == 'true'
+        id: review
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: false
+          display_report: false
+          prompt: |
+            Ejecuta una autorrevision nocturna, desatendida y ESTRICTAMENTE DE SOLO LECTURA
+            sobre exactamente estos archivos TypeScript:
+            ${{ steps.select.outputs.selected_files }}
+
+            Solo reporta un bug si puedes indicar la entrada o estado exacto que lo dispara y
+            el resultado incorrecto o crash observable. Ignora estilo, refactors, mejoras
+            hipoteticas y defensas adicionales "por si acaso". Ante cualquier duda, no reportes
+            un hallazgo. No leas otros archivos, secretos, variables de entorno ni metadatos de
+            infraestructura. No modifiques archivos, no crees commits, ramas, PRs ni mensajes.
+
+            Devuelve status=ok si revisaste todos y no encontraste bugs confirmados;
+            status=finding si existe al menos uno; status=incomplete si no pudiste revisar todos.
+            reviewed_files debe contener solo las rutas realmente revisadas. Cada hallazgo debe
+            ser breve, sin copiar bloques de codigo ni incluir datos sensibles.
+          claude_args: |
+            --model sonnet
+            --max-turns 8
+            --permission-mode plan
+            --allowedTools "Read,Glob,Grep"
+            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Skill"
+            --json-schema '{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string","enum":["ok","finding","incomplete"]},"reviewed_files":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":3},"findings":{"type":"array","maxItems":3,"items":{"type":"object","additionalProperties":false,"properties":{"file":{"type":"string"},"line":{"type":"integer","minimum":1},"summary":{"type":"string","maxLength":240},"diagnosis":{"type":"string","maxLength":1200},"confidence":{"type":"number","minimum":0,"maximum":1}},"required":["file","line","summary","diagnosis","confidence"]}}},"required":["status","reviewed_files","findings"]}'
+
+      - name: Crear registro auditable sanitizado
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.review.outputs.structured_output }}
+          SELECTED_FILES: ${{ steps.select.outputs.selected_files }}
+          CLAUDE_EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+        run: node scripts/claude-max/shadow-review.mjs write-result claude-max-shadow-result.json
+
+      - name: Conservar resultado de la comparacion
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: claude-max-shadow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: claude-max-shadow-result.json
+          if-no-files-found: error
+          retention-days: 30

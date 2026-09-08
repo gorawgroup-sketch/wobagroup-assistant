@@ -142,6 +142,12 @@ Rollback: no hacer un reset global, porque borraría el vigilante concurrente `e
 - Solo después, deshabilitar el cron API de autorrevisión y conservar `/admin/run-autorrevision-codigo` como respaldo manual incluido en allowlist.
 - No instalar ni autenticar Claude Code automáticamente: el binario no está instalado en este host y el login requiere decisión de Carlos.
 
+Estado al 8 de septiembre de 2026: se eligió Claude Code Max y quedó construido
+el workflow oficial en modo sombra, de solo lectura, con rotación compartida y
+registro sanitizado. La ruta API continúa activa. Falta que Carlos cree en
+GitHub el secret `CLAUDE_CODE_OAUTH_TOKEN` desde `claude setup-token` y completar
+cinco ciclos válidos antes de autorizar el corte.
+
 ### P2 — Optimización basada en evidencia
 
 - Con 14–30 días de atribución, ordenar procesos por USD y tokens de entrada.
@@ -200,7 +206,7 @@ No se declara falsamente migrado ningún proceso de producción: aún no existe 
 ## Riesgos y decisiones para Carlos
 
 1. Elegir límite diario y mensual. Propuesta inicial conservadora: alerta al 70%, bloqueo al 100%, usando el percentil 95 de 14 días por proceso; no fijar cifras antes de contar con esa muestra.
-2. Elegir si la autorrevisión migra a Codex o Claude Code. Codex ya está disponible en este host; Claude Code no está instalado.
+2. Claude Code Max quedó elegido para la autorrevisión. Pendiente de Carlos: generar localmente el OAuth y guardarlo como secret de GitHub; nunca compartir el token en chat ni instalarlo en Railway.
 3. Confirmar si existe ChatGPT Enterprise/Business con tokens de acceso para automatización confiable. Plus/Pro no debe tratarse como credencial de backend general.
 4. Definir RTO: cuánto tiempo puede quedar sin IA el bot antes de activar respaldo API.
 5. Confirmar si los correos automáticos pueden esperar una cola privada. Por defecto se mantienen en API por criticidad y latencia.

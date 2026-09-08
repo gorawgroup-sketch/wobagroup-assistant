@@ -4,6 +4,11 @@ import { revisarCodigoAutonomamente } from "../claude/client";
 import { obtenerMapaUltimaRevision, marcarArchivoRevisado } from "./revisionArchivoStore";
 import { crearPendienteAutorrepair } from "../github/autorrepairPendienteStore";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
+import {
+  debeEjecutarAutorrevisionApi,
+  obtenerProveedorAutorrevision,
+  seleccionarRutasAutorrevisionSombra,
+} from "./autorrevisionProvider";
 
 const ARCHIVOS_POR_NOCHE = 3;
 // Un archivo más largo que esto se salta (sin marcarlo revisado, para no perderlo de la rotación) —
@@ -25,6 +30,15 @@ const MAX_LINEAS_ARCHIVO = 400;
  * los avisos no urgentes de este proyecto.
  */
 export async function autorrevisionCodigo(): Promise<{ revisados: number; propuestos: number }> {
+  const proveedor = obtenerProveedorAutorrevision();
+  if (!debeEjecutarAutorrevisionApi(proveedor)) {
+    console.log(
+      "[autorrevisionCodigo] Ruta API en espera: Claude Code Max es el proveedor activo. " +
+        "Para volver inmediatamente, configura WOBI_AUTOREVISION_PROVIDER=api."
+    );
+    return { revisados: 0, propuestos: 0 };
+  }
+
   if (!esDiaHabilEspana()) {
     console.log("[autorrevisionCodigo] Fin de semana, no corre.");
     return { revisados: 0, propuestos: 0 };
@@ -44,8 +58,15 @@ export async function autorrevisionCodigo(): Promise<{ revisados: number; propue
     return { revisados: 0, propuestos: 0 };
   }
 
-  const mapaRevision = await obtenerMapaUltimaRevision();
-  const ordenados = [...candidatos].sort((a, b) => (mapaRevision.get(a) || 0) - (mapaRevision.get(b) || 0));
+  let ordenados: string[];
+  if (proveedor === "claude_max_shadow") {
+    ordenados = seleccionarRutasAutorrevisionSombra(candidatos);
+  } else {
+    const mapaRevision = await obtenerMapaUltimaRevision();
+    ordenados = [...candidatos].sort(
+      (a, b) => (mapaRevision.get(a) || 0) - (mapaRevision.get(b) || 0)
+    );
+  }
 
   let revisados = 0;
   let propuestos = 0;

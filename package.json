@@ -9,7 +9,7 @@
     "start": "node dist/src/server.js",
     "dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test core/**/*.test.ts"
+    "test": "tsx --test core/**/*.test.ts && node --test scripts/claude-max/*.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",
