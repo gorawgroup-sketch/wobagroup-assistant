@@ -2337,13 +2337,28 @@ export async function estaMovimientoYaConciliado(
   return estaConciliado(movimiento?.status);
 }
 
+/**
+ * Hallazgo real de auditoría (caso Salesmate/RapidOps, Footprint, 2026-09-08): el MOVIMIENTO bancario
+ * (en USD, -554.84) quedó reconciled_amount="-554.84" — coincide exacto con el total de la compra, y
+ * es justo lo que este chequeo ya verificaba (montoEnlazado > 0, y de hecho el valor completo). Pero
+ * la COMPRA misma, del lado de Holded, quedó con payments_total="478,39" y payments_pending="76,45" —
+ * Holded aplicó el accounting_amount (el equivalente en EUR que el propio Holded calcula para cuentas
+ * en otra moneda) como si fuera el monto nativo, en vez de los 554.84 USD reales — un movimiento que
+ * SÍ quedó marcado como conciliado por completo, pero que dejó la compra con un saldo pendiente ficticio.
+ * Ningún dato que mandemos nosotros causa esto (reconciliarMovimiento nunca manda un monto, Holded lo
+ * calcula solo al procesar el POST /reconcile) — es un comportamiento real de Holded para documentos en
+ * moneda distinta a EUR. No se puede evitar desde acá, pero SÍ se puede detectar: se relee la compra
+ * después de conciliar y se compara payments_pending contra cero (en la moneda NATIVA de la compra,
+ * nunca convertida) — si queda un pendiente real, el llamador debe avisarlo explícitamente en vez de
+ * reportar éxito sin más.
+ */
 export async function reconciliarMovimiento(
   empresa: Empresa,
   accountId: string,
   movementId: string,
   fechaAproximada: string,
   documentoId: string
-): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number }> {
+): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number; pendienteEnCompra?: number }> {
   await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
     documents: [{ document_id: documentoId, document_type: "purchase" }],
   });
@@ -2359,7 +2374,20 @@ export async function reconciliarMovimiento(
   // el estado cambió Y el monto enlazado es mayor a cero.
   const ok = estaConciliado(movimiento?.status) && montoEnlazado > 0;
 
-  return { ok, statusFinal, montoEnlazado };
+  let pendienteEnCompra: number | undefined;
+  if (ok) {
+    try {
+      const compra = await obtenerCompraHoldedPorId(empresa, documentoId);
+      const pendiente = parsearMontoHolded(compra.payments_pending as string | number | undefined);
+      if (Number.isFinite(pendiente) && pendiente > 0.01) {
+        pendienteEnCompra = pendiente;
+      }
+    } catch (error) {
+      console.error(`[reconciliarMovimiento] Error releyendo la compra ${documentoId} para verificar el saldo pendiente (no crítico):`, error);
+    }
+  }
+
+  return { ok, statusFinal, montoEnlazado, pendienteEnCompra };
 }
 
 export interface NuevoEventoHolded {
