@@ -405,8 +405,16 @@ const TAMANIO_MAXIMO_INLINE_DECORATIVO = 30000;
 function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
   if (!disposicion.toLowerCase().startsWith("inline")) return false;
-  const tamano = part.body?.size ?? 0;
-  return tamano <= TAMANIO_MAXIMO_INLINE_DECORATIVO;
+  // Hallazgo real de auditoría xhigh de este mismo cambio: si Gmail alguna vez no informa `body.size`
+  // para una parte inline (no visto en los 5 casos reales verificados, pero la API no lo garantiza para
+  // toda variante de estructura MIME), un `?? 0` acá clasificaría ese tamaño desconocido como
+  // "decorativo" y perdería un comprobante real en silencio — exactamente el bug que este cambio existe
+  // para cerrar, solo que por falta de dato en vez de por disposición. Tamaño desconocido nunca se trata
+  // como decorativo: en el peor caso, un logo genuino sin tamaño reportado pasa como adjunto real y la
+  // extracción por visión lo marca "ilegible" (barato y visible) en vez de perder un recibo real sin
+  // ningún rastro.
+  if (part.body?.size === undefined || part.body?.size === null) return false;
+  return part.body.size <= TAMANIO_MAXIMO_INLINE_DECORATIVO;
 }
 
 function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
