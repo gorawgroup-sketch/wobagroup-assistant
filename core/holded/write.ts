@@ -817,6 +817,31 @@ function contienePalabraClave(texto: string, palabras: string[]): boolean {
   });
 }
 
+// Sinónimos históricos del mismo tag — Holded tiene gastos reales etiquetados "alojamiento" (antes
+// de estandarizar en "hospedaje") y "coche" (antes de estandarizar en "alquilercoche"). Compartido
+// entre inferirTagsCategoria/inferirCuentaGasto (acá) y buscarGastosPorEtiquetaHolded (más abajo) —
+// una sola fuente de verdad de qué nombres de tag son "el mismo tag" en los datos reales.
+const SINONIMOS_ETIQUETA: Record<string, string[]> = {
+  hospedaje: ["alojamiento"],
+  alquilercoche: ["coche"],
+};
+
+/** true si algún tag de `a` coincide con algún tag de `b`, considerando sinónimos históricos (ver SINONIMOS_ETIQUETA) — nunca por igualdad estricta sola, para no fallar sobre datos con nomenclatura vieja. */
+function tagsConSinonimosSeSolapan(a: string[], b: string[]): boolean {
+  const expandir = (tags: string[]): Set<string> => {
+    const set = new Set<string>();
+    for (const t of tags) {
+      const n = normalizar(t);
+      set.add(n);
+      for (const sin of SINONIMOS_ETIQUETA[n] ?? []) set.add(sin);
+    }
+    return set;
+  };
+  const setA = expandir(a);
+  for (const t of expandir(b)) if (setA.has(t)) return true;
+  return false;
+}
+
 /**
  * Detecta tags de categoría a partir de la naturaleza real de ESTE gasto
  * (concepto + proveedor tal como se leyeron de la factura) — nunca decide
@@ -1037,9 +1062,9 @@ async function elegirCuentaConIA(
  * palabra completa contra una palabra completa del contacto es una señal fuerte, no ruido.
  */
 function coincideProveedorCorto(proveedor: string, contactName: string): boolean {
-  const [proveedorNorm] = palabrasDe(proveedor, 1);
-  if (!proveedorNorm || palabrasDe(proveedor, 1).length !== 1) return false; // solo aplica si el proveedor entero es una sola palabra
-  return palabrasDe(contactName, 1).includes(proveedorNorm);
+  const palabrasProveedor = palabrasDe(proveedor, 1);
+  if (palabrasProveedor.length !== 1) return false; // solo aplica si el proveedor entero es una sola palabra
+  return palabrasDe(contactName, 1).includes(palabrasProveedor[0]);
 }
 
 /**
@@ -1155,11 +1180,6 @@ export async function inferirCuentaGasto(
     const conteosOrdenados = Array.from(conteoPorCuenta.values()).sort((a, b) => b - a);
     const hayEmpateEnElPrimerLugar = conteosOrdenados.length > 1 && conteosOrdenados[0] === conteosOrdenados[1];
 
-    if (hayEmpateEnElPrimerLugar) {
-      const viaIA = await elegirCuentaConIA(criterios, porConcepto);
-      if (viaIA) return viaIA;
-    }
-
     // Hallazgo real de auditoría (casos Uber México/Guadalajara y Ke Rico NichoT1, Footprint,
     // 2026-09-08 — mismo gasto de viaje, dos líneas del correo): "business" es una palabra ≥5
     // caracteres genuinamente presente en el concepto ("Business Trip GDL", texto que Jorge/Carlos
@@ -1173,19 +1193,35 @@ export async function inferirCuentaGasto(
     // con un documento administrativo genérico. La corrección de fondo: si ya existe una señal de
     // categoría independiente y confiable (tagsCategoria, ver inferirTagsCategoria — no depende de
     // palabras sueltas del concepto, sino de la naturaleza real del gasto) y la cuenta ganadora del
-    // tier 2 no tiene NINGUNA línea histórica de respaldo con esa etiqueta, la evidencia del tier 2 se
-    // descarta como sospechosa y se cae al tier 3 (categoría), que si tiene suficiente evidencia real
-    // (ver MIN_EVIDENCIA_CONCEPTO) apunta a la cuenta correcta.
-    const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
-    if (sugeridoPorConcepto) {
-      const contradiceCategoria = tagsCategoria.length > 0 && !tagsCategoria.some((t) => sugeridoPorConcepto.tags.includes(t));
-      if (!contradiceCategoria) return sugeridoPorConcepto;
+    // tier 2 no tiene NINGUNA línea histórica de respaldo con esa etiqueta (considerando sinónimos, ver
+    // tagsConSinonimosSeSolapan — sin esto una cuenta con historial etiquetado "alojamiento" en vez de
+    // "hospedaje" se vetaba igual que una realmente ajena), la evidencia del tier 2 se descarta como
+    // sospechosa y se cae al tier 3 (categoría), que si tiene suficiente evidencia real (ver
+    // MIN_EVIDENCIA_CONCEPTO) apunta a la cuenta correcta. Cuando la cuenta ganadora NO tiene ningún tag
+    // registrado (líneas viejas o cargadas a mano, sin ningún tag) esto NO se trata como contradicción —
+    // ausencia de evidencia no es evidencia de lo contrario, y vetar ahí solo perdería un match real sin
+    // ganar ninguna protección real (hallazgo real de auditoría xhigh de este mismo cambio).
+    // Auditoría xhigh de este mismo cambio también encontró que el desempate por IA (elegirCuentaConIA,
+    // arriba) usaba exactamente el mismo `porConcepto` contaminado sin pasar por este veto — mismo
+    // riesgo, ahora cubierto con el mismo criterio.
+    const contradiceCategoria = (tags: string[]): boolean =>
+      tagsCategoria.length > 0 && tags.length > 0 && !tagsConSinonimosSeSolapan(tagsCategoria, tags);
+
+    if (hayEmpateEnElPrimerLugar) {
+      const viaIA = await elegirCuentaConIA(criterios, porConcepto);
+      if (viaIA) {
+        const tagsDelGrupoIA = porConcepto.filter((m) => m.account === viaIA.accountId).flatMap((m) => m.tags);
+        if (!contradiceCategoria(tagsDelGrupoIA)) return viaIA;
+      }
     }
+
+    const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
+    if (sugeridoPorConcepto && !contradiceCategoria(sugeridoPorConcepto.tags)) return sugeridoPorConcepto;
   }
 
   if (tagsCategoria.length === 0) return undefined;
 
-  const porCategoria = lineas.filter((l) => tagsCategoria.every((t) => l.tags.includes(t)));
+  const porCategoria = lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags)));
   return construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
 }
 
@@ -1350,15 +1386,9 @@ export type GastoConEtiqueta = GastoSinComprobante;
  * las etiquetas de Holded son la única pista fiable de a quién/qué corresponde un gasto genérico
  * (mismo principio que buscarGastosSinComprobante, arriba).
  */
-// Sinónimos históricos del mismo tag — ver inferirTagsCategoria más arriba: Holded tiene gastos
-// reales etiquetados "alojamiento" (antes de estandarizar en "hospedaje") y "coche" (antes de
-// estandarizar en "alquilercoche"). Sin esto, buscar "hospedaje" reportaría de menos — dejando fuera
-// todo lo que sigue etiquetado "alojamiento" desde antes de estandarizar.
-const SINONIMOS_ETIQUETA: Record<string, string[]> = {
-  hospedaje: ["alojamiento"],
-  alquilercoche: ["coche"],
-};
-
+// SINONIMOS_ETIQUETA está definido junto a inferirTagsCategoria más arriba (compartido con
+// inferirCuentaGasto) — sin esto, buscar "hospedaje" reportaría de menos, dejando fuera todo lo que
+// sigue etiquetado "alojamiento" desde antes de estandarizar.
 export async function buscarGastosPorEtiquetaHolded(
   empresa: Empresa,
   etiqueta: string,
