@@ -13,9 +13,27 @@ import { revisarConversacionesAutomaticas } from "./revisarConversacionesAutomat
 import { autorrevisionCodigo } from "./autorrevisionCodigo";
 import { vigilarProcesamientoAtascado } from "./vigilarProcesamientoAtascado";
 import { autoAuditarOperacionesDiarias } from "./autoAuditarOperaciones";
+import { invalidarEstadoCerebro } from "../cerebro/estadoAgregado";
+import { publicarCambioCerebro } from "../cerebro/realtime";
 
 const TIMEZONE = "Europe/Madrid";
 const jobsEnCurso = new Set<string>();
+const jobsPendientesDeNotificar = new Set<string>();
+let notificacionCerebroPendiente: NodeJS.Timeout | null = null;
+
+/** Agrupa jobs que terminan juntos (por ejemplo, varios controles de las 08:00). */
+function programarActualizacionCerebro(nombre: string): void {
+  jobsPendientesDeNotificar.add(nombre);
+  if (notificacionCerebroPendiente) clearTimeout(notificacionCerebroPendiente);
+  notificacionCerebroPendiente = setTimeout(() => {
+    notificacionCerebroPendiente = null;
+    const nombres = Array.from(jobsPendientesDeNotificar);
+    jobsPendientesDeNotificar.clear();
+    invalidarEstadoCerebro();
+    publicarCambioCerebro(`scheduler:${nombres.join(",")}`);
+  }, 5_000);
+  notificacionCerebroPendiente.unref();
+}
 
 /** Evita duplicar trabajo, gasto o acciones si una corrida tarda más que su intervalo. */
 function ejecutarSinSolapamiento(nombre: string, tarea: () => Promise<unknown>): void {
@@ -26,7 +44,13 @@ function ejecutarSinSolapamiento(nombre: string, tarea: () => Promise<unknown>):
   jobsEnCurso.add(nombre);
   tarea()
     .catch((error) => console.error(`[scheduler] Error ejecutando ${nombre}:`, error))
-    .finally(() => jobsEnCurso.delete(nombre));
+    .finally(() => {
+      jobsEnCurso.delete(nombre);
+      // Aunque el job solo haya leído, puede haber actualizado sus stores de
+      // último chequeo o detectado nuevos pendientes. El próximo request
+      // reconstruye el snapshot y los paneles abiertos reciben el aviso ya.
+      programarActualizacionCerebro(nombre);
+    });
 }
 
 /**

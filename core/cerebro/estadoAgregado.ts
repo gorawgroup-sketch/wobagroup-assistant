@@ -454,13 +454,22 @@ async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
   return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos };
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// Dos minutos mantiene el panel suficientemente fresco para operación diaria
+// sin convertir cada polling del navegador en una ráfaga contra Holded,
+// Google y Gmail. Los cambios ejecutados por Wobi invalidan este caché de
+// inmediato y llegan al navegador por el stream en tiempo real.
+const CACHE_TTL_MS = 2 * 60 * 1000;
 
 let cache: { datos: EstadoCerebroDatos; cacheadoEnMs: number } | null = null;
 let recalculoEnCurso: Promise<{ datos: EstadoCerebroDatos; cacheadoEnMs: number }> | null = null;
 
+/** Marca el snapshot como vencido sin interrumpir un cálculo ya iniciado. */
+export function invalidarEstadoCerebro(): void {
+  cache = null;
+}
+
 /**
- * Caché de proceso de 5 minutos: agregar todo (Sheets, Holded ×3 empresas,
+ * Caché de proceso de 2 minutos: agregar todo (Sheets, Holded ×3 empresas,
  * Drive, Gmail...) toma 12-22s en vivo, demasiado para que un front lo pida
  * en cada carga de página. `cacheadoEn` en la respuesta indica cuándo se
  * calcularon realmente los datos — si es igual a `generadoEn`, esta
