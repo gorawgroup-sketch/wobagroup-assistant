@@ -12,6 +12,7 @@ import { revisarGastosSinComprobante } from "./revisarGastosSinComprobante";
 import { revisarConversacionesAutomaticas } from "./revisarConversacionesAutomaticas";
 import { autorrevisionCodigo } from "./autorrevisionCodigo";
 import { vigilarProcesamientoAtascado } from "./vigilarProcesamientoAtascado";
+import { autoAuditarOperacionesDiarias } from "./autoAuditarOperaciones";
 
 const TIMEZONE = "Europe/Madrid";
 const jobsEnCurso = new Set<string>();
@@ -88,6 +89,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] enviarResumenPendientesDiario programado: diario 19:00 (${TIMEZONE})`);
+
+  cron.schedule(
+    "30 23 * * *",
+    () => {
+      ejecutarSinSolapamiento("autoAuditarOperacionesDiarias", () => autoAuditarOperacionesDiarias());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] autoAuditarOperacionesDiarias programado: diario 23:30 (${TIMEZONE})`);
 
   cron.schedule(
     "30 8 * * *",
