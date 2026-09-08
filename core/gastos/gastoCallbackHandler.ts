@@ -136,25 +136,34 @@ async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
  * cerrado sin serlo.
  */
 async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): Promise<void> {
-  const intentarAdjuntar = () =>
-    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, propuesta.nombreArchivoOriginal, propuesta.mimeType);
+  const adjuntar = (mimeType: string | undefined, nombreArchivo: string) =>
+    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType);
 
   try {
-    await intentarAdjuntar();
+    await adjuntar(propuesta.mimeType, propuesta.nombreArchivoOriginal);
   } catch (error) {
-    // Primer respaldo: era un adjunto REAL de Gmail (tiene attachmentId) — se vuelve a descargar
-    // igual. Segundo respaldo (hallazgo real de auditoría, caso MARNAPA/GDL Pastriva): era un PDF
-    // SINTÉTICO generado del cuerpo del correo (nunca tuvo attachmentId que recuperar) — se regenera
-    // desde cero con el cuerpo fresco de Gmail y los datos ya extraídos en la propuesta. Solo se
-    // propaga el error si NINGUNA de las dos vías logra reponer el archivo.
+    // Primer respaldo: era un adjunto REAL de Gmail (tiene attachmentId) — se vuelve a descargar el
+    // MISMO archivo, así que su mimeType/nombre originales siguen siendo correctos. Segundo respaldo
+    // (hallazgo real de auditoría, caso MARNAPA/GDL Pastriva): era un PDF SINTÉTICO generado del
+    // cuerpo del correo (nunca tuvo attachmentId que recuperar), o el primer respaldo también falló —
+    // se regenera desde cero con el cuerpo fresco de Gmail. Solo se propaga el error si NINGUNA de las
+    // dos vías logra reponer el archivo.
     const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
       mensajeIdGmail: propuesta.origenAdjuntoGmail?.mensajeIdGmail,
       attachmentIdGmail: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
     });
-    const regenerado = recuperado || (await regenerarComprobanteDesdeCuerpoSiFalta(propuesta.rutaLocal, propuesta));
-    if (!regenerado) throw error;
-
-    await intentarAdjuntar();
+    if (recuperado) {
+      await adjuntar(propuesta.mimeType, propuesta.nombreArchivoOriginal);
+    } else {
+      const regenerado = await regenerarComprobanteDesdeCuerpoSiFalta(propuesta.rutaLocal, propuesta);
+      if (!regenerado) throw error;
+      // Hallazgo real de auditoría xhigh: el archivo regenerado es SIEMPRE un PDF nuevo — nunca hay
+      // que reusar el mimeType/nombre del adjunto original (ej. "image/jpeg" de una foto real). Si se
+      // reusaran, Holded terminaría guardando bytes de PDF etiquetados como imagen — un comprobante
+      // corrupto en cualquier visor que confíe en el tipo declarado, sin ningún error visible.
+      const nombreBase = propuesta.nombreArchivoOriginal.replace(/\.[^./]+$/, "");
+      await adjuntar("application/pdf", `comprobante_${nombreBase}.pdf`);
+    }
   }
   await limpiarArchivoLocal(propuesta.rutaLocal);
 }

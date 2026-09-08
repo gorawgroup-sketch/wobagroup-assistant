@@ -3,6 +3,7 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
+import { conMutex } from "../utils/asyncMutex";
 import type { Empresa } from "../holded/client";
 import type { PurchaseCandidato, MovimientoBancarioCandidato } from "../holded/write";
 import type { LineaFactura } from "../documental/extractInvoiceData";
@@ -425,48 +426,54 @@ const MAX_INTENTOS_ESCRITURA = 3;
 
 /**
  * Calcular la fila libre y escribir ahí son dos llamadas separadas (values.get + values.update) —
- * sin ninguna transacción real de Sheets de por medio, dos llamadas a crearPropuestaGasto casi
- * simultáneas (ej. vigilarProcesamientoAtascado reintentando justo cuando revisarCorreoNuevo también
- * está procesando, el patrón real que motivó los bugs de esta misma noche) podrían calcular la MISMA
- * fila libre y que la segunda escritura pise a la primera en silencio — perdiendo una propuesta real
- * en vez de solo dejarla invisible, un resultado peor que el bug que esto corrige. Tras escribir, se
- * relee esa misma fila y se confirma que el id en la columna A es el que se acaba de escribir; si no
- * lo es, alguien más escribió ahí primero y se reintenta en una fila nueva.
+ * sin ninguna transacción real de Sheets de por medio. El retry-con-verificación de abajo detecta una
+ * colisión entre dos ESCRITURAS casi simultáneas, pero NUNCA una colisión con un BORRADO concurrente
+ * (hallazgo real de auditoría xhigh, mismo día): si consumirPropuestaGasto elimina una fila (desplaza
+ * todo lo de abajo hacia arriba) justo entre que esta función calculó "fila libre" y de verdad
+ * escribe ahí, la escritura puede terminar pisando en silencio una fila COMPLETAMENTE AJENA que el
+ * borrado desplazó hasta esa posición — destruyendo una propuesta real sin relación con esta llamada.
+ * Nada de esto es hipotético: consumirPropuestaGasto se dispara en cada tap de un botón de Telegram,
+ * mientras el cron de correo o el vigilante de atascados pueden estar creando una propuesta nueva al
+ * mismo tiempo (exactamente el patrón real de esta misma noche). conMutex serializa TODA operación
+ * que calcula/mueve filas de esta hoja en el propio proceso — nunca dos corren a la vez — cerrando
+ * ambos huecos de raíz en vez de perseguir cada colisión una por una.
  */
 export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "creadoEn">): Promise<PropuestaGasto> {
-  await purgarVencidas();
+  return conMutex(TAB_NAME, async () => {
+    await purgarVencidas();
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  // montoOriginal siempre se fija al monto real de creación, ignorando
-  // cualquier valor que venga en datos — solo actualizarMontoPropuestaGasto
-  // puede cambiar "monto" después, y nunca toca este campo.
-  const propuesta: PropuestaGasto = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now(), montoOriginal: datos.monto };
+    // montoOriginal siempre se fija al monto real de creación, ignorando
+    // cualquier valor que venga en datos — solo actualizarMontoPropuestaGasto
+    // puede cambiar "monto" después, y nunca toca este campo.
+    const propuesta: PropuestaGasto = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now(), montoOriginal: datos.monto };
 
-  for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
-    const fila = await siguienteFilaLibre();
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A${fila}:Y${fila}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [propuestaToRow(propuesta)] },
-    });
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const fila = await siguienteFilaLibre();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}:Y${fila}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [propuestaToRow(propuesta)] },
+      });
 
-    const verificacion = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A${fila}`,
-      valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    if (verificacion.data.values?.[0]?.[0] === propuesta.id) return propuesta;
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      if (verificacion.data.values?.[0]?.[0] === propuesta.id) return propuesta;
 
-    console.error(
-      `[gastoProposalSheet] Colisión al escribir la propuesta ${propuesta.id} en la fila ${fila} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
-    );
-  }
+      console.error(
+        `[gastoProposalSheet] Colisión al escribir la propuesta ${propuesta.id} en la fila ${fila} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+      );
+    }
 
-  throw new Error(`No se pudo guardar la propuesta ${propuesta.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
+    throw new Error(`No se pudo guardar la propuesta ${propuesta.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
+  });
 }
 
 export async function actualizarMessageIdGasto(id: string, messageId: number): Promise<void> {
@@ -662,13 +669,18 @@ export async function actualizarClasificacionPropuestaGasto(id: string, empresa:
 }
 
 /** Devuelve la propuesta y ELIMINA su fila de inmediato (aprobada o descartada). */
+/** Bajo el mismo conMutex que crearPropuestaGasto (ver su comentario) — borra una fila real
+ * (deleteDimension, desplaza todo lo de abajo), así que nunca puede correr a la vez que una
+ * escritura esté calculando/usando "la próxima fila libre" de esta misma hoja. */
 export async function consumirPropuestaGasto(id: string): Promise<PropuestaGasto | undefined> {
-  const todas = await leerTodas();
-  const match = todas.find(({ propuesta }) => propuesta.id === id);
-  if (!match) return undefined;
+  return conMutex(TAB_NAME, async () => {
+    const todas = await leerTodas();
+    const match = todas.find(({ propuesta }) => propuesta.id === id);
+    if (!match) return undefined;
 
-  await eliminarFila(match.rowIndex);
-  return match.propuesta;
+    await eliminarFila(match.rowIndex);
+    return match.propuesta;
+  });
 }
 
 /**

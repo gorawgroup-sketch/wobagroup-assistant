@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 import type { Empresa } from "../holded/client";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -217,55 +218,62 @@ async function siguienteFilaLibre(): Promise<number> {
 
 const MAX_INTENTOS_ESCRITURA = 3;
 
-/** Ver crearPropuestaGasto en gastoProposalSheet.ts — misma protección contra colisión: dos llamadas
- * casi simultáneas podrían calcular la misma fila libre y que la segunda pise a la primera. Tras
- * escribir se relee esa fila y se confirma el id; si no coincide, se reintenta en una fila nueva. */
+/**
+ * Ver crearPropuestaGasto en gastoProposalSheet.ts — misma protección contra colisión, con el mismo
+ * hallazgo real de auditoría xhigh añadido después: el retry-con-verificación de abajo solo detecta
+ * colisión entre dos ESCRITURAS, nunca contra un BORRADO concurrente (consumirConciliacionPendiente,
+ * que se dispara al tocar "Sí/No conciliar" en Telegram) que desplace una fila ajena justo a la
+ * posición que esta función acaba de calcular como libre. conMutex serializa toda operación que
+ * calcula/mueve filas de esta hoja en el propio proceso — cierra ese hueco de raíz.
+ */
 export async function guardarConciliacionPendiente(
   datos: Omit<ConciliacionPendiente, "id" | "creadoEn">
 ): Promise<ConciliacionPendiente> {
-  await purgarVencidas();
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+  return conMutex(TAB_NAME, async () => {
+    await purgarVencidas();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  const pendiente: ConciliacionPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
-  const fila_valores = [
-    pendiente.id,
-    pendiente.empresa,
-    pendiente.monto,
-    pendiente.fecha,
-    pendiente.descripcionGasto,
-    pendiente.chatId,
-    pendiente.creadoEn,
-    pendiente.gastoId,
-    pendiente.moneda,
-    pendiente.proveedor,
-    pendiente.deColaCorreo === true ? "true" : "",
-    pendiente.mensajeIdGmail ?? "",
-  ];
+    const pendiente: ConciliacionPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+    const fila_valores = [
+      pendiente.id,
+      pendiente.empresa,
+      pendiente.monto,
+      pendiente.fecha,
+      pendiente.descripcionGasto,
+      pendiente.chatId,
+      pendiente.creadoEn,
+      pendiente.gastoId,
+      pendiente.moneda,
+      pendiente.proveedor,
+      pendiente.deColaCorreo === true ? "true" : "",
+      pendiente.mensajeIdGmail ?? "",
+    ];
 
-  for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
-    const fila = await siguienteFilaLibre();
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A${fila}:L${fila}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [fila_valores] },
-    });
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const fila = await siguienteFilaLibre();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}:L${fila}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [fila_valores] },
+      });
 
-    const verificacion = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A${fila}`,
-      valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    if (verificacion.data.values?.[0]?.[0] === pendiente.id) return pendiente;
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      if (verificacion.data.values?.[0]?.[0] === pendiente.id) return pendiente;
 
-    console.error(
-      `[conciliacionPendienteStore] Colisión al escribir la pendiente ${pendiente.id} en la fila ${fila} — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
-    );
-  }
+      console.error(
+        `[conciliacionPendienteStore] Colisión al escribir la pendiente ${pendiente.id} en la fila ${fila} — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+      );
+    }
 
-  throw new Error(`No se pudo guardar la conciliación pendiente ${pendiente.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
+    throw new Error(`No se pudo guardar la conciliación pendiente ${pendiente.id} tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
+  });
 }
 
 /** Todas las conciliaciones pendientes de un chat — usado por vigilarProcesamientoAtascado.ts para saber si un correo "activo" sigue vivo esperando esta pregunta, en vez de darlo por atascado. */
@@ -275,11 +283,14 @@ export async function obtenerConciliacionesPendientesPorChat(chatId: number): Pr
 }
 
 /** Devuelve la pendiente y ELIMINA su fila (respondida, ya no debe quedar registro). */
+/** Bajo el mismo conMutex que guardarConciliacionPendiente (ver su comentario). */
 export async function consumirConciliacionPendiente(id: string): Promise<ConciliacionPendiente | undefined> {
-  const todas = await leerTodas();
-  const match = todas.find(({ pendiente }) => pendiente.id === id);
-  if (!match) return undefined;
+  return conMutex(TAB_NAME, async () => {
+    const todas = await leerTodas();
+    const match = todas.find(({ pendiente }) => pendiente.id === id);
+    if (!match) return undefined;
 
-  await eliminarFila(match.rowIndex);
-  return match.pendiente;
+    await eliminarFila(match.rowIndex);
+    return match.pendiente;
+  });
 }
