@@ -154,6 +154,28 @@ async function detectarConversionesSospechosas(compras: CompraDelDia[]): Promise
   return hallazgos;
 }
 
+/**
+ * Caso real (RapidOps/Salesmate, Footprint, 2026-09-08): una compra en USD quedó con
+ * payments_pending>0 después de conciliarse — el movimiento bancario real ya estaba conciliado al
+ * 100%, pero Holded aplicó el equivalente en EUR (pensado solo para reportes) como si fuera el pago
+ * real, dejando un saldo pendiente ficticio. Mismo comportamiento ya detectado en el momento (ver
+ * reconciliarMovimiento, core/holded/write.ts) para conciliaciones NUEVAS — este chequeo cubre
+ * además cualquier compra vieja que haya quedado así sin que nadie lo note. Señal, no prueba: un
+ * pendiente real y genuino (factura todavía sin pagar del todo) también entra acá — se reporta como
+ * "revisar", nunca como error confirmado. Solo aplica a compras en moneda distinta a EUR, que es
+ * donde existe este comportamiento de Holded; un pendiente en EUR es simplemente un pendiente real.
+ */
+function detectarSaldoPendienteSospechoso(compras: CompraDelDia[]): Hallazgo[] {
+  return compras
+    .filter((c) => c.moneda !== "EUR" && c.pagosPendiente > 0.01 && c.pagosTotal > 0.01)
+    .map((compra) => ({
+      compra,
+      motivo:
+        `saldo pendiente de ${compra.pagosPendiente.toFixed(2)} ${compra.moneda} tras un pago parcial de ${compra.pagosTotal.toFixed(2)} ${compra.moneda} — ` +
+        `revisar si el movimiento bancario real ya está conciliado al 100% (posible saldo ficticio de Holded en monedas no-EUR, ver reconciliarMovimiento)`,
+    }));
+}
+
 async function auditarEmpresa(empresa: Empresa, desde: string, hasta: string): Promise<{ compra: CompraDelDia; motivos: string[] }[]> {
   const compras = await obtenerComprasDelDia(empresa, desde, hasta).catch((error) => {
     console.error(`[autoAuditarOperaciones] Error obteniendo las compras de ${empresa} (${desde} a ${hasta}):`, error);
@@ -161,14 +183,15 @@ async function auditarEmpresa(empresa: Empresa, desde: string, hasta: string): P
   });
   if (compras.length === 0) return [];
 
-  const [duplicados, contactos, conversiones] = await Promise.all([
+  const [duplicados, contactos, conversiones, saldosPendientes] = await Promise.all([
     Promise.resolve(detectarPosiblesDuplicados(compras)),
     Promise.resolve(detectarContactoSinRastro(compras)),
     detectarConversionesSospechosas(compras),
+    Promise.resolve(detectarSaldoPendienteSospechoso(compras)),
   ]);
 
   const porCompra = new Map<string, { compra: CompraDelDia; motivos: string[] }>();
-  for (const h of [...duplicados, ...contactos, ...conversiones]) {
+  for (const h of [...duplicados, ...contactos, ...conversiones, ...saldosPendientes]) {
     const entry = porCompra.get(h.compra.id) ?? { compra: h.compra, motivos: [] };
     entry.motivos.push(h.motivo);
     porCompra.set(h.compra.id, entry);
