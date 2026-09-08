@@ -230,6 +230,23 @@ export async function obtenerBorradorCorreo(id: string): Promise<BorradorCorreo 
   return todos.find(({ borrador }) => borrador.id === id)?.borrador;
 }
 
+/**
+ * Bug real encontrado en vivo (2026-09-08): continuarConOrientacion (emailCallbackHandler.ts) llama a
+ * askClaude con la instrucción libre de Carlos y LUEGO, con un regex ("¿la instrucción menciona
+ * 'correo'/'responder'/...?") sobre el TEXTO de esa instrucción, decide si además genera un segundo
+ * borrador aparte (generarBorradorYOfrecer) — sin fijarse en si askClaude ya resolvió el pedido usando
+ * la tool proponer_envio_correo (que escribe en este mismo store). Caso real: "envío correo a
+ * Alberto..." SÍ contiene la palabra "correo", así que el regex disparaba el segundo borrador SIEMPRE,
+ * aunque el primero (el real, ya mostrado con sus propios botones) ya hubiera cumplido el pedido —
+ * Carlos terminó con dos borradores distintos y contradictorios para la misma instrucción. Esta
+ * función le da a ese chequeo una señal real en vez de adivinar por texto: ¿ya se creó un borrador
+ * para este chat desde que empezó a procesarse la instrucción?
+ */
+export async function huboBorradorCreadoDesde(chatId: number, desdeMs: number): Promise<boolean> {
+  const todos = await leerTodos();
+  return todos.some(({ borrador }) => borrador.chatId === chatId && borrador.creadoEn >= desdeMs);
+}
+
 /** Devuelve el borrador y lo elimina (se llama al enviar o cancelar). */
 export async function consumirBorradorCorreo(id: string): Promise<BorradorCorreo | undefined> {
   const todos = await leerTodos();
