@@ -1,3 +1,6 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { crearMensajeAnthropic } from "../ai/anthropicGateway";
+import { crearEjecucionIA } from "../ai/policy";
 import { answerCallbackQuery, editTelegramMessage, editTelegramMessageSmart, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons } from "../telegram/client";
 import { consumirPropuestaAccionCorreo, type PropuestaAccionCorreo } from "./emailActionStore";
 import { guardarPendienteOrientacionCorreo } from "./emailOrientationStore";
@@ -356,7 +359,7 @@ export async function handleDraftCallback(callback: TelegramCallbackQuery): Prom
     await editTelegramMessage(
       borrador.chatId,
       borrador.messageId,
-      `✏️ Ok — mándame el texto completo con el que quieres reemplazar este borrador (para: ${borrador.to}).`,
+      `✏️ Ok — dime qué quieres cambiar (ej. "cambia el saludo por Estimado Carlos", "corrige la fecha al 15 de septiembre", "hazlo más corto") y ajusto el borrador — no hace falta que reescribas todo, solo lo que quieres corregir (para: ${borrador.to}).`,
       []
     );
     await guardarPendienteEdicionBorrador(borrador.chatId, borrador.id);
@@ -404,26 +407,109 @@ export async function handleDraftCallback(callback: TelegramCallbackQuery): Prom
   }
 }
 
+let anthropicEdicion: Anthropic | null = null;
+function getClienteEdicion(): Anthropic {
+  if (anthropicEdicion) return anthropicEdicion;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("Falta la variable de entorno ANTHROPIC_API_KEY");
+  anthropicEdicion = new Anthropic({ apiKey });
+  return anthropicEdicion;
+}
+
 /**
- * Continúa el flujo cuando el usuario responde con el texto de reemplazo
- * tras pulsar "✏️ Editar antes de enviar".
+ * Aplica una instrucción de edición en lenguaje natural sobre el cuerpo
+ * ACTUAL de un borrador de correo, devolviendo el cuerpo completo ya
+ * actualizado — nunca reescribe partes que no se pidió tocar, a menos que la
+ * instrucción sea ella misma claramente un correo completo de reemplazo.
  */
-export async function continuarConEdicionBorrador(chatId: number, borradorId: string, nuevoTexto: string): Promise<void> {
-  const borrador = await actualizarCuerpoBorrador(borradorId, nuevoTexto);
-  if (!borrador) {
+async function aplicarEdicionBorrador(cuerpoActual: string, instruccion: string): Promise<string> {
+  const anthropic = getClienteEdicion();
+  const response = await crearMensajeAnthropic(anthropic, crearEjecucionIA("editar_borrador_correo"), {
+    model: "claude-sonnet-5",
+    max_tokens: 2048,
+    messages: [
+      {
+        role: "user",
+        content:
+          `Este es el cuerpo ACTUAL de un borrador de correo:\n\n"""\n${cuerpoActual}\n"""\n\n` +
+          `El usuario pidió este cambio: "${instruccion}"\n\n` +
+          `Aplica SOLO ese cambio y devuelve el cuerpo COMPLETO del correo ya actualizado, preservando ` +
+          `todo lo demás tal cual (mismo tono, mismo formato, mismos datos que no se pidió cambiar) — ` +
+          `NUNCA reescribas partes que no se pidió tocar. Si la instrucción es ella misma claramente un ` +
+          `correo completo de reemplazo (no una instrucción de edición sobre algo puntual), usa ese texto ` +
+          `tal cual como el nuevo cuerpo. Responde ÚNICAMENTE con el texto final del correo — sin comillas, ` +
+          `sin explicaciones, sin comentarios tuyos antes o después.`,
+      },
+    ],
+  });
+
+  // Hallazgo real de auditoría: con max_tokens acotado, un borrador largo podría cortarse a mitad de
+  // frase sin ningún aviso — un stop_reason distinto de "end_turn" (ej. "max_tokens") significa que el
+  // texto está truncado, nunca se debe usar como si fuera el cuerpo final del correo.
+  if (response.stop_reason !== "end_turn") {
+    throw new Error(`La respuesta quedó incompleta (${response.stop_reason}) — probablemente el correo es muy largo.`);
+  }
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  const resultado = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+  if (!resultado) throw new Error("La IA no devolvió ningún texto.");
+  return resultado;
+}
+
+/**
+ * Continúa el flujo cuando el usuario responde tras pulsar "✏️ Editar antes
+ * de enviar". Pedido explícito de Carlos: antes, esta función tomaba el
+ * mensaje del usuario como el CUERPO COMPLETO nuevo, descartando el borrador
+ * propuesto entero — si Carlos solo quería corregir una palabra o una frase,
+ * tenía que reescribir todo el correo él mismo. Ahora la respuesta se trata
+ * como una INSTRUCCIÓN de edición (aplicarEdicionBorrador, abajo) sobre el
+ * borrador YA existente — Claude aplica solo el cambio pedido y devuelve el
+ * cuerpo completo actualizado, preservando el resto tal cual.
+ */
+export async function continuarConEdicionBorrador(chatId: number, borradorId: string, instruccion: string): Promise<void> {
+  const borradorActual = await obtenerBorradorCorreo(borradorId);
+  if (!borradorActual) {
     await sendTelegramMessage(chatId, "Ese borrador ya no está disponible.");
     return;
   }
 
-  const texto = [`✉️ Borrador actualizado — para ${borrador.to}:`, "", nuevoTexto].join("\n");
+  // Hallazgo real de auditoría: antes esta escritura era instantánea (guardar texto tal cual); ahora
+  // implica una llamada de red real a Anthropic — mismo patrón ya establecido en este archivo para
+  // operaciones largas (ver continuarConOrientacion, más arriba) para que Carlos no se quede sin
+  // ninguna señal mientras espera.
+  await sendTelegramMessage(chatId, "🔄 Ajustando el borrador...").catch((error) =>
+    console.error("[emailCallbackHandler] No se pudo mostrar 'Ajustando...' (no crítico):", error)
+  );
 
-  const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-    [
-      { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
-      { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
-    ],
-    [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
-  ]);
+  // Hallazgo real de auditoría: todo lo que sigue (incluidas las llamadas a Sheets/Telegram, antes sin
+  // proteger) puede fallar por red/cuota — sin este try/catch, Carlos se quedaba sin ningún botón para
+  // reintentar (el pendiente de edición ya se consumió en server.ts antes de llegar acá). Cualquier
+  // fallo de acá en adelante re-ofrece el mismo botón de editar en vez de dejar el flujo colgado.
+  try {
+    const cuerpoActualizado = await aplicarEdicionBorrador(borradorActual.cuerpo, instruccion);
 
-  await actualizarMessageIdBorrador(borrador.id, messageId);
+    const borrador = await actualizarCuerpoBorrador(borradorId, cuerpoActualizado);
+    if (!borrador) {
+      await sendTelegramMessage(chatId, "Ese borrador ya no está disponible.");
+      return;
+    }
+
+    const texto = [`✉️ Borrador actualizado — para ${borrador.to}:`, "", cuerpoActualizado].join("\n");
+
+    const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+      [
+        { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
+        { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
+      ],
+      [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
+    ]);
+
+    await actualizarMessageIdBorrador(borrador.id, messageId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[emailCallbackHandler] Error aplicando la edición del borrador:", message);
+    await sendTelegramMessageWithButtons(chatId, `⚠️ No pude aplicar ese cambio (${message}). El borrador se conserva tal cual — inténtalo de nuevo.`, [
+      [{ text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borradorId}` }],
+    ]);
+  }
 }
