@@ -31,8 +31,10 @@ export function hashTextoChat(texto: string): string {
   return createHash("sha256").update(texto).digest("hex");
 }
 
-const ejecucionesEnCurso = new Map<string, Promise<ResultadoSolicitudChat>>();
+const ejecucionesEnCurso = new Map<string, { textoHash: string; tarea: Promise<ResultadoSolicitudChat> }>();
 const MAX_PROCESANDO_MS = 10 * 60 * 1000;
+
+export function solicitudesChatEnCurso(): number { return ejecucionesEnCurso.size; }
 
 export async function procesarSolicitudChat(
   entrada: { requestId: string; chatId: number; texto: string },
@@ -40,11 +42,16 @@ export async function procesarSolicitudChat(
   responder: () => Promise<string>
 ): Promise<ResultadoSolicitudChat> {
   const clave = `${entrada.chatId}:${entrada.requestId}`;
+  const textoHash = hashTextoChat(entrada.texto);
   const enCurso = ejecucionesEnCurso.get(clave);
-  if (enCurso) return enCurso;
+  if (enCurso) {
+    if (enCurso.textoHash !== textoHash) {
+      throw new ConflictoIdempotencia("El mismo messageId ya fue usado con un texto diferente.");
+    }
+    return enCurso.tarea;
+  }
 
   const tarea = (async (): Promise<ResultadoSolicitudChat> => {
-    const textoHash = hashTextoChat(entrada.texto);
     const existente = await repositorio.obtener(entrada.chatId, entrada.requestId);
     if (existente) {
       if (existente.textoHash !== textoHash) {
@@ -82,7 +89,7 @@ export async function procesarSolicitudChat(
     }
   })();
 
-  ejecucionesEnCurso.set(clave, tarea);
+  ejecucionesEnCurso.set(clave, { textoHash, tarea });
   try {
     return await tarea;
   } finally {

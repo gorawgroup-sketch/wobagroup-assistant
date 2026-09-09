@@ -3,6 +3,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 /** Contexto de la conversación en curso, disponible para los handlers que lo necesiten. */
 export interface ToolContext {
   chatId?: number;
+  antesDeEfecto?: () => void;
 }
 
 /**
@@ -25,4 +26,6 @@ export interface ToolDefinition {
    * hasta que alguien decida explícitamente marcarla segura, nunca al revés.
    */
   seguraParaModoRapido?: boolean;
+  /** Lectura auditada sin modelos anidados; admite abandonar la espera sin cancelar escrituras. */
+  lecturaAcotable?: boolean;
 }

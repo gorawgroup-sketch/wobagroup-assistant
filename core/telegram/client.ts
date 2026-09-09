@@ -1,5 +1,6 @@
 import type { IncomingMessage, InlineKeyboardButton, TelegramUpdate } from "./types";
 import { registrarMensajeSaliente } from "../claude/conversationStore";
+import { AcusesCallback } from "./callbackAcknowledgements";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 
@@ -430,12 +431,14 @@ async function sendTelegramMessagePlain(chatId: number, text: string): Promise<n
  * Responde a un callback_query (pulsación de botón inline) para que Telegram
  * quite el estado de "cargando" del botón. `text` es opcional (toast breve).
  */
-export async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+async function responderCallbackTelegram(callbackQueryId: string, text?: string): Promise<void> {
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/answerCallbackQuery`;
 
-  const response = await fetchConReintento(url, {
+  // Acuse efímero: no gastar un minuto reintentando una pulsación ya caducada.
+  const response = await fetch(url, {
     method: "POST",
+    signal: AbortSignal.timeout(4_000),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       callback_query_id: callbackQueryId,
@@ -443,10 +446,23 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
     }),
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Error respondiendo callback_query a Telegram (${response.status}): ${body}`);
+  const body = await response.json() as { ok?: boolean };
+  if (!response.ok || body.ok !== true) {
+    throw new Error(`Error respondiendo callback_query a Telegram (${response.status}).`);
   }
+}
+
+const acusesCallback = new AcusesCallback(
+  responderCallbackTelegram,
+  () => console.warn("[telegram/callback] No se pudo entregar el acuse temprano.")
+);
+
+export function prepararAcuseCallback(id: string, usuarioId: number): void {
+  acusesCallback.preparar(id, (texto) => sendTelegramMessage(usuarioId, texto));
+}
+
+export function answerCallbackQuery(id: string, text?: string): Promise<void> {
+  return acusesCallback.contestar(id, text);
 }
 
 /**

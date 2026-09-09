@@ -11,6 +11,7 @@ import type { ToolDefinition } from "./types";
 export const saldosBancariosTool: ToolDefinition = {
   name: "consultar_saldos_bancarios",
   seguraParaModoRapido: true,
+  lecturaAcotable: true,
   description:
     "Consulta el saldo real y actualizado de cada cuenta bancaria/tarjeta en Holded para una empresa " +
     "del grupo (WOBA, EWORKS o Footprint) — cuánto hay HOY en cada banco, no un cálculo ni una " +

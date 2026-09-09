@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
+import { mensajeFalloTurno } from "../core/claude/turnSafety";
+import { prepararAcuseCallback } from "../core/telegram/client";
 import {
   esUsuarioAutorizado,
   esAccionSensible,
@@ -72,6 +74,7 @@ import { crearSolicitudVinculoChat, confirmarVinculoChat } from "../core/cerebro
 import {
   ConflictoIdempotencia,
   procesarSolicitudChat,
+  solicitudesChatEnCurso,
 } from "../core/cerebro/webChatCoordinator";
 import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
@@ -164,7 +167,7 @@ process.on("SIGTERM", () => {
   cerrandoPorSigterm = true;
   servidorHttp?.close();
 
-  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0;
+  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0 && solicitudesChatEnCurso() === 0;
 
   if (nadaEnCurso()) {
     console.log("[server] SIGTERM recibido, sin trabajo en curso — saliendo de inmediato.");
@@ -173,7 +176,7 @@ process.on("SIGTERM", () => {
   }
 
   console.log(
-    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram y ${obtenerCantidadJobsEnCurso()} job(s) en curso — esperando a que terminen antes de salir.`
+    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${solicitudesChatEnCurso()} chat(s) web y ${obtenerCantidadJobsEnCurso()} job(s) en curso — esperando a que terminen antes de salir.`
   );
   const esperaMaximaDrenajeMs = 55_000;
   const inicio = Date.now();
@@ -185,7 +188,7 @@ process.on("SIGTERM", () => {
     } else if (Date.now() - inicio > esperaMaximaDrenajeMs) {
       clearInterval(intervalo);
       console.error(
-        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${obtenerCantidadJobsEnCurso()} job(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
+        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
       );
       process.exit(0);
     }
@@ -699,7 +702,7 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
       return;
     }
     console.error("[api/cerebro/chat] Error procesando mensaje:", error instanceof Error ? error.name : "Error");
-    res.status(500).json({ error: "Wobi no pudo completar este mensaje. Puedes reintentarlo con una solicitud nueva." });
+    res.status(500).json({ error: mensajeFalloTurno(error) });
   }
 });
 
@@ -1008,6 +1011,10 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
 
   const update = req.body as TelegramUpdate;
   if (!Number.isFinite(update.update_id) || !esUpdateTelegramNuevo(update.update_id)) return;
+
+  if (update.callback_query) {
+    prepararAcuseCallback(update.callback_query.id, update.callback_query.from.id);
+  }
 
   const remitente = update.callback_query?.from ?? update.message?.from;
   if (!(await esUsuarioAutorizado(remitente?.id))) {
@@ -1446,7 +1453,7 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
     // ver avisarSaldoAnthropicAgotado en core/claude/client.ts) — el propio chat se vuelve la alerta.
     const mensajeError = esErrorSaldoAnthropicAgotado(error)
       ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo responder hasta que se recargue crédito en console.anthropic.com → Plans & Billing. Ya avisé a los administradores."
-      : "Lo siento, ha ocurrido un error procesando tu mensaje. Inténtalo de nuevo en unos minutos.";
+      : mensajeFalloTurno(error);
     try {
       await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, mensajeError);
     } catch (sendError) {

@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext, ToolDefinition } from "./types";
+import { ejecutarHerramienta } from "./execution";
 import { knowledgeBaseTool } from "./knowledgeBase";
 import { cashflowResumenTool } from "./cashflowResumen";
 import { cashflowDetalleTool } from "./cashflowDetalle";
@@ -132,10 +133,5 @@ export async function executeTool(
     return `Error: la herramienta "${name}" no existe.`;
   }
 
-  try {
-    return await tool.handler(input, context);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return `Error ejecutando la herramienta "${name}": ${message}`;
-  }
+  return ejecutarHerramienta(tool, input, context);
 }

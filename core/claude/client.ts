@@ -1,7 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
-import { obtenerHistorial, guardarHistorial, limpiarHistorial } from "./conversationStore";
+import { obtenerHistorial, guardarHistorial } from "./conversationStore";
+import { ColaTurnos } from "./turnQueue";
+import { impedirReinicioConEfectos, MENSAJE_ACCION_INCIERTA, TurnoConEfectosError } from "./turnSafety";
+import { TiempoMaximoExcedidoError } from "../utils/asyncTimeout";
 import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
@@ -752,7 +755,10 @@ async function ejecutarConversacion(
       const claves = Object.keys(block.input as Record<string, unknown>);
       console.log(`[claude:${model}] tool_use -> ${block.name} (campos: ${claves.join(",") || "ninguno"})`);
 
-      const result = await executeTool(block.name, block.input as Record<string, unknown>, { chatId });
+      const result = await executeTool(block.name, block.input as Record<string, unknown>, {
+        chatId,
+        antesDeEfecto: () => { ejecucion.efectosIniciados = true; },
+      });
 
       console.log(`[claude:${model}] tool_result <- ${block.name} (${result.length} caracteres)`);
 
@@ -784,6 +790,7 @@ async function ejecutarConversacion(
 }
 
 function esErrorDeDisponibilidad(error: unknown): boolean {
+  if (error instanceof TiempoMaximoExcedidoError) return error.operacion === "solicitud_modelo";
   // 5xx / overloaded / timeouts de red del SDK — errores de que la API
   // (o el modelo) no está disponible ahora mismo, a diferencia de un 400
   // (mensaje mal formado, no se arregla reintentando con otro modelo) o un
@@ -896,6 +903,7 @@ async function orquestarTurno(
 ): Promise<string> {
   const pendientes = chatId !== undefined ? await obtenerPendientesSensibles(chatId) : undefined;
   const saltarModoRapido = pendientes !== undefined && haySensiblePendiente(pendientes);
+  let haikuNoDisponible = false;
 
   if (!saltarModoRapido) {
     const intentoRapido = await ejecutarConversacion(
@@ -911,7 +919,13 @@ async function orquestarTurno(
       ejecucion,
       pendientes,
       opciones.presentacion ?? "telegram"
-    );
+    ).catch((error): ResultadoConversacion => {
+      impedirReinicioConEfectos(ejecucion, error);
+      if (!esErrorDeDisponibilidad(error)) throw error;
+      haikuNoDisponible = true;
+      console.warn("[claude] Modo rápido no disponible; se intenta el modelo principal una vez.");
+      return { tipo: "escalar" };
+    });
 
     if (intentoRapido.tipo === "respuesta") {
       // Solo los mensajes NUEVOS de este turno (no el array completo, que arranca con un historial
@@ -947,9 +961,10 @@ async function orquestarTurno(
       opciones.presentacion ?? "telegram"
     );
   } catch (error) {
-    if (!esErrorDeDisponibilidad(error)) throw error;
+    impedirReinicioConEfectos(ejecucion, error);
+    if (!esErrorDeDisponibilidad(error) || haikuNoDisponible) throw error;
 
-    console.error("[claude] Sonnet no disponible, usando Haiku como respaldo de disponibilidad:", error);
+    console.warn("[claude] Sonnet no disponible; respaldo sin acciones previas.");
     resultadoFinal = await ejecutarConversacion(
       userText,
       chatId,
@@ -989,18 +1004,7 @@ export interface OpcionesAskClaude {
   presentacion?: "telegram" | "web";
 }
 
-const colasTurnosPorChat = new Map<number, Promise<unknown>>();
-
-function conTurnoSerializado<T>(chatId: number, tarea: () => Promise<T>): Promise<T> {
-  const anterior = colasTurnosPorChat.get(chatId) ?? Promise.resolve();
-  const actual = anterior.then(tarea, tarea);
-  const cola = actual.catch(() => undefined);
-  colasTurnosPorChat.set(chatId, cola);
-  void cola.finally(() => {
-    if (colasTurnosPorChat.get(chatId) === cola) colasTurnosPorChat.delete(chatId);
-  });
-  return actual;
-}
+const colaTurnos = new ColaTurnos();
 
 async function askClaudeInterno(
   userText: string,
@@ -1017,6 +1021,17 @@ async function askClaudeInterno(
   } catch (error) {
     registrarEstadoClaude(false, error instanceof Error ? error.message : String(error));
 
+    if (ejecucion.efectosIniciados) {
+      // Conserva el pedido y la incertidumbre; nunca reinicia ni borra la memoria tras una acción.
+      if (chatId !== undefined) {
+        await guardarHistorial(chatId, [
+          { role: "user", content: userText },
+          { role: "assistant", content: MENSAJE_ACCION_INCIERTA },
+        ]).catch(() => console.warn("[claude] No se pudo guardar el aviso de acción incierta."));
+      }
+      throw error instanceof TurnoConEfectosError ? error : new TurnoConEfectosError(error);
+    }
+
     // Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): un saldo de Anthropic agotado
     // también es un 400 invalid_request_error — antes caía en la salvaguarda de "historial rechazado"
     // de abajo y se reintentaba SIN HISTORIAL, un segundo intento inútil (el saldo sigue en cero,
@@ -1032,23 +1047,24 @@ async function askClaudeInterno(
     // invalid_request_error) — la causa raíz conocida ya está corregida en
     // guardarHistorial, pero esto cubre cualquier otro caso no previsto en
     // vez de tumbar la conversación entera del chat. Se reintenta UNA vez
-    // sin historial (arranca "en limpio"); si eso también falla, el error
+    // sin historial en la solicitud (NO borra la memoria persistida); si también falla, el error
     // se deja propagar tal cual para que el llamador lo reporte.
     const esRechazoDeHistorial =
-      error instanceof Anthropic.APIError && error.status === 400 && chatId !== undefined;
+      error instanceof Anthropic.APIError && error.status === 400 && chatId !== undefined &&
+      /tool_result|tool_use|messages\.[0-9]|messages\[[0-9]/i.test(error.message);
 
     if (!esRechazoDeHistorial) {
       throw error;
     }
 
-    console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
-    await limpiarHistorial(chatId!);
+    console.warn("[claude] Formato de historial rechazado; intento aislado sin borrar memoria.");
     try {
       const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false, ejecucion, opciones);
       registrarEstadoClaude(true);
       return respuesta;
     } catch (segundoError) {
       registrarEstadoClaude(false, segundoError instanceof Error ? segundoError.message : String(segundoError));
+      impedirReinicioConEfectos(ejecucion, segundoError);
       throw segundoError;
     }
   }
@@ -1068,7 +1084,7 @@ export function askClaude(
   opciones: OpcionesAskClaude = {}
 ): Promise<string> {
   const tarea = () => askClaudeInterno(userText, chatId, nombreRemitente, proceso, opciones);
-  return chatId === undefined ? tarea() : conTurnoSerializado(chatId, tarea);
+  return chatId === undefined ? tarea() : colaTurnos.ejecutar(chatId, tarea);
 }
 
 export interface CitaBusquedaWeb {

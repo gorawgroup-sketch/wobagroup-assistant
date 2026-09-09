@@ -78,3 +78,28 @@ test("rechaza reutilizar el mismo messageId con contenido diferente", async () =
     ConflictoIdempotencia
   );
 });
+
+test("rechaza contenido diferente también mientras la solicitud sigue en curso", async () => {
+  const repo = crearRepositorio();
+  let liberar!: () => void;
+  const espera = new Promise<void>((resolve) => { liberar = resolve; });
+  const primera = procesarSolicitudChat({ requestId: "en-curso", chatId: 10, texto: "uno" }, repo,
+    async () => { await espera; return "ok"; });
+  await assert.rejects(procesarSolicitudChat({ requestId: "en-curso", chatId: 10, texto: "dos" }, repo,
+    async () => assert.fail("no debe ejecutar")), ConflictoIdempotencia);
+  liberar();
+  await primera;
+});
+
+test("una solicitud fallida no repite efectos con el mismo identificador", async () => {
+  const repo = crearRepositorio();
+  const entrada = { requestId: "fallo", chatId: 11, texto: "acción" };
+  let llamadas = 0;
+  await assert.rejects(procesarSolicitudChat(entrada, repo, async () => {
+    llamadas++;
+    throw new Error("resultado incierto");
+  }));
+  const repetida = await procesarSolicitudChat(entrada, repo, async () => { llamadas++; return "mal"; });
+  assert.equal(repetida.estado, "fallido");
+  assert.equal(llamadas, 1);
+});
