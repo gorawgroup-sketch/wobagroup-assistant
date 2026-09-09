@@ -39,7 +39,9 @@ export const conciliarMovimientoTool: ToolDefinition = {
     "consultar_gastos_sin_comprobante, o porque el usuario ya te dio los datos). Necesita el proveedor/" +
     "concepto del gasto tal como aparece en Holded, su monto, su fecha y la empresa — busca el gasto por " +
     "su cuenta y, si es un match único y claro, manda la pregunta. Si hay varios gastos parecidos, NUNCA " +
-    "elige solo — te dice exactamente cuáles encontró para que confirmes cuál es.",
+    "elige solo — te dice exactamente cuáles encontró para que confirmes cuál es. Si en cambio piden " +
+    "'conciliar/verificar el cashflow' de forma general (sin un gasto puntual en mente), esa es otra " +
+    "pregunta — usa verificar_cashflow_actualizado.",
   input_schema: {
     type: "object",
     properties: {
