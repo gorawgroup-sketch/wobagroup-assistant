@@ -55,6 +55,7 @@ import { consumirPendienteAjusteMontoGasto } from "../core/gastos/pendienteAjust
 import { consumirPendienteAccionGasto } from "../core/gastos/pendienteAccionGastoStore";
 import { consumirPendienteSeleccionGasto } from "../core/gastos/pendienteSeleccionGastoStore";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
+import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
@@ -800,6 +801,8 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
         await handleGastoCallback(update.callback_query);
       } else if (data.startsWith("edicioncompra_")) {
         await handleEdicionCompraHoldedCallback(update.callback_query);
+      } else if (data.startsWith("edicioncashflow_")) {
+        await handleEdicionValorCashflowCallback(update.callback_query);
       } else if (data.startsWith("evento_")) {
         await handleEventoCallback(update.callback_query);
       } else if (data.startsWith("cerebroacceso_")) {
