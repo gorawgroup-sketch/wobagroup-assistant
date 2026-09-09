@@ -104,6 +104,56 @@ process.on("uncaughtException", (error) => {
   console.error("[server] uncaughtException (el proceso sigue vivo, no se cae):", error);
 });
 
+/**
+ * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): pidió confirmar si un movimiento era una
+ * transferencia interna, el bot respondió "Trabajando en tu consulta..." — y un redeploy normal de
+ * Railway (rollout, varias veces por sesión en desarrollo activo) llegó a mitad de ese procesamiento y
+ * mató el proceso. El webhook de Telegram ya había respondido 200 OK de inmediato (para que Telegram no
+ * reintente el update — ver /webhook/telegram más abajo), así que el trabajo REAL sigue corriendo en
+ * segundo plano, sin ninguna conexión HTTP abierta que un shutdown "normal" (esperar a que las requests
+ * en curso terminen) pueda detectar. Railway por defecto solo da 3 segundos entre SIGTERM y SIGKILL —
+ * muchísimo menos que lo que tarda un turno real de Claude con herramientas — así que sin esto, CADA
+ * redeploy durante una conversación activa mata esa conversación en silencio, sin ningún error visible
+ * ni para Carlos ni en los logs.
+ *
+ * `actualizacionesEnCurso` cuenta cuántos updates de Telegram siguen procesándose de verdad ahora mismo
+ * (incrementado/decrementado alrededor de procesarUpdateTelegram, ver /webhook/telegram). Al recibir
+ * SIGTERM, se espera a que llegue a 0 (con esperaMaximaDrenajeMs de margen, unos segundos por debajo del
+ * drainingSeconds real configurado en railway.json) antes de salir voluntariamente — así Railway nunca
+ * necesita llegar al SIGKILL para el caso común, y ninguna conversación en curso se pierde solo porque
+ * coincidió con un despliegue.
+ */
+let actualizacionesEnCurso = 0;
+let cerrandoPorSigterm = false;
+
+process.on("SIGTERM", () => {
+  if (cerrandoPorSigterm) return; // Railway no debería mandar SIGTERM dos veces, pero por si acaso.
+  cerrandoPorSigterm = true;
+
+  if (actualizacionesEnCurso === 0) {
+    console.log("[server] SIGTERM recibido, sin actualizaciones de Telegram en curso — saliendo de inmediato.");
+    process.exit(0);
+  }
+
+  console.log(`[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram en curso — esperando a que terminen antes de salir.`);
+  const esperaMaximaDrenajeMs = 55_000;
+  const inicio = Date.now();
+  const intervalo = setInterval(() => {
+    if (actualizacionesEnCurso === 0) {
+      clearInterval(intervalo);
+      console.log("[server] Todas las actualizaciones en curso terminaron — saliendo.");
+      process.exit(0);
+    } else if (Date.now() - inicio > esperaMaximaDrenajeMs) {
+      clearInterval(intervalo);
+      console.error(
+        `[server] Quedaron ${actualizacionesEnCurso} actualización(es) sin terminar tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
+      );
+      process.exit(0);
+    }
+  }, 250);
+  intervalo.unref();
+});
+
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
@@ -725,7 +775,18 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
   res.sendStatus(204);
 });
 
-app.post("/webhook/telegram", async (req: Request, res: Response) => {
+/**
+ * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): un redeploy de Railway (rollout normal,
+ * varias veces por sesión en desarrollo activo) mató a mitad de camino el procesamiento de este mismo
+ * handler — Telegram ya había recibido su 200 OK (ver abajo, se manda de inmediato), así que el
+ * "trabajando en tu consulta..." se quedó sin respuesta para siempre, sin ningún error visible y sin
+ * ninguna forma de que Carlos supiera que el proceso simplemente murió. `procesarUpdateTelegram` es el
+ * cuerpo real (sin cambios) de lo que antes era el handler inline — se extrae a una función nombrada
+ * para poder trackear cuántas actualizaciones siguen realmente en curso (ver `actualizacionesEnCurso`
+ * y el handler de SIGTERM más abajo), que ahora espera a que terminen antes de dejar que Railway mate
+ * el proceso, en vez de cortarlas a mitad de camino.
+ */
+async function procesarUpdateTelegram(req: Request, res: Response): Promise<void> {
   // Respondemos 200 de inmediato para que Telegram no reintente el update.
   res.sendStatus(200);
 
@@ -1139,6 +1200,15 @@ app.post("/webhook/telegram", async (req: Request, res: Response) => {
   } finally {
     detenerEscribiendo();
   }
+}
+
+app.post("/webhook/telegram", (req: Request, res: Response) => {
+  actualizacionesEnCurso++;
+  procesarUpdateTelegram(req, res)
+    .catch((error) => console.error("Error no capturado procesando el webhook de Telegram:", error))
+    .finally(() => {
+      actualizacionesEnCurso--;
+    });
 });
 
 /**
