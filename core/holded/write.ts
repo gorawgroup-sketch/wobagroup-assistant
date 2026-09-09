@@ -44,6 +44,27 @@ function getWriteApiKey(empresa: Empresa): string {
   return key;
 }
 
+/**
+ * Hallazgo real de auditoría xhigh: antes de esto, distinguir "la compra ya
+ * no existe" (404 real) de cualquier otro error dependía de que el llamador
+ * hiciera regex sobre el MENSAJE de un Error genérico, ensamblado dos capas
+ * más abajo — frágil en ambas direcciones (si Holded cambia el formato del
+ * cuerpo del error, o si un error no relacionado contiene "(404)" por
+ * coincidencia). Ahora el status HTTP real queda expuesto como propiedad
+ * tipada — ver revisarCorreccionesCuentaContable.ts, que decide si una
+ * asignación pendiente queda resuelta o no según esto.
+ */
+export class HoldedApiError extends Error {
+  constructor(
+    public readonly status: number,
+    empresa: Empresa,
+    body: string
+  ) {
+    super(`Error de la API de Holded (${status}) para ${empresa}: ${body}`);
+    this.name = "HoldedApiError";
+  }
+}
+
 async function holdedWriteCall(
   empresa: Empresa,
   method: "GET" | "POST" | "PUT",
@@ -64,7 +85,7 @@ async function holdedWriteCall(
 
   if (!response.ok) {
     const errBody = await response.text();
-    throw new Error(`Error de la API de Holded (${response.status}) para ${empresa}: ${errBody}`);
+    throw new HoldedApiError(response.status, empresa, errBody);
   }
 
   return response.json();
@@ -946,6 +967,13 @@ const PALABRAS_IGNORADAS_CONCEPTO = new Set([
 // Umbral mínimo de evidencia para confiar en un match por CONCEPTO (señal más débil que por
 // proveedor, ver construirSugerenciaDesdeCoincidencias) — una sola línea histórica nunca basta.
 const MIN_EVIDENCIA_CONCEPTO = 2;
+// Cuánto tiempo se confía en una corrección de cuenta confirmada (tier 0, ver inferirCuentaGasto) antes
+// de volver a los tiers normales de inferencia. Hallazgo real de auditoría xhigh: como el tier 0 ya no
+// se cruza contra evidencia de categoría (ver comentario junto a su uso, más abajo), esta es su única
+// protección real contra quedar obsoleto — 180 días es suficiente para que una corrección real siga
+// siendo útil, y suficientemente corto para que un error puntual (o una cuenta que Holded reorganizó
+// después) se autocorrija solo en vez de confiar en ella para siempre.
+const TTL_CORRECCION_VIGENTE_MS = 180 * 24 * 60 * 60 * 1000;
 
 function palabrasSignificativas(texto: string): string[] {
   return normalizar(texto)
@@ -1183,9 +1211,7 @@ export async function inferirCuentaGasto(
   // detectó y confirmó que Carlos corrigió a mano la cuenta de este
   // proveedor, esa confirmación EXPLÍCITA es evidencia más fuerte que
   // cualquier inferencia por precedente. Se busca ya (no hace falta esperar
-  // a recolectarLineasConCuenta), pero el RETURN se decide más abajo, tras
-  // calcular contradiceCategoria — ver el porqué en el comentario de más
-  // abajo, junto al resto del uso de corregida.
+  // a recolectarLineasConCuenta).
   const corregidaPromise = buscarCuentaCorregidaAprendida(criterios.proveedor, empresa).catch((error) => {
     console.error("[write] Error consultando cuenta corregida aprendida (no crítico, sigue con los tiers normales):", error);
     return undefined;
@@ -1194,6 +1220,55 @@ export async function inferirCuentaGasto(
   const lineas = await recolectarLineasConCuenta(empresa);
   const corregida = await corregidaPromise;
   if (lineas.length === 0 && !corregida) return undefined;
+
+  // Hallazgo real de auditoría xhigh (2ª pasada, 2 agentes independientes): la versión anterior
+  // gateaba el tier 0 detrás de `contradiceCategoria` (el mismo juez que protege tiers 1/2, ver más
+  // abajo) — pero ese juez compara contra evidencia AGREGADA de categoría, que casi siempre INCLUYE
+  // las mismas compras viejas y mal archivadas que motivaron la corrección en primer lugar (ej. 2+
+  // compras ya mal archivadas, con el tag correcto pero la cuenta vieja — exactamente el patrón real
+  // del caso Greengrass). Resultado: el gate podía vetar justo la corrección que existe para arreglar
+  // ese patrón, derrotando el propósito del tier 0 para su caso de uso más obvio (un proveedor
+  // reincidente). La diferencia de fondo: tiers 1/2/3 son INFERENCIA estadística sobre precedente (por
+  // eso necesitan cruzarse contra evidencia más amplia) — el tier 0 es un HECHO verificado en vivo por
+  // el job semanal contra la cuenta real que Carlos dejó en Holded, no una inferencia. Se confía en él
+  // sin cruzarlo contra categoría.
+  //
+  // La protección real contra que esta corrección se vuelva obsoleta con el tiempo (cuenta
+  // reorganizada/borrada en Holded, o un caso puntual que no debía generalizarse) es el TTL de abajo,
+  // no un cruce con categoría — vence sola y vuelve a los tiers normales en vez de confiar para
+  // siempre. La calidad de ENTRADA a cuentaCorregidaAprendidaSheet también se reforzó por separado
+  // (ver revisarCorreccionesCuentaContable.ts y gastoCallbackHandler.ts) para que llegue menos "ruido"
+  // a este tier de máxima confianza.
+  if (corregida) {
+    const vigente = corregida.confirmadoEn ? Date.now() - new Date(corregida.confirmadoEn).getTime() <= TTL_CORRECCION_VIGENTE_MS : false;
+    if (vigente) {
+      // Hallazgo real de auditoría: devolver tags:[] a ciegas le quitaba a
+      // este proveedor los tags que tiers 1/2 SÍ habrían adjuntado (ver
+      // procesarGastoEntrante.ts, que usa cuentaSugerida.tags como fallback de
+      // persona cuando no hay personaAsociada explícita) — una regresión
+      // silenciosa justo para el proveedor que ya se corrigió. Se reutiliza el
+      // mismo cálculo de tags frecuentes que tiers 1/2/3 (construirSugerenciaDesdeCoincidencias),
+      // filtrado a las líneas que YA usan la cuenta corregida — la cuenta en
+      // sí nunca cambia (viene de la corrección confirmada), solo se
+      // enriquecen tags/ejemplo si ya hay precedente real que los traiga.
+      const desdeCorreccion = construirSugerenciaDesdeCoincidencias(
+        lineas.filter((l) => l.account === corregida.cuentaId),
+        "correccion_confirmada",
+        0
+      );
+      return (
+        desdeCorreccion ?? {
+          accountId: corregida.cuentaId,
+          tags: [],
+          ejemplo: "corrección ya confirmada para este proveedor",
+          aprendidoDe: "correccion_confirmada",
+        }
+      );
+    }
+    console.error(
+      `[write] La cuenta corregida aprendida para "${criterios.proveedor}" (${empresa}) venció (más de ${TTL_CORRECCION_VIGENTE_MS / 86400000} días) — se ignora, sigue con los tiers normales.`
+    );
+  }
 
   // textosParecidos (no un simple includes/substring) — bug real encontrado
   // en vivo: "Booking.com" (como lo lee la extracción de la factura) nunca
@@ -1217,61 +1292,19 @@ export async function inferirCuentaGasto(
   // La corrección de fondo: en vez de preguntar "¿esta cuenta tiene el tag correcto?", se pregunta
   // "¿esta cuenta es la MISMA que ya usan, con evidencia real e independiente, el resto de los gastos
   // de esta categoría?" — se calcula el tier 3 (categoría) PRIMERO, no al final como último recurso, y
-  // se usa como el juez de referencia para los demás tiers: analiza TODAS las líneas reales de esta
-  // categoría (no solo las del mismo proveedor) y solo se acepta un match por proveedor/concepto
-  // cuando SEÑALA A LA MISMA CUENTA que esa evidencia agregada — si señalan a cuentas distintas, gana
-  // la evidencia de categoría (más amplia, menos manipulable por un solo historial contaminado). Si
-  // tagsCategoria no reconoce ninguna categoría, o no hay evidencia suficiente para el tier 3 todavía,
-  // no hay nada con qué cruzar — tiers 1/2 quedan intactos (ej. "Uber", cuyas líneas reales están
-  // etiquetadas "uber" y no "taxi", nunca alcanza el mínimo de evidencia del tier 3 con tagsCategoria
-  // estricto — sigue resolviendo por proveedor, sin cambios).
+  // se usa como el juez de referencia para los demás tiers (1/2, NO el tier 0 — ver arriba): analiza
+  // TODAS las líneas reales de esta categoría (no solo las del mismo proveedor) y solo se acepta un
+  // match por proveedor/concepto cuando SEÑALA A LA MISMA CUENTA que esa evidencia agregada — si
+  // señalan a cuentas distintas, gana la evidencia de categoría (más amplia, menos manipulable por un
+  // solo historial contaminado). Si tagsCategoria no reconoce ninguna categoría, o no hay evidencia
+  // suficiente para el tier 3 todavía, no hay nada con qué cruzar — tiers 1/2 quedan intactos (ej.
+  // "Uber", cuyas líneas reales están etiquetadas "uber" y no "taxi", nunca alcanza el mínimo de
+  // evidencia del tier 3 con tagsCategoria estricto — sigue resolviendo por proveedor, sin cambios).
   const porCategoria = tagsCategoria.length > 0 ? lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags))) : [];
   const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
 
   const contradiceCategoria = (accountId: string): boolean =>
     sugeridoPorCategoria !== undefined && sugeridoPorCategoria.accountId !== accountId;
-
-  // Hallazgo real de auditoría xhigh sobre el propio tier 0 (arriba): un
-  // "return" incondicional ahí, ANTES de calcular contradiceCategoria,
-  // reintroduce exactamente el mismo defecto que motivó reordenar los tiers
-  // 1/2/3 esta misma noche (caso Greengrass) — una sola señal (acá, una
-  // única detección semanal, que podría ser un falso positivo puntual de la
-  // API de Holded) dominando para siempre sin cruzarse contra evidencia más
-  // amplia, y encima por ENCIMA del juez que existe justo para eso. Una
-  // corrección confirmada por Carlos SÍ es evidencia más fuerte que
-  // cualquier inferencia por precedente — pero si contradice la evidencia
-  // agregada de categoría (más amplia, menos manipulable por un solo
-  // historial contaminado), se prefiere la categoría, igual que ya se hace
-  // para tiers 1/2 — nunca se aplica el tier 0 a ciegas.
-  if (corregida && !contradiceCategoria(corregida.cuentaId)) {
-    // Hallazgo real de auditoría: devolver tags:[] a ciegas le quitaba a
-    // este proveedor los tags que tiers 1/2 SÍ habrían adjuntado (ver
-    // procesarGastoEntrante.ts, que usa cuentaSugerida.tags como fallback de
-    // persona cuando no hay personaAsociada explícita) — una regresión
-    // silenciosa justo para el proveedor que ya se corrigió. Se reutiliza el
-    // mismo cálculo de tags frecuentes que tiers 1/2/3 (construirSugerenciaDesdeCoincidencias),
-    // filtrado a las líneas que YA usan la cuenta corregida — la cuenta en
-    // sí nunca cambia (viene de la corrección confirmada), solo se
-    // enriquecen tags/ejemplo si ya hay precedente real que los traiga.
-    const desdeCorreccion = construirSugerenciaDesdeCoincidencias(
-      lineas.filter((l) => l.account === corregida.cuentaId),
-      "correccion_confirmada",
-      0
-    );
-    return (
-      desdeCorreccion ?? {
-        accountId: corregida.cuentaId,
-        tags: [],
-        ejemplo: "corrección ya confirmada para este proveedor",
-        aprendidoDe: "correccion_confirmada",
-      }
-    );
-  }
-  if (corregida && contradiceCategoria(corregida.cuentaId)) {
-    console.error(
-      `[write] La cuenta corregida aprendida para "${criterios.proveedor}" (${empresa}) contradice la evidencia agregada de categoría — se ignora esta vez, sigue con los tiers normales.`
-    );
-  }
 
   // Hallazgo real de auditoría (caso "RESTAURANTE... SA DE CV" vs. "ADEL RESTAURACION SL", Footprint,
   // 2026-09-08): textosParecidos por sí solo no exige que la palabra compartida sea DISTINTIVA — solo
@@ -2071,7 +2104,11 @@ export interface CompraHoldedCruda {
 export async function obtenerCompraHoldedPorId(empresa: Empresa, purchaseId: string): Promise<CompraHoldedCruda> {
   const data = (await holdedWriteCall(empresa, "GET", `/purchases/${purchaseId}`)) as CompraHoldedCruda;
   if (!data?.id) {
-    throw new Error(`No se encontró la compra ${purchaseId} en Holded (${empresa}).`);
+    // Mismo caso que un 404 real de la API (Holded a veces responde 200 con
+    // cuerpo vacío en vez de un 404) — se homologa al mismo tipo de error
+    // para que revisarCorreccionesCuentaContable.ts lo trate igual sin tener
+    // que conocer esta particularidad de la API.
+    throw new HoldedApiError(404, empresa, `No se encontró la compra ${purchaseId} en Holded.`);
   }
   return data;
 }

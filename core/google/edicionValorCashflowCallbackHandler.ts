@@ -53,12 +53,15 @@ export async function handleEdicionValorCashflowCallback(callback: TelegramCallb
       return;
     }
     // Pedido explícito de Carlos ("que la práctica te vaya dando velocidad"):
-    // recuerda a qué fila real correspondió esta edición confirmada, para
-    // que la próxima búsqueda del mismo bloque+concepto+semana no tenga que
-    // volver a escanear el bloque entero (ver cashflowFilaAprendidaSheet.ts
-    // y su uso en buscarFilaCashflowParaEditar). No crítico — nunca debe
-    // tumbar la confirmación de una edición que ya tuvo éxito.
-    await registrarFilaAprendida(pendiente.bloque, pendiente.clienteOConcepto, pendiente.semana, pendiente.fila).catch((error) =>
+    // recuerda a qué fila real correspondió esta edición confirmada — ya no
+    // se usa para saltarse el escaneo (ver el hallazgo de auditoría xhigh
+    // junto a buscarFilaCashflowParaEditar en cashflowWrite.ts, que le quitó
+    // ese atajo por ser inseguro con datos financieros reales), pero se deja
+    // registrado como base para una versión futura y segura de esta
+    // optimización. No crítico y no bloqueante — ni debe tumbar ni debe
+    // demorar la confirmación de una edición que ya tuvo éxito, así que no
+    // se espera (fire-and-forget).
+    registrarFilaAprendida(pendiente.bloque, pendiente.clienteOConcepto, pendiente.semana, pendiente.fila).catch((error) =>
       console.error("[edicionValorCashflowCallbackHandler] Error registrando fila aprendida (no crítico):", error)
     );
     await editTelegramMessage(
