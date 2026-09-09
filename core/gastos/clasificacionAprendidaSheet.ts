@@ -1,5 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_clasificaciones_aprendidas";
@@ -66,7 +67,7 @@ async function ensureTab(): Promise<void> {
   tabAsegurada = true;
 }
 
-interface FilaAprendida {
+export interface FilaAprendida {
   rowIndex: number;
   proveedor: string;
   empresa: string;
@@ -123,30 +124,69 @@ export async function obtenerClasificacionesAprendidas(): Promise<string | null>
  * cuando el usuario confirma una clasificación propuesta (refuerza) o la
  * corrige (sobreescribe con el dato correcto).
  */
+const MAX_INTENTOS_ESCRITURA = 3;
+
+/**
+ * Hallazgo real de auditoría (misma noche, mismo bug ya cerrado en varios
+ * otros archivos): el camino de clasificación NUEVA usaba values.append, y
+ * "leer, decidir si existe, escribir" no tenía lock — mismo fix ya
+ * establecido: todo bajo conMutex, fila libre calculada a mano + rango
+ * explícito para el caso nuevo, con verificación y reintento.
+ */
 export async function registrarClasificacionAprendida(proveedor: string, empresa: string, concepto: string): Promise<void> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
-
-  const filas = await leerFilas();
   const objetivo = normalizar(proveedor);
-  const match = filas.find((f) => normalizar(f.proveedor) === objetivo);
 
-  if (match) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!B${match.rowIndex}:E${match.rowIndex}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[empresa, concepto, match.vecesConfirmado + 1, new Date().toISOString()]] },
-    });
-    return;
-  }
+  await conMutex(`clasificacionAprendida:${TAB_NAME}`, async () => {
+    const filas = await leerFilas();
+    const match = filas.find((f) => normalizar(f.proveedor) === objetivo);
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:E`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [[proveedor, empresa, concepto, 1, new Date().toISOString()]] },
+    if (match) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!B${match.rowIndex}:E${match.rowIndex}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[empresa, concepto, match.vecesConfirmado + 1, new Date().toISOString()]] },
+      });
+      return;
+    }
+
+    const filaNueva = [proveedor, empresa, concepto, 1, new Date().toISOString()];
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const resp = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A:E`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const filaLibre = (resp.data.values ?? []).length + 1;
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${filaLibre}:E${filaLibre}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [filaNueva] },
+      });
+
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${filaLibre}:E${filaLibre}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const filaEscrita = verificacion.data.values?.[0] ?? [];
+      const coincide = filaNueva.every((v, i) => String(filaEscrita[i] ?? "") === String(v));
+      if (coincide) return;
+
+      console.error(
+        `[clasificacionAprendidaSheet] Colisión al escribir en "${TAB_NAME}", fila ${filaLibre} — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+      );
+    }
+    throw new Error(`No se pudo registrar la clasificación aprendida tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
   });
+}
+
+/** Todas las clasificaciones aprendidas — para el reporte de aprendizaje (ver core/tools/reporteAprendizaje.ts). */
+export async function obtenerTodasLasClasificaciones(): Promise<FilaAprendida[]> {
+  return leerFilas();
 }
