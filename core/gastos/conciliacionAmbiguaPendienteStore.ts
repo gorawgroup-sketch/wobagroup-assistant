@@ -31,10 +31,19 @@ export interface ConciliacionAmbiguaPendiente {
    * la confirmación, igual que ya hace intentarConciliar para su propio candidato único aproximado.
    */
   esAproximado: boolean;
+  /**
+   * Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
+   * se necesita para registrar qué descripción de movimiento eligió Carlos
+   * cuando resuelve la ambigüedad (ver movimientoAmbiguoAprendidoSheet.ts) —
+   * sin esto, no hay forma de saber a qué proveedor pertenece la elección.
+   * Opcional porque intentarConciliar recibe proveedor como parámetro
+   * opcional (no siempre disponible en los 3 caminos que lo llaman).
+   */
+  proveedor?: string;
 }
 
 const TAB_NAME = "_conciliaciones_ambiguas_pendientes";
-const HEADERS = ["id", "empresa", "gastoId", "descripcionGasto", "chatId", "creadoEn", "candidatosJSON", "deColaCorreo", "esAproximado"];
+const HEADERS = ["id", "empresa", "gastoId", "descripcionGasto", "chatId", "creadoEn", "candidatosJSON", "deColaCorreo", "esAproximado", "proveedor"];
 const NUM_COLS = HEADERS.length;
 // Mismo TTL que conciliacionPendienteStore.ts (24h) y mismo motivo: no puede
 // ser más largo que el umbral de "correo atascado" de revisarCorreoNuevo.ts,
@@ -60,6 +69,7 @@ function filaAObjeto(valores: string[]): ConciliacionAmbiguaPendiente {
     candidatos,
     deColaCorreo: valores[7] === "true",
     esAproximado: valores[8] === "true",
+    proveedor: valores[9] || undefined,
   };
 }
 
@@ -74,6 +84,7 @@ function objetoAFila(p: ConciliacionAmbiguaPendiente): (string | number)[] {
     JSON.stringify(p.candidatos),
     p.deColaCorreo === true ? "true" : "",
     p.esAproximado ? "true" : "",
+    p.proveedor ?? "",
   ];
 }
 
