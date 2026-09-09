@@ -273,6 +273,16 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     console.error("[revisarCorreoNuevo] Error registrando remitente en el directorio de personas:", error)
   );
 
+  // Hallazgo real (2026-09-09): antes, el cuerpo completo solo se leía en el camino SIN adjuntos (más
+  // abajo) — un correo CON adjuntos nunca se leía de verdad, solo el `extracto` corto (snippet de
+  // Gmail) que se le pasaba a procesarDocumentoLocal. Se hoistea acá arriba porque ahora hace falta en
+  // AMBOS caminos: un correo con adjuntos también puede traer una instrucción real en el cuerpo (ver
+  // más abajo) que hay que leer, no solo mirar el snippet.
+  const cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id).catch((error) => {
+    console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
+    return "";
+  });
+
   // Pedido explícito de Carlos: analizar el direccionamiento de CADA
   // correo (qué acción hay que tomar, y si el camino está claro,
   // proponerlo directo; si no, preguntar) — nunca dejar caer un correo
@@ -284,6 +294,60 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
   // tipo. Cada adjunto es su propia decisión independiente — un correo
   // con 3 adjuntos necesita 3 resoluciones antes de darse por leído.
   if (correo.adjuntos.length > 0) {
+    // Segundo hallazgo real (2026-09-09, caso Alberto/AEAT): un correo con adjuntos iba DIRECTO al
+    // procesamiento de documento/gasto de arriba, sin que nada mirara el CUERPO del correo — "Revisa
+    // las comunicaciones, interprétala y pasa informe" (una instrucción real y explícita) se ignoró
+    // por completo porque el sistema solo vio 2 PDFs que parecían facturas y mandó directo la
+    // propuesta de "Crear gasto en Holded". Pedido explícito de Carlos: "debes fortalecer el agente
+    // que lee y procesa mails para que de manera muy inteligente identifique qué tipo de mail es y si
+    // tiene alguna solicitud que debe procesar" — un documento real y una solicitud real sobre ese
+    // documento no son mutuamente excluyentes, así que esto se atiende ANTES de procesar los adjuntos
+    // como posible gasto, nunca en su lugar (el loop de abajo sigue corriendo igual, sin cambios).
+    // `deColaCorreo: false` a propósito: esta propuesta es informativa/adicional, nunca cuenta como una
+    // de las `correo.adjuntos.length` decisiones que establecerPendientesActivo reserva para este
+    // correo (ver esa llamada, en avanzarColaCorreoSiActivo) — solo las decisiones reales sobre cada
+    // adjunto avanzan la cola, para no desincronizar el contador.
+    try {
+      const analisisConAdjuntos = await analizarCorreo(correo, cuerpoCompleto, true);
+      if (analisisConAdjuntos.tipo === "necesita_respuesta" || analisisConAdjuntos.tipo === "instruccion_jefe") {
+        const propuestaSolicitud = await crearPropuestaAccionCorreo({
+          chatId,
+          messageId: 0,
+          de: correo.de,
+          asunto: correo.asunto || "(sin asunto)",
+          tipo: analisisConAdjuntos.tipo,
+          resumen: analisisConAdjuntos.resumen,
+          accionSugerida: analisisConAdjuntos.accionSugerida,
+          threadId: correo.threadId,
+          messageIdHeader: correo.messageIdHeader,
+          mensajeId: correo.id,
+          deColaCorreo: false,
+        });
+
+        const textoSolicitud = [
+          `📧 *${propuestaSolicitud.asunto}* — este correo trae ${correo.adjuntos.length === 1 ? "un adjunto" : "adjuntos"} Y además pide algo:`,
+          `De: ${propuestaSolicitud.de}`,
+          propuestaSolicitud.resumen,
+          `→ ${propuestaSolicitud.accionSugerida}`,
+        ].join("\n");
+
+        const messageIdSolicitud = await sendTelegramMessageWithButtons(chatId, textoSolicitud, [
+          [
+            { text: "✅ Proceder", callback_data: `email_proceder:${propuestaSolicitud.id}` },
+            { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuestaSolicitud.id}` },
+          ],
+          [
+            { text: "❌ Descartar", callback_data: `email_descartar:${propuestaSolicitud.id}` },
+            { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuestaSolicitud.id}` },
+          ],
+        ]);
+
+        await actualizarMessageIdAccionCorreo(propuestaSolicitud.id, messageIdSolicitud);
+      }
+    } catch (error) {
+      console.error(`[revisarCorreoNuevo] Error analizando si el correo ${correo.id} pide algo más allá del adjunto (no crítico, sigue con el adjunto igual):`, error);
+    }
+
     let indiceAdjunto = 0;
     for (const adjunto of correo.adjuntos) {
       indiceAdjunto += 1;
@@ -384,11 +448,8 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
   // correo se trataba, e informativo tenía su propia pregunta binaria
   // aparte; ahora es una sola propuesta con resumen real + acción concreta
   // sugerida + 4 opciones, igual que ya funcionaba bien para
-  // necesita_respuesta/instruccion_jefe.
-  const cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id).catch((error) => {
-    console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
-    return "";
-  });
+  // necesita_respuesta/instruccion_jefe. (cuerpoCompleto ya se leyó arriba, al principio de la
+  // función — ahora se necesita en ambos caminos, con o sin adjuntos.)
 
   // Pedido explícito de Carlos, tras un caso real: un correo sin adjunto
   // puede describir un gasto real igual que uno con adjunto (ej. una

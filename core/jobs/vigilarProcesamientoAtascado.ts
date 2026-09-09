@@ -118,7 +118,17 @@ async function huboSenalDeEntrega(chatId: number, mensajeId: string): Promise<bo
     // le habría dicho al vigilante "no está atascado, solo espera respuesta" sobre algo que en
     // realidad nunca llegó a mostrarse — exactamente el caso real que esto existe para atrapar.
     gastos.some((g) => coincide(g.correoOrigen) && g.messageId !== 0) ||
-    accionesCorreo.some((a) => a.mensajeId === mensajeId) ||
+    // messageId !== 0 (mismo hallazgo que arriba, nunca se había aplicado acá) Y deColaCorreo (hallazgo
+    // real de auditoría, 2026-09-09): revisarCorreoNuevo.ts ahora TAMBIÉN puede crear una
+    // PropuestaAccionCorreo informativa para un correo CON adjuntos (detecta si el cuerpo pide algo
+    // más allá de "aquí está el documento") — esa propuesta se manda ANTES del loop que procesa cada
+    // adjunto como posible gasto, y se marca a propósito con deColaCorreo:false (nunca cuenta como una
+    // de las decisiones reales que establecerPendientesActivo reserva por adjunto). Sin este filtro,
+    // esa señal temprana e informativa bastaba para que el vigilante concluyera "no está atascado" —
+    // aunque el loop de adjuntos (la parte que de verdad puede colgarse: descarga, lectura con visión)
+    // ni siquiera hubiera empezado. Solo una propuesta de la COLA real (deColaCorreo:true) confirma que
+    // se cumplió la obligación completa de este correo.
+    accionesCorreo.some((a) => a.mensajeId === mensajeId && a.messageId !== 0 && a.deColaCorreo) ||
     conciliaciones.some((c) => c.mensajeIdGmail === mensajeId)
   );
 }
