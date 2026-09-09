@@ -361,7 +361,11 @@ const INSTRUCCION_MODO_RAPIDO =
   `responden con una o dos consultas de lectura y sin tener que interpretar ni razonar nada. Si para ` +
   `responder de verdad necesitas algo que no tienes disponible — enviar o proponer un correo, marcar un ` +
   `correo como leído, proponer un evento de calendario, registrar una corrección, capturar un correo ` +
-  `entrante, o cualquier verificación de precisión financiera real — O si la pregunta en el fondo pide ` +
+  `entrante, o cualquier verificación de precisión financiera real (ej. "concilia/verifica si el cashflow ` +
+  `está al día" — aunque la palabra "conciliar" se parezca al nombre de consultar_movimientos_sin_conciliar, ` +
+  `esa tool responde una pregunta DISTINTA — estado interno de Holded, no la hoja de cashflow — usarla acá ` +
+  `da una respuesta con datos reales pero de la pregunta equivocada, tan mala como inventarla; escala) — ` +
+  `O si la pregunta en el fondo pide ` +
   `análisis, recomendación, opinión, comparar opciones, interpretar una situación o cruzar información de ` +
   `varias fuentes para llegar a una conclusión (no solo reportar un dato tal cual sale de la fuente) — NO ` +
   `lo intentes con lo que tienes, no completes con una aproximación superficial, y no expliques primero ` +

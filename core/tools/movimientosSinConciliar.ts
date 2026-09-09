@@ -10,10 +10,24 @@ export const movimientosSinConciliarTool: ToolDefinition = {
   seguraParaModoRapido: true,
   description:
     "Consulta qué movimientos bancarios de Holded (WOBA, EWORKS o Footprint) NO están conciliados " +
-    "todavía, en un rango de días hacia atrás. A diferencia de consultar_gastos_sin_comprobante (que " +
-    "mira gastos ya registrados sin adjunto), esto mira el lado del banco: cargos/abonos que ni " +
-    "siquiera tienen un gasto asociado en Holded todavía. Úsala cuando pregunten qué movimientos " +
-    "bancarios faltan por conciliar. Solo consulta — nunca crea ni concilia nada.",
+    "todavía DENTRO DE HOLDED (status interno de Holded, nada que ver con la hoja de cashflow), en un " +
+    "rango de días hacia atrás. A diferencia de consultar_gastos_sin_comprobante (que mira gastos ya " +
+    "registrados sin adjunto), esto mira el lado del banco: cargos/abonos que ni siquiera tienen un " +
+    "gasto asociado en Holded todavía. Úsala SOLO para esa pregunta puntual sobre el estado interno de " +
+    "Holded. " +
+    // Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): pidió "movimientos para conciliar y
+    // verificar el cashflow" — el nombre de esta tool ("movimientos sin conciliar") calza léxicamente,
+    // pero es la pregunta EQUIVOCADA: un movimiento puede estar 100% registrado en la hoja de cashflow
+    // (cargo Y abono) y seguir figurando "pendiente" acá porque Holded aún no lo marcó como
+    // bank-reconciled internamente — dos sistemas de registro completamente distintos. Esta tool
+    // reportó un pago real de 500€ como "faltante" cuando ya estaba en el cashflow, y además no tiene
+    // ningún concepto de "semana" (solo un rango de días), así que mezcló movimientos de semanas
+    // anteriores con la semana que Carlos pidió — ambos errores reales de ese caso. Mismo patrón de
+    // redirección ya usado en consultar_cashflow_detalle.
+    "Si en cambio preguntan si el CASHFLOW está al día, qué falta por REGISTRAR en la hoja DATOS, o " +
+    "piden 'conciliar/verificar el cashflow' (aunque digan 'conciliar', NO es esta tool) — usa MEJOR " +
+    "verificar_cashflow_actualizado, que sí compara contra lo ya registrado en la hoja y sí entiende " +
+    "semanas concretas (ej. 'S37', 'esta semana'). Solo consulta — nunca crea ni concilia nada.",
   input_schema: {
     type: "object",
     properties: {
