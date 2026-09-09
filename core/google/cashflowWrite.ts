@@ -1,8 +1,9 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
-import { invalidarCacheDetalleRegistros } from "./cashflowSheet";
+import { invalidarCacheDetalleRegistros, SECCION_IDX_CLIENTE_PENDIENTES } from "./cashflowSheet";
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
+import { fechaHoyEspana } from "../utils/diaHabil";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -33,6 +34,22 @@ function assertSheetId(): string {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
   return CASHFLOW_SHEET_ID;
+}
+
+let gridIdDatosCache: number | null = null;
+
+/** gridId (id numérico interno) de la pestaña DATOS — necesario para un batchUpdate de formato, no de valores. Cacheado en memoria. */
+async function obtenerGridIdDatos(): Promise<number> {
+  if (gridIdDatosCache !== null) return gridIdDatosCache;
+  const sheetId = assertSheetId();
+  const sheets = getSheetsWriteClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
+  const datos = meta.data.sheets?.find((s) => s.properties?.title === "DATOS");
+  if (datos?.properties?.sheetId == null) {
+    throw new Error('No se encontró la pestaña "DATOS" en el Sheet de cashflow.');
+  }
+  gridIdDatosCache = datos.properties.sheetId;
+  return gridIdDatosCache;
 }
 
 export type BloqueEscritura =
@@ -260,13 +277,23 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
   };
 }
 
-// Columnas X:Z de DATOS: dos secciones apiladas bajo su propio título
-// ("PAGOS PENDIENTES ALBERTO" y "DEUDAS PENDIENTES OTROS"), sin rango de
-// filas fijo por sección — mismos títulos que ya usa el lado de LECTURA
-// (parsearSeccionesPendientes en cashflowSheet.ts).
-const SECCION_COLUMNA_INICIO = "X";
-const SECCION_COLUMNA_FIN = "Z";
+// Hallazgo real de auditoría (2026-09-09): esta sección ya NO es X:Z — ver el
+// mismo hallazgo, con el detalle completo verificado en vivo contra el Sheet
+// real, en parsearSeccionesPendientes (cashflowSheet.ts). Carlos agregó una
+// columna EMPRESA (ahora W) y una columna AÑO (ahora X), corriendo CLIENTE a
+// Z y SEMANA/VALOR a AA/AB — Y quedó vacía/separadora. Con la config vieja
+// (X:Z, título buscado en X), encontrarFilaDisponibleEnSeccion habría
+// fallado explícitamente (nunca encontraba el título, ver indiceDeTitulo) en
+// vez de corromper datos — pero seguía completamente roto para cualquier
+// intento real de registrar un pendiente nuevo.
+const SECCION_COLUMNA_INICIO = "W";
+const SECCION_COLUMNA_FIN = "AB";
 const SECCION_RANGO_LECTURA = `DATOS!${SECCION_COLUMNA_INICIO}1:${SECCION_COLUMNA_FIN}500`;
+// Posiciones dentro de una fila de SECCION_RANGO_LECTURA (0-indexado): W=0 empresa, X=1 año, Y=2 (vacía), Z=3 cliente, AA=4 semana, AB=5 valor.
+// SECCION_IDX_CLIENTE se reutiliza de cashflowSheet.ts (mismo hecho, una sola fuente de verdad — ver
+// hallazgo de auditoría xhigh junto a su declaración) en vez de redeclararlo acá por separado.
+const SECCION_IDX_CLIENTE = SECCION_IDX_CLIENTE_PENDIENTES;
+const SECCION_IDX_VALOR = 5;
 
 const TITULO_SECCION: Record<"pagos_pendientes_alberto" | "deudas_pendientes", string> = {
   pagos_pendientes_alberto: "PAGOS PENDIENTES ALBERTO",
@@ -298,8 +325,11 @@ async function encontrarFilaDisponibleEnSeccion(
   const rows = resp.data.values ?? [];
 
   const indiceDeTitulo = (titulo: string): number => {
-    const idx = rows.findIndex((row) => String(row[0] ?? "").trim().toUpperCase() === titulo);
-    if (idx === -1) throw new Error(`No se encontró la sección "${titulo}" en la hoja DATOS (columna ${SECCION_COLUMNA_INICIO}).`);
+    const idx = rows.findIndex((row) => String(row[SECCION_IDX_CLIENTE] ?? "").trim().toUpperCase() === titulo);
+    // Columna real del título/cliente dentro de SECCION_RANGO_LECTURA — ver SECCION_IDX_CLIENTE.
+    // Hallazgo real de auditoría: este mensaje es un literal, no se recalcula solo — si Carlos vuelve a
+    // mover estas columnas, hay que actualizar este texto a mano junto con SECCION_IDX_CLIENTE.
+    if (idx === -1) throw new Error(`No se encontró la sección "${titulo}" en la hoja DATOS (columna Z, cliente/título — offset ${SECCION_IDX_CLIENTE} dentro de ${SECCION_COLUMNA_INICIO}:${SECCION_COLUMNA_FIN}).`);
     return idx; // 0-indexado dentro de `rows`, que arranca en la fila 1 real
   };
 
@@ -318,7 +348,7 @@ async function encontrarFilaDisponibleEnSeccion(
 
   let idxUltimoConDatos = idxInicio;
   for (let i = idxInicio + 1; i < idxTopeEscaneo; i++) {
-    const cliente = String(rows[i]?.[0] ?? "").trim();
+    const cliente = String(rows[i]?.[SECCION_IDX_CLIENTE] ?? "").trim();
     if (cliente && cliente.toUpperCase() !== "CLIENTE") {
       idxUltimoConDatos = i;
     }
@@ -337,17 +367,22 @@ async function encontrarFilaDisponibleEnSeccion(
 
 export interface NuevoPendiente {
   seccion: "pagos_pendientes_alberto" | "deudas_pendientes";
+  /** Empresa dueña del pendiente (columna W, agregada por Carlos — ver hallazgo junto a SECCION_COLUMNA_INICIO). */
+  empresa: "WOBA" | "EWORKS";
   cliente: string;
   /** Puede ir vacío — pedido explícito: estos pagos van sin semana mientras no se sepa cuándo se pagarán. */
   semana?: string;
   valor: number;
+  /** Año del pendiente (columna X). Si no se da, se usa el año actual — mismo criterio que IMPUESTOS_POR_PAGAR/APLAZAMIENTO_IMPUESTOS. */
+  anio?: string;
 }
 
 /**
  * Registra una fila nueva en Pagos Pendientes Alberto o Deudas Pendientes
  * Otros — a diferencia de registrarMovimientoEnSheet, la semana es opcional
- * (estos son saldos pendientes sin fecha de pago conocida) y no hay columna
- * de empresa (aplica al grupo, no a WOBA/EWORKS por separado).
+ * (estos son saldos pendientes sin fecha de pago conocida). SÍ tiene columna
+ * de empresa (agregada por Carlos, ver hallazgo junto a SECCION_COLUMNA_INICIO)
+ * a diferencia de lo que decía este comentario antes.
  */
 export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Promise<ResultadoEscritura> {
   const sheetId = assertSheetId();
@@ -355,13 +390,61 @@ export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Prom
 
   const fila = await encontrarFilaDisponibleEnSeccion(pendiente.seccion);
   const rango = `DATOS!${SECCION_COLUMNA_INICIO}${fila}:${SECCION_COLUMNA_FIN}${fila}`;
+  // fechaHoyEspana (no new Date().getFullYear() directo) — hallazgo real de auditoría: el servidor
+  // corre en UTC, así que un new Date() crudo da el año equivocado durante la primera hora de cada 1 de
+  // enero en hora de Madrid (mismo tipo de descuadre silencioso que motivó este fix completo).
+  const anio = pendiente.anio || fechaHoyEspana().slice(0, 4);
 
+  // W=empresa, X=año, Y=(vacía, separadora), Z=cliente, AA=semana, AB=valor.
+  //
+  // Hallazgo real de auditoría xhigh (2ª ronda, 2 agentes independientes): la primera versión de este
+  // fix separaba esta escritura en 2 llamadas (RAW para W:Z, USER_ENTERED para AA:AB) para evitar que
+  // el año ("2026") se auto-formateara como moneda con USER_ENTERED — pero sin try/catch entre ambas,
+  // un fallo transitorio entre la 1ª y la 2ª dejaba una fila "fantasma" (cliente escrito, valor vacío)
+  // que además encontrarFilaDisponibleEnSeccion trata como "ya ocupada" para siempre, perdiendo esa
+  // fila de forma permanente. Verificado en vivo: RAW con un `number` real de JS (no un string) SÍ lo
+  // guarda como número real (confirmado con UNFORMATTED_VALUE, typeof "number"), no como texto — el
+  // problema original era solo con STRINGS puramente numéricos (el año). Una sola escritura RAW para
+  // toda la fila resuelve ambos: el año queda texto, y valor sigue siendo un número real (su formato de
+  // moneda para verse bien ya se fija aparte, ver más abajo) — y de paso vuelve a ser una escritura
+  // atómica, sin ventana para una fila a medias.
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
     range: rango,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[pendiente.cliente, pendiente.semana ?? "", pendiente.valor]] },
+    valueInputOption: "RAW",
+    requestBody: { values: [[pendiente.empresa, anio, "", pendiente.cliente, pendiente.semana ?? "", pendiente.valor]] },
   });
+
+  // Hallazgo real de auditoría (verificado en vivo): una fila nunca antes usada no hereda ningún
+  // formato — sin esto, `valor` se mostraba como "1.23" en vez de "€1.23" (a diferencia de las filas
+  // reales existentes, que sí tienen formato de moneda ya puesto a mano). Se fija explícitamente el
+  // MISMO patrón que ya usan las celdas reales de esta columna (verificado en vivo: "[$€]#,##0.00").
+  try {
+    const gridIdDatos = await obtenerGridIdDatos();
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: {
+                sheetId: gridIdDatos,
+                startRowIndex: fila - 1,
+                endRowIndex: fila,
+                startColumnIndex: 27, // AB, 0-indexado
+                endColumnIndex: 28,
+              },
+              cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: "[$€]#,##0.00" } } },
+              fields: "userEnteredFormat.numberFormat",
+            },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    // No crítico — el valor real ya quedó escrito y verificado; perder el formato de moneda es cosmético.
+    console.error("[cashflowWrite] No se pudo fijar el formato de moneda del pendiente registrado (no crítico):", error);
+  }
 
   const verificacion = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
@@ -370,13 +453,19 @@ export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Prom
   });
 
   const filaEscrita = verificacion.data.values?.[0];
-  const valorEscrito = filaEscrita?.[2];
+  const valorEscrito = filaEscrita?.[SECCION_IDX_VALOR];
+  const clienteEscrito = filaEscrita?.[SECCION_IDX_CLIENTE];
 
-  if (!filaEscrita || valorEscrito === undefined || valorEscrito === "") {
+  // Hallazgo real de auditoría: antes solo se verificaba `valor` — un escritor futuro que rompiera
+  // SOLO el resto de la fila (empresa/año/cliente) habría pasado esta verificación igual. Se confirma
+  // también `cliente`, ya que es el otro campo que encontrarFilaDisponibleEnSeccion usa para decidir si
+  // la fila "ya tiene datos" — si ese no coincide, la próxima búsqueda de fila libre puede comportarse
+  // mal aunque `valor` sí se haya escrito bien.
+  if (!filaEscrita || valorEscrito === undefined || valorEscrito === "" || clienteEscrito !== pendiente.cliente) {
     return {
       ok: false,
       mensaje:
-        `Se intentó escribir en ${rango} pero la verificación de lectura no encontró el valor esperado. ` +
+        `Se intentó escribir en ${rango} pero la verificación de lectura no encontró los valores esperados. ` +
         "Revisa manualmente la hoja antes de reintentar.",
       fila,
       rango,

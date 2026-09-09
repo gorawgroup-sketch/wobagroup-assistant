@@ -5,6 +5,7 @@ import { revisarCorreoNuevo } from "./revisarCorreoNuevo";
 import { enviarResumenPendientesDiario } from "./resumenPendientesDiario";
 import { revisarCostosIA } from "./revisarCostosIA";
 import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
+import { revisarEstructuraCashflow } from "./revisarEstructuraCashflow";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
 import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
@@ -154,6 +155,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarNumeracionCashflow programado: diario 8:15 (${TIMEZONE})`);
+
+  cron.schedule(
+    "25 8 * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarEstructuraCashflow", () => revisarEstructuraCashflow());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarEstructuraCashflow programado: diario 8:25 (${TIMEZONE})`);
 
   cron.schedule(
     "10 8 * * *",

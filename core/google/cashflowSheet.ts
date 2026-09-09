@@ -78,13 +78,18 @@ export interface DetalleRegistro {
   valor: string;
   /** Solo presente en GASTOS_FIJOS — banco desde el que se paga (columna L de DATOS). */
   banco?: string;
-  /** Solo presente en IMPUESTOS_POR_PAGAR y APLAZAMIENTO_IMPUESTOS — columna AÑO de DATOS. */
+  /**
+   * Solo presente en IMPUESTOS_POR_PAGAR, APLAZAMIENTO_IMPUESTOS, PAGOS_PENDIENTES_ALBERTO y
+   * DEUDAS_PENDIENTES — columna AÑO de DATOS (columna X en Pendientes desde que Carlos la agregó,
+   * ver hallazgo en parsearSeccionesPendientes).
+   */
   anio?: string;
   /**
    * Empresa DUEÑA del movimiento (WOBA | EWORKS), leída de la columna de tag.
    * undefined cuando el bloque no tiene esa columna (Pagos Extras, Impuestos
-   * por Pagar, Aplazamiento Impuestos, Gastos Fijos, Pendientes) — no debe
-   * confundirse con el nombre del cliente/proveedor.
+   * por Pagar, Aplazamiento Impuestos, Gastos Fijos) — no debe confundirse
+   * con el nombre del cliente/proveedor. Pendientes SÍ la tiene desde que
+   * Carlos la agregó (columna W) — ver hallazgo en parsearSeccionesPendientes.
    */
   empresa?: EmpresaTag;
 }
@@ -109,11 +114,36 @@ const DETALLE_BLOCKS: DetalleBlock[] = [
   { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:V500", fields: ["cliente", "semana", "valor"] },
 ];
 
-// Columnas X:Z de DATOS: dos secciones apiladas bajo un título propio cada
-// una ("PAGOS PENDIENTES ALBERTO" y "DEUDAS PENDIENTES OTROS"), sin un rango
-// de filas fijo — se detecta el título para saber a qué categoría pertenece
-// cada fila de debajo, en vez de asumir números de fila que pueden correrse.
-const SECCION_PENDIENTES_RANGE = "DATOS!X1:Z300";
+// Hallazgo real de auditoría (2026-09-09, pedido explícito de Carlos de ser
+// riguroso porque "a veces incluimos o quitamos filas o columnas y esto
+// mueve las áreas"): esta sección REALMENTE ya no es X:Z. Verificado en vivo
+// contra el Sheet real — Carlos agregó una columna EMPRESA (ahora en W) y una
+// columna AÑO (ahora en X, con el título propio "AÑ0" — sí, con cero, typo
+// real en la celda), lo que corrió CLIENTE a Z (antes en X) y SEMANA/VALOR a
+// AA/AB (antes en Y/Z) — Y quedó como columna vacía/separadora. La versión
+// anterior de este código seguía leyendo X:Z buscando el título en la
+// columna X (ahora AÑO, nunca coincide con "PAGOS PENDIENTES ALBERTO"/"DEUDAS
+// PENDIENTES OTROS") — categoriaActual nunca se activaba, así que CADA fila
+// de esta sección se descartaba en silencio (`if (!categoriaActual) continue`)
+// sin ningún error. Esto dejó invisible, en todas las lecturas del cashflow
+// durante un tiempo indeterminado, dinero real: reintegros/salarios/préstamo
+// de Alberto y deudas con Carrefour/Susana Iso/375LED/Ireri, sin que ninguna
+// herramienta ni el propio chat lo notaran o avisaran — exactamente el tipo
+// de corrupción silenciosa que Carlos pidió que dejara de pasar.
+// Hallazgo real de auditoría xhigh: este rango terminaba en fila 300 mientras que el lado de
+// ESCRITURA (cashflowWrite.ts, SECCION_RANGO_LECTURA) siempre escaneó hasta fila 500 buscando hueco
+// libre — si DEUDAS_PENDIENTES (que no tiene límite estricto de crecimiento, ver comentario en
+// encontrarFilaDisponibleEnSeccion) alguna vez creciera más allá de la fila 300, una fila nueva se
+// escribiría bien pero nunca más volvería a leerse — el mismo tipo de "dinero real invisible sin
+// ningún error" que motivó todo este fix, por otro camino. Se iguala a 500 para que lectura y
+// escritura miren exactamente el mismo rango real.
+const SECCION_PENDIENTES_RANGE = "DATOS!W1:AB500";
+// Posiciones dentro de una fila de SECCION_PENDIENTES_RANGE (0-indexado): W=0 empresa, X=1 año, Y=2 (vacía), Z=3 cliente/título, AA=4 semana, AB=5 valor.
+// Hallazgo real de auditoría xhigh: cashflowWrite.ts redeclaraba este mismo offset por su cuenta
+// (SECCION_IDX_CLIENTE) — dos constantes independientes codificando el mismo hecho pueden desincronizarse
+// si Carlos vuelve a mover estas columnas y solo se actualiza una. Se exporta para que ambos lados usen
+// la MISMA fuente de verdad.
+export const SECCION_IDX_CLIENTE_PENDIENTES = 3;
 const TITULOS_SECCION_PENDIENTES: Record<string, DetalleCategoria> = {
   "PAGOS PENDIENTES ALBERTO": "PAGOS_PENDIENTES_ALBERTO",
   "DEUDAS PENDIENTES OTROS": "DEUDAS_PENDIENTES",
@@ -124,9 +154,12 @@ function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
   let categoriaActual: DetalleCategoria | null = null;
 
   for (const row of rows) {
-    const cliente = String(row[0] ?? "").trim();
-    const semana = String(row[1] ?? "").trim();
-    const valor = String(row[2] ?? "").trim();
+    // W=empresa, X=año, Y=(vacía, separadora), Z=cliente, AA=semana, AB=valor — ver hallazgo arriba.
+    const empresaRaw = String(row[0] ?? "").trim().toUpperCase();
+    const anio = String(row[1] ?? "").trim();
+    const cliente = String(row[SECCION_IDX_CLIENTE_PENDIENTES] ?? "").trim();
+    const semana = String(row[SECCION_IDX_CLIENTE_PENDIENTES + 1] ?? "").trim();
+    const valor = String(row[SECCION_IDX_CLIENTE_PENDIENTES + 2] ?? "").trim();
 
     if (!cliente) continue;
 
@@ -139,7 +172,14 @@ function parsearSeccionesPendientes(rows: string[][]): DetalleRegistro[] {
     if (cliente.toUpperCase() === "CLIENTE") continue; // fila de encabezado de columna
     if (!categoriaActual || !valor) continue;
 
-    registros.push({ categoria: categoriaActual, cliente, semana, valor });
+    registros.push({
+      categoria: categoriaActual,
+      cliente,
+      semana,
+      valor,
+      anio: anio || undefined,
+      empresa: empresaRaw === "WOBA" || empresaRaw === "EWORKS" ? (empresaRaw as EmpresaTag) : undefined,
+    });
   }
 
   return registros;
@@ -283,6 +323,96 @@ function parsearSeccionesColumnaN(rows: string[][]): DetalleRegistro[] {
 const CACHE_TTL_MS = 8000;
 let cache: { en: number; datos: DetalleRegistro[] } | null = null;
 
+// Encabezados esperados fila 5 (verificado en vivo) para los 2 bloques de columnas fijas.
+const HEADERS_ESPERADOS_INGRESOS = ["CLIENTE", "PROYECTO", "SEMANA", "VALOR", "EMPRESA"];
+const HEADERS_ESPERADOS_PAGOS_EXTRAS = ["CLIENTE", "SEMANA", "VALOR"];
+
+/**
+ * Pedido explícito de Carlos (2026-09-09): "algunas veces incluimos o
+ * quitamos filas o columnas y esto mueve las áreas de acción y lectura de
+ * los datos" — que el sistema releea y confirme que las áreas siguen en su
+ * lugar antes de confiar en una búsqueda, no solo una vez al programarlo.
+ *
+ * Nace de un caso real encontrado en la MISMA sesión en que Carlos pidió
+ * esto: la sección de Pendientes (X:Z) llevaba un tiempo indeterminado con
+ * su columna de título desplazada (Carlos agregó EMPRESA y AÑO delante, ver
+ * hallazgo en parsearSeccionesPendientes) — cada fila real (Alberto,
+ * Carrefour, Susana Iso...) se descartaba en silencio, sin ningún error, en
+ * NINGUNA lectura del cashflow, hasta que se investigó a mano. Este chequeo
+ * existe para que la PRÓXIMA vez que Carlos mueva algo así, quede detectado
+ * solo — no otra vez a mano.
+ *
+ * No lanza excepción (un falso positivo acá no debe tumbar la lectura real
+ * del cashflow) — solo junta problemas encontrados; fetchDetalleRegistros
+ * los registra en consola en cada lectura fresca, y revisarEstructuraCashflow.ts
+ * (job diario) avisa a Carlos por Telegram si encuentra alguno.
+ */
+export interface ProblemaEstructuraDatos {
+  bloque: string;
+  detalle: string;
+}
+
+function verificarHeaders(headers: string[] | undefined, esperados: string[], bloque: string, problemas: ProblemaEstructuraDatos[]): void {
+  const reales = (headers ?? []).map((h) => String(h ?? "").trim().toUpperCase());
+  esperados.forEach((esperado, i) => {
+    if (reales[i] !== esperado) {
+      problemas.push({
+        bloque,
+        detalle: `Encabezado esperado "${esperado}" en la posición ${i + 1} no coincide (encontrado: "${reales[i] ?? "(vacío)"}") — la fila de encabezados pudo moverse o cambiar.`,
+      });
+    }
+  });
+}
+
+function verificarTitulosEncontrados(
+  rows: string[][],
+  idxTitulo: number,
+  titulos: Record<string, unknown>,
+  bloque: string,
+  problemas: ProblemaEstructuraDatos[]
+): void {
+  const encontrados = new Set(rows.map((r) => String(r[idxTitulo] ?? "").trim().toUpperCase()));
+  for (const titulo of Object.keys(titulos)) {
+    if (!encontrados.has(titulo)) {
+      problemas.push({
+        bloque,
+        detalle: `No se encontró la sección "${titulo}" donde se esperaba (columna de título habitual) — pudo moverse de columna, renombrarse, o borrarse.`,
+      });
+    }
+  }
+}
+
+/**
+ * Hallazgo real de auditoría xhigh (2ª ronda): verificarTitulosEncontrados solo confirma que el
+ * TÍTULO de cada sección siga en la columna esperada — pero si Carlos inserta una columna nueva a la
+ * DERECHA de un título (dentro del mismo bloque, sin mover el título en sí), el título se sigue
+ * encontrando bien mientras que las columnas de datos que le siguen (semana/valor) quedan corridas —
+ * exactamente la misma clase de corrupción silenciosa que motivó este fix completo, un paso más allá
+ * de lo que el chequeo por título puede ver. Esta verificación es independiente de cualquier columna
+ * fija: sobre los registros YA parseados, confirma que `valor` de verdad tenga forma de un importe real
+ * (dígitos, separadores de miles/decimales, símbolo de moneda opcional) — si algo como "S40" (un código
+ * de semana corrido a la columna de valor) aparece ahí, se detecta sin necesitar saber DÓNDE se movió.
+ */
+const FORMA_VALOR_VALIDO = /^[\s€$]*[\d.,]+[\s€$]*$/;
+
+function verificarFormaValores(registros: DetalleRegistro[], problemas: ProblemaEstructuraDatos[]): void {
+  for (const r of registros) {
+    if (r.valor && !FORMA_VALOR_VALIDO.test(r.valor)) {
+      problemas.push({
+        bloque: r.categoria,
+        detalle: `El valor "${r.valor}" (cliente/concepto: "${r.cliente ?? r.concepto ?? "?"}") no tiene forma de importe real — puede que una columna se haya corrido y esto sea en realidad otro dato (semana, texto, etc.).`,
+      });
+    }
+  }
+}
+
+let ultimaVerificacionEstructura: ProblemaEstructuraDatos[] = [];
+
+/** Problemas de estructura detectados en la última lectura FRESCA (no cacheada) de fetchDetalleRegistros. */
+export function obtenerUltimaVerificacionEstructura(): ProblemaEstructuraDatos[] {
+  return ultimaVerificacionEstructura;
+}
+
 /**
  * Lee TODOS los movimientos de detalle de la hoja DATOS: ingresos, pagos a
  * proyectos, pagos extras, impuestos por pagar, aplazamientos de impuestos,
@@ -298,6 +428,10 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
   const sheetId = assertSheetId();
   const sheets = getSheetsClient();
 
+  // Rangos de encabezado (fila 5) agregados AL FINAL para el chequeo de estructura de abajo — no
+  // participan en el parseo de datos en sí, solo en verificarHeaders.
+  const IDX_HEADER_INGRESOS = DETALLE_BLOCKS.length + 3;
+  const IDX_HEADER_PAGOS_EXTRAS = DETALLE_BLOCKS.length + 4;
   const resp = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: sheetId,
     ranges: [
@@ -305,6 +439,8 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
       SECCION_PENDIENTES_RANGE,
       SECCION_COLUMNA_N_RANGE,
       SECCION_COLUMNA_I_RANGE,
+      "DATOS!B5:F5",
+      "DATOS!T5:V5",
     ],
     valueRenderOption: "FORMATTED_VALUE",
   });
@@ -341,6 +477,25 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
 
   const filasColumnaI = valueRanges[DETALLE_BLOCKS.length + 2]?.values ?? [];
   registros.push(...parsearSeccionesColumnaI(filasColumnaI as string[][]));
+
+  // Verificación de estructura — ver comentario junto a ProblemaEstructuraDatos arriba. Se corre en
+  // CADA lectura fresca (no cacheada), sobre los mismos datos que ya se acaban de leer, sin ningún
+  // round-trip extra a Sheets.
+  const problemas: ProblemaEstructuraDatos[] = [];
+  verificarHeaders(valueRanges[IDX_HEADER_INGRESOS]?.values?.[0], HEADERS_ESPERADOS_INGRESOS, "INGRESOS", problemas);
+  verificarHeaders(valueRanges[IDX_HEADER_PAGOS_EXTRAS]?.values?.[0], HEADERS_ESPERADOS_PAGOS_EXTRAS, "PAGOS_EXTRAS", problemas);
+  verificarTitulosEncontrados(filasPendientes as string[][], SECCION_IDX_CLIENTE_PENDIENTES, TITULOS_SECCION_PENDIENTES, "PENDIENTES (W:AB)", problemas);
+  verificarTitulosEncontrados(filasColumnaN as string[][], 0, TITULOS_SECCION_COLUMNA_N, "COLUMNA N (PAGOS_PROYECTOS)", problemas);
+  verificarTitulosEncontrados(filasColumnaI as string[][], 0, TITULOS_SECCION_COLUMNA_I, "COLUMNA I (GASTOS_FIJOS)", problemas);
+  verificarFormaValores(registros, problemas);
+
+  if (problemas.length > 0) {
+    console.error(
+      `[cashflowSheet] Posible cambio de estructura en la hoja DATOS — ${problemas.length} problema(s) detectado(s):\n` +
+        problemas.map((p) => `  • [${p.bloque}] ${p.detalle}`).join("\n")
+    );
+  }
+  ultimaVerificacionEstructura = problemas;
 
   cache = { en: Date.now(), datos: registros };
   return registros;

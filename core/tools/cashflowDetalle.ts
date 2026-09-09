@@ -12,9 +12,12 @@ import type { ToolDefinition } from "./types";
  *
  * "empresa" y "contraparte" son conceptos distintos y no deben mezclarse:
  * - empresa: WOBA o EWORKS, la entidad del grupo dueña del movimiento (viene
- *   de la columna de tag; solo existe en Ingresos y Pagos Proyectos — el
- *   resto de categorías no tiene ese tag, así que filtrar por empresa las
- *   excluye siempre).
+ *   de la columna de tag; existe en Ingresos, Pagos Proyectos, y — desde que
+ *   Carlos agregó esa columna, ver hallazgo real de auditoría en
+ *   cashflowSheet.ts — también en Pagos Pendientes Alberto / Deudas
+ *   Pendientes. El resto de categorías (Pagos Extras, Impuestos por Pagar,
+ *   Aplazamiento Impuestos, Gastos Fijos, Gastos Consultores) NO tiene esa
+ *   columna, así que filtrar por empresa las excluye siempre).
  * - contraparte: texto libre con el nombre de quien paga o cobra, o el
  *   concepto del gasto (ej. "Limpieza", "Google", "Renting"), que puede
  *   incluir nombres de otras empresas del grupo (ej. "Footprint" aparece como
@@ -65,8 +68,8 @@ export const cashflowDetalleTool: ToolDefinition = {
         enum: ["WOBA", "EWORKS"],
         description:
           "Filtra por la empresa del grupo DUEÑA del movimiento (WOBA o EWORKS), no por el nombre " +
-          "del cliente/proveedor. Solo aplica a movimientos de Ingresos y Pagos a Proyectos, que son " +
-          "los únicos con esa clasificación. Opcional.",
+          "del cliente/proveedor. Aplica a Ingresos, Pagos a Proyectos, y Pagos Pendientes Alberto/" +
+          "Deudas Pendientes — el resto de categorías no tiene esa clasificación. Opcional.",
       },
       contraparte: {
         type: "string",

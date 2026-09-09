@@ -45,7 +45,7 @@ export const cashflowEscrituraTool: ToolDefinition = {
       empresa: {
         type: "string",
         enum: ["WOBA", "EWORKS"],
-        description: "Empresa dueña del movimiento. Ignorado en pagos_pendientes_alberto/deudas_pendientes (no tienen columna de empresa).",
+        description: "Empresa dueña del movimiento — obligatoria en todos los bloques, incluidos pagos_pendientes_alberto/deudas_pendientes.",
       },
       bloque: {
         type: "string",
@@ -101,6 +101,7 @@ export const cashflowEscrituraTool: ToolDefinition = {
     if (esSeccionCompartida) {
       const resultado = await registrarPendienteEnSheet({
         seccion: bloque as "pagos_pendientes_alberto" | "deudas_pendientes",
+        empresa,
         cliente: cliente_o_concepto,
         semana: semana || undefined,
         valor,
