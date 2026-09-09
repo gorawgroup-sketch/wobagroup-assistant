@@ -14,7 +14,9 @@ const TAB_NAME = "_conciliaciones_pendientes";
 // para entonces ya estaba activo. 24h, igual que el resto de los
 // "pendiente_*" de la familia, deja margen real de sobra para revisar en
 // Holded sin cruzar ese umbral.
-const TTL_MS = 24 * 60 * 60 * 1000;
+// Exportado — conciliarMovimiento.ts lo necesita para no reutilizar una pendiente ya vencida (ver su
+// comentario) con el mismo umbral que esta hoja usa para purgarlas, en vez de duplicar el valor.
+export const TTL_MS = 24 * 60 * 60 * 1000;
 
 const HEADERS = [
   "id",

@@ -1,5 +1,5 @@
 import { buscarGastoSimilar } from "../holded/write";
-import { guardarConciliacionPendiente } from "../gastos/conciliacionPendienteStore";
+import { guardarConciliacionPendiente, obtenerConciliacionesPendientesPorChat, TTL_MS } from "../gastos/conciliacionPendienteStore";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import type { Empresa } from "../holded/client";
 import type { ToolDefinition } from "./types";
@@ -98,16 +98,39 @@ export const conciliarMovimientoTool: ToolDefinition = {
     const descripcionGasto = `${gasto.contactName} — ${gasto.total.toFixed(2)} ${moneda}`;
 
     try {
-      const pendiente = await guardarConciliacionPendiente({
-        empresa,
-        monto: gasto.total,
-        fecha: gasto.fecha || fecha,
-        descripcionGasto,
-        chatId,
-        gastoId: gasto.id,
-        moneda,
-        proveedor,
-      });
+      // Hallazgo real de auditoría (2026-09-09, caso Anthropic/WOBA): esta tool creaba SIEMPRE una
+      // fila nueva de conciliación pendiente, sin `deColaCorreo`/`mensajeIdGmail` (esta tool no tiene
+      // forma de saber si el gasto viene de la cola de revisión de correo — solo lo busca por
+      // proveedor/monto/fecha en Holded, sin ningún contexto de correo). Si el gasto YA tenía una
+      // pregunta de conciliación pendiente real (creada por preguntarSiConciliar, que SÍ propaga esos
+      // campos), esta tool generaba una SEGUNDA pregunta idéntica en apariencia — Carlos no tenía
+      // forma de distinguir cuál tocar, y si tocaba esta segunda, la fila original (la que sí hace
+      // avanzar la cola) quedaba huérfana para siempre: "te quedas pegado" sin preguntar por el
+      // siguiente correo. Antes de crear una nueva, se reutiliza la que ya exista para este mismo
+      // gasto — preserva sus campos reales (deColaCorreo/mensajeIdGmail) en vez de perderlos.
+      // Hallazgo real de auditoría xhigh de este mismo fix: obtenerConciliacionesPendientesPorChat no
+      // purga vencidas (esa purga solo ocurre, perezosa, dentro de guardarConciliacionPendiente) — sin
+      // este chequeo, una pendiente vieja (>24h, aún no purgada) se reutilizaría igual, con su
+      // deColaCorreo/mensajeIdGmail originales, resucitándola como mensaje nuevo. Si Carlos la
+      // responde, avanzarColaCorreoSiActivo dispararía sobre lo que sea que esté activo en la cola EN
+      // ESE MOMENTO — que puede no tener ninguna relación con el correo original de esa fila vieja,
+      // exactamente el cross-wiring que TTL_MS (reducido de 3 días a 24h) ya existe para evitar.
+      const pendientesDelChat = await obtenerConciliacionesPendientesPorChat(chatId);
+      const yaPendiente = pendientesDelChat.find((p) => p.gastoId === gasto.id && Date.now() - p.creadoEn <= TTL_MS);
+
+      const pendiente =
+        yaPendiente ??
+        (await guardarConciliacionPendiente({
+          empresa,
+          monto: gasto.total,
+          fecha: gasto.fecha || fecha,
+          descripcionGasto,
+          chatId,
+          gastoId: gasto.id,
+          moneda,
+          proveedor,
+        }));
+
       await sendTelegramMessageWithButtons(chatId, `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`, [
         [
           { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
