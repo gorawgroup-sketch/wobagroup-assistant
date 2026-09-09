@@ -263,6 +263,160 @@ export interface ResumenProcesoIA extends ResumenCostos {
   proceso: string;
 }
 
+export interface PuntoCostoDiario {
+  fecha: string;
+  llamadas: number;
+  gastoRealApiUSD: number;
+}
+
+/**
+ * Snapshot monetario para el panel de control diario. Se calcula desde una
+ * sola lectura de `_costos_ia`: añadir gráficos o recomendaciones al front
+ * no multiplica las consultas a Sheets ni invoca ningún modelo.
+ */
+export interface AnalisisCostosDiario {
+  hoy: ResumenCostos;
+  ayer: ResumenCostos;
+  semanaActual: ResumenCostos;
+  mesActual: ResumenCostos;
+  ultimos7Dias: PuntoCostoDiario[];
+  promedio7DiasPreviosUSD: number;
+  umbralAnomaliaUSD: number;
+  esAnomaliaAyer: boolean;
+  proyeccionMensualUSD: number;
+  porProcesoAyer: ResumenProcesoIA[];
+  ejecucionesConMuchasLlamadasAyer: number;
+}
+
+function inicioDia(fecha: Date): Date {
+  const resultado = new Date(fecha);
+  resultado.setHours(0, 0, 0, 0);
+  return resultado;
+}
+
+function sumarDias(fecha: Date, dias: number): Date {
+  const resultado = new Date(fecha);
+  resultado.setDate(resultado.getDate() + dias);
+  return resultado;
+}
+
+function claveFechaLocal(fecha: Date): string {
+  return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, "0")}-${String(fecha.getDate()).padStart(2, "0")}`;
+}
+
+function resumirFilas(filas: FilaUso[]): ResumenCostos {
+  return filas.reduce(
+    (acc, fila) => ({
+      llamadas: acc.llamadas + 1,
+      inputTokens: acc.inputTokens + fila.inputTokens,
+      outputTokens: acc.outputTokens + fila.outputTokens,
+      costoUSD: acc.costoUSD + fila.costoUSD,
+      costoEquivalenteSuscripcionUSD:
+        acc.costoEquivalenteSuscripcionUSD + fila.costoEquivalenteSuscripcionUSD,
+      gastoRealApiUSD: acc.gastoRealApiUSD + fila.gastoRealApiUSD,
+    }),
+    {
+      llamadas: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costoUSD: 0,
+      costoEquivalenteSuscripcionUSD: 0,
+      gastoRealApiUSD: 0,
+    }
+  );
+}
+
+function filasEnRango(filas: FilaUso[], desde: Date, hasta: Date): FilaUso[] {
+  return filas.filter((fila) => fila.fecha >= desde && fila.fecha < hasta);
+}
+
+function resumirPorProceso(filas: FilaUso[]): ResumenProcesoIA[] {
+  const porProceso = new Map<string, ResumenProcesoIA>();
+  for (const fila of filas) {
+    const actual = porProceso.get(fila.proceso) ?? {
+      proceso: fila.proceso,
+      llamadas: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costoUSD: 0,
+      costoEquivalenteSuscripcionUSD: 0,
+      gastoRealApiUSD: 0,
+    };
+    actual.llamadas++;
+    actual.inputTokens += fila.inputTokens;
+    actual.outputTokens += fila.outputTokens;
+    actual.costoUSD += fila.costoUSD;
+    actual.costoEquivalenteSuscripcionUSD += fila.costoEquivalenteSuscripcionUSD;
+    actual.gastoRealApiUSD += fila.gastoRealApiUSD;
+    porProceso.set(fila.proceso, actual);
+  }
+  return [...porProceso.values()].sort((a, b) => b.gastoRealApiUSD - a.gastoRealApiUSD);
+}
+
+export async function obtenerAnalisisCostosDiario(
+  referencia: Date = new Date(),
+  multiplicadorAnomalia = 2,
+  maxLlamadasPorEjecucion = 12
+): Promise<AnalisisCostosDiario> {
+  const filas = await leerFilas();
+  const hoyInicio = inicioDia(referencia);
+  const mananaInicio = sumarDias(hoyInicio, 1);
+  const ayerInicio = sumarDias(hoyInicio, -1);
+  const semanaInicio = sumarDias(hoyInicio, -((hoyInicio.getDay() || 7) - 1));
+  const mesInicio = new Date(hoyInicio.getFullYear(), hoyInicio.getMonth(), 1);
+
+  const filasAyer = filasEnRango(filas, ayerInicio, hoyInicio);
+  const ultimos7Dias = Array.from({ length: 7 }, (_, indice) => {
+    const desde = sumarDias(hoyInicio, indice - 7);
+    const hasta = sumarDias(desde, 1);
+    const resumen = resumirFilas(filasEnRango(filas, desde, hasta));
+    return {
+      fecha: claveFechaLocal(desde),
+      llamadas: resumen.llamadas,
+      gastoRealApiUSD: resumen.gastoRealApiUSD,
+    };
+  });
+
+  // La referencia excluye ayer: así un pico no eleva su propio promedio y
+  // es más fácil detectar el cambio real frente a los siete días anteriores.
+  const sieteDiasPrevios = Array.from({ length: 7 }, (_, indice) => {
+    const desde = sumarDias(ayerInicio, indice - 7);
+    return resumirFilas(filasEnRango(filas, desde, sumarDias(desde, 1))).gastoRealApiUSD;
+  });
+  const promedio7DiasPreviosUSD =
+    sieteDiasPrevios.reduce((total, costo) => total + costo, 0) / sieteDiasPrevios.length;
+  const umbralAnomaliaUSD = promedio7DiasPreviosUSD * multiplicadorAnomalia;
+
+  const llamadasPorEjecucion = new Map<string, number>();
+  for (const fila of filasAyer) {
+    if (!fila.ejecucionId) continue;
+    llamadasPorEjecucion.set(fila.ejecucionId, (llamadasPorEjecucion.get(fila.ejecucionId) ?? 0) + 1);
+  }
+
+  const mesActual = resumirFilas(filasEnRango(filas, mesInicio, mananaInicio));
+  const diasDelMes = new Date(hoyInicio.getFullYear(), hoyInicio.getMonth() + 1, 0).getDate();
+  const fraccionDia = Math.min(1, Math.max(0, (referencia.getTime() - hoyInicio.getTime()) / 86_400_000));
+  const diasTranscurridos = Math.max(1, hoyInicio.getDate() - 1 + fraccionDia);
+
+  return {
+    hoy: resumirFilas(filasEnRango(filas, hoyInicio, mananaInicio)),
+    ayer: resumirFilas(filasAyer),
+    semanaActual: resumirFilas(filasEnRango(filas, semanaInicio, mananaInicio)),
+    mesActual,
+    ultimos7Dias,
+    promedio7DiasPreviosUSD,
+    umbralAnomaliaUSD,
+    esAnomaliaAyer:
+      promedio7DiasPreviosUSD > 0 &&
+      resumirFilas(filasAyer).gastoRealApiUSD > umbralAnomaliaUSD,
+    proyeccionMensualUSD: (mesActual.gastoRealApiUSD / diasTranscurridos) * diasDelMes,
+    porProcesoAyer: resumirPorProceso(filasAyer),
+    ejecucionesConMuchasLlamadasAyer: [...llamadasPorEjecucion.values()].filter(
+      (llamadas) => llamadas > maxLlamadasPorEjecucion
+    ).length,
+  };
+}
+
 /** Atribución agregada sin exponer prompts, resultados, chat IDs ni secretos. */
 export async function obtenerResumenPorProceso(desde: Date, hasta: Date): Promise<ResumenProcesoIA[]> {
   const filas = (await leerFilas()).filter((f) => f.fecha >= desde && f.fecha < hasta);

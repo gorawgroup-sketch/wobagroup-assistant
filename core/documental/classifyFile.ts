@@ -232,7 +232,8 @@ export async function clasificarDocumento(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
-      console.log(`[classifyFile] tool_use -> ${block.name}(${JSON.stringify(block.input)})`);
+      const campos = Object.keys(block.input as Record<string, unknown>);
+      console.log(`[classifyFile] tool_use -> ${block.name} (campos: ${campos.join(",") || "ninguno"})`);
 
       let resultado: string;
 
