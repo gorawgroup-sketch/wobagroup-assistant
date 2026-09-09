@@ -248,7 +248,8 @@ const SYSTEM_PROMPT_ESTATICO = [
 async function buildSystemPromptDinamico(
   chatId: number | undefined,
   nombreRemitente?: string,
-  pendientesPrefetch?: PendientesSensibles
+  pendientesPrefetch?: PendientesSensibles,
+  presentacion: "telegram" | "web" = "telegram"
 ): Promise<string> {
   const hoy = formatDateLocal(new Date());
 
@@ -265,6 +266,16 @@ async function buildSystemPromptDinamico(
       : "No sabes con certeza el nombre de quien te escribe en este mensaje — no asumas que es Carlos, " +
         "pregúntalo con calidez si hace falta dirigirte a la persona por nombre.",
   ];
+
+  if (presentacion === "web") {
+    partes.push(
+      "Esta respuesta se mostrará en el chat web de Wobi. Responde de forma clara y escaneable. " +
+        "Cuando existan tres o más valores comparables, usa una tabla Markdown con encabezados breves; " +
+        "el front la convertirá de forma determinista en tabla y gráfico. No inventes valores para llenar " +
+        "una visualización. Las acciones que requieran confirmación siguen usando los controles seguros " +
+        "existentes y nunca deben darse por ejecutadas antes de recibir confirmación real."
+    );
+  }
 
   if (chatId !== undefined) {
     // Reutiliza la lectura ya hecha en orquestarTurno (obtenerPendientesSensibles) cuando
@@ -380,6 +391,12 @@ const INSTRUCCION_MODO_RAPIDO =
   `o si de verdad requiere razonamiento, ESCALA — cuesta un poco más, pero una respuesta superficial (o ` +
   `falsa) en algo que sí importaba sale más cara. Solo para lo que sí es puramente un dato — responde tú ` +
   `mismo con normalidad, sigues siendo Wobi de principio a fin.`;
+
+const INSTRUCCION_SOLO_LECTURA_WEB =
+  "Este dispositivo web todavía no está vinculado de forma verificable con una cuenta de Telegram. " +
+  "Puedes consultar y analizar información, pero no puedes registrar, proponer ni ejecutar cambios. " +
+  "Si la persona pide una acción de escritura, explica brevemente que debe vincular Telegram desde el " +
+  "panel del chat para habilitar los mismos controles y confirmaciones del canal principal.";
 
 let client: Anthropic | null = null;
 
@@ -531,7 +548,8 @@ async function ejecutarConversacion(
   permiteEscalar: boolean,
   incluirBusquedaWeb: boolean,
   ejecucion: EjecucionIA,
-  pendientesPrefetch?: PendientesSensibles
+  pendientesPrefetch?: PendientesSensibles,
+  presentacion: "telegram" | "web" = "telegram"
 ): Promise<ResultadoConversacion> {
   const anthropic = getClient();
 
@@ -562,7 +580,10 @@ async function ejecutarConversacion(
   if (systemExtra) {
     system.push({ type: "text", text: systemExtra, cache_control: { type: "ephemeral" } });
   }
-  system.push({ type: "text", text: await buildSystemPromptDinamico(chatId, nombreRemitente, pendientesPrefetch) });
+  system.push({
+    type: "text",
+    text: await buildSystemPromptDinamico(chatId, nombreRemitente, pendientesPrefetch, presentacion),
+  });
 
   const historial = usarHistorial && chatId !== undefined ? await obtenerHistorial(chatId) : [];
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
@@ -805,7 +826,8 @@ async function orquestarTurno(
   chatId: number | undefined,
   nombreRemitente: string | undefined,
   usarHistorial: boolean,
-  ejecucion: EjecucionIA
+  ejecucion: EjecucionIA,
+  opciones: OpcionesAskClaude
 ): Promise<string> {
   const pendientes = chatId !== undefined ? await obtenerPendientesSensibles(chatId) : undefined;
   const saltarModoRapido = pendientes !== undefined && haySensiblePendiente(pendientes);
@@ -822,7 +844,8 @@ async function orquestarTurno(
       true,
       false, // sin búsqueda web en el modo rápido/económico — ver WEB_SEARCH_TOOL
       ejecucion,
-      pendientes
+      pendientes,
+      opciones.presentacion ?? "telegram"
     );
 
     if (intentoRapido.tipo === "respuesta") {
@@ -850,12 +873,13 @@ async function orquestarTurno(
       nombreRemitente,
       usarHistorial,
       MODEL_SONNET,
-      getToolDefinitions(false),
-      undefined,
+      getToolDefinitions(opciones.soloLectura ?? false),
+      opciones.soloLectura ? INSTRUCCION_SOLO_LECTURA_WEB : undefined,
       false,
       true, // intento completo — búsqueda web disponible, ver WEB_SEARCH_TOOL
       ejecucion,
-      pendientes
+      pendientes,
+      opciones.presentacion ?? "telegram"
     );
   } catch (error) {
     if (!esErrorDeDisponibilidad(error)) throw error;
@@ -867,12 +891,13 @@ async function orquestarTurno(
       nombreRemitente,
       usarHistorial,
       MODEL_HAIKU,
-      getToolDefinitions(false),
-      undefined,
+      getToolDefinitions(opciones.soloLectura ?? false),
+      opciones.soloLectura ? INSTRUCCION_SOLO_LECTURA_WEB : undefined,
       false,
       true, // sigue siendo el intento "completo" (solo cambió el modelo por disponibilidad)
       ejecucion,
-      pendientes
+      pendientes,
+      opciones.presentacion ?? "telegram"
     );
   }
 
@@ -894,15 +919,34 @@ async function orquestarTurno(
  * hasta que produzca una respuesta final en texto. Ver orquestarTurno para el enrutamiento
  * entre Haiku (rápido/barato) y Sonnet (completo/preciso).
  */
-export async function askClaude(
+export interface OpcionesAskClaude {
+  soloLectura?: boolean;
+  presentacion?: "telegram" | "web";
+}
+
+const colasTurnosPorChat = new Map<number, Promise<unknown>>();
+
+function conTurnoSerializado<T>(chatId: number, tarea: () => Promise<T>): Promise<T> {
+  const anterior = colasTurnosPorChat.get(chatId) ?? Promise.resolve();
+  const actual = anterior.then(tarea, tarea);
+  const cola = actual.catch(() => undefined);
+  colasTurnosPorChat.set(chatId, cola);
+  void cola.finally(() => {
+    if (colasTurnosPorChat.get(chatId) === cola) colasTurnosPorChat.delete(chatId);
+  });
+  return actual;
+}
+
+async function askClaudeInterno(
   userText: string,
   chatId?: number,
   nombreRemitente?: string,
-  proceso = "chat_conversacional"
+  proceso = "chat_conversacional",
+  opciones: OpcionesAskClaude = {}
 ): Promise<string> {
   const ejecucion = crearEjecucionIA(proceso);
   try {
-    const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, true, ejecucion);
+    const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, true, ejecucion, opciones);
     registrarEstadoClaude(true);
     return respuesta;
   } catch (error) {
@@ -923,7 +967,7 @@ export async function askClaude(
     console.error(`[claude] Historial de chat ${chatId} rechazado por la API, reintentando sin historial:`, error);
     await limpiarHistorial(chatId!);
     try {
-      const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false, ejecucion);
+      const respuesta = await orquestarTurno(userText, chatId, nombreRemitente, false, ejecucion, opciones);
       registrarEstadoClaude(true);
       return respuesta;
     } catch (segundoError) {
@@ -931,6 +975,23 @@ export async function askClaude(
       throw segundoError;
     }
   }
+}
+
+/**
+ * Punto único de entrada conversacional para Telegram y web. Los turnos de
+ * una misma identidad se serializan antes de leer el historial: así un
+ * mensaje enviado desde cada canal casi al mismo tiempo no puede leer el
+ * mismo contexto antiguo ni guardar respuestas fuera de orden.
+ */
+export function askClaude(
+  userText: string,
+  chatId?: number,
+  nombreRemitente?: string,
+  proceso = "chat_conversacional",
+  opciones: OpcionesAskClaude = {}
+): Promise<string> {
+  const tarea = () => askClaudeInterno(userText, chatId, nombreRemitente, proceso, opciones);
+  return chatId === undefined ? tarea() : conTurnoSerializado(chatId, tarea);
 }
 
 export interface CitaBusquedaWeb {

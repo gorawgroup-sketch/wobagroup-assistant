@@ -28,6 +28,7 @@ import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
 import { askClaude, buscarEnInternet } from "../core/claude/client";
+import { obtenerHistorialVisible } from "../core/claude/conversationStore";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
@@ -66,6 +67,13 @@ import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "..
 import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
 import { handleAutorespuestaHiloCallback } from "../core/gmail/autorespuestaHiloCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
+import { resolverIdentidadChatWeb } from "../core/cerebro/webChatIdentity";
+import { crearSolicitudVinculoChat, confirmarVinculoChat } from "../core/cerebro/chatLinkStore";
+import {
+  ConflictoIdempotencia,
+  procesarSolicitudChat,
+} from "../core/cerebro/webChatCoordinator";
+import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import { verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
@@ -191,7 +199,9 @@ app.use((_req: Request, res: Response, next) => {
   res.set("X-Content-Type-Options", "nosniff");
   res.set("X-Frame-Options", "DENY");
   res.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // El chat permite dictado solo desde este mismo origen. Cámara y ubicación
+  // siguen bloqueadas; el navegador pide permiso explícito antes de usar el micro.
+  res.set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
   res.set(
     "Content-Security-Policy",
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://wobagroup-assistant-production.up.railway.app; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
@@ -551,6 +561,169 @@ app.options("/api/cerebro/buscar", (_req: Request, res: Response) => {
   res.sendStatus(204);
 });
 
+function corsChat(res: Response, metodo: "GET" | "POST"): void {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, X-Cerebro-Nombre, X-Cerebro-Device, Content-Type");
+  res.set("Access-Control-Allow-Methods", metodo);
+}
+
+function nombreDesdeHeader(req: Request): string {
+  const valor = req.get("X-Cerebro-Nombre") ?? "";
+  try {
+    return decodeURIComponent(valor).trim().slice(0, 100);
+  } catch {
+    return valor.trim().slice(0, 100);
+  }
+}
+
+async function identidadChatDesdeRequest(req: Request) {
+  return resolverIdentidadChatWeb(
+    req.get("X-Cerebro-Key") ?? "",
+    nombreDesdeHeader(req),
+    req.get("X-Cerebro-Device") ?? ""
+  );
+}
+
+function identidadPublica(identidad: Awaited<ReturnType<typeof identidadChatDesdeRequest>>) {
+  if (!identidad) return null;
+  return {
+    nombre: identidad.nombre,
+    rol: identidad.rol,
+    vinculadaTelegram: identidad.vinculadaTelegram,
+    modo: identidad.modo,
+  };
+}
+
+/**
+ * Historial textual común. Si el dispositivo fue vinculado por Telegram,
+ * usa exactamente el mismo chatId que el bot; nunca expone tool inputs,
+ * tool results, claves ni razonamiento interno.
+ */
+app.get("/api/cerebro/chat", async (req: Request, res: Response) => {
+  corsChat(res, "GET");
+  const identidad = await identidadChatDesdeRequest(req);
+  if (!identidad) {
+    res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
+    return;
+  }
+
+  const mensajes = await obtenerHistorialVisible(identidad.chatId);
+  res.json({ identidad: identidadPublica(identidad), mensajes });
+});
+
+app.options("/api/cerebro/chat", (_req: Request, res: Response) => {
+  corsChat(res, "GET");
+  res.set("Access-Control-Allow-Methods", "GET, POST");
+  res.sendStatus(204);
+});
+
+const solicitudesChatPorMinuto = new Map<number, Map<string, number>>();
+
+function puedeEnviarMensajeChat(chatId: number, messageId: string): boolean {
+  const ahora = Date.now();
+  const recientes = solicitudesChatPorMinuto.get(chatId) ?? new Map<string, number>();
+  for (const [id, momento] of recientes) {
+    if (ahora - momento >= 60_000) recientes.delete(id);
+  }
+  // Los reintentos idempotentes no consumen una plaza adicional del límite.
+  if (recientes.has(messageId)) return true;
+  if (recientes.size >= 10) return false;
+  recientes.set(messageId, ahora);
+  solicitudesChatPorMinuto.set(chatId, recientes);
+  return true;
+}
+
+/**
+ * Entrada idempotente del chat web. messageId nace en el navegador y se
+ * persiste ANTES de llamar al modelo. Un retry con el mismo id se une a la
+ * ejecución viva o devuelve su respuesta anterior; nunca vuelve a ejecutar
+ * el turno ni sus herramientas.
+ */
+app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
+  corsChat(res, "POST");
+  const identidad = await identidadChatDesdeRequest(req);
+  if (!identidad) {
+    res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
+    return;
+  }
+
+  const messageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
+  const texto = typeof req.body?.texto === "string" ? req.body.texto.trim() : "";
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(messageId)) {
+    res.status(400).json({ error: "messageId ausente o inválido." });
+    return;
+  }
+  if (!texto || texto.length > 4_000) {
+    res.status(400).json({ error: "El mensaje debe tener entre 1 y 4.000 caracteres." });
+    return;
+  }
+  if (!puedeEnviarMensajeChat(identidad.chatId, messageId)) {
+    res.status(429).json({ error: "Demasiados mensajes seguidos. Espera un minuto antes de continuar." });
+    return;
+  }
+
+  try {
+    const resultado = await procesarSolicitudChat(
+      { requestId: messageId, chatId: identidad.chatId, texto },
+      webChatRequestStore,
+      () =>
+        askClaude(texto, identidad.chatId, identidad.nombre, "chat_conversacional", {
+          soloLectura: identidad.modo === "solo_lectura",
+          presentacion: "web",
+        })
+    );
+
+    if (resultado.estado === "procesando") {
+      res.status(202).json({ estado: resultado.estado, duplicada: true });
+      return;
+    }
+    if (resultado.estado === "fallido") {
+      res.status(409).json({
+        estado: resultado.estado,
+        error: "La ejecución anterior quedó interrumpida y no se repitió para evitar duplicar acciones.",
+      });
+      return;
+    }
+
+    publicarCambioCerebro("chat_web");
+    res.json({
+      estado: resultado.estado,
+      respuesta: resultado.respuesta,
+      duplicada: resultado.duplicada,
+      identidad: identidadPublica(identidad),
+    });
+  } catch (error) {
+    if (error instanceof ConflictoIdempotencia) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    console.error("[api/cerebro/chat] Error procesando mensaje:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "Wobi no pudo completar este mensaje. Puedes reintentarlo con una solicitud nueva." });
+  }
+});
+
+/** Crea un código de 10 minutos que solo puede confirmar el usuario desde su propio Telegram autorizado. */
+app.post("/api/cerebro/chat/vincular", async (req: Request, res: Response) => {
+  corsChat(res, "POST");
+  const identidad = await identidadChatDesdeRequest(req);
+  if (!identidad) {
+    res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
+    return;
+  }
+  try {
+    const resultado = await crearSolicitudVinculoChat(req.get("X-Cerebro-Device") ?? "", identidad.nombre);
+    res.json(resultado);
+  } catch (error) {
+    console.error("[api/cerebro/chat/vincular] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No se pudo crear el código de vinculación." });
+  }
+});
+
+app.options("/api/cerebro/chat/vincular", (_req: Request, res: Response) => {
+  corsChat(res, "POST");
+  res.sendStatus(204);
+});
+
 /**
  * Solicita acceso al front del cerebro: alguien manda su nombre, se crea una
  * solicitud pendiente y se notifica a TODOS los admins por Telegram con
@@ -805,6 +978,18 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
   res.sendStatus(204);
 });
 
+const telegramUpdatesRecientes = new Map<number, number>();
+
+function esUpdateTelegramNuevo(updateId: number): boolean {
+  const ahora = Date.now();
+  for (const [id, vistoEn] of telegramUpdatesRecientes) {
+    if (ahora - vistoEn > 24 * 60 * 60 * 1000) telegramUpdatesRecientes.delete(id);
+  }
+  if (telegramUpdatesRecientes.has(updateId)) return false;
+  telegramUpdatesRecientes.set(updateId, ahora);
+  return true;
+}
+
 /**
  * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): un redeploy de Railway (rollout normal,
  * varias veces por sesión en desarrollo activo) mató a mitad de camino el procesamiento de este mismo
@@ -821,6 +1006,7 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
   res.sendStatus(200);
 
   const update = req.body as TelegramUpdate;
+  if (!Number.isFinite(update.update_id) || !esUpdateTelegramNuevo(update.update_id)) return;
 
   const remitente = update.callback_query?.from ?? update.message?.from;
   if (!(await esUsuarioAutorizado(remitente?.id))) {
@@ -945,6 +1131,24 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
   const incoming = parseIncomingUpdate(update);
 
   if (!incoming) {
+    return;
+  }
+
+  const codigoVinculo = incoming.text.trim().match(/^\/?vincular\s+([a-zA-Z0-9-]{6,8})$/i)?.[1];
+  if (codigoVinculo && remitente) {
+    const nombreTelegram = incoming.fromNombre || [remitente.first_name, remitente.last_name].filter(Boolean).join(" ");
+    try {
+      const vinculo = await confirmarVinculoChat(codigoVinculo, remitente.id, nombreTelegram);
+      await sendTelegramMessage(
+        incoming.chatId,
+        vinculo
+          ? `✅ El dispositivo solicitado como "${vinculo.nombreSolicitud}" ya está vinculado a tu cuenta. Puedes continuar la misma conversación desde el front de Wobi.`
+          : "⚠️ Ese código no existe o venció. Genera uno nuevo desde el chat web."
+      );
+    } catch (error) {
+      console.error("[chat/vincular] Error confirmando vínculo:", error instanceof Error ? error.name : "Error");
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude completar la vinculación. Inténtalo de nuevo.");
+    }
     return;
   }
 

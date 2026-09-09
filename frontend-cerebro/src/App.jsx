@@ -42,6 +42,8 @@ const ARREGLAR_CONEXION_ENDPOINT = `${API_BASE}/conexiones/arreglar`;
 const BUSQUEDA_WEB_ENDPOINT = `${API_BASE}/busqueda-web`;
 const BUSCAR_ENDPOINT = `${API_BASE}/buscar`;
 const ACCIONES_PROGRAMADAS_ENDPOINT = `${API_BASE}/acciones-programadas`;
+const CHAT_ENDPOINT = `${API_BASE}/chat`;
+const CHAT_VINCULAR_ENDPOINT = `${API_BASE}/chat/vincular`;
 const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
@@ -49,6 +51,8 @@ const POLL_INTERVALO_MS = 3000;
 // visita — dura hasta que el token deje de ser válido en el servidor
 // (24h si es temporal, o hasta que un admin lo revoque).
 const LOCALSTORAGE_TOKEN_KEY = "wobi_cerebro_token";
+const LOCALSTORAGE_DEVICE_KEY = "wobi_cerebro_device";
+const LOCALSTORAGE_VOZ_KEY = "wobi_cerebro_leer_respuestas";
 // Username verificado en vivo contra getMe de la Bot API (no confiar en el nombre visible, que puede cambiar).
 const TELEGRAM_BOT_URL = "https://t.me/Woba_asistente_bot";
 // Ícono oficial de Telegram (recortado del asset provisto en el proyecto), fondo transparente.
@@ -1973,6 +1977,353 @@ function MiniCalendario({ apiKey, actualizacionId }) {
   );
 }
 
+function obtenerDeviceIdChat() {
+  const guardado = localStorage.getItem(LOCALSTORAGE_DEVICE_KEY);
+  if (guardado && /^[a-zA-Z0-9_-]{16,128}$/.test(guardado)) return guardado;
+  const nuevo = window.crypto?.randomUUID?.().replaceAll("-", "") || `device_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(LOCALSTORAGE_DEVICE_KEY, nuevo);
+  return nuevo;
+}
+
+function parsearNumeroVisual(valor) {
+  let limpio = String(valor || "").replace(/[^0-9,.-]/g, "");
+  if (!limpio || limpio === "-") return null;
+  if (limpio.includes(",") && limpio.includes(".")) {
+    limpio = limpio.lastIndexOf(",") > limpio.lastIndexOf(".")
+      ? limpio.replaceAll(".", "").replace(",", ".")
+      : limpio.replaceAll(",", "");
+  } else if (limpio.includes(",")) {
+    limpio = limpio.replace(",", ".");
+  }
+  const numero = Number(limpio);
+  return Number.isFinite(numero) ? numero : null;
+}
+
+function separarCeldaTabla(linea) {
+  return linea.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((celda) => celda.trim());
+}
+
+function bloquesRespuesta(texto) {
+  const lineas = String(texto || "").split("\n");
+  const bloques = [];
+  let textoActual = [];
+  const vaciarTexto = () => {
+    const contenido = textoActual.join("\n").trim();
+    if (contenido) bloques.push({ tipo: "texto", contenido });
+    textoActual = [];
+  };
+
+  for (let i = 0; i < lineas.length; i++) {
+    const pareceTabla = lineas[i].trim().startsWith("|") && /^\s*\|?\s*:?-{3,}/.test(lineas[i + 1] || "");
+    if (!pareceTabla) {
+      textoActual.push(lineas[i]);
+      continue;
+    }
+    vaciarTexto();
+    const cabeceras = separarCeldaTabla(lineas[i]);
+    i += 2;
+    const filas = [];
+    while (i < lineas.length && lineas[i].trim().startsWith("|")) {
+      filas.push(separarCeldaTabla(lineas[i]));
+      i++;
+    }
+    i--;
+    bloques.push({ tipo: "tabla", cabeceras, filas });
+  }
+  vaciarTexto();
+  return bloques;
+}
+
+function TablaRespuesta({ bloque }) {
+  const serie = bloque.filas
+    .map((fila) => ({ etiqueta: fila[0], valor: parsearNumeroVisual(fila[fila.length - 1]) }))
+    .filter((item) => item.etiqueta && item.valor !== null);
+  const maximo = Math.max(0, ...serie.map((item) => Math.abs(item.valor)));
+  const mostrarGrafico = serie.length >= 2 && serie.length <= 10 && maximo > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      <div style={{ overflowX: "auto", border: `1px solid ${C.line}`, borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.sans, fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ background: "rgba(143,210,245,.08)", color: C.coreBright }}>
+              {bloque.cabeceras.map((cabecera, i) => (
+                <th key={i} style={{ padding: "7px 8px", textAlign: i === 0 ? "left" : "right", fontWeight: 600 }}>{cabecera}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bloque.filas.map((fila, i) => (
+              <tr key={i} style={{ borderTop: `1px solid ${C.line}`, color: C.cream }}>
+                {fila.map((celda, j) => (
+                  <td key={j} style={{ padding: "7px 8px", textAlign: j === 0 ? "left" : "right" }}>{celda}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {mostrarGrafico && (
+        <div aria-label="Gráfico generado a partir de la tabla" style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {serie.map((item) => (
+            <div key={item.etiqueta} style={{ display: "grid", gridTemplateColumns: "minmax(70px, .8fr) 2fr auto", gap: 7, alignItems: "center" }}>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: C.sans, fontSize: 10.5, color: C.dim }}>{item.etiqueta}</span>
+              <span style={{ height: 7, borderRadius: 5, background: "rgba(143,210,245,.1)", overflow: "hidden" }}>
+                <span style={{ display: "block", width: `${Math.max(2, Math.abs(item.valor) / maximo * 100)}%`, height: "100%", background: C.coreBright, borderRadius: 5 }} />
+              </span>
+              <span style={{ fontFamily: C.mono, fontSize: 9.5, color: C.cream }}>{item.valor.toLocaleString("es-ES")}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContenidoRespuesta({ texto }) {
+  return bloquesRespuesta(texto).map((bloque, i) =>
+    bloque.tipo === "tabla" ? (
+      <TablaRespuesta key={i} bloque={bloque} />
+    ) : (
+      <div key={i} style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{bloque.contenido}</div>
+    )
+  );
+}
+
+function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
+  const [abierto, setAbierto] = useState(false);
+  const [mensajes, setMensajes] = useState([]);
+  const [identidad, setIdentidad] = useState(null);
+  const [texto, setTexto] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState("");
+  const [codigoVinculo, setCodigoVinculo] = useState(null);
+  const [escuchando, setEscuchando] = useState(false);
+  const [leerRespuestas, setLeerRespuestas] = useState(() => localStorage.getItem(LOCALSTORAGE_VOZ_KEY) === "1");
+  const [deviceId] = useState(obtenerDeviceIdChat);
+  const mensajesRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const enviandoRef = useRef(false);
+  const SpeechRecognition = typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
+
+  const headers = useMemo(() => ({
+    "X-Cerebro-Key": apiKey,
+    "X-Cerebro-Nombre": encodeURIComponent(nombreUsuario || ""),
+    "X-Cerebro-Device": deviceId,
+  }), [apiKey, nombreUsuario, deviceId]);
+
+  const cargarChat = useCallback(async () => {
+    if (!apiKey) return;
+    try {
+      const res = await fetch(CHAT_ENDPOINT, { headers, cache: "no-store" });
+      if (!res.ok) return;
+      const json = await res.json();
+      setMensajes(Array.isArray(json.mensajes) ? json.mensajes : []);
+      setIdentidad(json.identidad || null);
+      if (json.identidad?.vinculadaTelegram) setCodigoVinculo(null);
+    } catch {
+      // El último historial bueno continúa visible durante una reconexión.
+    }
+  }, [apiKey, headers]);
+
+  useEffect(() => {
+    // La misma señal SSE que refresca el cerebro también actualiza el
+    // historial abierto. Así un mensaje enviado por Telegram aparece aquí
+    // sin recargar el navegador ni mantener un segundo stream.
+    if (abierto) cargarChat();
+  }, [abierto, cargarChat, revisionTiempoReal]);
+
+  useEffect(() => {
+    if (!codigoVinculo) return undefined;
+    const id = setInterval(cargarChat, 3000);
+    return () => clearInterval(id);
+  }, [codigoVinculo, cargarChat]);
+
+  useEffect(() => {
+    const nodo = mensajesRef.current;
+    if (nodo) nodo.scrollTop = nodo.scrollHeight;
+  }, [mensajes, enviando]);
+
+  useEffect(() => () => {
+    recognitionRef.current?.stop?.();
+    window.speechSynthesis?.cancel?.();
+  }, []);
+
+  const hablar = useCallback((respuesta) => {
+    if (!leerRespuestas || !window.speechSynthesis || !respuesta) return;
+    window.speechSynthesis.cancel();
+    const voz = new SpeechSynthesisUtterance(respuesta.replace(/\|/g, " "));
+    voz.lang = "es-ES";
+    voz.rate = 1;
+    window.speechSynthesis.speak(voz);
+  }, [leerRespuestas]);
+
+  const enviarConReintento = useCallback(async (messageId, contenido) => {
+    let ultimoError;
+    for (let intento = 0; intento < 3; intento++) {
+      try {
+        const res = await fetch(CHAT_ENDPOINT, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId, texto: contenido }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.status === 202) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+        if (!res.ok) throw new Error(json.error || "No se pudo completar el mensaje.");
+        return json;
+      } catch (err) {
+        ultimoError = err;
+        if (intento < 2) await new Promise((resolve) => setTimeout(resolve, 800 * (intento + 1)));
+      }
+    }
+    throw ultimoError || new Error("No se pudo conectar con Wobi.");
+  }, [headers]);
+
+  const enviar = async () => {
+    const contenido = texto.trim();
+    if (!contenido || enviandoRef.current) return;
+    enviandoRef.current = true;
+    setEnviando(true);
+    setError("");
+    setTexto("");
+    setMensajes((actuales) => [...actuales, { rol: "usuario", texto: contenido, local: true }]);
+    const messageId = window.crypto?.randomUUID?.().replaceAll("-", "") || `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    try {
+      const json = await enviarConReintento(messageId, contenido);
+      const respuesta = json.respuesta || "Wobi terminó sin devolver texto.";
+      setMensajes((actuales) => [...actuales, { rol: "wobi", texto: respuesta, local: true }]);
+      if (json.identidad) setIdentidad(json.identidad);
+      hablar(respuesta);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo conectar con Wobi.");
+    } finally {
+      enviandoRef.current = false;
+      setEnviando(false);
+    }
+  };
+
+  const iniciarDictado = () => {
+    if (!SpeechRecognition) return;
+    if (escuchando) {
+      recognitionRef.current?.stop?.();
+      return;
+    }
+    const reconocimiento = new SpeechRecognition();
+    recognitionRef.current = reconocimiento;
+    reconocimiento.lang = "es-ES";
+    reconocimiento.interimResults = true;
+    reconocimiento.continuous = false;
+    reconocimiento.onstart = () => setEscuchando(true);
+    reconocimiento.onend = () => setEscuchando(false);
+    reconocimiento.onerror = () => {
+      setEscuchando(false);
+      setError("El navegador no pudo iniciar el dictado. Puedes seguir escribiendo.");
+    };
+    reconocimiento.onresult = (evento) => {
+      const transcripcion = Array.from(evento.results).map((resultado) => resultado[0]?.transcript || "").join(" ");
+      setTexto(transcripcion.trim());
+    };
+    reconocimiento.start();
+  };
+
+  const vincular = async () => {
+    setError("");
+    try {
+      const res = await fetch(CHAT_VINCULAR_ENDPOINT, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "No se pudo crear el código.");
+      if (json.estado === "vinculado") {
+        await cargarChat();
+        return;
+      }
+      setCodigoVinculo(json);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo crear el código.");
+    }
+  };
+
+  const toggleLectura = () => {
+    setLeerRespuestas((valor) => {
+      const nuevo = !valor;
+      localStorage.setItem(LOCALSTORAGE_VOZ_KEY, nuevo ? "1" : "0");
+      if (!nuevo) window.speechSynthesis?.cancel?.();
+      return nuevo;
+    });
+  };
+
+  return (
+    <div style={{ position: "fixed", right: 18, bottom: 18, zIndex: 40 }}>
+      {abierto && (
+        <section className="wobi-chat-panel" aria-label="Chat con Wobi" style={{ width: "min(430px, calc(100vw - 24px))", height: "min(680px, calc(100vh - 92px))", display: "flex", flexDirection: "column", borderRadius: 16, overflow: "hidden", border: `1px solid ${C.lineBright}`, background: "rgba(5,11,20,.98)", boxShadow: "0 24px 80px rgba(0,0,0,.55)", marginBottom: 10 }}>
+          <header style={{ padding: "13px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div>
+              <div style={{ fontFamily: C.serif, fontSize: 20, color: C.cream }}>Hablar con Wobi</div>
+              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: identidad?.vinculadaTelegram ? C.ok : C.amberBright, marginTop: 2 }}>
+                {identidad?.vinculadaTelegram ? "contexto compartido con Telegram" : "chat aislado · solo lectura hasta vincular"}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 5 }}>
+              <button type="button" onClick={toggleLectura} title="Leer las respuestas en voz alta" style={{ border: `1px solid ${leerRespuestas ? C.coreBright : C.line}`, background: "transparent", color: leerRespuestas ? C.coreBright : C.dim, borderRadius: 7, padding: "6px 8px", cursor: "pointer" }}>🔊</button>
+              <button type="button" onClick={() => setAbierto(false)} aria-label="Cerrar chat" style={{ border: `1px solid ${C.line}`, background: "transparent", color: C.dim, borderRadius: 7, padding: "6px 9px", cursor: "pointer" }}>×</button>
+            </div>
+          </header>
+
+          {!identidad?.vinculadaTelegram && (
+            <div style={{ padding: "9px 12px", borderBottom: `1px solid ${C.line}`, background: "rgba(232,167,92,.07)", fontFamily: C.sans, fontSize: 11, color: C.dim, lineHeight: 1.45 }}>
+              {codigoVinculo?.codigo ? (
+                <>
+                  En Telegram envía <strong style={{ color: C.amberBright }}>VINCULAR {codigoVinculo.codigo}</strong> a Wobi. Esta ventana lo detectará automáticamente.
+                  <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" style={{ color: C.coreBright, marginLeft: 6 }}>Abrir Telegram ↗</a>
+                </>
+              ) : (
+                <>
+                  Vincula este dispositivo para continuar aquí la misma conversación y habilitar las confirmaciones seguras.
+                  <button type="button" onClick={vincular} style={{ marginLeft: 7, border: "none", background: "transparent", color: C.amberBright, textDecoration: "underline", cursor: "pointer", padding: 0 }}>Generar código</button>
+                </>
+              )}
+            </div>
+          )}
+
+          <div ref={mensajesRef} aria-live="polite" style={{ flex: 1, overflowY: "auto", padding: 13, display: "flex", flexDirection: "column", gap: 10 }}>
+            {mensajes.length === 0 && (
+              <div style={{ margin: "auto", textAlign: "center", maxWidth: 260, color: C.dim, fontFamily: C.sans, fontSize: 12, lineHeight: 1.5 }}>
+                Puedes preguntarme por correo, documentos, cashflow, Holded o cualquier asunto operativo.
+              </div>
+            )}
+            {mensajes.map((mensaje, i) => (
+              <div key={`${mensaje.rol}-${i}-${mensaje.texto.slice(0, 12)}`} style={{ alignSelf: mensaje.rol === "usuario" ? "flex-end" : "stretch", maxWidth: mensaje.rol === "usuario" ? "84%" : "100%", padding: mensaje.rol === "usuario" ? "9px 11px" : "11px 12px", borderRadius: mensaje.rol === "usuario" ? "12px 12px 3px 12px" : "3px 12px 12px 12px", border: `1px solid ${mensaje.rol === "usuario" ? C.lineBright : C.line}`, background: mensaje.rol === "usuario" ? "rgba(46,109,164,.22)" : C.voidSoft, color: C.cream, fontFamily: C.sans, fontSize: 12.5 }}>
+                {mensaje.rol === "wobi" ? <ContenidoRespuesta texto={mensaje.texto} /> : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{mensaje.texto}</div>}
+              </div>
+            ))}
+            {enviando && <div style={{ fontFamily: C.mono, fontSize: 10, color: C.amberBright }}>Wobi está trabajando…</div>}
+          </div>
+
+          {error && <div role="alert" style={{ padding: "7px 12px", borderTop: `1px solid ${C.line}`, color: C.dangerBright, fontFamily: C.sans, fontSize: 11 }}>{error}</div>}
+          <div style={{ padding: 10, borderTop: `1px solid ${C.line}`, display: "flex", gap: 7, alignItems: "flex-end" }}>
+            <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} disabled={enviando} rows={2} maxLength={4000} placeholder="Escribe o dicta una pregunta…" style={{ flex: 1, minWidth: 0, resize: "none", borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft, color: C.cream, padding: "9px 10px", fontFamily: C.sans, fontSize: 12, outline: "none" }} />
+            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition || enviando} title={SpeechRecognition ? "Dictar con el micrófono" : "El dictado no está disponible en este navegador"} style={{ height: 38, minWidth: 38, borderRadius: 9, border: `1px solid ${escuchando ? C.amberBright : C.line}`, background: escuchando ? "rgba(232,167,92,.16)" : "transparent", color: escuchando ? C.amberBright : C.dim, cursor: SpeechRecognition ? "pointer" : "not-allowed", opacity: SpeechRecognition ? 1 : .45 }}>🎙</button>
+            <button type="button" onClick={enviar} disabled={!texto.trim() || enviando} style={{ height: 38, borderRadius: 9, border: `1px solid ${C.coreBright}`, background: "rgba(46,109,164,.28)", color: C.coreBright, padding: "0 12px", fontFamily: C.mono, fontSize: 10, cursor: texto.trim() && !enviando ? "pointer" : "default", opacity: texto.trim() && !enviando ? 1 : .45 }}>Enviar</button>
+          </div>
+          <div style={{ padding: "0 11px 8px", fontFamily: C.mono, fontSize: 8.5, color: C.dim }}>
+            cada mensaje tiene id único · los reintentos no duplican llamadas
+          </div>
+        </section>
+      )}
+      <button type="button" onClick={() => setAbierto((valor) => !valor)} aria-expanded={abierto} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, borderRadius: 999, border: `1px solid ${C.lineBright}`, background: C.panel, color: C.cream, padding: "10px 14px", boxShadow: "0 10px 30px rgba(0,0,0,.4)", cursor: "pointer", fontFamily: C.sans, fontSize: 12.5 }}>
+        <span style={{ width: 9, height: 9, borderRadius: "50%", background: C.ok, boxShadow: `0 0 8px ${C.ok}` }} />
+        {abierto ? "Cerrar Wobi" : "Hablar con Wobi"}
+      </button>
+    </div>
+  );
+}
+
 export default function CerebroWoba() {
   const [active, setActive] = useState(null);
   // Pedido explícito de Carlos: poder tener varios módulos abiertos a la vez
@@ -2930,6 +3281,13 @@ export default function CerebroWoba() {
 
       {esAdmin && <AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
       {esAdmin && <UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
+      {entered && apiKey && (
+        <WobiChat
+          apiKey={apiKey}
+          nombreUsuario={nombreUsuario}
+          revisionTiempoReal={ultimoContactoEn}
+        />
+      )}
     </div>
   );
 }
