@@ -7,6 +7,7 @@ import {
   inferirCuentaGasto,
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
+  type CuentaSugerida,
 } from "../holded/write";
 import {
   crearPropuestaGasto,
@@ -82,6 +83,23 @@ function normalizarNumeroDocumento(n: string | undefined): string {
 // terminaban comparados como "coincide" (mismo "00000"), diciendo "es el mismo gasto" entre dos
 // gastos que en realidad no se pueden distinguir por esta vía en absoluto.
 const PLACEHOLDER_SIN_NUMERO = "00000";
+
+// Hallazgo real de auditoría xhigh: un ternario en cascada con un "else"
+// final ("elegida por IA") le seguía cada rama vieja pero silenciosamente
+// absorbía cualquier valor NUEVO de CuentaSugerida["aprendidoDe"] añadido
+// después (ej. "correccion_confirmada", agregado esta misma noche) — un
+// gasto categorizado por una corrección YA CONFIRMADA por Carlos se le
+// mostraba como "elegida por IA", justo lo contrario de lo que pasó.
+// Record<..., string> sobre el tipo union completo obliga al compilador a
+// fallar si se agrega un valor nuevo a CuentaSugerida sin actualizar este
+// mapa — cierra la clase de bug, no solo el caso puntual.
+const ETIQUETA_APRENDIDO_DE: Record<CuentaSugerida["aprendidoDe"], string> = {
+  proveedor: "por proveedor",
+  concepto: "por concepto",
+  categoria: "por categoría",
+  correccion_confirmada: "corrección ya confirmada por ti",
+  ia: "elegida por IA",
+};
 
 function esNumeroDocumentoUtilizable(normalizado: string): boolean {
   return normalizado !== "" && normalizado !== PLACEHOLDER_SIN_NUMERO;
@@ -569,7 +587,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
 
     const notaCuenta = cuentaSugerida
       ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
-        ` (${cuentaSugerida.aprendidoDe === "proveedor" ? "por proveedor" : cuentaSugerida.aprendidoDe === "concepto" ? "por concepto" : cuentaSugerida.aprendidoDe === "categoria" ? "por categoría" : "elegida por IA"})` +
+        ` (${ETIQUETA_APRENDIDO_DE[cuentaSugerida.aprendidoDe]})` +
         notaTags
       : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.` +
         notaTags;

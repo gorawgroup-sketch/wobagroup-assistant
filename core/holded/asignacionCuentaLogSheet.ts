@@ -9,8 +9,12 @@ import type { Empresa } from "./client";
  * cada gasto de aquí más tarde: si su cuenta actual en Holded ya no
  * coincide con lo que se asignó acá, es una señal real de que Carlos la
  * corrigió a mano — esa corrección alimenta cuentaCorregidaAprendidaSheet.ts.
- * Cada entrada se borra tras revisarse una vez (ver consumirAsignacion) — no
- * tiene sentido seguir comparando el mismo gasto una y otra vez.
+ * Una entrada se borra (ver consumirAsignacionCuenta) SOLO cuando queda
+ * resuelta: se detectó y registró una corrección, o el gasto ya no existe en
+ * Holded. Si todavía no hay corrección, se deja pendiente para la próxima
+ * revisión semanal, hasta que purgarAsignacionesVencidas la borre por su
+ * TTL real de 30 días — así Carlos tiene la ventana completa para corregir a
+ * mano, no solo hasta la primera revisión.
  */
 export interface AsignacionCuenta {
   id: string;
@@ -64,7 +68,19 @@ export async function obtenerAsignacionesPendientesDeRevisar(): Promise<Asignaci
     .filter((a): a is AsignacionCuenta => a !== null && ahora - a.creadoEn <= TTL_MS);
 }
 
-/** Marca una asignación como ya revisada (la elimina — no tiene sentido revisar el mismo gasto dos veces). */
+/**
+ * Marca una asignación como resuelta (la elimina).
+ *
+ * Nota de auditoría (riesgo conocido, aceptado y no explotable hoy): el
+ * `leerFilas` de acá y el `eliminarFila` real están protegidos por el mutex
+ * de sheetsKeyValueStore.ts cada uno POR SEPARADO, no como una sola
+ * operación atómica — si dos llamadas concurrentes calcularan `rowIndex`
+ * contra una lectura desactualizada, una podría borrar la fila equivocada.
+ * Mismo tipo de hueco, ya identificado y deliberadamente diferido, que en
+ * pendienteEdicionValorCashflowStore.ts. Hoy no es explotable porque el
+ * único llamador (revisarCorreccionesCuentaContable.ts) procesa las
+ * asignaciones de forma secuencial, nunca en paralelo.
+ */
 export async function consumirAsignacionCuenta(id: string): Promise<void> {
   const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const fila = filas.find((f) => f.valores[0] === id);

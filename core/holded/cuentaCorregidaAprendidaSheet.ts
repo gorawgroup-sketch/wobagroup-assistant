@@ -130,7 +130,24 @@ async function leerFilas(): Promise<CuentaCorregidaAprendida[]> {
   return result;
 }
 
-/** Cuenta confirmada a mano para este proveedor+empresa, o undefined si nunca se detectó una corrección. Match exacto (normalizado) — ver comentario de normalizar() arriba. */
+/**
+ * Cuenta confirmada a mano para este proveedor+empresa, o undefined si nunca
+ * se detectó una corrección. Match exacto (normalizado) — ver comentario de
+ * normalizar() arriba.
+ *
+ * Nota de auditoría (riesgo conocido, aceptado): a diferencia de
+ * cashflowFilaAprendidaSheet.ts (que se auto-corrige solo, revalidando cada
+ * vez que usa la fila cacheada), esta entrada no tiene TTL ni
+ * re-verificación — una vez detectada una corrección, se confía en ella
+ * para siempre. El gate `contradiceCategoria` en el tier 0 de
+ * inferirCuentaGasto (write.ts) es una mitigación PARCIAL (evita que una
+ * corrección vieja y ya incorrecta contradiga evidencia agregada de
+ * categoría más reciente), pero no cierra el caso donde la corrección
+ * simplemente dejó de ser válida sin contradecir ninguna categoría. Se
+ * acepta por ahora porque el volumen de estas correcciones es bajo y
+ * Carlos revisa el reporte de aprendizaje (reporteAprendizaje.ts)
+ * periódicamente.
+ */
 export async function buscarCuentaCorregidaAprendida(proveedor: string, empresa: string): Promise<CuentaCorregidaAprendida | undefined> {
   const filas = await leerFilas();
   const objetivo = normalizar(proveedor);

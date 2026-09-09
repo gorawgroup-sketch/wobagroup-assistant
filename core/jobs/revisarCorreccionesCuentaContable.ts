@@ -44,13 +44,23 @@ export async function revisarCorreccionesCuentaContable(referenceDate: Date = ne
   let revisadas = 0;
 
   for (const asignacion of pendientes) {
+    // Solo se consume (se deja de revisar) una asignación cuando queda
+    // REALMENTE resuelta: se detectó y registró una corrección, o el gasto
+    // ya no existe en Holded (nunca habrá nada que comparar). Si todavía no
+    // hay corrección, o si el registro del aprendizaje falla, se deja
+    // pendiente — la próxima corrida semanal la vuelve a revisar, hasta que
+    // purgarAsignacionesVencidas la borre por su verdadero TTL de 30 días.
+    // Hallazgo real de auditoría: consumir siempre acá (como antes) mataba
+    // el aprendizaje en dos casos reales: (a) Carlos corrige la cuenta a
+    // mano DESPUÉS de la primera revisión semanal mataba la ventana de 30
+    // días a solo 1 semana; (b) un fallo de escritura en Sheets tras
+    // agotar reintentos perdía la corrección detectada para siempre.
+    let resuelto = false;
+
     try {
       const compra = await obtenerCompraHoldedPorId(asignacion.empresa, asignacion.gastoId);
       const cuentaActual = compra.lines?.[0]?.account ?? undefined;
 
-      // Solo se aprende de un cambio REAL y confirmado — si el gasto ya no
-      // existe, o no tiene cuenta actual, o sigue igual, no hay nada que
-      // hacer más que dejar de revisarlo.
       if (cuentaActual && cuentaActual !== asignacion.cuentaIdAsignada) {
         await registrarCuentaCorregidaAprendida(asignacion.proveedor, asignacion.empresa, cuentaActual, "");
         correcciones.push({
@@ -59,12 +69,22 @@ export async function revisarCorreccionesCuentaContable(referenceDate: Date = ne
           cuentaAnterior: asignacion.cuentaIdAsignada,
           cuentaNueva: cuentaActual,
         });
+        resuelto = true;
       }
+      // cuentaActual sin corrección, o sin cuenta legible: todavía no hay
+      // nada que aprender, pero puede haberlo en una revisión futura — no
+      // se marca como resuelto.
     } catch (error) {
-      // Un gasto borrado, o un error puntual de Holded, no debe tumbar la revisión de los demás.
+      const gastoBorrado = error instanceof Error && /\(404\)|No se encontró la compra/.test(error.message);
+      if (gastoBorrado) {
+        // El gasto ya no existe — nunca habrá una cuenta que comparar.
+        resuelto = true;
+      }
       console.error(`[revisarCorreccionesCuentaContable] Error revisando el gasto ${asignacion.gastoId} (no crítico, sigue con los demás):`, error);
-    } finally {
-      revisadas++;
+    }
+
+    revisadas++;
+    if (resuelto) {
       await consumirAsignacionCuenta(asignacion.id).catch((error) =>
         console.error(`[revisarCorreccionesCuentaContable] Error marcando como revisada la asignación ${asignacion.id} (no crítico):`, error)
       );
@@ -82,7 +102,9 @@ export async function revisarCorreccionesCuentaContable(referenceDate: Date = ne
     return { corregidas: correcciones.length, revisadas };
   }
 
-  const lineas = correcciones.map((c) => `  • "${c.proveedor}" (${c.empresa}): cuenta corregida — quedó aprendida para la próxima vez`).join("\n");
+  const lineas = correcciones
+    .map((c) => `  • "${c.proveedor}" (${c.empresa}): ${c.cuentaAnterior} → ${c.cuentaNueva} — quedó aprendida para la próxima vez`)
+    .join("\n");
   const texto = [
     `📚 Detecté ${correcciones.length} corrección(es) de cuenta contable hecha(s) a mano en Holded esta semana:`,
     lineas,
