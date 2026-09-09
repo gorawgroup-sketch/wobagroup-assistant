@@ -78,6 +78,13 @@ export interface DatosFactura {
    * usarse en vez del tag histórico.
    */
   personaAsociada?: string;
+  /**
+   * true si hay evidencia real de que este gasto ocurrió durante un viaje/desplazamiento de trabajo
+   * de `personaAsociada`. Pedido explícito de Carlos, casos reales (Simon Talloen, tickets ALDI/
+   * Ahorramas): decide la cuenta contable (inferirCuentaGasto, ver core/holded/write.ts) — un gasto
+   * cotidiano de alguien de viaje se contabiliza como gasto de viaje, no como gasto normal de oficina.
+   */
+  contextoDeViaje?: boolean;
   fecha: string; // YYYY-MM-DD, según lo que diga el documento
   concepto: string;
   /**
@@ -90,6 +97,15 @@ export interface DatosFactura {
    * de recibir un dato falso).
    */
   numeroDocumento?: string;
+  /**
+   * true si el documento es un recibo/tique simplificado (sin los datos
+   * fiscales de la empresa compradora impresos) — legalmente no deducible
+   * de IVA. Pedido explícito de Carlos, casos reales ALDI/Ahorramas: cuando
+   * es true, `lineas` se colapsa a un solo importe sin desglosar IVA antes
+   * de llegar a Holded (ver procesarGastoEntrante.ts), sin importar qué
+   * desglose venga impreso en el propio tique.
+   */
+  reciboSimplificado: boolean;
   /** Desglose por tipo de IVA (una o varias líneas). El % es el que aparece impreso, no un código de Holded. */
   lineas: LineaFactura[];
   empresaProbable: EmpresaGasto;
@@ -161,6 +177,24 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "de Uber/vuelo/hotel). Si no hay ninguna evidencia clara de una persona concreta, omite este " +
           "campo — nunca inventes un nombre.",
       },
+      contexto_de_viaje: {
+        type: "boolean",
+        description:
+          "true si este es un gasto INDIVIDUAL de comida, transporte u hospedaje de UNA persona " +
+          "identificada (ver persona_asociada) — un almuerzo/cena/taxi/hotel de esa persona en " +
+          "concreto, no una compra o contrato a nombre de la empresa (ej. un servicio de catering para " +
+          "toda la oficina, una suscripción, un proveedor recurrente). El grupo contabiliza este tipo de " +
+          "gasto individual como 'Gastos de viaje', sin importar si la persona viajó literalmente a otra " +
+          "ciudad o no — un almuerzo/cena de una sola persona en un restaurante normal ya cuenta, aunque " +
+          "sea en su ciudad habitual. Pedido explícito de Carlos, casos reales: tickets de supermercado " +
+          "de Simon Talloen en desplazamiento (ALDI, Ahorramas), y un ticket de restaurante de Carlos " +
+          "González en Madrid (Nori Nori) — en los tres, 'los productos y demás consideraciones ' " +
+          "inteligentes' ya bastan para reconocerlo como gasto de viaje: 1-2 platos/bebidas para una " +
+          "sola persona, sin más contexto que lo clasifique de otra forma. true por defecto siempre que " +
+          "persona_asociada quede identificada Y el gasto sea de esta naturaleza individual — false SOLO " +
+          "si es claramente otra cosa (una factura/contrato formal a nombre de la empresa, un pedido para " +
+          "varias personas/toda la oficina, o si no se identificó ninguna persona asociada).",
+      },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
       numero_documento: {
         type: "string",
@@ -187,12 +221,32 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "adivines uno, y nunca uses un número parecido a falta de uno real.",
       },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
+      recibo_simplificado: {
+        type: "boolean",
+        description:
+          "true si el documento es un recibo/tique SIMPLIFICADO — NO muestra los datos fiscales " +
+          "completos de la empresa COMPRADORA (nombre/razón social + NIF/CIF en España, o razón " +
+          "social + RFC en México) impresos en el propio documento, normalmente porque solo trae un " +
+          "único total al consumidor final. false si es una factura FORMAL COMPLETA que sí identifica " +
+          "a la empresa compradora con su nombre y número fiscal (una sección tipo 'Datos del " +
+          "cliente'/'Facturar a', con el nombre y NIF/CIF/RFC del grupo o su razón social legal). " +
+          "Pedido explícito de Carlos, tras varios casos reales (tickets de supermercado como ALDI, " +
+          "Ahorramas): un recibo simplificado NO se puede usar legalmente para deducir el IVA, aunque " +
+          "el propio tique muestre un desglose de IVA impreso — el desglose de esos documentos no " +
+          "tiene validez fiscal para el grupo, así que deben registrarse como un solo importe total, " +
+          "SIN desglosar IVA (ver 'lineas' más abajo). Repórtalo también cuando el documento no es " +
+          "legible del todo o no queda claro (true por defecto ante la duda — es preferible no " +
+          "deducir un IVA real que deducir uno que luego no se pueda justificar ante Hacienda).",
+      },
       lineas: {
         type: "array",
         description:
           "Desglose por tipo de IVA, tal como aparece en la factura (una línea por cada base+IVA " +
           "distinto). Si la factura no desglosa nada (un solo total, sin IVA separado), reporta UNA " +
-          "línea con base = monto y tipo_iva_pct = 0 (nunca inventes un desglose que no está impreso).",
+          "línea con base = monto y tipo_iva_pct = 0 (nunca inventes un desglose que no está impreso). " +
+          "Si 'recibo_simplificado' es true, reporta SIEMPRE una sola línea con base = monto y " +
+          "tipo_iva_pct = 0, sin importar qué desglose de IVA traiga impreso el propio tique — ese " +
+          "desglose no tiene validez fiscal para el grupo en un recibo simplificado.",
         items: {
           type: "object",
           properties: {
@@ -246,6 +300,18 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "total sin desglose, repórtalo como una sola línea. El porcentaje de IVA es el que está impreso " +
       "en el documento (un número como 21 o 10) — nunca un código interno de Holded, eso se resuelve " +
       "después con datos reales del sistema.",
+    "IMPORTANTE — recibo simplificado vs. factura formal: antes de desglosar IVA en 'lineas', decide " +
+      "si el documento es un recibo/tique SIMPLIFICADO (no muestra el nombre y NIF/CIF/RFC de la " +
+      "empresa compradora, solo un total al consumidor final — típico de tickets de supermercado, " +
+      "gasolinera, parking, taxi) o una factura FORMAL COMPLETA (sí identifica a la empresa compradora " +
+      "con nombre + número fiscal, típica sección 'Datos del cliente'/'Facturar a'). Si el propio " +
+      "documento imprime literalmente 'Factura Simplificada' (caso real: ticket de Nori Nori) es la " +
+      "señal más fuerte posible — repórtalo true sin dudar, no hace falta ningún otro análisis. Reporta " +
+      "'recibo_simplificado'. Un recibo simplificado NO se puede usar legalmente para deducir IVA, así " +
+      "que su 'lineas' debe reportarse como UNA sola línea con base = monto y tipo_iva_pct = 0 — nunca " +
+      "reportes el desglose de IVA que traiga impreso, aunque lo traiga. Ante la duda, marca " +
+      "recibo_simplificado=true (mejor no deducir un IVA real que deducir uno que luego no se pueda " +
+      "justificar ante Hacienda).",
     "IMPORTANTE — retención de IRPF: muchas facturas de alquiler/arrendamiento de local y de " +
       "profesionales autónomos en España incluyen, además del IVA (que SUMA), una retención de IRPF que " +
       "RESTA del total (ej. 'I.R.P.F. (19%) sobre B.I.: -642,32€'), dejando un 'Total a Ingresar'/'Total " +
@@ -282,6 +348,12 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
     "Ese mismo 'Contexto del correo' también sirve para identificar 'persona_asociada' — mira si hay una " +
       "cadena de reenvío y usa el remitente ORIGINAL (el 'From:' dentro del bloque 'Forwarded message', no " +
       "quien hizo el último reenvío) como la persona a la que corresponde el gasto.",
+    "IMPORTANTE — contexto de viaje/desplazamiento: si 'persona_asociada' quedó identificada, revisa " +
+      "también si hay evidencia real de que estaba de viaje (lugar distinto a su base habitual mencionado " +
+      "en el documento o en el contexto del correo/caption, o consultar_base_conocimiento lo confirma) y " +
+      "repórtalo en 'contexto_de_viaje'. Un gasto cotidiano (comida, transporte, alojamiento) de alguien " +
+      "de viaje se contabiliza como gasto de viaje/desplazamiento, aunque el propio ticket (ej. un " +
+      "supermercado) no lo diga por sí mismo — no lo asumas sin evidencia real.",
     clasificacionesAprendidas
       ? `Además, estas son clasificaciones aprendidas de facturas anteriores del mismo proveedor — ` +
         `dales prioridad sobre cualquier suposición genérica:\n\n${clasificacionesAprendidas}`
@@ -329,6 +401,7 @@ export async function extraerDatosFactura(
     moneda: "",
     fecha: "",
     concepto: "",
+    reciboSimplificado: true,
     lineas: [],
     empresaProbable: "desconocida",
     confianza: "baja",
@@ -399,6 +472,17 @@ export async function extraerDatosFactura(
       const input = reportar.input as Record<string, unknown>;
       const monto = typeof input.monto === "number" ? input.monto : 0;
 
+      // Ante duda/omisión, se asume NO simplificado (preserva el comportamiento existente de
+      // desglosar IVA) — el riesgo real de un falso negativo puntual (un recibo simplificado que se
+      // cuela con IVA desglosado) es mucho menor que el de un default al revés, que colapsaría el IVA
+      // de TODAS las facturas formales legítimas si este campo alguna vez llegara vacío por un bug.
+      // === "true" además de === true — hallazgo real de auditoría: mismo patrón defensivo ya usado
+      // para booleans de origen no 100% confiable en otras partes del proyecto (ver
+      // gastoPendienteDatosStore.ts) — si el modelo alguna vez devuelve el string "true" en vez del
+      // boolean literal, no debe caer silenciosamente al default (que acá SÍ importa: decide si se
+      // puede deducir IVA).
+      const reciboSimplificado = input.recibo_simplificado === true || input.recibo_simplificado === "true";
+
       const lineasRaw = Array.isArray(input.lineas) ? input.lineas : [];
       const lineas: LineaFactura[] = lineasRaw
         .map((l): LineaFactura | null => {
@@ -412,6 +496,7 @@ export async function extraerDatosFactura(
           };
         })
         .filter((l): l is LineaFactura => l !== null);
+      const lineaUnica: LineaFactura = { concepto: (input.concepto as string) ?? "", base: monto, tipoIvaPct: 0 };
 
       return {
         esFacturaOGasto: Boolean(input.es_factura_o_gasto),
@@ -424,13 +509,20 @@ export async function extraerDatosFactura(
             ? input.moneda_equivalente.trim().toUpperCase()
             : undefined,
         personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
+        contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
         fecha: (input.fecha as string) ?? "",
         numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
         concepto: (input.concepto as string) ?? "",
+        reciboSimplificado,
         // Si Claude no reportó líneas (o vinieron vacías), se usa una sola
         // línea con el total completo a 0% en vez de perder el importe —
-        // crearGastoHolded siempre necesita al menos una línea.
-        lineas: lineas.length > 0 ? lineas : [{ concepto: (input.concepto as string) ?? "", base: monto, tipoIvaPct: 0 }],
+        // crearGastoHolded siempre necesita al menos una línea. En un recibo
+        // simplificado se fuerza el colapso acá también (no solo aguas abajo
+        // en procesarGastoEntrante.ts) aunque Claude haya reportado un
+        // desglose — defensa en profundidad: ese desglose nunca tiene
+        // validez fiscal en este tipo de documento, así que no debe llegar
+        // ni siquiera a mostrarse como si fuera real.
+        lineas: reciboSimplificado || lineas.length === 0 ? [lineaUnica] : lineas,
         empresaProbable: (input.empresa_probable as EmpresaGasto) ?? "desconocida",
         confianza: (input.confianza as DatosFactura["confianza"]) ?? "baja",
         razon: (input.razon as string) ?? "",

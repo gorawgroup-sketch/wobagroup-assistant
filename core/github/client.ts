@@ -205,6 +205,25 @@ export async function fusionarPullRequest(numero: number, rama: string): Promise
   return true;
 }
 
+/**
+ * Crea un GitHub Issue real en el repo — pedido explícito de Carlos: poder escalar un reporte desde el
+ * chat directamente a development, sin tener que copiar/pegar manualmente el texto en una sesión de
+ * Claude Code (ver core/tools/escalarDesarrollo.ts). No toca main ni ninguna rama, solo abre el issue.
+ */
+export async function crearIssue(params: { titulo: string; cuerpo: string; labels?: string[] }): Promise<{ numero: number; url: string }> {
+  const resp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/issues`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: params.titulo, body: params.cuerpo, labels: params.labels ?? [] }),
+  });
+  if (!resp.ok) {
+    const detalle = await resp.text().catch(() => "");
+    throw new Error(`No se pudo crear el issue (HTTP ${resp.status}). ${detalle}`.trim());
+  }
+  const data = (await resp.json()) as { number: number; html_url: string };
+  return { numero: data.number, url: data.html_url };
+}
+
 /** Descarte desde Telegram: cierra el PR sin fusionar y borra la rama. Devuelve false si el cierre en sí falló. */
 export async function cerrarPullRequestYBorrarRama(numero: number, rama: string): Promise<boolean> {
   const cerrarResp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${numero}`, {

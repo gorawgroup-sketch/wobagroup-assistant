@@ -44,6 +44,7 @@ import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
 import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
 import { marcarCorreoLeidoTool } from "./marcarCorreoLeido";
+import { escalarDesarrolloTool } from "./escalarDesarrollo";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -96,6 +97,7 @@ const tools: ToolDefinition[] = [
   revisarCorreoPuntualTool,
   gestionarContactoAutorespuestaTool,
   marcarCorreoLeidoTool,
+  escalarDesarrolloTool,
 ];
 
 /**
