@@ -171,3 +171,8 @@ export async function sugerirCandidatoAprendido(proveedor: string, empresa: stri
   );
   return idx === -1 ? undefined : idx;
 }
+
+/** Todos los aprendizajes de conciliación ambigua — para el reporte de aprendizaje (ver core/tools/reporteAprendizaje.ts). */
+export async function obtenerTodosLosMovimientosAprendidos(): Promise<MovimientoAmbiguoAprendido[]> {
+  return leerFilas();
+}
