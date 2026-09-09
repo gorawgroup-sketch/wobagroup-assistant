@@ -3,6 +3,25 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { textosParecidos } from "../utils/textoParecido";
 import { conMutex } from "../utils/asyncMutex";
 
+/**
+ * Hallazgo real de auditoría: match exacto para PROVEEDOR (no fuzzy) —
+ * mismo criterio, mismo motivo que cuentaCorregidaAprendidaSheet.ts (verificado
+ * en vivo esa noche: "Un Proveedor Que Jamas Existio 999" coincidía por
+ * error con "Proveedor De Prueba XYZ" vía textosParecidos, ambos comparten
+ * la palabra "Proveedor"). Acá el riesgo es menor (esto solo resalta con
+ * ⭐, nunca decide solo — Carlos siempre revisa y toca el botón), pero la
+ * misma protección es igual de barata de aplicar y evita CUALQUIER duda.
+ */
+function normalizarProveedor(texto: string): string {
+  return texto
+    .normalize("NFD")
+    .replace(new RegExp("[̀-ͯ]", "g"), "")
+    .toLowerCase()
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_movimientos_ambiguos_aprendidos";
 const HEADERS = ["proveedor", "empresa", "descripcionMovimiento", "confirmadoEn"];
@@ -163,11 +182,14 @@ export async function sugerirCandidatoAprendido(proveedor: string, empresa: stri
   if (!proveedor.trim() || candidatos.length === 0) return undefined;
 
   const aprendidos = await leerFilas();
-  const coincidenciasProveedor = aprendidos.filter((a) => a.empresa === empresa && textosParecidos(proveedor, a.proveedor));
+  const proveedorNormalizado = normalizarProveedor(proveedor);
+  const coincidenciasProveedor = aprendidos.filter(
+    (a) => a.empresa === empresa && normalizarProveedor(a.proveedor) === proveedorNormalizado
+  );
   if (coincidenciasProveedor.length === 0) return undefined;
 
   const idx = candidatos.findIndex(
-    (c) => c.descripcion && coincidenciasProveedor.some((a) => textosParecidos(a.descripcionMovimiento, c.descripcion!))
+    (c) => c.descripcion && coincidenciasProveedor.some((a) => textosParecidos(c.descripcion!, a.descripcionMovimiento))
   );
   return idx === -1 ? undefined : idx;
 }

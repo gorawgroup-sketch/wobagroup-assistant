@@ -490,7 +490,17 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
     const nombreAprendido = String(rowAprendida[idxNombre] ?? "").trim();
     const semanaAprendida = String(rowAprendida[idxSemana] ?? "").trim();
     const valorCrudoAprendido = rowAprendida[idxValor];
-    const valorAprendido = typeof valorCrudoAprendido === "number" ? valorCrudoAprendido : Number(valorCrudoAprendido);
+    // Hallazgo real de auditoría: faltaba acá la MISMA guarda contra celda
+    // VALOR vacía que ya tiene el escaneo completo más abajo (Number("") da
+    // 0, no NaN) — sin esto, el atajo de caché SÍ podía "confirmar" una fila
+    // de sub-encabezado de categoría con VALOR vacío como si fuera un dato
+    // real, justo el bug que ese chequeo ya existe para evitar.
+    const valorAprendido =
+      valorCrudoAprendido === undefined || valorCrudoAprendido === null || valorCrudoAprendido === ""
+        ? NaN
+        : typeof valorCrudoAprendido === "number"
+          ? valorCrudoAprendido
+          : Number(valorCrudoAprendido);
     const coincide =
       nombreAprendido &&
       textosParecidos(criterios.cliente_o_concepto, nombreAprendido) &&

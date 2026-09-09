@@ -1181,20 +1181,19 @@ export async function inferirCuentaGasto(
   // Tier 0 — pedido explícito de Carlos ("que la práctica te vaya dando
   // experticia"): si revisarCorreccionesCuentaContable.ts (job semanal) ya
   // detectó y confirmó que Carlos corrigió a mano la cuenta de este
-  // proveedor, esa confirmación EXPLÍCITA manda sobre cualquier inferencia
-  // por precedente — se consulta antes que recolectarLineasConCuenta,
-  // incluso funciona si todavía no hay ninguna línea histórica (empresa
-  // nueva sin gastos previos). Ver cuentaCorregidaAprendidaSheet.ts.
-  const corregida = await buscarCuentaCorregidaAprendida(criterios.proveedor, empresa).catch((error) => {
+  // proveedor, esa confirmación EXPLÍCITA es evidencia más fuerte que
+  // cualquier inferencia por precedente. Se busca ya (no hace falta esperar
+  // a recolectarLineasConCuenta), pero el RETURN se decide más abajo, tras
+  // calcular contradiceCategoria — ver el porqué en el comentario de más
+  // abajo, junto al resto del uso de corregida.
+  const corregidaPromise = buscarCuentaCorregidaAprendida(criterios.proveedor, empresa).catch((error) => {
     console.error("[write] Error consultando cuenta corregida aprendida (no crítico, sigue con los tiers normales):", error);
     return undefined;
   });
-  if (corregida) {
-    return { accountId: corregida.cuentaId, tags: [], ejemplo: "corrección ya confirmada para este proveedor", aprendidoDe: "correccion_confirmada" };
-  }
 
   const lineas = await recolectarLineasConCuenta(empresa);
-  if (lineas.length === 0) return undefined;
+  const corregida = await corregidaPromise;
+  if (lineas.length === 0 && !corregida) return undefined;
 
   // textosParecidos (no un simple includes/substring) — bug real encontrado
   // en vivo: "Booking.com" (como lo lee la extracción de la factura) nunca
@@ -1231,6 +1230,48 @@ export async function inferirCuentaGasto(
 
   const contradiceCategoria = (accountId: string): boolean =>
     sugeridoPorCategoria !== undefined && sugeridoPorCategoria.accountId !== accountId;
+
+  // Hallazgo real de auditoría xhigh sobre el propio tier 0 (arriba): un
+  // "return" incondicional ahí, ANTES de calcular contradiceCategoria,
+  // reintroduce exactamente el mismo defecto que motivó reordenar los tiers
+  // 1/2/3 esta misma noche (caso Greengrass) — una sola señal (acá, una
+  // única detección semanal, que podría ser un falso positivo puntual de la
+  // API de Holded) dominando para siempre sin cruzarse contra evidencia más
+  // amplia, y encima por ENCIMA del juez que existe justo para eso. Una
+  // corrección confirmada por Carlos SÍ es evidencia más fuerte que
+  // cualquier inferencia por precedente — pero si contradice la evidencia
+  // agregada de categoría (más amplia, menos manipulable por un solo
+  // historial contaminado), se prefiere la categoría, igual que ya se hace
+  // para tiers 1/2 — nunca se aplica el tier 0 a ciegas.
+  if (corregida && !contradiceCategoria(corregida.cuentaId)) {
+    // Hallazgo real de auditoría: devolver tags:[] a ciegas le quitaba a
+    // este proveedor los tags que tiers 1/2 SÍ habrían adjuntado (ver
+    // procesarGastoEntrante.ts, que usa cuentaSugerida.tags como fallback de
+    // persona cuando no hay personaAsociada explícita) — una regresión
+    // silenciosa justo para el proveedor que ya se corrigió. Se reutiliza el
+    // mismo cálculo de tags frecuentes que tiers 1/2/3 (construirSugerenciaDesdeCoincidencias),
+    // filtrado a las líneas que YA usan la cuenta corregida — la cuenta en
+    // sí nunca cambia (viene de la corrección confirmada), solo se
+    // enriquecen tags/ejemplo si ya hay precedente real que los traiga.
+    const desdeCorreccion = construirSugerenciaDesdeCoincidencias(
+      lineas.filter((l) => l.account === corregida.cuentaId),
+      "correccion_confirmada",
+      0
+    );
+    return (
+      desdeCorreccion ?? {
+        accountId: corregida.cuentaId,
+        tags: [],
+        ejemplo: "corrección ya confirmada para este proveedor",
+        aprendidoDe: "correccion_confirmada",
+      }
+    );
+  }
+  if (corregida && contradiceCategoria(corregida.cuentaId)) {
+    console.error(
+      `[write] La cuenta corregida aprendida para "${criterios.proveedor}" (${empresa}) contradice la evidencia agregada de categoría — se ignora esta vez, sigue con los tiers normales.`
+    );
+  }
 
   // Hallazgo real de auditoría (caso "RESTAURANTE... SA DE CV" vs. "ADEL RESTAURACION SL", Footprint,
   // 2026-09-08): textosParecidos por sí solo no exige que la palabra compartida sea DISTINTIVA — solo
