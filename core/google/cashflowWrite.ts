@@ -1,6 +1,8 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
 import { invalidarCacheDetalleRegistros } from "./cashflowSheet";
+import { textosParecidos } from "../utils/textoParecido";
+import { montosCercanos } from "../utils/montos";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -385,6 +387,203 @@ export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Prom
   return {
     ok: true,
     mensaje: `Movimiento registrado y verificado en ${rango}.`,
+    fila,
+    rango,
+  };
+}
+
+// ── Edición de un valor YA ESCRITO en una fila existente ────────────────────
+//
+// Pedido explícito de Carlos: hasta ahora este sistema solo podía registrar
+// movimientos NUEVOS (arriba) — no había ninguna forma de corregir un monto
+// ya escrito en una fila existente, ni siquiera con aprobación explícita por
+// botón, a diferencia del resto de las escrituras de este sistema (Holded,
+// gastos, pagos recurrentes). Igual que esas, esto NUNCA escribe directo —
+// solo propone (ver core/tools/editarValorCashflow.ts) tras aprobación por
+// botón (ver core/google/edicionValorCashflowCallbackHandler.ts).
+//
+// Solo cubre los bloques de BLOQUE_CONFIG (columnas fijas y contiguas) — los
+// de sección compartida (pagos_pendientes_alberto/deudas_pendientes) y los
+// que todavía no tienen escritor (impuestos_por_pagar/aplazamiento_impuestos)
+// quedan fuera por ahora, mismo criterio de "construir cuando aparezca un
+// caso real" que ya sigue el resto de este archivo.
+
+const TOLERANCIA_VALOR_ACTUAL = 0.01;
+
+/** Desplaza una columna de una sola letra N posiciones (ej. "I" + 2 → "K") — suficiente para los bloques de este archivo, todos dentro de A-Z. */
+function letraColumna(base: string, offset: number): string {
+  return String.fromCharCode(base.charCodeAt(0) + offset);
+}
+
+export interface CriteriosBusquedaValorCashflow {
+  bloque: BloqueEscritura;
+  cliente_o_concepto: string;
+  /** Vacío para buscar sin filtrar por semana (poco recomendable — puede haber varias filas del mismo cliente/concepto en semanas distintas). */
+  semana: string;
+  valorActual: number;
+}
+
+export interface FilaCashflowEncontrada {
+  fila: number;
+  clienteOConcepto: string;
+  semana: string;
+  valorActual: number;
+  banco?: string;
+  proyecto?: string;
+}
+
+/**
+ * Busca, dentro del bloque indicado, la(s) fila(s) que coincidan con
+ * cliente/concepto (parecido, no exacto — ver textosParecidos) + semana
+ * (exacta) + el valor actual que se cree que tiene (con tolerancia de
+ * redondeo) — el mismo criterio de "concepto + semana + monto actual" que
+ * describió Carlos. Puede devolver más de una coincidencia real (dos filas
+ * del mismo proveedor y semana con el mismo monto, por ejemplo) — nunca
+ * adivina cuál es, quien llame decide qué hacer si hay más de una.
+ */
+export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaValorCashflow): Promise<FilaCashflowEncontrada[]> {
+  const config = BLOQUE_CONFIG[criterios.bloque];
+  if (!config) {
+    throw new Error(
+      `El bloque "${criterios.bloque}" no admite edición de valor todavía (columnas de sección compartida, o sin escritor) — corrígelo a mano en el Sheet.`
+    );
+  }
+
+  const sheetId = assertSheetId();
+  const sheets = getSheetsWriteClient();
+
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `DATOS!${config.columnaInicio}${PRIMERA_FILA_DATOS}:${config.columnaFin}${ULTIMA_FILA_BUSQUEDA}`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
+
+  const idxNombre = config.campos.indexOf(config.campos.includes("cliente") ? "cliente" : "concepto");
+  const idxSemana = config.campos.indexOf("semana");
+  const idxValor = config.campos.indexOf("valor");
+  const idxBanco = config.campos.indexOf("banco");
+  const idxProyecto = config.campos.indexOf("proyecto");
+  // Hallazgo real de auditoría: sin este chequeo, un BLOQUE_CONFIG futuro
+  // sin "valor"/"cliente"/"concepto"/"semana" haría que indexOf devuelva -1
+  // en silencio, y letraColumna(base, -1) escribiría en una columna ANTES
+  // de columnaInicio sin ningún error — nunca debe pasar desapercibido.
+  if (idxNombre === -1 || idxSemana === -1 || idxValor === -1) {
+    throw new Error(`Configuración inválida para el bloque "${criterios.bloque}": faltan columnas de nombre/semana/valor en BLOQUE_CONFIG.`);
+  }
+  const semanaBuscada = criterios.semana.trim().toUpperCase();
+
+  const encontradas: FilaCashflowEncontrada[] = [];
+  rows.forEach((row, i) => {
+    const nombre = String(row[idxNombre] ?? "").trim();
+    if (!nombre) return;
+    const semana = String(row[idxSemana] ?? "").trim();
+    const valorCrudo = row[idxValor];
+    // Hallazgo real de auditoría: Number("") da 0 (no NaN) — una celda de
+    // VALOR vacía (ej. las filas de sub-encabezado de categoría de
+    // gastos_fijos: "Impuestos", "Créditos", "Servicios", que sí tienen
+    // texto en concepto pero VALOR vacío — ver comentario de
+    // findNextEmptyRow más arriba en este mismo archivo) pasaría el chequeo
+    // de Number.isFinite como si fuera un valor real de 0, permitiendo
+    // "encontrar" y proponer editar una fila de título en vez de un dato
+    // real. Se rechaza explícitamente antes de intentar convertir.
+    if (valorCrudo === undefined || valorCrudo === null || valorCrudo === "") return;
+    const valor = typeof valorCrudo === "number" ? valorCrudo : Number(valorCrudo);
+    if (!Number.isFinite(valor)) return;
+
+    if (!textosParecidos(criterios.cliente_o_concepto, nombre)) return;
+    if (semanaBuscada && semana.toUpperCase() !== semanaBuscada) return;
+    if (!montosCercanos(valor, criterios.valorActual, TOLERANCIA_VALOR_ACTUAL)) return;
+
+    encontradas.push({
+      fila: PRIMERA_FILA_DATOS + i,
+      clienteOConcepto: nombre,
+      semana,
+      valorActual: valor,
+      banco: idxBanco !== -1 ? String(row[idxBanco] ?? "") || undefined : undefined,
+      proyecto: idxProyecto !== -1 ? String(row[idxProyecto] ?? "") || undefined : undefined,
+    });
+  });
+
+  return encontradas;
+}
+
+/**
+ * Corrige el valor de una fila YA IDENTIFICADA (ver buscarFilaCashflowParaEditar)
+ * — nunca toca ningún otro campo de la fila. Antes de escribir, relee la
+ * celda y confirma que sigue teniendo el valor esperado (el que se vio al
+ * proponer el cambio): si cambió mientras tanto (Carlos lo corrigió a mano,
+ * u otra escritura concurrente), aborta en vez de sobrescribir a ciegas —
+ * la propuesta pudo quedar pendiente de aprobación un buen rato. Después de
+ * escribir, relee de nuevo para verificar que el nuevo valor quedó guardado.
+ */
+export async function editarValorEnFilaCashflow(
+  bloque: BloqueEscritura,
+  fila: number,
+  valorEsperadoActual: number,
+  valorNuevo: number
+): Promise<ResultadoEscritura> {
+  const config = BLOQUE_CONFIG[bloque];
+  if (!config) throw new Error(`El bloque "${bloque}" no admite edición de valor.`);
+
+  const idxValor = config.campos.indexOf("valor");
+  // Mismo chequeo que buscarFilaCashflowParaEditar — nunca escribir en una
+  // columna calculada a partir de un índice -1 sin avisar.
+  if (idxValor === -1) {
+    throw new Error(`Configuración inválida para el bloque "${bloque}": falta la columna "valor" en BLOQUE_CONFIG.`);
+  }
+  const columnaValor = letraColumna(config.columnaInicio, idxValor);
+  const rango = `DATOS!${columnaValor}${fila}`;
+
+  const sheetId = assertSheetId();
+  const sheets = getSheetsWriteClient();
+
+  const actual = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: rango,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const valorActualCrudo = actual.data.values?.[0]?.[0];
+  const valorActualNumero = typeof valorActualCrudo === "number" ? valorActualCrudo : Number(valorActualCrudo);
+  if (!Number.isFinite(valorActualNumero) || !montosCercanos(valorActualNumero, valorEsperadoActual, TOLERANCIA_VALOR_ACTUAL)) {
+    return {
+      ok: false,
+      mensaje:
+        `El valor en ${rango} ya no es ${valorEsperadoActual} (ahora es "${valorActualCrudo}") — algo cambió desde que se propuso ` +
+        "esta edición. Revísalo a mano en el Sheet antes de reintentar.",
+      fila,
+      rango,
+    };
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: rango,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[valorNuevo]] },
+  });
+
+  const verificacion = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: rango,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const valorEscritoCrudo = verificacion.data.values?.[0]?.[0];
+  const valorEscrito = typeof valorEscritoCrudo === "number" ? valorEscritoCrudo : Number(valorEscritoCrudo);
+
+  if (!Number.isFinite(valorEscrito) || !montosCercanos(valorEscrito, valorNuevo, TOLERANCIA_VALOR_ACTUAL)) {
+    return {
+      ok: false,
+      mensaje: `Se intentó escribir ${valorNuevo} en ${rango} pero la verificación no coincide (quedó "${valorEscritoCrudo}") — revisa manualmente la hoja.`,
+      fila,
+      rango,
+    };
+  }
+
+  invalidarCacheDetalleRegistros();
+  return {
+    ok: true,
+    mensaje: `Valor corregido y verificado en ${rango}: ${valorEsperadoActual} → ${valorNuevo}.`,
     fila,
     rango,
   };

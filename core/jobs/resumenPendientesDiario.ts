@@ -9,6 +9,7 @@ import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasifi
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { obtenerPendientesEdicionCompraHoldedPorChat } from "../holded/pendienteEdicionCompraHoldedStore";
+import { obtenerPendientesEdicionValorCashflowPorChat } from "../google/pendienteEdicionValorCashflowStore";
 import { obtenerPendienteReclasificacionPorChat, consumirPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
 import { obtenerPendientesCapturaEmpresaPorChat, eliminarPendienteCapturaEmpresa } from "../knowledge/pendienteCapturaEmpresaStore";
 import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocumento } from "../documental/pendienteAlertaDocumentoStore";
@@ -216,6 +217,20 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando ediciones de compra en Holded (no crítico):", error);
+  }
+
+  try {
+    const edicionesCashflow = await obtenerPendientesEdicionValorCashflowPorChat(chatId);
+    for (const e of edicionesCashflow) {
+      // Mismo criterio que las ediciones de Holded arriba: dato de dinero
+      // real ya identificado, nunca se descarta con "Descartar todo".
+      items.push({
+        descripcion: `✏️ Edición de cashflow sin aprobar: "${e.resumenAntes}" → ${e.valorNuevo.toFixed(2)} — revisar individual, no se borra con "Descartar todo"`,
+        creadoEn: e.creadoEn,
+      });
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando ediciones de valor en cashflow (no crítico):", error);
   }
 
   try {

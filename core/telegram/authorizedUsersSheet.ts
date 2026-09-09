@@ -350,6 +350,13 @@ const ACCIONES_SENSIBLES = new Set([
   // (centralizar la decisión completa en superadmin, no solo la escritura).
   "edicioncompra_confirmar",
   "edicioncompra_cancelar",
+  // Pedido explícito de Carlos: corregir un valor YA ESCRITO en el cashflow
+  // (ver proponerEdicionValorCashflowTool/editarValorEnFilaCashflow) —
+  // mismo criterio que edicioncompra_confirmar/cancelar: se protege igual
+  // que crear un gasto nuevo, y "Cancelar" también se centraliza en
+  // superadmin.
+  "edicioncashflow_confirmar",
+  "edicioncashflow_cancelar",
   // Pedido explícito de Carlos: aprobar un hilo para conversación automática
   // (ver hiloAutorespuestaStore.ts / revisarConversacionesAutomaticas.ts) es
   // la decisión MÁS sensible de todo el flujo de correo — a diferencia de

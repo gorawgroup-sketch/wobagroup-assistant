@@ -1,5 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 
 /**
  * Causa raíz real, encontrada en vivo (2026-09-02): varios stores de
@@ -115,46 +116,117 @@ export async function leerFilas(tabName: string, numCols: number, headers: strin
     }));
 }
 
-/** Agrega una fila nueva al final de la pestaña. */
+/** Prefijo del namespace de conMutex de este módulo — evita colisión con cualquier otro código que use el tabName crudo como clave de mutex por otro motivo. */
+function claveMutex(tabName: string): string {
+  return `sheetsKV:${tabName}`;
+}
+
+async function siguienteFilaLibre(tabName: string, numCols: number): Promise<number> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  // Rango ancho (A:última columna, no solo A:A) a propósito: una fila ya
+  // rota (columna A vacía pero datos reales más a la derecha) igual debe
+  // contarse, para no escribir encima de ella — mismo criterio ya aplicado
+  // en gastoProposalSheet.ts.
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${tabName}!A:${colLetter(numCols)}`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
+  return rows.length + 1;
+}
+
+const MAX_INTENTOS_ESCRITURA = 3;
+
+/**
+ * Hallazgo real de auditoría (misma noche, mismo bug ya cerrado por
+ * separado en gastoProposalSheet.ts, conciliacionPendienteStore.ts y
+ * pagoRecurrenteProposalSheet.ts, pero nunca aplicado acá — el primitivo
+ * COMPARTIDO que usan 20+ stores de "pendientes" en todo el sistema, ESTE
+ * incluido): `values.append` con un rango de columnas le pide a Sheets que
+ * ADIVINE en qué fila y columna empieza "la tabla" — y esa heurística puede
+ * fallar en silencio (caso real confirmado: MARNAPA/Pastriva, un encabezado
+ * desactualizado hizo que 5 filas reales se escribieran completas pero
+ * desplazadas de columna, invisibles para leerFilas — "no encuentra ningún
+ * movimiento" cuando el gasto sí existía). Se corrige de raíz UNA sola vez
+ * acá, en vez de seguir parchando cada store por separado cuando le toque
+ * el mismo bug: se calcula la fila libre real a mano y se escribe con
+ * `values.update` sobre un rango EXPLÍCITO, con verificación y reintento
+ * ante colisión — y las tres operaciones que mutan filas (agregar/
+ * actualizar/eliminar) quedan bajo el MISMO conMutex por tabName, cerrando
+ * también la colisión entre una escritura y un borrado concurrente
+ * (idéntico patrón, mismo motivo, que gastoProposalSheet.ts).
+ */
 export async function agregarFila(tabName: string, numCols: number, headers: string[], valores: (string | number)[]): Promise<void> {
   await ensureTab(tabName, headers);
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${tabName}!A:${colLetter(numCols)}`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [valores] },
+  await conMutex(claveMutex(tabName), async () => {
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const fila = await siguienteFilaLibre(tabName, numCols);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${tabName}!A${fila}:${colLetter(numCols)}${fila}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [valores] },
+      });
+
+      // Hallazgo real de auditoría: comparar SOLO la columna A (por
+      // convención, el id/clave en la mayoría de stores) no basta como
+      // verificación genérica — al menos dos stores reales (avisoUnicoPorDiaStore.ts,
+      // pendienteCapturaEmpresaStore.ts) permiten a propósito varias filas
+      // con el MISMO valor en columna A (no es un id único ahí). Comparar
+      // la fila COMPLETA que se acaba de escribir es la única verificación
+      // que es válida para CUALQUIER store sin que este módulo necesite
+      // conocer cuál columna es "la clave" de cada uno.
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${tabName}!A${fila}:${colLetter(numCols)}${fila}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const filaEscrita = verificacion.data.values?.[0] ?? [];
+      const coincide = valores.every((v, i) => String(filaEscrita[i] ?? "") === String(v));
+      if (coincide) return;
+
+      console.error(
+        `[sheetsKeyValueStore] Colisión al escribir en "${tabName}", fila ${fila} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+      );
+    }
+    throw new Error(`No se pudo escribir en "${tabName}" tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
   });
 }
 
-/** Sobrescribe una fila existente (por su rowIndex, ver leerFilas). */
+/** Sobrescribe una fila existente (por su rowIndex, ver leerFilas). Mismo conMutex que agregarFila/eliminarFila — ver su comentario. */
 export async function actualizarFila(tabName: string, rowIndex: number, numCols: number, valores: (string | number)[]): Promise<void> {
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${tabName}!A${rowIndex}:${colLetter(numCols)}${rowIndex}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [valores] },
+  await conMutex(claveMutex(tabName), async () => {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${tabName}!A${rowIndex}:${colLetter(numCols)}${rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [valores] },
+    });
   });
 }
 
-/** Borra una fila (por su rowIndex). Se usa al "consumir" un pendiente. */
+/** Borra una fila (por su rowIndex). Se usa al "consumir" un pendiente. Mismo conMutex que agregarFila/actualizarFila — ver su comentario. */
 export async function eliminarFila(tabName: string, rowIndex: number, headers: string[]): Promise<void> {
   const sheetId = assertSheetId();
   const sheets = getClient();
   const gridId = await ensureTab(tabName, headers);
 
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: {
-      requests: [
-        { deleteDimension: { range: { sheetId: gridId, dimension: "ROWS", startIndex: rowIndex - 1, endIndex: rowIndex } } },
-      ],
-    },
+  await conMutex(claveMutex(tabName), async () => {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: {
+        requests: [
+          { deleteDimension: { range: { sheetId: gridId, dimension: "ROWS", startIndex: rowIndex - 1, endIndex: rowIndex } } },
+        ],
+      },
+    });
   });
 }

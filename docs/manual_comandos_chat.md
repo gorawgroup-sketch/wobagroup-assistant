@@ -214,6 +214,14 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - ❌ Cancelar — no escribe nada.
 - Solo el superadministrador puede aprobar (las dos opciones) — mismo criterio que crear/cancelar un gasto normal.
 
+**Sobre corregir un valor YA ESCRITO en el cashflow (WOBA y EWORKS):**
+- Pedido explícito de Carlos, tras un caso real (el propio sistema le avisó, en medio de una conversación sobre una diferencia de monto, que solo podía registrar movimientos NUEVOS en el cashflow — no había ninguna forma de corregir un valor ya escrito en una fila existente, ni siquiera con aprobación explícita): pídelo en texto libre (ej. "el valor del alquiler de la semana S40 en realidad es 3.850, no 3.700" o "corrige el pago de Booking.com en gastos fijos, semana S36, era 250 no 204,65") — identifica la fila por bloque + cliente/proveedor/concepto + semana + el valor actual, y si encuentra exactamente una, propone la edición con botones. Si encuentra varias, lista cada una y pregunta cuál es antes de proponer nada.
+- Solo cubre los bloques de columnas fijas del cashflow — **ingresos**, **pagos proyectos**, **pagos extras**, **gastos fijos**. Los pagos pendientes de Alberto, las deudas pendientes, y los bloques que todavía no tienen escritor (impuestos por pagar, aplazamiento de impuestos) no admiten edición por chat todavía — corrígelos a mano en el Sheet.
+- Solo corrige el **valor** de esa fila — nunca el cliente/concepto, la semana, el proyecto ni el banco por este camino (para eso, edítalo directo en el Sheet).
+- ✅ Confirmar edición — antes de escribir, vuelve a leer la celda y confirma que sigue teniendo el valor que se vio al proponer el cambio (si cambió mientras tanto — Carlos lo corrigió a mano, u otra escritura — aborta en vez de sobrescribir a ciegas). Después de escribir, relee de nuevo para verificar que el nuevo valor quedó guardado.
+- ❌ Cancelar — no escribe nada.
+- Solo el superadministrador puede aprobar (las dos opciones) — mismo criterio que el resto de escrituras reales del sistema.
+
 **Sobre a qué empresa corresponde una captura de conocimiento (CAPTURA):**
 - El guardado real ocurre al presionar "✅ Confirmar y guardar" — antes de eso no se ha escrito nada en la base de conocimiento.
 - Botones ✅ WOBA / ✅ EWORKS / ✅ Footprint / ✅ General — se pueden marcar varios a la vez (toggle, tocar de nuevo desmarca); "General" es excluyente con las demás (marcarlo desmarca el resto y viceversa). Hace falta marcar al menos una para poder confirmar.
