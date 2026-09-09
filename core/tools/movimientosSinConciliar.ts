@@ -7,7 +7,21 @@ const MAX_CUENTAS_A_REVISAR = 10;
 
 export const movimientosSinConciliarTool: ToolDefinition = {
   name: "consultar_movimientos_sin_conciliar",
-  seguraParaModoRapido: true,
+  // Hallazgo real de auditoría xhigh (2ª pasada, sobre este mismo fix): el
+  // texto de redirección de abajo por sí solo no bastaba — la reincidencia
+  // real (caso Business Atelier Europa, 2026-09-09) ocurrió justo con esta
+  // tool marcada segura para modo rápido, así que Haiku podía elegirla
+  // directo sin pasar nunca por Sonnet (que sí lee ambas descriptions y
+  // desambigua mejor). Este archivo mismo documenta, en otro incidente, que
+  // "un parche de texto en el prompt" ya demostró ser menos confiable que
+  // quitarle a Haiku la posibilidad de equivocarse (ver el bypass de las 4
+  // preguntas sensibles en core/claude/client.ts) — mismo criterio acá: se
+  // quita el acceso directo de Haiku a esta tool en vez de confiar en que
+  // siempre lea bien la aclaración. El criterio de este campo (ver
+  // core/tools/types.ts) es "Sonnet-only por defecto, nunca al revés" — una
+  // tool con un nombre léxicamente confundible con una pregunta de precisión
+  // financiera real es exactamente el caso que ese default existe para
+  // cubrir.
   description:
     "Consulta qué movimientos bancarios de Holded (WOBA, EWORKS o Footprint) NO están conciliados " +
     "todavía DENTRO DE HOLDED (status interno de Holded, nada que ver con la hoja de cashflow), en un " +
@@ -27,7 +41,9 @@ export const movimientosSinConciliarTool: ToolDefinition = {
     "Si en cambio preguntan si el CASHFLOW está al día, qué falta por REGISTRAR en la hoja DATOS, o " +
     "piden 'conciliar/verificar el cashflow' (aunque digan 'conciliar', NO es esta tool) — usa MEJOR " +
     "verificar_cashflow_actualizado, que sí compara contra lo ya registrado en la hoja y sí entiende " +
-    "semanas concretas (ej. 'S37', 'esta semana'). Solo consulta — nunca crea ni concilia nada.",
+    "semanas concretas (ej. 'S37', 'esta semana'). No intentes cruzar el resultado de esta tool con la " +
+    "hoja de cashflow a mano — se te van a escapar coincidencias reales (falsos 'falta registrar'), usa " +
+    "la tool dedicada. Solo consulta — nunca crea ni concilia nada.",
   input_schema: {
     type: "object",
     properties: {
