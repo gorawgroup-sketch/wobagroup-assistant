@@ -790,7 +790,23 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 // alquiler de coche — se estandariza en el más usado. Ver
 // procesarGastoEntrante.ts (tagsFinal) para cómo se evita escribir las dos
 // variantes juntas cuando la cuenta contable sugerida trae la vieja.
-const PALABRAS_ALIMENTACION = ["restaurante", "almuerzo", "desayuno", "cena", "comida", "cafeteria", "brunch"];
+// "supermercado" (genérico) + "aldi"/"ahorramas" (casos reales confirmados explícitamente por Carlos,
+// 2026-09-09: tickets de supermercado de Simon Talloen en desplazamiento que quedaban sin ningún tag
+// de categoría — ninguna palabra de este diccionario, antes centrado en restaurantes, reconocía un
+// supermercado como alimentación) — a propósito sin sumar otras cadenas (Mercadona, Carrefour, Lidl...)
+// sin evidencia real de uso en facturas de este grupo, mismo criterio que el resto de este archivo.
+const PALABRAS_ALIMENTACION = [
+  "restaurante",
+  "almuerzo",
+  "desayuno",
+  "cena",
+  "comida",
+  "cafeteria",
+  "brunch",
+  "supermercado",
+  "aldi",
+  "ahorramas",
+];
 const PALABRAS_TAXI = ["taxi", "uber", "cabify", "bolt", "freenow"];
 // Hallazgo real (caso Kelly Correales, Uber Eats — 12.71 USD/€, Green House Churubusco): "uber" solo
 // coincide con Uber Eats tanto como con Uber el taxi/rideshare, la misma marca opera los dos
@@ -934,7 +950,7 @@ export interface CuentaSugerida {
   accountId: string;
   tags: string[];
   ejemplo: string;
-  aprendidoDe: "proveedor" | "concepto" | "categoria" | "ia" | "correccion_confirmada";
+  aprendidoDe: "proveedor" | "concepto" | "categoria" | "viaje" | "ia" | "correccion_confirmada";
 }
 
 interface LineaConCuenta {
@@ -967,6 +983,18 @@ const PALABRAS_IGNORADAS_CONCEPTO = new Set([
 // Umbral mínimo de evidencia para confiar en un match por CONCEPTO (señal más débil que por
 // proveedor, ver construirSugerenciaDesdeCoincidencias) — una sola línea histórica nunca basta.
 const MIN_EVIDENCIA_CONCEPTO = 2;
+// Umbral propio del tier "viaje" (ver inferirCuentaGasto) — deliberadamente MÁS ALTO que
+// MIN_EVIDENCIA_CONCEPTO. Hallazgo real de auditoría xhigh (3 ángulos independientes coincidieron): a
+// diferencia de tiers 1/2 (proveedor/concepto), que solo aceptan su sugerencia si NO contradice a
+// sugeridoPorCategoria (el "juez" que evita que 2 líneas viejas mal archivadas decidan para siempre,
+// caso real Greengrass), el tier "viaje" no puede usar ese mismo juez — por diseño, existe justo para
+// SUPERAR la categoría propia del ticket (un supermercado en viaje debe ganar sobre "alimentación"
+// genérica, no perder contra ella). Sin ningún cruce, un mínimo de apenas 2 líneas mal etiquetadas
+// bastaría para que gane. 3 no es una prueba matemática, pero sube el costo real de que una
+// contaminación puntual (en vez de precedente real y establecido, como el verificado en vivo en las 3
+// empresas del grupo) decida la cuenta — mismo principio que ya se aplicó para el match por concepto
+// (2, no 1) cuando ese tier también resultó ser una señal más débil de lo que parecía.
+const MIN_EVIDENCIA_VIAJE = 3;
 // Cuánto tiempo se confía en una corrección de cuenta confirmada (tier 0, ver inferirCuentaGasto) antes
 // de volver a los tiers normales de inferencia. Hallazgo real de auditoría xhigh: como el tier 0 ya no
 // se cruza contra evidencia de categoría (ver comentario junto a su uso, más abajo), esta es su única
@@ -1060,7 +1088,7 @@ function construirSugerenciaDesdeCoincidencias(
  * Carlos: "usa el modelo IA que se requiera para que esto sea preciso".
  */
 async function elegirCuentaConIA(
-  criterios: { proveedor: string; concepto: string },
+  criterios: { proveedor: string; concepto: string; contextoDeViaje?: boolean },
   candidatos: LineaConCuenta[]
 ): Promise<CuentaSugerida | undefined> {
   const porCuenta = new Map<string, LineaConCuenta[]>();
@@ -1093,8 +1121,14 @@ async function elegirCuentaConIA(
         {
           role: "user",
           content:
-            `Gasto nuevo — proveedor: "${criterios.proveedor}", concepto: "${criterios.concepto}". ` +
-            `¿Cuál de estas cuentas contables (identificadas solo por ejemplos reales ya registrados en Holded) ` +
+            `Gasto nuevo — proveedor: "${criterios.proveedor}", concepto: "${criterios.concepto}".` +
+            (criterios.contextoDeViaje
+              ? ` Este gasto ocurrió durante un viaje/desplazamiento de trabajo de la persona asociada — si ` +
+                `alguna de las opciones es claramente una cuenta de gastos de viaje/desplazamiento, prefiérela ` +
+                `aunque el proveedor/concepto por sí solos no lo sugieran (ej. comida comprada durante un ` +
+                `viaje sigue siendo gasto de viaje, no un gasto normal de oficina).`
+              : "") +
+            ` ¿Cuál de estas cuentas contables (identificadas solo por ejemplos reales ya registrados en Holded) ` +
             `es la más adecuada para este gasto? Responde SOLO con el número de la opción, o "0" si ninguna encaja bien.\n\n${listado}`,
         },
       ],
@@ -1202,9 +1236,16 @@ function coincideProveedorCorto(proveedor: string, contactName: string): boolean
  * pero la cuenta equivocada) se repita para siempre solo porque el mismo proveedor vuelve a aparecer.
  * Ver contradiceCategoria dentro de la función.
  */
+// Tags que por sí solos son evidencia inequívoca de desplazamiento (transporte de cualquier medio +
+// hospedaje) — deliberadamente SIN "alimentacion"/"parking"/"gasolina", que también ocurren fuera de
+// un viaje y no bastan solos para identificar la cuenta de "Gastos de viaje". Se usa para el tier de
+// contexto de viaje de inferirCuentaGasto (ver más abajo) — nunca para inferirTagsCategoria, que sigue
+// decidiendo el tag de ESTE gasto por su propia naturaleza, no por el contexto de viaje.
+const TAGS_VIAJE_REFERENCIA = ["transporte", "taxi", "tren", "avion", "alquilercoche", "peaje", "barco", "hospedaje"];
+
 export async function inferirCuentaGasto(
   empresa: Empresa,
-  criterios: { proveedor: string; concepto: string; personaAsociada?: string }
+  criterios: { proveedor: string; concepto: string; personaAsociada?: string; contextoDeViaje?: boolean }
 ): Promise<CuentaSugerida | undefined> {
   // Tier 0 — pedido explícito de Carlos ("que la práctica te vaya dando
   // experticia"): si revisarCorreccionesCuentaContable.ts (job semanal) ya
@@ -1268,6 +1309,25 @@ export async function inferirCuentaGasto(
     console.error(
       `[write] La cuenta corregida aprendida para "${criterios.proveedor}" (${empresa}) venció (más de ${TTL_CORRECCION_VIGENTE_MS / 86400000} días) — se ignora, sigue con los tiers normales.`
     );
+  }
+
+  // Tier "viaje" — pedido explícito de Carlos, casos reales (Simon Talloen en desplazamiento, tickets
+  // de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien de viaje debe
+  // contabilizarse como gasto de viaje/desplazamiento — "profesionales independientes" y la cuenta
+  // genérica por defecto casi nunca son lo correcto ahí, sin importar qué proveedor/concepto tenga el
+  // ticket puntual (un supermercado no tiene NADA en su nombre/concepto que apunte a "viaje"). Cuando
+  // extraerDatosFactura reporta contexto real de desplazamiento (ver contextoDeViaje más arriba), se
+  // busca la cuenta que el grupo YA usa de verdad para gastos de transporte/hospedaje (evidencia
+  // inequívoca de viaje, ver TAGS_VIAJE_REFERENCIA — nunca alimentación/parking/gasolina solos, que
+  // también ocurren sin viaje) y se usa ESA, antes de que el proveedor/concepto de este ticket en
+  // concreto puedan arrastrarlo hacia una cuenta sin relación real (ej. un precedente viejo mal
+  // archivado en "profesionales independientes"). Se resuelve ANTES que tiers 1/2/3 a propósito — un
+  // contexto de viaje confirmado es una señal más fuerte que la inferencia estadística por
+  // proveedor/concepto de ESTE ticket puntual, que nunca va a mencionar viaje por sí solo.
+  if (criterios.contextoDeViaje) {
+    const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
+    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(porViaje, "viaje", MIN_EVIDENCIA_VIAJE);
+    if (sugeridoPorViaje) return sugeridoPorViaje;
   }
 
   // textosParecidos (no un simple includes/substring) — bug real encontrado

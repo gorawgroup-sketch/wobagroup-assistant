@@ -374,6 +374,14 @@ const ACCIONES_SENSIBLES = new Set([
   // criterio que el resto de pares sí/no de este set.
   "autorrepair_desplegar",
   "autorrepair_descartar",
+  // Hallazgo real de auditoría xhigh: la primera versión de escalar_a_development creaba el GitHub
+  // Issue directo al llamar la tool, sin botón ni gate — cualquier usuario autorizado (no solo
+  // superadmin) podía crear un issue público real en el repo. Se corrigió al patrón proponer+botón
+  // (ver core/tools/escalarDesarrollo.ts / core/github/escalacionCallbackHandler.ts); mismo criterio
+  // que autorrepair_desplegar: un issue real en GitHub, visible para todo el equipo, se centraliza en
+  // superadmin igual que el resto de escrituras externas del sistema.
+  "escaladev_confirmar",
+  "escaladev_cancelar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

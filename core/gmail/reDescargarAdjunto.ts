@@ -83,6 +83,10 @@ export async function regenerarComprobanteDesdeCuerpoSiFalta(
         fecha: propuesta.fecha,
         concepto: propuesta.concepto,
         numeroDocumento: propuesta.numeroDocumento,
+        // Inerte acá: generarComprobantePDF no lee este campo, solo reconstruye visualmente el PDF.
+        // La decisión real de si discriminar IVA ya quedó tomada en propuesta.lineas cuando se creó
+        // la propuesta original.
+        reciboSimplificado: false,
         lineas: propuesta.lineas,
         empresaProbable: "desconocida",
         confianza: "alta",

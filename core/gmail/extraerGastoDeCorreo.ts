@@ -73,6 +73,19 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "— prioridad al remitente ORIGINAL de una cadena de reenvío ('---------- Forwarded message " +
           "---------- From: X'), no quien hizo el último reenvío. Omite si no hay evidencia clara.",
       },
+      contexto_de_viaje: {
+        type: "boolean",
+        description:
+          "true si este es un gasto INDIVIDUAL de comida, transporte u hospedaje de UNA persona " +
+          "identificada (ver persona_asociada) — un almuerzo/cena/taxi/hotel de esa persona en " +
+          "concreto, no una compra o contrato a nombre de la empresa. El grupo contabiliza este tipo de " +
+          "gasto individual como 'Gastos de viaje', sin importar si viajó literalmente a otra ciudad o " +
+          "no. Pedido explícito de Carlos, casos reales (notificaciones de tarjeta reenviadas por correo " +
+          "de compras de supermercado/restaurante de una persona en desplazamiento). true por defecto " +
+          "siempre que persona_asociada quede identificada Y el gasto sea de esta naturaleza individual " +
+          "— false SOLO si es claramente otra cosa (una factura/contrato a nombre de la empresa, o si no " +
+          "se identificó ninguna persona asociada).",
+      },
       fecha: { type: "string", description: "Fecha del gasto en formato YYYY-MM-DD." },
       numero_documento: {
         type: "string",
@@ -130,6 +143,10 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
     "Para 'persona_asociada': mira si hay una cadena de reenvío en el cuerpo y usa el remitente ORIGINAL " +
       "(el 'From:' dentro del bloque 'Forwarded message', no quien hizo el último reenvío) como la persona " +
       "a la que corresponde el gasto. Omite si no hay evidencia clara.",
+    "IMPORTANTE — contexto de viaje/desplazamiento: si 'persona_asociada' quedó identificada, revisa si " +
+      "el gasto es individual de esa persona (comida, transporte, hospedaje) en vez de una compra a nombre " +
+      "de la empresa, y repórtalo en 'contexto_de_viaje'. Un almuerzo/cena/taxi de una sola persona se " +
+      "contabiliza como gasto de viaje aunque no haya viajado literalmente a otra ciudad.",
     clasificacionesAprendidas
       ? `Además, estas son clasificaciones aprendidas de facturas anteriores del mismo proveedor — dales ` +
         `prioridad sobre cualquier suposición genérica:\n\n${clasificacionesAprendidas}`
@@ -166,6 +183,7 @@ export async function extraerGastoDeCorreo(
     moneda: "",
     fecha: "",
     concepto: "",
+    reciboSimplificado: true,
     lineas: [],
     empresaProbable: "desconocida",
     confianza: "baja",
@@ -232,12 +250,15 @@ export async function extraerGastoDeCorreo(
           typeof input.persona_asociada === "string" && input.persona_asociada.trim()
             ? input.persona_asociada.trim()
             : undefined,
+        contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
         fecha: (input.fecha as string) ?? "",
         numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
         concepto,
-        // Un correo describiendo un gasto casi nunca trae un desglose de IVA
-        // limpio por tipo — una sola línea con el total, igual que hace
-        // extraerDatosFactura cuando el documento tampoco lo desglosa.
+        // Un correo describiendo un gasto (notificación de tarjeta, texto pegado) nunca trae los
+        // datos fiscales de la empresa compradora ni un desglose de IVA limpio por tipo — se trata
+        // siempre como recibo simplificado: una sola línea con el total, sin discriminar IVA. Mismo
+        // criterio que extraerDatosFactura aplica cuando el propio documento no muestra esos datos.
+        reciboSimplificado: true,
         lineas: [{ concepto, base: monto, tipoIvaPct: 0 }],
         empresaProbable: (input.empresa_probable as DatosFactura["empresaProbable"]) ?? "desconocida",
         confianza: (input.confianza as DatosFactura["confianza"]) ?? "baja",

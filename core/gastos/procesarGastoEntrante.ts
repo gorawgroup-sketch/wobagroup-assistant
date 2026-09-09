@@ -97,6 +97,7 @@ const ETIQUETA_APRENDIDO_DE: Record<CuentaSugerida["aprendidoDe"], string> = {
   proveedor: "por proveedor",
   concepto: "por concepto",
   categoria: "por categoría",
+  viaje: "por contexto de viaje/desplazamiento",
   correccion_confirmada: "corrección ya confirmada por ti",
   ia: "elegida por IA",
 };
@@ -232,9 +233,16 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
 
   const monedaParaHolded = usarEquivalente ? (datos.monedaEquivalente as string).toUpperCase().trim() : monedaOriginal;
   const montoParaHolded = usarEquivalente ? (datos.montoEquivalente as number) : datos.monto;
-  const lineasParaHolded = usarEquivalente
-    ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
-    : datos.lineas;
+  // Pedido explícito de Carlos, casos reales ALDI/Ahorramas: un recibo simplificado (sin los datos
+  // fiscales de la empresa compradora impresos) no se puede usar legalmente para deducir IVA — se
+  // colapsa a un solo importe sin desglosar, igual que ya se hacía para el caso de moneda
+  // equivalente. extraerDatosFactura ya fuerza este mismo colapso en `datos.lineas` (defensa en
+  // profundidad), pero se repite acá explícitamente para que esta decisión quede clara en el punto
+  // donde de verdad se decide qué llega a Holded, sin depender solo de lo que venga ya colapsado.
+  const lineasParaHolded =
+    usarEquivalente || datos.reciboSimplificado
+      ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
+      : datos.lineas;
 
   let candidatos: Awaited<ReturnType<typeof buscarGastoSimilar>> = [];
   try {
@@ -321,7 +329,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // ya tenía 159 líneas reales de gastos de viaje bajo la misma cuenta.
   const cuentaSugerida =
     candidatos.length === 0
-      ? await inferirCuentaGasto(empresa, { proveedor: datos.proveedor, concepto: datos.concepto, personaAsociada: datos.personaAsociada }).catch((error) => {
+      ? await inferirCuentaGasto(empresa, {
+          proveedor: datos.proveedor,
+          concepto: datos.concepto,
+          personaAsociada: datos.personaAsociada,
+          contextoDeViaje: datos.contextoDeViaje,
+        }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;
         })
@@ -602,7 +615,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       `Fecha: ${datos.fecha}`,
       `Concepto: ${conceptoConMonedaOriginal}`,
       `Desglose de IVA:`,
-      desgloseIva,
+      datos.reciboSimplificado
+        ? `${desgloseIva} — recibo simplificado (sin datos fiscales de la empresa), registrado sin discriminar IVA, no deducible.`
+        : desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
     ].join("\n") + notaCuenta + notaMovimiento;
 

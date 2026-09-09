@@ -77,6 +77,7 @@ import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import { verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
+import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
 import type { TelegramUpdate } from "../core/telegram/types";
 
@@ -1096,6 +1097,8 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
         await handleAutorespuestaHiloCallback(update.callback_query);
       } else if (data.startsWith("autorrepair_")) {
         await handleAutorrepairCallback(update.callback_query);
+      } else if (data.startsWith("escaladev_")) {
+        await handleEscalacionCallback(update.callback_query);
       } else {
         await handleCallbackQuery(update.callback_query);
       }
