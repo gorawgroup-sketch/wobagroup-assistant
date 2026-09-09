@@ -36,6 +36,19 @@ function programarActualizacionCerebro(nombre: string): void {
   notificacionCerebroPendiente.unref();
 }
 
+/**
+ * Hallazgo real de auditoría xhigh (sobre el fix de graceful-shutdown en src/server.ts): el handler de
+ * SIGTERM ahí espera a que termine el trabajo de Telegram en curso antes de dejar que Railway mate el
+ * proceso, pero no tenía ninguna forma de saber si un CRON estaba corriendo — un redeploy podía seguir
+ * matando a mitad de camino, por ejemplo, autorrevisionCodigo (que escribe rama+commit+PR en GitHub) o
+ * revisarCorreoNuevo, sin que ningún update de Telegram estuviera en curso al mismo tiempo. Se expone el
+ * tamaño de este Set (ya existente, pensado originalmente solo para evitar solapamiento del mismo job
+ * consigo mismo) para que ese mismo handler de SIGTERM también pueda esperar a que los crons terminen.
+ */
+export function obtenerCantidadJobsEnCurso(): number {
+  return jobsEnCurso.size;
+}
+
 /** Evita duplicar trabajo, gasto o acciones si una corrida tarda más que su intervalo. */
 function ejecutarSinSolapamiento(nombre: string, tarea: () => Promise<unknown>): void {
   if (jobsEnCurso.has(nombre)) {

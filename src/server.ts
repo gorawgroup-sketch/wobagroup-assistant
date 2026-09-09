@@ -1,6 +1,7 @@
 import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
+import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
 import {
@@ -29,7 +30,7 @@ import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendie
 import { askClaude, buscarEnInternet } from "../core/claude/client";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
-import { startScheduler } from "../core/jobs/scheduler";
+import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
@@ -117,36 +118,65 @@ process.on("uncaughtException", (error) => {
  * ni para Carlos ni en los logs.
  *
  * `actualizacionesEnCurso` cuenta cuántos updates de Telegram siguen procesándose de verdad ahora mismo
- * (incrementado/decrementado alrededor de procesarUpdateTelegram, ver /webhook/telegram). Al recibir
- * SIGTERM, se espera a que llegue a 0 (con esperaMaximaDrenajeMs de margen, unos segundos por debajo del
- * drainingSeconds real configurado en railway.json) antes de salir voluntariamente — así Railway nunca
- * necesita llegar al SIGKILL para el caso común, y ninguna conversación en curso se pierde solo porque
- * coincidió con un despliegue.
+ * (incrementado/decrementado alrededor de procesarUpdateTelegram, ver /webhook/telegram, y de cualquier
+ * otro trabajo real que responda rápido y siga corriendo después — ver trackearEnSegundoPlano). Al
+ * recibir SIGTERM, se espera a que llegue a 0 — Y a que obtenerCantidadJobsEnCurso() (core/jobs/scheduler.ts)
+ * también llegue a 0, hallazgo real de auditoría xhigh: un cron (ej. autorrevisionCodigo, que escribe
+ * rama+commit+PR en GitHub) puede estar corriendo sin que haya ningún update de Telegram en curso al
+ * mismo tiempo, y un redeploy lo mataría igual de silenciosamente si solo se mirara lo primero — con
+ * esperaMaximaDrenajeMs de margen, unos segundos por debajo del drainingSeconds real configurado en
+ * railway.json) antes de salir voluntariamente. servidorHttp.close() se llama primero para dejar de
+ * aceptar conexiones NUEVAS de inmediato (otro hallazgo real de auditoría: sin esto, Railway podía
+ * seguir mandando updates nuevos durante toda la ventana de espera, y alguno que llegara justo antes del
+ * límite se mataría igual) — así Railway nunca necesita llegar al SIGKILL para el caso común, y ningún
+ * trabajo en curso se pierde solo porque coincidió con un despliegue.
  */
 let actualizacionesEnCurso = 0;
 let cerrandoPorSigterm = false;
+let servidorHttp: HttpServer | null = null;
+
+/**
+ * Para cualquier trabajo real que, como /webhook/telegram, responde rápido y sigue corriendo después en
+ * segundo plano (nunca esperado por el ciclo de vida normal de la request) — lo suma a
+ * actualizacionesEnCurso para que el SIGTERM de arriba también lo espere. Hallazgo real de auditoría
+ * xhigh: /revisarcorreo (dentro de procesarUpdateTelegram) y /admin/run-gmail-check ya tenían
+ * exactamente este patrón sin trackear — el propio código que este fix dice proteger tenía el mismo
+ * hueco por dentro.
+ */
+function trackearEnSegundoPlano<T>(promesa: Promise<T>): void {
+  actualizacionesEnCurso++;
+  promesa.finally(() => {
+    actualizacionesEnCurso--;
+  });
+}
 
 process.on("SIGTERM", () => {
   if (cerrandoPorSigterm) return; // Railway no debería mandar SIGTERM dos veces, pero por si acaso.
   cerrandoPorSigterm = true;
+  servidorHttp?.close();
 
-  if (actualizacionesEnCurso === 0) {
-    console.log("[server] SIGTERM recibido, sin actualizaciones de Telegram en curso — saliendo de inmediato.");
+  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0;
+
+  if (nadaEnCurso()) {
+    console.log("[server] SIGTERM recibido, sin trabajo en curso — saliendo de inmediato.");
     process.exit(0);
+    return;
   }
 
-  console.log(`[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram en curso — esperando a que terminen antes de salir.`);
+  console.log(
+    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram y ${obtenerCantidadJobsEnCurso()} job(s) en curso — esperando a que terminen antes de salir.`
+  );
   const esperaMaximaDrenajeMs = 55_000;
   const inicio = Date.now();
   const intervalo = setInterval(() => {
-    if (actualizacionesEnCurso === 0) {
+    if (nadaEnCurso()) {
       clearInterval(intervalo);
-      console.log("[server] Todas las actualizaciones en curso terminaron — saliendo.");
+      console.log("[server] Todo el trabajo en curso terminó — saliendo.");
       process.exit(0);
     } else if (Date.now() - inicio > esperaMaximaDrenajeMs) {
       clearInterval(intervalo);
       console.error(
-        `[server] Quedaron ${actualizacionesEnCurso} actualización(es) sin terminar tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
+        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${obtenerCantidadJobsEnCurso()} job(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
       );
       process.exit(0);
     }
@@ -920,7 +950,8 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
 
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
-    revisarCorreoNuevo(true) // forzarAviso: lo pidió Carlos ahora mismo, sin importar el día ni si ya se avisó hoy
+    trackearEnSegundoPlano(
+      revisarCorreoNuevo(true) // forzarAviso: lo pidió Carlos ahora mismo, sin importar el día ni si ya se avisó hoy
       .then((resultado) => {
         // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
         // con varios correos reales sin leer en Gmail, y el sistema
@@ -950,7 +981,8 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
       .catch((error) => {
         console.error("Error en revisión extraordinaria de correo:", error);
         sendTelegramMessage(incoming.chatId, "⚠️ Hubo un error revisando el correo.").catch(() => {});
-      });
+      })
+    );
     return;
   }
 
@@ -1352,9 +1384,11 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
 
   res.json({ ok: true, mensaje: "Revisión de correo iniciada en segundo plano." });
 
-  revisarCorreoNuevo(true).catch((error) => { // forzarAviso: se disparó a mano vía este endpoint admin
-    console.error("[admin/run-gmail-check] Error:", error);
-  });
+  trackearEnSegundoPlano(
+    revisarCorreoNuevo(true).catch((error) => { // forzarAviso: se disparó a mano vía este endpoint admin
+      console.error("[admin/run-gmail-check] Error:", error);
+    })
+  );
 });
 
 /**
@@ -1440,7 +1474,7 @@ app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) 
   }
 });
 
-app.listen(PORT, () => {
+servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
 });
