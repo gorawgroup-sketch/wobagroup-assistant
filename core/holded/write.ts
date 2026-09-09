@@ -10,6 +10,7 @@ import { textosParecidos, palabrasDe } from "../utils/textoParecido";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
+import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -2031,8 +2032,50 @@ export class FechaBloqueadaError extends Error {
   }
 }
 
+/**
+ * Hallazgo real de auditoría (reportado en vivo por Carlos, caso Anthropic/WOBA, 24.20 USD): un gasto
+ * creado en moneda extranjera (ej. USD) se mostraba en Holded con el símbolo € pero el valor NUMÉRICO
+ * de la moneda original sin convertir (ej. "20,00€" para un cargo real de $20 USD) — el equivalente en
+ * EUR que Holded calcula para toda la contabilidad/conciliación quedaba mal, aunque "currency" (USD)
+ * en sí estuviera correcta. Causa raíz: esta función nunca mandaba "currency_change" (el tipo de
+ * cambio real, ver el mismo campo ya manejado con cuidado en editarCompraHolded más abajo) al CREAR el
+ * documento — Holded lo dejaba en su default (paridad 1:1, tratando $1 como si fuera €1). El fix ya
+ * existente en editarCompraHolded solo PRESERVA un currency_change que ya estaba bien puesto — nunca lo
+ * establece por primera vez, así que todo gasto nuevo en moneda extranjera nacía mal y se quedaba así
+ * salvo reparación manual. Se calcula acá con la misma fuente ya usada para auditar conversiones
+ * (obtenerTasaCambioHistorica, tasas reales del BCE vía Frankfurter) — nunca se inventa, y si la
+ * consulta falla (red, fecha sin dato) se omite el campo en vez de bloquear la creación del gasto,
+ * dejando a Holded con su comportamiento previo solo para ese caso puntual (mismo criterio que el resto
+ * de este archivo: nunca frenar una escritura real por un chequeo best-effort que no se pudo hacer).
+ *
+ * Hallazgo real de auditoría xhigh: Frankfurter (obtenerTasaCambioHistorica) solo cubre las ~30 monedas
+ * del BCE — no incluye COP, y Footprint SÍ tiene una cuenta de tesorería real en COP (ver el comentario
+ * de recolectarLineasConCuenta/buscarMovimientoSimilar más abajo). Sin fallback, un gasto en COP se
+ * habría quedado con el MISMO bug original, en silencio. Se intenta la tasa histórica real primero
+ * (más precisa, casi siempre disponible); si la moneda no está cubierta, se cae a la tasa ACTUAL
+ * (obtenerTasaCambioActual, otra fuente real, nunca inventada) — mejor una aproximación de hoy que la
+ * paridad ficticia 1:1.
+ */
+async function calcularTasaCambioParaCreacion(moneda: string | undefined, fecha: string): Promise<number | undefined> {
+  const monedaNormalizada = (moneda || "EUR").toUpperCase().trim();
+  if (!monedaNormalizada || monedaNormalizada === "EUR") return undefined;
+
+  const tasaHistorica = await obtenerTasaCambioHistorica(fecha, "EUR", monedaNormalizada).catch((error) => {
+    console.error(`[write] Error consultando la tasa de cambio histórica EUR->${monedaNormalizada} del ${fecha}:`, error);
+    return undefined;
+  });
+  if (tasaHistorica !== undefined) return tasaHistorica;
+
+  const tasaActual = await obtenerTasaCambioActual("EUR", monedaNormalizada).catch((error) => {
+    console.error(`[write] Error consultando la tasa de cambio actual EUR->${monedaNormalizada} (se crea sin currency_change explícito):`, error);
+    return undefined;
+  });
+  return tasaActual;
+}
+
 export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded): Promise<{ id: string }> {
   const catalogo = await obtenerCatalogoImpuestos(empresa);
+  const tasaCambio = await calcularTasaCambioParaCreacion(gasto.moneda, gasto.fecha);
 
   const items = gasto.lineas.map((linea) => {
     const taxKey = mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
@@ -2060,6 +2103,9 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       items,
       ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
       ...(gasto.moneda ? { currency: gasto.moneda } : {}),
+      // Ver calcularTasaCambioParaCreacion arriba — sin esto, Holded calculaba el equivalente en EUR
+      // de toda la contabilidad a paridad ficticia 1:1 para cualquier gasto nuevo en moneda extranjera.
+      ...(tasaCambio !== undefined ? { currency_change: tasaCambio } : {}),
       // Bug real de gravedad alta encontrado en vivo (2026-09-03, gasto de
       // "Santo Suadero", Footprint): el campo que de verdad acepta POST
       // /purchases para el número de documento es "number", NO
