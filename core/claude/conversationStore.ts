@@ -269,6 +269,44 @@ export async function obtenerHistorial(chatId: number): Promise<Anthropic.Messag
   }
 }
 
+export interface MensajeConversacionVisible {
+  rol: "usuario" | "wobi";
+  texto: string;
+}
+
+/**
+ * Proyección segura del historial para el chat web. Nunca expone tool_use,
+ * tool_result, thinking ni parámetros internos: solo los textos que la
+ * persona escribió y los textos que Wobi produjo. Al usar el mismo chatId
+ * de Telegram después de vincular el dispositivo, la conversación puede
+ * continuar en cualquiera de los dos canales.
+ */
+export async function obtenerHistorialVisible(chatId: number): Promise<MensajeConversacionVisible[]> {
+  const historial = await obtenerHistorial(chatId);
+  const visibles: MensajeConversacionVisible[] = [];
+
+  for (const mensaje of historial) {
+    if (mensaje.role === "user" && typeof mensaje.content === "string") {
+      const texto = mensaje.content.trim();
+      if (texto) visibles.push({ rol: "usuario", texto });
+      continue;
+    }
+
+    if (mensaje.role !== "assistant") continue;
+    const texto =
+      typeof mensaje.content === "string"
+        ? mensaje.content.trim()
+        : mensaje.content
+            .filter((bloque): bloque is Anthropic.TextBlockParam => bloque.type === "text")
+            .map((bloque) => bloque.text)
+            .join("\n\n")
+            .trim();
+    if (texto) visibles.push({ rol: "wobi", texto });
+  }
+
+  return visibles.slice(-MAX_MESSAGES);
+}
+
 /** Descarta el historial de un chat — vía de escape si algo lo deja en un estado que la API rechaza.
  *  Pasa por el mismo conLockDeChat que guardarHistorial para que no se cruce con una escritura
  *  concurrente del mismo chat. */

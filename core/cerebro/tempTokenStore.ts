@@ -141,7 +141,7 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 }
 
 /** Cachea en memoria de proceso los tokens vigentes ya vistos, para no pegarle a Sheets en cada request al endpoint de datos. */
-const cacheVigentes = new Map<string, number>(); // token -> expiraEn (unix ms)
+const cacheVigentes = new Map<string, FilaToken>(); // token -> identidad + expiración
 let cacheCargadaEn = 0;
 const CACHE_TTL_MS = 60 * 1000;
 
@@ -152,7 +152,7 @@ async function cargarCacheSiHaceFalta(forzar = false): Promise<void> {
   cacheVigentes.clear();
   const ahora = Date.now();
   for (const { fila } of todas) {
-    if (fila.token && fila.expiraEn > ahora) cacheVigentes.set(fila.token, fila.expiraEn);
+    if (fila.token && fila.expiraEn > ahora) cacheVigentes.set(fila.token, fila);
   }
   cacheCargadaEn = ahora;
 }
@@ -175,18 +175,32 @@ export async function crearTokenTemporal(nombre: string, horasValidez = HORAS_VA
     requestBody: { values: [[id, token, nombre, creadoEn, expiraEn]] },
   });
 
-  cacheVigentes.set(token, expiraEn);
+  cacheVigentes.set(token, { id, token, nombre, creadoEn, expiraEn });
 
   return { token, expiraEn };
 }
 
 /** true si el token existe, no ha vencido, y no fue revocado. Cachea la lista de vigentes ~60s para no pegarle a Sheets en cada request. */
 export async function esTokenTemporalValido(token: string): Promise<boolean> {
-  if (!token) return false;
+  return (await obtenerTokenTemporalValido(token)) !== undefined;
+}
 
+/**
+ * Devuelve la identidad asociada a un token vigente sin revelar el propio
+ * token. El chat web la usa para no confiar en un nombre manipulable enviado
+ * por el navegador.
+ */
+export async function obtenerTokenTemporalValido(token: string): Promise<TokenTemporalActivo | undefined> {
+  if (!token) return undefined;
   await cargarCacheSiHaceFalta();
-  const expiraEn = cacheVigentes.get(token);
-  return !!expiraEn && expiraEn > Date.now();
+  const fila = cacheVigentes.get(token);
+  if (!fila || fila.expiraEn <= Date.now()) return undefined;
+  return {
+    id: fila.id,
+    nombre: fila.nombre,
+    creadoEn: fila.creadoEn,
+    expiraEn: fila.expiraEn,
+  };
 }
 
 /** Lista los tokens vigentes (sin revelar el valor del token) — para el panel de admin. */
