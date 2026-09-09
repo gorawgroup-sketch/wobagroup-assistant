@@ -1,6 +1,7 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { textosParecidos } from "../utils/textoParecido";
+import { conMutex } from "../utils/asyncMutex";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_duplicados_confirmados";
@@ -102,6 +103,35 @@ async function leerFilas(): Promise<FilaDuplicado[]> {
     }));
 }
 
+const MAX_INTENTOS_ESCRITURA = 3;
+
+/**
+ * Hallazgo real de auditoría (misma noche, mismo bug ya cerrado en
+ * gastoProposalSheet.ts, conciliacionPendienteStore.ts, pagoRecurrenteProposalSheet.ts
+ * y el primitivo compartido sheetsKeyValueStore.ts, pero nunca aplicado
+ * acá): `values.append` con un rango de columnas deja que Sheets ADIVINE en
+ * qué fila/columna empieza "la tabla" — heurística que puede fallar en
+ * silencio. Justo esta hoja es la "memoria" que hace que el sistema
+ * aprenda de los duplicados que se confirman a mano — si el registro se
+ * pierde o se desalinea en silencio, el aprendizaje mismo queda roto sin
+ * ningún aviso. Se corrige con el mismo patrón ya establecido: fila libre
+ * calculada a mano, escritura en rango explícito, verificación (fila
+ * completa, no una sola columna — esta hoja no tiene un id único por fila,
+ * el mismo proveedor puede confirmarse varias veces) y reintento ante
+ * colisión, bajo conMutex.
+ */
+async function siguienteFilaLibre(): Promise<number> {
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!A:F`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
+  return rows.length + 1;
+}
+
 /** Registra un caso confirmado a mano: este proveedor, con esta diferencia de monto, es el mismo pago. */
 export async function registrarDuplicadoConfirmado(
   proveedor: string,
@@ -114,15 +144,32 @@ export async function registrarDuplicadoConfirmado(
   const sheets = getClient();
 
   const diferencia = Math.abs(montoHolded - montoCashflow);
+  const fila = [proveedor, empresa, montoHolded, montoCashflow, diferencia, new Date().toISOString()];
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:F`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: {
-      values: [[proveedor, empresa, montoHolded, montoCashflow, diferencia, new Date().toISOString()]],
-    },
+  await conMutex(`duplicadosConfirmados:${TAB_NAME}`, async () => {
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const filaLibre = await siguienteFilaLibre();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${filaLibre}:F${filaLibre}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [fila] },
+      });
+
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${filaLibre}:F${filaLibre}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      const filaEscrita = verificacion.data.values?.[0] ?? [];
+      const coincide = fila.every((v, i) => String(filaEscrita[i] ?? "") === String(v));
+      if (coincide) return;
+
+      console.error(
+        `[duplicadosConfirmadosSheet] Colisión al escribir en "${TAB_NAME}", fila ${filaLibre} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
+      );
+    }
+    throw new Error(`No se pudo registrar el duplicado confirmado tras ${MAX_INTENTOS_ESCRITURA} intentos por colisiones repetidas.`);
   });
 }
 
