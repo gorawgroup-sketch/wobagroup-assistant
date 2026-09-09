@@ -13,6 +13,7 @@ import { revisarConversacionesAutomaticas } from "./revisarConversacionesAutomat
 import { autorrevisionCodigo } from "./autorrevisionCodigo";
 import { vigilarProcesamientoAtascado } from "./vigilarProcesamientoAtascado";
 import { autoAuditarOperacionesDiarias } from "./autoAuditarOperaciones";
+import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaContable";
 
 const TIMEZONE = "Europe/Madrid";
 const jobsEnCurso = new Set<string>();
@@ -134,6 +135,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarAnotacionesCashflow programado: diario 8:20 (${TIMEZONE})`);
+
+  cron.schedule(
+    "40 8 * * 1",
+    () => {
+      ejecutarSinSolapamiento("revisarCorreccionesCuentaContable", () => revisarCorreccionesCuentaContable());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarCorreccionesCuentaContable programado: lunes 8:40 (${TIMEZONE})`);
 
   cron.schedule(
     "5 * * * *",

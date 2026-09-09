@@ -45,6 +45,7 @@ import {
 import { guardarPendienteSeleccionGasto, type PendienteSeleccionGasto } from "./pendienteSeleccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
+import { registrarAsignacionCuenta } from "../holded/asignacionCuentaLogSheet";
 import {
   guardarResolucionContacto,
   consumirResolucionContacto,
@@ -1426,6 +1427,16 @@ async function crearGastoYReportar(
   if (contactoForzado && aprenderAlias) {
     await registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
       (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
+    );
+  }
+  // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
+  // propuesta.cuentaId, cuando viene dado, siempre viene de inferirCuentaGasto
+  // (nunca hay hoy un camino donde el usuario la fuerce explícita antes de
+  // crear) — se registra para que revisarCorreccionesCuentaContable.ts
+  // pueda detectar más adelante si Carlos la corrigió a mano en Holded.
+  if (propuesta.cuentaId) {
+    await registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: propuesta.cuentaId }).catch(
+      (error) => console.error("[gastoCallbackHandler] No se pudo registrar la asignación de cuenta (no crítico):", error)
     );
   }
 
