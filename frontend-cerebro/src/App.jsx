@@ -2259,67 +2259,134 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   };
 
   return (
-    <div style={{ position: "fixed", right: 18, bottom: 18, zIndex: 40 }}>
-      {abierto && (
-        <section className="wobi-chat-panel" aria-label="Chat con Wobi" style={{ width: "min(430px, calc(100vw - 24px))", height: "min(680px, calc(100vh - 92px))", display: "flex", flexDirection: "column", borderRadius: 16, overflow: "hidden", border: `1px solid ${C.lineBright}`, background: "rgba(5,11,20,.98)", boxShadow: "0 24px 80px rgba(0,0,0,.55)", marginBottom: 10 }}>
-          <header style={{ padding: "13px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-            <div>
-              <div style={{ fontFamily: C.serif, fontSize: 20, color: C.cream }}>Hablar con Wobi</div>
-              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: identidad?.vinculadaTelegram ? C.ok : C.amberBright, marginTop: 2 }}>
-                {identidad?.vinculadaTelegram ? "contexto compartido con Telegram" : "chat aislado · solo lectura hasta vincular"}
+    <div className="wobi-contacto">
+      {abierto ? (
+        <section className="wobi-chat-panel" aria-label="Centro de conversación con Wobi">
+          <header className="wobi-chat-cabecera">
+            <div className="wobi-identidad">
+              <span className="wobi-avatar wobi-avatar--grande" aria-hidden="true">
+                <img src={WOBI_IMG} alt="" />
+                <span className="wobi-presencia" />
+              </span>
+              <div>
+                <div className="wobi-chat-nombre">Wobi</div>
+                <div className="wobi-chat-estado">
+                  <span className="wobi-punto-estado" />
+                  {identidad?.vinculadaTelegram ? "Una conversación · dos canales" : "Disponible en este panel"}
+                </div>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 5 }}>
-              <button type="button" onClick={toggleLectura} title="Leer las respuestas en voz alta" style={{ border: `1px solid ${leerRespuestas ? C.coreBright : C.line}`, background: "transparent", color: leerRespuestas ? C.coreBright : C.dim, borderRadius: 7, padding: "6px 8px", cursor: "pointer" }}>🔊</button>
-              <button type="button" onClick={() => setAbierto(false)} aria-label="Cerrar chat" style={{ border: `1px solid ${C.line}`, background: "transparent", color: C.dim, borderRadius: 7, padding: "6px 9px", cursor: "pointer" }}>×</button>
+            <div className="wobi-chat-controles">
+              <button
+                type="button"
+                onClick={toggleLectura}
+                aria-pressed={leerRespuestas}
+                aria-label={leerRespuestas ? "Desactivar lectura de respuestas" : "Leer las respuestas en voz alta"}
+                title={leerRespuestas ? "Desactivar lectura de respuestas" : "Leer las respuestas en voz alta"}
+                className={`wobi-control-icono${leerRespuestas ? " wobi-control-icono--activo" : ""}`}
+              >
+                <span aria-hidden="true">◖)))</span>
+              </button>
+              <button type="button" onClick={() => setAbierto(false)} aria-label="Cerrar chat" className="wobi-control-icono">
+                <span aria-hidden="true">×</span>
+              </button>
             </div>
           </header>
 
+          <div className="wobi-canales" aria-label="Canales disponibles">
+            <div className="wobi-canal wobi-canal--activo">
+              <span className="wobi-canal-icono" aria-hidden="true">✦</span>
+              <span><strong>Chat web</strong><small>Estás aquí</small></span>
+            </div>
+            <a className="wobi-canal" href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer">
+              <img src={TELEGRAM_ICON} alt="" width={24} height={24} />
+              <span><strong>Telegram</strong><small>{identidad?.vinculadaTelegram ? "Contexto compartido" : "Canal alternativo"}</small></span>
+              <span className="wobi-canal-flecha" aria-hidden="true">↗</span>
+            </a>
+          </div>
+
           {!identidad?.vinculadaTelegram && (
-            <div style={{ padding: "9px 12px", borderBottom: `1px solid ${C.line}`, background: "rgba(232,167,92,.07)", fontFamily: C.sans, fontSize: 11, color: C.dim, lineHeight: 1.45 }}>
+            <div className="wobi-vinculo">
               {codigoVinculo?.codigo ? (
                 <>
-                  En Telegram envía <strong style={{ color: C.amberBright }}>VINCULAR {codigoVinculo.codigo}</strong> a Wobi. Esta ventana lo detectará automáticamente.
-                  <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" style={{ color: C.coreBright, marginLeft: 6 }}>Abrir Telegram ↗</a>
+                  <div className="wobi-vinculo-codigo-info">
+                    <span className="wobi-vinculo-etiqueta">Vinculación pendiente</span>
+                    <span>En Telegram envía este código. Wobi lo detectará automáticamente.</span>
+                  </div>
+                  <strong className="wobi-vinculo-codigo">VINCULAR {codigoVinculo.codigo}</strong>
                 </>
               ) : (
                 <>
-                  Vincula este dispositivo para continuar aquí la misma conversación y habilitar las confirmaciones seguras.
-                  <button type="button" onClick={vincular} style={{ marginLeft: 7, border: "none", background: "transparent", color: C.amberBright, textDecoration: "underline", cursor: "pointer", padding: 0 }}>Generar código</button>
+                  <div>
+                    <strong>Continúa la misma conversación en ambos canales.</strong>
+                    <span>Vincula este dispositivo una sola vez para compartir contexto y confirmaciones.</span>
+                  </div>
+                  <button type="button" onClick={vincular}>Vincular Telegram</button>
                 </>
               )}
             </div>
           )}
 
-          <div ref={mensajesRef} aria-live="polite" style={{ flex: 1, overflowY: "auto", padding: 13, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div ref={mensajesRef} aria-live="polite" className="wobi-mensajes">
             {mensajes.length === 0 && (
-              <div style={{ margin: "auto", textAlign: "center", maxWidth: 260, color: C.dim, fontFamily: C.sans, fontSize: 12, lineHeight: 1.5 }}>
-                Puedes preguntarme por correo, documentos, cashflow, Holded o cualquier asunto operativo.
+              <div className="wobi-chat-vacio">
+                <span className="wobi-avatar wobi-avatar--vacio" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
+                <strong>¿En qué trabajamos?</strong>
+                <span>Pregúntame por correo, documentos, cashflow, Holded o cualquier asunto operativo.</span>
               </div>
             )}
-            {mensajes.map((mensaje, i) => (
-              <div key={`${mensaje.rol}-${i}-${mensaje.texto.slice(0, 12)}`} style={{ alignSelf: mensaje.rol === "usuario" ? "flex-end" : "stretch", maxWidth: mensaje.rol === "usuario" ? "84%" : "100%", padding: mensaje.rol === "usuario" ? "9px 11px" : "11px 12px", borderRadius: mensaje.rol === "usuario" ? "12px 12px 3px 12px" : "3px 12px 12px 12px", border: `1px solid ${mensaje.rol === "usuario" ? C.lineBright : C.line}`, background: mensaje.rol === "usuario" ? "rgba(46,109,164,.22)" : C.voidSoft, color: C.cream, fontFamily: C.sans, fontSize: 12.5 }}>
-                {mensaje.rol === "wobi" ? <ContenidoRespuesta texto={mensaje.texto} /> : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{mensaje.texto}</div>}
+            {mensajes.map((mensaje, i) => {
+              const esWobi = mensaje.rol === "wobi";
+              return (
+                <div key={`${mensaje.rol}-${i}-${mensaje.texto.slice(0, 12)}`} className={`wobi-mensaje-fila ${esWobi ? "wobi-mensaje-fila--wobi" : "wobi-mensaje-fila--usuario"}`}>
+                  {esWobi && <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>}
+                  <div className={`wobi-burbuja ${esWobi ? "wobi-burbuja--wobi" : "wobi-burbuja--usuario"}`}>
+                    {esWobi ? <ContenidoRespuesta texto={mensaje.texto} /> : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{mensaje.texto}</div>}
+                  </div>
+                </div>
+              );
+            })}
+            {enviando && (
+              <div className="wobi-escribiendo">
+                <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
+                <span><i /><i /><i /></span>
               </div>
-            ))}
-            {enviando && <div style={{ fontFamily: C.mono, fontSize: 10, color: C.amberBright }}>Wobi está trabajando…</div>}
+            )}
           </div>
 
-          {error && <div role="alert" style={{ padding: "7px 12px", borderTop: `1px solid ${C.line}`, color: C.dangerBright, fontFamily: C.sans, fontSize: 11 }}>{error}</div>}
-          <div style={{ padding: 10, borderTop: `1px solid ${C.line}`, display: "flex", gap: 7, alignItems: "flex-end" }}>
-            <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} disabled={enviando} rows={2} maxLength={4000} placeholder="Escribe o dicta una pregunta…" style={{ flex: 1, minWidth: 0, resize: "none", borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft, color: C.cream, padding: "9px 10px", fontFamily: C.sans, fontSize: 12, outline: "none" }} />
-            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition || enviando} title={SpeechRecognition ? "Dictar con el micrófono" : "El dictado no está disponible en este navegador"} style={{ height: 38, minWidth: 38, borderRadius: 9, border: `1px solid ${escuchando ? C.amberBright : C.line}`, background: escuchando ? "rgba(232,167,92,.16)" : "transparent", color: escuchando ? C.amberBright : C.dim, cursor: SpeechRecognition ? "pointer" : "not-allowed", opacity: SpeechRecognition ? 1 : .45 }}>🎙</button>
-            <button type="button" onClick={enviar} disabled={!texto.trim() || enviando} style={{ height: 38, borderRadius: 9, border: `1px solid ${C.coreBright}`, background: "rgba(46,109,164,.28)", color: C.coreBright, padding: "0 12px", fontFamily: C.mono, fontSize: 10, cursor: texto.trim() && !enviando ? "pointer" : "default", opacity: texto.trim() && !enviando ? 1 : .45 }}>Enviar</button>
+          {error && <div role="alert" className="wobi-chat-error">{error}</div>}
+          <div className="wobi-compositor">
+            <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} disabled={enviando} rows={2} maxLength={4000} placeholder="Escribe o dicta una pregunta…" />
+            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition || enviando} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
+              <span aria-hidden="true">🎙</span>
+            </button>
+            <button type="button" onClick={enviar} disabled={!texto.trim() || enviando} className="wobi-boton-enviar">
+              Enviar <span aria-hidden="true">↑</span>
+            </button>
           </div>
-          <div style={{ padding: "0 11px 8px", fontFamily: C.mono, fontSize: 8.5, color: C.dim }}>
-            cada mensaje tiene id único · los reintentos no duplican llamadas
+          <div className="wobi-chat-seguridad">
+            <span aria-hidden="true">↻</span> Reintentos protegidos · sin llamadas duplicadas
           </div>
         </section>
+      ) : (
+        <div className="wobi-contacto-dock" aria-label="Canales para hablar con Wobi">
+          <button type="button" onClick={() => setAbierto(true)} aria-expanded="false" className="wobi-contacto-principal">
+            <span className="wobi-avatar wobi-avatar--dock" aria-hidden="true">
+              <img src={WOBI_IMG} alt="" />
+              <span className="wobi-presencia" />
+            </span>
+            <span className="wobi-contacto-texto">
+              <strong>Hablar con Wobi</strong>
+              <small>Chat · voz · contexto en vivo</small>
+            </span>
+            <span className="wobi-contacto-flecha" aria-hidden="true">↑</span>
+          </button>
+          <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="wobi-contacto-telegram" aria-label="Hablar con Wobi en Telegram">
+            <img src={TELEGRAM_ICON} alt="" width={22} height={22} />
+            <span>Telegram</span>
+          </a>
+        </div>
       )}
-      <button type="button" onClick={() => setAbierto((valor) => !valor)} aria-expanded={abierto} style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, borderRadius: 999, border: `1px solid ${C.lineBright}`, background: C.panel, color: C.cream, padding: "10px 14px", boxShadow: "0 10px 30px rgba(0,0,0,.4)", cursor: "pointer", fontFamily: C.sans, fontSize: 12.5 }}>
-        <span style={{ width: 9, height: 9, borderRadius: "50%", background: C.ok, boxShadow: `0 0 8px ${C.ok}` }} />
-        {abierto ? "Cerrar Wobi" : "Hablar con Wobi"}
-      </button>
     </div>
   );
 }
@@ -2635,6 +2702,370 @@ export default function CerebroWoba() {
           from { opacity: 0; transform: scale(1.08); filter: blur(6px); }
           to { opacity: 1; transform: scale(1); filter: blur(0px); }
         }
+        @keyframes wobiDockIn {
+          from { opacity: 0; transform: translateY(12px) scale(.97); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes wobiTyping {
+          0%, 60%, 100% { opacity: .32; transform: translateY(0); }
+          30% { opacity: 1; transform: translateY(-3px); }
+        }
+
+        .wobi-contacto {
+          position: fixed;
+          right: 20px;
+          bottom: 20px;
+          z-index: 40;
+          font-family: ${C.sans};
+        }
+        .wobi-contacto button,
+        .wobi-contacto a,
+        .wobi-contacto textarea {
+          font: inherit;
+        }
+        .wobi-contacto button:focus-visible,
+        .wobi-contacto a:focus-visible,
+        .wobi-contacto textarea:focus-visible {
+          outline: 2px solid ${C.amberBright};
+          outline-offset: 2px;
+        }
+        .wobi-contacto-dock {
+          display: flex;
+          align-items: stretch;
+          min-width: 360px;
+          overflow: hidden;
+          border: 1px solid rgba(143,210,245,.38);
+          border-radius: 18px;
+          background: linear-gradient(145deg, rgba(15,27,42,.98), rgba(6,14,24,.98));
+          box-shadow: 0 22px 60px rgba(0,0,0,.52), 0 0 34px rgba(46,109,164,.14);
+          animation: wobiDockIn .3s ease-out;
+          backdrop-filter: blur(18px);
+        }
+        .wobi-contacto-principal {
+          flex: 1;
+          min-width: 0;
+          min-height: 72px;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 12px;
+          padding: 10px 14px 10px 10px;
+          border: 0;
+          color: ${C.cream};
+          background: transparent;
+          text-align: left;
+          cursor: pointer;
+          transition: background .18s ease;
+        }
+        .wobi-contacto-principal:hover { background: rgba(143,210,245,.07); }
+        .wobi-contacto-texto { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .wobi-contacto-texto strong { font-family: ${C.serif}; font-size: 18px; font-weight: 500; letter-spacing: .01em; }
+        .wobi-contacto-texto small { color: ${C.dim}; font-size: 12px; white-space: nowrap; }
+        .wobi-contacto-flecha {
+          width: 28px;
+          height: 28px;
+          display: grid;
+          place-items: center;
+          border: 1px solid ${C.line};
+          border-radius: 50%;
+          color: ${C.coreBright};
+          background: rgba(143,210,245,.05);
+        }
+        .wobi-contacto-telegram {
+          min-width: 92px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          padding: 9px 12px;
+          border-left: 1px solid ${C.line};
+          color: #86d8ff;
+          text-decoration: none;
+          font-size: 12px;
+          transition: background .18s ease;
+        }
+        .wobi-contacto-telegram:hover { background: rgba(42,171,238,.09); }
+        .wobi-avatar {
+          position: relative;
+          flex: 0 0 auto;
+          display: block;
+          overflow: visible;
+          border-radius: 50%;
+          background: radial-gradient(circle at 50% 35%, #274863, ${C.void} 72%);
+          box-shadow: inset 0 0 0 1px rgba(143,210,245,.3), 0 0 22px rgba(46,109,164,.2);
+        }
+        .wobi-avatar > img {
+          width: 100%;
+          height: 100%;
+          display: block;
+          border-radius: inherit;
+          object-fit: cover;
+          filter: saturate(.9) contrast(1.04) brightness(.82);
+        }
+        .wobi-avatar--dock { width: 50px; height: 50px; }
+        .wobi-avatar--grande { width: 52px; height: 52px; }
+        .wobi-avatar--mensaje { width: 28px; height: 28px; margin-top: 2px; }
+        .wobi-avatar--vacio { width: 70px; height: 70px; margin-bottom: 5px; }
+        .wobi-presencia {
+          position: absolute;
+          right: 1px;
+          bottom: 2px;
+          width: 11px;
+          height: 11px;
+          box-sizing: border-box;
+          border: 2px solid ${C.panel};
+          border-radius: 50%;
+          background: ${C.ok};
+          box-shadow: 0 0 9px ${C.ok};
+        }
+        .wobi-chat-panel {
+          width: min(470px, calc(100vw - 40px));
+          height: min(740px, calc(100vh - 40px));
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          border: 1px solid rgba(143,210,245,.36);
+          border-radius: 22px;
+          background: linear-gradient(180deg, rgba(9,19,31,.995), rgba(4,10,18,.995));
+          box-shadow: 0 28px 90px rgba(0,0,0,.66), 0 0 50px rgba(46,109,164,.1);
+          animation: wobiDockIn .26s ease-out;
+        }
+        .wobi-chat-cabecera {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 14px 16px;
+          border-bottom: 1px solid ${C.line};
+          background: radial-gradient(circle at 12% 0%, rgba(46,109,164,.2), transparent 48%);
+        }
+        .wobi-identidad { display: flex; align-items: center; gap: 12px; min-width: 0; }
+        .wobi-chat-nombre { font-family: ${C.serif}; color: ${C.cream}; font-size: 22px; line-height: 1.1; }
+        .wobi-chat-estado { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: ${C.dim}; font-size: 12px; }
+        .wobi-punto-estado { width: 6px; height: 6px; border-radius: 50%; background: ${C.ok}; box-shadow: 0 0 7px ${C.ok}; }
+        .wobi-chat-controles { display: flex; gap: 7px; }
+        .wobi-control-icono {
+          width: 42px;
+          height: 42px;
+          display: grid;
+          place-items: center;
+          padding: 0;
+          border: 1px solid ${C.line};
+          border-radius: 11px;
+          background: rgba(5,11,20,.4);
+          color: ${C.dim};
+          cursor: pointer;
+          transition: border-color .18s ease, color .18s ease, background .18s ease;
+        }
+        .wobi-control-icono:hover,
+        .wobi-control-icono--activo { color: ${C.coreBright}; border-color: ${C.lineBright}; background: rgba(143,210,245,.07); }
+        .wobi-canales {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+          padding: 10px 12px;
+          border-bottom: 1px solid ${C.line};
+          background: rgba(5,11,20,.38);
+        }
+        .wobi-canal {
+          min-height: 48px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 10px;
+          box-sizing: border-box;
+          border: 1px solid ${C.line};
+          border-radius: 11px;
+          color: ${C.cream};
+          text-decoration: none;
+          background: rgba(12,22,32,.7);
+        }
+        .wobi-canal--activo { border-color: rgba(111,207,151,.4); background: rgba(111,207,151,.06); }
+        .wobi-canal-icono { width: 24px; text-align: center; color: ${C.ok}; font-size: 18px; }
+        .wobi-canal > span:not(.wobi-canal-icono):not(.wobi-canal-flecha) { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .wobi-canal strong { font-size: 13px; font-weight: 600; }
+        .wobi-canal small { color: ${C.dim}; font-size: 11px; white-space: nowrap; }
+        .wobi-canal-flecha { margin-left: auto; color: #86d8ff; }
+        a.wobi-canal:hover { border-color: rgba(42,171,238,.48); background: rgba(42,171,238,.08); }
+        .wobi-vinculo {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 11px 14px;
+          border-bottom: 1px solid rgba(232,167,92,.22);
+          color: ${C.dim};
+          background: rgba(232,167,92,.065);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .wobi-vinculo > div { display: flex; flex-direction: column; gap: 2px; }
+        .wobi-vinculo strong { color: ${C.cream}; font-weight: 600; }
+        .wobi-vinculo-codigo-info { min-width: 0; }
+        .wobi-vinculo-codigo {
+          flex: 0 0 auto;
+          padding: 8px 10px;
+          border: 1px solid rgba(232,167,92,.42);
+          border-radius: 9px;
+          color: ${C.amberBright} !important;
+          background: rgba(232,167,92,.08);
+          font-family: ${C.mono};
+          font-size: 12px;
+          letter-spacing: .025em;
+          white-space: nowrap;
+        }
+        .wobi-vinculo > button {
+          flex: 0 0 auto;
+          min-height: 38px;
+          padding: 7px 11px;
+          border: 1px solid rgba(232,167,92,.48);
+          border-radius: 9px;
+          color: ${C.amberBright};
+          background: rgba(232,167,92,.08);
+          cursor: pointer;
+          font-size: 12px;
+        }
+        .wobi-vinculo-etiqueta { color: ${C.amberBright}; font-family: ${C.mono}; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+        .wobi-mensajes {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 13px;
+          overflow-y: auto;
+          padding: 18px 15px;
+          scrollbar-color: rgba(143,210,245,.22) transparent;
+        }
+        .wobi-chat-vacio {
+          max-width: 290px;
+          margin: auto;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+          color: ${C.dim};
+          text-align: center;
+          font-size: 14px;
+          line-height: 1.55;
+        }
+        .wobi-chat-vacio strong { color: ${C.cream}; font-family: ${C.serif}; font-size: 22px; font-weight: 500; }
+        .wobi-mensaje-fila { display: flex; gap: 8px; width: 100%; align-items: flex-start; }
+        .wobi-mensaje-fila--usuario { justify-content: flex-end; }
+        .wobi-burbuja {
+          max-width: calc(100% - 38px);
+          box-sizing: border-box;
+          padding: 11px 13px;
+          color: ${C.cream};
+          font-size: 14px;
+          line-height: 1.55;
+        }
+        .wobi-burbuja--wobi {
+          width: 100%;
+          border: 1px solid ${C.line};
+          border-radius: 4px 14px 14px 14px;
+          background: linear-gradient(145deg, rgba(15,27,42,.9), rgba(10,19,29,.86));
+        }
+        .wobi-burbuja--usuario {
+          max-width: 84%;
+          border: 1px solid rgba(143,210,245,.34);
+          border-radius: 14px 14px 4px 14px;
+          background: linear-gradient(145deg, rgba(46,109,164,.3), rgba(31,72,110,.23));
+        }
+        .wobi-escribiendo { display: flex; align-items: center; gap: 8px; }
+        .wobi-escribiendo > span:last-child { display: flex; gap: 4px; padding: 11px 13px; border: 1px solid ${C.line}; border-radius: 4px 14px 14px 14px; background: ${C.voidSoft}; }
+        .wobi-escribiendo i { width: 5px; height: 5px; border-radius: 50%; background: ${C.amberBright}; animation: wobiTyping 1.2s infinite; }
+        .wobi-escribiendo i:nth-child(2) { animation-delay: .14s; }
+        .wobi-escribiendo i:nth-child(3) { animation-delay: .28s; }
+        .wobi-chat-error { padding: 9px 14px; border-top: 1px solid rgba(240,113,120,.28); color: ${C.dangerBright}; background: rgba(240,113,120,.06); font-size: 13px; }
+        .wobi-compositor {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto auto;
+          gap: 8px;
+          align-items: end;
+          padding: 11px 12px 8px;
+          border-top: 1px solid ${C.line};
+          background: rgba(5,11,20,.72);
+        }
+        .wobi-compositor textarea {
+          min-width: 0;
+          min-height: 46px;
+          max-height: 130px;
+          resize: vertical;
+          box-sizing: border-box;
+          padding: 11px 12px;
+          border: 1px solid ${C.line};
+          border-radius: 12px;
+          outline: 0;
+          color: ${C.cream};
+          background: rgba(15,27,42,.86);
+          font-size: 14px;
+          line-height: 1.45;
+        }
+        .wobi-compositor textarea::placeholder { color: #6f849a; }
+        .wobi-boton-micro,
+        .wobi-boton-enviar {
+          min-height: 46px;
+          border-radius: 12px;
+          cursor: pointer;
+        }
+        .wobi-boton-micro {
+          width: 46px;
+          padding: 0;
+          border: 1px solid ${C.line};
+          color: ${C.dim};
+          background: rgba(15,27,42,.7);
+        }
+        .wobi-boton-micro--activo { border-color: ${C.amberBright}; color: ${C.amberBright}; background: rgba(232,167,92,.13); }
+        .wobi-boton-micro:disabled { cursor: not-allowed; opacity: .4; }
+        .wobi-boton-enviar {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 0 14px;
+          border: 1px solid ${C.coreBright};
+          color: ${C.cream};
+          background: linear-gradient(145deg, #2e6da4, #234f76);
+          font-size: 13px;
+          font-weight: 600;
+        }
+        .wobi-boton-enviar span { font-size: 16px; }
+        .wobi-boton-enviar:disabled { cursor: default; opacity: .38; filter: saturate(.3); }
+        .wobi-chat-seguridad {
+          display: flex;
+          justify-content: center;
+          gap: 5px;
+          padding: 0 12px 10px;
+          color: #657c91;
+          background: rgba(5,11,20,.72);
+          font-family: ${C.mono};
+          font-size: 10px;
+        }
+
+        @media (max-width: 600px) {
+          .wobi-contacto { left: 10px; right: 10px; bottom: 10px; }
+          .wobi-contacto-dock { min-width: 0; width: 100%; border-radius: 16px; }
+          .wobi-contacto-principal { min-height: 68px; padding-right: 10px; gap: 10px; }
+          .wobi-avatar--dock { width: 46px; height: 46px; }
+          .wobi-contacto-telegram { min-width: 78px; padding-inline: 9px; }
+          .wobi-contacto-texto strong { font-size: 17px; }
+          .wobi-contacto-texto small { font-size: 11px; }
+          .wobi-chat-panel { width: 100%; height: calc(100dvh - 20px); border-radius: 18px; }
+          .wobi-chat-cabecera { padding: 12px; }
+          .wobi-avatar--grande { width: 46px; height: 46px; }
+          .wobi-chat-nombre { font-size: 20px; }
+          .wobi-chat-estado { font-size: 11px; }
+          .wobi-canales { padding: 8px 10px; gap: 6px; }
+          .wobi-canal { min-height: 45px; padding: 7px 8px; gap: 7px; }
+          .wobi-canal strong { font-size: 12px; }
+          .wobi-canal small { font-size: 10px; }
+          .wobi-vinculo { align-items: flex-start; padding: 10px 12px; }
+          .wobi-vinculo > button { min-height: 42px; }
+          .wobi-mensajes { padding: 14px 11px; }
+          .wobi-burbuja { font-size: 13.5px; }
+          .wobi-compositor { grid-template-columns: minmax(0, 1fr) 46px; }
+          .wobi-boton-enviar { grid-column: 1 / -1; justify-content: center; min-height: 42px; }
+          .wobi-chat-seguridad { padding-bottom: 7px; }
+        }
 
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after {
@@ -2784,29 +3215,6 @@ export default function CerebroWoba() {
           </div>
         )}
 
-        <a
-          href={TELEGRAM_BOT_URL}
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            marginTop: 16,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 9,
-            fontFamily: C.mono,
-            fontSize: 11,
-            letterSpacing: "0.08em",
-            color: "#2AABEE",
-            textDecoration: "none",
-            background: "rgba(42, 171, 238, 0.08)",
-            border: "1px solid #2AABEE",
-            borderRadius: 999,
-            padding: "8px 18px 8px 12px",
-          }}
-        >
-          <img src={TELEGRAM_ICON} alt="" width={20} height={20} style={{ display: "block" }} />
-          Hablar con Wobi en Telegram
-        </a>
       </div>
 
       {liveData && <AtencionAhora data={liveData} onAbrir={abrirModuloDesdeResumen} />}
