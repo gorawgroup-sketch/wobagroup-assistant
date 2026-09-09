@@ -36,7 +36,9 @@ export const verificarCashflowActualizadoTool: ToolDefinition = {
     "hace la comparación real (con tolerancia de monto, agrupación de cargos repetidos, y detección de " +
     "posibles duplicados por nombre/monto parecido que pregunta en vez de asumir). Úsala SIEMPRE que " +
     "pregunten '¿está actualizado el cashflow?', '¿está al día?', '¿falta algo por registrar?', 'revisa la " +
-    "semana X/S36', o pidan comparar contra Holded — para CUALQUIER semana, pasada o presente, no solo la " +
+    "semana X/S36', pidan 'conciliar/verificar el cashflow' (aunque digan 'conciliar', NO es " +
+    "consultar_movimientos_sin_conciliar — esa mira el estado interno de Holded, no la hoja de cashflow), " +
+    "o pidan comparar contra Holded — para CUALQUIER semana, pasada o presente, no solo la " +
     "actual/anterior. Nunca compares manualmente leyendo consultar_cashflow_detalle y los movimientos de " +
     "Holded por separado — esta tool ya tiene la lógica de matching correcta (tolerancias, agrupación, " +
     "duplicados aprendidos) y evita falsos 'falta registrar'. Footprint NO tiene cashflow en esta hoja — " +
