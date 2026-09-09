@@ -1,6 +1,7 @@
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { consumirPendienteEdicionValorCashflow } from "./pendienteEdicionValorCashflowStore";
 import { editarValorEnFilaCashflow } from "./cashflowWrite";
+import { registrarFilaAprendida } from "./cashflowFilaAprendidaSheet";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -51,6 +52,15 @@ export async function handleEdicionValorCashflowCallback(callback: TelegramCallb
       await editTelegramMessage(pendiente.chatId, pendiente.messageId, `⚠️ No pude confirmar la edición de "${pendiente.resumenAntes}": ${resultado.mensaje}`, []);
       return;
     }
+    // Pedido explícito de Carlos ("que la práctica te vaya dando velocidad"):
+    // recuerda a qué fila real correspondió esta edición confirmada, para
+    // que la próxima búsqueda del mismo bloque+concepto+semana no tenga que
+    // volver a escanear el bloque entero (ver cashflowFilaAprendidaSheet.ts
+    // y su uso en buscarFilaCashflowParaEditar). No crítico — nunca debe
+    // tumbar la confirmación de una edición que ya tuvo éxito.
+    await registrarFilaAprendida(pendiente.bloque, pendiente.clienteOConcepto, pendiente.semana, pendiente.fila).catch((error) =>
+      console.error("[edicionValorCashflowCallbackHandler] Error registrando fila aprendida (no crítico):", error)
+    );
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
