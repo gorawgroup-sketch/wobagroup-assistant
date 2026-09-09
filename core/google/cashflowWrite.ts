@@ -3,6 +3,7 @@ import { loadServiceAccountCredentials } from "./serviceAccount";
 import { invalidarCacheDetalleRegistros } from "./cashflowSheet";
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
+import { obtenerFilaAprendida } from "./cashflowFilaAprendidaSheet";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -452,13 +453,6 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
   const sheetId = assertSheetId();
   const sheets = getSheetsWriteClient();
 
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: `DATOS!${config.columnaInicio}${PRIMERA_FILA_DATOS}:${config.columnaFin}${ULTIMA_FILA_BUSQUEDA}`,
-    valueRenderOption: "UNFORMATTED_VALUE",
-  });
-  const rows = resp.data.values ?? [];
-
   const idxNombre = config.campos.indexOf(config.campos.includes("cliente") ? "cliente" : "concepto");
   const idxSemana = config.campos.indexOf("semana");
   const idxValor = config.campos.indexOf("valor");
@@ -472,6 +466,57 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
     throw new Error(`Configuración inválida para el bloque "${criterios.bloque}": faltan columnas de nombre/semana/valor en BLOQUE_CONFIG.`);
   }
   const semanaBuscada = criterios.semana.trim().toUpperCase();
+
+  // Pedido explícito de Carlos ("que la práctica te vaya dando velocidad"):
+  // antes de escanear el bloque entero, prueba la fila que quedó recordada
+  // la última vez que se confirmó una edición para este mismo
+  // bloque+concepto+semana (ver cashflowFilaAprendidaSheet.ts). Nunca se usa
+  // a ciegas — se relee esa fila puntual y se revalida contra los mismos
+  // criterios que el escaneo completo exigiría; si ya no coincide (Carlos
+  // insertó/borró filas a mano, algo que hace directamente en este Sheet),
+  // se ignora en silencio y se sigue con el escaneo normal de abajo — cero
+  // riesgo de fila equivocada, solo una posible ganancia de velocidad.
+  const filaAprendida = await obtenerFilaAprendida(criterios.bloque, criterios.cliente_o_concepto, criterios.semana).catch((error) => {
+    console.error("[cashflowWrite] Error consultando fila aprendida (no crítico, sigue con el escaneo normal):", error);
+    return undefined;
+  });
+  if (filaAprendida !== undefined) {
+    const respFila = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `DATOS!${config.columnaInicio}${filaAprendida}:${config.columnaFin}${filaAprendida}`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const rowAprendida = respFila.data.values?.[0] ?? [];
+    const nombreAprendido = String(rowAprendida[idxNombre] ?? "").trim();
+    const semanaAprendida = String(rowAprendida[idxSemana] ?? "").trim();
+    const valorCrudoAprendido = rowAprendida[idxValor];
+    const valorAprendido = typeof valorCrudoAprendido === "number" ? valorCrudoAprendido : Number(valorCrudoAprendido);
+    const coincide =
+      nombreAprendido &&
+      textosParecidos(criterios.cliente_o_concepto, nombreAprendido) &&
+      (!semanaBuscada || semanaAprendida.toUpperCase() === semanaBuscada) &&
+      Number.isFinite(valorAprendido) &&
+      montosCercanos(valorAprendido, criterios.valorActual, TOLERANCIA_VALOR_ACTUAL);
+    if (coincide) {
+      return [
+        {
+          fila: filaAprendida,
+          clienteOConcepto: nombreAprendido,
+          semana: semanaAprendida,
+          valorActual: valorAprendido,
+          banco: idxBanco !== -1 ? String(rowAprendida[idxBanco] ?? "") || undefined : undefined,
+          proyecto: idxProyecto !== -1 ? String(rowAprendida[idxProyecto] ?? "") || undefined : undefined,
+        },
+      ];
+    }
+  }
+
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId: sheetId,
+    range: `DATOS!${config.columnaInicio}${PRIMERA_FILA_DATOS}:${config.columnaFin}${ULTIMA_FILA_BUSQUEDA}`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const rows = resp.data.values ?? [];
 
   const encontradas: FilaCashflowEncontrada[] = [];
   rows.forEach((row, i) => {

@@ -2,6 +2,7 @@ import { obtenerTodosLosAlias } from "../gastos/proveedorAliasSheet";
 import { obtenerTodasLasClasificaciones } from "../gastos/clasificacionAprendidaSheet";
 import { obtenerTodosLosDuplicadosConfirmados } from "../cashflow/duplicadosConfirmadosSheet";
 import { obtenerTodosLosMovimientosAprendidos } from "../holded/movimientoAmbiguoAprendidoSheet";
+import { obtenerTodasLasFilasAprendidas } from "../google/cashflowFilaAprendidaSheet";
 import { obtenerCorreccionesCrudas } from "../knowledge/correctionsStore";
 import type { ToolDefinition } from "./types";
 
@@ -25,7 +26,7 @@ export const reporteAprendizajeTool: ToolDefinition = {
   input_schema: { type: "object", properties: {} },
   seguraParaModoRapido: true,
   handler: async () => {
-    const [alias, clasificaciones, duplicados, movimientos, correcciones] = await Promise.all([
+    const [alias, clasificaciones, duplicados, movimientos, filasCashflow, correcciones] = await Promise.all([
       obtenerTodosLosAlias().catch((error) => {
         console.error("[reporteAprendizaje] Error leyendo alias de proveedor:", error);
         return [];
@@ -40,6 +41,10 @@ export const reporteAprendizajeTool: ToolDefinition = {
       }),
       obtenerTodosLosMovimientosAprendidos().catch((error) => {
         console.error("[reporteAprendizaje] Error leyendo conciliaciones ambiguas aprendidas:", error);
+        return [];
+      }),
+      obtenerTodasLasFilasAprendidas().catch((error) => {
+        console.error("[reporteAprendizaje] Error leyendo filas de cashflow aprendidas:", error);
         return [];
       }),
       obtenerCorreccionesCrudas().catch((error) => {
@@ -62,10 +67,11 @@ export const reporteAprendizajeTool: ToolDefinition = {
           : ""),
       `• Tolerancias de duplicado confirmadas: ${duplicados.length}`,
       `• Patrones de conciliación ambigua aprendidos: ${movimientos.length}`,
+      `• Filas de cashflow recordadas (búsqueda instantánea): ${filasCashflow.length}`,
       `• Correcciones generales guardadas: ${correcciones.length}`,
       ``,
-      `Total de casos reales que ya no se vuelven a preguntar desde cero: ${
-        alias.length + clasificaciones.length + duplicados.length + movimientos.length + correcciones.length
+      `Total de casos reales que ya no se vuelven a preguntar/buscar desde cero: ${
+        alias.length + clasificaciones.length + duplicados.length + movimientos.length + filasCashflow.length + correcciones.length
       }.`,
     ];
 
