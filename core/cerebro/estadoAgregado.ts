@@ -14,11 +14,10 @@ import { obtenerModoRetrieval, obtenerIndiceDocumentos } from "../knowledge/load
 import { obtenerCapturasCrudas } from "../knowledge/capturaSheet";
 import { obtenerCorreccionesCrudas } from "../knowledge/correctionsStore";
 import { obtenerUsuariosAutorizados } from "../telegram/authorizedUsersSheet";
-import { obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
-import { UMBRAL_ANOMALIA } from "../jobs/revisarCostosIA";
 import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunStore";
-import { mondayOf, lunesDeEtiquetaSemana, weekLabel } from "../utils/isoWeek";
+import { lunesDeEtiquetaSemana, weekLabel } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
+import { construirControlDiario, type ControlDiario } from "./controlDiario";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
@@ -377,38 +376,22 @@ async function construirConocimiento() {
   };
 }
 
-async function construirAccesos() {
-  const [usuarios, costoHoy, costoSemana, costosPor7Dias] = await Promise.all([
-    seguro("accesos.usuarios", obtenerUsuariosAutorizados, []),
-    seguro("accesos.costoHoy", async () => {
-      const hoy = new Date();
-      const inicioHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-      const manana = new Date(inicioHoy.getTime() + 86400000);
-      return (await obtenerResumenCostos(inicioHoy, manana)).costoUSD;
-    }, 0),
-    seguro("accesos.costoSemana", async () => {
-      const hoy = new Date();
-      const inicioSemana = mondayOf(hoy);
-      const manana = new Date(new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()).getTime() + 86400000);
-      return (await obtenerResumenCostos(inicioSemana, manana)).costoUSD;
-    }, 0),
-    seguro("accesos.costosPor7Dias", () => obtenerCostoPorDia(7, new Date()), [] as number[]),
-  ]);
-
-  const promedio7Dias = costosPor7Dias.reduce((a, b) => a + b, 0) / (costosPor7Dias.length || 1);
-
+function construirAccesos(
+  usuarios: Awaited<ReturnType<typeof obtenerUsuariosAutorizados>>,
+  controlDiario: ControlDiario
+) {
+  const costos = controlDiario.costos;
   return {
     usuariosAutorizados: {
       superadmins: usuarios.filter((u) => u.rol === "superadmin").length,
       admins: usuarios.filter((u) => u.rol === "admin").length,
       colaboradores: usuarios.filter((u) => u.rol === "colaborador").length,
     },
-    costoIaHoy: costoHoy,
-    costoIaEstaSemana: costoSemana,
-    // Umbral DINÁMICO: no es un número fijo, es promedio de los últimos 7
-    // días * UMBRAL_ANOMALIA — el mismo cálculo exacto que usa
-    // revisarCostosIA.ts para decidir si avisar de un gasto inusual.
-    umbraLAlertaCosto: promedio7Dias * UMBRAL_ANOMALIA,
+    costoIaHoy: costos?.hoy.gastoRealApiUSD ?? null,
+    costoIaEstaSemana: costos?.semanaActual.gastoRealApiUSD ?? null,
+    // Umbral dinámico calculado por el control diario desde los siete días
+    // anteriores a ayer; el día evaluado nunca infla su propia referencia.
+    umbraLAlertaCosto: costos?.umbralAnomaliaUSD ?? null,
   };
 }
 
@@ -421,6 +404,7 @@ export interface EstadoCerebroDatos {
   drive: Awaited<ReturnType<typeof construirDrive>>;
   conocimiento: Awaited<ReturnType<typeof construirConocimiento>>;
   accesos: Awaited<ReturnType<typeof construirAccesos>>;
+  controlDiario: ControlDiario;
 }
 
 export interface EstadoCerebro extends EstadoCerebroDatos {
@@ -440,7 +424,7 @@ export interface EstadoCerebro extends EstadoCerebroDatos {
  * el endpoint.
  */
 async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
-  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos] = await Promise.all([
+  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, usuarios, controlDiario] = await Promise.all([
     construirCashflow(),
     construirHolded(),
     construirCrm(),
@@ -448,10 +432,12 @@ async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
     construirFiscal(),
     construirDrive(),
     construirConocimiento(),
-    construirAccesos(),
+    seguro("accesos.usuarios", obtenerUsuariosAutorizados, []),
+    construirControlDiario(),
   ]);
+  const accesos = construirAccesos(usuarios, controlDiario);
 
-  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos };
+  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, controlDiario };
 }
 
 // Dos minutos mantiene el panel suficientemente fresco para operación diaria

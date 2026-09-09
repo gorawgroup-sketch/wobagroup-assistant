@@ -578,6 +578,264 @@ function AtencionAhora({ data, onAbrir }) {
   );
 }
 
+function etiquetaProceso(proceso) {
+  const nombres = {
+    extraer_factura: "Extracción de facturas",
+    chat_conversacional: "Chat conversacional",
+    clasificar_correo: "Clasificación de correo",
+    extraer_gasto_correo: "Gastos desde correo",
+    accion_gasto: "Acciones de gasto",
+    autorrevision_codigo: "Autorrevisión de código",
+    sin_atribuir: "Sin atribuir",
+  };
+  return nombres[proceso] || String(proceso || "Proceso").replaceAll("_", " ");
+}
+
+function fechaCorta(fecha) {
+  const partes = String(fecha || "").split("-");
+  return partes.length === 3 ? `${partes[2]}/${partes[1]}` : fecha;
+}
+
+/**
+ * Pequeño motor de control operativo. El backend genera el diagnóstico con
+ * reglas deterministas; este componente solo lo convierte en indicadores,
+ * gráfico, tabla y acciones. Abrirlo no invoca ningún modelo.
+ */
+function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir }) {
+  const control = get(data, "controlDiario");
+  const [abierto, setAbierto] = useState(true);
+  const [conexiones, setConexiones] = useState(null);
+  const [cargandoConexiones, setCargandoConexiones] = useState(false);
+  const [errorConexiones, setErrorConexiones] = useState(false);
+
+  const cargarConexiones = useCallback(async () => {
+    if (!apiKey) return;
+    setCargandoConexiones(true);
+    try {
+      const res = await fetch(CONEXIONES_ENDPOINT, {
+        headers: { "X-Cerebro-Key": apiKey },
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setConexiones(json?.conexiones || []);
+        setErrorConexiones(false);
+      } else {
+        setErrorConexiones(true);
+      }
+    } catch {
+      // Se conserva la última lectura buena; el estado en vivo reintentará.
+      setErrorConexiones(true);
+    } finally {
+      setCargandoConexiones(false);
+    }
+  }, [apiKey]);
+
+  useEffect(() => {
+    if (abierto) cargarConexiones();
+  }, [abierto, cargarConexiones, actualizacionId]);
+
+  if (!control) return null;
+
+  const costos = control.costos;
+  const recomendaciones = Array.isArray(control.recomendaciones) ? control.recomendaciones : [];
+  const conexionesCaidas = Array.isArray(conexiones) ? conexiones.filter((conexion) => !conexion.ok) : [];
+  const estado = (conexionesCaidas.length > 0 || errorConexiones) && control.estado === "estable" ? "atencion" : control.estado;
+  const visual = {
+    estable: { texto: "Estable", color: C.ok, fondo: "rgba(111, 207, 151, 0.06)" },
+    atencion: { texto: "Requiere atención", color: C.amberBright, fondo: "rgba(232, 167, 92, 0.07)" },
+    critico: { texto: "Incidencia crítica", color: C.dangerBright, fondo: "rgba(240, 113, 120, 0.08)" },
+  }[estado] || { texto: "Analizando", color: C.dim, fondo: C.voidSoft };
+  const serie = costos?.ultimos7Dias || [];
+  const maximoSerie = Math.max(0.01, ...serie.map((punto) => Number(punto.gastoRealApiUSD) || 0));
+  const procesos = costos?.porProcesoAyer?.slice(0, 5) || [];
+  const totalAyer = Number(costos?.ayer?.gastoRealApiUSD) || 0;
+  const prioridadColor = {
+    critica: C.dangerBright,
+    alta: C.amberBright,
+    media: C.coreBright,
+    informativa: C.dim,
+  };
+
+  return (
+    <section
+      aria-labelledby="control-diario-titulo"
+      style={{
+        maxWidth: 980,
+        margin: "12px auto 0",
+        borderRadius: 12,
+        border: `1px solid ${visual.color}`,
+        background: visual.fondo,
+        position: "relative",
+        zIndex: 2,
+        overflow: "hidden",
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setAbierto((valor) => !valor)}
+        aria-expanded={abierto}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 14,
+          padding: "14px 16px",
+          border: "none",
+          background: "transparent",
+          color: C.cream,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span>
+          <span id="control-diario-titulo" style={{ display: "block", fontFamily: C.mono, fontSize: 10.5, letterSpacing: "0.1em", textTransform: "uppercase", color: visual.color }}>
+            Control diario · {visual.texto}
+          </span>
+          <span style={{ display: "block", fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 5 }}>
+            {control.resumen}
+          </span>
+        </span>
+        <span style={{ flexShrink: 0, fontFamily: C.mono, fontSize: 11, color: C.amberBright }}>
+          {abierto ? "Ocultar ▴" : "Ver análisis ▾"}
+        </span>
+      </button>
+
+      {abierto && (
+        <div style={{ borderTop: `1px solid ${C.line}`, padding: "14px 16px 16px" }}>
+          <div className="control-metricas">
+            {[
+              ["API hoy", control.costosDisponibles ? fmtUSD(costos?.hoy?.gastoRealApiUSD) : "No disponible"],
+              ["API ayer", control.costosDisponibles ? fmtUSD(costos?.ayer?.gastoRealApiUSD) : "No disponible"],
+              ["Proyección mensual", control.costosDisponibles ? fmtUSD(costos?.proyeccionMensualUSD) : "No disponible"],
+              ["Memoria", control.memoria?.ok ? `${control.memoria.filas} conversaciones · íntegra` : "Requiere revisión"],
+            ].map(([titulo, valor]) => (
+              <div key={titulo} style={{ padding: "11px 12px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.voidSoft }}>
+                <div style={{ fontFamily: C.mono, fontSize: 9, color: C.dim, textTransform: "uppercase", letterSpacing: "0.06em" }}>{titulo}</div>
+                <div style={{ fontFamily: C.sans, fontSize: 15, color: C.cream, marginTop: 6 }}>{valor}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="control-detalle-grid">
+            <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft }}>
+              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                Gasto real · últimos 7 días
+              </div>
+              {serie.length > 0 ? (
+                <div role="img" aria-label="Gráfico del gasto real de API durante los últimos siete días" style={{ display: "grid", gridTemplateColumns: `repeat(${serie.length}, minmax(24px, 1fr))`, gap: 7, height: 132, alignItems: "end", marginTop: 10 }}>
+                  {serie.map((punto) => {
+                    const costo = Number(punto.gastoRealApiUSD) || 0;
+                    const altura = costo === 0 ? 3 : Math.max(8, (costo / maximoSerie) * 88);
+                    return (
+                      <div key={punto.fecha} title={`${punto.fecha}: ${fmtUSD(costo)} · ${punto.llamadas} llamada(s)`} style={{ minWidth: 0, textAlign: "center" }}>
+                        <div style={{ fontFamily: C.mono, fontSize: 8.5, color: costo === maximoSerie ? C.amberBright : C.dim, overflow: "hidden" }}>
+                          {costo > 0 ? costo.toFixed(1) : "0"}
+                        </div>
+                        <div style={{ height: 92, display: "flex", alignItems: "flex-end", justifyContent: "center", margin: "3px 0" }}>
+                          <div style={{ width: "68%", maxWidth: 32, height: altura, minHeight: 3, borderRadius: "4px 4px 2px 2px", background: costo === maximoSerie ? C.amberBright : C.coreBright, opacity: costo === 0 ? 0.35 : 0.82 }} />
+                        </div>
+                        <div style={{ fontFamily: C.mono, fontSize: 8, color: C.dim }}>{fechaCorta(punto.fecha)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "20px 0" }}>Sin serie disponible.</div>
+              )}
+            </div>
+
+            <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft, overflowX: "auto" }}>
+              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 9 }}>
+                Qué generó el gasto de ayer
+              </div>
+              {procesos.length > 0 ? (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.sans, fontSize: 10.5 }}>
+                  <thead>
+                    <tr style={{ color: C.dim, textAlign: "left" }}>
+                      <th style={{ padding: "4px 5px", fontWeight: 500 }}>Proceso</th>
+                      <th style={{ padding: "4px 5px", fontWeight: 500, textAlign: "right" }}>Llamadas</th>
+                      <th style={{ padding: "4px 5px", fontWeight: 500, textAlign: "right" }}>Coste</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {procesos.map((proceso) => (
+                      <tr key={proceso.proceso} style={{ borderTop: `1px solid ${C.line}` }}>
+                        <td style={{ padding: "7px 5px", color: C.cream }}>
+                          {etiquetaProceso(proceso.proceso)}
+                          {totalAyer > 0 && <span style={{ color: C.dim }}> · {Math.round((proceso.gastoRealApiUSD / totalAyer) * 100)}%</span>}
+                        </td>
+                        <td style={{ padding: "7px 5px", color: C.dim, textAlign: "right", fontFamily: C.mono }}>{proceso.llamadas}</td>
+                        <td style={{ padding: "7px 5px", color: C.amberBright, textAlign: "right", fontFamily: C.mono }}>{fmtUSD(proceso.gastoRealApiUSD)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "20px 0" }}>Ayer no hubo consumo atribuible.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                Recomendaciones priorizadas
+              </div>
+              <div style={{ fontFamily: C.mono, fontSize: 9, color: C.dim }}>
+                política {control.politica?.killSwitch ? "kill switch" : control.politica?.modo} · {control.politica?.procesosPermitidos || 0} proceso(s) permitidos
+              </div>
+            </div>
+            {recomendaciones.length === 0 ? (
+              <div style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${C.line}`, color: C.ok, fontFamily: C.sans, fontSize: 11.5 }}>
+                No hay acciones urgentes. El control seguirá evaluando cada nuevo snapshot.
+              </div>
+            ) : (
+              recomendaciones.map((recomendacion) => (
+                <div key={recomendacion.id} className="control-recomendacion" style={{ alignItems: "start", gap: 10, padding: "10px 11px", borderRadius: 8, border: `1px solid ${C.line}`, background: C.voidSoft }}>
+                  <span style={{ marginTop: 2, padding: "3px 6px", borderRadius: 999, border: `1px solid ${prioridadColor[recomendacion.prioridad] || C.dim}`, color: prioridadColor[recomendacion.prioridad] || C.dim, fontFamily: C.mono, fontSize: 8, textTransform: "uppercase" }}>
+                    {recomendacion.prioridad}
+                  </span>
+                  <span>
+                    <span style={{ display: "block", color: C.cream, fontFamily: C.sans, fontSize: 12, fontWeight: 600 }}>{recomendacion.titulo}</span>
+                    <span style={{ display: "block", color: C.dim, fontFamily: C.sans, fontSize: 10.5, marginTop: 3 }}>{recomendacion.detalle}</span>
+                    <span style={{ display: "block", color: C.coreBright, fontFamily: C.sans, fontSize: 10.5, marginTop: 4 }}>{recomendacion.siguientePaso}</span>
+                  </span>
+                  <button type="button" onClick={() => onAbrir(recomendacion.modulo)} style={{ border: "none", background: "none", color: C.amberBright, fontFamily: C.mono, fontSize: 9.5, cursor: "pointer", padding: 3 }}>
+                    Abrir →
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.line}`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontFamily: C.mono, fontSize: 9, color: C.dim }}>Servicios:</span>
+              {cargandoConexiones && !conexiones && <span style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim }}>comprobando…</span>}
+              {errorConexiones && !conexiones && (
+                <button type="button" onClick={() => onAbrir("conexiones")} style={{ border: "none", background: "none", padding: 0, color: C.dangerBright, fontFamily: C.sans, fontSize: 10, cursor: "pointer", textDecoration: "underline" }}>
+                  estado no disponible · revisar conexiones
+                </button>
+              )}
+              {Array.isArray(conexiones) && conexiones.map((conexion) => (
+                <span key={conexion.id} title={conexion.ok ? `${conexion.nombre}: activo` : conexion.detalle} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: C.sans, fontSize: 9.5, color: conexion.ok ? C.dim : C.dangerBright }}>
+                  <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: "50%", background: conexion.ok ? C.ok : C.dangerBright }} />
+                  {conexion.nombre}
+                </span>
+              ))}
+            </div>
+            <span style={{ fontFamily: C.mono, fontSize: 8.5, color: C.dim }}>
+              análisis determinista · 0 llamadas de IA · {timeAgo(control.generadoEn) || "ahora"}
+            </span>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function useRadialLayout(count, radius) {
   return useMemo(() => {
     const rnd = seeded(7);
@@ -2070,6 +2328,36 @@ export default function CerebroWoba() {
           gap: 16px;
           align-content: start;
         }
+        .control-metricas {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 8px;
+        }
+        .control-detalle-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+          gap: 10px;
+          margin-top: 10px;
+        }
+        .control-recomendacion {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+        }
+        @media (max-width: 720px) {
+          .control-metricas {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+          .control-detalle-grid {
+            grid-template-columns: minmax(0, 1fr);
+          }
+          .control-recomendacion {
+            grid-template-columns: auto minmax(0, 1fr);
+          }
+          .control-recomendacion > button {
+            grid-column: 2;
+            justify-self: start;
+          }
+        }
       `}</style>
 
       <div
@@ -2171,6 +2459,14 @@ export default function CerebroWoba() {
       </div>
 
       {liveData && <AtencionAhora data={liveData} onAbrir={abrirModuloDesdeResumen} />}
+      {liveData && apiKey && (
+        <ControlDiarioPanel
+          data={liveData}
+          apiKey={apiKey}
+          actualizacionId={get(liveData, "cacheadoEn")}
+          onAbrir={abrirModuloDesdeResumen}
+        />
+      )}
 
 
       {/* Pedido explícito de Carlos, tras ver un ejemplo de referencia (conducting.ai) y luego

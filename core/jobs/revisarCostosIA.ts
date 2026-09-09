@@ -1,4 +1,4 @@
-import { diagnosticarRepeticionesIA, obtenerResumenCostos, obtenerCostoPorDia } from "../claude/costTracking";
+import { obtenerAnalisisCostosDiario } from "../claude/costTracking";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
 import { obtenerEstadoConexiones } from "../cerebro/conexiones";
@@ -29,21 +29,16 @@ export async function revisarCostosIA(referenceDate: Date = new Date()): Promise
     return { costoAyerUSD: 0, problemas: 1 };
   }
 
-  const hoy = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
-  const ayerInicio = new Date(hoy);
-  ayerInicio.setDate(ayerInicio.getDate() - 1);
-
-  const [resumenAyer, resumenMes, costosPor7Dias, conexiones, memoria, repeticiones] = await Promise.all([
-    obtenerResumenCostos(ayerInicio, hoy),
-    obtenerResumenCostos(new Date(hoy.getFullYear(), hoy.getMonth(), 1), new Date(hoy.getTime() + 1)),
-    obtenerCostoPorDia(7, hoy),
+  const [analisisCostos, conexiones, memoria] = await Promise.all([
+    obtenerAnalisisCostosDiario(referenceDate, UMBRAL_ANOMALIA),
     obtenerEstadoConexiones(true).catch(() => []),
     diagnosticarMemoriaConversacional(),
-    diagnosticarRepeticionesIA(ayerInicio, hoy),
   ]);
 
-  const promedio7Dias = costosPor7Dias.reduce((a, b) => a + b, 0) / (costosPor7Dias.length || 1);
-  const esAnomalia = promedio7Dias > 0 && resumenAyer.gastoRealApiUSD > promedio7Dias * UMBRAL_ANOMALIA;
+  const resumenAyer = analisisCostos.ayer;
+  const resumenMes = analisisCostos.mesActual;
+  const promedio7Dias = analisisCostos.promedio7DiasPreviosUSD;
+  const esAnomalia = analisisCostos.esAnomaliaAyer;
   const configApi = cargarConfiguracionPoliticaApi();
   const conexionesCaidas = conexiones.filter((c) => !c.ok);
   const problemas: string[] = [];
@@ -51,8 +46,8 @@ export async function revisarCostosIA(referenceDate: Date = new Date()): Promise
   if (conexiones.length === 0) problemas.push("no se pudo completar el chequeo de conexiones");
   if (conexionesCaidas.length > 0) problemas.push(`servicios caídos/permisos: ${conexionesCaidas.map((c) => c.nombre).join(", ")}`);
   if (!memoria.ok) problemas.push(`memoria no íntegra (${memoria.filasCorruptas} fila(s) corrupta(s))`);
-  if (repeticiones.ejecucionesConMuchasLlamadas.length > 0) {
-    problemas.push(`${repeticiones.ejecucionesConMuchasLlamadas.length} ejecución(es) con posibles repeticiones`);
+  if (analisisCostos.ejecucionesConMuchasLlamadasAyer > 0) {
+    problemas.push(`${analisisCostos.ejecucionesConMuchasLlamadasAyer} ejecución(es) con posibles repeticiones`);
   }
   if (configApi.modo === "allowlist") {
     if (configApi.limiteDiarioUSD > 0 && resumenAyer.gastoRealApiUSD >= configApi.limiteDiarioUSD) {
