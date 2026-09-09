@@ -27,7 +27,7 @@ import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
-import { askClaude, buscarEnInternet } from "../core/claude/client";
+import { askClaude, buscarEnInternet, esErrorSaldoAnthropicAgotado } from "../core/claude/client";
 import { obtenerHistorialVisible } from "../core/claude/conversationStore";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
@@ -1203,10 +1203,17 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
         await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, respuesta);
       } catch (error) {
         console.error("Error capturando correo:", error);
+        // Hallazgo real de auditoría: el mensaje específico de saldo agotado (ver askClaude en
+        // core/claude/client.ts) solo se aplicaba en el flujo principal de chat — este flujo tenía su
+        // propio mensaje genérico fijo, así que un usuario en medio de capturar un correo justo cuando
+        // se agotó el saldo veía el mismo mensaje inútil de siempre, aunque el aviso a admins ya
+        // funcionaba igual (vive dentro de askClaude, no depende de quién lo llame).
         await entregarRespuestaTrasTrabajar(
           incoming.chatId,
           mensajeTrabajandoId,
-          "Hubo un error leyendo el correo para capturarlo. Intenta de nuevo."
+          esErrorSaldoAnthropicAgotado(error)
+            ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo leer el correo hasta que se recargue crédito. Ya avisé a los administradores."
+            : "Hubo un error leyendo el correo para capturarlo. Intenta de nuevo."
         );
       } finally {
         detenerEscribiendo();
@@ -1369,7 +1376,13 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
       await sendTelegramMessageSmart(incoming.chatId, respuesta);
     } catch (error) {
       console.error("Error programando alerta de documento:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error programando la alerta. Intenta de nuevo.");
+      // Ver hallazgo real de auditoría junto al catch de "capturar_correo_chat" más arriba.
+      await sendTelegramMessage(
+        incoming.chatId,
+        esErrorSaldoAnthropicAgotado(error)
+          ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo programar la alerta hasta que se recargue crédito. Ya avisé a los administradores."
+          : "Hubo un error programando la alerta. Intenta de nuevo."
+      );
     }
     return;
   }
@@ -1424,12 +1437,15 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
     await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, reply);
   } catch (error) {
     console.error("Error procesando el mensaje de Telegram:", error);
+    // Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): con el saldo de Anthropic agotado,
+    // este mensaje genérico era la ÚNICA señal visible — no decía qué pasaba de verdad. Ahora, para
+    // este caso específico, se lo dice directo en el chat (además del aviso aparte a todos los admins,
+    // ver avisarSaldoAnthropicAgotado en core/claude/client.ts) — el propio chat se vuelve la alerta.
+    const mensajeError = esErrorSaldoAnthropicAgotado(error)
+      ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo responder hasta que se recargue crédito en console.anthropic.com → Plans & Billing. Ya avisé a los administradores."
+      : "Lo siento, ha ocurrido un error procesando tu mensaje. Inténtalo de nuevo en unos minutos.";
     try {
-      await entregarRespuestaTrasTrabajar(
-        incoming.chatId,
-        mensajeTrabajandoId,
-        "Lo siento, ha ocurrido un error procesando tu mensaje. Inténtalo de nuevo en unos minutos."
-      );
+      await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, mensajeError);
     } catch (sendError) {
       console.error("Error enviando el mensaje de error a Telegram:", sendError);
     }

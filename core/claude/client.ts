@@ -9,6 +9,8 @@ import { obtenerPendienteReclasificacionPorChat } from "../documental/pendienteR
 import { registrarBusquedaWeb } from "./webSearchLog";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA, type EjecucionIA } from "../ai/policy";
+import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
+import { sendTelegramMessage } from "../telegram/client";
 
 const MODEL_SONNET = "claude-sonnet-5";
 const MODEL_HAIKU = "claude-haiku-4-5";
@@ -428,6 +430,69 @@ let ultimoEstadoClaude: EstadoClaude | null = null;
 
 function registrarEstadoClaude(ok: boolean, detalle?: string): void {
   ultimoEstadoClaude = { ok, en: Date.now(), detalle };
+}
+
+/**
+ * Pedido explícito de Carlos, tras un caso real (2026-09-09): el saldo de la cuenta de Anthropic se
+ * agotó en pleno chat, y el único síntoma visible fue el mensaje genérico "Lo siento, ha ocurrido un
+ * error procesando tu mensaje" repetido — nada le dijo a Carlos qué pasaba de verdad, ni acá ni en
+ * ningún otro lado, hasta que se investigaron los logs a mano. Anthropic no expone ninguna API para
+ * consultar el saldo restante ANTES de que se agote (investigado en vivo — no existe ese endpoint,
+ * verificado contra la documentación oficial), así que no hay forma de avisar con anticipación real
+ * desde el código — lo único posible es reconocer el error EXACTO en el momento en que ocurre y avisar
+ * de inmediato, de la forma más clara posible, en vez de dejar que se vea como un error genérico más.
+ */
+export function esErrorSaldoAnthropicAgotado(error: unknown): boolean {
+  if (!(error instanceof Anthropic.APIError) || typeof error.message !== "string") return false;
+  const mensaje = error.message.toLowerCase();
+  // Hallazgo real de auditoría: "credit balance is too low" (el caso real de Carlos) siempre llega como
+  // 400 — pero Anthropic documenta un 402 "billing_error" aparte para otros problemas de facturación
+  // (ej. una tarjeta de auto-recarga rechazada) que también deberían avisar igual, aunque el mensaje sea
+  // distinto — se cubre por status, no solo por texto exacto, para no quedar corto ante ese otro caso.
+  return (error.status === 400 && mensaje.includes("credit balance is too low")) || error.status === 402;
+}
+
+const COOLDOWN_AVISO_SALDO_MS = 30 * 60 * 1000; // no más de 1 aviso cada 30 min, para no saturar el chat con la misma alerta.
+let ultimoAvisoSaldoEn = 0;
+
+/**
+ * Avisa a TODOS los admins (no solo a quien mandó el mensaje que disparó el error) — con enfriamiento
+ * para no repetir el mismo aviso en cada mensaje fallido mientras dure la interrupción real.
+ *
+ * Hallazgo real de auditoría: el enfriamiento se marcaba ANTES de intentar avisar — si obtenerAdmins()
+ * o TODOS los sendTelegramMessage fallaban (ej. un error transitorio de Sheets/Telegram justo en ese
+ * momento), el aviso real nunca llegaba a nadie pero el enfriamiento igual quedaba consumido, dejando a
+ * Carlos sin ningún aviso durante los siguientes 30 minutos — exactamente el escenario que esta función
+ * existe para evitar. Ahora el enfriamiento solo se marca si de verdad se le avisó a AL MENOS un admin.
+ */
+async function avisarSaldoAnthropicAgotado(): Promise<void> {
+  if (Date.now() - ultimoAvisoSaldoEn < COOLDOWN_AVISO_SALDO_MS) return;
+
+  const admins = await obtenerAdmins().catch((error) => {
+    console.error("[claude] Error obteniendo admins para avisar del saldo agotado:", error);
+    return [];
+  });
+  const texto =
+    "🚨 El saldo de la cuenta de Anthropic (la que usa WOBI para responder) se agotó — el chat no puede " +
+    "responder hasta que se recargue crédito. Entra a console.anthropic.com → Plans & Billing → agrega " +
+    "crédito. También conviene activar ahí un \"Usage Alert\" (aviso por email a un saldo mínimo) para que " +
+    "esto avise ANTES de agotarse la próxima vez — no existe ninguna forma de que WOBI lo detecte con " +
+    "anticipación, solo en el momento en que ya falló.";
+
+  let algunoAvisado = false;
+  for (const admin of admins) {
+    await sendTelegramMessage(admin.userId, texto)
+      .then(() => {
+        algunoAvisado = true;
+      })
+      .catch((error) => console.error(`[claude] Error avisando a admin ${admin.userId} del saldo agotado:`, error));
+  }
+
+  if (algunoAvisado) {
+    ultimoAvisoSaldoEn = Date.now();
+  } else {
+    console.error("[claude] No se pudo avisar a NINGÚN admin del saldo agotado — no se consume el enfriamiento, se reintentará en el próximo mensaje fallido.");
+  }
 }
 
 export function obtenerUltimoEstadoClaude(): EstadoClaude | null {
@@ -950,6 +1015,19 @@ async function askClaudeInterno(
     registrarEstadoClaude(true);
     return respuesta;
   } catch (error) {
+    registrarEstadoClaude(false, error instanceof Error ? error.message : String(error));
+
+    // Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): un saldo de Anthropic agotado
+    // también es un 400 invalid_request_error — antes caía en la salvaguarda de "historial rechazado"
+    // de abajo y se reintentaba SIN HISTORIAL, un segundo intento inútil (el saldo sigue en cero,
+    // vuelve a fallar exactamente igual) que solo demoraba más la respuesta y ensuciaba los logs. Se
+    // detecta primero y aparte: nunca tiene sentido reintentar, y sí tiene sentido avisar de inmediato
+    // (ver avisarSaldoAnthropicAgotado) en vez de dejarlo pasar como un error genérico más.
+    if (esErrorSaldoAnthropicAgotado(error)) {
+      await avisarSaldoAnthropicAgotado();
+      throw error;
+    }
+
     // Salvaguarda ante un historial en memoria que la API rechaza (400
     // invalid_request_error) — la causa raíz conocida ya está corregida en
     // guardarHistorial, pero esto cubre cualquier otro caso no previsto en
@@ -960,7 +1038,6 @@ async function askClaudeInterno(
       error instanceof Anthropic.APIError && error.status === 400 && chatId !== undefined;
 
     if (!esRechazoDeHistorial) {
-      registrarEstadoClaude(false, error instanceof Error ? error.message : String(error));
       throw error;
     }
 
