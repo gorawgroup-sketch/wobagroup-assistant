@@ -526,54 +526,39 @@ function AtencionAhora({ data, onAbrir }) {
       detalle: umbralCosto > 0 && costoHoy >= umbralCosto ? fmtUSD(costoHoy) : null,
     },
   ].filter((item) => item.cantidad > 0);
+  const totalPendientes = items.reduce((total, item) => total + item.cantidad, 0);
 
   return (
     <section
       aria-labelledby="atencion-ahora-titulo"
-      style={{
-        maxWidth: 980,
-        margin: "18px auto 0",
-        padding: "14px 16px",
-        borderRadius: 10,
-        border: `1px solid ${items.length > 0 ? C.amber : C.line}`,
-        background: items.length > 0 ? "rgba(232, 167, 92, 0.06)" : "rgba(111, 207, 151, 0.05)",
-        position: "relative",
-        zIndex: 2,
-      }}
+      className={`atencion-rail${items.length > 0 ? " atencion-rail--activa" : " atencion-rail--estable"}`}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <div id="atencion-ahora-titulo" style={{ fontFamily: C.mono, fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: items.length > 0 ? C.amberBright : C.ok }}>
-          {items.length > 0 ? `Atención ahora · ${items.reduce((total, item) => total + item.cantidad, 0)} pendiente(s)` : "Todo bajo control"}
+      <div className="atencion-rail-cabecera">
+        <div id="atencion-ahora-titulo" className="atencion-rail-titulo">
+          <span className="atencion-rail-pulso" aria-hidden="true" />
+          <span>{items.length > 0 ? "Prioridades de hoy" : "Todo bajo control"}</span>
+          {items.length > 0 && <strong>{totalPendientes}</strong>}
         </div>
-        <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim }}>
-          fuentes {timeAgo(get(data, "cacheadoEn")) || "actualizadas"}
+        <div className="atencion-rail-fuente">
+          Datos en vivo · {timeAgo(get(data, "cacheadoEn")) || "actualizados"}
         </div>
       </div>
 
       {items.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginTop: 10 }}>
+        <div className="atencion-flujo">
           {items.map((item, i) => (
             <button
               type="button"
               key={`${item.id}-${i}`}
               onClick={() => onAbrir(item.id)}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 10,
-                minHeight: 44,
-                padding: "8px 10px",
-                borderRadius: 7,
-                border: `1px solid ${C.line}`,
-                background: C.voidSoft,
-                color: C.cream,
-                cursor: "pointer",
-                textAlign: "left",
-              }}
+              className="atencion-item"
             >
-              <span style={{ fontFamily: C.sans, fontSize: 11.5 }}>{item.texto}</span>
-              <span style={{ fontFamily: C.mono, fontSize: 13, color: C.amberBright }}>{item.detalle || item.cantidad}</span>
+              <span className="atencion-item-numero">{item.detalle || item.cantidad}</span>
+              <span className="atencion-item-texto">
+                <strong>{item.texto}</strong>
+                <small>Abrir módulo</small>
+              </span>
+              <span className="atencion-item-flecha" aria-hidden="true">↗</span>
             </button>
           ))}
         </div>
@@ -607,7 +592,7 @@ function fechaCorta(fecha) {
  */
 function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir }) {
   const control = get(data, "controlDiario");
-  const [abierto, setAbierto] = useState(true);
+  const [abierto, setAbierto] = useState(false);
   const [conexiones, setConexiones] = useState(null);
   const [cargandoConexiones, setCargandoConexiones] = useState(false);
   const [errorConexiones, setErrorConexiones] = useState(false);
@@ -664,50 +649,35 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir }) {
   return (
     <section
       aria-labelledby="control-diario-titulo"
-      style={{
-        maxWidth: 980,
-        margin: "12px auto 0",
-        borderRadius: 12,
-        border: `1px solid ${visual.color}`,
-        background: visual.fondo,
-        position: "relative",
-        zIndex: 2,
-        overflow: "hidden",
-      }}
+      className={`control-diario control-diario--${abierto ? "abierto" : "cerrado"}`}
+      style={{ "--control-color": visual.color, "--control-fondo": visual.fondo }}
     >
       <button
         type="button"
         onClick={() => setAbierto((valor) => !valor)}
         aria-expanded={abierto}
-        style={{
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 14,
-          padding: "14px 16px",
-          border: "none",
-          background: "transparent",
-          color: C.cream,
-          cursor: "pointer",
-          textAlign: "left",
-        }}
+        className="control-diario-resumen"
       >
-        <span>
-          <span id="control-diario-titulo" style={{ display: "block", fontFamily: C.mono, fontSize: 10.5, letterSpacing: "0.1em", textTransform: "uppercase", color: visual.color }}>
-            Control diario · {visual.texto}
+        <span className="control-diario-senal" aria-hidden="true">
+          <span />
+        </span>
+        <span className="control-diario-copy">
+          <span id="control-diario-titulo" className="control-diario-etiqueta">
+            Diagnóstico diario
           </span>
-          <span style={{ display: "block", fontFamily: C.sans, fontSize: 12, color: C.dim, marginTop: 5 }}>
+          <span className="control-diario-estado">{visual.texto}</span>
+          <span className="control-diario-descripcion">
             {control.resumen}
           </span>
         </span>
-        <span style={{ flexShrink: 0, fontFamily: C.mono, fontSize: 11, color: C.amberBright }}>
-          {abierto ? "Ocultar ▴" : "Ver análisis ▾"}
+        <span className="control-diario-accion">
+          {abierto ? "Cerrar análisis" : "Abrir análisis"}
+          <span aria-hidden="true">{abierto ? "↑" : "↓"}</span>
         </span>
       </button>
 
       {abierto && (
-        <div style={{ borderTop: `1px solid ${C.line}`, padding: "14px 16px 16px" }}>
+        <div className="control-diario-contenido">
           <div className="control-metricas">
             {[
               ["API hoy", control.costosDisponibles ? fmtUSD(costos?.hoy?.gastoRealApiUSD) : "No disponible"],
@@ -2259,7 +2229,7 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   };
 
   return (
-    <div className="wobi-contacto">
+    <div className={`wobi-contacto ${abierto ? "wobi-contacto--abierto" : "wobi-contacto--destacado"}`}>
       {abierto ? (
         <section className="wobi-chat-panel" aria-label="Centro de conversación con Wobi">
           <header className="wobi-chat-cabecera">
@@ -2376,14 +2346,18 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
               <span className="wobi-presencia" />
             </span>
             <span className="wobi-contacto-texto">
-              <strong>Hablar con Wobi</strong>
-              <small>Chat · voz · contexto en vivo</small>
+              <span className="wobi-contacto-disponible"><i aria-hidden="true" /> Wobi está disponible</span>
+              <strong>Comunícate con Wobi</strong>
+              <small>Escribe, dicta o continúa en Telegram con el mismo contexto.</small>
             </span>
-            <span className="wobi-contacto-flecha" aria-hidden="true">↑</span>
+            <span className="wobi-contacto-accion">
+              Abrir conversación <i aria-hidden="true">→</i>
+            </span>
           </button>
           <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="wobi-contacto-telegram" aria-label="Hablar con Wobi en Telegram">
             <img src={TELEGRAM_ICON} alt="" width={22} height={22} />
-            <span>Telegram</span>
+            <span><strong>Telegram</strong><small>Canal alternativo</small></span>
+            <i aria-hidden="true">↗</i>
           </a>
         </div>
       )}
@@ -2711,12 +2685,200 @@ export default function CerebroWoba() {
           30% { opacity: 1; transform: translateY(-3px); }
         }
 
+        .atencion-rail {
+          width: min(980px, calc(100% - 32px));
+          margin: 20px auto 0;
+          position: relative;
+          z-index: 2;
+          color: ${C.cream};
+        }
+        .atencion-rail::before {
+          content: "";
+          position: absolute;
+          top: 34px;
+          left: 0;
+          right: 0;
+          height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(232,167,92,.7) 12%, rgba(143,210,245,.18) 72%, transparent);
+        }
+        .atencion-rail--estable::before {
+          background: linear-gradient(90deg, transparent, rgba(111,207,151,.62) 20%, transparent);
+        }
+        .atencion-rail-cabecera {
+          min-height: 26px;
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 0 4px;
+        }
+        .atencion-rail-titulo {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: ${C.amberBright};
+          font-family: ${C.mono};
+          font-size: 12px;
+          letter-spacing: .1em;
+          text-transform: uppercase;
+        }
+        .atencion-rail--estable .atencion-rail-titulo { color: ${C.ok}; }
+        .atencion-rail-titulo strong {
+          color: ${C.cream};
+          font-size: 16px;
+          font-weight: 500;
+          letter-spacing: 0;
+        }
+        .atencion-rail-pulso {
+          width: 7px;
+          height: 7px;
+          flex: 0 0 auto;
+          border-radius: 50%;
+          background: ${C.amberBright};
+          box-shadow: 0 0 0 4px rgba(232,167,92,.1), 0 0 14px rgba(232,167,92,.6);
+        }
+        .atencion-rail--estable .atencion-rail-pulso { background: ${C.ok}; box-shadow: 0 0 12px rgba(111,207,151,.5); }
+        .atencion-rail-fuente {
+          color: ${C.dim};
+          font-family: ${C.mono};
+          font-size: 12px;
+        }
+        .atencion-flujo {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+          padding-top: 10px;
+          border-bottom: 1px solid rgba(143,210,245,.12);
+        }
+        .atencion-item {
+          min-width: 0;
+          min-height: 76px;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 11px;
+          padding: 12px 14px;
+          border: 0;
+          border-right: 1px solid rgba(143,210,245,.13);
+          color: ${C.cream};
+          background: transparent;
+          text-align: left;
+          cursor: pointer;
+          transition: background .2s ease, transform .2s ease;
+        }
+        .atencion-item:last-child { border-right: 0; }
+        .atencion-item:hover { background: linear-gradient(180deg, rgba(232,167,92,.06), rgba(46,109,164,.04)); transform: translateY(-1px); }
+        .atencion-item:focus-visible { outline: 2px solid ${C.amberBright}; outline-offset: -2px; }
+        .atencion-item-numero {
+          color: ${C.amberBright};
+          font-family: ${C.serif};
+          font-size: 27px;
+          line-height: 1;
+          font-variant-numeric: tabular-nums;
+        }
+        .atencion-item-texto { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+        .atencion-item-texto strong { font-size: 14px; font-weight: 500; line-height: 1.25; }
+        .atencion-item-texto small { color: ${C.dim}; font-size: 12px; }
+        .atencion-item-flecha { color: ${C.coreBright}; font-size: 14px; opacity: .62; }
+
+        .control-diario {
+          width: min(980px, calc(100% - 32px));
+          margin: 8px auto 0;
+          position: relative;
+          z-index: 2;
+          overflow: hidden;
+          border-bottom: 1px solid rgba(143,210,245,.12);
+          color: ${C.cream};
+          background: transparent;
+          transition: background .2s ease, border-color .2s ease;
+        }
+        .control-diario--abierto {
+          border: 1px solid color-mix(in srgb, var(--control-color) 48%, transparent);
+          border-radius: 14px;
+          background: var(--control-fondo);
+        }
+        .control-diario-resumen {
+          width: 100%;
+          min-height: 74px;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 14px;
+          padding: 11px 4px;
+          border: 0;
+          color: ${C.cream};
+          background: transparent;
+          text-align: left;
+          cursor: pointer;
+        }
+        .control-diario--abierto .control-diario-resumen { padding-inline: 15px; }
+        .control-diario-resumen:focus-visible { outline: 2px solid var(--control-color); outline-offset: -2px; }
+        .control-diario-senal {
+          width: 38px;
+          height: 38px;
+          display: grid;
+          place-items: center;
+          border: 1px solid color-mix(in srgb, var(--control-color) 38%, transparent);
+          border-radius: 50%;
+          background: color-mix(in srgb, var(--control-color) 7%, transparent);
+        }
+        .control-diario-senal span {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          background: var(--control-color);
+          box-shadow: 0 0 13px var(--control-color);
+        }
+        .control-diario-copy {
+          min-width: 0;
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: baseline;
+          column-gap: 10px;
+          row-gap: 3px;
+        }
+        .control-diario-etiqueta {
+          color: ${C.dim};
+          font-family: ${C.mono};
+          font-size: 12px;
+          letter-spacing: .08em;
+          text-transform: uppercase;
+        }
+        .control-diario-estado { color: var(--control-color); font-size: 14px; font-weight: 600; }
+        .control-diario-descripcion { grid-column: 1 / -1; color: ${C.dim}; font-size: 13px; line-height: 1.4; }
+        .control-diario-accion {
+          display: inline-flex;
+          align-items: center;
+          gap: 9px;
+          color: ${C.amberBright};
+          font-family: ${C.mono};
+          font-size: 12px;
+          white-space: nowrap;
+        }
+        .control-diario-accion span {
+          width: 28px;
+          height: 28px;
+          display: grid;
+          place-items: center;
+          border: 1px solid ${C.line};
+          border-radius: 50%;
+          color: ${C.coreBright};
+        }
+        .control-diario-contenido { padding: 14px 16px 16px; border-top: 1px solid ${C.line}; }
+
         .wobi-contacto {
+          font-family: ${C.sans};
+        }
+        .wobi-contacto--destacado {
+          width: min(980px, calc(100% - 32px));
+          margin: 20px auto 4px;
+          position: relative;
+          z-index: 3;
+        }
+        .wobi-contacto--abierto {
           position: fixed;
           right: 20px;
           bottom: 20px;
           z-index: 40;
-          font-family: ${C.sans};
         }
         .wobi-contacto button,
         .wobi-contacto a,
@@ -2730,26 +2892,39 @@ export default function CerebroWoba() {
           outline-offset: 2px;
         }
         .wobi-contacto-dock {
+          position: relative;
           display: flex;
           align-items: stretch;
-          min-width: 360px;
+          width: 100%;
+          min-width: 0;
           overflow: hidden;
-          border: 1px solid rgba(143,210,245,.38);
-          border-radius: 18px;
-          background: linear-gradient(145deg, rgba(15,27,42,.98), rgba(6,14,24,.98));
-          box-shadow: 0 22px 60px rgba(0,0,0,.52), 0 0 34px rgba(46,109,164,.14);
+          border: 1px solid rgba(143,210,245,.24);
+          border-radius: 28px 8px 28px 8px;
+          background: radial-gradient(circle at 9% 50%, rgba(46,109,164,.3), transparent 31%), linear-gradient(100deg, rgba(13,27,43,.96), rgba(7,16,27,.91) 68%, rgba(15,27,42,.8));
+          box-shadow: 0 18px 46px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.025), 0 0 48px rgba(46,109,164,.08);
           animation: wobiDockIn .3s ease-out;
           backdrop-filter: blur(18px);
+        }
+        .wobi-contacto-dock::before {
+          content: "";
+          position: absolute;
+          left: 84px;
+          right: 18%;
+          top: 0;
+          height: 1px;
+          background: linear-gradient(90deg, ${C.coreBright}, rgba(143,210,245,0));
+          opacity: .7;
+          pointer-events: none;
         }
         .wobi-contacto-principal {
           flex: 1;
           min-width: 0;
-          min-height: 72px;
+          min-height: 104px;
           display: grid;
           grid-template-columns: auto minmax(0, 1fr) auto;
           align-items: center;
-          gap: 12px;
-          padding: 10px 14px 10px 10px;
+          gap: 16px;
+          padding: 12px 22px 12px 14px;
           border: 0;
           color: ${C.cream};
           background: transparent;
@@ -2758,33 +2933,55 @@ export default function CerebroWoba() {
           transition: background .18s ease;
         }
         .wobi-contacto-principal:hover { background: rgba(143,210,245,.07); }
-        .wobi-contacto-texto { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-        .wobi-contacto-texto strong { font-family: ${C.serif}; font-size: 18px; font-weight: 500; letter-spacing: .01em; }
-        .wobi-contacto-texto small { color: ${C.dim}; font-size: 12px; white-space: nowrap; }
-        .wobi-contacto-flecha {
-          width: 28px;
-          height: 28px;
-          display: grid;
-          place-items: center;
-          border: 1px solid ${C.line};
-          border-radius: 50%;
+        .wobi-contacto-texto { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+        .wobi-contacto-disponible {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          margin-bottom: 1px;
+          color: ${C.ok};
+          font-family: ${C.mono};
+          font-size: 12px;
+          letter-spacing: .08em;
+          text-transform: uppercase;
+        }
+        .wobi-contacto-disponible i { width: 6px; height: 6px; border-radius: 50%; background: ${C.ok}; box-shadow: 0 0 10px ${C.ok}; }
+        .wobi-contacto-texto strong { font-family: ${C.serif}; font-size: 25px; line-height: 1.1; font-weight: 500; letter-spacing: .01em; }
+        .wobi-contacto-texto small { color: ${C.dim}; font-size: 14px; line-height: 1.35; }
+        .wobi-contacto-accion {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 13px;
+          border: 1px solid rgba(143,210,245,.3);
+          border-radius: 11px;
           color: ${C.coreBright};
-          background: rgba(143,210,245,.05);
+          background: rgba(143,210,245,.055);
+          font-size: 13px;
+          white-space: nowrap;
+        }
+        .wobi-contacto-accion i { font-style: normal; font-size: 17px; }
+        .wobi-contacto-principal:hover .wobi-contacto-accion {
+          border-color: rgba(143,210,245,.55);
+          background: rgba(143,210,245,.09);
         }
         .wobi-contacto-telegram {
-          min-width: 92px;
+          min-width: 150px;
           display: flex;
-          flex-direction: column;
           align-items: center;
           justify-content: center;
-          gap: 4px;
-          padding: 9px 12px;
+          gap: 10px;
+          padding: 12px 16px;
           border-left: 1px solid ${C.line};
           color: #86d8ff;
           text-decoration: none;
-          font-size: 12px;
+          font-size: 13px;
           transition: background .18s ease;
         }
+        .wobi-contacto-telegram > span { display: flex; flex-direction: column; gap: 2px; }
+        .wobi-contacto-telegram strong { color: ${C.cream}; font-size: 13px; font-weight: 600; }
+        .wobi-contacto-telegram small { color: ${C.dim}; font-size: 11px; white-space: nowrap; }
+        .wobi-contacto-telegram > i { margin-left: auto; color: #86d8ff; font-style: normal; }
         .wobi-contacto-telegram:hover { background: rgba(42,171,238,.09); }
         .wobi-avatar {
           position: relative;
@@ -2803,7 +3000,7 @@ export default function CerebroWoba() {
           object-fit: cover;
           filter: saturate(.9) contrast(1.04) brightness(.82);
         }
-        .wobi-avatar--dock { width: 50px; height: 50px; }
+        .wobi-avatar--dock { width: 74px; height: 74px; }
         .wobi-avatar--grande { width: 52px; height: 52px; }
         .wobi-avatar--mensaje { width: 28px; height: 28px; margin-top: 2px; }
         .wobi-avatar--vacio { width: 70px; height: 70px; margin-bottom: 5px; }
@@ -3041,14 +3238,45 @@ export default function CerebroWoba() {
           font-size: 10px;
         }
 
+        @media (max-width: 780px) {
+          .atencion-flujo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .atencion-item:nth-child(2n) { border-right: 0; }
+          .atencion-item:nth-child(n+3) { border-top: 1px solid rgba(143,210,245,.1); }
+          .control-diario-copy { grid-template-columns: minmax(0, 1fr); }
+          .control-diario-estado { grid-column: 1; }
+          .control-diario-descripcion { grid-column: 1; }
+          .wobi-contacto-principal { grid-template-columns: auto minmax(0, 1fr); }
+          .wobi-contacto-accion { grid-column: 2; justify-self: start; padding: 7px 10px; }
+        }
+
         @media (max-width: 600px) {
-          .wobi-contacto { left: 10px; right: 10px; bottom: 10px; }
-          .wobi-contacto-dock { min-width: 0; width: 100%; border-radius: 16px; }
-          .wobi-contacto-principal { min-height: 68px; padding-right: 10px; gap: 10px; }
-          .wobi-avatar--dock { width: 46px; height: 46px; }
-          .wobi-contacto-telegram { min-width: 78px; padding-inline: 9px; }
-          .wobi-contacto-texto strong { font-size: 17px; }
-          .wobi-contacto-texto small { font-size: 11px; }
+          .atencion-rail,
+          .control-diario,
+          .wobi-contacto--destacado { width: calc(100% - 20px); }
+          .atencion-rail { margin-top: 16px; }
+          .atencion-rail::before { top: 50px; }
+          .atencion-rail-cabecera { min-height: 42px; }
+          .atencion-rail-fuente { max-width: 130px; text-align: right; line-height: 1.35; }
+          .atencion-flujo { grid-template-columns: minmax(0, 1fr); padding-top: 8px; }
+          .atencion-item,
+          .atencion-item:nth-child(2n) { min-height: 66px; border-right: 0; border-top: 1px solid rgba(143,210,245,.1); }
+          .atencion-item:first-child { border-top: 0; }
+          .atencion-item-numero { min-width: 42px; font-size: 25px; }
+          .control-diario-resumen { grid-template-columns: auto minmax(0, 1fr); gap: 11px; padding-block: 13px; }
+          .control-diario-accion { grid-column: 2; justify-self: start; margin-top: 2px; }
+          .control-diario-accion span { width: 25px; height: 25px; }
+          .wobi-contacto--destacado { margin-top: 16px; }
+          .wobi-contacto--abierto { left: 10px; right: 10px; bottom: 10px; }
+          .wobi-contacto-dock { display: grid; grid-template-columns: minmax(0, 1fr); border-radius: 22px 7px 22px 7px; }
+          .wobi-contacto-dock::before { left: 66px; right: 18px; }
+          .wobi-contacto-principal { min-height: 94px; padding: 11px 13px; gap: 11px; }
+          .wobi-avatar--dock { width: 60px; height: 60px; }
+          .wobi-contacto-accion { display: none; }
+          .wobi-contacto-telegram { min-width: 0; justify-content: flex-start; padding: 10px 15px; border-top: 1px solid ${C.line}; border-left: 0; }
+          .wobi-contacto-telegram > i { margin-left: auto; }
+          .wobi-contacto-texto strong { font-size: 21px; }
+          .wobi-contacto-texto small { font-size: 12px; }
+          .wobi-contacto-disponible { font-size: 10px; }
           .wobi-chat-panel { width: 100%; height: calc(100dvh - 20px); border-radius: 18px; }
           .wobi-chat-cabecera { padding: 12px; }
           .wobi-avatar--grande { width: 46px; height: 46px; }
@@ -3216,6 +3444,14 @@ export default function CerebroWoba() {
         )}
 
       </div>
+
+      {entered && apiKey && (
+        <WobiChat
+          apiKey={apiKey}
+          nombreUsuario={nombreUsuario}
+          revisionTiempoReal={ultimoContactoEn}
+        />
+      )}
 
       {liveData && <AtencionAhora data={liveData} onAbrir={abrirModuloDesdeResumen} />}
       {liveData && apiKey && (
@@ -3689,13 +3925,6 @@ export default function CerebroWoba() {
 
       {esAdmin && <AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
       {esAdmin && <UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
-      {entered && apiKey && (
-        <WobiChat
-          apiKey={apiKey}
-          nombreUsuario={nombreUsuario}
-          revisionTiempoReal={ultimoContactoEn}
-        />
-      )}
     </div>
   );
 }
