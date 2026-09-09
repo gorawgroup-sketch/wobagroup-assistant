@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { estaConciliado, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
+import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
 import { montosCercanos } from "../utils/montos";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
@@ -912,7 +913,7 @@ export interface CuentaSugerida {
   accountId: string;
   tags: string[];
   ejemplo: string;
-  aprendidoDe: "proveedor" | "concepto" | "categoria" | "ia";
+  aprendidoDe: "proveedor" | "concepto" | "categoria" | "ia" | "correccion_confirmada";
 }
 
 interface LineaConCuenta {
@@ -1177,6 +1178,21 @@ export async function inferirCuentaGasto(
   empresa: Empresa,
   criterios: { proveedor: string; concepto: string; personaAsociada?: string }
 ): Promise<CuentaSugerida | undefined> {
+  // Tier 0 — pedido explícito de Carlos ("que la práctica te vaya dando
+  // experticia"): si revisarCorreccionesCuentaContable.ts (job semanal) ya
+  // detectó y confirmó que Carlos corrigió a mano la cuenta de este
+  // proveedor, esa confirmación EXPLÍCITA manda sobre cualquier inferencia
+  // por precedente — se consulta antes que recolectarLineasConCuenta,
+  // incluso funciona si todavía no hay ninguna línea histórica (empresa
+  // nueva sin gastos previos). Ver cuentaCorregidaAprendidaSheet.ts.
+  const corregida = await buscarCuentaCorregidaAprendida(criterios.proveedor, empresa).catch((error) => {
+    console.error("[write] Error consultando cuenta corregida aprendida (no crítico, sigue con los tiers normales):", error);
+    return undefined;
+  });
+  if (corregida) {
+    return { accountId: corregida.cuentaId, tags: [], ejemplo: "corrección ya confirmada para este proveedor", aprendidoDe: "correccion_confirmada" };
+  }
+
   const lineas = await recolectarLineasConCuenta(empresa);
   if (lineas.length === 0) return undefined;
 
