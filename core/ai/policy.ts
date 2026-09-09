@@ -25,6 +25,8 @@ export interface DecisionPoliticaApi {
 export interface EjecucionIA {
   id: string;
   proceso: string;
+  /** Se marca ANTES de invocar cualquier herramienta con posibles escrituras. */
+  efectosIniciados?: boolean;
   siguienteLlamada(): number;
 }
 

@@ -112,6 +112,8 @@ const CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA: Record<Empresa, { id: string; name: 
 };
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
+  // Identificador interno de dispararDecisionFinal: no es un callback de Telegram.
+  if (callbackQueryId.startsWith("seleccion_")) return;
   try {
     await answerCallbackQuery(callbackQueryId, text);
   } catch (error) {
@@ -937,9 +939,8 @@ function preguntaParaAccion(key: string, propuesta: PropuestaGasto): string {
  * nuevo, en vez de reimplementar esa lógica (manejo de contacto no
  * encontrado, fecha bloqueada, pregunta de conciliar, avance de la cola de
  * correo...) por segunda vez. `from`/`id` son placeholders: handleGastoCallback
- * nunca los lee (solo lee `data`), y un segundo answerCallbackQuery con un id
- * que no corresponde a un callback real de Telegram simplemente falla y se
- * ignora (ver answerCallbackQuerySafe) — no tiene efecto visible.
+ * nunca los lee (solo lee `data`). answerCallbackQuerySafe reconoce estos ids
+ * internos y no realiza una solicitud inválida a Telegram.
  */
 async function dispararDecisionFinal(propuesta: PropuestaGasto, decisionKey: string): Promise<void> {
   const indice = indiceCandidato(decisionKey);

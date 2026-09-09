@@ -22,7 +22,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  */
 export const gestionarContactoAutorespuestaTool: ToolDefinition = {
   name: "gestionar_contacto_autorespuesta",
-  seguraParaModoRapido: true,
+  // También agrega y quita contactos: nunca exponerla en modo de solo lectura.
+  seguraParaModoRapido: false,
   description:
     "Agrega, quita o lista los contactos ELEGIBLES para conversación automática por correo. Agregar a " +
     "alguien no responde automáticamente TODOS sus correos — cada conversación/hilo específico de ese " +
