@@ -15,7 +15,7 @@ function normalizar(texto: string): string {
  * falsos positivos (una búsqueda de "Seguridad social" traía de vuelta
  * pólizas de seguro que no tienen nada que ver) — con 6 ya no colisionan.
  */
-function palabrasParecidas(a: string, b: string): boolean {
+export function palabrasParecidas(a: string, b: string): boolean {
   if (a === b) return true;
   const minLen = Math.min(a.length, b.length);
   if (minLen < 4) return false;

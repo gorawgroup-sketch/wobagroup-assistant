@@ -1,6 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
-import { textosParecidos } from "../utils/textoParecido";
+import { palabrasDe, palabrasParecidas } from "../utils/textoParecido";
 import { conMutex } from "../utils/asyncMutex";
 
 /**
@@ -96,6 +96,7 @@ async function ensureTab(): Promise<void> {
 }
 
 export interface MovimientoAmbiguoAprendido {
+  rowIndex: number;
   proveedor: string;
   empresa: string;
   descripcionMovimiento: string;
@@ -113,13 +114,17 @@ async function leerFilas(): Promise<MovimientoAmbiguoAprendido[]> {
   });
 
   const rows = resp.data.values ?? [];
-  return rows
-    .filter((row) => row[0])
-    .map((row) => ({
+  const result: MovimientoAmbiguoAprendido[] = [];
+  rows.forEach((row, i) => {
+    if (!row[0]) return;
+    result.push({
+      rowIndex: i + 2,
       proveedor: String(row[0]),
       empresa: row[1] ? String(row[1]) : "",
       descripcionMovimiento: row[2] ? String(row[2]) : "",
-    }));
+    });
+  });
+  return result;
 }
 
 async function siguienteFilaLibre(): Promise<number> {
@@ -134,16 +139,49 @@ async function siguienteFilaLibre(): Promise<number> {
   return rows.length + 1;
 }
 
-/** Registra que, para este proveedor, un movimiento con esta descripción real fue el elegido entre varios ambiguos. */
+/**
+ * Registra que, para este proveedor, un movimiento con esta descripción real
+ * fue el elegido entre varios ambiguos.
+ *
+ * Hallazgo real de auditoría xhigh (4 agentes independientes): a diferencia
+ * de sus 3 stores hermanos (clasificacionAprendidaSheet.ts,
+ * proveedorAliasSheet.ts, cuentaCorregidaAprendidaSheet.ts), esta función
+ * NUNCA revisaba si el mismo (proveedor, empresa, descripcionMovimiento) ya
+ * existía antes de agregar — cada confirmación de un proveedor recurrente
+ * (ej. un cargo mensual ambiguo cada ciclo) agregaba una fila nueva sin
+ * límite, inflando el conteo de reporteAprendizaje.ts y, más grave, con
+ * leerFilas() acotado a A2:D10000, empujando eventualmente los
+ * aprendizajes más viejos y establecidos fuera del rango leído. Ahora
+ * actualiza `confirmadoEn` de la fila existente en vez de duplicar.
+ */
 export async function registrarMovimientoAmbiguoElegido(proveedor: string, empresa: string, descripcionMovimiento: string): Promise<void> {
   if (!proveedor.trim() || !descripcionMovimiento.trim()) return;
 
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
+  const proveedorNormalizado = normalizarProveedor(proveedor);
+  const descripcionNormalizada = normalizarProveedor(descripcionMovimiento);
   const fila = [proveedor, empresa, descripcionMovimiento, new Date().toISOString()];
 
   await conMutex(`movimientoAmbiguoAprendido:${TAB_NAME}`, async () => {
+    const existentes = await leerFilas();
+    const match = existentes.find(
+      (f) =>
+        f.empresa === empresa &&
+        normalizarProveedor(f.proveedor) === proveedorNormalizado &&
+        normalizarProveedor(f.descripcionMovimiento) === descripcionNormalizada
+    );
+    if (match) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!D${match.rowIndex}:D${match.rowIndex}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[new Date().toISOString()]] },
+      });
+      return;
+    }
+
     for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
       const filaLibre = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
@@ -172,11 +210,37 @@ export async function registrarMovimientoAmbiguoElegido(proveedor: string, empre
 }
 
 /**
- * Entre varios candidatos ambiguos, devuelve el índice del primero cuya
- * descripción coincide con algo ya confirmado antes para este proveedor —
- * undefined si ninguno coincide o nunca se ha confirmado nada para él. Solo
- * se usa para RESALTAR una opción en el mensaje (ver ofrecerEleccionMovimientosAmbiguos)
+ * Puntúa cuánto se parece `descripcion` a `aprendida` — suma la longitud de
+ * cada palabra distintiva (5+ caracteres) de `descripcion` que aparece
+ * parecida en `aprendida`. 0 si ninguna coincide.
+ */
+function puntuarCoincidencia(descripcion: string, aprendida: string): number {
+  const palabrasDescripcion = palabrasDe(descripcion, 5);
+  const palabrasAprendida = palabrasDe(aprendida, 3);
+  let score = 0;
+  for (const pd of palabrasDescripcion) {
+    if (palabrasAprendida.some((pa) => palabrasParecidas(pd, pa))) score += pd.length;
+  }
+  return score;
+}
+
+/**
+ * Entre varios candidatos ambiguos, devuelve el índice del que mejor
+ * coincide con algo ya confirmado antes para este proveedor — undefined si
+ * ninguno coincide o nunca se ha confirmado nada para él. Solo se usa para
+ * RESALTAR una opción en el mensaje (ver ofrecerEleccionMovimientosAmbiguos)
  * — nunca decide sola, Carlos siempre elige con el botón.
+ *
+ * Hallazgo real de auditoría xhigh: la versión anterior usaba
+ * `candidatos.findIndex(...)`, quedándose con el PRIMER candidato (en el
+ * orden en que Holded devolvió los movimientos bancarios) que coincidiera
+ * con CUALQUIER descripción aprendida — mismo defecto ya documentado y
+ * corregido en buscarContactoHolded (write.ts, ver puntuarDistintividad):
+ * si dos aprendizajes distintos para este proveedor existen (ej. "PAYPAL
+ * *PROVEEDORX" y "PROVEEDOR X SL AMSTERDAM"), el candidato con la
+ * coincidencia MÁS FUERTE puede perder contra uno con una coincidencia más
+ * débil solo por venir antes en la lista. Ahora se puntúa cada candidato
+ * contra TODAS las descripciones aprendidas y gana el de mayor puntaje.
  */
 export async function sugerirCandidatoAprendido(proveedor: string, empresa: string, candidatos: { descripcion?: string }[]): Promise<number | undefined> {
   if (!proveedor.trim() || candidatos.length === 0) return undefined;
@@ -188,10 +252,17 @@ export async function sugerirCandidatoAprendido(proveedor: string, empresa: stri
   );
   if (coincidenciasProveedor.length === 0) return undefined;
 
-  const idx = candidatos.findIndex(
-    (c) => c.descripcion && coincidenciasProveedor.some((a) => textosParecidos(c.descripcion!, a.descripcionMovimiento))
-  );
-  return idx === -1 ? undefined : idx;
+  let mejorIdx: number | undefined;
+  let mejorScore = 0;
+  candidatos.forEach((c, i) => {
+    if (!c.descripcion) return;
+    const score = Math.max(0, ...coincidenciasProveedor.map((a) => puntuarCoincidencia(c.descripcion!, a.descripcionMovimiento)));
+    if (score > mejorScore) {
+      mejorScore = score;
+      mejorIdx = i;
+    }
+  });
+  return mejorIdx;
 }
 
 /** Todos los aprendizajes de conciliación ambigua — para el reporte de aprendizaje (ver core/tools/reporteAprendizaje.ts). */

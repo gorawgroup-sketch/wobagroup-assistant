@@ -58,7 +58,22 @@ function colLetter(numCols: number): string {
 
 const tabsAseguradas = new Map<string, number>(); // tabName -> gridId
 
-/** Crea la pestaña (oculta) si no existe, con estos headers en la fila 1. Idempotente y cacheado en memoria. */
+/**
+ * Crea la pestaña (oculta) si no existe, con estos headers en la fila 1.
+ * Idempotente y cacheado en memoria.
+ *
+ * Hallazgo real de auditoría xhigh: cuando la pestaña YA existe, esta función
+ * nunca revisaba si su fila de headers seguía teniendo tantas columnas como
+ * el array `headers` que le pasa el store — un store pre-existente que crece
+ * su HEADERS (ej. conciliacionAmbiguaPendienteStore.ts agregó "proveedor"
+ * como columna 10 esta misma noche) deja la fila 1 real del Sheet
+ * desactualizada para siempre, mostrando datos en una columna sin ninguna
+ * etiqueta. Ahora se compara el largo de la fila 1 real contra `headers` la
+ * PRIMERA vez que se toca esa pestaña en este proceso (cacheado igual que el
+ * resto de esta función, así que no agrega una llamada de red en cada
+ * operación) y se extiende si quedó corta — nunca se acorta ni se
+ * sobreescriben las etiquetas existentes, solo se completan las que faltan.
+ */
 export async function ensureTab(tabName: string, headers: string[]): Promise<number> {
   const cacheado = tabsAseguradas.get(tabName);
   if (cacheado !== undefined) return cacheado;
@@ -69,6 +84,20 @@ export async function ensureTab(tabName: string, headers: string[]): Promise<num
   const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
   const existing = meta.data.sheets?.find((s) => s.properties?.title === tabName);
   if (existing?.properties?.sheetId != null) {
+    const filaHeaders = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${tabName}!A1:${colLetter(headers.length)}1`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const headersActuales = filaHeaders.data.values?.[0] ?? [];
+    if (headersActuales.length < headers.length) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${tabName}!A1:${colLetter(headers.length)}1`,
+        valueInputOption: "RAW",
+        requestBody: { values: [headers.map((h, i) => headersActuales[i] ?? h)] },
+      });
+    }
     tabsAseguradas.set(tabName, existing.properties.sheetId);
     return existing.properties.sheetId;
   }

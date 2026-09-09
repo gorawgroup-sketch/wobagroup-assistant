@@ -207,18 +207,24 @@ async function ofrecerEleccionMovimientosAmbiguos(
   proveedor?: string
 ): Promise<ResultadoIntentarConciliar> {
   try {
-    const pendiente = await guardarConciliacionAmbiguaPendiente({ empresa, gastoId, descripcionGasto, chatId, candidatos, deColaCorreo, esAproximado, proveedor });
-    // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
-    // nunca decide sola (Carlos siempre elige con el botón, es dinero), solo
-    // resalta con ⭐ la opción que ya coincidió con algo confirmado antes
-    // para este proveedor — para que elegir sea más rápido, sin tener que
-    // leer las descripciones bancarias crudas cada vez.
-    const indiceSugerido = proveedor
-      ? await sugerirCandidatoAprendido(proveedor, empresa, candidatos).catch((error) => {
-          console.error("[gastoCallbackHandler] Error consultando sugerencia aprendida de conciliación (no crítico):", error);
-          return undefined;
-        })
-      : undefined;
+    // Hallazgo real de auditoría xhigh (efficiency): guardarConciliacionAmbiguaPendiente y
+    // sugerirCandidatoAprendido son independientes entre sí (ninguna depende del resultado de la
+    // otra — la primera solo necesita los datos ya recibidos como parámetros, no `pendiente.id`) así
+    // que no hay razón para esperarlas una tras otra antes de mandarle el mensaje a Carlos.
+    const [pendiente, indiceSugerido] = await Promise.all([
+      guardarConciliacionAmbiguaPendiente({ empresa, gastoId, descripcionGasto, chatId, candidatos, deColaCorreo, esAproximado, proveedor }),
+      // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
+      // nunca decide sola (Carlos siempre elige con el botón, es dinero), solo
+      // resalta con ⭐ la opción que ya coincidió con algo confirmado antes
+      // para este proveedor — para que elegir sea más rápido, sin tener que
+      // leer las descripciones bancarias crudas cada vez.
+      proveedor
+        ? sugerirCandidatoAprendido(proveedor, empresa, candidatos).catch((error) => {
+            console.error("[gastoCallbackHandler] Error consultando sugerencia aprendida de conciliación (no crítico):", error);
+            return undefined;
+          })
+        : Promise.resolve(undefined),
+    ]);
     const filas: InlineKeyboardButton[][] = candidatos.map((_, i) => [
       {
         text: `${i === indiceSugerido ? "⭐ " : ""}🔗 Conciliar con #${i + 1}`,
@@ -1421,24 +1427,51 @@ async function crearGastoYReportar(
       `sube el comprobante a mano ahí, no reenvíes el documento o se duplicaría el gasto.`;
   }
 
-  await registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto).catch(
-    (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
-  );
-  if (contactoForzado && aprenderAlias) {
-    await registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
-      (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
-    );
-  }
   // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
   // propuesta.cuentaId, cuando viene dado, siempre viene de inferirCuentaGasto
   // (nunca hay hoy un camino donde el usuario la fuerce explícita antes de
   // crear) — se registra para que revisarCorreccionesCuentaContable.ts
   // pueda detectar más adelante si Carlos la corrigió a mano en Holded.
-  if (propuesta.cuentaId) {
-    await registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: propuesta.cuentaId }).catch(
-      (error) => console.error("[gastoCallbackHandler] No se pudo registrar la asignación de cuenta (no crítico):", error)
-    );
-  }
+  //
+  // Hallazgo real de auditoría xhigh: inferirCuentaGasto se llamó para
+  // `propuesta.empresa` (la empresa detectada originalmente, en
+  // procesarGastoEntrante.ts) — si Carlos corrige la clasificación a OTRA
+  // empresa (ej. "EWORKS, servicio de limpieza" vía "✏️ Corregir
+  // clasificación", ver parsearCorreccionClasificacion), `empresaFinal`
+  // difiere de `propuesta.empresa` y propuesta.cuentaId queda siendo la
+  // cuenta de un plan de cuentas AJENO — no tiene sentido en la empresa
+  // real donde se está creando el gasto. Registrar esa asignación de todas
+  // formas contaminaría cuentaCorregidaAprendidaSheet.ts la semana
+  // siguiente: si Holded ignora en silencio ese id ajeno y el gasto cae en
+  // la cuenta genérica por defecto, revisarCorreccionesCuentaContable.ts lo
+  // vería como "Carlos corrigió a la cuenta genérica" y el tier 0 aplicaría
+  // esa cuenta genérica con máxima confianza a este proveedor en la empresa
+  // correcta desde entonces — exactamente el tipo de mala categorización
+  // que este sistema de aprendizaje existe para evitar. Solo se registra
+  // cuando la cuenta sugerida de verdad corresponde a la empresa final.
+  //
+  // Hallazgo real de auditoría xhigh (efficiency): estas 3 escrituras de
+  // aprendizaje son independientes entre sí (tablas distintas) y cada una ya
+  // se protege con su propio .catch "no crítico" — no hay ninguna razón para
+  // esperarlas una tras otra antes de responder a Carlos. Promise.all las
+  // corre en paralelo (nunca puede rechazar, cada promesa ya se atrapa a sí
+  // misma) — el tiempo total pasa de la SUMA de las 3 escrituras a Sheets al
+  // MÁXIMO de las 3.
+  await Promise.all([
+    registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto).catch(
+      (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
+    ),
+    contactoForzado && aprenderAlias
+      ? registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
+          (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
+        )
+      : Promise.resolve(),
+    propuesta.cuentaId && empresaFinal === propuesta.empresa
+      ? registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: propuesta.cuentaId }).catch(
+          (error) => console.error("[gastoCallbackHandler] No se pudo registrar la asignación de cuenta (no crítico):", error)
+        )
+      : Promise.resolve(),
+  ]);
 
   const nombreContacto = contacto.name ?? propuesta.proveedor;
   // Bug real encontrado en vivo (2026-09-07): el mismo contacto placeholder ("PROVEEDOR SIN
@@ -1469,7 +1502,14 @@ async function crearGastoYReportar(
 
   if (conciliarInline) {
     if (movimientoObjetivo) {
-      const notaConciliacion = await conciliarContraMovimientoEspecifico(empresaFinal, movimientoObjetivo, gasto.id);
+      // Hallazgo real de auditoría xhigh: esta es la MISMA clase de ambigüedad
+      // real que gasto_conciliar_elegir aprende de (movimientoObjetivo viene
+      // de PropuestaGasto.movimientosAmbiguos, resuelta por Carlos vía el
+      // teclado "🔗 Conciliar con #N" ANTES de crear el gasto) — faltaba
+      // pasar propuesta.proveedor acá, así que este camino (posiblemente el
+      // más común, ya que resuelve la ambigüedad en el mismo tap que crea el
+      // gasto) nunca alimentaba movimientoAmbiguoAprendidoSheet.ts.
+      const notaConciliacion = await conciliarContraMovimientoEspecifico(empresaFinal, movimientoObjetivo, gasto.id, false, propuesta.proveedor);
       return { mensaje: `${baseMensaje}${notaConciliacion}` };
     }
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.

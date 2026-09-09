@@ -102,6 +102,7 @@ export interface CuentaCorregidaAprendida {
   empresa: string;
   cuentaId: string;
   cuentaNombre: string;
+  confirmadoEn: string;
 }
 
 async function leerFilas(): Promise<CuentaCorregidaAprendida[]> {
@@ -125,6 +126,7 @@ async function leerFilas(): Promise<CuentaCorregidaAprendida[]> {
       empresa: row[1] ? String(row[1]) : "",
       cuentaId: row[2] ? String(row[2]) : "",
       cuentaNombre: row[3] ? String(row[3]) : "",
+      confirmadoEn: row[4] ? String(row[4]) : "",
     });
   });
   return result;
@@ -135,18 +137,26 @@ async function leerFilas(): Promise<CuentaCorregidaAprendida[]> {
  * se detectó una corrección. Match exacto (normalizado) — ver comentario de
  * normalizar() arriba.
  *
- * Nota de auditoría (riesgo conocido, aceptado): a diferencia de
- * cashflowFilaAprendidaSheet.ts (que se auto-corrige solo, revalidando cada
- * vez que usa la fila cacheada), esta entrada no tiene TTL ni
- * re-verificación — una vez detectada una corrección, se confía en ella
- * para siempre. El gate `contradiceCategoria` en el tier 0 de
- * inferirCuentaGasto (write.ts) es una mitigación PARCIAL (evita que una
- * corrección vieja y ya incorrecta contradiga evidencia agregada de
- * categoría más reciente), pero no cierra el caso donde la corrección
- * simplemente dejó de ser válida sin contradecir ninguna categoría. Se
- * acepta por ahora porque el volumen de estas correcciones es bajo y
- * Carlos revisa el reporte de aprendizaje (reporteAprendizaje.ts)
- * periódicamente.
+ * Hallazgo real de auditoría xhigh (2ª pasada, 2 agentes independientes):
+ * el gate `contradiceCategoria` que el tier 0 de inferirCuentaGasto (write.ts)
+ * usaba para "proteger" esta corrección era en realidad AUTO-DERROTABLE —
+ * comparaba contra evidencia agregada de categoría que casi siempre INCLUYE
+ * las mismas líneas históricas mal archivadas que motivaron la corrección en
+ * primer lugar (ej. 2+ compras viejas, ya mal archivadas, con el tag correcto
+ * pero la cuenta vieja) — así que el gate podía vetar justo la corrección que
+ * existe para arreglar ese patrón. Se quitó ese gate del tier 0 (write.ts
+ * confía en `corregida` sin cruzarla contra categoría — es un HECHO verificado
+ * por el job semanal contra Holded real, no una inferencia estadística como
+ * tiers 1/2/3, que sí necesitan ese cruce). La protección real contra que una
+ * corrección se vuelva obsoleta ahora es el TTL de `confirmadoEn` (ver
+ * TTL_CORRECCION_VIGENTE_MS en write.ts) — vence sola y vuelve a los tiers
+ * normales en vez de confiar para siempre. La calidad de ENTRADA a esta tabla
+ * también se reforzó: revisarCorreccionesCuentaContable.ts ahora exige que
+ * TODAS las líneas de la compra compartan una única cuenta (no solo la
+ * primera) antes de registrar una corrección, y gastoCallbackHandler.ts ya no
+ * registra la asignación original si la empresa final difiere de la empresa
+ * para la que se infirió la cuenta (evita contaminación cruzada entre
+ * empresas).
  */
 export async function buscarCuentaCorregidaAprendida(proveedor: string, empresa: string): Promise<CuentaCorregidaAprendida | undefined> {
   const filas = await leerFilas();

@@ -3,7 +3,6 @@ import { loadServiceAccountCredentials } from "./serviceAccount";
 import { invalidarCacheDetalleRegistros } from "./cashflowSheet";
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
-import { obtenerFilaAprendida } from "./cashflowFilaAprendidaSheet";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -441,6 +440,20 @@ export interface FilaCashflowEncontrada {
  * describió Carlos. Puede devolver más de una coincidencia real (dos filas
  * del mismo proveedor y semana con el mismo monto, por ejemplo) — nunca
  * adivina cuál es, quien llame decide qué hacer si hay más de una.
+ *
+ * Hallazgo real de auditoría xhigh (5 agentes independientes, confirmado):
+ * esta función tuvo brevemente un atajo que, cuando había una fila
+ * "aprendida" (ver cashflowFilaAprendidaSheet.ts) para el mismo
+ * bloque+cliente+semana, la revalidaba y devolvía SOLA, saltándose por
+ * completo el escaneo del resto del bloque — rompiendo justo la garantía de
+ * "nunca adivina cuál es" que este mismo comentario promete, porque nunca
+ * llegaba a comprobar si OTRA fila también calzaba. La clave de la caché ni
+ * siquiera incluye "proyecto"/"banco", así que dos filas del mismo
+ * cliente+semana en proyectos distintos (posible en ingresos/pagos_proyectos)
+ * eran indistinguibles para ella. Dado que este Sheet es dinero real y Carlos
+ * prioriza corrección sobre velocidad en todo lo financiero, se quitó el
+ * atajo — esta función siempre escanea el bloque completo, igual que antes
+ * de que la caché existiera.
  */
 export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaValorCashflow): Promise<FilaCashflowEncontrada[]> {
   const config = BLOQUE_CONFIG[criterios.bloque];
@@ -466,60 +479,6 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
     throw new Error(`Configuración inválida para el bloque "${criterios.bloque}": faltan columnas de nombre/semana/valor en BLOQUE_CONFIG.`);
   }
   const semanaBuscada = criterios.semana.trim().toUpperCase();
-
-  // Pedido explícito de Carlos ("que la práctica te vaya dando velocidad"):
-  // antes de escanear el bloque entero, prueba la fila que quedó recordada
-  // la última vez que se confirmó una edición para este mismo
-  // bloque+concepto+semana (ver cashflowFilaAprendidaSheet.ts). Nunca se usa
-  // a ciegas — se relee esa fila puntual y se revalida contra los mismos
-  // criterios que el escaneo completo exigiría; si ya no coincide (Carlos
-  // insertó/borró filas a mano, algo que hace directamente en este Sheet),
-  // se ignora en silencio y se sigue con el escaneo normal de abajo — cero
-  // riesgo de fila equivocada, solo una posible ganancia de velocidad.
-  const filaAprendida = await obtenerFilaAprendida(criterios.bloque, criterios.cliente_o_concepto, criterios.semana).catch((error) => {
-    console.error("[cashflowWrite] Error consultando fila aprendida (no crítico, sigue con el escaneo normal):", error);
-    return undefined;
-  });
-  if (filaAprendida !== undefined) {
-    const respFila = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: `DATOS!${config.columnaInicio}${filaAprendida}:${config.columnaFin}${filaAprendida}`,
-      valueRenderOption: "UNFORMATTED_VALUE",
-    });
-    const rowAprendida = respFila.data.values?.[0] ?? [];
-    const nombreAprendido = String(rowAprendida[idxNombre] ?? "").trim();
-    const semanaAprendida = String(rowAprendida[idxSemana] ?? "").trim();
-    const valorCrudoAprendido = rowAprendida[idxValor];
-    // Hallazgo real de auditoría: faltaba acá la MISMA guarda contra celda
-    // VALOR vacía que ya tiene el escaneo completo más abajo (Number("") da
-    // 0, no NaN) — sin esto, el atajo de caché SÍ podía "confirmar" una fila
-    // de sub-encabezado de categoría con VALOR vacío como si fuera un dato
-    // real, justo el bug que ese chequeo ya existe para evitar.
-    const valorAprendido =
-      valorCrudoAprendido === undefined || valorCrudoAprendido === null || valorCrudoAprendido === ""
-        ? NaN
-        : typeof valorCrudoAprendido === "number"
-          ? valorCrudoAprendido
-          : Number(valorCrudoAprendido);
-    const coincide =
-      nombreAprendido &&
-      textosParecidos(criterios.cliente_o_concepto, nombreAprendido) &&
-      (!semanaBuscada || semanaAprendida.toUpperCase() === semanaBuscada) &&
-      Number.isFinite(valorAprendido) &&
-      montosCercanos(valorAprendido, criterios.valorActual, TOLERANCIA_VALOR_ACTUAL);
-    if (coincide) {
-      return [
-        {
-          fila: filaAprendida,
-          clienteOConcepto: nombreAprendido,
-          semana: semanaAprendida,
-          valorActual: valorAprendido,
-          banco: idxBanco !== -1 ? String(rowAprendida[idxBanco] ?? "") || undefined : undefined,
-          proyecto: idxProyecto !== -1 ? String(rowAprendida[idxProyecto] ?? "") || undefined : undefined,
-        },
-      ];
-    }
-  }
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,

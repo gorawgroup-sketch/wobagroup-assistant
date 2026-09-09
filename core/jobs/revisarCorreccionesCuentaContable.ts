@@ -1,6 +1,6 @@
 import { obtenerAsignacionesPendientesDeRevisar, consumirAsignacionCuenta, purgarAsignacionesVencidas } from "../holded/asignacionCuentaLogSheet";
 import { registrarCuentaCorregidaAprendida } from "../holded/cuentaCorregidaAprendidaSheet";
-import { obtenerCompraHoldedPorId } from "../holded/write";
+import { obtenerCompraHoldedPorId, HoldedApiError } from "../holded/write";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
 import { esDiaHabilEspana } from "../utils/diaHabil";
@@ -59,23 +59,36 @@ export async function revisarCorreccionesCuentaContable(referenceDate: Date = ne
 
     try {
       const compra = await obtenerCompraHoldedPorId(asignacion.empresa, asignacion.gastoId);
-      const cuentaActual = compra.lines?.[0]?.account ?? undefined;
+      const lineasCuenta = (compra.lines ?? []).map((l) => l.account).filter((a): a is string => Boolean(a));
+      // Hallazgo real de auditoría xhigh: crearGastoHolded aplica la MISMA
+      // cuenta a cada línea al crear el gasto, pero comparar solo lines[0]
+      // rompe esa suposición si Carlos edita la compra después (divide una
+      // línea a otra cuenta, reordena líneas) — ya no es la misma señal
+      // limpia de "corregí la cuenta de este gasto completo". Solo se trata
+      // como corrección real cuando TODAS las líneas coinciden en una única
+      // cuenta (igual que al crearlo) y esa cuenta difiere de la asignada.
+      const cuentaUnica = lineasCuenta.length > 0 && lineasCuenta.every((a) => a === lineasCuenta[0]) ? lineasCuenta[0] : undefined;
 
-      if (cuentaActual && cuentaActual !== asignacion.cuentaIdAsignada) {
-        await registrarCuentaCorregidaAprendida(asignacion.proveedor, asignacion.empresa, cuentaActual, "");
+      if (cuentaUnica && cuentaUnica !== asignacion.cuentaIdAsignada) {
+        await registrarCuentaCorregidaAprendida(asignacion.proveedor, asignacion.empresa, cuentaUnica, "");
         correcciones.push({
           proveedor: asignacion.proveedor,
           empresa: asignacion.empresa,
           cuentaAnterior: asignacion.cuentaIdAsignada,
-          cuentaNueva: cuentaActual,
+          cuentaNueva: cuentaUnica,
         });
         resuelto = true;
       }
-      // cuentaActual sin corrección, o sin cuenta legible: todavía no hay
-      // nada que aprender, pero puede haberlo en una revisión futura — no
-      // se marca como resuelto.
+      // Sin cuenta única (líneas mezcladas, o sin cuenta legible), o sin
+      // corrección: todavía no hay nada limpio que aprender, pero puede
+      // haberlo en una revisión futura — no se marca como resuelto.
     } catch (error) {
-      const gastoBorrado = error instanceof Error && /\(404\)|No se encontró la compra/.test(error.message);
+      // Hallazgo real de auditoría xhigh: antes esto se detectaba con un
+      // regex sobre el mensaje del error (frágil — un mensaje no
+      // relacionado que coincidiera con "(404)" por casualidad habría
+      // borrado esta asignación para siempre). Ahora se usa el status HTTP
+      // real y tipado (ver HoldedApiError en write.ts).
+      const gastoBorrado = error instanceof HoldedApiError && error.status === 404;
       if (gastoBorrado) {
         // El gasto ya no existe — nunca habrá una cuenta que comparar.
         resuelto = true;
