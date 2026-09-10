@@ -46,7 +46,14 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "un avance de obra a un cliente es un INGRESO, nunca un gasto, aunque mencione un monto real y " +
           "un 'proveedor' con toda la pinta de una transacción real.",
       },
-      proveedor: { type: "string", description: "Nombre del proveedor/comercio tal como aparece en el correo." },
+      proveedor: {
+        type: "string",
+        description:
+          "Nombre del proveedor/comercio tal como aparece en el correo. Si de verdad no se puede " +
+          "identificar, omite este campo por completo — NUNCA inventes un texto genérico tipo 'Proveedor " +
+          "no identificado' o similar: ese texto puede terminar como nombre de un contacto real y " +
+          "permanente en la contabilidad si se usa para crear uno nuevo.",
+      },
       monto: { type: "number", description: "Importe TOTAL del gasto, tal como aparece en el correo." },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD." },
       monto_equivalente: {
