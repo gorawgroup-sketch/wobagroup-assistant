@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-09-10 ("🆕 Crear contacto nuevo" al crear un gasto sin proveedor identificado — evita reutilizar el contacto genérico compartido).
+actualización: 2026-09-10 (registrar por chat una fila NUEVA en el cashflow, a pedido puntual — antes solo el comparativo automático Holded-vs-cashflow podía crear filas).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -220,6 +220,14 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - Solo cubre los bloques de columnas fijas del cashflow — **ingresos**, **pagos proyectos**, **pagos extras**, **gastos fijos**. Los pagos pendientes de Alberto, las deudas pendientes, y los bloques que todavía no tienen escritor (impuestos por pagar, aplazamiento de impuestos) no admiten edición por chat todavía — corrígelos a mano en el Sheet.
 - Solo corrige el **valor** de esa fila — nunca el cliente/concepto, la semana, el proyecto ni el banco por este camino (para eso, edítalo directo en el Sheet).
 - ✅ Confirmar edición — antes de escribir, vuelve a leer la celda y confirma que sigue teniendo el valor que se vio al proponer el cambio (si cambió mientras tanto — Carlos lo corrigió a mano, u otra escritura — aborta en vez de sobrescribir a ciegas). Después de escribir, relee de nuevo para verificar que el nuevo valor quedó guardado.
+- ❌ Cancelar — no escribe nada.
+- Solo el superadministrador puede aprobar (las dos opciones) — mismo criterio que el resto de escrituras reales del sistema.
+
+**Sobre registrar por chat una fila NUEVA en el cashflow (WOBA y EWORKS), a pedido puntual (no detectada automáticamente):**
+- Pedido explícito de Carlos, tras un caso real (pidió agregar por chat una sanción AEAT y una providencia de apremio al bloque "Pagos Extras" de EWORKS, y el sistema respondió que no tenía forma de crear una fila nueva desde el chat, aunque el comparativo automático Holded-vs-cashflow sí puede): pídelo en texto libre (ej. "incluye una sanción de la AEAT de 137,62€ en pagos extras de EWORKS, semana S37" o "agrega la providencia de apremio de Alberto Comolli, 747,31€, en pagos extras") — identifica empresa + bloque + concepto + valor (+ semana, salvo en pagos pendientes de Alberto/deudas pendientes) y propone el registro con botones.
+- Cubre los mismos bloques que ya tienen escritor automático — **ingresos**, **pagos proyectos**, **pagos extras**, **gastos fijos**, **pagos pendientes de Alberto**, **deudas pendientes**. Impuestos por pagar y aplazamiento de impuestos todavía no tienen escritor (ni por chat ni automático) — regístralos a mano en el Sheet.
+- "Pagos Extras" y "Gastos Fijos" no tienen columna propia de empresa en el Sheet — la propuesta deja constancia de la empresa al inicio del concepto (ej. "EWORKS — Sanción AEAT") y lo avisa explícitamente antes de pedir confirmación.
+- ✅ Confirmar registro — escribe la fila nueva y relee para verificar que quedó guardada.
 - ❌ Cancelar — no escribe nada.
 - Solo el superadministrador puede aprobar (las dos opciones) — mismo criterio que el resto de escrituras reales del sistema.
 

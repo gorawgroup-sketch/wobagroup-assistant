@@ -41,6 +41,7 @@ import { conciliarMovimientoTool } from "./conciliarMovimiento";
 import { programarAccionFuturaTool } from "./programarAccion";
 import { proponerEdicionCompraHoldedTool } from "./editarCompraHolded";
 import { editarValorCashflowTool } from "./editarValorCashflow";
+import { registrarManualCashflowTool } from "./registrarManualCashflow";
 import { reporteAprendizajeTool } from "./reporteAprendizaje";
 import { buscarGastosPorEtiquetaTool } from "./buscarGastosPorEtiqueta";
 import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
@@ -94,6 +95,7 @@ const tools: ToolDefinition[] = [
   programarAccionFuturaTool,
   proponerEdicionCompraHoldedTool,
   editarValorCashflowTool,
+  registrarManualCashflowTool,
   reporteAprendizajeTool,
   buscarGastosPorEtiquetaTool,
   leerAdjuntosCompraHoldedTool,

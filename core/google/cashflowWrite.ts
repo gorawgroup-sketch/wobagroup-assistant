@@ -4,6 +4,7 @@ import { invalidarCachesCashflow, SECCION_IDX_CLIENTE_PENDIENTES } from "./cashf
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
 import { fechaHoyEspana } from "../utils/diaHabil";
+import { conMutex } from "../utils/asyncMutex";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -127,6 +128,25 @@ const BLOQUE_CONFIG: Partial<Record<BloqueEscritura, BloqueColumnas>> = {
   // cuando aparezca uno.
 };
 
+/**
+ * true si el bloque tiene columna propia de empresa en DATOS (ver BLOQUE_CONFIG arriba) — usado por
+ * proponerRegistroManualCashflowTool (core/tools/registrarManualCashflow.ts) para avisar quando la
+ * empresa indicada no queda registrada en ninguna columna real (ej. pagos_extras/gastos_fijos) y hay
+ * que dejar constancia en el propio texto del concepto en vez de perderla en silencio.
+ *
+ * Hallazgo real de auditoría: BLOQUE_CONFIG solo cubre los bloques de columnas fijas — para
+ * pagos_pendientes_alberto/deudas_pendientes (BLOQUES_SECCION_COMPARTIDA, columnas W:AB, escritas por
+ * registrarPendienteEnSheet más abajo) daba `undefined` y por lo tanto `false`, aunque esos DOS
+ * bloques SÍ tienen columna propia de empresa (columna W — ver el comentario junto a
+ * SECCION_COLUMNA_INICIO y NuevoPendiente.empresa más abajo). El falso negativo hacía que la tool
+ * anteponga "EMPRESA — " al concepto (columna Z) además de escribir la empresa real en su propia
+ * columna (W), duplicando el dato y ensuciando el nombre del cliente sin necesidad.
+ */
+export function bloqueTieneColumnaEmpresa(bloque: BloqueEscritura): boolean {
+  if (BLOQUES_SECCION_COMPARTIDA.includes(bloque)) return true;
+  return BLOQUE_CONFIG[bloque]?.tieneEmpresa ?? false;
+}
+
 const PRIMERA_FILA_DATOS = 6;
 const ULTIMA_FILA_BUSQUEDA = 500;
 
@@ -212,8 +232,6 @@ export interface ResultadoEscritura {
  * confirmar que se guardó correctamente.
  */
 export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): Promise<ResultadoEscritura> {
-  const sheetId = assertSheetId();
-  const sheets = getSheetsWriteClient();
   const config = BLOQUE_CONFIG[movimiento.bloque];
   if (!config) {
     if (movimiento.bloque === "aplazamiento_impuestos" || movimiento.bloque === "impuestos_por_pagar") {
@@ -226,58 +244,71 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
     throw new Error(`El bloque "${movimiento.bloque}" no usa registrarMovimientoEnSheet — usa registrarPendienteEnSheet.`);
   }
 
-  const fila = await findNextEmptyRow(movimiento.bloque);
-  const rango = `DATOS!${config.columnaInicio}${fila}:${config.columnaFin}${fila}`;
+  // Hallazgo real de auditoría (motivado por proponerRegistroManualCashflowTool, que hace mucho más
+  // probable que dos confirmaciones lleguen casi juntas al MISMO bloque — ej. dos líneas seguidas
+  // para "Pagos Extras"): findNextEmptyRow lee la primera fila vacía y el propio values.update escribe
+  // ahí en dos llamadas HTTP separadas, sin ninguna transacción real. Dos llamadas casi simultáneas
+  // para el mismo bloque podían calcular la MISMA fila "vacía" y la segunda escritura pisaba
+  // completamente a la primera en silencio — mismo tipo de carrera ya cerrada para Sheets en general
+  // (ver asyncMutex.ts) y para duplicados de gasto (claveMutexDuplicado, gastoCallbackHandler.ts),
+  // aplicado acá por el mismo motivo: serializar TODO el ciclo calcular-fila + escribir + verificar por
+  // clave de bloque, nunca solo el cálculo de la fila.
+  return conMutex(`cashflowBloque:${movimiento.bloque}`, async () => {
+    const sheetId = assertSheetId();
+    const sheets = getSheetsWriteClient();
+    const fila = await findNextEmptyRow(movimiento.bloque);
+    const rango = `DATOS!${config.columnaInicio}${fila}:${config.columnaFin}${fila}`;
 
-  const valoresPorCampo: Record<string, string | number> = {
-    cliente: movimiento.cliente_o_concepto,
-    concepto: movimiento.cliente_o_concepto,
-    proyecto: movimiento.proyecto ?? "",
-    banco: movimiento.banco ?? "",
-    semana: movimiento.semana,
-    valor: movimiento.valor,
-    empresa: movimiento.empresa,
-  };
+    const valoresPorCampo: Record<string, string | number> = {
+      cliente: movimiento.cliente_o_concepto,
+      concepto: movimiento.cliente_o_concepto,
+      proyecto: movimiento.proyecto ?? "",
+      banco: movimiento.banco ?? "",
+      semana: movimiento.semana,
+      valor: movimiento.valor,
+      empresa: movimiento.empresa,
+    };
 
-  const fila_valores = config.campos.map((campo) => valoresPorCampo[campo]);
+    const fila_valores = config.campos.map((campo) => valoresPorCampo[campo]);
 
-  // Invalida antes y después: si Sheets acepta la escritura pero se pierde la
-  // respuesta de red, tampoco conservaremos una fotografía anterior.
-  invalidarCachesCashflow();
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: rango,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [fila_valores] },
-  });
+    // Invalida antes y después: si Sheets acepta la escritura pero se pierde la
+    // respuesta de red, tampoco conservaremos una fotografía anterior.
+    invalidarCachesCashflow();
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: rango,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [fila_valores] },
+    });
 
-  const verificacion = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: rango,
-    valueRenderOption: "FORMATTED_VALUE",
-  });
+    const verificacion = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: rango,
+      valueRenderOption: "FORMATTED_VALUE",
+    });
 
-  const filaEscrita = verificacion.data.values?.[0];
-  const valorEscrito = filaEscrita?.[config.campos.indexOf("valor")];
+    const filaEscrita = verificacion.data.values?.[0];
+    const valorEscrito = filaEscrita?.[config.campos.indexOf("valor")];
 
-  if (!filaEscrita || valorEscrito === undefined || valorEscrito === "") {
+    if (!filaEscrita || valorEscrito === undefined || valorEscrito === "") {
+      return {
+        ok: false,
+        mensaje:
+          `Se intentó escribir en ${rango} pero la verificación de lectura no encontró el valor esperado. ` +
+          "Revisa manualmente la hoja antes de reintentar.",
+        fila,
+        rango,
+      };
+    }
+
+    invalidarCachesCashflow();
     return {
-      ok: false,
-      mensaje:
-        `Se intentó escribir en ${rango} pero la verificación de lectura no encontró el valor esperado. ` +
-        "Revisa manualmente la hoja antes de reintentar.",
+      ok: true,
+      mensaje: `Movimiento registrado y verificado en ${rango}.`,
       fila,
       rango,
     };
-  }
-
-  invalidarCachesCashflow();
-  return {
-    ok: true,
-    mensaje: `Movimiento registrado y verificado en ${rango}.`,
-    fila,
-    rango,
-  };
+  });
 }
 
 // Hallazgo real de auditoría (2026-09-09): esta sección ya NO es X:Z — ver el
@@ -388,6 +419,15 @@ export interface NuevoPendiente {
  * a diferencia de lo que decía este comentario antes.
  */
 export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Promise<ResultadoEscritura> {
+  // Mismo hallazgo y mismo criterio que registrarMovimientoEnSheet (ver su propio comentario): calcular
+  // la fila disponible y escribir ahí son pasos separados — dos confirmaciones casi simultáneas para la
+  // MISMA sección podían pisarse. Se serializa por sección, no por bloque en general, porque
+  // pagos_pendientes_alberto y deudas_pendientes ocupan rangos de fila distintos dentro de las mismas
+  // columnas (acotados por su propio título de sección) — solo compiten consigo mismas.
+  return conMutex(`cashflowSeccion:${pendiente.seccion}`, () => escribirPendienteEnSheet(pendiente));
+}
+
+async function escribirPendienteEnSheet(pendiente: NuevoPendiente): Promise<ResultadoEscritura> {
   const sheetId = assertSheetId();
   const sheets = getSheetsWriteClient();
 

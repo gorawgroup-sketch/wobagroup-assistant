@@ -367,6 +367,12 @@ const ACCIONES_SENSIBLES = new Set([
   // superadmin.
   "edicioncashflow_confirmar",
   "edicioncashflow_cancelar",
+  // Pedido explícito de Carlos: registrar por chat una fila NUEVA en el cashflow (ver
+  // proponerRegistroManualCashflowTool/registrarMovimientoEnSheet) — mismo criterio que
+  // edicioncashflow_confirmar/cancelar: se protege igual que crear un gasto nuevo, y "Cancelar"
+  // también se centraliza en superadmin.
+  "regmanualcf_confirmar",
+  "regmanualcf_cancelar",
   // Pedido explícito de Carlos: aprobar un hilo para conversación automática
   // (ver hiloAutorespuestaStore.ts / revisarConversacionesAutomaticas.ts) es
   // la decisión MÁS sensible de todo el flujo de correo — a diferencia de

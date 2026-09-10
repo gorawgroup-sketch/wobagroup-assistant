@@ -10,6 +10,7 @@ import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoRes
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { obtenerPendientesEdicionCompraHoldedPorChat } from "../holded/pendienteEdicionCompraHoldedStore";
 import { obtenerPendientesEdicionValorCashflowPorChat } from "../google/pendienteEdicionValorCashflowStore";
+import { obtenerPendientesRegistroManualCashflowPorChat } from "../google/pendienteRegistroManualCashflowStore";
 import { obtenerPendienteReclasificacionPorChat, consumirPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
 import { obtenerPendientesCapturaEmpresaPorChat, eliminarPendienteCapturaEmpresa } from "../knowledge/pendienteCapturaEmpresaStore";
 import { obtenerPendienteAlertaDocumentoPorChat, consumirPendienteAlertaDocumento } from "../documental/pendienteAlertaDocumentoStore";
@@ -231,6 +232,20 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando ediciones de valor en cashflow (no crítico):", error);
+  }
+
+  try {
+    const registrosCashflow = await obtenerPendientesRegistroManualCashflowPorChat(chatId);
+    for (const r of registrosCashflow) {
+      // Mismo criterio que las ediciones de cashflow arriba: dato de dinero
+      // real ya identificado, nunca se descarta con "Descartar todo".
+      items.push({
+        descripcion: `🆕 Registro nuevo en cashflow sin aprobar: "${r.resumen}" — revisar individual, no se borra con "Descartar todo"`,
+        creadoEn: r.creadoEn,
+      });
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error consultando registros manuales de cashflow (no crítico):", error);
   }
 
   try {
