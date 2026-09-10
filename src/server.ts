@@ -83,6 +83,7 @@ import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAudi
 import { verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
+import { crearPendienteAutorrepair } from "../core/github/autorrepairPendienteStore";
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
 import type { TelegramUpdate } from "../core/telegram/types";
 import {
@@ -1773,6 +1774,83 @@ app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) 
     res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Pedido explícito de Carlos: al pulsar "Crear issue" en una escalación desde el chat, que además de
+ * quedar registrado para development, se le mande la solicitud a Claude para que investigue y proponga
+ * un arreglo real. La investigación/propuesta corre FUERA de este servidor, en GitHub Actions (ver
+ * .github/workflows/claude-issue-autofix.yml — usa anthropics/claude-code-action, mismo integración ya
+ * probada por la autorrevisión nocturna en modo sombra), porque ahí Claude puede tener acceso de
+ * escritura a CUALQUIER archivo del repo sin las restricciones de la autorrevisión nocturna (que solo
+ * puede tocar core/utils/ — decisión explícita de Carlos, distinta para este flujo) — ese workflow
+ * corre en la infraestructura de GitHub, no en Railway, así que no puede llamar directo a
+ * crearPendienteAutorrepair/sendTelegramMessageWithButtons como sí hace autorrevisionCodigo.ts (mismo
+ * proceso Node). Este endpoint es el puente: una vez el workflow abre el PR real, hace un POST acá con
+ * los datos, y de ahí en adelante es EXACTAMENTE el mismo mecanismo de aprobación ya usado por la
+ * autorrevisión nocturna (autorrepairCallbackHandler.ts) — el PR nunca se fusiona sin el tap de
+ * "✅ Desplegar" en Telegram, sin importar si lo propuso el cron nocturno o este flujo por Issue.
+ *
+ * Reutiliza ADMIN_SECRET (ya configurado en Railway para los demás endpoints /admin/*) en vez de un
+ * secreto nuevo — Carlos solo necesita copiar ese mismo valor como secret de GitHub Actions
+ * (Settings → Secrets and variables → Actions → New repository secret, nombre ADMIN_SECRET) para que
+ * el workflow pueda autenticarse acá.
+ */
+app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  const auth = req.headers.authorization;
+  if (auth !== `Bearer ${adminSecret}`) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  const { numeroPR, rama, urlPR, resumen, chatId, issueNumero } = req.body ?? {};
+  if (
+    typeof numeroPR !== "number" ||
+    typeof rama !== "string" ||
+    !rama ||
+    typeof urlPR !== "string" ||
+    !urlPR ||
+    typeof resumen !== "string" ||
+    !resumen ||
+    typeof chatId !== "number"
+  ) {
+    res.status(400).json({ error: "Faltan campos — se esperan numeroPR (number), rama (string), urlPR (string), resumen (string), chatId (number)." });
+    return;
+  }
+
+  try {
+    await crearPendienteAutorrepair({
+      numeroPR,
+      rama,
+      ruta: issueNumero ? `Issue #${issueNumero}` : "Escalación desde el chat",
+      resumen,
+      urlPR,
+      chatId,
+    });
+
+    await sendTelegramMessageWithButtons(
+      chatId,
+      `🔧 **Arreglo propuesto por Claude**${issueNumero ? ` para el issue #${issueNumero}` : ""}:\n\n${resumen}\n\n${urlPR}`,
+      [
+        [
+          { text: "✅ Desplegar", callback_data: `autorrepair_desplegar:${numeroPR}` },
+          { text: "❌ Descartar", callback_data: `autorrepair_descartar:${numeroPR}` },
+        ],
+      ]
+    );
+
+    res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[webhook/github-autofix] Error registrando el autofix propuesto:", message);
     res.status(500).json({ ok: false, error: message });
   }
 });

@@ -1,0 +1,160 @@
+name: Claude - autofix de Issue escalado desde el chat
+
+# Pedido explicito de Carlos: al pulsar "Crear issue" en una escalacion desde el chat de WOBI, que
+# ademas de quedar registrado para development, se le envie la solicitud a Claude y Claude investigue
+# y proponga un arreglo real. A diferencia de claude-max-shadow-autoreview.yml (solo lectura, rota
+# archivos al azar cada noche), este workflow SI puede escribir codigo y abrir un Pull Request real —
+# decision explicita de Carlos, sin la restriccion de "solo core/utils/" de la autorrevision nocturna,
+# porque los bugs reales que se escalan normalmente tocan dinero/Holded/cashflow. La garantia de
+# seguridad no cambia: el PR nunca se fusiona solo — src/server.ts recibe el aviso via
+# /webhook/github-autofix y lo muestra en Telegram con los mismos botones "Desplegar/Descartar" ya
+# usados por la autorrevision nocturna (ver core/github/autorrepairCallbackHandler.ts).
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: claude-issue-autofix-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    name: Investigar y proponer un arreglo real
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # La propia etiqueta (agregada siempre por escalacionCallbackHandler.ts al crear el issue desde
+    # el chat) es el unico disparador real — evita que este workflow corra sobre cualquier otro issue
+    # del repo.
+    if: contains(github.event.issue.labels.*.name, 'wobi-auto-fix')
+    steps:
+      - name: Comprobar configuracion privada
+        id: preflight
+        shell: bash
+        env:
+          CLAUDE_MAX_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "${CLAUDE_MAX_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "### Claude Max aun no esta activado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Falta el secret CLAUDE_CODE_OAUTH_TOKEN. No se investigo nada." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Extraer el chatId de Telegram del cuerpo del issue
+        id: extraer
+        if: steps.preflight.outputs.configured == 'true'
+        shell: bash
+        run: |
+          CHAT_ID=$(printf '%s' "${ISSUE_BODY}" | grep -oP '(?<=wobi-chat-id:)-?\d+' | head -1 || true)
+          echo "chat_id=$CHAT_ID" >> "$GITHUB_OUTPUT"
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+
+      - name: Descargar codigo
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Investigar y proponer arreglo con Claude Code Max
+        if: steps.preflight.outputs.configured == 'true'
+        id: fix
+        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          label_trigger: "wobi-auto-fix"
+          show_full_output: false
+          display_report: false
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE NUMBER: ${{ github.event.issue.number }}
+            TITLE: ${{ github.event.issue.title }}
+            BODY:
+            ${{ github.event.issue.body }}
+
+            Este issue fue escalado desde el chat de WOBI (un asistente de contabilidad/operaciones
+            para varias empresas) por Carlos, su CAO. Investiga a fondo el bug o la mejora descrita,
+            confirma la causa real LEYENDO el codigo relevante (nunca asumas sin verificar contra el
+            codigo real), e implementa un arreglo de RAIZ — nunca un parche superficial ni una
+            abstraccion/funcionalidad mas alla de lo que el issue pide. Nunca inventes datos ni
+            comportamiento que no puedas confirmar leyendo el repo.
+
+            Antes de proponer nada, corre `npx tsc --noEmit` y `npm run build` para confirmar que
+            compila limpio; si hay tests relevantes (`npm test`), corrElos tambien. Si el arreglo
+            necesita mas contexto o una decision que solo el usuario puede tomar (ej. cambia el
+            comportamiento fiscal/contable de forma ambigua), NO lo implementes a ciegas.
+
+            Si lograste un arreglo real, verificado y completo: crea una rama nueva (con
+            `git checkout -b`), haz commit, sube la rama (`git push`), y abre un Pull Request contra la
+            rama por defecto con `gh pr create` — titulo breve y claro, cuerpo explicando el
+            diagnostico y el arreglo, y agrega literalmente "Fixes #${{ github.event.issue.number }}"
+            en el cuerpo del PR. NUNCA fusiones el PR tu mismo, ni con `gh pr merge` ni de ninguna otra
+            forma — eso requiere una aprobacion manual aparte que no te corresponde a ti.
+
+            Si NO lograste un arreglo real y verificado, NO crees ninguna rama ni PR — en vez de eso,
+            comenta en el issue (`gh issue comment`) explicando que investigaste y que haria falta para
+            seguir.
+
+            Devuelve status="created" (con pr_number, pr_url y branch reales, exactos) si abriste el
+            PR, o status="skipped" (con el motivo en resumen) si no lo hiciste.
+          claude_args: |
+            --model sonnet
+            --max-turns 40
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash(npm:*),Bash(npx:*),Bash(git:*),Bash(gh:*)"
+            --disallowedTools "WebFetch,WebSearch,Task,Skill"
+            --json-schema '{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string","enum":["created","skipped"]},"pr_number":{"type":"integer"},"pr_url":{"type":"string"},"branch":{"type":"string"},"resumen":{"type":"string","maxLength":600}},"required":["status","resumen"]}'
+
+      - name: Avisar a WOBI por Telegram si se creo un PR
+        # El chequeo de status="created" se hace DENTRO del script bash (no aqui con fromJSON) a
+        # proposito: si el paso anterior se salto (preflight.configured=false), structured_output
+        # queda vacio, y fromJSON('') en una condicion `if:` de YAML podria fallar la evaluacion
+        # entera en vez de simplemente evaluar a falso — mas seguro resolverlo con jq, que sí maneja
+        # una entrada vacia sin reventar.
+        if: steps.preflight.outputs.configured == 'true'
+        shell: bash
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.fix.outputs.structured_output }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          STATUS=$(printf '%s' "${STRUCTURED_OUTPUT:-}" | jq -r '.status // empty' 2>/dev/null || true)
+          if [ "$STATUS" != "created" ]; then
+            echo "No se creo ningun PR (status=${STATUS:-vacio}) — nada que avisar." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ -z "${ADMIN_SECRET:-}" ]; then
+            echo "::warning::Falta el secret ADMIN_SECRET en este repo — no se pudo avisar a WOBI por Telegram. El PR ya existe en GitHub, revisalo a mano." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "${CHAT_ID:-}" ]; then
+            echo "::warning::No se encontro wobi-chat-id en el cuerpo del issue — no se pudo avisar a WOBI por Telegram. El PR ya existe en GitHub, revisalo a mano." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          PR_NUMBER=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.pr_number')
+          PR_URL=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.pr_url')
+          BRANCH=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.branch')
+          RESUMEN=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.resumen')
+
+          BODY=$(jq -n \
+            --argjson numeroPR "$PR_NUMBER" \
+            --arg rama "$BRANCH" \
+            --arg urlPR "$PR_URL" \
+            --arg resumen "$RESUMEN" \
+            --argjson chatId "$CHAT_ID" \
+            --argjson issueNumero "$ISSUE_NUMBER" \
+            '{numeroPR:$numeroPR, rama:$rama, urlPR:$urlPR, resumen:$resumen, chatId:$chatId, issueNumero:$issueNumero}')
+
+          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix" \
+            -H "Authorization: Bearer ${ADMIN_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY"
