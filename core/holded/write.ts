@@ -338,6 +338,12 @@ export interface PurchaseCandidato {
   descripcion: string;
   /** Número de documento/comprobante tal como está en Holded (document_number) — undefined si Holded no tiene ninguno registrado (borrador sin número). */
   documentNumber?: string;
+  /**
+   * true si este candidato vino del fallback por monto+fecha de buscarGastoSimilar (el texto de
+   * proveedor NO coincidió) — ver su comentario. El llamador debe avisarlo explícitamente en vez de
+   * mostrarlo como si fuera un match normal por proveedor.
+   */
+  proveedorDistinto?: boolean;
 }
 
 /**
@@ -349,7 +355,14 @@ export interface PurchaseCandidato {
  */
 export function formatearCandidatosDuplicado(candidatos: PurchaseCandidato[]): string {
   return candidatos
-    .map((c) => `• ${c.contactName} — ${c.total.toFixed(2)}€ (${c.fecha}, doc "${c.documentNumber ?? "sin número"}")`)
+    .map((c) => {
+      // Hallazgo real de auditoría: candidatos que vienen del fallback por monto+fecha de
+      // buscarGastoSimilar (proveedorDistinto) NO coinciden por proveedor — sin esta nota, el texto
+      // que envuelve esta lista en cada llamador (ej. "coincide en proveedor, monto y fecha") queda
+      // falso para este caso.
+      const notaProveedor = c.proveedorDistinto ? " [proveedor DISTINTO — coincide solo por importe y fecha]" : "";
+      return `• ${c.contactName} — ${c.total.toFixed(2)}€ (${c.fecha}, doc "${c.documentNumber ?? "sin número"}")${notaProveedor}`;
+    })
     .join("\n");
 }
 
@@ -472,7 +485,33 @@ export async function buscarGastoSimilar(
     cursor = data.cursor;
   }
 
-  return candidatos;
+  if (candidatos.length > 0) return candidatos;
+
+  // Hallazgo real de auditoría (caso real Carlos, 2026-09-10, "JRJ 9 2015 SL" / "Larrauri" — mismo
+  // gasto real, Footprint): el mismo comercio puede aparecer con dos textos de proveedor totalmente
+  // distintos en dos documentos distintos del mismo gasto (nombre comercial en una proforma, razón
+  // social en el comprobante de pago) — textosParecidos no comparte ninguna palabra entre "Larrauri" y
+  // "JRJ 9 2015 SL", así que el filtro de arriba nunca encuentra el gasto YA CREADO, y
+  // procesarGastoEntrante.ts terminaba proponiendo un gasto NUEVO (duplicado) sin ningún aviso. Cuando
+  // el match por proveedor no encuentra nada, se intenta un segundo pase SOLO por monto+fecha EXACTA
+  // (ventanaDias=0 — deliberadamente el mismo día nada más, a diferencia de buscarComprasPorMonto que
+  // se usa para sugerir alternativas de contacto con una ventana de 15 días; acá el objetivo es alta
+  // confianza de que sea EL MISMO gasto, no una coincidencia de importe en otro día — y con
+  // ventanaDias=0 cualquier candidato que devuelva es, por construcción, del mismo día exacto) — nunca
+  // decide sola, solo entrega la alternativa marcada como `proveedorDistinto` para que el llamador la
+  // muestre con una nota explícita y dele a Carlos la decisión, mismo criterio que el resto de este
+  // archivo.
+  //
+  // Hallazgo real de auditoría xhigh de este mismo fix: un `.catch` acá que tragara el error y
+  // devolviera `[]` rompía en silencio el "fail closed" que crearGastoYReportar (gastoCallbackHandler.ts)
+  // ya construyó a propósito sobre esta misma función — esa verificación pre-escritura envuelve
+  // buscarGastoSimilar en su propio try/catch y SOLO falla cerrado (VerificacionDuplicadoFallidaError,
+  // nunca crea el gasto a ciegas) si esta función LANZA. Tragar el error acá adentro habría dejado
+  // pasar exactamente el caso que esa protección existe para atrapar (Holded caído/rate limit justo en
+  // el momento de verificar), pero solo para este segundo pase. Se deja propagar el error tal cual,
+  // igual que ya hacen las llamadas de holdedWriteCall del primer pase (arriba, sin ningún try/catch
+  // propio) — el llamador decide cómo tratarlo, nunca esta función por su cuenta.
+  return (await buscarComprasPorMonto(empresa, criterios.monto, criterios.fecha, 0)).map((c) => ({ ...c, proveedorDistinto: true }));
 }
 
 /**
