@@ -63,6 +63,7 @@ import {
   buscarGastoSimilar,
   formatearCandidatosDuplicado,
   crearGastoHolded,
+  crearContactoHolded,
   adjuntarComprobanteHolded,
   buscarMovimientoSimilar,
   buscarMovimientoAproximado,
@@ -853,6 +854,54 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 
     const placeholder = CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA[resolucion.empresaFinal];
     await procesarGastoConContactoResuelto(resolucion, placeholder, false);
+    return;
+  }
+
+  if (accion === "gasto_crearcontactonuevo") {
+    const resolucion = await consumirResolucionContacto(propuestaId);
+    if (!resolucion) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Creando contacto...");
+    await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Creando el contacto "${resolucion.propuesta.proveedor}" en Holded...`, []);
+
+    try {
+      // Hallazgo real de auditoría: sin esto, dos propuestas del MISMO proveedor nuevo (ej. dos
+      // facturas de "CAFÉ PINO" llegando cerca en el tiempo, ninguna con alias todavía) podían
+      // procesarse casi al mismo tiempo y terminar en DOS POST /contacts para el mismo proveedor —
+      // dos contactos reales y permanentes en Holded para la misma entidad. Mismo criterio que
+      // claveMutexDuplicado (ver crearGastoYReportar): todo el ciclo verificar-y-crear va serializado
+      // por clave (empresa+proveedor normalizado), y se vuelve a comprobar DENTRO del mutex si el
+      // contacto ya existe (por alias recién aprendido o ya creado en Holded por la llamada anterior)
+      // antes de crear uno nuevo — así la segunda llamada en cola reutiliza el contacto real que la
+      // primera acaba de crear, en vez de duplicarlo.
+      const claveMutexContacto = `crearContacto:${resolucion.empresaFinal}:${resolucion.propuesta.proveedor.trim().toLowerCase()}`;
+      const contactoNuevo = await conMutex(claveMutexContacto, async () => {
+        const existente = await buscarContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor);
+        if (existente) {
+          return { id: existente.id, name: existente.name ?? resolucion.propuesta.proveedor.trim() };
+        }
+        return crearContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor);
+      });
+      // aprenderAlias=true (default) a propósito, a diferencia del placeholder genérico — este contacto
+      // es real y propio de este proveedor, así que la próxima factura del mismo debe resolver directo.
+      await procesarGastoConContactoResuelto(resolucion, contactoNuevo);
+    } catch (error) {
+      // Mismo criterio que el catch general de procesarGastoConContactoResuelto (arriba): la
+      // resolución ya se consumió (consumirResolucionContacto), así que ningún botón nuevo con este
+      // mismo id serviría para reintentar — se avisa el error real y se pide reenviar el documento en
+      // vez de ofrecer un botón que ya no apunta a nada.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[gastoCallbackHandler] Error creando contacto nuevo en Holded:", message);
+      await editTelegramMessage(
+        resolucion.chatId,
+        resolucion.messageId,
+        `⚠️ No pude crear el contacto "${resolucion.propuesta.proveedor}" en Holded (${message}) — el gasto NO se creó. Reenvía el documento original para intentarlo de nuevo.`,
+        []
+      );
+    }
     return;
   }
 
@@ -1768,6 +1817,17 @@ async function manejarContactoNoEncontrado(
     { text: "🆗 Crear sin proveedor real", callback_data: `gasto_crearsinproveedor:${resolucionId}` },
   ];
 
+  // Hallazgo real de auditoría (caso "CAFÉ PINO" → "Lidl Breda", Footprint, tercera vez que el
+  // contacto placeholder compartido termina renombrado en Holded — ver crearContactoHolded en
+  // core/holded/write.ts): cuando SÍ se identificó un proveedor real con confianza desde el documento
+  // (propuesta.proveedor no vacío), pero no existe todavía en Holded, ofrece crear un contacto NUEVO Y
+  // PROPIO en vez de forzar la elección entre "alternativa parecida" o "genérico compartido" — evita
+  // de raíz que un gasto futuro no relacionado termine mostrando este mismo nombre por error.
+  const botonContactoNuevo = (resolucionId: string): InlineKeyboardButton[] =>
+    propuesta.proveedor.trim()
+      ? [{ text: `🆕 Crear contacto nuevo: "${propuesta.proveedor}"`, callback_data: `gasto_crearcontactonuevo:${resolucionId}` }]
+      : [];
+
   if (alternativas.length === 0) {
     // Pedido explícito de Carlos: si respondes en este mismo chat (ej. "ya
     // lo creé") en vez de reenviar la factura, el asistente debe reconocer
@@ -1779,8 +1839,8 @@ async function manejarContactoNoEncontrado(
     // y la tool reintentar_contacto_pendiente (core/tools/) hacen el resto.
     const textoFinal =
       `${encabezado}\n\nPuedes crearlo en Holded y avisarme aquí mismo (ej. "ya lo creé") — reintento solo, ` +
-      `sin que tengas que reenviar la factura. O, si prefieres no esperar, uso un contacto genérico y dejo el ` +
-      `nombre real en la descripción (lo corriges en Holded cuando quieras).`;
+      `sin que tengas que reenviar la factura. O creo un contacto nuevo yo mismo con el nombre real ` +
+      `("${propuesta.proveedor}"), o uso el genérico compartido y dejo el nombre real en la descripción.`;
 
     const resolucion = await guardarResolucionContacto({
       propuesta,
@@ -1791,7 +1851,7 @@ async function manejarContactoNoEncontrado(
       messageId: messageId ?? 0,
     });
 
-    const botones: InlineKeyboardButton[][] = [botonSinProveedor(resolucion.id)];
+    const botones: InlineKeyboardButton[][] = [botonContactoNuevo(resolucion.id), botonSinProveedor(resolucion.id)].filter((fila) => fila.length > 0);
 
     if (messageId != null) {
       await editTelegramMessage(chatId, messageId, textoFinal, botones);
@@ -1825,6 +1885,8 @@ async function manejarContactoNoEncontrado(
   const botones: InlineKeyboardButton[][] = alternativas.map((a, i) => [
     { text: `✅ ${a.contactName}`, callback_data: `gasto_usarcontacto:${resolucion.id}:${i}` },
   ]);
+  const filaContactoNuevo = botonContactoNuevo(resolucion.id);
+  if (filaContactoNuevo.length > 0) botones.push(filaContactoNuevo);
   botones.push(botonSinProveedor(resolucion.id));
 
   await editTelegramMessage(chatId, mensajeIdFinal, texto, botones);

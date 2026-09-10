@@ -257,6 +257,11 @@ const ACCIONES_SENSIBLES = new Set([
   "gasto_cancelar",
   "gasto_usarcontacto",
   "gasto_crearsinproveedor",
+  // Pedido explícito de Carlos, tras un caso real (contacto placeholder compartido "PROVEEDOR SIN
+  // IDENTIFICAR" renombrado por error en Holded a "Lidl Breda", tercera vez que pasa): crea un
+  // contacto NUEVO y real en Holded (core/holded/write.ts, crearContactoHolded) — misma clase de
+  // escritura que gasto_crearsinproveedor, mismo criterio de protección.
+  "gasto_crearcontactonuevo",
   "evento_confirmar",
   "cerebroacceso_temporal",
   "cerebroacceso_maestro",

@@ -134,7 +134,15 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "paga. El grupo también factura y cobra a sus propios clientes en muchos proyectos — antes de " +
           "reportar true, confirma que el grupo es quien PAGA en esta transacción, no quien la emite/cobra.",
       },
-      proveedor: { type: "string", description: "Nombre del proveedor/emisor tal como aparece en el documento." },
+      proveedor: {
+        type: "string",
+        description:
+          "Nombre del proveedor/emisor tal como aparece en el documento. Si de verdad no se puede leer " +
+          "(documento ilegible, cortado, sin nombre de emisor visible), omite este campo por completo — " +
+          "NUNCA inventes un texto genérico tipo 'Proveedor no identificado' o similar: ese texto puede " +
+          "terminar como nombre de un contacto real y permanente en la contabilidad si se usa para crear " +
+          "uno nuevo, así que un proveedor vacío/omitido y uno inventado no son intercambiables.",
+      },
       monto: {
         type: "number",
         description:

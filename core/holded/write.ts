@@ -281,6 +281,35 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
 }
 
 /**
+ * Pedido explícito de Carlos, tras un caso real (gasto de "CAFÉ PINO", Footprint, terminó mostrando
+ * "Lidl Breda" en Holded): el contacto placeholder compartido "PROVEEDOR SIN IDENTIFICAR" (ver
+ * CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA en gastoCallbackHandler.ts) es el MISMO registro para TODOS los
+ * gastos sin proveedor identificado de una empresa — si alguien lo renombra en Holded pensando que
+ * corrige UN gasto puntual (ya documentado que pasó 3 veces: "Aeropuerto de Panamá", "Kyriad Creteil",
+ * ahora "Lidl Breda"), cambia el nombre mostrado en TODOS los demás, pasados y futuros. Cuando el
+ * proveedor SÍ se identificó con confianza desde el documento (solo no existe todavía como contacto
+ * real en Holded), crear un contacto NUEVO y propio evita el problema de raíz — nunca vuelve a
+ * compartirse con otro gasto no relacionado. Verificado en vivo contra la API real de Holded
+ * (POST /contacts con {name, type:"supplier"} → 201 con id real; confirmado también que DELETE
+ * /contacts/{id} funciona y es permanente, usado solo para limpiar el contacto de prueba de esta
+ * verificación). "code" es el campo real que Holded usa para el NIF/CIF/RFC del contacto — se omite
+ * cuando no se tiene (nunca se inventa uno).
+ */
+export async function crearContactoHolded(empresa: Empresa, nombre: string, codigoFiscal?: string): Promise<{ id: string; name: string }> {
+  const nombreLimpio = nombre.trim();
+  const data = (await holdedWriteCall(empresa, "POST", "/contacts", {
+    name: nombreLimpio,
+    type: "supplier",
+    ...(codigoFiscal ? { code: codigoFiscal } : {}),
+  })) as { id?: string };
+
+  if (!data.id) {
+    throw new Error("Holded no devolvió un id para el contacto creado.");
+  }
+  return { id: data.id, name: nombreLimpio };
+}
+
+/**
  * Dos palabras se consideran "la misma" para efectos de nombre parecido si
  * son iguales, o si comparten un prefijo largo — cubre plural/singular
  * ("facilities"/"facility") y variantes cortas ("oceana"/"ocean") sin
