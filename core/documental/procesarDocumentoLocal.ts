@@ -1,6 +1,7 @@
 import { extraerDatosFactura } from "./extractInvoiceData";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { manejarClasificacion } from "./processClassification";
+import { sendTelegramMessage } from "../telegram/client";
 
 export const MIMES_LEGIBLES_COMO_FACTURA = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
 
@@ -44,36 +45,59 @@ export async function procesarDocumentoLocal(
   entrada: DocumentoLocalEntrante
 ): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "gasto_duplicado" | "archivo"> {
   if (entrada.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(entrada.mimeType)) {
-    try {
-      const datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo);
-      if (datosFactura.esFacturaOGasto) {
-        const resultado = await procesarGastoEntrante({
-          chatId: entrada.chatId,
-          rutaLocal: entrada.rutaLocal,
-          nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-          mimeType: entrada.mimeType,
-          datos: datosFactura,
-          deColaCorreo: entrada.correoOrigen?.deColaCorreo,
-          origenAdjuntoGmail:
-            entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
-              ? { mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail }
-              : undefined,
-          correoOrigen: entrada.correoOrigen
-            ? {
-                de: entrada.correoOrigen.de,
-                asunto: entrada.correoOrigen.asunto,
-                threadId: entrada.correoOrigen.threadId,
-                messageIdHeader: entrada.correoOrigen.messageIdHeader,
-                mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
-              }
-            : undefined,
-        });
-        if (resultado === "propuesta_enviada") return "gasto_propuesto";
-        if (resultado === "propuesta_duplicada") return "gasto_duplicado";
-        return "gasto_pendiente_datos";
+    // Hallazgo real de auditoría (correo con 8 adjuntos de banca móvil, 6 clasificados mal como
+    // "no es un gasto"): antes, CUALQUIER excepción real de extraerDatosFactura (un fallo transitorio
+    // de la API de Anthropic, o agotar MAX_ITERATIONS sin decisión — ver el throw explícito agregado
+    // en extractInvoiceData.ts) se tragaba en silencio y el documento caía al mismo camino
+    // ("documento genérico") que una decisión DELIBERADA del modelo de que no es un gasto —
+    // indistinguible para Carlos, sin ningún aviso de que en realidad hubo un error, no una lectura
+    // real. Un reintento cubre el caso transitorio más común; si sigue fallando, se avisa
+    // explícitamente ANTES de archivar como genérico, para que quede claro que es incertidumbre, no
+    // una clasificación real.
+    let datosFactura: Awaited<ReturnType<typeof extraerDatosFactura>> | undefined;
+    let errorLectura: unknown;
+    for (let intento = 1; intento <= 2 && !datosFactura; intento++) {
+      try {
+        datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo, entrada.nombreArchivoOriginal);
+      } catch (error) {
+        errorLectura = error;
+        console.error(`[procesarDocumentoLocal] Error leyendo el documento como factura (intento ${intento}/2):`, error);
       }
-    } catch (error) {
-      console.error("[procesarDocumentoLocal] Error leyendo el documento como factura (sigue como documento normal):", error);
+    }
+
+    if (datosFactura?.esFacturaOGasto) {
+      const resultado = await procesarGastoEntrante({
+        chatId: entrada.chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos: datosFactura,
+        deColaCorreo: entrada.correoOrigen?.deColaCorreo,
+        origenAdjuntoGmail:
+          entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
+            ? { mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail }
+            : undefined,
+        correoOrigen: entrada.correoOrigen
+          ? {
+              de: entrada.correoOrigen.de,
+              asunto: entrada.correoOrigen.asunto,
+              threadId: entrada.correoOrigen.threadId,
+              messageIdHeader: entrada.correoOrigen.messageIdHeader,
+              mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
+            }
+          : undefined,
+      });
+      if (resultado === "propuesta_enviada") return "gasto_propuesto";
+      if (resultado === "propuesta_duplicada") return "gasto_duplicado";
+      return "gasto_pendiente_datos";
+    }
+
+    if (!datosFactura && errorLectura) {
+      const mensaje = errorLectura instanceof Error ? errorLectura.message : String(errorLectura);
+      await sendTelegramMessage(
+        entrada.chatId,
+        `⚠️ No pude leer "${entrada.nombreArchivoOriginal}" para saber si es un gasto (error real leyendo el documento, tras 2 intentos: ${mensaje}) — lo archivo como documento genérico por ahora, pero esto es incertidumbre, no una clasificación real. Revísalo a mano; si es un gasto, reenvíalo.`
+      ).catch(() => {});
     }
   }
 
