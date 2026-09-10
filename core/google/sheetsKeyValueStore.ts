@@ -56,7 +56,12 @@ function colLetter(numCols: number): string {
   return String.fromCharCode("A".charCodeAt(0) + numCols - 1);
 }
 
-const tabsAseguradas = new Map<string, number>(); // tabName -> gridId
+interface TabAsegurada {
+  gridId: number;
+  rowCount: number;
+}
+
+const tabsAseguradas = new Map<string, TabAsegurada>();
 
 /**
  * Crea la pestaña (oculta) si no existe, con estos headers en la fila 1.
@@ -76,7 +81,7 @@ const tabsAseguradas = new Map<string, number>(); // tabName -> gridId
  */
 export async function ensureTab(tabName: string, headers: string[]): Promise<number> {
   const cacheado = tabsAseguradas.get(tabName);
-  if (cacheado !== undefined) return cacheado;
+  if (cacheado !== undefined) return cacheado.gridId;
 
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -98,7 +103,10 @@ export async function ensureTab(tabName: string, headers: string[]): Promise<num
         requestBody: { values: [headers.map((h, i) => headersActuales[i] ?? h)] },
       });
     }
-    tabsAseguradas.set(tabName, existing.properties.sheetId);
+    tabsAseguradas.set(tabName, {
+      gridId: existing.properties.sheetId,
+      rowCount: existing.properties.gridProperties?.rowCount ?? 1000,
+    });
     return existing.properties.sheetId;
   }
 
@@ -115,8 +123,45 @@ export async function ensureTab(tabName: string, headers: string[]): Promise<num
   });
 
   const gridId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId ?? 0;
-  tabsAseguradas.set(tabName, gridId);
+  tabsAseguradas.set(tabName, {
+    gridId,
+    rowCount: addResp.data.replies?.[0]?.addSheet?.properties?.gridProperties?.rowCount ?? 1000,
+  });
   return gridId;
+}
+
+/**
+ * `values.update` evita que Sheets adivine dónde comienza la tabla, pero no
+ * puede escribir fuera de la cuadrícula física. Los ledgers de larga vida
+ * pueden superar las 1.000 filas iniciales, así que ampliamos en bloques
+ * antes de escribir. La capacidad queda cacheada y se corrige también al
+ * borrar filas para no añadir una llamada de metadatos por operación.
+ */
+async function asegurarCapacidadFila(tabName: string, fila: number): Promise<void> {
+  const tab = tabsAseguradas.get(tabName);
+  if (!tab || fila <= tab.rowCount) return;
+
+  const cantidad = Math.max(1000, fila - tab.rowCount);
+  await getClient().spreadsheets.batchUpdate({
+    spreadsheetId: assertSheetId(),
+    requestBody: {
+      requests: [
+        {
+          appendDimension: {
+            sheetId: tab.gridId,
+            dimension: "ROWS",
+            length: cantidad,
+          },
+        },
+      ],
+    },
+  });
+  tab.rowCount += cantidad;
+}
+
+function registrarFilasEliminadas(tabName: string, cantidad: number): void {
+  const tab = tabsAseguradas.get(tabName);
+  if (tab) tab.rowCount = Math.max(1, tab.rowCount - cantidad);
 }
 
 export interface FilaCruda {
@@ -132,7 +177,9 @@ export async function leerFilas(tabName: string, numCols: number, headers: strin
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${tabName}!A2:${colLetter(numCols)}10000`,
+    // Sin un tope de fila artificial: la API devuelve hasta el último valor
+    // usado y la cuadrícula ahora crece bajo demanda en agregarFila.
+    range: `${tabName}!A2:${colLetter(numCols)}`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -143,6 +190,28 @@ export async function leerFilas(tabName: string, numCols: number, headers: strin
       rowIndex: i + 2,
       valores: Array.from({ length: numCols }, (_, c) => (row[c] == null ? "" : String(row[c]))),
     }));
+}
+
+/** Lee una sola fila por índice; útil para refrescar leases sin volver a cargar toda la pestaña. */
+export async function leerFila(
+  tabName: string,
+  rowIndex: number,
+  numCols: number,
+  headers: string[]
+): Promise<FilaCruda | undefined> {
+  if (!Number.isInteger(rowIndex) || rowIndex < 2) return undefined;
+  await ensureTab(tabName, headers);
+  const resp = await getClient().spreadsheets.values.get({
+    spreadsheetId: assertSheetId(),
+    range: `${tabName}!A${rowIndex}:${colLetter(numCols)}${rowIndex}`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  const row = resp.data.values?.[0];
+  if (!row?.some((valor) => valor !== undefined && valor !== "")) return undefined;
+  return {
+    rowIndex,
+    valores: Array.from({ length: numCols }, (_, c) => (row[c] == null ? "" : String(row[c]))),
+  };
 }
 
 /** Prefijo del namespace de conMutex de este módulo — evita colisión con cualquier otro código que use el tabName crudo como clave de mutex por otro motivo. */
@@ -187,14 +256,15 @@ const MAX_INTENTOS_ESCRITURA = 3;
  * también la colisión entre una escritura y un borrado concurrente
  * (idéntico patrón, mismo motivo, que gastoProposalSheet.ts).
  */
-export async function agregarFila(tabName: string, numCols: number, headers: string[], valores: (string | number)[]): Promise<void> {
+export async function agregarFila(tabName: string, numCols: number, headers: string[], valores: (string | number)[]): Promise<number> {
   await ensureTab(tabName, headers);
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  await conMutex(claveMutex(tabName), async () => {
+  return conMutex(claveMutex(tabName), async () => {
     for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
       const fila = await siguienteFilaLibre(tabName, numCols);
+      await asegurarCapacidadFila(tabName, fila);
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
         range: `${tabName}!A${fila}:${colLetter(numCols)}${fila}`,
@@ -217,7 +287,7 @@ export async function agregarFila(tabName: string, numCols: number, headers: str
       });
       const filaEscrita = verificacion.data.values?.[0] ?? [];
       const coincide = valores.every((v, i) => String(filaEscrita[i] ?? "") === String(v));
-      if (coincide) return;
+      if (coincide) return fila;
 
       console.error(
         `[sheetsKeyValueStore] Colisión al escribir en "${tabName}", fila ${fila} (otro proceso escribió ahí primero) — reintento ${intento + 1}/${MAX_INTENTOS_ESCRITURA}.`
@@ -257,5 +327,29 @@ export async function eliminarFila(tabName: string, rowIndex: number, headers: s
         ],
       },
     });
+    registrarFilasEliminadas(tabName, 1);
+  });
+}
+
+/** Borra varias filas en una sola llamada. Los índices se ordenan de mayor a menor para que no se desplacen entre sí. */
+export async function eliminarFilas(tabName: string, rowIndices: readonly number[], headers: string[]): Promise<void> {
+  const indices = [...new Set(rowIndices)].filter((i) => Number.isInteger(i) && i >= 2).sort((a, b) => b - a);
+  if (indices.length === 0) return;
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+  const gridId = await ensureTab(tabName, headers);
+
+  await conMutex(claveMutex(tabName), async () => {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: sheetId,
+      requestBody: {
+        requests: indices.map((rowIndex) => ({
+          deleteDimension: {
+            range: { sheetId: gridId, dimension: "ROWS", startIndex: rowIndex - 1, endIndex: rowIndex },
+          },
+        })),
+      },
+    });
+    registrarFilasEliminadas(tabName, indices.length);
   });
 }
