@@ -1,5 +1,9 @@
 import { unlink } from "node:fs/promises";
-import { consumirPendienteReclasificacionPorChat, guardarPendienteReclasificacion } from "../documental/pendienteReclasificacionStore";
+import {
+  consumirPendienteReclasificacionPorChat,
+  consumirPendienteReclasificacionPorId,
+  obtenerPendienteReclasificacionPorChat,
+} from "../documental/pendienteReclasificacionStore";
 import { archivarDocumentoEnDrive } from "../documental/archiveFile";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import type { PropuestaClasificacion } from "../documental/classificationStore";
@@ -65,7 +69,7 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
       return "Error: hace falta una empresa válida (WOBA, EWORKS o Footprint) y una carpeta — pregúntale al usuario cuál falta.";
     }
 
-    const pendiente = await consumirPendienteReclasificacionPorChat(chatId);
+    const pendiente = await obtenerPendienteReclasificacionPorChat(chatId);
     if (!pendiente) {
       return "No hay ningún documento pendiente de reclasificar para este chat (puede que ya se haya procesado, o que haya expirado).";
     }
@@ -92,21 +96,15 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
     try {
       resultado = await archivarDocumentoEnDrive(propuestaCorregida, crearCarpetaSiNoExiste);
     } catch (error) {
-      // Se reinserta el pendiente para no perderlo por un error transitorio.
-      await guardarPendienteReclasificacion({ ...pendiente }).catch(() => {});
       const message = error instanceof Error ? error.message : String(error);
       return `Error archivando el documento: ${message}. La pregunta sigue pendiente, se puede reintentar.`;
     }
 
     if (!resultado.ok) {
-      // No se logró archivar (ej. no existe esa empresa/carpeta) — se
-      // reinserta para poder reintentar con otro dato, igual que un error
-      // transitorio. Nunca avanza la cola sobre un archivado que no ocurrió.
-      await guardarPendienteReclasificacion({ ...pendiente }).catch((error) =>
-        console.error("[reclasificarDocumentoPendiente] Error reinsertando el pendiente:", error)
-      );
       return `No se pudo archivar "${pendiente.nombreArchivoOriginal}": ${resultado.mensaje} La pregunta sigue pendiente, se puede reintentar con otro dato.`;
     }
+
+    await consumirPendienteReclasificacionPorId(pendiente.id, chatId).catch(() => undefined);
 
     if (pendiente.correoOrigen?.deColaCorreo) {
       await avanzarColaCorreoSiActivo(chatId);

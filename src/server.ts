@@ -92,6 +92,7 @@ import {
 import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
+import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -292,6 +293,7 @@ app.get("/health", (_req: Request, res: Response) => {
     cacheLecturas: resumirMetricasCachesLectura(),
     entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
     enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
+    subidasDrive: obtenerEstadoSubidasDriveDurables(),
   });
 });
 
@@ -1791,6 +1793,17 @@ servidorHttp = app.listen(PORT, () => {
       })
       .catch((error) => {
         console.error("[gmail/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarSubidasDriveAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[drive/durable] Reconciliación de arranque:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error("[drive/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
       })
   );
 });

@@ -1,4 +1,4 @@
-import { consumirPropuestaClasificacionPorChat } from "../documental/classificationStore";
+import { consumirPropuestaClasificacion, obtenerPropuestaClasificacionPendientePorChat } from "../documental/classificationStore";
 import { archivarDocumentoEnDrive } from "../documental/archiveFile";
 import type { ToolDefinition } from "./types";
 
@@ -34,7 +34,7 @@ export const confirmarArchivoPendienteTool: ToolDefinition = {
       return "Error: no se pudo determinar el chat — no se puede confirmar ninguna propuesta.";
     }
 
-    const propuesta = await consumirPropuestaClasificacionPorChat(chatId);
+    const propuesta = await obtenerPropuestaClasificacionPendientePorChat(chatId);
     if (!propuesta) {
       return "No hay ninguna propuesta de archivo pendiente para este chat (puede que ya se haya " +
         "procesado, o que haya expirado — vuelve a mandar el archivo si hace falta).";
@@ -42,8 +42,10 @@ export const confirmarArchivoPendienteTool: ToolDefinition = {
 
     const resultado = await archivarDocumentoEnDrive(propuesta);
     if (!resultado.ok) {
-      return `No se pudo archivar "${propuesta.nombreArchivoOriginal}": ${resultado.mensaje}`;
+      return `No se pudo archivar "${propuesta.nombreArchivoOriginal}": ${resultado.mensaje} La propuesta sigue pendiente y se puede verificar o reintentar sin duplicar.`;
     }
+
+    await consumirPropuestaClasificacion(propuesta.id).catch(() => undefined);
 
     const notaCorreoOrigen = propuesta.correoOrigen
       ? ` Este documento vino de un correo — de: ${propuesta.correoOrigen.de}, asunto: "${propuesta.correoOrigen.asunto}". ` +

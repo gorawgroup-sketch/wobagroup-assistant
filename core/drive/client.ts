@@ -1,6 +1,15 @@
 import { createReadStream } from "node:fs";
 import { google, drive_v3 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
+import {
+  ejecutarSubidaDriveDurable,
+  identidadSubidaDrive,
+  reconciliarSubidasDrivePendientes,
+  SubidaDriveInciertaError,
+  type ResultadoSubidaDrive,
+} from "./durableUpload";
+import { durableUploadStore } from "./durableUploadStore";
 
 /** Escapa un valor para usarlo dentro de una consulta de Drive (name = '...' / name contains '...') — compartido por todas las búsquedas de este archivo, antes 4 copias independientes de la misma línea. */
 function escaparParaConsultaDrive(nombre: string): string {
@@ -544,20 +553,71 @@ export interface ArchivoSubido {
   webViewLink: string;
 }
 
-/**
- * Sube un archivo local a una carpeta específica de Drive. Solo debe
- * invocarse tras aprobación explícita del usuario — nunca automáticamente.
- */
-export async function subirArchivoADrive(
+const APP_PROPERTY_EFECTO = "wobi_effect";
+const metricasSubidasDurables = {
+  activas: 0,
+  subidas: 0,
+  reutilizadas: 0,
+  verificadasRecuperadas: 0,
+  incertidumbresDetectadas: 0,
+  errores: 0,
+  inciertasUltimaRevision: 0,
+};
+let timerReconciliacionSubidas: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionSubidasDriveDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    // Solo false explícito restaura temporalmente el camino anterior.
+    habilitado: (env.WOBI_DRIVE_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoSubidasDriveDurables() {
+  return { habilitado: configuracionSubidasDriveDurables().habilitado, ...metricasSubidasDurables };
+}
+
+async function buscarArchivoPorMarcador(
+  marcador: string,
+  folderId: string
+): Promise<ResultadoSubidaDrive | undefined> {
+  const drive = getDriveWriteClient();
+  const q =
+    `appProperties has { key='${APP_PROPERTY_EFECTO}' and value='${marcador}' } ` +
+    `and '${escaparParaConsultaDrive(folderId)}' in parents and trashed = false`;
+  const res = await drive.files.list({
+    q,
+    fields: "incompleteSearch, files(id, webViewLink)",
+    pageSize: 2,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+    corpora: "allDrives",
+  });
+  if (res.data.incompleteSearch) {
+    throw new Error("Drive devolvió una búsqueda incompleta para el marcador durable.");
+  }
+  const encontrado = res.data.files?.[0];
+  if (!encontrado?.id) return undefined;
+  return {
+    fileId: encontrado.id,
+    webViewLink: encontrado.webViewLink ?? `https://drive.google.com/file/d/${encontrado.id}/view`,
+  };
+}
+
+async function subirArchivoADriveDirecto(
   rutaLocal: string,
   nombreArchivo: string,
   mimeType: string | undefined,
-  folderId: string
+  folderId: string,
+  marcador?: string
 ): Promise<ArchivoSubido> {
   const drive = getDriveWriteClient();
 
   const res = await drive.files.create({
-    requestBody: { name: nombreArchivo, parents: [folderId] },
+    requestBody: {
+      name: nombreArchivo,
+      parents: [folderId],
+      appProperties: marcador ? { [APP_PROPERTY_EFECTO]: marcador } : undefined,
+    },
     media: { mimeType: mimeType || "application/octet-stream", body: createReadStream(rutaLocal) },
     fields: "id, webViewLink",
     supportsAllDrives: true,
@@ -571,6 +631,92 @@ export async function subirArchivoADrive(
     fileId: res.data.id,
     webViewLink: res.data.webViewLink ?? `https://drive.google.com/file/d/${res.data.id}/view`,
   };
+}
+
+/** Reconciliación de arranque: únicamente busca marcadores privados; nunca vuelve a subir. */
+export async function reconciliarSubidasDriveAlArrancar() {
+  if (!configuracionSubidasDriveDurables().habilitado) {
+    return { revisadas: 0, verificadas: 0, inciertas: 0, errores: 0 };
+  }
+  const resumen = await reconciliarSubidasDrivePendientes(durableUploadStore, buscarArchivoPorMarcador);
+  metricasSubidasDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasSubidasDurables.incertidumbresDetectadas += resumen.inciertas;
+  metricasSubidasDurables.errores += resumen.errores;
+  metricasSubidasDurables.inciertasUltimaRevision = resumen.inciertas;
+  if (resumen.inciertas > 0 || resumen.errores > 0) programarReconciliacionSubidasDrive(30_000, 3);
+  return resumen;
+}
+
+/** Reintentos acotados de solo lectura después de una respuesta ambigua. */
+function programarReconciliacionSubidasDrive(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacionSubidas || intentosRestantes <= 0) return;
+  timerReconciliacionSubidas = setTimeout(() => {
+    timerReconciliacionSubidas = null;
+    void reconciliarSubidasDrivePendientes(durableUploadStore, buscarArchivoPorMarcador)
+      .then((resumen) => {
+        metricasSubidasDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasSubidasDurables.incertidumbresDetectadas += resumen.inciertas;
+        metricasSubidasDurables.errores += resumen.errores;
+        metricasSubidasDurables.inciertasUltimaRevision = resumen.inciertas;
+        if (resumen.inciertas > 0 || resumen.errores > 0) {
+          programarReconciliacionSubidasDrive(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasSubidasDurables.errores++;
+        programarReconciliacionSubidasDrive(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacionSubidas.unref();
+}
+
+/**
+ * Sube un archivo local a una carpeta específica de Drive. Solo debe
+ * invocarse tras aprobación explícita del usuario — nunca automáticamente.
+ * La clave estable identifica la aprobación, no el nombre ni los bytes: así
+ * un retry técnico reutiliza el archivo, pero dos aprobaciones deliberadas
+ * del mismo documento siguen siendo dos acciones distintas.
+ */
+export async function subirArchivoADrive(
+  rutaLocal: string,
+  nombreArchivo: string,
+  mimeType: string | undefined,
+  folderId: string,
+  idempotencyKey: string,
+  proceso: string = "archivo_aprobado"
+): Promise<ArchivoSubido> {
+  if (!configuracionSubidasDriveDurables().habilitado) {
+    return subirArchivoADriveDirecto(rutaLocal, nombreArchivo, mimeType, folderId);
+  }
+
+  const identidad = identidadSubidaDrive(idempotencyKey, folderId);
+  return conMutex(`drive-upload:${identidad.clave}`, async () => {
+    metricasSubidasDurables.activas++;
+    try {
+      const subida = await ejecutarSubidaDriveDurable(
+        idempotencyKey,
+        folderId,
+        proceso,
+        durableUploadStore,
+        {
+          buscar: buscarArchivoPorMarcador,
+          subir: (marcador) => subirArchivoADriveDirecto(rutaLocal, nombreArchivo, mimeType, folderId, marcador),
+        }
+      );
+      if (subida.reutilizado) metricasSubidasDurables.reutilizadas++;
+      else metricasSubidasDurables.subidas++;
+      return subida.resultado;
+    } catch (error) {
+      if (error instanceof SubidaDriveInciertaError) {
+        metricasSubidasDurables.incertidumbresDetectadas++;
+        metricasSubidasDurables.inciertasUltimaRevision++;
+        programarReconciliacionSubidasDrive(30_000, 3);
+      } else metricasSubidasDurables.errores++;
+      throw error;
+    } finally {
+      metricasSubidasDurables.activas--;
+    }
+  });
 }
 
 /**

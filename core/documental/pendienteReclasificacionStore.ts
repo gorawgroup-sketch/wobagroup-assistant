@@ -184,14 +184,21 @@ async function purgarVencidas(): Promise<void> {
 }
 
 export async function guardarPendienteReclasificacion(
-  datos: Omit<PendienteReclasificacion, "id" | "creadoEn">
+  datos: Omit<PendienteReclasificacion, "id" | "creadoEn"> & { id?: string }
 ): Promise<PendienteReclasificacion> {
   await purgarVencidas();
   const sheetId = assertSheetId();
   const sheets = getClient();
   await ensureTab();
 
-  const pendiente: PendienteReclasificacion = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+  // Si viene de una propuesta ya identificada conservamos su id. Es la
+  // identidad durable de la aprobación y evita que un reintento técnico se
+  // convierta en una segunda subida distinta.
+  const pendiente: PendienteReclasificacion = {
+    ...datos,
+    id: datos.id ?? randomUUID().slice(0, 8),
+    creadoEn: Date.now(),
+  };
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
@@ -213,6 +220,18 @@ export async function consumirPendienteReclasificacionPorChat(chatId: number): P
   const masReciente = delChat.reduce((a, b) => (a.pendiente.creadoEn >= b.pendiente.creadoEn ? a : b));
   await eliminarFila(masReciente.rowIndex);
   return masReciente.pendiente;
+}
+
+/** Consume exactamente el pendiente que produjo la acción, sin afectar otro documento del mismo chat. */
+export async function consumirPendienteReclasificacionPorId(
+  id: string,
+  chatId?: number
+): Promise<PendienteReclasificacion | undefined> {
+  const todas = await leerTodas();
+  const match = todas.find(({ pendiente }) => pendiente.id === id && (chatId === undefined || pendiente.chatId === chatId));
+  if (!match) return undefined;
+  await eliminarFila(match.rowIndex);
+  return match.pendiente;
 }
 
 /** Solo lectura (no consume) — para que buildSystemPromptDinamico avise de la pregunta pendiente. */
