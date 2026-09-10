@@ -114,7 +114,7 @@ export const registrarManualCashflowTool: ToolDefinition = {
       : `\n\n⚠️ El bloque "${bloque}" no tiene columna propia de empresa en el Sheet — se incluye "${empresa}" al inicio del concepto para que quede identificable.`;
 
     const texto =
-      `🆕 *Propuesta de registro nuevo en cashflow* — ${resumen}${notaEmpresa}\n\n` +
+      `🆕 **Propuesta de registro nuevo en cashflow** — ${resumen}${notaEmpresa}\n\n` +
       `Esto crea una fila NUEVA — no toca ninguna fila existente.`;
 
     const pendiente = await crearPendienteRegistroManualCashflow({
