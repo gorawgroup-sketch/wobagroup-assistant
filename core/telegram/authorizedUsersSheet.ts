@@ -266,6 +266,10 @@ const ACCIONES_SENSIBLES = new Set([
   "cerebroacceso_temporal",
   "cerebroacceso_maestro",
   "reportecontable_enviar",
+  // Reintento con nonce después de un rechazo inequívoco de Gmail. Usa un
+  // prefijo corto para respetar el límite de 64 bytes de callback_data aun
+  // cuando la propuesta tenga un UUID completo.
+  "rpt_retry",
   "email_proceder",
   "email_descartar",
   "email_orientar",

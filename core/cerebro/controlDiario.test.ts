@@ -35,6 +35,7 @@ function entradaBase(): EntradaControlDiario {
       limiteMensualUSD: 100,
       procesosPermitidos: 4,
     },
+    enviosCorreo: { preparado: 0, enviando: 0, verificado: 3, incierto: 0 },
     generadoEn: new Date("2026-09-09T09:00:00Z"),
   };
 }
@@ -76,4 +77,20 @@ test("un fallo de memoria se muestra como crítico y nunca como cero", () => {
   assert.equal(control.costos, null);
   assert.ok(control.recomendaciones.some((r) => r.id === "costos-no-disponibles"));
   assert.ok(control.recomendaciones.some((r) => r.id === "memoria-no-integra"));
+});
+
+test("un envío de correo incierto se eleva como crítico", () => {
+  const entrada = entradaBase();
+  entrada.enviosCorreo = { preparado: 0, enviando: 0, verificado: 2, incierto: 1 };
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "envios-correo-inciertos"));
+});
+
+test("un fallo leyendo el ledger nunca se representa como cero", () => {
+  const entrada = entradaBase();
+  entrada.enviosCorreo = null;
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "ledger-correo-no-disponible"));
 });

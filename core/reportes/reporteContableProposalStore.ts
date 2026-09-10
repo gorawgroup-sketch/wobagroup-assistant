@@ -64,6 +64,12 @@ export async function actualizarMessageIdReporteContable(id: string, messageId: 
   await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.propuesta, messageId }));
 }
 
+/** Lee sin consumir; la propuesta solo se borra al cancelar o confirmar el envío. */
+export async function obtenerPropuestaReporteContable(id: string): Promise<PropuestaReporteContable | undefined> {
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.propuesta.id === id)?.propuesta;
+}
+
 /** Consume (lee y elimina) una propuesta por id. undefined si no existe o venció. */
 export async function consumirPropuestaReporteContable(id: string): Promise<PropuestaReporteContable | undefined> {
   const vigentes = await leerVigentes();

@@ -7,6 +7,7 @@ import {
   type DiagnosticoMemoriaConversacional,
 } from "../claude/conversationStore";
 import { cargarConfiguracionPoliticaApi, type ModoPoliticaApi } from "../ai/policy";
+import { durableSendStore, type ResumenLedgerEnviosCorreo } from "../gmail/durableSendStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -36,6 +37,7 @@ export interface ControlDiario {
   costos: AnalisisCostosDiario | null;
   memoria: DiagnosticoMemoriaConversacional;
   politica: PoliticaControlDiario;
+  enviosCorreo: ResumenLedgerEnviosCorreo | null;
   recomendaciones: RecomendacionControlDiario[];
 }
 
@@ -43,6 +45,8 @@ export interface EntradaControlDiario {
   costos: AnalisisCostosDiario | null;
   memoria: DiagnosticoMemoriaConversacional;
   politica: PoliticaControlDiario;
+  /** undefined mantiene compatibilidad de pruebas/llamadores; null significa fallo real de lectura. */
+  enviosCorreo?: ResumenLedgerEnviosCorreo | null;
   generadoEn?: Date;
 }
 
@@ -61,6 +65,26 @@ function nombreProceso(proceso: string): string {
 export function generarControlDiario(entrada: EntradaControlDiario): ControlDiario {
   const recomendaciones: RecomendacionControlDiario[] = [];
   const { costos, memoria, politica } = entrada;
+
+  if (entrada.enviosCorreo === null) {
+    recomendaciones.push({
+      id: "ledger-correo-no-disponible",
+      prioridad: "critica",
+      titulo: "No se pudo comprobar la continuidad del correo",
+      detalle: "El control diario no pudo leer el ledger durable de envíos; no se asume que esté vacío.",
+      siguientePaso: "Revisar permisos de Google Sheets y la pestaña _envios_correo_durables antes de reenviar correos.",
+      modulo: "conexiones",
+    });
+  } else if (entrada.enviosCorreo && entrada.enviosCorreo.incierto > 0) {
+    recomendaciones.push({
+      id: "envios-correo-inciertos",
+      prioridad: "critica",
+      titulo: "Hay envíos de correo con resultado incierto",
+      detalle: `${entrada.enviosCorreo.incierto} envío(s) no pudieron confirmarse contra la carpeta Enviados.`,
+      siguientePaso: "Comprobar esos correos en Gmail antes de autorizar cualquier envío equivalente nuevo.",
+      modulo: "conexiones",
+    });
+  }
 
   if (!costos) {
     recomendaciones.push({
@@ -174,18 +198,23 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     costos,
     memoria,
     politica,
+    enviosCorreo: entrada.enviosCorreo ?? null,
     recomendaciones,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria] = await Promise.all([
+  const [costos, memoria, enviosCorreo] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
         return null;
       }),
     diagnosticarMemoriaConversacional(),
+    durableSendStore.obtenerResumen().catch((error) => {
+      console.error("[controlDiario] No se pudo leer el ledger de correo:", error instanceof Error ? error.name : "Error");
+      return null;
+    }),
   ]);
   const config = cargarConfiguracionPoliticaApi();
 
@@ -199,6 +228,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       limiteMensualUSD: config.limiteMensualUSD,
       procesosPermitidos: config.procesosPermitidos.size,
     },
+    enviosCorreo,
     generadoEn: referencia,
   });
 }

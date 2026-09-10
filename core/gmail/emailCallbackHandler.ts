@@ -12,6 +12,7 @@ import {
   consumirOfertaResponderCorreo,
 } from "./emailReplyOfferStore";
 import { enviarCorreo, obtenerCuerpoCompletoCorreo, extraerDireccionCorreo } from "./client";
+import { EnvioCorreoInciertoError } from "./durableSend";
 import { askClaude } from "../claude/client";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
@@ -380,6 +381,8 @@ export async function handleDraftCallback(callback: TelegramCallbackQuery): Prom
       to: borrador.to,
       asunto: borrador.subject,
       cuerpo: borrador.cuerpo,
+      idempotencyKey: `borrador:${borrador.id}`,
+      proceso: "borrador_aprobado",
       threadId: borrador.threadId,
       messageIdHeader: borrador.messageIdHeader,
     });
@@ -392,17 +395,22 @@ export async function handleDraftCallback(callback: TelegramCallbackQuery): Prom
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[emailCallbackHandler] Error enviando correo:", message);
+    const incierto = error instanceof EnvioCorreoInciertoError;
     await editTelegramMessage(
       borrador.chatId,
       borrador.messageId,
-      `⚠️ Error al enviar a ${borrador.to}: ${message}\n\nEl borrador se conserva — puedes volver a intentarlo.`,
-      [
-        [
-          { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
-          { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
-        ],
-        [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
-      ]
+      incierto
+        ? `⚠️ Estado de envío incierto para ${borrador.to}. Gmail no confirmó el resultado y Wobi no repetirá el envío para evitar un correo duplicado. El ledger lo verificará contra la carpeta Enviados.`
+        : `⚠️ Error al enviar a ${borrador.to}: ${message}\n\nEl borrador se conserva — puedes volver a intentarlo.`,
+      incierto
+        ? []
+        : [
+            [
+              { text: "📤 Reintentar envío", callback_data: `draft_enviar:${borrador.id}:${Date.now().toString(36)}` },
+              { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
+            ],
+            [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
+          ]
     );
   }
 }

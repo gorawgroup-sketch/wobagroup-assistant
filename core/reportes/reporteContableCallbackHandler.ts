@@ -1,8 +1,9 @@
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
-import { enviarCorreo } from "../gmail/client";
+import { consultarEnvioCorreoExistente, enviarCorreo } from "../gmail/client";
+import { EnvioCorreoInciertoError } from "../gmail/durableSend";
 import { generarReporteContable } from "../holded/accounting";
 import { generarExcelContable, generarPDFContable } from "./generarReporteContable";
-import { consumirPropuestaReporteContable } from "./reporteContableProposalStore";
+import { consumirPropuestaReporteContable, obtenerPropuestaReporteContable } from "./reporteContableProposalStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -28,7 +29,7 @@ export async function handleReporteContableCallback(callback: TelegramCallbackQu
   }
 
   const [accion, id] = data.split(":");
-  const propuesta = await consumirPropuestaReporteContable(id);
+  const propuesta = await obtenerPropuestaReporteContable(id);
 
   if (!propuesta) {
     await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
@@ -37,6 +38,7 @@ export async function handleReporteContableCallback(callback: TelegramCallbackQu
 
   if (accion === "reportecontable_cancelar") {
     await answerCallbackQuerySafe(callback.id);
+    await consumirPropuestaReporteContable(id);
     await editTelegramMessage(propuesta.chatId, propuesta.messageId, "❌ Envío del reporte cancelado.", []);
     return;
   }
@@ -45,6 +47,18 @@ export async function handleReporteContableCallback(callback: TelegramCallbackQu
   await answerCallbackQuerySafe(callback.id, "Generando y enviando...");
 
   try {
+    const idempotencyKey = `reporte-contable:${propuesta.id}`;
+    const envioExistente = await consultarEnvioCorreoExistente(idempotencyKey);
+    if (envioExistente) {
+      await consumirPropuestaReporteContable(id);
+      await editTelegramMessage(
+        propuesta.chatId,
+        propuesta.messageId,
+        `✅ El reporte de ${propuesta.empresa} ya estaba confirmado en Gmail; no se generó ni envió una segunda copia.`,
+        []
+      );
+      return;
+    }
     const reporte = await generarReporteContable(propuesta.empresa, propuesta.desde, propuesta.hasta);
     const [excel, pdf] = await Promise.all([generarExcelContable(reporte), generarPDFContable(reporte)]);
 
@@ -55,11 +69,15 @@ export async function handleReporteContableCallback(callback: TelegramCallbackQu
         `Adjunto el balance y pérdidas y ganancias de ${propuesta.empresa} para el período ${propuesta.desde} a ${propuesta.hasta}.\n\n` +
         `Reconstruido a partir de los datos contables reales de Holded (no es la exportación oficial de Holded, esa función no está disponible por su API) — resultado aproximado del período: ${reporte.resultadoAproximado.toFixed(2)} EUR.\n\n` +
         `— Wobi`,
+      idempotencyKey,
+      proceso: "reporte_contable",
       adjuntos: [
         { filename: excel.filename, mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", content: excel.buffer },
         { filename: pdf.filename, mimeType: "application/pdf", content: pdf.buffer },
       ],
     });
+
+    await consumirPropuestaReporteContable(id);
 
     await editTelegramMessage(
       propuesta.chatId,
@@ -70,11 +88,16 @@ export async function handleReporteContableCallback(callback: TelegramCallbackQu
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Error generando/enviando reporte contable:", message);
+    const incierto = error instanceof EnvioCorreoInciertoError;
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
-      `⚠️ No se pudo generar o enviar el reporte (error: ${message}). Nada se envió — puedes pedirlo de nuevo.`,
-      []
+      incierto
+        ? "⚠️ Gmail no confirmó si el reporte salió. Wobi bloqueó el reenvío para evitar duplicarlo y verificará el resultado contra la carpeta Enviados."
+        : `⚠️ No se pudo generar o enviar el reporte (error: ${message}). La propuesta se conserva y puedes reintentar.`,
+      incierto
+        ? []
+        : [[{ text: "📤 Reintentar", callback_data: `rpt_retry:${id}:${Date.now().toString(36)}` }]]
     );
   }
 }
