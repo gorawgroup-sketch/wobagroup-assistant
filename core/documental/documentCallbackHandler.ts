@@ -6,6 +6,7 @@ import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacio
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "./pendienteReclasificacionStore";
 import { consumirPendienteDesambiguacionPorId, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
+import { registrarDocumentoArchivadoDesdeCorreo } from "./documentoArchivadoPorCorreoStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
@@ -18,6 +19,23 @@ async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): 
     const message = error instanceof Error ? error.message : String(error);
     console.error("[documentCallbackHandler] No se pudo responder el callback_query (no crítico):", message);
   }
+}
+
+/**
+ * Registra que este adjunto de correo YA se resolvió (archivado con éxito, o descartado a propósito
+ * — ambas son decisiones finales legítimas) — para que un reproceso futuro del mismo correo
+ * (automático o vía revisar_correo_puntual) lo salte en vez de volver a descargarlo y clasificarlo
+ * desde cero (ver documentoArchivadoPorCorreoStore.ts). Deliberadamente se llama SOLO en los puntos
+ * de resolución REAL, nunca al proponer — mismo criterio ya usado para gastos
+ * (registrarGastoDesdeCorreo se llama tras la creación real en Holded, nunca al proponer). Sin
+ * mensajeIdGmail/attachmentIdGmail (documento no venía de un correo) no hay nada que registrar.
+ */
+async function registrarResolucionDesdeCorreo(correoOrigen: { mensajeIdGmail?: string; attachmentIdGmail?: string } | undefined): Promise<void> {
+  if (!correoOrigen?.mensajeIdGmail || !correoOrigen?.attachmentIdGmail) return;
+  await registrarDocumentoArchivadoDesdeCorreo({
+    mensajeIdGmail: correoOrigen.mensajeIdGmail,
+    attachmentId: correoOrigen.attachmentIdGmail,
+  }).catch((error) => console.error("[documentCallbackHandler] Error registrando adjunto resuelto (no crítico):", error));
 }
 
 /**
@@ -179,6 +197,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   if (accion === "doc_descartar") {
     await answerCallbackQuerySafe(callback.id);
     await consumirPropuestaClasificacion(id);
+    await registrarResolucionDesdeCorreo(propuesta.correoOrigen);
     await unlink(propuesta.rutaLocal).catch(() => {});
     await editTelegramMessage(
       propuesta.chatId,
@@ -274,6 +293,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     await consumirPropuestaClasificacion(id).catch((error) =>
       console.error("[documentCallbackHandler] No se pudo cerrar la propuesta después de verificar Drive:", error instanceof Error ? error.name : "Error")
     );
+    await registrarResolucionDesdeCorreo(propuesta.correoOrigen);
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
@@ -341,6 +361,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
   }
 
   await unlink(pendiente.rutaLocal).catch(() => {});
+  await registrarResolucionDesdeCorreo(pendiente.correoOrigen);
   await sendTelegramMessage(chatId, `❌ Descartado — "${pendiente.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`);
 
   if (pendiente.correoOrigen?.deColaCorreo) {
