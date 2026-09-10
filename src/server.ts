@@ -83,6 +83,12 @@ import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHan
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
 import type { TelegramUpdate } from "../core/telegram/types";
+import {
+  CoordinadorEntregasTelegram,
+  configuracionEntregasDurables,
+  type EntregaTelegramDurable,
+} from "../core/telegram/durableDelivery";
+import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
 
@@ -123,8 +129,8 @@ process.on("uncaughtException", (error) => {
  * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): pidió confirmar si un movimiento era una
  * transferencia interna, el bot respondió "Trabajando en tu consulta..." — y un redeploy normal de
  * Railway (rollout, varias veces por sesión en desarrollo activo) llegó a mitad de ese procesamiento y
- * mató el proceso. El webhook de Telegram ya había respondido 200 OK de inmediato (para que Telegram no
- * reintente el update — ver /webhook/telegram más abajo), así que el trabajo REAL sigue corriendo en
+ * mató el proceso. En aquel momento el webhook de Telegram respondía 200 OK antes de guardar el update;
+ * el bloque 4 ahora exige una reserva durable antes de ese ACK. El trabajo REAL sigue corriendo en
  * segundo plano, sin ninguna conexión HTTP abierta que un shutdown "normal" (esperar a que las requests
  * en curso terminen) pueda detectar. Railway por defecto solo da 3 segundos entre SIGTERM y SIGKILL —
  * muchísimo menos que lo que tarda un turno real de Claude con herramientas — así que sin esto, CADA
@@ -164,9 +170,25 @@ function trackearEnSegundoPlano<T>(promesa: Promise<T>): void {
   });
 }
 
+async function avisarEntregaTelegramIncierta(entrega: EntregaTelegramDurable): Promise<void> {
+  if (!entrega.chatId) return;
+  await sendTelegramMessage(
+    entrega.chatId,
+    "⚠️ Una solicitud quedó interrumpida después de comenzar. Wobi no la repitió automáticamente para evitar duplicar una acción. Consulta el estado antes de volver a ejecutarla."
+  );
+}
+
+const coordinadorEntregasTelegram = new CoordinadorEntregasTelegram(
+  durableDeliveryStore,
+  procesarUpdateTelegram,
+  avisarEntregaTelegramIncierta
+);
+const configuracionTelegramDurable = configuracionEntregasDurables();
+
 process.on("SIGTERM", () => {
   if (cerrandoPorSigterm) return; // Railway no debería mandar SIGTERM dos veces, pero por si acaso.
   cerrandoPorSigterm = true;
+  coordinadorEntregasTelegram.cerrar();
   servidorHttp?.close();
 
   const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0 &&
@@ -266,6 +288,7 @@ app.get("/health", (_req: Request, res: Response) => {
     status: "ok",
     trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes },
     cacheLecturas: resumirMetricasCachesLectura(),
+    entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
   });
 });
 
@@ -990,35 +1013,19 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
   res.sendStatus(204);
 });
 
-const telegramUpdatesRecientes = new Map<number, number>();
-
-function esUpdateTelegramNuevo(updateId: number): boolean {
-  const ahora = Date.now();
-  for (const [id, vistoEn] of telegramUpdatesRecientes) {
-    if (ahora - vistoEn > 24 * 60 * 60 * 1000) telegramUpdatesRecientes.delete(id);
-  }
-  if (telegramUpdatesRecientes.has(updateId)) return false;
-  telegramUpdatesRecientes.set(updateId, ahora);
-  return true;
-}
-
 /**
  * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): un redeploy de Railway (rollout normal,
  * varias veces por sesión en desarrollo activo) mató a mitad de camino el procesamiento de este mismo
- * handler — Telegram ya había recibido su 200 OK (ver abajo, se manda de inmediato), así que el
+ * handler — Telegram ya había recibido su 200 OK antes de que existiera un registro recuperable, así que el
  * "trabajando en tu consulta..." se quedó sin respuesta para siempre, sin ningún error visible y sin
  * ninguna forma de que Carlos supiera que el proceso simplemente murió. `procesarUpdateTelegram` es el
- * cuerpo real (sin cambios) de lo que antes era el handler inline — se extrae a una función nombrada
- * para poder trackear cuántas actualizaciones siguen realmente en curso (ver `actualizacionesEnCurso`
+ * cuerpo real de lo que antes era el handler inline; la reserva/ACK vive ahora fuera de esta función
+ * para poder persistir antes de confirmar la entrega. La función nombrada permite además trackear
+ * cuántas actualizaciones siguen realmente en curso (ver `actualizacionesEnCurso`
  * y el handler de SIGTERM más abajo), que ahora espera a que terminen antes de dejar que Railway mate
  * el proceso, en vez de cortarlas a mitad de camino.
  */
-async function procesarUpdateTelegram(req: Request, res: Response): Promise<void> {
-  // Respondemos 200 de inmediato para que Telegram no reintente el update.
-  res.sendStatus(200);
-
-  const update = req.body as TelegramUpdate;
-  if (!Number.isFinite(update.update_id) || !esUpdateTelegramNuevo(update.update_id)) return;
+async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
 
   if (update.callback_query) {
     prepararAcuseCallback(update.callback_query.id, update.callback_query.from.id);
@@ -1472,10 +1479,60 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
   }
 }
 
+// Fallback reversible del bloque 4. Solo se usa si el interruptor durable se
+// desactiva expresamente en Railway.
+const telegramUpdatesRecientes = new Map<number, number>();
+function esUpdateTelegramNuevoLocal(updateId: number): boolean {
+  const ahora = Date.now();
+  for (const [id, vistoEn] of telegramUpdatesRecientes) {
+    if (ahora - vistoEn > 24 * 60 * 60 * 1000) telegramUpdatesRecientes.delete(id);
+  }
+  if (telegramUpdatesRecientes.has(updateId)) return false;
+  telegramUpdatesRecientes.set(updateId, ahora);
+  return true;
+}
+
 app.post("/webhook/telegram", (req: Request, res: Response) => {
+  const update = req.body as TelegramUpdate;
+  if (!Number.isFinite(update.update_id)) {
+    res.sendStatus(200);
+    return;
+  }
+
+  if (!configuracionTelegramDurable.habilitado) {
+    res.sendStatus(200);
+    if (!esUpdateTelegramNuevoLocal(update.update_id)) return;
+    actualizacionesEnCurso++;
+    procesarUpdateTelegram(update)
+      .catch((error) => console.error("Error no capturado procesando el webhook de Telegram:", error))
+      .finally(() => { actualizacionesEnCurso--; });
+    return;
+  }
+
   actualizacionesEnCurso++;
-  procesarUpdateTelegram(req, res)
-    .catch((error) => console.error("Error no capturado procesando el webhook de Telegram:", error))
+  coordinadorEntregasTelegram.reservar(
+    update,
+    Boolean(update.callback_query && esAccionSensible(update.callback_query.data ?? ""))
+  )
+    .then(async ({ entrega, nueva }) => {
+      // Telegram solo recibe 200 después de que la entrega quedó durable.
+      // El procesamiento real continúa fuera del ciclo HTTP, como antes.
+      res.sendStatus(200);
+      if (!nueva && update.callback_query) {
+        const texto = entrega.estado === "completada"
+          ? "Esta acción ya fue procesada."
+          : entrega.estado === "incierta"
+            ? "Esta acción quedó con resultado incierto; comprueba su estado antes de repetirla."
+            : "Esta acción ya está en proceso.";
+        await answerCallbackQuery(update.callback_query.id, texto).catch(() => undefined);
+      }
+      await coordinadorEntregasTelegram.atender(entrega, nueva);
+    })
+    .catch((error) => {
+      console.error("Error en entrega durable de Telegram:", error instanceof Error ? error.name : "Error");
+      // Si todavía no se confirmó, Telegram puede reenviar el mismo update.
+      if (!res.headersSent) res.sendStatus(503);
+    })
     .finally(() => {
       actualizacionesEnCurso--;
     });
@@ -1715,4 +1772,11 @@ app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) 
 servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
+  if (configuracionTelegramDurable.habilitado) {
+    trackearEnSegundoPlano(
+      coordinadorEntregasTelegram.recuperar().catch((error) => {
+        console.error("[telegram/durable] No se pudo revisar entregas recuperables al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+    );
+  }
 });
