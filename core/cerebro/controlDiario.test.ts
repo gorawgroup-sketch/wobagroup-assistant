@@ -36,6 +36,7 @@ function entradaBase(): EntradaControlDiario {
       procesosPermitidos: 4,
     },
     enviosCorreo: { preparado: 0, enviando: 0, verificado: 3, incierto: 0 },
+    subidasDrive: { preparada: 0, subiendo: 0, verificada: 4, incierta: 0 },
     generadoEn: new Date("2026-09-09T09:00:00Z"),
   };
 }
@@ -93,4 +94,20 @@ test("un fallo leyendo el ledger nunca se representa como cero", () => {
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "ledger-correo-no-disponible"));
+});
+
+test("una subida a Drive incierta se eleva como crítica", () => {
+  const entrada = entradaBase();
+  entrada.subidasDrive = { preparada: 0, subiendo: 0, verificada: 2, incierta: 1 };
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "subidas-drive-inciertas"));
+});
+
+test("un fallo leyendo el ledger de Drive nunca se representa como cero", () => {
+  const entrada = entradaBase();
+  entrada.subidasDrive = null;
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "ledger-drive-no-disponible"));
 });

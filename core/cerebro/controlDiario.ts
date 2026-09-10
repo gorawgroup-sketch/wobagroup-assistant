@@ -8,6 +8,7 @@ import {
 } from "../claude/conversationStore";
 import { cargarConfiguracionPoliticaApi, type ModoPoliticaApi } from "../ai/policy";
 import { durableSendStore, type ResumenLedgerEnviosCorreo } from "../gmail/durableSendStore";
+import { durableUploadStore, type ResumenLedgerSubidasDrive } from "../drive/durableUploadStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -38,6 +39,7 @@ export interface ControlDiario {
   memoria: DiagnosticoMemoriaConversacional;
   politica: PoliticaControlDiario;
   enviosCorreo: ResumenLedgerEnviosCorreo | null;
+  subidasDrive: ResumenLedgerSubidasDrive | null;
   recomendaciones: RecomendacionControlDiario[];
 }
 
@@ -47,6 +49,8 @@ export interface EntradaControlDiario {
   politica: PoliticaControlDiario;
   /** undefined mantiene compatibilidad de pruebas/llamadores; null significa fallo real de lectura. */
   enviosCorreo?: ResumenLedgerEnviosCorreo | null;
+  /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
+  subidasDrive?: ResumenLedgerSubidasDrive | null;
   generadoEn?: Date;
 }
 
@@ -82,6 +86,26 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       titulo: "Hay envíos de correo con resultado incierto",
       detalle: `${entrada.enviosCorreo.incierto} envío(s) no pudieron confirmarse contra la carpeta Enviados.`,
       siguientePaso: "Comprobar esos correos en Gmail antes de autorizar cualquier envío equivalente nuevo.",
+      modulo: "conexiones",
+    });
+  }
+
+  if (entrada.subidasDrive === null) {
+    recomendaciones.push({
+      id: "ledger-drive-no-disponible",
+      prioridad: "critica",
+      titulo: "No se pudo comprobar la continuidad de Drive",
+      detalle: "El control diario no pudo leer el ledger durable de subidas; no se asume que esté vacío.",
+      siguientePaso: "Revisar permisos de Google Sheets y la pestaña _subidas_drive_durables antes de repetir archivados.",
+      modulo: "conexiones",
+    });
+  } else if (entrada.subidasDrive && entrada.subidasDrive.incierta > 0) {
+    recomendaciones.push({
+      id: "subidas-drive-inciertas",
+      prioridad: "critica",
+      titulo: "Hay subidas a Drive con resultado incierto",
+      detalle: `${entrada.subidasDrive.incierta} subida(s) no pudieron confirmarse mediante su marcador privado.`,
+      siguientePaso: "Comprobar el ledger y Drive antes de autorizar otra carga equivalente.",
       modulo: "conexiones",
     });
   }
@@ -199,12 +223,13 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     memoria,
     politica,
     enviosCorreo: entrada.enviosCorreo ?? null,
+    subidasDrive: entrada.subidasDrive ?? null,
     recomendaciones,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria, enviosCorreo] = await Promise.all([
+  const [costos, memoria, enviosCorreo, subidasDrive] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
@@ -213,6 +238,10 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     diagnosticarMemoriaConversacional(),
     durableSendStore.obtenerResumen().catch((error) => {
       console.error("[controlDiario] No se pudo leer el ledger de correo:", error instanceof Error ? error.name : "Error");
+      return null;
+    }),
+    durableUploadStore.obtenerResumen().catch((error) => {
+      console.error("[controlDiario] No se pudo leer el ledger de Drive:", error instanceof Error ? error.name : "Error");
       return null;
     }),
   ]);
@@ -229,6 +258,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       procesosPermitidos: config.procesosPermitidos.size,
     },
     enviosCorreo,
+    subidasDrive,
     generadoEn: referencia,
   });
 }

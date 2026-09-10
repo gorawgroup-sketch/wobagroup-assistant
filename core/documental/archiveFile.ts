@@ -3,6 +3,7 @@ import { resolverCarpetaDestino, resolverOCrearCarpeta, subirArchivoADrive } fro
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import type { PropuestaClasificacion } from "./classificationStore";
+import { esArchivoLocalInexistente } from "../drive/durableUpload";
 
 export interface ResultadoArchivado {
   ok: boolean;
@@ -65,19 +66,47 @@ export async function archivarDocumentoEnDrive(
     // trabajo aunque el original siga intacto en Gmail. Si la subida falla
     // y se sabe de qué mensaje/adjunto vino, se reintenta una vez tras
     // volver a descargarlo de la fuente durable.
+    const idempotencyKey = `documento:${propuesta.id}`;
+    const proceso = crearCarpetaSiNoExiste ? "documento_reclasificado" : "documento_aprobado";
     let subida: Awaited<ReturnType<typeof subirArchivoADrive>>;
     try {
-      subida = await subirArchivoADrive(propuesta.rutaLocal, propuesta.nombreArchivoOriginal, propuesta.mimeType, destino.folderId);
+      subida = await subirArchivoADrive(
+        propuesta.rutaLocal,
+        propuesta.nombreArchivoOriginal,
+        propuesta.mimeType,
+        destino.folderId,
+        idempotencyKey,
+        proceso
+      );
     } catch (error) {
+      // Un timeout/5xx de Drive podría significar que el archivo ya quedó
+      // creado. Solo ENOENT autoriza recuperar la copia local y reintentar.
+      if (!esArchivoLocalInexistente(error)) throw error;
       const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
         mensajeIdGmail: propuesta.correoOrigen?.mensajeIdGmail,
         attachmentIdGmail: propuesta.correoOrigen?.attachmentIdGmail,
       });
       if (!recuperado) throw error;
-      subida = await subirArchivoADrive(propuesta.rutaLocal, propuesta.nombreArchivoOriginal, propuesta.mimeType, destino.folderId);
+      subida = await subirArchivoADrive(
+        propuesta.rutaLocal,
+        propuesta.nombreArchivoOriginal,
+        propuesta.mimeType,
+        destino.folderId,
+        idempotencyKey,
+        proceso
+      );
     }
 
-    await unlink(propuesta.rutaLocal);
+    // La subida puede haberse recuperado desde el ledger después de un
+    // redeploy, cuando la copia temporal ya no existe. Una limpieza local
+    // fallida nunca convierte un archivo verificado en un falso fallo.
+    await unlink(propuesta.rutaLocal).catch((error) => {
+      const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+      if (code !== "ENOENT") {
+        console.error("[archiveFile] No se pudo limpiar la copia temporal después de verificar Drive:",
+          error instanceof Error ? error.name : "Error");
+      }
+    });
 
     const notaCarpeta = destino.creada
       ? `la carpeta nueva "${destino.rutaEncontrada}" (recién creada)`

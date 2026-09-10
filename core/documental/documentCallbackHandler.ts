@@ -163,7 +163,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     return;
   }
 
-  const propuesta = await consumirPropuestaClasificacion(id);
+  const propuesta = await obtenerPropuestaClasificacion(id);
 
   if (!propuesta) {
     await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
@@ -178,6 +178,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   // otro punto terminal de este flujo.
   if (accion === "doc_descartar") {
     await answerCallbackQuerySafe(callback.id);
+    await consumirPropuestaClasificacion(id);
     await unlink(propuesta.rutaLocal).catch(() => {});
     await editTelegramMessage(
       propuesta.chatId,
@@ -207,6 +208,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // tener dónde aterrizar (bug real encontrado en la auditoría — el orden
     // original notificaba primero).
     const guardado = await guardarPendienteReclasificacion({
+      id: propuesta.id,
       chatId: propuesta.chatId,
       rutaLocal: propuesta.rutaLocal,
       nombreArchivoOriginal: propuesta.nombreArchivoOriginal,
@@ -221,23 +223,20 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       });
 
     if (!guardado) {
-      // Nada quedó pendiente de verdad (la propuesta original ya se borró
-      // arriba) — dejarlo "activo" solo bloquearía el resto de la cola
-      // esperando una respuesta que nunca va a completar nada. Se avisa con
-      // claridad y se avanza, igual que cualquier otro error irreversible
-      // de este flujo (mismo criterio que preguntarSiConciliar en
-      // gastoCallbackHandler.ts).
+      // La propuesta original aún existe porque ahora solo se consume tras
+      // persistir el siguiente estado. El usuario puede volver a intentarlo.
       await editTelegramMessage(
         propuesta.chatId,
         propuesta.messageId,
-        `⚠️ No pude preparar "${propuesta.nombreArchivoOriginal}" para elegir otra carpeta (error guardando el pendiente). Reenvía el archivo si todavía quieres archivarlo.`,
-        []
+        `⚠️ No pude preparar "${propuesta.nombreArchivoOriginal}" para elegir otra carpeta. La propuesta sigue pendiente; vuelve a pulsar el botón en unos segundos.`,
+        [[{ text: "✏️ Reintentar elegir carpeta", callback_data: `doc_reroute:${propuesta.id}:${Date.now().toString(36)}` }]]
       );
-      if (propuesta.correoOrigen?.deColaCorreo) {
-        await avanzarColaCorreoSiActivo(propuesta.chatId);
-      }
       return;
     }
+
+    await consumirPropuestaClasificacion(id).catch((error) =>
+      console.error("[documentCallbackHandler] No se pudo cerrar la propuesta tras guardar la reclasificación:", error instanceof Error ? error.name : "Error")
+    );
 
     // Hallazgo real de auditoría: este mensaje pedía la empresa/carpeta a ciegas, sin decir que se
     // puede pedir ver las carpetas que ya existen, crear una nueva, o simplemente descartarlo —
@@ -262,12 +261,19 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     return;
   }
 
-  // doc_confirm
+  // doc_confirm / doc_retry
+  if (accion !== "doc_confirm" && accion !== "doc_retry") {
+    await answerCallbackQuerySafe(callback.id, "Acción de documento no reconocida.");
+    return;
+  }
   await answerCallbackQuerySafe(callback.id, "Subiendo a Drive...");
 
   const resultado = await archivarDocumentoEnDrive(propuesta);
 
   if (resultado.ok) {
+    await consumirPropuestaClasificacion(id).catch((error) =>
+      console.error("[documentCallbackHandler] No se pudo cerrar la propuesta después de verificar Drive:", error instanceof Error ? error.name : "Error")
+    );
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
@@ -284,8 +290,14 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
-      `⚠️ No se pudo archivar — ${propuesta.nombreArchivoOriginal}\n\n${resultado.mensaje}`,
-      []
+      `⚠️ No se pudo confirmar el archivado — ${propuesta.nombreArchivoOriginal}\n\n${resultado.mensaje}\n\nLa propuesta sigue disponible. Puedes reintentar; si Drive ya lo recibió, WOBI solo lo verificará y no volverá a subirlo.`,
+      [
+        [{ text: "🔄 Verificar / reintentar", callback_data: `doc_retry:${propuesta.id}:${Date.now().toString(36)}` }],
+        [
+          { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}:${Date.now().toString(36)}` },
+          { text: "❌ Descartar", callback_data: `doc_descartar:${propuesta.id}:${Date.now().toString(36)}` },
+        ],
+      ]
     );
   }
 }

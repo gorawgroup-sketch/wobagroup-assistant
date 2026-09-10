@@ -243,6 +243,7 @@ const ACCIONES_SENSIBLES = new Set([
   "recpago_confirmar",
   "draft_enviar",
   "doc_confirm",
+  "doc_retry",
   "gasto_adjuntar",
   "gasto_nuevo",
   // Gap real encontrado en la auditoría del teclado de selección (2026-09-03):
