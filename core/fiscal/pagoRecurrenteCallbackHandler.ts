@@ -225,8 +225,8 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
         await editTelegramMessage(
           propuesta.chatId,
           propuesta.messageId,
-          `⛔ No registré el pago — ya existe en Holded ${error.candidatos.length === 1 ? "algo" : "algo (varios)"} que coincide en proveedor, ` +
-            `monto y fecha cercana:\n${listado}\n\nSi es el mismo pago, no hace falta hacer nada más. Si de verdad es un pago nuevo distinto, ` +
+          `⛔ No registré el pago — ya existe en Holded ${error.candidatos.length === 1 ? "algo" : "algo (varios)"} que podría ser este mismo ` +
+            `pago (mismo importe y fecha cercana${error.candidatos.some((c) => c.proveedorDistinto) ? ", aunque el proveedor no coincide por texto — revísalo con cuidado" : ", mismo proveedor"}):\n${listado}\n\nSi es el mismo pago, no hace falta hacer nada más. Si de verdad es un pago nuevo distinto, ` +
             `regístralo directo en Holded a mano — esta propuesta ya se consumió y no hay un reintento automático desde aquí.`,
           []
         );

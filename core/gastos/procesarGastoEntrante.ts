@@ -424,6 +424,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       `Concepto: ${conceptoConMonedaOriginal}`,
     ];
     if (datos.numeroDocumento) lineasTexto.push(`Número de documento: ${datos.numeroDocumento}`);
+    // Hallazgo real de auditoría (caso "JRJ 9 2015 SL"/"Larrauri", mismo gasto real con dos textos de
+    // proveedor distintos en dos documentos): cuando buscarGastoSimilar cae a su fallback por
+    // monto+fecha (proveedorDistinto=true, ningún candidato coincidió por texto de proveedor), avisar
+    // explícitamente — de lo contrario esta lista se ve igual que un match normal por proveedor, y
+    // Carlos no tiene forma de saber que el nombre no coincidió y por qué igual se sugiere.
+    const algunoProveedorDistinto = candidatos.some((c) => c.proveedorDistinto);
     lineasTexto.push(
       ``,
       `Encontré ${candidatos.length === 1 ? "un gasto" : "estos gastos"} ya registrado(s) en Holded que podría(n) corresponder:`,
@@ -439,6 +445,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         return `${i + 1}. ${c.contactName} — ${c.total.toFixed(2)} € (${c.fecha}) — ${c.descripcion}${notaDoc}`;
       })
     );
+    if (algunoProveedorDistinto) {
+      lineasTexto.push(
+        ``,
+        `⚠️ El nombre de proveedor de esta factura (${datos.proveedor}) NO coincide con el de ${candidatos.length === 1 ? "este" : "estos"} — se sugiere solo porque coincide el importe exacto y la fecha (mismo día). Puede ser el mismo comercio con otro nombre en cada documento (nombre comercial vs. razón social), o un gasto real distinto por casualidad — revísalo antes de decidir.`
+      );
+    }
     if (avisoNumeroDocumento) lineasTexto.push(``, avisoNumeroDocumento);
     lineasTexto.push(``, `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`);
 
