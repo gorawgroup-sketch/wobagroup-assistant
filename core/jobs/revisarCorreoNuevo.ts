@@ -26,6 +26,7 @@ import type { DatosFactura } from "../documental/extractInvoiceData";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
+import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import {
   encolarCorreos,
   hayActivo,
@@ -388,6 +389,28 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         continue;
       }
 
+      // Hallazgo real (caso real Carlos, 2026-09-10 — correo con 8 adjuntos, pidió revisar de nuevo
+      // el correo para descargar SOLO la factura que faltaba y el sistema volvió a descargar y
+      // clasificar las 8): el chequeo de arriba (buscarGastoDesdeCorreo) solo cubre adjuntos que YA
+      // se convirtieron en un gasto real — un adjunto que se clasificó como "documento genérico"
+      // (archivado en Drive, nunca fue un gasto) no quedaba registrado en ningún lado, así que
+      // CUALQUIER reproceso del mismo correo (automático por cron, o pedido puntual vía
+      // revisar_correo_puntual — ambos pasan por este mismo loop) lo volvía a descargar y clasificar
+      // desde cero. Mismo criterio granular que el chequeo de arriba: por adjunto, no por correo
+      // entero, para no saltarse por error un adjunto real y distinto que sí siga pendiente.
+      const yaArchivado = await yaSeArchivoDesdeCorreo(correo.id, adjunto.attachmentId).catch((error) => {
+        console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya se archivó (no crítico, sigue igual):`, error);
+        return false;
+      });
+      if (yaArchivado) {
+        await sendTelegramMessage(
+          chatId,
+          `📄 "${adjunto.filename}" (${correo.asunto}) — ya se revisó antes y se archivó como documento (no era un gasto), no lo vuelvo a descargar.`
+        ).catch(() => {});
+        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+        continue;
+      }
+
       try {
         const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
         await mkdir(UPLOADS_DIR, { recursive: true });
@@ -447,6 +470,14 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         if (resultadoDocumento === "gasto_duplicado" && deColaCorreo) {
           await avanzarColaCorreoSiActivo(chatId);
         }
+
+        // NO se registra "ya archivado" acá — procesarDocumentoLocal retornando "archivo" solo
+        // significa que se MANDÓ una propuesta/pregunta a Telegram, no que el documento ya se
+        // archivó de verdad (falta el clic de Carlos, y el archivado real puede fallar). El registro
+        // real vive en los puntos de RESOLUCIÓN (documentCallbackHandler.ts / reclasificarDocumentoPendiente.ts
+        // — ver yaSeArchivoDesdeCorreo/registrarDocumentoArchivadoDesdeCorreo ahí), mismo criterio ya
+        // usado para gastos (registrarGastoDesdeCorreo se llama tras la creación real en Holded, no al
+        // proponer).
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
