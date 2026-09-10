@@ -1,6 +1,11 @@
 import { unlink } from "node:fs/promises";
-import { consumirPendienteReclasificacionPorChat, guardarPendienteReclasificacion } from "../documental/pendienteReclasificacionStore";
+import {
+  consumirPendienteReclasificacionPorChat,
+  consumirPendienteReclasificacionPorId,
+  obtenerPendienteReclasificacionPorChat,
+} from "../documental/pendienteReclasificacionStore";
 import { archivarDocumentoEnDrive } from "../documental/archiveFile";
+import { registrarDocumentoArchivadoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import type { PropuestaClasificacion } from "../documental/classificationStore";
 import type { ToolDefinition } from "./types";
@@ -65,7 +70,7 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
       return "Error: hace falta una empresa válida (WOBA, EWORKS o Footprint) y una carpeta — pregúntale al usuario cuál falta.";
     }
 
-    const pendiente = await consumirPendienteReclasificacionPorChat(chatId);
+    const pendiente = await obtenerPendienteReclasificacionPorChat(chatId);
     if (!pendiente) {
       return "No hay ningún documento pendiente de reclasificar para este chat (puede que ya se haya procesado, o que haya expirado).";
     }
@@ -92,20 +97,24 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
     try {
       resultado = await archivarDocumentoEnDrive(propuestaCorregida, crearCarpetaSiNoExiste);
     } catch (error) {
-      // Se reinserta el pendiente para no perderlo por un error transitorio.
-      await guardarPendienteReclasificacion({ ...pendiente }).catch(() => {});
       const message = error instanceof Error ? error.message : String(error);
       return `Error archivando el documento: ${message}. La pregunta sigue pendiente, se puede reintentar.`;
     }
 
     if (!resultado.ok) {
-      // No se logró archivar (ej. no existe esa empresa/carpeta) — se
-      // reinserta para poder reintentar con otro dato, igual que un error
-      // transitorio. Nunca avanza la cola sobre un archivado que no ocurrió.
-      await guardarPendienteReclasificacion({ ...pendiente }).catch((error) =>
-        console.error("[reclasificarDocumentoPendiente] Error reinsertando el pendiente:", error)
-      );
       return `No se pudo archivar "${pendiente.nombreArchivoOriginal}": ${resultado.mensaje} La pregunta sigue pendiente, se puede reintentar con otro dato.`;
+    }
+
+    await consumirPendienteReclasificacionPorId(pendiente.id, chatId).catch(() => undefined);
+
+    // Ya se archivó de verdad (resultado.ok) — registra la resolución para que un reproceso futuro
+    // del mismo correo no vuelva a descargar este adjunto (ver documentoArchivadoPorCorreoStore.ts;
+    // mismo criterio que documentCallbackHandler.ts, solo en el punto real de éxito, nunca al proponer).
+    if (pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.attachmentIdGmail) {
+      await registrarDocumentoArchivadoDesdeCorreo({
+        mensajeIdGmail: pendiente.correoOrigen.mensajeIdGmail,
+        attachmentId: pendiente.correoOrigen.attachmentIdGmail,
+      }).catch((error) => console.error("[reclasificarDocumentoPendiente] Error registrando adjunto archivado (no crítico):", error));
     }
 
     if (pendiente.correoOrigen?.deColaCorreo) {
@@ -148,6 +157,15 @@ export const descartarDocumentoPendienteTool: ToolDefinition = {
     }
 
     await unlink(pendiente.rutaLocal).catch(() => {});
+
+    // Descartar es una decisión final legítima — registra la resolución igual que un archivado
+    // exitoso, para que un reproceso futuro del mismo correo no vuelva a descargar este adjunto.
+    if (pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.attachmentIdGmail) {
+      await registrarDocumentoArchivadoDesdeCorreo({
+        mensajeIdGmail: pendiente.correoOrigen.mensajeIdGmail,
+        attachmentId: pendiente.correoOrigen.attachmentIdGmail,
+      }).catch((error) => console.error("[reclasificarDocumentoPendiente] Error registrando adjunto descartado (no crítico):", error));
+    }
 
     if (pendiente.correoOrigen?.deColaCorreo) {
       await avanzarColaCorreoSiActivo(chatId);
