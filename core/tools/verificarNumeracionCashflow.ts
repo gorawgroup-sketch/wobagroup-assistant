@@ -1,5 +1,6 @@
-import { fetchResumenSemanas } from "../google/cashflowSheet";
+import { fetchResumenSemanasConMeta } from "../google/cashflowSheet";
 import { validarNumeracionSemanas, mesDeEtiquetaSemana } from "../google/validarNumeracionCashflow";
+import { notaFrescura } from "../utils/readCache";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -19,11 +20,13 @@ export const verificarNumeracionCashflowTool: ToolDefinition = {
     "(no confundir con verificar_cashflow_actualizado, que compara contra Holded).",
   input_schema: { type: "object", properties: {} },
   handler: async () => {
-    const semanas = await fetchResumenSemanas();
+    const lectura = await fetchResumenSemanasConMeta();
+    const semanas = lectura.datos;
+    const responder = (texto: string): string => `${texto}\n\n${notaFrescura(lectura.meta)}`;
     const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
 
     if (conDatos.length === 0) {
-      return "La hoja CASHFLOW no tiene ninguna semana con datos todavía.";
+      return responder("La hoja CASHFLOW no tiene ninguna semana con datos todavía.");
     }
 
     const problemas = validarNumeracionSemanas(conDatos);
@@ -31,7 +34,7 @@ export const verificarNumeracionCashflowTool: ToolDefinition = {
     const mesUltima = mesDeEtiquetaSemana(ultima.semana) ?? "(no se pudo determinar)";
 
     if (problemas.length === 0) {
-      return (
+      return responder(
         `✅ Numeración correcta — ${conDatos.length} semana(s) con datos, de ${conDatos[0].semana} a ` +
         `${ultima.semana}, en secuencia sin saltos ni duplicados. La más reciente (${ultima.semana}) ` +
         `corresponde a ${mesUltima}.`
@@ -39,6 +42,6 @@ export const verificarNumeracionCashflowTool: ToolDefinition = {
     }
 
     const lineas = problemas.map((p) => `  • [${p.tipo}] ${p.detalle}`).join("\n");
-    return `⚠️ Se encontraron ${problemas.length} problema(s) de numeración:\n${lineas}`;
+    return responder(`⚠️ Se encontraron ${problemas.length} problema(s) de numeración:\n${lineas}`);
   },
 };

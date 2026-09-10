@@ -1,4 +1,6 @@
 import { getSheetsClient } from "./sheetsClient";
+import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
+import { enteroAcotado } from "../utils/asyncTimeout";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 
@@ -25,7 +27,7 @@ function assertSheetId(): string {
 /**
  * Lee el resumen semanal ya calculado (valores, no fórmulas) de la hoja CASHFLOW.
  */
-export async function fetchResumenSemanas(): Promise<ResumenSemana[]> {
+async function cargarResumenSemanas(): Promise<ResumenSemana[]> {
   const sheetId = assertSheetId();
   const sheets = getSheetsClient();
 
@@ -53,6 +55,17 @@ export async function fetchResumenSemanas(): Promise<ResumenSemana[]> {
   });
 
   return result;
+}
+
+const CACHE_RESUMEN_TTL_MS = enteroAcotado(process.env.WOBI_CASHFLOW_CACHE_TTL_MS, 10_000, 0, 60_000);
+const cacheResumen = new CacheLectura<ResumenSemana[]>("cashflow_resumen", CACHE_RESUMEN_TTL_MS);
+
+export function fetchResumenSemanasConMeta(): Promise<LecturaConMeta<ResumenSemana[]>> {
+  return cacheResumen.obtener(cargarResumenSemanas);
+}
+
+export async function fetchResumenSemanas(): Promise<ResumenSemana[]> {
+  return (await fetchResumenSemanasConMeta()).datos;
 }
 
 export type DetalleCategoria =
@@ -320,8 +333,8 @@ function parsearSeccionesColumnaN(rows: string[][]): DetalleRegistro[] {
 // duración: el cashflow puede cambiar por una aprobación real en cualquier
 // momento, así que se vence rápido a propósito, solo para el "ráfaga" de
 // llamadas de un mismo turno de conversación.
-const CACHE_TTL_MS = 8000;
-let cache: { en: number; datos: DetalleRegistro[] } | null = null;
+const CACHE_DETALLE_TTL_MS = enteroAcotado(process.env.WOBI_CASHFLOW_CACHE_TTL_MS, 10_000, 0, 60_000);
+const cacheDetalle = new CacheLectura<DetalleRegistro[]>("cashflow_detalle", CACHE_DETALLE_TTL_MS);
 
 // Encabezados esperados fila 5 (verificado en vivo) para los 2 bloques de columnas fijas.
 const HEADERS_ESPERADOS_INGRESOS = ["CLIENTE", "PROYECTO", "SEMANA", "VALOR", "EMPRESA"];
@@ -420,11 +433,7 @@ export function obtenerUltimaVerificacionEstructura(): ProblemaEstructuraDatos[]
  * actual y próximo mes, categorías propias) y pendientes (Alberto / deudas
  * con otros), sin filtrar.
  */
-export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
-  if (cache && Date.now() - cache.en < CACHE_TTL_MS) {
-    return cache.datos;
-  }
-
+async function cargarDetalleRegistros(): Promise<DetalleRegistro[]> {
   const sheetId = assertSheetId();
   const sheets = getSheetsClient();
 
@@ -497,11 +506,23 @@ export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
   }
   ultimaVerificacionEstructura = problemas;
 
-  cache = { en: Date.now(), datos: registros };
   return registros;
+}
+
+export function fetchDetalleRegistrosConMeta(): Promise<LecturaConMeta<DetalleRegistro[]>> {
+  return cacheDetalle.obtener(cargarDetalleRegistros);
+}
+
+export async function fetchDetalleRegistros(): Promise<DetalleRegistro[]> {
+  return (await fetchDetalleRegistrosConMeta()).datos;
 }
 
 /** Invalida la cache de arriba — llamar justo después de escribir en DATOS para que la próxima lectura sea fresca. */
 export function invalidarCacheDetalleRegistros(): void {
-  cache = null;
+  cacheDetalle.invalidar();
+}
+
+export function invalidarCachesCashflow(): void {
+  cacheResumen.invalidar();
+  cacheDetalle.invalidar();
 }

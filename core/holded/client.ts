@@ -1,4 +1,6 @@
 import { formatDateLocal } from "../utils/dateFormat";
+import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
+import { enteroAcotado } from "../utils/asyncTimeout";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -98,13 +100,38 @@ export interface BankMovement {
 /**
  * Lista las cuentas de tesorería (bancarias) configuradas para la empresa.
  */
-export async function listTreasuryAccounts(empresa: Empresa): Promise<TreasuryAccount[]> {
+async function cargarCuentasTesoreria(empresa: Empresa): Promise<TreasuryAccount[]> {
   const data = await holdedGet(empresa, "/treasury/accounts");
   if (Array.isArray(data)) return data as TreasuryAccount[];
   if (data && Array.isArray((data as { items?: unknown }).items)) {
     return (data as { items: TreasuryAccount[] }).items;
   }
   return [];
+}
+
+const CACHE_CUENTAS_TTL_MS = enteroAcotado(process.env.WOBI_HOLDED_CACHE_TTL_MS, 10_000, 0, 60_000);
+const cachesCuentas = new Map<Empresa, CacheLectura<TreasuryAccount[]>>();
+
+function cacheCuentasDe(empresa: Empresa): CacheLectura<TreasuryAccount[]> {
+  let cache = cachesCuentas.get(empresa);
+  if (!cache) {
+    cache = new CacheLectura<TreasuryAccount[]>("holded_cuentas", CACHE_CUENTAS_TTL_MS);
+    cachesCuentas.set(empresa, cache);
+  }
+  return cache;
+}
+
+export function listTreasuryAccountsConMeta(empresa: Empresa): Promise<LecturaConMeta<TreasuryAccount[]>> {
+  return cacheCuentasDe(empresa).obtener(() => cargarCuentasTesoreria(empresa));
+}
+
+export async function listTreasuryAccounts(empresa: Empresa): Promise<TreasuryAccount[]> {
+  return (await listTreasuryAccountsConMeta(empresa)).datos;
+}
+
+export function invalidarCacheCuentasTesoreria(empresa?: Empresa): void {
+  if (empresa) cachesCuentas.get(empresa)?.invalidar();
+  else for (const cache of cachesCuentas.values()) cache.invalidar();
 }
 
 /**

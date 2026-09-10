@@ -1,6 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
-import { invalidarCacheDetalleRegistros, SECCION_IDX_CLIENTE_PENDIENTES } from "./cashflowSheet";
+import { invalidarCachesCashflow, SECCION_IDX_CLIENTE_PENDIENTES } from "./cashflowSheet";
 import { textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
 import { fechaHoyEspana } from "../utils/diaHabil";
@@ -241,6 +241,9 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
 
   const fila_valores = config.campos.map((campo) => valoresPorCampo[campo]);
 
+  // Invalida antes y después: si Sheets acepta la escritura pero se pierde la
+  // respuesta de red, tampoco conservaremos una fotografía anterior.
+  invalidarCachesCashflow();
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
     range: rango,
@@ -268,7 +271,7 @@ export async function registrarMovimientoEnSheet(movimiento: NuevoMovimiento): P
     };
   }
 
-  invalidarCacheDetalleRegistros();
+  invalidarCachesCashflow();
   return {
     ok: true,
     mensaje: `Movimiento registrado y verificado en ${rango}.`,
@@ -408,6 +411,7 @@ export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Prom
   // toda la fila resuelve ambos: el año queda texto, y valor sigue siendo un número real (su formato de
   // moneda para verse bien ya se fija aparte, ver más abajo) — y de paso vuelve a ser una escritura
   // atómica, sin ventana para una fila a medias.
+  invalidarCachesCashflow();
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
     range: rango,
@@ -472,7 +476,7 @@ export async function registrarPendienteEnSheet(pendiente: NuevoPendiente): Prom
     };
   }
 
-  invalidarCacheDetalleRegistros();
+  invalidarCachesCashflow();
   return {
     ok: true,
     mensaje: `Movimiento registrado y verificado en ${rango}.`,
@@ -659,6 +663,7 @@ export async function editarValorEnFilaCashflow(
     };
   }
 
+  invalidarCachesCashflow();
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
     range: rango,
@@ -683,7 +688,7 @@ export async function editarValorEnFilaCashflow(
     };
   }
 
-  invalidarCacheDetalleRegistros();
+  invalidarCachesCashflow();
   return {
     ok: true,
     mensaje: `Valor corregido y verificado en ${rango}: ${valorEsperadoActual} → ${valorNuevo}.`,

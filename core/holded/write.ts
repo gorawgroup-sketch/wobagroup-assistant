@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
-import { estaConciliado, type Empresa } from "./client";
+import { estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
@@ -11,6 +11,8 @@ import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
+import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
+import { enteroAcotado } from "../utils/asyncTimeout";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -2931,9 +2933,14 @@ export async function reconciliarMovimiento(
   fechaAproximada: string,
   documentoId: string
 ): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number; pendienteEnCompra?: number }> {
+  // Se invalida también antes del POST: Holded puede aceptar la conciliación
+  // aunque su respuesta no llegue a WOBI.
+  invalidarCacheCuentasTesoreria(empresa);
   await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
     documents: [{ document_id: documentoId, document_type: "purchase" }],
   });
+  // El saldo/conteo pendiente pudo cambiar incluso si la verificación posterior falla.
+  invalidarCacheCuentasTesoreria(empresa);
 
   const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
@@ -3022,6 +3029,8 @@ export async function buscarUsuarioHoldedPorNombre(empresa: Empresa, nombreOEmai
  * del usuario por botón — nunca automáticamente.
  */
 export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHolded): Promise<{ id: string; verificado: boolean }> {
+  // Protege también el caso de resultado incierto (POST aceptado y respuesta perdida).
+  invalidarCacheEventosHolded(empresa);
   const data = (await holdedWriteCall(empresa, "POST", "/events", {
     name: evento.nombre,
     kind: evento.tipo,
@@ -3037,6 +3046,8 @@ export async function crearEventoHolded(empresa: Empresa, evento: NuevoEventoHol
   if (!data.id) {
     throw new Error("Holded no devolvió un id para el evento creado.");
   }
+  // El POST ya fue aceptado: no conservar una lista anterior aunque falle la verificación.
+  invalidarCacheEventosHolded(empresa);
 
   let verificado = false;
   try {
@@ -3060,17 +3071,26 @@ export interface EventoProximo {
  * próximos `dias` días (hoy incluido). Solo lectura.
  */
 const MAX_PAGINAS_EVENTOS = 15;
+type EventoCrudo = { name?: string; start_date?: string };
+const CACHE_EVENTOS_TTL_MS = enteroAcotado(process.env.WOBI_HOLDED_EVENTS_CACHE_TTL_MS, 30_000, 0, 120_000);
+const cachesEventos = new Map<Empresa, CacheLectura<EventoCrudo[]>>();
 
-export async function listarProximosEventosHolded(empresa: Empresa, dias: number): Promise<EventoProximo[]> {
-  const desdeStr = formatDateLocal(new Date());
-  const hastaStr = formatDateLocal(new Date(Date.now() + dias * 24 * 60 * 60 * 1000));
+function cacheEventosDe(empresa: Empresa): CacheLectura<EventoCrudo[]> {
+  let cache = cachesEventos.get(empresa);
+  if (!cache) {
+    cache = new CacheLectura<EventoCrudo[]>("holded_eventos", CACHE_EVENTOS_TTL_MS);
+    cachesEventos.set(empresa, cache);
+  }
+  return cache;
+}
 
+async function cargarEventosHolded(empresa: Empresa): Promise<EventoCrudo[]> {
   // Verificado en vivo: a diferencia de /purchases y /bank-movements,
   // /events NO filtra por start_date/end_date en el servidor (una prueba
   // real con esos parámetros devolvió eventos de 2024 sin filtrar) — hay
   // que traer todo (el volumen real es pequeño, decenas por empresa) y
   // filtrar la fecha aquí.
-  const eventos: Array<{ name?: string; start_date?: string }> = [];
+  const eventos: EventoCrudo[] = [];
   let cursor: string | undefined;
 
   for (let pagina = 0; pagina < MAX_PAGINAS_EVENTOS; pagina++) {
@@ -3088,7 +3108,17 @@ export async function listarProximosEventosHolded(empresa: Empresa, dias: number
     cursor = data.cursor;
   }
 
-  return eventos
+  return eventos;
+}
+
+export async function listarProximosEventosHoldedConMeta(
+  empresa: Empresa,
+  dias: number
+): Promise<LecturaConMeta<EventoProximo[]>> {
+  const lectura = await cacheEventosDe(empresa).obtener(() => cargarEventosHolded(empresa));
+  const desdeStr = formatDateLocal(new Date());
+  const hastaStr = formatDateLocal(new Date(Date.now() + dias * 24 * 60 * 60 * 1000));
+  const datos = lectura.datos
     .filter((e) => {
       if (!e.start_date) return false;
       const fecha = e.start_date.slice(0, 10);
@@ -3100,4 +3130,14 @@ export async function listarProximosEventosHolded(empresa: Empresa, dias: number
       empresa,
     }))
     .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  return { datos, meta: lectura.meta };
+}
+
+export async function listarProximosEventosHolded(empresa: Empresa, dias: number): Promise<EventoProximo[]> {
+  return (await listarProximosEventosHoldedConMeta(empresa, dias)).datos;
+}
+
+export function invalidarCacheEventosHolded(empresa?: Empresa): void {
+  if (empresa) cachesEventos.get(empresa)?.invalidar();
+  else for (const cache of cachesEventos.values()) cache.invalidar();
 }

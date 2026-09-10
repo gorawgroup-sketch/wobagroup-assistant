@@ -1,4 +1,5 @@
-import { fetchDetalleRegistros } from "../google/cashflowSheet";
+import { fetchDetalleRegistrosConMeta } from "../google/cashflowSheet";
+import { notaFrescura } from "../utils/readCache";
 import { textosParecidos } from "../utils/textoParecido";
 import type { ToolDefinition } from "./types";
 
@@ -84,7 +85,9 @@ export const cashflowDetalleTool: ToolDefinition = {
     },
   },
   handler: async (input) => {
-    const registros = await fetchDetalleRegistros();
+    const lectura = await fetchDetalleRegistrosConMeta();
+    const registros = lectura.datos;
+    const responder = (texto: string) => `${texto}\n${notaFrescura(lectura.meta)}`;
 
     const semanaFiltro = typeof input.semana === "string" ? input.semana.trim().toUpperCase() : undefined;
     const empresaFiltro = typeof input.empresa === "string" ? input.empresa.trim().toUpperCase() : undefined;
@@ -120,7 +123,7 @@ export const cashflowDetalleTool: ToolDefinition = {
     }
 
     if (filtrados.length === 0) {
-      return "No se encontraron movimientos que coincidan con esos filtros.";
+      return responder("No se encontraron movimientos que coincidan con esos filtros.");
     }
 
     const lineas = filtrados
@@ -134,9 +137,9 @@ export const cashflowDetalleTool: ToolDefinition = {
       })
       .join("\n");
 
-    if (!aproximado) return lineas;
+    if (!aproximado) return responder(lineas);
 
-    return (
+    return responder(
       `⚠️ COINCIDENCIA APROXIMADA (no encontré "${input.contraparte}" tal cual — esto es lo más parecido, ` +
       `confírmalo con el usuario antes de darlo por hecho):\n\n${lineas}`
     );
