@@ -1,4 +1,5 @@
-import { fetchResumenSemanas } from "../google/cashflowSheet";
+import { fetchResumenSemanasConMeta } from "../google/cashflowSheet";
+import { notaFrescura } from "../utils/readCache";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -30,7 +31,9 @@ export const cashflowResumenTool: ToolDefinition = {
     },
   },
   handler: async (input) => {
-    const semanas = await fetchResumenSemanas();
+    const lectura = await fetchResumenSemanasConMeta();
+    const semanas = lectura.datos;
+    const responder = (texto: string) => `${texto}\n${notaFrescura(lectura.meta)}`;
     const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
 
     const desde = typeof input.semana_desde === "string" ? input.semana_desde.trim().toUpperCase() : undefined;
@@ -43,7 +46,7 @@ export const cashflowResumenTool: ToolDefinition = {
       const idxHasta = hasta ? conDatos.findIndex((s) => s.semana.toUpperCase() === hasta) : conDatos.length - 1;
 
       if (idxDesde === -1 || idxHasta === -1) {
-        return `No se encontró alguna de las semanas solicitadas (${desde ?? "?"} - ${hasta ?? "?"}) entre las semanas con datos disponibles.`;
+        return responder(`No se encontró alguna de las semanas solicitadas (${desde ?? "?"} - ${hasta ?? "?"}) entre las semanas con datos disponibles.`);
       }
 
       seleccion = conDatos.slice(Math.min(idxDesde, idxHasta), Math.max(idxDesde, idxHasta) + 1);
@@ -52,18 +55,18 @@ export const cashflowResumenTool: ToolDefinition = {
     }
 
     if (seleccion.length === 0) {
-      return "No hay semanas con datos disponibles en el cashflow.";
+      return responder("No hay semanas con datos disponibles en el cashflow.");
     }
 
-    return seleccion
+    return responder(seleccion
       .map(
         (s) =>
           `${s.semana}: Balance inicial ${s.balanceInicial} | Income ${s.income} | ` +
           `Project expenses ${s.projectExpenses} | General expenses ${s.generalExpenses} | ` +
           `Balance final ${s.balanceFinal}`
       )
-      .join("\n");
+      .join("\n"));
   },
 };
 
-type ResumenSemanaList = Awaited<ReturnType<typeof fetchResumenSemanas>>;
+type ResumenSemanaList = Awaited<ReturnType<typeof fetchResumenSemanasConMeta>>["datos"];

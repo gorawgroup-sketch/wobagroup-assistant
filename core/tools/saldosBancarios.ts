@@ -1,4 +1,5 @@
-import { listTreasuryAccounts, type Empresa } from "../holded/client";
+import { listTreasuryAccountsConMeta, type Empresa } from "../holded/client";
+import { notaFrescura } from "../utils/readCache";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -40,11 +41,13 @@ export const saldosBancariosTool: ToolDefinition = {
     }
     const incluirArchivadas = input.incluirArchivadas === true;
 
-    const cuentas = await listTreasuryAccounts(empresa);
+    const lectura = await listTreasuryAccountsConMeta(empresa);
+    const cuentas = lectura.datos;
+    const responder = (texto: string) => `${texto}\n${notaFrescura(lectura.meta)}`;
     const visibles = incluirArchivadas ? cuentas : cuentas.filter((c) => !c.archived);
 
     if (visibles.length === 0) {
-      return `No se encontraron cuentas bancarias para ${empresa}.`;
+      return responder(`No se encontraron cuentas bancarias para ${empresa}.`);
     }
 
     const lineas = visibles.map((c) => {
@@ -60,11 +63,11 @@ export const saldosBancariosTool: ToolDefinition = {
     const activas = visibles.filter((c) => !c.archived && c.currency === "EUR");
     const totalEUR = activas.reduce((acc, c) => acc + (Number(c.balance) || 0), 0);
 
-    return [
+    return responder([
       `Saldos bancarios de ${empresa}:`,
       ...lineas,
       "",
       `Total en cuentas activas en EUR: ${totalEUR.toFixed(2)} EUR (no incluye cuentas en otra moneda ni archivadas).`,
-    ].join("\n");
+    ].join("\n"));
   },
 };

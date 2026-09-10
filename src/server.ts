@@ -84,6 +84,7 @@ import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandl
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
 import type { TelegramUpdate } from "../core/telegram/types";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
+import { resumirMetricasCachesLectura } from "../core/utils/readCache";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -261,7 +262,11 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.get("/health", (_req: Request, res: Response) => {
   const herramientas = obtenerEstadoPlanificadorHerramientas();
-  res.json({ status: "ok", trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes } });
+  res.json({
+    status: "ok",
+    trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes },
+    cacheLecturas: resumirMetricasCachesLectura(),
+  });
 });
 
 // La raíz del dominio nunca tuvo ninguna página propia — sin esto, entrar a

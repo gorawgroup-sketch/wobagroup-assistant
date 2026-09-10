@@ -17,6 +17,7 @@ import { autoAuditarOperacionesDiarias } from "./autoAuditarOperaciones";
 import { invalidarEstadoCerebro } from "../cerebro/estadoAgregado";
 import { publicarCambioCerebro } from "../cerebro/realtime";
 import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaContable";
+import { esperarPrioridadInteractiva } from "./jobPriority";
 
 const TIMEZONE = "Europe/Madrid";
 const jobsEnCurso = new Set<string>();
@@ -57,7 +58,16 @@ function ejecutarSinSolapamiento(nombre: string, tarea: () => Promise<unknown>):
     return;
   }
   jobsEnCurso.add(nombre);
-  tarea()
+  esperarPrioridadInteractiva()
+    .then((prioridad) => {
+      if (prioridad.esperoMs > 0) {
+        console.log("[scheduler]", JSON.stringify({ nombre, fase: "cedio_al_chat", esperaMs: prioridad.esperoMs }));
+      }
+      if (prioridad.agotada) {
+        console.warn(`[scheduler] ${nombre} agotó la ventana de prioridad interactiva; continúa para no quedar bloqueado.`);
+      }
+      return tarea();
+    })
     .catch((error) => console.error(`[scheduler] Error ejecutando ${nombre}:`, error))
     .finally(() => {
       jobsEnCurso.delete(nombre);
