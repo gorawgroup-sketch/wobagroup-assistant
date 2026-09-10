@@ -1,5 +1,5 @@
 import { listarContactosAutorespuesta } from "../gmail/autorespuestaContactoStore";
-import { listarHilosNoLeidosDe, obtenerHiloCompleto, marcarHiloComoLeido, enviarCorreo } from "../gmail/client";
+import { listarHilosNoLeidosDe, obtenerHiloCompleto, marcarHiloComoLeido, enviarCorreo, consultarEnvioCorreoExistente } from "../gmail/client";
 import { obtenerEstadoHiloAutorespuesta, crearPendienteAprobacionHilo } from "../gmail/hiloAutorespuestaStore";
 import { responderCorreoAutomatico } from "../claude/client";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
@@ -33,6 +33,15 @@ export async function procesarHiloAutorespuestaAprobado(threadId: string, chatId
   const ultimoMensaje = hilo.mensajes[hilo.mensajes.length - 1];
   if (!ultimoMensaje || ultimoMensaje.esNuestro) return false;
 
+  const idempotencyKey = `autorespuesta:${hilo.ultimoMensajeId}`;
+  const envioExistente = await consultarEnvioCorreoExistente(idempotencyKey);
+  if (envioExistente) {
+    // El envío ya estaba confirmado (posible recuperación tras reinicio):
+    // cerrar el hilo sin volver a gastar IA ni mandar otra notificación.
+    await marcarHiloComoLeido(threadId);
+    return true;
+  }
+
   const hiloTexto = hilo.mensajes
     .map((m) => `[${m.esNuestro ? "Wobi (nosotros)" : m.de}] — ${m.fecha}:\n${m.cuerpo}`)
     .join("\n\n---\n\n");
@@ -52,6 +61,8 @@ export async function procesarHiloAutorespuestaAprobado(threadId: string, chatId
     to: hilo.ultimoDe,
     asunto: hilo.asunto || "(sin asunto)",
     cuerpo: respuesta,
+    idempotencyKey,
+    proceso: "autorespuesta",
     threadId,
     messageIdHeader: hilo.ultimoMessageIdHeader,
     firmaOverride: FOOTER_RESPUESTA_AUTOMATICA,

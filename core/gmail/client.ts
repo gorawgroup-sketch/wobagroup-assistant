@@ -1,6 +1,16 @@
 import { google, gmail_v1 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
+import { conMutex } from "../utils/asyncMutex";
+import {
+  EnvioCorreoInciertoError,
+  consultarEnvioCorreoDurable,
+  ejecutarEnvioCorreoDurable,
+  identidadEnvioCorreo,
+  reconciliarEnviosCorreoPendientes,
+  type ResultadoEnvioCorreo,
+} from "./durableSend";
+import { durableSendStore } from "./durableSendStore";
 
 let gmailClient: gmail_v1.Gmail | null = null;
 
@@ -608,11 +618,12 @@ function textoAHtmlBasico(texto: string): string {
  * si además hay adjuntos, esa parte alternative queda anidada dentro de un
  * multipart/mixed junto con cada adjunto, como antes.
  */
-function construirMimeConAdjuntos(params: {
+export function construirMimeConAdjuntos(params: {
   to: string;
   asunto: string;
   cuerpo: string;
   messageIdHeader?: string;
+  messageIdPropio: string;
   adjuntos?: AdjuntoParaEnviar[];
   firmaHtml?: string;
 }): Buffer {
@@ -621,7 +632,12 @@ function construirMimeConAdjuntos(params: {
   const asuntoConRe =
     !params.messageIdHeader || /^re:/i.test(params.asunto.trim()) ? params.asunto : `Re: ${params.asunto}`;
 
-  const headerLines = [`To: ${params.to}`, `Subject: ${codificarHeaderAsunto(asuntoConRe)}`, `MIME-Version: 1.0`];
+  const headerLines = [
+    `To: ${params.to}`,
+    `Subject: ${codificarHeaderAsunto(asuntoConRe)}`,
+    `Message-ID: ${params.messageIdPropio}`,
+    `MIME-Version: 1.0`,
+  ];
   if (params.messageIdHeader) {
     headerLines.push(`In-Reply-To: ${params.messageIdHeader}`);
     headerLines.push(`References: ${params.messageIdHeader}`);
@@ -705,33 +721,151 @@ function base64UrlEncodeBuffer(buf: Buffer): string {
  * para llevar su propia leyenda ("🤖 Respuesta automática") en vez de la
  * firma personal de Carlos, que implicaría que él la escribió a mano.
  */
-export async function enviarCorreo(params: {
+export interface ParametrosEnvioCorreo {
   to: string;
   asunto: string;
   cuerpo: string;
+  /** Identidad estable del efecto aprobado; nunca debe incluir secretos ni el cuerpo. */
+  idempotencyKey: string;
+  proceso: "borrador_aprobado" | "reporte_contable" | "autorespuesta";
   threadId?: string;
   messageIdHeader?: string;
   adjuntos?: AdjuntoParaEnviar[];
   firmaOverride?: string;
-}): Promise<{ id: string; threadId: string }> {
+}
+
+const metricasEnviosDurables = {
+  activos: 0,
+  enviados: 0,
+  reutilizados: 0,
+  verificadosRecuperados: 0,
+  incertidumbresDetectadas: 0,
+  errores: 0,
+  inciertosUltimaRevision: 0,
+};
+let timerReconciliacion: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionEnviosCorreoDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    // Solo false explícito restaura el camino anterior; una errata mantiene la protección.
+    habilitado: (env.WOBI_EMAIL_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoEnviosCorreoDurables() {
+  return { habilitado: configuracionEnviosCorreoDurables().habilitado, ...metricasEnviosDurables };
+}
+
+async function buscarCorreoEnviadoPorMessageId(messageIdRfc: string): Promise<ResultadoEnvioCorreo | undefined> {
+  const res = await getGmailClient().users.messages.list({
+    userId: "me",
+    q: `in:sent rfc822msgid:${messageIdRfc}`,
+    maxResults: 2,
+  });
+  const encontrado = res.data.messages?.[0];
+  if (!encontrado?.id) return undefined;
+  return { id: encontrado.id, threadId: encontrado.threadId ?? "" };
+}
+
+/** Reconciliación de arranque: solo consulta Gmail; jamás reenvía. */
+export async function reconciliarEnviosCorreoAlArrancar() {
+  if (!configuracionEnviosCorreoDurables().habilitado) {
+    return { revisados: 0, verificados: 0, inciertos: 0, errores: 0 };
+  }
+  const resumen = await reconciliarEnviosCorreoPendientes(durableSendStore, buscarCorreoEnviadoPorMessageId);
+  metricasEnviosDurables.verificadosRecuperados += resumen.verificados;
+  metricasEnviosDurables.incertidumbresDetectadas += resumen.inciertos;
+  metricasEnviosDurables.errores += resumen.errores;
+  metricasEnviosDurables.inciertosUltimaRevision = resumen.inciertos;
+  if (resumen.inciertos > 0 || resumen.errores > 0) programarReconciliacionEnviosCorreo(30_000, 3);
+  return resumen;
+}
+
+/** Reintentos de SOLO LECTURA tras ambigüedad; nunca llama a messages.send. */
+function programarReconciliacionEnviosCorreo(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacion || intentosRestantes <= 0) return;
+  timerReconciliacion = setTimeout(() => {
+    timerReconciliacion = null;
+    void reconciliarEnviosCorreoPendientes(durableSendStore, buscarCorreoEnviadoPorMessageId)
+      .then((resumen) => {
+        metricasEnviosDurables.verificadosRecuperados += resumen.verificados;
+        metricasEnviosDurables.incertidumbresDetectadas += resumen.inciertos;
+        metricasEnviosDurables.errores += resumen.errores;
+        metricasEnviosDurables.inciertosUltimaRevision = resumen.inciertos;
+        if (resumen.inciertos > 0 || resumen.errores > 0) {
+          programarReconciliacionEnviosCorreo(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasEnviosDurables.errores++;
+        programarReconciliacionEnviosCorreo(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacion.unref();
+}
+
+/** Se usa antes de redactar con IA o generar adjuntos costosos. No crea filas nuevas. */
+export async function consultarEnvioCorreoExistente(idempotencyKey: string): Promise<ResultadoEnvioCorreo | undefined> {
+  if (!configuracionEnviosCorreoDurables().habilitado) return undefined;
+  const identidad = identidadEnvioCorreo(idempotencyKey);
+  return conMutex(`gmail-send:${identidad.clave}`, () =>
+    consultarEnvioCorreoDurable(idempotencyKey, durableSendStore, buscarCorreoEnviadoPorMessageId)
+  );
+}
+
+async function enviarCorreoPorGmail(params: ParametrosEnvioCorreo, messageIdPropio: string): Promise<ResultadoEnvioCorreo> {
   const gmail = getGmailSendClient();
   const firmaHtml = params.firmaOverride ?? (await obtenerFirmaGmail());
-  const raw = base64UrlEncodeBuffer(construirMimeConAdjuntos({ ...params, firmaHtml }));
-
+  const raw = base64UrlEncodeBuffer(construirMimeConAdjuntos({ ...params, firmaHtml, messageIdPropio }));
   const res = await gmail.users.messages.send({
     userId: "me",
-    requestBody: {
-      raw,
-      threadId: params.threadId || undefined,
-    },
+    requestBody: { raw, threadId: params.threadId || undefined },
   });
-
-  // No crítico — el correo ya se envió, esto solo alimenta el directorio.
-  registrarPersonaDesdeCorreo(params.to, "correo_saliente").catch((error) =>
-    console.error("[gmail/client] Error registrando destinatario en el directorio de personas:", error)
-  );
-
   return { id: res.data.id ?? "", threadId: res.data.threadId ?? "" };
+}
+
+export async function enviarCorreo(params: ParametrosEnvioCorreo): Promise<{ id: string; threadId: string }> {
+  const identidad = identidadEnvioCorreo(params.idempotencyKey);
+  if (!configuracionEnviosCorreoDurables().habilitado) {
+    const resultado = await enviarCorreoPorGmail(params, identidad.messageIdRfc);
+    registrarPersonaDesdeCorreo(params.to, "correo_saliente").catch((error) =>
+      console.error("[gmail/client] Error registrando destinatario en el directorio de personas:", error)
+    );
+    return resultado;
+  }
+  return conMutex(`gmail-send:${identidad.clave}`, async () => {
+    metricasEnviosDurables.activos++;
+    try {
+      const envio = await ejecutarEnvioCorreoDurable(
+        params.idempotencyKey,
+        params.proceso,
+        durableSendStore,
+        {
+          buscar: buscarCorreoEnviadoPorMessageId,
+          enviar: (messageIdPropio) => enviarCorreoPorGmail(params, messageIdPropio),
+        }
+      );
+
+      if (envio.reutilizado) metricasEnviosDurables.reutilizados++;
+      else metricasEnviosDurables.enviados++;
+
+      // No crítico — el correo ya se envió, esto solo alimenta el directorio.
+      registrarPersonaDesdeCorreo(params.to, "correo_saliente").catch((error) =>
+        console.error("[gmail/client] Error registrando destinatario en el directorio de personas:", error)
+      );
+
+      return envio.resultado;
+    } catch (error) {
+      if (error instanceof EnvioCorreoInciertoError) {
+        metricasEnviosDurables.incertidumbresDetectadas++;
+        metricasEnviosDurables.inciertosUltimaRevision++;
+        programarReconciliacionEnviosCorreo(30_000, 3);
+      } else metricasEnviosDurables.errores++;
+      throw error;
+    } finally {
+      metricasEnviosDurables.activos--;
+    }
+  });
 }
 
 /** Descarga los bytes de un adjunto específico de un mensaje. */

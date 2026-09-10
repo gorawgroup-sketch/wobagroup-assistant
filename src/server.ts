@@ -39,6 +39,7 @@ import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
 import { handleDescartarTodoPendienteCallback, handleDescartarItemPendienteCallback } from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
+import { obtenerEstadoEnviosCorreoDurables, reconciliarEnviosCorreoAlArrancar } from "../core/gmail/client";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
 import { consumirPendienteOrientacionAnotacion } from "../core/jobs/cashflowAnnotationOrientationStore";
@@ -290,6 +291,7 @@ app.get("/health", (_req: Request, res: Response) => {
     trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes },
     cacheLecturas: resumirMetricasCachesLectura(),
     entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
+    enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
   });
 });
 
@@ -1780,4 +1782,15 @@ servidorHttp = app.listen(PORT, () => {
       })
     );
   }
+  trackearEnSegundoPlano(
+    reconciliarEnviosCorreoAlArrancar()
+      .then((r) => {
+        if (r.revisados > 0) {
+          console.log("[gmail/durable] Reconciliación de arranque:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error("[gmail/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
 });
