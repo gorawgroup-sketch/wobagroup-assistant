@@ -1,6 +1,42 @@
-import { obtenerPropuestasGastoPorChat } from "../gastos/gastoProposalSheet";
+import { obtenerPropuestasGastoPorChat, type PropuestaGasto } from "../gastos/gastoProposalSheet";
 import { reenviarPropuestaGasto } from "../gastos/reenviarPropuestaGasto";
+import { montosCercanos } from "../utils/montos";
 import type { ToolDefinition } from "./types";
+
+/**
+ * Hallazgo real (caso real Carlos, 2026-09-10 — propuestas de "Agencia Tributaria (AEAT)" y "1688
+ * Chen Jin S.L." pendientes a la vez): esta tool nunca tuvo forma de indicar CUÁL propuesta reenviar
+ * cuando hay varias — el input_schema no tenía ningún campo, así que sin importar cuántas veces Carlos
+ * aclarara cuál quería ("2", "sí", o el nombre completo del proveedor), la tool volvía a devolver la
+ * MISMA lista ambigua, en un bucle sin salida real (Claude no tenía ningún parámetro donde pasarle la
+ * aclaración de Carlos). Se agrega `cual` (texto libre: proveedor, parte de él, número de la lista tal
+ * como se mostró, o el monto) para que el modelo pase la aclaración del usuario y la tool resuelva a
+ * UNA propuesta sin volver a preguntar cuando ya alcanza para identificarla sin ambigüedad.
+ */
+function resolverPropuestaPorTexto(pendientes: PropuestaGasto[], cual: string): PropuestaGasto[] {
+  const texto = cual.trim().toLowerCase();
+  if (!texto) return pendientes;
+
+  // "2" o "la 2" — número de la lista tal como se le mostró al usuario (1-based).
+  const comoIndice = Number(texto.replace(/[^\d]/g, ""));
+  if (texto.replace(/[^\d]/g, "") === texto.replace(/\s/g, "") && Number.isInteger(comoIndice) && comoIndice >= 1 && comoIndice <= pendientes.length) {
+    return [pendientes[comoIndice - 1]];
+  }
+
+  const porProveedor = pendientes.filter(
+    (p) => p.proveedor.toLowerCase().includes(texto) || texto.includes(p.proveedor.toLowerCase())
+  );
+  if (porProveedor.length > 0) return porProveedor;
+
+  // Monto tal como lo haya escrito el usuario (con coma o punto decimal, con o sin símbolo de moneda).
+  const comoMonto = Number(texto.replace(/[^\d.,]/g, "").replace(",", "."));
+  if (Number.isFinite(comoMonto) && comoMonto > 0) {
+    const porMonto = pendientes.filter((p) => montosCercanos(p.monto, comoMonto, 0.01));
+    if (porMonto.length > 0) return porMonto;
+  }
+
+  return pendientes;
+}
 
 /**
  * Caso real (2026-09-07): una propuesta de gasto de Uber tenía ya un movimiento bancario
@@ -35,13 +71,30 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
     "por sí sola — esas escrituras en Holded siempre requieren que el usuario toque el botón real (mismo " +
     "criterio que el resto del sistema), así que después de llamar a esta tool dile al usuario que toque el " +
     "botón que corresponde a lo que pidió, ya renovado al final del chat. Nunca digas que no hay forma de " +
-    "crear el gasto ni pidas que reenvíen el documento — la propuesta ya existe completa.",
-  input_schema: { type: "object", properties: {} },
-  handler: async (_input, context) => {
+    "crear el gasto ni pidas que reenvíen el documento — la propuesta ya existe completa. Si hay VARIAS " +
+    "propuestas pendientes y el usuario ya dijo cuál quiere (por número de la lista, nombre del proveedor, o " +
+    "monto — en cualquier mensaje de la conversación, no solo el último), pásalo en 'cual' para no volver a " +
+    "preguntar algo que el usuario ya contestó.",
+  input_schema: {
+    type: "object",
+    properties: {
+      cual: {
+        type: "string",
+        description:
+          "Solo si hay VARIAS propuestas pendientes: cuál quiere el usuario, tal como lo haya dicho — el número " +
+          "de la lista que se le mostró (ej. '2'), el nombre del proveedor o parte de él (ej. 'Chen Jin', " +
+          "'AEAT'), o el monto (ej. '8,50'). Omite este campo si solo hay una propuesta pendiente, o si el " +
+          "usuario todavía no dijo cuál.",
+      },
+    },
+  },
+  handler: async (input, context) => {
     const chatId = context?.chatId;
     if (chatId === undefined) {
       return "Error: no se pudo determinar el chat — no se puede reenviar ninguna propuesta de gasto.";
     }
+
+    const cual = typeof input.cual === "string" ? input.cual : "";
 
     const pendientes = await obtenerPropuestasGastoPorChat(chatId);
     if (pendientes.length === 0) {
@@ -52,17 +105,23 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
       );
     }
 
-    if (pendientes.length > 1) {
+    const resueltas = pendientes.length > 1 && cual ? resolverPropuestaPorTexto(pendientes, cual) : pendientes;
+
+    if (resueltas.length !== 1) {
       const lista = pendientes
         .map((p, i) => `${i + 1}. ${p.proveedor} — ${p.monto.toFixed(2)} ${p.moneda} (${p.fecha})`)
         .join("\n");
+      const notaIntento = cual
+        ? ` "${cual}" no alcanzó para identificar una sola (¿coincide con más de una, o con ninguna?) —`
+        : "";
       return (
-        `Hay ${pendientes.length} propuestas de gasto pendientes en este chat — pregúntale al usuario cuál es ` +
-        `(por proveedor y monto, nunca adivines por orden) antes de reenviar ninguna:\n${lista}`
+        `Hay ${pendientes.length} propuestas de gasto pendientes en este chat —${notaIntento} pregúntale al ` +
+        `usuario cuál es (por proveedor y monto, nunca adivines por orden) antes de reenviar ninguna, y vuelve ` +
+        `a llamar a esta herramienta pasando su respuesta en 'cual':\n${lista}`
       );
     }
 
-    const propuesta = pendientes[0];
+    const propuesta = resueltas[0];
     await reenviarPropuestaGasto(propuesta, "🔁 Botones renovados — toca la decisión que quieras aplicar.");
 
     return (
