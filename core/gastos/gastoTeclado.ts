@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { InlineKeyboardButton } from "../telegram/types";
 import type { PropuestaGasto } from "./gastoProposalSheet";
 
@@ -178,7 +179,21 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
     filas.push([boton("otrasacciones", "Otras acciones (recordatorio, instrucciones...)")]);
   }
 
-  filas.push([{ text: "▶️ Aprobar selección", callback_data: `gasto_aprobar:${propuesta.id}` }]);
+  // Hallazgo real de auditoría (caso real Carlos, 2026-09-10): "gasto_aprobar" es una acción sensible
+  // (ver ACCIONES_SENSIBLES) — la entrega durable de Telegram (core/telegram/durableDelivery.ts)
+  // identifica un callback sensible por usuario+chat+mensaje+callback_data EXACTOS, así que dos
+  // toques de este botón sobre el MISMO mensaje con el MISMO callback_data se tratan como "la misma
+  // acción" sin importar que la SELECCIÓN real haya cambiado entre uno y otro. Presionar "Aprobar
+  // selección" sin marcar nada (rebote de validación, ningún efecto real — handleGastoAprobarCallback)
+  // igual queda marcado "completada" en la entrega durable, así que el segundo toque — DESPUÉS de
+  // marcar un check real — se bloqueaba con "Esta acción ya fue procesada", sin haber hecho nada. Se
+  // incluye una huella corta de la selección actual en el propio callback_data: cada estado de
+  // selección distinto genera una entrega durable distinta, así que el rebote de validación (selección
+  // vacía) nunca vuelve a colisionar con el intento real (selección no vacía) — sin tocar el mecanismo
+  // de entrega durable en sí, que sigue protegiendo correctamente contra un doble-toque real sobre la
+  // MISMA selección.
+  const huellaSeleccion = createHash("sha256").update(Array.from(seleccion).sort().join(",")).digest("hex").slice(0, 8);
+  filas.push([{ text: "▶️ Aprobar selección", callback_data: `gasto_aprobar:${propuesta.id}:${huellaSeleccion}` }]);
 
   return filas;
 }
