@@ -244,7 +244,17 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "tiene validez fiscal para el grupo, así que deben registrarse como un solo importe total, " +
           "SIN desglosar IVA (ver 'lineas' más abajo). Repórtalo también cuando el documento no es " +
           "legible del todo o no queda claro (true por defecto ante la duda — es preferible no " +
-          "deducir un IVA real que deducir uno que luego no se pueda justificar ante Hacienda).",
+          "deducir un IVA real que deducir uno que luego no se pueda justificar ante Hacienda). " +
+          "TAMBIÉN repórtalo true (aunque el documento SÍ muestre los datos fiscales completos de la " +
+          "empresa compradora, y aunque la propia factura SÍ desglose un IVA/VAT) cuando el PROVEEDOR " +
+          "(emisor) está fuera de España — su dirección impresa no es española, o su propio número de " +
+          "identificación fiscal no es un NIF/CIF español (ej. un 'EU VAT' de otro país, o ningún NIF/CIF " +
+          "español en absoluto). Pedido explícito de Carlos, caso real: factura de Anthropic, PBC (San " +
+          "Francisco, EEUU, 'EU VAT: IE...' — un número irlandés) a nombre de la empresa compradora " +
+          "española, con una línea 'VAT - Spain (21%)' impresa — ese IVA cobrado por un proveedor " +
+          "extranjero NO es deducible por el mecanismo normal de IVA doméstico español (requeriría " +
+          "inversión del sujeto pasivo/autoliquidación, un trámite fiscal aparte que este sistema no " +
+          "hace), así que sigue siendo un recibo, no una factura con IVA deducible directo.",
       },
       lineas: {
         type: "array",
