@@ -83,6 +83,7 @@ import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHan
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
 import type { TelegramUpdate } from "../core/telegram/types";
+import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -167,7 +168,8 @@ process.on("SIGTERM", () => {
   cerrandoPorSigterm = true;
   servidorHttp?.close();
 
-  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0 && solicitudesChatEnCurso() === 0;
+  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0 &&
+    solicitudesChatEnCurso() === 0 && obtenerEstadoPlanificadorHerramientas().activas === 0;
 
   if (nadaEnCurso()) {
     console.log("[server] SIGTERM recibido, sin trabajo en curso — saliendo de inmediato.");
@@ -176,7 +178,7 @@ process.on("SIGTERM", () => {
   }
 
   console.log(
-    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${solicitudesChatEnCurso()} chat(s) web y ${obtenerCantidadJobsEnCurso()} job(s) en curso — esperando a que terminen antes de salir.`
+    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s) y ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s) activas — esperando a que terminen antes de salir.`
   );
   const esperaMaximaDrenajeMs = 55_000;
   const inicio = Date.now();
@@ -188,7 +190,7 @@ process.on("SIGTERM", () => {
     } else if (Date.now() - inicio > esperaMaximaDrenajeMs) {
       clearInterval(intervalo);
       console.error(
-        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
+        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s), ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
       );
       process.exit(0);
     }
@@ -258,7 +260,8 @@ function programarActualizacionCerebroDesdeTelegram(): void {
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
+  const herramientas = obtenerEstadoPlanificadorHerramientas();
+  res.json({ status: "ok", trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes } });
 });
 
 // La raíz del dominio nunca tuvo ninguna página propia — sin esto, entrar a

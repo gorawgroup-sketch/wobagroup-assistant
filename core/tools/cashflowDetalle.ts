@@ -41,6 +41,7 @@ export const cashflowDetalleTool: ToolDefinition = {
   name: "consultar_cashflow_detalle",
   seguraParaModoRapido: true,
   lecturaAcotable: true,
+  lecturaParalela: "cashflow",
   description:
     "Consulta el detalle de movimientos del cashflow desde la hoja DATOS: ingresos, pagos a proyectos, " +
     "pagos extras, impuestos por pagar, aplazamientos de impuestos, gastos fijos (nóminas, créditos, " +

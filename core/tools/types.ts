@@ -4,6 +4,9 @@ import type Anthropic from "@anthropic-ai/sdk";
 export interface ToolContext {
   chatId?: number;
   antesDeEfecto?: () => void;
+  /** Cancela admisión pendiente, nunca una escritura ya iniciada. */
+  signal?: AbortSignal;
+  ejecucionId?: string;
 }
 
 /**
@@ -28,4 +31,6 @@ export interface ToolDefinition {
   seguraParaModoRapido?: boolean;
   /** Lectura auditada sin modelos anidados; admite abandonar la espera sin cancelar escrituras. */
   lecturaAcotable?: boolean;
+  /** Solo consultas independientes auditadas; no equivale a seguraParaModoRapido. */
+  lecturaParalela?: "cashflow" | "holded";
 }

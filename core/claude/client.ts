@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { executeTool, getToolDefinitions } from "../tools/registry";
+import { executeTool, executeToolBatch, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
 import { obtenerHistorial, guardarHistorial } from "./conversationStore";
 import { ColaTurnos } from "./turnQueue";
@@ -732,42 +732,16 @@ async function ejecutarConversacion(
 
     messages.push({ role: "assistant", content: response.content });
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const block of toolUseBlocks) {
-      if (!nombresDisponibles.has(block.name)) {
-        // Defensa en profundidad — no debería llegar hasta acá (arriba ya
-        // se escala cuando es posible), pero si de todas formas pasa (ej.
-        // en el intento completo, donde ya no hay a dónde escalar), nunca
-        // se ejecuta una tool que no estaba realmente ofrecida.
-        console.error(`[claude:${model}] Tool "${block.name}" solicitada pero no disponible — no se ejecuta.`);
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: `Error: la herramienta "${block.name}" no está disponible en este contexto.`,
-          is_error: true,
-        });
-        continue;
-      }
-
-      // Solo metadatos estructurales: los valores pueden contener datos
-      // personales, financieros o secretos aportados por una integración.
-      const claves = Object.keys(block.input as Record<string, unknown>);
-      console.log(`[claude:${model}] tool_use -> ${block.name} (campos: ${claves.join(",") || "ninguno"})`);
-
-      const result = await executeTool(block.name, block.input as Record<string, unknown>, {
-        chatId,
-        antesDeEfecto: () => { ejecucion.efectosIniciados = true; },
-      });
-
-      console.log(`[claude:${model}] tool_result <- ${block.name} (${result.length} caracteres)`);
-
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: block.id,
-        content: result,
-      });
-    }
+    const inicioLote = Date.now();
+    const toolResults = await executeToolBatch(toolUseBlocks, nombresDisponibles, {
+      chatId,
+      ejecucionId: ejecucion.id,
+      antesDeEfecto: () => { ejecucion.efectosIniciados = true; },
+    });
+    console.log("[tools/batch]", JSON.stringify({
+      ejecucionId: ejecucion.id, cantidad: toolUseBlocks.length,
+      duracionMs: Date.now() - inicioLote,
+    }));
 
     messages.push({ role: "user", content: toolResults });
   }
