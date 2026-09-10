@@ -410,7 +410,8 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
 export async function extraerDatosFactura(
   rutaLocal: string,
   mimeType: string | undefined,
-  contextoCorreo?: string
+  contextoCorreo?: string,
+  nombreArchivo?: string
 ): Promise<DatosFactura> {
   const fallback: DatosFactura = {
     esFacturaOGasto: false,
@@ -444,9 +445,24 @@ export async function extraerDatosFactura(
     REPORTAR_TOOL,
   ];
 
-  const textoInstruccion = contextoCorreo
-    ? `Lee este documento y reporta sus datos.\n\nContexto del correo que traía este adjunto:\n${contextoCorreo}`
-    : "Lee este documento y reporta sus datos.";
+  // Hallazgo real de auditoría (correo con 8 adjuntos, capturas de notificación de banca móvil
+  // nombradas "4,95€ - Alimentacion BCN - Mastercard.jpeg" — 6 de 8 se clasificaron mal como
+  // "no es un gasto" y quedaron sin ningún dato mientras el nombre YA traía monto+categoría+forma de
+  // pago con la fiabilidad del propio banco): antes, el nombre real del archivo NUNCA llegaba a este
+  // prompt — la decisión de es_factura_o_gasto dependía al 100% de leer visualmente la imagen a
+  // ciegas. Se incluye acá como una pista MÁS (nunca la única fuente de verdad — sigue siendo el
+  // contenido real del documento lo que manda si hay conflicto), pero con la fiabilidad suficiente
+  // para inclinar la decisión cuando la lectura visual sea ambigua.
+  const notaNombreArchivo = nombreArchivo
+    ? `\n\nNombre del archivo tal como llegó (a veces ya trae monto/categoría/forma de pago resueltos por ` +
+      `quien lo generó — un banco, una app — úsalo como pista adicional, nunca como la única fuente de ` +
+      `verdad si contradice claramente el contenido real del documento): "${nombreArchivo}"`
+    : "";
+
+  const textoInstruccion =
+    (contextoCorreo
+      ? `Lee este documento y reporta sus datos.\n\nContexto del correo que traía este adjunto:\n${contextoCorreo}`
+      : "Lee este documento y reporta sus datos.") + notaNombreArchivo;
 
   const messages: Anthropic.MessageParam[] = [
     {
@@ -561,5 +577,12 @@ export async function extraerDatosFactura(
     messages.push({ role: "user", content: toolResults });
   }
 
-  return fallback;
+  // Hallazgo real de auditoría (mismo patrón ya confirmado en core/gmail/classifyEmail.ts): agotar
+  // MAX_ITERATIONS sin que el modelo llegara a invocar REPORTAR_TOOL no es lo mismo que una decisión
+  // real de "no es un gasto" — es que el presupuesto de turnos se acabó antes de decidir. Devolver
+  // `fallback` en silencio acá era indistinguible, para procesarDocumentoLocal.ts, de un "false"
+  // deliberado — un documento real quedaba archivado como genérico sin que nadie se enterara de que en
+  // realidad fue un fallo de presupuesto, no una lectura real del contenido. Lanzar en vez de devolver
+  // deja que el llamador reintente (ver procesarDocumentoLocal.ts) en vez de tragárselo.
+  throw new Error("Se agotaron los intentos sin que el modelo reportara una decisión clara (es_factura_o_gasto).");
 }
