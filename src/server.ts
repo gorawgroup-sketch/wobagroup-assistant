@@ -57,6 +57,7 @@ import { consumirPendienteAccionGasto } from "../core/gastos/pendienteAccionGast
 import { consumirPendienteSeleccionGasto } from "../core/gastos/pendienteSeleccionGastoStore";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
+import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
@@ -756,6 +757,8 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
         await handleEdicionCompraHoldedCallback(update.callback_query);
       } else if (data.startsWith("edicioncashflow_")) {
         await handleEdicionValorCashflowCallback(update.callback_query);
+      } else if (data.startsWith("regmanualcf_")) {
+        await handleRegistroManualCashflowCallback(update.callback_query);
       } else if (data.startsWith("evento_")) {
         await handleEventoCallback(update.callback_query);
       } else if (data.startsWith("cerebroacceso_")) {
