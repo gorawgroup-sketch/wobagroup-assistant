@@ -179,3 +179,30 @@ test("si falla la respuesta del checkpoint, relee la reserva y no la pierde", as
   assert.equal(procesadas, 1);
   assert.equal(repo.filas.get(reserva.entrega.clave)?.estado, "completada");
 });
+
+test("una ejecución local larga no se declara incierta mientras continúa activa", async () => {
+  const repo = new RepoMemoria();
+  let ahora = 0;
+  let liberar!: () => void;
+  const bloqueada = new Promise<void>((resolve) => { liberar = resolve; });
+  let avisos = 0;
+  const coordinador = new CoordinadorEntregasTelegram(
+    repo,
+    async () => bloqueada,
+    async () => { avisos++; },
+    { ahora: () => ahora, demoraIncertidumbreMs: 1_000 }
+  );
+  const reserva = await coordinador.reservar(mensaje(80), false);
+  const ejecucion = coordinador.atender(reserva.entrega, true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  ahora = 10_000;
+  await coordinador.atender((await repo.obtener(reserva.entrega.clave))!, false);
+  assert.equal(repo.filas.get(reserva.entrega.clave)?.estado, "iniciada");
+  assert.equal(avisos, 0);
+
+  liberar();
+  await ejecucion;
+  coordinador.cerrar();
+  assert.equal(repo.filas.get(reserva.entrega.clave)?.estado, "completada");
+});

@@ -10,7 +10,7 @@ Fecha: 2026-09-10. Base recuperable: merge `4d5f82493095719965fe6b15dd02cec3f119
 - Una entrega `iniciada` que sigue abierta tras 120 s se marca `incierta`, nunca se reejecuta y avisa al chat que debe comprobarse el resultado antes de repetir.
 - Dos `callback_query` distintos sobre el mismo botón sensible comparten una clave SHA-256 derivada de usuario, mensaje y acción. La segunda pulsación no repite la operación y recibe una confirmación clara en Telegram. Los toggles y pre-pasos no usan esta deduplicación semántica para no bloquear cambios intencionales.
 - Los estados terminales se conservan 30 días y se purgan en lote. Duplicados físicos conservan como canónico el estado más avanzado, evitando que una fila `reservada` venza sobre otra ya `completada`.
-- La pestaña amplía automáticamente su cuadrícula en bloques cuando el volumen supera la capacidad inicial, sin volver a la heurística ambigua de `values.append`.
+- La pestaña amplía automáticamente su cuadrícula en bloques cuando el volumen supera la capacidad inicial y sus lecturas no tienen el antiguo techo de 10.000 filas, sin volver a la heurística ambigua de `values.append`.
 - `/health` expone únicamente contadores: habilitación, activas, revisiones pendientes, recuperadas, inciertas, duplicadas y errores. No muestra payload, usuario, chat, texto ni claves.
 - El apagado controlado cancela timers locales; el siguiente proceso reconstruye las revisiones desde el ledger.
 
@@ -41,8 +41,9 @@ Reversión operativa inmediata: `WOBI_TELEGRAM_DURABLE_ENABLED=false`. Reversió
 - Mensajes distintos con el mismo texto no se confunden.
 - Recuperación de una reserva previa al inicio.
 - Conversión de una ejecución interrumpida en incierta, notificación y ausencia de reintento.
+- Una ejecución local larga no se declara incierta mientras todavía continúa activa.
 - Fallo del handler sin repetición automática.
 - Interruptor y ventanas acotadas, incluida errata que mantiene el modo seguro.
-- 84 pruebas (80 TypeScript + 4 del worker Claude Max), typecheck y build backend/frontend antes de publicar.
+- 85 pruebas (81 TypeScript + 4 del worker Claude Max), typecheck y build backend/frontend antes de publicar.
 
 Punto de recuperación previo: deployment Railway `50a929ca-4ee1-4edb-b44b-0832fb061b1a`, commit `4d5f82493095719965fe6b15dd02cec3f1192ab8`, verificado en SUCCESS/RUNNING al cerrar el bloque 3.

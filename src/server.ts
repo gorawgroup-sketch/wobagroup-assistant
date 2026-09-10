@@ -192,7 +192,8 @@ process.on("SIGTERM", () => {
   servidorHttp?.close();
 
   const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0 &&
-    solicitudesChatEnCurso() === 0 && obtenerEstadoPlanificadorHerramientas().activas === 0;
+    solicitudesChatEnCurso() === 0 && obtenerEstadoPlanificadorHerramientas().activas === 0 &&
+    coordinadorEntregasTelegram.estado.activas === 0;
 
   if (nadaEnCurso()) {
     console.log("[server] SIGTERM recibido, sin trabajo en curso — saliendo de inmediato.");
@@ -201,7 +202,7 @@ process.on("SIGTERM", () => {
   }
 
   console.log(
-    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s) y ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s) activas — esperando a que terminen antes de salir.`
+    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${coordinadorEntregasTelegram.estado.activas} entrega(s) durable(s), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s) y ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s) activas — esperando a que terminen antes de salir.`
   );
   const esperaMaximaDrenajeMs = 55_000;
   const inicio = Date.now();
@@ -213,7 +214,7 @@ process.on("SIGTERM", () => {
     } else if (Date.now() - inicio > esperaMaximaDrenajeMs) {
       clearInterval(intervalo);
       console.error(
-        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s), ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
+        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${coordinadorEntregasTelegram.estado.activas} entrega(s) durable(s), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s), ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
       );
       process.exit(0);
     }

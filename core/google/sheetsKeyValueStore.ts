@@ -177,7 +177,9 @@ export async function leerFilas(tabName: string, numCols: number, headers: strin
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${tabName}!A2:${colLetter(numCols)}10000`,
+    // Sin un tope de fila artificial: la API devuelve hasta el último valor
+    // usado y la cuadrícula ahora crece bajo demanda en agregarFila.
+    range: `${tabName}!A2:${colLetter(numCols)}`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 

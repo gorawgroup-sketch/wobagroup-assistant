@@ -138,6 +138,13 @@ export class CoordinadorEntregasTelegram {
       return this.ejecutar(entrega.clave, !nueva);
     }
     if (entrega.estado === "iniciada") {
+      // El lease solo distingue un proceso muerto de uno vivo si miramos la
+      // ejecución local. Una herramienta legítima puede superar la ventana;
+      // mientras siga activa aquí se vuelve a revisar, nunca se declara
+      // incierta prematuramente.
+      if (this.activas.has(entrega.clave)) {
+        return this.programar(entrega.clave, Math.min(30_000, this.demoraIncertidumbreMs));
+      }
       const espera = Math.max(0, this.demoraIncertidumbreMs - (this.ahora() - entrega.actualizadoEn));
       if (espera > 0) return this.programar(entrega.clave, espera);
       return this.declararIncierta(entrega.clave);
