@@ -23,8 +23,14 @@ function resolverPropuestaPorTexto(pendientes: PropuestaGasto[], cual: string): 
     return [pendientes[comoIndice - 1]];
   }
 
+  // Hallazgo real de auditoría: un proveedor vacío/en blanco (caso real — extractInvoiceData.ts/
+  // extraerGastoDeCorreo.ts pueden dejarlo así cuando no se pudo leer, o gastoProposalSheet.ts al
+  // releer una fila con esa columna vacía) hace que `"".includes(texto)` NUNCA aplique, pero
+  // `texto.includes("")` es SIEMPRE true (todo string incluye al vacío) — sin este filtro, una
+  // propuesta sin proveedor se colaba en CUALQUIER búsqueda por texto, resolviendo a la propuesta
+  // equivocada o bloqueando para siempre la resolución de la propuesta real.
   const porProveedor = pendientes.filter(
-    (p) => p.proveedor.toLowerCase().includes(texto) || texto.includes(p.proveedor.toLowerCase())
+    (p) => p.proveedor.trim() !== "" && (p.proveedor.toLowerCase().includes(texto) || texto.includes(p.proveedor.toLowerCase()))
   );
   if (porProveedor.length > 0) return porProveedor;
 
