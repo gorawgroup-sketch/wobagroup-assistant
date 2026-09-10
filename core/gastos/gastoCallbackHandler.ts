@@ -46,6 +46,7 @@ import { guardarPendienteSeleccionGasto, type PendienteSeleccionGasto } from "./
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
 import { registrarAsignacionCuenta } from "../holded/asignacionCuentaLogSheet";
+import { registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
 import {
   guardarResolucionContacto,
   consumirResolucionContacto,
@@ -1462,6 +1463,21 @@ async function crearGastoYReportar(
     registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto).catch(
       (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
     ),
+    // Hallazgo real de auditoría (caso Avianca/Larrauri, 2026-09-10): registro directo de "este correo
+    // ya se convirtió en este gasto" — ver gastoPorCorreoStore.ts para el bug real que esto cierra
+    // (el mismo correo reprocesado generaba una propuesta duplicada, a veces sin que buscarGastoSimilar
+    // la atrapara a tiempo por depender de la propia búsqueda de Holded). No crítico: si esto falla, la
+    // protección normal de duplicados (buscarGastoSimilar) sigue siendo la primera línea de defensa.
+    propuesta.correoOrigen?.mensajeIdGmail
+      ? registrarGastoDesdeCorreo({
+          mensajeIdGmail: propuesta.correoOrigen.mensajeIdGmail,
+          // Distingue CUÁL adjunto de un correo con varios ya se resolvió — ver el comentario de
+          // gastoPorCorreoStore.ts sobre por qué esto no puede ser solo por mensajeIdGmail.
+          attachmentId: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
+          gastoId: gasto.id,
+          empresa: empresaFinal,
+        }).catch((error) => console.error("[gastoCallbackHandler] No se pudo registrar el gasto por correo (no crítico):", error))
+      : Promise.resolve(),
     contactoForzado && aprenderAlias
       ? registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
           (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
