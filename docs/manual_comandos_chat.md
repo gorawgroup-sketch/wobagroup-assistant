@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-09-10 (registrar por chat una fila NUEVA en el cashflow, a pedido puntual — antes solo el comparativo automático Holded-vs-cashflow podía crear filas).
+actualización: 2026-09-10 (al crear un issue de escalación a development, Claude ahora investiga y propone un arreglo real automáticamente, vía GitHub Actions — con la misma aprobación por botón antes de fusionar).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -278,9 +278,15 @@ registrar en cashflow) sin que presiones uno de estos botones.
 
 **Sobre una propuesta de escalación a development:**
 - Cuando se pide explícitamente escalar/reportar algo a development (`escalar_a_development`), se muestra el reporte completo con dos botones — nunca se crea el issue solo con la propuesta.
-- 📤 Crear issue — crea el GitHub Issue real en el repo y responde con el link.
+- 📤 Crear issue — crea el GitHub Issue real en el repo, lo etiqueta para que Claude lo investigue automáticamente (ver abajo), y responde con el link.
 - ❌ Cancelar — no se crea nada.
 - Solo el superadministrador puede presionar cualquiera de los dos — mismo criterio que el resto de escrituras externas del sistema (un issue real en GitHub, visible para todo el equipo, es de la misma naturaleza que enviar un correo).
+
+**Sobre lo que pasa DESPUÉS de crear el issue (pedido explícito de Carlos: "que envíe solicitud de ajuste a Claude y Claude reinicie el ajuste del problema"):**
+- Automático, sin ningún comando aparte: al crear el issue, un workflow de GitHub Actions (`.github/workflows/claude-issue-autofix.yml`) invoca a Claude Code para que investigue el bug/mejora descrita y, si logra un arreglo real y verificado (compila, build limpio), abra un Pull Request — a diferencia de la autorrevisión nocturna (que solo puede tocar `core/utils/`), este flujo puede proponer cambios en CUALQUIER archivo del repo, decisión explícita de Carlos para que sirva contra los bugs reales que de verdad se escalan (dinero, Holded, cashflow).
+- La garantía de seguridad no cambia: el PR **nunca se fusiona solo**. Si Claude propone un arreglo, WOBI avisa por Telegram con los mismos botones "✅ Desplegar / ❌ Descartar" que ya usa la autorrevisión nocturna (ver sección de autorrevisión más arriba) — desplegar fusiona el PR (dispara el redeploy normal de Railway), descartar cierra el PR sin fusionar.
+- Si Claude no logra un arreglo real y verificado, no crea ningún PR — solo deja un comentario en el issue explicando qué encontró y qué haría falta para seguir (revisar el link del issue a mano).
+- Requiere que el secret de GitHub Actions `ADMIN_SECRET` (mismo valor ya usado en Railway para los endpoints `/admin/*`) esté configurado en el repo — sin eso, Claude investiga y puede abrir el PR igual, pero WOBI no puede avisar por Telegram (el PR queda visible solo en GitHub hasta que alguien lo revise a mano).
 
 ---
 
