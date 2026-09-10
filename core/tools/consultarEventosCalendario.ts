@@ -17,6 +17,7 @@ export const consultarEventosCalendarioTool: ToolDefinition = {
   name: "consultar_eventos_calendario",
   seguraParaModoRapido: true,
   lecturaAcotable: true,
+  lecturaParalela: "holded",
   description:
     "Consulta las actividades/eventos ya programados en el calendario CRM de Holded (WOBA, EWORKS o " +
     "Footprint) en los próximos días. Úsala para confirmar si algo que se programó realmente quedó " +

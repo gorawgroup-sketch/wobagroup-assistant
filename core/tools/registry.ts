@@ -1,6 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext, ToolDefinition } from "./types";
-import { ejecutarHerramienta } from "./execution";
+import { ejecutarHerramienta, esLecturaParalela } from "./execution";
+import { ejecutarLoteOrdenado } from "./batch";
+import { configuracionConcurrencia } from "./scheduler";
 import { knowledgeBaseTool } from "./knowledgeBase";
 import { cashflowResumenTool } from "./cashflowResumen";
 import { cashflowDetalleTool } from "./cashflowDetalle";
@@ -134,4 +136,28 @@ export async function executeTool(
   }
 
   return ejecutarHerramienta(tool, input, context);
+}
+
+/** Única frontera para lotes conversacionales. La autorización se comprueba ANTES de admitir trabajo. */
+export async function executeToolBatch(
+  bloques: readonly Anthropic.ToolUseBlock[],
+  nombresPermitidos: ReadonlySet<string>,
+  context: ToolContext = {}
+): Promise<Anthropic.ToolResultBlockParam[]> {
+  return ejecutarLoteOrdenado(bloques, (bloque) => {
+    if (!nombresPermitidos.has(bloque.name)) return false;
+    const tool = tools.find((t) => t.name === bloque.name);
+    return tool !== undefined && esLecturaParalela(tool);
+  }, async (bloque, signal): Promise<Anthropic.ToolResultBlockParam> => {
+    if (!nombresPermitidos.has(bloque.name)) {
+      return {
+        type: "tool_result", tool_use_id: bloque.id, is_error: true,
+        content: `Error: la herramienta "${bloque.name}" no está disponible en este contexto.`,
+      };
+    }
+    const content = await executeTool(bloque.name, bloque.input as Record<string, unknown>, {
+      ...context, signal: context.signal ? AbortSignal.any([context.signal, signal]) : signal,
+    });
+    return { type: "tool_result", tool_use_id: bloque.id, content };
+  }, configuracionConcurrencia().paralelo);
 }

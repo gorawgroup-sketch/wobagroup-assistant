@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ejecutarHerramienta } from "./execution";
+import { ejecutarHerramienta as ejecutarOriginal } from "./execution";
+import { PlanificadorHerramientas } from "./scheduler";
 import type { ToolDefinition } from "./types";
 import { impedirReinicioConEfectos, mensajeFalloTurno, TurnoConEfectosError } from "../claude/turnSafety";
 import type { EjecucionIA } from "../ai/policy";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
 
 const base: ToolDefinition = { name: "prueba", description: "", input_schema: { type: "object" }, handler: () => "ok" };
+// Cada unidad tiene reservas aisladas, incluidas las operaciones que intencionalmente nunca terminan.
+const ejecutarHerramienta: typeof ejecutarOriginal = (tool, input, context, limite) =>
+  ejecutarOriginal(tool, input, context, limite, new PlanificadorHerramientas());
 
 test("solo lectura auditada vence y no marca efectos", async () => {
   let efectos = false;

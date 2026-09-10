@@ -10,6 +10,7 @@ export const cashflowResumenTool: ToolDefinition = {
   name: "consultar_cashflow_resumen",
   seguraParaModoRapido: true,
   lecturaAcotable: true,
+  lecturaParalela: "cashflow",
   description:
     "Consulta el resumen semanal del cashflow del grupo (balance inicial, income, project expenses, " +
     "general expenses y balance final), leyendo los valores ya calculados de la hoja CASHFLOW. Úsala " +
