@@ -25,6 +25,7 @@ import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
+import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import {
   encolarCorreos,
   hayActivo,
@@ -361,6 +362,32 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         correo.adjuntos.length > 1
           ? `📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
           : undefined;
+
+      // Hallazgo real de auditoría (caso Avianca/Larrauri, 2026-09-10): este mismo correo puede volver
+      // a llegar acá reprocesado (el hilo de Gmail no siempre queda marcado como leído tras la primera
+      // resolución — investigación en curso sobre la causa exacta) — sin este chequeo, se volvía a leer
+      // el adjunto, extraer los datos, y proponer un gasto NUEVO para algo ya creado en Holded,
+      // confiando solo en que buscarGastoSimilar lo detectara a tiempo (no siempre confiable — ver su
+      // comentario: Holded puede tardar en indexar un documento recién creado). Este chequeo es una
+      // defensa propia, independiente de Holded: si YA hay un registro directo de que ESTE adjunto en
+      // concreto (mensajeIdGmail + attachmentId, no solo el correo) se convirtió en un gasto real, se
+      // salta su procesamiento — nunca hace falta releerlo ni proponerlo de nuevo. Se hace POR ADJUNTO,
+      // no una sola vez antes del loop, a propósito: un correo con varios adjuntos reales y distintos
+      // (ver el caso citado arriba) puede tener UNO ya resuelto y OTRO genuinamente pendiente todavía —
+      // un chequeo a nivel de correo entero habría saltado también ese otro, sin resolver, por error.
+      const gastoYaCreado = await buscarGastoDesdeCorreo(correo.id, adjunto.attachmentId).catch((error) => {
+        console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya generó un gasto (no crítico, sigue igual):`, error);
+        return undefined;
+      });
+      if (gastoYaCreado) {
+        await sendTelegramMessage(
+          chatId,
+          `📄 "${adjunto.filename}" (${correo.asunto}) — ya generó el gasto ${gastoYaCreado.gastoId} (${gastoYaCreado.empresa}) antes, no propongo uno nuevo.`
+        ).catch(() => {});
+        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+        continue;
+      }
+
       try {
         const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
         await mkdir(UPLOADS_DIR, { recursive: true });
@@ -477,6 +504,20 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
   }
 
   if (gastoDetectado?.esFacturaOGasto) {
+    // Mismo chequeo que el camino con adjuntos, arriba — ver su comentario (caso Avianca/Larrauri).
+    const gastoYaCreadoEnCuerpo = await buscarGastoDesdeCorreo(correo.id).catch((error) => {
+      console.error(`[revisarCorreoNuevo] Error consultando si el correo ${correo.id} ya generó un gasto (no crítico, sigue igual):`, error);
+      return undefined;
+    });
+    if (gastoYaCreadoEnCuerpo) {
+      await sendTelegramMessage(
+        chatId,
+        `📄 "${correo.asunto}" — ya generó el gasto ${gastoYaCreadoEnCuerpo.gastoId} (${gastoYaCreadoEnCuerpo.empresa}) antes, no propongo uno nuevo.`
+      ).catch(() => {});
+      if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+      return;
+    }
+
     try {
       const bytes = await generarComprobantePDF(
         { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto },
