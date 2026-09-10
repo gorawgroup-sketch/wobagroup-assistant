@@ -866,6 +866,10 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 // de categoría — ninguna palabra de este diccionario, antes centrado en restaurantes, reconocía un
 // supermercado como alimentación) — a propósito sin sumar otras cadenas (Mercadona, Carrefour, Lidl...)
 // sin evidencia real de uso en facturas de este grupo, mismo criterio que el resto de este archivo.
+// "coffee"/"cafe" (normalizar quita el acento de "café") / "bakery" — caso real confirmado (Carlos,
+// 2026-09-10): un ticket de "Santagloria Coffee & Bakery" (Café Americà, Aigua amb Gas, Gloria
+// Xocolata) quedó SIN ningún tag de categoría — ninguna palabra de este diccionario (antes solo
+// "cafeteria", nunca "cafe"/"coffee" sueltos) reconocía una cafetería/panadería como alimentación.
 const PALABRAS_ALIMENTACION = [
   "restaurante",
   "almuerzo",
@@ -873,6 +877,9 @@ const PALABRAS_ALIMENTACION = [
   "cena",
   "comida",
   "cafeteria",
+  "cafe",
+  "coffee",
+  "bakery",
   "brunch",
   "supermercado",
   "aldi",
