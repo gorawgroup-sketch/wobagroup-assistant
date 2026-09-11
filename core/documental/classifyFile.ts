@@ -4,9 +4,10 @@ import { listarSubcarpetas } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
+import { resolverModeloDocumental } from "../ai/modelRouting";
 import { buscarReglaClasificacion } from "./carpetaReglaStore";
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = resolverModeloDocumental("clasificar_documento");
 const MAX_ITERATIONS = 6;
 
 let client: Anthropic | null = null;

@@ -3,8 +3,9 @@ import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import type { CorreoResumen } from "./client";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
+import { resolverModeloDocumental } from "../ai/modelRouting";
 
-const MODEL = "claude-sonnet-5";
+const MODEL = resolverModeloDocumental("clasificar_correo");
 const MAX_ITERATIONS = 4;
 
 let client: Anthropic | null = null;
@@ -201,7 +202,11 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
       // margen de sobra sin costo extra real, solo se factura lo que el
       // modelo realmente genera.
       max_tokens: 8192,
-      system: buildSystemPrompt(hayAdjuntos),
+      // El prompt es idéntico para los correos del mismo tipo. Marcarlo como prefijo cacheable no
+      // cambia lo que ve el modelo y abarata repeticiones cercanas y vueltas de tool-use.
+      system: [
+        { type: "text", text: buildSystemPrompt(hayAdjuntos), cache_control: { type: "ephemeral" } },
+      ],
       tools,
       messages,
     });

@@ -3,9 +3,10 @@ import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
+import { resolverModeloDocumental } from "../ai/modelRouting";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = resolverModeloDocumental("extraer_gasto_correo");
 const MAX_ITERATIONS = 4;
 
 let client: Anthropic | null = null;
@@ -231,7 +232,15 @@ export async function extraerGastoDeCorreo(
       // el riesgo es más serio todavía: esto detecta GASTOS reales en el
       // cuerpo del correo.
       max_tokens: 8192,
-      system: buildSystemPrompt(clasificacionesAprendidas),
+      // Las reglas aprendidas cambian poco y se repiten dentro de una misma revisión de correo. El
+      // caché conserva exactamente el mismo prompt y reduce el input facturado en llamadas cercanas.
+      system: [
+        {
+          type: "text",
+          text: buildSystemPrompt(clasificacionesAprendidas),
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       tools,
       messages,
     });
