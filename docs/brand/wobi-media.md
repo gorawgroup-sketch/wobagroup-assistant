@@ -26,4 +26,4 @@ Herramienta: ImageGen integrada. Prompt final: Remove the background from this i
 
 El centro muestra únicamente la cabeza del mismo `wobi-transparent.png` aprobado, sin cambiar ni regenerar el rostro. `src/wobiHead.js` define el encuadre y el contorno de la mandíbula; `WobiAvatar` aplica ese mismo recorte al SVG visible y al muestreo de nanobots. No se modifican los píxeles del original.
 
-El favicon activo es `brand/wobi-head.ico`, con PNG de 32, 180, 192 y 512 px. Se exporta del mismo SVG, contorno y archivo original mediante Sharp, conservando alfa; sustituye al anterior icono gráfico `wobi-face`. El PNG de 512 px permite reutilizar la cabeza en otros soportes.
+El favicon activo es `brand/wobi-favicon-closeup.ico`, con PNG de 16, 32, 48, 180, 192, 512 y 1024 px. Se exporta del mismo contorno y archivo original mediante Sharp, conservando alfa. Su encuadre SVG es `250 125 670 670`: amplía la cara un 37% respecto al anterior encuadre de 920 unidades y reduce el espacio dedicado a partículas periféricas. El núcleo mantiene su encuadre original. Cada tamaño se renderiza desde la fuente original; el ICO incluye las versiones de 16, 32 y 48 px.
