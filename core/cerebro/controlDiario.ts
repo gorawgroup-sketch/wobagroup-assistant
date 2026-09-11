@@ -10,6 +10,7 @@ import { cargarConfiguracionPoliticaApi, type ModoPoliticaApi } from "../ai/poli
 import { durableSendStore, type ResumenLedgerEnviosCorreo } from "../gmail/durableSendStore";
 import { durableUploadStore, type ResumenLedgerSubidasDrive } from "../drive/durableUploadStore";
 import { durablePurchaseStore, type ResumenLedgerCreacionesCompra } from "../holded/durablePurchaseStore";
+import { durablePurchaseEditStore, type ResumenLedgerEdicionesCompra } from "../holded/durablePurchaseEditStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -42,6 +43,7 @@ export interface ControlDiario {
   enviosCorreo: ResumenLedgerEnviosCorreo | null;
   subidasDrive: ResumenLedgerSubidasDrive | null;
   comprasHolded: ResumenLedgerCreacionesCompra | null;
+  edicionesHolded: ResumenLedgerEdicionesCompra | null;
   recomendaciones: RecomendacionControlDiario[];
 }
 
@@ -55,6 +57,8 @@ export interface EntradaControlDiario {
   subidasDrive?: ResumenLedgerSubidasDrive | null;
   /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
   comprasHolded?: ResumenLedgerCreacionesCompra | null;
+  /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
+  edicionesHolded?: ResumenLedgerEdicionesCompra | null;
   generadoEn?: Date;
 }
 
@@ -130,6 +134,26 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       titulo: "Hay compras de Holded con resultado incierto",
       detalle: `${entrada.comprasHolded.incierta} compra(s) no pudieron confirmarse mediante su marcador interno.`,
       siguientePaso: "Comprobar esas compras en Holded antes de autorizar un registro equivalente.",
+      modulo: "conexiones",
+    });
+  }
+
+  if (entrada.edicionesHolded === null) {
+    recomendaciones.push({
+      id: "ledger-ediciones-holded-no-disponible",
+      prioridad: "critica",
+      titulo: "No se pudo comprobar la continuidad de las ediciones de Holded",
+      detalle: "El control diario no pudo leer el ledger durable de ediciones; no se asume que esté vacío.",
+      siguientePaso: "Revisar permisos de Google Sheets y la pestaña _ediciones_holded_durables antes de repetir una corrección.",
+      modulo: "conexiones",
+    });
+  } else if (entrada.edicionesHolded && entrada.edicionesHolded.incierta > 0) {
+    recomendaciones.push({
+      id: "ediciones-holded-inciertas",
+      prioridad: "critica",
+      titulo: "Hay ediciones de Holded con resultado incierto",
+      detalle: `${entrada.edicionesHolded.incierta} edición(es) no coinciden todavía con su huella esperada.`,
+      siguientePaso: "Comprobar esos documentos en Holded antes de autorizar otra corrección equivalente.",
       modulo: "conexiones",
     });
   }
@@ -249,12 +273,13 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     enviosCorreo: entrada.enviosCorreo ?? null,
     subidasDrive: entrada.subidasDrive ?? null,
     comprasHolded: entrada.comprasHolded ?? null,
+    edicionesHolded: entrada.edicionesHolded ?? null,
     recomendaciones,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded] = await Promise.all([
+  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
@@ -273,6 +298,10 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       console.error("[controlDiario] No se pudo leer el ledger de Holded:", error instanceof Error ? error.name : "Error");
       return null;
     }),
+    durablePurchaseEditStore.obtenerResumen().catch((error) => {
+      console.error("[controlDiario] No se pudo leer el ledger de ediciones de Holded:", error instanceof Error ? error.name : "Error");
+      return null;
+    }),
   ]);
   const config = cargarConfiguracionPoliticaApi();
 
@@ -289,6 +318,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     enviosCorreo,
     subidasDrive,
     comprasHolded,
+    edicionesHolded,
     generadoEn: referencia,
   });
 }

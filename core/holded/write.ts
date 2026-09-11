@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
@@ -23,8 +24,17 @@ import {
   type ResultadoCreacionCompra,
 } from "./durablePurchase";
 import { durablePurchaseStore } from "./durablePurchaseStore";
+import {
+  EdicionCompraInciertaError,
+  ejecutarEdicionCompraDurable,
+  reconciliarEdicionesCompraPendientes,
+  type PreparacionEdicionCompra,
+  type RegistroEdicionCompra,
+} from "./durablePurchaseEdit";
+import { durablePurchaseEditStore } from "./durablePurchaseEditStore";
 
 export { ConflictoCreacionCompraError, CreacionCompraInciertaError } from "./durablePurchase";
+export { ConflictoEdicionCompraError, EdicionCompraInciertaError } from "./durablePurchaseEdit";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -209,6 +219,73 @@ function programarReconciliacionCreacionesCompra(demoraMs: number, intentosResta
       });
   }, demoraMs);
   timerReconciliacionCompras.unref();
+}
+
+const metricasEdicionesCompraDurables = {
+  activas: 0,
+  editadas: 0,
+  reutilizadas: 0,
+  verificadasRecuperadas: 0,
+  incertidumbresDetectadas: 0,
+  errores: 0,
+  inciertasUltimaRevision: 0,
+};
+let timerReconciliacionEdiciones: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionEdicionesCompraDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    // Solo false explícito recupera temporalmente el PUT anterior.
+    habilitado: (env.WOBI_HOLDED_EDIT_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoEdicionesCompraDurables() {
+  return { habilitado: configuracionEdicionesCompraDurables().habilitado, ...metricasEdicionesCompraDurables };
+}
+
+async function verificarEdicionRegistrada(
+  registro: RegistroEdicionCompra
+): Promise<{ id: string; valor: CompraHoldedCruda } | undefined> {
+  if (!registro.huellaEsperada) return undefined;
+  const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.purchaseId);
+  const huella = huellaEstadoCompra(compra, registro.verificarTotal ?? false);
+  return huella === registro.huellaEsperada ? { id: compra.id, valor: compra } : undefined;
+}
+
+/** Reconciliación de arranque de solo lectura; nunca repite un PUT. */
+export async function reconciliarEdicionesCompraAlArrancar() {
+  if (!configuracionEdicionesCompraDurables().habilitado) {
+    return { revisadas: 0, verificadas: 0, inciertas: 0, errores: 0 };
+  }
+  const resumen = await reconciliarEdicionesCompraPendientes(durablePurchaseEditStore, verificarEdicionRegistrada);
+  metricasEdicionesCompraDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasEdicionesCompraDurables.incertidumbresDetectadas += resumen.inciertas;
+  metricasEdicionesCompraDurables.errores += resumen.errores;
+  metricasEdicionesCompraDurables.inciertasUltimaRevision = resumen.inciertas;
+  if (resumen.inciertas > 0 || resumen.errores > 0) programarReconciliacionEdicionesCompra(30_000, 3);
+  return resumen;
+}
+
+function programarReconciliacionEdicionesCompra(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacionEdiciones || intentosRestantes <= 0) return;
+  timerReconciliacionEdiciones = setTimeout(() => {
+    timerReconciliacionEdiciones = null;
+    void reconciliarEdicionesCompraPendientes(durablePurchaseEditStore, verificarEdicionRegistrada)
+      .then((resumen) => {
+        metricasEdicionesCompraDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasEdicionesCompraDurables.incertidumbresDetectadas += resumen.inciertas;
+        metricasEdicionesCompraDurables.errores += resumen.errores;
+        metricasEdicionesCompraDurables.inciertasUltimaRevision = resumen.inciertas;
+        if (resumen.inciertas > 0 || resumen.errores > 0) {
+          programarReconciliacionEdicionesCompra(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasEdicionesCompraDurables.errores++;
+        programarReconciliacionEdicionesCompra(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacionEdiciones.unref();
 }
 
 export interface HoldedContact {
@@ -2588,7 +2665,11 @@ function lineaCrudaAItem(l: LineaCompraHoldedCruda, priceOverride?: number): Rec
   };
 }
 
-export async function editarCompraHolded(empresa: Empresa, purchaseId: string, cambios: CambiosCompraHolded): Promise<CompraHoldedCruda> {
+async function prepararEdicionCompraHolded(
+  empresa: Empresa,
+  purchaseId: string,
+  cambios: CambiosCompraHolded
+): Promise<PreparacionEdicionCompra> {
   const actual = await obtenerCompraHoldedPorId(empresa, purchaseId);
 
   const catalogo = cambios.lineas ? await obtenerCatalogoImpuestos(empresa) : undefined;
@@ -2688,83 +2769,149 @@ export async function editarCompraHolded(empresa: Empresa, purchaseId: string, c
     items,
   };
 
+  // Cuando se reemplazan líneas Holded recalcula impuestos y retenciones;
+  // en ese caso no se inventa un total esperado. Para cualquier otro cambio
+  // el total debe quedar exactamente igual o en el monto nuevo aprobado.
+  const verificarTotal = cambios.lineas === undefined;
+  const esperada: CompraHoldedCruda = {
+    ...actual,
+    document_number: String(body.number ?? ""),
+    date: String(body.date ?? ""),
+    due_date: (body.due_date as string | null | undefined) ?? null,
+    currency: monedaActual,
+    currency_change: tasaCambioActual,
+    contact_id: actual.contact_id,
+    design_id: actual.design_id,
+    lines: items.map(() => ({})),
+    total: cambios.montoNuevo ?? actual.total,
+  };
+  return {
+    huellaEsperada: huellaEstadoCompra(esperada, verificarTotal),
+    verificarTotal,
+    payload: {
+      empresa,
+      purchaseId,
+      body,
+      fecha: cambios.fecha ?? actual.date ?? "",
+    } satisfies PayloadEdicionCompraHolded,
+  };
+}
+
+interface PayloadEdicionCompraHolded {
+  empresa: Empresa;
+  purchaseId: string;
+  body: Record<string, unknown>;
+  fecha: string;
+}
+
+export function huellaEstadoCompra(compra: CompraHoldedCruda, verificarTotal: boolean): string {
+  const estado: Record<string, unknown> = {
+    numeroDocumento: compra.document_number || "",
+    fecha: compra.date ?? "",
+    vencimiento: compra.due_date || "",
+    moneda: (compra.currency || "EUR").toUpperCase().trim(),
+    tasaCambioCentimos: Math.round((numeroDecimalPlano(compra.currency_change) || 1) * 100),
+    contacto: compra.contact_id || "",
+    diseno: compra.design_id || "",
+    numeroLineas: compra.lines?.length ?? 0,
+  };
+  if (verificarTotal) estado.totalCentimos = Math.round(numeroDesdeHolded(compra.total) * 100);
+  return createHash("sha256").update(JSON.stringify(estado)).digest("hex");
+}
+
+function payloadEdicion(preparacion: PreparacionEdicionCompra): PayloadEdicionCompraHolded {
+  const payload = preparacion.payload as Partial<PayloadEdicionCompraHolded> | null;
+  if (!payload?.empresa || !payload.purchaseId || !payload.body) {
+    throw new Error("La preparación durable de la edición no contiene un payload válido.");
+  }
+  return payload as PayloadEdicionCompraHolded;
+}
+
+async function aplicarEdicionPreparada(preparacion: PreparacionEdicionCompra): Promise<void> {
+  const payload = payloadEdicion(preparacion);
   try {
-    await holdedWriteCall(empresa, "PUT", `/purchases/${purchaseId}`, body);
+    await holdedWriteCall(payload.empresa, "PUT", `/purchases/${payload.purchaseId}`, payload.body);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/date has been locked/i.test(message)) {
-      throw new FechaBloqueadaError(cambios.fecha ?? actual.date ?? "");
-    }
+    if (/date has been locked/i.test(message)) throw new FechaBloqueadaError(payload.fecha);
     throw error;
   }
+}
 
-  // Verificación post-escritura: dado que el endpoint reemplaza el
-  // documento entero, un 200 OK no confirma que el resultado sea el
-  // esperado (ej. una línea mal formada podría quedar vacía en silencio).
-  const releido = await obtenerCompraHoldedPorId(empresa, purchaseId);
-  if (cambios.numeroDocumento && releido.document_number !== cambios.numeroDocumento) {
-    throw new EdicionNoVerificadaError(
-      `Holded aceptó la edición pero el número de documento quedó en "${releido.document_number}", no en "${cambios.numeroDocumento}" — revisar a mano en Holded.`,
-      purchaseId
-    );
-  }
-  if ((releido.lines?.length ?? 0) === 0 && items.length > 0) {
-    throw new EdicionNoVerificadaError("Holded aceptó la edición pero la compra quedó SIN líneas — revisar a mano en Holded antes de dar esto por corregido.", purchaseId);
-  }
-  // Red de seguridad para el bug de moneda de arriba: si a pesar de mandarla
-  // explícita la moneda quedó distinta de la que tenía el documento, el
-  // monto nativo ya no es de fiar (ver comentario de "currency" en body) —
-  // nunca reportar "✅ Editado" con la contabilidad potencialmente rota.
-  // Mismo `monedaActual` normalizado de arriba en ambos lados (ver su
-  // comentario) — sin esto, la mayoría de las ediciones reales (gastos en
-  // EUR) habría disparado este error por un falso desajuste de formato, no
-  // por un problema real de moneda.
-  const monedaReleida = (releido.currency || "EUR").toUpperCase().trim();
-  if (monedaReleida !== monedaActual) {
-    throw new EdicionNoVerificadaError(
-      `Holded aceptó la edición pero la moneda quedó en "${monedaReleida}", no en "${monedaActual}" — el monto puede estar mal interpretado, revisar a mano en Holded antes de dar esto por corregido.`,
-      purchaseId
-    );
-  }
-  // Misma red de seguridad para "currency_change" (ver su comentario en
-  // body): la moneda por sí sola puede quedar correcta y el equivalente en
-  // EUR seguir mal si el tipo de cambio se resetea en silencio. Tolerancia
-  // de 0.01 — Holded devuelve esto redondeado a 2 decimales.
-  const tasaReleida = numeroDecimalPlano(releido.currency_change) || 1;
-  if (Math.abs(tasaReleida - tasaCambioActual) > 0.01) {
-    throw new EdicionNoVerificadaError(
-      `Holded aceptó la edición pero el tipo de cambio quedó en ${tasaReleida}, no en ${tasaCambioActual} — el equivalente en EUR puede estar mal calculado, revisar a mano en Holded antes de dar esto por corregido.`,
-      purchaseId
-    );
-  }
-  // Misma red de seguridad para el proveedor (contact_id): esta función
-  // nunca reasigna el proveedor por sí sola, así que si quedó distinto del
-  // que tenía el documento, algo salió mal en el reemplazo completo.
-  if (actual.contact_id && releido.contact_id !== actual.contact_id) {
-    throw new EdicionNoVerificadaError(
-      `Holded aceptó la edición pero el proveedor (contact_id) quedó en "${releido.contact_id}", no en "${actual.contact_id}" — revisar a mano en Holded antes de dar esto por corregido.`,
-      purchaseId
-    );
-  }
-  if (cambios.montoNuevo !== undefined && Math.abs(numeroDesdeHolded(releido.total) - cambios.montoNuevo) > 0.05) {
-    throw new EdicionNoVerificadaError(
-      `Holded aceptó la edición pero el total quedó en ${releido.total}, no en ${cambios.montoNuevo.toFixed(2)} — revisar a mano en Holded.`,
-      purchaseId
-    );
-  }
-  // Bug real de auditoría: sin este chequeo, cuando NI lineas NI montoNuevo
-  // se pidieron (ej. solo corregir el número de documento), nada verificaba
-  // que el total siguiera igual — un bug de parseo en numeroDesdeHolded
-  // (ya corregido, pero esto es la red de seguridad) podría haber colapsado
-  // una factura real a 0€ y el "✅ Editado" habría salido igual.
-  if (cambios.montoNuevo === undefined && cambios.lineas === undefined && Math.abs(numeroDesdeHolded(releido.total) - totalActual) > 0.05) {
-    throw new EdicionNoVerificadaError(
-      `Holded aceptó la edición pero el total cambió de ${totalActual.toFixed(2)} a ${releido.total} sin que se pidiera — revisar a mano en Holded, no se tocó el monto a propósito.`,
-      purchaseId
-    );
+export interface ContextoEdicionCompraHolded {
+  /** Identidad estable de la propuesta aprobada; nunca incluye proveedor, importe o documento. */
+  idempotencyKey: string;
+  proceso?: string;
+}
+
+export async function editarCompraHolded(
+  empresa: Empresa,
+  purchaseId: string,
+  cambios: CambiosCompraHolded,
+  contexto?: ContextoEdicionCompraHolded
+): Promise<CompraHoldedCruda> {
+  const durableHabilitado = configuracionEdicionesCompraDurables().habilitado;
+  if (durableHabilitado && !contexto?.idempotencyKey?.trim()) {
+    throw new Error("La edición durable de Holded requiere una clave idempotente de la aprobación.");
   }
 
-  return releido;
+  if (!durableHabilitado || !contexto) {
+    const preparacion = await prepararEdicionCompraHolded(empresa, purchaseId, cambios);
+    await aplicarEdicionPreparada(preparacion);
+    const registroLegacy: RegistroEdicionCompra = {
+      clave: "legacy",
+      proceso: "editar_compra_legacy",
+      estado: "editando",
+      empresa,
+      purchaseId,
+      huellaSolicitud: "legacy",
+      huellaEsperada: preparacion.huellaEsperada,
+      verificarTotal: preparacion.verificarTotal,
+      creadoEn: Date.now(),
+      actualizadoEn: Date.now(),
+    };
+    const confirmado = await verificarEdicionRegistrada(registroLegacy);
+    if (!confirmado) {
+      throw new EdicionNoVerificadaError(
+        "Holded aceptó la edición, pero la relectura no coincide con el estado esperado — revisar a mano antes de repetir.",
+        purchaseId
+      );
+    }
+    return confirmado.valor;
+  }
+
+  return conMutex(`holded-purchase-edit:${empresa}:${contexto.idempotencyKey}`, async () => {
+    metricasEdicionesCompraDurables.activas++;
+    try {
+      const edicion = await ejecutarEdicionCompraDurable(
+        contexto.idempotencyKey,
+        empresa,
+        purchaseId,
+        cambios,
+        contexto.proceso ?? "edicion_compra_aprobada",
+        durablePurchaseEditStore,
+        {
+          preparar: () => prepararEdicionCompraHolded(empresa, purchaseId, cambios),
+          editar: aplicarEdicionPreparada,
+          verificar: verificarEdicionRegistrada,
+        }
+      );
+      if (edicion.reutilizado) metricasEdicionesCompraDurables.reutilizadas++;
+      else metricasEdicionesCompraDurables.editadas++;
+      return edicion.resultado.valor;
+    } catch (error) {
+      if (error instanceof EdicionCompraInciertaError) {
+        metricasEdicionesCompraDurables.incertidumbresDetectadas++;
+        metricasEdicionesCompraDurables.inciertasUltimaRevision++;
+        programarReconciliacionEdicionesCompra(30_000, 3);
+      } else {
+        metricasEdicionesCompraDurables.errores++;
+      }
+      throw error;
+    } finally {
+      metricasEdicionesCompraDurables.activas--;
+    }
+  });
 }
 
 export interface MovimientoBancarioCandidato {
