@@ -113,7 +113,13 @@ export async function verificarConversion(
   if (tasaReal === undefined) return undefined;
 
   const montoEsperado = montoOriginal * tasaReal;
-  const diferenciaPct = montoEsperado === 0 ? 0 : (Math.abs(montoConvertidoReal - montoEsperado) / montoEsperado) * 100;
+  const diferenciaAbsoluta = Math.abs(montoConvertidoReal - montoEsperado);
+  // El denominador también debe ser absoluto: notas de crédito/reembolsos usan montos negativos y
+  // antes producían un porcentaje negativo que nunca superaba el umbral de alerta. Si el monto
+  // esperado es cero, cualquier registro no nulo es una discrepancia completa (100%), no un 0%.
+  const diferenciaPct = montoEsperado === 0
+    ? (diferenciaAbsoluta === 0 ? 0 : 100)
+    : (diferenciaAbsoluta / Math.abs(montoEsperado)) * 100;
 
   return { tasaReal, montoEsperado, diferenciaPct };
 }
