@@ -4,7 +4,7 @@ import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
-import { mimeADocumentBlock, type DocumentOrImageBlock } from "./documentBlock";
+import { mimeADocumentBlock, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_ITERATIONS = 4;
@@ -427,7 +427,7 @@ export async function extraerDatosFactura(
     razon: "No fue posible leer el documento.",
   };
 
-  let documentBlock: DocumentOrImageBlock;
+  let documentBlock: DocumentOrImageBlock | TextBlock;
   try {
     const data = await readFile(rutaLocal);
     documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
