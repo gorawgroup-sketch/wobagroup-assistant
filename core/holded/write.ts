@@ -1670,12 +1670,12 @@ export function esImporteUtilComoPrecedenteContable(total: number, numeroDocumen
 // revisarCorreoNuevo.ts) — aparece en la gran mayoría de los conceptos con conversión de moneda sin
 // decir nada sobre la NATURALEZA del gasto, y sin excluirla arrastraba coincidencias falsas hacia
 // cuentas totalmente ajenas.
-// "correo"/"cuerpo"/"original" — mismo hallazgo, esta vez del relleno automático que usa
+// "correo"/"cuerpo"/"original"/"visual" — mismo hallazgo, esta vez del relleno automático que usa
 // revisarCorreoNuevo.ts cuando un gasto se detecta en el cuerpo de un correo sin adjunto: "(...,
-// comprobante generado desde el cuerpo del correo, sin adjunto original)".
+// comprobante visual generado desde el cuerpo del correo, sin adjunto original)".
 const PALABRAS_IGNORADAS_CONCEPTO = new Set([
   "para", "desde", "sobre", "hasta", "todavía", "documento", "adjunto", "generado",
-  "comprobante", "correo", "cuerpo", "original",
+  "comprobante", "correo", "cuerpo", "original", "visual",
 ]);
 // Umbral mínimo de evidencia para confiar en un match por CONCEPTO (señal más débil que por
 // proveedor, ver construirSugerenciaDesdeCoincidencias) — una sola línea histórica nunca basta.

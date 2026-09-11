@@ -5,6 +5,7 @@ import {
   obtenerUltimoMensajeDeHilo,
   obtenerResumenCorreo,
   obtenerCuerpoCompletoCorreo,
+  obtenerHtmlVisualCorreo,
   descargarAdjunto,
   marcarHiloComoLeido,
   buscarMensajes,
@@ -550,8 +551,15 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     }
 
     try {
+      const htmlOriginal = await obtenerHtmlVisualCorreo(correo.id).catch((error) => {
+        console.error(
+          `[revisarCorreoNuevo] No se pudo recuperar el HTML visual del correo ${correo.id}; se usará el respaldo de texto:`,
+          error instanceof Error ? error.message : String(error)
+        );
+        return undefined;
+      });
       const bytes = await generarComprobantePDF(
-        { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto },
+        { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto, htmlOriginal },
         gastoDetectado
       );
       await mkdir(UPLOADS_DIR, { recursive: true });
@@ -559,14 +567,13 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       const destino = join(UPLOADS_DIR, nombreArchivo);
       await writeFile(destino, bytes);
 
-      // Nota honesta en el concepto — para que la propuesta que ve Carlos
-      // deje claro que el "comprobante" es un PDF generado a partir del
-      // cuerpo, no el recibo original, sin tocar procesarGastoEntrante.ts.
+      // Nota honesta en el concepto: se conserva visualmente el correo, pero
+      // el remitente no incluyó un archivo adjunto independiente.
       const datosConNota: DatosFactura = {
         ...gastoDetectado,
         concepto: gastoDetectado.concepto
-          ? `${gastoDetectado.concepto} (comprobante generado desde el cuerpo del correo, sin adjunto original)`
-          : "Gasto detectado en el cuerpo del correo (sin adjunto original)",
+          ? `${gastoDetectado.concepto} (comprobante visual generado desde el cuerpo del correo, sin adjunto original)`
+          : "Gasto detectado en el cuerpo del correo (comprobante visual, sin adjunto original)",
       };
 
       await procesarGastoEntrante({
@@ -848,5 +855,3 @@ export async function handleDescartarActivoCallback(callback: TelegramCallbackQu
   const resultado = await saltarCorreoActivo(chatId);
   await sendTelegramMessage(chatId, resultado).catch(() => {});
 }
-
-
