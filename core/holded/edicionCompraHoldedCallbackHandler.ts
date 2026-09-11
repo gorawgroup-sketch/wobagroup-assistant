@@ -1,6 +1,10 @@
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
-import { consumirPendienteEdicionCompraHolded } from "./pendienteEdicionCompraHoldedStore";
-import { editarCompraHolded, EdicionNoVerificadaError } from "./write";
+import {
+  consumirPendienteEdicionCompraHolded,
+  eliminarPendienteEdicionCompraHolded,
+  obtenerPendienteEdicionCompraHolded,
+} from "./pendienteEdicionCompraHoldedStore";
+import { editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError } from "./write";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -26,7 +30,14 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
   }
 
   const [accion, id] = data.split(":");
-  const pendiente = await consumirPendienteEdicionCompraHolded(id);
+  if (accion !== "edicioncompra_confirmar" && accion !== "edicioncompra_cancelar") {
+    await answerCallbackQuerySafe(callback.id, "Acción de edición no reconocida.");
+    return;
+  }
+  const pendiente =
+    accion === "edicioncompra_cancelar"
+      ? await consumirPendienteEdicionCompraHolded(id)
+      : await obtenerPendienteEdicionCompraHolded(id);
   if (!pendiente) {
     await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya se procesó).");
     return;
@@ -42,7 +53,16 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
   await editTelegramMessage(pendiente.chatId, pendiente.messageId, `🔄 Editando en Holded — ${pendiente.resumenAntes}...`, []);
 
   try {
-    const resultado = await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, pendiente.cambios);
+    const resultado = await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, pendiente.cambios, {
+      idempotencyKey: `propuesta-edicion:${pendiente.id}`,
+      proceso: "edicion_compra_aprobada",
+    });
+    await eliminarPendienteEdicionCompraHolded(pendiente.id).catch((error) =>
+      console.error(
+        "[edicionCompraHoldedCallbackHandler] La edición quedó verificada, pero no se pudo cerrar la propuesta:",
+        error instanceof Error ? error.name : "Error"
+      )
+    );
     const totalDespues = typeof resultado.total === "number" ? resultado.total.toFixed(2) : String(resultado.total ?? "");
     // Hallazgo real de auditoría: esto mandaba "€" fijo sin importar la
     // moneda real del documento — inofensivo mientras editarCompraHolded
@@ -66,8 +86,8 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
     // respondió 200 OK — el documento pudo haber cambiado, solo no de la
     // forma esperada. Nunca decir "no se tocó nada" en ese caso, sería falso.
     const notaEstado =
-      error instanceof EdicionNoVerificadaError
-        ? "La edición SÍ se envió a Holded — revísalo ahí directo, no reintentes esta misma corrección sin comprobar antes."
+      error instanceof EdicionNoVerificadaError || error instanceof EdicionCompraInciertaError
+        ? "La edición pudo haberse enviado a Holded. Wobi bloqueó cualquier repetición automática; revísala allí y conserva esta propuesta hasta que la reconciliación confirme el resultado."
         : "El documento original no se tocó, revísalo a mano si hace falta.";
     await editTelegramMessage(
       pendiente.chatId,

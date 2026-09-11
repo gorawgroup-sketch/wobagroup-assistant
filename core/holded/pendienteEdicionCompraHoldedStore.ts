@@ -78,6 +78,21 @@ export async function actualizarMessageIdEdicionCompraHolded(id: string, message
   await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.pendiente, messageId }));
 }
 
+/** Lee sin consumir: una confirmación incierta debe seguir disponible para reconciliación. */
+export async function obtenerPendienteEdicionCompraHolded(id: string): Promise<PendienteEdicionCompraHolded | undefined> {
+  const vigentes = await leerVigentes();
+  return vigentes.find((f) => f.pendiente.id === id)?.pendiente;
+}
+
+/** Elimina únicamente después de cancelar o de verificar el resultado final. */
+export async function eliminarPendienteEdicionCompraHolded(id: string): Promise<boolean> {
+  const vigentes = await leerVigentes();
+  const fila = vigentes.find((f) => f.pendiente.id === id);
+  if (!fila) return false;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return true;
+}
+
 /** Devuelve la propuesta y ELIMINA su fila (aprobada o cancelada). */
 export async function consumirPendienteEdicionCompraHolded(id: string): Promise<PendienteEdicionCompraHolded | undefined> {
   const vigentes = await leerVigentes();

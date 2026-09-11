@@ -96,7 +96,12 @@ import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
 import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
-import { obtenerEstadoCreacionesCompraDurables, reconciliarCreacionesCompraAlArrancar } from "../core/holded/write";
+import {
+  obtenerEstadoCreacionesCompraDurables,
+  obtenerEstadoEdicionesCompraDurables,
+  reconciliarCreacionesCompraAlArrancar,
+  reconciliarEdicionesCompraAlArrancar,
+} from "../core/holded/write";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -300,6 +305,7 @@ app.get("/health", (_req: Request, res: Response) => {
     enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
     subidasDrive: obtenerEstadoSubidasDriveDurables(),
     comprasHolded: obtenerEstadoCreacionesCompraDurables(),
+    edicionesHolded: obtenerEstadoEdicionesCompraDurables(),
   });
 });
 
@@ -1900,6 +1906,20 @@ servidorHttp = app.listen(PORT, () => {
       })
       .catch((error) => {
         console.error("[holded/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarEdicionesCompraAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación de ediciones al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger de ediciones al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
       })
   );
 });
