@@ -85,12 +85,8 @@ body {
 .wobi-button--secondary { background: transparent; border-color: #45637d; color: #d1e8f7; }
 .wobi-button--secondary:hover { background: #11263b; }
 .wobi-button:disabled { opacity: .5; cursor: default; }
-.wobi-button:focus-visible, .wobi-voice summary:focus-visible, .wobi-voice select:focus-visible { outline: 2px solid #8fd2f5; outline-offset: 5px; }
+.wobi-button:focus-visible { outline: 2px solid #8fd2f5; outline-offset: 5px; }
 .wobi-voice { margin-top: 14px; font-size: 14px; max-width: 340px; }
-.wobi-voice details { margin-top: 16px; color: #b1c5d9; }
-.wobi-voice summary { width: fit-content; cursor: pointer; padding: 5px 0; }
-.wobi-voice label { display: block; margin: 14px 0 8px; }
-.wobi-voice select { width: 100%; min-height: 44px; padding: 8px; background: #0f1b2a; color: #f5f0e4; border: 1px solid #45637d; border-radius: 6px; font: inherit; }
 .wobi-voice p { color: #9db1c8; font-size: 13px; line-height: 1.5; }
 @keyframes wobi-materialize { 0%, 35% { opacity: 0; } 100% { opacity: 1; } }
 @keyframes wobi-speaking { 0%, 100% { filter: brightness(1); } 50% { filter: brightness(1.2) saturate(1.1); } }
@@ -101,7 +97,6 @@ body {
   .wobi-entry__intro, .wobi-voice { margin-left: auto; margin-right: auto; }
   .wobi-entry h1 { margin: 10px 0; }
   .wobi-entry__intro { font-size: 16px; margin-bottom: 20px; }
-  .wobi-voice summary { margin-inline: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   .wobi-portrait, .wobi-portrait img, .wobi-entry { animation: none !important; transition: none !important; }
