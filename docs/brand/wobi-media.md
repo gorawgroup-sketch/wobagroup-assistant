@@ -8,13 +8,13 @@ Voz: `es-MX-DaliaNeural`, ritmo y tono naturales (+0%). Grabación estática com
 Texto de locución: «Hola, soy Uóbi. Estoy aquí para ayudarte a organizar la información y avanzar con claridad. Dime qué necesitas y lo vemos juntos.»
 La grafía fonética Uóbi se usa solo en la locución; la marca visible sigue siendo WOBi.
 
-La lectura de respuestas del chat es una función separada. Su conexión a síntesis externa requiere autorización porque las respuestas pueden contener información interna.
+La lectura del chat utiliza la misma `es-MX-DaliaNeural`, con ritmo +0% y tono +0 Hz, fijada en el servidor para todos los usuarios. `POST /api/cerebro/voz` exige la misma autorización del chat y sintetiza fragmentos de hasta 500 caracteres mediante `msedge-tts` (cliente del servicio Microsoft Edge). El usuario autorizó expresamente enviar las respuestas del chat a Microsoft para esta síntesis, incluido su posible contenido interno. No se almacena el audio y se responde con `Cache-Control: no-store`.
+
+El cliente divide las respuestas en frases, omite la sintaxis Markdown y reproduce el audio recibido. Al cerrar el chat, desactivar la lectura o salir de la pestaña cancela la voz. Si el navegador bloquea la reproducción automática, ofrece un botón para reproducir el audio ya preparado. Si Microsoft no responde, conserva la respuesta escrita y comunica el error; no sustituye la voz por la del sistema operativo. Wobi se transforma en Uóbi únicamente en la locución.
 
 ## Favicon
 
-Generado con la herramienta integrada ImageGen a partir del retrato WOBi aprobado. PNG con alfa real; versiones 32, 180, 192 y 512 px; ICO de 16, 32 y 48 px. El retrato principal permanece en `brand/wobi.png`.
-
-Prompt: Create a single professional favicon brand mark derived from the reference WOBi face. Only the head/face, no neck, shoulders, torso, enclosing circle or background. Actual transparent alpha background. Simplify the mature calm humanoid identity into an elegantly designed bold vector-like icon: cobalt and cyan sculpted contour strokes define oval head, two calm eyes, nose and mouth; restrained amber central nose/forehead accent. Clean thick contour bands rather than photographic particle detail. A few geometric fragments along the right temple suggest nanobots assembling the face. Preserve mature human facial proportions, not a toy robot or child mascot. Centered in a square with balanced padding, strong silhouette legible at 16 and 32px. No text, watermark, black or navy rectangle. Transparent outside the face and in negative spaces between contour lines.
+El favicon actual es `brand/wobi-outline.svg`: dibujo vectorial del contorno de la cabeza, ojos, nariz y boca, sin cuello ni fondo. Sus líneas son negras en pestañas claras y blancas en pestañas oscuras. Los PNG de 16, 32, 48, 180, 192 y 512 px y el ICO de 16/32/48 px se exportan de ese SVG con alfa transparente. Esta versión reemplaza el recorte fotográfico para mejorar su lectura a tamaño pequeño. El retrato principal permanece en `brand/wobi.png`.
 
 ## Retrato central transparente
 
@@ -22,8 +22,6 @@ Archivo: `frontend-cerebro/public/brand/wobi-transparent.png`, PNG RGBA 1254 × 
 
 Herramienta: ImageGen integrada. Prompt final: Remove the background from this image. Make a transparent-background cutout PNG of the blue and gold Wobi nanobot person, keeping the same face, head, neck, shoulders and glowing particles. Output with transparent background enabled and actual alpha transparency. Do not draw checkerboard. Keep original artwork intact.
 
-## Cabeza actual: centro y favicon
+## Cabeza actual: centro
 
 El centro muestra únicamente la cabeza del mismo `wobi-transparent.png` aprobado, sin cambiar ni regenerar el rostro. `src/wobiHead.js` define el encuadre y el contorno de la mandíbula; `WobiAvatar` aplica ese mismo recorte al SVG visible y al muestreo de nanobots. No se modifican los píxeles del original.
-
-El favicon activo es `brand/wobi-favicon-closeup.ico`, con PNG de 16, 32, 48, 180, 192, 512 y 1024 px. Se exporta del mismo contorno y archivo original mediante Sharp, conservando alfa. Su encuadre SVG es `250 125 670 670`: amplía la cara un 37% respecto al anterior encuadre de 920 unidades y reduce el espacio dedicado a partículas periféricas. El núcleo mantiene su encuadre original. Cada tamaño se renderiza desde la fuente original; el ICO incluye las versiones de 16, 32 y 48 px.

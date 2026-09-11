@@ -85,6 +85,7 @@ import {
   solicitudesChatEnCurso,
 } from "../core/cerebro/webChatCoordinator";
 import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
+import { crearRouterVoz } from "../core/cerebro/voiceRouter";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import { verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
@@ -418,6 +419,8 @@ async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> 
   }
   return true;
 }
+
+app.use("/api/cerebro/voz", crearRouterVoz(exigeAccesoValido));
 
 /**
  * Canal de invalidación en tiempo real. Envía solo metadatos; los datos de
