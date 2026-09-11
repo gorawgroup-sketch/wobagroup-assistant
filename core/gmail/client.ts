@@ -419,6 +419,32 @@ export function extraerDireccionCorreo(de: string): string {
 // sobre la imagen real — no solo el texto del cuerpo).
 const TAMANIO_MAXIMO_INLINE_DECORATIVO = 30000;
 
+/**
+ * Firmas/banners inline verificados en correos reales que superan el umbral genérico.
+ *
+ * El banner de la firma que acompaña los correos de gastos de Footprint pesa exactamente
+ * 51.837 bytes, se llama `image.png`, es PNG y llega como `inline` con Content-ID. Se comprobó
+ * contra ocho correos distintos: el banner conserva siempre esta huella MIME, mientras que cada
+ * comprobante real llega con `Content-Disposition: attachment` y un nombre propio (`15.png`,
+ * `HOTEL.png`, etc.). Sin esta excepción conservadora Wobi envía una pregunta para archivar la
+ * firma y otra propuesta para el gasto del mismo correo.
+ *
+ * No usamos un umbral más amplio porque podría ocultar un ticket real pequeño. Si la firma cambia
+ * aunque sea de tamaño, pasa por el procesamiento normal (fail-open) hasta que se audite su nueva
+ * huella.
+ */
+const HUELLAS_INLINE_DECORATIVAS_CONOCIDAS = new Set(["image/png:image.png:51837"]);
+
+export function esHuellaInlineDecorativaConocida(part: gmail_v1.Schema$MessagePart): boolean {
+  const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
+  const tieneContentId = part.headers?.some((h) => h.name?.toLowerCase() === "content-id") ?? false;
+  const tamano = part.body?.size;
+  if (!disposicion.toLowerCase().startsWith("inline") || !tieneContentId || tamano == null) return false;
+
+  const huella = `${(part.mimeType ?? "").toLowerCase()}:${(part.filename ?? "").toLowerCase()}:${tamano}`;
+  return HUELLAS_INLINE_DECORATIVAS_CONOCIDAS.has(huella);
+}
+
 function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
   if (!disposicion.toLowerCase().startsWith("inline")) return false;
@@ -431,7 +457,7 @@ function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   // extracción por visión lo marca "ilegible" (barato y visible) en vez de perder un recibo real sin
   // ningún rastro.
   if (part.body?.size === undefined || part.body?.size === null) return false;
-  return part.body.size <= TAMANIO_MAXIMO_INLINE_DECORATIVO;
+  return part.body.size <= TAMANIO_MAXIMO_INLINE_DECORATIVO || esHuellaInlineDecorativaConocida(part);
 }
 
 function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
