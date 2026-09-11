@@ -70,6 +70,7 @@ import {
   obtenerMonedasCuentasReales,
   reconciliarMovimiento,
   estaMovimientoYaConciliado,
+  CreacionCompraInciertaError,
   ContactoNoEncontradoError,
   FechaBloqueadaError,
   PosibleDuplicadoGastoError,
@@ -717,6 +718,10 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeVerificacionDuplicadoFallida(error), []);
         return;
       }
+      if (error instanceof CreacionCompraInciertaError) {
+        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeCreacionCompraIncierta(propuesta.proveedor), []);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error procesando gasto:", message);
       await editTelegramMessage(
@@ -1319,6 +1324,14 @@ function mensajeVerificacionDuplicadoFallida(error: VerificacionDuplicadoFallida
   );
 }
 
+function mensajeCreacionCompraIncierta(proveedor: string): string {
+  return (
+    `⚠️ Holded no confirmó si creó el gasto de "${proveedor}". Por seguridad Wobi NO repetirá la creación: ` +
+    `la está verificando mediante su marcador interno y la mostrará como incidencia hasta resolverla. ` +
+    `No reenvíes el documento ni lo registres otra vez sin comprobar antes si ya aparece en Holded.`
+  );
+}
+
 async function crearGastoYReportar(
   propuesta: PropuestaGasto,
   empresaFinal: PropuestaGasto["empresa"],
@@ -1446,16 +1459,20 @@ async function crearGastoYReportar(
       throw new PosibleDuplicadoGastoError(candidatosNuevos);
     }
 
-    return crearGastoHolded(empresaFinal, {
-      contactId: contacto.id,
-      fecha: fechaBusqueda,
-      descripcion: descripcionFinal,
-      lineas,
-      cuentaId: propuesta.cuentaId,
-      tags: propuesta.cuentaTags,
-      moneda: propuesta.moneda,
-      numeroDocumento: propuesta.numeroDocumento,
-    });
+    return crearGastoHolded(
+      empresaFinal,
+      {
+        contactId: contacto.id,
+        fecha: fechaBusqueda,
+        descripcion: descripcionFinal,
+        lineas,
+        cuentaId: propuesta.cuentaId,
+        tags: propuesta.cuentaTags,
+        moneda: propuesta.moneda,
+        numeroDocumento: propuesta.numeroDocumento,
+      },
+      { idempotencyKey: `gasto:${propuesta.id}`, proceso: "gasto_aprobado" }
+    );
   });
 
   // A partir de acá el gasto YA EXISTE en Holded — un fallo en cualquier
@@ -1767,6 +1784,15 @@ export async function procesarGastoConContactoResuelto(
       await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensajeVerificacionDuplicadoFallida(error), []);
       return;
     }
+    if (error instanceof CreacionCompraInciertaError) {
+      await editTelegramMessage(
+        resolucion.chatId,
+        resolucion.messageId,
+        mensajeCreacionCompraIncierta(resolucion.propuesta.proveedor),
+        []
+      );
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando gasto con contacto resuelto:", message);
     await editTelegramMessage(
@@ -1979,6 +2005,10 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     }
     if (error instanceof VerificacionDuplicadoFallidaError) {
       await sendTelegramMessage(propuesta.chatId, mensajeVerificacionDuplicadoFallida(error));
+      return;
+    }
+    if (error instanceof CreacionCompraInciertaError) {
+      await sendTelegramMessage(propuesta.chatId, mensajeCreacionCompraIncierta(propuesta.proveedor));
       return;
     }
     const message = error instanceof Error ? error.message : String(error);

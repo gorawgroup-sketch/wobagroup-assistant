@@ -37,6 +37,7 @@ function entradaBase(): EntradaControlDiario {
     },
     enviosCorreo: { preparado: 0, enviando: 0, verificado: 3, incierto: 0 },
     subidasDrive: { preparada: 0, subiendo: 0, verificada: 4, incierta: 0 },
+    comprasHolded: { preparada: 0, creando: 0, verificada: 5, incierta: 0 },
     generadoEn: new Date("2026-09-09T09:00:00Z"),
   };
 }
@@ -110,4 +111,20 @@ test("un fallo leyendo el ledger de Drive nunca se representa como cero", () => 
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "ledger-drive-no-disponible"));
+});
+
+test("una compra de Holded incierta se eleva como crítica", () => {
+  const entrada = entradaBase();
+  entrada.comprasHolded = { preparada: 0, creando: 0, verificada: 2, incierta: 1 };
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "compras-holded-inciertas"));
+});
+
+test("un fallo leyendo el ledger de Holded nunca se representa como cero", () => {
+  const entrada = entradaBase();
+  entrada.comprasHolded = null;
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "ledger-holded-no-disponible"));
 });

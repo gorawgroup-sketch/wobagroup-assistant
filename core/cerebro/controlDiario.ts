@@ -9,6 +9,7 @@ import {
 import { cargarConfiguracionPoliticaApi, type ModoPoliticaApi } from "../ai/policy";
 import { durableSendStore, type ResumenLedgerEnviosCorreo } from "../gmail/durableSendStore";
 import { durableUploadStore, type ResumenLedgerSubidasDrive } from "../drive/durableUploadStore";
+import { durablePurchaseStore, type ResumenLedgerCreacionesCompra } from "../holded/durablePurchaseStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -40,6 +41,7 @@ export interface ControlDiario {
   politica: PoliticaControlDiario;
   enviosCorreo: ResumenLedgerEnviosCorreo | null;
   subidasDrive: ResumenLedgerSubidasDrive | null;
+  comprasHolded: ResumenLedgerCreacionesCompra | null;
   recomendaciones: RecomendacionControlDiario[];
 }
 
@@ -51,6 +53,8 @@ export interface EntradaControlDiario {
   enviosCorreo?: ResumenLedgerEnviosCorreo | null;
   /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
   subidasDrive?: ResumenLedgerSubidasDrive | null;
+  /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
+  comprasHolded?: ResumenLedgerCreacionesCompra | null;
   generadoEn?: Date;
 }
 
@@ -106,6 +110,26 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       titulo: "Hay subidas a Drive con resultado incierto",
       detalle: `${entrada.subidasDrive.incierta} subida(s) no pudieron confirmarse mediante su marcador privado.`,
       siguientePaso: "Comprobar el ledger y Drive antes de autorizar otra carga equivalente.",
+      modulo: "conexiones",
+    });
+  }
+
+  if (entrada.comprasHolded === null) {
+    recomendaciones.push({
+      id: "ledger-holded-no-disponible",
+      prioridad: "critica",
+      titulo: "No se pudo comprobar la continuidad de Holded",
+      detalle: "El control diario no pudo leer el ledger durable de compras; no se asume que esté vacío.",
+      siguientePaso: "Revisar permisos de Google Sheets y la pestaña _compras_holded_durables antes de repetir una compra.",
+      modulo: "conexiones",
+    });
+  } else if (entrada.comprasHolded && entrada.comprasHolded.incierta > 0) {
+    recomendaciones.push({
+      id: "compras-holded-inciertas",
+      prioridad: "critica",
+      titulo: "Hay compras de Holded con resultado incierto",
+      detalle: `${entrada.comprasHolded.incierta} compra(s) no pudieron confirmarse mediante su marcador interno.`,
+      siguientePaso: "Comprobar esas compras en Holded antes de autorizar un registro equivalente.",
       modulo: "conexiones",
     });
   }
@@ -224,12 +248,13 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     politica,
     enviosCorreo: entrada.enviosCorreo ?? null,
     subidasDrive: entrada.subidasDrive ?? null,
+    comprasHolded: entrada.comprasHolded ?? null,
     recomendaciones,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria, enviosCorreo, subidasDrive] = await Promise.all([
+  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
@@ -242,6 +267,10 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     }),
     durableUploadStore.obtenerResumen().catch((error) => {
       console.error("[controlDiario] No se pudo leer el ledger de Drive:", error instanceof Error ? error.name : "Error");
+      return null;
+    }),
+    durablePurchaseStore.obtenerResumen().catch((error) => {
+      console.error("[controlDiario] No se pudo leer el ledger de Holded:", error instanceof Error ? error.name : "Error");
       return null;
     }),
   ]);
@@ -259,6 +288,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     },
     enviosCorreo,
     subidasDrive,
+    comprasHolded,
     generadoEn: referencia,
   });
 }

@@ -96,6 +96,7 @@ import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
 import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
+import { obtenerEstadoCreacionesCompraDurables, reconciliarCreacionesCompraAlArrancar } from "../core/holded/write";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -298,6 +299,7 @@ app.get("/health", (_req: Request, res: Response) => {
     entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
     enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
     subidasDrive: obtenerEstadoSubidasDriveDurables(),
+    comprasHolded: obtenerEstadoCreacionesCompraDurables(),
   });
 });
 
@@ -1887,6 +1889,17 @@ servidorHttp = app.listen(PORT, () => {
       })
       .catch((error) => {
         console.error("[drive/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarCreacionesCompraAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación de compras al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error("[holded/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
       })
   );
 });

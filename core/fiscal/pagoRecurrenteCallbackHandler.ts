@@ -15,6 +15,7 @@ import {
   buscarGastoSimilar,
   formatearCandidatosDuplicado,
   crearGastoHolded,
+  CreacionCompraInciertaError,
   PosibleDuplicadoGastoError,
   VerificacionDuplicadoFallidaError,
 } from "../holded/write";
@@ -180,15 +181,19 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
           throw new PosibleDuplicadoGastoError(posiblesDuplicados);
         }
 
-        return crearGastoHolded(propuesta.empresaHolded, {
-          contactId: contacto.id,
-          fecha: propuesta.fechaVencimiento,
-          descripcion: conceptoEtiquetado,
-          // Pagos recurrentes no traen desglose de IVA (el monto lo da el
-          // usuario a mano, no una factura leída) — una sola línea al 0%,
-          // igual que el comportamiento anterior.
-          lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
-        });
+        return crearGastoHolded(
+          propuesta.empresaHolded,
+          {
+            contactId: contacto.id,
+            fecha: fechaBusqueda,
+            descripcion: conceptoEtiquetado,
+            // Pagos recurrentes no traen desglose de IVA (el monto lo da el
+            // usuario a mano, no una factura leída) — una sola línea al 0%,
+            // igual que el comportamiento anterior.
+            lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
+          },
+          { idempotencyKey: `pago-recurrente:${propuesta.id}`, proceso: "pago_recurrente_aprobado" }
+        );
       });
 
       // Footprint no tiene cashflow en Sheets (ver revisarHoldedVsCashflow.ts
@@ -238,6 +243,16 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
           propuesta.messageId,
           `⚠️ No pude confirmar que este pago no esté ya duplicado en Holded (${error.message}) — por seguridad, NO lo registré. ` +
             `Revisa en Holded a mano si ya existe; esta propuesta ya se consumió, así que si hace falta regístralo directo ahí.`,
+          []
+        );
+        return;
+      }
+      if (error instanceof CreacionCompraInciertaError) {
+        await editTelegramMessage(
+          propuesta.chatId,
+          propuesta.messageId,
+          `⚠️ Holded no confirmó si creó "${propuesta.concepto}". Wobi bloqueó cualquier repetición automática y ` +
+            `lo dejó pendiente de verificación para evitar un pago duplicado. Comprueba Holded antes de registrarlo a mano.`,
           []
         );
         return;

@@ -39,4 +39,4 @@ No se subió ningún archivo real durante las pruebas. Este bloque no agrega mod
 
 ## Límite deliberado
 
-Producción debe continuar con una sola réplica: Sheets más mutex local evita carreras en el despliegue actual, pero no ofrece compare-and-swap distribuido. Antes de aumentar réplicas se necesita un almacén transaccional compartido. La creación de carpetas ya busca una coincidencia antes de crear, pero su propio efecto externo se auditará por separado; Holded permanece sin cambios hasta implementar reconciliadores específicos para creación, edición y conciliación.
+Producción debe continuar con una sola réplica: Sheets más mutex local evita carreras en el despliegue actual, pero no ofrece compare-and-swap distribuido. Antes de aumentar réplicas se necesita un almacén transaccional compartido. La creación de carpetas ya busca una coincidencia antes de crear, pero su propio efecto externo se auditará por separado. La creación de compras de Holded quedó cubierta después en el bloque 6A; edición y conciliación siguen pendientes de reconciliadores específicos.
