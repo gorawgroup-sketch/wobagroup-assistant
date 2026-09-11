@@ -222,6 +222,10 @@ export async function listarHilosNoLeidos(): Promise<string[]> {
     paginas += 1;
   } while (pageToken && paginas < 10);
 
+  if (pageToken) {
+    throw new Error("Gmail devolvió más páginas de hilos sin leer de las que se pudieron revisar con seguridad.");
+  }
+
   return ids;
 }
 
@@ -315,7 +319,7 @@ export async function obtenerHiloCompleto(threadId: string): Promise<{
  */
 export async function obtenerUltimoMensajeDeHilo(
   threadId: string
-): Promise<{ messageId: string; fecha: string; de: string; asunto: string } | undefined> {
+): Promise<{ messageId: string; fecha: string; fechaPrimerNoLeido: string; de: string; asunto: string } | undefined> {
   const gmail = getGmailClient();
   const res = await gmail.users.threads.get({
     userId: "me",
@@ -327,10 +331,12 @@ export async function obtenerUltimoMensajeDeHilo(
   const mensajes = res.data.messages ?? [];
   const ultimo = mensajes[mensajes.length - 1];
   if (!ultimo?.id) return undefined;
+  const primerNoLeido = mensajes.find((m) => m.labelIds?.includes("UNREAD")) ?? ultimo;
 
   return {
     messageId: ultimo.id,
     fecha: leerHeader(ultimo.payload?.headers, "Date"),
+    fechaPrimerNoLeido: leerHeader(primerNoLeido.payload?.headers, "Date"),
     de: leerHeader(ultimo.payload?.headers, "From"),
     asunto: leerHeader(ultimo.payload?.headers, "Subject"),
   };

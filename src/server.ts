@@ -1217,7 +1217,7 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     trackearEnSegundoPlano(
-      revisarCorreoNuevo(true) // forzarAviso: lo pidió Carlos ahora mismo, sin importar el día ni si ya se avisó hoy
+      revisarCorreoNuevo(true, incoming.chatId) // forzarAviso: lo pidió este chat ahora mismo, sin importar el día ni si ya se avisó hoy
       .then((resultado) => {
         // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
         // con varios correos reales sin leer en Gmail, y el sistema

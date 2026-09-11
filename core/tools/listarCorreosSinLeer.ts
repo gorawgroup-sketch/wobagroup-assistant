@@ -17,11 +17,10 @@ export const listarCorreosSinLeerTool: ToolDefinition = {
   seguraParaModoRapido: true,
   description:
     "Lista los correos SIN LEER de la bandeja de entrada (remitente, asunto, fecha, adjuntos, un " +
-    "extracto breve) — úsala SIEMPRE que el usuario mencione 'los correos sin leer', 'los que no he " +
-    "leído', 'los dos correos nuevos', etc. sin decirte de qué tratan, en vez de preguntarle cuáles son. " +
-    "Con esto identificas cada uno; si alguno resulta ser una factura/gasto con adjunto, sigue con " +
-    "capturar_correo (usando su remitente/asunto exacto para encontrarlo) para leerlo completo y que siga " +
-    "el flujo normal de gasto/archivo.",
+    "extracto breve), siempre ordenados del MÁS ANTIGUO al más nuevo. Es solo un inventario de lectura. " +
+    "Si el usuario pide PROCESAR, REVISAR o EVACUAR los correos sin leer, no encadenes esta herramienta " +
+    "con capturar_correo: usa revisar_cola_correo, que conserva el orden, la no duplicación y el marcado " +
+    "como leído únicamente al terminar cada correo.",
   input_schema: {
     type: "object",
     properties: {
@@ -40,6 +39,12 @@ export const listarCorreosSinLeerTool: ToolDefinition = {
     const resumenes = await Promise.all(ids.map((id) => obtenerResumenCorreo(id)));
 
     return resumenes
+      .sort((a, b) => {
+        const fechaA = Date.parse(a.fecha);
+        const fechaB = Date.parse(b.fecha);
+        return (Number.isFinite(fechaA) ? fechaA : Number.MAX_SAFE_INTEGER) -
+          (Number.isFinite(fechaB) ? fechaB : Number.MAX_SAFE_INTEGER);
+      })
       .map((r, i) => {
         const adjuntosTxt = r.adjuntos.length > 0 ? r.adjuntos.map((a) => a.filename).join(", ") : "ninguno";
         const extractoTxt = r.extracto ? r.extracto.slice(0, 200) : "(sin extracto)";

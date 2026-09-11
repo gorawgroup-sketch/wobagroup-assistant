@@ -46,6 +46,7 @@ import { reporteAprendizajeTool } from "./reporteAprendizaje";
 import { buscarGastosPorEtiquetaTool } from "./buscarGastosPorEtiqueta";
 import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
 import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
+import { revisarColaCorreoTool } from "./revisarColaCorreo";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
 import { marcarCorreoLeidoTool } from "./marcarCorreoLeido";
 import { escalarDesarrolloTool } from "./escalarDesarrollo";
@@ -100,6 +101,7 @@ const tools: ToolDefinition[] = [
   buscarGastosPorEtiquetaTool,
   leerAdjuntosCompraHoldedTool,
   revisarCorreoPuntualTool,
+  revisarColaCorreoTool,
   gestionarContactoAutorespuestaTool,
   marcarCorreoLeidoTool,
   escalarDesarrolloTool,

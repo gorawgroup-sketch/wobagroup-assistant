@@ -1,6 +1,6 @@
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
 import {
-  buscarGastoSimilar,
+  verificarDuplicadoGastoEstricto,
   buscarMovimientoSimilar,
   buscarMovimientoAproximado,
   buscarMovimientoEnMonedaAlternativa,
@@ -245,15 +245,56 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
       : datos.lineas;
 
-  let candidatos: Awaited<ReturnType<typeof buscarGastoSimilar>> = [];
+  let candidatos: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"] = [];
+  let movimientosYaConciliados: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["movimientosConciliados"] = [];
   try {
-    candidatos = await buscarGastoSimilar(empresa, {
+    const verificacion = await verificarDuplicadoGastoEstricto(empresa, {
       proveedor: datos.proveedor,
       monto: montoParaHolded,
       fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+      moneda: monedaParaHolded,
+      numeroDocumento: datos.numeroDocumento,
     });
+    candidatos = verificacion.compras;
+    movimientosYaConciliados = verificacion.movimientosConciliados;
   } catch (error) {
     console.error("[procesarGastoEntrante] Error buscando gasto similar en Holded:", error);
+    const detalle = error instanceof Error ? error.message : String(error);
+    await sendTelegramMessage(
+      chatId,
+      `⚠️ No pude completar la verificación estricta de duplicados en Holded (${detalle}). Por seguridad NO propuse ni creé el gasto. ` +
+        `El correo/documento queda pendiente y se puede reintentar cuando Holded responda correctamente.`
+    ).catch(() => {});
+    await guardarGastoPendienteDatos({
+      chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      datos,
+      motivo: "verificacion_duplicado",
+      deColaCorreo: entrada.deColaCorreo,
+      correoOrigen: entrada.correoOrigen,
+    }).catch((errorStore) => console.error("[procesarGastoEntrante] Error guardando reintento de duplicados:", errorStore));
+    return "pendiente_datos";
+  }
+
+  if (movimientosYaConciliados.length > 0) {
+    const lineas = movimientosYaConciliados
+      .map(
+        (m, i) =>
+          `${i + 1}. ${m.accountName}: “${m.descripcion}” — ${Math.abs(m.monto).toFixed(2)} ${m.moneda}, ${m.fecha}, ` +
+          `estado ${m.status}, coincidencia ${m.nivel}`
+      )
+      .join("\n");
+    await sendTelegramMessage(
+      chatId,
+      `⛔ No propuse crear este gasto: encontré un movimiento bancario YA CONCILIADO que coincide con ` +
+        `${datos.proveedor}, ${montoParaHolded.toFixed(2)} ${monedaParaHolded}, ${datos.fecha}.\n\n${lineas}\n\n` +
+        `Esto es evidencia de que el gasto ya fue registrado o vinculado en Holded. Si después se desmarcó “Es una factura de compra”, ` +
+        `Holded puede mostrarlo como ticket y omitirlo del listado API de compras, pero sigue siendo el mismo gasto. No se habilita “Crear gasto” ` +
+        `hasta una revisión manual que demuestre que es una operación distinta.`
+    );
+    return "propuesta_duplicada";
   }
 
   // Bug real encontrado en vivo (2026-09-03): buscarGastoSimilar (arriba)
@@ -399,6 +440,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   const importeTexto = usarEquivalente
     ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal})`
     : `${datos.monto} ${datos.moneda}`;
+  const etiquetaTipoDocumento = datos.reciboSimplificado ? "Ticket/recibo detectado" : "Factura detectada";
+  const notaTicket = datos.reciboSimplificado
+    ? `⚠️ Este comprobante es un ticket/recibo simplificado, NO una factura legal. La integración disponible ` +
+      `de Holded solo permite crearlo inicialmente como compra; después de aprobar, debes abrir Opciones y ` +
+      `desmarcar “Es una factura de compra”. Wobi seguirá reconociendo ese ticket mediante la conciliación ` +
+      `bancaria para no volver a registrarlo.`
+    : "";
 
   let texto: string;
   let botones: { text: string; callback_data: string }[][];
@@ -421,7 +469,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : "";
 
     const lineasTexto = [
-      `📄 *Factura detectada* — ${datos.proveedor} (${importeTexto}, ${datos.fecha}, ${empresa})`,
+      `📄 *${etiquetaTipoDocumento}* — ${datos.proveedor} (${importeTexto}, ${datos.fecha}, ${empresa})`,
       `Concepto: ${conceptoConMonedaOriginal}`,
     ];
     if (datos.numeroDocumento) lineasTexto.push(`Número de documento: ${datos.numeroDocumento}`);
@@ -453,6 +501,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       );
     }
     if (avisoNumeroDocumento) lineasTexto.push(``, avisoNumeroDocumento);
+    if (notaTicket) lineasTexto.push(``, notaTicket);
     lineasTexto.push(``, `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`);
 
     texto = lineasTexto.join("\n");
@@ -650,7 +699,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         notaTags;
 
     texto = [
-      `📄 *Factura detectada* — no encontré ningún gasto ya registrado en Holded que corresponda.`,
+      `📄 *${etiquetaTipoDocumento}* — no encontré ningún gasto ya registrado en Holded que corresponda.`,
       ``,
       `Propuesta para crear un gasto nuevo:`,
       `Empresa: ${empresa}`,
@@ -663,7 +712,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         ? `${desgloseIva} — recibo simplificado (sin datos fiscales de la empresa), registrado sin discriminar IVA, no deducible.`
         : desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
-    ].join("\n") + notaCuenta + notaMovimiento;
+    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento;
 
     // Pedido explícito de Carlos: cuando hay un movimiento bancario
     // confirmado, mostrar SIEMPRE las dos opciones juntas ("Crear" y

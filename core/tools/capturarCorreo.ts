@@ -1,8 +1,17 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buscarMensajes, obtenerResumenCorreo, obtenerCuerpoCompletoCorreo, descargarAdjunto, marcarHiloComoLeido } from "../gmail/client";
+import {
+  buscarMensajes,
+  listarHilosNoLeidos,
+  obtenerUltimoMensajeDeHilo,
+  obtenerResumenCorreo,
+  obtenerCuerpoCompletoCorreo,
+  descargarAdjunto,
+  marcarHiloComoLeido,
+} from "../gmail/client";
 import { registrarCaptura } from "../knowledge/capturaSheet";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
+import { esReferenciaCorreoConcreta } from "../gmail/referenciaCorreo";
 import type { ToolDefinition } from "./types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -39,8 +48,10 @@ export const capturarCorreoTool: ToolDefinition = {
     "(botón de aprobación); si no, propone archivarlo en Drive. Úsala cuando pidan 'capturar', 'guardar', " +
     "'procesar' o 'que recuerdes' la información de un correo que llegó o que mencionan — incluyendo " +
     "facturas o comprobantes que llegaron como adjunto de correo, no solo texto. Nunca inventes ni " +
-    "resumas el contenido de memoria, esta herramienta va a leer el correo real (y sus adjuntos). Si no " +
-    "se especifica cuál correo, usa el más reciente de la bandeja de entrada.",
+    "resumas el contenido de memoria, esta herramienta va a leer el correo real (y sus adjuntos). " +
+    "Si se da una referencia CONCRETA (asunto, remitente, nombre o detalle), puede buscarla también en el " +
+    "historial leído. Si no se especifica cuál, usa el hilo sin leer más antiguo; para la revisión general " +
+    "usa revisar_cola_correo.",
   input_schema: {
     type: "object",
     properties: {
@@ -49,7 +60,7 @@ export const capturarCorreoTool: ToolDefinition = {
         description:
           "Términos para encontrar el correo correcto (remitente, asunto, tema) — puede ser lenguaje " +
           "natural o una consulta de Gmail (ej. 'from:proveedor@dominio.com', 'subject:factura'). Si no se " +
-          "da o no se sabe cuál es, se omite y se toma el correo más reciente.",
+          "da o no se sabe cuál es, se omite y se toma el correo SIN LEER más antiguo.",
       },
       empresas: {
         type: "array",
@@ -65,11 +76,37 @@ export const capturarCorreoTool: ToolDefinition = {
   handler: async (input, context) => {
     const busqueda = typeof input.busqueda === "string" ? input.busqueda.trim() : "";
     const empresas = Array.isArray(input.empresas) ? input.empresas.filter((e): e is string => typeof e === "string") : [];
-    const query = busqueda ? `${busqueda} in:inbox` : "in:inbox";
-
+    if (busqueda && !esReferenciaCorreoConcreta(busqueda)) {
+      return "La referencia al correo es demasiado general para abrir el historial leído. Usa revisar_cola_correo: procesará solo los no leídos, del más antiguo al más nuevo.";
+    }
     let ids: string[] = [];
     try {
-      ids = await buscarMensajes(query, 1);
+      if (busqueda) {
+        const coincidencias = await buscarMensajes(`${busqueda} in:inbox`, 20);
+        const resumenes = await Promise.all(coincidencias.map((id) => obtenerResumenCorreo(id)));
+        // Una referencia puntual busca el resultado más reciente. El orden
+        // antiguo -> nuevo pertenece exclusivamente a la cola automática de
+        // no leídos; no debe hacer que "el correo de X" abra por accidente
+        // un correo histórico muy antiguo del mismo remitente.
+        resumenes.sort((a, b) => {
+          const fechaA = Date.parse(a.fecha);
+          const fechaB = Date.parse(b.fecha);
+          return (Number.isFinite(fechaB) ? fechaB : Number.MIN_SAFE_INTEGER) -
+            (Number.isFinite(fechaA) ? fechaA : Number.MIN_SAFE_INTEGER);
+        });
+        if (resumenes[0]) ids = [resumenes[0].id];
+      } else {
+        const hilos = await listarHilosNoLeidos();
+        const metadatos = (await Promise.all(hilos.map((id) => obtenerUltimoMensajeDeHilo(id))))
+          .filter((m): m is NonNullable<typeof m> => Boolean(m))
+          .sort((a, b) => {
+            const fechaA = Date.parse(a.fechaPrimerNoLeido || a.fecha);
+            const fechaB = Date.parse(b.fechaPrimerNoLeido || b.fecha);
+            return (Number.isFinite(fechaA) ? fechaA : Number.MAX_SAFE_INTEGER) -
+              (Number.isFinite(fechaB) ? fechaB : Number.MAX_SAFE_INTEGER);
+          });
+        if (metadatos[0]) ids = [metadatos[0].messageId];
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return `Error buscando el correo: ${message}`;
@@ -77,8 +114,8 @@ export const capturarCorreoTool: ToolDefinition = {
 
     if (ids.length === 0) {
       return busqueda
-        ? `No encontré ningún correo que coincida con "${busqueda}" en la bandeja de entrada.`
-        : "No encontré ningún correo en la bandeja de entrada.";
+        ? `No encontré ningún correo que coincida con la referencia concreta "${busqueda}" en la bandeja de entrada, ni leído ni sin leer.`
+        : "No encontré ningún correo sin leer en la bandeja de entrada.";
     }
 
     const [resumen, cuerpo] = await Promise.all([obtenerResumenCorreo(ids[0]), obtenerCuerpoCompletoCorreo(ids[0])]);
@@ -87,20 +124,22 @@ export const capturarCorreoTool: ToolDefinition = {
 
     await registrarCaptura(contenido, "correo entrante (capturado)", empresas);
 
-    // Pedido explícito de Carlos: al capturar un correo, queda procesado — que también se marque
-    // leído en Gmail automáticamente, en vez de quedar sin leer aunque Wobi ya lo guardó. No crítico
-    // (best-effort): si falla, la captura en sí ya se guardó bien, no hace falta avisar del error acá.
-    const marcadoLeido = await marcarHiloComoLeido(resumen.threadId).catch(() => false);
-
     const empresasLabel = empresas.length > 0 ? ` (${empresas.join(", ")})` : "";
-    const baseTexto =
+    const baseTextoInicial =
       `Capturado el correo "${resumen.asunto}" de ${resumen.de}${empresasLabel} ` +
       `(${cuerpo.length} caracteres del cuerpo) — ya está en la base de conocimiento, disponible para ` +
-      `futuras consultas${marcadoLeido ? ", y lo marqué como leído" : ""}.`;
+      `futuras consultas.`;
 
     if (resumen.adjuntos.length === 0) {
-      return baseTexto;
+      // Sin adjuntos ni decisiones pendientes, la captura completa sí es
+      // terminal: recién ahora se puede marcar el hilo como leído.
+      const marcadoLeido = await marcarHiloComoLeido(resumen.threadId).catch(() => false);
+      return `${baseTextoInicial}${marcadoLeido ? " El correo quedó marcado como leído." : " No pude marcarlo como leído; permanece pendiente en Gmail."}`;
     }
+
+    const baseTexto =
+      `${baseTextoInicial} Como tiene adjuntos con decisiones todavía pendientes, NO lo marqué como leído; ` +
+      `solo quedará leído cuando esos documentos se hayan procesado.`;
 
     if (context?.chatId === undefined) {
       return (

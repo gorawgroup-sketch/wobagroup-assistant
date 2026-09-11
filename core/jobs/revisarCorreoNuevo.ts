@@ -118,8 +118,8 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
  * (para que /revisarcorreo o la conversación automática siempre vean el estado real), solo el AVISO
  * proactivo de "¿empezamos?" se limita a una vez por día hábil.
  */
-export async function revisarCorreoNuevo(forzarAviso = false): Promise<ResultadoRevisarCorreo> {
-  const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
+export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?: number): Promise<ResultadoRevisarCorreo> {
+  const chatId = chatIdSolicitante ?? (process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined);
 
   if (!chatId) {
     console.error("[revisarCorreoNuevo] Falta CASHFLOW_ALERTS_CHAT_ID, no se puede notificar.");
@@ -158,7 +158,13 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
     ids = await listarHilosNoLeidos();
   } catch (error) {
     console.error("[revisarCorreoNuevo] Error listando hilos sin leer:", error);
-    ids = [];
+    // No sincronizar con una lista vacía inventada: si Gmail falló,
+    // eliminaríamos de la cola correos que siguen realmente sin leer.
+    const activo = await obtenerActivoActual(chatId).catch(() => undefined);
+    return {
+      correosRevisados: 0,
+      activoBloqueando: activo ? { asunto: activo.asunto, de: activo.de } : undefined,
+    };
   }
 
   console.log(`[revisarCorreoNuevo] ${ids.length} hilo(s) sin leer en la bandeja`);
@@ -174,10 +180,16 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
   const [habiaActivoAntes, totalAntesDeEncolar] = await Promise.all([hayActivo(chatId), contarPendientesTotal(chatId)]);
 
   const itemsParaEncolar: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }> = [];
+  let metadatosCompletos = true;
   for (const threadId of ids) {
     try {
       const ultimo = await obtenerUltimoMensajeDeHilo(threadId);
-      if (!ultimo) continue;
+      if (!ultimo) {
+        // No reconciliar/eliminar filas locales desde una fotografía a la
+        // que le faltó un hilo real de Gmail.
+        metadatosCompletos = false;
+        continue;
+      }
 
       // Pedido explícito de Carlos: la aprobación de conversación automática
       // (ver autorespuestaContactoStore.ts) es por CONTACTO, pero un mismo
@@ -194,7 +206,10 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
         if (estadoHilo?.estado === "aprobado" || estadoHilo?.estado === "pendiente") continue;
       }
 
-      const fechaOrden = Date.parse(ultimo.fecha);
+      // Se trabaja con el mensaje más reciente del hilo, pero la prioridad
+      // corresponde al PRIMER mensaje que sigue sin leer. Así una respuesta
+      // nueva no manda un hilo antiguo al final de la cola.
+      const fechaOrden = Date.parse(ultimo.fechaPrimerNoLeido || ultimo.fecha);
       itemsParaEncolar.push({
         id: threadId,
         mensajeId: ultimo.messageId,
@@ -203,11 +218,14 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
         fechaOrden: Number.isFinite(fechaOrden) ? fechaOrden : Date.now(),
       });
     } catch (error) {
+      metadatosCompletos = false;
       console.error(`[revisarCorreoNuevo] Error leyendo metadatos del hilo ${threadId} (se omite de la cola):`, error);
     }
   }
 
-  const nuevos = itemsParaEncolar.length > 0 ? await encolarCorreos(chatId, itemsParaEncolar) : 0;
+  // Se llama incluso con [] para reconciliar y retirar de la cola local los
+  // hilos que ya no están sin leer en Gmail.
+  const nuevos = await encolarCorreos(chatId, itemsParaEncolar, { reconciliarAusentes: metadatosCompletos });
 
   // Bug real encontrado en vivo: esto antes vivía DENTRO del `if (nuevos ===
   // 0) return` de arriba — un "revisarcorreo" manual con la cola ya llena
@@ -218,7 +236,7 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
   // nuevo, si no hay nada activo y sí hay algo pendiente (nuevo o de antes),
   // se avisa (con botón — nunca se muestra el siguiente correo directo, ver
   // pedirConfirmacionSiguienteCorreo).
-  const totalPendienteTrasEncolar = totalAntesDeEncolar + nuevos;
+  const totalPendienteTrasEncolar = await contarPendientesTotal(chatId);
   if (!habiaActivoAntes && totalPendienteTrasEncolar > 0) {
     const debeAvisar = forzarAviso || (esDiaHabilEspana() && !(await yaSeAvisoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId)));
 
@@ -482,14 +500,13 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
-        // Este adjunto nunca mandó ninguna propuesta — nada lo va a
-        // resolver por su cuenta, así que se resuelve acá mismo (con
-        // aviso) para no dejar la cola trabada esperando algo que nunca va a llegar.
+        // No marcar como leído ni avanzar: el adjunto NO se procesó. Queda
+        // activo para que el usuario pueda reintentarlo o descartarlo de
+        // forma explícita, sin perder el tracking de Gmail.
         await sendTelegramMessage(
           chatId,
-          `⚠️ Hubo un error leyendo el adjunto "${adjunto.filename}" de "${correo.asunto}" — lo salto.`
+          `⚠️ Hubo un error leyendo el adjunto "${adjunto.filename}" de "${correo.asunto}" — no lo marqué como leído ni avancé la cola. Puedes reintentarlo o descartarlo explícitamente.`
         ).catch(() => {});
-        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
       }
     }
     return;
@@ -576,7 +593,7 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           : "Gasto detectado en el cuerpo del correo (comprobante visual, sin adjunto original)",
       };
 
-      await procesarGastoEntrante({
+      const resultadoGasto = await procesarGastoEntrante({
         chatId,
         rutaLocal: destino,
         nombreArchivoOriginal: nombreArchivo,
@@ -591,6 +608,9 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           mensajeIdGmail: correo.id,
         },
       });
+      if (resultadoGasto === "propuesta_duplicada" && deColaCorreo) {
+        await avanzarColaCorreoSiActivo(chatId);
+      }
       return;
     } catch (error) {
       console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id} (sigue como correo normal):`, error);
@@ -637,9 +657,8 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
  * Procesa el correo que acaba de pasar a "activo" en la cola (el más
  * antiguo pendiente) — fija cuántas decisiones hacen falta para darlo por
  * resuelto (ver establecerPendientesActivo) y delega el análisis real en
- * procesarCorreoLocalizado (deColaCorreo=true). Si algo se rompe antes de
- * llegar a mandar ninguna propuesta, se resuelve igual (con aviso) para no
- * dejar la cola trabada en un correo roto para siempre.
+ * procesarCorreoLocalizado (deColaCorreo=true). Si algo se rompe, el correo
+ * permanece activo y sin leer hasta un reintento o descarte explícito.
  */
 export async function procesarSiguienteCorreoActivo(chatId: number): Promise<void> {
   const activo = await iniciarSiguienteActivo(chatId);
@@ -651,11 +670,9 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
     await procesarCorreoLocalizado(chatId, correo, true);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error procesando correo activo ${activo.id}:`, error);
-    await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — lo salto y sigo con el siguiente.`).catch(
+    await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — permanece sin leer y activo; no avancé la cola. Reinténtalo o descártalo explícitamente.`).catch(
       () => {}
     );
-    await establecerPendientesActivo(chatId, activo.id, 1);
-    await avanzarColaCorreoSiActivo(chatId);
   }
 }
 
@@ -668,15 +685,16 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
  * la cola (procesarCorreoLocalizado), pero con deColaCorreo=false: nunca
  * toca colaRevisionStore, así que si hay un correo activo de la cola en
  * curso al mismo tiempo, sigue exactamente donde estaba cuando esto
- * termine. Nunca marca el correo como leído por su cuenta (a diferencia de
- * la cola) — eso ya lo hace, si corresponde, la resolución de la propuesta
- * resultante a través del mecanismo normal.
+ * termine. Nunca cambia el estado leído/no leído por adelantado ni toca la
+ * cola. En el caso histórico esperado el correo ya está leído; si la
+ * búsqueda puntual encuentra uno todavía no leído, seguirá así y la cola
+ * automática conservará el tracking hasta resolverlo por su flujo normal.
  */
 export async function procesarCorreoPuntual(
   chatId: number,
   busqueda: string
 ): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean }> {
-  const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "in:inbox";
+  const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
   const ids = await buscarMensajes(query, 1);
   if (ids.length === 0) return { encontrado: false };
 
@@ -689,7 +707,11 @@ export async function procesarCorreoPuntual(
   // gasto duplicado. En ese caso exacto, mejor avisar y dejar que se resuelva desde la propuesta que
   // la cola ya mandó, en vez de duplicar el trabajo.
   const activo = await obtenerActivoActual(chatId).catch(() => undefined);
-  if (activo && activo.mensajeId === correo.id) {
+  // Comparar también por THREAD id: una búsqueda puntual puede devolver un
+  // mensaje anterior del mismo hilo y no necesariamente el messageId más
+  // reciente guardado en la cola. Sigue siendo la misma conversación y no
+  // debe producir una segunda propuesta paralela.
+  if (activo && (activo.id === correo.threadId || activo.mensajeId === correo.id)) {
     return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
   }
 
