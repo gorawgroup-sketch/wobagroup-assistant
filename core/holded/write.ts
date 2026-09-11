@@ -3087,6 +3087,13 @@ export interface LineaCompraHoldedCruda {
   [key: string]: unknown;
 }
 
+interface DetallePagoCompraHolded {
+  id?: string;
+  amount?: string | number;
+  date?: string;
+  bank_id?: string;
+}
+
 export interface CompraHoldedCruda {
   id: string;
   document_number?: string | null;
@@ -3105,6 +3112,8 @@ export interface CompraHoldedCruda {
    */
   currency_change?: string | number;
   total?: string | number;
+  payments_pending?: string | number;
+  payments_detail?: DetallePagoCompraHolded[];
   design_id?: string | null;
   lines?: LineaCompraHoldedCruda[];
   [key: string]: unknown;
@@ -3856,7 +3865,7 @@ async function leerEstadoMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string
-): Promise<{ status?: string; reconciled_amount?: string } | undefined> {
+): Promise<{ status?: string; reconciled_amount?: string; amount?: string } | undefined> {
   const fechaBase = new Date(fechaAproximada);
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
@@ -3870,13 +3879,17 @@ async function leerEstadoMovimiento(
       start_date: formatDateLocal(desde),
       end_date: formatDateLocal(hasta),
       limit: "200",
+      // Sin este filtro Holded devuelve en la práctica solo los pendientes.
+      // Un movimiento desaparecía justo después de conciliarlo y el ledger
+      // durable quedaba incierto aunque el efecto sí estuviera aplicado.
+      status: "pending,reconciled,partial,forced_reconciled",
     });
     if (cursor) params.set("cursor", cursor);
     const respuesta = (await holdedReadJson(
       empresa,
       `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements?${params.toString()}`
     )) as {
-      items?: Array<{ id: string; status?: string; reconciled_amount?: string }>;
+      items?: Array<{ id: string; status?: string; reconciled_amount?: string; amount?: string }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -3910,6 +3923,36 @@ export async function estaMovimientoYaConciliado(
 }
 
 /**
+ * Confirma que el importe conciliado del movimiento terminó como pago del
+ * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
+ * confundir un movimiento conciliado contra otro documento con el efecto
+ * que Wobi intentó aplicar.
+ */
+export function verificarPagoCompraEnMovimiento(
+  compra: Pick<CompraHoldedCruda, "payments_detail" | "payments_pending">,
+  accountId: string,
+  fechaMovimiento: string,
+  montoEnlazado: number
+): { montoPago: number; pendienteEnCompra?: number } | undefined {
+  if (!Number.isFinite(montoEnlazado) || montoEnlazado <= 0) return undefined;
+  const pago = (compra.payments_detail ?? []).find((detalle) => {
+    const monto = Math.abs(parsearMontoHolded(detalle.amount));
+    return detalle.bank_id === accountId
+      && detalle.date?.startsWith(fechaMovimiento)
+      && Number.isFinite(monto)
+      && Math.abs(monto - montoEnlazado) <= TOLERANCIA_MONTO;
+  });
+  if (!pago) return undefined;
+
+  const montoPago = Math.abs(parsearMontoHolded(pago.amount));
+  const pendiente = parsearMontoHolded(compra.payments_pending);
+  return {
+    montoPago,
+    ...(Number.isFinite(pendiente) && pendiente > TOLERANCIA_MONTO ? { pendienteEnCompra: pendiente } : {}),
+  };
+}
+
+/**
  * Hallazgo real de auditoría (caso Salesmate/RapidOps, Footprint, 2026-09-08): el MOVIMIENTO bancario
  * (en USD, -554.84) quedó reconciled_amount="-554.84" — coincide exacto con el total de la compra, y
  * es justo lo que este chequeo ya verificaba (montoEnlazado > 0, y de hecho el valor completo). Pero
@@ -3936,32 +3979,52 @@ async function inspeccionarConciliacionRegistrada(
   if (!movimiento) return { estado: "no_encontrada" };
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
   const montoEnlazado = Math.abs(parsearMontoMovimiento(movimiento?.reconciled_amount) || 0);
+  const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento?.amount) || 0);
 
   // No basta con que el status diga "conciliado" — así es exactamente como
   // se veía el bug real que motivó este chequeo más estricto: status
   // "forced_reconciled" pero reconciled_amount "0.00" (sin ningún documento
   // realmente enlazado). Solo se reporta éxito si AMBAS cosas se confirman:
   // el estado cambió Y el monto enlazado es mayor a cero.
-  const ok = estaConciliado(movimiento?.status) && montoEnlazado > 0;
+  const movimientoParcial = movimiento?.status === "partial";
+  const tieneEnlace = (estaConciliado(movimiento?.status) || movimientoParcial) && montoEnlazado > 0;
 
   let pendienteEnCompra: number | undefined;
-  if (ok) {
+  let pagoDelDocumentoConfirmado = false;
+  if (tieneEnlace) {
     try {
       const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.documentId);
-      const pendiente = parsearMontoHolded(compra.payments_pending as string | number | undefined);
-      if (Number.isFinite(pendiente) && pendiente > 0.01) {
-        pendienteEnCompra = pendiente;
-      }
+      const pago = verificarPagoCompraEnMovimiento(
+        compra,
+        registro.accountId,
+        registro.fechaAproximada,
+        montoEnlazado
+      );
+      pagoDelDocumentoConfirmado = Boolean(pago);
+      pendienteEnCompra = pago?.pendienteEnCompra;
     } catch (error) {
       console.error(
-        `[reconciliarMovimiento] Error releyendo la compra ${registro.documentId} para verificar el saldo pendiente (no crítico):`,
+        `[reconciliarMovimiento] Error releyendo la compra ${registro.documentId} para verificar el pago:`,
         error
       );
     }
   }
 
-  const resultado = { ok, statusFinal, montoEnlazado, pendienteEnCompra };
-  return ok ? { estado: "verificada", resultado } : { estado: "libre", resultado };
+  const ok = tieneEnlace && pagoDelDocumentoConfirmado;
+  const pendienteEnMovimiento = movimientoParcial && montoMovimiento > montoEnlazado + TOLERANCIA_MONTO
+    ? montoMovimiento - montoEnlazado
+    : undefined;
+  const resultado = {
+    ok,
+    statusFinal,
+    montoEnlazado,
+    pendienteEnCompra,
+    movimientoParcial: movimientoParcial || undefined,
+    pendienteEnMovimiento,
+  };
+  if (ok) return { estado: "verificada", resultado };
+  if (estaConciliado(movimiento?.status)) return { estado: "ocupada", resultado };
+  return { estado: "libre", resultado };
 }
 
 async function aplicarConciliacionRegistrada(registro: RegistroConciliacionMovimiento): Promise<void> {

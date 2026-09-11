@@ -8,6 +8,8 @@ export interface ResultadoConciliacionMovimiento {
   statusFinal: string;
   montoEnlazado: number;
   pendienteEnCompra?: number;
+  movimientoParcial?: boolean;
+  pendienteEnMovimiento?: number;
 }
 
 export interface RegistroConciliacionMovimiento {
@@ -39,6 +41,7 @@ export interface RepositorioConciliacionesMovimiento {
 export type InspeccionConciliacionMovimiento =
   | { estado: "libre"; resultado: ResultadoConciliacionMovimiento }
   | { estado: "no_encontrada" }
+  | { estado: "ocupada"; resultado: ResultadoConciliacionMovimiento }
   | { estado: "verificada"; resultado: ResultadoConciliacionMovimiento };
 
 export interface TransporteConciliacionMovimiento {
@@ -171,6 +174,7 @@ export async function ejecutarConciliacionMovimientoDurable(
 
   const inicialInspeccion = await transporte.inspeccionar(registro);
   if (inicialInspeccion.estado === "verificada") throw new MovimientoYaConciliadoError();
+  if (inicialInspeccion.estado === "ocupada") throw new MovimientoYaConciliadoError();
   if (inicialInspeccion.estado === "no_encontrada") {
     throw new Error("El movimiento bancario ya no aparece en Holded; Wobi no intentó conciliarlo.");
   }
