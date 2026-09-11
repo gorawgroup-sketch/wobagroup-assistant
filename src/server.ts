@@ -37,7 +37,12 @@ import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/schedul
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
-import { handleDescartarTodoPendienteCallback, handleDescartarItemPendienteCallback } from "../core/jobs/resumenPendientesDiario";
+import {
+  handleCancelarDescartarTodoPendienteCallback,
+  handleConfirmarDescartarTodoPendienteCallback,
+  handleDescartarTodoPendienteCallback,
+  handleDescartarItemPendienteCallback,
+} from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { obtenerEstadoEnviosCorreoDurables, reconciliarEnviosCorreoAlArrancar } from "../core/gmail/client";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
@@ -1113,6 +1118,10 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
         } else {
           await handleColaCorreoSiguienteCallback(update.callback_query);
         }
+      } else if (data === "resumen_descartar_todo:confirmar") {
+        await handleConfirmarDescartarTodoPendienteCallback(update.callback_query);
+      } else if (data === "resumen_descartar_todo:cancelar") {
+        await handleCancelarDescartarTodoPendienteCallback(update.callback_query);
       } else if (data === "resumen_descartar_todo") {
         await handleDescartarTodoPendienteCallback(update.callback_query);
       } else if (data.startsWith("resumen_descartar_item:")) {
