@@ -6,9 +6,13 @@ import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock } from "./documentBlock";
 
 const MODEL = resolverModeloDocumental("transcribir_captura");
-// Sin cache_control deliberadamente: la parte estable de esta petición está muy por debajo del
-// mínimo cacheable de Sonnet (1.024 tokens). Marcarla no generaría hits ni ahorro; el documento y su
-// contexto sí cambian en cada llamada. Se conserva el prompt exacto y solo se optimiza el modelo.
+// Sonnet 5 (el modelo que resuelve resolverModeloDocumental) piensa en modo adaptativo por
+// default si no se manda `thinking` — a diferencia del claude-sonnet-4-6 anterior, donde omitirlo
+// significaba sin razonamiento. Ese pensamiento invisible cuenta contra el mismo max_tokens=8192
+// que el texto transcrito, así que en un documento denso puede consumir presupuesto real antes de
+// escribir una sola palabra visible — el bucle de continuación de abajo ya cubre ese caso igual que
+// cubre documentos simplemente largos, así que no hace falta desactivar el pensamiento (desactivarlo
+// en la familia 5 tiene sus propios problemas: puede filtrar texto crudo o tags de pensamiento).
 
 let client: Anthropic | null = null;
 
@@ -21,6 +25,19 @@ function getClient(): Anthropic {
   client = new Anthropic({ apiKey });
   return client;
 }
+
+// Hallazgo real de auditoría (pedido explícito de Carlos, 2026-09-11 — un blueprint técnico real
+// sobre backup automático Holded→Drive, reenviado como parte de una reunión): "me gustaría que
+// analizaras mucho mejor, leyeras el contenido del documento... e integrarlo a tu conocimiento". Con
+// max_tokens=1500 (≈1000-1100 palabras) esta función truncaba en silencio cualquier documento técnico
+// real de más de un par de páginas — sin ningún aviso, ni de que se cortó ni de dónde. Se sube al
+// mismo techo ya establecido en este proyecto para lecturas de documentos que no pueden perder datos
+// (ver extractInvoiceData.ts, max_tokens=8192) y, para el caso raro de que ni así alcance, se agrega
+// un bucle de continuación acotado (máximo 3 turnos) que le pide seguir EXACTAMENTE donde se cortó —
+// mismo patrón multi-turno ya usado en extractInvoiceData.ts, adaptado acá para texto libre en vez de
+// tool-calling. Nunca se devuelve un texto truncado en silencio: si aun con los 3 turnos se sigue
+// cortando, se lo dice explícitamente al final en vez de fingir que la transcripción quedó completa.
+const MAX_TURNOS_TRANSCRIPCION = 3;
 
 /**
  * Transcribe el CONTENIDO real de un documento/imagen (PDF, foto, captura
@@ -48,29 +65,69 @@ export async function transcribirParaCaptura(
   const documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
 
   const textoInstruccion = [
-    "Transcribe el contenido real de este documento/imagen en texto, de forma clara y completa — es " +
+    "Transcribe el contenido real de este documento/imagen en texto, de forma clara y COMPLETA — es " +
       "para guardarlo como conocimiento consultable del equipo, así que prioriza los datos concretos " +
-      "(listas, nombres, fechas, cifras, decisiones) tal como aparecen, no un resumen vago.",
+      "(listas, nombres, fechas, cifras, decisiones, pasos de un proceso) tal como aparecen, no un " +
+      "resumen vago. Si el documento es largo (varias páginas, un proceso con muchos pasos), " +
+      "transcríbelo TODO igual — nunca resumas ni omitas secciones para ahorrar espacio.",
     contexto ? `Contexto de quién lo mandó y por qué (úsalo para dar marco, no lo repitas literal):\n${contexto}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  const response = await crearMensajeAnthropic(anthropic, ejecucion, {
-    model: MODEL,
-    max_tokens: 1500,
-    messages: [
-      {
-        role: "user",
-        content: [documentBlock, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
-      },
-    ],
-  });
+  // cache_control en el documento (no en el texto de instrucción, que es chico y no cambia el
+  // cálculo): el bucle de abajo puede reenviar este mismo bloque sin cambios en el turno 2 y 3 dentro
+  // de UNA sola llamada — a diferencia de antes, cuando la función solo se invocaba una vez y el
+  // documento sí cambiaba en cada invocación real. Si el documento es lo bastante grande para superar
+  // el mínimo cacheable, los turnos de continuación leen ese bloque desde caché en vez de pagarlo de
+  // nuevo entero; si no llega al mínimo, o si nunca hace falta continuar, no genera costo extra real.
+  const documentBlockConCache = { ...documentBlock, cache_control: { type: "ephemeral" } };
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  const texto = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
-  if (!texto) {
+  const messages: Anthropic.MessageParam[] = [
+    {
+      role: "user",
+      content: [documentBlockConCache, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
+    },
+  ];
+
+  let textoCompleto = "";
+  let seCorto = false;
+
+  for (let turno = 0; turno < MAX_TURNOS_TRANSCRIPCION; turno++) {
+    const response = await crearMensajeAnthropic(anthropic, ejecucion, {
+      model: MODEL,
+      max_tokens: 8192,
+      messages,
+    });
+
+    const textBlock = response.content.find((b) => b.type === "text");
+    const texto = textBlock && textBlock.type === "text" ? textBlock.text : "";
+    textoCompleto += texto;
+
+    if (response.stop_reason !== "max_tokens") {
+      seCorto = false;
+      break;
+    }
+
+    seCorto = true;
+    if (turno === MAX_TURNOS_TRANSCRIPCION - 1) break;
+
+    messages.push({ role: "assistant", content: response.content });
+    messages.push({
+      role: "user",
+      content: "Continúa la transcripción EXACTAMENTE donde la dejaste — nunca repitas lo que ya transcribiste arriba.",
+    });
+  }
+
+  textoCompleto = textoCompleto.trim();
+  if (!textoCompleto) {
     throw new Error("Claude no devolvió ninguna transcripción para este documento.");
   }
-  return texto;
+
+  if (seCorto) {
+    console.error(`[transcribeForCapture] Transcripción de "${rutaLocal}" se cortó por longitud incluso tras ${MAX_TURNOS_TRANSCRIPCION} turnos — puede quedar incompleta.`);
+    textoCompleto += "\n\n[⚠️ Esta transcripción se cortó por longitud — el documento es más largo de lo que se pudo capturar. Puede faltar contenido del final.]";
+  }
+
+  return textoCompleto;
 }
