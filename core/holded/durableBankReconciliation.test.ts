@@ -14,7 +14,7 @@ import {
   type RepositorioConciliacionesMovimiento,
   type TransporteConciliacionMovimiento,
 } from "./durableBankReconciliation";
-import { configuracionConciliacionesMovimientoDurables } from "./write";
+import { configuracionConciliacionesMovimientoDurables, verificarPagoCompraEnMovimiento } from "./write";
 
 class RepoMemoria implements RepositorioConciliacionesMovimiento {
   filas = new Map<string, RegistroConciliacionMovimiento>();
@@ -125,6 +125,17 @@ test("un movimiento ya conciliado antes de reservar nunca dispara POST", async (
   await assert.rejects(ejecutarConciliacionMovimientoDurable(identidad(), repo, holded), MovimientoYaConciliadoError);
   assert.equal(holded.conciliaciones.length, 0);
   assert.equal(repo.filas.values().next().value?.estado, "preparada");
+});
+
+test("un movimiento ocupado por otro documento nunca dispara POST", async () => {
+  const repo = new RepoMemoria();
+  const holded = transporte();
+  holded.inspeccionar = async () => ({
+    estado: "ocupada",
+    resultado: { ok: false, statusFinal: "reconciled", montoEnlazado: 125.5 },
+  });
+  await assert.rejects(ejecutarConciliacionMovimientoDurable(identidad(), repo, holded), MovimientoYaConciliadoError);
+  assert.equal(holded.conciliaciones.length, 0);
 });
 
 test("un movimiento inexistente falla cerrado antes del POST", async () => {
@@ -270,4 +281,38 @@ test("la protección solo se desactiva con false explícito", () => {
     configuracionConciliacionesMovimientoDurables({ WOBI_HOLDED_RECONCILIATION_DURABLE_ENABLED: "falso" } as NodeJS.ProcessEnv).habilitado,
     true
   );
+});
+
+test("confirma el pago del documento por cuenta, fecha e importe enlazado", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ id: "payment-1", bank_id: "account-1", date: "2026-09-11", amount: "24,20" }],
+      payments_pending: "0,00",
+    },
+    "account-1",
+    "2026-09-11",
+    24.2
+  );
+  assert.deepEqual(resultado, { montoPago: 24.2 });
+});
+
+test("no atribuye al documento un pago de otra cuenta, fecha o importe", () => {
+  const compra = {
+    payments_detail: [{ id: "payment-1", bank_id: "account-2", date: "2026-09-10", amount: "25,20" }],
+    payments_pending: "0,00",
+  };
+  assert.equal(verificarPagoCompraEnMovimiento(compra, "account-1", "2026-09-11", 24.2), undefined);
+});
+
+test("conserva el saldo pendiente de una compra aunque el vínculo esté confirmado", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-11T10:00:00Z", amount: "554,84" }],
+      payments_pending: "76,45",
+    },
+    "account-1",
+    "2026-09-11",
+    554.84
+  );
+  assert.deepEqual(resultado, { montoPago: 554.84, pendienteEnCompra: 76.45 });
 });

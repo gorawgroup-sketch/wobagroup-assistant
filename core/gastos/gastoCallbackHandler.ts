@@ -423,9 +423,15 @@ async function conciliarContraMovimientoEspecifico(
             `documentos en moneda distinta a EUR (aplica el equivalente en EUR en vez del monto real). Revísalo a mano ` +
             `en Holded (sección Pagos del documento) para corregir el saldo.`
           : "";
+      const notaMovimientoParcial = resultado.movimientoParcial
+        ? `\n\n⚠️ La compra quedó pagada y el vínculo fue confirmado, pero el movimiento bancario continúa ` +
+          `parcialmente conciliado${resultado.pendienteEnMovimiento !== undefined
+            ? ` (${resultado.pendienteEnMovimiento.toFixed(2)} ${movimiento.moneda} todavía sin asignar)`
+            : ""}. Revisa si el resto corresponde a otra partida.`
+        : "";
       return (
         `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${movimiento.descripcion || "sin descripción"}, ` +
-        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}`
+        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}${notaMovimientoParcial}`
       );
     }
     return (
