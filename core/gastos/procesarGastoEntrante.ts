@@ -19,6 +19,7 @@ import {
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import { construirTecladoGasto } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
+import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 
@@ -525,14 +526,38 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
 
+    // Si la factura está en una moneda real de la empresa (por ejemplo USD) pero el cargo salió de
+    // otra cuenta (por ejemplo EUR), las búsquedas anteriores no pueden encontrarlo: para monedas
+    // distintas de EUR comparan únicamente contra movimientos nativos de esa misma moneda. Se usa
+    // ahora la tasa histórica solo como referencia de búsqueda, nunca para cambiar el gasto ni para
+    // conciliar automáticamente. Incluso con un único candidato se obliga a elegir "Conciliar con
+    // #N", porque la tasa exacta aplicada por el banco puede incluir spread.
+    const otrasMonedas = Array.from(monedasReales).filter((m) => m !== monedaParaHolded);
+    let movimientosTipoCambio: Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>> = [];
+    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && otrasMonedas.length > 0) {
+      try {
+        movimientosTipoCambio = await buscarMovimientosPorTipoCambio(
+          empresa,
+          {
+            monto: montoParaHolded,
+            moneda: monedaParaHolded,
+            fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+            proveedor: datos.proveedor,
+          },
+          otrasMonedas
+        );
+      } catch (error) {
+        console.error("[procesarGastoEntrante] Error buscando movimiento por tipo de cambio:", error);
+      }
+    }
+
     // Pedido explícito de Carlos, tras un caso real: Kelly reportó por correo un gasto de Uber Eats
     // como "12.71 dólares" — no había ningún movimiento sin conciliar en USD, pero SÍ había uno de
     // exactamente 12.71 € el mismo día. El monto que reportó era correcto, la MONEDA que dijo estaba
     // mal. Solo se prueba cuando la búsqueda normal (exacta y aproximada) ya no encontró nada —
     // nunca reemplaza ni concilia sola, solo avisa para que se confirme antes de crear el gasto.
     let movimientoMonedaAlternativa: Awaited<ReturnType<typeof buscarMovimientoEnMonedaAlternativa>> | undefined;
-    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0) {
-      const otrasMonedas = Array.from(monedasReales).filter((m) => m !== monedaParaHolded);
+    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0) {
       if (otrasMonedas.length > 0) {
         try {
           movimientoMonedaAlternativa = await buscarMovimientoEnMonedaAlternativa(
@@ -571,6 +596,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
               .join("\n") +
             `\nMarca "🔗 Conciliar con #N" abajo (o "Crear (sin conciliar)" si ninguno es) y aprueba tu selección.`
+          : movimientosTipoCambio.length > 0
+            ? `\n\n💱 No apareció el cargo por ${importeTexto}, pero encontré ${movimientosTipoCambio.length === 1 ? "esta alternativa" : "estas alternativas"} ` +
+              `en otra moneda/cuenta de ${empresa}, calculando primero el equivalente con la tasa histórica de referencia:\n` +
+              movimientosTipoCambio.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
+              `\nMarca "🔗 Conciliar con #N" abajo si reconoces el cargo, o "Crear (sin conciliar)" si ninguno corresponde. ` +
+              `Wobi no elegirá ni conciliará por su cuenta una coincidencia cambiaria.`
           : movimientoMonedaAlternativa
             ? `\n\n💱 OJO — posible error de moneda: no encontré ningún movimiento de ${importeTexto}, pero SÍ hay uno de ` +
               `EXACTAMENTE ${movimientoMonedaAlternativa.monto.toFixed(2)} ${movimientoMonedaAlternativa.moneda} el ` +
@@ -591,12 +622,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // hecho. gasto_nuevo_conciliar vuelve a buscar (exacto y luego
     // aproximado) al momento de conciliar, así que encuentra lo mismo.
     if (movimientoAproximado) movimientoBancario = movimientoAproximado;
+    const movimientosParaElegir = candidatosMovAmbiguos.length > 0 ? candidatosMovAmbiguos : movimientosTipoCambio;
 
     await actualizarFlagMovimientoBancarioGasto(propuesta.id, Boolean(movimientoBancario)).catch((error) =>
       console.error("[procesarGastoEntrante] Error guardando el flag de movimiento bancario (no crítico):", error)
     );
-    if (candidatosMovAmbiguos.length > 0) {
-      await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, candidatosMovAmbiguos).catch((error) =>
+    if (movimientosParaElegir.length > 0) {
+      await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosParaElegir).catch((error) =>
         console.error("[procesarGastoEntrante] Error guardando los movimientos ambiguos (no crítico):", error)
       );
     }
@@ -641,7 +673,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // "Crear" (no hay nada que conciliar todavía).
     botones = construirTecladoGasto(propuesta, {
       hayMovimientoBancario: Boolean(movimientoBancario),
-      numMovimientosAmbiguos: candidatosMovAmbiguos.length > 0 ? candidatosMovAmbiguos.length : undefined,
+      numMovimientosAmbiguos: movimientosParaElegir.length > 0 ? movimientosParaElegir.length : undefined,
     });
   }
 

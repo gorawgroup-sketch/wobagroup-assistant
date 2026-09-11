@@ -95,6 +95,7 @@ import { askClaude, interpretarCorreccionGasto, type CorreccionGasto } from "../
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import type { LineaFactura } from "../documental/extractInvoiceData";
+import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 
 /**
  * Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE PANAMA
@@ -250,12 +251,18 @@ async function ofrecerEleccionMovimientosAmbiguos(
     ]);
     filas.push([{ text: "❌ Ninguno, dejar así", callback_data: `gasto_conciliar_elegir_no:${pendiente.id}` }]);
     const notaSugerido = indiceSugerido !== undefined ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores de este proveedor.` : "";
+    const hayTipoCambio = candidatos.some((c) => c.origenCoincidencia === "tipo_cambio");
+    const detalleCandidatos = candidatos
+      .map((m, i) => hayTipoCambio
+        ? describirMovimientoMultimoneda(m, i)
+        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+      .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
-      `💳 Encontré ${candidatos.length} movimientos bancarios${esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
-        candidatos.map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`).join("\n") +
+      `💳 Encontré ${candidatos.length} movimientos bancarios${hayTipoCambio ? " en otra moneda usando una tasa histórica de referencia" : esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
+        detalleCandidatos +
         notaSugerido +
-        `\n\n¿Con cuál concilio?`,
+        `\n\n¿Con cuál concilio?${hayTipoCambio ? " No elegiré ninguno automáticamente porque la tasa real del banco puede incluir margen." : ""}`,
       filas
     );
     return {
@@ -314,7 +321,31 @@ async function intentarConciliar(
       }
     }
 
-    if (!candidato) return { nota: "", esperandoEleccion: false };
+    if (!candidato) {
+      // El gasto puede estar en USD y el cargo bancario en EUR (u otra moneda real de la misma
+      // empresa). Después de que el usuario pide conciliar, se repite también la búsqueda por tipo
+      // de cambio. Incluso con un único resultado se pide elegirlo explícitamente: la tasa del BCE
+      // es una referencia, no prueba suficiente para una escritura financiera automática.
+      const monedasReales = await obtenerMonedasCuentasReales(empresa);
+      const porTipoCambio = await buscarMovimientosPorTipoCambio(
+        empresa,
+        { monto, moneda, fecha: fechaBusqueda, proveedor },
+        monedasReales
+      );
+      if (porTipoCambio.length > 0) {
+        return await ofrecerEleccionMovimientosAmbiguos(
+          empresa,
+          gastoId,
+          descripcionGasto,
+          chatId,
+          porTipoCambio,
+          deColaCorreo,
+          true,
+          proveedor
+        );
+      }
+      return { nota: "", esperandoEleccion: false };
+    }
 
     // Reutiliza conciliarContraMovimientoEspecifico en vez de repetir la llamada a
     // reconciliarMovimiento acá — hallazgo real de auditoría: esta rama llamaba a
@@ -358,7 +389,11 @@ async function conciliarContraMovimientoEspecifico(
    */
   proveedorParaAprender?: string
 ): Promise<string> {
-  const notaAprox = esAproximado ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded" : "";
+  const notaAprox = movimiento.origenCoincidencia === "tipo_cambio"
+    ? ` — coincidencia MULTIMONEDA por tasa de referencia: ${describirMovimientoMultimoneda(movimiento)}; confírmalo en Holded`
+    : esAproximado
+      ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded"
+      : "";
   try {
     const yaConciliado = await estaMovimientoYaConciliado(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha);
     if (yaConciliado) {
@@ -1622,7 +1657,13 @@ async function crearGastoYReportar(
       // pasar propuesta.proveedor acá, así que este camino (posiblemente el
       // más común, ya que resuelve la ambigüedad en el mismo tap que crea el
       // gasto) nunca alimentaba movimientoAmbiguoAprendidoSheet.ts.
-      const notaConciliacion = await conciliarContraMovimientoEspecifico(empresaFinal, movimientoObjetivo, gasto.id, false, propuesta.proveedor);
+      const notaConciliacion = await conciliarContraMovimientoEspecifico(
+        empresaFinal,
+        movimientoObjetivo,
+        gasto.id,
+        movimientoObjetivo.origenCoincidencia === "tipo_cambio" || movimientoObjetivo.origenCoincidencia === "aproximada",
+        propuesta.proveedor
+      );
       return { mensaje: `${baseMensaje}${notaConciliacion}` };
     }
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.

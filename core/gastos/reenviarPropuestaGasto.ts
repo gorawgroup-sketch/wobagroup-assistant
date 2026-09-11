@@ -6,7 +6,8 @@ import {
 } from "./gastoProposalSheet";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
-import { buscarMovimientoSimilar, buscarMovimientoAproximado } from "../holded/write";
+import { buscarMovimientoSimilar, buscarMovimientoAproximado, obtenerMonedasCuentasReales } from "../holded/write";
+import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 
 /**
  * Bug real encontrado en vivo (2026-09-07, y confirmado que ya había pasado antes el 2026-09-02 con
@@ -31,15 +32,17 @@ import { buscarMovimientoSimilar, buscarMovimientoAproximado } from "../holded/w
  * pobre que el mensaje original de una propuesta (sin desglose de IVA, sin cuenta contable, sin decir
  * si había o no un movimiento bancario para conciliar) — Carlos: "no me das detalles, como sueles
  * hacerlo... no sé si esto tiene para conciliar... con esto no puedo conciliar tan fácilmente". Ahora
- * reconstruye el mismo nivel de detalle a partir de los campos YA guardados en la propuesta — y, si
- * una propuesta huérfana se interrumpió ANTES de completar la búsqueda de movimiento bancario
- * (hayMovimientoBancario todavía undefined), la repite en vivo en vez de dejar la duda sin resolver —
- * mismo criterio que ya usa aplicarCorreccionMoneda (gastoCallbackHandler.ts) tras corregir la moneda.
+ * reconstruye el mismo nivel de detalle a partir de los campos YA guardados en la propuesta y repite
+ * la búsqueda bancaria en vivo SIEMPRE: un movimiento puede sincronizarse después, y un false antiguo
+ * no debe impedir que una versión nueva del buscador pruebe otras monedas/tasas. Es una lectura
+ * solicitada al renovar botones, no un sondeo automático constante.
  */
 export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, encabezado: string): Promise<number> {
   let propuesta = propuestaInicial;
 
-  if (propuesta.hayMovimientoBancario === undefined && propuesta.candidatos.length === 0) {
+  // Se recalcula SIEMPRE al renovar: un movimiento puede haber llegado después de crear la propuesta
+  // y una fila antigua puede guardar false aunque el algoritmo actual ya sepa buscar por conversión.
+  if (propuesta.candidatos.length === 0) {
     let movimientoEncontrado = false;
     // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
     // matches" — cuando hay VARIOS matches exactos igual de parecidos (ninguno único), ninguna de
@@ -66,17 +69,29 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         });
         movimientoEncontrado = aproximados.length > 0;
       }
+
+      if (!movimientoEncontrado && movimientosAmbiguos.length === 0) {
+        const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);
+        movimientosAmbiguos = await buscarMovimientosPorTipoCambio(
+          propuesta.empresa,
+          {
+            monto: propuesta.monto,
+            moneda: propuesta.moneda,
+            fecha: propuesta.fecha,
+            proveedor: propuesta.proveedor,
+          },
+          monedasReales
+        );
+      }
     } catch (error) {
       console.error("[reenviarPropuestaGasto] Error buscando movimiento bancario (no crítico):", error);
     }
     await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
       console.error("[reenviarPropuestaGasto] Error guardando el flag de movimiento bancario (no crítico):", error)
     );
-    if (movimientosAmbiguos.length > 0) {
-      await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosAmbiguos).catch((error) =>
-        console.error("[reenviarPropuestaGasto] Error guardando los movimientos ambiguos (no crítico):", error)
-      );
-    }
+    await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosAmbiguos).catch((error) =>
+      console.error("[reenviarPropuestaGasto] Error guardando los movimientos ambiguos (no crítico):", error)
+    );
     propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos };
   }
 
@@ -105,7 +120,12 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       : propuesta.hayMovimientoBancario
         ? `\n\n💳 Sí hay un movimiento bancario real sin conciliar que coincide en monto y fecha — puedes usar "Crear y conciliar".`
         : propuesta.movimientosAmbiguos && propuesta.movimientosAmbiguos.length > 0
-          ? `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
+          ? propuesta.movimientosAmbiguos.some((m) => m.origenCoincidencia === "tipo_cambio")
+            ? `\n\n💱 Encontré ${propuesta.movimientosAmbiguos.length === 1 ? "una alternativa" : `${propuesta.movimientosAmbiguos.length} alternativas`} ` +
+              `en otra moneda/cuenta de ${propuesta.empresa} usando la tasa histórica como referencia:\n` +
+              propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
+              `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
+            : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
           : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con este monto/fecha — revísalo a mano en Holded si ya salió del banco.`;
 
   const texto =
