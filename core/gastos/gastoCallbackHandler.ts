@@ -60,7 +60,8 @@ import {
   buscarContactoHolded,
   buscarContactosParecidos,
   buscarComprasPorMonto,
-  buscarGastoSimilar,
+  verificarDuplicadoGastoEstricto,
+  movimientoConciliadoComoCandidato,
   formatearCandidatosDuplicado,
   crearGastoHolded,
   crearContactoHolded,
@@ -1376,6 +1377,14 @@ interface ResultadoCrearGasto {
  */
 export function mensajeDuplicadoDetectado(candidatos: PosibleDuplicadoGastoError["candidatos"]): string {
   const listado = formatearCandidatosDuplicado(candidatos);
+  const hayMovimientoConciliado = candidatos.some((c) => c.movimientoConciliado);
+  if (hayMovimientoConciliado) {
+    return (
+      `⛔ No creé el gasto — la comprobación final encontró un movimiento bancario YA CONCILIADO que podría ser esta misma operación:\n${listado}\n\n` +
+      `Holded puede ocultar del endpoint de compras un documento convertido manualmente de factura a ticket, aunque el gasto y su conciliación sigan existiendo. ` +
+      `Por eso no habilito una creación automática alternativa. Verifica el ticket en Holded; solo si es una operación realmente distinta debe registrarse manualmente o mediante una excepción expresamente revisada.`
+    );
+  }
   return (
     `⛔ No creé el gasto — encontré en Holded ${candidatos.length === 1 ? "una compra" : candidatos.length + " compras"} que podría(n) ` +
     `ser este mismo, y que no te había mostrado antes:\n${listado}\n\n` +
@@ -1514,11 +1523,17 @@ async function crearGastoYReportar(
   const gasto = await conMutex(claveMutexDuplicado, async () => {
     let candidatosJustoAntes: PurchaseCandidato[];
     try {
-      candidatosJustoAntes = await buscarGastoSimilar(empresaFinal, {
+      const verificacion = await verificarDuplicadoGastoEstricto(empresaFinal, {
         proveedor: propuesta.proveedor,
         monto: propuesta.monto,
         fecha: fechaBusqueda,
+        moneda: propuesta.moneda,
+        numeroDocumento: propuesta.numeroDocumento,
       });
+      candidatosJustoAntes = [
+        ...verificacion.compras,
+        ...verificacion.movimientosConciliados.map(movimientoConciliadoComoCandidato),
+      ];
     } catch (error) {
       throw new VerificacionDuplicadoFallidaError(error);
     }

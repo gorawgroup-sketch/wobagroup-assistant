@@ -20,8 +20,8 @@ const EMPRESAS = ["WOBA", "EWORKS", "Footprint"] as const;
 export const reintentarGastoPendienteTool: ToolDefinition = {
   name: "reintentar_gasto_pendiente",
   description:
-    "Retoma el procesamiento de una factura/gasto que quedó pendiente porque faltaba un dato (la empresa, o " +
-    "el monto/moneda equivalente para una factura en moneda extranjera) — úsala cuando el usuario responda " +
+    "Retoma el procesamiento de una factura/gasto que quedó pendiente porque faltaba un dato (la empresa o " +
+    "el monto/moneda equivalente) o porque falló la verificación estricta de duplicados en Holded. Úsala cuando el usuario responda " +
     "en texto libre a esa pregunta pendiente (ej. 'son 17.95 USD', 'es de Footprint', 'son 40 euros'). Nunca " +
     "vuelvas a pedir que reenvíen el documento — ya se leyó, solo falta el dato puntual que el usuario acaba " +
     "de dar. Si el dato que falta era la empresa, pásala en 'empresa'. Si era el monto/moneda equivalente, " +
@@ -86,9 +86,13 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
       // Seguía faltando el mismo dato (o el usuario no dio lo que hacía
       // falta) — procesarGastoEntrante ya volvió a preguntar y a persistir
       // el pendiente, así que no hay que hacer nada más acá.
-      return "El dato dado no era suficiente (o no correspondía a lo que faltaba) — se le volvió a preguntar al usuario y la pregunta sigue pendiente.";
+      return pendiente.motivo === "verificacion_duplicado"
+        ? "La verificación estricta de duplicados todavía no pudo completarse. No se propuso ni creó el gasto y el reintento quedó guardado."
+        : "El dato dado no era suficiente (o no correspondía a lo que faltaba) — se le volvió a preguntar al usuario y la pregunta sigue pendiente.";
     }
 
-    return "Listo — con el dato que dio el usuario, ya se mandó la propuesta con botón para crear el gasto en Holded. No hace falta que lo repitas, ya se le mostró por Telegram.";
+    return resultado === "propuesta_duplicada"
+      ? "Listo — la revisión encontró evidencia de que el gasto ya existe o está conciliado. No se creó ni se propuso otro gasto."
+      : "Listo — con el dato que dio el usuario, ya se mandó la propuesta con botón para crear el gasto en Holded. No hace falta que lo repitas, ya se le mostró por Telegram.";
   },
 };

@@ -37,7 +37,12 @@ import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/schedul
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
-import { handleDescartarTodoPendienteCallback, handleDescartarItemPendienteCallback } from "../core/jobs/resumenPendientesDiario";
+import {
+  handleCancelarDescartarTodoPendienteCallback,
+  handleConfirmarDescartarTodoPendienteCallback,
+  handleDescartarTodoPendienteCallback,
+  handleDescartarItemPendienteCallback,
+} from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { obtenerEstadoEnviosCorreoDurables, reconciliarEnviosCorreoAlArrancar } from "../core/gmail/client";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
@@ -1113,6 +1118,10 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
         } else {
           await handleColaCorreoSiguienteCallback(update.callback_query);
         }
+      } else if (data === "resumen_descartar_todo:confirmar") {
+        await handleConfirmarDescartarTodoPendienteCallback(update.callback_query);
+      } else if (data === "resumen_descartar_todo:cancelar") {
+        await handleCancelarDescartarTodoPendienteCallback(update.callback_query);
       } else if (data === "resumen_descartar_todo") {
         await handleDescartarTodoPendienteCallback(update.callback_query);
       } else if (data.startsWith("resumen_descartar_item:")) {
@@ -1208,7 +1217,7 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     trackearEnSegundoPlano(
-      revisarCorreoNuevo(true) // forzarAviso: lo pidió Carlos ahora mismo, sin importar el día ni si ya se avisó hoy
+      revisarCorreoNuevo(true, incoming.chatId) // forzarAviso: lo pidió este chat ahora mismo, sin importar el día ni si ya se avisó hoy
       .then((resultado) => {
         // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
         // con varios correos reales sin leer en Gmail, y el sistema

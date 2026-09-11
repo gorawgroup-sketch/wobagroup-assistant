@@ -123,14 +123,31 @@ async function leerTodas(): Promise<{ rowIndex: number; item: ItemColaCorreo }[]
  */
 export async function encolarCorreos(
   chatId: number,
-  items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>
+  items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>,
+  opciones: { reconciliarAusentes?: boolean } = {}
 ): Promise<number> {
-  const existentes = await leerTodas();
+  let existentes = await leerTodas();
+  const idsNoLeidos = new Set(items.map((item) => item.id));
+
+  // Gmail es la fuente de verdad. Si un hilo que todavía esperaba en
+  // "cola" ya no está sin leer, se retira antes de elegir el siguiente.
+  // Nunca se toca una fila "activa": pudo generar propuestas visibles que
+  // aún deben cerrarse de forma explícita.
+  const obsoletos = opciones.reconciliarAusentes === false
+    ? []
+    : existentes
+        .filter((f) => f.item.chatId === chatId && f.item.estado === "cola" && !idsNoLeidos.has(f.item.id))
+        .sort((a, b) => b.rowIndex - a.rowIndex);
+  for (const obsoleto of obsoletos) {
+    await eliminarFila(TAB_NAME, obsoleto.rowIndex, HEADERS);
+  }
+  if (obsoletos.length > 0) existentes = await leerTodas();
+
   const delChat = existentes.filter((f) => f.item.chatId === chatId);
   const filaPorId = new Map(delChat.map((f) => [f.item.id, f]));
 
   let agregados = 0;
-  for (const item of items) {
+  for (const item of [...items].sort((a, b) => a.fechaOrden - b.fechaOrden)) {
     const existente = filaPorId.get(item.id);
 
     if (!existente) {
@@ -325,17 +342,10 @@ export async function reencolarActivoParaReintento(
  * resuelto por su cuenta (a mano, fuera del chat). Vacía TODA la cola de
  * este chat (activo + en cola) sin intentar resolver nada. Devuelve los ids
  * de hilo (Gmail thread id, ver ItemColaCorreo.id) de las filas eliminadas
- * — bug real de auditoría, encontrado en vivo (2026-09-03): esto NO marca
- * nada como leído en Gmail por sí solo (sigue siendo responsabilidad del
- * llamador, que sí tiene acceso a la API de Gmail — este store no), pero
- * antes ningún llamador lo hacía tampoco, así que Gmail seguía contando el
- * hilo como "sin leer" para siempre — is:unread es la única fuente de
- * verdad de la cola (ver revisarCorreoNuevo.ts), así que el hilo
- * "descartado" volvía a aparecer solo en la siguiente revisión horaria,
- * deshaciendo el descarte sin avisar. Devolver los ids permite que el
- * llamador SÍ los marque leídos cuando el descarte es una decisión
- * explícita del usuario (no un salto automático por 48h estancado, donde sí
- * tiene sentido dejarlo sin marcar por si de verdad hace falta revisarlo).
+ * — esto NO marca nada como leído en Gmail. Limpiar el resumen solo borra
+ * el estado local; los hilos que continúen sin leer reaparecen en la
+ * siguiente sincronización. Marcar como leído queda reservado al cierre
+ * exitoso de cada correo individual.
  */
 export async function vaciarColaCorreoDelChat(chatId: number): Promise<string[]> {
   const todas = await leerTodas();

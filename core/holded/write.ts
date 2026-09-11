@@ -16,6 +16,7 @@ import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/ex
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
 import { conMutex } from "../utils/asyncMutex";
+import { evaluarMovimientoConciliadoComoDuplicado } from "./duplicateSignals";
 import {
   consultarCreacionCompraDurable,
   CreacionCompraInciertaError,
@@ -965,6 +966,14 @@ export interface PurchaseCandidato {
    * mostrarlo como si fuera un match normal por proveedor.
    */
   proveedorDistinto?: boolean;
+  /** Moneda real del documento, cuando Holded la devuelve. */
+  moneda?: string;
+  /** Evidencia bancaria: el cargo ya está conciliado aunque el ticket no aparezca en /purchases. */
+  movimientoConciliado?: boolean;
+  /** Cuenta bancaria en la que apareció la evidencia conciliada. */
+  cuentaBancaria?: string;
+  /** Confianza de la evidencia compuesta. */
+  nivelCoincidencia?: "exacta" | "probable";
 }
 
 /**
@@ -982,7 +991,11 @@ export function formatearCandidatosDuplicado(candidatos: PurchaseCandidato[]): s
       // que envuelve esta lista en cada llamador (ej. "coincide en proveedor, monto y fecha") queda
       // falso para este caso.
       const notaProveedor = c.proveedorDistinto ? " [proveedor DISTINTO — coincide solo por importe y fecha]" : "";
-      return `• ${c.contactName} — ${c.total.toFixed(2)}€ (${c.fecha}, doc "${c.documentNumber ?? "sin número"}")${notaProveedor}`;
+      const moneda = c.moneda ?? "EUR";
+      const notaBanco = c.movimientoConciliado
+        ? ` [MOVIMIENTO YA CONCILIADO${c.cuentaBancaria ? ` en ${c.cuentaBancaria}` : ""}; coincidencia ${c.nivelCoincidencia ?? "probable"}]`
+        : "";
+      return `• ${c.contactName} — ${c.total.toFixed(2)} ${moneda} (${c.fecha}, doc "${c.documentNumber ?? "sin número"}")${notaProveedor}${notaBanco}`;
     })
     .join("\n");
 }
@@ -1053,9 +1066,11 @@ const MAX_PAGINAS_PURCHASES = 10;
  */
 export async function buscarGastoSimilar(
   empresa: Empresa,
-  criterios: { proveedor: string; monto: number; fecha: string }
+  criterios: { proveedor: string; monto: number; fecha: string; moneda?: string; numeroDocumento?: string }
 ): Promise<PurchaseCandidato[]> {
   const fechaBase = new Date(criterios.fecha);
+  const numeroObjetivo = (criterios.numeroDocumento ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+  const numeroObjetivoUtil = numeroObjetivo !== "" && numeroObjetivo !== "00000";
 
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_BUSQUEDA);
@@ -1074,7 +1089,7 @@ export async function buscarGastoSimilar(
     if (cursor) params.set("cursor", cursor);
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; document_number?: string | null }>;
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; document_number?: string | null; currency?: string }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -1088,9 +1103,14 @@ export async function buscarGastoSimilar(
       // esta comprobación de "¿ya existe este gasto?" fallaba SIEMPRE para
       // ese caso real — arriesgando crear un gasto DUPLICADO en vez de
       // detectar el que ya existía.
-      if (!textosParecidos(criterios.proveedor, item.contact_name)) continue;
+      const coincideProveedor = textosParecidos(criterios.proveedor, item.contact_name);
+      if (criterios.moneda && item.currency && item.currency.toUpperCase() !== criterios.moneda.toUpperCase()) continue;
       const total = parsearMontoHolded(item.total);
-      if (!Number.isFinite(total) || !montosCercanos(total, criterios.monto, TOLERANCIA_MONTO)) continue;
+      if (!Number.isFinite(total)) continue;
+      const coincideMonto = montosCercanos(total, criterios.monto, TOLERANCIA_MONTO);
+      const numeroItem = (item.document_number ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+      const coincideNumero = numeroObjetivoUtil && numeroItem === numeroObjetivo;
+      if (!(coincideProveedor && coincideMonto) && !(coincideNumero && (coincideProveedor || coincideMonto))) continue;
 
       candidatos.push({
         id: item.id,
@@ -1099,10 +1119,14 @@ export async function buscarGastoSimilar(
         total,
         descripcion: item.description ?? "",
         documentNumber: item.document_number || undefined,
+        moneda: (item.currency ?? criterios.moneda ?? "EUR").toUpperCase(),
       });
     }
 
-    if (!data.has_more || !data.cursor) break;
+    if (!data.has_more) break;
+    if (!data.cursor || pagina === MAX_PAGINAS_PURCHASES - 1) {
+      throw new Error("Holded devolvió una búsqueda incompleta de compras; no es seguro asumir que no hay duplicados.");
+    }
     cursor = data.cursor;
   }
 
@@ -1132,7 +1156,136 @@ export async function buscarGastoSimilar(
   // el momento de verificar), pero solo para este segundo pase. Se deja propagar el error tal cual,
   // igual que ya hacen las llamadas de holdedWriteCall del primer pase (arriba, sin ningún try/catch
   // propio) — el llamador decide cómo tratarlo, nunca esta función por su cuenta.
-  return (await buscarComprasPorMonto(empresa, criterios.monto, criterios.fecha, 0)).map((c) => ({ ...c, proveedorDistinto: true }));
+  return (await buscarComprasPorMonto(empresa, criterios.monto, criterios.fecha, 0, criterios.moneda)).map((c) => ({ ...c, proveedorDistinto: true }));
+}
+
+export interface MovimientoConciliadoDuplicado {
+  accountId: string;
+  accountName: string;
+  movementId: string;
+  descripcion: string;
+  monto: number;
+  moneda: string;
+  fecha: string;
+  status: string;
+  nivel: "exacta" | "probable";
+}
+
+const MAX_PAGINAS_MOVIMIENTOS_DUPLICADO = 10;
+const CONCURRENCIA_CUENTAS_DUPLICADO = 4;
+
+async function mapearConLimite<T, R>(items: T[], limite: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const resultados = new Array<R>(items.length);
+  let siguiente = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const indice = siguiente++;
+      if (indice >= items.length) return;
+      resultados[indice] = await fn(items[indice]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limite, items.length) }, () => worker()));
+  return resultados;
+}
+
+/**
+ * Segunda fuente de verdad para tickets: busca cargos ya conciliados en
+ * todas las cuentas de la empresa. Es imprescindible porque Holded puede
+ * ocultar de /purchases un documento al convertirlo manualmente de factura
+ * de compra a ticket, aunque siga existiendo y conciliado en la interfaz.
+ */
+export async function buscarMovimientosYaConciliadosComoDuplicado(
+  empresa: Empresa,
+  criterios: { proveedor: string; monto: number; fecha: string; moneda?: string }
+): Promise<MovimientoConciliadoDuplicado[]> {
+  const { desde, hasta } = ventanaBusquedaMovimiento(criterios.fecha);
+  const cuentasData = (await holdedReadJson(empresa, "/treasury/accounts")) as {
+    items?: Array<{ id: string; name?: string; archived?: boolean }>;
+  } | Array<{ id: string; name?: string; archived?: boolean }>;
+  const cuentasCrudas = Array.isArray(cuentasData) ? cuentasData : (cuentasData.items ?? []);
+  const cuentas = cuentasCrudas.filter((c) => !c.archived && c.id);
+
+  const porCuenta = await mapearConLimite(cuentas, CONCURRENCIA_CUENTAS_DUPLICADO, async (cuenta) => {
+    const encontrados: MovimientoConciliadoDuplicado[] = [];
+    let cursor: string | undefined;
+    for (let pagina = 0; pagina < MAX_PAGINAS_MOVIMIENTOS_DUPLICADO; pagina++) {
+      const params = new URLSearchParams({
+        start_date: formatDateLocal(desde),
+        end_date: formatDateLocal(hasta),
+        limit: "200",
+        status: "pending,reconciled,partial,forced_reconciled",
+      });
+      if (cursor) params.set("cursor", cursor);
+      const data = (await holdedReadJson(
+        empresa,
+        `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
+      )) as {
+        items?: Array<{
+          id?: string;
+          description?: string;
+          amount?: string | number;
+          currency?: string;
+          accounting_amount?: string | number | null;
+          booking_date?: string;
+          status?: string;
+          reconciled_amount?: string | number | null;
+        }>;
+        cursor?: string;
+        has_more?: boolean;
+      };
+
+      for (const mov of data.items ?? []) {
+        if (!mov.id) continue;
+        const coincidencia = evaluarMovimientoConciliadoComoDuplicado(mov, criterios);
+        if (!coincidencia) continue;
+        encontrados.push({
+          accountId: cuenta.id,
+          accountName: cuenta.name ?? "cuenta sin nombre",
+          movementId: mov.id,
+          descripcion: mov.description ?? "(sin descripción)",
+          monto: coincidencia.monto,
+          moneda: coincidencia.moneda,
+          fecha: coincidencia.fecha,
+          status: mov.status ?? "desconocido",
+          nivel: coincidencia.nivel,
+        });
+      }
+
+      if (!data.has_more) break;
+      if (!data.cursor || pagina === MAX_PAGINAS_MOVIMIENTOS_DUPLICADO - 1) {
+        throw new Error(`Holded devolvió movimientos incompletos para la cuenta ${cuenta.name ?? cuenta.id}; no es seguro crear el gasto.`);
+      }
+      cursor = data.cursor;
+    }
+    return encontrados;
+  });
+
+  return porCuenta.flat().sort((a, b) => (a.nivel === b.nivel ? a.fecha.localeCompare(b.fecha) : a.nivel === "exacta" ? -1 : 1));
+}
+
+export async function verificarDuplicadoGastoEstricto(
+  empresa: Empresa,
+  criterios: { proveedor: string; monto: number; fecha: string; moneda?: string; numeroDocumento?: string }
+): Promise<{ compras: PurchaseCandidato[]; movimientosConciliados: MovimientoConciliadoDuplicado[] }> {
+  const [compras, movimientosConciliados] = await Promise.all([
+    buscarGastoSimilar(empresa, criterios),
+    buscarMovimientosYaConciliadosComoDuplicado(empresa, criterios),
+  ]);
+  return { compras, movimientosConciliados };
+}
+
+export function movimientoConciliadoComoCandidato(m: MovimientoConciliadoDuplicado): PurchaseCandidato {
+  return {
+    id: `bank:${m.accountId}:${m.movementId}`,
+    contactName: m.descripcion,
+    fecha: m.fecha,
+    total: Math.abs(m.monto),
+    descripcion: `Movimiento bancario ${m.status} en ${m.accountName}`,
+    moneda: m.moneda,
+    movimientoConciliado: true,
+    cuentaBancaria: m.accountName,
+    nivelCoincidencia: m.nivel,
+  };
 }
 
 /**
@@ -1147,7 +1300,8 @@ export async function buscarComprasPorMonto(
   empresa: Empresa,
   monto: number,
   fecha: string,
-  ventanaDias = 15
+  ventanaDias = 15,
+  moneda?: string
 ): Promise<PurchaseCandidato[]> {
   const fechaBase = new Date(fecha);
   const desde = new Date(fechaBase);
@@ -1167,13 +1321,14 @@ export async function buscarComprasPorMonto(
     if (cursor) params.set("cursor", cursor);
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string }>;
+      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; currency?: string }>;
       cursor?: string;
       has_more?: boolean;
     };
 
     for (const item of data.items ?? []) {
       if (!item.contact_name) continue;
+      if (moneda && item.currency && item.currency.toUpperCase() !== moneda.toUpperCase()) continue;
       const total = parsearMontoHolded(item.total);
       if (!Number.isFinite(total) || !montosCercanos(total, monto, TOLERANCIA_MONTO)) continue;
 
@@ -1187,10 +1342,14 @@ export async function buscarComprasPorMonto(
         fecha: item.date ?? "",
         total,
         descripcion: item.description ?? "",
+        moneda: (item.currency ?? moneda ?? "EUR").toUpperCase(),
       });
     }
 
-    if (!data.has_more || !data.cursor) break;
+    if (!data.has_more) break;
+    if (!data.cursor || pagina === MAX_PAGINAS_PURCHASES - 1) {
+      throw new Error("Holded devolvió una búsqueda incompleta por importe; no es seguro asumir que no hay duplicados.");
+    }
     cursor = data.cursor;
   }
 
@@ -1670,12 +1829,12 @@ export function esImporteUtilComoPrecedenteContable(total: number, numeroDocumen
 // revisarCorreoNuevo.ts) — aparece en la gran mayoría de los conceptos con conversión de moneda sin
 // decir nada sobre la NATURALEZA del gasto, y sin excluirla arrastraba coincidencias falsas hacia
 // cuentas totalmente ajenas.
-// "correo"/"cuerpo"/"original" — mismo hallazgo, esta vez del relleno automático que usa
+// "correo"/"cuerpo"/"original"/"visual" — mismo hallazgo, esta vez del relleno automático que usa
 // revisarCorreoNuevo.ts cuando un gasto se detecta en el cuerpo de un correo sin adjunto: "(...,
-// comprobante generado desde el cuerpo del correo, sin adjunto original)".
+// comprobante visual generado desde el cuerpo del correo, sin adjunto original)".
 const PALABRAS_IGNORADAS_CONCEPTO = new Set([
   "para", "desde", "sobre", "hasta", "todavía", "documento", "adjunto", "generado",
-  "comprobante", "correo", "cuerpo", "original",
+  "comprobante", "correo", "cuerpo", "original", "visual",
 ]);
 // Umbral mínimo de evidencia para confiar en un match por CONCEPTO (señal más débil que por
 // proveedor, ver construirSugerenciaDesdeCoincidencias) — una sola línea histórica nunca basta.

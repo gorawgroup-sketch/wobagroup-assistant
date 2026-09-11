@@ -4,7 +4,6 @@ import { esDiaHabilEspana } from "../utils/diaHabil";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery } from "../telegram/client";
 import type { TelegramCallbackQuery, InlineKeyboardButton } from "../telegram/types";
 import { obtenerResumenColaPorChat, vaciarColaCorreoDelChat } from "../gmail/colaRevisionStore";
-import { marcarHiloComoLeido } from "../gmail/client";
 import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat, consumirPropuestaClasificacion } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
@@ -421,7 +420,7 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
       // todo libre" desde acá mismo en vez de ir mensaje por mensaje.
       await sendTelegramMessageWithButtons(admin.userId, texto, [
         ...botonesIndividuales,
-        [{ text: "🗑️ Descartar todo", callback_data: "resumen_descartar_todo" }],
+        [{ text: "🧹 Limpiar pendientes", callback_data: "resumen_descartar_todo" }],
       ]);
     } catch (error) {
       console.error(`[resumenPendientesDiario] Error generando/enviando el resumen para ${admin.userId}:`, error);
@@ -430,8 +429,8 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
 }
 
 /**
- * Maneja el botón "🗑️ Descartar todo" del resumen diario — pedido explícito
- * de Carlos. Descarta la cola de correo completa, las propuestas de archivo
+ * Ejecuta la limpieza masiva del resumen diario — pedido explícito de
+ * Carlos. Retira la cola LOCAL de correo, las propuestas de archivo
  * (puede haber varias por chat — se drenan una por una hasta que no quede
  * ninguna) y los "pendiente_*" de un solo cupo por chat que NO tienen datos
  * financieros reales adentro. Deliberadamente NO toca nada que represente
@@ -444,6 +443,12 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
  * una factura real, solo falta la empresa o el monto exacto) — esos dos se
  * quedan fuera del descarte masivo por el mismo criterio que las propuestas
  * de gasto: siempre revisión individual, nunca en bloque.
+ *
+ * Invariante crítico (Carlos, 2026-09-11): vaciar esta cola interna NUNCA
+ * modifica Gmail. Los hilos siguen con UNREAD y vuelven a aparecer en la
+ * siguiente revisión; solo una resolución individual del correo puede
+ * marcarlo como leído. El test de arquitectura asociado impide reintroducir
+ * una llamada a marcarHiloComoLeido en este flujo.
  */
 async function descartarTodosLosPendientes(chatId: number): Promise<number> {
   let n = 0;
@@ -453,21 +458,11 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
   // bug real de auditoría: antes sumaba el conteo crudo de filas, que podía
   // no coincidir para nada con "cuántas cosas" decía el resumen justo
   // arriba de este mismo botón.
-  const hilosCorreoBorrados = await vaciarColaCorreoDelChat(chatId).catch((error) => {
+  const hilosRetiradosDeColaLocal = await vaciarColaCorreoDelChat(chatId).catch((error) => {
     console.error("[resumenPendientesDiario] Error vaciando la cola de correo (no crítico):", error);
     return [] as string[];
   });
-  if (hilosCorreoBorrados.length > 0) n += 1;
-  // Bug real encontrado en vivo (2026-09-03): sin esto, Gmail seguía
-  // contando estos hilos como sin leer para siempre (is:unread es la única
-  // fuente de verdad de la cola) y la siguiente revisión horaria los volvía
-  // a encolar solos, deshaciendo el "Descartar todo" sin avisar — es una
-  // decisión explícita del usuario, se marcan leídos de verdad.
-  for (const threadId of hilosCorreoBorrados) {
-    marcarHiloComoLeido(threadId).catch((error: unknown) =>
-      console.error(`[resumenPendientesDiario] Error marcando el hilo ${threadId} como leído (no crítico):`, error)
-    );
-  }
+  if (hilosRetiradosDeColaLocal.length > 0) n += 1;
 
   try {
     // Puede haber varias propuestas de archivo pendientes del mismo chat —
@@ -644,6 +639,7 @@ export async function handleDescartarItemPendienteCallback(callback: TelegramCal
   }
 }
 
+/** Primera pulsación: explica el alcance y exige confirmación, sin borrar todavía. */
 export async function handleDescartarTodoPendienteCallback(callback: TelegramCallbackQuery): Promise<void> {
   const chatId = callback.message?.chat.id;
 
@@ -655,11 +651,46 @@ export async function handleDescartarTodoPendienteCallback(callback: TelegramCal
 
   if (chatId === undefined) return;
 
+  await sendTelegramMessageWithButtons(
+    chatId,
+    "⚠️ ¿Confirmas que quieres limpiar los pendientes descartables? Las propuestas financieras seguirán intactas y los correos de Gmail permanecerán SIN LEER para que WOBI vuelva a revisarlos.",
+    [[
+      { text: "✅ Sí, limpiar pendientes", callback_data: "resumen_descartar_todo:confirmar" },
+      { text: "↩️ Cancelar", callback_data: "resumen_descartar_todo:cancelar" },
+    ]]
+  );
+}
+
+/** Segunda pulsación explícita: limpia stores locales, pero jamás cambia Gmail. */
+export async function handleConfirmarDescartarTodoPendienteCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+
+  try {
+    await answerCallbackQuery(callback.id);
+  } catch (error) {
+    console.error("[resumenPendientesDiario] No se pudo responder el callback_query de confirmación (no crítico):", error);
+  }
+
+  if (chatId === undefined) return;
+
   const n = await descartarTodosLosPendientes(chatId);
   await sendTelegramMessage(
     chatId,
     n > 0
-      ? `🗑️ Descartado — ${n} cosa${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} menos (las propuestas de gasto NO se tocaron, esas siguen una por una).`
+      ? `🧹 Limpieza completada — ${n} cosa${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"} menos. Las propuestas financieras no se tocaron y los correos permanecen sin leer en Gmail.`
       : "Ya no quedaba nada pendiente para descartar."
   ).catch(() => {});
+}
+
+/** Cancela la confirmación sin cambiar ningún pendiente ni correo. */
+export async function handleCancelarDescartarTodoPendienteCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+  try {
+    await answerCallbackQuery(callback.id, "Limpieza cancelada.");
+  } catch (error) {
+    console.error("[resumenPendientesDiario] No se pudo responder el callback_query de cancelación (no crítico):", error);
+  }
+  if (chatId !== undefined) {
+    await sendTelegramMessage(chatId, "↩️ Limpieza cancelada — no se modificó ningún pendiente ni correo.").catch(() => {});
+  }
 }

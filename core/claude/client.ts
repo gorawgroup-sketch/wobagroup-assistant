@@ -209,10 +209,21 @@ const SYSTEM_PROMPT_ESTATICO = [
     "mensaje — nunca inventes ni resumas de memoria lo que crees que dice el correo. Usa la herramienta " +
     "capturar_correo, que va a leer el correo real (asunto, remitente, cuerpo completo) y lo guarda tal " +
     "cual. Si el mensaje menciona de quién o sobre qué es el correo, pásaselo como término de búsqueda; " +
-    "si no, se toma el más reciente de la bandeja de entrada. Si capturar_correo devuelve un error o dice " +
+    "si dio una referencia CONCRETA (asunto, remitente, nombre o detalle), puede buscarse también en el historial " +
+    "leído; si no especifica cuál, solo se consideran los SIN LEER y se toma el más antiguo. Si capturar_correo devuelve un error o dice " +
     "que no encontró el correo, NUNCA respondas como si se hubiera guardado — dile a la persona exactamente " +
     "qué pasó (no encontró el correo, hubo un error técnico, etc.) para que sepa que tiene que intentarlo " +
     "de otra forma. Es más importante decir 'no lo logré capturar' que sonar útil.",
+  "Para un pedido GENERAL de revisar, procesar, evacuar o continuar con los correos sin leer usa SIEMPRE " +
+    "revisar_cola_correo. Esa es la única ruta que garantiza is:unread in:inbox, orden del más antiguo al " +
+    "más nuevo, un correo activo a la vez y marcado como leído solo después de resolverlo. No improvises ese " +
+    "flujo combinando listar_correos_sin_leer con capturar_correo. listar_correos_sin_leer sirve solo para " +
+    "mostrar un inventario; capturar_correo sirve para guardar el contenido de un correo puntual; y " +
+    "revisar_correo_puntual solo cuando el usuario identifica expresamente un correo concreto por asunto, " +
+    "remitente, nombre, empresa, número de documento u otro detalle; en ese caso puede estar ya leído y se " +
+    "puede buscar para releerlo, reprocesarlo, extraer información o preparar una respuesta fuera de orden. " +
+    "Si un correo leído vuelve a aparecer como no leído, se procesa otra vez, pero las barreras de idempotencia " +
+    "deben impedir volver a crear el mismo gasto o archivar el mismo adjunto.",
   "Para saldos bancarios reales (cuánto hay HOY en cada cuenta/banco) usa consultar_saldos_bancarios — " +
     "es un dato directo de Holded, no lo calcules sumando movimientos tú mismo. Para el balance o " +
     "pérdidas y ganancias (P&L) de una empresa, usa generar_reporte_contable — genera Excel y PDF reales " +
@@ -328,11 +339,13 @@ async function buildSystemPromptDinamico(
       const queFalta =
         gastoPendiente.motivo === "empresa"
           ? "a qué empresa (WOBA, EWORKS o Footprint) pertenece"
+          : gastoPendiente.motivo === "verificacion_duplicado"
+            ? "reintentar la verificación estricta de duplicados en Holded; no hace falta aportar otro dato"
           : "el monto y moneda EXACTOS que salieron de la cuenta (la factura está en moneda extranjera sin equivalente explícito)";
       partes.push(
         `Hay una pregunta SIN RESPONDER en este chat sobre una factura/gasto: se detectó "${gastoPendiente.datos.proveedor}" ` +
           `(${gastoPendiente.datos.monto} ${gastoPendiente.datos.moneda}) pero todavía NO se mandó ninguna propuesta con ` +
-          `botón — falta que el usuario confirme ${queFalta}. Si su mensaje actual responde eso, usa la herramienta ` +
+          `botón — falta ${queFalta}. Si su mensaje actual responde eso o pide reintentar, usa la herramienta ` +
           "reintentar_gasto_pendiente con el dato que dio — nunca le pidas que reenvíe el documento, ya se leyó, y " +
           "nunca le digas que 'ya se la mandaste' hasta que esta herramienta confirme que la propuesta salió. Si su " +
           "mensaje pide algo distinto (programar un recordatorio, guardar algo en la memoria del sistema, o " +

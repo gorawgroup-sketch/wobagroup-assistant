@@ -222,6 +222,10 @@ export async function listarHilosNoLeidos(): Promise<string[]> {
     paginas += 1;
   } while (pageToken && paginas < 10);
 
+  if (pageToken) {
+    throw new Error("Gmail devolvió más páginas de hilos sin leer de las que se pudieron revisar con seguridad.");
+  }
+
   return ids;
 }
 
@@ -315,7 +319,7 @@ export async function obtenerHiloCompleto(threadId: string): Promise<{
  */
 export async function obtenerUltimoMensajeDeHilo(
   threadId: string
-): Promise<{ messageId: string; fecha: string; de: string; asunto: string } | undefined> {
+): Promise<{ messageId: string; fecha: string; fechaPrimerNoLeido: string; de: string; asunto: string } | undefined> {
   const gmail = getGmailClient();
   const res = await gmail.users.threads.get({
     userId: "me",
@@ -327,10 +331,12 @@ export async function obtenerUltimoMensajeDeHilo(
   const mensajes = res.data.messages ?? [];
   const ultimo = mensajes[mensajes.length - 1];
   if (!ultimo?.id) return undefined;
+  const primerNoLeido = mensajes.find((m) => m.labelIds?.includes("UNREAD")) ?? ultimo;
 
   return {
     messageId: ultimo.id,
     fecha: leerHeader(ultimo.payload?.headers, "Date"),
+    fechaPrimerNoLeido: leerHeader(primerNoLeido.payload?.headers, "Date"),
     de: leerHeader(ultimo.payload?.headers, "From"),
     asunto: leerHeader(ultimo.payload?.headers, "Subject"),
   };
@@ -401,8 +407,9 @@ export function extraerDireccionCorreo(de: string): string {
 // igual que el logo decorativo del caso Booking.com (`Content-Disposition: inline` + Content-ID),
 // así que con solo la disposición como criterio estos recibos reales quedaban EXCLUIDOS de
 // `adjuntos` igual que un logo — el correo entraba al camino "sin adjunto → cuerpo como
-// comprobante" (revisarCorreoNuevo.ts), que solo lee TEXTO (generarComprobantePDF), perdiendo la
-// imagen real por completo. Verificado en vivo contra los mensajes reales de Gmail: los logos
+// comprobante" (revisarCorreoNuevo.ts). Ese camino conserva ahora el HTML visual, pero una imagen
+// pegada de gran tamaño sigue siendo un comprobante real y debe procesarse con visión, no como mera
+// decoración del correo. Verificado en vivo contra los mensajes reales de Gmail: los logos
 // decorativos del caso Booking.com pesan 935 y 2969 bytes; los recibos reales pegados en el cuerpo
 // (Polipay, comprobantes de restaurante/hotel) pesan entre 554.255 y 1.452.541 bytes — tres órdenes
 // de magnitud de diferencia, sin ningún caso real visto en la zona intermedia. Un umbral de 30KB
@@ -538,6 +545,119 @@ function extraerHtml(part: gmail_v1.Schema$MessagePart | undefined): string | nu
     if (encontrado) return encontrado;
   }
   return null;
+}
+
+const MAX_HTML_VISUAL_BYTES = 2 * 1024 * 1024;
+const MAX_RECURSO_INLINE_BYTES = 6 * 1024 * 1024;
+const MAX_RECURSOS_INLINE_TOTAL_BYTES = 12 * 1024 * 1024;
+
+function buscarParteHtml(part: gmail_v1.Schema$MessagePart | undefined): gmail_v1.Schema$MessagePart | undefined {
+  if (!part) return undefined;
+  if (part.mimeType?.toLowerCase() === "text/html") return part;
+  for (const sub of part.parts ?? []) {
+    const encontrada = buscarParteHtml(sub);
+    if (encontrada) return encontrada;
+  }
+  return undefined;
+}
+
+function headerParte(part: gmail_v1.Schema$MessagePart, nombre: string): string {
+  return part.headers?.find((header) => header.name?.toLowerCase() === nombre.toLowerCase())?.value ?? "";
+}
+
+async function leerBytesParte(
+  gmail: gmail_v1.Gmail,
+  messageId: string,
+  part: gmail_v1.Schema$MessagePart
+): Promise<Buffer | undefined> {
+  if (part.body?.data) {
+    return Buffer.from(part.body.data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  }
+  if (!part.body?.attachmentId) return undefined;
+  const response = await gmail.users.messages.attachments.get({
+    userId: "me",
+    messageId,
+    id: part.body.attachmentId,
+  });
+  if (!response.data.data) return undefined;
+  return Buffer.from(response.data.data.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
+function escaparRegExp(valor: string): string {
+  return valor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Sustituye referencias cid: y Content-Location por data URI. Se exporta
+ * para probar la transformación sin acceder a Gmail ni ejecutar Chromium.
+ */
+export function incrustarRecursosInlineCorreo(
+  html: string,
+  recursos: Array<{ referencias: string[]; mimeType: string; bytes: Buffer }>
+): string {
+  let resultado = html;
+  for (const recurso of recursos) {
+    if (!/^image\/[a-z0-9.+-]+$/i.test(recurso.mimeType)) continue;
+    const dataUri = `data:${recurso.mimeType};base64,${recurso.bytes.toString("base64")}`;
+    for (const referenciaCruda of recurso.referencias) {
+      const referencia = referenciaCruda.replace(/^<|>$/g, "").trim();
+      if (!referencia) continue;
+      const candidatos = referenciaCruda.toLowerCase().startsWith("http")
+        ? [referenciaCruda, referencia]
+        : [`cid:${referencia}`, `cid:${encodeURIComponent(referencia)}`];
+      for (const candidato of candidatos) {
+        resultado = resultado.replace(new RegExp(escaparRegExp(candidato), "gi"), dataUri);
+      }
+    }
+  }
+  return resultado;
+}
+
+/**
+ * Recupera el HTML original del correo y sus imágenes MIME incrustadas para
+ * renderizar un comprobante visual. No carga recursos externos: solo usa
+ * bytes que Gmail ya entregó dentro del mensaje, evitando tracking y SSRF.
+ * Si el mensaje no trae HTML devuelve undefined y el llamador conserva el
+ * PDF de texto como respaldo fiable.
+ */
+export async function obtenerHtmlVisualCorreo(id: string): Promise<string | undefined> {
+  const gmail = getGmailClient();
+  const response = await gmail.users.messages.get({ userId: "me", id, format: "full" });
+  const messageId = response.data.id ?? id;
+  const parteHtml = buscarParteHtml(response.data.payload);
+  if (!parteHtml) return undefined;
+
+  const htmlBytes = await leerBytesParte(gmail, messageId, parteHtml);
+  if (!htmlBytes?.length) return undefined;
+  if (htmlBytes.length > MAX_HTML_VISUAL_BYTES) {
+    throw new Error(`El HTML del correo supera el límite visual seguro de ${MAX_HTML_VISUAL_BYTES} bytes.`);
+  }
+
+  const recursos: Array<{ referencias: string[]; mimeType: string; bytes: Buffer }> = [];
+  let totalRecursos = 0;
+  async function recorrer(part: gmail_v1.Schema$MessagePart | undefined): Promise<void> {
+    if (!part) return;
+    const mimeType = part.mimeType?.toLowerCase() ?? "";
+    const contentId = headerParte(part, "Content-ID");
+    const contentLocation = headerParte(part, "Content-Location");
+    if (mimeType.startsWith("image/") && (contentId || contentLocation)) {
+      const tamanoDeclarado = part.body?.size;
+      if (tamanoDeclarado == null || tamanoDeclarado <= MAX_RECURSO_INLINE_BYTES) {
+        const bytes = await leerBytesParte(gmail, messageId, part);
+        if (bytes?.length && bytes.length <= MAX_RECURSO_INLINE_BYTES) {
+          totalRecursos += bytes.length;
+          if (totalRecursos > MAX_RECURSOS_INLINE_TOTAL_BYTES) {
+            throw new Error("Las imágenes incrustadas del correo superan el límite visual seguro.");
+          }
+          recursos.push({ referencias: [contentId, contentLocation].filter(Boolean), mimeType, bytes });
+        }
+      }
+    }
+    for (const sub of part.parts ?? []) await recorrer(sub);
+  }
+  await recorrer(response.data.payload);
+
+  return incrustarRecursosInlineCorreo(htmlBytes.toString("utf8"), recursos);
 }
 
 /** Conversión cruda de HTML a texto — suficiente para capturar contenido legible, no para renderizar. */
