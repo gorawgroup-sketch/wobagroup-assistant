@@ -1507,6 +1507,12 @@ const PALABRAS_HOSPEDAJE = [
   "ibis",
   "nh hotel",
 ];
+// Suscripciones/licencias digitales recurrentes. Este tag ya existe y se usa de verdad en Holded;
+// aquí solo se reconoce de forma independiente a partir del gasto actual para que el histórico
+// agregado de suscripciones pueda actuar como juez cuando un mismo proveedor tenga precedentes
+// contradictorios. Caso real: "one-time credit purchase" de Anthropic quedó en "Diferencias
+// negativas de cambio" porque dos cargos residuales de 0,02/0,03 EUR contaminaron su historial.
+const PALABRAS_SUSCRIPCION = ["suscripcion", "subscription", "one-time credit purchase"];
 // NOTA: el orden de estas comprobaciones importa (retorna en el primer match, nunca combina
 // categorías) — hospedaje se revisa ANTES que alimentación a propósito, porque una factura de hotel
 // puede mencionar comida (desayuno incluido) sin que el gasto en sí sea de alimentación.
@@ -1576,6 +1582,7 @@ function tagsConSinonimosSeSolapan(a: string[], b: string[]): boolean {
 export function inferirTagsCategoria(concepto: string, proveedor: string): string[] {
   const texto = `${concepto} ${proveedor}`;
 
+  if (contienePalabraClave(texto, PALABRAS_SUSCRIPCION)) return ["suscripcion"];
   if (contienePalabraClave(texto, PALABRAS_UBER_EATS)) return ["alimentacion"];
   if (contienePalabraClave(texto, PALABRAS_TAXI)) return ["transporte", "taxi"];
   if (contienePalabraClave(texto, PALABRAS_TREN)) return ["transporte", "tren"];
@@ -1598,7 +1605,9 @@ export interface CuentaSugerida {
   aprendidoDe: "proveedor" | "concepto" | "categoria" | "viaje" | "ia" | "correccion_confirmada";
 }
 
-interface LineaConCuenta {
+export interface LineaConCuenta {
+  /** Documento de origen: evita que diez líneas de una sola compra cuenten como diez precedentes. */
+  documentId?: string;
   contactName: string;
   descripcion: string;
   lineName: string;
@@ -1607,6 +1616,24 @@ interface LineaConCuenta {
 }
 
 const MAX_PAGINAS_CUENTAS = 10;
+// Un cargo residual inferior a una unidad monetaria no es evidencia suficiente para aprender una
+// categoría contable. Caso real verificado: dos compras completadas de Anthropic por 0,02 y 0,03 EUR,
+// sin número de factura, estaban en "Diferencias negativas de cambio" y empataron 2-2 contra dos
+// suscripciones reales de 18 EUR en la cuenta correcta. El orden de paginación resolvió el empate a
+// favor de la cuenta errónea. Se siguen leyendo y conservando esos documentos en Holded; únicamente
+// se excluyen como PRECEDENTE para clasificar compras futuras.
+export const IMPORTE_MINIMO_PRECEDENTE_CONTABLE = 1;
+
+export function esImporteUtilComoPrecedenteContable(total: number, numeroDocumento?: string | null): boolean {
+  // Si una respuesta antigua de Holded no trae total, no descartamos una línea potencialmente válida
+  // solo por falta de metadata. Tampoco descartamos una microfactura con número real: el patrón
+  // contaminante comprobado son cargos residuales SIN documento, no cualquier compra pequeña.
+  return (
+    !Number.isFinite(total) ||
+    Math.abs(total) >= IMPORTE_MINIMO_PRECEDENTE_CONTABLE ||
+    Boolean(numeroDocumento?.trim())
+  );
+}
 // 5+ caracteres (no 4) a propósito, igual que textosParecidos — bug real
 // encontrado en vivo: con el umbral en 4, palabras genéricas cortas
 // (ej. "real", "cargo") de un concepto sintético coincidían por azar con
@@ -1664,8 +1691,11 @@ async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuen
 
     const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
       items?: Array<{
+        id?: string;
         contact_name?: string;
         description?: string;
+        document_number?: string | null;
+        total?: string | number;
         tags?: string[];
         lines?: Array<{ name?: string; account?: string }>;
       }>;
@@ -1674,9 +1704,12 @@ async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuen
     };
 
     for (const item of data.items ?? []) {
+      const totalDocumento = parsearMontoHolded(item.total);
+      if (!esImporteUtilComoPrecedenteContable(totalDocumento, item.document_number)) continue;
       for (const line of item.lines ?? []) {
         if (!line.account) continue;
         lineas.push({
+          documentId: item.id,
           contactName: item.contact_name ?? "",
           descripcion: item.description ?? "",
           lineName: line.name ?? "",
@@ -1701,19 +1734,32 @@ async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuen
  * fuerte y determinística por diseño) usa el valor por defecto (1); el match por concepto (señal más
  * débil, la que causó el caso real Kelly Correales/Uber Eats) exige más de una coincidencia real.
  */
-function construirSugerenciaDesdeCoincidencias(
+export function construirSugerenciaDesdeCoincidencias(
   matches: LineaConCuenta[],
   origen: CuentaSugerida["aprendidoDe"],
   minEvidencia = 1
 ): CuentaSugerida | undefined {
   if (matches.length === 0) return undefined;
 
+  // Una factura puede tener varias líneas en la misma cuenta. Contarla una vez por línea inflaba su
+  // voto y permitía que un único documento excepcional venciera a varios precedentes independientes.
+  // Se conserva por separado una misma factura que use cuentas distintas: esa contradicción sí es
+  // información real y debe producir empate/ambigüedad.
+  const unicos = matches.filter((match, indice, todos) => {
+    if (!match.documentId) return true;
+    return todos.findIndex((otro) => otro.documentId === match.documentId && otro.account === match.account) === indice;
+  });
   const conteo = new Map<string, number>();
-  for (const m of matches) conteo.set(m.account, (conteo.get(m.account) ?? 0) + 1);
-  const [cuentaGanadora, votos] = Array.from(conteo.entries()).sort((a, b) => b[1] - a[1])[0];
+  for (const m of unicos) conteo.set(m.account, (conteo.get(m.account) ?? 0) + 1);
+  const ordenadas = Array.from(conteo.entries()).sort((a, b) => b[1] - a[1]);
+  const [cuentaGanadora, votos] = ordenadas[0];
   if (votos < minEvidencia) return undefined;
+  // Nunca resolver un empate por el orden en que Holded paginó los documentos. Si dos cuentas tienen
+  // la misma evidencia, este nivel se declara inconcluso y deja decidir al siguiente nivel
+  // (categoría/IA o, finalmente, revisión humana).
+  if (ordenadas.length > 1 && ordenadas[1][1] === votos) return undefined;
 
-  const delGrupo = matches.filter((m) => m.account === cuentaGanadora);
+  const delGrupo = unicos.filter((m) => m.account === cuentaGanadora);
   const tagsFrecuentes = new Map<string, number>();
   for (const m of delGrupo) for (const t of m.tags) tagsFrecuentes.set(t, (tagsFrecuentes.get(t) ?? 0) + 1);
   const tags = Array.from(tagsFrecuentes.entries())
