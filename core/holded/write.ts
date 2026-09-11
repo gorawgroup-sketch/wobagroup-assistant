@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
@@ -32,9 +32,23 @@ import {
   type RegistroEdicionCompra,
 } from "./durablePurchaseEdit";
 import { durablePurchaseEditStore } from "./durablePurchaseEditStore";
+import {
+  AdjuntoCompraInciertoError,
+  ejecutarAdjuntoCompraDurable,
+  identidadAdjuntoCompra,
+  reconciliarAdjuntosCompraPendientes,
+  type RegistroAdjuntoCompra,
+  type ResultadoAdjuntoCompra,
+} from "./durablePurchaseAttachment";
+import { durablePurchaseAttachmentStore } from "./durablePurchaseAttachmentStore";
 
 export { ConflictoCreacionCompraError, CreacionCompraInciertaError } from "./durablePurchase";
 export { ConflictoEdicionCompraError, EdicionCompraInciertaError } from "./durablePurchaseEdit";
+export {
+  AdjuntoCompraInciertoError,
+  ConflictoAdjuntoCompraError,
+  esArchivoLocalInexistente,
+} from "./durablePurchaseAttachment";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -59,6 +73,11 @@ const ENV_VAR_WRITE_POR_EMPRESA: Record<Empresa, string> = {
   // código mantiene la separación read/write de todas formas.
   Footprint: "HOLDED_API_KEY_WRITE_FOOTPRINT",
 };
+const ENV_VAR_READ_POR_EMPRESA: Record<Empresa, string> = {
+  WOBA: "HOLDED_API_KEY_WOBA",
+  EWORKS: "HOLDED_API_KEY_EWORKS",
+  Footprint: "HOLDED_API_KEY_FOOTPRINT",
+};
 
 function getWriteApiKey(empresa: Empresa): string {
   const envVar = ENV_VAR_WRITE_POR_EMPRESA[empresa];
@@ -67,6 +86,21 @@ function getWriteApiKey(empresa: Empresa): string {
     throw new Error(`Falta la variable de entorno ${envVar}`);
   }
   return key;
+}
+
+function getReadApiKey(empresa: Empresa): string {
+  const envVar = ENV_VAR_READ_POR_EMPRESA[empresa];
+  const key = process.env[envVar];
+  if (!key) throw new Error(`Falta la variable de entorno ${envVar}`);
+  return key;
+}
+
+async function holdedAttachmentReadJson(empresa: Empresa, path: string): Promise<unknown> {
+  const response = await fetch(`${HOLDED_API_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
+  });
+  if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
+  return response.json();
 }
 
 /**
@@ -286,6 +320,65 @@ function programarReconciliacionEdicionesCompra(demoraMs: number, intentosRestan
       });
   }, demoraMs);
   timerReconciliacionEdiciones.unref();
+}
+
+const metricasAdjuntosCompraDurables = {
+  activas: 0,
+  subidos: 0,
+  reutilizados: 0,
+  verificadosRecuperados: 0,
+  incertidumbresDetectadas: 0,
+  errores: 0,
+  inciertosUltimaRevision: 0,
+};
+let timerReconciliacionAdjuntos: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionAdjuntosCompraDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    // Solo false explícito recupera temporalmente el POST anterior.
+    habilitado: (env.WOBI_HOLDED_ATTACHMENT_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoAdjuntosCompraDurables() {
+  return { habilitado: configuracionAdjuntosCompraDurables().habilitado, ...metricasAdjuntosCompraDurables };
+}
+
+/** Reconciliación de arranque: exclusivamente lista y descarga adjuntos; nunca ejecuta POST. */
+export async function reconciliarAdjuntosCompraAlArrancar() {
+  if (!configuracionAdjuntosCompraDurables().habilitado) {
+    return { revisados: 0, verificados: 0, inciertos: 0, errores: 0 };
+  }
+  const resumen = await reconciliarAdjuntosCompraPendientes(durablePurchaseAttachmentStore, buscarAdjuntoPorHuella);
+  metricasAdjuntosCompraDurables.verificadosRecuperados += resumen.verificados;
+  metricasAdjuntosCompraDurables.incertidumbresDetectadas += resumen.inciertos;
+  metricasAdjuntosCompraDurables.errores += resumen.errores;
+  metricasAdjuntosCompraDurables.inciertosUltimaRevision = resumen.inciertos;
+  if (resumen.inciertos > 0 || resumen.errores > 0) programarReconciliacionAdjuntosCompra(30_000, 3);
+  return resumen;
+}
+
+/** Los reintentos automáticos son siempre de lectura; una incertidumbre jamás habilita otro POST. */
+function programarReconciliacionAdjuntosCompra(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacionAdjuntos || intentosRestantes <= 0) return;
+  timerReconciliacionAdjuntos = setTimeout(() => {
+    timerReconciliacionAdjuntos = null;
+    void reconciliarAdjuntosCompraPendientes(durablePurchaseAttachmentStore, buscarAdjuntoPorHuella)
+      .then((resumen) => {
+        metricasAdjuntosCompraDurables.verificadosRecuperados += resumen.verificados;
+        metricasAdjuntosCompraDurables.incertidumbresDetectadas += resumen.inciertos;
+        metricasAdjuntosCompraDurables.errores += resumen.errores;
+        metricasAdjuntosCompraDurables.inciertosUltimaRevision = resumen.inciertos;
+        if (resumen.inciertos > 0 || resumen.errores > 0) {
+          programarReconciliacionAdjuntosCompra(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasAdjuntosCompraDurables.errores++;
+        programarReconciliacionAdjuntosCompra(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacionAdjuntos.unref();
 }
 
 export interface HoldedContact {
@@ -2070,29 +2163,201 @@ export async function contarFacturasRecientes(empresa: Empresa, dias: number): P
   return total;
 }
 
+const MAX_BYTES_ADJUNTO_HOLDED = 10 * 1024 * 1024;
+const MAX_PAGINAS_ADJUNTOS_HOLDED = 20;
+
+export function validarTamanoAdjuntoHolded(byteLength: number): void {
+  if (!Number.isSafeInteger(byteLength) || byteLength <= 0) {
+    throw new Error("El comprobante está vacío; no se enviará a Holded.");
+  }
+  if (byteLength > MAX_BYTES_ADJUNTO_HOLDED) {
+    throw new Error("El comprobante supera el máximo de 10 MB permitido por Holded.");
+  }
+}
+
+export interface ContextoAdjuntoCompraHolded {
+  /** Identidad estable de la aprobación; nunca contiene proveedor, documento ni nombre original. */
+  idempotencyKey: string;
+  proceso?: string;
+}
+
+function extensionAdjunto(nombreArchivo: string, mimeType: string | undefined): string {
+  const extension = extname(nombreArchivo).slice(1).toLowerCase();
+  if (/^[a-z0-9]{1,8}$/.test(extension)) return extension;
+  const porMime: Record<string, string> = {
+    "application/pdf": "pdf",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "image/heif": "heif",
+  };
+  return porMime[(mimeType ?? "").toLowerCase()] ?? "bin";
+}
+
+async function descargarAdjuntoParaVerificar(
+  empresa: Empresa,
+  purchaseId: string,
+  referencia: string
+): Promise<Uint8Array | undefined> {
+  const response = await fetch(
+    `${HOLDED_API_BASE}/purchases/${encodeURIComponent(purchaseId)}/attachments/${encodeURIComponent(referencia)}`,
+    { headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/octet-stream" } }
+  );
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 /**
- * Adjunta un comprobante (PDF/imagen) a un gasto ya existente en Holded
- * (POST /purchases/{id}/attachments, multipart). Verificado en vivo: un
- * cuerpo JSON vacío devuelve "File not found", confirmando que este
- * endpoint espera un archivo real, no JSON.
+ * Comprueba identidad por SHA-256 de los bytes descargados. Un nombre
+ * coincidente pero inaccesible o con contenido diferente falla cerrado:
+ * jamás autoriza un POST que pueda duplicar o reemplazar el archivo.
  */
-export async function adjuntarComprobanteHolded(empresa: Empresa, purchaseId: string, rutaLocal: string, nombreArchivo: string, mimeType: string | undefined): Promise<void> {
-  const apiKey = getWriteApiKey(empresa);
-  const bytes = await readFile(rutaLocal);
+async function buscarAdjuntoPorHuella(registro: RegistroAdjuntoCompra): Promise<ResultadoAdjuntoCompra | undefined> {
+  type ItemAdjunto = string | {
+    id?: string;
+    identifier?: string;
+    name?: string;
+    filename?: string;
+    file_name?: string;
+  };
+  const candidatos: ItemAdjunto[] = [];
+  let cursor: string | undefined;
 
+  for (let pagina = 0; pagina < MAX_PAGINAS_ADJUNTOS_HOLDED; pagina++) {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+    const respuesta = await holdedAttachmentReadJson(
+      registro.empresa,
+      `/purchases/${encodeURIComponent(registro.purchaseId)}/attachments?${params.toString()}`
+    );
+    const data = Array.isArray(respuesta)
+      ? { items: respuesta as ItemAdjunto[], has_more: false as const, cursor: undefined }
+      : (respuesta as { items?: ItemAdjunto[]; has_more?: boolean; cursor?: string });
+    candidatos.push(
+      ...(data.items ?? []).filter((item) => {
+        if (typeof item === "string") return item === registro.fileName;
+        return [item.id, item.identifier, item.name, item.filename, item.file_name]
+          .some((valor) => valor === registro.fileName);
+      })
+    );
+    if (!data.has_more) break;
+    if (!data.cursor || pagina === MAX_PAGINAS_ADJUNTOS_HOLDED - 1) {
+      throw new Error("Holded devolvió una lista incompleta de adjuntos; no es seguro repetir la carga.");
+    }
+    cursor = data.cursor;
+  }
+
+  const encontrados: ResultadoAdjuntoCompra[] = [];
+  for (const _candidato of candidatos) {
+    // Holded documenta attachmentId como el nombre del archivo. Usamos el
+    // nombre estable conocido, no un eventual id de metadatos del listado.
+    const bytes = await descargarAdjuntoParaVerificar(registro.empresa, registro.purchaseId, registro.fileName);
+    if (!bytes) throw new AdjuntoCompraInciertoError();
+    const huella = createHash("sha256").update(bytes).digest("hex");
+    if (huella === registro.contentHash) {
+      encontrados.push({ attachmentId: registro.fileName, fileName: registro.fileName });
+    }
+  }
+
+  if (encontrados.length > 1) {
+    throw new Error("Holded contiene más de un adjunto con el mismo nombre y contenido; se requiere revisión manual.");
+  }
+  if (candidatos.length > 0 && encontrados.length === 0) {
+    throw new Error("Holded ya contiene el nombre durable con bytes diferentes; Wobi bloqueó la carga.");
+  }
+  return encontrados[0];
+}
+
+async function subirAdjuntoDirecto(
+  empresa: Empresa,
+  purchaseId: string,
+  bytes: Uint8Array,
+  fileName: string,
+  mimeType: string | undefined
+): Promise<ResultadoAdjuntoCompra> {
   const formData = new FormData();
-  formData.append("file", new Blob([bytes], { type: mimeType || "application/octet-stream" }), nombreArchivo);
-
-  const response = await fetch(`${HOLDED_API_BASE}/purchases/${purchaseId}/attachments`, {
+  formData.append("file", new Blob([bytes], { type: mimeType || "application/octet-stream" }), fileName);
+  const response = await fetch(`${HOLDED_API_BASE}/purchases/${encodeURIComponent(purchaseId)}/attachments`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers: { Authorization: `Bearer ${getWriteApiKey(empresa)}` },
     body: formData,
   });
+  if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
 
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new Error(`Error adjuntando comprobante en Holded (${response.status}) para ${empresa}: ${errBody}`);
+  let data: { id?: unknown };
+  try {
+    data = (await response.json()) as { id?: unknown };
+  } catch {
+    // Un éxito sin referencia verificable es ambiguo: el núcleo durable hará únicamente GET.
+    throw new Error("Holded aceptó el adjunto pero no devolvió una referencia JSON verificable.");
   }
+  if (typeof data.id !== "string" || !data.id.trim()) {
+    throw new Error("Holded aceptó el adjunto pero no devolvió su identificador.");
+  }
+  return { attachmentId: data.id, fileName };
+}
+
+/**
+ * Adjunta un comprobante a una compra. Lee, valida y calcula la huella antes
+ * de reservar el efecto durable. En modo durable, cualquier resultado
+ * incierto bloquea otro POST hasta confirmarlo mediante lista+descarga.
+ */
+export async function adjuntarComprobanteHolded(
+  empresa: Empresa,
+  purchaseId: string,
+  rutaLocal: string,
+  nombreArchivo: string,
+  mimeType: string | undefined,
+  contexto?: ContextoAdjuntoCompraHolded
+): Promise<ResultadoAdjuntoCompra> {
+  const bytes = await readFile(rutaLocal);
+  validarTamanoAdjuntoHolded(bytes.byteLength);
+
+  const durableHabilitado = configuracionAdjuntosCompraDurables().habilitado;
+  if (durableHabilitado && !contexto?.idempotencyKey?.trim()) {
+    throw new Error("El adjunto durable de Holded requiere una clave idempotente de la aprobación.");
+  }
+  if (!durableHabilitado || !contexto) {
+    return subirAdjuntoDirecto(empresa, purchaseId, bytes, nombreArchivo, mimeType);
+  }
+
+  const contentHash = createHash("sha256").update(bytes).digest("hex");
+  const inicial = identidadAdjuntoCompra(
+    contexto.idempotencyKey,
+    empresa,
+    purchaseId,
+    contentHash,
+    extensionAdjunto(nombreArchivo, mimeType),
+    contexto.proceso ?? "comprobante_gasto_aprobado"
+  );
+
+  // La clave adicional por compra+bytes serializa dos aprobaciones distintas
+  // que convergen en el mismo nombre durable dentro de esta única réplica.
+  return conMutex(`holded-purchase-attachment:${empresa}:${purchaseId}:${contentHash}`, async () => {
+    metricasAdjuntosCompraDurables.activas++;
+    try {
+      const ejecucion = await ejecutarAdjuntoCompraDurable(inicial, durablePurchaseAttachmentStore, {
+        buscar: buscarAdjuntoPorHuella,
+        subir: (fileName) => subirAdjuntoDirecto(empresa, purchaseId, bytes, fileName, mimeType),
+      });
+      if (ejecucion.reutilizado) metricasAdjuntosCompraDurables.reutilizados++;
+      else metricasAdjuntosCompraDurables.subidos++;
+      return ejecucion.resultado;
+    } catch (error) {
+      if (error instanceof AdjuntoCompraInciertoError) {
+        metricasAdjuntosCompraDurables.incertidumbresDetectadas++;
+        metricasAdjuntosCompraDurables.inciertosUltimaRevision++;
+        programarReconciliacionAdjuntosCompra(30_000, 3);
+      } else {
+        metricasAdjuntosCompraDurables.errores++;
+      }
+      throw error;
+    } finally {
+      metricasAdjuntosCompraDurables.activas--;
+    }
+  });
 }
 
 export interface TaxCatalogEntry {
