@@ -6,9 +6,13 @@ import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock } from "./documentBlock";
 
 const MODEL = resolverModeloDocumental("transcribir_captura");
-// Sin cache_control deliberadamente: la parte estable de esta petición está muy por debajo del
-// mínimo cacheable de Sonnet (1.024 tokens). Marcarla no generaría hits ni ahorro; el documento y su
-// contexto sí cambian en cada llamada. Se conserva el prompt exacto y solo se optimiza el modelo.
+// Sonnet 5 (el modelo que resuelve resolverModeloDocumental) piensa en modo adaptativo por
+// default si no se manda `thinking` — a diferencia del claude-sonnet-4-6 anterior, donde omitirlo
+// significaba sin razonamiento. Ese pensamiento invisible cuenta contra el mismo max_tokens=8192
+// que el texto transcrito, así que en un documento denso puede consumir presupuesto real antes de
+// escribir una sola palabra visible — el bucle de continuación de abajo ya cubre ese caso igual que
+// cubre documentos simplemente largos, así que no hace falta desactivar el pensamiento (desactivarlo
+// en la familia 5 tiene sus propios problemas: puede filtrar texto crudo o tags de pensamiento).
 
 let client: Anthropic | null = null;
 
@@ -71,10 +75,18 @@ export async function transcribirParaCaptura(
     .filter(Boolean)
     .join("\n\n");
 
+  // cache_control en el documento (no en el texto de instrucción, que es chico y no cambia el
+  // cálculo): el bucle de abajo puede reenviar este mismo bloque sin cambios en el turno 2 y 3 dentro
+  // de UNA sola llamada — a diferencia de antes, cuando la función solo se invocaba una vez y el
+  // documento sí cambiaba en cada invocación real. Si el documento es lo bastante grande para superar
+  // el mínimo cacheable, los turnos de continuación leen ese bloque desde caché en vez de pagarlo de
+  // nuevo entero; si no llega al mínimo, o si nunca hace falta continuar, no genera costo extra real.
+  const documentBlockConCache = { ...documentBlock, cache_control: { type: "ephemeral" } };
+
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: [documentBlock, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
+      content: [documentBlockConCache, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
     },
   ];
 
