@@ -2,9 +2,13 @@ import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
+import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock } from "./documentBlock";
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = resolverModeloDocumental("transcribir_captura");
+// Sin cache_control deliberadamente: la parte estable de esta petición está muy por debajo del
+// mínimo cacheable de Sonnet (1.024 tokens). Marcarla no generaría hits ni ahorro; el documento y su
+// contexto sí cambian en cada llamada. Se conserva el prompt exacto y solo se optimiza el modelo.
 
 let client: Anthropic | null = null;
 

@@ -4,9 +4,10 @@ import { knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
+import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock, type DocumentOrImageBlock } from "./documentBlock";
 
-const MODEL = "claude-sonnet-4-6";
+const MODEL = resolverModeloDocumental("extraer_factura");
 const MAX_ITERATIONS = 4;
 
 let client: Anthropic | null = null;
