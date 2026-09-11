@@ -3467,6 +3467,18 @@ export interface MovimientoBancarioCandidato {
   /** Moneda de `monto` — igual a `criterios.moneda` de la búsqueda ("EUR" si no se especificó). */
   moneda: string;
   fecha: string;
+  /** Cómo se identificó este candidato. Los registros antiguos no incluyen el campo. */
+  origenCoincidencia?: "exacta" | "aproximada" | "tipo_cambio" | "moneda_alternativa";
+  /** Importe esperado tras aplicar una tasa de referencia, solo para coincidencias multimoneda. */
+  montoReferencia?: number;
+  /** Moneda original del documento antes de convertir la referencia. */
+  monedaOrigenReferencia?: string;
+  /** Tasa histórica de referencia usada para buscar; nunca se presenta como tasa exacta del banco. */
+  tasaReferencia?: number;
+  /** Diferencia absoluta frente al importe buscado o convertido. */
+  diferenciaMonto?: number;
+  /** Refuerzo por texto: el proveedor parece estar presente en la descripción bancaria. */
+  coincideProveedor?: boolean;
 }
 
 // Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
@@ -3642,7 +3654,7 @@ const TOLERANCIA_APROXIMADA_PISO = 1;
  * filtró por monto cercano antes, así que hace falta que AMBAS señales
  * coincidan, nunca el nombre solo.
  */
-function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
+export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
   const p = normalizar(proveedor).trim();
   const d = normalizar(descripcion).trim();
   if (p.length < 3 || d.length < 3) return false;
