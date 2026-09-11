@@ -4,6 +4,7 @@ import {
   construirSugerenciaDesdeCoincidencias,
   esImporteUtilComoPrecedenteContable,
   inferirTagsCategoria,
+  seleccionarCoincidenciasProveedor,
   type LineaConCuenta,
 } from "./write";
 
@@ -55,4 +56,38 @@ test("reconoce una compra de créditos de Anthropic como suscripción", () => {
     inferirTagsCategoria("Compra de créditos (one-time credit purchase) — septiembre 2026", "Anthropic, PBC"),
     ["suscripcion"]
   );
+});
+
+test("una razón social exacta nunca se mezcla con otra sociedad de nombre parecido", () => {
+  const lineas: LineaConCuenta[] = [
+    { ...linea("llc-1", "profesionales"), contactName: "BUSINESS ATELIER LLC", lineName: "Consulting Service" },
+    { ...linea("llc-2", "profesionales"), contactName: "BUSINESS ATELIER LLC", lineName: "Sent Money" },
+    { ...linea("llc-error", "woba-services"), contactName: "BUSINESS ATELIER LLC", lineName: "Consulting Service" },
+    ...Array.from({ length: 12 }, (_, indice) => ({
+      ...linea(`europa-${indice}`, "woba-services"),
+      contactName: "Business Atelier Europa SL (WOBA GROUP)",
+      lineName: "Servicios contables y financieros",
+    })),
+  ];
+
+  const seleccion = seleccionarCoincidenciasProveedor("BUSINESS ATELIER LLC (KMINO)", lineas);
+  const sugerencia = construirSugerenciaDesdeCoincidencias(seleccion.coincidencias, "proveedor");
+  assert.equal(seleccion.identidadExacta, true);
+  assert.equal(seleccion.coincidencias.length, 3);
+  assert.equal(sugerencia?.accountId, "profesionales");
+});
+
+test("un empate de la entidad exacta queda inconcluso y no usa empresas parecidas", () => {
+  const lineas: LineaConCuenta[] = [
+    { ...linea("llc-1", "profesionales"), contactName: "BUSINESS ATELIER LLC" },
+    { ...linea("llc-2", "woba-services"), contactName: "BUSINESS ATELIER LLC" },
+    ...Array.from({ length: 8 }, (_, indice) => ({
+      ...linea(`europa-${indice}`, "woba-services"),
+      contactName: "Business Atelier Europa SL (WOBA GROUP)",
+    })),
+  ];
+
+  const seleccion = seleccionarCoincidenciasProveedor("BUSINESS ATELIER LLC", lineas);
+  assert.equal(seleccion.identidadExacta, true);
+  assert.equal(construirSugerenciaDesdeCoincidencias(seleccion.coincidencias, "proveedor"), undefined);
 });

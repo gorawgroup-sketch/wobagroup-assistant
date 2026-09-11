@@ -1886,6 +1886,38 @@ function coincideProveedorCorto(proveedor: string, contactName: string): boolean
   return palabrasDe(contactName, 1).includes(palabrasProveedor[0]);
 }
 
+function normalizarRazonSocialExacta(nombre: string): string {
+  // El texto entre paréntesis suele ser una marca/alias comercial, no parte
+  // de la identidad legal: "BUSINESS ATELIER LLC (KMINO)" debe seguir
+  // coincidiendo con "BUSINESS ATELIER LLC", pero nunca con
+  // "Business Atelier Europa SL (WOBA GROUP)".
+  return normalizar(nombre.replace(/\([^)]*\)/g, " "));
+}
+
+export function seleccionarCoincidenciasProveedor(
+  proveedor: string,
+  lineas: LineaConCuenta[]
+): { coincidencias: LineaConCuenta[]; identidadExacta: boolean } {
+  const identidad = normalizarRazonSocialExacta(proveedor);
+  if (!identidad) return { coincidencias: [], identidadExacta: false };
+
+  const exactas = lineas.filter(
+    (linea) => linea.contactName && normalizarRazonSocialExacta(linea.contactName) === identidad
+  );
+  if (exactas.length > 0) return { coincidencias: exactas, identidadExacta: true };
+
+  const nombresContactos = Array.from(new Set(lineas.map((linea) => linea.contactName)));
+  const parecidas = lineas.filter((linea) => {
+    if (!linea.contactName) return false;
+    if (coincideProveedorCorto(proveedor, linea.contactName)) return true;
+    return (
+      textosParecidos(proveedor, linea.contactName) &&
+      puntuarDistintividad(proveedor, linea.contactName, nombresContactos) > 0
+    );
+  });
+  return { coincidencias: parecidas, identidadExacta: false };
+}
+
 /**
  * Busca qué cuenta contable de Holded ya se usa en compras reales
  * parecidas — por proveedor o por palabras clave del concepto — para no
@@ -2097,21 +2129,23 @@ export async function inferirCuentaGasto(
   // frecuentes para los que el tier 1 debería ser más fuerte (confirmado con Booking.com, citado en el
   // propio comentario de más abajo: 159 líneas reales). Se deduplica antes de pasarlo, restaurando el
   // significado real de la constante ("cuántos PROVEEDORES DISTINTOS comparten esta palabra").
-  const nombresContactosLineas = Array.from(new Set(lineas.map((l) => l.contactName)));
-  const porNombre = criterios.proveedor.trim()
-    ? lineas.filter((l) => {
-        if (!l.contactName) return false;
-        if (coincideProveedorCorto(criterios.proveedor, l.contactName)) return true;
-        return (
-          textosParecidos(criterios.proveedor, l.contactName) &&
-          puntuarDistintividad(criterios.proveedor, l.contactName, nombresContactosLineas) > 0
-        );
-      })
-    : [];
+  const seleccionProveedor = seleccionarCoincidenciasProveedor(criterios.proveedor, lineas);
+  const porNombre = seleccionProveedor.coincidencias;
 
   const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
   if (sugeridoPorNombre) {
     if (!contradiceCategoria(sugeridoPorNombre.accountId)) return sugeridoPorNombre;
+  }
+
+  // Si Holded ya contiene esta razón social exacta, nunca se amplía la
+  // votación a entidades solo "parecidas". Si su propio historial queda
+  // empatado o contradice una categoría fiable, se usa esa categoría o se
+  // pide revisión humana desde la propuesta; jamás se deja que otra
+  // sociedad del grupo gane por tener más facturas ni se gasta IA para
+  // resolver una ambigüedad contable sin evidencia suficiente.
+  if (seleccionProveedor.identidadExacta) {
+    if (sugeridoPorCategoria) return sugeridoPorCategoria;
+    return undefined;
   }
 
   // Hallazgo real de auditoría (caso Kelly Correales, Uber Eats — Green House Churubusco): el
