@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>WOBi</title>
+  <style>.face{stroke:#111111}@media(prefers-color-scheme:dark){.face{stroke:#f4f4f4}}</style>
+  <g class="face" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 3C18 3 10 12 10.5 25l1 12c.5 7 5 13 12 19l4 3c2.8 2 6.2 2 9 0l4-3c7-6 11.5-12 12-19l1-12C54 12 46 3 32 3Z"/>
+    <path d="M17 27c4-2.2 8-1.3 11 1M36 28c3-2.3 7-3.2 11-1"/>
+    <path d="M18 30c2.5 2 5.5 2.4 8 .8M38 30.8c2.5 1.6 5.5 1.2 8-.8" stroke-width="2.2"/>
+    <path d="M32 28.5 29.5 40c1.6 1.1 3.4 1.1 5 0M26 48c2-.2 4-.8 6-.8s4 .6 6 .8M29 52h6" stroke-width="2.4"/>
+    <path d="m15 36 6 6m28-6-6 6" stroke-width="2.2"/>
+  </g>
+</svg>

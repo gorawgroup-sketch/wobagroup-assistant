@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import WobiAvatar, { WOBI_IMAGE } from "./WobiAvatar.jsx";
 import WobiVoice from "./WobiVoice.jsx";
+import { createWobiSpeech } from "./wobiSpeech.js";
 import { useCerebroRealtime } from "./useCerebroRealtime";
 
 const C = {
@@ -1859,6 +1860,10 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   const [codigoVinculo, setCodigoVinculo] = useState(null);
   const [escuchando, setEscuchando] = useState(false);
   const [leerRespuestas, setLeerRespuestas] = useState(() => localStorage.getItem(LOCALSTORAGE_VOZ_KEY) === "1");
+  const [vozPendiente, setVozPendiente] = useState(false);
+  const lectorVoz = useMemo(() => createWobiSpeech(), []);
+  const vozActivaRef = useRef(false);
+  vozActivaRef.current = leerRespuestas && abierto;
   const [deviceId] = useState(obtenerDeviceIdChat);
   const mensajesRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -1905,17 +1910,29 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
 
   useEffect(() => () => {
     recognitionRef.current?.stop?.();
-    window.speechSynthesis?.cancel?.();
-  }, []);
+    lectorVoz.stop();
+  }, [lectorVoz]);
+
+  useEffect(() => {
+    if (leerRespuestas && abierto) return;
+    lectorVoz.stop();
+    setVozPendiente(false);
+  }, [leerRespuestas, abierto, lectorVoz]);
+
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.hidden) { lectorVoz.stop(); setVozPendiente(false); }
+    };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => document.removeEventListener("visibilitychange", onHidden);
+  }, [lectorVoz]);
 
   const hablar = useCallback((respuesta) => {
-    if (!leerRespuestas || !window.speechSynthesis || !respuesta) return;
-    window.speechSynthesis.cancel();
-    const voz = new SpeechSynthesisUtterance(respuesta.replace(/\|/g, " "));
-    voz.lang = "es-ES";
-    voz.rate = 1;
-    window.speechSynthesis.speak(voz);
-  }, [leerRespuestas]);
+    if (!vozActivaRef.current || document.hidden || !respuesta) return;
+    setVozPendiente(false);
+    lectorVoz.speak(respuesta, headers, () => setVozPendiente(true))
+      .catch(() => { setVozPendiente(false); setError("No se pudo reproducir la voz de WOBi. La respuesta sigue disponible por escrito."); });
+  }, [leerRespuestas, headers, lectorVoz]);
 
   const enviarConReintento = useCallback(async (messageId, contenido) => {
     let ultimoError;
@@ -2012,7 +2029,6 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
     setLeerRespuestas((valor) => {
       const nuevo = !valor;
       localStorage.setItem(LOCALSTORAGE_VOZ_KEY, nuevo ? "1" : "0");
-      if (!nuevo) window.speechSynthesis?.cancel?.();
       return nuevo;
     });
   };
@@ -2051,6 +2067,11 @@ function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
               </button>
             </div>
           </header>
+
+          {vozPendiente && <button type="button" className="wobi-button" onClick={() => {
+            lectorVoz.resume().then(() => setVozPendiente(false))
+              .catch(() => setError("Pulsa de nuevo para reproducir la respuesta."));
+          }}>Reproducir respuesta</button>}
 
           <div className="wobi-canales" aria-label="Canales disponibles">
             <div className="wobi-canal wobi-canal--activo">
