@@ -13,6 +13,18 @@ import { transcribirParaCaptura } from "../documental/transcribeForCapture";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
+import { conMutex } from "../utils/asyncMutex";
+import {
+  consultarCreacionCompraDurable,
+  CreacionCompraInciertaError,
+  ejecutarCreacionCompraDurable,
+  reconciliarCreacionesCompraPendientes,
+  type RegistroCreacionCompra,
+  type ResultadoCreacionCompra,
+} from "./durablePurchase";
+import { durablePurchaseStore } from "./durablePurchaseStore";
+
+export { ConflictoCreacionCompraError, CreacionCompraInciertaError } from "./durablePurchase";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -92,6 +104,111 @@ async function holdedWriteCall(
   }
 
   return response.json();
+}
+
+const metricasCreacionesCompraDurables = {
+  activas: 0,
+  creadas: 0,
+  reutilizadas: 0,
+  verificadasRecuperadas: 0,
+  incertidumbresDetectadas: 0,
+  errores: 0,
+  inciertasUltimaRevision: 0,
+};
+let timerReconciliacionCompras: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionCreacionesCompraDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    // Solo false explícito restaura el POST anterior. Una errata conserva la protección financiera.
+    habilitado: (env.WOBI_HOLDED_PURCHASE_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoCreacionesCompraDurables() {
+  return { habilitado: configuracionCreacionesCompraDurables().habilitado, ...metricasCreacionesCompraDurables };
+}
+
+/**
+ * Busca el marcador opaco que se guarda en `notes`. La lista de compras no
+ * devuelve notas, por lo que primero acota por contacto+fecha y después lee
+ * cada candidato. Si la búsqueda no es exhaustiva o encuentra más de uno,
+ * falla cerrado: nunca habilita otro POST a partir de una lectura ambigua.
+ */
+async function buscarCompraPorMarcador(registro: RegistroCreacionCompra): Promise<ResultadoCreacionCompra | undefined> {
+  const MAX_CANDIDATOS_DETALLE = 30;
+  const ids: string[] = [];
+  let cursor: string | undefined;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
+    const params = new URLSearchParams({
+      limit: "100",
+      contact_id: registro.contactId,
+      start_date: registro.fecha,
+      end_date: registro.fecha,
+    });
+    if (cursor) params.set("cursor", cursor);
+    const data = (await holdedWriteCall(registro.empresa, "GET", `/purchases?${params.toString()}`)) as {
+      items?: Array<{ id?: string }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+    for (const item of data.items ?? []) if (item.id) ids.push(item.id);
+    if (ids.length > MAX_CANDIDATOS_DETALLE) {
+      throw new Error("Holded devolvió demasiadas compras candidatas para verificar el marcador durable con seguridad.");
+    }
+    if (!data.has_more) break;
+    if (!data.cursor || pagina === MAX_PAGINAS_PURCHASES - 1) {
+      throw new Error("Holded devolvió una búsqueda incompleta al reconciliar la compra durable.");
+    }
+    cursor = data.cursor;
+  }
+
+  const encontrados: string[] = [];
+  for (const id of ids) {
+    const compra = (await holdedWriteCall(registro.empresa, "GET", `/purchases/${id}`)) as { id?: string; notes?: string | null };
+    if (compra.id && compra.notes?.trim() === registro.marcador) encontrados.push(compra.id);
+  }
+  if (encontrados.length > 1) {
+    throw new Error("Holded contiene más de una compra con el mismo marcador durable; se requiere revisión manual.");
+  }
+  return encontrados[0] ? { id: encontrados[0] } : undefined;
+}
+
+/** Reconciliación de arranque: solo consulta Holded; jamás crea compras. */
+export async function reconciliarCreacionesCompraAlArrancar() {
+  if (!configuracionCreacionesCompraDurables().habilitado) {
+    return { revisadas: 0, verificadas: 0, inciertas: 0, errores: 0 };
+  }
+  const resumen = await reconciliarCreacionesCompraPendientes(durablePurchaseStore, buscarCompraPorMarcador);
+  metricasCreacionesCompraDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasCreacionesCompraDurables.incertidumbresDetectadas += resumen.inciertas;
+  metricasCreacionesCompraDurables.errores += resumen.errores;
+  metricasCreacionesCompraDurables.inciertasUltimaRevision = resumen.inciertas;
+  if (resumen.inciertas > 0 || resumen.errores > 0) programarReconciliacionCreacionesCompra(30_000, 3);
+  return resumen;
+}
+
+/** Reintentos de solo lectura tras ambigüedad; nunca llama a POST /purchases. */
+function programarReconciliacionCreacionesCompra(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacionCompras || intentosRestantes <= 0) return;
+  timerReconciliacionCompras = setTimeout(() => {
+    timerReconciliacionCompras = null;
+    void reconciliarCreacionesCompraPendientes(durablePurchaseStore, buscarCompraPorMarcador)
+      .then((resumen) => {
+        metricasCreacionesCompraDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasCreacionesCompraDurables.incertidumbresDetectadas += resumen.inciertas;
+        metricasCreacionesCompraDurables.errores += resumen.errores;
+        metricasCreacionesCompraDurables.inciertasUltimaRevision = resumen.inciertas;
+        if (resumen.inciertas > 0 || resumen.errores > 0) {
+          programarReconciliacionCreacionesCompra(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasCreacionesCompraDurables.errores++;
+        programarReconciliacionCreacionesCompra(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacionCompras.unref();
 }
 
 export interface HoldedContact {
@@ -2150,9 +2267,46 @@ async function calcularTasaCambioParaCreacion(moneda: string | undefined, fecha:
   return tasaActual;
 }
 
-export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded): Promise<{ id: string }> {
-  const catalogo = await obtenerCatalogoImpuestos(empresa);
-  const tasaCambio = await calcularTasaCambioParaCreacion(gasto.moneda, gasto.fecha);
+export interface ContextoCreacionGastoHolded {
+  /** Identidad estable de la aprobación de usuario, nunca proveedor/importe/fecha. */
+  idempotencyKey: string;
+  proceso?: string;
+}
+
+export async function crearGastoHolded(
+  empresa: Empresa,
+  gasto: NuevoGastoHolded,
+  contexto?: ContextoCreacionGastoHolded
+): Promise<{ id: string }> {
+  const durableHabilitado = configuracionCreacionesCompraDurables().habilitado;
+  if (durableHabilitado && !contexto?.idempotencyKey?.trim()) {
+    throw new Error("La creación durable de Holded requiere una clave idempotente de la aprobación.");
+  }
+
+  // Revisa el ledger antes de calcular catálogo/tipo de cambio: si esta
+  // aprobación ya terminó o quedó ambigua, no repite trabajo ni un POST.
+  if (durableHabilitado && contexto) {
+    const existente = await conMutex(`holded-purchase:${empresa}:${contexto.idempotencyKey}`, () =>
+      consultarCreacionCompraDurable(
+        contexto.idempotencyKey,
+        empresa,
+        gasto.contactId,
+        gasto.fecha,
+        gasto,
+        durablePurchaseStore,
+        buscarCompraPorMarcador
+      )
+    );
+    if (existente) {
+      metricasCreacionesCompraDurables.reutilizadas++;
+      return existente;
+    }
+  }
+
+  const [catalogo, tasaCambio] = await Promise.all([
+    obtenerCatalogoImpuestos(empresa),
+    calcularTasaCambioParaCreacion(gasto.moneda, gasto.fecha),
+  ]);
 
   const items = gasto.lineas.map((linea) => {
     const taxKey = mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
@@ -2171,31 +2325,67 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
     };
   });
 
-  let data: { id?: string };
-  try {
-    data = (await holdedWriteCall(empresa, "POST", "/purchases", {
-      contact_id: gasto.contactId,
-      date: gasto.fecha,
-      description: gasto.descripcion,
-      items,
-      ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
-      ...(gasto.moneda ? { currency: gasto.moneda } : {}),
-      // Ver calcularTasaCambioParaCreacion arriba — sin esto, Holded calculaba el equivalente en EUR
-      // de toda la contabilidad a paridad ficticia 1:1 para cualquier gasto nuevo en moneda extranjera.
-      ...(tasaCambio !== undefined ? { currency_change: tasaCambio } : {}),
-      // Bug real de gravedad alta encontrado en vivo (2026-09-03, gasto de
-      // "Santo Suadero", Footprint): el campo que de verdad acepta POST
-      // /purchases para el número de documento es "number", NO
-      // "document_number" (ese es el nombre que Holded usa al DEVOLVER el
-      // dato en un GET, pero no el que espera al crear/actualizar — mismo
-      // desajuste ya confirmado en vivo para PUT /purchases/{id}, ver
-      // editarCompraHolded). "document_number" es un campo desconocido para
-      // Holded que se ignora en silencio (sin error) — así que NINGÚN gasto
-      // creado por este sistema hasta ahora quedó con su número de
-      // documento real, sin importar que se hubiera extraído correctamente
-      // ni que se mandara "00000" de placeholder.
-      number: gasto.numeroDocumento || "00000",
+  const solicitud = {
+    contact_id: gasto.contactId,
+    date: gasto.fecha,
+    description: gasto.descripcion,
+    items,
+    ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
+    ...(gasto.moneda ? { currency: gasto.moneda } : {}),
+    // Ver calcularTasaCambioParaCreacion arriba — sin esto, Holded calculaba el equivalente en EUR
+    // de toda la contabilidad a paridad ficticia 1:1 para cualquier gasto nuevo en moneda extranjera.
+    ...(tasaCambio !== undefined ? { currency_change: tasaCambio } : {}),
+    // El campo de escritura es `number`; Holded devuelve el mismo dato como
+    // `document_number` al leerlo.
+    number: gasto.numeroDocumento || "00000",
+  };
+
+  const crearDirecto = async (marcador?: string): Promise<{ id: string }> => {
+    const data = (await holdedWriteCall(empresa, "POST", "/purchases", {
+      ...solicitud,
+      // Marcador opaco, sin datos comerciales ni secretos. La documentación
+      // oficial define notes como internas y el GET individual las devuelve.
+      ...(marcador ? { notes: marcador } : {}),
     })) as { id?: string };
+    if (!data.id) throw new Error("Holded no devolvió un id para el gasto creado.");
+    return { id: data.id };
+  };
+
+  try {
+    if (!durableHabilitado || !contexto) return await crearDirecto();
+
+    return await conMutex(`holded-purchase:${empresa}:${contexto.idempotencyKey}`, async () => {
+      metricasCreacionesCompraDurables.activas++;
+      try {
+        const creacion = await ejecutarCreacionCompraDurable(
+          contexto.idempotencyKey,
+          empresa,
+          gasto.contactId,
+          gasto.fecha,
+          gasto,
+          contexto.proceso ?? "gasto_aprobado",
+          durablePurchaseStore,
+          {
+            buscar: buscarCompraPorMarcador,
+            crear: crearDirecto,
+          }
+        );
+        if (creacion.reutilizado) metricasCreacionesCompraDurables.reutilizadas++;
+        else metricasCreacionesCompraDurables.creadas++;
+        return creacion.resultado;
+      } catch (error) {
+        if (error instanceof CreacionCompraInciertaError) {
+          metricasCreacionesCompraDurables.incertidumbresDetectadas++;
+          metricasCreacionesCompraDurables.inciertasUltimaRevision++;
+          programarReconciliacionCreacionesCompra(30_000, 3);
+        } else {
+          metricasCreacionesCompraDurables.errores++;
+        }
+        throw error;
+      } finally {
+        metricasCreacionesCompraDurables.activas--;
+      }
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/date has been locked/i.test(message)) {
@@ -2203,12 +2393,6 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
     }
     throw error;
   }
-
-  if (!data.id) {
-    throw new Error("Holded no devolvió un id para el gasto creado.");
-  }
-
-  return { id: data.id };
 }
 
 /**
