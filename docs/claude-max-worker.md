@@ -10,7 +10,8 @@ necesita responder en tiempo real.
 
 El workflow `.github/workflows/claude-max-shadow-autoreview.yml`:
 
-- corre de lunes a viernes y también admite ejecución manual;
+- admite ejecución manual; su cron de lunes a viernes está suspendido
+  temporalmente por el bloqueo de autenticación descrito abajo;
 - rota hasta tres archivos de la lista blanca `core/utils/`, con máximo 400 líneas;
 - usa únicamente `Read`, `Glob` y `Grep`;
 - no conserva credenciales de Git, no tiene permiso de escritura y no puede
@@ -38,6 +39,26 @@ log ni variable de Railway.
 
 El workflow omite limpiamente la invocación si el secret falta. No existe un
 fallback oculto a API dentro de GitHub Actions.
+
+## Bloqueo temporal de la Action con Claude Max
+
+Desde que se configuró el secreto, las ejecuciones reales en runners hospedados
+por GitHub terminan antes del primer turno con `is_error: true`, cero uso y un
+rechazo 401 del token OAuth. Las ejecuciones verdes anteriores no validaban la
+integración: omitieron Claude porque el secreto todavía no estaba configurado.
+
+El mismo comportamiento está documentado en la incidencia abierta
+[`anthropics/claude-code-action#1613`](https://github.com/anthropics/claude-code-action/issues/1613):
+un token creado mediante `claude setup-token` funciona en el CLI local con una
+suscripción Max, pero la Action lo rechaza en un runner hospedado. Regenerar el
+secreto, cambiar de modelo o actualizar entre las versiones afectadas no lo
+resuelve.
+
+Por eso el cron queda desactivado y `workflow_dispatch` se conserva para una
+prueba manual cuando Anthropic publique una corrección. Esto evita correos y
+minutos de CI fallidos sin fingir que hubo una revisión. La ruta API histórica
+permanece disponible y no se cambia a `claude_max` mientras no existan cinco
+ciclos reales y válidos.
 
 ## Fases y corte reversible
 

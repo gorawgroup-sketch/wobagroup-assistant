@@ -1,10 +1,12 @@
 name: Claude Max - autorrevision en sombra
 
 on:
+  # Temporalmente manual: los tokens de suscripcion creados por
+  # `claude setup-token` estan siendo rechazados con 401 por la Action en
+  # runners hospedados de GitHub. Mantener el cron activo solo produce una
+  # ejecucion fallida y un correo diario sin realizar ninguna revision.
+  # Incidencia upstream: https://github.com/anthropics/claude-code-action/issues/1613
   workflow_dispatch:
-  schedule:
-    # Después de la revisión histórica de Railway. GitHub cron usa UTC.
-    - cron: "30 21 * * 1-5"
 
 permissions:
   contents: read
