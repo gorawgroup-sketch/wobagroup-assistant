@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-// One recording of the selected Paulina (es-MX) voice for every device.
-const GREETING_AUDIO = `${import.meta.env.BASE_URL}brand/wobi-saludo-paulina-v2.wav`;
+// One neural recording for every device, with WOBi pronounced as Uóbi.
+const GREETING_AUDIO = `${import.meta.env.BASE_URL}brand/wobi-saludo-neural-v3.mp3`;
 
 export default function WobiVoice({ onSpeakingChange }) {
   const audioRef = useRef(null);
