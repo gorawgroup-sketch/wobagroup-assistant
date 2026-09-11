@@ -72,6 +72,8 @@ import {
   estaMovimientoYaConciliado,
   AdjuntoCompraInciertoError,
   ConciliacionMovimientoInciertaError,
+  ContactosHoldedAmbiguosError,
+  CreacionContactoInciertaError,
   CreacionCompraInciertaError,
   esArchivoLocalInexistente,
   ContactoNoEncontradoError,
@@ -918,10 +920,18 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       // vez de ofrecer un botón que ya no apunta a nada.
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error creando contacto nuevo en Holded:", message);
+      const detalle =
+        error instanceof ContactosHoldedAmbiguosError
+          ? error.despuesDeEscritura
+            ? `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s) después del intento. Wobi bloqueó cualquier repetición; revisa cuál contacto quedó creado antes de reenviar el documento.`
+            : `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s). Wobi no creó otro contacto; revisa los duplicados en Holded antes de reenviar el documento.`
+          : error instanceof CreacionContactoInciertaError
+            ? "Holded no confirmó si creó el contacto. Wobi bloqueó cualquier repetición; no reenvíes el documento ni lo crees manualmente hasta comprobar el proveedor en Holded."
+            : `No pude crear el contacto (${message}); el gasto NO se creó. Reenvía el documento original para intentarlo de nuevo.`;
       await editTelegramMessage(
         resolucion.chatId,
         resolucion.messageId,
-        `⚠️ No pude crear el contacto "${resolucion.propuesta.proveedor}" en Holded (${message}) — el gasto NO se creó. Reenvía el documento original para intentarlo de nuevo.`,
+        `⚠️ ${detalle}`,
         []
       );
     }
