@@ -273,3 +273,29 @@ test("la huella compara formatos reales de Holded sin exponer los valores", () =
   assert.notEqual(esperada, alterada);
   assert.equal(esperada.includes("F-100"), false);
 });
+
+test("la huella de una corrección contable verifica cada cuenta sin romper huellas anteriores", () => {
+  const base = {
+    id: "purchase-1",
+    document_number: "1313",
+    date: "2026-09-11",
+    currency: "EUR",
+    currency_change: "1.00",
+    contact_id: "contact-1",
+    total: "2.200,00",
+    lines: [{ name: "Consulting Service", account: "profesionales" }],
+  };
+  const cuentaDistinta = {
+    ...base,
+    lines: [{ name: "Consulting Service", account: "woba-services" }],
+  };
+
+  // Compatibilidad: las ediciones antiguas siguen usando exactamente la
+  // huella histórica, que deliberadamente no incluía el detalle de cuenta.
+  assert.equal(huellaEstadoCompra(base, true), huellaEstadoCompra(cuentaDistinta, true));
+
+  const esperada = huellaEstadoCompra(base, true, true);
+  assert.match(esperada, /^cuentas-v1:[a-f0-9]{64}$/);
+  assert.notEqual(esperada, huellaEstadoCompra(cuentaDistinta, true, true));
+  assert.equal(esperada.includes("profesionales"), false);
+});

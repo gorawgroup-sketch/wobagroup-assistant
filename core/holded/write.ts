@@ -3,6 +3,7 @@ import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
+import { obtenerPlanContable } from "./accounting";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
@@ -316,7 +317,8 @@ async function verificarEdicionRegistrada(
 ): Promise<{ id: string; valor: CompraHoldedCruda } | undefined> {
   if (!registro.huellaEsperada) return undefined;
   const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.purchaseId);
-  const huella = huellaEstadoCompra(compra, registro.verificarTotal ?? false);
+  const verificarCuentas = registro.huellaEsperada.startsWith("cuentas-v1:");
+  const huella = huellaEstadoCompra(compra, registro.verificarTotal ?? false, verificarCuentas);
   return huella === registro.huellaEsperada ? { id: compra.id, valor: compra } : undefined;
 }
 
@@ -2466,7 +2468,11 @@ export async function leerAdjuntosCompraHolded(
   const attachments = (await holdedWriteCall(empresa, "GET", `/purchases/${purchaseId}/attachments`)) as {
     items?: Array<{ id: string }>;
   };
-  const nombres = (attachments.items ?? []).map((a) => a.id);
+  // Holded puede devolver dos entradas con exactamente el mismo id después
+  // de un PUT del documento (confirmado en la factura 1313). Es una sola
+  // referencia física descargable: deduplicarla evita transcribir y cobrar
+  // dos veces por el mismo comprobante.
+  const nombres = Array.from(new Set((attachments.items ?? []).map((a) => a.id).filter(Boolean)));
   if (nombres.length === 0) return [];
 
   const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -3253,6 +3259,13 @@ export interface CambiosCompraHolded {
    * comportamiento normal de esta función.
    */
   tasaCambioNueva?: number;
+  /**
+   * Reasigna todas las líneas de la compra a una cuenta contable REAL ya
+   * validada contra el plan contable de Holded. Se usa únicamente tras una
+   * aprobación explícita: el resto de los campos de cada línea se conserva
+   * y la relectura posterior incluye las cuentas en su huella.
+   */
+  cuentaIdNueva?: string;
 }
 
 /**
@@ -3276,7 +3289,11 @@ export interface CambiosCompraHolded {
  * escalado proporcional de montoNuevo); si no, se usa el precio real tal
  * cual viene de Holded.
  */
-function lineaCrudaAItem(l: LineaCompraHoldedCruda, priceOverride?: number): Record<string, unknown> {
+function lineaCrudaAItem(
+  l: LineaCompraHoldedCruda,
+  priceOverride?: number,
+  accountOverride?: string
+): Record<string, unknown> {
   return {
     name: l.name ?? "(línea)",
     type: l.type ?? "product",
@@ -3288,7 +3305,7 @@ function lineaCrudaAItem(l: LineaCompraHoldedCruda, priceOverride?: number): Rec
     taxes: l.taxes ?? [],
     tags: l.tags ?? [],
     sku: l.sku ?? undefined,
-    account: l.account ?? undefined,
+    account: accountOverride ?? l.account ?? undefined,
     project_id: l.project_id ?? undefined,
     retention: numeroDesdeHolded(l.retention) || undefined,
     unit_type: l.unit_type ?? undefined,
@@ -3306,6 +3323,19 @@ async function prepararEdicionCompraHolded(
 
   const lineasCrudasActuales = actual.lines ?? [];
   const totalActual = numeroDesdeHolded(actual.total);
+  const cuentaNueva = cambios.cuentaIdNueva?.trim();
+  if (cambios.cuentaIdNueva !== undefined && !cuentaNueva) {
+    throw new Error("La cuenta contable nueva no puede estar vacía.");
+  }
+  if (cuentaNueva && !cambios.lineas && lineasCrudasActuales.length === 0) {
+    throw new Error("No se puede reasignar la cuenta de una compra sin líneas.");
+  }
+  if (cuentaNueva) {
+    const cuentaExiste = (await obtenerPlanContable(empresa)).some((cuenta) => cuenta.id === cuentaNueva);
+    if (!cuentaExiste) {
+      throw new Error("La cuenta contable nueva no existe en el plan contable actual de Holded.");
+    }
+  }
 
   const items = cambios.lineas
     ? cambios.lineas.map((linea) => {
@@ -3320,6 +3350,7 @@ async function prepararEdicionCompraHolded(
           units: 1,
           price: linea.base,
           taxes: [taxKey, retencionKey].filter((k): k is string => Boolean(k)),
+          ...(cuentaNueva ? { account: cuentaNueva } : {}),
         };
       })
     : cambios.montoNuevo !== undefined
@@ -3328,12 +3359,14 @@ async function prepararEdicionCompraHolded(
           // escalar proporcionalmente (nunca reemplazar por el total completo
           // en cada línea) — de otro modo varias líneas reales quedarían
           // todas con el monto NUEVO completo en vez de repartirlo entre ellas.
-          lineasCrudasActuales.map((l) => lineaCrudaAItem(l, (numeroDesdeHolded(l.price) * cambios.montoNuevo!) / totalActual))
+          lineasCrudasActuales.map((l) =>
+            lineaCrudaAItem(l, (numeroDesdeHolded(l.price) * cambios.montoNuevo!) / totalActual, cuentaNueva)
+          )
         : // Sin línea previa con total real (0€ o sin líneas) — no hay proporción
           // que escalar, se reemplaza por una única línea limpia con el monto
           // nuevo, mismo criterio que el caso degenerado de aplicarTextoAjusteMonto.
           [{ name: actual.description ?? "(línea)", type: "product", units: 1, price: cambios.montoNuevo, taxes: [] }]
-      : lineasCrudasActuales.map((l) => lineaCrudaAItem(l));
+      : lineasCrudasActuales.map((l) => lineaCrudaAItem(l, undefined, cuentaNueva));
 
   // Bug real de gravedad alta encontrado en vivo (2026-09-08, gasto de Google
   // Workspace en USD, Footprint — reporte explícito de Carlos): este PUT
@@ -3396,6 +3429,14 @@ async function prepararEdicionCompraHolded(
     // design_id SÍ es un campo editable documentado de este PUT (verificado
     // en vivo contra la API real) — se preserva tal cual, igual que due_date.
     ...(actual.design_id ? { design_id: actual.design_id } : {}),
+    // Estos campos existen en la lectura real de Holded. Aunque algunos no
+    // aparecen aún en el esquema público del PUT, reenviarlos evita perder
+    // metadatos si la API los trata como mutables; si no los admite, Holded
+    // los ignora (el cuerpo ya contiene otros campos reales no documentados,
+    // como currency/contact_id, por el mismo motivo de preservación).
+    ...(actual.description != null ? { description: actual.description } : {}),
+    ...(typeof actual.notes === "string" ? { notes: actual.notes } : {}),
+    ...(Array.isArray(actual.tags) ? { tags: actual.tags } : {}),
     items,
   };
 
@@ -3412,11 +3453,11 @@ async function prepararEdicionCompraHolded(
     currency_change: tasaCambioActual,
     contact_id: actual.contact_id,
     design_id: actual.design_id,
-    lines: items.map(() => ({})),
+    lines: items as LineaCompraHoldedCruda[],
     total: cambios.montoNuevo ?? actual.total,
   };
   return {
-    huellaEsperada: huellaEstadoCompra(esperada, verificarTotal),
+    huellaEsperada: huellaEstadoCompra(esperada, verificarTotal, Boolean(cuentaNueva)),
     verificarTotal,
     payload: {
       empresa,
@@ -3434,7 +3475,11 @@ interface PayloadEdicionCompraHolded {
   fecha: string;
 }
 
-export function huellaEstadoCompra(compra: CompraHoldedCruda, verificarTotal: boolean): string {
+export function huellaEstadoCompra(
+  compra: CompraHoldedCruda,
+  verificarTotal: boolean,
+  verificarCuentas = false
+): string {
   const estado: Record<string, unknown> = {
     numeroDocumento: compra.document_number || "",
     fecha: compra.date ?? "",
@@ -3446,7 +3491,34 @@ export function huellaEstadoCompra(compra: CompraHoldedCruda, verificarTotal: bo
     numeroLineas: compra.lines?.length ?? 0,
   };
   if (verificarTotal) estado.totalCentimos = Math.round(numeroDesdeHolded(compra.total) * 100);
-  return createHash("sha256").update(JSON.stringify(estado)).digest("hex");
+  if (verificarCuentas) {
+    estado.metadatosProtegidos = {
+      descripcion: compra.description ?? null,
+      notas: compra.notes ?? null,
+      tags: compra.tags ?? [],
+    };
+    estado.lineasProtegidas = (compra.lines ?? []).map((linea) => ({
+      nombre: linea.name ?? null,
+      tipo: linea.type ?? null,
+      descripcion: linea.description ?? null,
+      producto: linea.product_id ?? null,
+      unidades: numeroDesdeHolded(linea.units),
+      precio: numeroDesdeHolded(linea.price),
+      descuento: numeroDesdeHolded(linea.discount),
+      impuestos: linea.taxes ?? [],
+      tags: linea.tags ?? [],
+      sku: linea.sku ?? null,
+      cuenta: (linea.account ?? "").trim(),
+      proyecto: linea.project_id ?? null,
+      retencion: numeroDesdeHolded(linea.retention),
+      unidad: linea.unit_type ?? null,
+    }));
+  }
+  const huella = createHash("sha256").update(JSON.stringify(estado)).digest("hex");
+  // La marca permite que la reconciliación durable sepa qué versión
+  // calcular sin cambiar el esquema del ledger ni invalidar ediciones
+  // anteriores que ya guardaron la huella histórica sin cuentas.
+  return verificarCuentas ? `cuentas-v1:${huella}` : huella;
 }
 
 function payloadEdicion(preparacion: PreparacionEdicionCompra): PayloadEdicionCompraHolded {
