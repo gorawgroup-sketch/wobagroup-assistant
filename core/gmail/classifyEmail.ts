@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { knowledgeBaseTool } from "../tools/knowledgeBase";
+import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import type { CorreoResumen } from "./client";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
@@ -186,6 +186,11 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
   ].join("\n");
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
+  const consultarConocimiento = crearConsultorConocimiento({
+    ambito: "correo",
+    maxCaracteres: 16_000,
+    maxConsultas: 1,
+  });
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await crearMensajeAnthropic(anthropic, ejecucion, {
@@ -233,7 +238,7 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
       if (block.name === knowledgeBaseTool.name) {
-        const resultado = await knowledgeBaseTool.handler(block.input as Record<string, unknown>);
+        const resultado = await consultarConocimiento(block.input as Record<string, unknown>);
         toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultado });
       }
     }

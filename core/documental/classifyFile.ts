@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { knowledgeBaseTool } from "../tools/knowledgeBase";
+import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import { listarSubcarpetas } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
@@ -188,6 +188,13 @@ export async function clasificarDocumento(
   ].join("\n");
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
+  // La clasificación de carpetas no necesita el Plan General Contable. Se conserva el corpus completo,
+  // pero este flujo solo puede recuperar contexto documental compacto una vez por ejecución.
+  const consultarConocimiento = crearConsultorConocimiento({
+    ambito: "documental",
+    maxCaracteres: 14_000,
+    maxConsultas: 1,
+  });
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await crearMensajeAnthropic(anthropic, ejecucion, {
@@ -203,6 +210,9 @@ export async function clasificarDocumento(
       // Prefijo estable compartido por los archivos procesados en el mismo
       // lote; los metadatos del archivo siguen siendo entrada no cacheada.
       system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      // Desde la segunda vuelta, cachea además el historial de herramientas. No se activa en la primera
+      // para no pagar una escritura de caché sobre una entrada única si Claude resuelve de inmediato.
+      cache_control: i > 0 ? { type: "ephemeral" } : undefined,
       tools,
       messages,
     });
@@ -239,7 +249,7 @@ export async function clasificarDocumento(
       let resultado: string;
 
       if (block.name === knowledgeBaseTool.name) {
-        resultado = await knowledgeBaseTool.handler(block.input as Record<string, unknown>);
+        resultado = await consultarConocimiento(block.input as Record<string, unknown>);
       } else if (block.name === LISTAR_CARPETAS_TOOL_NAME) {
         const input = block.input as { empresa?: EmpresaConCarpeta; carpeta_padre?: string };
         const rootId = input.empresa ? ROOT_FOLDERS[input.empresa] : undefined;

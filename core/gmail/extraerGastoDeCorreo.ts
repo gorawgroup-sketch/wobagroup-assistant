@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { knowledgeBaseTool } from "../tools/knowledgeBase";
+import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
@@ -218,6 +218,11 @@ export async function extraerGastoDeCorreo(
   ].join("\n");
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
+  const consultarConocimiento = crearConsultorConocimiento({
+    ambito: "contabilidad",
+    maxCaracteres: 24_000,
+    maxConsultas: 2,
+  });
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const response = await crearMensajeAnthropic(anthropic, ejecucion, {
@@ -288,7 +293,7 @@ export async function extraerGastoDeCorreo(
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
       if (block.name === knowledgeBaseTool.name) {
-        const resultado = await knowledgeBaseTool.handler(block.input as Record<string, unknown>);
+        const resultado = await consultarConocimiento(block.input as Record<string, unknown>);
         toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultado });
       }
     }

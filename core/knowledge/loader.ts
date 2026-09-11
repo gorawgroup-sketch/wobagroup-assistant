@@ -3,12 +3,18 @@ import { join } from "node:path";
 
 const DOCS_DIR = join(process.cwd(), "docs");
 
-interface DocEntry {
+export interface DocEntry {
   nombre: string;
   contenido: string;
 }
 
+export interface FragmentoDocumento extends DocEntry {
+  seccion: string;
+  puntaje: number;
+}
+
 let cachedDocs: DocEntry[] | null = null;
+let cachedFragmentos: FragmentoDocumento[] | null = null;
 
 function leerTodosLosDocs(): DocEntry[] {
   if (cachedDocs !== null) return cachedDocs;
@@ -32,12 +38,51 @@ function leerTodosLosDocs(): DocEntry[] {
 /** Fuerza a que la próxima consulta vuelva a leer disco (ej. tras guardar una captura nueva). */
 export function invalidarCacheConocimiento(): void {
   cachedDocs = null;
+  cachedFragmentos = null;
 }
 
 const DIACRITICOS = new RegExp("[̀-ͯ]", "g");
 
-function normalizar(texto: string): string {
+export function normalizarConocimiento(texto: string): string {
   return texto.normalize("NFD").replace(DIACRITICOS, "").toLowerCase();
+}
+
+const PALABRAS_VACIAS = new Set([
+  "para", "como", "esta", "este", "esto", "estos", "estas", "desde", "hasta", "sobre", "entre",
+  "donde", "cuando", "quien", "cual", "porque", "pero", "solo", "tambien", "tiene", "tener", "hacer",
+  "hecho", "grupo", "empresa", "informacion", "documento", "consulta", "necesito", "quiero", "the", "and",
+  "with", "from", "that", "this", "what", "when", "where",
+]);
+
+export function terminosConocimiento(consulta: string): string[] {
+  return Array.from(
+    new Set(
+      normalizarConocimiento(consulta)
+        .split(/[^a-z0-9]+/i)
+        .filter((p) => p.length >= 3 && !PALABRAS_VACIAS.has(p))
+    )
+  );
+}
+
+/** Puntaje acotado y reutilizable para capturas/correcciones dinámicas. */
+export function puntuarTextoConocimiento(texto: string, consulta: string): number {
+  const normalizado = normalizarConocimiento(texto);
+  const terminos = terminosConocimiento(consulta);
+  if (terminos.length === 0) return 0;
+
+  let puntaje = 0;
+  let distintos = 0;
+  for (const termino of terminos) {
+    const apariciones = normalizado.split(termino).length - 1;
+    if (apariciones > 0) {
+      distintos += 1;
+      puntaje += 3 + Math.min(apariciones, 8);
+    }
+  }
+
+  const frase = normalizarConocimiento(consulta).trim();
+  if (frase.length >= 8 && normalizado.includes(frase)) puntaje += 20;
+  return puntaje + distintos * 2;
 }
 
 export interface IndiceDocumento {
@@ -53,127 +98,161 @@ export function obtenerIndiceDocumentos(): IndiceDocumento[] {
   }));
 }
 
-const MAX_DOCS_RELEVANTES = 3;
-const LONGITUD_MINIMA_PALABRA = 3;
+const MAX_FRAGMENTO_CARACTERES = 6_000;
+const SOLAPAMIENTO_CARACTERES = 500;
+const LONGITUD_MINIMA_CORTE = Math.floor(MAX_FRAGMENTO_CARACTERES * 0.6);
 
-/**
- * Selecciona, por coincidencia simple de palabras clave (insensible a
- * mayúsculas/acentos), los documentos de /docs más relevantes a `consulta`
- * — en vez de cargar y concatenar todo el contenido de /docs en cada
- * llamada, que desperdicia contexto en preguntas puntuales y no escala
- * si se agregan más documentos.
- *
- * Hallazgo real de auditoría (integración del Plan General de Contabilidad, 2026-09-11 — documentos de
- * 30KB a 435KB, contra un corpus previo donde el más grande apenas llegaba a 56KB): la limitación ya
- * documentada acá ("un documento pequeño y muy específico puede perder contra documentos grandes y
- * genéricos") pasó de riesgo teórico a bug real, verificado en vivo. La consulta "cuenta contable
- * servicios profesionales independientes" nunca traía el cuadro de cuentas (la respuesta real),
- * porque palabras genéricas del propio dominio ("cuenta", "contable" — aparecen miles de veces en
- * CUALQUIER parte del Plan General de Contabilidad, sin distinguir nada entre sus partes) dominaban
- * el conteo bruto, ahogando a las palabras realmente distintivas de la consulta ("profesionales",
- * "independientes"). Dos correcciones probadas en vivo, ambas necesarias:
- * 1) IDF con corte duro — una palabra presente en más de la mitad de los documentos del corpus se
- *    considera genérica del dominio y pesa CERO (no "casi cero", un IDF suave del tipo
- *    1/documentos-que-la-contienen no bastaba: con miles de apariciones en un documento grande, hasta
- *    un peso pequeño seguía ganando por volumen); el resto pesa 1/documentos-que-la-contienen (más
- *    rara = más peso).
- * 2) Normalización logarítmica por longitud — SIN esto, una palabra de frecuencia media (ej. "nuevo",
- *    presente en la mitad exacta de los documentos, justo debajo del corte del punto 1) seguía
- *    ganando por volumen bruto en un documento de 230KB frente a un documento de 2KB genuinamente
- *    relevante. Dividir por la longitud DIRECTA (densidad por cada 1.000 caracteres) sobrecorrige en
- *    la otra dirección — deja ganar a un documento chico e IRRELEVANTE con una sola coincidencia de
- *    una palabra rara, verificado en vivo. Dividir por log(longitud) amortigua la ventaja de un
- *    documento enorme sin inflar documentos chicos por casualidad — verificado en vivo contra 5
- *    consultas reales (con y sin relación al Plan General de Contabilidad) sin regresión.
- */
-export function buscarDocumentosRelevantes(consulta: string): DocEntry[] {
-  const docs = leerTodosLosDocs();
+function cortarCercaDeSalto(texto: string, inicio: number, limite: number): number {
+  if (limite >= texto.length) return texto.length;
+  const minimo = inicio + LONGITUD_MINIMA_CORTE;
+  const dobleSalto = texto.lastIndexOf("\n\n", limite);
+  if (dobleSalto >= minimo) return dobleSalto + 2;
+  const salto = texto.lastIndexOf("\n", limite);
+  return salto >= minimo ? salto + 1 : limite;
+}
 
-  const palabras = normalizar(consulta)
-    .split(/[^a-z0-9]+/i)
-    .filter((p) => p.length >= LONGITUD_MINIMA_PALABRA);
+function fragmentarDocumento(doc: DocEntry): FragmentoDocumento[] {
+  const contenido = doc.contenido.replace(/\f/g, "\n");
+  const resultado: FragmentoDocumento[] = [];
+  let inicio = 0;
+  let numero = 1;
 
-  if (palabras.length === 0) return [];
-
-  const contenidosNormalizados = docs.map((doc) => normalizar(doc.contenido));
-
-  const pesoPorPalabra = new Map<string, number>();
-  for (const palabra of palabras) {
-    const docsConPalabra = contenidosNormalizados.filter((c) => c.includes(palabra)).length;
-    const genericaDelDominio = docs.length > 0 && docsConPalabra / docs.length > 0.5;
-    pesoPorPalabra.set(palabra, genericaDelDominio || docsConPalabra === 0 ? 0 : 1 / docsConPalabra);
+  while (inicio < contenido.length) {
+    const fin = cortarCercaDeSalto(contenido, inicio, inicio + MAX_FRAGMENTO_CARACTERES);
+    const trozo = contenido.slice(inicio, fin).trim();
+    if (trozo) {
+      const encabezado = trozo
+        .split("\n")
+        .find((linea) => /^#{1,6}\s+/.test(linea.trim()))
+        ?.replace(/^#{1,6}\s+/, "")
+        .trim();
+      resultado.push({
+        nombre: doc.nombre,
+        contenido: trozo,
+        seccion: encabezado || `fragmento ${numero}`,
+        puntaje: 0,
+      });
+      numero += 1;
+    }
+    if (fin >= contenido.length) break;
+    inicio = Math.max(inicio + 1, fin - SOLAPAMIENTO_CARACTERES);
   }
 
-  const puntuados = docs.map((doc, i) => {
-    const contenidoNormalizado = contenidosNormalizados[i];
-    let coincidencias = 0;
-    let puntaje = 0;
-    for (const palabra of palabras) {
-      const apariciones = contenidoNormalizado.split(palabra).length - 1;
-      coincidencias += apariciones;
-      puntaje += apariciones * (pesoPorPalabra.get(palabra) ?? 0);
-    }
-    // Normalizado por log(longitud), no por longitud directa — probado en vivo: dividir por longitud
-    // directa (densidad por cada 1.000 caracteres) sobrecorrige y deja ganar a un documento chico e
-    // IRRELEVANTE con una sola coincidencia de una palabra rara, contra un documento grande y sí
-    // relevante con docenas de coincidencias reales. El logaritmo amortigua la ventaja de un documento
-    // enorme sin inflar documentos chicos por casualidad.
-    const puntajeNormalizado = puntaje / Math.log(contenidoNormalizado.length + 10);
-    return { doc, coincidencias, puntajeNormalizado };
-  });
+  return resultado;
+}
 
-  return puntuados
-    .filter((p) => p.coincidencias > 0)
-    .sort((a, b) => b.puntajeNormalizado - a.puntajeNormalizado)
-    .slice(0, MAX_DOCS_RELEVANTES)
-    .map((p) => p.doc);
+function leerFragmentos(): FragmentoDocumento[] {
+  if (cachedFragmentos !== null) return cachedFragmentos;
+  cachedFragmentos = leerTodosLosDocs().flatMap(fragmentarDocumento);
+  return cachedFragmentos;
+}
+
+export interface OpcionesFragmentos {
+  incluirPGC?: boolean;
+  maxCaracteres?: number;
+  maxFragmentos?: number;
 }
 
 /**
- * Tamaño (caracteres) por debajo del cual se prefiere cargar TODO el corpus
- * de /docs en vez de aplicar scoring selectivo — a este volumen, cargar todo
- * cabe cómodamente en el contexto y evita el riesgo de scoring descrito
- * arriba. Por encima del umbral, cargar todo dejaría de ser barato y se usa
- * buscarDocumentosRelevantes (que sí puede perder documentos pequeños, pero
- * a cambio no desperdicia contexto en cada consulta).
+ * Recuperación por fragmentos con presupuesto estricto. El corpus original permanece completo en disco; nunca
+ * se resume ni se elimina. Solo se limita lo que viaja en UNA llamada al modelo. Esto evita que un documento
+ * grande (el PGC supera 400 KB) se reenvíe entero en cada vuelta de tool-use.
  */
-const UMBRAL_CARGA_COMPLETA = 40_000;
+export function buscarFragmentosRelevantes(
+  consulta: string,
+  opciones: OpcionesFragmentos = {}
+): FragmentoDocumento[] {
+  const incluirPGC = opciones.incluirPGC ?? true;
+  const maxCaracteres = Math.max(1_000, opciones.maxCaracteres ?? 14_000);
+  const maxFragmentos = Math.max(1, opciones.maxFragmentos ?? 5);
+  const terminos = terminosConocimiento(consulta);
+  if (terminos.length === 0) return [];
 
-/**
- * Punto de entrada real para el tool consultar_base_conocimiento: decide
- * entre cargar todos los documentos regulares de /docs (corpus pequeño) o
- * aplicar el scoring por palabras clave de buscarDocumentosRelevantes
- * (corpus grande) — nunca ambos a la vez. No aplica a capturas/correcciones,
- * que se incluyen siempre desde sus propios stores en Sheets,
- * independientemente de este umbral.
- */
-export function seleccionarDocumentosRelevantes(consulta: string): DocEntry[] {
-  const docs = leerTodosLosDocs();
-  const tamanoTotal = docs.reduce((acc, doc) => acc + doc.contenido.length, 0);
-
-  if (tamanoTotal < UMBRAL_CARGA_COMPLETA) {
-    return docs;
+  const candidatos = leerFragmentos().filter(
+    (fragmento) => incluirPGC || !fragmento.nombre.startsWith("PGC_")
+  );
+  const frecuenciaDocumental = new Map<string, number>();
+  for (const termino of terminos) {
+    frecuenciaDocumental.set(
+      termino,
+      candidatos.filter((fragmento) => normalizarConocimiento(fragmento.contenido).includes(termino)).length
+    );
   }
 
-  return buscarDocumentosRelevantes(consulta);
+  const puntuados = candidatos
+    .map((fragmento) => {
+      const texto = normalizarConocimiento(
+        `${fragmento.nombre} ${fragmento.seccion}\n${fragmento.contenido}`
+      );
+      let puntaje = 0;
+      let distintos = 0;
+      for (const termino of terminos) {
+        const apariciones = texto.split(termino).length - 1;
+        if (apariciones <= 0) continue;
+        distintos += 1;
+        const frecuencia = frecuenciaDocumental.get(termino) ?? 1;
+        const idf = Math.log((candidatos.length + 1) / (frecuencia + 1)) + 1;
+        puntaje += (2 + Math.log1p(apariciones)) * idf;
+      }
+      const cobertura = distintos / terminos.length;
+      puntaje += cobertura * 12;
+      if (distintos === terminos.length) puntaje += 8;
+      return { ...fragmento, puntaje };
+    })
+    .filter((fragmento) => fragmento.puntaje > 0)
+    .sort((a, b) => b.puntaje - a.puntaje || a.nombre.localeCompare(b.nombre));
+
+  const seleccionados: FragmentoDocumento[] = [];
+  let usados = 0;
+  for (const fragmento of puntuados) {
+    if (seleccionados.length >= maxFragmentos) break;
+    const cabecera = `<!-- Fuente: docs/${fragmento.nombre}; sección: ${fragmento.seccion} -->\n`;
+    const disponible = maxCaracteres - usados - cabecera.length;
+    if (disponible < 300) break;
+    const contenido = fragmento.contenido.slice(0, disponible);
+    seleccionados.push({ ...fragmento, contenido });
+    usados += cabecera.length + contenido.length + 6;
+  }
+
+  return seleccionados;
+}
+
+/** Compatibilidad para consumidores previos; devuelve únicamente los fragmentos presupuestados. */
+export function buscarDocumentosRelevantes(consulta: string): DocEntry[] {
+  return buscarFragmentosRelevantes(consulta, { maxCaracteres: 18_000 }).map(
+    ({ nombre, contenido }) => ({ nombre, contenido })
+  );
+}
+
+/**
+ * Compatibilidad con consumidores existentes. Las llamadas del modelo deben usar buscarFragmentosRelevantes;
+ * esta función ya no devuelve documentos gigantes completos.
+ */
+export function seleccionarDocumentosRelevantes(consulta: string): DocEntry[] {
+  return buscarFragmentosRelevantes(consulta).map(({ nombre, contenido }) => ({ nombre, contenido }));
 }
 
 export interface ModoRetrieval {
-  modo: "carga_completa" | "scoring";
+  modo: "carga_completa" | "scoring_fragmentos";
   tamanoTotalCaracteres: number;
   umbralCaracteres: number;
   documentos: number;
+  fragmentos: number;
+  maxCaracteresPorConsulta: number;
 }
 
-/** Diagnóstico de qué modo está usando seleccionarDocumentosRelevantes ahora mismo, y por qué. */
+/** Diagnóstico del modo acotado para el panel de control. */
 export function obtenerModoRetrieval(): ModoRetrieval {
   const docs = leerTodosLosDocs();
-  const tamanoTotal = docs.reduce((acc, doc) => acc + doc.contenido.length, 0);
+  const tamanoTotalCaracteres = docs.reduce((acc, doc) => acc + doc.contenido.length, 0);
+  const umbralCaracteres = 40_000;
 
   return {
-    modo: tamanoTotal < UMBRAL_CARGA_COMPLETA ? "carga_completa" : "scoring",
-    tamanoTotalCaracteres: tamanoTotal,
-    umbralCaracteres: UMBRAL_CARGA_COMPLETA,
+    modo: tamanoTotalCaracteres < umbralCaracteres ? "carga_completa" : "scoring_fragmentos",
+    tamanoTotalCaracteres,
+    umbralCaracteres,
     documentos: docs.length,
+    fragmentos: leerFragmentos().length,
+    maxCaracteresPorConsulta: 14_000,
   };
 }
