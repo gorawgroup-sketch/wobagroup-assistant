@@ -335,7 +335,14 @@ const MAX_ITEMS_RECIENTES = 5;
 
 async function construirConocimiento() {
   const [modo, capturas, correcciones] = await Promise.all([
-    seguro("conocimiento.modo", async () => obtenerModoRetrieval(), { modo: "carga_completa" as const, tamanoTotalCaracteres: 0, umbralCaracteres: 0, documentos: 0 }),
+    seguro("conocimiento.modo", async () => obtenerModoRetrieval(), {
+      modo: "carga_completa" as const,
+      tamanoTotalCaracteres: 0,
+      umbralCaracteres: 0,
+      documentos: 0,
+      fragmentos: 0,
+      maxCaracteresPorConsulta: 14_000,
+    }),
     seguro("conocimiento.capturas", obtenerCapturasCrudas, []),
     seguro("conocimiento.correcciones", obtenerCorreccionesCrudas, []),
   ]);
@@ -361,12 +368,12 @@ async function construirConocimiento() {
     documentos: modo.documentos,
     listaDocumentos: indiceDocumentos,
     modoActual: modo.modo,
-    // "carga_completa" y "scoring" son nombres internos sin sentido para
-    // quien no programó el sistema — se traduce a una frase clara.
+    // Los nombres internos del modo no son útiles para quien opera el sistema; se traducen a una frase clara.
     explicacionModo:
       modo.modo === "carga_completa"
         ? "Todos los documentos caben completos en cada consulta — no hace falta elegir cuáles son relevantes."
-        : "Hay demasiado contenido para mandarlo completo en cada consulta — se seleccionan los documentos más relevantes según palabras clave de la pregunta.",
+        : `Las fuentes completas están conservadas, pero cada consulta recibe solo fragmentos relevantes ` +
+          `(máximo ${modo.maxCaracteresPorConsulta.toLocaleString("es-ES")} caracteres de documentos) para evitar coste y latencia innecesarios.`,
     ultimaCaptura,
     ultimaCorreccion,
     totalCapturas: capturas.length,
