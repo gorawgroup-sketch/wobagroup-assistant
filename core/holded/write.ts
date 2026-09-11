@@ -51,6 +51,19 @@ import {
   type ResultadoConciliacionMovimiento,
 } from "./durableBankReconciliation";
 import { durableBankReconciliationStore } from "./durableBankReconciliationStore";
+import {
+  ContactosHoldedAmbiguosError,
+  CreacionContactoInciertaError,
+  ejecutarCreacionContactoDurable,
+  identidadCreacionContacto,
+  normalizarCodigoFiscalContacto,
+  normalizarNombreContacto,
+  reconciliarCreacionesContactoPendientes,
+  type InspeccionCreacionContacto,
+  type RegistroCreacionContacto,
+  type ResultadoCreacionContacto,
+} from "./durableContact";
+import { durableContactStore } from "./durableContactStore";
 
 export { ConflictoCreacionCompraError, CreacionCompraInciertaError } from "./durablePurchase";
 export { ConflictoEdicionCompraError, EdicionCompraInciertaError } from "./durablePurchaseEdit";
@@ -64,6 +77,10 @@ export {
   ConflictoConciliacionMovimientoError,
   MovimientoYaConciliadoError,
 } from "./durableBankReconciliation";
+export {
+  ContactosHoldedAmbiguosError,
+  CreacionContactoInciertaError,
+} from "./durableContact";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -462,6 +479,72 @@ function programarReconciliacionMovimientos(demoraMs: number, intentosRestantes:
   timerReconciliacionMovimientos.unref();
 }
 
+const metricasCreacionesContactoDurables = {
+  activas: 0,
+  creadas: 0,
+  reutilizadas: 0,
+  verificadasRecuperadas: 0,
+  incertidumbresDetectadas: 0,
+  ambiguasDetectadas: 0,
+  errores: 0,
+  inciertasUltimaRevision: 0,
+};
+let timerReconciliacionContactos: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionCreacionesContactoDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    habilitado: (env.WOBI_HOLDED_CONTACT_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoCreacionesContactoDurables() {
+  return {
+    habilitado: configuracionCreacionesContactoDurables().habilitado,
+    ...metricasCreacionesContactoDurables,
+  };
+}
+
+/** Reconciliación de arranque exclusivamente por GET; nunca llama a POST /contacts. */
+export async function reconciliarContactosAlArrancar() {
+  if (!configuracionCreacionesContactoDurables().habilitado) {
+    return { revisadas: 0, verificadas: 0, inciertas: 0, ambiguas: 0, errores: 0 };
+  }
+  const resumen = await reconciliarCreacionesContactoPendientes(
+    durableContactStore,
+    inspeccionarCreacionContactoRegistrada
+  );
+  metricasCreacionesContactoDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasCreacionesContactoDurables.incertidumbresDetectadas += resumen.inciertas;
+  metricasCreacionesContactoDurables.ambiguasDetectadas += resumen.ambiguas;
+  metricasCreacionesContactoDurables.errores += resumen.errores;
+  metricasCreacionesContactoDurables.inciertasUltimaRevision = resumen.inciertas;
+  if (resumen.inciertas > 0 || resumen.errores > 0) programarReconciliacionContactos(30_000, 3);
+  return resumen;
+}
+
+function programarReconciliacionContactos(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacionContactos || intentosRestantes <= 0) return;
+  timerReconciliacionContactos = setTimeout(() => {
+    timerReconciliacionContactos = null;
+    void reconciliarCreacionesContactoPendientes(durableContactStore, inspeccionarCreacionContactoRegistrada)
+      .then((resumen) => {
+        metricasCreacionesContactoDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasCreacionesContactoDurables.incertidumbresDetectadas += resumen.inciertas;
+        metricasCreacionesContactoDurables.ambiguasDetectadas += resumen.ambiguas;
+        metricasCreacionesContactoDurables.errores += resumen.errores;
+        metricasCreacionesContactoDurables.inciertasUltimaRevision = resumen.inciertas;
+        if (resumen.inciertas > 0 || resumen.errores > 0) {
+          programarReconciliacionContactos(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasCreacionesContactoDurables.errores++;
+        programarReconciliacionContactos(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacionContactos.unref();
+}
+
 export interface HoldedContact {
   id: string;
   name?: string;
@@ -494,6 +577,9 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
 
   for (let pagina = 0; pagina < MAX_PAGINAS_CONTACTOS; pagina++) {
     const path = `/contacts?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    // Conservamos la credencial histórica de escritura para este buscador general:
+    // así desactivar el ledger restaura exactamente la ruta previa. La reconciliación
+    // durable y de solo lectura usa holdedReadJson por separado (abajo).
     const data = (await holdedWriteCall(empresa, "GET", path)) as {
       items?: HoldedContact[];
       cursor?: string;
@@ -502,11 +588,14 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
 
     contactos.push(...(data.items ?? []));
 
-    if (!data.has_more || !data.cursor) break;
+    if (!data.has_more) return contactos;
+    if (!data.cursor || pagina === MAX_PAGINAS_CONTACTOS - 1) {
+      throw new Error("Holded devolvió una lista incompleta de contactos; Wobi no puede decidir con seguridad.");
+    }
     cursor = data.cursor;
   }
 
-  return contactos;
+  throw new Error("Holded superó el límite seguro de paginación de contactos.");
 }
 
 // Nunca aceptar un match de buscarContactoHolded que dependa SOLO de una
@@ -648,33 +737,143 @@ export async function buscarContactoHolded(empresa: Empresa, nombre: string): Pr
   return puntuados[0].contacto;
 }
 
-/**
- * Pedido explícito de Carlos, tras un caso real (gasto de "CAFÉ PINO", Footprint, terminó mostrando
- * "Lidl Breda" en Holded): el contacto placeholder compartido "PROVEEDOR SIN IDENTIFICAR" (ver
- * CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA en gastoCallbackHandler.ts) es el MISMO registro para TODOS los
- * gastos sin proveedor identificado de una empresa — si alguien lo renombra en Holded pensando que
- * corrige UN gasto puntual (ya documentado que pasó 3 veces: "Aeropuerto de Panamá", "Kyriad Creteil",
- * ahora "Lidl Breda"), cambia el nombre mostrado en TODOS los demás, pasados y futuros. Cuando el
- * proveedor SÍ se identificó con confianza desde el documento (solo no existe todavía como contacto
- * real en Holded), crear un contacto NUEVO y propio evita el problema de raíz — nunca vuelve a
- * compartirse con otro gasto no relacionado. Verificado en vivo contra la API real de Holded
- * (POST /contacts con {name, type:"supplier"} → 201 con id real; confirmado también que DELETE
- * /contacts/{id} funciona y es permanente, usado solo para limpiar el contacto de prueba de esta
- * verificación). "code" es el campo real que Holded usa para el NIF/CIF/RFC del contacto — se omite
- * cuando no se tiene (nunca se inventa uno).
- */
-export async function crearContactoHolded(empresa: Empresa, nombre: string, codigoFiscal?: string): Promise<{ id: string; name: string }> {
-  const nombreLimpio = nombre.trim();
-  const data = (await holdedWriteCall(empresa, "POST", "/contacts", {
-    name: nombreLimpio,
-    type: "supplier",
-    ...(codigoFiscal ? { code: codigoFiscal } : {}),
-  })) as { id?: string };
+type RespuestaContactosExactos = {
+  items?: HoldedContact[];
+  cursor?: string;
+  has_more?: boolean;
+};
 
-  if (!data.id) {
-    throw new Error("Holded no devolvió un id para el contacto creado.");
+async function paginarContactosExactos(empresa: Empresa, ruta: string, paramsBase: URLSearchParams): Promise<HoldedContact[]> {
+  const encontrados: HoldedContact[] = [];
+  let cursor: string | undefined;
+  for (let pagina = 0; pagina < MAX_PAGINAS_CONTACTOS; pagina++) {
+    const params = new URLSearchParams(paramsBase);
+    params.set("limit", "100");
+    if (cursor) params.set("cursor", cursor);
+    const data = (await holdedReadJson(empresa, `${ruta}?${params.toString()}`)) as RespuestaContactosExactos;
+    encontrados.push(...(data.items ?? []));
+    if (!data.has_more) return encontrados;
+    if (!data.cursor || pagina === MAX_PAGINAS_CONTACTOS - 1) {
+      throw new Error("Holded devolvió una búsqueda incompleta de contactos; no es seguro crear otro.");
+    }
+    cursor = data.cursor;
   }
-  return { id: data.id, name: nombreLimpio };
+  throw new Error("Holded superó el límite seguro de búsqueda de contactos.");
+}
+
+function contactosUnicosPorId(contactos: HoldedContact[]): HoldedContact[] {
+  return [...new Map(contactos.filter((c) => c.id).map((c) => [c.id, c])).values()];
+}
+
+async function inspeccionarCreacionContactoRegistrada(
+  registro: RegistroCreacionContacto
+): Promise<InspeccionCreacionContacto> {
+  let exactosCodigo: HoldedContact[] = [];
+  if (registro.codigoFiscal) {
+    exactosCodigo = contactosUnicosPorId(
+      (await paginarContactosExactos(
+        registro.empresa,
+        "/contacts",
+        new URLSearchParams({ code: registro.codigoFiscal })
+      )).filter(
+        (contacto) =>
+          typeof contacto.code === "string" &&
+          normalizarCodigoFiscalContacto(contacto.code) === registro.codigoFiscalNormalizado
+      )
+    );
+    if (exactosCodigo.length > 1) return { estado: "ambiguo", cantidad: exactosCodigo.length };
+    if (exactosCodigo.length === 1) {
+      const contacto = exactosCodigo[0];
+      return { estado: "unico", resultado: { id: contacto.id, name: contacto.name?.trim() || registro.nombre } };
+    }
+  }
+
+  const porNombre = contactosUnicosPorId(
+    (await paginarContactosExactos(
+      registro.empresa,
+      "/contacts/search",
+      new URLSearchParams({ name: registro.nombre })
+    )).filter(
+      (contacto) =>
+        typeof contacto.name === "string" &&
+        normalizarNombreContacto(contacto.name) === registro.nombreNormalizado
+    )
+  );
+  if (porNombre.length === 0) return { estado: "ausente" };
+  if (porNombre.length > 1) return { estado: "ambiguo", cantidad: porNombre.length };
+
+  const contacto = porNombre[0];
+  if (
+    registro.codigoFiscalNormalizado &&
+    (typeof contacto.code !== "string" ||
+      normalizarCodigoFiscalContacto(contacto.code) !== registro.codigoFiscalNormalizado)
+  ) {
+    return { estado: "ambiguo", cantidad: 1 };
+  }
+  return { estado: "unico", resultado: { id: contacto.id, name: contacto.name?.trim() || registro.nombre } };
+}
+
+async function aplicarCreacionContacto(registro: RegistroCreacionContacto): Promise<ResultadoCreacionContacto> {
+  const data = (await holdedWriteCall(registro.empresa, "POST", "/contacts", {
+    name: registro.nombre,
+    type: "supplier",
+    ...(registro.codigoFiscal ? { code: registro.codigoFiscal } : {}),
+  })) as { id?: string };
+  if (!data.id?.trim()) throw new Error("Holded no devolvió un id para el contacto creado.");
+  return { id: data.id, name: registro.nombre };
+}
+
+/**
+ * Crea o reutiliza un proveedor real mediante una frontera durable. Holded no expone una clave de
+ * idempotencia en POST /contacts, por lo que un timeout jamás permite repetir: Wobi busca por código
+ * fiscal exacto o nombre normalizado, y bloquea la operación si encuentra varias coincidencias.
+ */
+export async function crearContactoHolded(
+  empresa: Empresa,
+  nombre: string,
+  codigoFiscal?: string
+): Promise<ResultadoCreacionContacto> {
+  const registro = identidadCreacionContacto(
+    empresa,
+    nombre,
+    codigoFiscal,
+    "crear_contacto_proveedor"
+  );
+  if (!configuracionCreacionesContactoDurables().habilitado) {
+    return aplicarCreacionContacto(registro);
+  }
+
+  return conMutex(`holded-contact:${registro.clave}`, async () => {
+    metricasCreacionesContactoDurables.activas++;
+    try {
+      const ejecucion = await ejecutarCreacionContactoDurable(
+        registro,
+        durableContactStore,
+        { inspeccionar: inspeccionarCreacionContactoRegistrada, crear: aplicarCreacionContacto }
+      );
+      if (ejecucion.reutilizado) metricasCreacionesContactoDurables.reutilizadas++;
+      else metricasCreacionesContactoDurables.creadas++;
+      return ejecucion.resultado;
+    } catch (error) {
+      if (error instanceof ContactosHoldedAmbiguosError) {
+        metricasCreacionesContactoDurables.ambiguasDetectadas++;
+        if (error.despuesDeEscritura) {
+          metricasCreacionesContactoDurables.incertidumbresDetectadas++;
+          metricasCreacionesContactoDurables.inciertasUltimaRevision++;
+          programarReconciliacionContactos(30_000, 3);
+        }
+      } else if (error instanceof CreacionContactoInciertaError) {
+        metricasCreacionesContactoDurables.incertidumbresDetectadas++;
+        metricasCreacionesContactoDurables.inciertasUltimaRevision++;
+        programarReconciliacionContactos(30_000, 3);
+      } else {
+        metricasCreacionesContactoDurables.errores++;
+      }
+      throw error;
+    } finally {
+      metricasCreacionesContactoDurables.activas--;
+    }
+  });
 }
 
 /**

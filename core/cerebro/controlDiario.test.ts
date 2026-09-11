@@ -41,6 +41,7 @@ function entradaBase(): EntradaControlDiario {
     edicionesHolded: { preparada: 0, editando: 0, verificada: 2, incierta: 0 },
     adjuntosHolded: { preparado: 0, subiendo: 0, verificado: 3, incierto: 0 },
     conciliacionesHolded: { preparada: 0, conciliando: 0, verificada: 2, incierta: 0 },
+    contactosHolded: { preparada: 0, creando: 0, verificada: 2, incierta: 0 },
     generadoEn: new Date("2026-09-09T09:00:00Z"),
   };
 }
@@ -178,4 +179,20 @@ test("un fallo leyendo el ledger de conciliaciones nunca se representa como cero
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "ledger-conciliaciones-holded-no-disponible"));
+});
+
+test("un contacto de Holded incierto se eleva como crítico", () => {
+  const entrada = entradaBase();
+  entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1 };
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "contactos-holded-inciertos"));
+});
+
+test("un fallo leyendo el ledger de contactos nunca se representa como cero", () => {
+  const entrada = entradaBase();
+  entrada.contactosHolded = null;
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(control.recomendaciones.some((r) => r.id === "ledger-contactos-holded-no-disponible"));
 });

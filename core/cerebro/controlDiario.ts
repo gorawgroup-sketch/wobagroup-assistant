@@ -19,6 +19,10 @@ import {
   durableBankReconciliationStore,
   type ResumenLedgerConciliacionesMovimiento,
 } from "../holded/durableBankReconciliationStore";
+import {
+  durableContactStore,
+  type ResumenLedgerCreacionesContacto,
+} from "../holded/durableContactStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -54,6 +58,7 @@ export interface ControlDiario {
   edicionesHolded: ResumenLedgerEdicionesCompra | null;
   adjuntosHolded: ResumenLedgerAdjuntosCompra | null;
   conciliacionesHolded: ResumenLedgerConciliacionesMovimiento | null;
+  contactosHolded: ResumenLedgerCreacionesContacto | null;
   recomendaciones: RecomendacionControlDiario[];
 }
 
@@ -73,6 +78,8 @@ export interface EntradaControlDiario {
   adjuntosHolded?: ResumenLedgerAdjuntosCompra | null;
   /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
   conciliacionesHolded?: ResumenLedgerConciliacionesMovimiento | null;
+  /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
+  contactosHolded?: ResumenLedgerCreacionesContacto | null;
   generadoEn?: Date;
 }
 
@@ -212,6 +219,26 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     });
   }
 
+  if (entrada.contactosHolded === null) {
+    recomendaciones.push({
+      id: "ledger-contactos-holded-no-disponible",
+      prioridad: "critica",
+      titulo: "No se pudo comprobar la continuidad de contactos",
+      detalle: "El control diario no pudo leer el ledger durable de proveedores; no se asume que esté vacío.",
+      siguientePaso: "Revisar permisos de Google Sheets y la pestaña _contactos_holded_durables antes de crear otro proveedor.",
+      modulo: "conexiones",
+    });
+  } else if (entrada.contactosHolded && entrada.contactosHolded.incierta > 0) {
+    recomendaciones.push({
+      id: "contactos-holded-inciertos",
+      prioridad: "critica",
+      titulo: "Hay contactos de Holded con resultado incierto",
+      detalle: `${entrada.contactosHolded.incierta} contacto(s) no pudieron confirmarse por código fiscal o nombre exacto.`,
+      siguientePaso: "Comprobar esos proveedores en Holded y resolver coincidencias duplicadas antes de autorizar otra creación.",
+      modulo: "conexiones",
+    });
+  }
+
   if (!costos) {
     recomendaciones.push({
       id: "costos-no-disponibles",
@@ -330,12 +357,13 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     edicionesHolded: entrada.edicionesHolded ?? null,
     adjuntosHolded: entrada.adjuntosHolded ?? null,
     conciliacionesHolded: entrada.conciliacionesHolded ?? null,
+    contactosHolded: entrada.contactosHolded ?? null,
     recomendaciones,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded, adjuntosHolded, conciliacionesHolded] = await Promise.all([
+  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded, adjuntosHolded, conciliacionesHolded, contactosHolded] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
@@ -366,6 +394,10 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       console.error("[controlDiario] No se pudo leer el ledger de conciliaciones de Holded:", error instanceof Error ? error.name : "Error");
       return null;
     }),
+    durableContactStore.obtenerResumen().catch((error) => {
+      console.error("[controlDiario] No se pudo leer el ledger de contactos de Holded:", error instanceof Error ? error.name : "Error");
+      return null;
+    }),
   ]);
   const config = cargarConfiguracionPoliticaApi();
 
@@ -385,6 +417,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     edicionesHolded,
     adjuntosHolded,
     conciliacionesHolded,
+    contactosHolded,
     generadoEn: referencia,
   });
 }

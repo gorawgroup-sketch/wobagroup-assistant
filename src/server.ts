@@ -101,10 +101,12 @@ import {
   obtenerEstadoEdicionesCompraDurables,
   obtenerEstadoAdjuntosCompraDurables,
   obtenerEstadoConciliacionesMovimientoDurables,
+  obtenerEstadoCreacionesContactoDurables,
   reconciliarCreacionesCompraAlArrancar,
   reconciliarEdicionesCompraAlArrancar,
   reconciliarAdjuntosCompraAlArrancar,
   reconciliarMovimientosAlArrancar,
+  reconciliarContactosAlArrancar,
 } from "../core/holded/write";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
@@ -312,6 +314,7 @@ app.get("/health", (_req: Request, res: Response) => {
     edicionesHolded: obtenerEstadoEdicionesCompraDurables(),
     adjuntosHolded: obtenerEstadoAdjuntosCompraDurables(),
     conciliacionesHolded: obtenerEstadoConciliacionesMovimientoDurables(),
+    contactosHolded: obtenerEstadoCreacionesContactoDurables(),
   });
 });
 
@@ -1952,6 +1955,20 @@ servidorHttp = app.listen(PORT, () => {
       .catch((error) => {
         console.error(
           "[holded/durable] No se pudo reconciliar el ledger bancario al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarContactosAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación de contactos al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger de contactos al arrancar:",
           error instanceof Error ? error.name : "Error"
         );
       })
