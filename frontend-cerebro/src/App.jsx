@@ -3391,7 +3391,7 @@ export default function CerebroWoba() {
           )}
         </svg>
 
-        <WobiAvatar className="wobi-portrait--core" transparent energized={Boolean(active || openIds.length > 0 || openGroups.length > 0)} assemble={entered} />
+        <WobiAvatar className="wobi-portrait--core" transparent headOnly energized={Boolean(active || openIds.length > 0 || openGroups.length > 0)} assemble={entered} />
 
         {/* Etiquetas de los 3 grupos, siempre. */}
         {groupPositions.map((p, gi) => {

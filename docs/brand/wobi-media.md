@@ -21,3 +21,9 @@ Prompt: Create a single professional favicon brand mark derived from the referen
 Archivo: `frontend-cerebro/public/brand/wobi-transparent.png`, PNG RGBA 1254 × 1254. Se usa en el centro de las células; conserva el retrato aprobado y elimina el fondo exterior. El montaje muestrea su canal alfa y funde las partículas con la figura final durante 1,8 segundos. Con movimiento reducido se muestra directamente la figura.
 
 Herramienta: ImageGen integrada. Prompt final: Remove the background from this image. Make a transparent-background cutout PNG of the blue and gold Wobi nanobot person, keeping the same face, head, neck, shoulders and glowing particles. Output with transparent background enabled and actual alpha transparency. Do not draw checkerboard. Keep original artwork intact.
+
+## Cabeza actual: centro y favicon
+
+El centro muestra únicamente la cabeza del mismo `wobi-transparent.png` aprobado, sin cambiar ni regenerar el rostro. `src/wobiHead.js` define el encuadre y el contorno de la mandíbula; `WobiAvatar` aplica ese mismo recorte al SVG visible y al muestreo de nanobots. No se modifican los píxeles del original.
+
+El favicon activo es `brand/wobi-head.ico`, con PNG de 32, 180, 192 y 512 px. Se exporta del mismo SVG, contorno y archivo original mediante Sharp, conservando alfa; sustituye al anterior icono gráfico `wobi-face`. El PNG de 512 px permite reutilizar la cabeza en otros soportes.

@@ -1,10 +1,12 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { HEAD_OUTLINE, HEAD_VIEW } from "./wobiHead.js";
 
 export const WOBI_IMAGE = `${import.meta.env.BASE_URL}brand/wobi.png`;
 const WOBI_TRANSPARENT_IMAGE = `${import.meta.env.BASE_URL}brand/wobi-transparent.png`;
 
 /** The selected artwork remains the source of both the portrait and its assembly particles. */
-export default function WobiAvatar({ className = "", energized = false, speaking = false, assemble = false, transparent = false }) {
+export default function WobiAvatar({ className = "", energized = false, speaking = false, assemble = false, transparent = false, headOnly = false }) {
+  const headClipId = useId();
   const canvasRef = useRef(null);
   const [assembling, setAssembling] = useState(false);
   const image = transparent ? WOBI_TRANSPARENT_IMAGE : WOBI_IMAGE;
@@ -35,7 +37,16 @@ export default function WobiAvatar({ className = "", energized = false, speaking
         sample.width = sample.height = 160;
         const sampleCtx = sample.getContext("2d");
         if (!sampleCtx) { stop(); return; }
-        sampleCtx.drawImage(source, 0, 0, 160, 160);
+        if (headOnly) {
+          const scale = 160 / HEAD_VIEW.size;
+          sampleCtx.save();
+          sampleCtx.setTransform(scale, 0, 0, scale, -HEAD_VIEW.x * scale, -HEAD_VIEW.y * scale);
+          sampleCtx.clip(new Path2D(HEAD_OUTLINE));
+          sampleCtx.drawImage(source, 0, 0, 1254, 1254);
+          sampleCtx.restore();
+        } else {
+          sampleCtx.drawImage(source, 0, 0, 160, 160);
+        }
         const { data } = sampleCtx.getImageData(0, 0, 160, 160);
         const particles = [];
         for (let y = 0; y < 160; y += 2) {
@@ -76,11 +87,16 @@ export default function WobiAvatar({ className = "", energized = false, speaking
       source.onerror = null;
       motion.removeEventListener("change", onMotionChange);
     };
-  }, [assemble, image]);
+  }, [assemble, image, headOnly]);
 
   return (
     <div className={`wobi-portrait ${className}`} data-transparent={transparent} data-energized={energized} data-speaking={speaking} data-assembling={assembling}>
-      <img src={image} alt="WOBi, rostro humanoide formado por nanobots azules y ámbar" width="1254" height="1254" draggable="false" />
+      {headOnly ? (
+        <svg className="wobi-portrait__head" viewBox={`${HEAD_VIEW.x} ${HEAD_VIEW.y} ${HEAD_VIEW.size} ${HEAD_VIEW.size}`} role="img" aria-label="WOBi, cabeza formada por nanobots azules y ámbar">
+          <defs><clipPath id={headClipId} clipPathUnits="userSpaceOnUse"><path d={HEAD_OUTLINE} /></clipPath></defs>
+          <image href={image} width="1254" height="1254" clipPath={`url(#${headClipId})`} />
+        </svg>
+      ) : <img src={image} alt="WOBi, rostro humanoide formado por nanobots azules y ámbar" width="1254" height="1254" draggable="false" />}
       {assemble && <canvas ref={canvasRef} width="320" height="320" aria-hidden="true" />}
     </div>
   );
