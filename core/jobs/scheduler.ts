@@ -131,13 +131,16 @@ export function startScheduler(): void {
   console.log(`[scheduler] revisarCorreoNuevo programado: cada hora (${TIMEZONE})`);
 
   cron.schedule(
-    "0 19 * * *",
+    // No coincidir con revisarCorreoNuevo, que corre al minuto 0 de cada hora
+    // y también concentra lecturas de Sheets. La separación evita competir
+    // por la misma cuota por usuario durante el resumen más intensivo.
+    "10 19 * * *",
     () => {
       ejecutarSinSolapamiento("enviarResumenPendientesDiario", () => enviarResumenPendientesDiario());
     },
     { timezone: TIMEZONE }
   );
-  console.log(`[scheduler] enviarResumenPendientesDiario programado: diario 19:00 (${TIMEZONE})`);
+  console.log(`[scheduler] enviarResumenPendientesDiario programado: diario 19:10 (${TIMEZONE})`);
 
   cron.schedule(
     "30 23 * * *",
