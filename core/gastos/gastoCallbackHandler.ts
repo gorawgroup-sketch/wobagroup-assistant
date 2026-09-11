@@ -70,7 +70,9 @@ import {
   obtenerMonedasCuentasReales,
   reconciliarMovimiento,
   estaMovimientoYaConciliado,
+  AdjuntoCompraInciertoError,
   CreacionCompraInciertaError,
+  esArchivoLocalInexistente,
   ContactoNoEncontradoError,
   FechaBloqueadaError,
   PosibleDuplicadoGastoError,
@@ -150,11 +152,18 @@ async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
  */
 async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): Promise<void> {
   const adjuntar = (mimeType: string | undefined, nombreArchivo: string) =>
-    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType);
+    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType, {
+      idempotencyKey: `gasto:${propuesta.id}:adjunto:${purchaseId}`,
+      proceso: "comprobante_gasto_aprobado",
+    });
 
   try {
     await adjuntar(propuesta.mimeType, propuesta.nombreArchivoOriginal);
   } catch (error) {
+    // Solo reconstruimos tmp/uploads cuando realmente desapareció. Un error
+    // de red o de Holded puede significar que el POST sí tuvo efecto y nunca
+    // debe transformarse en una segunda subida.
+    if (!esArchivoLocalInexistente(error)) throw error;
     // Primer respaldo: era un adjunto REAL de Gmail (tiene attachmentId) — se vuelve a descargar el
     // MISMO archivo, así que su mimeType/nombre originales siguen siendo correctos. Segundo respaldo
     // (hallazgo real de auditoría, caso MARNAPA/GDL Pastriva): era un PDF SINTÉTICO generado del
@@ -638,7 +647,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.error(`[gastoCallbackHandler] Gasto ${candidato.id} ya existía pero falló adjuntar el comprobante:`, message);
-          notaComprobante = `\n\n⚠️ No pude adjuntar el comprobante (${message}). Súbelo a mano en Holded (id ${candidato.id}) si tienes el archivo.`;
+          notaComprobante = error instanceof AdjuntoCompraInciertoError
+            ? `\n\n⏳ Holded no confirmó todavía el comprobante. Wobi bloqueó toda repetición y lo verificará solo por lectura. No lo subas manualmente hasta comprobar el estado (id ${candidato.id}).`
+            : `\n\n⚠️ No pude adjuntar el comprobante (${message}). Súbelo a mano en Holded (id ${candidato.id}) si tienes el archivo.`;
         }
 
         await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto).catch(
@@ -1490,9 +1501,11 @@ async function crearGastoYReportar(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[gastoCallbackHandler] Gasto ${gasto.id} creado pero falló adjuntar el comprobante:`, message);
-    notaComprobante =
-      `\n\n⚠️ No pude adjuntar el comprobante (${message}). El gasto YA está creado en Holded (id ${gasto.id}) — ` +
-      `sube el comprobante a mano ahí, no reenvíes el documento o se duplicaría el gasto.`;
+    notaComprobante = error instanceof AdjuntoCompraInciertoError
+      ? `\n\n⏳ El gasto YA está creado en Holded (id ${gasto.id}), pero Holded no confirmó todavía el comprobante. ` +
+        "Wobi bloqueó toda repetición y lo verificará solo por lectura; no lo subas manualmente ni reenvíes el documento hasta comprobar el estado."
+      : `\n\n⚠️ No pude adjuntar el comprobante (${message}). El gasto YA está creado en Holded (id ${gasto.id}) — ` +
+        `sube el comprobante a mano ahí, no reenvíes el documento o se duplicaría el gasto.`;
   }
 
   // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
