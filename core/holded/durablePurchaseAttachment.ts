@@ -9,6 +9,14 @@ export interface ResultadoAdjuntoCompra {
   fileName: string;
 }
 
+export type ItemAdjuntoCompraHolded = string | {
+  id?: string;
+  identifier?: string;
+  name?: string;
+  filename?: string;
+  file_name?: string;
+};
+
 export interface RegistroAdjuntoCompra {
   clave: string;
   proceso: string;
@@ -77,6 +85,48 @@ export function esArchivoLocalInexistente(error: unknown): boolean {
 
 function hash(valor: string): string {
   return createHash("sha256").update(valor).digest("hex");
+}
+
+function referenciasAdjunto(item: ItemAdjuntoCompraHolded): string[] {
+  if (typeof item === "string") return item.trim() ? [item.trim()] : [];
+  return [item.id, item.identifier, item.name, item.filename, item.file_name]
+    .filter((valor): valor is string => typeof valor === "string" && Boolean(valor.trim()))
+    .map((valor) => valor.trim());
+}
+
+/**
+ * Holded puede sustituir el nombre enviado por un identificador propio al
+ * listar el adjunto. La prueba durable debe seguir ese identificador real y
+ * comparar los bytes, no depender del nombre original.
+ */
+export async function verificarAdjuntoListadoPorContenido(
+  registro: RegistroAdjuntoCompra,
+  items: ItemAdjuntoCompraHolded[],
+  descargar: (referencia: string) => Promise<Uint8Array | undefined>,
+  maxReferencias = 25
+): Promise<ResultadoAdjuntoCompra | undefined> {
+  const referencias = [...new Set(items.flatMap(referenciasAdjunto))];
+  if (referencias.length > maxReferencias) {
+    throw new AdjuntoCompraInciertoError();
+  }
+
+  let nombreEsperadoDetectado = false;
+  for (const referencia of referencias) {
+    if (referencia === registro.fileName) nombreEsperadoDetectado = true;
+    const bytes = await descargar(referencia);
+    if (!bytes) continue;
+    const huella = createHash("sha256").update(bytes).digest("hex");
+    if (huella === registro.contentHash) {
+      return { attachmentId: referencia, fileName: registro.fileName };
+    }
+  }
+
+  // El mismo nombre con otros bytes es un conflicto, no permiso para
+  // reemplazarlo o añadir otra copia.
+  if (nombreEsperadoDetectado) {
+    throw new Error("Holded ya contiene el nombre durable con bytes diferentes; Wobi bloqueó la carga.");
+  }
+  return undefined;
 }
 
 function extensionSegura(extension: string): string {

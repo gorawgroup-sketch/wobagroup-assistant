@@ -37,6 +37,8 @@ import {
   ejecutarAdjuntoCompraDurable,
   identidadAdjuntoCompra,
   reconciliarAdjuntosCompraPendientes,
+  verificarAdjuntoListadoPorContenido,
+  type ItemAdjuntoCompraHolded,
   type RegistroAdjuntoCompra,
   type ResultadoAdjuntoCompra,
 } from "./durablePurchaseAttachment";
@@ -2541,14 +2543,7 @@ async function descargarAdjuntoParaVerificar(
  * jamás autoriza un POST que pueda duplicar o reemplazar el archivo.
  */
 async function buscarAdjuntoPorHuella(registro: RegistroAdjuntoCompra): Promise<ResultadoAdjuntoCompra | undefined> {
-  type ItemAdjunto = string | {
-    id?: string;
-    identifier?: string;
-    name?: string;
-    filename?: string;
-    file_name?: string;
-  };
-  const candidatos: ItemAdjunto[] = [];
+  const candidatos: ItemAdjuntoCompraHolded[] = [];
   let cursor: string | undefined;
 
   for (let pagina = 0; pagina < MAX_PAGINAS_ADJUNTOS_HOLDED; pagina++) {
@@ -2559,15 +2554,9 @@ async function buscarAdjuntoPorHuella(registro: RegistroAdjuntoCompra): Promise<
       `/purchases/${encodeURIComponent(registro.purchaseId)}/attachments?${params.toString()}`
     );
     const data = Array.isArray(respuesta)
-      ? { items: respuesta as ItemAdjunto[], has_more: false as const, cursor: undefined }
-      : (respuesta as { items?: ItemAdjunto[]; has_more?: boolean; cursor?: string });
-    candidatos.push(
-      ...(data.items ?? []).filter((item) => {
-        if (typeof item === "string") return item === registro.fileName;
-        return [item.id, item.identifier, item.name, item.filename, item.file_name]
-          .some((valor) => valor === registro.fileName);
-      })
-    );
+      ? { items: respuesta as ItemAdjuntoCompraHolded[], has_more: false as const, cursor: undefined }
+      : (respuesta as { items?: ItemAdjuntoCompraHolded[]; has_more?: boolean; cursor?: string });
+    candidatos.push(...(data.items ?? []));
     if (!data.has_more) break;
     if (!data.cursor || pagina === MAX_PAGINAS_ADJUNTOS_HOLDED - 1) {
       throw new Error("Holded devolvió una lista incompleta de adjuntos; no es seguro repetir la carga.");
@@ -2575,25 +2564,11 @@ async function buscarAdjuntoPorHuella(registro: RegistroAdjuntoCompra): Promise<
     cursor = data.cursor;
   }
 
-  const encontrados: ResultadoAdjuntoCompra[] = [];
-  for (const _candidato of candidatos) {
-    // Holded documenta attachmentId como el nombre del archivo. Usamos el
-    // nombre estable conocido, no un eventual id de metadatos del listado.
-    const bytes = await descargarAdjuntoParaVerificar(registro.empresa, registro.purchaseId, registro.fileName);
-    if (!bytes) throw new AdjuntoCompraInciertoError();
-    const huella = createHash("sha256").update(bytes).digest("hex");
-    if (huella === registro.contentHash) {
-      encontrados.push({ attachmentId: registro.fileName, fileName: registro.fileName });
-    }
-  }
-
-  if (encontrados.length > 1) {
-    throw new Error("Holded contiene más de un adjunto con el mismo nombre y contenido; se requiere revisión manual.");
-  }
-  if (candidatos.length > 0 && encontrados.length === 0) {
-    throw new Error("Holded ya contiene el nombre durable con bytes diferentes; Wobi bloqueó la carga.");
-  }
-  return encontrados[0];
+  return verificarAdjuntoListadoPorContenido(
+    registro,
+    candidatos,
+    (referencia) => descargarAdjuntoParaVerificar(registro.empresa, registro.purchaseId, referencia)
+  );
 }
 
 async function subirAdjuntoDirecto(

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   AdjuntoCompraInciertoError,
@@ -7,6 +8,7 @@ import {
   esArchivoLocalInexistente,
   identidadAdjuntoCompra,
   reconciliarAdjuntosCompraPendientes,
+  verificarAdjuntoListadoPorContenido,
   type EstadoAdjuntoCompra,
   type RegistroAdjuntoCompra,
   type RepositorioAdjuntosCompra,
@@ -231,4 +233,66 @@ test("el límite oficial de 10 MB se aplica antes de cualquier transporte", () =
   assert.doesNotThrow(() => validarTamanoAdjuntoHolded(10 * 1024 * 1024));
   assert.throws(() => validarTamanoAdjuntoHolded(0), /vacío/);
   assert.throws(() => validarTamanoAdjuntoHolded(10 * 1024 * 1024 + 1), /10 MB/);
+});
+
+test("recupera por contenido un adjunto cuyo nombre Holded sustituyó por un id", async () => {
+  const bytes = new TextEncoder().encode("factura-real");
+  const registro = identidad("aprobacion-renombrada", createHash("sha256").update(bytes).digest("hex"));
+  const referenciasDescargadas: string[] = [];
+  const encontrado = await verificarAdjuntoListadoPorContenido(
+    registro,
+    [{ id: "holded-id-renombrado" }],
+    async (referencia) => {
+      referenciasDescargadas.push(referencia);
+      return referencia === "holded-id-renombrado" ? bytes : undefined;
+    }
+  );
+  assert.deepEqual(encontrado, { attachmentId: "holded-id-renombrado", fileName: registro.fileName });
+  assert.deepEqual(referenciasDescargadas, ["holded-id-renombrado"]);
+});
+
+test("un nombre durable con contenido diferente sigue bloqueando la carga", async () => {
+  const registro = identidad();
+  await assert.rejects(
+    verificarAdjuntoListadoPorContenido(
+      registro,
+      [{ id: registro.fileName }],
+      async () => new TextEncoder().encode("otro archivo")
+    ),
+    /bytes diferentes/
+  );
+});
+
+test("los ids repetidos se descargan una sola vez", async () => {
+  const bytes = new TextEncoder().encode("factura-real");
+  const registro = identidad("aprobacion-deduplicada", createHash("sha256").update(bytes).digest("hex"));
+  let descargas = 0;
+  const encontrado = await verificarAdjuntoListadoPorContenido(
+    registro,
+    ["id-1", { id: "id-1", identifier: "id-1" }],
+    async () => {
+      descargas++;
+      return bytes;
+    }
+  );
+  assert.equal(encontrado?.attachmentId, "id-1");
+  assert.equal(descargas, 1);
+});
+
+test("una lista excesiva falla cerrada antes de descargar", async () => {
+  const registro = identidad();
+  let descargas = 0;
+  await assert.rejects(
+    verificarAdjuntoListadoPorContenido(
+      registro,
+      ["id-1", "id-2", "id-3"],
+      async () => {
+        descargas++;
+        return undefined;
+      },
+      2
+    ),
+    AdjuntoCompraInciertoError
+  );
+  assert.equal(descargas, 0);
 });
