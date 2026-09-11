@@ -100,9 +100,11 @@ import {
   obtenerEstadoCreacionesCompraDurables,
   obtenerEstadoEdicionesCompraDurables,
   obtenerEstadoAdjuntosCompraDurables,
+  obtenerEstadoConciliacionesMovimientoDurables,
   reconciliarCreacionesCompraAlArrancar,
   reconciliarEdicionesCompraAlArrancar,
   reconciliarAdjuntosCompraAlArrancar,
+  reconciliarMovimientosAlArrancar,
 } from "../core/holded/write";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
@@ -309,6 +311,7 @@ app.get("/health", (_req: Request, res: Response) => {
     comprasHolded: obtenerEstadoCreacionesCompraDurables(),
     edicionesHolded: obtenerEstadoEdicionesCompraDurables(),
     adjuntosHolded: obtenerEstadoAdjuntosCompraDurables(),
+    conciliacionesHolded: obtenerEstadoConciliacionesMovimientoDurables(),
   });
 });
 
@@ -1935,6 +1938,20 @@ servidorHttp = app.listen(PORT, () => {
       .catch((error) => {
         console.error(
           "[holded/durable] No se pudo reconciliar el ledger de adjuntos al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarMovimientosAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación bancaria al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger bancario al arrancar:",
           error instanceof Error ? error.name : "Error"
         );
       })

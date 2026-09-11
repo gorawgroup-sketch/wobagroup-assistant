@@ -71,6 +71,7 @@ import {
   reconciliarMovimiento,
   estaMovimientoYaConciliado,
   AdjuntoCompraInciertoError,
+  ConciliacionMovimientoInciertaError,
   CreacionCompraInciertaError,
   esArchivoLocalInexistente,
   ContactoNoEncontradoError,
@@ -397,6 +398,12 @@ async function conciliarContraMovimientoEspecifico(
     );
   } catch (error) {
     console.error("[gastoCallbackHandler] Error conciliando contra el movimiento elegido:", error);
+    if (error instanceof ConciliacionMovimientoInciertaError) {
+      return (
+        `\n\n⏳ Holded no confirmó si concilió el movimiento "${movimiento.descripcion || "sin descripción"}". ` +
+        "Wobi bloqueó toda repetición y lo verificará solo por lectura. No vuelvas a conciliarlo manualmente hasta comprobar su estado en Holded."
+      );
+    }
     return `\n\n⚠️ El gasto se creó, pero hubo un error al conciliar contra "${movimiento.descripcion || "sin descripción"}" — revísalo a mano en Holded.`;
   }
 }

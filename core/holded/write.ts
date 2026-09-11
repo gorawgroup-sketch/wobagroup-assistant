@@ -41,6 +41,16 @@ import {
   type ResultadoAdjuntoCompra,
 } from "./durablePurchaseAttachment";
 import { durablePurchaseAttachmentStore } from "./durablePurchaseAttachmentStore";
+import {
+  ConciliacionMovimientoInciertaError,
+  ejecutarConciliacionMovimientoDurable,
+  identidadConciliacionMovimiento,
+  reconciliarConciliacionesMovimientoPendientes,
+  type InspeccionConciliacionMovimiento,
+  type RegistroConciliacionMovimiento,
+  type ResultadoConciliacionMovimiento,
+} from "./durableBankReconciliation";
+import { durableBankReconciliationStore } from "./durableBankReconciliationStore";
 
 export { ConflictoCreacionCompraError, CreacionCompraInciertaError } from "./durablePurchase";
 export { ConflictoEdicionCompraError, EdicionCompraInciertaError } from "./durablePurchaseEdit";
@@ -49,6 +59,11 @@ export {
   ConflictoAdjuntoCompraError,
   esArchivoLocalInexistente,
 } from "./durablePurchaseAttachment";
+export {
+  ConciliacionMovimientoInciertaError,
+  ConflictoConciliacionMovimientoError,
+  MovimientoYaConciliadoError,
+} from "./durableBankReconciliation";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -95,7 +110,7 @@ function getReadApiKey(empresa: Empresa): string {
   return key;
 }
 
-async function holdedAttachmentReadJson(empresa: Empresa, path: string): Promise<unknown> {
+async function holdedReadJson(empresa: Empresa, path: string): Promise<unknown> {
   const response = await fetch(`${HOLDED_API_BASE}${path}`, {
     headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
   });
@@ -379,6 +394,72 @@ function programarReconciliacionAdjuntosCompra(demoraMs: number, intentosRestant
       });
   }, demoraMs);
   timerReconciliacionAdjuntos.unref();
+}
+
+const metricasConciliacionesMovimientoDurables = {
+  activas: 0,
+  conciliadas: 0,
+  reutilizadas: 0,
+  verificadasRecuperadas: 0,
+  incertidumbresDetectadas: 0,
+  errores: 0,
+  inciertasUltimaRevision: 0,
+};
+let timerReconciliacionMovimientos: ReturnType<typeof setTimeout> | null = null;
+
+export function configuracionConciliacionesMovimientoDurables(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    habilitado: (env.WOBI_HOLDED_RECONCILIATION_DURABLE_ENABLED ?? "true").trim().toLowerCase() !== "false",
+  };
+}
+
+export function obtenerEstadoConciliacionesMovimientoDurables() {
+  return {
+    habilitado: configuracionConciliacionesMovimientoDurables().habilitado,
+    ...metricasConciliacionesMovimientoDurables,
+  };
+}
+
+/** Reconciliación de arranque exclusivamente por GET; nunca llama a POST /reconcile. */
+export async function reconciliarMovimientosAlArrancar() {
+  if (!configuracionConciliacionesMovimientoDurables().habilitado) {
+    return { revisadas: 0, verificadas: 0, inciertas: 0, errores: 0 };
+  }
+  const resumen = await reconciliarConciliacionesMovimientoPendientes(
+    durableBankReconciliationStore,
+    inspeccionarConciliacionRegistrada
+  );
+  metricasConciliacionesMovimientoDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasConciliacionesMovimientoDurables.incertidumbresDetectadas += resumen.inciertas;
+  metricasConciliacionesMovimientoDurables.errores += resumen.errores;
+  metricasConciliacionesMovimientoDurables.inciertasUltimaRevision = resumen.inciertas;
+  if (resumen.inciertas > 0 || resumen.errores > 0) programarReconciliacionMovimientos(30_000, 3);
+  return resumen;
+}
+
+function programarReconciliacionMovimientos(demoraMs: number, intentosRestantes: number): void {
+  if (timerReconciliacionMovimientos || intentosRestantes <= 0) return;
+  timerReconciliacionMovimientos = setTimeout(() => {
+    timerReconciliacionMovimientos = null;
+    void reconciliarConciliacionesMovimientoPendientes(
+      durableBankReconciliationStore,
+      inspeccionarConciliacionRegistrada
+    )
+      .then((resumen) => {
+        metricasConciliacionesMovimientoDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasConciliacionesMovimientoDurables.incertidumbresDetectadas += resumen.inciertas;
+        metricasConciliacionesMovimientoDurables.errores += resumen.errores;
+        metricasConciliacionesMovimientoDurables.inciertasUltimaRevision = resumen.inciertas;
+        if (resumen.inciertas > 0 || resumen.errores > 0) {
+          programarReconciliacionMovimientos(60_000, intentosRestantes - 1);
+        }
+      })
+      .catch(() => {
+        metricasConciliacionesMovimientoDurables.errores++;
+        programarReconciliacionMovimientos(60_000, intentosRestantes - 1);
+      });
+  }, demoraMs);
+  timerReconciliacionMovimientos.unref();
 }
 
 export interface HoldedContact {
@@ -2228,7 +2309,7 @@ async function buscarAdjuntoPorHuella(registro: RegistroAdjuntoCompra): Promise<
   for (let pagina = 0; pagina < MAX_PAGINAS_ADJUNTOS_HOLDED; pagina++) {
     const params = new URLSearchParams({ limit: "100" });
     if (cursor) params.set("cursor", cursor);
-    const respuesta = await holdedAttachmentReadJson(
+    const respuesta = await holdedReadJson(
       registro.empresa,
       `/purchases/${encodeURIComponent(registro.purchaseId)}/attachments?${params.toString()}`
     );
@@ -3550,18 +3631,32 @@ async function leerEstadoMovimiento(
   const hasta = new Date(fechaBase);
   hasta.setDate(hasta.getDate() + VENTANA_DIAS_MOVIMIENTO);
 
-  const params = new URLSearchParams({
-    start_date: formatDateLocal(desde),
-    end_date: formatDateLocal(hasta),
-    limit: "100",
-  });
-  const respuesta = (await holdedWriteCall(
-    empresa,
-    "GET",
-    `/treasury/accounts/${accountId}/bank-movements?${params.toString()}`
-  )) as { items?: Array<{ id: string; status?: string; reconciled_amount?: string }> };
-
-  return (respuesta.items ?? []).find((m) => m.id === movementId);
+  let cursor: string | undefined;
+  const MAX_PAGINAS_ESTADO_MOVIMIENTO = 10;
+  for (let pagina = 0; pagina < MAX_PAGINAS_ESTADO_MOVIMIENTO; pagina++) {
+    const params = new URLSearchParams({
+      start_date: formatDateLocal(desde),
+      end_date: formatDateLocal(hasta),
+      limit: "200",
+    });
+    if (cursor) params.set("cursor", cursor);
+    const respuesta = (await holdedReadJson(
+      empresa,
+      `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements?${params.toString()}`
+    )) as {
+      items?: Array<{ id: string; status?: string; reconciled_amount?: string }>;
+      cursor?: string;
+      has_more?: boolean;
+    };
+    const encontrado = (respuesta.items ?? []).find((m) => m.id === movementId);
+    if (encontrado) return encontrado;
+    if (!respuesta.has_more) return undefined;
+    if (!respuesta.cursor || pagina === MAX_PAGINAS_ESTADO_MOVIMIENTO - 1) {
+      throw new Error("Holded devolvió una búsqueda incompleta del movimiento bancario; no es seguro conciliarlo.");
+    }
+    cursor = respuesta.cursor;
+  }
+  return undefined;
 }
 
 /**
@@ -3597,23 +3692,16 @@ export async function estaMovimientoYaConciliado(
  * nunca convertida) — si queda un pendiente real, el llamador debe avisarlo explícitamente en vez de
  * reportar éxito sin más.
  */
-export async function reconciliarMovimiento(
-  empresa: Empresa,
-  accountId: string,
-  movementId: string,
-  fechaAproximada: string,
-  documentoId: string
-): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number; pendienteEnCompra?: number }> {
-  // Se invalida también antes del POST: Holded puede aceptar la conciliación
-  // aunque su respuesta no llegue a WOBI.
-  invalidarCacheCuentasTesoreria(empresa);
-  await holdedWriteCall(empresa, "POST", `/treasury/accounts/${accountId}/bank-movements/${movementId}/reconcile`, {
-    documents: [{ document_id: documentoId, document_type: "purchase" }],
-  });
-  // El saldo/conteo pendiente pudo cambiar incluso si la verificación posterior falla.
-  invalidarCacheCuentasTesoreria(empresa);
-
-  const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
+async function inspeccionarConciliacionRegistrada(
+  registro: RegistroConciliacionMovimiento
+): Promise<InspeccionConciliacionMovimiento> {
+  const movimiento = await leerEstadoMovimiento(
+    registro.empresa,
+    registro.accountId,
+    registro.movementId,
+    registro.fechaAproximada
+  );
+  if (!movimiento) return { estado: "no_encontrada" };
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
   const montoEnlazado = Math.abs(parsearMontoMovimiento(movimiento?.reconciled_amount) || 0);
 
@@ -3627,17 +3715,86 @@ export async function reconciliarMovimiento(
   let pendienteEnCompra: number | undefined;
   if (ok) {
     try {
-      const compra = await obtenerCompraHoldedPorId(empresa, documentoId);
+      const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.documentId);
       const pendiente = parsearMontoHolded(compra.payments_pending as string | number | undefined);
       if (Number.isFinite(pendiente) && pendiente > 0.01) {
         pendienteEnCompra = pendiente;
       }
     } catch (error) {
-      console.error(`[reconciliarMovimiento] Error releyendo la compra ${documentoId} para verificar el saldo pendiente (no crítico):`, error);
+      console.error(
+        `[reconciliarMovimiento] Error releyendo la compra ${registro.documentId} para verificar el saldo pendiente (no crítico):`,
+        error
+      );
     }
   }
 
-  return { ok, statusFinal, montoEnlazado, pendienteEnCompra };
+  const resultado = { ok, statusFinal, montoEnlazado, pendienteEnCompra };
+  return ok ? { estado: "verificada", resultado } : { estado: "libre", resultado };
+}
+
+async function aplicarConciliacionRegistrada(registro: RegistroConciliacionMovimiento): Promise<void> {
+  invalidarCacheCuentasTesoreria(registro.empresa);
+  try {
+    await holdedWriteCall(
+      registro.empresa,
+      "POST",
+      `/treasury/accounts/${encodeURIComponent(registro.accountId)}/bank-movements/${encodeURIComponent(registro.movementId)}/reconcile`,
+      { documents: [{ document_id: registro.documentId, document_type: "purchase" }] }
+    );
+  } finally {
+    // Holded puede haber aceptado el efecto aunque la respuesta se pierda.
+    invalidarCacheCuentasTesoreria(registro.empresa);
+  }
+}
+
+export async function reconciliarMovimiento(
+  empresa: Empresa,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string,
+  documentoId: string
+): Promise<ResultadoConciliacionMovimiento> {
+  const registro = identidadConciliacionMovimiento(
+    empresa,
+    accountId,
+    movementId,
+    documentoId,
+    fechaAproximada,
+    "conciliacion_movimiento_aprobada"
+  );
+
+  if (!configuracionConciliacionesMovimientoDurables().habilitado) {
+    await aplicarConciliacionRegistrada(registro);
+    const inspeccion = await inspeccionarConciliacionRegistrada(registro);
+    return inspeccion.estado === "no_encontrada"
+      ? { ok: false, statusFinal: "(no encontrado al releer)", montoEnlazado: 0 }
+      : inspeccion.resultado;
+  }
+
+  return conMutex(`holded-bank-reconciliation:${empresa}:${accountId}:${movementId}`, async () => {
+    metricasConciliacionesMovimientoDurables.activas++;
+    try {
+      const ejecucion = await ejecutarConciliacionMovimientoDurable(
+        registro,
+        durableBankReconciliationStore,
+        { inspeccionar: inspeccionarConciliacionRegistrada, conciliar: aplicarConciliacionRegistrada }
+      );
+      if (ejecucion.reutilizada) metricasConciliacionesMovimientoDurables.reutilizadas++;
+      else metricasConciliacionesMovimientoDurables.conciliadas++;
+      return ejecucion.resultado;
+    } catch (error) {
+      if (error instanceof ConciliacionMovimientoInciertaError) {
+        metricasConciliacionesMovimientoDurables.incertidumbresDetectadas++;
+        metricasConciliacionesMovimientoDurables.inciertasUltimaRevision++;
+        programarReconciliacionMovimientos(30_000, 3);
+      } else {
+        metricasConciliacionesMovimientoDurables.errores++;
+      }
+      throw error;
+    } finally {
+      metricasConciliacionesMovimientoDurables.activas--;
+    }
+  });
 }
 
 export interface NuevoEventoHolded {

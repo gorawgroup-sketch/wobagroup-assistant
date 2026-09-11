@@ -15,6 +15,10 @@ import {
   durablePurchaseAttachmentStore,
   type ResumenLedgerAdjuntosCompra,
 } from "../holded/durablePurchaseAttachmentStore";
+import {
+  durableBankReconciliationStore,
+  type ResumenLedgerConciliacionesMovimiento,
+} from "../holded/durableBankReconciliationStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -49,6 +53,7 @@ export interface ControlDiario {
   comprasHolded: ResumenLedgerCreacionesCompra | null;
   edicionesHolded: ResumenLedgerEdicionesCompra | null;
   adjuntosHolded: ResumenLedgerAdjuntosCompra | null;
+  conciliacionesHolded: ResumenLedgerConciliacionesMovimiento | null;
   recomendaciones: RecomendacionControlDiario[];
 }
 
@@ -66,6 +71,8 @@ export interface EntradaControlDiario {
   edicionesHolded?: ResumenLedgerEdicionesCompra | null;
   /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
   adjuntosHolded?: ResumenLedgerAdjuntosCompra | null;
+  /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
+  conciliacionesHolded?: ResumenLedgerConciliacionesMovimiento | null;
   generadoEn?: Date;
 }
 
@@ -181,6 +188,26 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       titulo: "Hay comprobantes de Holded con resultado incierto",
       detalle: `${entrada.adjuntosHolded.incierto} comprobante(s) no pudieron confirmarse descargando y comparando sus bytes.`,
       siguientePaso: "Comprobar esos adjuntos en Holded antes de autorizar otra carga equivalente.",
+      modulo: "conexiones",
+    });
+  }
+
+  if (entrada.conciliacionesHolded === null) {
+    recomendaciones.push({
+      id: "ledger-conciliaciones-holded-no-disponible",
+      prioridad: "critica",
+      titulo: "No se pudo comprobar la continuidad de conciliaciones",
+      detalle: "El control diario no pudo leer el ledger durable de conciliaciones bancarias; no se asume que esté vacío.",
+      siguientePaso: "Revisar permisos de Google Sheets y la pestaña _conciliaciones_holded_durables antes de repetir una conciliación.",
+      modulo: "conexiones",
+    });
+  } else if (entrada.conciliacionesHolded && entrada.conciliacionesHolded.incierta > 0) {
+    recomendaciones.push({
+      id: "conciliaciones-holded-inciertas",
+      prioridad: "critica",
+      titulo: "Hay conciliaciones bancarias con resultado incierto",
+      detalle: `${entrada.conciliacionesHolded.incierta} conciliación(es) no pudieron confirmarse contra el movimiento en Holded.`,
+      siguientePaso: "Comprobar esos movimientos y documentos en Holded antes de autorizar otra conciliación.",
       modulo: "conexiones",
     });
   }
@@ -302,12 +329,13 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     comprasHolded: entrada.comprasHolded ?? null,
     edicionesHolded: entrada.edicionesHolded ?? null,
     adjuntosHolded: entrada.adjuntosHolded ?? null,
+    conciliacionesHolded: entrada.conciliacionesHolded ?? null,
     recomendaciones,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded, adjuntosHolded] = await Promise.all([
+  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded, adjuntosHolded, conciliacionesHolded] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
@@ -334,6 +362,10 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       console.error("[controlDiario] No se pudo leer el ledger de adjuntos de Holded:", error instanceof Error ? error.name : "Error");
       return null;
     }),
+    durableBankReconciliationStore.obtenerResumen().catch((error) => {
+      console.error("[controlDiario] No se pudo leer el ledger de conciliaciones de Holded:", error instanceof Error ? error.name : "Error");
+      return null;
+    }),
   ]);
   const config = cargarConfiguracionPoliticaApi();
 
@@ -352,6 +384,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     comprasHolded,
     edicionesHolded,
     adjuntosHolded,
+    conciliacionesHolded,
     generadoEn: referencia,
   });
 }
