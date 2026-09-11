@@ -15,3 +15,9 @@ La lectura de respuestas del chat es una función separada. Su conexión a sínt
 Generado con la herramienta integrada ImageGen a partir del retrato WOBi aprobado. PNG con alfa real; versiones 32, 180, 192 y 512 px; ICO de 16, 32 y 48 px. El retrato principal permanece en `brand/wobi.png`.
 
 Prompt: Create a single professional favicon brand mark derived from the reference WOBi face. Only the head/face, no neck, shoulders, torso, enclosing circle or background. Actual transparent alpha background. Simplify the mature calm humanoid identity into an elegantly designed bold vector-like icon: cobalt and cyan sculpted contour strokes define oval head, two calm eyes, nose and mouth; restrained amber central nose/forehead accent. Clean thick contour bands rather than photographic particle detail. A few geometric fragments along the right temple suggest nanobots assembling the face. Preserve mature human facial proportions, not a toy robot or child mascot. Centered in a square with balanced padding, strong silhouette legible at 16 and 32px. No text, watermark, black or navy rectangle. Transparent outside the face and in negative spaces between contour lines.
+
+## Retrato central transparente
+
+Archivo: `frontend-cerebro/public/brand/wobi-transparent.png`, PNG RGBA 1254 × 1254. Se usa en el centro de las células; conserva el retrato aprobado y elimina el fondo exterior. El montaje muestrea su canal alfa y funde las partículas con la figura final durante 1,8 segundos. Con movimiento reducido se muestra directamente la figura.
+
+Herramienta: ImageGen integrada. Prompt final: Remove the background from this image. Make a transparent-background cutout PNG of the blue and gold Wobi nanobot person, keeping the same face, head, neck, shoulders and glowing particles. Output with transparent background enabled and actual alpha transparency. Do not draw checkerboard. Keep original artwork intact.
