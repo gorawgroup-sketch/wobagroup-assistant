@@ -1,6 +1,7 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
 import { conMutex } from "../utils/asyncMutex";
+import { CacheMetadataPestanas, type MetadataPestana } from "./sheetsMetadataCache";
 
 /**
  * Causa raíz real, encontrada en vivo (2026-09-02): varios stores de
@@ -62,6 +63,81 @@ interface TabAsegurada {
 }
 
 const tabsAseguradas = new Map<string, TabAsegurada>();
+const preparacionesEnCurso = new Map<string, Promise<TabAsegurada>>();
+
+const metadataPestanas = new CacheMetadataPestanas(async () => {
+  const meta = await getClient().spreadsheets.get({
+    spreadsheetId: assertSheetId(),
+    fields: "sheets.properties",
+  });
+  const resultado = new Map<string, MetadataPestana>();
+  for (const sheet of meta.data.sheets ?? []) {
+    const title = sheet.properties?.title;
+    const gridId = sheet.properties?.sheetId;
+    if (!title || gridId == null) continue;
+    resultado.set(title, {
+      gridId,
+      rowCount: sheet.properties?.gridProperties?.rowCount ?? 1000,
+    });
+  }
+  return resultado;
+});
+
+export function obtenerDiagnosticoMetadataPestanas() {
+  return metadataPestanas.diagnostico();
+}
+
+async function obtenerOCrearTab(tabName: string, headers: string[]): Promise<TabAsegurada> {
+  const asegurada = tabsAseguradas.get(tabName);
+  if (asegurada) return asegurada;
+  const enCurso = preparacionesEnCurso.get(tabName);
+  if (enCurso) return enCurso;
+
+  const preparacion = (async () => {
+    const existente = await metadataPestanas.obtener(tabName);
+    if (existente) return existente;
+
+    const addResp = await getClient().spreadsheets.batchUpdate({
+      spreadsheetId: assertSheetId(),
+      requestBody: { requests: [{ addSheet: { properties: { title: tabName, hidden: true } } }] },
+    });
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${tabName}!A1:${colLetter(headers.length)}1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [headers] },
+    });
+
+    const creada = {
+      gridId: addResp.data.replies?.[0]?.addSheet?.properties?.sheetId ?? 0,
+      rowCount: addResp.data.replies?.[0]?.addSheet?.properties?.gridProperties?.rowCount ?? 1000,
+    };
+    metadataPestanas.registrar(tabName, creada);
+    tabsAseguradas.set(tabName, creada); // sus headers acaban de escribirse
+    return creada;
+  })();
+  preparacionesEnCurso.set(tabName, preparacion);
+  try {
+    return await preparacion;
+  } finally {
+    preparacionesEnCurso.delete(tabName);
+  }
+}
+
+async function completarHeaders(
+  tabName: string,
+  headers: string[],
+  headersActuales: unknown[]
+): Promise<void> {
+  if (headersActuales.length < headers.length) {
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${tabName}!A1:${colLetter(headers.length)}1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [headers.map((header, indice) => headersActuales[indice] ?? header)] },
+    });
+  }
+}
 
 /**
  * Crea la pestaña (oculta) si no existe, con estos headers en la fila 1.
@@ -83,51 +159,17 @@ export async function ensureTab(tabName: string, headers: string[]): Promise<num
   const cacheado = tabsAseguradas.get(tabName);
   if (cacheado !== undefined) return cacheado.gridId;
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
-  const existing = meta.data.sheets?.find((s) => s.properties?.title === tabName);
-  if (existing?.properties?.sheetId != null) {
-    const filaHeaders = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
+  const tab = await obtenerOCrearTab(tabName, headers);
+  if (!tabsAseguradas.has(tabName)) {
+    const filaHeaders = await getClient().spreadsheets.values.get({
+      spreadsheetId: assertSheetId(),
       range: `${tabName}!A1:${colLetter(headers.length)}1`,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
-    const headersActuales = filaHeaders.data.values?.[0] ?? [];
-    if (headersActuales.length < headers.length) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: sheetId,
-        range: `${tabName}!A1:${colLetter(headers.length)}1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [headers.map((h, i) => headersActuales[i] ?? h)] },
-      });
-    }
-    tabsAseguradas.set(tabName, {
-      gridId: existing.properties.sheetId,
-      rowCount: existing.properties.gridProperties?.rowCount ?? 1000,
-    });
-    return existing.properties.sheetId;
+    await completarHeaders(tabName, headers, filaHeaders.data.values?.[0] ?? []);
+    tabsAseguradas.set(tabName, tab);
   }
-
-  const addResp = await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: tabName, hidden: true } } }] },
-  });
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${tabName}!A1:${colLetter(headers.length)}1`,
-    valueInputOption: "RAW",
-    requestBody: { values: [headers] },
-  });
-
-  const gridId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId ?? 0;
-  tabsAseguradas.set(tabName, {
-    gridId,
-    rowCount: addResp.data.replies?.[0]?.addSheet?.properties?.gridProperties?.rowCount ?? 1000,
-  });
-  return gridId;
+  return tab.gridId;
 }
 
 /**
@@ -171,19 +213,26 @@ export interface FilaCruda {
 
 /** Lee todas las filas con datos (fila 1 es headers, se excluye) — valores siempre como string, "" si la celda está vacía. */
 export async function leerFilas(tabName: string, numCols: number, headers: string[]): Promise<FilaCruda[]> {
-  await ensureTab(tabName, headers);
+  const headersYaVerificados = tabsAseguradas.has(tabName);
+  const tab = await obtenerOCrearTab(tabName, headers);
   const sheetId = assertSheetId();
   const sheets = getClient();
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    // Sin un tope de fila artificial: la API devuelve hasta el último valor
-    // usado y la cuadrícula ahora crece bajo demanda en agregarFila.
-    range: `${tabName}!A2:${colLetter(numCols)}`,
+    // En el primer acceso incluimos la fila 1 en ESTA MISMA lectura para
+    // verificar headers sin gastar un segundo read request. Después se lee
+    // desde A2 como antes. No se cachean filas ni datos de negocio.
+    range: `${tabName}!A${headersYaVerificados ? 2 : 1}:${colLetter(numCols)}`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
-  const rows = resp.data.values ?? [];
+  let rows = resp.data.values ?? [];
+  if (!headersYaVerificados) {
+    await completarHeaders(tabName, headers, rows[0] ?? []);
+    tabsAseguradas.set(tabName, tab);
+    rows = rows.slice(1);
+  }
   return rows
     .filter((row) => row[0] !== undefined && row[0] !== "")
     .map((row, i) => ({
@@ -219,7 +268,7 @@ function claveMutex(tabName: string): string {
   return `sheetsKV:${tabName}`;
 }
 
-async function siguienteFilaLibre(tabName: string, numCols: number): Promise<number> {
+async function siguienteFilaLibre(tabName: string, numCols: number, headers: string[]): Promise<number> {
   const sheetId = assertSheetId();
   const sheets = getClient();
   // Rango ancho (A:última columna, no solo A:A) a propósito: una fila ya
@@ -232,6 +281,11 @@ async function siguienteFilaLibre(tabName: string, numCols: number): Promise<num
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const rows = resp.data.values ?? [];
+  if (!tabsAseguradas.has(tabName)) {
+    const tab = await obtenerOCrearTab(tabName, headers);
+    await completarHeaders(tabName, headers, rows[0] ?? []);
+    tabsAseguradas.set(tabName, tab);
+  }
   return rows.length + 1;
 }
 
@@ -257,13 +311,13 @@ const MAX_INTENTOS_ESCRITURA = 3;
  * (idéntico patrón, mismo motivo, que gastoProposalSheet.ts).
  */
 export async function agregarFila(tabName: string, numCols: number, headers: string[], valores: (string | number)[]): Promise<number> {
-  await ensureTab(tabName, headers);
+  await obtenerOCrearTab(tabName, headers);
   const sheetId = assertSheetId();
   const sheets = getClient();
 
   return conMutex(claveMutex(tabName), async () => {
     for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
-      const fila = await siguienteFilaLibre(tabName, numCols);
+      const fila = await siguienteFilaLibre(tabName, numCols, headers);
       await asegurarCapacidadFila(tabName, fila);
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,

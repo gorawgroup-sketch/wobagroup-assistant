@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { ensureTab as ensureKeyValueTab } from "../google/sheetsKeyValueStore";
 
 // Historial por chat de Telegram, para que preguntas de seguimiento ("envíale
 // ese link a Carlos") tengan contexto de lo que se habló antes.
@@ -41,8 +42,6 @@ function assertSheetId(): string {
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
-let tabAsegurada = false;
-let tabGridId: number | null = null;
 
 // Serializa TODAS las lecturas+escrituras del historial de un chat — necesario porque dos
 // operaciones concurrentes (un turno largo de askClaude terminando de guardar, y un aviso saliente
@@ -79,34 +78,7 @@ function getClient(): sheets_v4.Sheets {
 }
 
 async function ensureTab(): Promise<number> {
-  if (tabGridId !== null) return tabGridId;
-
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
-  const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
-  if (existing?.properties?.sheetId != null) {
-    tabAsegurada = true;
-    tabGridId = existing.properties.sheetId;
-    return tabGridId;
-  }
-
-  const addResp = await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }] },
-  });
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:C1`,
-    valueInputOption: "RAW",
-    requestBody: { values: [HEADERS] },
-  });
-
-  tabAsegurada = true;
-  tabGridId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId ?? 0;
-  return tabGridId;
+  return ensureKeyValueTab(TAB_NAME, HEADERS);
 }
 
 interface FilaHistorial {

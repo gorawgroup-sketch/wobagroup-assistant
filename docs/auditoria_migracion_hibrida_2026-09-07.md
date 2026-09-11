@@ -106,7 +106,7 @@ Estos procesos cuestan cero tokens y ya cumplen “si no hay novedad, no invocar
 | Acciones programadas: vencimiento | Cada hora, minuto 5 | Store de acciones | Alta | IA solo al vencer/condición libre |
 | Conversaciones automáticas: detección | Cada 15 min | Gmail, allowlist contacto/hilo | Crítica | IA solo con mensaje nuevo externo |
 | Vigilante de procesamiento atascado | Cada 2 min | Stores de colas, Telegram | Alta operativa | Añadido concurrentemente en `ee79d20`; sin modelo |
-| Resumen de pendientes | Diario 19:00 | Stores/Sheets/Telegram | Media | Sin modelo |
+| Resumen de pendientes | Diario 19:10 | Stores/Sheets/Telegram | Media | Sin modelo |
 | Callbacks de aprobación | Por botón | Telegram, Gmail, Drive, Holded, Sheets, Calendar, GitHub | Crítica | La mayoría deterministas; escrituras requieren aprobación previa salvo hilos aprobados |
 | Cerebro/estado/conexiones/acceso | Bajo demanda | Express, Sheets, integraciones | Alta seguridad | Sin IA salvo buscador manual |
 
