@@ -672,6 +672,22 @@ function palabrasParecidasEstricto(a: string, b: string): boolean {
   return a.slice(0, prefijo) === b.slice(0, prefijo);
 }
 
+/**
+ * Hallazgo real de auditoría (Carlos, 2026-09-11 — factura real de Hotel101 Madrid, Footprint,
+ * 174,59€): "Hotel 101 Spain Management, S.L.U." (extraído del documento) se asignó al contacto real
+ * "MH APARTMENTS MANAGERS SL" — sin ninguna relación — porque "management" y "managers" comparten los
+ * primeros 6 caracteres ("manage"), suficiente para el matcher LAXO (palabrasParecidas, pensado para
+ * typos de OCR) usado para decidir "¿esta palabra aparece en el candidato?". El conteo de
+ * distintividad de abajo SÍ usa el matcher estricto (8 caracteres) para contar cuántos contactos
+ * comparten la palabra — pero nunca lo aplicaba sobre el match real que había disparado el punto, así
+ * que "management" salía "compartida por 0 contactos" (ni "managers" la cuenta, falla el estricto) y
+ * puntuaba como si fuera una palabra rarísima, cuando el único motivo de que hubiera match alguno era
+ * la tolerancia laxa. Verificado en vivo contra los contactos reales de Footprint:
+ * buscarContactoHolded("Hotel 101 Global - Madrid (Hotel 101 Spain Management, S.L.U.)") devolvía
+ * exactamente ese contacto equivocado antes de este fix. La red de selección (loose) se deja igual —
+ * sigue sirviendo para encontrar candidatos con typos reales cortos — pero antes de puntuar un match
+ * como distintivo, se exige que ESE match puntual (no otro) también resista el estándar estricto.
+ */
 function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
   const palabrasObjetivo = normalizar(objetivo)
     .split(" ")
@@ -682,7 +698,12 @@ function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLo
 
   let score = 0;
   for (const po of palabrasObjetivo) {
-    if (!palabrasCandidato.some((pc) => palabrasParecidas(po, pc))) continue;
+    const pcCoincidente = palabrasCandidato.find((pc) => palabrasParecidas(po, pc));
+    if (!pcCoincidente) continue;
+    // El match que calificó a este candidato debe resistir el mismo estándar estricto con el que se
+    // mide "distintivo" más abajo — si no, la tolerancia laxa de arriba (pensada para typos cortos)
+    // termina inflando palabras largas sin relación real (ver "management"/"managers" arriba).
+    if (!palabrasParecidasEstricto(po, pcCoincidente)) continue;
 
     const contactosQueComparten = todosLosNombres.filter((otro) =>
       normalizar(otro)
