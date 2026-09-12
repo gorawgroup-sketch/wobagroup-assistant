@@ -29,3 +29,7 @@ El centro muestra únicamente la cabeza del mismo `wobi-transparent.png` aprobad
 ## Reproducción del chat
 
 Cada respuesta incluye «Escuchar respuesta», independiente de la preferencia de lectura automática. Al activar la lectura se reproduce la última respuesta existente. Un elemento audio persistente muestra controles nativos, volumen y progreso; informa carga, reproducción, pausa y error, con reintento. La lectura automática conserva la preferencia guardada y permanece desactivada en dispositivos nuevos. El proveedor y el alcance autorizado del envío de texto no cambian.
+
+## Política de medios del navegador
+
+El servidor permite `media-src 'self' blob:` para reproducir el MP3 autenticado a través de una URL temporal creada por el navegador. Sin esta directiva, `default-src 'self'` bloqueaba el audio del chat aunque el endpoint entregara un MP3 válido; el saludo estático sí podía reproducirse. Las restricciones de scripts, conexiones y marcos se conservan. La prueba de reproducción debe incluir las cabeceras CSP de producción: verificar solo el endpoint o Vite no detecta este bloqueo.
