@@ -653,6 +653,8 @@ export async function setTelegramWebhook(webhookUrl: string): Promise<void> {
 
 export interface TelegramWebhookInfo {
   url: string;
+  /** Telegram lo define como el número actual de actualizaciones aún pendientes de entregar. */
+  pendingUpdateCount?: number;
   lastErrorMessage?: string;
   lastErrorDate?: number;
 }
@@ -669,11 +671,17 @@ export async function getTelegramWebhookInfo(): Promise<TelegramWebhookInfo> {
   }
 
   const data = (await response.json()) as {
-    result: { url: string; last_error_message?: string; last_error_date?: number };
+    result: {
+      url: string;
+      pending_update_count?: number;
+      last_error_message?: string;
+      last_error_date?: number;
+    };
   };
 
   return {
     url: data.result.url,
+    pendingUpdateCount: data.result.pending_update_count ?? 0,
     lastErrorMessage: data.result.last_error_message,
     lastErrorDate: data.result.last_error_date,
   };

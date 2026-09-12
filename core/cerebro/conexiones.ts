@@ -1,4 +1,8 @@
-import { getTelegramWebhookInfo, setTelegramWebhook } from "../telegram/client";
+import {
+  getTelegramWebhookInfo,
+  setTelegramWebhook,
+  type TelegramWebhookInfo,
+} from "../telegram/client";
 import { obtenerUltimoEstadoClaude, verificarConexionClaude, obtenerUltimoEstadoBusquedaWeb } from "../claude/client";
 import { verificarConexionSheets } from "../google/sheetsClient";
 import { verificarConexionDrive } from "../drive/client";
@@ -34,16 +38,44 @@ export interface ConexionEstado {
  * valida que haya una URL registrada y que Telegram no reporte errores de
  * entrega recientes.
  */
+const VENTANA_ERROR_TELEGRAM_MS = 15 * 60 * 1000;
+
+/**
+ * Telegram conserva `last_error_message` incluso después de recuperarse. Por eso un error histórico
+ * no puede declarar caído el canal indefinidamente: se cruza con su fecha y con la cola pendiente.
+ */
+export function evaluarEstadoWebhookTelegram(
+  info: TelegramWebhookInfo,
+  referenciaMs = Date.now()
+): { ok: boolean; detalle?: string } {
+  if (!info.url) {
+    return { ok: false, detalle: "No hay ninguna URL de webhook registrada en Telegram." };
+  }
+
+  const pendientes = Math.max(0, info.pendingUpdateCount ?? 0);
+  const errorEnMs = info.lastErrorDate === undefined ? undefined : info.lastErrorDate * 1000;
+  const errorReciente = errorEnMs !== undefined && referenciaMs - errorEnMs <= VENTANA_ERROR_TELEGRAM_MS;
+  const errorVigente = Boolean(info.lastErrorMessage) && (errorReciente || pendientes > 0 || errorEnMs === undefined);
+
+  if (errorVigente) {
+    const cola = pendientes > 0 ? ` (${pendientes} actualización(es) pendiente(s))` : "";
+    return { ok: false, detalle: `Telegram reporta un error de entrega reciente${cola}: ${info.lastErrorMessage}` };
+  }
+
+  if (info.lastErrorMessage && errorEnMs !== undefined) {
+    return {
+      ok: true,
+      detalle: `Último error de entrega resuelto el ${new Date(errorEnMs).toISOString()}; no hay actualizaciones pendientes.`,
+    };
+  }
+
+  return { ok: true };
+}
+
 async function verificarTelegram(): Promise<{ ok: boolean; detalle?: string }> {
   try {
     const info = await getTelegramWebhookInfo();
-    if (!info.url) {
-      return { ok: false, detalle: "No hay ninguna URL de webhook registrada en Telegram." };
-    }
-    if (info.lastErrorMessage) {
-      return { ok: false, detalle: `Telegram reporta un error de entrega reciente: ${info.lastErrorMessage}` };
-    }
-    return { ok: true };
+    return evaluarEstadoWebhookTelegram(info);
   } catch (error) {
     return { ok: false, detalle: error instanceof Error ? error.message : String(error) };
   }
