@@ -7,6 +7,9 @@ function entradaBase(): EntradaControlDiario {
     llamadas: 10,
     inputTokens: 1_000,
     outputTokens: 100,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    ahorroNetoCacheUSD: 0,
     costoUSD: 1,
     costoEquivalenteSuscripcionUSD: 0,
     gastoRealApiUSD: 1,
@@ -70,6 +73,38 @@ test("prioriza un gasto anómalo y una política todavía abierta", () => {
   assert.ok(control.recomendaciones.some((r) => r.id === "gasto-anomalo" && r.prioridad === "alta"));
   assert.ok(control.recomendaciones.some((r) => r.id === "politica-observe" && r.prioridad === "alta"));
   assert.ok(control.recomendaciones.some((r) => r.id === "proceso-principal"));
+});
+
+test("muestra ahorro de caché sin convertirlo en una incidencia", () => {
+  const entrada = entradaBase();
+  entrada.costos = {
+    ...entrada.costos!,
+    ayer: {
+      ...entrada.costos!.ayer,
+      cacheCreationTokens: 10_000,
+      cacheReadTokens: 100_000,
+      ahorroNetoCacheUSD: 0.17,
+    },
+  };
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "estable");
+  assert.ok(control.recomendaciones.some((r) => r.id === "cache-efectiva" && r.prioridad === "informativa"));
+});
+
+test("avisa si se paga por crear una caché grande que nunca se reutiliza", () => {
+  const entrada = entradaBase();
+  entrada.costos = {
+    ...entrada.costos!,
+    ayer: {
+      ...entrada.costos!.ayer,
+      cacheCreationTokens: 75_000,
+      cacheReadTokens: 0,
+      ahorroNetoCacheUSD: -0.04,
+    },
+  };
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "atencion");
+  assert.ok(control.recomendaciones.some((r) => r.id === "cache-sin-reuso"));
 });
 
 test("un fallo de memoria se muestra como crítico y nunca como cero", () => {

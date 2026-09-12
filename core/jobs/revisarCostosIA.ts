@@ -72,6 +72,9 @@ export async function revisarCostosIA(referenceDate: Date = new Date()): Promise
     `Promedio últimos 7 días: $${promedio7Dias.toFixed(4)} USD/día`,
     `Acumulado API este mes: $${resumenMes.gastoRealApiUSD.toFixed(4)} USD (${resumenMes.llamadas} llamadas)`,
     `Valor equivalente cubierto por suscripción este mes: $${resumenMes.costoEquivalenteSuscripcionUSD.toFixed(4)} USD`,
+    `Caché ayer: ${resumenAyer.cacheReadTokens.toLocaleString("es-ES")} tokens reutilizados / ` +
+      `${resumenAyer.cacheCreationTokens.toLocaleString("es-ES")} creados; ahorro neto estimado ` +
+      `$${resumenAyer.ahorroNetoCacheUSD.toFixed(4)} USD`,
     `Política API: ${configApi.killSwitch ? "kill switch activo" : configApi.modo}`,
     `Memoria: ${memoria.ok ? "íntegra" : "requiere revisión"} (${memoria.filas} conversaciones, ${memoria.filasVencidas} vencidas)`,
     `Servicios: ${conexionesCaidas.length === 0 ? "operativos" : `${conexionesCaidas.length} con error`}`,

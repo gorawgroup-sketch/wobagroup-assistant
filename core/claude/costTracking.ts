@@ -85,6 +85,20 @@ export function calcularCostoUSD(usage: UsoAnthropic, modelo: string): number {
   );
 }
 
+/**
+ * Ahorro neto frente a enviar esos mismos tokens siempre como entrada nueva.
+ * Puede ser negativo durante el calentamiento: crear caché cuesta un 25% adicional y solo compensa
+ * cuando una llamada posterior la reutiliza. No incluye salida ni búsquedas porque no cambian.
+ */
+export function calcularAhorroNetoCacheUSD(
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+  modelo: string
+): number {
+  const { input: precioInput } = obtenerPrecios(modelo);
+  return cacheReadTokens * precioInput * 0.9 - cacheCreationTokens * precioInput * 0.25;
+}
+
 function assertSheetId(): string {
   if (!CASHFLOW_SHEET_ID) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
@@ -210,6 +224,9 @@ export interface ResumenCostos {
   llamadas: number;
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  ahorroNetoCacheUSD: number;
   costoUSD: number;
   costoEquivalenteSuscripcionUSD: number;
   gastoRealApiUSD: number;
@@ -217,9 +234,13 @@ export interface ResumenCostos {
 
 interface FilaUso {
   fecha: Date;
+  modelo: string;
   costoUSD: number;
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  ahorroNetoCacheUSD: number;
   proceso: string;
   autenticacion: string;
   ejecucionId: string;
@@ -244,8 +265,16 @@ async function leerFilas(): Promise<FilaUso[]> {
     .filter((row) => row[0])
     .map((row) => ({
       fecha: new Date(String(row[0])),
+      modelo: String(row[2] || "modelo_desconocido"),
       inputTokens: Number(row[3]) || 0,
       outputTokens: Number(row[4]) || 0,
+      cacheCreationTokens: Number(row[5]) || 0,
+      cacheReadTokens: Number(row[6]) || 0,
+      ahorroNetoCacheUSD: calcularAhorroNetoCacheUSD(
+        Number(row[5]) || 0,
+        Number(row[6]) || 0,
+        String(row[2] || "modelo_desconocido")
+      ),
       costoUSD: Number(row[7]) || 0,
       proceso: String(row[8] || "sin_atribuir"),
       autenticacion: String(row[9] || "anthropic_api_key"),
@@ -307,6 +336,9 @@ function resumirFilas(filas: FilaUso[]): ResumenCostos {
       llamadas: acc.llamadas + 1,
       inputTokens: acc.inputTokens + fila.inputTokens,
       outputTokens: acc.outputTokens + fila.outputTokens,
+      cacheCreationTokens: acc.cacheCreationTokens + fila.cacheCreationTokens,
+      cacheReadTokens: acc.cacheReadTokens + fila.cacheReadTokens,
+      ahorroNetoCacheUSD: acc.ahorroNetoCacheUSD + fila.ahorroNetoCacheUSD,
       costoUSD: acc.costoUSD + fila.costoUSD,
       costoEquivalenteSuscripcionUSD:
         acc.costoEquivalenteSuscripcionUSD + fila.costoEquivalenteSuscripcionUSD,
@@ -316,6 +348,9 @@ function resumirFilas(filas: FilaUso[]): ResumenCostos {
       llamadas: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      ahorroNetoCacheUSD: 0,
       costoUSD: 0,
       costoEquivalenteSuscripcionUSD: 0,
       gastoRealApiUSD: 0,
@@ -335,6 +370,9 @@ function resumirPorProceso(filas: FilaUso[]): ResumenProcesoIA[] {
       llamadas: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      ahorroNetoCacheUSD: 0,
       costoUSD: 0,
       costoEquivalenteSuscripcionUSD: 0,
       gastoRealApiUSD: 0,
@@ -342,6 +380,9 @@ function resumirPorProceso(filas: FilaUso[]): ResumenProcesoIA[] {
     actual.llamadas++;
     actual.inputTokens += fila.inputTokens;
     actual.outputTokens += fila.outputTokens;
+    actual.cacheCreationTokens += fila.cacheCreationTokens;
+    actual.cacheReadTokens += fila.cacheReadTokens;
+    actual.ahorroNetoCacheUSD += fila.ahorroNetoCacheUSD;
     actual.costoUSD += fila.costoUSD;
     actual.costoEquivalenteSuscripcionUSD += fila.costoEquivalenteSuscripcionUSD;
     actual.gastoRealApiUSD += fila.gastoRealApiUSD;
@@ -425,6 +466,9 @@ export async function obtenerResumenPorProceso(desde: Date, hasta: Date): Promis
       llamadas: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      ahorroNetoCacheUSD: 0,
       costoUSD: 0,
       costoEquivalenteSuscripcionUSD: 0,
       gastoRealApiUSD: 0,
@@ -432,6 +476,9 @@ export async function obtenerResumenPorProceso(desde: Date, hasta: Date): Promis
     actual.llamadas++;
     actual.inputTokens += fila.inputTokens;
     actual.outputTokens += fila.outputTokens;
+    actual.cacheCreationTokens += fila.cacheCreationTokens;
+    actual.cacheReadTokens += fila.cacheReadTokens;
+    actual.ahorroNetoCacheUSD += fila.ahorroNetoCacheUSD;
     actual.costoUSD += fila.costoUSD;
     actual.costoEquivalenteSuscripcionUSD += fila.costoEquivalenteSuscripcionUSD;
     actual.gastoRealApiUSD += fila.gastoRealApiUSD;
@@ -479,6 +526,9 @@ export async function obtenerResumenCostos(desde: Date, hasta: Date): Promise<Re
       llamadas: acc.llamadas + 1,
       inputTokens: acc.inputTokens + f.inputTokens,
       outputTokens: acc.outputTokens + f.outputTokens,
+      cacheCreationTokens: acc.cacheCreationTokens + f.cacheCreationTokens,
+      cacheReadTokens: acc.cacheReadTokens + f.cacheReadTokens,
+      ahorroNetoCacheUSD: acc.ahorroNetoCacheUSD + f.ahorroNetoCacheUSD,
       costoUSD: acc.costoUSD + f.costoUSD,
       costoEquivalenteSuscripcionUSD:
         acc.costoEquivalenteSuscripcionUSD + f.costoEquivalenteSuscripcionUSD,
@@ -488,6 +538,9 @@ export async function obtenerResumenCostos(desde: Date, hasta: Date): Promise<Re
       llamadas: 0,
       inputTokens: 0,
       outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      ahorroNetoCacheUSD: 0,
       costoUSD: 0,
       costoEquivalenteSuscripcionUSD: 0,
       gastoRealApiUSD: 0,

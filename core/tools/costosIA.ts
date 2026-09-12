@@ -53,10 +53,13 @@ export const costosIATool: ToolDefinition = {
 
     return [
       `Costo de IA (${periodo}): $${resumen.costoUSD.toFixed(4)} USD`,
+      `Gasto real de API: $${resumen.gastoRealApiUSD.toFixed(4)} USD`,
       `Llamadas a la API: ${resumen.llamadas}`,
       `Tokens de entrada: ${resumen.inputTokens.toLocaleString("es-ES")}`,
       `Tokens de salida: ${resumen.outputTokens.toLocaleString("es-ES")}`,
-      `Modelo: claude-sonnet-4-6 ($3/1M entrada, $15/1M salida)`,
+      `Caché: ${resumen.cacheReadTokens.toLocaleString("es-ES")} tokens reutilizados / ` +
+        `${resumen.cacheCreationTokens.toLocaleString("es-ES")} creados`,
+      `Ahorro neto estimado por caché: $${resumen.ahorroNetoCacheUSD.toFixed(4)} USD`,
     ].join("\n");
   },
 };
