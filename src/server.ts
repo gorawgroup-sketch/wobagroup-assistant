@@ -255,9 +255,11 @@ app.use((_req: Request, res: Response, next) => {
   // El chat permite dictado solo desde este mismo origen. Cámara y ubicación
   // siguen bloqueadas; el navegador pide permiso explícito antes de usar el micro.
   res.set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
+  // El chat reproduce el MP3 autenticado como URL blob local. El permiso
+  // se limita a medios: scripts, conexiones y marcos conservan sus restricciones.
   res.set(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://wobagroup-assistant-production.up.railway.app; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    "default-src 'self'; script-src 'self'; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://wobagroup-assistant-production.up.railway.app; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
   );
   next();
 });
