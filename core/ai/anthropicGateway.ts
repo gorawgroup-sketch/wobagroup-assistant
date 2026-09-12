@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { registrarUsoIA } from "../claude/costTracking";
 import { autorizarLlamadaApi, type EjecucionIA } from "./policy";
 import { enteroAcotado, TiempoMaximoExcedidoError } from "../utils/asyncTimeout";
+import { validarPresupuestoSolicitudIA } from "./requestBudget";
 
 export function configuracionSolicitudAnthropic(model: string, env: NodeJS.ProcessEnv = process.env) {
   const raw = model.includes("haiku") ? env.WOBI_AI_HAIKU_TIMEOUT_MS
@@ -42,8 +43,19 @@ export async function crearMensajeAnthropic(
   params: Anthropic.MessageCreateParamsNonStreaming,
   chatId?: number
 ): Promise<Anthropic.Message> {
-  await autorizarLlamadaApi(ejecucion.proceso);
   const llamadaNumero = ejecucion.siguienteLlamada();
+  try {
+    validarPresupuestoSolicitudIA(ejecucion.proceso, llamadaNumero, params);
+  } catch (error) {
+    console.warn("[ai/budget]", JSON.stringify({
+      ejecucionId: ejecucion.id,
+      proceso: ejecucion.proceso,
+      llamadaNumero,
+      error: error instanceof Error ? error.name : "Error",
+    }));
+    throw error;
+  }
+  await autorizarLlamadaApi(ejecucion.proceso);
   const config = configuracionSolicitudAnthropic(String(params.model));
   const inicio = Date.now();
   let response: Anthropic.Message;
