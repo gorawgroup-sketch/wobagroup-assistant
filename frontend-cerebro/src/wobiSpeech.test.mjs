@@ -53,3 +53,24 @@ test("browser autoplay denial offers a direct resume of prepared audio", async (
   audio.dispatchEvent(new Event("ended")); await speaking;
   assert.equal(attempts, 2);
 });
+
+test("reports loading, blocked, real playback, pause and completion for the visible player", async () => {
+  const states = []; const denied = deferred(); const audio = new FakeAudio();
+  audio.play = () => Promise.reject(new DOMException("gesture needed", "NotAllowedError"));
+  const player = createWobiSpeech({ fetchAudio: async () => audioResponse(), makeAudio: () => audio,
+    urls: { createObjectURL: () => "blob:visible", revokeObjectURL() {} }, onStateChange: state => states.push(state),
+  });
+  const speaking = player.speak("Hola", {}, denied.resolve); await denied.promise;
+  assert.deepEqual(states, ["loading", "blocked"]);
+  // Native controls play the same element without another synthesis request.
+  audio.dispatchEvent(new Event("playing")); audio.dispatchEvent(new Event("pause"));
+  audio.dispatchEvent(new Event("playing")); audio.dispatchEvent(new Event("ended")); await speaking;
+  assert.deepEqual(states, ["loading", "blocked", "playing", "paused", "playing", "idle"]);
+});
+
+test("a failed request leaves a retryable error state instead of silently clearing the player", async () => {
+  const states = [];
+  const player = createWobiSpeech({ fetchAudio: async () => new Response("Unavailable", {status:503}), onStateChange: state => states.push(state) });
+  await assert.rejects(player.speak("Hola", {}));
+  assert.deepEqual(states, ["loading", "error"]);
+});

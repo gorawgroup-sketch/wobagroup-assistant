@@ -19,6 +19,7 @@ export function createWobiSpeech({
   fetchAudio = (...args) => fetch(...args),
   makeAudio = () => new Audio(),
   urls = URL,
+  onStateChange = () => {},
 } = {}) {
   let current;
   const stop = () => { current?.controller.abort(); };
@@ -29,9 +30,12 @@ export function createWobiSpeech({
     const session = { controller: new AbortController(), audio: null };
     current = session;
     const signal = session.controller.signal;
+    let failed = false;
+    const report = state => { if (current === session) onStateChange(state); };
     try {
       for (const texto of splitSpeechText(text)) {
         signal.throwIfAborted();
+        report("loading");
         const response = await fetchAudio("/api/cerebro/voz", {
           method: "POST", headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({ texto }), signal,
@@ -50,12 +54,18 @@ export function createWobiSpeech({
             const finish = (error) => {
               audio.removeEventListener("ended", ended);
               audio.removeEventListener("error", failed);
+              audio.removeEventListener("playing", playing);
+              audio.removeEventListener("pause", paused);
               signal.removeEventListener("abort", cancelled);
               if (error) reject(error); else resolve();
             };
+            const playing = () => report("playing");
+            const paused = () => { if (!signal.aborted) report("paused"); };
             const ended = () => finish();
             const failed = () => finish(new Error("No se pudo reproducir la voz de WOBi."));
             const cancelled = () => { audio.pause(); finish(signal.reason); };
+            audio.addEventListener("playing", playing);
+            audio.addEventListener("pause", paused);
             audio.addEventListener("ended", ended);
             audio.addEventListener("error", failed);
             signal.addEventListener("abort", cancelled, { once: true });
@@ -63,7 +73,7 @@ export function createWobiSpeech({
             audio.play().catch(error => {
               if (signal.aborted) return;
               // Keep the prepared audio so a user gesture can resume it directly.
-              if (error.name === "NotAllowedError") onBlocked();
+              if (error.name === "NotAllowedError") { report("blocked"); onBlocked(); }
               else finish(error);
             });
           });
@@ -75,9 +85,12 @@ export function createWobiSpeech({
         }
       }
     } catch (error) {
-      if (!signal.aborted) throw error;
+      if (!signal.aborted) { failed = true; report("error"); throw error; }
     } finally {
-      if (current === session) current = null;
+      if (current === session) {
+        if (!failed) report("idle");
+        current = null;
+      }
     }
   }
   return { speak, stop, resume };

@@ -25,3 +25,7 @@ Herramienta: ImageGen integrada. Prompt final: Remove the background from this i
 ## Cabeza actual: centro
 
 El centro muestra únicamente la cabeza del mismo `wobi-transparent.png` aprobado, sin cambiar ni regenerar el rostro. `src/wobiHead.js` define el encuadre y el contorno de la mandíbula; `WobiAvatar` aplica ese mismo recorte al SVG visible y al muestreo de nanobots. No se modifican los píxeles del original.
+
+## Reproducción del chat
+
+Cada respuesta incluye «Escuchar respuesta», independiente de la preferencia de lectura automática. Al activar la lectura se reproduce la última respuesta existente. Un elemento audio persistente muestra controles nativos, volumen y progreso; informa carga, reproducción, pausa y error, con reintento. La lectura automática conserva la preferencia guardada y permanece desactivada en dispositivos nuevos. El proveedor y el alcance autorizado del envío de texto no cambian.
