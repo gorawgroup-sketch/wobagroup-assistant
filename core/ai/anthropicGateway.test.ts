@@ -3,6 +3,7 @@ import test from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
 import { configuracionSolicitudAnthropic, conLimiteSolicitud, crearMensajeAnthropic } from "./anthropicGateway";
 import { TiempoMaximoExcedidoError } from "../utils/asyncTimeout";
+import { PresupuestoSolicitudIAExcedidoError } from "./requestBudget";
 
 test("presupuestos de espera por modelo y reintentos explícitos", () => {
   assert.deepEqual(configuracionSolicitudAnthropic("claude-haiku", {}), { timeout: 60_000, maxRetries: 0 });
@@ -24,6 +25,31 @@ test("gateway desactiva reintentos SDK ante 503; no utiliza red real", async () 
     model: "claude-haiku-4-5", max_tokens: 1, messages: [{ role: "user", content: "test" }],
   }));
   assert.equal(llamadas, 1);
+});
+
+test("gateway bloquea un clasificador desproporcionado antes de abrir la conexión", async () => {
+  let llamadasRed = 0;
+  const sdk = new Anthropic({
+    apiKey: "test-not-a-secret",
+    fetch: async () => {
+      llamadasRed += 1;
+      return new Response("{}", { status: 200 });
+    },
+  });
+
+  await assert.rejects(
+    crearMensajeAnthropic(
+      sdk,
+      { id: "budget-test", proceso: "clasificar_documento", siguienteLlamada: () => 1 },
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "x".repeat(170_000) }],
+      }
+    ),
+    PresupuestoSolicitudIAExcedidoError
+  );
+  assert.equal(llamadasRed, 0);
 });
 
 test("SDK real recibe aborto si no llegan cabeceras", async () => {
