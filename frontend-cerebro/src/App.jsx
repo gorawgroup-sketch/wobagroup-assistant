@@ -2872,7 +2872,7 @@ export default function CerebroWoba() {
         .wobi-chat-estado { display: flex; align-items: center; gap: 6px; margin-top: 5px; color: ${C.dim}; font-size: 12px; }
         .wobi-punto-estado { width: 6px; height: 6px; border-radius: 50%; background: ${C.ok}; box-shadow: 0 0 7px ${C.ok}; }
         .wobi-chat-controles { display: flex; gap: 7px; }
-        .wobi-reproductor { margin: 0 16px 12px; padding: 12px; border: 1px solid ${C.line}; border-radius: 12px; color: ${C.text}; font-size: 12px; }
+        .wobi-reproductor { margin: 0 16px 12px; padding: 12px; border: 1px solid ${C.line}; border-radius: 12px; color: ${C.cream}; font-size: 12px; }
         .wobi-reproductor audio { display: block; width: 100%; height: 36px; margin-top: 8px; }
         .wobi-reproductor-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
         .wobi-reproductor button, .wobi-escuchar-respuesta { color: ${C.coreBright}; background: transparent; border: 1px solid ${C.lineBright}; border-radius: 8px; padding: 7px 10px; cursor: pointer; font: inherit; }
