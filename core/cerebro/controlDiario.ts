@@ -285,6 +285,31 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     });
   }
 
+  if (costos && costos.ayer.ahorroNetoCacheUSD > 0.001) {
+    recomendaciones.push({
+      id: "cache-efectiva",
+      prioridad: "informativa",
+      titulo: "La caché está reduciendo el gasto",
+      detalle: `Ayer reutilizó ${costos.ayer.cacheReadTokens.toLocaleString("es-ES")} tokens y ahorró aproximadamente $${costos.ayer.ahorroNetoCacheUSD.toFixed(2)} netos.`,
+      siguientePaso: "Mantener estables los prefijos compartidos y seguir midiendo por proceso.",
+      modulo: "accesos",
+    });
+  } else if (
+    costos &&
+    costos.ayer.llamadas >= 10 &&
+    costos.ayer.cacheCreationTokens >= 50_000 &&
+    costos.ayer.cacheReadTokens === 0
+  ) {
+    recomendaciones.push({
+      id: "cache-sin-reuso",
+      prioridad: "media",
+      titulo: "La caché se crea pero no se reutiliza",
+      detalle: `Ayer se escribieron ${costos.ayer.cacheCreationTokens.toLocaleString("es-ES")} tokens de caché sin ninguna lectura posterior.`,
+      siguientePaso: "Revisar estabilidad y orden de los prefijos antes de ampliar la caché a más procesos.",
+      modulo: "accesos",
+    });
+  }
+
   if (politica.modo === "observe") {
     recomendaciones.push({
       id: "politica-observe",
