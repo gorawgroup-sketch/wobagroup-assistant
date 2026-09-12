@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import WobiAvatar, { WOBI_IMAGE } from "./WobiAvatar.jsx";
 import WobiVoice from "./WobiVoice.jsx";
-import { createWobiSpeech } from "./wobiSpeech.js";
+import { createStreamingWobiSpeech } from "./wobiRealtimeSpeech.js";
 import { useCerebroRealtime } from "./useCerebroRealtime";
 
 const C = {
@@ -1862,10 +1862,8 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   const [leerRespuestas, setLeerRespuestas] = useState(() => localStorage.getItem(LOCALSTORAGE_VOZ_KEY) === "1");
   const [vozPendiente, setVozPendiente] = useState(false);
   const [estadoVoz, setEstadoVoz] = useState("idle");
-  const audioChatRef = useRef(null);
   const ultimaLocucionRef = useRef("");
-  const lectorVoz = useMemo(() => createWobiSpeech({
-    makeAudio: () => audioChatRef.current,
+  const lectorVoz = useMemo(() => createStreamingWobiSpeech({
     onStateChange: setEstadoVoz,
   }), []);
   const vozActivaRef = useRef(false);
@@ -1916,7 +1914,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
 
   useEffect(() => () => {
     recognitionRef.current?.stop?.();
-    lectorVoz.stop();
+    lectorVoz.dispose();
   }, [lectorVoz]);
 
   useEffect(() => {
@@ -1935,8 +1933,8 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
 
   useEffect(() => { if (estadoVoz === "playing") setVozPendiente(false); }, [estadoVoz]);
 
-  const hablar = useCallback((respuesta, manual = false) => {
-    if ((!manual && !vozActivaRef.current) || document.hidden || !respuesta) return;
+  const hablar = useCallback((respuesta) => {
+    if (!vozActivaRef.current || document.hidden || !respuesta) return;
     ultimaLocucionRef.current = respuesta;
     setError("");
     setVozPendiente(false);
@@ -1971,6 +1969,8 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   const enviar = async () => {
     const contenido = texto.trim();
     if (!contenido || enviandoRef.current) return;
+    lectorVoz.stop();
+    if (vozActivaRef.current) lectorVoz.activate().catch(() => setVozPendiente(true));
     enviandoRef.current = true;
     setEnviando(true);
     setError("");
@@ -2037,11 +2037,11 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
 
   const toggleLectura = () => {
     const nuevo = !leerRespuestas;
+    vozActivaRef.current = nuevo && abierto;
     setLeerRespuestas(nuevo);
     localStorage.setItem(LOCALSTORAGE_VOZ_KEY, nuevo ? "1" : "0");
     if (!nuevo) { lectorVoz.stop(); setVozPendiente(false); return; }
-    const ultima = mensajes.findLast(mensaje => mensaje.rol === "wobi");
-    if (ultima) hablar(ultima.texto, true);
+    lectorVoz.activate().catch(() => setVozPendiente(true));
   };
 
   return (
@@ -2067,12 +2067,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
                 type="button"
                 onClick={toggleLectura}
                 aria-pressed={leerRespuestas}
-                aria-label={leerRespuestas ? "Desactivar lectura de respuestas" : "Leer las respuestas en voz alta"}
-                title={leerRespuestas ? "Desactivar lectura de respuestas" : "Leer las respuestas en voz alta"}
+                aria-label={leerRespuestas ? "Desactivar voz" : "Activar voz"}
+                title={leerRespuestas ? "Desactivar voz" : "Activar voz"}
                 style={{ width: "auto", padding: "0 10px", fontSize: 12 }}
                 className={`wobi-control-icono${leerRespuestas ? " wobi-control-icono--activo" : ""}`}
               >
-                <span>{leerRespuestas ? "Voz activada" : "Activar voz"}</span>
+                <span>{leerRespuestas ? "Voz activada" : "Voz desactivada"}</span>
               </button>
               <button type="button" onClick={() => setAbierto(false)} aria-label="Cerrar chat" className="wobi-control-icono">
                 <span aria-hidden="true">×</span>
@@ -2080,17 +2080,16 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
             </div>
           </header>
 
-          <div className="wobi-reproductor" hidden={estadoVoz === "idle"}>
-            <div role="status">{({ loading: "Preparando la voz de WOBi…", playing: "WOBi está hablando", paused: "Audio en pausa", blocked: "Pulsa Reproducir para escuchar la respuesta", error: "No se pudo reproducir el audio. Puedes reintentarlo." })[estadoVoz]}</div>
-            <audio ref={audioChatRef} controls preload="auto" aria-label="Audio de la respuesta de WOBi" />
-            <div className="wobi-reproductor-acciones">
-              {vozPendiente && <button type="button" onClick={() => {
-                lectorVoz.resume().then(() => setVozPendiente(false))
-                  .catch(() => setError("Pulsa el botón de reproducción del audio para escuchar la respuesta."));
-              }}>Reproducir respuesta</button>}
-              {estadoVoz === "error" && <button type="button" onClick={() => hablar(ultimaLocucionRef.current, true)}>Reintentar audio</button>}
-              <button type="button" onClick={() => { lectorVoz.stop(); setVozPendiente(false); setEstadoVoz("idle"); }}>Detener audio</button>
-            </div>
+          <div className="wobi-reproductor" hidden={estadoVoz === "idle" && !vozPendiente}>
+            <div role="status">{({ loading: "Conectando la voz de WOBi…", playing: "WOBi está hablando", blocked: "Activa el audio para escuchar a WOBi", error: "No se pudo conectar la voz. La respuesta sigue disponible por escrito." })[estadoVoz]}</div>
+            {(vozPendiente || estadoVoz === "blocked") && <button type="button" onClick={() => {
+              lectorVoz.activate().then(() => setVozPendiente(false))
+                .catch(() => setError("El navegador no pudo activar el audio."));
+            }}>Permitir audio</button>}
+            {estadoVoz === "error" && leerRespuestas && <button type="button" onClick={() => {
+              lectorVoz.activate().catch(() => setVozPendiente(true));
+              hablar(ultimaLocucionRef.current);
+            }}>Reintentar voz</button>}
           </div>
 
           <div className="wobi-canales" aria-label="Canales disponibles">
@@ -2141,7 +2140,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
                 <div key={`${mensaje.rol}-${i}-${mensaje.texto.slice(0, 12)}`} className={`wobi-mensaje-fila ${esWobi ? "wobi-mensaje-fila--wobi" : "wobi-mensaje-fila--usuario"}`}>
                   {esWobi && <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>}
                   <div className={`wobi-burbuja ${esWobi ? "wobi-burbuja--wobi" : "wobi-burbuja--usuario"}`}>
-                    {esWobi ? <><ContenidoRespuesta texto={mensaje.texto} /><button type="button" className="wobi-escuchar-respuesta" onClick={() => hablar(mensaje.texto, true)}>Escuchar respuesta</button></> : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{mensaje.texto}</div>}
+                    {esWobi ? <ContenidoRespuesta texto={mensaje.texto} /> : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{mensaje.texto}</div>}
                   </div>
                 </div>
               );
@@ -2873,10 +2872,7 @@ export default function CerebroWoba() {
         .wobi-punto-estado { width: 6px; height: 6px; border-radius: 50%; background: ${C.ok}; box-shadow: 0 0 7px ${C.ok}; }
         .wobi-chat-controles { display: flex; gap: 7px; }
         .wobi-reproductor { margin: 0 16px 12px; padding: 12px; border: 1px solid ${C.line}; border-radius: 12px; color: ${C.cream}; font-size: 12px; }
-        .wobi-reproductor audio { display: block; width: 100%; height: 36px; margin-top: 8px; }
-        .wobi-reproductor-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-        .wobi-reproductor button, .wobi-escuchar-respuesta { color: ${C.coreBright}; background: transparent; border: 1px solid ${C.lineBright}; border-radius: 8px; padding: 7px 10px; cursor: pointer; font: inherit; }
-        .wobi-escuchar-respuesta { margin-top: 12px; font-size: 12px; }
+        .wobi-reproductor button { color: ${C.coreBright}; background: transparent; border: 1px solid ${C.lineBright}; border-radius: 8px; padding: 7px 10px; cursor: pointer; font: inherit; }
         .wobi-control-icono {
           width: 42px;
           height: 42px;

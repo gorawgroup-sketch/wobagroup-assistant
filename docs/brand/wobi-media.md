@@ -10,11 +10,11 @@ La grafía fonética Uóbi se usa solo en la locución; la marca visible sigue s
 
 La lectura del chat utiliza la misma `es-MX-DaliaNeural`, con ritmo +0% y tono +0 Hz, fijada en el servidor para todos los usuarios. `POST /api/cerebro/voz` exige la misma autorización del chat y sintetiza fragmentos de hasta 500 caracteres mediante `msedge-tts` (cliente del servicio Microsoft Edge). El usuario autorizó expresamente enviar las respuestas del chat a Microsoft para esta síntesis, incluido su posible contenido interno. No se almacena el audio y se responde con `Cache-Control: no-store`.
 
-El cliente divide las respuestas en frases, omite la sintaxis Markdown y reproduce el audio recibido. Al cerrar el chat, desactivar la lectura o salir de la pestaña cancela la voz. Si el navegador bloquea la reproducción automática, ofrece un botón para reproducir el audio ya preparado. Si Microsoft no responde, conserva la respuesta escrita y comunica el error; no sustituye la voz por la del sistema operativo. Wobi se transforma en Uóbi únicamente en la locución.
+El cliente divide las respuestas en frases y omite la sintaxis Markdown. `POST /api/cerebro/voz/stream` entrega PCM s16le mono a 24 kHz, decodificado incrementalmente en el servidor con mpg123-decoder. Web Audio reproduce los bloques conforme llegan, con una cola continua y hasta diez segundos preparados por adelantado. El siguiente fragmento se solicita mientras sigue sonando el anterior. Al cerrar el chat, desactivar la voz o salir de la pestaña se cancela la reproducción y la petición pendiente. Si el navegador bloquea el audio, ofrece un único botón para habilitarlo. Si Microsoft no responde, conserva la respuesta escrita y comunica el error; no sustituye la voz por la del sistema operativo. Wobi se transforma en Uóbi únicamente en la locución.
 
 ## Favicon
 
-El favicon actual es `brand/wobi-outline.svg`: dibujo vectorial del contorno de la cabeza, ojos, nariz y boca, sin cuello ni fondo. Sus líneas son negras en pestañas claras y blancas en pestañas oscuras. Los PNG de 16, 32, 48, 180, 192 y 512 px y el ICO de 16/32/48 px se exportan de ese SVG con alfa transparente. Esta versión reemplaza el recorte fotográfico para mejorar su lectura a tamaño pequeño. El retrato principal permanece en `brand/wobi.png`.
+El favicon actual es `brand/wobi-wordmark.svg`: únicamente el nombre WOBi en letras negras, sobre fondo transparente. Los PNG de 16, 32, 48, 180, 192 y 512 px y el ICO de 16/32/48 px se exportan del mismo SVG. Los nuevos nombres de archivo renuevan la caché del icono. El retrato principal permanece en `brand/wobi.png`.
 
 ## Retrato central transparente
 
@@ -28,8 +28,12 @@ El centro muestra únicamente la cabeza del mismo `wobi-transparent.png` aprobad
 
 ## Reproducción del chat
 
-Cada respuesta incluye «Escuchar respuesta», independiente de la preferencia de lectura automática. Al activar la lectura se reproduce la última respuesta existente. Un elemento audio persistente muestra controles nativos, volumen y progreso; informa carga, reproducción, pausa y error, con reintento. La lectura automática conserva la preferencia guardada y permanece desactivada en dispositivos nuevos. El proveedor y el alcance autorizado del envío de texto no cambian.
+El chat tiene un único interruptor «Voz activada / Voz desactivada» y recuerda la preferencia en el dispositivo; permanece apagado en dispositivos nuevos. Al activarlo se habilita el contexto de audio desde el gesto del usuario. Las nuevas respuestas se leen automáticamente, sin reproductor ni botones por mensaje. Activarlo no repite conversaciones antiguas. Desactivarlo detiene inmediatamente todos los bloques programados. Se conserva un reintento únicamente ante errores. La consulta del asistente sigue completándose antes de sintetizar: el streaming reduce la espera de audio, no el tiempo de consulta a herramientas o generación de la respuesta.
+
+Prueba local con el componente real, las cabeceras CSP de producción y síntesis real: primer audio programado a 955 ms desde Enviar (incluyendo una respuesta de chat simulada de 300 ms), 289 bloques y 0 ms de hueco añadido entre bloques. Es una medición de prueba, no una garantía de latencia de consultas reales.
 
 ## Política de medios del navegador
 
 El servidor permite `media-src 'self' blob:` para reproducir el MP3 autenticado a través de una URL temporal creada por el navegador. Sin esta directiva, `default-src 'self'` bloqueaba el audio del chat aunque el endpoint entregara un MP3 válido; el saludo estático sí podía reproducirse. Las restricciones de scripts, conexiones y marcos se conservan. La prueba de reproducción debe incluir las cabeceras CSP de producción: verificar solo el endpoint o Vite no detecta este bloqueo.
+
+El chat actual utiliza Web Audio con PCM recibido del mismo origen. El decodificador WASM se ejecuta en el servidor; no se relajan las restricciones de scripts del navegador. El endpoint MP3 anterior se mantiene compatible.

@@ -19,6 +19,7 @@
     "exceljs": "^4.4.0",
     "express": "^4.21.1",
     "googleapis": "^176.0.0",
+    "mpg123-decoder": "1.0.3",
     "msedge-tts": "2.0.7",
     "node-cron": "^4.6.0",
     "pdfkit": "^0.20.1",
