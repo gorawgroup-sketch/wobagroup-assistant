@@ -71,15 +71,23 @@ function construirOpcionesBloque(
 // "sin registrar". Verificado en vivo el patrón real de Holded/Wise: una
 // conversión aparece como DOS movimientos con la MISMA descripción literal
 // "Converted Usd To Eur" (uno en cada cuenta propia — ej. "Emoney EUR" y
-// "Emoney USD" de WOBA), a veces con "(fee: XXX)" al final. No se intenta
-// detectar traslados entre cuentas propias por otros patrones de texto
-// todavía — no hay un ejemplo real confirmado del que partir; si aparece
-// uno, se agrega aquí con el mismo cuidado (verificado contra datos reales,
-// no adivinado).
+// "Emoney USD" de WOBA), a veces con "(fee: XXX)" al final.
 const RE_CONVERSION_MONEDA = /^converted\s+\S+\s+to\s+\S+/i;
 
+// Hallazgo real de auditoría (Carlos, 2026-09-14 — transferencia de 500€, WOBA, 07/09/2026): "Business
+// Atelier Europa" es una entidad propia del grupo usada como cuenta puente/tesorería entre WOBA y
+// EWORKS, no un tercero — verificado en vivo contra el histórico real de movimientos bancarios de
+// ambas empresas (docenas de casos, 2025-2026): la propia descripción bancaria ya lo dice literalmente
+// ("Transferencia Propia", "Gastos Internos", "Entre Company"), y varios pares casan en monto y fecha
+// exacta entre dos cuentas propias distintas (ej. WOBA 07/09/2026: -500€ en BBVA "TRANSFERENCIAS
+// BUSINESS ATELIER EUROPA S.L." + 500€ en Main "Payment From Business Atelier Europa S.l." — el mismo
+// caso que reportó Carlos). Nunca aparece "Business Atelier LLC" (proveedor real y NO relacionado de
+// Footprint, ver core/holded/write.ts) en ningún movimiento bancario real de WOBA/EWORKS — el patrón
+// exige "europa" para no arriesgarse a confundirlos si alguna vez coinciden.
+const RE_CUENTA_PROPIA_BUSINESS_ATELIER_EUROPA = /business\s+atelier\s+europa/i;
+
 function esMovimientoInternoOConversion(descripcion: string | undefined): boolean {
-  return RE_CONVERSION_MONEDA.test(descripcion ?? "");
+  return RE_CONVERSION_MONEDA.test(descripcion ?? "") || RE_CUENTA_PROPIA_BUSINESS_ATELIER_EUROPA.test(descripcion ?? "");
 }
 
 /**
