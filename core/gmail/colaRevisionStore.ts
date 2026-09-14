@@ -377,9 +377,24 @@ export interface ResultadoResolverActivo {
  * CUALQUIER punto terminal del sistema (ver comentario arriba del archivo)
  * sin que ese código necesite saber si en verdad hay una revisión de correo
  * en curso: si no hay ningún correo activo para este chat, esto es un no-op
- * seguro. NUNCA marca como leído por sí sola — eso es responsabilidad del
- * llamador (revisarCorreoNuevo.ts), que además debe llamar a
- * iniciarSiguienteActivo si terminado=true y quiere seguir con la cola.
+ * seguro.
+ *
+ * Hallazgo real de auditoría (Carlos, caso real "Eurohotel Gran Via Fira" — mismo síntoma ya
+ * documentado antes sin causa confirmada como "caso Avianca/Larrauri" en revisarCorreoNuevo.ts): un
+ * correo ya resuelto (evidencia real: Holded ya tenía el movimiento bancario conciliado) volvía a
+ * aparecer como "sin leer" y se reprocesaba entero. Causa real encontrada: esta función BORRABA la
+ * fila (dando la cola por resuelta) ANTES de que el llamador marcara el hilo como leído en Gmail —
+ * si esa llamada a Gmail fallaba o el proceso se interrumpía justo en el medio (confirmado en vivo:
+ * logs reales de producción muestran fallos recurrentes de cuota de Sheets — "Quota exceeded... Read
+ * requests per minute" — en este mismo archivo y en otros stores, 9 veces en una sola ventana de 500
+ * líneas de log), la cola ya no bloqueaba nada (fila borrada) pero el hilo real de Gmail seguía sin
+ * leer — la próxima revisión lo encontraba "nuevo" y repetía todo el trabajo desde cero, sin ningún
+ * aviso de que algo había fallado. Ahora esta función NUNCA borra la fila por sí sola cuando queda
+ * resuelta — solo la deja en pendientesRestantes=0 (sigue "activo", sigue bloqueando) y deja que el
+ * llamador (revisarCorreoNuevo.ts) confirme el borrado vía confirmarActivoResueltoTrasMarcarLeido,
+ * SOLO después de que marcarHiloComoLeido en Gmail haya devuelto éxito de verdad — así un fallo deja
+ * el correo visiblemente trabado (con el mismo mecanismo ya existente para cualquier correo activo
+ * atascado: aviso, reintento, 48h de auto-salto) en vez de perder el rastro en silencio.
  */
 export async function resolverUnoActivo(chatId: number): Promise<ResultadoResolverActivo> {
   const todas = await leerTodas();
@@ -388,10 +403,40 @@ export async function resolverUnoActivo(chatId: number): Promise<ResultadoResolv
 
   const restantes = fila.item.pendientesRestantes - 1;
   if (restantes <= 0) {
-    await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+    if (fila.item.pendientesRestantes !== 0) {
+      await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.item, pendientesRestantes: 0 }));
+    }
     return { terminado: true, gmailIdResuelto: fila.item.id };
   }
 
   await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.item, pendientesRestantes: restantes }));
   return { terminado: false };
+}
+
+/**
+ * Confirma que el correo activo (con pendientesRestantes ya en 0, ver resolverUnoActivo) quedó de
+ * verdad resuelto — se llama SOLO después de que marcarHiloComoLeido en Gmail devolvió éxito real,
+ * nunca antes. Recién acá se borra la fila; si esto nunca se llama (porque Gmail falló), la fila
+ * sigue viva y "activa" — visible, bloqueando, y recuperable con los mecanismos que ya existen para
+ * cualquier correo activo atascado (48h de auto-salto, "🗑️ Descartar y liberar", saltarCorreoActivo).
+ */
+export async function confirmarActivoResueltoTrasMarcarLeido(chatId: number, gmailId: string): Promise<void> {
+  const todas = await leerTodas();
+  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
+  if (!fila) return;
+  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+}
+
+/**
+ * Reintenta confirmar un correo que ya quedó resuelto (pendientesRestantes=0) pero cuyo hilo de
+ * Gmail no se pudo marcar como leído la vez anterior — ver el hallazgo real arriba. Se llama al
+ * principio de cada revisión (revisarCorreoNuevo.ts), ANTES de decidir si hay algo "activo"
+ * bloqueando la cola, para que un fallo transitorio (ej. cuota de Sheets/Gmail agotada por unos
+ * minutos) se resuelva solo en la siguiente pasada normal, sin esperar el auto-salto de 48h ni
+ * requerir que Carlos lo destrabe a mano.
+ */
+export async function reintentarActivoPendienteDeMarcarLeido(chatId: number): Promise<ItemColaCorreo | undefined> {
+  const fila = await obtenerActivoActual(chatId);
+  if (!fila || fila.pendientesRestantes > 0) return undefined;
+  return fila;
 }
