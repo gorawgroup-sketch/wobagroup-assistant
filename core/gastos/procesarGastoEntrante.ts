@@ -27,6 +27,8 @@ import {
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
+import { buscarGastoProcesadoPorIdentidad } from "./gastoPorCorreoStore";
+import { calcularHuellaContenido } from "./identidadGasto";
 
 export interface GastoEntrante {
   chatId: number;
@@ -168,6 +170,10 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   }
 
   const empresa: Empresa = datos.empresaProbable;
+  const huellaContenido = await calcularHuellaContenido(entrada.rutaLocal).catch((error) => {
+    console.error("[procesarGastoEntrante] No se pudo calcular la huella del comprobante (continúa con otras defensas):", error);
+    return undefined;
+  });
 
   // Pedido explícito de Carlos, tras dos errores reales: (1) un gasto de
   // Uber en Colombia se registró con 148.346 — el monto en COP — tratado
@@ -300,6 +306,55 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
 
   const monedaParaHolded = usarEquivalente ? (monedaEquivalenteResuelta as string) : monedaOriginal;
   const montoParaHolded = usarEquivalente ? (montoEquivalenteResuelto as number) : datos.monto;
+
+  // Defensa propia contra reenvíos: los tickets pueden dejar de aparecer en
+  // /purchases después de desmarcar "Es una factura de compra". Antes de
+  // consultar o proponer nada, revisamos una identidad durable que conserva
+  // el mismo archivo y el número legal+proveedor del gasto ya creado.
+  let duplicadoInterno: Awaited<ReturnType<typeof buscarGastoProcesadoPorIdentidad>>;
+  try {
+    duplicadoInterno = await buscarGastoProcesadoPorIdentidad(empresa, {
+      huellaContenido,
+      numeroDocumento: datos.numeroDocumento,
+      proveedor: datos.proveedor,
+      monto: montoParaHolded,
+      moneda: monedaParaHolded,
+      fecha: datos.fecha,
+      concepto: datos.concepto,
+    });
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    console.error("[procesarGastoEntrante] Error consultando identidad interna de duplicados:", error);
+    await sendTelegramMessage(
+      chatId,
+      `⚠️ No pude comprobar el registro interno de comprobantes ya procesados (${detalle}). Por seguridad NO propuse ` +
+        `crear ni conciliar el gasto. El correo queda pendiente para reintentarlo cuando la verificación vuelva a estar disponible.`
+    ).catch(() => {});
+    await guardarGastoPendienteDatos({
+      chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      datos,
+      motivo: "verificacion_duplicado",
+      deColaCorreo: entrada.deColaCorreo,
+      correoOrigen: entrada.correoOrigen,
+    }).catch((errorStore) =>
+      console.error("[procesarGastoEntrante] Error guardando el reintento de identidad documental:", errorStore)
+    );
+    return "pendiente_datos";
+  }
+  if (duplicadoInterno) {
+    const motivo = duplicadoInterno.motivo === "mismo_archivo"
+      ? "el archivo es exactamente el mismo"
+      : "coinciden el número de documento y el proveedor";
+    await sendTelegramMessage(
+      chatId,
+      `⛔ No propuse crear ni conciliar este gasto: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
+        `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
+    );
+    return "propuesta_duplicada";
+  }
   // Pedido explícito de Carlos, casos reales ALDI/Ahorramas: un recibo simplificado (sin los datos
   // fiscales de la empresa compradora impresos) no se puede usar legalmente para deducir IVA — se
   // colapsa a un solo importe sin desglosar, igual que ya se hacía para el caso de moneda
@@ -529,6 +584,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     deColaCorreo: entrada.deColaCorreo,
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,
+    huellaContenido,
   });
 
   const desgloseIva = lineasParaHolded

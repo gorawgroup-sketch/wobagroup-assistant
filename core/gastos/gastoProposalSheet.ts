@@ -44,6 +44,7 @@ const HEADERS = [
   "seleccionAccionesJSON",
   "hayMovimientoBancario",
   "movimientosAmbiguosJSON",
+  "huellaContenido",
 ];
 
 export interface PropuestaGasto {
@@ -153,6 +154,8 @@ export interface PropuestaGasto {
    * un check "Conciliar con #N" por cada uno, y así elegir empresa + conciliar en la MISMA aprobación.
    */
   movimientosAmbiguos?: MovimientoBancarioCandidato[];
+  /** SHA-256 de los bytes del comprobante, para deduplicar reenvíos del mismo archivo. */
+  huellaContenido?: string;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -205,7 +208,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:Y1`,
+    range: `${TAB_NAME}!A1:Z1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -298,6 +301,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     // de Sheets, así que la búsqueda en vivo nunca se disparaba.
     hayMovimientoBancario: row[23] === "" || row[23] == null ? undefined : row[23] === true || row[23] === "true",
     movimientosAmbiguos,
+    huellaContenido: row[25] ? String(row[25]) : undefined,
   };
 }
 
@@ -328,6 +332,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.seleccionAcciones && p.seleccionAcciones.length > 0 ? JSON.stringify(p.seleccionAcciones) : "",
     p.hayMovimientoBancario === undefined ? "" : p.hayMovimientoBancario ? "true" : "false",
     p.movimientosAmbiguos && p.movimientosAmbiguos.length > 0 ? JSON.stringify(p.movimientosAmbiguos) : "",
+    p.huellaContenido ?? "",
   ];
 }
 
@@ -343,7 +348,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:Y10000`,
+    range: `${TAB_NAME}!A2:Z10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -388,7 +393,7 @@ async function purgarVencidas(): Promise<void> {
 
 /**
  * Bug real de gravedad alta encontrado en vivo (2026-09-08, caso MARNAPA SA DE CV/GDL Pastriva,
- * 4.96€): `values.append` con un rango de columnas (`A:Y`) le pide a Sheets que ADIVINE en qué fila Y
+ * 4.96€): `values.append` con un rango de columnas (`A:Z`) le pide a Sheets que ADIVINE en qué fila Y
  * EN QUÉ COLUMNA empieza "la tabla" — y esa heurística puede fallar en silencio. Verificado en vivo:
  * 5 propuestas reales seguidas se escribieron completas SIN error, pero todas terminaron con sus
  * datos empezando en la columna U en vez de la A (el resto de la fila, A:T, quedó vacío) — probablemente
@@ -404,18 +409,18 @@ async function purgarVencidas(): Promise<void> {
  *
  * La corrección de fondo: nunca dejar que Sheets adivine la fila/columna de un `append` — se calcula
  * la fila libre real a mano (ver siguienteFilaLibre) y se escribe con `values.update` sobre un rango
- * EXPLÍCITO (`A{fila}:Y{fila}`), que Sheets no puede reinterpretar ni desplazar.
+ * EXPLÍCITO (`A{fila}:Z{fila}`), que Sheets no puede reinterpretar ni desplazar.
  */
 async function siguienteFilaLibre(): Promise<number> {
   const sheetId = assertSheetId();
   const sheets = getClient();
-  // Rango ancho (A:Y, no solo A:A) a propósito: una fila ya rota por este mismo bug puede tener la
+  // Rango ancho (A:Z, no solo A:A) a propósito: una fila ya rota por este mismo bug puede tener la
   // columna A vacía pero datos reales más a la derecha — hay que contarla igual para no escribir
   // encima de ella. values.get recorta las filas vacías al final, así que rows.length ya es "la
   // última fila con algo, en cualquier columna del rango".
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:Y`,
+    range: `${TAB_NAME}!A:Z`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const rows = resp.data.values ?? [];
@@ -455,7 +460,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:Y${fila}`,
+        range: `${TAB_NAME}!A${fila}:Z${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(propuesta)] },
       });
