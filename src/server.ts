@@ -79,9 +79,11 @@ import { handleAutorespuestaHiloCallback } from "../core/gmail/autorespuestaHilo
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
 import { resolverIdentidadChatWeb } from "../core/cerebro/webChatIdentity";
 import { crearSolicitudVinculoChat, confirmarVinculoChat } from "../core/cerebro/chatLinkStore";
+import { extraerCodigoVinculoChat } from "../core/cerebro/chatLinkCommand";
 import {
   ConflictoIdempotencia,
-  procesarSolicitudChat,
+  iniciarSolicitudChat,
+  solicitudChatExpirada,
   solicitudesChatEnCurso,
 } from "../core/cerebro/webChatCoordinator";
 import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
@@ -655,6 +657,24 @@ async function identidadChatDesdeRequest(req: Request) {
   );
 }
 
+async function identidadChatParaRespuesta(req: Request, res: Response) {
+  try {
+    const identidad = await identidadChatDesdeRequest(req);
+    if (!identidad) {
+      res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
+      return null;
+    }
+    return identidad;
+  } catch (error) {
+    // Express 4 no captura automáticamente rechazos de handlers async. Un
+    // 429 transitorio de Sheets antes escapaba como unhandledRejection y el
+    // navegador quedaba esperando. Ahora el fallo es explícito y recuperable.
+    console.error("[api/cerebro/chat] No se pudo resolver la identidad:", error instanceof Error ? error.name : "Error");
+    res.status(503).json({ error: "Wobi está reconectando sus datos. Inténtalo de nuevo en unos segundos." });
+    return null;
+  }
+}
+
 function identidadPublica(identidad: Awaited<ReturnType<typeof identidadChatDesdeRequest>>) {
   if (!identidad) return null;
   return {
@@ -672,11 +692,8 @@ function identidadPublica(identidad: Awaited<ReturnType<typeof identidadChatDesd
  */
 app.get("/api/cerebro/chat", async (req: Request, res: Response) => {
   corsChat(res, "GET");
-  const identidad = await identidadChatDesdeRequest(req);
-  if (!identidad) {
-    res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
-    return;
-  }
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
 
   const mensajes = await obtenerHistorialVisible(identidad.chatId);
   res.json({ identidad: identidadPublica(identidad), mensajes });
@@ -712,11 +729,8 @@ function puedeEnviarMensajeChat(chatId: number, messageId: string): boolean {
  */
 app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
   corsChat(res, "POST");
-  const identidad = await identidadChatDesdeRequest(req);
-  if (!identidad) {
-    res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
-    return;
-  }
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
 
   const messageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
   const texto = typeof req.body?.texto === "string" ? req.body.texto.trim() : "";
@@ -734,18 +748,25 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
   }
 
   try {
-    const resultado = await procesarSolicitudChat(
+    const resultado = await iniciarSolicitudChat(
       { requestId: messageId, chatId: identidad.chatId, texto },
       webChatRequestStore,
-      () =>
-        askClaude(texto, identidad.chatId, identidad.nombre, "chat_conversacional", {
-          soloLectura: identidad.modo === "solo_lectura",
-          presentacion: "web",
-        })
+      async () => {
+        try {
+          return await askClaude(texto, identidad.chatId, identidad.nombre, "chat_conversacional", {
+            soloLectura: identidad.modo === "solo_lectura",
+            presentacion: "web",
+          });
+        } finally {
+          // Despierta el front al terminar (con éxito o error). La respuesta
+          // se recupera por requestId; no depende de mantener el POST vivo.
+          publicarCambioCerebro("chat_web");
+        }
+      }
     );
 
     if (resultado.estado === "procesando") {
-      res.status(202).json({ estado: resultado.estado, duplicada: true });
+      res.status(202).json({ estado: resultado.estado, requestId: messageId, duplicada: resultado.duplicada });
       return;
     }
     if (resultado.estado === "fallido") {
@@ -756,7 +777,6 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
       return;
     }
 
-    publicarCambioCerebro("chat_web");
     res.json({
       estado: resultado.estado,
       respuesta: resultado.respuesta,
@@ -773,14 +793,49 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
   }
 });
 
+/** Estado durable de un turno asíncrono del chat web. */
+app.get("/api/cerebro/chat/solicitud/:requestId", async (req: Request, res: Response) => {
+  corsChat(res, "GET");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+
+  const requestId = req.params.requestId?.trim() ?? "";
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) {
+    res.status(400).json({ error: "requestId ausente o inválido." });
+    return;
+  }
+
+  try {
+    let solicitud = await webChatRequestStore.obtener(identidad.chatId, requestId);
+    if (!solicitud) {
+      res.status(404).json({ error: "No encontré esa solicitud en esta conversación." });
+      return;
+    }
+    if (solicitudChatExpirada(solicitud)) {
+      await webChatRequestStore.fallar(identidad.chatId, requestId);
+      solicitud = { ...solicitud, estado: "fallido", actualizadoEn: Date.now() };
+    }
+    res.json({
+      requestId,
+      estado: solicitud.estado,
+      respuesta: solicitud.estado === "completado" ? solicitud.respuesta ?? "" : undefined,
+    });
+  } catch (error) {
+    console.error("[api/cerebro/chat/solicitud] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No pude consultar el estado del mensaje." });
+  }
+});
+
+app.options("/api/cerebro/chat/solicitud/:requestId", (_req: Request, res: Response) => {
+  corsChat(res, "GET");
+  res.sendStatus(204);
+});
+
 /** Crea un código de 10 minutos que solo puede confirmar el usuario desde su propio Telegram autorizado. */
 app.post("/api/cerebro/chat/vincular", async (req: Request, res: Response) => {
   corsChat(res, "POST");
-  const identidad = await identidadChatDesdeRequest(req);
-  if (!identidad) {
-    res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
-    return;
-  }
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
   try {
     const resultado = await crearSolicitudVinculoChat(req.get("X-Cerebro-Device") ?? "", identidad.nombre);
     res.json(resultado);
@@ -1201,11 +1256,12 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     return;
   }
 
-  const codigoVinculo = incoming.text.trim().match(/^\/?vincular\s+([a-zA-Z0-9-]{6,8})$/i)?.[1];
+  const codigoVinculo = extraerCodigoVinculoChat(incoming.text);
   if (codigoVinculo && remitente) {
     const nombreTelegram = incoming.fromNombre || [remitente.first_name, remitente.last_name].filter(Boolean).join(" ");
     try {
       const vinculo = await confirmarVinculoChat(codigoVinculo, remitente.id, nombreTelegram);
+      if (vinculo) publicarCambioCerebro("chat_vinculado");
       await sendTelegramMessage(
         incoming.chatId,
         vinculo

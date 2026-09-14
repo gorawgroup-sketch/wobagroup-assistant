@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { CacheLectura } from "../utils/readCache";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_cerebro_vinculos_chat";
@@ -117,19 +118,27 @@ function rowToFila(row: unknown[]): FilaVinculo | null {
   };
 }
 
+// El front consulta el vínculo mientras Telegram lo confirma. Sin esta
+// caché, cada sondeo hacía una lectura completa de Sheets y agotaba la
+// cuota compartida en pocos minutos. Solo este servicio escribe la pestaña
+// y cada mutación confirmada invalida la fotografía.
+const cacheVinculos = new CacheLectura<FilaConIndice[]>("vinculos_chat", 60_000);
+
 async function leerTodas(): Promise<FilaConIndice[]> {
-  await ensureTab();
-  const resp = await getClient().spreadsheets.values.get({
-    spreadsheetId: assertSheetId(),
-    range: `${TAB_NAME}!A2:J10000`,
-    valueRenderOption: "UNFORMATTED_VALUE",
-  });
-  const resultado: FilaConIndice[] = [];
-  (resp.data.values ?? []).forEach((row, index) => {
-    const fila = rowToFila(row);
-    if (fila) resultado.push({ rowIndex: index + 2, fila });
-  });
-  return resultado;
+  return (await cacheVinculos.obtener(async () => {
+    await ensureTab();
+    const resp = await getClient().spreadsheets.values.get({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A2:J10000`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const resultado: FilaConIndice[] = [];
+    (resp.data.values ?? []).forEach((row, index) => {
+      const fila = rowToFila(row);
+      if (fila) resultado.push({ rowIndex: index + 2, fila });
+    });
+    return resultado;
+  })).datos;
 }
 
 async function purgarCodigosVencidos(): Promise<void> {
@@ -149,6 +158,7 @@ async function purgarCodigosVencidos(): Promise<void> {
       })),
     },
   });
+  cacheVinculos.invalidar();
 }
 
 function sinHashes(fila: FilaVinculo): VinculoChat {
@@ -215,6 +225,7 @@ export async function crearSolicitudVinculoChat(
       ]],
     },
   });
+  cacheVinculos.invalidar();
   return { estado: "pendiente", codigo, expiraEn };
 }
 
@@ -244,6 +255,7 @@ export async function confirmarVinculoChat(
       values: [["vinculado", telegramUserId, nombreTelegram, match.fila.creadoEn, match.fila.expiraEn, ahora]],
     },
   });
+  cacheVinculos.invalidar();
   return sinHashes({
     ...match.fila,
     estado: "vinculado",

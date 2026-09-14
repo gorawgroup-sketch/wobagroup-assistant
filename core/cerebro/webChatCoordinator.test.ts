@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ConflictoIdempotencia,
+  iniciarSolicitudChat,
   procesarSolicitudChat,
   type RepositorioSolicitudesChat,
   type SolicitudChatGuardada,
@@ -102,4 +103,30 @@ test("una solicitud fallida no repite efectos con el mismo identificador", async
   const repetida = await procesarSolicitudChat(entrada, repo, async () => { llamadas++; return "mal"; });
   assert.equal(repetida.estado, "fallido");
   assert.equal(llamadas, 1);
+});
+
+test("el modo asíncrono confirma la reserva sin esperar la respuesta del modelo", async () => {
+  const repo = crearRepositorio();
+  let liberar!: () => void;
+  const espera = new Promise<void>((resolve) => { liberar = resolve; });
+  let termino = false;
+
+  const inicio = await iniciarSolicitudChat(
+    { requestId: "asincrono-1", chatId: 12, texto: "analiza esto" },
+    repo,
+    async () => {
+      await espera;
+      termino = true;
+      return "listo";
+    }
+  );
+
+  assert.equal(inicio.estado, "procesando");
+  assert.equal(termino, false);
+  assert.equal(repo.filas.get("12:asincrono-1")?.estado, "procesando");
+
+  liberar();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(termino, true);
+  assert.equal(repo.filas.get("12:asincrono-1")?.estado, "completado");
 });

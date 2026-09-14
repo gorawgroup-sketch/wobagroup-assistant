@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { ensureTab as ensureKeyValueTab } from "../google/sheetsKeyValueStore";
+import { CacheLectura } from "../utils/readCache";
 
 // Historial por chat de Telegram, para que preguntas de seguimiento ("envíale
 // ese link a Carlos") tengan contexto de lo que se habló antes.
@@ -88,32 +89,36 @@ interface FilaHistorial {
   actualizadoEn: number;
 }
 
+const cacheHistorial = new CacheLectura<FilaHistorial[]>("historial_conversaciones", 60_000);
+
 function filaVencida(actualizadoEn: number): boolean {
   return Date.now() - actualizadoEn > TTL_HISTORIAL_MS;
 }
 
 async function leerTodasLasFilas(): Promise<FilaHistorial[]> {
-  await ensureTab();
-  const sheetId = assertSheetId();
-  const sheets = getClient();
+  return (await cacheHistorial.obtener(async () => {
+    await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
 
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:C10000`,
-    valueRenderOption: "UNFORMATTED_VALUE",
-  });
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A2:C10000`,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
 
-  const rows = resp.data.values ?? [];
-  return rows.map((row, i) => {
-    let mensajes: Anthropic.MessageParam[] = [];
-    try {
-      mensajes = row[1] ? JSON.parse(String(row[1])) : [];
-    } catch {
-      mensajes = []; // fila corrupta — mejor arrancar en limpio que tumbar la conversación
-    }
-    const actualizadoEn = row[2] ? new Date(String(row[2])).getTime() : 0;
-    return { rowIndex: i + 2, chatId: Number(row[0]), mensajes, actualizadoEn };
-  });
+    const rows = resp.data.values ?? [];
+    return rows.map((row, i) => {
+      let mensajes: Anthropic.MessageParam[] = [];
+      try {
+        mensajes = row[1] ? JSON.parse(String(row[1])) : [];
+      } catch {
+        mensajes = []; // fila corrupta — mejor arrancar en limpio que tumbar la conversación
+      }
+      const actualizadoEn = row[2] ? new Date(String(row[2])).getTime() : 0;
+      return { rowIndex: i + 2, chatId: Number(row[0]), mensajes, actualizadoEn };
+    });
+  })).datos;
 }
 
 export interface DiagnosticoMemoriaConversacional {
@@ -201,6 +206,7 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
       ],
     },
   });
+  cacheHistorial.invalidar();
 }
 
 /**
@@ -384,6 +390,7 @@ async function guardarHistorialInterno(chatId: number, nuevosMensajes: Anthropic
         requestBody: { values: [valores] },
       });
     }
+    cacheHistorial.invalidar();
   } catch (error) {
     // No tumba el turno actual (ya se le respondió al usuario) — pero si
     // esto falla seguido, la conversación vuelve a perder memoria entre
