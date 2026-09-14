@@ -67,3 +67,38 @@ test("usa el equivalente contable de una cuenta extranjera al buscar en EUR", ()
   assert.equal(resultado?.nivel, "exacta");
   assert.equal(resultado?.monto, -100.4);
 });
+
+test("detecta un ticket sin proveedor contra un cargo exacto y completamente conciliado dos días antes", () => {
+  const resultado = evaluarMovimientoConciliadoComoDuplicado(
+    {
+      id: "mov-gate-gourmet",
+      description: "Gate Gourmet Spain Iry",
+      amount: "-6.60",
+      currency: "EUR",
+      booking_date: "2026-09-09T00:00:00+00:00",
+      status: "reconciled",
+      reconciled_amount: "-6.60",
+    },
+    { proveedor: "", monto: 6.6, fecha: "2026-09-11", moneda: "EUR" }
+  );
+
+  assert.equal(resultado?.nivel, "probable");
+  assert.equal(resultado?.diferenciaDias, 2);
+  assert.equal(resultado?.sinProveedorIdentificado, true);
+});
+
+test("sin proveedor no bloquea por fecha lejana, conciliación parcial o importe aproximado", () => {
+  const criterios = { proveedor: "", monto: 6.6, fecha: "2026-09-11", moneda: "EUR" };
+  const base = {
+    description: "Comercio sin identificar",
+    amount: "-6.60",
+    currency: "EUR",
+    booking_date: "2026-09-09T00:00:00+00:00",
+    status: "reconciled",
+    reconciled_amount: "-6.60",
+  };
+
+  assert.equal(evaluarMovimientoConciliadoComoDuplicado({ ...base, booking_date: "2026-09-01T00:00:00+00:00" }, criterios), undefined);
+  assert.equal(evaluarMovimientoConciliadoComoDuplicado({ ...base, status: "partial", reconciled_amount: "-3.30" }, criterios), undefined);
+  assert.equal(evaluarMovimientoConciliadoComoDuplicado({ ...base, amount: "-6.55", reconciled_amount: "-6.55" }, criterios), undefined);
+});
