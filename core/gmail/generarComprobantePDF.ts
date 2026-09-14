@@ -103,8 +103,20 @@ export function prepararHtmlCorreoParaPDF(correo: DatosCorreoParaComprobante): s
   return documento;
 }
 
-async function rutaChrome(configurada?: string): Promise<{ executablePath: string; args: string[] }> {
-  if (configurada) return { executablePath: configurada, args: ["--no-sandbox", "--disable-dev-shm-usage"] };
+interface RutaChrome {
+  executablePath: string;
+  args: string[];
+  empaquetadoServerless: boolean;
+}
+
+async function rutaChrome(configurada?: string): Promise<RutaChrome> {
+  if (configurada) {
+    return {
+      executablePath: configurada,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+      empaquetadoServerless: false,
+    };
+  }
 
   if (process.platform === "darwin") {
     const candidatas = [
@@ -112,21 +124,47 @@ async function rutaChrome(configurada?: string): Promise<{ executablePath: strin
       "/Applications/Chromium.app/Contents/MacOS/Chromium",
     ];
     const encontrada = candidatas.find(existsSync);
-    if (encontrada) return { executablePath: encontrada, args: ["--no-sandbox", "--disable-dev-shm-usage"] };
+    if (encontrada) {
+      return {
+        executablePath: encontrada,
+        args: ["--no-sandbox", "--disable-dev-shm-usage"],
+        empaquetadoServerless: false,
+      };
+    }
   }
 
   const { default: chromium } = await import("@sparticuz/chromium");
-  return { executablePath: await chromium.executablePath(), args: chromium.args };
+  return {
+    executablePath: await chromium.executablePath(),
+    args: chromium.args,
+    empaquetadoServerless: true,
+  };
+}
+
+/**
+ * @sparticuz/chromium distribuye `headless_shell`, no Chrome completo. Desde
+ * Puppeteer 25 debe arrancarse expresamente con `headless: "shell"`; usar
+ * `true` (la configuración anterior) termina en código 127 en Railway.
+ */
+export function modoHeadlessComprobante(empaquetadoServerless: boolean): true | "shell" {
+  return empaquetadoServerless ? "shell" : true;
 }
 
 async function generarComprobanteVisualPDF(correo: DatosCorreoParaComprobante): Promise<Buffer> {
   const { default: puppeteer } = await import("puppeteer-core");
   const config = configuracionComprobanteVisual();
   const chrome = await rutaChrome(config.ejecutable);
+  const headless = modoHeadlessComprobante(chrome.empaquetadoServerless);
+  const args = chrome.empaquetadoServerless
+    ? await puppeteer.defaultArgs({ args: chrome.args, headless })
+    : chrome.args;
   const browser = await puppeteer.launch({
     executablePath: chrome.executablePath,
-    args: chrome.args,
-    headless: true,
+    args,
+    headless,
+    // Si el binario vuelve a fallar en producción, Railway conservará la
+    // causa real (biblioteca/permiso) en vez del mensaje opaco "Code: 127".
+    dumpio: true,
     defaultViewport: { width: 1280, height: 1600, deviceScaleFactor: 1 },
   });
 
@@ -161,6 +199,26 @@ async function generarComprobanteVisualPDF(correo: DatosCorreoParaComprobante): 
     return pdf;
   } finally {
     await browser.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Prueba de vida usada por el build de producción. Lanza el mismo navegador
+ * y genera un PDF mínimo: si Railway no puede renderizar comprobantes
+ * visuales, el despliegue falla antes de reemplazar la versión estable.
+ */
+export async function verificarMotorComprobanteVisual(): Promise<void> {
+  const pdf = await generarComprobanteVisualPDF({
+    de: "Wobi <verificacion@local.invalid>",
+    asunto: "Verificación interna del motor de comprobantes",
+    fecha: "2000-01-01",
+    cuerpoCompleto: "Verificación",
+    htmlOriginal:
+      '<!doctype html><html><head><style>.total{color:#08783c;font-weight:700}</style></head>' +
+      '<body><table><tr><td>Motor visual</td><td class="total">OK</td></tr></table></body></html>',
+  });
+  if (pdf.length < 100 || pdf.subarray(0, 4).toString("ascii") !== "%PDF") {
+    throw new Error("El motor visual no produjo un PDF válido.");
   }
 }
 
@@ -203,20 +261,19 @@ async function generarComprobanteTextoPDF(
 }
 
 /**
- * Genera un comprobante fiel desde el HTML original. El PDF de texto se
- * conserva como respaldo reversible para correos sin HTML o si Chromium no
- * puede arrancar; nunca se pierde el soporte por un fallo visual.
+ * Genera un comprobante fiel desde el HTML original. El PDF de texto se usa
+ * únicamente cuando el correo realmente era texto plano. Si existe HTML,
+ * cualquier fallo visual se propaga: adjuntar una reconstrucción deformada
+ * como si fuera el original es peor que dejar el correo pendiente.
  */
 export async function generarComprobantePDF(correo: DatosCorreoParaComprobante, extraido: DatosFactura): Promise<Buffer> {
-  if (configuracionComprobanteVisual().habilitado && correo.htmlOriginal?.trim()) {
-    try {
-      return await generarComprobanteVisualPDF(correo);
-    } catch (error) {
-      console.error(
-        "[generarComprobantePDF] Falló el render visual seguro; se conserva el PDF de texto como respaldo:",
-        error instanceof Error ? error.message : String(error)
+  if (correo.htmlOriginal?.trim()) {
+    if (!configuracionComprobanteVisual().habilitado) {
+      throw new Error(
+        "El correo contiene diseño HTML, pero el render visual está desactivado. No se generará un comprobante de texto deformado."
       );
     }
+    return generarComprobanteVisualPDF(correo);
   }
   return generarComprobanteTextoPDF(correo, extraido);
 }

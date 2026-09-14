@@ -568,13 +568,9 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     }
 
     try {
-      const htmlOriginal = await obtenerHtmlVisualCorreo(correo.id).catch((error) => {
-        console.error(
-          `[revisarCorreoNuevo] No se pudo recuperar el HTML visual del correo ${correo.id}; se usará el respaldo de texto:`,
-          error instanceof Error ? error.message : String(error)
-        );
-        return undefined;
-      });
+      // No ocultar errores de Gmail: si el correo sí tenía diseño y no se
+      // logra recuperarlo, un PDF de texto no es un comprobante fiel.
+      const htmlOriginal = await obtenerHtmlVisualCorreo(correo.id);
       const bytes = await generarComprobantePDF(
         { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto, htmlOriginal },
         gastoDetectado
@@ -613,9 +609,16 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       }
       return;
     } catch (error) {
-      console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id} (sigue como correo normal):`, error);
-      // Cae al análisis genérico de abajo en vez de perder el correo —
-      // mejor preguntar de forma genérica que no decir nada.
+      const detalle = error instanceof Error ? error.message : String(error);
+      console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id}:`, error);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ Detecté un gasto en "${correo.asunto}", pero no pude conservar fielmente el diseño de su comprobante ` +
+          `(${detalle}). No creé ni adjunté una reconstrucción deformada. El correo permanece sin procesar y sin marcar como leído para reintentarlo.`
+      ).catch(() => {});
+      // No convertirlo en una propuesta genérica ni avanzar la cola: ambas
+      // cosas ocultarían que el soporte contable aún no está resuelto.
+      return;
     }
   }
 

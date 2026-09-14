@@ -69,13 +69,9 @@ export async function regenerarComprobanteDesdeCuerpoSiFalta(
   try {
     const [cuerpoCompleto, htmlOriginal] = await Promise.all([
       obtenerCuerpoCompletoCorreo(mensajeIdGmail),
-      obtenerHtmlVisualCorreo(mensajeIdGmail).catch((error) => {
-        console.error(
-          "[reDescargarAdjunto] No se pudo recuperar el HTML visual; se regenerará el respaldo de texto:",
-          error instanceof Error ? error.message : String(error)
-        );
-        return undefined;
-      }),
+      // Si Gmail falla, no degradar silenciosamente un comprobante HTML a
+      // texto: el llamador dejará el gasto pendiente de soporte.
+      obtenerHtmlVisualCorreo(mensajeIdGmail),
     ]);
     const bytes = await generarComprobantePDF(
       {

@@ -1104,12 +1104,21 @@ export async function buscarGastoSimilar(
       // ese caso real — arriesgando crear un gasto DUPLICADO en vez de
       // detectar el que ya existía.
       const coincideProveedor = textosParecidos(criterios.proveedor, item.contact_name);
-      if (criterios.moneda && item.currency && item.currency.toUpperCase() !== criterios.moneda.toUpperCase()) continue;
       const total = parsearMontoHolded(item.total);
       if (!Number.isFinite(total)) continue;
       const coincideMonto = montosCercanos(total, criterios.monto, TOLERANCIA_MONTO);
       const numeroItem = (item.document_number ?? "").trim().toUpperCase().replace(/\s+/g, " ");
       const coincideNumero = numeroObjetivoUtil && numeroItem === numeroObjetivo;
+      const coincideMoneda =
+        !criterios.moneda ||
+        !item.currency ||
+        item.currency.toUpperCase() === criterios.moneda.toUpperCase();
+      // Un número de documento real + el mismo proveedor es evidencia más
+      // fuerte que una moneda o un total mal guardados. Esto permite detectar
+      // y reparar documentos legacy como el de Anthropic sin tratarlos como
+      // inexistentes ni crear un duplicado. Sin número exacto, la moneda sigue
+      // siendo obligatoria.
+      if (!coincideMoneda && !(coincideNumero && coincideProveedor)) continue;
       if (!(coincideProveedor && coincideMonto) && !(coincideNumero && (coincideProveedor || coincideMonto))) continue;
 
       candidatos.push({
@@ -3419,6 +3428,13 @@ export interface CambiosCompraHolded {
    */
   tasaCambioNueva?: number;
   /**
+   * Corrige la moneda de un documento mal creado. Es una operación
+   * excepcional: el llamador debe aportar también la tasa real; para EUR la
+   * única tasa válida es 1. La relectura posterior verifica moneda, tasa y
+   * total antes de reportar éxito.
+   */
+  monedaNueva?: string;
+  /**
    * Reasigna todas las líneas de la compra a una cuenta contable REAL ya
    * validada contra el plan contable de Holded. Se usa únicamente tras una
    * aprobación explícita: el resto de los campos de cada línea se conserva
@@ -3555,6 +3571,17 @@ async function prepararEdicionCompraHolded(
   // (documento EUR implícito), no preservarse tal cual — hallazgo real de
   // auditoría.
   const monedaActual = (actual.currency || "EUR").toUpperCase().trim();
+  const monedaNueva = cambios.monedaNueva?.toUpperCase().trim();
+  if (cambios.monedaNueva !== undefined && !/^[A-Z]{3}$/.test(monedaNueva ?? "")) {
+    throw new Error("La moneda nueva debe ser un código ISO 4217 de tres letras.");
+  }
+  const monedaFinal = monedaNueva ?? monedaActual;
+  if (monedaNueva && monedaNueva !== monedaActual && cambios.tasaCambioNueva === undefined) {
+    throw new Error("Cambiar la moneda exige una tasaCambioNueva explícita; no se permite inventarla.");
+  }
+  if (monedaFinal === "EUR" && cambios.tasaCambioNueva !== undefined && cambios.tasaCambioNueva !== 1) {
+    throw new Error("Un documento registrado en EUR debe usar tasa de cambio 1.");
+  }
   // Hallazgo real de auditoría (contra el spec real de Holded,
   // api.holded.com/openapi/api2.json): "currency" por sí sola NO basta —
   // "currency_change" (el tipo de cambio real que Holded aplicó, ej. "1.16"
@@ -3577,7 +3604,7 @@ async function prepararEdicionCompraHolded(
     number: cambios.numeroDocumento ?? actual.document_number ?? "00000",
     date: cambios.fecha ?? actual.date,
     due_date: actual.due_date ?? null,
-    currency: monedaActual,
+    currency: monedaFinal,
     currency_change: tasaCambioActual,
     // contact_id (el proveedor real del gasto) tampoco está en el PUT
     // documentado de Holded, pero si se omitiera y el reemplazo completo lo
@@ -3608,7 +3635,7 @@ async function prepararEdicionCompraHolded(
     document_number: String(body.number ?? ""),
     date: String(body.date ?? ""),
     due_date: (body.due_date as string | null | undefined) ?? null,
-    currency: monedaActual,
+    currency: monedaFinal,
     currency_change: tasaCambioActual,
     contact_id: actual.contact_id,
     design_id: actual.design_id,

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { incrustarRecursosInlineCorreo } from "./client";
-import { configuracionComprobanteVisual, prepararHtmlCorreoParaPDF } from "./generarComprobantePDF";
+import {
+  configuracionComprobanteVisual,
+  modoHeadlessComprobante,
+  prepararHtmlCorreoParaPDF,
+} from "./generarComprobantePDF";
 
 test("el render visual está activo por defecto y solo false lo desactiva", () => {
   assert.equal(configuracionComprobanteVisual({} as NodeJS.ProcessEnv).habilitado, true);
@@ -13,6 +17,11 @@ test("el render visual está activo por defecto y solo false lo desactiva", () =
     configuracionComprobanteVisual({ WOBI_EMAIL_VISUAL_PDF_ENABLED: "0" } as NodeJS.ProcessEnv).habilitado,
     true
   );
+});
+
+test("usa headless_shell para el Chromium empaquetado de Railway", () => {
+  assert.equal(modoHeadlessComprobante(true), "shell");
+  assert.equal(modoHeadlessComprobante(false), true);
 });
 
 test("conserva el diseño pasivo y elimina scripts, navegación y recursos remotos", () => {

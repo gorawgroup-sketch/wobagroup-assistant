@@ -299,3 +299,18 @@ test("la huella de una corrección contable verifica cada cuenta sin romper huel
   assert.notEqual(esperada, huellaEstadoCompra(cuentaDistinta, true, true));
   assert.equal(esperada.includes("profesionales"), false);
 });
+
+test("la huella distingue la reparación de USD a EUR y la tasa aplicada", () => {
+  const usd = {
+    id: "purchase-anthropic",
+    document_number: "2599-9467-0883",
+    date: "2026-09-11",
+    currency: "USD",
+    currency_change: "1.16",
+    contact_id: "anthropic",
+    total: "20,88",
+    lines: [{ name: "Anthropic", price: "20,88" }],
+  };
+  const eur = { ...usd, currency: "EUR", currency_change: 1 };
+  assert.notEqual(huellaEstadoCompra(usd, true), huellaEstadoCompra(eur, true));
+});
