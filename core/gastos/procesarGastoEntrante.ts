@@ -348,6 +348,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const proveedorVisible = esProveedorNoIdentificado(datos.proveedor)
       ? "proveedor no identificado en el ticket"
       : datos.proveedor;
+    const hayCompraVisible = candidatos.length > 0;
     const todosConConciliacionCompleta = movimientosYaConciliados.every((m) => m.status !== "partial");
     const lineas = movimientosYaConciliados
       .map(
@@ -363,12 +364,35 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         (todosConConciliacionCompleta
           ? `Holded informa además que el importe completo del movimiento ya está conciliado, por lo que no es seguro ni posible `
           : `Holded informa además que el movimiento ya tiene una conciliación aplicada, por lo que no es seguro `) +
-        `volver a conciliarlo automáticamente. Wobi no encontró una compra visible asociada mediante la API, por lo que NO afirma que el gasto ` +
-        `esté creado: el movimiento puede estar vinculado a un ticket que la API no lista, a otro documento, o tener un estado incoherente. ` +
-        `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si el vínculo es incorrecto, debe liberarse allí antes de crear y ` +
-        `conciliar el gasto correcto. No se habilita “Crear gasto” hasta resolver esa relación, para evitar una duplicación contable.`
+        (hayCompraVisible
+          ? `volver a conciliarlo automáticamente. Wobi encontró además ${candidatos.length} compra(s) visible(s) compatible(s), así que el gasto ` +
+            `queda tratado como duplicado y no se habilita “Crear gasto”.`
+          : `volver a conciliarlo automáticamente. Wobi no encontró una compra visible asociada mediante la API, por lo que NO afirma que el gasto ` +
+            `esté creado: el movimiento puede estar vinculado a un ticket que la API no lista, a otro documento, o tener un estado incoherente. ` +
+            `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si el vínculo es incorrecto, libéralo allí y dime “ya lo liberé, ` +
+            `reintenta”. El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`)
     );
-    return "propuesta_duplicada";
+
+    if (hayCompraVisible) return "propuesta_duplicada";
+
+    // Un movimiento ocupado sin una compra visible NO demuestra que el
+    // gasto esté resuelto. Tratarlo como `propuesta_duplicada` hacía que la
+    // cola de correo lo marcara como leído y perdiera el seguimiento justo
+    // en el caso incierto que más necesita revisión. Se persiste como
+    // verificación pendiente: el vigilante reconoce esta señal, no repite
+    // el análisis ni cobra otra extracción, y el usuario puede retomarlo
+    // diciendo que ya revisó/liberó el movimiento.
+    await guardarGastoPendienteDatos({
+      chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      datos,
+      motivo: "verificacion_duplicado",
+      deColaCorreo: entrada.deColaCorreo,
+      correoOrigen: entrada.correoOrigen,
+    });
+    return "pendiente_datos";
   }
 
   // Bug real encontrado en vivo (2026-09-03): buscarGastoSimilar (arriba)
