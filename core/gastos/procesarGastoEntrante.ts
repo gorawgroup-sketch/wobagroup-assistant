@@ -20,6 +20,10 @@ import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import { construirTecladoGasto } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import {
+  obtenerPoliticaMonedaLiquidacion,
+  seleccionarMovimientoLiquidacionSeguro,
+} from "./monedaLiquidacionProveedor";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 
@@ -192,8 +196,69 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return new Set(["EUR"]);
   });
   const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
+  const politicaLiquidacion = obtenerPoliticaMonedaLiquidacion(empresa, datos.proveedor, monedaOriginal);
+  let montoEquivalenteResuelto = datos.montoEquivalente;
+  let monedaEquivalenteResuelta = datos.monedaEquivalente?.toUpperCase().trim();
+  let movimientoLiquidacionUsado: Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>[number] | undefined;
+
+  // Regla contable confirmada por Carlos (caso real Anthropic, doc
+  // 2599-9467-0883): la factura trae USD, pero la tarjeta/cuenta siempre se
+  // carga en EUR. Antes el flujo terminó creando 20,88 USD con tasa 1,16 y
+  // vinculando un pago real de 20,88 EUR: Holded mostraba 24,22 pagados y
+  // -3,34 pendientes. Para proveedores con política de liquidación nunca se
+  // registra la cifra USD como EUR ni se calcula el importe final con el BCE.
+  // Si el documento/correo no trae el equivalente EUR, se localiza un único
+  // cargo real del mismo proveedor y día; la tasa histórica solo acota la
+  // búsqueda y el importe usado es el del banco. Ante ausencia o ambigüedad,
+  // se pregunta y no se crea nada.
+  if (politicaLiquidacion && monedaEquivalenteResuelta !== politicaLiquidacion.moneda) {
+    const fechaBusqueda = datos.fecha || new Date().toISOString().slice(0, 10);
+    const candidatosLiquidacion = await buscarMovimientosPorTipoCambio(
+      empresa,
+      {
+        monto: datos.monto,
+        moneda: monedaOriginal,
+        fecha: fechaBusqueda,
+        proveedor: datos.proveedor,
+      },
+      [politicaLiquidacion.moneda]
+    );
+    movimientoLiquidacionUsado = seleccionarMovimientoLiquidacionSeguro(
+      candidatosLiquidacion,
+      datos.proveedor,
+      fechaBusqueda,
+      politicaLiquidacion.moneda
+    );
+
+    if (movimientoLiquidacionUsado) {
+      montoEquivalenteResuelto = Math.abs(movimientoLiquidacionUsado.monto);
+      monedaEquivalenteResuelta = politicaLiquidacion.moneda;
+    } else {
+      await sendTelegramMessage(
+        chatId,
+        `📄 Detecté una factura de ${datos.proveedor || "Anthropic"} por ${datos.monto.toFixed(2)} ${monedaOriginal}. ` +
+          `${politicaLiquidacion.motivo} No encontré un único cargo bancario EUR del mismo proveedor y fecha que ` +
+          `permita fijar el importe exacto sin adivinar. Dime el cargo EXACTO en ${politicaLiquidacion.moneda}; ` +
+          `hasta entonces no registraré la cifra USD como si fueran euros.`
+      );
+      await guardarGastoPendienteDatos({
+        chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos,
+        motivo: "moneda",
+        deColaCorreo: entrada.deColaCorreo,
+        correoOrigen: entrada.correoOrigen,
+      }).catch((error) =>
+        console.error("[procesarGastoEntrante] Error guardando pendiente de moneda de liquidación:", error)
+      );
+      return "pendiente_datos";
+    }
+  }
   const esMonedaExtranjera = monedaOriginal !== "" && !monedasReales.has(monedaOriginal);
-  const hayEquivalenteExplicito = datos.montoEquivalente !== undefined && Boolean(datos.monedaEquivalente);
+  const hayEquivalenteExplicito =
+    montoEquivalenteResuelto !== undefined && Boolean(monedaEquivalenteResuelta);
 
   // Pedido explícito de Carlos, tras un caso real: un Uber en Bogotá se
   // pagó con la tarjeta en EUR (el correo de reenvío decía "11.98 euros"
@@ -232,8 +297,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return "pendiente_datos";
   }
 
-  const monedaParaHolded = usarEquivalente ? (datos.monedaEquivalente as string).toUpperCase().trim() : monedaOriginal;
-  const montoParaHolded = usarEquivalente ? (datos.montoEquivalente as number) : datos.monto;
+  const monedaParaHolded = usarEquivalente ? (monedaEquivalenteResuelta as string) : monedaOriginal;
+  const montoParaHolded = usarEquivalente ? (montoEquivalenteResuelto as number) : datos.monto;
   // Pedido explícito de Carlos, casos reales ALDI/Ahorramas: un recibo simplificado (sin los datos
   // fiscales de la empresa compradora impresos) no se puede usar legalmente para deducir IVA — se
   // colapsa a un solo importe sin desglosar, igual que ya se hacía para el caso de moneda
@@ -438,7 +503,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     .join("\n");
 
   const importeTexto = usarEquivalente
-    ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal})`
+    ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal}` +
+      `${movimientoLiquidacionUsado ? "; importe EUR tomado del cargo bancario exacto" : ""})`
     : `${datos.monto} ${datos.moneda}`;
   const etiquetaTipoDocumento = datos.reciboSimplificado ? "Ticket/recibo detectado" : "Factura detectada";
   const notaTicket = datos.reciboSimplificado

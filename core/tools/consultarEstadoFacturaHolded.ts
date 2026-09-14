@@ -95,10 +95,13 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
       const tipoTexto = r.tipo === "gasto" ? "Gasto" : "Ingreso";
       const vencimiento = r.dueDate ? `, vence ${r.dueDate}` : "";
       const borrador = r.draft ? " — borrador" : "";
+      const moneda = r.moneda || "EUR";
       const estadoPago =
         r.pendiente > 0.01
-          ? `PENDIENTE de pago (${r.pendiente.toFixed(2)} € sin pagar de ${r.total.toFixed(2)} €)`
-          : `ya pagada (${r.total.toFixed(2)} €)`;
+          ? `PENDIENTE de pago (${r.pendiente.toFixed(2)} ${moneda} sin pagar de ${r.total.toFixed(2)} ${moneda})`
+          : r.pendiente < -0.01
+            ? `⚠️ saldo incoherente/sobrepagado (${r.total.toFixed(2)} ${moneda}; pendiente ${r.pendiente.toFixed(2)} ${moneda})`
+            : `ya pagada (${r.total.toFixed(2)} ${moneda})`;
       const comprobante =
         r.tipo === "gasto"
           ? r.tieneComprobante === true
