@@ -1223,6 +1223,23 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
       }
     } catch (error) {
       console.error("Error procesando callback_query de Telegram:", error);
+      // Telegram ya recibió el ACK HTTP y, en muchos flujos, el usuario ya
+      // vio un mensaje intermedio como "Aplicando...". Un error no manejado
+      // aquí quedaba únicamente en logs y hacía que pareciera que el bot se
+      // congeló. Nunca reintentamos una acción sensible desde este catch
+      // (podría haberse aplicado aunque la confirmación se perdiera); solo
+      // cerramos visualmente el estado y pedimos comprobar antes de repetir.
+      // Sin texto: si el acuse temprano ya salió, AcusesCallback no crea un
+      // segundo mensaje tardío. El aviso persistente se manda una sola vez
+      // justo debajo.
+      await answerCallbackQuery(update.callback_query.id).catch(() => {});
+      const chatId = update.callback_query.message?.chat.id;
+      if (chatId !== undefined) {
+        await sendTelegramMessage(
+          chatId,
+          "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto de Telegram continúa operativo."
+        ).catch(() => {});
+      }
     }
     return;
   }

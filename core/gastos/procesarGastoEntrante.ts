@@ -26,6 +26,7 @@ import {
 } from "./monedaLiquidacionProveedor";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
+import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 
 export interface GastoEntrante {
   chatId: number;
@@ -344,7 +345,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   }
 
   if (movimientosYaConciliados.length > 0) {
-    const proveedorVisible = datos.proveedor || "proveedor no identificado en el ticket";
+    const proveedorVisible = esProveedorNoIdentificado(datos.proveedor)
+      ? "proveedor no identificado en el ticket"
+      : datos.proveedor;
     const todosConConciliacionCompleta = movimientosYaConciliados.every((m) => m.status !== "partial");
     const lineas = movimientosYaConciliados
       .map(
@@ -360,10 +363,10 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         (todosConConciliacionCompleta
           ? `Holded informa además que el importe completo del movimiento ya está conciliado, por lo que no es seguro ni posible `
           : `Holded informa además que el movimiento ya tiene una conciliación aplicada, por lo que no es seguro `) +
-        `volver a conciliarlo automáticamente. Esto es evidencia de que el gasto ya fue registrado o vinculado en Holded. ` +
-        `Si después se desmarcó “Es una factura de compra”, ` +
-        `Holded puede mostrarlo como ticket y omitirlo del listado API de compras, pero sigue siendo el mismo gasto. No se habilita “Crear gasto” ` +
-        `hasta una revisión manual que demuestre que es una operación distinta.`
+        `volver a conciliarlo automáticamente. Wobi no encontró una compra visible asociada mediante la API, por lo que NO afirma que el gasto ` +
+        `esté creado: el movimiento puede estar vinculado a un ticket que la API no lista, a otro documento, o tener un estado incoherente. ` +
+        `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si el vínculo es incorrecto, debe liberarse allí antes de crear y ` +
+        `conciliar el gasto correcto. No se habilita “Crear gasto” hasta resolver esa relación, para evitar una duplicación contable.`
     );
     return "propuesta_duplicada";
   }
@@ -619,7 +622,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       );
       if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
-      else if (datos.proveedor) {
+      else if (!esProveedorNoIdentificado(datos.proveedor)) {
         // Pedido explícito de Carlos tras un caso real: el match exacto (1
         // céntimo de tolerancia) no encuentra nada cuando el equivalente en
         // EUR de la factura es una estimación (ej. conversión desde MXN) y
@@ -734,7 +737,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
                 : "") +
               ` Confirma la moneda real antes de crear el gasto (no lo crees ni concilies todavía si no estás seguro).`
             : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
-              (datos.proveedor ? " — ni exacto ni aproximado por nombre y monto cercano" : " (búsqueda exacta — no hay nombre de proveedor para buscar aproximado)") +
+              (!esProveedorNoIdentificado(datos.proveedor)
+                ? " — ni exacto ni aproximado por nombre y monto cercano"
+                : " (búsqueda exacta — no hay un nombre real de proveedor para buscar por similitud)") +
               ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
