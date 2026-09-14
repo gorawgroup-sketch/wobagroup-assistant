@@ -1,14 +1,32 @@
-import { leerFilas, agregarFila, eliminarFila } from "../google/sheetsKeyValueStore";
+import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/sheetsKeyValueStore";
 import type { Empresa } from "../holded/client";
+import {
+  coincidenciaIdentidadGasto,
+  type IdentidadGastoProcesado,
+  type MotivoCoincidenciaIdentidad,
+} from "./identidadGasto";
 
 const TAB_NAME = "_gastos_por_correo";
-const HEADERS = ["mensajeIdGmail", "attachmentId", "gastoId", "empresa", "creadoEn"];
+const HEADERS = [
+  "mensajeIdGmail",
+  "attachmentId",
+  "gastoId",
+  "empresa",
+  "creadoEn",
+  "huellaContenido",
+  "numeroDocumento",
+  "proveedor",
+  "monto",
+  "moneda",
+  "fecha",
+  "concepto",
+];
 const NUM_COLS = HEADERS.length;
-// 90 días — deliberadamente mucho más largo que el TTL de 24-48h de los "pendiente_*" normales: esto
+// 3 años — deliberadamente mucho más largo que el TTL de 24-48h de los "pendiente_*" normales: esto
 // no es una pregunta esperando respuesta, es un registro permanente de "este correo YA se convirtió en
 // este gasto", y necesita seguir siendo consultable mucho después de que cualquier propuesta/pendiente
 // relacionada haya expirado — ver buscarGastoDesdeCorreo.
-const TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const TTL_MS = 3 * 365 * 24 * 60 * 60 * 1000;
 
 export interface GastoPorCorreo {
   mensajeIdGmail: string;
@@ -16,6 +34,53 @@ export interface GastoPorCorreo {
   gastoId: string;
   empresa: Empresa;
   creadoEn: number;
+  identidad?: IdentidadGastoProcesado;
+}
+
+export interface CoincidenciaGastoProcesado {
+  registro: GastoPorCorreo;
+  motivo: MotivoCoincidenciaIdentidad;
+}
+
+function filaARegistro(valores: string[]): GastoPorCorreo | undefined {
+  const [mensajeIdGmail, attachmentId, gastoId, empresa, creadoEnRaw, huellaContenido, numeroDocumento, proveedor, montoRaw, moneda, fecha, concepto] = valores;
+  const creadoEn = Number(creadoEnRaw) || 0;
+  if (!mensajeIdGmail || !gastoId || !(["WOBA", "EWORKS", "Footprint"] as string[]).includes(empresa)) return undefined;
+  const monto = montoRaw !== "" ? Number(montoRaw) : undefined;
+  const identidad: IdentidadGastoProcesado = {
+    huellaContenido: huellaContenido || undefined,
+    numeroDocumento: numeroDocumento || undefined,
+    proveedor: proveedor || undefined,
+    monto: monto !== undefined && Number.isFinite(monto) ? monto : undefined,
+    moneda: moneda || undefined,
+    fecha: fecha || undefined,
+    concepto: concepto || undefined,
+  };
+  return {
+    mensajeIdGmail,
+    attachmentId: attachmentId || undefined,
+    gastoId,
+    empresa: empresa as Empresa,
+    creadoEn,
+    identidad,
+  };
+}
+
+function registroAFila(registro: GastoPorCorreo): (string | number)[] {
+  return [
+    registro.mensajeIdGmail,
+    registro.attachmentId ?? "",
+    registro.gastoId,
+    registro.empresa,
+    registro.creadoEn,
+    registro.identidad?.huellaContenido ?? "",
+    registro.identidad?.numeroDocumento ?? "",
+    registro.identidad?.proveedor ?? "",
+    registro.identidad?.monto ?? "",
+    registro.identidad?.moneda ?? "",
+    registro.identidad?.fecha ?? "",
+    registro.identidad?.concepto ?? "",
+  ];
 }
 
 /**
@@ -47,6 +112,7 @@ export async function registrarGastoDesdeCorreo(datos: {
   attachmentId?: string;
   gastoId: string;
   empresa: Empresa;
+  identidad?: IdentidadGastoProcesado;
 }): Promise<void> {
   if (!datos.mensajeIdGmail || !datos.gastoId) return;
   // Hallazgo real de auditoría: sin esta purga, esta tabla solo crece — la creación de gastos desde
@@ -58,7 +124,30 @@ export async function registrarGastoDesdeCorreo(datos: {
   // emailDraftStore.ts, escalacionDesarrolloStore.ts): purgar vencidas ANTES de escribir, en vez de
   // depender de un job externo aparte que alguien tendría que acordarse de programar.
   await purgarVencidos().catch((error) => console.error("[gastoPorCorreoStore] Error purgando registros vencidos (no crítico):", error));
-  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, [datos.mensajeIdGmail, datos.attachmentId ?? "", datos.gastoId, datos.empresa, Date.now()]);
+  const registro: GastoPorCorreo = {
+    mensajeIdGmail: datos.mensajeIdGmail,
+    attachmentId: datos.attachmentId,
+    gastoId: datos.gastoId,
+    empresa: datos.empresa,
+    creadoEn: Date.now(),
+    identidad: datos.identidad,
+  };
+  const existentes = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const mismaResolucion = existentes.find(
+    (fila) =>
+      fila.valores[0] === datos.mensajeIdGmail &&
+      (fila.valores[1] ?? "") === (datos.attachmentId ?? "") &&
+      fila.valores[2] === datos.gastoId
+  );
+  if (mismaResolucion) {
+    const anterior = filaARegistro(mismaResolucion.valores);
+    await actualizarFila(TAB_NAME, mismaResolucion.rowIndex, NUM_COLS, registroAFila({
+      ...registro,
+      creadoEn: anterior?.creadoEn || registro.creadoEn,
+    }));
+    return;
+  }
+  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, registroAFila(registro));
 }
 
 async function purgarVencidos(): Promise<void> {
@@ -90,14 +179,38 @@ export async function buscarGastoDesdeCorreo(mensajeIdGmail: string, attachmentI
 
   let masReciente: GastoPorCorreo | undefined;
   for (const fila of filas) {
-    const [id, attachmentIdFila, gastoId, empresa, creadoEnRaw] = fila.valores;
-    if (id !== mensajeIdGmail || !gastoId) continue;
-    if ((attachmentIdFila ?? "") !== attachmentBuscado) continue;
-    const creadoEn = Number(creadoEnRaw) || 0;
-    if (ahora - creadoEn > TTL_MS) continue;
-    if (!masReciente || creadoEn > masReciente.creadoEn) {
-      masReciente = { mensajeIdGmail: id, attachmentId: attachmentIdFila || undefined, gastoId, empresa: empresa as Empresa, creadoEn };
+    const registro = filaARegistro(fila.valores);
+    if (!registro || registro.mensajeIdGmail !== mensajeIdGmail) continue;
+    if ((registro.attachmentId ?? "") !== attachmentBuscado) continue;
+    if (ahora - registro.creadoEn > TTL_MS) continue;
+    if (!masReciente || registro.creadoEn > masReciente.creadoEn) {
+      masReciente = registro;
     }
   }
   return masReciente;
+}
+
+/**
+ * Detecta el mismo comprobante aunque llegue reenviado en otro mensaje de
+ * Gmail. Esta consulta no depende de que Holded siga listando el documento
+ * como /purchases (los tickets pueden desaparecer de esa vista).
+ */
+export async function buscarGastoProcesadoPorIdentidad(
+  empresa: Empresa,
+  identidad: IdentidadGastoProcesado
+): Promise<CoincidenciaGastoProcesado | undefined> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const ahora = Date.now();
+  let mejor: CoincidenciaGastoProcesado | undefined;
+  for (const fila of filas) {
+    const registro = filaARegistro(fila.valores);
+    if (!registro || registro.empresa !== empresa || ahora - registro.creadoEn > TTL_MS || !registro.identidad) continue;
+    const motivo = coincidenciaIdentidadGasto(identidad, registro.identidad);
+    if (!motivo) continue;
+    if (!mejor || motivo === "mismo_archivo" || registro.creadoEn > mejor.registro.creadoEn) {
+      mejor = { registro, motivo };
+    }
+    if (motivo === "mismo_archivo") break;
+  }
+  return mejor;
 }

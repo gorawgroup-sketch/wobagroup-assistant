@@ -97,6 +97,7 @@ import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import type { LineaFactura } from "../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import { claveIdempotenciaGasto } from "./identidadGasto";
 
 /**
  * Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE PANAMA
@@ -1555,7 +1556,17 @@ async function crearGastoYReportar(
         moneda: propuesta.moneda,
         numeroDocumento: propuesta.numeroDocumento,
       },
-      { idempotencyKey: `gasto:${propuesta.id}`, proceso: "gasto_aprobado" }
+      {
+        idempotencyKey: claveIdempotenciaGasto({
+          empresa: empresaFinal,
+          contactId: contacto.id,
+          propuestaId: propuesta.id,
+          numeroDocumento: propuesta.numeroDocumento,
+          huellaContenido: propuesta.huellaContenido,
+          fecha: propuesta.fecha,
+        }),
+        proceso: "gasto_aprobado",
+      }
     );
   });
 
@@ -1628,6 +1639,15 @@ async function crearGastoYReportar(
           attachmentId: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
           gastoId: gasto.id,
           empresa: empresaFinal,
+          identidad: {
+            huellaContenido: propuesta.huellaContenido,
+            numeroDocumento: propuesta.numeroDocumento,
+            proveedor: propuesta.proveedor,
+            monto: propuesta.monto,
+            moneda: propuesta.moneda,
+            fecha: propuesta.fecha,
+            concepto: propuesta.concepto,
+          },
         }).catch((error) => console.error("[gastoCallbackHandler] No se pudo registrar el gasto por correo (no crítico):", error))
       : Promise.resolve(),
     contactoForzado && aprenderAlias
