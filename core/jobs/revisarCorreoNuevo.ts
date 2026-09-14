@@ -38,6 +38,8 @@ import {
   obtenerActivoEstancado,
   descartarActivoEstancado,
   obtenerActivoActual,
+  confirmarActivoResueltoTrasMarcarLeido,
+  reintentarActivoPendienteDeMarcarLeido,
 } from "../gmail/colaRevisionStore";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
@@ -124,6 +126,30 @@ export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?
   if (!chatId) {
     console.error("[revisarCorreoNuevo] Falta CASHFLOW_ALERTS_CHAT_ID, no se puede notificar.");
     return { correosRevisados: 0 };
+  }
+
+  // Antes que cualquier otra cosa: si el correo activo ya tomó TODAS sus decisiones reales
+  // (pendientesRestantes=0) pero se quedó sin confirmar por un fallo al marcarlo leído en Gmail la
+  // vez anterior (ver resolverUnoActivo/confirmarActivoResueltoTrasMarcarLeido — caso real Eurohotel/
+  // Avianca/Larrauri), se reintenta acá, en cada revisión, en vez de esperar 48h o requerir que
+  // Carlos lo destrabe a mano — la mayoría de estos fallos son transitorios (cuota de Sheets/Gmail
+  // agotada por unos minutos), así que un reintento normal minutos/horas después suele bastar.
+  const pendienteDeConfirmar = await reintentarActivoPendienteDeMarcarLeido(chatId).catch((error) => {
+    console.error("[revisarCorreoNuevo] Error revisando si hay un correo pendiente de confirmar leído:", error);
+    return undefined;
+  });
+  if (pendienteDeConfirmar) {
+    const marcado = await marcarHiloComoLeido(pendienteDeConfirmar.id).catch((error: unknown) => {
+      console.error("[revisarCorreoNuevo] Error reintentando marcar el hilo como leído:", error);
+      return false;
+    });
+    if (marcado) {
+      await confirmarActivoResueltoTrasMarcarLeido(chatId, pendienteDeConfirmar.id).catch((error) =>
+        console.error("[revisarCorreoNuevo] Error confirmando el correo reintentado (no crítico):", error)
+      );
+    }
+    // Si sigue fallando, se deja tal cual — el chequeo de "estancado" (48h) de abajo eventualmente lo
+    // saltará con aviso si el fallo resulta ser persistente, no solo transitorio.
   }
 
   // Antes de encolar nada: si el correo activo lleva más de 48h esperando
@@ -383,13 +409,16 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           ? `📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
           : undefined;
 
-      // Hallazgo real de auditoría (caso Avianca/Larrauri, 2026-09-10): este mismo correo puede volver
-      // a llegar acá reprocesado (el hilo de Gmail no siempre queda marcado como leído tras la primera
-      // resolución — investigación en curso sobre la causa exacta) — sin este chequeo, se volvía a leer
-      // el adjunto, extraer los datos, y proponer un gasto NUEVO para algo ya creado en Holded,
-      // confiando solo en que buscarGastoSimilar lo detectara a tiempo (no siempre confiable — ver su
-      // comentario: Holded puede tardar en indexar un documento recién creado). Este chequeo es una
-      // defensa propia, independiente de Holded: si YA hay un registro directo de que ESTE adjunto en
+      // Hallazgo real de auditoría (caso Avianca/Larrauri, 2026-09-10, causa confirmada 2026-09-14
+      // con el caso Eurohotel Gran Via Fira — ver resolverUnoActivo en colaRevisionStore.ts): este
+      // mismo correo puede volver a llegar acá reprocesado (el hilo de Gmail no siempre quedaba
+      // marcado como leído tras la primera resolución — causa real: la fila de la cola se borraba
+      // ANTES de confirmar el marcado en Gmail, así que un fallo transitorio de esa llamada perdía el
+      // rastro en silencio, ya corregido) — sin este chequeo, se volvía a leer el adjunto, extraer los
+      // datos, y proponer un gasto NUEVO para algo ya creado en Holded, confiando solo en que
+      // buscarGastoSimilar lo detectara a tiempo (no siempre confiable — ver su comentario: Holded
+      // puede tardar en indexar un documento recién creado). Este chequeo se deja como defensa propia,
+      // independiente de Holded: si YA hay un registro directo de que ESTE adjunto en
       // concreto (mensajeIdGmail + attachmentId, no solo el correo) se convirtió en un gasto real, se
       // salta su procesamiento — nunca hace falta releerlo ni proponerlo de nuevo. Se hace POR ADJUNTO,
       // no una sola vez antes del loop, a propósito: un correo con varios adjuntos reales y distintos
@@ -745,8 +774,31 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
   if (!resultado.terminado) return;
 
   if (resultado.gmailIdResuelto) {
-    marcarHiloComoLeido(resultado.gmailIdResuelto).catch((error: unknown) =>
-      console.error("[revisarCorreoNuevo] Error marcando el hilo como leído (no crítico):", error)
+    // Hallazgo real de auditoría (caso Eurohotel/Avianca/Larrauri — ver el comentario de
+    // resolverUnoActivo en colaRevisionStore.ts): antes esto era fire-and-forget (sin await, .catch
+    // solo logueaba) y la fila de la cola ya se había borrado ANTES de llegar acá — un fallo real
+    // (confirmado en logs de producción: cuota de Sheets/Gmail agotada) se perdía en silencio,
+    // dejando el hilo sin leer en Gmail para siempre y repitiendo todo el correo desde cero en la
+    // próxima revisión. Ahora se espera el resultado real y solo se confirma (borra la fila) si Gmail
+    // de verdad devolvió éxito — si falla, la fila queda "activa" (bloqueando, visible) para que se
+    // reintente sola en la próxima revisión (ver reintentarActivoPendienteDeMarcarLeido, al principio
+    // de esta función) o se destrabe a mano con los mecanismos ya existentes.
+    const marcado = await marcarHiloComoLeido(resultado.gmailIdResuelto).catch((error: unknown) => {
+      console.error("[revisarCorreoNuevo] Error marcando el hilo como leído:", error);
+      return false;
+    });
+
+    if (!marcado) {
+      await sendTelegramMessage(
+        chatId,
+        "⚠️ Ya resolví este correo pero no pude marcarlo como leído en Gmail (fallo real del lado de Gmail/Sheets) " +
+          "— lo dejo activo para no perder el rastro; se reintenta solo en la próxima revisión."
+      ).catch(() => {});
+      return;
+    }
+
+    await confirmarActivoResueltoTrasMarcarLeido(chatId, resultado.gmailIdResuelto).catch((error) =>
+      console.error("[revisarCorreoNuevo] Error confirmando el correo resuelto (no crítico, se reintentará):", error)
     );
   }
 
