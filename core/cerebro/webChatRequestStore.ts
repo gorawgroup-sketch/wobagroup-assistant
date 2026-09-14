@@ -1,5 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { CacheLectura } from "../utils/readCache";
 import type {
   RepositorioSolicitudesChat,
   SolicitudChatGuardada,
@@ -63,30 +64,34 @@ interface FilaConIndice {
   solicitud: SolicitudChatGuardada;
 }
 
+const cacheSolicitudes = new CacheLectura<FilaConIndice[]>("solicitudes_chat", 60_000);
+
 async function leerTodas(): Promise<FilaConIndice[]> {
-  await ensureTab();
-  const resp = await getClient().spreadsheets.values.get({
-    spreadsheetId: assertSheetId(),
-    range: `${TAB_NAME}!A2:G10000`,
-    valueRenderOption: "UNFORMATTED_VALUE",
-  });
-  const resultado: FilaConIndice[] = [];
-  (resp.data.values ?? []).forEach((row, index) => {
-    if (!row[0] || !row[1]) return;
-    resultado.push({
-      rowIndex: index + 2,
-      solicitud: {
-        requestId: String(row[0]),
-        chatId: Number(row[1]),
-        textoHash: String(row[2] ?? ""),
-        estado: (row[3] as EstadoSolicitudChat) || "fallido",
-        respuesta: row[4] ? String(row[4]) : undefined,
-        creadoEn: Number(row[5]) || 0,
-        actualizadoEn: Number(row[6]) || 0,
-      },
+  return (await cacheSolicitudes.obtener(async () => {
+    await ensureTab();
+    const resp = await getClient().spreadsheets.values.get({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A2:G10000`,
+      valueRenderOption: "UNFORMATTED_VALUE",
     });
-  });
-  return resultado;
+    const resultado: FilaConIndice[] = [];
+    (resp.data.values ?? []).forEach((row, index) => {
+      if (!row[0] || !row[1]) return;
+      resultado.push({
+        rowIndex: index + 2,
+        solicitud: {
+          requestId: String(row[0]),
+          chatId: Number(row[1]),
+          textoHash: String(row[2] ?? ""),
+          estado: (row[3] as EstadoSolicitudChat) || "fallido",
+          respuesta: row[4] ? String(row[4]) : undefined,
+          creadoEn: Number(row[5]) || 0,
+          actualizadoEn: Number(row[6]) || 0,
+        },
+      });
+    });
+    return resultado;
+  })).datos;
 }
 
 async function actualizar(
@@ -107,6 +112,7 @@ async function actualizar(
       values: [[estado, respuesta, match.solicitud.creadoEn, Date.now()]],
     },
   });
+  cacheSolicitudes.invalidar();
 }
 
 async function purgarSolicitudesAntiguas(): Promise<void> {
@@ -130,6 +136,7 @@ async function purgarSolicitudesAntiguas(): Promise<void> {
       })),
     },
   });
+  cacheSolicitudes.invalidar();
   ultimaPurgaEn = ahora;
 }
 
@@ -161,6 +168,7 @@ export const webChatRequestStore: RepositorioSolicitudesChat = {
         ]],
       },
     });
+    cacheSolicitudes.invalidar();
   },
 
   async completar(chatId, requestId, respuesta) {

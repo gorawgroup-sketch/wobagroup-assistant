@@ -47,6 +47,7 @@ const BUSCAR_ENDPOINT = `${API_BASE}/buscar`;
 const ACCIONES_PROGRAMADAS_ENDPOINT = `${API_BASE}/acciones-programadas`;
 const CHAT_ENDPOINT = `${API_BASE}/chat`;
 const CHAT_VINCULAR_ENDPOINT = `${API_BASE}/chat/vincular`;
+const CHAT_SOLICITUD_ENDPOINT = (requestId) => `${CHAT_ENDPOINT}/solicitud/${encodeURIComponent(requestId)}`;
 const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
@@ -56,6 +57,8 @@ const POLL_INTERVALO_MS = 3000;
 const LOCALSTORAGE_TOKEN_KEY = "wobi_cerebro_token";
 const LOCALSTORAGE_DEVICE_KEY = "wobi_cerebro_device";
 const LOCALSTORAGE_VOZ_KEY = "wobi_cerebro_leer_respuestas";
+const LOCALSTORAGE_CHAT_PENDIENTES_KEY = "wobi_cerebro_chat_pendientes";
+const MAX_SOLICITUDES_CHAT_ACTIVAS = 6;
 // Username verificado en vivo contra getMe de la Bot API (no confiar en el nombre visible, que puede cambiar).
 const TELEGRAM_BOT_URL = "https://t.me/Woba_asistente_bot";
 // Ícono oficial de Telegram (recortado del asset provisto en el proyecto), fondo transparente.
@@ -1850,12 +1853,30 @@ function ContenidoRespuesta({ texto }) {
   );
 }
 
-export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
-  const [abierto, setAbierto] = useState(false);
+export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoCompleto = false }) {
+  const [abierto, setAbierto] = useState(modoCompleto);
+  const [deviceId] = useState(obtenerDeviceIdChat);
+  const claveSolicitudes = `${LOCALSTORAGE_CHAT_PENDIENTES_KEY}:${deviceId}:${encodeURIComponent((nombreUsuario || "usuario").trim().toLowerCase())}`;
   const [mensajes, setMensajes] = useState([]);
   const [identidad, setIdentidad] = useState(null);
   const [texto, setTexto] = useState("");
-  const [enviando, setEnviando] = useState(false);
+  // `registrando` dura solo hasta que la reserva idempotente quedó guardada;
+  // el análisis continúa en segundo plano y ya no bloquea el compositor.
+  const [registrando, setRegistrando] = useState(false);
+  const [solicitudes, setSolicitudes] = useState(() => {
+    try {
+      const guardadas = JSON.parse(localStorage.getItem(claveSolicitudes) || "[]");
+      const limite = Date.now() - 48 * 60 * 60 * 1000;
+      return Array.isArray(guardadas)
+        ? guardadas.filter((item) =>
+          item && typeof item.messageId === "string" && typeof item.texto === "string" &&
+          Number(item.creadoEn) > limite
+        ).slice(-MAX_SOLICITUDES_CHAT_ACTIVAS)
+        : [];
+    } catch {
+      return [];
+    }
+  });
   const [error, setError] = useState("");
   const [codigoVinculo, setCodigoVinculo] = useState(null);
   const [escuchando, setEscuchando] = useState(false);
@@ -1868,11 +1889,17 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   }), []);
   const vozActivaRef = useRef(false);
   vozActivaRef.current = leerRespuestas && abierto;
-  const [deviceId] = useState(obtenerDeviceIdChat);
   const mensajesRef = useRef(null);
   const recognitionRef = useRef(null);
   const enviandoRef = useRef(false);
+  const consultandoSolicitudesRef = useRef(false);
   const SpeechRecognition = typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
+  const solicitudesActivas = solicitudes.filter((item) => item.estado !== "fallido");
+  const procesando = solicitudesActivas.length > 0;
+  const limiteSolicitudesAlcanzado = solicitudesActivas.length >= MAX_SOLICITUDES_CHAT_ACTIVAS;
+  const telegramVinculoUrl = codigoVinculo?.codigo
+    ? `${TELEGRAM_BOT_URL}?start=vincular_${codigoVinculo.codigo.replace(/[^a-zA-Z0-9]/g, "")}`
+    : TELEGRAM_BOT_URL;
 
   const headers = useMemo(() => ({
     "X-Cerebro-Key": apiKey,
@@ -1880,17 +1907,39 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
     "X-Cerebro-Device": deviceId,
   }), [apiKey, nombreUsuario, deviceId]);
 
+  useEffect(() => {
+    if (modoCompleto) setAbierto(true);
+  }, [modoCompleto]);
+
+  useEffect(() => {
+    try {
+      if (solicitudes.length > 0) {
+        localStorage.setItem(claveSolicitudes, JSON.stringify(solicitudes));
+      } else {
+        localStorage.removeItem(claveSolicitudes);
+      }
+    } catch {
+      // El seguimiento continúa en memoria si el navegador bloquea storage.
+    }
+  }, [claveSolicitudes, solicitudes]);
+
   const cargarChat = useCallback(async () => {
     if (!apiKey) return;
     try {
       const res = await fetch(CHAT_ENDPOINT, { headers, cache: "no-store" });
-      if (!res.ok) return;
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status >= 500) setError(json.error || "Wobi está reconectando el historial.");
+        return null;
+      }
       setMensajes(Array.isArray(json.mensajes) ? json.mensajes : []);
       setIdentidad(json.identidad || null);
       if (json.identidad?.vinculadaTelegram) setCodigoVinculo(null);
+      return json;
     } catch {
       // El último historial bueno continúa visible durante una reconexión.
+      setError("No pude sincronizar el historial. Seguiré intentando sin repetir tus mensajes.");
+      return null;
     }
   }, [apiKey, headers]);
 
@@ -1910,7 +1959,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
   useEffect(() => {
     const nodo = mensajesRef.current;
     if (nodo) nodo.scrollTop = nodo.scrollHeight;
-  }, [mensajes, enviando]);
+  }, [mensajes, solicitudes]);
 
   useEffect(() => () => {
     recognitionRef.current?.stop?.();
@@ -1942,6 +1991,87 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
       .catch(() => { setVozPendiente(false); setError("No se pudo reproducir la voz de WOBi. La respuesta sigue disponible por escrito."); });
   }, [headers, lectorVoz]);
 
+  const revisarSolicitudes = useCallback(async () => {
+    const activas = solicitudes.filter((item) => item.estado !== "fallido");
+    if (activas.length === 0 || consultandoSolicitudesRef.current) return;
+    consultandoSolicitudesRef.current = true;
+
+    try {
+      const resultados = await Promise.all(activas.map(async (solicitud) => {
+        try {
+          const res = await fetch(CHAT_SOLICITUD_ENDPOINT(solicitud.messageId), { headers, cache: "no-store" });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const definitivo = res.status === 400 || res.status === 403 || (res.status === 404 && Date.now() - solicitud.creadoEn > 15_000);
+            return { messageId: solicitud.messageId, estado: definitivo ? "fallido" : solicitud.estado, error: json.error || "No pude verificar este mensaje." };
+          }
+          return { messageId: solicitud.messageId, estado: json.estado, respuesta: json.respuesta };
+        } catch {
+          return { messageId: solicitud.messageId, estado: solicitud.estado, error: "Reconectando con Wobi…" };
+        }
+      }));
+
+      const completadas = resultados.filter((item) => item.estado === "completado");
+      if (completadas.length > 0) {
+        const historial = await cargarChat();
+        if (!historial) {
+          const solicitudesPorId = new Map(activas.map((item) => [item.messageId, item]));
+          setMensajes((actuales) => [
+            ...actuales,
+            ...completadas.flatMap((item) => {
+              const original = solicitudesPorId.get(item.messageId);
+              return [
+                ...(original ? [{ rol: "usuario", texto: original.texto, local: true }] : []),
+                { rol: "wobi", texto: item.respuesta || "Wobi terminó el análisis.", local: true },
+              ];
+            }),
+          ]);
+        }
+        completadas.forEach((item) => hablar(item.respuesta || "Wobi terminó el análisis."));
+      }
+
+      const idsCompletados = new Set(completadas.map((item) => item.messageId));
+      const porId = new Map(resultados.map((item) => [item.messageId, item]));
+      setSolicitudes((actuales) => {
+        let cambio = idsCompletados.size > 0;
+        const siguientes = actuales
+          .filter((item) => !idsCompletados.has(item.messageId))
+          .map((item) => {
+            const resultado = porId.get(item.messageId);
+            if (!resultado) return item;
+            const estado = resultado.estado || item.estado;
+            const errorResultado = resultado.error || "";
+            if (estado === item.estado && errorResultado === (item.error || "")) return item;
+            cambio = true;
+            return { ...item, estado, error: errorResultado };
+          });
+        return cambio ? siguientes : actuales;
+      });
+
+      const fallida = resultados.find((item) => item.estado === "fallido");
+      if (fallida) {
+        setError(`${fallida.error || "Una solicitud quedó interrumpida."} No la repetiré automáticamente para evitar acciones duplicadas.`);
+      }
+    } finally {
+      consultandoSolicitudesRef.current = false;
+    }
+  }, [cargarChat, hablar, headers, solicitudes]);
+
+  useEffect(() => {
+    if (!procesando) return undefined;
+    let cancelado = false;
+    let temporizador;
+    const consultar = async () => {
+      await revisarSolicitudes();
+      if (!cancelado) temporizador = setTimeout(consultar, 3000);
+    };
+    consultar();
+    return () => {
+      cancelado = true;
+      clearTimeout(temporizador);
+    };
+  }, [procesando, revisarSolicitudes]);
+
   const enviarConReintento = useCallback(async (messageId, contenido) => {
     let ultimoError;
     for (let intento = 0; intento < 3; intento++) {
@@ -1952,14 +2082,13 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
           body: JSON.stringify({ messageId, texto: contenido }),
         });
         const json = await res.json().catch(() => ({}));
-        if (res.status === 202) {
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-          continue;
-        }
-        if (!res.ok) throw new Error(json.error || "No se pudo completar el mensaje.");
-        return json;
+        if (res.status === 202 || res.ok) return json;
+        const fallo = new Error(json.error || "No se pudo registrar el mensaje.");
+        fallo.definitivo = res.status >= 400 && res.status < 500;
+        throw fallo;
       } catch (err) {
         ultimoError = err;
+        if (err?.definitivo) throw err;
         if (intento < 2) await new Promise((resolve) => setTimeout(resolve, 800 * (intento + 1)));
       }
     }
@@ -1968,26 +2097,42 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
 
   const enviar = async () => {
     const contenido = texto.trim();
-    if (!contenido || enviandoRef.current) return;
+    if (!contenido || enviandoRef.current || limiteSolicitudesAlcanzado) return;
     lectorVoz.stop();
     if (vozActivaRef.current) lectorVoz.activate().catch(() => setVozPendiente(true));
     enviandoRef.current = true;
-    setEnviando(true);
+    setRegistrando(true);
     setError("");
     setTexto("");
-    setMensajes((actuales) => [...actuales, { rol: "usuario", texto: contenido, local: true }]);
     const messageId = window.crypto?.randomUUID?.().replaceAll("-", "") || `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const solicitud = { messageId, texto: contenido, estado: "registrando", creadoEn: Date.now(), error: "" };
+    setSolicitudes((actuales) => [...actuales, solicitud]);
     try {
       const json = await enviarConReintento(messageId, contenido);
-      const respuesta = json.respuesta || "Wobi terminó sin devolver texto.";
-      setMensajes((actuales) => [...actuales, { rol: "wobi", texto: respuesta, local: true }]);
-      if (json.identidad) setIdentidad(json.identidad);
-      hablar(respuesta);
+      if (json.estado === "completado") {
+        const historial = await cargarChat();
+        if (!historial) {
+          setMensajes((actuales) => [
+            ...actuales,
+            { rol: "usuario", texto: contenido, local: true },
+            { rol: "wobi", texto: json.respuesta || "Wobi terminó el análisis.", local: true },
+          ]);
+        }
+        setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== messageId));
+        hablar(json.respuesta || "Wobi terminó el análisis.");
+      } else if (json.estado === "fallido") {
+        setSolicitudes((actuales) => actuales.map((item) => item.messageId === messageId ? { ...item, estado: "fallido" } : item));
+      } else {
+        setSolicitudes((actuales) => actuales.map((item) => item.messageId === messageId ? { ...item, estado: "procesando" } : item));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo conectar con Wobi.");
+      setSolicitudes((actuales) => actuales.map((item) => item.messageId === messageId
+        ? { ...item, estado: err?.definitivo ? "fallido" : "verificando", error: err instanceof Error ? err.message : "Reconectando…" }
+        : item));
     } finally {
       enviandoRef.current = false;
-      setEnviando(false);
+      setRegistrando(false);
     }
   };
 
@@ -2044,10 +2189,22 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
     lectorVoz.activate().catch(() => setVozPendiente(true));
   };
 
+  const abrirEnPestanaNueva = () => {
+    window.open("/cerebro/?chat=grande", "_blank", "noopener,noreferrer");
+  };
+
+  const cerrarChat = () => {
+    if (modoCompleto) {
+      window.location.assign("/cerebro/");
+      return;
+    }
+    setAbierto(false);
+  };
+
   return (
-    <div className={`wobi-contacto ${abierto ? "wobi-contacto--abierto" : "wobi-contacto--destacado"}`}>
+    <div className={`wobi-contacto ${abierto ? "wobi-contacto--abierto" : "wobi-contacto--destacado"}${modoCompleto ? " wobi-contacto--completo" : ""}`}>
       {abierto ? (
-        <section className="wobi-chat-panel" aria-label="Centro de conversación con Wobi">
+        <section className={`wobi-chat-panel${modoCompleto ? " wobi-chat-panel--completo" : ""}`} aria-label="Centro de conversación con Wobi">
           <header className="wobi-chat-cabecera">
             <div className="wobi-identidad">
               <span className="wobi-avatar wobi-avatar--grande" aria-hidden="true">
@@ -2063,6 +2220,11 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
               </div>
             </div>
             <div className="wobi-chat-controles">
+              {!modoCompleto && (
+                <button type="button" onClick={abrirEnPestanaNueva} aria-label="Abrir chat grande en una pestaña nueva" title="Abrir chat grande" className="wobi-control-icono">
+                  <span aria-hidden="true">↗</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={toggleLectura}
@@ -2074,7 +2236,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
               >
                 <span>{leerRespuestas ? "Voz activada" : "Voz desactivada"}</span>
               </button>
-              <button type="button" onClick={() => setAbierto(false)} aria-label="Cerrar chat" className="wobi-control-icono">
+              <button type="button" onClick={cerrarChat} aria-label={modoCompleto ? "Volver al panel" : "Cerrar chat"} className="wobi-control-icono">
                 <span aria-hidden="true">×</span>
               </button>
             </div>
@@ -2097,7 +2259,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
               <span className="wobi-canal-icono" aria-hidden="true">✦</span>
               <span><strong>Chat web</strong><small>Estás aquí</small></span>
             </div>
-            <a className="wobi-canal" href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer">
+            <a className="wobi-canal" href={telegramVinculoUrl} target="_blank" rel="noreferrer">
               <img src={TELEGRAM_ICON} alt="" width={24} height={24} />
               <span><strong>Telegram</strong><small>{identidad?.vinculadaTelegram ? "Contexto compartido" : "Canal alternativo"}</small></span>
               <span className="wobi-canal-flecha" aria-hidden="true">↗</span>
@@ -2110,9 +2272,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
                 <>
                   <div className="wobi-vinculo-codigo-info">
                     <span className="wobi-vinculo-etiqueta">Vinculación pendiente</span>
-                    <span>En Telegram envía este código. Wobi lo detectará automáticamente.</span>
+                    <span>Abre Telegram y toca Iniciar. Wobi confirmará el vínculo aquí automáticamente.</span>
                   </div>
-                  <strong className="wobi-vinculo-codigo">VINCULAR {codigoVinculo.codigo}</strong>
+                  <div className="wobi-vinculo-acciones">
+                    <strong className="wobi-vinculo-codigo">VINCULAR {codigoVinculo.codigo}</strong>
+                    <a href={telegramVinculoUrl} target="_blank" rel="noreferrer">Abrir Telegram ↗</a>
+                  </div>
                 </>
               ) : (
                 <>
@@ -2145,26 +2310,41 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
                 </div>
               );
             })}
-            {enviando && (
-              <div className="wobi-escribiendo">
-                <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
-                <span><i /><i /><i /></span>
-              </div>
-            )}
+            {solicitudes.map((solicitud, indice) => (
+              <React.Fragment key={solicitud.messageId}>
+                <div className="wobi-mensaje-fila wobi-mensaje-fila--usuario">
+                  <div className="wobi-burbuja wobi-burbuja--usuario">
+                    <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{solicitud.texto}</div>
+                  </div>
+                </div>
+                {solicitud.estado === "fallido" ? (
+                  <div className="wobi-solicitud-fallida" role="status">
+                    <span>Esta solicitud se interrumpió y no se repitió para evitar duplicados.</span>
+                    <button type="button" onClick={() => setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== solicitud.messageId))}>Quitar</button>
+                  </div>
+                ) : (
+                  <div className="wobi-escribiendo">
+                    <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
+                    <span><i /><i /><i /></span>
+                    <small>{indice === 0 ? "Wobi está analizando…" : `En cola · turno ${indice + 1}`}</small>
+                  </div>
+                )}
+              </React.Fragment>
+            ))}
           </div>
 
           {error && <div role="alert" className="wobi-chat-error">{error}</div>}
           <div className="wobi-compositor">
-            <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} disabled={enviando} rows={2} maxLength={4000} placeholder="Escribe o dicta una pregunta…" />
-            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition || enviando} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
+            <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} rows={2} maxLength={4000} placeholder={limiteSolicitudesAlcanzado ? "Espera a que termine una solicitud…" : "Escribe o dicta una pregunta…"} />
+            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
               <span aria-hidden="true">🎙</span>
             </button>
-            <button type="button" onClick={enviar} disabled={!texto.trim() || enviando} className="wobi-boton-enviar">
-              Enviar <span aria-hidden="true">↑</span>
+            <button type="button" onClick={enviar} disabled={!texto.trim() || registrando || limiteSolicitudesAlcanzado} className="wobi-boton-enviar">
+              {registrando ? "Guardando…" : "Enviar"} <span aria-hidden="true">↑</span>
             </button>
           </div>
           <div className="wobi-chat-seguridad">
-            <span aria-hidden="true">↻</span> Reintentos protegidos · sin llamadas duplicadas
+            <span aria-hidden="true">↻</span> {procesando ? `${solicitudesActivas.length} solicitud(es) en curso · puedes seguir escribiendo` : "Reintentos protegidos · sin llamadas duplicadas"}
           </div>
         </section>
       ) : (
@@ -2195,6 +2375,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal }) {
 }
 
 export default function CerebroWoba() {
+  const modoChatCompleto = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("chat") === "grande";
   const [active, setActive] = useState(null);
   // Pedido explícito de Carlos: poder tener varios módulos abiertos a la vez
   // (antes un solo valor `open`) — ver el comentario de "cerebro-layout" más
@@ -2709,6 +2890,12 @@ export default function CerebroWoba() {
           bottom: 20px;
           z-index: 40;
         }
+        .wobi-contacto--completo {
+          inset: 0;
+          z-index: 80;
+          padding: 0;
+          background: ${C.void};
+        }
         .wobi-contacto button,
         .wobi-contacto a,
         .wobi-contacto textarea {
@@ -2857,6 +3044,24 @@ export default function CerebroWoba() {
           box-shadow: 0 28px 90px rgba(0,0,0,.66), 0 0 50px rgba(46,109,164,.1);
           animation: wobiDockIn .26s ease-out;
         }
+        .wobi-chat-panel--completo {
+          width: 100vw;
+          height: 100dvh;
+          border: 0;
+          border-radius: 0;
+          box-shadow: none;
+        }
+        .wobi-chat-panel--completo .wobi-mensajes {
+          width: min(980px, 100%);
+          margin-inline: auto;
+          box-sizing: border-box;
+        }
+        .wobi-chat-panel--completo .wobi-compositor,
+        .wobi-chat-panel--completo .wobi-chat-seguridad {
+          width: min(980px, calc(100% - 24px));
+          margin-inline: auto;
+          box-sizing: border-box;
+        }
         .wobi-chat-cabecera {
           display: flex;
           align-items: center;
@@ -2943,9 +3148,14 @@ export default function CerebroWoba() {
           letter-spacing: .025em;
           white-space: nowrap;
         }
+        .wobi-vinculo-acciones { flex: 0 0 auto; display: flex !important; align-items: stretch; gap: 6px !important; }
+        .wobi-vinculo-acciones > a,
         .wobi-vinculo > button {
           flex: 0 0 auto;
           min-height: 38px;
+          display: inline-flex;
+          align-items: center;
+          box-sizing: border-box;
           padding: 7px 11px;
           border: 1px solid rgba(232,167,92,.48);
           border-radius: 9px;
@@ -2953,7 +3163,10 @@ export default function CerebroWoba() {
           background: rgba(232,167,92,.08);
           cursor: pointer;
           font-size: 12px;
+          text-decoration: none;
         }
+        .wobi-vinculo-acciones > a:hover,
+        .wobi-vinculo > button:hover { background: rgba(232,167,92,.14); }
         .wobi-vinculo-etiqueta { color: ${C.amberBright}; font-family: ${C.mono}; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
         .wobi-mensajes {
           flex: 1;
@@ -3000,10 +3213,25 @@ export default function CerebroWoba() {
           background: linear-gradient(145deg, rgba(46,109,164,.3), rgba(31,72,110,.23));
         }
         .wobi-escribiendo { display: flex; align-items: center; gap: 8px; }
-        .wobi-escribiendo > span:last-child { display: flex; gap: 4px; padding: 11px 13px; border: 1px solid ${C.line}; border-radius: 4px 14px 14px 14px; background: ${C.voidSoft}; }
+        .wobi-escribiendo > span:nth-child(2) { display: flex; gap: 4px; padding: 11px 13px; border: 1px solid ${C.line}; border-radius: 4px 14px 14px 14px; background: ${C.voidSoft}; }
         .wobi-escribiendo i { width: 5px; height: 5px; border-radius: 50%; background: ${C.amberBright}; animation: wobiTyping 1.2s infinite; }
         .wobi-escribiendo i:nth-child(2) { animation-delay: .14s; }
         .wobi-escribiendo i:nth-child(3) { animation-delay: .28s; }
+        .wobi-escribiendo small { color: ${C.dim}; font-size: 11px; }
+        .wobi-solicitud-fallida {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-left: 36px;
+          padding: 9px 11px;
+          border: 1px solid rgba(240,113,120,.28);
+          border-radius: 10px;
+          color: ${C.dangerBright};
+          background: rgba(240,113,120,.06);
+          font-size: 12px;
+        }
+        .wobi-solicitud-fallida button { flex: 0 0 auto; border: 0; color: ${C.cream}; background: transparent; cursor: pointer; text-decoration: underline; }
         .wobi-chat-error { padding: 9px 14px; border-top: 1px solid rgba(240,113,120,.28); color: ${C.dangerBright}; background: rgba(240,113,120,.06); font-size: 13px; }
         .wobi-compositor {
           display: grid;
@@ -3119,6 +3347,7 @@ export default function CerebroWoba() {
           .wobi-canal small { font-size: 10px; }
           .wobi-vinculo { align-items: flex-start; padding: 10px 12px; }
           .wobi-vinculo > button { min-height: 42px; }
+          .wobi-vinculo-acciones { width: 100%; flex-wrap: wrap; }
           .wobi-mensajes { padding: 14px 11px; }
           .wobi-burbuja { font-size: 13.5px; }
           .wobi-compositor { grid-template-columns: minmax(0, 1fr) 46px; }
@@ -3282,6 +3511,7 @@ export default function CerebroWoba() {
           apiKey={apiKey}
           nombreUsuario={nombreUsuario}
           revisionTiempoReal={ultimoContactoEn}
+          modoCompleto={modoChatCompleto}
         />
       )}
 
