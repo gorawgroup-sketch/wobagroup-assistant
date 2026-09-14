@@ -344,6 +344,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   }
 
   if (movimientosYaConciliados.length > 0) {
+    const proveedorVisible = datos.proveedor || "proveedor no identificado en el ticket";
+    const todosConConciliacionCompleta = movimientosYaConciliados.every((m) => m.status !== "partial");
     const lineas = movimientosYaConciliados
       .map(
         (m, i) =>
@@ -354,8 +356,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     await sendTelegramMessage(
       chatId,
       `⛔ No propuse crear este gasto: encontré un movimiento bancario YA CONCILIADO que coincide con ` +
-        `${datos.proveedor}, ${montoParaHolded.toFixed(2)} ${monedaParaHolded}, ${datos.fecha}.\n\n${lineas}\n\n` +
-        `Esto es evidencia de que el gasto ya fue registrado o vinculado en Holded. Si después se desmarcó “Es una factura de compra”, ` +
+        `${proveedorVisible}, ${montoParaHolded.toFixed(2)} ${monedaParaHolded}, ${datos.fecha}.\n\n${lineas}\n\n` +
+        (todosConConciliacionCompleta
+          ? `Holded informa además que el importe completo del movimiento ya está conciliado, por lo que no es seguro ni posible `
+          : `Holded informa además que el movimiento ya tiene una conciliación aplicada, por lo que no es seguro `) +
+        `volver a conciliarlo automáticamente. Esto es evidencia de que el gasto ya fue registrado o vinculado en Holded. ` +
+        `Si después se desmarcó “Es una factura de compra”, ` +
         `Holded puede mostrarlo como ticket y omitirlo del listado API de compras, pero sigue siendo el mismo gasto. No se habilita “Crear gasto” ` +
         `hasta una revisión manual que demuestre que es una operación distinta.`
     );
