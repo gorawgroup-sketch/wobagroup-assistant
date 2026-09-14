@@ -105,7 +105,9 @@ async function consultarPersona(empresa: Empresa, consulta: string): Promise<Vac
         consulta,
         estado: "ambiguo",
         candidatos: seleccion.candidatos,
-        detalle: "Hay más de una persona posible. Se necesita el nombre completo; Wobi no debe adivinar.",
+        detalle:
+          "Hay más de una persona posible. Wobi debe preguntar directamente a quien hizo la solicitud " +
+          "por el nombre completo; nunca debe adivinar ni trasladar esa aclaración a otra persona.",
       };
     }
 
