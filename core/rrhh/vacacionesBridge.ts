@@ -109,7 +109,6 @@ function extraerFila(
     diasAsignados === undefined ||
     diasSolicitadosPendientes === undefined ||
     diasAprobados === undefined ||
-    diasUsados === undefined ||
     diasRestantes === undefined ||
     !Number.isFinite(actualizadoMs) ||
     actualizadoMs > ahoraMs + 5 * 60_000
@@ -117,7 +116,7 @@ function extraerFila(
     return {
       ...base,
       estado: "incompleto",
-      detalle: "El registro no tiene todos los saldos numéricos o una fecha de actualización válida.",
+      detalle: "El registro no tiene todos los saldos obligatorios o una fecha de actualización válida.",
     };
   }
 
@@ -126,7 +125,7 @@ function extraerFila(
     diasAsignados,
     diasSolicitadosPendientes,
     diasAprobados,
-    diasUsados,
+    ...(diasUsados === undefined ? {} : { diasUsados }),
     diasRestantes,
     actualizadoEn: new Date(actualizadoMs).toISOString(),
   };

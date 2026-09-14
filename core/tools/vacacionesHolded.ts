@@ -86,9 +86,10 @@ export const vacacionesHoldedTool: ToolDefinition = {
         : `${resultado.diasAnualesContrato} días anuales en contrato`;
       const copia = porNombre.get(resultado.nombre ?? "");
       if (copia?.estado === "vigente") {
+        const usados = copia.diasUsados == null ? "" : `, ${copia.diasUsados} usados`;
         return `- ${resultado.nombre}: ${politica}; ${copia.diasAsignados} asignados, ` +
-          `${copia.diasSolicitadosPendientes} solicitados pendientes, ${copia.diasAprobados} aprobados, ` +
-          `${copia.diasUsados} usados y ${copia.diasRestantes} restantes para ${ano}. ` +
+          `${copia.diasSolicitadosPendientes} solicitados pendientes, ${copia.diasAprobados} aprobados` +
+          `${usados} y ${copia.diasRestantes} restantes para ${ano}. ` +
           `Copia verificada de Holded actualizada ${copia.actualizadoEn}.`;
       }
       const estadoPuente = copia?.detalle ?? puente.detalle ?? "No hay un saldo exacto autorizado disponible.";
