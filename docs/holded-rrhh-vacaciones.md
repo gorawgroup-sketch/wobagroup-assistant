@@ -34,9 +34,26 @@ o saldo restante. Esos datos sí existen en la interfaz de Holded, en
 `RRHH > Ausencias`, pero Wobi no usa cookies, scraping ni sesiones personales
 en Railway para saltarse esta limitación.
 
-Por eso la respuesta exacta a "cuántos días les quedan" exige una fuente
-adicional soportada y autorizada. La opción recomendada es una exportación
-sanitizada de Holded con nombre, solicitados, aprobados, restantes y fecha de
-actualización, guardada en un origen de acceso restringido. Antes de crear ese
-puente se debe definir quién lo actualiza, su caducidad y qué personas pueden
-consultarlo.
+Por eso la respuesta exacta a "cuántos días les quedan" usa un puente
+sanitizado y restringido, separado del cashflow. La pestaña `Vacaciones`
+contiene exactamente estas columnas:
+
+`empresa`, `nombre`, `ano`, `dias_asignados`,
+`dias_solicitados_pendientes`, `dias_aprobados`, `dias_usados`,
+`dias_restantes`, `actualizado_en`.
+
+Cualquier columna adicional bloquea toda la fuente para impedir que salario,
+NIF, email, cuenta bancaria u otra información personal llegue al modelo por
+error. La variable `HOLDED_RRHH_VACACIONES_SHEET_ID` identifica la hoja y
+`WOBI_RRHH_MAX_AGE_HOURS` limita su vigencia (24 horas por defecto). Un registro
+vencido, incompleto, duplicado o ambiguo nunca se usa para responder cifras.
+
+La fuente debe actualizarse desde la vista o un informe oficial de Holded. No
+se usan cookies, scraping ni sesiones personales en Railway. Si un nombre es
+ambiguo, Wobi pregunta directamente al remitente del correo o a la persona que
+hizo la consulta; no lo adivina ni traslada innecesariamente la pregunta a
+Carlos.
+
+La hoja se crea con un propietario humano dentro de Google Workspace y se
+comparte solamente con la cuenta de servicio de Wobi como lector. Wobi no
+recibe permisos para crear archivos, cambiar el acceso ni compartir la hoja.
