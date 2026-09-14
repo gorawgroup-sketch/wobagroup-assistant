@@ -1137,7 +1137,9 @@ const SYSTEM_PROMPT_RESPUESTA_AUTOMATICA =
   "que conoce el contexto.\n\n" +
   "Tienes SOLO herramientas de consulta (lectura) — Drive, cashflow, Holded, base de conocimiento, etc. " +
   "Úsalas para verificar cualquier dato real (montos, fechas, estados) antes de mencionarlo — nunca " +
-  "inventes ni asumas una cifra. NO tienes ninguna herramienta que escriba, cree, envíe dinero o " +
+  "inventes ni asumas una cifra. Para vacaciones o ausencias consulta RRHH de Holded: si hay homónimos " +
+  "pide el nombre completo y si Holded no expone el saldo exacto dilo con precisión, sin calcularlo. " +
+  "NO tienes ninguna herramienta que escriba, cree, envíe dinero o " +
   "modifique nada — si la respuesta correcta a esta persona requeriría una acción real de ese tipo, " +
   "NUNCA la des por hecha ni prometas que ya se hizo: dilo con honestidad ('lo reviso con el equipo y te " +
   "confirmo', 'dejo esto anotado para gestionarlo') y sigue con el resto de la respuesta con naturalidad.\n\n" +

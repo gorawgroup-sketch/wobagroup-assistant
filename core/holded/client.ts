@@ -21,7 +21,18 @@ function getApiKey(empresa: Empresa): string {
   return key;
 }
 
-async function holdedGet(empresa: Empresa, path: string, params: Record<string, string | undefined> = {}) {
+/**
+ * GET autenticado interno para módulos de solo lectura de Holded.
+ *
+ * No debe exponerse como una herramienta genérica al modelo: cada consumidor
+ * tiene que validar el input y devolver únicamente los campos permitidos para
+ * su dominio (por ejemplo, RRHH nunca devuelve nómina ni datos personales).
+ */
+export async function holdedGet<T = unknown>(
+  empresa: Empresa,
+  path: string,
+  params: Record<string, string | undefined> = {}
+): Promise<T> {
   const apiKey = getApiKey(empresa);
   const url = new URL(`${HOLDED_API_BASE}${path}`);
 
@@ -41,7 +52,7 @@ async function holdedGet(empresa: Empresa, path: string, params: Record<string, 
     throw new Error(`Error de la API de Holded (${response.status}) para ${empresa}: ${body}`);
   }
 
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
 /**

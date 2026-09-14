@@ -38,6 +38,11 @@ test("herramienta no ofrecida nunca se ejecuta al usar el registro real en lote"
   assert.equal(result[0].is_error, true);
 });
 
+test("la consulta de vacaciones está disponible en chat y autorrespuesta como lectura segura", () => {
+  const permitidos = new Set(getToolDefinitions(true).map((tool) => tool.name));
+  assert.equal(permitidos.has("consultar_vacaciones_holded"), true);
+});
+
 test("fallo real de lectura auditada detiene lote antes de una acción", async (t) => {
   t.mock.method(cashflowResumenTool, "handler", async () => { throw new Error("Sheets no disponible"); });
   t.mock.method(registrarCorreccionTool, "handler", () => assert.fail("no debe escribir"));
