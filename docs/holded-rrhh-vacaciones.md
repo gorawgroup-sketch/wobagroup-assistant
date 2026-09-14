@@ -42,6 +42,10 @@ contiene exactamente estas columnas:
 `dias_solicitados_pendientes`, `dias_aprobados`, `dias_usados`,
 `dias_restantes`, `actualizado_en`.
 
+`dias_usados` puede quedar vacío cuando la vista oficial del supervisor no
+separa los días ya disfrutados de los días aprobados para fechas futuras.
+Wobi omite entonces esa cifra: nunca la calcula ni la sustituye por cero.
+
 Cualquier columna adicional bloquea toda la fuente para impedir que salario,
 NIF, email, cuenta bancaria u otra información personal llegue al modelo por
 error. La variable `HOLDED_RRHH_VACACIONES_SHEET_ID` identifica la hoja y

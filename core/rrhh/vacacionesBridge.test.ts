@@ -27,6 +27,19 @@ test("acepta una copia vigente sin calcular ni modificar los saldos de Holded", 
   });
 });
 
+test("acepta días usados vacíos y no inventa una cifra que Holded no muestra", () => {
+  const resultado = interpretarTablaVacaciones([
+    [...ENCABEZADOS_PUENTE_VACACIONES],
+    ["WOBA", "HEYDI JASMIN ANTUNEZ MADRID", 2026, 25, 0, 23, "", 2, "2026-09-14T10:00:00.000Z"],
+  ], { ahora, maxAgeHours: 24 });
+
+  assert.equal(resultado.estado, "ok");
+  assert.equal(resultado.registros[0]?.estado, "vigente");
+  assert.equal(resultado.registros[0]?.diasAprobados, 23);
+  assert.equal(resultado.registros[0]?.diasUsados, undefined);
+  assert.equal(resultado.registros[0]?.diasRestantes, 2);
+});
+
 test("bloquea toda la fuente si aparece una columna de PII no autorizada", () => {
   const resultado = interpretarTablaVacaciones([
     [...ENCABEZADOS_PUENTE_VACACIONES, "salario"],
