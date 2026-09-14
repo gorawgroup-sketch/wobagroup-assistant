@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluarMovimientoConciliadoComoDuplicado } from "./duplicateSignals";
+import { esProveedorNoIdentificado, evaluarMovimientoConciliadoComoDuplicado } from "./duplicateSignals";
 
 test("detecta el ticket Hippopotamus ya conciliado como duplicado exacto", () => {
   const resultado = evaluarMovimientoConciliadoComoDuplicado(
@@ -85,6 +85,44 @@ test("detecta un ticket sin proveedor contra un cargo exacto y completamente con
   assert.equal(resultado?.nivel, "probable");
   assert.equal(resultado?.diferenciaDias, 2);
   assert.equal(resultado?.sinProveedorIdentificado, true);
+});
+
+test("trata las etiquetas descriptivas de proveedor desconocido como ausencia de proveedor real", () => {
+  for (const proveedor of [
+    "Establecimiento no identificado (cafetería)",
+    "Proveedor no identificado en el ticket",
+    "Proveedor desconocido",
+    "Sin proveedor real",
+    "Unknown merchant (coffee shop)",
+  ]) {
+    assert.equal(esProveedorNoIdentificado(proveedor), true, proveedor);
+  }
+  assert.equal(esProveedorNoIdentificado("Establecimientos Madrid SL"), false);
+  assert.equal(esProveedorNoIdentificado("Unknown Pleasures Coffee"), false);
+});
+
+test("detecta el cargo conciliado cuando la extracción puso un placeholder de cafetería", () => {
+  const resultado = evaluarMovimientoConciliadoComoDuplicado(
+    {
+      id: "mov-gate-gourmet",
+      description: "Gate Gourmet Spain Iry",
+      amount: "-6.60",
+      currency: "EUR",
+      booking_date: "2026-09-09T00:00:00+00:00",
+      status: "reconciled",
+      reconciled_amount: "-6.60",
+    },
+    {
+      proveedor: "Establecimiento no identificado (cafetería)",
+      monto: 6.6,
+      fecha: "2026-09-11",
+      moneda: "EUR",
+    }
+  );
+
+  assert.equal(resultado?.nivel, "probable");
+  assert.equal(resultado?.sinProveedorIdentificado, true);
+  assert.equal(resultado?.diferenciaDias, 2);
 });
 
 test("sin proveedor no bloquea por fecha lejana, conciliación parcial o importe aproximado", () => {

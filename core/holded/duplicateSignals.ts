@@ -56,6 +56,28 @@ function normalizarTexto(texto: string): string {
     .trim();
 }
 
+/**
+ * La extracción documental no siempre deja el proveedor vacío cuando no
+ * puede leerlo. A veces devuelve una etiqueta descriptiva para que el
+ * usuario entienda el problema (por ejemplo, "Establecimiento no
+ * identificado (cafetería)"). Esa etiqueta NO es un proveedor real y no
+ * puede usarse para exigir que el extracto bancario contenga el mismo
+ * nombre. Mantener esta lista cerrada evita tratar como desconocido a un
+ * comercio real que simplemente tenga un nombre poco habitual.
+ */
+export function esProveedorNoIdentificado(proveedor: string | undefined): boolean {
+  const normalizado = normalizarTexto(proveedor ?? "");
+  if (!normalizado) return true;
+  return [
+    /^establecimiento no identificado(?:\b|$)/,
+    /^proveedor no identificado(?:\b|$)/,
+    /^proveedor desconocido(?:\b|$)/,
+    /^sin proveedor(?:\b|$)/,
+    /^unknown (?:merchant|vendor|supplier)(?:\b|$)/,
+    /^unidentified (?:merchant|vendor|supplier)(?:\b|$)/,
+  ].some((patron) => patron.test(normalizado));
+}
+
 function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
   const p = normalizarTexto(proveedor);
   const d = normalizarTexto(descripcion);
@@ -105,7 +127,7 @@ export function evaluarMovimientoConciliadoComoDuplicado(
   const coincideProveedor = proveedorPareceEnDescripcion(criterios.proveedor, movimiento.description ?? "");
   const coincideFechaExacta = fechaCalendario(movimiento.booking_date) === criterios.fecha.slice(0, 10);
   const diferenciaDias = diferenciaDiasCalendario(movimiento.booking_date, criterios.fecha);
-  const sinProveedorIdentificado = normalizarTexto(criterios.proveedor).length < 3;
+  const sinProveedorIdentificado = esProveedorNoIdentificado(criterios.proveedor);
   const coincidenciaReforzadaSinProveedor =
     sinProveedorIdentificado &&
     montoExacto &&
