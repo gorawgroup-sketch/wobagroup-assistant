@@ -33,6 +33,25 @@ export async function procesarHiloAutorespuestaAprobado(threadId: string, chatId
   const ultimoMensaje = hilo.mensajes[hilo.mensajes.length - 1];
   if (!ultimoMensaje || ultimoMensaje.esNuestro) return false;
 
+  // Hallazgo real de auditoría (caso real Carlos, hilo Alberto Comolli <> Sofía Sabjan de 3G Office,
+  // "Saldo proyecto Electra"): la aprobación es por HILO completo, pero a quién va dirigido cada
+  // mensaje puede cambiar de uno a otro dentro del mismo hilo — Alberto escribía "To: Sofía Sabjan",
+  // solo copiando ("Cc") a asistente@wobagroup.com para que Carlos tuviera visibilidad, y este job
+  // igual respondía como si la conversación fuera CON Wobi, generando una respuesta confusa dirigida
+  // a un tercero externo real que ni siquiera esperaba oír de nosotros. Si Wobi no aparece en el "To"
+  // de ESTE mensaje concreto (solo en copia, o ni eso), no hay nada que un asistente automático deba
+  // responder — se avisa a Carlos por si quiere intervenir él mismo, y se marca leído para no
+  // repetir el mismo aviso cada 15 minutos mientras nadie lo atienda.
+  if (!ultimoMensaje.dirigidoANosotros) {
+    await marcarHiloComoLeido(threadId);
+    await sendTelegramMessage(
+      chatId,
+      `ℹ️ ${hilo.ultimoDe} escribió en "${hilo.asunto}" pero solo nos tiene en copia (Cc) — no nos escribe ` +
+        `directamente a nosotros (To: ${ultimoMensaje.para || "desconocido"}). No respondí automáticamente; revísalo si hace falta intervenir.`
+    ).catch((error) => console.error("[revisarConversacionesAutomaticas] No se pudo avisar por Telegram (no crítico):", error));
+    return false;
+  }
+
   const idempotencyKey = `autorespuesta:${hilo.ultimoMensajeId}`;
   const envioExistente = await consultarEnvioCorreoExistente(idempotencyKey);
   if (envioExistente) {
@@ -50,10 +69,15 @@ export async function procesarHiloAutorespuestaAprobado(threadId: string, chatId
     remitente: hilo.ultimoDe,
     asunto: hilo.asunto,
     hiloTexto,
+    ultimoPara: ultimoMensaje.para,
+    ultimoCc: ultimoMensaje.cc,
   });
 
   if (!respuesta.trim()) {
-    console.error(`[revisarConversacionesAutomaticas] Respuesta vacía para el hilo ${threadId} — se salta, se reintenta en la próxima corrida.`);
+    // Puede ser una respuesta genuinamente vacía (error de IA, reintentar), o una decisión explícita
+    // de no responder porque el mensaje va dirigido a otra persona (ver SYSTEM_PROMPT_RESPUESTA_AUTOMATICA)
+    // — en ambos casos lo correcto es lo mismo: no enviar nada y no dar el hilo por resuelto todavía.
+    console.error(`[revisarConversacionesAutomaticas] Sin respuesta para el hilo ${threadId} (vacía, o decisión de no intervenir) — se salta, se reintenta en la próxima corrida.`);
     return false;
   }
 

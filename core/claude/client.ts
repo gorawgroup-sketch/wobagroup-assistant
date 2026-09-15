@@ -1147,7 +1147,17 @@ const SYSTEM_PROMPT_RESPUESTA_AUTOMATICA =
   "Responde en el mismo idioma del hilo. No reveles información interna que no sea directamente " +
   "relevante para esta persona o este tema. Devuelve ÚNICAMENTE el cuerpo del correo de respuesta, listo " +
   "para enviar — sin firma (se agrega aparte), sin asunto, sin explicarle a nadie que eres una IA dentro " +
-  "del cuerpo (eso ya lo indica una leyenda que se agrega al final del correo, aparte de tu texto).";
+  "del cuerpo (eso ya lo indica una leyenda que se agrega al final del correo, aparte de tu texto).\n\n" +
+  "Hallazgo real de auditoría (caso real: Alberto Comolli le escribía a Sofía Sabjan de 3G Office, " +
+  "solo copiando a asistente@wobagroup.com para que Carlos tuviera visibilidad — Wobi respondió de " +
+  "todos modos, incluso saludando 'Hola Sofía' dentro del cuerpo, generando confusión real con un " +
+  "tercero externo). El sistema ya filtra los casos donde nosotros solo estamos en copia (Cc), pero " +
+  "eso no basta: aunque técnicamente aparezcamos en el 'To' del último mensaje, si el remitente se " +
+  "dirige por nombre a OTRA persona (un saludo, un 'Fulano, ¿puedes...', un destinatario humano " +
+  "explícito distinto de nosotros) y esa persona sigue en la conversación, esa respuesta es de esa " +
+  "persona, no nuestra. Devuelve la cadena vacía (sin texto) si concluyes que este mensaje no espera " +
+  "una respuesta nuestra — el sistema simplemente no envía nada y Carlos lo revisa él mismo. Nunca " +
+  "inventes un saludo dirigido a otra persona ni actúes como si fueras esa persona.";
 
 /**
  * Redacta la respuesta de un correo para la conversación automática con un
@@ -1165,6 +1175,9 @@ export async function responderCorreoAutomatico(params: {
   remitente: string;
   asunto: string;
   hiloTexto: string;
+  /** Headers "To"/"Cc" crudos del último mensaje — para que el modelo vea a quién más va dirigido. */
+  ultimoPara?: string;
+  ultimoCc?: string;
 }): Promise<string> {
   const anthropic = getClient();
   const ejecucion = crearEjecucionIA("respuesta_correo_automatica");
@@ -1172,9 +1185,12 @@ export async function responderCorreoAutomatico(params: {
   const nombresDisponibles = new Set(tools.map((t) => t.name));
 
   const userText =
-    `Remitente: ${params.remitente}\nAsunto: ${params.asunto}\n\n` +
+    `Remitente: ${params.remitente}\nAsunto: ${params.asunto}\n` +
+    `Para (To) del último mensaje: ${params.ultimoPara || "desconocido"}\n` +
+    `Copia (Cc) del último mensaje: ${params.ultimoCc || "(ninguna)"}\n\n` +
     `Hilo completo de la conversación (más antiguo primero):\n\n${params.hiloTexto}\n\n` +
-    `Redacta la respuesta a enviar ahora, continuando la conversación.`;
+    `Redacta la respuesta a enviar ahora, continuando la conversación — o la cadena vacía si concluyes ` +
+    `que este mensaje no espera una respuesta nuestra (ver instrucción sobre a quién va dirigido).`;
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
 

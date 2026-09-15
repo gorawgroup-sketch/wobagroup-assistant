@@ -265,6 +265,20 @@ export interface MensajeDeHilo {
   de: string;
   fecha: string;
   cuerpo: string;
+  /** Headers crudos "To"/"Cc" tal como los mandó Gmail — para mostrarle a Claude quién está en copia. */
+  para: string;
+  cc: string;
+  /**
+   * Hallazgo real de auditoría (caso real Carlos, hilo con Alberto Comolli <> Sofía Sabjan de 3G
+   * Office): la conversación automática respondía a CUALQUIER mensaje no nuestro de un hilo aprobado,
+   * sin mirar a quién iba dirigido de verdad — así, un correo donde Alberto le escribía a Sofía
+   * (destinataria real, "To") y solo copiaba a asistente@wobagroup.com ("Cc", para que Carlos tuviera
+   * visibilidad) terminaba con Wobi respondiéndole a Alberto como si la conversación fuera CON Wobi,
+   * incluso saludando "Hola Sofía" dentro del cuerpo — una respuesta automática confusa hacia un
+   * tercero externo real. true solo cuando GMAIL_IMPERSONATE_EMAIL aparece en el header "To" de este
+   * mensaje — estar solo en "Cc" (visibilidad, no se espera respuesta nuestra) da false.
+   */
+  dirigidoANosotros: boolean;
 }
 
 /**
@@ -281,6 +295,8 @@ export async function obtenerHiloCompleto(threadId: string): Promise<{
   ultimoMensajeId: string;
   ultimoMessageIdHeader: string;
   ultimoDe: string;
+  /** dirigidoANosotros del ÚLTIMO mensaje — ver MensajeDeHilo. */
+  ultimoDirigidoANosotros: boolean;
 }> {
   const gmail = getGmailClient();
   const res = await gmail.users.threads.get({ userId: "me", id: threadId, format: "full" });
@@ -293,7 +309,17 @@ export async function obtenerHiloCompleto(threadId: string): Promise<{
     const de = leerHeader(msg.payload?.headers, "From");
     const plano = extraerTextoPlano(msg.payload);
     const cuerpo = plano ? plano.trim() : htmlATexto(extraerHtml(msg.payload) ?? msg.snippet ?? "");
-    return { de, fecha: leerHeader(msg.payload?.headers, "Date"), cuerpo, esNuestro: extraerDireccionCorreo(de) === impersonate };
+    const para = leerHeader(msg.payload?.headers, "To");
+    const cc = leerHeader(msg.payload?.headers, "Cc");
+    return {
+      de,
+      fecha: leerHeader(msg.payload?.headers, "Date"),
+      cuerpo,
+      para,
+      cc,
+      dirigidoANosotros: direccionesDeHeader(para).includes(impersonate),
+      esNuestro: extraerDireccionCorreo(de) === impersonate,
+    };
   });
 
   const ultimo = mensajesCrudos[mensajesCrudos.length - 1];
@@ -305,6 +331,7 @@ export async function obtenerHiloCompleto(threadId: string): Promise<{
     ultimoMensajeId: ultimo?.id ?? "",
     ultimoMessageIdHeader: leerHeader(ultimo?.payload?.headers, "Message-ID"),
     ultimoDe: mensajes[mensajes.length - 1]?.de ?? "",
+    ultimoDirigidoANosotros: mensajes[mensajes.length - 1]?.dirigidoANosotros ?? false,
   };
 }
 
@@ -378,6 +405,24 @@ function leerHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, no
 export function extraerDireccionCorreo(de: string): string {
   const match = de.match(/<([^>]+)>/);
   return (match ? match[1] : de).trim().toLowerCase();
+}
+
+/**
+ * Extrae TODAS las direcciones puras de un header "To"/"Cc" con varios destinatarios (ej. `"Sofía
+ * Sabjan" <ssabjan@3g-office.com>, "3g office.Recepción" <recepcion@3g-office.com>`) — mismo criterio
+ * de exactitud que extraerDireccionCorreo (nunca una subcadena del header completo), extendido a
+ * múltiples direcciones. Usado por dirigidoANosotros (obtenerHiloCompleto) para distinguir "Wobi es
+ * uno de los destinatarios reales de este mensaje" de "el texto del header contiene, en cualquier
+ * parte, algo parecido" — hallazgo real de auditoría, mismo espíritu que el de extraerDireccionCorreo.
+ */
+export function direccionesDeHeader(header: string): string[] {
+  const conAngulos = Array.from(header.matchAll(/<([^>]+)>/g)).map((m) => m[1].trim().toLowerCase());
+  if (conAngulos.length > 0) return conAngulos;
+  // Sin <> — lista simple de correos separados por coma, sin nombre para mostrar.
+  return header
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 /**
