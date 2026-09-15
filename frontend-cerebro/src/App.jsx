@@ -1887,6 +1887,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   const [error, setError] = useState("");
   const [codigoVinculo, setCodigoVinculo] = useState(null);
   const [escuchando, setEscuchando] = useState(false);
+  const [errorDictado, setErrorDictado] = useState("");
   const [leerRespuestas, setLeerRespuestas] = useState(() => localStorage.getItem(LOCALSTORAGE_VOZ_KEY) === "1");
   const [vozPendiente, setVozPendiente] = useState(false);
   const [estadoVoz, setEstadoVoz] = useState("idle");
@@ -1898,6 +1899,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   vozActivaRef.current = leerRespuestas && abierto;
   const mensajesRef = useRef(null);
   const recognitionRef = useRef(null);
+  const dictadoActivoRef = useRef(false);
+  const dictadoReinicioRef = useRef(null);
+  const dictadoTextoBaseRef = useRef("");
+  const dictadoAcumuladoRef = useRef("");
+  const dictadoSesionRef = useRef("");
+  const iniciarSesionDictadoRef = useRef(null);
   const enviandoRef = useRef(false);
   const consultandoSolicitudesRef = useRef(false);
   const SpeechRecognition = typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
@@ -1970,9 +1977,22 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   }, [mensajes, solicitudes]);
 
   useEffect(() => () => {
+    dictadoActivoRef.current = false;
+    if (dictadoReinicioRef.current) clearTimeout(dictadoReinicioRef.current);
+    dictadoReinicioRef.current = null;
     recognitionRef.current?.stop?.();
+    recognitionRef.current = null;
     lectorVoz.dispose();
   }, [lectorVoz]);
+
+  useEffect(() => {
+    const reanudarDictadoVisible = () => {
+      if (document.hidden || !dictadoActivoRef.current || recognitionRef.current) return;
+      iniciarSesionDictadoRef.current?.();
+    };
+    document.addEventListener("visibilitychange", reanudarDictadoVisible);
+    return () => document.removeEventListener("visibilitychange", reanudarDictadoVisible);
+  }, []);
 
   useEffect(() => {
     if (leerRespuestas && abierto) return;
@@ -2108,6 +2128,15 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     if (!contenido || enviandoRef.current || limiteSolicitudesAlcanzado) return;
     lectorVoz.stop();
     if (vozActivaRef.current) lectorVoz.activate().catch(() => setVozPendiente(true));
+    // Si el micrófono sigue encendido, el texto enviado ya no debe reaparecer
+    // en el siguiente resultado acumulado. Cerramos solo la sesión interna;
+    // `onend` la abrirá de nuevo porque la intención del usuario sigue activa.
+    if (dictadoActivoRef.current) {
+      dictadoTextoBaseRef.current = "";
+      dictadoAcumuladoRef.current = "";
+      dictadoSesionRef.current = "";
+      recognitionRef.current?.abort?.();
+    }
     enviandoRef.current = true;
     setRegistrando(true);
     setError("");
@@ -2205,28 +2234,97 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     }
   }, [botonesEnProceso, headers, cargarChat]);
 
-  const iniciarDictado = () => {
-    if (!SpeechRecognition) return;
-    if (escuchando) {
-      recognitionRef.current?.stop?.();
-      return;
-    }
+  const iniciarSesionDictado = useCallback(() => {
+    if (!SpeechRecognition || !dictadoActivoRef.current || document.hidden || recognitionRef.current) return;
     const reconocimiento = new SpeechRecognition();
     recognitionRef.current = reconocimiento;
     reconocimiento.lang = "es-ES";
     reconocimiento.interimResults = true;
-    reconocimiento.continuous = false;
-    reconocimiento.onstart = () => setEscuchando(true);
-    reconocimiento.onend = () => setEscuchando(false);
-    reconocimiento.onerror = () => {
-      setEscuchando(false);
-      setError("El navegador no pudo iniciar el dictado. Puedes seguir escribiendo.");
+    reconocimiento.continuous = true;
+    reconocimiento.onstart = () => {
+      setEscuchando(true);
+      setErrorDictado("");
+    };
+    reconocimiento.onend = () => {
+      if (recognitionRef.current === reconocimiento) recognitionRef.current = null;
+
+      const fragmento = dictadoSesionRef.current.trim();
+      if (fragmento) {
+        dictadoAcumuladoRef.current = [dictadoAcumuladoRef.current, fragmento].filter(Boolean).join(" ");
+        setTexto([dictadoTextoBaseRef.current, dictadoAcumuladoRef.current].filter(Boolean).join(" "));
+      }
+      dictadoSesionRef.current = "";
+
+      if (!dictadoActivoRef.current) {
+        setEscuchando(false);
+        return;
+      }
+
+      // Los navegadores terminan SpeechRecognition después de silencios o por
+      // límites internos, aun con `continuous=true`. Mientras el usuario no
+      // apague el micrófono, abrimos una sesión nueva sin perder el texto.
+      if (!document.hidden) {
+        dictadoReinicioRef.current = window.setTimeout(() => {
+          dictadoReinicioRef.current = null;
+          iniciarSesionDictadoRef.current?.();
+        }, 250);
+      }
+    };
+    reconocimiento.onerror = (evento) => {
+      const codigo = evento?.error || "desconocido";
+      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(codigo)) {
+        dictadoActivoRef.current = false;
+        setEscuchando(false);
+        setErrorDictado(codigo === "audio-capture"
+          ? "No encuentro un micrófono disponible. Revisa el dispositivo y vuelve a activarlo."
+          : "El navegador bloqueó el micrófono. Autoriza el acceso y vuelve a activarlo.");
+        return;
+      }
+      if (codigo !== "no-speech" && codigo !== "aborted") {
+        setErrorDictado("El dictado perdió la conexión; Wobi intentará reactivarlo automáticamente.");
+      }
     };
     reconocimiento.onresult = (evento) => {
-      const transcripcion = Array.from(evento.results).map((resultado) => resultado[0]?.transcript || "").join(" ");
-      setTexto(transcripcion.trim());
+      const transcripcion = Array.from(evento.results)
+        .map((resultado) => resultado[0]?.transcript || "")
+        .join(" ")
+        .trim();
+      dictadoSesionRef.current = transcripcion;
+      setTexto([dictadoTextoBaseRef.current, dictadoAcumuladoRef.current, transcripcion].filter(Boolean).join(" "));
     };
-    reconocimiento.start();
+    try {
+      reconocimiento.start();
+    } catch {
+      recognitionRef.current = null;
+      if (dictadoActivoRef.current) {
+        dictadoReinicioRef.current = window.setTimeout(() => {
+          dictadoReinicioRef.current = null;
+          iniciarSesionDictadoRef.current?.();
+        }, 500);
+      }
+    }
+  }, [SpeechRecognition]);
+  iniciarSesionDictadoRef.current = iniciarSesionDictado;
+
+  const iniciarDictado = () => {
+    if (!SpeechRecognition) return;
+    if (dictadoActivoRef.current) {
+      dictadoActivoRef.current = false;
+      if (dictadoReinicioRef.current) clearTimeout(dictadoReinicioRef.current);
+      dictadoReinicioRef.current = null;
+      recognitionRef.current?.stop?.();
+      setEscuchando(false);
+      setErrorDictado("");
+      return;
+    }
+
+    dictadoActivoRef.current = true;
+    dictadoTextoBaseRef.current = texto.trim();
+    dictadoAcumuladoRef.current = "";
+    dictadoSesionRef.current = "";
+    setEscuchando(true);
+    setErrorDictado("");
+    iniciarSesionDictado();
   };
 
   const vincular = async () => {
@@ -2437,15 +2535,17 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
           )}
 
           {error && <div role="alert" className="wobi-chat-error">{error}</div>}
+          {errorDictado && <div role="alert" className="wobi-chat-error">{errorDictado}</div>}
           <div className="wobi-compositor">
             <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} rows={2} maxLength={4000} placeholder={limiteSolicitudesAlcanzado ? "Espera a que termine una solicitud…" : "Escribe o dicta una pregunta…"} />
-            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
+            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado continuo" : "Activar dictado continuo") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado continuo" : "Activar dictado continuo") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
               <span aria-hidden="true">🎙</span>
             </button>
             <button type="button" onClick={enviar} disabled={!texto.trim() || registrando || limiteSolicitudesAlcanzado} className="wobi-boton-enviar">
               {registrando ? "Guardando…" : "Enviar"} <span aria-hidden="true">↑</span>
             </button>
           </div>
+          {escuchando && <div className="wobi-dictado-activo" role="status"><span aria-hidden="true" /> Micrófono activo · toca el micrófono para detenerlo</div>}
           <div className="wobi-chat-seguridad">
             <span aria-hidden="true">↻</span> {procesando ? `${solicitudesActivas.length} solicitud(es) en curso · puedes seguir escribiendo` : "Reintentos protegidos · sin llamadas duplicadas"}
           </div>
@@ -3406,6 +3506,29 @@ export default function CerebroWoba() {
         }
         .wobi-boton-enviar span { font-size: 16px; }
         .wobi-boton-enviar:disabled { cursor: default; opacity: .38; filter: saturate(.3); }
+        .wobi-dictado-activo {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 7px;
+          padding: 0 12px 7px;
+          color: ${C.amberBright};
+          background: rgba(5,11,20,.72);
+          font-family: ${C.mono};
+          font-size: 10px;
+        }
+        .wobi-dictado-activo span {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: ${C.dangerBright};
+          box-shadow: 0 0 0 4px rgba(240,113,120,.12);
+          animation: wobi-micro-pulso 1.5s ease-in-out infinite;
+        }
+        @keyframes wobi-micro-pulso {
+          0%, 100% { opacity: .62; transform: scale(.88); }
+          50% { opacity: 1; transform: scale(1); }
+        }
         .wobi-chat-seguridad {
           display: flex;
           justify-content: center;
