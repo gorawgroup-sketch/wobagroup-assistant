@@ -635,9 +635,6 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
                     <span style={{ display: "block", color: C.coreBright, fontFamily: C.sans, fontSize: 10.5, marginTop: 4 }}>{recomendacion.siguientePaso}</span>
                   </span>
                   <span style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-                    <button type="button" onClick={() => onAbrir(recomendacion.modulo)} style={{ border: "none", background: "none", color: C.amberBright, fontFamily: C.mono, fontSize: 9.5, cursor: "pointer", padding: 3 }}>
-                      Abrir →
-                    </button>
                     {onPreguntarWobi && (
                       <button
                         type="button"

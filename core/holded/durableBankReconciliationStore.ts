@@ -25,6 +25,8 @@ export interface ResumenLedgerConciliacionesMovimiento {
   conciliando: number;
   verificada: number;
   incierta: number;
+  /** Empresas (WOBA/EWORKS/Footprint) con al menos una conciliación en estado "incierta" — sin esto no se sabe en qué Holded mirar. */
+  empresasConIncertidumbre: string[];
 }
 
 function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undefined {
@@ -152,8 +154,19 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
   async obtenerResumen(): Promise<ResumenLedgerConciliacionesMovimiento> {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const resumen: ResumenLedgerConciliacionesMovimiento = { preparada: 0, conciliando: 0, verificada: 0, incierta: 0 };
-      for (const registro of this.registros.values()) resumen[registro.estado]++;
+      const resumen: ResumenLedgerConciliacionesMovimiento = {
+        preparada: 0,
+        conciliando: 0,
+        verificada: 0,
+        incierta: 0,
+        empresasConIncertidumbre: [],
+      };
+      const empresasInciertas = new Set<string>();
+      for (const registro of this.registros.values()) {
+        resumen[registro.estado]++;
+        if (registro.estado === "incierta") empresasInciertas.add(registro.empresa);
+      }
+      resumen.empresasConIncertidumbre = [...empresasInciertas].sort();
       return resumen;
     });
   }
