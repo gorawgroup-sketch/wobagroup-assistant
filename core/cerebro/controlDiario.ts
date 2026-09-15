@@ -23,6 +23,7 @@ import {
   durableContactStore,
   type ResumenLedgerCreacionesContacto,
 } from "../holded/durableContactStore";
+import { obtenerRecomendacionesDescartadas } from "./controlDiarioDescartesStore";
 
 export type EstadoControlDiario = "estable" | "atencion" | "critico";
 export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa";
@@ -80,6 +81,13 @@ export interface EntradaControlDiario {
   conciliacionesHolded?: ResumenLedgerConciliacionesMovimiento | null;
   /** undefined mantiene compatibilidad; null significa fallo real de lectura. */
   contactosHolded?: ResumenLedgerCreacionesContacto | null;
+  /**
+   * IDs de recomendación descartados vigentes (ver controlDiarioDescartesStore.ts) — pedido explícito
+   * de Carlos: poder decirle a Wobi desde el chat que ya revisó una recomendación y que no vuelva a
+   * mostrarla por un tiempo. Filtro puro sobre el resultado ya calculado, no cambia ninguna otra
+   * lógica — undefined/vacío mantiene el comportamiento anterior (nada descartado).
+   */
+  recomendacionesDescartadas?: ReadonlySet<string>;
   generadoEn?: Date;
 }
 
@@ -358,14 +366,22 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     });
   }
 
-  const hayCritica = recomendaciones.some((r) => r.prioridad === "critica");
-  const hayAtencion = recomendaciones.some((r) => r.prioridad === "alta" || r.prioridad === "media");
+  // Filtro puro sobre lo ya calculado — un descarte vigente (ver controlDiarioDescartesStore.ts)
+  // quita la tarjeta Y recalcula el estado/resumen general a partir de lo que quede, para que un
+  // hallazgo descartado no siga mostrando "Incidencia crítica" con la tarjeta ya oculta.
+  const descartadas = entrada.recomendacionesDescartadas;
+  const recomendacionesVisibles = descartadas?.size
+    ? recomendaciones.filter((r) => !descartadas.has(r.id))
+    : recomendaciones;
+
+  const hayCritica = recomendacionesVisibles.some((r) => r.prioridad === "critica");
+  const hayAtencion = recomendacionesVisibles.some((r) => r.prioridad === "alta" || r.prioridad === "media");
   const estado: EstadoControlDiario = hayCritica ? "critico" : hayAtencion ? "atencion" : "estable";
   const resumen =
     estado === "critico"
       ? "Hay una incidencia que requiere intervención antes de confiar en el control automático."
       : estado === "atencion"
-        ? `${recomendaciones.length} recomendación(es) priorizada(s) para controlar coste y estabilidad.`
+        ? `${recomendacionesVisibles.length} recomendación(es) priorizada(s) para controlar coste y estabilidad.`
         : "Costes, memoria y política de uso están dentro de los controles configurados.";
 
   return {
@@ -383,12 +399,12 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     adjuntosHolded: entrada.adjuntosHolded ?? null,
     conciliacionesHolded: entrada.conciliacionesHolded ?? null,
     contactosHolded: entrada.contactosHolded ?? null,
-    recomendaciones,
+    recomendaciones: recomendacionesVisibles,
   };
 }
 
 export async function construirControlDiario(referencia: Date = new Date()): Promise<ControlDiario> {
-  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded, adjuntosHolded, conciliacionesHolded, contactosHolded] = await Promise.all([
+  const [costos, memoria, enviosCorreo, subidasDrive, comprasHolded, edicionesHolded, adjuntosHolded, conciliacionesHolded, contactosHolded, recomendacionesDescartadas] = await Promise.all([
     obtenerAnalisisCostosDiario(referencia)
       .catch((error) => {
         console.error("[controlDiario] No se pudo leer la telemetría de costes:", error instanceof Error ? error.name : "Error");
@@ -423,6 +439,10 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       console.error("[controlDiario] No se pudo leer el ledger de contactos de Holded:", error instanceof Error ? error.name : "Error");
       return null;
     }),
+    obtenerRecomendacionesDescartadas().catch((error) => {
+      console.error("[controlDiario] No se pudo leer los descartes de recomendaciones (se asume ninguno):", error instanceof Error ? error.name : "Error");
+      return new Set<string>();
+    }),
   ]);
   const config = cargarConfiguracionPoliticaApi();
 
@@ -443,6 +463,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     adjuntosHolded,
     conciliacionesHolded,
     contactosHolded,
+    recomendacionesDescartadas,
     generadoEn: referencia,
   });
 }

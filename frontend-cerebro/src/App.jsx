@@ -438,7 +438,7 @@ function fechaCorta(fecha) {
  * reglas deterministas; este componente solo lo convierte en indicadores,
  * gráfico, tabla y acciones. Abrirlo no invoca ningún modelo.
  */
-function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir }) {
+function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPreguntarWobi }) {
   const control = get(data, "controlDiario");
   const [abierto, setAbierto] = useState(false);
   const [conexiones, setConexiones] = useState(null);
@@ -624,9 +624,31 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir }) {
                     <span style={{ display: "block", color: C.dim, fontFamily: C.sans, fontSize: 10.5, marginTop: 3 }}>{recomendacion.detalle}</span>
                     <span style={{ display: "block", color: C.coreBright, fontFamily: C.sans, fontSize: 10.5, marginTop: 4 }}>{recomendacion.siguientePaso}</span>
                   </span>
-                  <button type="button" onClick={() => onAbrir(recomendacion.modulo)} style={{ border: "none", background: "none", color: C.amberBright, fontFamily: C.mono, fontSize: 9.5, cursor: "pointer", padding: 3 }}>
-                    Abrir →
-                  </button>
+                  <span style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                    <button type="button" onClick={() => onAbrir(recomendacion.modulo)} style={{ border: "none", background: "none", color: C.amberBright, fontFamily: C.mono, fontSize: 9.5, cursor: "pointer", padding: 3 }}>
+                      Abrir →
+                    </button>
+                    {onPreguntarWobi && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onPreguntarWobi(
+                            `Investiga a fondo esta recomendación del Diagnóstico Diario (verifica con datos reales en vivo, no solo lo que dice el resumen):\n\n` +
+                              `Prioridad: ${recomendacion.prioridad}\n` +
+                              `Título: ${recomendacion.titulo}\n` +
+                              `Detalle: ${recomendacion.detalle}\n` +
+                              `Siguiente paso sugerido: ${recomendacion.siguientePaso}\n\n` +
+                              `Explícame con evidencia real qué está pasando. Si hay algo que se pueda arreglar, hazlo o dame los botones para decidirlo; ` +
+                              `si tras investigar concluyes que no amerita ninguna acción (ej. una diferencia inmaterial), dímelo claramente y, si te digo ` +
+                              `que lo obvie, usa la herramienta para descartar esta recomendación (id "${recomendacion.id}") y que no vuelva a aparecer hoy.`
+                          )
+                        }
+                        style={{ border: `1px solid ${C.line}`, borderRadius: 6, background: "none", color: C.cream, fontFamily: C.mono, fontSize: 9.5, cursor: "pointer", padding: "3px 7px" }}
+                      >
+                        🔍 Preguntarle a Wobi
+                      </button>
+                    )}
+                  </span>
                 </div>
               ))
             )}
@@ -1854,7 +1876,7 @@ function ContenidoRespuesta({ texto }) {
   );
 }
 
-export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoCompleto = false }) {
+export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoCompleto = false, preguntaExterna }) {
   const [abierto, setAbierto] = useState(modoCompleto);
   const [deviceId] = useState(obtenerDeviceIdChat);
   const claveSolicitudes = `${LOCALSTORAGE_CHAT_PENDIENTES_KEY}:${deviceId}:${encodeURIComponent((nombreUsuario || "usuario").trim().toLowerCase())}`;
@@ -2103,8 +2125,8 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     throw ultimoError || new Error("No se pudo conectar con Wobi.");
   }, [headers]);
 
-  const enviar = async () => {
-    const contenido = texto.trim();
+  const enviar = async (textoForzado) => {
+    const contenido = (textoForzado ?? texto).trim();
     if (!contenido || enviandoRef.current || limiteSolicitudesAlcanzado) return;
     lectorVoz.stop();
     if (vozActivaRef.current) lectorVoz.activate().catch(() => setVozPendiente(true));
@@ -2143,6 +2165,23 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
       setRegistrando(false);
     }
   };
+
+  // Pedido explícito de Carlos: quiere poder pedirle a Wobi que investigue una recomendación del
+  // Diagnóstico Diario (ControlDiarioPanel) SIN tener que salir del front — "que estas explicaciones
+  // me las dé directamente el front". `preguntaExterna` es un objeto {texto, key} que el panel
+  // padre cambia cada vez que se toca "🔍 Preguntarle a Wobi" en una tarjeta de recomendación (key
+  // distinto en cada toque, incluso repitiendo la misma pregunta, para que este efecto SIEMPRE
+  // dispare). Abre el chat si estaba cerrado y manda la pregunta de inmediato, igual que si Carlos la
+  // hubiera escrito él mismo — mismo camino real (enviar), sin ningún atajo que se salte el registro
+  // durable ni el historial compartido con Telegram.
+  const ultimaPreguntaExternaKeyRef = useRef(null);
+  useEffect(() => {
+    if (!preguntaExterna?.texto || preguntaExterna.key === ultimaPreguntaExternaKeyRef.current) return;
+    ultimaPreguntaExternaKeyRef.current = preguntaExterna.key;
+    setAbierto(true);
+    void enviar(preguntaExterna.texto);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preguntaExterna]);
 
   /**
    * Pulsa uno de los botones reales de Telegram desde el chat web — ver POST /api/cerebro/chat/boton
@@ -2736,6 +2775,14 @@ export default function CerebroWoba() {
         panel.scrollIntoView({ behavior: reduceMovimiento ? "auto" : "smooth", block: "start" });
       }
     }, 80);
+  }, []);
+
+  // Pedido explícito de Carlos: puentea ControlDiarioPanel (hermano de WobiChat, no un hijo) con el
+  // chat real — "que yo le pueda dar la orden al sistema desde el mismo front". `key: Date.now()`
+  // asegura que WobiChat dispare aunque se repita la misma pregunta dos veces seguidas.
+  const [preguntaControlDiario, setPreguntaControlDiario] = useState(null);
+  const preguntarWobi = useCallback((texto) => {
+    setPreguntaControlDiario({ texto, key: Date.now() });
   }, []);
 
   // Indicadores operativos calculados solo desde datos reales. Se retiraron
@@ -3649,6 +3696,7 @@ export default function CerebroWoba() {
           nombreUsuario={nombreUsuario}
           revisionTiempoReal={ultimoContactoEn}
           modoCompleto={modoChatCompleto}
+          preguntaExterna={preguntaControlDiario}
         />
       )}
 
@@ -3659,6 +3707,7 @@ export default function CerebroWoba() {
           apiKey={apiKey}
           actualizacionId={get(liveData, "cacheadoEn")}
           onAbrir={abrirModuloDesdeResumen}
+          onPreguntarWobi={preguntarWobi}
         />
       )}
 
