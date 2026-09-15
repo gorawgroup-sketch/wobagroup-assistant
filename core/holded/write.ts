@@ -4248,17 +4248,27 @@ export function verificarPagoCompraEnMovimiento(
   montoEnlazado: number
 ): { montoPago: number; pendienteEnCompra?: number } | undefined {
   if (!Number.isFinite(montoEnlazado) || montoEnlazado <= 0) return undefined;
+  const pendiente = parsearMontoHolded(compra.payments_pending);
+  const compraTotalmentePagada = Number.isFinite(pendiente) && pendiente <= TOLERANCIA_MONTO;
   const pago = (compra.payments_detail ?? []).find((detalle) => {
+    if (detalle.bank_id !== accountId || !detalle.date?.startsWith(fechaMovimiento)) return false;
     const monto = Math.abs(parsearMontoHolded(detalle.amount));
-    return detalle.bank_id === accountId
-      && detalle.date?.startsWith(fechaMovimiento)
-      && Number.isFinite(monto)
-      && Math.abs(monto - montoEnlazado) <= TOLERANCIA_MONTO;
+    if (!Number.isFinite(monto) || monto <= 0) return false;
+    if (Math.abs(monto - montoEnlazado) <= TOLERANCIA_MONTO) return true;
+    // Hallazgo real de auditoría (Footprint, cuenta USD "Costa Azul Panama Bell", 2026-09-07):
+    // reconciled_amount del movimiento fue 70.76 (moneda nativa, USD) pero payments_detail.amount
+    // de la compra quedó en 60,70 — Holded a veces registra este importe ya convertido a la moneda
+    // contable (EUR), con un tipo de cambio distinto al de accounting_amount del propio movimiento,
+    // así que ni cruzarlo contra ese campo da una coincidencia exacta. Exigir aquí que las dos cifras
+    // coincidan es comparar peras con manzanas para cuentas en moneda distinta al EUR, y dejaba
+    // "incierta" para siempre una conciliación que Holded ya daba por completamente pagada.
+    // Con cuenta y fecha correctas y un importe real no-cero, el saldo pendiente en cero de la
+    // propia compra ya es la prueba de que Holded la considera pagada del todo.
+    return compraTotalmentePagada;
   });
   if (!pago) return undefined;
 
   const montoPago = Math.abs(parsearMontoHolded(pago.amount));
-  const pendiente = parsearMontoHolded(compra.payments_pending);
   return {
     montoPago,
     ...(Number.isFinite(pendiente) && pendiente > TOLERANCIA_MONTO ? { pendienteEnCompra: pendiente } : {}),
