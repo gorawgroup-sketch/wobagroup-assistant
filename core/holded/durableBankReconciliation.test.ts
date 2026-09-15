@@ -316,3 +316,45 @@ test("conserva el saldo pendiente de una compra aunque el vínculo esté confirm
   );
   assert.deepEqual(resultado, { montoPago: 554.84, pendienteEnCompra: 76.45 });
 });
+
+test("caso real Footprint (Costa Azul Panama Bell, 2026-09-07): un importe en otra moneda no bloquea una compra ya pagada del todo", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      // El movimiento bancario (USD) quedó reconciled_amount=70.76, pero Holded registró el pago de
+      // la compra en su equivalente contable (EUR) — 60,70, no 70,76 — así que un cruce exacto contra
+      // el importe del movimiento nunca coincide, aunque la compra ya está 100% pagada.
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-07", amount: "60,70" }],
+      payments_pending: "0,00",
+    },
+    "account-1",
+    "2026-09-07",
+    70.76
+  );
+  assert.deepEqual(resultado, { montoPago: 60.7 });
+});
+
+test("un importe en otra moneda SÍ sigue bloqueado si la compra todavía tiene saldo pendiente real", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-07", amount: "60,70" }],
+      payments_pending: "10,00",
+    },
+    "account-1",
+    "2026-09-07",
+    70.76
+  );
+  assert.equal(resultado, undefined);
+});
+
+test("un enlace fantasma (importe cero) nunca se acepta, ni siquiera con la compra en cero pendiente", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-07", amount: "0,00" }],
+      payments_pending: "0,00",
+    },
+    "account-1",
+    "2026-09-07",
+    70.76
+  );
+  assert.equal(resultado, undefined);
+});
