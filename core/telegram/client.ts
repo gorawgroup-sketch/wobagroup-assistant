@@ -1,7 +1,11 @@
 import type { IncomingMessage, InlineKeyboardButton, TelegramUpdate } from "./types";
 import { registrarMensajeSaliente } from "../claude/conversationStore";
 import { AcusesCallback } from "./callbackAcknowledgements";
-import { registrarBotonesActivos, actualizarBotonesActivos } from "../cerebro/webBotonesStore";
+import {
+  actualizarBotonesActivos,
+  actualizarTextoBotonesActivos,
+  registrarBotonesActivos,
+} from "../cerebro/webBotonesStore";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 
@@ -276,7 +280,7 @@ export async function sendTelegramMessageWithButtons(
   registrarMensajeSaliente(chatId, text).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
-  registrarBotonesActivos(chatId, data.result.message_id, text, buttons);
+  await registrarBotonesActivos(chatId, data.result.message_id, text, buttons);
 
   return data.result.message_id;
 }
@@ -360,7 +364,7 @@ export async function sendTelegramMessageExpandable(
   registrarMensajeSaliente(chatId, `${titulo}\n\n${cuerpo}`).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
-  if (buttons) registrarBotonesActivos(chatId, data.result.message_id, `${titulo}\n\n${cuerpo}`, buttons);
+  if (buttons) await registrarBotonesActivos(chatId, data.result.message_id, `${titulo}\n\n${cuerpo}`, buttons);
 
   return data.result.message_id;
 }
@@ -502,6 +506,16 @@ export async function editTelegramMessage(
     const errBody = await response.text();
     throw new Error(`Error editando mensaje de Telegram (${response.status}): ${errBody}`);
   }
+
+  if (buttons === undefined) {
+    await actualizarTextoBotonesActivos(chatId, messageId, text);
+  } else if (buttons.length > 0) {
+    // Una edición puede abrir un segundo nivel de decisiones. Se registra
+    // como teclado completo incluso si este proceso no vio el nivel anterior.
+    await registrarBotonesActivos(chatId, messageId, text, buttons);
+  } else {
+    await actualizarBotonesActivos(chatId, messageId, []);
+  }
 }
 
 /**
@@ -510,11 +524,18 @@ export async function editTelegramMessage(
  * explícito de Carlos para el teclado de selección de acciones de gasto
  * (ver gastoTeclado.ts): marcar/desmarcar un check no debe reescribir ni
  * reformatear el texto original de la propuesta, solo repintar los botones.
+ *
+ * `textoSiFalta` (opcional): respaldo para el espejo durable del chat web — ver
+ * actualizarBotonesActivos en webBotonesStore.ts. Como esta función a propósito no toca el texto
+ * real del mensaje en Telegram, no siempre hay un texto a mano; cuando el llamador sí lo tiene
+ * (normalmente reconstruible desde la propuesta), pasarlo evita que una actualización de botones
+ * se pierda en silencio si el registro original ya no existe.
  */
 export async function editTelegramMessageReplyMarkup(
   chatId: number,
   messageId: number,
-  buttons: InlineKeyboardButton[][]
+  buttons: InlineKeyboardButton[][],
+  textoSiFalta?: string
 ): Promise<void> {
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageReplyMarkup`;
@@ -537,13 +558,13 @@ export async function editTelegramMessageReplyMarkup(
     // (ej. marcar y desmarcar el mismo check dos veces seguidas). El estado
     // pedido y el real ya coinciden, así que el espejo también se actualiza acá.
     if (response.status === 400 && /message is not modified/i.test(errBody)) {
-      actualizarBotonesActivos(chatId, messageId, buttons);
+      await actualizarBotonesActivos(chatId, messageId, buttons, textoSiFalta);
       return;
     }
     throw new Error(`Error editando los botones de un mensaje de Telegram (${response.status}): ${errBody}`);
   }
 
-  actualizarBotonesActivos(chatId, messageId, buttons);
+  await actualizarBotonesActivos(chatId, messageId, buttons, textoSiFalta);
 }
 
 /** Igual que editTelegramMessage, pero con título fijo + cuerpo largo colapsado — ver sendTelegramMessageExpandable. */
@@ -579,6 +600,15 @@ export async function editTelegramMessageExpandable(
   if (!response.ok) {
     const errBody = await response.text();
     throw new Error(`Error editando mensaje expandible de Telegram (${response.status}): ${errBody}`);
+  }
+
+  const textoPlano = `${titulo}\n\n${cuerpo}`;
+  if (buttons === undefined) {
+    await actualizarTextoBotonesActivos(chatId, messageId, textoPlano);
+  } else if (buttons.length > 0) {
+    await registrarBotonesActivos(chatId, messageId, textoPlano, buttons);
+  } else {
+    await actualizarBotonesActivos(chatId, messageId, []);
   }
 }
 

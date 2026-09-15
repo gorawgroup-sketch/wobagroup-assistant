@@ -60,7 +60,8 @@ import {
   buscarContactoHolded,
   buscarContactosParecidos,
   buscarComprasPorMonto,
-  buscarGastoSimilar,
+  verificarDuplicadoGastoEstricto,
+  movimientoConciliadoComoCandidato,
   formatearCandidatosDuplicado,
   crearGastoHolded,
   crearContactoHolded,
@@ -70,6 +71,12 @@ import {
   obtenerMonedasCuentasReales,
   reconciliarMovimiento,
   estaMovimientoYaConciliado,
+  AdjuntoCompraInciertoError,
+  ConciliacionMovimientoInciertaError,
+  ContactosHoldedAmbiguosError,
+  CreacionContactoInciertaError,
+  CreacionCompraInciertaError,
+  esArchivoLocalInexistente,
   ContactoNoEncontradoError,
   FechaBloqueadaError,
   PosibleDuplicadoGastoError,
@@ -89,6 +96,8 @@ import { askClaude, interpretarCorreccionGasto, type CorreccionGasto } from "../
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import type { LineaFactura } from "../documental/extractInvoiceData";
+import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import { claveIdempotenciaGasto } from "./identidadGasto";
 
 /**
  * Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE PANAMA
@@ -114,6 +123,8 @@ const CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA: Record<Empresa, { id: string; name: 
 };
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
+  // Identificador interno de dispararDecisionFinal: no es un callback de Telegram.
+  if (callbackQueryId.startsWith("seleccion_")) return;
   try {
     await answerCallbackQuery(callbackQueryId, text);
   } catch (error) {
@@ -123,6 +134,17 @@ async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): 
 
 async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
   await unlink(rutaLocal).catch(() => {}); // no crítico si ya no existe
+}
+
+/**
+ * Resumen corto de una propuesta — respaldo para editTelegramMessageReplyMarkup cuando el registro
+ * de botones del chat web ya no existe (ver textoSiFalta en webBotonesStore.ts/telegram/client.ts).
+ * A propósito NO intenta reconstruir el mensaje original completo (desglose de IVA, confianza, etc.)
+ * — esta función solo existe para que el chat web tenga ALGO razonable que mostrar junto a botones
+ * que de otro modo quedarían huérfanos en silencio; el texto real que Telegram muestra no cambia.
+ */
+function resumenTextoPropuestaGasto(propuesta: PropuestaGasto): string {
+  return `📄 ${propuesta.proveedor} — ${propuesta.monto.toFixed(2)} ${propuesta.moneda} (${propuesta.fecha}) — ${propuesta.concepto}`;
 }
 
 /**
@@ -147,11 +169,18 @@ async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
  */
 async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): Promise<void> {
   const adjuntar = (mimeType: string | undefined, nombreArchivo: string) =>
-    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType);
+    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType, {
+      idempotencyKey: `gasto:${propuesta.id}:adjunto:${purchaseId}`,
+      proceso: "comprobante_gasto_aprobado",
+    });
 
   try {
     await adjuntar(propuesta.mimeType, propuesta.nombreArchivoOriginal);
   } catch (error) {
+    // Solo reconstruimos tmp/uploads cuando realmente desapareció. Un error
+    // de red o de Holded puede significar que el POST sí tuvo efecto y nunca
+    // debe transformarse en una segunda subida.
+    if (!esArchivoLocalInexistente(error)) throw error;
     // Primer respaldo: era un adjunto REAL de Gmail (tiene attachmentId) — se vuelve a descargar el
     // MISMO archivo, así que su mimeType/nombre originales siguen siendo correctos. Segundo respaldo
     // (hallazgo real de auditoría, caso MARNAPA/GDL Pastriva): era un PDF SINTÉTICO generado del
@@ -246,12 +275,18 @@ async function ofrecerEleccionMovimientosAmbiguos(
     ]);
     filas.push([{ text: "❌ Ninguno, dejar así", callback_data: `gasto_conciliar_elegir_no:${pendiente.id}` }]);
     const notaSugerido = indiceSugerido !== undefined ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores de este proveedor.` : "";
+    const hayTipoCambio = candidatos.some((c) => c.origenCoincidencia === "tipo_cambio");
+    const detalleCandidatos = candidatos
+      .map((m, i) => hayTipoCambio
+        ? describirMovimientoMultimoneda(m, i)
+        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+      .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
-      `💳 Encontré ${candidatos.length} movimientos bancarios${esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
-        candidatos.map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`).join("\n") +
+      `💳 Encontré ${candidatos.length} movimientos bancarios${hayTipoCambio ? " en otra moneda usando una tasa histórica de referencia" : esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
+        detalleCandidatos +
         notaSugerido +
-        `\n\n¿Con cuál concilio?`,
+        `\n\n¿Con cuál concilio?${hayTipoCambio ? " No elegiré ninguno automáticamente porque la tasa real del banco puede incluir margen." : ""}`,
       filas
     );
     return {
@@ -310,7 +345,31 @@ async function intentarConciliar(
       }
     }
 
-    if (!candidato) return { nota: "", esperandoEleccion: false };
+    if (!candidato) {
+      // El gasto puede estar en USD y el cargo bancario en EUR (u otra moneda real de la misma
+      // empresa). Después de que el usuario pide conciliar, se repite también la búsqueda por tipo
+      // de cambio. Incluso con un único resultado se pide elegirlo explícitamente: la tasa del BCE
+      // es una referencia, no prueba suficiente para una escritura financiera automática.
+      const monedasReales = await obtenerMonedasCuentasReales(empresa);
+      const porTipoCambio = await buscarMovimientosPorTipoCambio(
+        empresa,
+        { monto, moneda, fecha: fechaBusqueda, proveedor },
+        monedasReales
+      );
+      if (porTipoCambio.length > 0) {
+        return await ofrecerEleccionMovimientosAmbiguos(
+          empresa,
+          gastoId,
+          descripcionGasto,
+          chatId,
+          porTipoCambio,
+          deColaCorreo,
+          true,
+          proveedor
+        );
+      }
+      return { nota: "", esperandoEleccion: false };
+    }
 
     // Reutiliza conciliarContraMovimientoEspecifico en vez de repetir la llamada a
     // reconciliarMovimiento acá — hallazgo real de auditoría: esta rama llamaba a
@@ -354,7 +413,11 @@ async function conciliarContraMovimientoEspecifico(
    */
   proveedorParaAprender?: string
 ): Promise<string> {
-  const notaAprox = esAproximado ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded" : "";
+  const notaAprox = movimiento.origenCoincidencia === "tipo_cambio"
+    ? ` — coincidencia MULTIMONEDA por tasa de referencia: ${describirMovimientoMultimoneda(movimiento)}; confírmalo en Holded`
+    : esAproximado
+      ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded"
+      : "";
   try {
     const yaConciliado = await estaMovimientoYaConciliado(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha);
     if (yaConciliado) {
@@ -384,9 +447,15 @@ async function conciliarContraMovimientoEspecifico(
             `documentos en moneda distinta a EUR (aplica el equivalente en EUR en vez del monto real). Revísalo a mano ` +
             `en Holded (sección Pagos del documento) para corregir el saldo.`
           : "";
+      const notaMovimientoParcial = resultado.movimientoParcial
+        ? `\n\n⚠️ La compra quedó pagada y el vínculo fue confirmado, pero el movimiento bancario continúa ` +
+          `parcialmente conciliado${resultado.pendienteEnMovimiento !== undefined
+            ? ` (${resultado.pendienteEnMovimiento.toFixed(2)} ${movimiento.moneda} todavía sin asignar)`
+            : ""}. Revisa si el resto corresponde a otra partida.`
+        : "";
       return (
         `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${movimiento.descripcion || "sin descripción"}, ` +
-        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}`
+        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}${notaMovimientoParcial}`
       );
     }
     return (
@@ -396,6 +465,12 @@ async function conciliarContraMovimientoEspecifico(
     );
   } catch (error) {
     console.error("[gastoCallbackHandler] Error conciliando contra el movimiento elegido:", error);
+    if (error instanceof ConciliacionMovimientoInciertaError) {
+      return (
+        `\n\n⏳ Holded no confirmó si concilió el movimiento "${movimiento.descripcion || "sin descripción"}". ` +
+        "Wobi bloqueó toda repetición y lo verificará solo por lectura. No vuelvas a conciliarlo manualmente hasta comprobar su estado en Holded."
+      );
+    }
     return `\n\n⚠️ El gasto se creó, pero hubo un error al conciliar contra "${movimiento.descripcion || "sin descripción"}" — revísalo a mano en Holded.`;
   }
 }
@@ -646,7 +721,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           console.error(`[gastoCallbackHandler] Gasto ${candidato.id} ya existía pero falló adjuntar el comprobante:`, message);
-          notaComprobante = `\n\n⚠️ No pude adjuntar el comprobante (${message}). Súbelo a mano en Holded (id ${candidato.id}) si tienes el archivo.`;
+          notaComprobante = error instanceof AdjuntoCompraInciertoError
+            ? `\n\n⏳ Holded no confirmó todavía el comprobante. Wobi bloqueó toda repetición y lo verificará solo por lectura. No lo subas manualmente hasta comprobar el estado (id ${candidato.id}).`
+            : `\n\n⚠️ No pude adjuntar el comprobante (${message}). Súbelo a mano en Holded (id ${candidato.id}) si tienes el archivo.`;
         }
 
         await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto).catch(
@@ -724,6 +801,10 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       }
       if (error instanceof VerificacionDuplicadoFallidaError) {
         await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeVerificacionDuplicadoFallida(error), []);
+        return;
+      }
+      if (error instanceof CreacionCompraInciertaError) {
+        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeCreacionCompraIncierta(propuesta.proveedor), []);
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -904,10 +985,18 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       // vez de ofrecer un botón que ya no apunta a nada.
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error creando contacto nuevo en Holded:", message);
+      const detalle =
+        error instanceof ContactosHoldedAmbiguosError
+          ? error.despuesDeEscritura
+            ? `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s) después del intento. Wobi bloqueó cualquier repetición; revisa cuál contacto quedó creado antes de reenviar el documento.`
+            : `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s). Wobi no creó otro contacto; revisa los duplicados en Holded antes de reenviar el documento.`
+          : error instanceof CreacionContactoInciertaError
+            ? "Holded no confirmó si creó el contacto. Wobi bloqueó cualquier repetición; no reenvíes el documento ni lo crees manualmente hasta comprobar el proveedor en Holded."
+            : `No pude crear el contacto (${message}); el gasto NO se creó. Reenvía el documento original para intentarlo de nuevo.`;
       await editTelegramMessage(
         resolucion.chatId,
         resolucion.messageId,
-        `⚠️ No pude crear el contacto "${resolucion.propuesta.proveedor}" en Holded (${message}) — el gasto NO se creó. Reenvía el documento original para intentarlo de nuevo.`,
+        `⚠️ ${detalle}`,
         []
       );
     }
@@ -960,7 +1049,7 @@ async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propue
 
   const propuestaActualizada: PropuestaGasto = { ...propuesta, seleccionAcciones: nuevaSeleccion };
   const teclado = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuesta));
-  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, teclado).catch((error) =>
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, teclado, resumenTextoPropuestaGasto(propuestaActualizada)).catch((error) =>
     console.error("[gastoCallbackHandler] Error repintando el teclado de selección (no crítico):", error)
   );
 }
@@ -998,9 +1087,8 @@ function preguntaParaAccion(key: string, propuesta: PropuestaGasto): string {
  * nuevo, en vez de reimplementar esa lógica (manejo de contacto no
  * encontrado, fecha bloqueada, pregunta de conciliar, avance de la cola de
  * correo...) por segunda vez. `from`/`id` son placeholders: handleGastoCallback
- * nunca los lee (solo lee `data`), y un segundo answerCallbackQuery con un id
- * que no corresponde a un callback real de Telegram simplemente falla y se
- * ignora (ver answerCallbackQuerySafe) — no tiene efecto visible.
+ * nunca los lee (solo lee `data`). answerCallbackQuerySafe reconoce estos ids
+ * internos y no realiza una solicitud inválida a Telegram.
  */
 async function dispararDecisionFinal(propuesta: PropuestaGasto, decisionKey: string): Promise<void> {
   const indice = indiceCandidato(decisionKey);
@@ -1142,7 +1230,7 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
   const propuestaFresca = await obtenerPropuestaGasto(propuesta.id);
   if (propuestaFresca) {
     const teclado = construirTecladoGasto(propuestaFresca, opcionesTecladoDesdePropuesta(propuestaFresca));
-    await editTelegramMessageReplyMarkup(propuestaFresca.chatId, propuestaFresca.messageId, teclado).catch((error) =>
+    await editTelegramMessageReplyMarkup(propuestaFresca.chatId, propuestaFresca.messageId, teclado, resumenTextoPropuestaGasto(propuestaFresca)).catch((error) =>
       console.error("[gastoCallbackHandler] Error reponiendo el teclado tras aplicar (no crítico):", error)
     );
   }
@@ -1312,6 +1400,14 @@ interface ResultadoCrearGasto {
  */
 export function mensajeDuplicadoDetectado(candidatos: PosibleDuplicadoGastoError["candidatos"]): string {
   const listado = formatearCandidatosDuplicado(candidatos);
+  const hayMovimientoConciliado = candidatos.some((c) => c.movimientoConciliado);
+  if (hayMovimientoConciliado) {
+    return (
+      `⛔ No creé el gasto — la comprobación final encontró un movimiento bancario YA CONCILIADO que podría ser esta misma operación:\n${listado}\n\n` +
+      `Holded puede ocultar del endpoint de compras un documento convertido manualmente de factura a ticket, aunque el gasto y su conciliación sigan existiendo. ` +
+      `Por eso no habilito una creación automática alternativa. Verifica el ticket en Holded; solo si es una operación realmente distinta debe registrarse manualmente o mediante una excepción expresamente revisada.`
+    );
+  }
   return (
     `⛔ No creé el gasto — encontré en Holded ${candidatos.length === 1 ? "una compra" : candidatos.length + " compras"} que podría(n) ` +
     `ser este mismo, y que no te había mostrado antes:\n${listado}\n\n` +
@@ -1326,6 +1422,14 @@ function mensajeVerificacionDuplicadoFallida(error: VerificacionDuplicadoFallida
   return (
     `⚠️ No pude confirmar que este gasto no esté ya duplicado en Holded (${error.message}) — por seguridad, NO lo creé. ` +
     `Revisa en Holded a mano si ya existe, y si Holded parece estar bien, vuelve a intentar en un momento.`
+  );
+}
+
+function mensajeCreacionCompraIncierta(proveedor: string): string {
+  return (
+    `⚠️ Holded no confirmó si creó el gasto de "${proveedor}". Por seguridad Wobi NO repetirá la creación: ` +
+    `la está verificando mediante su marcador interno y la mostrará como incidencia hasta resolverla. ` +
+    `No reenvíes el documento ni lo registres otra vez sin comprobar antes si ya aparece en Holded.`
   );
 }
 
@@ -1442,11 +1546,17 @@ async function crearGastoYReportar(
   const gasto = await conMutex(claveMutexDuplicado, async () => {
     let candidatosJustoAntes: PurchaseCandidato[];
     try {
-      candidatosJustoAntes = await buscarGastoSimilar(empresaFinal, {
+      const verificacion = await verificarDuplicadoGastoEstricto(empresaFinal, {
         proveedor: propuesta.proveedor,
         monto: propuesta.monto,
         fecha: fechaBusqueda,
+        moneda: propuesta.moneda,
+        numeroDocumento: propuesta.numeroDocumento,
       });
+      candidatosJustoAntes = [
+        ...verificacion.compras,
+        ...verificacion.movimientosConciliados.map(movimientoConciliadoComoCandidato),
+      ];
     } catch (error) {
       throw new VerificacionDuplicadoFallidaError(error);
     }
@@ -1456,16 +1566,30 @@ async function crearGastoYReportar(
       throw new PosibleDuplicadoGastoError(candidatosNuevos);
     }
 
-    return crearGastoHolded(empresaFinal, {
-      contactId: contacto.id,
-      fecha: fechaBusqueda,
-      descripcion: descripcionFinal,
-      lineas,
-      cuentaId: propuesta.cuentaId,
-      tags: propuesta.cuentaTags,
-      moneda: propuesta.moneda,
-      numeroDocumento: propuesta.numeroDocumento,
-    });
+    return crearGastoHolded(
+      empresaFinal,
+      {
+        contactId: contacto.id,
+        fecha: fechaBusqueda,
+        descripcion: descripcionFinal,
+        lineas,
+        cuentaId: propuesta.cuentaId,
+        tags: propuesta.cuentaTags,
+        moneda: propuesta.moneda,
+        numeroDocumento: propuesta.numeroDocumento,
+      },
+      {
+        idempotencyKey: claveIdempotenciaGasto({
+          empresa: empresaFinal,
+          contactId: contacto.id,
+          propuestaId: propuesta.id,
+          numeroDocumento: propuesta.numeroDocumento,
+          huellaContenido: propuesta.huellaContenido,
+          fecha: propuesta.fecha,
+        }),
+        proceso: "gasto_aprobado",
+      }
+    );
   });
 
   // A partir de acá el gasto YA EXISTE en Holded — un fallo en cualquier
@@ -1483,9 +1607,11 @@ async function crearGastoYReportar(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[gastoCallbackHandler] Gasto ${gasto.id} creado pero falló adjuntar el comprobante:`, message);
-    notaComprobante =
-      `\n\n⚠️ No pude adjuntar el comprobante (${message}). El gasto YA está creado en Holded (id ${gasto.id}) — ` +
-      `sube el comprobante a mano ahí, no reenvíes el documento o se duplicaría el gasto.`;
+    notaComprobante = error instanceof AdjuntoCompraInciertoError
+      ? `\n\n⏳ El gasto YA está creado en Holded (id ${gasto.id}), pero Holded no confirmó todavía el comprobante. ` +
+        "Wobi bloqueó toda repetición y lo verificará solo por lectura; no lo subas manualmente ni reenvíes el documento hasta comprobar el estado."
+      : `\n\n⚠️ No pude adjuntar el comprobante (${message}). El gasto YA está creado en Holded (id ${gasto.id}) — ` +
+        `sube el comprobante a mano ahí, no reenvíes el documento o se duplicaría el gasto.`;
   }
 
   // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
@@ -1535,6 +1661,15 @@ async function crearGastoYReportar(
           attachmentId: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
           gastoId: gasto.id,
           empresa: empresaFinal,
+          identidad: {
+            huellaContenido: propuesta.huellaContenido,
+            numeroDocumento: propuesta.numeroDocumento,
+            proveedor: propuesta.proveedor,
+            monto: propuesta.monto,
+            moneda: propuesta.moneda,
+            fecha: propuesta.fecha,
+            concepto: propuesta.concepto,
+          },
         }).catch((error) => console.error("[gastoCallbackHandler] No se pudo registrar el gasto por correo (no crítico):", error))
       : Promise.resolve(),
     contactoForzado && aprenderAlias
@@ -1585,7 +1720,13 @@ async function crearGastoYReportar(
       // pasar propuesta.proveedor acá, así que este camino (posiblemente el
       // más común, ya que resuelve la ambigüedad en el mismo tap que crea el
       // gasto) nunca alimentaba movimientoAmbiguoAprendidoSheet.ts.
-      const notaConciliacion = await conciliarContraMovimientoEspecifico(empresaFinal, movimientoObjetivo, gasto.id, false, propuesta.proveedor);
+      const notaConciliacion = await conciliarContraMovimientoEspecifico(
+        empresaFinal,
+        movimientoObjetivo,
+        gasto.id,
+        movimientoObjetivo.origenCoincidencia === "tipo_cambio" || movimientoObjetivo.origenCoincidencia === "aproximada",
+        propuesta.proveedor
+      );
       return { mensaje: `${baseMensaje}${notaConciliacion}` };
     }
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.
@@ -1775,6 +1916,15 @@ export async function procesarGastoConContactoResuelto(
     }
     if (error instanceof VerificacionDuplicadoFallidaError) {
       await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensajeVerificacionDuplicadoFallida(error), []);
+      return;
+    }
+    if (error instanceof CreacionCompraInciertaError) {
+      await editTelegramMessage(
+        resolucion.chatId,
+        resolucion.messageId,
+        mensajeCreacionCompraIncierta(resolucion.propuesta.proveedor),
+        []
+      );
       return;
     }
     const message = error instanceof Error ? error.message : String(error);
@@ -1991,6 +2141,10 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
       await sendTelegramMessage(propuesta.chatId, mensajeVerificacionDuplicadoFallida(error));
       return;
     }
+    if (error instanceof CreacionCompraInciertaError) {
+      await sendTelegramMessage(propuesta.chatId, mensajeCreacionCompraIncierta(propuesta.proveedor));
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando corrección de gasto:", message);
     await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);
@@ -2183,7 +2337,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
         movimientosAmbiguos: movimientosAmbiguosNuevos,
       };
       const botones = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuestaActualizada));
-      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones);
+      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones, resumenTextoPropuestaGasto(propuestaActualizada));
     } catch (error) {
       console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir moneda (no crítico):", error);
     }
