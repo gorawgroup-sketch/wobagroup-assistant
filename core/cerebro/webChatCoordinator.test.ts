@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ConflictoIdempotencia,
+  hashTextoChat,
   iniciarSolicitudChat,
+  obtenerSolicitudChatViva,
   procesarSolicitudChat,
   type RepositorioSolicitudesChat,
   type SolicitudChatGuardada,
@@ -23,6 +25,11 @@ function crearRepositorio(): RepositorioSolicitudesChat & { filas: Map<string, S
       const actual = filas.get(clave(chatId, requestId));
       if (!actual) throw new Error("sin reserva");
       filas.set(clave(chatId, requestId), { ...actual, estado: "completado", respuesta, actualizadoEn: Date.now() });
+    },
+    async marcarIncierto(chatId, requestId) {
+      const actual = filas.get(clave(chatId, requestId));
+      if (!actual) throw new Error("sin reserva");
+      filas.set(clave(chatId, requestId), { ...actual, estado: "incierto", actualizadoEn: Date.now() });
     },
     async fallar(chatId, requestId) {
       const actual = filas.get(clave(chatId, requestId));
@@ -92,17 +99,92 @@ test("rechaza contenido diferente también mientras la solicitud sigue en curso"
   await primera;
 });
 
-test("una solicitud fallida no repite efectos con el mismo identificador", async () => {
+test("una solicitud con resultado incierto no repite efectos con el mismo identificador", async () => {
   const repo = crearRepositorio();
   const entrada = { requestId: "fallo", chatId: 11, texto: "acción" };
   let llamadas = 0;
-  await assert.rejects(procesarSolicitudChat(entrada, repo, async () => {
+  const primera = await procesarSolicitudChat(entrada, repo, async () => {
     llamadas++;
     throw new Error("resultado incierto");
-  }));
+  });
   const repetida = await procesarSolicitudChat(entrada, repo, async () => { llamadas++; return "mal"; });
-  assert.equal(repetida.estado, "fallido");
+  assert.equal(primera.estado, "incierto");
+  assert.equal(repetida.estado, "incierto");
   assert.equal(llamadas, 1);
+});
+
+test("publica procesando, aplicado y completado en memoria sin consultar la persistencia", async () => {
+  const repo = crearRepositorio();
+  const estados: string[] = [];
+  const entrada = { requestId: "estado-vivo-1", chatId: 13, texto: "acción segura" };
+
+  const resultado = await procesarSolicitudChat(entrada, repo, async () => "listo", (solicitud) => {
+    estados.push(solicitud.estado);
+  });
+
+  assert.equal(resultado.estado, "completado");
+  assert.deepEqual(estados, ["procesando", "aplicado", "completado"]);
+  assert.equal(obtenerSolicitudChatViva(13, "estado-vivo-1")?.estado, "completado");
+});
+
+test("un fallo del canal visual no cambia ni repite la operación real", async () => {
+  const repo = crearRepositorio();
+  let llamadas = 0;
+  const resultado = await procesarSolicitudChat(
+    { requestId: "evento-fallido", chatId: 16, texto: "acción" },
+    repo,
+    async () => { llamadas++; return "listo"; },
+    () => { throw new Error("stream desconectado"); }
+  );
+
+  assert.equal(resultado.estado, "completado");
+  assert.equal(repo.filas.get("16:evento-fallido")?.estado, "completado");
+  assert.equal(llamadas, 1);
+});
+
+test("si el efecto terminó pero falla su confirmación durable, lo bloquea como incierto", async () => {
+  const repo = crearRepositorio();
+  repo.completar = async () => { throw new Error("Sheets temporalmente fuera de línea"); };
+  const entrada = { requestId: "confirmacion-incierta", chatId: 14, texto: "crear y conciliar" };
+  let llamadas = 0;
+
+  const primera = await procesarSolicitudChat(entrada, repo, async () => {
+    llamadas++;
+    return "efecto ejecutado";
+  });
+  const repetida = await procesarSolicitudChat(entrada, repo, async () => {
+    llamadas++;
+    return "no debe repetirse";
+  });
+
+  assert.equal(primera.estado, "incierto");
+  assert.equal(repetida.estado, "incierto");
+  assert.equal(repo.filas.get("14:confirmacion-incierta")?.estado, "incierto");
+  assert.equal(llamadas, 1);
+});
+
+test("una reserva antigua sin cierre se vuelve incierta y no ejecuta otra vez", async () => {
+  const repo = crearRepositorio();
+  const haceOnceMinutos = Date.now() - 11 * 60 * 1000;
+  repo.filas.set("15:reserva-antigua", {
+    requestId: "reserva-antigua",
+    chatId: 15,
+    textoHash: hashTextoChat("acción contable"),
+    estado: "procesando",
+    creadoEn: haceOnceMinutos,
+    actualizadoEn: haceOnceMinutos,
+  });
+  let llamadas = 0;
+
+  const resultado = await procesarSolicitudChat(
+    { requestId: "reserva-antigua", chatId: 15, texto: "acción contable" },
+    repo,
+    async () => { llamadas++; return "no debe ejecutarse"; }
+  );
+
+  assert.equal(resultado.estado, "incierto");
+  assert.equal(repo.filas.get("15:reserva-antigua")?.estado, "incierto");
+  assert.equal(llamadas, 0);
 });
 
 test("el modo asíncrono confirma la reserva sin esperar la respuesta del modelo", async () => {

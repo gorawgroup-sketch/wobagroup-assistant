@@ -8,12 +8,14 @@ import {
 
 class RepositorioMemoria implements RepositorioBotonesWeb {
   readonly filas = new Map<string, BotonesActivosMensaje>();
+  lecturas = 0;
 
   constructor(iniciales: BotonesActivosMensaje[] = []) {
     for (const mensaje of iniciales) this.filas.set(`${mensaje.chatId}:${mensaje.messageId}`, structuredClone(mensaje));
   }
 
   async listar() {
+    this.lecturas++;
     return Array.from(this.filas.values()).map((mensaje) => structuredClone(mensaje));
   }
 
@@ -25,6 +27,24 @@ class RepositorioMemoria implements RepositorioBotonesWeb {
     this.filas.delete(`${chatId}:${messageId}`);
   }
 }
+
+test("el front abierto carga la persistencia una sola vez y sirve los siguientes refrescos desde memoria", async () => {
+  const repo = new RepositorioMemoria([
+    {
+      chatId: 10,
+      messageId: 99,
+      texto: "¿Seguimos?",
+      botones: [[{ text: "▶️ Sí, siguiente", callback_data: "colacorreo_siguiente" }]],
+      actualizadoEn: 1,
+    },
+  ]);
+  const store = new AlmacenBotonesWeb(repo, () => 100);
+
+  await Promise.all(Array.from({ length: 25 }, () => store.obtenerActivos(10)));
+  for (let i = 0; i < 100; i++) await store.obtenerActivos(10);
+
+  assert.equal(repo.lecturas, 1);
+});
 
 test("recupera todos los botones después de un reinicio", async () => {
   const repo = new RepositorioMemoria([
