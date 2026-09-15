@@ -51,6 +51,17 @@ export interface GastoPendienteDatos {
    * PropuestaGasto.correoOrigen (gastoProposalSheet.ts).
    */
   correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; mensajeIdGmail?: string };
+  /**
+   * Hallazgo real de auditoría (mismo patrón que correoOrigen arriba, caso real Holded Technologies
+   * septiembre/Footprint): sin este campo, un adjunto REAL de Gmail (no un cuerpo-como-comprobante)
+   * perdía su origen al pasar por este store — reintentarGastoPendiente.ts volvía a llamar
+   * procesarGastoEntrante SIN él, así que si la copia local (tmp/uploads) se perdía en un redeploy de
+   * Railway mientras la pregunta seguía pendiente, adjuntarYLimpiar (gastoCallbackHandler.ts) nunca
+   * podía recuperar el PDF real desde Gmail — caía directo a regenerar un comprobante SUSTITUTO desde
+   * el cuerpo del correo (pensado solo para cuando nunca hubo un adjunto real), adjuntando un
+   * documento que no es la factura real. Ver PropuestaGasto.origenAdjuntoGmail (gastoProposalSheet.ts).
+   */
+  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -70,6 +81,7 @@ const HEADERS = [
   "creadoEn",
   "deColaCorreo",
   "correoOrigenJSON",
+  "origenAdjuntoGmailJSON",
 ];
 
 function assertSheetId(): string {
@@ -122,7 +134,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:J1`,
+    range: `${TAB_NAME}!A1:K1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -151,6 +163,13 @@ function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
     correoOrigen = undefined;
   }
 
+  let origenAdjuntoGmail: GastoPendienteDatos["origenAdjuntoGmail"];
+  try {
+    origenAdjuntoGmail = row[10] ? JSON.parse(String(row[10])) : undefined;
+  } catch {
+    origenAdjuntoGmail = undefined;
+  }
+
   return {
     id: String(row[0]),
     chatId: Number(row[1]) || 0,
@@ -162,6 +181,7 @@ function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
     creadoEn: Number(row[7]) || 0,
     deColaCorreo: row[8] === true || row[8] === "true",
     correoOrigen,
+    origenAdjuntoGmail,
   };
 }
 
@@ -177,6 +197,7 @@ function pendienteToRow(p: GastoPendienteDatos): (string | number)[] {
     p.creadoEn,
     p.deColaCorreo === true ? "true" : "",
     p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
+    p.origenAdjuntoGmail ? JSON.stringify(p.origenAdjuntoGmail) : "",
   ];
 }
 
@@ -192,7 +213,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:J10000`,
+    range: `${TAB_NAME}!A2:K10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -248,7 +269,7 @@ export async function guardarGastoPendienteDatos(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:J`,
+    range: `${TAB_NAME}!A:K`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [pendienteToRow(pendiente)] },
