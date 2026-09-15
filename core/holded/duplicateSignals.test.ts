@@ -125,6 +125,60 @@ test("detecta el cargo conciliado cuando la extracción puso un placeholder de c
   assert.equal(resultado?.diferenciaDias, 2);
 });
 
+test("no trata el cargo YA conciliado de un mes anterior como duplicado de una suscripción mensual recurrente", () => {
+  // Caso real: Holded Technologies cobra 123.42€/mes a Footprint. El cargo
+  // de julio y el de agosto ya estaban conciliados contra sus propias
+  // facturas de esos meses — no deben bloquear la factura NUEVA de
+  // septiembre solo por compartir proveedor e importe exacto.
+  const criterios = { proveedor: "Holded Technologies", monto: 123.42, fecha: "2026-09-09", moneda: "EUR" };
+
+  const cargoJulio = evaluarMovimientoConciliadoComoDuplicado(
+    {
+      id: "mov-julio",
+      description: "Main Holded Technologies Sl",
+      amount: "-123.42",
+      currency: "EUR",
+      booking_date: "2026-07-09T00:00:00+00:00",
+      status: "reconciled",
+      reconciled_amount: "-123.42",
+    },
+    criterios
+  );
+  const cargoAgosto = evaluarMovimientoConciliadoComoDuplicado(
+    {
+      id: "mov-agosto",
+      description: "Main Holded Technologies Sl",
+      amount: "-123.42",
+      currency: "EUR",
+      booking_date: "2026-08-09T00:00:00+00:00",
+      status: "reconciled",
+      reconciled_amount: "-123.42",
+    },
+    criterios
+  );
+
+  assert.equal(cargoJulio, undefined);
+  assert.equal(cargoAgosto, undefined);
+});
+
+test("sí detecta el cargo del mismo proveedor cuando la fecha está razonablemente cerca", () => {
+  const resultado = evaluarMovimientoConciliadoComoDuplicado(
+    {
+      id: "mov-septiembre",
+      description: "Main Holded Technologies Sl",
+      amount: "-123.42",
+      currency: "EUR",
+      booking_date: "2026-09-12T00:00:00+00:00",
+      status: "reconciled",
+      reconciled_amount: "-123.42",
+    },
+    { proveedor: "Holded Technologies", monto: 123.42, fecha: "2026-09-09", moneda: "EUR" }
+  );
+
+  assert.equal(resultado?.nivel, "probable");
+  assert.equal(resultado?.diferenciaDias, 3);
+});
+
 test("sin proveedor no bloquea por fecha lejana, conciliación parcial o importe aproximado", () => {
   const criterios = { proveedor: "", monto: 6.6, fecha: "2026-09-11", moneda: "EUR" };
   const base = {
