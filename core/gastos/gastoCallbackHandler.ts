@@ -1141,7 +1141,20 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
 
   const seleccion = propuesta.seleccionAcciones ?? [];
   if (seleccion.length === 0) {
+    // Hallazgo real de auditoría (caso real Carlos, pedido explícito de verificar que "Aprobar
+    // selección" nunca reaccione sin nada marcado): esta validación SIEMPRE se cumplía — sin checks
+    // marcados, nunca se crea ni concilia nada, acá se corta antes de tocar Holded. Pero el aviso
+    // solo se mandaba como "toast" de Telegram (answerCallbackQuerySafe) — un widget que no existe en
+    // el chat web, y que además siempre falla para un clic sintético del chat web (callback.id
+    // "web:...", nunca un callback_query real de Telegram que se pueda "responder"). El resultado: al
+    // tocar el botón sin marcar nada desde el chat web, no pasaba nada Y tampoco se veía ningún aviso
+    // de por qué — parecía que el botón simplemente no hacía nada, sin explicación. Se manda también
+    // como mensaje real (sendTelegramMessage, ya visible en Telegram Y en el chat web por el mismo
+    // historial compartido) para que la explicación llegue sin importar desde qué canal se tocó.
     await answerCallbackQuerySafe(callback.id, "No marcaste ninguna acción todavía — marca al menos una y vuelve a aprobar.");
+    await sendTelegramMessage(propuesta.chatId, "No marcaste ninguna acción todavía — marca al menos una casilla y vuelve a tocar \"▶️ Aprobar selección\".").catch((error) =>
+      console.error("[gastoCallbackHandler] Error avisando que no había selección marcada (no crítico):", error)
+    );
     return;
   }
 
