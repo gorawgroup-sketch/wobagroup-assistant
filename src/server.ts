@@ -762,6 +762,16 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
       webChatRequestStore,
       async () => {
         try {
+          // Hallazgo real de auditoría (caso real Carlos: corrección de moneda de un gasto dada por
+          // el chat del front que se perdió en una respuesta conversacional genérica) — antes de
+          // dejar que Claude improvise, se intenta la MISMA cadena determinista de "pendiente_*" que
+          // ya usa Telegram (ver intentarResolverPendienteTextoLibre) para responder algo puntual ya
+          // preguntado. Nunca para una identidad "solo_lectura" (dispositivo sin vincular): esa cadena
+          // puede escribir en Holded/Sheets, el mismo límite que ya aplica a las tools de Claude acá
+          // mismo (soloLectura más abajo).
+          if (identidad.modo !== "solo_lectura" && (await intentarResolverPendienteTextoLibre(identidad.chatId, texto))) {
+            return "🔄 Procesando tu respuesta...";
+          }
           return await askClaude(texto, identidad.chatId, identidad.nombre, "chat_conversacional", {
             soloLectura: identidad.modo === "solo_lectura",
             presentacion: "web",
@@ -1336,6 +1346,226 @@ async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<
   }
 }
 
+/**
+ * Hallazgo real de auditoría (caso real Carlos: corrección de moneda de un gasto de Uber dada en el
+ * chat del front, que "desapareció" y terminó mandando la misma propuesta de nuevo). Esta cadena de
+ * "pendiente_*" (respuestas en texto libre a una pregunta puntual ya hecha — corrección de gasto,
+ * ajuste de monto, elección de conciliación, edición de borrador, orientación de correo, regla de
+ * clasificación, alerta de documento, desambiguación de documento, monto de pago recurrente) vivía
+ * SOLO dentro de procesarUpdateTelegram — el endpoint del chat web (`POST /api/cerebro/chat`) llamaba
+ * a askClaude directo, sin pasar nunca por acá. El resultado: la MISMA instrucción de texto libre se
+ * cumplía de forma determinista por Telegram (esta cadena la reconoce y actúa) pero se le pedía a
+ * Claude que improvisara sobre la marcha por el chat web, sin ninguna herramienta pensada para
+ * "corregir una propuesta ya enviada" — así que la respuesta real de Carlos, aunque llegaba, no tenía
+ * ningún mecanismo determinista con qué engancharse y se perdía en una respuesta conversacional
+ * genérica. Extraída para que AMBOS canales pasen por la misma cadena antes de llegar a Claude —
+ * exactamente el mismo criterio que ya se usaba para los botones (ver despacharCallbackQuery,
+ * reutilizado tal cual por /api/cerebro/chat/boton). Devuelve true si esta cadena manejó el mensaje
+ * por completo (el llamador no debe llamar a askClaude); false si no había ninguna pregunta pendiente
+ * de este tipo (el llamador debe seguir con su propio flujo normal).
+ */
+async function intentarResolverPendienteTextoLibre(chatId: number, texto: string): Promise<boolean> {
+  const pendienteMontoPago = await consumirPendienteMontoPago(chatId);
+  if (pendienteMontoPago) {
+    try {
+      await continuarConMontoPago(pendienteMontoPago, texto);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("Error procesando importe de pago recurrente:", message);
+      // Se reinserta el pendiente (con creadoEn actualizado) para que el
+      // usuario pueda corregir su respuesta sin tener que pulsar el botón
+      // de nuevo — a diferencia de otros "pendiente_*", aquí el error es
+      // casi siempre un simple problema de formato del texto, no algo grave.
+      await guardarPendienteMontoPago(pendienteMontoPago);
+      await sendTelegramMessage(chatId, message);
+    }
+    return true;
+  }
+
+  const pendienteCorreccionGasto = await consumirPendienteCorreccionGasto(chatId);
+  if (pendienteCorreccionGasto) {
+    try {
+      await continuarConCorreccionGasto(pendienteCorreccionGasto, texto);
+    } catch (error) {
+      console.error("Error procesando corrección de clasificación de gasto:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando la corrección.");
+    }
+    return true;
+  }
+
+  const pendienteAjusteMontoGasto = await consumirPendienteAjusteMontoGasto(chatId);
+  if (pendienteAjusteMontoGasto) {
+    try {
+      await continuarConAjusteMonto(pendienteAjusteMontoGasto, texto);
+    } catch (error) {
+      console.error("Error procesando ajuste de monto de gasto:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando el ajuste de monto.");
+    }
+    return true;
+  }
+
+  const pendienteAccionGasto = await consumirPendienteAccionGasto(chatId);
+  if (pendienteAccionGasto) {
+    try {
+      await continuarConAccionGasto(pendienteAccionGasto, texto);
+    } catch (error) {
+      console.error("Error procesando otras acciones sobre una propuesta de gasto:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción.");
+    }
+    return true;
+  }
+
+  const pendienteSeleccionGasto = await consumirPendienteSeleccionGasto(chatId);
+  if (pendienteSeleccionGasto) {
+    try {
+      await continuarConSeleccionGasto(pendienteSeleccionGasto, texto);
+    } catch (error) {
+      console.error("Error procesando la cola de selección de una propuesta de gasto:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu respuesta.");
+    }
+    return true;
+  }
+
+  const pendienteEdicionBorrador = await consumirPendienteEdicionBorrador(chatId);
+  if (pendienteEdicionBorrador) {
+    try {
+      await continuarConEdicionBorrador(pendienteEdicionBorrador.chatId, pendienteEdicionBorrador.borradorId, texto);
+    } catch (error) {
+      console.error("Error procesando edición de borrador de correo:", error);
+      await sendTelegramMessage(chatId, "Hubo un error actualizando el borrador.");
+    }
+    return true;
+  }
+
+  const pendienteOrientacion = await consumirPendienteOrientacionCorreo(chatId);
+  if (pendienteOrientacion) {
+    try {
+      await continuarConOrientacion(
+        pendienteOrientacion.chatId,
+        pendienteOrientacion.de,
+        pendienteOrientacion.asunto,
+        pendienteOrientacion.resumen,
+        texto,
+        pendienteOrientacion.threadId,
+        pendienteOrientacion.messageIdHeader,
+        pendienteOrientacion.deColaCorreo
+      );
+    } catch (error) {
+      console.error("Error procesando orientación específica de correo:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción.");
+    }
+    return true;
+  }
+
+  const pendienteOrientacionAnotacion = await consumirPendienteOrientacionAnotacion(chatId);
+  if (pendienteOrientacionAnotacion) {
+    try {
+      await continuarConOrientacionAnotacion(
+        pendienteOrientacionAnotacion.chatId,
+        pendienteOrientacionAnotacion.ubicacion,
+        pendienteOrientacionAnotacion.detalle,
+        pendienteOrientacionAnotacion.recomendacion,
+        texto
+      );
+    } catch (error) {
+      console.error("Error procesando orientación específica de anotación de cashflow:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción.");
+    }
+    return true;
+  }
+
+  const pendienteRegla = await consumirPendienteReglaClasificacion(chatId);
+  if (pendienteRegla) {
+    try {
+      await registrarReglaClasificacion({
+        empresa: pendienteRegla.empresa,
+        criterio: texto.trim(),
+        tipoDocumento: pendienteRegla.tipoDocumento,
+        carpetaDestino: pendienteRegla.carpetaDestino,
+      });
+      await sendTelegramMessage(
+        chatId,
+        `✅ Aprendido — la próxima vez que un documento de ${pendienteRegla.empresa} coincida con "${texto.trim()}", lo archivo directo en "${pendienteRegla.carpetaDestino}" sin preguntar.`
+      );
+    } catch (error) {
+      console.error("Error registrando regla de clasificación:", error);
+      await sendTelegramMessage(chatId, "Hubo un error guardando la regla. Intenta de nuevo.");
+    }
+    return true;
+  }
+
+  const pendienteAlertaDoc = await consumirPendienteAlertaDocumento(chatId);
+  if (pendienteAlertaDoc) {
+    try {
+      const instruccion =
+        `El usuario quiere programar una alerta/recordatorio relacionado con un documento que se está ` +
+        `archivando ahora mismo. Documento: "${pendienteAlertaDoc.nombreArchivoOriginal}" (${pendienteAlertaDoc.empresa}, ` +
+        `${pendienteAlertaDoc.tipoDocumento}). Lo que pide el usuario: "${texto}". Usa la herramienta ` +
+        `programar_accion_futura para dejarlo programado (interpreta la fecha o condición que haya dado) — no lo ` +
+        `hagas ahora mismo, solo prográmalo.`;
+      const respuesta = await askClaude(instruccion, chatId, undefined, "resolver_alerta_documento");
+      await sendTelegramMessageSmart(chatId, respuesta);
+    } catch (error) {
+      console.error("Error programando alerta de documento:", error);
+      // Ver hallazgo real de auditoría junto al catch de "capturar_correo_chat" en procesarUpdateTelegram.
+      await sendTelegramMessage(
+        chatId,
+        esErrorSaldoAnthropicAgotado(error)
+          ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo programar la alerta hasta que se recargue crédito. Ya avisé a los administradores."
+          : "Hubo un error programando la alerta. Intenta de nuevo."
+      );
+    }
+    return true;
+  }
+
+  const pendienteDesambiguacion = await consumirPendienteDesambiguacion(chatId);
+  if (pendienteDesambiguacion) {
+    try {
+      await manejarClasificacion({
+        chatId: pendienteDesambiguacion.chatId,
+        rutaLocal: pendienteDesambiguacion.rutaLocal,
+        nombreArchivoOriginal: pendienteDesambiguacion.nombreArchivoOriginal,
+        mimeType: pendienteDesambiguacion.mimeType,
+        nombreParaClasificar: pendienteDesambiguacion.nombreParaClasificar,
+        captionEfectivo:
+          `${pendienteDesambiguacion.captionOriginal ?? ""}\n\n` +
+          `Pregunta que se le hizo al usuario para desambiguar: ${pendienteDesambiguacion.preguntaFormulada}\n` +
+          `Respuesta del usuario: ${texto}`,
+        correoOrigen: pendienteDesambiguacion.correoOrigen,
+        esContinuacionDesambiguacion: true,
+      });
+    } catch (error) {
+      console.error("Error procesando respuesta de desambiguación:", error);
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu respuesta. Intenta reenviar el archivo.");
+    }
+    return true;
+  }
+
+  // Si hay una captura de conocimiento esperando que elijan la empresa y
+  // confirmen, y el usuario en cambio manda un mensaje normal, avisa —
+  // sin esto, la selección se pierde en silencio a los 30 min y ni el
+  // usuario ni el asistente vuelven a mencionarlo: pasó dos veces (2026-08-27
+  // y 2026-08-28) que alguien tocó una empresa pero nunca "Confirmar y
+  // guardar", y al preguntar después el asistente decía "no encontré nada"
+  // sin ninguna pista de que la captura nunca se había guardado. No consume
+  // ni resuelve nada — solo avisa — así que NO cuenta como "manejado": el
+  // llamador sigue con su flujo normal (askClaude) después de este aviso.
+  const pendientesCapturaEmpresa = await obtenerPendientesCapturaEmpresaPorChat(chatId);
+  if (pendientesCapturaEmpresa.length > 0) {
+    const texto2 =
+      pendientesCapturaEmpresa.length === 1
+        ? "⏳ Tienes una captura de conocimiento sin confirmar (arriba) — todavía no se guardó nada. " +
+          'Pulsa "✅ Confirmar y guardar" en ese mensaje, o "❌ Cancelar" si ya no aplica.'
+        : `⏳ Tienes ${pendientesCapturaEmpresa.length} capturas de conocimiento sin confirmar (arriba) — todavía no ` +
+          'se guardó nada de eso. Pulsa "✅ Confirmar y guardar" en cada mensaje, o "❌ Cancelar" si ya no aplica.';
+    await sendTelegramMessage(chatId, texto2).catch((error) =>
+      console.error("Error avisando de captura pendiente sin confirmar:", error)
+    );
+  }
+
+  return false;
+}
+
 async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
 
   if (update.callback_query) {
@@ -1501,205 +1731,7 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     return;
   }
 
-  const pendienteMontoPago = await consumirPendienteMontoPago(incoming.chatId);
-  if (pendienteMontoPago) {
-    try {
-      await continuarConMontoPago(pendienteMontoPago, incoming.text);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("Error procesando importe de pago recurrente:", message);
-      // Se reinserta el pendiente (con creadoEn actualizado) para que el
-      // usuario pueda corregir su respuesta sin tener que pulsar el botón
-      // de nuevo — a diferencia de otros "pendiente_*", aquí el error es
-      // casi siempre un simple problema de formato del texto, no algo grave.
-      await guardarPendienteMontoPago(pendienteMontoPago);
-      await sendTelegramMessage(incoming.chatId, message);
-    }
-    return;
-  }
-
-  const pendienteCorreccionGasto = await consumirPendienteCorreccionGasto(incoming.chatId);
-  if (pendienteCorreccionGasto) {
-    try {
-      await continuarConCorreccionGasto(pendienteCorreccionGasto, incoming.text);
-    } catch (error) {
-      console.error("Error procesando corrección de clasificación de gasto:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando la corrección.");
-    }
-    return;
-  }
-
-  const pendienteAjusteMontoGasto = await consumirPendienteAjusteMontoGasto(incoming.chatId);
-  if (pendienteAjusteMontoGasto) {
-    try {
-      await continuarConAjusteMonto(pendienteAjusteMontoGasto, incoming.text);
-    } catch (error) {
-      console.error("Error procesando ajuste de monto de gasto:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando el ajuste de monto.");
-    }
-    return;
-  }
-
-  const pendienteAccionGasto = await consumirPendienteAccionGasto(incoming.chatId);
-  if (pendienteAccionGasto) {
-    try {
-      await continuarConAccionGasto(pendienteAccionGasto, incoming.text);
-    } catch (error) {
-      console.error("Error procesando otras acciones sobre una propuesta de gasto:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
-    }
-    return;
-  }
-
-  const pendienteSeleccionGasto = await consumirPendienteSeleccionGasto(incoming.chatId);
-  if (pendienteSeleccionGasto) {
-    try {
-      await continuarConSeleccionGasto(pendienteSeleccionGasto, incoming.text);
-    } catch (error) {
-      console.error("Error procesando la cola de selección de una propuesta de gasto:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu respuesta.");
-    }
-    return;
-  }
-
-  const pendienteEdicionBorrador = await consumirPendienteEdicionBorrador(incoming.chatId);
-  if (pendienteEdicionBorrador) {
-    try {
-      await continuarConEdicionBorrador(
-        pendienteEdicionBorrador.chatId,
-        pendienteEdicionBorrador.borradorId,
-        incoming.text
-      );
-    } catch (error) {
-      console.error("Error procesando edición de borrador de correo:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error actualizando el borrador.");
-    }
-    return;
-  }
-
-  const pendienteOrientacion = await consumirPendienteOrientacionCorreo(incoming.chatId);
-  if (pendienteOrientacion) {
-    try {
-      await continuarConOrientacion(
-        pendienteOrientacion.chatId,
-        pendienteOrientacion.de,
-        pendienteOrientacion.asunto,
-        pendienteOrientacion.resumen,
-        incoming.text,
-        pendienteOrientacion.threadId,
-        pendienteOrientacion.messageIdHeader,
-        pendienteOrientacion.deColaCorreo
-      );
-    } catch (error) {
-      console.error("Error procesando orientación específica de correo:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
-    }
-    return;
-  }
-
-  const pendienteOrientacionAnotacion = await consumirPendienteOrientacionAnotacion(incoming.chatId);
-  if (pendienteOrientacionAnotacion) {
-    try {
-      await continuarConOrientacionAnotacion(
-        pendienteOrientacionAnotacion.chatId,
-        pendienteOrientacionAnotacion.ubicacion,
-        pendienteOrientacionAnotacion.detalle,
-        pendienteOrientacionAnotacion.recomendacion,
-        incoming.text
-      );
-    } catch (error) {
-      console.error("Error procesando orientación específica de anotación de cashflow:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu instrucción.");
-    }
-    return;
-  }
-
-  const pendienteRegla = await consumirPendienteReglaClasificacion(incoming.chatId);
-  if (pendienteRegla) {
-    try {
-      await registrarReglaClasificacion({
-        empresa: pendienteRegla.empresa,
-        criterio: incoming.text.trim(),
-        tipoDocumento: pendienteRegla.tipoDocumento,
-        carpetaDestino: pendienteRegla.carpetaDestino,
-      });
-      await sendTelegramMessage(
-        incoming.chatId,
-        `✅ Aprendido — la próxima vez que un documento de ${pendienteRegla.empresa} coincida con "${incoming.text.trim()}", lo archivo directo en "${pendienteRegla.carpetaDestino}" sin preguntar.`
-      );
-    } catch (error) {
-      console.error("Error registrando regla de clasificación:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error guardando la regla. Intenta de nuevo.");
-    }
-    return;
-  }
-
-  const pendienteAlertaDoc = await consumirPendienteAlertaDocumento(incoming.chatId);
-  if (pendienteAlertaDoc) {
-    try {
-      const instruccion =
-        `El usuario quiere programar una alerta/recordatorio relacionado con un documento que se está ` +
-        `archivando ahora mismo. Documento: "${pendienteAlertaDoc.nombreArchivoOriginal}" (${pendienteAlertaDoc.empresa}, ` +
-        `${pendienteAlertaDoc.tipoDocumento}). Lo que pide el usuario: "${incoming.text}". Usa la herramienta ` +
-        `programar_accion_futura para dejarlo programado (interpreta la fecha o condición que haya dado) — no lo ` +
-        `hagas ahora mismo, solo prográmalo.`;
-      const respuesta = await askClaude(instruccion, incoming.chatId, undefined, "resolver_alerta_documento");
-      await sendTelegramMessageSmart(incoming.chatId, respuesta);
-    } catch (error) {
-      console.error("Error programando alerta de documento:", error);
-      // Ver hallazgo real de auditoría junto al catch de "capturar_correo_chat" más arriba.
-      await sendTelegramMessage(
-        incoming.chatId,
-        esErrorSaldoAnthropicAgotado(error)
-          ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo programar la alerta hasta que se recargue crédito. Ya avisé a los administradores."
-          : "Hubo un error programando la alerta. Intenta de nuevo."
-      );
-    }
-    return;
-  }
-
-  const pendiente = await consumirPendienteDesambiguacion(incoming.chatId);
-  if (pendiente) {
-    try {
-      await manejarClasificacion({
-        chatId: pendiente.chatId,
-        rutaLocal: pendiente.rutaLocal,
-        nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
-        mimeType: pendiente.mimeType,
-        nombreParaClasificar: pendiente.nombreParaClasificar,
-        captionEfectivo:
-          `${pendiente.captionOriginal ?? ""}\n\n` +
-          `Pregunta que se le hizo al usuario para desambiguar: ${pendiente.preguntaFormulada}\n` +
-          `Respuesta del usuario: ${incoming.text}`,
-        correoOrigen: pendiente.correoOrigen,
-        esContinuacionDesambiguacion: true,
-      });
-    } catch (error) {
-      console.error("Error procesando respuesta de desambiguación:", error);
-      await sendTelegramMessage(incoming.chatId, "Hubo un error procesando tu respuesta. Intenta reenviar el archivo.");
-    }
-    return;
-  }
-
-  // Si hay una captura de conocimiento esperando que elijan la empresa y
-  // confirmen, y el usuario en cambio manda un mensaje normal, avisa —
-  // sin esto, la selección se pierde en silencio a los 30 min y ni el
-  // usuario ni el asistente vuelven a mencionarlo: pasó dos veces (2026-08-27
-  // y 2026-08-28) que alguien tocó una empresa pero nunca "Confirmar y
-  // guardar", y al preguntar después el asistente decía "no encontré nada"
-  // sin ninguna pista de que la captura nunca se había guardado.
-  const pendientesCapturaEmpresa = await obtenerPendientesCapturaEmpresaPorChat(incoming.chatId);
-  if (pendientesCapturaEmpresa.length > 0) {
-    const texto =
-      pendientesCapturaEmpresa.length === 1
-        ? "⏳ Tienes una captura de conocimiento sin confirmar (arriba) — todavía no se guardó nada. " +
-          'Pulsa "✅ Confirmar y guardar" en ese mensaje, o "❌ Cancelar" si ya no aplica.'
-        : `⏳ Tienes ${pendientesCapturaEmpresa.length} capturas de conocimiento sin confirmar (arriba) — todavía no ` +
-          'se guardó nada de eso. Pulsa "✅ Confirmar y guardar" en cada mensaje, o "❌ Cancelar" si ya no aplica.';
-    await sendTelegramMessage(incoming.chatId, texto).catch((error) =>
-      console.error("Error avisando de captura pendiente sin confirmar:", error)
-    );
-  }
+  if (await intentarResolverPendienteTextoLibre(incoming.chatId, incoming.text)) return;
 
   const detenerEscribiendo = iniciarIndicadorEscribiendo(incoming.chatId);
   const mensajeTrabajandoId = await avisarTrabajando(incoming.chatId);
