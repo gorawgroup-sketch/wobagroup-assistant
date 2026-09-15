@@ -182,6 +182,17 @@ async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): 
     });
     if (recuperado) {
       await adjuntar(propuesta.mimeType, propuesta.nombreArchivoOriginal);
+    } else if (propuesta.origenAdjuntoGmail) {
+      // Hallazgo real de auditoría (caso real Holded Technologies/Footprint): este documento SÍ tuvo
+      // un adjunto real en Gmail (origenAdjuntoGmail está seteado) — el respaldo de arriba solo falló
+      // por un problema puntual (Gmail no respondió, el adjunto ya no existe, etc.), no porque nunca
+      // hubo un adjunto que recuperar. Regenerar acá un PDF del CUERPO del correo sustituiría la
+      // factura/ticket real por un documento que no lo es — nunca solo el hilo de correo, sin el
+      // comprobante real — y el llamador (gastoCallbackHandler) ya sabe avisar con claridad que el
+      // gasto quedó creado pero sin comprobante para subirlo a mano. El respaldo de "regenerar desde
+      // el cuerpo" queda reservado EXCLUSIVAMENTE para cuando nunca hubo un adjunto real que recuperar
+      // (rama de abajo).
+      throw error;
     } else {
       const regenerado = await regenerarComprobanteDesdeCuerpoSiFalta(propuesta.rutaLocal, propuesta);
       if (!regenerado) throw error;
