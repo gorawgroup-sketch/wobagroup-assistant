@@ -31,6 +31,18 @@ export interface CoincidenciaMovimientoConciliado {
 // más estricta: importe exacto, conciliación completa y fecha muy cercana.
 const VENTANA_DIAS_SIN_PROVEEDOR = 3;
 
+// Hallazgo real de auditoría (caso Holded Technologies, 123.42€/mes en
+// Footprint): la rama de "importe exacto + coincide proveedor" no exigía
+// ninguna cercanía de fecha, así que un cargo mensual recurrente con importe
+// fijo quedaba marcado como "probable duplicado" del cargo YA conciliado del
+// mes anterior (y el anterior a ese, sin límite) para siempre — bloqueando
+// cada mes nuevo del mismo gasto legítimo. Esta ventana acota esa rama a un
+// desfase plausible entre ticket y cargo bancario (igual criterio que
+// VENTANA_DIAS_BUSQUEDA en write.ts para "compras similares"), sin debilitar
+// la detección real: dos cargos separados por más de esto ya no son
+// candidatos razonables a ser la misma transacción.
+const VENTANA_DIAS_COINCIDENCIA_MOVIMIENTO = 15;
+
 function diferenciaDiasCalendario(a: string | undefined, b: string): number {
   const fechaA = fechaCalendario(a);
   const fechaB = fechaCalendario(b);
@@ -134,14 +146,19 @@ export function evaluarMovimientoConciliadoComoDuplicado(
     diferenciaDias <= VENTANA_DIAS_SIN_PROVEEDOR &&
     conciliacionCompleta(movimiento);
 
-  // Una coincidencia por monto exacto exige además nombre o fecha. Una
-  // aproximada exige ambas señales para evitar bloquear gastos recurrentes
-  // legítimos por una cantidad parecida. Excepción conservadora: si el
-  // ticket no trae proveedor, un cargo completamente conciliado, exacto y
-  // a <=3 días se devuelve como PROBABLE. El llamador muestra todos los
-  // candidatos y bloquea la creación; nunca concilia ni decide en silencio.
+  // Una coincidencia por monto exacto exige además nombre o fecha Y una
+  // cercanía de fecha plausible (VENTANA_DIAS_COINCIDENCIA_MOVIMIENTO) — sin
+  // este último requisito, un proveedor con cargos recurrentes de igual
+  // importe (una suscripción mensual, por ejemplo) matchearía contra
+  // cualquier mes anterior ya conciliado sin límite de tiempo. Una
+  // aproximada exige ambas señales (proveedor Y fecha exacta) para evitar
+  // bloquear gastos recurrentes legítimos por una cantidad parecida.
+  // Excepción conservadora: si el ticket no trae proveedor, un cargo
+  // completamente conciliado, exacto y a <=3 días se devuelve como
+  // PROBABLE. El llamador muestra todos los candidatos y bloquea la
+  // creación; nunca concilia ni decide en silencio.
   if (
-    !(montoExacto && (coincideProveedor || coincideFechaExacta)) &&
+    !(montoExacto && (coincideProveedor || coincideFechaExacta) && diferenciaDias <= VENTANA_DIAS_COINCIDENCIA_MOVIMIENTO) &&
     !(montoCercano && coincideProveedor && coincideFechaExacta) &&
     !coincidenciaReforzadaSinProveedor
   ) {
