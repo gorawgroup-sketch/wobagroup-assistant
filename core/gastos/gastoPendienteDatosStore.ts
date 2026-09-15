@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 
 /**
@@ -69,6 +70,14 @@ const TAB_NAME = "_gastos_pendientes_datos";
 // 24h — pedido explícito de Carlos (mismo criterio en todos los
 // "pendiente_*", ver pendienteCapturaEmpresaStore.ts), igual que contactoResolucionStore.ts.
 const TTL_MS = 24 * 60 * 60 * 1000;
+// Hallazgo real de auditoría (2026-09-15): a diferencia de otros stores de este mismo tipo
+// (durableBankReconciliationStore, webBotonesStore), este nunca tuvo protección contra
+// lectura-modificación-escritura concurrente — dos llamadas casi simultáneas (ej. el vigilante de
+// correos atascados reintentando un correo dos veces en pocos minutos) podían leer la misma
+// instantánea de filas, y la eliminación de una pisar el índice de fila que la otra ya tenía
+// capturado, dejando filas en blanco (huérfanas) en la hoja y perdiendo el registro real. Todas las
+// operaciones que leen y luego escriben ahora se serializan con la misma clave.
+const CLAVE_MUTEX = `gastos-pendientes-datos:${TAB_NAME}`;
 
 const HEADERS = [
   "id",
@@ -259,23 +268,25 @@ async function purgarVencidas(): Promise<void> {
 export async function guardarGastoPendienteDatos(
   datos: Omit<GastoPendienteDatos, "id" | "creadoEn">
 ): Promise<GastoPendienteDatos> {
-  await purgarVencidas();
+  return conMutex(CLAVE_MUTEX, async () => {
+    await purgarVencidas();
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  const pendiente: GastoPendienteDatos = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+    const pendiente: GastoPendienteDatos = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:K`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [pendienteToRow(pendiente)] },
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A:K`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [pendienteToRow(pendiente)] },
+    });
+
+    return pendiente;
   });
-
-  return pendiente;
 }
 
 /**
@@ -284,13 +295,15 @@ export async function guardarGastoPendienteDatos(
  * mismo chat, consume la más reciente.
  */
 export async function consumirGastoPendienteDatosPorChat(chatId: number): Promise<GastoPendienteDatos | undefined> {
-  const todas = await leerTodas();
-  const delChat = todas.filter(({ pendiente }) => pendiente.chatId === chatId);
-  if (delChat.length === 0) return undefined;
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const delChat = todas.filter(({ pendiente }) => pendiente.chatId === chatId);
+    if (delChat.length === 0) return undefined;
 
-  const masReciente = delChat.reduce((a, b) => (a.pendiente.creadoEn >= b.pendiente.creadoEn ? a : b));
-  await eliminarFila(masReciente.rowIndex);
-  return masReciente.pendiente;
+    const masReciente = delChat.reduce((a, b) => (a.pendiente.creadoEn >= b.pendiente.creadoEn ? a : b));
+    await eliminarFila(masReciente.rowIndex);
+    return masReciente.pendiente;
+  });
 }
 
 /** Solo lectura (no consume) — para que buildSystemPromptDinamico avise de la pregunta pendiente. */

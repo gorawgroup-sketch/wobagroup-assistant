@@ -30,6 +30,13 @@ import { CacheLectura } from "../utils/readCache";
 // de mensajes por chat, para no desplazar la conversación real tan rápido.
 const MAX_MESSAGES = 30;
 const TTL_HISTORIAL_MS = 6 * 60 * 60 * 1000; // 6 horas — cubre una pausa normal (comida, una reunión), no una conversación de hace días
+// Hallazgo real de auditoría (2026-09-15): Sheets rechaza una celda con más de 50.000 caracteres —
+// un turno con resultados de herramientas grandes o un bloque de razonamiento extendido con firma
+// larga puede superar ese límite con muchos menos de MAX_MESSAGES mensajes. Antes eso hacía fallar
+// la escritura COMPLETA en silencio (solo quedaba un log) y el chat perdía la memoria de todo el
+// turno — incluida la respuesta que el usuario acababa de leer segundos antes ("no debería
+// desconocer una indicación que está en el chat solo unos minutos o segundos antes").
+const LIMITE_CARACTERES_CELDA = 45_000;
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_historial_conversaciones";
@@ -232,6 +239,42 @@ function esInicioDeTurno(mensaje: Anthropic.MessageParam): boolean {
   return mensaje.role === "user" && typeof mensaje.content === "string";
 }
 
+/**
+ * Recorta `combinados` para respetar MAX_MESSAGES y LIMITE_CARACTERES_CELDA sin cortar nunca a
+ * mitad de un turno (dejaría un tool_result huérfano — 400 invalid_request_error de la API de
+ * Anthropic) — extraído como función pura para poder probar el recorte por tamaño sin depender de
+ * Sheets. Ver comentarios de MAX_MESSAGES y LIMITE_CARACTERES_CELDA más arriba.
+ */
+export function recortarHistorialParaGuardar(combinados: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  let recortados = combinados;
+  if (combinados.length > MAX_MESSAGES) {
+    const candidato = combinados.length - MAX_MESSAGES;
+    let inicio = candidato;
+    while (inicio < combinados.length && !esInicioDeTurno(combinados[inicio])) {
+      inicio++;
+    }
+    // Si no hay ningún inicio de turno válido en la cola candidata (un solo
+    // turno con herramientas ocupó todo el margen), se conserva el array
+    // completo — mejor un historial más largo de lo ideal que uno corrupto.
+    recortados = inicio < combinados.length ? combinados.slice(inicio) : combinados;
+  }
+
+  while (recortados.length > 0 && JSON.stringify(recortados).length > LIMITE_CARACTERES_CELDA) {
+    let inicio = 1;
+    while (inicio < recortados.length && !esInicioDeTurno(recortados[inicio])) inicio++;
+    if (inicio >= recortados.length) {
+      // Ni siquiera el último turno por sí solo entra en una celda — mejor guardar el historial
+      // vacío (se pierde memoria previa, pero la próxima escritura vuelve a funcionar) que dejar
+      // de escribir del todo y perder también la respuesta de ESTE turno.
+      recortados = [];
+      break;
+    }
+    recortados = recortados.slice(inicio);
+  }
+
+  return recortados;
+}
+
 export async function obtenerHistorial(chatId: number): Promise<Anthropic.MessageParam[]> {
   try {
     const fila = await leerFila(chatId);
@@ -351,26 +394,7 @@ async function guardarHistorialInterno(chatId: number, nuevosMensajes: Anthropic
     const fila = await leerFila(chatId); // lectura fresca, ya dentro del lock del chat
     const previos = fila && !filaVencida(fila.actualizadoEn) ? fila.mensajes : [];
     const combinados = [...previos, ...nuevosMensajes];
-
-    let recortados = combinados;
-    if (combinados.length > MAX_MESSAGES) {
-      // No se puede cortar en cualquier índice: un turno con herramientas deja
-      // varios mensajes intermedios (assistant con tool_use + user con
-      // tool_result) que dependen unos de otros — cortar a mitad de eso deja un
-      // tool_result "huérfano" al principio del array, y la API de Anthropic lo
-      // rechaza con 400 invalid_request_error (bug real visto en producción).
-      // Por eso se busca el inicio de turno más cercano al límite en vez de
-      // cortar por índice fijo.
-      const candidato = combinados.length - MAX_MESSAGES;
-      let inicio = candidato;
-      while (inicio < combinados.length && !esInicioDeTurno(combinados[inicio])) {
-        inicio++;
-      }
-      // Si no hay ningún inicio de turno válido en la cola candidata (un solo
-      // turno con herramientas ocupó todo el margen), se conserva el array
-      // completo — mejor un historial más largo de lo ideal que uno corrupto.
-      recortados = inicio < combinados.length ? combinados.slice(inicio) : combinados;
-    }
+    const recortados = recortarHistorialParaGuardar(combinados);
 
     const valores = [chatId, JSON.stringify(recortados), new Date().toISOString()];
 

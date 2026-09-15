@@ -59,14 +59,36 @@ const MAX_REINTENTOS_AUTOMATICOS = 2;
 const reintentosPorGmailId = new Map<string, number>();
 
 /**
+ * Caso real reportado por Carlos (2026-09-15): un correo ("Fwd: Factura Uber...") con una
+ * verificación estricta de duplicados ya resuelta (mensaje "⛔ No propuse crear este gasto..." ya
+ * enviado, pendiente ya guardado en gastoPendienteDatosStore con su correoOrigen) igual se marcó
+ * "atascado" dos veces seguidas (reintento 1/2 y 2/2, ~3 minutos aparte) — mandando el MISMO mensaje
+ * dos veces y dejando el primero huérfano. Causa: activo.mensajeId (colaRevisionStore) se actualiza
+ * en cada reintento al ÚLTIMO mensaje del HILO (ver reencolarActivoParaReintento más abajo,
+ * obtenerUltimoMensajeDeHilo), que puede no ser el mismo mensaje puntual que procesarGastoEntrante
+ * procesó y guardó en correoOrigen.mensajeIdGmail — un cruce exacto por mensajeId es frágil ante ese
+ * desplazamiento dentro del mismo hilo. El threadId (activo.id, estable durante todo el hilo) no
+ * tiene ese problema, así que ahora basta con que CUALQUIERA de los dos coincida.
+ */
+export function coincideCorreoPendiente(
+  origen: { mensajeIdGmail?: string; threadId?: string } | undefined,
+  mensajeId: string,
+  threadId: string
+): boolean {
+  if (!origen) return false;
+  return origen.mensajeIdGmail === mensajeId || origen.threadId === threadId;
+}
+
+/**
  * `undefined` = no se pudo verificar (algún store falló al leer) — hallazgo real de auditoría: antes
  * cada chequeo se tragaba su propio error y lo trataba como "no hay evidencia", así que un error de
  * lectura transitorio en Sheets sesgaba la conclusión hacia "está atascado" y disparaba un reintento
  * real (con costo de API) sobre algo que en realidad no se pudo verificar — nunca debe reintentar por
  * no haber podido comprobar, solo por haber comprobado de verdad que no hay nada.
  */
-async function huboSenalDeEntrega(chatId: number, mensajeId: string): Promise<boolean | undefined> {
-  const coincide = (co: { mensajeIdGmail?: string } | undefined) => co?.mensajeIdGmail === mensajeId;
+async function huboSenalDeEntrega(chatId: number, mensajeId: string, threadId: string): Promise<boolean | undefined> {
+  const coincide = (co: { mensajeIdGmail?: string; threadId?: string } | undefined) =>
+    coincideCorreoPendiente(co, mensajeId, threadId);
 
   const NO_VERIFICADO = Symbol("no verificado");
   const resultados = await Promise.all([
@@ -152,7 +174,7 @@ async function vigilarUnChat(chatId: number): Promise<void> {
   const activo = await obtenerActivoEstancado(chatId, UMBRAL_ATASCADO_MS);
   if (!activo) return;
 
-  const señal = await huboSenalDeEntrega(chatId, activo.mensajeId);
+  const señal = await huboSenalDeEntrega(chatId, activo.mensajeId, activo.id);
   if (señal === undefined) {
     // No se pudo verificar (algún store falló al leer) — nunca se actúa sobre una duda, se reintenta
     // solo en la próxima corrida cuando de verdad se pueda confirmar.
