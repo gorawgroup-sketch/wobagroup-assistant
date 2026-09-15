@@ -29,6 +29,18 @@ const HEADERS = ["clave", "chatId", "messageId", "texto", "botonesJSON", "actual
 const NUM_COLS = HEADERS.length;
 const MUTEX_PERSISTENCIA = "webBotonesStore:sheet";
 
+interface FilaBotonesPersistida {
+  rowIndex: number;
+  mensaje: BotonesActivosMensaje;
+}
+
+// Una instancia de Railway carga el índice durable una sola vez. Después de
+// esa recuperación inicial, cada alta/edición/baja actualiza este espejo en
+// memoria junto con Sheets. Así mantener el chat abierto no convierte cada
+// refresco visual en una lectura de Google Sheets.
+let filasPersistidas: Map<string, FilaBotonesPersistida> | null = null;
+let cargaFilasPersistidas: Promise<Map<string, FilaBotonesPersistida>> | null = null;
+
 function clave(chatId: number, messageId: number): string {
   return `${chatId}:${messageId}`;
 }
@@ -81,57 +93,104 @@ function aFila(mensaje: BotonesActivosMensaje): (string | number)[] {
   ];
 }
 
+async function obtenerFilasPersistidas(): Promise<Map<string, FilaBotonesPersistida>> {
+  if (filasPersistidas) return filasPersistidas;
+  if (cargaFilasPersistidas) return cargaFilasPersistidas;
+
+  cargaFilasPersistidas = (async () => {
+    const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+    const indice = new Map<string, FilaBotonesPersistida>();
+    for (const fila of filas) {
+      const mensaje = desdeFila(fila.valores);
+      if (!mensaje) continue;
+      indice.set(clave(mensaje.chatId, mensaje.messageId), { rowIndex: fila.rowIndex, mensaje });
+    }
+    filasPersistidas = indice;
+    return indice;
+  })();
+
+  try {
+    return await cargaFilasPersistidas;
+  } finally {
+    cargaFilasPersistidas = null;
+  }
+}
+
 const repositorioSheets: RepositorioBotonesWeb = {
   async listar() {
-    const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
-    return filas.flatMap(({ valores }) => {
-      const mensaje = desdeFila(valores);
-      return mensaje ? [mensaje] : [];
-    });
+    const filas = await obtenerFilasPersistidas();
+    return Array.from(filas.values(), ({ mensaje }) => mensaje);
   },
 
   async guardar(mensaje) {
     await conMutex(MUTEX_PERSISTENCIA, async () => {
-      const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
-      const existente = filas.find(({ valores }) => valores[0] === clave(mensaje.chatId, mensaje.messageId));
+      const filas = await obtenerFilasPersistidas();
+      const llave = clave(mensaje.chatId, mensaje.messageId);
+      const existente = filas.get(llave);
       if (existente) {
         await actualizarFila(TAB_NAME, existente.rowIndex, NUM_COLS, aFila(mensaje));
+        filas.set(llave, { rowIndex: existente.rowIndex, mensaje });
       } else {
-        await agregarFila(TAB_NAME, NUM_COLS, HEADERS, aFila(mensaje));
+        const rowIndex = await agregarFila(TAB_NAME, NUM_COLS, HEADERS, aFila(mensaje));
+        filas.set(llave, { rowIndex, mensaje });
       }
     });
   },
 
   async eliminar(chatId, messageId) {
     await conMutex(MUTEX_PERSISTENCIA, async () => {
-      const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
-      const existente = filas.find(({ valores }) => valores[0] === clave(chatId, messageId));
-      if (existente) await eliminarFila(TAB_NAME, existente.rowIndex, HEADERS);
+      const filas = await obtenerFilasPersistidas();
+      const llave = clave(chatId, messageId);
+      const existente = filas.get(llave);
+      if (!existente) return;
+      await eliminarFila(TAB_NAME, existente.rowIndex, HEADERS);
+      filas.delete(llave);
+      // deleteDimension desplaza las filas posteriores una posición. Ajustar
+      // el índice evita una relectura completa después de cada decisión.
+      for (const [otraLlave, fila] of filas) {
+        if (fila.rowIndex > existente.rowIndex) {
+          filas.set(otraLlave, { ...fila, rowIndex: fila.rowIndex - 1 });
+        }
+      }
     });
   },
 };
 
 /**
- * Cache corto para no consultar Sheets en cada render. No hay TTL funcional
- * ni máximo de botones: una decisión permanece mientras siga activa en
- * Telegram y se elimina cuando el mismo flujo retira su teclado.
+ * El snapshot durable se carga una vez por proceso. No hay TTL funcional ni
+ * máximo de botones: una decisión permanece mientras siga activa en Telegram
+ * y se elimina cuando el mismo flujo retira su teclado.
  */
 export class AlmacenBotonesWeb {
   private readonly activos = new Map<string, BotonesActivosMensaje>();
   private cacheCargadaEn = 0;
+  private cargaEnCurso: Promise<void> | null = null;
+  private readonly eliminadosAntesDeCarga = new Set<string>();
 
   constructor(
     private readonly repositorio: RepositorioBotonesWeb,
     private readonly ahora: () => number = Date.now,
-    private readonly cacheTtlMs = 3_000
+    private readonly cacheTtlMs = Number.POSITIVE_INFINITY
   ) {}
 
   private async cargarSiHaceFalta(forzar = false): Promise<void> {
     if (!forzar && this.cacheCargadaEn > 0 && this.ahora() - this.cacheCargadaEn < this.cacheTtlMs) return;
-    const guardados = await this.repositorio.listar();
-    this.activos.clear();
-    for (const mensaje of guardados) this.activos.set(clave(mensaje.chatId, mensaje.messageId), mensaje);
-    this.cacheCargadaEn = this.ahora();
+    if (this.cargaEnCurso) return this.cargaEnCurso;
+    this.cargaEnCurso = (async () => {
+      const guardados = await this.repositorio.listar();
+      for (const mensaje of guardados) {
+        const llave = clave(mensaje.chatId, mensaje.messageId);
+        if (this.eliminadosAntesDeCarga.has(llave)) continue;
+        const local = this.activos.get(llave);
+        if (!local || local.actualizadoEn <= mensaje.actualizadoEn) this.activos.set(llave, mensaje);
+      }
+      this.cacheCargadaEn = this.ahora();
+    })();
+    try {
+      await this.cargaEnCurso;
+    } finally {
+      this.cargaEnCurso = null;
+    }
   }
 
   async registrar(
@@ -142,7 +201,9 @@ export class AlmacenBotonesWeb {
   ): Promise<void> {
     if (!botonesValidos(botones)) return;
     const mensaje = { chatId, messageId, texto, botones, actualizadoEn: this.ahora() };
-    this.activos.set(clave(chatId, messageId), mensaje);
+    const llave = clave(chatId, messageId);
+    this.eliminadosAntesDeCarga.delete(llave);
+    this.activos.set(llave, mensaje);
     await this.repositorio.guardar(mensaje);
   }
 
@@ -153,7 +214,9 @@ export class AlmacenBotonesWeb {
     textoSiFalta?: string
   ): Promise<void> {
     if (botones.length === 0) {
-      this.activos.delete(clave(chatId, messageId));
+      const llave = clave(chatId, messageId);
+      this.eliminadosAntesDeCarga.add(llave);
+      this.activos.delete(llave);
       await this.repositorio.eliminar(chatId, messageId);
       return;
     }
