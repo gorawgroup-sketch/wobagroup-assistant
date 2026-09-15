@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
+import { mensajeFalloTurno } from "../core/claude/turnSafety";
+import { prepararAcuseCallback } from "../core/telegram/client";
 import {
   esUsuarioAutorizado,
   esAccionSensible,
@@ -28,14 +30,21 @@ import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
 import { askClaude, buscarEnInternet, esErrorSaldoAnthropicAgotado } from "../core/claude/client";
+import { obtenerHistorialVisible } from "../core/claude/conversationStore";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
-import { handleDescartarTodoPendienteCallback, handleDescartarItemPendienteCallback } from "../core/jobs/resumenPendientesDiario";
+import {
+  handleCancelarDescartarTodoPendienteCallback,
+  handleConfirmarDescartarTodoPendienteCallback,
+  handleDescartarTodoPendienteCallback,
+  handleDescartarItemPendienteCallback,
+} from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
+import { obtenerEstadoEnviosCorreoDurables, reconciliarEnviosCorreoAlArrancar } from "../core/gmail/client";
 import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
 import { consumirPendienteOrientacionAnotacion } from "../core/jobs/cashflowAnnotationOrientationStore";
@@ -55,24 +64,59 @@ import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorrec
 import { consumirPendienteAjusteMontoGasto } from "../core/gastos/pendienteAjusteMontoGastoStore";
 import { consumirPendienteAccionGasto } from "../core/gastos/pendienteAccionGastoStore";
 import { consumirPendienteSeleccionGasto } from "../core/gastos/pendienteSeleccionGastoStore";
+import { obtenerDiagnosticoMetadataPestanas } from "../core/google/sheetsKeyValueStore";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
-import { obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
+import { obtenerRevisionCerebro, publicarCambioCerebro, suscribirCambiosCerebro } from "../core/cerebro/realtime";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
 import { handleReporteContableCallback } from "../core/reportes/reporteContableCallbackHandler";
 import { handleAutorespuestaHiloCallback } from "../core/gmail/autorespuestaHiloCallbackHandler";
 import { esTokenTemporalValido, listarTokensActivos, revocarTokenTemporal } from "../core/cerebro/tempTokenStore";
+import { resolverIdentidadChatWeb } from "../core/cerebro/webChatIdentity";
+import { crearSolicitudVinculoChat, confirmarVinculoChat } from "../core/cerebro/chatLinkStore";
+import { extraerCodigoVinculoChat } from "../core/cerebro/chatLinkCommand";
+import {
+  ConflictoIdempotencia,
+  iniciarSolicitudChat,
+  solicitudChatExpirada,
+  solicitudesChatEnCurso,
+} from "../core/cerebro/webChatCoordinator";
+import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
+import { crearRouterVoz } from "../core/cerebro/voiceRouter";
+import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import { verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { crearPendienteAutorrepair } from "../core/github/autorrepairPendienteStore";
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
-import type { TelegramUpdate } from "../core/telegram/types";
+import type { TelegramUpdate, TelegramCallbackQuery } from "../core/telegram/types";
+import {
+  CoordinadorEntregasTelegram,
+  configuracionEntregasDurables,
+  type EntregaTelegramDurable,
+} from "../core/telegram/durableDelivery";
+import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
+import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
+import { resumirMetricasCachesLectura } from "../core/utils/readCache";
+import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
+import {
+  obtenerEstadoCreacionesCompraDurables,
+  obtenerEstadoEdicionesCompraDurables,
+  obtenerEstadoAdjuntosCompraDurables,
+  obtenerEstadoConciliacionesMovimientoDurables,
+  obtenerEstadoCreacionesContactoDurables,
+  reconciliarCreacionesCompraAlArrancar,
+  reconciliarEdicionesCompraAlArrancar,
+  reconciliarAdjuntosCompraAlArrancar,
+  reconciliarMovimientosAlArrancar,
+  reconciliarContactosAlArrancar,
+} from "../core/holded/write";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -111,8 +155,8 @@ process.on("uncaughtException", (error) => {
  * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): pidió confirmar si un movimiento era una
  * transferencia interna, el bot respondió "Trabajando en tu consulta..." — y un redeploy normal de
  * Railway (rollout, varias veces por sesión en desarrollo activo) llegó a mitad de ese procesamiento y
- * mató el proceso. El webhook de Telegram ya había respondido 200 OK de inmediato (para que Telegram no
- * reintente el update — ver /webhook/telegram más abajo), así que el trabajo REAL sigue corriendo en
+ * mató el proceso. En aquel momento el webhook de Telegram respondía 200 OK antes de guardar el update;
+ * el bloque 4 ahora exige una reserva durable antes de ese ACK. El trabajo REAL sigue corriendo en
  * segundo plano, sin ninguna conexión HTTP abierta que un shutdown "normal" (esperar a que las requests
  * en curso terminen) pueda detectar. Railway por defecto solo da 3 segundos entre SIGTERM y SIGKILL —
  * muchísimo menos que lo que tarda un turno real de Claude con herramientas — así que sin esto, CADA
@@ -152,12 +196,30 @@ function trackearEnSegundoPlano<T>(promesa: Promise<T>): void {
   });
 }
 
+async function avisarEntregaTelegramIncierta(entrega: EntregaTelegramDurable): Promise<void> {
+  if (!entrega.chatId) return;
+  await sendTelegramMessage(
+    entrega.chatId,
+    "⚠️ Una solicitud quedó interrumpida después de comenzar. Wobi no la repitió automáticamente para evitar duplicar una acción. Consulta el estado antes de volver a ejecutarla."
+  );
+}
+
+const coordinadorEntregasTelegram = new CoordinadorEntregasTelegram(
+  durableDeliveryStore,
+  procesarUpdateTelegram,
+  avisarEntregaTelegramIncierta
+);
+const configuracionTelegramDurable = configuracionEntregasDurables();
+
 process.on("SIGTERM", () => {
   if (cerrandoPorSigterm) return; // Railway no debería mandar SIGTERM dos veces, pero por si acaso.
   cerrandoPorSigterm = true;
+  coordinadorEntregasTelegram.cerrar();
   servidorHttp?.close();
 
-  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0;
+  const nadaEnCurso = () => actualizacionesEnCurso === 0 && obtenerCantidadJobsEnCurso() === 0 &&
+    solicitudesChatEnCurso() === 0 && obtenerEstadoPlanificadorHerramientas().activas === 0 &&
+    coordinadorEntregasTelegram.estado.activas === 0;
 
   if (nadaEnCurso()) {
     console.log("[server] SIGTERM recibido, sin trabajo en curso — saliendo de inmediato.");
@@ -166,7 +228,7 @@ process.on("SIGTERM", () => {
   }
 
   console.log(
-    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram y ${obtenerCantidadJobsEnCurso()} job(s) en curso — esperando a que terminen antes de salir.`
+    `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${coordinadorEntregasTelegram.estado.activas} entrega(s) durable(s), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s) y ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s) activas — esperando a que terminen antes de salir.`
   );
   const esperaMaximaDrenajeMs = 55_000;
   const inicio = Date.now();
@@ -178,7 +240,7 @@ process.on("SIGTERM", () => {
     } else if (Date.now() - inicio > esperaMaximaDrenajeMs) {
       clearInterval(intervalo);
       console.error(
-        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${obtenerCantidadJobsEnCurso()} job(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
+        `[server] Quedó trabajo sin terminar (${actualizacionesEnCurso} actualización(es), ${coordinadorEntregasTelegram.estado.activas} entrega(s) durable(s), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s), ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s)) tras ${esperaMaximaDrenajeMs}ms de espera — saliendo de todas formas (Railway va a forzar el cierre pronto).`
       );
       process.exit(0);
     }
@@ -187,12 +249,84 @@ process.on("SIGTERM", () => {
 });
 
 const app = express();
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+app.use((_req: Request, res: Response, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-Frame-Options", "DENY");
+  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  // El chat permite dictado solo desde este mismo origen. Cámara y ubicación
+  // siguen bloqueadas; el navegador pide permiso explícito antes de usar el micro.
+  res.set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
+  // El chat reproduce el MP3 autenticado como URL blob local. El permiso
+  // se limita a medios: scripts, conexiones y marcos conservan sus restricciones.
+  res.set(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self'; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://wobagroup-assistant-production.up.railway.app; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+  );
+  next();
+});
 app.use(express.json());
+
+interface VentanaLimite {
+  inicio: number;
+  usos: number;
+}
+
+/** Defensa simple en proceso; los límites globales de IA siguen aplicándose aparte. */
+function crearLimitador(maximo: number, ventanaMs: number) {
+  const ventanas = new Map<string, VentanaLimite>();
+  return (clave: string): { permitido: boolean; reintentarEnSegundos: number } => {
+    const ahora = Date.now();
+    if (ventanas.size >= 5_000 && !ventanas.has(clave)) {
+      const primera = ventanas.keys().next().value;
+      if (primera) ventanas.delete(primera);
+    }
+    const actual = ventanas.get(clave);
+    if (!actual || ahora - actual.inicio >= ventanaMs) {
+      ventanas.set(clave, { inicio: ahora, usos: 1 });
+      return { permitido: true, reintentarEnSegundos: 0 };
+    }
+    if (actual.usos >= maximo) {
+      return { permitido: false, reintentarEnSegundos: Math.max(1, Math.ceil((ventanaMs - (ahora - actual.inicio)) / 1000)) };
+    }
+    actual.usos += 1;
+    return { permitido: true, reintentarEnSegundos: 0 };
+  };
+}
+
+const limitarSolicitudesAcceso = crearLimitador(5, 10 * 60 * 1000);
+const limitarBusquedasPanel = crearLimitador(30, 60 * 60 * 1000);
+
+let invalidacionTelegramPendiente: NodeJS.Timeout | null = null;
+function programarActualizacionCerebroDesdeTelegram(origen: "telegram" | "chat_web" = "telegram"): void {
+  if (invalidacionTelegramPendiente) clearTimeout(invalidacionTelegramPendiente);
+  invalidacionTelegramPendiente = setTimeout(() => {
+    invalidacionTelegramPendiente = null;
+    invalidarEstadoCerebro();
+    publicarCambioCerebro(origen);
+  }, 12_000);
+  invalidacionTelegramPendiente.unref();
+}
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
+  const herramientas = obtenerEstadoPlanificadorHerramientas();
+  res.json({
+    status: "ok",
+    trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes },
+    cacheLecturas: resumirMetricasCachesLectura(),
+    metadataSheets: obtenerDiagnosticoMetadataPestanas(),
+    entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
+    enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
+    subidasDrive: obtenerEstadoSubidasDriveDurables(),
+    comprasHolded: obtenerEstadoCreacionesCompraDurables(),
+    edicionesHolded: obtenerEstadoEdicionesCompraDurables(),
+    adjuntosHolded: obtenerEstadoAdjuntosCompraDurables(),
+    conciliacionesHolded: obtenerEstadoConciliacionesMovimientoDurables(),
+    contactosHolded: obtenerEstadoCreacionesContactoDurables(),
+  });
 });
 
 // La raíz del dominio nunca tuvo ninguna página propia — sin esto, entrar a
@@ -212,7 +346,18 @@ app.get("/", (_req: Request, res: Response) => {
  * de /cerebro además de los assets estáticos — no hace falta un catch-all.
  */
 const CEREBRO_DIST = join(process.cwd(), "frontend-cerebro", "dist");
-app.use("/cerebro", express.static(CEREBRO_DIST));
+app.use(
+  "/cerebro",
+  express.static(CEREBRO_DIST, {
+    setHeaders: (res, path) => {
+      if (path.includes(`${join("cerebro", "assets")}`) || path.includes("/assets/")) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    },
+  })
+);
 app.get("/cerebro", (_req: Request, res: Response) => {
   res.sendFile(join(CEREBRO_DIST, "index.html"));
 });
@@ -280,6 +425,50 @@ async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> 
   return true;
 }
 
+app.use("/api/cerebro/voz", crearRouterVoz(exigeAccesoValido));
+
+/**
+ * Canal de invalidación en tiempo real. Envía solo metadatos; los datos de
+ * negocio se siguen leyendo por /estado, con autenticación y caché propios.
+ * fetch streaming permite conservar X-Cerebro-Key sin ponerla en la URL.
+ */
+app.get("/api/cerebro/stream", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  if (!(await exigeAccesoValido(req, res))) return;
+
+  res.status(200);
+  res.set("Content-Type", "text/event-stream; charset=utf-8");
+  res.set("Cache-Control", "no-cache, no-transform");
+  res.set("Connection", "keep-alive");
+  res.set("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const escribir = (evento: string, data: unknown) => {
+    if (!res.writableEnded) res.write(`event: ${evento}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  escribir("listo", { revision: obtenerRevisionCerebro(), en: new Date().toISOString() });
+  const cancelar = suscribirCambiosCerebro((evento) => escribir("actualizar", evento));
+  const ping = setInterval(() => {
+    if (!res.writableEnded) res.write(`: ping ${Date.now()}\n\n`);
+  }, 20_000);
+  ping.unref();
+
+  req.on("close", () => {
+    clearInterval(ping);
+    cancelar();
+  });
+});
+
+app.options("/api/cerebro/stream", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  res.sendStatus(204);
+});
+
 /**
  * Estado de las conexiones externas (Telegram, Claude, Google Sheets/Drive/
  * Gmail, Holded x3) para el panel de conexiones — ver core/cerebro/conexiones.ts.
@@ -313,7 +502,9 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
 
-  if (!(await exigeAccesoValido(req, res))) return;
+  // Reconfigurar un webhook o forzar un ping de Claude no es una lectura:
+  // solo la sesión maestra puede hacerlo.
+  if (!exigeKeyMaestra(req, res)) return;
 
   const id = typeof req.body?.id === "string" ? req.body.id : "";
   if (!id) {
@@ -323,6 +514,7 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
 
   try {
     const conexion = await arreglarConexion(id);
+    publicarCambioCerebro(`conexion:${id}`);
     res.json({ conexion });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -417,8 +609,17 @@ app.post("/api/cerebro/buscar", async (req: Request, res: Response) => {
     return;
   }
 
+  const limite = limitarBusquedasPanel(req.ip || req.socket.remoteAddress || "desconocido");
+  if (!limite.permitido) {
+    res.set("Retry-After", String(limite.reintentarEnSegundos));
+    res.status(429).json({ error: "Límite de búsquedas del panel alcanzado. Intenta más tarde." });
+    return;
+  }
+
   try {
     const resultado = await buscarEnInternet(query);
+    invalidarEstadoCerebro();
+    publicarCambioCerebro("busqueda_web");
     res.json(resultado);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -434,6 +635,343 @@ app.options("/api/cerebro/buscar", (_req: Request, res: Response) => {
   res.sendStatus(204);
 });
 
+function corsChat(res: Response, metodo: "GET" | "POST"): void {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, X-Cerebro-Nombre, X-Cerebro-Device, Content-Type");
+  res.set("Access-Control-Allow-Methods", metodo);
+}
+
+function nombreDesdeHeader(req: Request): string {
+  const valor = req.get("X-Cerebro-Nombre") ?? "";
+  try {
+    return decodeURIComponent(valor).trim().slice(0, 100);
+  } catch {
+    return valor.trim().slice(0, 100);
+  }
+}
+
+async function identidadChatDesdeRequest(req: Request) {
+  return resolverIdentidadChatWeb(
+    req.get("X-Cerebro-Key") ?? "",
+    nombreDesdeHeader(req),
+    req.get("X-Cerebro-Device") ?? ""
+  );
+}
+
+async function identidadChatParaRespuesta(req: Request, res: Response) {
+  try {
+    const identidad = await identidadChatDesdeRequest(req);
+    if (!identidad) {
+      res.status(403).json({ error: "Sesión de chat inválida o dispositivo no reconocido." });
+      return null;
+    }
+    return identidad;
+  } catch (error) {
+    // Express 4 no captura automáticamente rechazos de handlers async. Un
+    // 429 transitorio de Sheets antes escapaba como unhandledRejection y el
+    // navegador quedaba esperando. Ahora el fallo es explícito y recuperable.
+    console.error("[api/cerebro/chat] No se pudo resolver la identidad:", error instanceof Error ? error.name : "Error");
+    res.status(503).json({ error: "Wobi está reconectando sus datos. Inténtalo de nuevo en unos segundos." });
+    return null;
+  }
+}
+
+function identidadPublica(identidad: Awaited<ReturnType<typeof identidadChatDesdeRequest>>) {
+  if (!identidad) return null;
+  return {
+    nombre: identidad.nombre,
+    rol: identidad.rol,
+    vinculadaTelegram: identidad.vinculadaTelegram,
+    modo: identidad.modo,
+  };
+}
+
+/**
+ * Historial textual común. Si el dispositivo fue vinculado por Telegram,
+ * usa exactamente el mismo chatId que el bot; nunca expone tool inputs,
+ * tool results, claves ni razonamiento interno.
+ */
+app.get("/api/cerebro/chat", async (req: Request, res: Response) => {
+  corsChat(res, "GET");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+
+  const mensajes = await obtenerHistorialVisible(identidad.chatId);
+  // Espejo de qué mensajes recientes siguen con botones activos en Telegram (ver
+  // core/cerebro/webBotonesStore.ts) — el front los renderiza como opciones clicables, en modo
+  // completo, junto al texto correspondiente en `mensajes`.
+  const botonesActivos = obtenerBotonesActivos(identidad.chatId).map((b) => ({
+    messageId: b.messageId,
+    texto: b.texto,
+    botones: b.botones,
+  }));
+  res.json({ identidad: identidadPublica(identidad), mensajes, botonesActivos });
+});
+
+app.options("/api/cerebro/chat", (_req: Request, res: Response) => {
+  corsChat(res, "GET");
+  res.set("Access-Control-Allow-Methods", "GET, POST");
+  res.sendStatus(204);
+});
+
+const solicitudesChatPorMinuto = new Map<number, Map<string, number>>();
+
+function puedeEnviarMensajeChat(chatId: number, messageId: string): boolean {
+  const ahora = Date.now();
+  const recientes = solicitudesChatPorMinuto.get(chatId) ?? new Map<string, number>();
+  for (const [id, momento] of recientes) {
+    if (ahora - momento >= 60_000) recientes.delete(id);
+  }
+  // Los reintentos idempotentes no consumen una plaza adicional del límite.
+  if (recientes.has(messageId)) return true;
+  if (recientes.size >= 10) return false;
+  recientes.set(messageId, ahora);
+  solicitudesChatPorMinuto.set(chatId, recientes);
+  return true;
+}
+
+/**
+ * Entrada idempotente del chat web. messageId nace en el navegador y se
+ * persiste ANTES de llamar al modelo. Un retry con el mismo id se une a la
+ * ejecución viva o devuelve su respuesta anterior; nunca vuelve a ejecutar
+ * el turno ni sus herramientas.
+ */
+app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
+  corsChat(res, "POST");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+
+  const messageId = typeof req.body?.messageId === "string" ? req.body.messageId.trim() : "";
+  const texto = typeof req.body?.texto === "string" ? req.body.texto.trim() : "";
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(messageId)) {
+    res.status(400).json({ error: "messageId ausente o inválido." });
+    return;
+  }
+  if (!texto || texto.length > 4_000) {
+    res.status(400).json({ error: "El mensaje debe tener entre 1 y 4.000 caracteres." });
+    return;
+  }
+  if (!puedeEnviarMensajeChat(identidad.chatId, messageId)) {
+    res.status(429).json({ error: "Demasiados mensajes seguidos. Espera un minuto antes de continuar." });
+    return;
+  }
+
+  try {
+    const resultado = await iniciarSolicitudChat(
+      { requestId: messageId, chatId: identidad.chatId, texto },
+      webChatRequestStore,
+      async () => {
+        try {
+          return await askClaude(texto, identidad.chatId, identidad.nombre, "chat_conversacional", {
+            soloLectura: identidad.modo === "solo_lectura",
+            presentacion: "web",
+          });
+        } finally {
+          // Despierta el front al terminar (con éxito o error). La respuesta
+          // se recupera por requestId; no depende de mantener el POST vivo.
+          publicarCambioCerebro("chat_web");
+        }
+      }
+    );
+
+    if (resultado.estado === "procesando") {
+      res.status(202).json({ estado: resultado.estado, requestId: messageId, duplicada: resultado.duplicada });
+      return;
+    }
+    if (resultado.estado === "fallido") {
+      res.status(409).json({
+        estado: resultado.estado,
+        error: "La ejecución anterior quedó interrumpida y no se repitió para evitar duplicar acciones.",
+      });
+      return;
+    }
+
+    res.json({
+      estado: resultado.estado,
+      respuesta: resultado.respuesta,
+      duplicada: resultado.duplicada,
+      identidad: identidadPublica(identidad),
+    });
+  } catch (error) {
+    if (error instanceof ConflictoIdempotencia) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    console.error("[api/cerebro/chat] Error procesando mensaje:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: mensajeFalloTurno(error) });
+  }
+});
+
+/** Estado durable de un turno asíncrono del chat web. */
+app.get("/api/cerebro/chat/solicitud/:requestId", async (req: Request, res: Response) => {
+  corsChat(res, "GET");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+
+  const requestId = req.params.requestId?.trim() ?? "";
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) {
+    res.status(400).json({ error: "requestId ausente o inválido." });
+    return;
+  }
+
+  try {
+    let solicitud = await webChatRequestStore.obtener(identidad.chatId, requestId);
+    if (!solicitud) {
+      res.status(404).json({ error: "No encontré esa solicitud en esta conversación." });
+      return;
+    }
+    if (solicitudChatExpirada(solicitud)) {
+      await webChatRequestStore.fallar(identidad.chatId, requestId);
+      solicitud = { ...solicitud, estado: "fallido", actualizadoEn: Date.now() };
+    }
+    res.json({
+      requestId,
+      estado: solicitud.estado,
+      respuesta: solicitud.estado === "completado" ? solicitud.respuesta ?? "" : undefined,
+    });
+  } catch (error) {
+    console.error("[api/cerebro/chat/solicitud] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No pude consultar el estado del mensaje." });
+  }
+});
+
+app.options("/api/cerebro/chat/solicitud/:requestId", (_req: Request, res: Response) => {
+  corsChat(res, "GET");
+  res.sendStatus(204);
+});
+
+/** Crea un código de 10 minutos que solo puede confirmar el usuario desde su propio Telegram autorizado. */
+app.post("/api/cerebro/chat/vincular", async (req: Request, res: Response) => {
+  corsChat(res, "POST");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+  try {
+    const resultado = await crearSolicitudVinculoChat(req.get("X-Cerebro-Device") ?? "", identidad.nombre);
+    res.json(resultado);
+  } catch (error) {
+    console.error("[api/cerebro/chat/vincular] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No se pudo crear el código de vinculación." });
+  }
+});
+
+app.options("/api/cerebro/chat/vincular", (_req: Request, res: Response) => {
+  corsChat(res, "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Pedido explícito de Carlos: que el chat web pueda resolver las mismas decisiones que hoy solo
+ * existen como botones de Telegram (crear gasto vs. duplicado, clasificar un documento, aprobar
+ * categorías de cashflow...). "Pulsar" un botón acá construye un TelegramCallbackQuery sintético
+ * (mismo shape que uno real, con el message_id REAL que Telegram ya asignó al enviarlo) y lo
+ * despacha por despacharCallbackQuery — la MISMA lógica que ya resuelve cada botón real de Telegram,
+ * sin reimplementar ninguno de los ~15 flujos existentes (gastos, documentos, cashflow...). Aplica y
+ * queda reflejado en AMBOS canales: como el chatId es el mismo de Telegram (una vez vinculado), el
+ * handler edita/limpia el teclado del mensaje real, así que también desaparece ahí.
+ *
+ * El botón pulsado debe ser exactamente uno de los que el propio servidor mandó hace poco — nunca se
+ * confía en que el cliente diga "este botón existe", se valida contra lo que de verdad está en
+ * webBotonesStore (que puede perderse en un redeploy; en ese caso el botón simplemente ya no aparece
+ * como disponible, y sigue resolviéndose desde Telegram con normalidad).
+ *
+ * Solo en modo completo (dispositivo vinculado) — un dispositivo no vinculado ya no ve tools de
+ * escritura (ver soloLectura en askClaude), pero esto es una segunda capa: nunca ejecutar una acción
+ * real en nombre de alguien cuya identidad de Telegram todavía no está confirmada.
+ *
+ * Idempotente igual que /api/cerebro/chat (mismo mecanismo, mismo store — la respuesta se recupera
+ * por requestId vía GET /api/cerebro/chat/solicitud/:requestId, ya existente): un requestId repetido
+ * con el mismo callbackData se une a la ejecución en curso o devuelve su resultado ya guardado, nunca
+ * repite la acción real.
+ */
+app.post("/api/cerebro/chat/boton", async (req: Request, res: Response) => {
+  corsChat(res, "POST");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+
+  if (identidad.modo !== "completo") {
+    res.status(403).json({ error: "Vincula este dispositivo con Telegram para poder resolver decisiones desde el chat web." });
+    return;
+  }
+
+  const requestId = typeof req.body?.requestId === "string" ? req.body.requestId.trim() : "";
+  const messageId = Number(req.body?.messageId);
+  const callbackData = typeof req.body?.callbackData === "string" ? req.body.callbackData.trim() : "";
+
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) {
+    res.status(400).json({ error: "requestId ausente o inválido." });
+    return;
+  }
+  if (!Number.isInteger(messageId) || messageId <= 0) {
+    res.status(400).json({ error: "Falta messageId (entero positivo)." });
+    return;
+  }
+  if (!callbackData || callbackData.length > 200) {
+    res.status(400).json({ error: "callbackData ausente o inválido." });
+    return;
+  }
+
+  const mensaje = obtenerBotonesDeMensaje(identidad.chatId, messageId);
+  const botonValido = mensaje?.botones.some((fila) => fila.some((b) => b.callback_data === callbackData));
+  if (!mensaje || !botonValido) {
+    res.status(409).json({
+      error:
+        "Ese botón ya no está disponible — puede que ya se haya resuelto (revisa el mensaje más reciente) o que el servidor se haya reiniciado desde que se mostró. Si sigue pendiente, resuélvelo desde Telegram.",
+    });
+    return;
+  }
+
+  try {
+    const resultado = await iniciarSolicitudChat(
+      { requestId, chatId: identidad.chatId, texto: callbackData },
+      webChatRequestStore,
+      async () => {
+        const callback: TelegramCallbackQuery = {
+          id: `web:${requestId}`,
+          from: { id: identidad.chatId, is_bot: false, first_name: identidad.nombre },
+          message: {
+            message_id: messageId,
+            chat: { id: identidad.chatId, type: "private" },
+            date: Math.floor(Date.now() / 1000),
+            text: mensaje.texto,
+          },
+          data: callbackData,
+        };
+        try {
+          await despacharCallbackQuery(callback);
+          return "ok";
+        } finally {
+          programarActualizacionCerebroDesdeTelegram("chat_web");
+        }
+      }
+    );
+
+    if (resultado.estado === "procesando") {
+      res.status(202).json({ estado: resultado.estado, requestId, duplicada: resultado.duplicada });
+      return;
+    }
+    if (resultado.estado === "fallido") {
+      res.status(409).json({
+        estado: resultado.estado,
+        error: "La ejecución anterior quedó interrumpida y no se repitió para evitar duplicar acciones.",
+      });
+      return;
+    }
+    res.json({ estado: resultado.estado, duplicada: resultado.duplicada });
+  } catch (error) {
+    if (error instanceof ConflictoIdempotencia) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    console.error("[api/cerebro/chat/boton] Error procesando botón:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No pude procesar ese botón." });
+  }
+});
+
+app.options("/api/cerebro/chat/boton", (_req: Request, res: Response) => {
+  corsChat(res, "POST");
+  res.sendStatus(204);
+});
+
 /**
  * Solicita acceso al front del cerebro: alguien manda su nombre, se crea una
  * solicitud pendiente y se notifica a TODOS los admins por Telegram con
@@ -445,6 +983,13 @@ app.post("/api/cerebro/solicitar-acceso", async (req: Request, res: Response) =>
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
+
+  const limite = limitarSolicitudesAcceso(req.ip || req.socket.remoteAddress || "desconocido");
+  if (!limite.permitido) {
+    res.set("Retry-After", String(limite.reintentarEnSegundos));
+    res.status(429).json({ error: "Demasiadas solicitudes de acceso. Espera unos minutos." });
+    return;
+  }
 
   const nombre = typeof req.body?.nombre === "string" ? req.body.nombre.trim().slice(0, 100) : "";
   if (!nombre) {
@@ -572,6 +1117,7 @@ app.post("/api/cerebro/revocar-acceso", async (req: Request, res: Response) => {
 
   try {
     const existia = await revocarTokenTemporal(id);
+    if (existia) publicarCambioCerebro("acceso_revocado");
     res.json({ ok: existia });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -633,6 +1179,8 @@ app.post("/api/cerebro/cambiar-rol-usuario", async (req: Request, res: Response)
       return;
     }
     await autorizarUsuario(userId, rol, existente.nombre);
+    invalidarEstadoCerebro();
+    publicarCambioCerebro("usuario_rol_actualizado");
     res.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -659,6 +1207,10 @@ app.post("/api/cerebro/eliminar-usuario", async (req: Request, res: Response) =>
 
   try {
     const existia = await eliminarUsuario(userId);
+    if (existia) {
+      invalidarEstadoCerebro();
+      publicarCambioCerebro("usuario_eliminado");
+    }
     res.json({ ok: existia });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -677,19 +1229,118 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
 /**
  * Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): un redeploy de Railway (rollout normal,
  * varias veces por sesión en desarrollo activo) mató a mitad de camino el procesamiento de este mismo
- * handler — Telegram ya había recibido su 200 OK (ver abajo, se manda de inmediato), así que el
+ * handler — Telegram ya había recibido su 200 OK antes de que existiera un registro recuperable, así que el
  * "trabajando en tu consulta..." se quedó sin respuesta para siempre, sin ningún error visible y sin
  * ninguna forma de que Carlos supiera que el proceso simplemente murió. `procesarUpdateTelegram` es el
- * cuerpo real (sin cambios) de lo que antes era el handler inline — se extrae a una función nombrada
- * para poder trackear cuántas actualizaciones siguen realmente en curso (ver `actualizacionesEnCurso`
+ * cuerpo real de lo que antes era el handler inline; la reserva/ACK vive ahora fuera de esta función
+ * para poder persistir antes de confirmar la entrega. La función nombrada permite además trackear
+ * cuántas actualizaciones siguen realmente en curso (ver `actualizacionesEnCurso`
  * y el handler de SIGTERM más abajo), que ahora espera a que terminen antes de dejar que Railway mate
  * el proceso, en vez de cortarlas a mitad de camino.
  */
-async function procesarUpdateTelegram(req: Request, res: Response): Promise<void> {
-  // Respondemos 200 de inmediato para que Telegram no reintente el update.
-  res.sendStatus(200);
+/**
+ * Despacha un callback_query (por prefijo de su `data`) al handler que corresponde — extraído de
+ * procesarUpdateTelegram para que el chat web (ver /api/cerebro/chat/boton) pueda disparar EXACTAMENTE
+ * la misma lógica que un botón real de Telegram, construyendo un TelegramCallbackQuery sintético en
+ * vez de duplicar este switch. La autorización de "¿puede este usuario hablarle al bot?" queda fuera
+ * a propósito (es responsabilidad de cada llamador: procesarUpdateTelegram ya la hizo con
+ * esUsuarioAutorizado antes de llegar acá; el endpoint web la hace con identidadChatParaRespuesta) —
+ * lo que SÍ viaja acá es el chequeo de rol para acciones sensibles, que aplica igual sin importar el
+ * canal.
+ */
+async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<void> {
+  const data = callback.data ?? "";
 
-  const update = req.body as TelegramUpdate;
+  if (data.startsWith("auth_")) {
+    await handleAuthCallback(callback);
+    return;
+  }
+
+  if (esAccionSensible(data) && !puedeAprobarAccionSensible(await obtenerRolUsuario(callback.from?.id))) {
+    console.warn(`[auth] Usuario sin permiso de superadmin intentó acción sensible — id: ${callback.from?.id}, accion: ${data}`);
+    await answerCallbackQuery(callback.id, "Esta acción requiere aprobación del superadministrador.").catch(() => {});
+    return;
+  }
+
+  try {
+    if (data.startsWith("doc_")) {
+      await handleDocumentCallback(callback);
+    } else if (data.startsWith("desamb_")) {
+      await handleDesambiguacionCallback(callback);
+    } else if (data.startsWith("colacorreo_")) {
+      if (data === "colacorreo_descartaractivo") {
+        await handleDescartarActivoCallback(callback);
+      } else {
+        await handleColaCorreoSiguienteCallback(callback);
+      }
+    } else if (data === "resumen_descartar_todo:confirmar") {
+      await handleConfirmarDescartarTodoPendienteCallback(callback);
+    } else if (data === "resumen_descartar_todo:cancelar") {
+      await handleCancelarDescartarTodoPendienteCallback(callback);
+    } else if (data === "resumen_descartar_todo") {
+      await handleDescartarTodoPendienteCallback(callback);
+    } else if (data.startsWith("resumen_descartar_item:")) {
+      await handleDescartarItemPendienteCallback(callback);
+    } else if (data.startsWith("email_")) {
+      await handleEmailActionCallback(callback);
+    } else if (data.startsWith("draft_")) {
+      await handleDraftCallback(callback);
+    } else if (data.startsWith("recpago_")) {
+      await handlePagoRecurrenteCallback(callback);
+    } else if (data.startsWith("gasto_")) {
+      await handleGastoCallback(callback);
+    } else if (data.startsWith("edicioncompra_")) {
+      await handleEdicionCompraHoldedCallback(callback);
+    } else if (data.startsWith("edicioncashflow_")) {
+      await handleEdicionValorCashflowCallback(callback);
+    } else if (data.startsWith("regmanualcf_")) {
+      await handleRegistroManualCashflowCallback(callback);
+    } else if (data.startsWith("evento_")) {
+      await handleEventoCallback(callback);
+    } else if (data.startsWith("cerebroacceso_")) {
+      await handleAccesoCerebroCallback(callback);
+    } else if (data.startsWith("capturaempresa_")) {
+      await handleCapturaEmpresaCallback(callback);
+    } else if (data.startsWith("anotcf_")) {
+      await handleCashflowAnnotationActionCallback(callback);
+    } else if (data.startsWith("accprog_")) {
+      await handleAccionProgramadaCallback(callback);
+    } else if (data.startsWith("reportecontable_")) {
+      await handleReporteContableCallback(callback);
+    } else if (data.startsWith("autohilo_")) {
+      await handleAutorespuestaHiloCallback(callback);
+    } else if (data.startsWith("autorrepair_")) {
+      await handleAutorrepairCallback(callback);
+    } else if (data.startsWith("escaladev_")) {
+      await handleEscalacionCallback(callback);
+    } else {
+      await handleCallbackQuery(callback);
+    }
+  } catch (error) {
+    console.error("Error procesando callback_query:", error);
+    // El llamador ya recibió su ACK (Telegram por HTTP 200 del webhook, o el endpoint web por su
+    // propia respuesta) y, en muchos flujos, el usuario ya vio un mensaje intermedio como
+    // "Aplicando...". Un error no manejado aquí quedaba únicamente en logs y hacía que pareciera que
+    // el bot se congeló. Nunca reintentamos una acción sensible desde este catch (podría haberse
+    // aplicado aunque la confirmación se perdiera); solo cerramos visualmente el estado y pedimos
+    // comprobar antes de repetir. Sin texto en el ACK: si el acuse temprano ya salió, AcusesCallback
+    // no crea un segundo mensaje tardío. El aviso persistente se manda una sola vez justo debajo.
+    await answerCallbackQuery(callback.id).catch(() => {});
+    const chatId = callback.message?.chat.id;
+    if (chatId !== undefined) {
+      await sendTelegramMessage(
+        chatId,
+        "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto de Telegram continúa operativo."
+      ).catch(() => {});
+    }
+  }
+}
+
+async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
+
+  if (update.callback_query) {
+    prepararAcuseCallback(update.callback_query.id, update.callback_query.from.id);
+  }
 
   const remitente = update.callback_query?.from ?? update.message?.from;
   if (!(await esUsuarioAutorizado(remitente?.id))) {
@@ -714,76 +1365,13 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
     return;
   }
 
+  // La mayoría de los cambios visibles del panel nacen en Telegram. Se
+  // agrupan durante 12 s para esperar a que termine el flujo y evitar una
+  // reconstrucción costosa por cada mensaje o botón consecutivo.
+  programarActualizacionCerebroDesdeTelegram();
+
   if (update.callback_query) {
-    const data = update.callback_query.data ?? "";
-
-    if (data.startsWith("auth_")) {
-      await handleAuthCallback(update.callback_query);
-      return;
-    }
-
-    if (esAccionSensible(data) && !puedeAprobarAccionSensible(await obtenerRolUsuario(remitente?.id))) {
-      console.warn(`[auth] Usuario sin permiso de superadmin intentó acción sensible — id: ${remitente?.id}, accion: ${data}`);
-      await answerCallbackQuery(
-        update.callback_query.id,
-        "Esta acción requiere aprobación del superadministrador."
-      ).catch(() => {});
-      return;
-    }
-
-    try {
-      if (data.startsWith("doc_")) {
-        await handleDocumentCallback(update.callback_query);
-      } else if (data.startsWith("desamb_")) {
-        await handleDesambiguacionCallback(update.callback_query);
-      } else if (data.startsWith("colacorreo_")) {
-        if (data === "colacorreo_descartaractivo") {
-          await handleDescartarActivoCallback(update.callback_query);
-        } else {
-          await handleColaCorreoSiguienteCallback(update.callback_query);
-        }
-      } else if (data === "resumen_descartar_todo") {
-        await handleDescartarTodoPendienteCallback(update.callback_query);
-      } else if (data.startsWith("resumen_descartar_item:")) {
-        await handleDescartarItemPendienteCallback(update.callback_query);
-      } else if (data.startsWith("email_")) {
-        await handleEmailActionCallback(update.callback_query);
-      } else if (data.startsWith("draft_")) {
-        await handleDraftCallback(update.callback_query);
-      } else if (data.startsWith("recpago_")) {
-        await handlePagoRecurrenteCallback(update.callback_query);
-      } else if (data.startsWith("gasto_")) {
-        await handleGastoCallback(update.callback_query);
-      } else if (data.startsWith("edicioncompra_")) {
-        await handleEdicionCompraHoldedCallback(update.callback_query);
-      } else if (data.startsWith("edicioncashflow_")) {
-        await handleEdicionValorCashflowCallback(update.callback_query);
-      } else if (data.startsWith("regmanualcf_")) {
-        await handleRegistroManualCashflowCallback(update.callback_query);
-      } else if (data.startsWith("evento_")) {
-        await handleEventoCallback(update.callback_query);
-      } else if (data.startsWith("cerebroacceso_")) {
-        await handleAccesoCerebroCallback(update.callback_query);
-      } else if (data.startsWith("capturaempresa_")) {
-        await handleCapturaEmpresaCallback(update.callback_query);
-      } else if (data.startsWith("anotcf_")) {
-        await handleCashflowAnnotationActionCallback(update.callback_query);
-      } else if (data.startsWith("accprog_")) {
-        await handleAccionProgramadaCallback(update.callback_query);
-      } else if (data.startsWith("reportecontable_")) {
-        await handleReporteContableCallback(update.callback_query);
-      } else if (data.startsWith("autohilo_")) {
-        await handleAutorespuestaHiloCallback(update.callback_query);
-      } else if (data.startsWith("autorrepair_")) {
-        await handleAutorrepairCallback(update.callback_query);
-      } else if (data.startsWith("escaladev_")) {
-        await handleEscalacionCallback(update.callback_query);
-      } else {
-        await handleCallbackQuery(update.callback_query);
-      }
-    } catch (error) {
-      console.error("Error procesando callback_query de Telegram:", error);
-    }
+    await despacharCallbackQuery(update.callback_query);
     return;
   }
 
@@ -816,10 +1404,29 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
     return;
   }
 
+  const codigoVinculo = extraerCodigoVinculoChat(incoming.text);
+  if (codigoVinculo && remitente) {
+    const nombreTelegram = incoming.fromNombre || [remitente.first_name, remitente.last_name].filter(Boolean).join(" ");
+    try {
+      const vinculo = await confirmarVinculoChat(codigoVinculo, remitente.id, nombreTelegram);
+      if (vinculo) publicarCambioCerebro("chat_vinculado");
+      await sendTelegramMessage(
+        incoming.chatId,
+        vinculo
+          ? `✅ El dispositivo solicitado como "${vinculo.nombreSolicitud}" ya está vinculado a tu cuenta. Puedes continuar la misma conversación desde el front de Wobi.`
+          : "⚠️ Ese código no existe o venció. Genera uno nuevo desde el chat web."
+      );
+    } catch (error) {
+      console.error("[chat/vincular] Error confirmando vínculo:", error instanceof Error ? error.name : "Error");
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude completar la vinculación. Inténtalo de nuevo.");
+    }
+    return;
+  }
+
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     trackearEnSegundoPlano(
-      revisarCorreoNuevo(true) // forzarAviso: lo pidió Carlos ahora mismo, sin importar el día ni si ya se avisó hoy
+      revisarCorreoNuevo(true, incoming.chatId) // forzarAviso: lo pidió este chat ahora mismo, sin importar el día ni si ya se avisó hoy
       .then((resultado) => {
         // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
         // con varios correos reales sin leer en Gmail, y el sistema
@@ -1107,7 +1714,7 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
     // ver avisarSaldoAnthropicAgotado en core/claude/client.ts) — el propio chat se vuelve la alerta.
     const mensajeError = esErrorSaldoAnthropicAgotado(error)
       ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo responder hasta que se recargue crédito en console.anthropic.com → Plans & Billing. Ya avisé a los administradores."
-      : "Lo siento, ha ocurrido un error procesando tu mensaje. Inténtalo de nuevo en unos minutos.";
+      : mensajeFalloTurno(error);
     try {
       await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, mensajeError);
     } catch (sendError) {
@@ -1118,10 +1725,60 @@ async function procesarUpdateTelegram(req: Request, res: Response): Promise<void
   }
 }
 
+// Fallback reversible del bloque 4. Solo se usa si el interruptor durable se
+// desactiva expresamente en Railway.
+const telegramUpdatesRecientes = new Map<number, number>();
+function esUpdateTelegramNuevoLocal(updateId: number): boolean {
+  const ahora = Date.now();
+  for (const [id, vistoEn] of telegramUpdatesRecientes) {
+    if (ahora - vistoEn > 24 * 60 * 60 * 1000) telegramUpdatesRecientes.delete(id);
+  }
+  if (telegramUpdatesRecientes.has(updateId)) return false;
+  telegramUpdatesRecientes.set(updateId, ahora);
+  return true;
+}
+
 app.post("/webhook/telegram", (req: Request, res: Response) => {
+  const update = req.body as TelegramUpdate;
+  if (!Number.isFinite(update.update_id)) {
+    res.sendStatus(200);
+    return;
+  }
+
+  if (!configuracionTelegramDurable.habilitado) {
+    res.sendStatus(200);
+    if (!esUpdateTelegramNuevoLocal(update.update_id)) return;
+    actualizacionesEnCurso++;
+    procesarUpdateTelegram(update)
+      .catch((error) => console.error("Error no capturado procesando el webhook de Telegram:", error))
+      .finally(() => { actualizacionesEnCurso--; });
+    return;
+  }
+
   actualizacionesEnCurso++;
-  procesarUpdateTelegram(req, res)
-    .catch((error) => console.error("Error no capturado procesando el webhook de Telegram:", error))
+  coordinadorEntregasTelegram.reservar(
+    update,
+    Boolean(update.callback_query && esAccionSensible(update.callback_query.data ?? ""))
+  )
+    .then(async ({ entrega, nueva }) => {
+      // Telegram solo recibe 200 después de que la entrega quedó durable.
+      // El procesamiento real continúa fuera del ciclo HTTP, como antes.
+      res.sendStatus(200);
+      if (!nueva && update.callback_query) {
+        const texto = entrega.estado === "completada"
+          ? "Esta acción ya fue procesada."
+          : entrega.estado === "incierta"
+            ? "Esta acción quedó con resultado incierto; comprueba su estado antes de repetirla."
+            : "Esta acción ya está en proceso.";
+        await answerCallbackQuery(update.callback_query.id, texto).catch(() => undefined);
+      }
+      await coordinadorEntregasTelegram.atender(entrega, nueva);
+    })
+    .catch((error) => {
+      console.error("Error en entrega durable de Telegram:", error instanceof Error ? error.name : "Error");
+      // Si todavía no se confirmó, Telegram puede reenviar el mismo update.
+      if (!res.headersSent) res.sendStatus(503);
+    })
     .finally(() => {
       actualizacionesEnCurso--;
     });
@@ -1438,4 +2095,100 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
 servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
+  if (configuracionTelegramDurable.habilitado) {
+    trackearEnSegundoPlano(
+      coordinadorEntregasTelegram.recuperar().catch((error) => {
+        console.error("[telegram/durable] No se pudo revisar entregas recuperables al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+    );
+  }
+  trackearEnSegundoPlano(
+    reconciliarEnviosCorreoAlArrancar()
+      .then((r) => {
+        if (r.revisados > 0) {
+          console.log("[gmail/durable] Reconciliación de arranque:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error("[gmail/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarSubidasDriveAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[drive/durable] Reconciliación de arranque:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error("[drive/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarCreacionesCompraAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación de compras al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error("[holded/durable] No se pudo reconciliar el ledger al arrancar:", error instanceof Error ? error.name : "Error");
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarEdicionesCompraAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación de ediciones al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger de ediciones al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarAdjuntosCompraAlArrancar()
+      .then((r) => {
+        if (r.revisados > 0) {
+          console.log("[holded/durable] Reconciliación de adjuntos al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger de adjuntos al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarMovimientosAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación bancaria al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger bancario al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
+      })
+  );
+  trackearEnSegundoPlano(
+    reconciliarContactosAlArrancar()
+      .then((r) => {
+        if (r.revisadas > 0) {
+          console.log("[holded/durable] Reconciliación de contactos al arrancar:", JSON.stringify(r));
+        }
+      })
+      .catch((error) => {
+        console.error(
+          "[holded/durable] No se pudo reconciliar el ledger de contactos al arrancar:",
+          error instanceof Error ? error.name : "Error"
+        );
+      })
+  );
 });

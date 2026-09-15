@@ -1,5 +1,7 @@
 import type { IncomingMessage, InlineKeyboardButton, TelegramUpdate } from "./types";
 import { registrarMensajeSaliente } from "../claude/conversationStore";
+import { AcusesCallback } from "./callbackAcknowledgements";
+import { registrarBotonesActivos, actualizarBotonesActivos } from "../cerebro/webBotonesStore";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 
@@ -274,6 +276,7 @@ export async function sendTelegramMessageWithButtons(
   registrarMensajeSaliente(chatId, text).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
+  registrarBotonesActivos(chatId, data.result.message_id, text, buttons);
 
   return data.result.message_id;
 }
@@ -357,6 +360,7 @@ export async function sendTelegramMessageExpandable(
   registrarMensajeSaliente(chatId, `${titulo}\n\n${cuerpo}`).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
+  if (buttons) registrarBotonesActivos(chatId, data.result.message_id, `${titulo}\n\n${cuerpo}`, buttons);
 
   return data.result.message_id;
 }
@@ -430,12 +434,14 @@ async function sendTelegramMessagePlain(chatId: number, text: string): Promise<n
  * Responde a un callback_query (pulsación de botón inline) para que Telegram
  * quite el estado de "cargando" del botón. `text` es opcional (toast breve).
  */
-export async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+async function responderCallbackTelegram(callbackQueryId: string, text?: string): Promise<void> {
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/answerCallbackQuery`;
 
-  const response = await fetchConReintento(url, {
+  // Acuse efímero: no gastar un minuto reintentando una pulsación ya caducada.
+  const response = await fetch(url, {
     method: "POST",
+    signal: AbortSignal.timeout(4_000),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       callback_query_id: callbackQueryId,
@@ -443,10 +449,23 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
     }),
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Error respondiendo callback_query a Telegram (${response.status}): ${body}`);
+  const body = await response.json() as { ok?: boolean };
+  if (!response.ok || body.ok !== true) {
+    throw new Error(`Error respondiendo callback_query a Telegram (${response.status}).`);
   }
+}
+
+const acusesCallback = new AcusesCallback(
+  responderCallbackTelegram,
+  () => console.warn("[telegram/callback] No se pudo entregar el acuse temprano.")
+);
+
+export function prepararAcuseCallback(id: string, usuarioId: number): void {
+  acusesCallback.preparar(id, (texto) => sendTelegramMessage(usuarioId, texto));
+}
+
+export function answerCallbackQuery(id: string, text?: string): Promise<void> {
+  return acusesCallback.contestar(id, text);
 }
 
 /**
@@ -515,10 +534,16 @@ export async function editTelegramMessageReplyMarkup(
     // Telegram devuelve 400 "message is not modified" cuando el teclado
     // mandado es idéntico al que ya está — no es un error real, pasa cada
     // vez que una selección vuelve al mismo estado que ya se había pintado
-    // (ej. marcar y desmarcar el mismo check dos veces seguidas).
-    if (response.status === 400 && /message is not modified/i.test(errBody)) return;
+    // (ej. marcar y desmarcar el mismo check dos veces seguidas). El estado
+    // pedido y el real ya coinciden, así que el espejo también se actualiza acá.
+    if (response.status === 400 && /message is not modified/i.test(errBody)) {
+      actualizarBotonesActivos(chatId, messageId, buttons);
+      return;
+    }
     throw new Error(`Error editando los botones de un mensaje de Telegram (${response.status}): ${errBody}`);
   }
+
+  actualizarBotonesActivos(chatId, messageId, buttons);
 }
 
 /** Igual que editTelegramMessage, pero con título fijo + cuerpo largo colapsado — ver sendTelegramMessageExpandable. */
@@ -637,6 +662,8 @@ export async function setTelegramWebhook(webhookUrl: string): Promise<void> {
 
 export interface TelegramWebhookInfo {
   url: string;
+  /** Telegram lo define como el número actual de actualizaciones aún pendientes de entregar. */
+  pendingUpdateCount?: number;
   lastErrorMessage?: string;
   lastErrorDate?: number;
 }
@@ -653,11 +680,17 @@ export async function getTelegramWebhookInfo(): Promise<TelegramWebhookInfo> {
   }
 
   const data = (await response.json()) as {
-    result: { url: string; last_error_message?: string; last_error_date?: number };
+    result: {
+      url: string;
+      pending_update_count?: number;
+      last_error_message?: string;
+      last_error_date?: number;
+    };
   };
 
   return {
     url: data.result.url,
+    pendingUpdateCount: data.result.pending_update_count ?? 0,
     lastErrorMessage: data.result.last_error_message,
     lastErrorDate: data.result.last_error_date,
   };
