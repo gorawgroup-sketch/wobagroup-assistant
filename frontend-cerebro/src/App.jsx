@@ -3,6 +3,13 @@ import WobiAvatar, { WOBI_IMAGE } from "./WobiAvatar.jsx";
 import WobiVoice from "./WobiVoice.jsx";
 import { createStreamingWobiSpeech } from "./wobiRealtimeSpeech.js";
 import { useCerebroRealtime } from "./useCerebroRealtime";
+import {
+  crearBloqueoOperaciones,
+  etiquetaEstadoSolicitud,
+  solicitudBloqueaBoton,
+  solicitudChatActiva,
+  tonoEstadoSolicitud,
+} from "./chatOperationState.mjs";
 
 const C = {
   void: "#050B14",
@@ -51,6 +58,8 @@ const CHAT_SOLICITUD_ENDPOINT = (requestId) => `${CHAT_ENDPOINT}/solicitud/${enc
 const CHAT_BOTON_ENDPOINT = `${CHAT_ENDPOINT}/boton`;
 const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
+const CHAT_RECUPERACION_FALLBACK_MS = 30000;
+const CHAT_RESERVA_NO_ENCONTRADA_MS = 2 * 60 * 1000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
 // guarda en localStorage para no tener que volver a pedir acceso en cada
 // visita — dura hasta que el token deje de ser válido en el servidor
@@ -60,6 +69,7 @@ const LOCALSTORAGE_DEVICE_KEY = "wobi_cerebro_device";
 const LOCALSTORAGE_VOZ_KEY = "wobi_cerebro_leer_respuestas";
 const LOCALSTORAGE_CHAT_PENDIENTES_KEY = "wobi_cerebro_chat_pendientes";
 const MAX_SOLICITUDES_CHAT_ACTIVAS = 6;
+const MAX_SOLICITUDES_CHAT_GUARDADAS = 50;
 // Username verificado en vivo contra getMe de la Bot API (no confiar en el nombre visible, que puede cambiar).
 const TELEGRAM_BOT_URL = "https://t.me/Woba_asistente_bot";
 // Ícono oficial de Telegram (recortado del asset provisto en el proyecto), fondo transparente.
@@ -1873,7 +1883,7 @@ function ContenidoRespuesta({ texto }) {
   );
 }
 
-export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoCompleto = false, preguntaExterna }) {
+export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, revisionSolicitudes, modoCompleto = false, preguntaExterna }) {
   const [abierto, setAbierto] = useState(modoCompleto);
   const [deviceId] = useState(obtenerDeviceIdChat);
   const claveSolicitudes = `${LOCALSTORAGE_CHAT_PENDIENTES_KEY}:${deviceId}:${encodeURIComponent((nombreUsuario || "usuario").trim().toLowerCase())}`;
@@ -1886,6 +1896,8 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   // criterio que Telegram — nunca esperar a la respuesta del servidor para deshabilitarlos).
   const [botonesActivos, setBotonesActivos] = useState([]);
   const [botonesEnProceso, setBotonesEnProceso] = useState(() => new Set());
+  const bloqueoBotonesRef = useRef(null);
+  if (!bloqueoBotonesRef.current) bloqueoBotonesRef.current = crearBloqueoOperaciones();
   // `registrando` dura solo hasta que la reserva idempotente quedó guardada;
   // el análisis continúa en segundo plano y ya no bloquea el compositor.
   const [registrando, setRegistrando] = useState(false);
@@ -1897,7 +1909,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
         ? guardadas.filter((item) =>
           item && typeof item.messageId === "string" && typeof item.texto === "string" &&
           Number(item.creadoEn) > limite
-        ).slice(-MAX_SOLICITUDES_CHAT_ACTIVAS)
+        ).slice(-MAX_SOLICITUDES_CHAT_GUARDADAS)
         : [];
     } catch {
       return [];
@@ -1915,14 +1927,26 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   }), []);
   const vozActivaRef = useRef(false);
   vozActivaRef.current = leerRespuestas && abierto;
+  const textoRef = useRef(texto);
+  textoRef.current = texto;
   const mensajesRef = useRef(null);
   const recognitionRef = useRef(null);
+  const mantenerDictadoRef = useRef(false);
+  const reinicioDictadoRef = useRef(null);
   const enviandoRef = useRef(false);
   const consultandoSolicitudesRef = useRef(false);
   const SpeechRecognition = typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
-  const solicitudesActivas = solicitudes.filter((item) => item.estado !== "fallido");
+  const solicitudesActivas = solicitudes.filter(solicitudChatActiva);
+  const solicitudesChatActivas = solicitudesActivas.filter((item) => item.tipo !== "boton");
   const procesando = solicitudesActivas.length > 0;
-  const limiteSolicitudesAlcanzado = solicitudesActivas.length >= MAX_SOLICITUDES_CHAT_ACTIVAS;
+  const limiteSolicitudesAlcanzado = solicitudesChatActivas.length >= MAX_SOLICITUDES_CHAT_ACTIVAS;
+  const botonesBloqueados = useMemo(() => {
+    const ids = new Set(botonesEnProceso);
+    for (const solicitud of solicitudes) {
+      if (solicitudBloqueaBoton(solicitud)) ids.add(solicitud.origenMessageId);
+    }
+    return ids;
+  }, [botonesEnProceso, solicitudes]);
   const telegramVinculoUrl = codigoVinculo?.codigo
     ? `${TELEGRAM_BOT_URL}?start=vincular_${codigoVinculo.codigo.replace(/[^a-zA-Z0-9]/g, "")}`
     : TELEGRAM_BOT_URL;
@@ -1978,17 +2002,13 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   }, [abierto, cargarChat, revisionTiempoReal]);
 
   useEffect(() => {
-    if (!codigoVinculo) return undefined;
-    const id = setInterval(cargarChat, 3000);
-    return () => clearInterval(id);
-  }, [codigoVinculo, cargarChat]);
-
-  useEffect(() => {
     const nodo = mensajesRef.current;
     if (nodo) nodo.scrollTop = nodo.scrollHeight;
   }, [mensajes, solicitudes]);
 
   useEffect(() => () => {
+    mantenerDictadoRef.current = false;
+    if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current);
     recognitionRef.current?.stop?.();
     lectorVoz.dispose();
   }, [lectorVoz]);
@@ -1998,6 +2018,15 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     lectorVoz.stop();
     setVozPendiente(false);
   }, [leerRespuestas, abierto, lectorVoz]);
+
+  useEffect(() => {
+    if (abierto) return;
+    mantenerDictadoRef.current = false;
+    if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current);
+    recognitionRef.current?.stop?.();
+    recognitionRef.current = null;
+    setEscuchando(false);
+  }, [abierto]);
 
   useEffect(() => {
     const onHidden = () => {
@@ -2019,7 +2048,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   }, [headers, lectorVoz]);
 
   const revisarSolicitudes = useCallback(async () => {
-    const activas = solicitudes.filter((item) => item.estado !== "fallido");
+    const activas = solicitudes.filter(solicitudChatActiva);
     if (activas.length === 0 || consultandoSolicitudesRef.current) return;
     consultandoSolicitudesRef.current = true;
 
@@ -2029,7 +2058,10 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
           const res = await fetch(CHAT_SOLICITUD_ENDPOINT(solicitud.messageId), { headers, cache: "no-store" });
           const json = await res.json().catch(() => ({}));
           if (!res.ok) {
-            const definitivo = res.status === 400 || res.status === 403 || (res.status === 404 && Date.now() - solicitud.creadoEn > 15_000);
+            // Una reserva en Sheets puede tardar durante backoff de cuota.
+            // Un 404 temprano no autoriza a darla por fallida ni a repetirla.
+            const definitivo = res.status === 400 || res.status === 403 ||
+              (res.status === 404 && Date.now() - solicitud.creadoEn > CHAT_RESERVA_NO_ENCONTRADA_MS);
             return { messageId: solicitud.messageId, estado: definitivo ? "fallido" : solicitud.estado, error: json.error || "No pude verificar este mensaje." };
           }
           return { messageId: solicitud.messageId, estado: json.estado, respuesta: json.respuesta };
@@ -2047,6 +2079,13 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
             ...actuales,
             ...completadas.flatMap((item) => {
               const original = solicitudesPorId.get(item.messageId);
+              if (original?.tipo === "boton") {
+                return [{
+                  rol: "wobi",
+                  texto: `✅ Wobi terminó de procesar “${original.texto}”. El detalle aparecerá cuando se reconecte el historial.`,
+                  local: true,
+                }];
+              }
               return [
                 ...(original ? [{ rol: "usuario", texto: original.texto, local: true }] : []),
                 { rol: "wobi", texto: item.respuesta || "Wobi terminó el análisis.", local: true },
@@ -2054,7 +2093,10 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
             }),
           ]);
         }
-        completadas.forEach((item) => hablar(item.respuesta || "Wobi terminó el análisis."));
+        completadas.forEach((item) => {
+          const original = activas.find((solicitud) => solicitud.messageId === item.messageId);
+          if (original?.tipo !== "boton") hablar(item.respuesta || "Wobi terminó el análisis.");
+        });
       }
 
       const idsCompletados = new Set(completadas.map((item) => item.messageId));
@@ -2075,6 +2117,10 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
         return cambio ? siguientes : actuales;
       });
 
+      const incierta = resultados.find((item) => item.estado === "incierto");
+      if (incierta) {
+        setError("Una acción pudo haberse aplicado, pero no quedó confirmada. La repetición está bloqueada hasta revisar su resultado.");
+      }
       const fallida = resultados.find((item) => item.estado === "fallido");
       if (fallida) {
         setError(`${fallida.error || "Una solicitud quedó interrumpida."} No la repetiré automáticamente para evitar acciones duplicadas.`);
@@ -2090,12 +2136,29 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     let temporizador;
     const consultar = async () => {
       await revisarSolicitudes();
-      if (!cancelado) temporizador = setTimeout(consultar, 3000);
+      if (!cancelado) temporizador = setTimeout(consultar, CHAT_RECUPERACION_FALLBACK_MS);
     };
     consultar();
     return () => {
       cancelado = true;
       clearTimeout(temporizador);
+    };
+  }, [procesando, revisarSolicitudes]);
+
+  useEffect(() => {
+    if (procesando) revisarSolicitudes();
+  }, [procesando, revisarSolicitudes, revisionSolicitudes, revisionTiempoReal]);
+
+  useEffect(() => {
+    if (!procesando) return undefined;
+    const recuperar = () => {
+      if (!document.hidden && navigator.onLine) revisarSolicitudes();
+    };
+    document.addEventListener("visibilitychange", recuperar);
+    window.addEventListener("online", recuperar);
+    return () => {
+      document.removeEventListener("visibilitychange", recuperar);
+      window.removeEventListener("online", recuperar);
     };
   }, [procesando, revisarSolicitudes]);
 
@@ -2112,6 +2175,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
         if (res.status === 202 || res.ok) return json;
         const fallo = new Error(json.error || "No se pudo registrar el mensaje.");
         fallo.definitivo = res.status >= 400 && res.status < 500;
+        fallo.estado = json.estado;
         throw fallo;
       } catch (err) {
         ultimoError = err;
@@ -2131,8 +2195,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     setRegistrando(true);
     setError("");
     setTexto("");
+    textoRef.current = "";
+    // En modo conversación el micrófono sigue activo, pero se abre una
+    // sesión de dictado limpia para que el texto ya enviado no reaparezca.
+    if (mantenerDictadoRef.current) recognitionRef.current?.stop?.();
     const messageId = window.crypto?.randomUUID?.().replaceAll("-", "") || `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const solicitud = { messageId, texto: contenido, estado: "registrando", creadoEn: Date.now(), error: "" };
+    const solicitud = { messageId, texto: contenido, tipo: "mensaje", estado: "registrando", creadoEn: Date.now(), error: "" };
     setSolicitudes((actuales) => [...actuales, solicitud]);
     try {
       const json = await enviarConReintento(messageId, contenido);
@@ -2155,7 +2223,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo conectar con Wobi.");
       setSolicitudes((actuales) => actuales.map((item) => item.messageId === messageId
-        ? { ...item, estado: err?.definitivo ? "fallido" : "verificando", error: err instanceof Error ? err.message : "Reconectando…" }
+        ? { ...item, estado: err?.estado === "incierto" ? "incierto" : err?.definitivo ? "fallido" : "verificando", error: err instanceof Error ? err.message : "Reconectando…" }
         : item));
     } finally {
       enviandoRef.current = false;
@@ -2188,35 +2256,26 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
    * procesarse (202/200), y cargarChat() trae el resultado real (nuevos mensajes, nuevos botones si
    * la acción generó otra decisión) en cuanto termina.
    */
-  const pulsarBoton = useCallback(async (messageId, callbackData) => {
-    if (botonesEnProceso.has(messageId)) return;
+  const pulsarBoton = useCallback(async (messageId, callbackData, textoBoton) => {
+    // El ref cierra incluso dos clics dentro del mismo frame, antes de que
+    // React alcance a repintar el botón como deshabilitado.
+    if (botonesBloqueados.has(messageId) || !bloqueoBotonesRef.current.intentar(messageId)) return;
     setBotonesEnProceso((actuales) => new Set(actuales).add(messageId));
     setError("");
     const requestId = window.crypto?.randomUUID?.().replaceAll("-", "") || `btn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-    const esperarResultado = async () => {
-      // Hallazgo real de auditoría (caso real Carlos: "Aprobar selección" con varias acciones
-      // marcadas juntas — crear y conciliar + guardar como conocimiento — se dio por "tardó
-      // demasiado" aunque el servidor seguía trabajando de verdad). 40 intentos × 3s = 120s alcanza
-      // para una sola acción, pero una selección compuesta encadena varias llamadas reales a
-      // Holded/Sheets/Claude, y una sola de ellas ya puede tardar 60-80s+ cuando Sheets aplica su
-      // propio backoff de cuota (ver core/utils/readCache.ts y los reintentos ya documentados en
-      // otras partes del proyecto) — sin ser un error real, solo lento. 100 intentos × 3s = 300s da
-      // margen real a una selección compuesta sin dejar de detectar un fallo genuino.
-      for (let intento = 0; intento < 100; intento++) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVALO_MS));
-        try {
-          const res = await fetch(CHAT_SOLICITUD_ENDPOINT(requestId), { headers, cache: "no-store" });
-          const json = await res.json().catch(() => ({}));
-          if (res.ok && json.estado === "completado") return { ok: true };
-          if (res.ok && json.estado === "fallido") return { ok: false, error: "La acción quedó interrumpida y no se repitió para evitar duplicarla." };
-          if (!res.ok && (res.status === 400 || res.status === 403)) return { ok: false, error: json.error || "No se pudo confirmar la acción." };
-        } catch {
-          // problema transitorio de red — reintenta en la siguiente vuelta del sondeo
-        }
-      }
-      return { ok: false, error: "Tardó demasiado en confirmarse — revisa el último resultado en Holded antes de volver a intentarlo." };
+    const operacion = {
+      messageId: requestId,
+      tipo: "boton",
+      origenMessageId: messageId,
+      callbackData,
+      texto: textoBoton || "Aplicar decisión",
+      estado: "en_cola",
+      creadoEn: Date.now(),
+      error: "",
     };
+    // Se persiste ANTES del POST. Si la pestaña se duerme o se cierra, al
+    // volver se consulta este mismo requestId; nunca se fabrica otro.
+    setSolicitudes((actuales) => [...actuales, operacion]);
 
     try {
       const res = await fetch(CHAT_BOTON_ENDPOINT, {
@@ -2227,7 +2286,21 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok && res.status !== 202) {
+        if (json.estado === "incierto") {
+          setSolicitudes((actuales) => actuales.map((item) => item.messageId === requestId
+            ? { ...item, estado: "incierto", error: json.error || "Resultado incierto." }
+            : item));
+        } else if (res.status >= 500) {
+          setSolicitudes((actuales) => actuales.map((item) => item.messageId === requestId
+            ? { ...item, estado: "verificando", error: "Reconectando sin repetir la acción…" }
+            : item));
+        } else {
+          // Rechazo anterior a la ejecución (permiso, botón vencido o dato
+          // inválido): no existe una acción incierta que recuperar.
+          setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== requestId));
+        }
         setError(json.error || "No se pudo procesar ese botón.");
+        await cargarChat();
         return;
       }
 
@@ -2244,42 +2317,88 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
         setBotonesActivos((actuales) => actuales.filter((b) => b.messageId !== messageId));
       }
 
-      const resultado = json.estado === "completado" ? { ok: true } : await esperarResultado();
-      if (!resultado.ok) setError(resultado.error || "No se pudo confirmar la acción.");
-      await cargarChat();
+      if (json.estado === "completado") {
+        setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== requestId));
+        await cargarChat();
+      } else {
+        setSolicitudes((actuales) => actuales.map((item) => item.messageId === requestId
+          ? { ...item, estado: json.estado === "aplicado" ? "aplicado" : "procesando" }
+          : item));
+      }
     } catch {
-      setError("No se pudo conectar con Wobi para procesar ese botón.");
+      setSolicitudes((actuales) => actuales.map((item) => item.messageId === requestId
+        ? { ...item, estado: "verificando", error: "Reconectando sin repetir la acción…" }
+        : item));
+      setError("Se perdió temporalmente la conexión. Wobi verificará esta misma acción sin repetirla.");
     } finally {
+      bloqueoBotonesRef.current.liberar(messageId);
       setBotonesEnProceso((actuales) => {
         const siguiente = new Set(actuales);
         siguiente.delete(messageId);
         return siguiente;
       });
     }
-  }, [botonesEnProceso, headers, cargarChat]);
+  }, [botonesBloqueados, headers, cargarChat]);
 
   const iniciarDictado = () => {
     if (!SpeechRecognition) return;
-    if (escuchando) {
+    if (mantenerDictadoRef.current) {
+      mantenerDictadoRef.current = false;
+      if (reinicioDictadoRef.current) clearTimeout(reinicioDictadoRef.current);
       recognitionRef.current?.stop?.();
+      recognitionRef.current = null;
+      setEscuchando(false);
       return;
     }
-    const reconocimiento = new SpeechRecognition();
-    recognitionRef.current = reconocimiento;
-    reconocimiento.lang = "es-ES";
-    reconocimiento.interimResults = true;
-    reconocimiento.continuous = false;
-    reconocimiento.onstart = () => setEscuchando(true);
-    reconocimiento.onend = () => setEscuchando(false);
-    reconocimiento.onerror = () => {
-      setEscuchando(false);
-      setError("El navegador no pudo iniciar el dictado. Puedes seguir escribiendo.");
+
+    mantenerDictadoRef.current = true;
+    setError("");
+    const lanzar = () => {
+      if (!mantenerDictadoRef.current) return;
+      const reconocimiento = new SpeechRecognition();
+      const textoBase = textoRef.current.trim();
+      recognitionRef.current = reconocimiento;
+      reconocimiento.lang = "es-ES";
+      reconocimiento.interimResults = true;
+      reconocimiento.continuous = true;
+      reconocimiento.onstart = () => setEscuchando(true);
+      reconocimiento.onend = () => {
+        if (recognitionRef.current === reconocimiento) recognitionRef.current = null;
+        if (!mantenerDictadoRef.current) {
+          setEscuchando(false);
+          return;
+        }
+        // Chrome cierra sesiones largas aunque `continuous` esté activo.
+        // Se abre otra sobre el texto ya capturado y el micrófono sigue
+        // encendido hasta que Carlos vuelva a tocar el botón.
+        reinicioDictadoRef.current = setTimeout(lanzar, 250);
+      };
+      reconocimiento.onerror = (evento) => {
+        const fatal = ["not-allowed", "service-not-allowed", "audio-capture"].includes(evento?.error);
+        if (!fatal) return;
+        mantenerDictadoRef.current = false;
+        setEscuchando(false);
+        setError("El navegador perdió el permiso del micrófono. Puedes habilitarlo y volver a tocar el botón.");
+      };
+      reconocimiento.onresult = (evento) => {
+        const transcripcion = Array.from(evento.results)
+          .map((resultado) => resultado[0]?.transcript || "")
+          .join(" ")
+          .trim();
+        const combinado = [textoBase, transcripcion].filter(Boolean).join(" ").trim();
+        textoRef.current = combinado;
+        setTexto(combinado);
+      };
+      try {
+        reconocimiento.start();
+      } catch {
+        mantenerDictadoRef.current = false;
+        recognitionRef.current = null;
+        setEscuchando(false);
+        setError("No pude mantener activo el micrófono. Puedes volver a tocar el botón para reintentarlo.");
+      }
     };
-    reconocimiento.onresult = (evento) => {
-      const transcripcion = Array.from(evento.results).map((resultado) => resultado[0]?.transcript || "").join(" ");
-      setTexto(transcripcion.trim());
-    };
-    reconocimiento.start();
+    lanzar();
   };
 
   const vincular = async () => {
@@ -2432,29 +2551,62 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
                 </div>
               );
             })}
-            {solicitudes.map((solicitud, indice) => (
-              <React.Fragment key={solicitud.messageId}>
-                <div className="wobi-mensaje-fila wobi-mensaje-fila--usuario">
-                  <div className="wobi-burbuja wobi-burbuja--usuario">
-                    <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{solicitud.texto}</div>
+            {solicitudes.map((solicitud, indice) => {
+              const esBoton = solicitud.tipo === "boton";
+              const terminal = solicitud.estado === "fallido" || solicitud.estado === "incierto";
+              if (esBoton) {
+                return (
+                  <div
+                    key={solicitud.messageId}
+                    className={`wobi-operacion wobi-operacion--${tonoEstadoSolicitud(solicitud)}`}
+                    role="status"
+                  >
+                    <span className="wobi-operacion-icono" aria-hidden="true">{terminal ? "⚠" : "↻"}</span>
+                    <span className="wobi-operacion-copy">
+                      <strong>{solicitud.texto}</strong>
+                      <small>{etiquetaEstadoSolicitud(solicitud)}</small>
+                      {terminal && <em>Revisa el resultado en Holded o Telegram antes de volver a intentar.</em>}
+                    </span>
+                    {terminal && (
+                      <button
+                        type="button"
+                        onClick={() => setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== solicitud.messageId))}
+                        title="Úsalo solo después de verificar el resultado"
+                      >
+                        Ya verifiqué
+                      </button>
+                    )}
                   </div>
-                </div>
-                {solicitud.estado === "fallido" ? (
-                  <div className="wobi-solicitud-fallida" role="status">
-                    <span>Esta solicitud se interrumpió y no se repitió para evitar duplicados.</span>
-                    <button type="button" onClick={() => setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== solicitud.messageId))}>Quitar</button>
+                );
+              }
+              return (
+                <React.Fragment key={solicitud.messageId}>
+                  <div className="wobi-mensaje-fila wobi-mensaje-fila--usuario">
+                    <div className="wobi-burbuja wobi-burbuja--usuario">
+                      <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55 }}>{solicitud.texto}</div>
+                    </div>
                   </div>
-                ) : (
-                  <div className="wobi-escribiendo">
-                    <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
-                    <span><i /><i /><i /></span>
-                    <small>{indice === 0 ? "Wobi está analizando…" : `En cola · turno ${indice + 1}`}</small>
-                  </div>
-                )}
-              </React.Fragment>
-            ))}
+                  {terminal ? (
+                    <div className="wobi-solicitud-fallida" role="status">
+                      <span>{solicitud.estado === "incierto"
+                        ? "El resultado no pudo confirmarse. Wobi bloqueó cualquier repetición automática."
+                        : "Esta solicitud se interrumpió y no se repitió para evitar duplicados."}</span>
+                      <button type="button" onClick={() => setSolicitudes((actuales) => actuales.filter((item) => item.messageId !== solicitud.messageId))}>Cerrar</button>
+                    </div>
+                  ) : (
+                    <div className="wobi-escribiendo">
+                      <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
+                      <span><i /><i /><i /></span>
+                      <small>{solicitud.estado === "aplicado" || solicitud.estado === "verificando"
+                        ? etiquetaEstadoSolicitud(solicitud)
+                        : indice === 0 ? "Wobi está analizando…" : `En cola · turno ${indice + 1}`}</small>
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            })}
             {identidad?.modo === "completo" && botonesActivos.map((item) => {
-              const enProceso = botonesEnProceso.has(item.messageId);
+              const enProceso = botonesBloqueados.has(item.messageId);
               return (
                 <div key={item.messageId} className="wobi-mensaje-fila wobi-mensaje-fila--wobi">
                   <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
@@ -2468,7 +2620,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
                               key={`${i}-${botonIndice}-${boton.callback_data}`}
                               type="button"
                               disabled={enProceso}
-                              onClick={() => pulsarBoton(item.messageId, boton.callback_data)}
+                              onClick={() => pulsarBoton(item.messageId, boton.callback_data, boton.text)}
                             >
                               {boton.text}
                             </button>
@@ -2476,7 +2628,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
                         </div>
                       ))}
                     </div>
-                    {enProceso && <small className="wobi-botones-procesando">Aplicando…</small>}
+                    {enProceso && <small className="wobi-botones-procesando">Decisión en curso o pendiente de verificación · no se puede repetir</small>}
                   </div>
                 </div>
               );
@@ -2495,12 +2647,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
             <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
               <span aria-hidden="true">🎙</span>
             </button>
-            <button type="button" onClick={enviar} disabled={!texto.trim() || registrando || limiteSolicitudesAlcanzado} className="wobi-boton-enviar">
+            <button type="button" onClick={() => enviar()} disabled={!texto.trim() || registrando || limiteSolicitudesAlcanzado} className="wobi-boton-enviar">
               {registrando ? "Guardando…" : "Enviar"} <span aria-hidden="true">↑</span>
             </button>
           </div>
           <div className="wobi-chat-seguridad">
-            <span aria-hidden="true">↻</span> {procesando ? `${solicitudesActivas.length} solicitud(es) en curso · puedes seguir escribiendo` : "Reintentos protegidos · sin llamadas duplicadas"}
+            <span aria-hidden="true">↻</span> {procesando ? `${solicitudesActivas.length} operación(es) en curso · puedes seguir escribiendo` : "Actualización en tiempo real · reintentos protegidos"}
           </div>
         </section>
       ) : (
@@ -2586,6 +2738,7 @@ export default function CerebroWoba() {
   const [refreshing, setRefreshing] = useState(false);
   const [estadoTiempoReal, setEstadoTiempoReal] = useState("desconectado");
   const [ultimoContactoEn, setUltimoContactoEn] = useState(null);
+  const [revisionSolicitudesChat, setRevisionSolicitudesChat] = useState(0);
   const [errorSincronizacion, setErrorSincronizacion] = useState("");
   const refreshEnCursoRef = useRef(null);
   const [verificandoSesion, setVerificandoSesion] = useState(true);
@@ -2742,7 +2895,18 @@ export default function CerebroWoba() {
     [apiKey]
   );
 
-  useCerebroRealtime({ apiKey, onRefresh: refreshLiveData, onStatus: setEstadoTiempoReal });
+  const manejarEventoTiempoReal = useCallback((evento) => {
+    if (evento?.tipo?.startsWith("chat_solicitud:")) {
+      setRevisionSolicitudesChat((actual) => actual + 1);
+    }
+  }, []);
+
+  useCerebroRealtime({
+    apiKey,
+    onRefresh: refreshLiveData,
+    onStatus: setEstadoTiempoReal,
+    onEvent: manejarEventoTiempoReal,
+  });
 
   const cerrarSesion = useCallback(() => {
     try {
@@ -3393,6 +3557,36 @@ export default function CerebroWoba() {
         .wobi-botones-fila button:hover:not(:disabled) { background: rgba(232,167,92,.16); }
         .wobi-botones-fila button:disabled { opacity: .45; cursor: default; }
         .wobi-botones-procesando { display: block; margin-top: 6px; color: ${C.dim}; font-size: 11px; }
+        .wobi-operacion {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 10px;
+          margin-left: 36px;
+          padding: 10px 11px;
+          border: 1px solid rgba(143,210,245,.24);
+          border-radius: 11px;
+          color: ${C.cream};
+          background: rgba(46,109,164,.08);
+        }
+        .wobi-operacion--verificando { border-color: rgba(232,167,92,.35); background: rgba(232,167,92,.07); }
+        .wobi-operacion--alerta { border-color: rgba(240,113,120,.34); background: rgba(240,113,120,.07); }
+        .wobi-operacion--listo { border-color: rgba(111,207,151,.34); background: rgba(111,207,151,.07); }
+        .wobi-operacion-icono { color: ${C.amberBright}; font-family: ${C.mono}; font-size: 15px; }
+        .wobi-operacion--alerta .wobi-operacion-icono { color: ${C.dangerBright}; }
+        .wobi-operacion-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+        .wobi-operacion-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+        .wobi-operacion-copy small { color: ${C.dim}; font-family: ${C.mono}; font-size: 10px; }
+        .wobi-operacion-copy em { color: ${C.dangerBright}; font-size: 10.5px; font-style: normal; }
+        .wobi-operacion button {
+          padding: 6px 8px;
+          border: 1px solid rgba(240,113,120,.32);
+          border-radius: 7px;
+          color: ${C.cream};
+          background: transparent;
+          font-size: 10.5px;
+          cursor: pointer;
+        }
         .wobi-escribiendo { display: flex; align-items: center; gap: 8px; }
         .wobi-escribiendo > span:nth-child(2) { display: flex; gap: 4px; padding: 11px 13px; border: 1px solid ${C.line}; border-radius: 4px 14px 14px 14px; background: ${C.voidSoft}; }
         .wobi-escribiendo i { width: 5px; height: 5px; border-radius: 50%; background: ${C.amberBright}; animation: wobiTyping 1.2s infinite; }
@@ -3531,6 +3725,8 @@ export default function CerebroWoba() {
           .wobi-vinculo-acciones { width: 100%; flex-wrap: wrap; }
           .wobi-mensajes { padding: 14px 11px; }
           .wobi-burbuja { font-size: 13.5px; }
+          .wobi-operacion { margin-left: 0; grid-template-columns: auto minmax(0, 1fr); }
+          .wobi-operacion button { grid-column: 2; justify-self: start; }
           .wobi-compositor { grid-template-columns: minmax(0, 1fr) 46px; }
           .wobi-boton-enviar { grid-column: 1 / -1; justify-content: center; min-height: 42px; }
           .wobi-chat-seguridad { padding-bottom: 7px; }
@@ -3692,6 +3888,7 @@ export default function CerebroWoba() {
           apiKey={apiKey}
           nombreUsuario={nombreUsuario}
           revisionTiempoReal={ultimoContactoEn}
+          revisionSolicitudes={revisionSolicitudesChat}
           modoCompleto={modoChatCompleto}
           preguntaExterna={preguntaControlDiario}
         />

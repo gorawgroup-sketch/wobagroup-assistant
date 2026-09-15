@@ -12,6 +12,11 @@ const TAB_NAME = "_cerebro_chat_solicitudes";
 const HEADERS = ["requestId", "chatId", "textoHash", "estado", "respuesta", "creadoEn", "actualizadoEn"];
 const TTL_SOLICITUD_MS = 48 * 60 * 60 * 1000;
 let ultimaPurgaEn = 0;
+const filasMemoria = new Map<string, FilaConIndice>();
+
+function claveSolicitud(chatId: number, requestId: string): string {
+  return `${chatId}:${requestId}`;
+}
 
 function assertSheetId(): string {
   if (!CASHFLOW_SHEET_ID) throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
@@ -67,7 +72,7 @@ interface FilaConIndice {
 const cacheSolicitudes = new CacheLectura<FilaConIndice[]>("solicitudes_chat", 60_000);
 
 async function leerTodas(): Promise<FilaConIndice[]> {
-  return (await cacheSolicitudes.obtener(async () => {
+  const filas = (await cacheSolicitudes.obtener(async () => {
     await ensureTab();
     const resp = await getClient().spreadsheets.values.get({
       spreadsheetId: assertSheetId(),
@@ -92,6 +97,10 @@ async function leerTodas(): Promise<FilaConIndice[]> {
     });
     return resultado;
   })).datos;
+  for (const fila of filas) {
+    filasMemoria.set(claveSolicitud(fila.solicitud.chatId, fila.solicitud.requestId), fila);
+  }
+  return filas;
 }
 
 async function actualizar(
@@ -100,7 +109,8 @@ async function actualizar(
   estado: EstadoSolicitudChat,
   respuesta = ""
 ): Promise<void> {
-  const match = (await leerTodas()).find(
+  const llave = claveSolicitud(chatId, requestId);
+  const match = filasMemoria.get(llave) ?? (await leerTodas()).find(
     ({ solicitud }) => solicitud.chatId === chatId && solicitud.requestId === requestId
   );
   if (!match) throw new Error("No existe la reserva idempotente del mensaje.");
@@ -111,6 +121,10 @@ async function actualizar(
     requestBody: {
       values: [[estado, respuesta, match.solicitud.creadoEn, Date.now()]],
     },
+  });
+  filasMemoria.set(llave, {
+    rowIndex: match.rowIndex,
+    solicitud: { ...match.solicitud, estado, respuesta: respuesta || undefined, actualizadoEn: Date.now() },
   });
   cacheSolicitudes.invalidar();
 }
@@ -136,22 +150,26 @@ async function purgarSolicitudesAntiguas(): Promise<void> {
       })),
     },
   });
+  filasMemoria.clear();
   cacheSolicitudes.invalidar();
   ultimaPurgaEn = ahora;
 }
 
 export const webChatRequestStore: RepositorioSolicitudesChat = {
   async obtener(chatId, requestId) {
+    const llave = claveSolicitud(chatId, requestId);
+    const local = filasMemoria.get(llave);
+    if (local) return { ...local.solicitud };
     const match = (await leerTodas()).find(
       ({ solicitud }) => solicitud.chatId === chatId && solicitud.requestId === requestId
     );
-    return match?.solicitud;
+    return match ? { ...match.solicitud } : undefined;
   },
 
   async reservar(solicitud) {
     await ensureTab();
     await purgarSolicitudesAntiguas();
-    await getClient().spreadsheets.values.append({
+    const respuesta = await getClient().spreadsheets.values.append({
       spreadsheetId: assertSheetId(),
       range: `${TAB_NAME}!A:G`,
       valueInputOption: "RAW",
@@ -168,11 +186,23 @@ export const webChatRequestStore: RepositorioSolicitudesChat = {
         ]],
       },
     });
+    const updatedRange = respuesta.data.updates?.updatedRange ?? "";
+    const rowIndex = Number(updatedRange.match(/![A-Z]+(\d+):/i)?.[1]);
+    if (Number.isInteger(rowIndex) && rowIndex >= 2) {
+      filasMemoria.set(claveSolicitud(solicitud.chatId, solicitud.requestId), {
+        rowIndex,
+        solicitud: { ...solicitud },
+      });
+    }
     cacheSolicitudes.invalidar();
   },
 
   async completar(chatId, requestId, respuesta) {
     await actualizar(chatId, requestId, "completado", respuesta);
+  },
+
+  async marcarIncierto(chatId, requestId) {
+    await actualizar(chatId, requestId, "incierto");
   },
 
   async fallar(chatId, requestId) {

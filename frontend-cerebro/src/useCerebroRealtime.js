@@ -15,14 +15,16 @@ function authHeaders(apiKey) {
  * - pausa todo en segundo plano y actualiza al volver a la pestaña;
  * - reconecta con backoff, sin bucles agresivos si Railway o la red caen.
  */
-export function useCerebroRealtime({ apiKey, onRefresh, onStatus }) {
+export function useCerebroRealtime({ apiKey, onRefresh, onStatus, onEvent }) {
   const refreshRef = useRef(onRefresh);
   const statusRef = useRef(onStatus);
+  const eventRef = useRef(onEvent);
 
   useEffect(() => {
     refreshRef.current = onRefresh;
     statusRef.current = onStatus;
-  }, [onRefresh, onStatus]);
+    eventRef.current = onEvent;
+  }, [onRefresh, onStatus, onEvent]);
 
   useEffect(() => {
     if (!apiKey) {
@@ -59,7 +61,15 @@ export function useCerebroRealtime({ apiKey, onRefresh, onStatus }) {
         if (linea.startsWith("event:")) tipo = linea.slice(6).trim();
         if (linea.startsWith("data:")) data += linea.slice(5).trim();
       }
-      if (tipo === "actualizar" && data) refrescar("evento");
+      if (tipo === "actualizar" && data) {
+        let evento;
+        try { evento = JSON.parse(data); } catch { evento = undefined; }
+        eventRef.current?.(evento);
+        // Los avances de una solicitud solo despiertan el seguimiento de
+        // ese requestId. No justifican reconstruir todo el panel agregado
+        // (ni tocar sus fuentes externas) tres veces por cada mensaje.
+        if (!evento?.tipo?.startsWith("chat_solicitud:")) refrescar("evento");
+      }
     };
 
     const conectar = async () => {

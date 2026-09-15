@@ -83,6 +83,7 @@ import { extraerCodigoVinculoChat } from "../core/cerebro/chatLinkCommand";
 import {
   ConflictoIdempotencia,
   iniciarSolicitudChat,
+  obtenerSolicitudChatViva,
   solicitudChatExpirada,
   solicitudesChatEnCurso,
 } from "../core/cerebro/webChatCoordinator";
@@ -307,6 +308,12 @@ function programarActualizacionCerebroDesdeTelegram(origen: "telegram" | "chat_w
     publicarCambioCerebro(origen);
   }, 12_000);
   invalidacionTelegramPendiente.unref();
+}
+
+function notificarEstadoSolicitudChat(estado: string): void {
+  // El evento no contiene texto, identidad ni datos contables. Solo despierta
+  // a los navegadores autenticados para que consulten su propia operación.
+  publicarCambioCerebro(`chat_solicitud:${estado}`);
 }
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -781,10 +788,11 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
           // se recupera por requestId; no depende de mantener el POST vivo.
           publicarCambioCerebro("chat_web");
         }
-      }
+      },
+      (solicitud) => notificarEstadoSolicitudChat(solicitud.estado)
     );
 
-    if (resultado.estado === "procesando") {
+    if (resultado.estado === "procesando" || resultado.estado === "aplicado") {
       res.status(202).json({ estado: resultado.estado, requestId: messageId, duplicada: resultado.duplicada });
       return;
     }
@@ -792,6 +800,13 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
       res.status(409).json({
         estado: resultado.estado,
         error: "La ejecución anterior quedó interrumpida y no se repitió para evitar duplicar acciones.",
+      });
+      return;
+    }
+    if (resultado.estado === "incierto") {
+      res.status(409).json({
+        estado: resultado.estado,
+        error: "No pude confirmar el resultado. No lo repetiré automáticamente; verifica el último estado antes de continuar.",
       });
       return;
     }
@@ -825,14 +840,15 @@ app.get("/api/cerebro/chat/solicitud/:requestId", async (req: Request, res: Resp
   }
 
   try {
-    let solicitud = await webChatRequestStore.obtener(identidad.chatId, requestId);
+    let solicitud = obtenerSolicitudChatViva(identidad.chatId, requestId) ??
+      await webChatRequestStore.obtener(identidad.chatId, requestId);
     if (!solicitud) {
       res.status(404).json({ error: "No encontré esa solicitud en esta conversación." });
       return;
     }
     if (solicitudChatExpirada(solicitud)) {
-      await webChatRequestStore.fallar(identidad.chatId, requestId);
-      solicitud = { ...solicitud, estado: "fallido", actualizadoEn: Date.now() };
+      await webChatRequestStore.marcarIncierto(identidad.chatId, requestId);
+      solicitud = { ...solicitud, estado: "incierto", actualizadoEn: Date.now() };
     }
     res.json({
       requestId,
@@ -947,15 +963,17 @@ app.post("/api/cerebro/chat/boton", async (req: Request, res: Response) => {
           data: callbackData,
         };
         try {
-          await despacharCallbackQuery(callback);
+          const confirmado = await despacharCallbackQuery(callback);
+          if (!confirmado) throw new Error("resultado_callback_incierto");
           return "ok";
         } finally {
           programarActualizacionCerebroDesdeTelegram("chat_web");
         }
-      }
+      },
+      (solicitud) => notificarEstadoSolicitudChat(solicitud.estado)
     );
 
-    if (resultado.estado === "procesando") {
+    if (resultado.estado === "procesando" || resultado.estado === "aplicado") {
       res.status(202).json({ estado: resultado.estado, requestId, duplicada: resultado.duplicada });
       return;
     }
@@ -963,6 +981,13 @@ app.post("/api/cerebro/chat/boton", async (req: Request, res: Response) => {
       res.status(409).json({
         estado: resultado.estado,
         error: "La ejecución anterior quedó interrumpida y no se repitió para evitar duplicar acciones.",
+      });
+      return;
+    }
+    if (resultado.estado === "incierto") {
+      res.status(409).json({
+        estado: resultado.estado,
+        error: "La acción pudo haberse aplicado, pero no quedó confirmada. Comprueba el resultado antes de repetirla.",
       });
       return;
     }
@@ -1258,18 +1283,18 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
  * lo que SÍ viaja acá es el chequeo de rol para acciones sensibles, que aplica igual sin importar el
  * canal.
  */
-async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<void> {
+async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<boolean> {
   const data = callback.data ?? "";
 
   if (data.startsWith("auth_")) {
     await handleAuthCallback(callback);
-    return;
+    return true;
   }
 
   if (esAccionSensible(data) && !puedeAprobarAccionSensible(await obtenerRolUsuario(callback.from?.id))) {
     console.warn(`[auth] Usuario sin permiso de superadmin intentó acción sensible — id: ${callback.from?.id}, accion: ${data}`);
     await answerCallbackQuery(callback.id, "Esta acción requiere aprobación del superadministrador.").catch(() => {});
-    return;
+    return true;
   }
 
   try {
@@ -1326,6 +1351,7 @@ async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<
     } else {
       await handleCallbackQuery(callback);
     }
+    return true;
   } catch (error) {
     console.error("Error procesando callback_query:", error);
     // El llamador ya recibió su ACK (Telegram por HTTP 200 del webhook, o el endpoint web por su
@@ -1348,6 +1374,7 @@ async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<
         "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto del chat sigue operativo."
       ).catch(() => {});
     }
+    return false;
   }
 }
 
