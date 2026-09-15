@@ -98,6 +98,39 @@ test("actualiza un teclado recuperado de la persistencia aunque el proceso sea n
   assert.equal(repo.filas.get("10:350")?.botones[0][0].callback_data, "seleccion:aprobar");
 });
 
+test("caso real Carlos: actualizar botones de un mensaje sin registro previo no hace nada sin un texto de respaldo", async () => {
+  const repo = new RepositorioMemoria();
+  const store = new AlmacenBotonesWeb(repo, () => 50, 0);
+
+  // Sin registro previo (ej. se perdió antes de que este store fuera durable) y sin textoSiFalta —
+  // no hay forma de saber qué texto debería tener, así que se descarta (comportamiento previo).
+  await store.actualizar(10, 400, [[{ text: "✅ Crear y conciliar", callback_data: "gasto_nuevo_conciliar:1" }]]);
+
+  assert.equal(await store.obtenerMensaje(10, 400), undefined);
+  assert.equal(repo.filas.size, 0);
+});
+
+test("caso real Carlos: actualizar botones de un mensaje sin registro previo los recrea si hay un texto de respaldo", async () => {
+  const repo = new RepositorioMemoria();
+  const store = new AlmacenBotonesWeb(repo, () => 50, 0);
+
+  // Hallazgo real de auditoría: una corrección de moneda de una propuesta de gasto cuyo registro de
+  // botones ya no existía (ej. creada antes de que este store se volviera durable) dejaba el chat web
+  // sin ningún botón para siempre — Telegram y Holded quedaban al día, pero acá no pasaba nada. Con
+  // textoSiFalta, la actualización recrea el registro en vez de perderse en silencio.
+  await store.actualizar(
+    10,
+    400,
+    [[{ text: "✅ Crear y conciliar", callback_data: "gasto_nuevo_conciliar:1" }]],
+    "📄 Uber — 9.92 EUR (2026-09-11) — Viaje Uber, Bogotá"
+  );
+
+  const recuperado = await store.obtenerMensaje(10, 400);
+  assert.equal(recuperado?.texto, "📄 Uber — 9.92 EUR (2026-09-11) — Viaje Uber, Bogotá");
+  assert.equal(recuperado?.botones[0][0].callback_data, "gasto_nuevo_conciliar:1");
+  assert.equal(repo.filas.size, 1);
+});
+
 test("no descarta botones antiguos por un límite artificial de cantidad", async () => {
   const repo = new RepositorioMemoria();
   let ahora = 100;

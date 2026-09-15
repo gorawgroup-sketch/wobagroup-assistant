@@ -146,7 +146,12 @@ export class AlmacenBotonesWeb {
     await this.repositorio.guardar(mensaje);
   }
 
-  async actualizar(chatId: number, messageId: number, botones: InlineKeyboardButton[][]): Promise<void> {
+  async actualizar(
+    chatId: number,
+    messageId: number,
+    botones: InlineKeyboardButton[][],
+    textoSiFalta?: string
+  ): Promise<void> {
     if (botones.length === 0) {
       this.activos.delete(clave(chatId, messageId));
       await this.repositorio.eliminar(chatId, messageId);
@@ -156,7 +161,20 @@ export class AlmacenBotonesWeb {
 
     await this.cargarSiHaceFalta();
     const existente = this.activos.get(clave(chatId, messageId));
-    if (!existente) return;
+    if (!existente) {
+      // Hallazgo real de auditoría (caso real Carlos: corrección de moneda de una propuesta de gasto
+      // cuyo registro de botones se había perdido — ej. quedó creada antes de que este store se
+      // volviera durable) — sin este respaldo, la actualización se descartaba en silencio para
+      // siempre: Telegram y Holded quedaban al día, pero el chat web nunca volvía a mostrar esos
+      // botones, sin ningún error visible. Si el llamador tiene a mano un texto razonable (no siempre
+      // lo tiene — editTelegramMessageReplyMarkup existe justo para editar SOLO botones, sin texto),
+      // se usa para recrear el registro en vez de perder la actualización.
+      if (!textoSiFalta) return;
+      const nuevo: BotonesActivosMensaje = { chatId, messageId, texto: textoSiFalta, botones, actualizadoEn: this.ahora() };
+      this.activos.set(clave(chatId, messageId), nuevo);
+      await this.repositorio.guardar(nuevo);
+      return;
+    }
     const actualizado = { ...existente, botones, actualizadoEn: this.ahora() };
     this.activos.set(clave(chatId, messageId), actualizado);
     await this.repositorio.guardar(actualizado);
@@ -212,14 +230,19 @@ export async function registrarBotonesActivos(
   }
 }
 
-/** Actualiza o retira el teclado sin cambiar el texto guardado. */
+/**
+ * Actualiza o retira el teclado sin cambiar el texto guardado. `textoSiFalta` es un respaldo
+ * opcional: si el registro de este mensaje ya no existe (ver AlmacenBotonesWeb.actualizar), se usa
+ * para recrearlo en vez de descartar la actualización en silencio.
+ */
 export async function actualizarBotonesActivos(
   chatId: number,
   messageId: number,
-  botones: InlineKeyboardButton[][]
+  botones: InlineKeyboardButton[][],
+  textoSiFalta?: string
 ): Promise<void> {
   try {
-    await almacen.actualizar(chatId, messageId, botones);
+    await almacen.actualizar(chatId, messageId, botones, textoSiFalta);
   } catch (error) {
     registrarFallo("actualizar", error);
   }

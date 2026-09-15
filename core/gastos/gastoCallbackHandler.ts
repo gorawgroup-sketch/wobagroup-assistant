@@ -137,6 +137,17 @@ async function limpiarArchivoLocal(rutaLocal: string): Promise<void> {
 }
 
 /**
+ * Resumen corto de una propuesta — respaldo para editTelegramMessageReplyMarkup cuando el registro
+ * de botones del chat web ya no existe (ver textoSiFalta en webBotonesStore.ts/telegram/client.ts).
+ * A propósito NO intenta reconstruir el mensaje original completo (desglose de IVA, confianza, etc.)
+ * — esta función solo existe para que el chat web tenga ALGO razonable que mostrar junto a botones
+ * que de otro modo quedarían huérfanos en silencio; el texto real que Telegram muestra no cambia.
+ */
+function resumenTextoPropuestaGasto(propuesta: PropuestaGasto): string {
+  return `📄 ${propuesta.proveedor} — ${propuesta.monto.toFixed(2)} ${propuesta.moneda} (${propuesta.fecha}) — ${propuesta.concepto}`;
+}
+
+/**
  * Adjunta el comprobante a un gasto de Holded y borra la copia local
  * temporal (solo si tuvo éxito).
  *
@@ -1038,7 +1049,7 @@ async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propue
 
   const propuestaActualizada: PropuestaGasto = { ...propuesta, seleccionAcciones: nuevaSeleccion };
   const teclado = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuesta));
-  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, teclado).catch((error) =>
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, teclado, resumenTextoPropuestaGasto(propuestaActualizada)).catch((error) =>
     console.error("[gastoCallbackHandler] Error repintando el teclado de selección (no crítico):", error)
   );
 }
@@ -1219,7 +1230,7 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
   const propuestaFresca = await obtenerPropuestaGasto(propuesta.id);
   if (propuestaFresca) {
     const teclado = construirTecladoGasto(propuestaFresca, opcionesTecladoDesdePropuesta(propuestaFresca));
-    await editTelegramMessageReplyMarkup(propuestaFresca.chatId, propuestaFresca.messageId, teclado).catch((error) =>
+    await editTelegramMessageReplyMarkup(propuestaFresca.chatId, propuestaFresca.messageId, teclado, resumenTextoPropuestaGasto(propuestaFresca)).catch((error) =>
       console.error("[gastoCallbackHandler] Error reponiendo el teclado tras aplicar (no crítico):", error)
     );
   }
@@ -2326,7 +2337,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
         movimientosAmbiguos: movimientosAmbiguosNuevos,
       };
       const botones = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuestaActualizada));
-      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones);
+      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones, resumenTextoPropuestaGasto(propuestaActualizada));
     } catch (error) {
       console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir moneda (no crítico):", error);
     }
