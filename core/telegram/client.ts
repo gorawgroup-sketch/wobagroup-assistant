@@ -1,6 +1,7 @@
 import type { IncomingMessage, InlineKeyboardButton, TelegramUpdate } from "./types";
 import { registrarMensajeSaliente } from "../claude/conversationStore";
 import { AcusesCallback } from "./callbackAcknowledgements";
+import { registrarBotonesActivos, actualizarBotonesActivos } from "../cerebro/webBotonesStore";
 
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 
@@ -275,6 +276,7 @@ export async function sendTelegramMessageWithButtons(
   registrarMensajeSaliente(chatId, text).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
+  registrarBotonesActivos(chatId, data.result.message_id, text, buttons);
 
   return data.result.message_id;
 }
@@ -358,6 +360,7 @@ export async function sendTelegramMessageExpandable(
   registrarMensajeSaliente(chatId, `${titulo}\n\n${cuerpo}`).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
+  if (buttons) registrarBotonesActivos(chatId, data.result.message_id, `${titulo}\n\n${cuerpo}`, buttons);
 
   return data.result.message_id;
 }
@@ -531,10 +534,16 @@ export async function editTelegramMessageReplyMarkup(
     // Telegram devuelve 400 "message is not modified" cuando el teclado
     // mandado es idéntico al que ya está — no es un error real, pasa cada
     // vez que una selección vuelve al mismo estado que ya se había pintado
-    // (ej. marcar y desmarcar el mismo check dos veces seguidas).
-    if (response.status === 400 && /message is not modified/i.test(errBody)) return;
+    // (ej. marcar y desmarcar el mismo check dos veces seguidas). El estado
+    // pedido y el real ya coinciden, así que el espejo también se actualiza acá.
+    if (response.status === 400 && /message is not modified/i.test(errBody)) {
+      actualizarBotonesActivos(chatId, messageId, buttons);
+      return;
+    }
     throw new Error(`Error editando los botones de un mensaje de Telegram (${response.status}): ${errBody}`);
   }
+
+  actualizarBotonesActivos(chatId, messageId, buttons);
 }
 
 /** Igual que editTelegramMessage, pero con título fijo + cuerpo largo colapsado — ver sendTelegramMessageExpandable. */
