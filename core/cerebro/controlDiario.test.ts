@@ -208,6 +208,26 @@ test("una conciliación bancaria incierta se eleva como crítica", () => {
   assert.ok(control.recomendaciones.some((r) => r.id === "conciliaciones-holded-inciertas"));
 });
 
+test("caso real Carlos: descartar una recomendación quita la tarjeta y recalcula el estado general", () => {
+  const entrada = entradaBase();
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1 };
+  entrada.recomendacionesDescartadas = new Set(["conciliaciones-holded-inciertas"]);
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "estable");
+  assert.ok(!control.recomendaciones.some((r) => r.id === "conciliaciones-holded-inciertas"));
+});
+
+test("descartar una recomendación no oculta las demás que sigan vigentes", () => {
+  const entrada = entradaBase();
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1 };
+  entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1 };
+  entrada.recomendacionesDescartadas = new Set(["conciliaciones-holded-inciertas"]);
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.ok(!control.recomendaciones.some((r) => r.id === "conciliaciones-holded-inciertas"));
+  assert.ok(control.recomendaciones.some((r) => r.id === "contactos-holded-inciertos"));
+});
+
 test("un fallo leyendo el ledger de conciliaciones nunca se representa como cero", () => {
   const entrada = entradaBase();
   entrada.conciliacionesHolded = null;
