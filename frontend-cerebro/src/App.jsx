@@ -2187,9 +2187,18 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
         return;
       }
 
-      // Coincide con Telegram: todo el teclado de la propuesta se retira apenas se resuelve
-      // cualquiera de sus opciones, no solo la que se tocó.
-      setBotonesActivos((actuales) => actuales.filter((b) => b.messageId !== messageId));
+      // Hallazgo real de auditoría (caso real Carlos): "gasto_toggle:" (marcar/desmarcar un check del
+      // teclado de selección de gasto) NO es una decisión final en Telegram — el mensaje conserva su
+      // teclado, solo se repinta con el check nuevo, y recién "▶️ Aprobar selección" (gasto_aprobar)
+      // ejecuta y retira los botones. Quitar la tarjeta acá para CUALQUIER botón (incluidos los
+      // checks) hacía que cada marca de casilla la hiciera desaparecer y luego reaparecer al
+      // refrescar — un parpadeo que Telegram nunca tiene, porque ahí el mensaje nunca deja de
+      // mostrarse. Para el resto de los ~24 tipos de botones (decisiones de un solo toque, sin
+      // checkboxes) sí coincide con Telegram: se retiran apenas se resuelve cualquiera de sus
+      // opciones — ahí sí corresponde quitar la tarjeta optimistamente.
+      if (!callbackData.startsWith("gasto_toggle:")) {
+        setBotonesActivos((actuales) => actuales.filter((b) => b.messageId !== messageId));
+      }
 
       const resultado = json.estado === "completado" ? { ok: true } : await esperarResultado();
       if (!resultado.ok) setError(resultado.error || "No se pudo confirmar la acción.");
