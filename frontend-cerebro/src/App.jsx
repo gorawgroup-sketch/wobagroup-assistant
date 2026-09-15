@@ -2410,9 +2410,9 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
                     <div className="wobi-botones-decision">
                       {item.botones.map((fila, i) => (
                         <div key={i} className="wobi-botones-fila">
-                          {fila.map((boton) => (
+                          {fila.map((boton, botonIndice) => (
                             <button
-                              key={boton.callback_data}
+                              key={`${i}-${botonIndice}-${boton.callback_data}`}
                               type="button"
                               disabled={enProceso}
                               onClick={() => pulsarBoton(item.messageId, boton.callback_data)}

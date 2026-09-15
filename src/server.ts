@@ -700,7 +700,7 @@ app.get("/api/cerebro/chat", async (req: Request, res: Response) => {
   // Espejo de qué mensajes recientes siguen con botones activos en Telegram (ver
   // core/cerebro/webBotonesStore.ts) — el front los renderiza como opciones clicables, en modo
   // completo, junto al texto correspondiente en `mensajes`.
-  const botonesActivos = obtenerBotonesActivos(identidad.chatId).map((b) => ({
+  const botonesActivos = (await obtenerBotonesActivos(identidad.chatId)).map((b) => ({
     messageId: b.messageId,
     texto: b.texto,
     botones: b.botones,
@@ -881,8 +881,8 @@ app.options("/api/cerebro/chat/vincular", (_req: Request, res: Response) => {
  *
  * El botón pulsado debe ser exactamente uno de los que el propio servidor mandó hace poco — nunca se
  * confía en que el cliente diga "este botón existe", se valida contra lo que de verdad está en
- * webBotonesStore (que puede perderse en un redeploy; en ese caso el botón simplemente ya no aparece
- * como disponible, y sigue resolviéndose desde Telegram con normalidad).
+ * webBotonesStore. El espejo es durable para sobrevivir redeploys y conserva exactamente el
+ * callback_data enviado a Telegram.
  *
  * Solo en modo completo (dispositivo vinculado) — un dispositivo no vinculado ya no ve tools de
  * escritura (ver soloLectura en askClaude), pero esto es una segunda capa: nunca ejecutar una acción
@@ -920,12 +920,12 @@ app.post("/api/cerebro/chat/boton", async (req: Request, res: Response) => {
     return;
   }
 
-  const mensaje = obtenerBotonesDeMensaje(identidad.chatId, messageId);
+  const mensaje = await obtenerBotonesDeMensaje(identidad.chatId, messageId);
   const botonValido = mensaje?.botones.some((fila) => fila.some((b) => b.callback_data === callbackData));
   if (!mensaje || !botonValido) {
     res.status(409).json({
       error:
-        "Ese botón ya no está disponible — puede que ya se haya resuelto (revisa el mensaje más reciente) o que el servidor se haya reiniciado desde que se mostró. Si sigue pendiente, resuélvelo desde Telegram.",
+        "Ese botón ya no está disponible — puede que ya se haya resuelto. Revisa el mensaje más reciente antes de intentarlo otra vez.",
     });
     return;
   }
