@@ -88,13 +88,14 @@ import {
 } from "../core/cerebro/webChatCoordinator";
 import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { crearRouterVoz } from "../core/cerebro/voiceRouter";
+import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import { verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { crearPendienteAutorrepair } from "../core/github/autorrepairPendienteStore";
 import { autorrevisionCodigo } from "../core/jobs/autorrevisionCodigo";
-import type { TelegramUpdate } from "../core/telegram/types";
+import type { TelegramUpdate, TelegramCallbackQuery } from "../core/telegram/types";
 import {
   CoordinadorEntregasTelegram,
   configuracionEntregasDurables,
@@ -298,12 +299,12 @@ const limitarSolicitudesAcceso = crearLimitador(5, 10 * 60 * 1000);
 const limitarBusquedasPanel = crearLimitador(30, 60 * 60 * 1000);
 
 let invalidacionTelegramPendiente: NodeJS.Timeout | null = null;
-function programarActualizacionCerebroDesdeTelegram(): void {
+function programarActualizacionCerebroDesdeTelegram(origen: "telegram" | "chat_web" = "telegram"): void {
   if (invalidacionTelegramPendiente) clearTimeout(invalidacionTelegramPendiente);
   invalidacionTelegramPendiente = setTimeout(() => {
     invalidacionTelegramPendiente = null;
     invalidarEstadoCerebro();
-    publicarCambioCerebro("telegram");
+    publicarCambioCerebro(origen);
   }, 12_000);
   invalidacionTelegramPendiente.unref();
 }
@@ -696,7 +697,15 @@ app.get("/api/cerebro/chat", async (req: Request, res: Response) => {
   if (!identidad) return;
 
   const mensajes = await obtenerHistorialVisible(identidad.chatId);
-  res.json({ identidad: identidadPublica(identidad), mensajes });
+  // Espejo de qué mensajes recientes siguen con botones activos en Telegram (ver
+  // core/cerebro/webBotonesStore.ts) — el front los renderiza como opciones clicables, en modo
+  // completo, junto al texto correspondiente en `mensajes`.
+  const botonesActivos = obtenerBotonesActivos(identidad.chatId).map((b) => ({
+    messageId: b.messageId,
+    texto: b.texto,
+    botones: b.botones,
+  }));
+  res.json({ identidad: identidadPublica(identidad), mensajes, botonesActivos });
 });
 
 app.options("/api/cerebro/chat", (_req: Request, res: Response) => {
@@ -846,6 +855,119 @@ app.post("/api/cerebro/chat/vincular", async (req: Request, res: Response) => {
 });
 
 app.options("/api/cerebro/chat/vincular", (_req: Request, res: Response) => {
+  corsChat(res, "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Pedido explícito de Carlos: que el chat web pueda resolver las mismas decisiones que hoy solo
+ * existen como botones de Telegram (crear gasto vs. duplicado, clasificar un documento, aprobar
+ * categorías de cashflow...). "Pulsar" un botón acá construye un TelegramCallbackQuery sintético
+ * (mismo shape que uno real, con el message_id REAL que Telegram ya asignó al enviarlo) y lo
+ * despacha por despacharCallbackQuery — la MISMA lógica que ya resuelve cada botón real de Telegram,
+ * sin reimplementar ninguno de los ~15 flujos existentes (gastos, documentos, cashflow...). Aplica y
+ * queda reflejado en AMBOS canales: como el chatId es el mismo de Telegram (una vez vinculado), el
+ * handler edita/limpia el teclado del mensaje real, así que también desaparece ahí.
+ *
+ * El botón pulsado debe ser exactamente uno de los que el propio servidor mandó hace poco — nunca se
+ * confía en que el cliente diga "este botón existe", se valida contra lo que de verdad está en
+ * webBotonesStore (que puede perderse en un redeploy; en ese caso el botón simplemente ya no aparece
+ * como disponible, y sigue resolviéndose desde Telegram con normalidad).
+ *
+ * Solo en modo completo (dispositivo vinculado) — un dispositivo no vinculado ya no ve tools de
+ * escritura (ver soloLectura en askClaude), pero esto es una segunda capa: nunca ejecutar una acción
+ * real en nombre de alguien cuya identidad de Telegram todavía no está confirmada.
+ *
+ * Idempotente igual que /api/cerebro/chat (mismo mecanismo, mismo store — la respuesta se recupera
+ * por requestId vía GET /api/cerebro/chat/solicitud/:requestId, ya existente): un requestId repetido
+ * con el mismo callbackData se une a la ejecución en curso o devuelve su resultado ya guardado, nunca
+ * repite la acción real.
+ */
+app.post("/api/cerebro/chat/boton", async (req: Request, res: Response) => {
+  corsChat(res, "POST");
+  const identidad = await identidadChatParaRespuesta(req, res);
+  if (!identidad) return;
+
+  if (identidad.modo !== "completo") {
+    res.status(403).json({ error: "Vincula este dispositivo con Telegram para poder resolver decisiones desde el chat web." });
+    return;
+  }
+
+  const requestId = typeof req.body?.requestId === "string" ? req.body.requestId.trim() : "";
+  const messageId = Number(req.body?.messageId);
+  const callbackData = typeof req.body?.callbackData === "string" ? req.body.callbackData.trim() : "";
+
+  if (!/^[a-zA-Z0-9_-]{8,100}$/.test(requestId)) {
+    res.status(400).json({ error: "requestId ausente o inválido." });
+    return;
+  }
+  if (!Number.isInteger(messageId) || messageId <= 0) {
+    res.status(400).json({ error: "Falta messageId (entero positivo)." });
+    return;
+  }
+  if (!callbackData || callbackData.length > 200) {
+    res.status(400).json({ error: "callbackData ausente o inválido." });
+    return;
+  }
+
+  const mensaje = obtenerBotonesDeMensaje(identidad.chatId, messageId);
+  const botonValido = mensaje?.botones.some((fila) => fila.some((b) => b.callback_data === callbackData));
+  if (!mensaje || !botonValido) {
+    res.status(409).json({
+      error:
+        "Ese botón ya no está disponible — puede que ya se haya resuelto (revisa el mensaje más reciente) o que el servidor se haya reiniciado desde que se mostró. Si sigue pendiente, resuélvelo desde Telegram.",
+    });
+    return;
+  }
+
+  try {
+    const resultado = await iniciarSolicitudChat(
+      { requestId, chatId: identidad.chatId, texto: callbackData },
+      webChatRequestStore,
+      async () => {
+        const callback: TelegramCallbackQuery = {
+          id: `web:${requestId}`,
+          from: { id: identidad.chatId, is_bot: false, first_name: identidad.nombre },
+          message: {
+            message_id: messageId,
+            chat: { id: identidad.chatId, type: "private" },
+            date: Math.floor(Date.now() / 1000),
+            text: mensaje.texto,
+          },
+          data: callbackData,
+        };
+        try {
+          await despacharCallbackQuery(callback);
+          return "ok";
+        } finally {
+          programarActualizacionCerebroDesdeTelegram("chat_web");
+        }
+      }
+    );
+
+    if (resultado.estado === "procesando") {
+      res.status(202).json({ estado: resultado.estado, requestId, duplicada: resultado.duplicada });
+      return;
+    }
+    if (resultado.estado === "fallido") {
+      res.status(409).json({
+        estado: resultado.estado,
+        error: "La ejecución anterior quedó interrumpida y no se repitió para evitar duplicar acciones.",
+      });
+      return;
+    }
+    res.json({ estado: resultado.estado, duplicada: resultado.duplicada });
+  } catch (error) {
+    if (error instanceof ConflictoIdempotencia) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
+    console.error("[api/cerebro/chat/boton] Error procesando botón:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No pude procesar ese botón." });
+  }
+});
+
+app.options("/api/cerebro/chat/boton", (_req: Request, res: Response) => {
   corsChat(res, "POST");
   res.sendStatus(204);
 });
@@ -1116,6 +1238,104 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
  * y el handler de SIGTERM más abajo), que ahora espera a que terminen antes de dejar que Railway mate
  * el proceso, en vez de cortarlas a mitad de camino.
  */
+/**
+ * Despacha un callback_query (por prefijo de su `data`) al handler que corresponde — extraído de
+ * procesarUpdateTelegram para que el chat web (ver /api/cerebro/chat/boton) pueda disparar EXACTAMENTE
+ * la misma lógica que un botón real de Telegram, construyendo un TelegramCallbackQuery sintético en
+ * vez de duplicar este switch. La autorización de "¿puede este usuario hablarle al bot?" queda fuera
+ * a propósito (es responsabilidad de cada llamador: procesarUpdateTelegram ya la hizo con
+ * esUsuarioAutorizado antes de llegar acá; el endpoint web la hace con identidadChatParaRespuesta) —
+ * lo que SÍ viaja acá es el chequeo de rol para acciones sensibles, que aplica igual sin importar el
+ * canal.
+ */
+async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<void> {
+  const data = callback.data ?? "";
+
+  if (data.startsWith("auth_")) {
+    await handleAuthCallback(callback);
+    return;
+  }
+
+  if (esAccionSensible(data) && !puedeAprobarAccionSensible(await obtenerRolUsuario(callback.from?.id))) {
+    console.warn(`[auth] Usuario sin permiso de superadmin intentó acción sensible — id: ${callback.from?.id}, accion: ${data}`);
+    await answerCallbackQuery(callback.id, "Esta acción requiere aprobación del superadministrador.").catch(() => {});
+    return;
+  }
+
+  try {
+    if (data.startsWith("doc_")) {
+      await handleDocumentCallback(callback);
+    } else if (data.startsWith("desamb_")) {
+      await handleDesambiguacionCallback(callback);
+    } else if (data.startsWith("colacorreo_")) {
+      if (data === "colacorreo_descartaractivo") {
+        await handleDescartarActivoCallback(callback);
+      } else {
+        await handleColaCorreoSiguienteCallback(callback);
+      }
+    } else if (data === "resumen_descartar_todo:confirmar") {
+      await handleConfirmarDescartarTodoPendienteCallback(callback);
+    } else if (data === "resumen_descartar_todo:cancelar") {
+      await handleCancelarDescartarTodoPendienteCallback(callback);
+    } else if (data === "resumen_descartar_todo") {
+      await handleDescartarTodoPendienteCallback(callback);
+    } else if (data.startsWith("resumen_descartar_item:")) {
+      await handleDescartarItemPendienteCallback(callback);
+    } else if (data.startsWith("email_")) {
+      await handleEmailActionCallback(callback);
+    } else if (data.startsWith("draft_")) {
+      await handleDraftCallback(callback);
+    } else if (data.startsWith("recpago_")) {
+      await handlePagoRecurrenteCallback(callback);
+    } else if (data.startsWith("gasto_")) {
+      await handleGastoCallback(callback);
+    } else if (data.startsWith("edicioncompra_")) {
+      await handleEdicionCompraHoldedCallback(callback);
+    } else if (data.startsWith("edicioncashflow_")) {
+      await handleEdicionValorCashflowCallback(callback);
+    } else if (data.startsWith("regmanualcf_")) {
+      await handleRegistroManualCashflowCallback(callback);
+    } else if (data.startsWith("evento_")) {
+      await handleEventoCallback(callback);
+    } else if (data.startsWith("cerebroacceso_")) {
+      await handleAccesoCerebroCallback(callback);
+    } else if (data.startsWith("capturaempresa_")) {
+      await handleCapturaEmpresaCallback(callback);
+    } else if (data.startsWith("anotcf_")) {
+      await handleCashflowAnnotationActionCallback(callback);
+    } else if (data.startsWith("accprog_")) {
+      await handleAccionProgramadaCallback(callback);
+    } else if (data.startsWith("reportecontable_")) {
+      await handleReporteContableCallback(callback);
+    } else if (data.startsWith("autohilo_")) {
+      await handleAutorespuestaHiloCallback(callback);
+    } else if (data.startsWith("autorrepair_")) {
+      await handleAutorrepairCallback(callback);
+    } else if (data.startsWith("escaladev_")) {
+      await handleEscalacionCallback(callback);
+    } else {
+      await handleCallbackQuery(callback);
+    }
+  } catch (error) {
+    console.error("Error procesando callback_query:", error);
+    // El llamador ya recibió su ACK (Telegram por HTTP 200 del webhook, o el endpoint web por su
+    // propia respuesta) y, en muchos flujos, el usuario ya vio un mensaje intermedio como
+    // "Aplicando...". Un error no manejado aquí quedaba únicamente en logs y hacía que pareciera que
+    // el bot se congeló. Nunca reintentamos una acción sensible desde este catch (podría haberse
+    // aplicado aunque la confirmación se perdiera); solo cerramos visualmente el estado y pedimos
+    // comprobar antes de repetir. Sin texto en el ACK: si el acuse temprano ya salió, AcusesCallback
+    // no crea un segundo mensaje tardío. El aviso persistente se manda una sola vez justo debajo.
+    await answerCallbackQuery(callback.id).catch(() => {});
+    const chatId = callback.message?.chat.id;
+    if (chatId !== undefined) {
+      await sendTelegramMessage(
+        chatId,
+        "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto de Telegram continúa operativo."
+      ).catch(() => {});
+    }
+  }
+}
+
 async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
 
   if (update.callback_query) {
@@ -1151,96 +1371,7 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   programarActualizacionCerebroDesdeTelegram();
 
   if (update.callback_query) {
-    const data = update.callback_query.data ?? "";
-
-    if (data.startsWith("auth_")) {
-      await handleAuthCallback(update.callback_query);
-      return;
-    }
-
-    if (esAccionSensible(data) && !puedeAprobarAccionSensible(await obtenerRolUsuario(remitente?.id))) {
-      console.warn(`[auth] Usuario sin permiso de superadmin intentó acción sensible — id: ${remitente?.id}, accion: ${data}`);
-      await answerCallbackQuery(
-        update.callback_query.id,
-        "Esta acción requiere aprobación del superadministrador."
-      ).catch(() => {});
-      return;
-    }
-
-    try {
-      if (data.startsWith("doc_")) {
-        await handleDocumentCallback(update.callback_query);
-      } else if (data.startsWith("desamb_")) {
-        await handleDesambiguacionCallback(update.callback_query);
-      } else if (data.startsWith("colacorreo_")) {
-        if (data === "colacorreo_descartaractivo") {
-          await handleDescartarActivoCallback(update.callback_query);
-        } else {
-          await handleColaCorreoSiguienteCallback(update.callback_query);
-        }
-      } else if (data === "resumen_descartar_todo:confirmar") {
-        await handleConfirmarDescartarTodoPendienteCallback(update.callback_query);
-      } else if (data === "resumen_descartar_todo:cancelar") {
-        await handleCancelarDescartarTodoPendienteCallback(update.callback_query);
-      } else if (data === "resumen_descartar_todo") {
-        await handleDescartarTodoPendienteCallback(update.callback_query);
-      } else if (data.startsWith("resumen_descartar_item:")) {
-        await handleDescartarItemPendienteCallback(update.callback_query);
-      } else if (data.startsWith("email_")) {
-        await handleEmailActionCallback(update.callback_query);
-      } else if (data.startsWith("draft_")) {
-        await handleDraftCallback(update.callback_query);
-      } else if (data.startsWith("recpago_")) {
-        await handlePagoRecurrenteCallback(update.callback_query);
-      } else if (data.startsWith("gasto_")) {
-        await handleGastoCallback(update.callback_query);
-      } else if (data.startsWith("edicioncompra_")) {
-        await handleEdicionCompraHoldedCallback(update.callback_query);
-      } else if (data.startsWith("edicioncashflow_")) {
-        await handleEdicionValorCashflowCallback(update.callback_query);
-      } else if (data.startsWith("regmanualcf_")) {
-        await handleRegistroManualCashflowCallback(update.callback_query);
-      } else if (data.startsWith("evento_")) {
-        await handleEventoCallback(update.callback_query);
-      } else if (data.startsWith("cerebroacceso_")) {
-        await handleAccesoCerebroCallback(update.callback_query);
-      } else if (data.startsWith("capturaempresa_")) {
-        await handleCapturaEmpresaCallback(update.callback_query);
-      } else if (data.startsWith("anotcf_")) {
-        await handleCashflowAnnotationActionCallback(update.callback_query);
-      } else if (data.startsWith("accprog_")) {
-        await handleAccionProgramadaCallback(update.callback_query);
-      } else if (data.startsWith("reportecontable_")) {
-        await handleReporteContableCallback(update.callback_query);
-      } else if (data.startsWith("autohilo_")) {
-        await handleAutorespuestaHiloCallback(update.callback_query);
-      } else if (data.startsWith("autorrepair_")) {
-        await handleAutorrepairCallback(update.callback_query);
-      } else if (data.startsWith("escaladev_")) {
-        await handleEscalacionCallback(update.callback_query);
-      } else {
-        await handleCallbackQuery(update.callback_query);
-      }
-    } catch (error) {
-      console.error("Error procesando callback_query de Telegram:", error);
-      // Telegram ya recibió el ACK HTTP y, en muchos flujos, el usuario ya
-      // vio un mensaje intermedio como "Aplicando...". Un error no manejado
-      // aquí quedaba únicamente en logs y hacía que pareciera que el bot se
-      // congeló. Nunca reintentamos una acción sensible desde este catch
-      // (podría haberse aplicado aunque la confirmación se perdiera); solo
-      // cerramos visualmente el estado y pedimos comprobar antes de repetir.
-      // Sin texto: si el acuse temprano ya salió, AcusesCallback no crea un
-      // segundo mensaje tardío. El aviso persistente se manda una sola vez
-      // justo debajo.
-      await answerCallbackQuery(update.callback_query.id).catch(() => {});
-      const chatId = update.callback_query.message?.chat.id;
-      if (chatId !== undefined) {
-        await sendTelegramMessage(
-          chatId,
-          "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto de Telegram continúa operativo."
-        ).catch(() => {});
-      }
-    }
+    await despacharCallbackQuery(update.callback_query);
     return;
   }
 

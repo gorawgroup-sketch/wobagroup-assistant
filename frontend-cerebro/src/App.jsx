@@ -48,6 +48,7 @@ const ACCIONES_PROGRAMADAS_ENDPOINT = `${API_BASE}/acciones-programadas`;
 const CHAT_ENDPOINT = `${API_BASE}/chat`;
 const CHAT_VINCULAR_ENDPOINT = `${API_BASE}/chat/vincular`;
 const CHAT_SOLICITUD_ENDPOINT = (requestId) => `${CHAT_ENDPOINT}/solicitud/${encodeURIComponent(requestId)}`;
+const CHAT_BOTON_ENDPOINT = `${CHAT_ENDPOINT}/boton`;
 const CONEXIONES_POLL_MS = 60000;
 const POLL_INTERVALO_MS = 3000;
 // La sesión (key maestra o token temporal, lo que se haya aprobado) se
@@ -1860,6 +1861,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   const [mensajes, setMensajes] = useState([]);
   const [identidad, setIdentidad] = useState(null);
   const [texto, setTexto] = useState("");
+  // Botones reales de Telegram (crear gasto vs. duplicado, clasificar documento...) que el chat web
+  // puede resolver directamente — ver core/cerebro/webBotonesStore.ts. `botonesEnProceso` son los
+  // messageId con una pulsación en curso: sus botones quedan inactivos de inmediato en la UI (mismo
+  // criterio que Telegram — nunca esperar a la respuesta del servidor para deshabilitarlos).
+  const [botonesActivos, setBotonesActivos] = useState([]);
+  const [botonesEnProceso, setBotonesEnProceso] = useState(() => new Set());
   // `registrando` dura solo hasta que la reserva idempotente quedó guardada;
   // el análisis continúa en segundo plano y ya no bloquea el compositor.
   const [registrando, setRegistrando] = useState(false);
@@ -1934,6 +1941,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
       }
       setMensajes(Array.isArray(json.mensajes) ? json.mensajes : []);
       setIdentidad(json.identidad || null);
+      setBotonesActivos(Array.isArray(json.botonesActivos) ? json.botonesActivos : []);
       if (json.identidad?.vinculadaTelegram) setCodigoVinculo(null);
       return json;
     } catch {
@@ -2136,6 +2144,67 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     }
   };
 
+  /**
+   * Pulsa uno de los botones reales de Telegram desde el chat web — ver POST /api/cerebro/chat/boton
+   * (mismo despacho que un botón real, ver despacharCallbackQuery en src/server.ts). Igual que en
+   * Telegram, el teclado del mensaje queda inactivo de inmediato al pulsar, sin esperar la respuesta
+   * del servidor — se quita optimistamente de botonesActivos apenas el POST confirma que empezó a
+   * procesarse (202/200), y cargarChat() trae el resultado real (nuevos mensajes, nuevos botones si
+   * la acción generó otra decisión) en cuanto termina.
+   */
+  const pulsarBoton = useCallback(async (messageId, callbackData) => {
+    if (botonesEnProceso.has(messageId)) return;
+    setBotonesEnProceso((actuales) => new Set(actuales).add(messageId));
+    setError("");
+    const requestId = window.crypto?.randomUUID?.().replaceAll("-", "") || `btn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+    const esperarResultado = async () => {
+      for (let intento = 0; intento < 40; intento++) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVALO_MS));
+        try {
+          const res = await fetch(CHAT_SOLICITUD_ENDPOINT(requestId), { headers, cache: "no-store" });
+          const json = await res.json().catch(() => ({}));
+          if (res.ok && json.estado === "completado") return { ok: true };
+          if (res.ok && json.estado === "fallido") return { ok: false, error: "La acción quedó interrumpida y no se repitió para evitar duplicarla." };
+          if (!res.ok && (res.status === 400 || res.status === 403)) return { ok: false, error: json.error || "No se pudo confirmar la acción." };
+        } catch {
+          // problema transitorio de red — reintenta en la siguiente vuelta del sondeo
+        }
+      }
+      return { ok: false, error: "Tardó demasiado en confirmarse — revisa el resultado en Telegram." };
+    };
+
+    try {
+      const res = await fetch(CHAT_BOTON_ENDPOINT, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, messageId, callbackData }),
+      });
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok && res.status !== 202) {
+        setError(json.error || "No se pudo procesar ese botón.");
+        return;
+      }
+
+      // Coincide con Telegram: todo el teclado de la propuesta se retira apenas se resuelve
+      // cualquiera de sus opciones, no solo la que se tocó.
+      setBotonesActivos((actuales) => actuales.filter((b) => b.messageId !== messageId));
+
+      const resultado = json.estado === "completado" ? { ok: true } : await esperarResultado();
+      if (!resultado.ok) setError(resultado.error || "No se pudo confirmar la acción.");
+      await cargarChat();
+    } catch {
+      setError("No se pudo conectar con Wobi para procesar ese botón.");
+    } finally {
+      setBotonesEnProceso((actuales) => {
+        const siguiente = new Set(actuales);
+        siguiente.delete(messageId);
+        return siguiente;
+      });
+    }
+  }, [botonesEnProceso, headers, cargarChat]);
+
   const iniciarDictado = () => {
     if (!SpeechRecognition) return;
     if (escuchando) {
@@ -2331,7 +2400,41 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
                 )}
               </React.Fragment>
             ))}
+            {identidad?.modo === "completo" && botonesActivos.map((item) => {
+              const enProceso = botonesEnProceso.has(item.messageId);
+              return (
+                <div key={item.messageId} className="wobi-mensaje-fila wobi-mensaje-fila--wobi">
+                  <span className="wobi-avatar wobi-avatar--mensaje" aria-hidden="true"><img src={WOBI_IMG} alt="" /></span>
+                  <div className="wobi-burbuja wobi-burbuja--wobi wobi-burbuja--botones">
+                    <ContenidoRespuesta texto={item.texto} />
+                    <div className="wobi-botones-decision">
+                      {item.botones.map((fila, i) => (
+                        <div key={i} className="wobi-botones-fila">
+                          {fila.map((boton) => (
+                            <button
+                              key={boton.callback_data}
+                              type="button"
+                              disabled={enProceso}
+                              onClick={() => pulsarBoton(item.messageId, boton.callback_data)}
+                            >
+                              {boton.text}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                    {enProceso && <small className="wobi-botones-procesando">Aplicando…</small>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
+
+          {identidad && identidad.modo !== "completo" && botonesActivos.length > 0 && (
+            <div className="wobi-chat-error" role="status">
+              Hay {botonesActivos.length} decisión{botonesActivos.length === 1 ? "" : "es"} pendiente{botonesActivos.length === 1 ? "" : "s"} — vincula este dispositivo con Telegram (arriba) para poder resolverla{botonesActivos.length === 1 ? "" : "s"} desde acá, o resuélvela{botonesActivos.length === 1 ? "" : "s"} directamente en Telegram mientras tanto.
+            </div>
+          )}
 
           {error && <div role="alert" className="wobi-chat-error">{error}</div>}
           <div className="wobi-compositor">
@@ -3212,6 +3315,23 @@ export default function CerebroWoba() {
           border-radius: 14px 14px 4px 14px;
           background: linear-gradient(145deg, rgba(46,109,164,.3), rgba(31,72,110,.23));
         }
+        .wobi-burbuja--botones { border-color: rgba(232,167,92,.34); }
+        .wobi-botones-decision { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+        .wobi-botones-fila { display: flex; flex-wrap: wrap; gap: 6px; }
+        .wobi-botones-fila button {
+          flex: 1 1 auto;
+          min-height: 38px;
+          padding: 8px 12px;
+          border: 1px solid rgba(232,167,92,.48);
+          border-radius: 9px;
+          color: ${C.amberBright};
+          background: rgba(232,167,92,.08);
+          font-size: 13px;
+          cursor: pointer;
+        }
+        .wobi-botones-fila button:hover:not(:disabled) { background: rgba(232,167,92,.16); }
+        .wobi-botones-fila button:disabled { opacity: .45; cursor: default; }
+        .wobi-botones-procesando { display: block; margin-top: 6px; color: ${C.dim}; font-size: 11px; }
         .wobi-escribiendo { display: flex; align-items: center; gap: 8px; }
         .wobi-escribiendo > span:nth-child(2) { display: flex; gap: 4px; padding: 11px 13px; border: 1px solid ${C.line}; border-radius: 4px 14px 14px 14px; background: ${C.voidSoft}; }
         .wobi-escribiendo i { width: 5px; height: 5px; border-radius: 50%; background: ${C.amberBright}; animation: wobiTyping 1.2s infinite; }
