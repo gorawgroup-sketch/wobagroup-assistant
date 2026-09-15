@@ -26,6 +26,8 @@ export interface ResumenLedgerAdjuntosCompra {
   subiendo: number;
   verificado: number;
   incierto: number;
+  /** Empresas (WOBA/EWORKS/Footprint) con al menos un adjunto en estado "incierto" — sin esto no se sabe en qué Holded mirar. */
+  empresasConIncertidumbre: string[];
 }
 
 function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undefined {
@@ -161,8 +163,19 @@ class StoreAdjuntosCompra implements RepositorioAdjuntosCompra {
   async obtenerResumen(): Promise<ResumenLedgerAdjuntosCompra> {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const resumen: ResumenLedgerAdjuntosCompra = { preparado: 0, subiendo: 0, verificado: 0, incierto: 0 };
-      for (const registro of this.registros.values()) resumen[registro.estado]++;
+      const resumen: ResumenLedgerAdjuntosCompra = {
+        preparado: 0,
+        subiendo: 0,
+        verificado: 0,
+        incierto: 0,
+        empresasConIncertidumbre: [],
+      };
+      const empresasInciertas = new Set<string>();
+      for (const registro of this.registros.values()) {
+        resumen[registro.estado]++;
+        if (registro.estado === "incierto") empresasInciertas.add(registro.empresa);
+      }
+      resumen.empresasConIncertidumbre = [...empresasInciertas].sort();
       return resumen;
     });
   }

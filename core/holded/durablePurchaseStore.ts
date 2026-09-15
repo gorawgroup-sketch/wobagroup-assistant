@@ -25,6 +25,8 @@ export interface ResumenLedgerCreacionesCompra {
   creando: number;
   verificada: number;
   incierta: number;
+  /** Empresas (WOBA/EWORKS/Footprint) con al menos una compra en estado "incierta" — sin esto no se sabe en qué Holded mirar. */
+  empresasConIncertidumbre: string[];
 }
 
 function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undefined {
@@ -160,8 +162,19 @@ class StoreCreacionesCompra implements RepositorioCreacionesCompra {
   async obtenerResumen(): Promise<ResumenLedgerCreacionesCompra> {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const resumen: ResumenLedgerCreacionesCompra = { preparada: 0, creando: 0, verificada: 0, incierta: 0 };
-      for (const registro of this.registros.values()) resumen[registro.estado]++;
+      const resumen: ResumenLedgerCreacionesCompra = {
+        preparada: 0,
+        creando: 0,
+        verificada: 0,
+        incierta: 0,
+        empresasConIncertidumbre: [],
+      };
+      const empresasInciertas = new Set<string>();
+      for (const registro of this.registros.values()) {
+        resumen[registro.estado]++;
+        if (registro.estado === "incierta") empresasInciertas.add(registro.empresa);
+      }
+      resumen.empresasConIncertidumbre = [...empresasInciertas].sort();
       return resumen;
     });
   }

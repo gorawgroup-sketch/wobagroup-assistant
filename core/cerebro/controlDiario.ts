@@ -103,6 +103,11 @@ function nombreProceso(proceso: string): string {
   return nombres[proceso] ?? proceso.replaceAll("_", " ");
 }
 
+/** Carlos gestiona 3 Holded distintos (WOBA/EWORKS/Footprint) — sin nombrar la empresa, una incidencia crítica no dice dónde corregir. */
+function listaEmpresas(empresas: string[]): string {
+  return empresas.length > 0 ? empresas.join(", ") : "empresa sin determinar";
+}
+
 export function generarControlDiario(entrada: EntradaControlDiario): ControlDiario {
   const recomendaciones: RecomendacionControlDiario[] = [];
   const { costos, memoria, politica } = entrada;
@@ -161,7 +166,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       id: "compras-holded-inciertas",
       prioridad: "critica",
       titulo: "Hay compras de Holded con resultado incierto",
-      detalle: `${entrada.comprasHolded.incierta} compra(s) no pudieron confirmarse mediante su marcador interno.`,
+      detalle: `${entrada.comprasHolded.incierta} compra(s) no pudieron confirmarse mediante su marcador interno (Holded ${listaEmpresas(entrada.comprasHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esas compras en Holded antes de autorizar un registro equivalente.",
       modulo: "conexiones",
     });
@@ -181,7 +186,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       id: "ediciones-holded-inciertas",
       prioridad: "critica",
       titulo: "Hay ediciones de Holded con resultado incierto",
-      detalle: `${entrada.edicionesHolded.incierta} edición(es) no coinciden todavía con su huella esperada.`,
+      detalle: `${entrada.edicionesHolded.incierta} edición(es) no coinciden todavía con su huella esperada (Holded ${listaEmpresas(entrada.edicionesHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos documentos en Holded antes de autorizar otra corrección equivalente.",
       modulo: "conexiones",
     });
@@ -201,7 +206,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       id: "adjuntos-holded-inciertos",
       prioridad: "critica",
       titulo: "Hay comprobantes de Holded con resultado incierto",
-      detalle: `${entrada.adjuntosHolded.incierto} comprobante(s) no pudieron confirmarse descargando y comparando sus bytes.`,
+      detalle: `${entrada.adjuntosHolded.incierto} comprobante(s) no pudieron confirmarse descargando y comparando sus bytes (Holded ${listaEmpresas(entrada.adjuntosHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos adjuntos en Holded antes de autorizar otra carga equivalente.",
       modulo: "conexiones",
     });
@@ -221,7 +226,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       id: "conciliaciones-holded-inciertas",
       prioridad: "critica",
       titulo: "Hay conciliaciones bancarias con resultado incierto",
-      detalle: `${entrada.conciliacionesHolded.incierta} conciliación(es) no pudieron confirmarse contra el movimiento en Holded.`,
+      detalle: `${entrada.conciliacionesHolded.incierta} conciliación(es) no pudieron confirmarse contra el movimiento en Holded (${listaEmpresas(entrada.conciliacionesHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos movimientos y documentos en Holded antes de autorizar otra conciliación.",
       modulo: "conexiones",
     });
@@ -241,7 +246,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       id: "contactos-holded-inciertos",
       prioridad: "critica",
       titulo: "Hay contactos de Holded con resultado incierto",
-      detalle: `${entrada.contactosHolded.incierta} contacto(s) no pudieron confirmarse por código fiscal o nombre exacto.`,
+      detalle: `${entrada.contactosHolded.incierta} contacto(s) no pudieron confirmarse por código fiscal o nombre exacto (Holded ${listaEmpresas(entrada.contactosHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos proveedores en Holded y resolver coincidencias duplicadas antes de autorizar otra creación.",
       modulo: "conexiones",
     });

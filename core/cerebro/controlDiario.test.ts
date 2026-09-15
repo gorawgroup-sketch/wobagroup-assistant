@@ -40,11 +40,11 @@ function entradaBase(): EntradaControlDiario {
     },
     enviosCorreo: { preparado: 0, enviando: 0, verificado: 3, incierto: 0 },
     subidasDrive: { preparada: 0, subiendo: 0, verificada: 4, incierta: 0 },
-    comprasHolded: { preparada: 0, creando: 0, verificada: 5, incierta: 0 },
-    edicionesHolded: { preparada: 0, editando: 0, verificada: 2, incierta: 0 },
-    adjuntosHolded: { preparado: 0, subiendo: 0, verificado: 3, incierto: 0 },
-    conciliacionesHolded: { preparada: 0, conciliando: 0, verificada: 2, incierta: 0 },
-    contactosHolded: { preparada: 0, creando: 0, verificada: 2, incierta: 0 },
+    comprasHolded: { preparada: 0, creando: 0, verificada: 5, incierta: 0, empresasConIncertidumbre: [] },
+    edicionesHolded: { preparada: 0, editando: 0, verificada: 2, incierta: 0, empresasConIncertidumbre: [] },
+    adjuntosHolded: { preparado: 0, subiendo: 0, verificado: 3, incierto: 0, empresasConIncertidumbre: [] },
+    conciliacionesHolded: { preparada: 0, conciliando: 0, verificada: 2, incierta: 0, empresasConIncertidumbre: [] },
+    contactosHolded: { preparada: 0, creando: 0, verificada: 2, incierta: 0, empresasConIncertidumbre: [] },
     generadoEn: new Date("2026-09-09T09:00:00Z"),
   };
 }
@@ -152,12 +152,14 @@ test("un fallo leyendo el ledger de Drive nunca se representa como cero", () => 
   assert.ok(control.recomendaciones.some((r) => r.id === "ledger-drive-no-disponible"));
 });
 
-test("una compra de Holded incierta se eleva como crítica", () => {
+test("una compra de Holded incierta se eleva como crítica y dice en qué empresa mirar", () => {
   const entrada = entradaBase();
-  entrada.comprasHolded = { preparada: 0, creando: 0, verificada: 2, incierta: 1 };
+  entrada.comprasHolded = { preparada: 0, creando: 0, verificada: 2, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
-  assert.ok(control.recomendaciones.some((r) => r.id === "compras-holded-inciertas"));
+  const recomendacion = control.recomendaciones.find((r) => r.id === "compras-holded-inciertas");
+  assert.ok(recomendacion);
+  assert.match(recomendacion.detalle, /Footprint/);
 });
 
 test("un fallo leyendo el ledger de Holded nunca se representa como cero", () => {
@@ -170,7 +172,7 @@ test("un fallo leyendo el ledger de Holded nunca se representa como cero", () =>
 
 test("una edición de Holded incierta se eleva como crítica", () => {
   const entrada = entradaBase();
-  entrada.edicionesHolded = { preparada: 0, editando: 0, verificada: 1, incierta: 1 };
+  entrada.edicionesHolded = { preparada: 0, editando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "ediciones-holded-inciertas"));
@@ -186,7 +188,7 @@ test("un fallo leyendo el ledger de ediciones nunca se representa como cero", ()
 
 test("un adjunto de Holded incierto se eleva como crítico", () => {
   const entrada = entradaBase();
-  entrada.adjuntosHolded = { preparado: 0, subiendo: 0, verificado: 1, incierto: 1 };
+  entrada.adjuntosHolded = { preparado: 0, subiendo: 0, verificado: 1, incierto: 1, empresasConIncertidumbre: ["EWORKS"] };
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "adjuntos-holded-inciertos"));
@@ -200,17 +202,19 @@ test("un fallo leyendo el ledger de adjuntos nunca se representa como cero", () 
   assert.ok(control.recomendaciones.some((r) => r.id === "ledger-adjuntos-holded-no-disponible"));
 });
 
-test("una conciliación bancaria incierta se eleva como crítica", () => {
+test("una conciliación bancaria incierta se eleva como crítica y dice en qué empresa mirar", () => {
   const entrada = entradaBase();
-  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1 };
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
-  assert.ok(control.recomendaciones.some((r) => r.id === "conciliaciones-holded-inciertas"));
+  const recomendacion = control.recomendaciones.find((r) => r.id === "conciliaciones-holded-inciertas");
+  assert.ok(recomendacion);
+  assert.match(recomendacion.detalle, /Footprint/);
 });
 
 test("caso real Carlos: descartar una recomendación quita la tarjeta y recalcula el estado general", () => {
   const entrada = entradaBase();
-  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1 };
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
   entrada.recomendacionesDescartadas = new Set(["conciliaciones-holded-inciertas"]);
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "estable");
@@ -219,8 +223,8 @@ test("caso real Carlos: descartar una recomendación quita la tarjeta y recalcul
 
 test("descartar una recomendación no oculta las demás que sigan vigentes", () => {
   const entrada = entradaBase();
-  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1 };
-  entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1 };
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
+  entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
   entrada.recomendacionesDescartadas = new Set(["conciliaciones-holded-inciertas"]);
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
@@ -238,7 +242,7 @@ test("un fallo leyendo el ledger de conciliaciones nunca se representa como cero
 
 test("un contacto de Holded incierto se eleva como crítico", () => {
   const entrada = entradaBase();
-  entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1 };
+  entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["EWORKS"] };
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "contactos-holded-inciertos"));
