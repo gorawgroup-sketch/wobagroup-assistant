@@ -164,6 +164,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "empresa",
       deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
       correoOrigen: entrada.correoOrigen,
     }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (empresa):", error));
     return "pendiente_datos";
@@ -256,6 +257,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         datos,
         motivo: "moneda",
         deColaCorreo: entrada.deColaCorreo,
+        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
         correoOrigen: entrada.correoOrigen,
       }).catch((error) =>
         console.error("[procesarGastoEntrante] Error guardando pendiente de moneda de liquidación:", error)
@@ -299,6 +301,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "moneda",
       deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
       correoOrigen: entrada.correoOrigen,
     }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
     return "pendiente_datos";
@@ -338,6 +341,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "verificacion_duplicado",
       deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
       correoOrigen: entrada.correoOrigen,
     }).catch((errorStore) =>
       console.error("[procesarGastoEntrante] Error guardando el reintento de identidad documental:", errorStore)
@@ -394,6 +398,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "verificacion_duplicado",
       deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
       correoOrigen: entrada.correoOrigen,
     }).catch((errorStore) => console.error("[procesarGastoEntrante] Error guardando reintento de duplicados:", errorStore));
     return "pendiente_datos";
@@ -445,6 +450,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       datos,
       motivo: "verificacion_duplicado",
       deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
       correoOrigen: entrada.correoOrigen,
     });
     return "pendiente_datos";

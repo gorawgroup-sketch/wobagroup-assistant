@@ -74,6 +74,7 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
         datos,
         deColaCorreo: pendiente.deColaCorreo,
         correoOrigen: pendiente.correoOrigen,
+        origenAdjuntoGmail: pendiente.origenAdjuntoGmail,
       });
     } catch (error) {
       // Se reinserta el pendiente para no perderlo por un error transitorio.
