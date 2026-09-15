@@ -1,20 +1,14 @@
+import { agregarFila, actualizarFila, eliminarFila, leerFilas } from "../google/sheetsKeyValueStore";
 import type { InlineKeyboardButton } from "../telegram/types";
+import { conMutex } from "../utils/asyncMutex";
 
 /**
- * Pedido explícito de Carlos: que el chat web pueda resolver las mismas decisiones que hoy solo
- * existen como botones de Telegram (crear gasto vs. duplicado, clasificar un documento, aprobar
- * categorías de cashflow...). Telegram sigue siendo la única fuente de verdad de qué botones existen
- * de verdad (los maneja Telegram mismo, con su propio reply_markup) — esto es solo un ESPEJO en
- * memoria para que el panel web sepa qué mostrar y a qué callback_data corresponde cada botón.
+ * Espejo durable de los teclados inline que Wobi muestra en Telegram.
  *
- * Deliberadamente en memoria, no en Sheets: sendTelegramMessageWithButtons/editTelegramMessageReplyMarkup
- * se llaman con muchísima frecuencia en todo el sistema — agregarles una escritura a Sheets en cada
- * llamada sumaría carga real a un camino ya caliente, por un dato que es puramente de presentación (la
- * fuente de verdad de cada decisión pendiente sigue viviendo en su propio store dedicado, como
- * siempre — gastoProposalSheet, pendienteReclasificacionStore, etc.). Tolerante a perderse en un
- * redeploy: un botón que sigue vivo en Telegram simplemente no aparece en el chat web hasta que se
- * regenere (ej. al reintentar la consulta), y sigue funcionando normal desde Telegram mientras tanto
- * — nunca es la única forma de resolver algo.
+ * El front no inventa acciones: conserva exactamente el texto y callback_data
+ * que Telegram recibió. Persistirlos permite que sigan disponibles después de
+ * un redeploy de Railway y que una decisión de segundo nivel (por ejemplo
+ * "▶️ Sí, siguiente") aparezca también en el chat web.
  */
 export interface BotonesActivosMensaje {
   chatId: number;
@@ -24,68 +18,241 @@ export interface BotonesActivosMensaje {
   actualizadoEn: number;
 }
 
-const activos = new Map<string, BotonesActivosMensaje>();
+export interface RepositorioBotonesWeb {
+  listar(): Promise<BotonesActivosMensaje[]>;
+  guardar(mensaje: BotonesActivosMensaje): Promise<void>;
+  eliminar(chatId: number, messageId: number): Promise<void>;
+}
+
+const TAB_NAME = "_cerebro_botones_web";
+const HEADERS = ["clave", "chatId", "messageId", "texto", "botonesJSON", "actualizadoEn"];
+const NUM_COLS = HEADERS.length;
+const MUTEX_PERSISTENCIA = "webBotonesStore:sheet";
 
 function clave(chatId: number, messageId: number): string {
   return `${chatId}:${messageId}`;
 }
 
-// Mismo criterio que el resto del sistema para "algo esperando resolución" (ver
-// UMBRAL_ACTIVO_ESTANCADO_MS en revisarCorreoNuevo.ts) — pasado este tiempo, se asume que ya se
-// resolvió por otro camino (Telegram) o quedó obsoleto, y deja de mostrarse en el chat web.
-const TTL_MS = 48 * 60 * 60 * 1000;
-const MAX_POR_CHAT = 20;
+function botonesValidos(value: unknown): value is InlineKeyboardButton[][] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (fila) =>
+        Array.isArray(fila) &&
+        fila.length > 0 &&
+        fila.every(
+          (boton) =>
+            boton !== null &&
+            typeof boton === "object" &&
+            typeof (boton as InlineKeyboardButton).text === "string" &&
+            typeof (boton as InlineKeyboardButton).callback_data === "string" &&
+            (boton as InlineKeyboardButton).callback_data.length > 0
+        )
+    )
+  );
+}
 
-function purgarVencidosYExceso(chatId: number): void {
-  const ahora = Date.now();
-  const deEsteChat: [string, BotonesActivosMensaje][] = [];
-
-  for (const [k, v] of activos) {
-    if (v.chatId !== chatId) continue;
-    if (ahora - v.actualizadoEn >= TTL_MS) {
-      activos.delete(k);
-      continue;
-    }
-    deEsteChat.push([k, v]);
+function desdeFila(valores: string[]): BotonesActivosMensaje | undefined {
+  const chatId = Number(valores[1]);
+  const messageId = Number(valores[2]);
+  const actualizadoEn = Number(valores[5]);
+  if (!Number.isSafeInteger(chatId) || !Number.isSafeInteger(messageId) || messageId <= 0 || !actualizadoEn) {
+    return undefined;
   }
 
-  if (deEsteChat.length <= MAX_POR_CHAT) return;
-  deEsteChat.sort((a, b) => a[1].actualizadoEn - b[1].actualizadoEn);
-  for (let i = 0; i < deEsteChat.length - MAX_POR_CHAT; i++) activos.delete(deEsteChat[i][0]);
+  try {
+    const botones: unknown = JSON.parse(valores[4] || "[]");
+    if (!botonesValidos(botones)) return undefined;
+    return { chatId, messageId, texto: valores[3] || "", botones, actualizadoEn };
+  } catch {
+    return undefined;
+  }
 }
 
-/** Se llama al enviar un mensaje nuevo con botones (sendTelegramMessageWithButtons/Expandable). */
-export function registrarBotonesActivos(chatId: number, messageId: number, texto: string, botones: InlineKeyboardButton[][]): void {
-  if (botones.length === 0) return;
-  activos.set(clave(chatId, messageId), { chatId, messageId, texto, botones, actualizadoEn: Date.now() });
-  purgarVencidosYExceso(chatId);
+function aFila(mensaje: BotonesActivosMensaje): (string | number)[] {
+  return [
+    clave(mensaje.chatId, mensaje.messageId),
+    mensaje.chatId,
+    mensaje.messageId,
+    mensaje.texto,
+    JSON.stringify(mensaje.botones),
+    mensaje.actualizadoEn,
+  ];
 }
+
+const repositorioSheets: RepositorioBotonesWeb = {
+  async listar() {
+    const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+    return filas.flatMap(({ valores }) => {
+      const mensaje = desdeFila(valores);
+      return mensaje ? [mensaje] : [];
+    });
+  },
+
+  async guardar(mensaje) {
+    await conMutex(MUTEX_PERSISTENCIA, async () => {
+      const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+      const existente = filas.find(({ valores }) => valores[0] === clave(mensaje.chatId, mensaje.messageId));
+      if (existente) {
+        await actualizarFila(TAB_NAME, existente.rowIndex, NUM_COLS, aFila(mensaje));
+      } else {
+        await agregarFila(TAB_NAME, NUM_COLS, HEADERS, aFila(mensaje));
+      }
+    });
+  },
+
+  async eliminar(chatId, messageId) {
+    await conMutex(MUTEX_PERSISTENCIA, async () => {
+      const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+      const existente = filas.find(({ valores }) => valores[0] === clave(chatId, messageId));
+      if (existente) await eliminarFila(TAB_NAME, existente.rowIndex, HEADERS);
+    });
+  },
+};
 
 /**
- * Se llama al repintar los botones de un mensaje ya enviado (editTelegramMessageReplyMarkup) — con
- * botones=[] (el caso más común, "ya se resolvió") lo retira del espejo; con una selección nueva
- * (ej. togglear un check) actualiza qué botones mostrar, conservando el texto original.
+ * Cache corto para no consultar Sheets en cada render. No hay TTL funcional
+ * ni máximo de botones: una decisión permanece mientras siga activa en
+ * Telegram y se elimina cuando el mismo flujo retira su teclado.
  */
-export function actualizarBotonesActivos(chatId: number, messageId: number, botones: InlineKeyboardButton[][]): void {
-  const k = clave(chatId, messageId);
-  if (botones.length === 0) {
-    activos.delete(k);
-    return;
+export class AlmacenBotonesWeb {
+  private readonly activos = new Map<string, BotonesActivosMensaje>();
+  private cacheCargadaEn = 0;
+
+  constructor(
+    private readonly repositorio: RepositorioBotonesWeb,
+    private readonly ahora: () => number = Date.now,
+    private readonly cacheTtlMs = 3_000
+  ) {}
+
+  private async cargarSiHaceFalta(forzar = false): Promise<void> {
+    if (!forzar && this.cacheCargadaEn > 0 && this.ahora() - this.cacheCargadaEn < this.cacheTtlMs) return;
+    const guardados = await this.repositorio.listar();
+    this.activos.clear();
+    for (const mensaje of guardados) this.activos.set(clave(mensaje.chatId, mensaje.messageId), mensaje);
+    this.cacheCargadaEn = this.ahora();
   }
-  const existente = activos.get(k);
-  if (!existente) return; // nunca se vio crear este mensaje (ej. de antes de este cambio) — nada que mostrar
-  activos.set(k, { ...existente, botones, actualizadoEn: Date.now() });
+
+  async registrar(
+    chatId: number,
+    messageId: number,
+    texto: string,
+    botones: InlineKeyboardButton[][]
+  ): Promise<void> {
+    if (!botonesValidos(botones)) return;
+    const mensaje = { chatId, messageId, texto, botones, actualizadoEn: this.ahora() };
+    this.activos.set(clave(chatId, messageId), mensaje);
+    await this.repositorio.guardar(mensaje);
+  }
+
+  async actualizar(chatId: number, messageId: number, botones: InlineKeyboardButton[][]): Promise<void> {
+    if (botones.length === 0) {
+      this.activos.delete(clave(chatId, messageId));
+      await this.repositorio.eliminar(chatId, messageId);
+      return;
+    }
+    if (!botonesValidos(botones)) return;
+
+    await this.cargarSiHaceFalta();
+    const existente = this.activos.get(clave(chatId, messageId));
+    if (!existente) return;
+    const actualizado = { ...existente, botones, actualizadoEn: this.ahora() };
+    this.activos.set(clave(chatId, messageId), actualizado);
+    await this.repositorio.guardar(actualizado);
+  }
+
+  async actualizarTexto(chatId: number, messageId: number, texto: string): Promise<void> {
+    await this.cargarSiHaceFalta();
+    const existente = this.activos.get(clave(chatId, messageId));
+    if (!existente || existente.texto === texto) return;
+    const actualizado = { ...existente, texto, actualizadoEn: this.ahora() };
+    this.activos.set(clave(chatId, messageId), actualizado);
+    await this.repositorio.guardar(actualizado);
+  }
+
+  async obtenerActivos(chatId: number): Promise<BotonesActivosMensaje[]> {
+    await this.cargarSiHaceFalta();
+    return this.obtenerActivosMemoria(chatId);
+  }
+
+  async obtenerMensaje(chatId: number, messageId: number): Promise<BotonesActivosMensaje | undefined> {
+    await this.cargarSiHaceFalta();
+    return this.obtenerMensajeMemoria(chatId, messageId);
+  }
+
+  obtenerActivosMemoria(chatId: number): BotonesActivosMensaje[] {
+    return Array.from(this.activos.values())
+      .filter((mensaje) => mensaje.chatId === chatId)
+      .sort((a, b) => a.actualizadoEn - b.actualizadoEn);
+  }
+
+  obtenerMensajeMemoria(chatId: number, messageId: number): BotonesActivosMensaje | undefined {
+    return this.activos.get(clave(chatId, messageId));
+  }
 }
 
-/** Todos los mensajes con botones todavía activos para un chat, del más viejo al más nuevo. */
-export function obtenerBotonesActivos(chatId: number): BotonesActivosMensaje[] {
-  purgarVencidosYExceso(chatId);
-  return Array.from(activos.values())
-    .filter((v) => v.chatId === chatId)
-    .sort((a, b) => a.actualizadoEn - b.actualizadoEn);
+const almacen = new AlmacenBotonesWeb(repositorioSheets);
+
+function registrarFallo(operacion: string, error: unknown): void {
+  console.error(`[webBotonesStore] No se pudo ${operacion} el espejo durable:`, error instanceof Error ? error.message : error);
 }
 
-/** Un mensaje puntual — usado para validar que el botón que se intenta pulsar sigue vigente antes de despacharlo. */
-export function obtenerBotonesDeMensaje(chatId: number, messageId: number): BotonesActivosMensaje | undefined {
-  return activos.get(clave(chatId, messageId));
+/** Se llama después de enviar un mensaje nuevo con botones a Telegram. */
+export async function registrarBotonesActivos(
+  chatId: number,
+  messageId: number,
+  texto: string,
+  botones: InlineKeyboardButton[][]
+): Promise<void> {
+  try {
+    await almacen.registrar(chatId, messageId, texto, botones);
+  } catch (error) {
+    registrarFallo("guardar", error);
+  }
+}
+
+/** Actualiza o retira el teclado sin cambiar el texto guardado. */
+export async function actualizarBotonesActivos(
+  chatId: number,
+  messageId: number,
+  botones: InlineKeyboardButton[][]
+): Promise<void> {
+  try {
+    await almacen.actualizar(chatId, messageId, botones);
+  } catch (error) {
+    registrarFallo("actualizar", error);
+  }
+}
+
+/** Mantiene el texto del front sincronizado cuando Telegram edita el mensaje sin cambiar su teclado. */
+export async function actualizarTextoBotonesActivos(chatId: number, messageId: number, texto: string): Promise<void> {
+  try {
+    await almacen.actualizarTexto(chatId, messageId, texto);
+  } catch (error) {
+    registrarFallo("actualizar el texto de", error);
+  }
+}
+
+/** Todos los mensajes con botones activos para un chat, del más viejo al más nuevo. */
+export async function obtenerBotonesActivos(chatId: number): Promise<BotonesActivosMensaje[]> {
+  try {
+    return await almacen.obtenerActivos(chatId);
+  } catch (error) {
+    registrarFallo("leer", error);
+    return almacen.obtenerActivosMemoria(chatId);
+  }
+}
+
+/** Un mensaje puntual; también valida que un clic del front siga siendo una acción vigente. */
+export async function obtenerBotonesDeMensaje(
+  chatId: number,
+  messageId: number
+): Promise<BotonesActivosMensaje | undefined> {
+  try {
+    return await almacen.obtenerMensaje(chatId, messageId);
+  } catch (error) {
+    registrarFallo("leer", error);
+    return almacen.obtenerMensajeMemoria(chatId, messageId);
+  }
 }
