@@ -524,11 +524,18 @@ export async function editTelegramMessage(
  * explícito de Carlos para el teclado de selección de acciones de gasto
  * (ver gastoTeclado.ts): marcar/desmarcar un check no debe reescribir ni
  * reformatear el texto original de la propuesta, solo repintar los botones.
+ *
+ * `textoSiFalta` (opcional): respaldo para el espejo durable del chat web — ver
+ * actualizarBotonesActivos en webBotonesStore.ts. Como esta función a propósito no toca el texto
+ * real del mensaje en Telegram, no siempre hay un texto a mano; cuando el llamador sí lo tiene
+ * (normalmente reconstruible desde la propuesta), pasarlo evita que una actualización de botones
+ * se pierda en silencio si el registro original ya no existe.
  */
 export async function editTelegramMessageReplyMarkup(
   chatId: number,
   messageId: number,
-  buttons: InlineKeyboardButton[][]
+  buttons: InlineKeyboardButton[][],
+  textoSiFalta?: string
 ): Promise<void> {
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageReplyMarkup`;
@@ -551,13 +558,13 @@ export async function editTelegramMessageReplyMarkup(
     // (ej. marcar y desmarcar el mismo check dos veces seguidas). El estado
     // pedido y el real ya coinciden, así que el espejo también se actualiza acá.
     if (response.status === 400 && /message is not modified/i.test(errBody)) {
-      await actualizarBotonesActivos(chatId, messageId, buttons);
+      await actualizarBotonesActivos(chatId, messageId, buttons, textoSiFalta);
       return;
     }
     throw new Error(`Error editando los botones de un mensaje de Telegram (${response.status}): ${errBody}`);
   }
 
-  await actualizarBotonesActivos(chatId, messageId, buttons);
+  await actualizarBotonesActivos(chatId, messageId, buttons, textoSiFalta);
 }
 
 /** Igual que editTelegramMessage, pero con título fijo + cuerpo largo colapsado — ver sendTelegramMessageExpandable. */
