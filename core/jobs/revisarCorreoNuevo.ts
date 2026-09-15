@@ -473,7 +473,18 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           nombreArchivoOriginal: adjunto.filename,
           mimeType: adjunto.mimeType,
           nombreParaClasificar: adjunto.filename,
-          captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${correo.extracto}`,
+          // Hallazgo real de auditoría (caso real Carlos, Uber Bogotá/Nicolás Gómez, 34980 COP): esto
+          // usaba correo.extracto (el snippet corto de Gmail, msg.snippet, ~100-200 caracteres) — para
+          // un "Fwd:" cuyo preámbulo son varias líneas de cabecera ("---------- Forwarded message
+          // ---------", From/Date/Subject), el snippet de Gmail puede agotarse ENTERO en ese preámbulo
+          // y nunca llegar a la línea real de contenido. Caso real confirmado en vivo: el correo traía
+          // "Uber - €9,92 - $$34980 - Aeropuerto Col a Casa..." — el equivalente EUR explícito que
+          // extraerDatosFactura ya sabe buscar (ver su system prompt) — pero el snippet cortaba justo
+          // antes, en "...Subject: Factura Uber - Aeropuerto COL a Casa - Viaje CentroAmerica", así que
+          // ese equivalente NUNCA llegó al modelo: no es que lo pasara por alto, nunca lo vio. Mismo
+          // cuerpoCompleto (obtenerCuerpoCompletoCorreo) que este mismo correo ya lee más arriba para
+          // decidir si además pide algo — ya en memoria, sin costo adicional.
+          captionEfectivo: `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpoCompleto || correo.extracto}`,
           // deColaCorreo real del llamador — permite a documentCallbackHandler.ts y
           // gastoCallbackHandler.ts distinguir esta propuesta (que sí debe
           // avanzar la cola de revisión al resolverse) de una propuesta
