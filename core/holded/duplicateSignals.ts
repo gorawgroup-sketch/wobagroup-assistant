@@ -135,7 +135,14 @@ export function evaluarMovimientoConciliadoComoDuplicado(
 
   const diferenciaMonto = Math.abs(Math.abs(monto) - Math.abs(criterios.monto));
   const montoExacto = diferenciaMonto <= 0.011;
-  const montoCercano = diferenciaMonto <= Math.max(0.5, Math.abs(criterios.monto) * 0.01);
+  // Hallazgo real de auditoría (Footprint, cuenta USD, 2026-09-08): dos viajes de Uber distintos el
+  // mismo día ("Uber Pending", 3.55 y 3.77 USD) — el piso fijo de 0.50 hacía que CUALQUIER cargo del
+  // mismo proveedor ese día calificara como "monto cercano" (diferencia real: 0.22, muy por debajo
+  // del piso), bloqueando la creación de un gasto real y distinto solo por compartir proveedor y
+  // fecha. Para importes chicos (la mayoría de tickets de transporte/comida) ese piso era mucho mayor
+  // que la propia transacción. Se conserva el 1% proporcional para importes grandes (variación
+  // plausible de tipo de cambio o cargos), pero el piso baja a un margen de céntimos, no de dólares.
+  const montoCercano = diferenciaMonto <= Math.max(0.05, Math.abs(criterios.monto) * 0.01);
   const coincideProveedor = proveedorPareceEnDescripcion(criterios.proveedor, movimiento.description ?? "");
   const coincideFechaExacta = fechaCalendario(movimiento.booking_date) === criterios.fecha.slice(0, 10);
   const diferenciaDias = diferenciaDiasCalendario(movimiento.booking_date, criterios.fecha);

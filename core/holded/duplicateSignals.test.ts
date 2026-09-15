@@ -179,6 +179,26 @@ test("sí detecta el cargo del mismo proveedor cuando la fecha está razonableme
   assert.equal(resultado?.diferenciaDias, 3);
 });
 
+test("caso real Carlos (Footprint, 2026-09-08): dos viajes de Uber distintos el mismo día no se confunden entre sí solo por compartir proveedor y fecha", () => {
+  // El movimiento real "Uber Pending" de 3.55 USD, ya conciliado, no debe bloquear un ticket
+  // DISTINTO de 3.77 USD del mismo proveedor y fecha — son dos viajes reales distintos, no la
+  // misma transacción con una pequeña variación de redondeo.
+  const resultado = evaluarMovimientoConciliadoComoDuplicado(
+    {
+      id: "mov-uber-355",
+      description: "Uber Pending",
+      amount: "-3.55",
+      currency: "USD",
+      booking_date: "2026-09-08T00:00:00+00:00",
+      status: "reconciled",
+      reconciled_amount: "-3.55",
+    },
+    { proveedor: "Uber", monto: 3.77, fecha: "2026-09-08", moneda: "USD" }
+  );
+
+  assert.equal(resultado, undefined);
+});
+
 test("sin proveedor no bloquea por fecha lejana, conciliación parcial o importe aproximado", () => {
   const criterios = { proveedor: "", monto: 6.6, fecha: "2026-09-11", moneda: "EUR" };
   const base = {
