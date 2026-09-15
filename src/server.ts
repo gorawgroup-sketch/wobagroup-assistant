@@ -1338,9 +1338,14 @@ async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<
     await answerCallbackQuery(callback.id).catch(() => {});
     const chatId = callback.message?.chat.id;
     if (chatId !== undefined) {
+      // Hallazgo real de auditoría: este mensaje se manda vía sendTelegramMessage — por el historial
+      // compartido, llega a Telegram Y al chat web (despacharCallbackQuery se reutiliza tal cual para
+      // los dos, ver /api/cerebro/chat/boton). "El resto de Telegram continúa operativo" no tiene
+      // sentido para alguien que está viendo esto en el chat web, así que el texto no debe nombrar un
+      // canal en concreto.
       await sendTelegramMessage(
         chatId,
-        "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto de Telegram continúa operativo."
+        "⚠️ No pude confirmar cómo terminó tu selección. Por seguridad no la repetí: revisa el último resultado en Holded antes de volver a intentarlo. El resto del chat sigue operativo."
       ).catch(() => {});
     }
   }

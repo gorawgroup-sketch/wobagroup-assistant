@@ -2159,7 +2159,15 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     const requestId = window.crypto?.randomUUID?.().replaceAll("-", "") || `btn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
     const esperarResultado = async () => {
-      for (let intento = 0; intento < 40; intento++) {
+      // Hallazgo real de auditoría (caso real Carlos: "Aprobar selección" con varias acciones
+      // marcadas juntas — crear y conciliar + guardar como conocimiento — se dio por "tardó
+      // demasiado" aunque el servidor seguía trabajando de verdad). 40 intentos × 3s = 120s alcanza
+      // para una sola acción, pero una selección compuesta encadena varias llamadas reales a
+      // Holded/Sheets/Claude, y una sola de ellas ya puede tardar 60-80s+ cuando Sheets aplica su
+      // propio backoff de cuota (ver core/utils/readCache.ts y los reintentos ya documentados en
+      // otras partes del proyecto) — sin ser un error real, solo lento. 100 intentos × 3s = 300s da
+      // margen real a una selección compuesta sin dejar de detectar un fallo genuino.
+      for (let intento = 0; intento < 100; intento++) {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVALO_MS));
         try {
           const res = await fetch(CHAT_SOLICITUD_ENDPOINT(requestId), { headers, cache: "no-store" });
@@ -2171,7 +2179,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
           // problema transitorio de red — reintenta en la siguiente vuelta del sondeo
         }
       }
-      return { ok: false, error: "Tardó demasiado en confirmarse — revisa el resultado en Telegram." };
+      return { ok: false, error: "Tardó demasiado en confirmarse — revisa el último resultado en Holded antes de volver a intentarlo." };
     };
 
     try {
