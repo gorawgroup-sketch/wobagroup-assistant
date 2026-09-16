@@ -210,14 +210,14 @@ jobs:
           echo "- Turnos: $TURNS de 80" >> "$GITHUB_STEP_SUMMARY"
           echo "- Resultado: $SUBTYPE" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Entregar el resultado verificado a WOBI
+      - name: Preparar Pull Request seguro con WOBI
         # El chequeo de status="branch_ready" se hace DENTRO del script bash (no aqui con fromJSON) a
         # proposito: si el paso anterior se salto (preflight.configured=false), structured_output
         # queda vacio, y fromJSON('') en una condicion `if:` de YAML podria fallar la evaluacion
         # entera en vez de simplemente evaluar a falso — mas seguro resolverlo con jq, que sí maneja
         # una entrada vacia sin reventar.
         if: steps.preflight.outputs.configured == 'true'
-        id: entregar
+        id: preparar_pr
         shell: bash
         env:
           STRUCTURED_OUTPUT: ${{ steps.fix.outputs.structured_output }}
@@ -255,7 +255,79 @@ jobs:
             --argjson issueNumero "$ISSUE_NUMBER" \
             '{rama:$rama,tituloPR:$tituloPR,resumen:$resumen,chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero}')
 
-          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix-branch" \
+          RESPONSE=$(curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix-branch" \
+            -H "Authorization: Bearer ${ADMIN_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY")
+          PR_NUMBER=$(printf '%s' "$RESPONSE" | jq -r '.numeroPR')
+          PR_URL=$(printf '%s' "$RESPONSE" | jq -r '.urlPR')
+          PR_BRANCH=$(printf '%s' "$RESPONSE" | jq -r '.rama')
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || [ -z "$PR_URL" ] || [ -z "$PR_BRANCH" ]; then
+            echo "::error::WOBI no devolvió un Pull Request válido." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "branch=$PR_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "resumen_b64=$(printf '%s' "$RESUMEN" | base64 -w 0)" >> "$GITHUB_OUTPUT"
+
+      - name: Esperar sincronización y CI verde
+        if: steps.preparar_pr.outputs.pr_number != ''
+        id: verificar_ci
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.preparar_pr.outputs.pr_number }}
+        run: |
+          for INTENTO in $(seq 1 90); do
+            DATA=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json statusCheckRollup,mergeStateStatus)
+            MERGE_STATE=$(printf '%s' "$DATA" | jq -r '.mergeStateStatus // "UNKNOWN"')
+            TOTAL=$(printf '%s' "$DATA" | jq '[.statusCheckRollup[]?] | length')
+            FALLIDOS=$(printf '%s' "$DATA" | jq '[.statusCheckRollup[]? | (.conclusion // .state // "") | select(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE")] | length')
+            PENDIENTES=$(printf '%s' "$DATA" | jq '[.statusCheckRollup[]? | select((.__typename == "CheckRun" and (.status // "") != "COMPLETED") or (.__typename == "StatusContext" and ((.state // "") == "PENDING" or (.state // "") == "EXPECTED")))] | length')
+
+            if [ "$FALLIDOS" -gt 0 ]; then
+              echo "::error::El PR #$PR_NUMBER no pasó sus controles; no se mostrarán botones de despliegue." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            if [ "$TOTAL" -gt 0 ] && [ "$PENDIENTES" -eq 0 ]; then
+              if [ "$MERGE_STATE" = "BEHIND" ] || [ "$MERGE_STATE" = "DIRTY" ]; then
+                echo "::error::El PR #$PR_NUMBER no quedó sincronizado/fusionable después del CI (estado $MERGE_STATE)." >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              echo "PR #$PR_NUMBER sincronizado y con $TOTAL control(es) en verde." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::El PR #$PR_NUMBER no terminó sus controles dentro de 15 minutos." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Entregar aprobación a WOBI después del CI
+        if: steps.verificar_ci.outcome == 'success'
+        id: entregar
+        shell: bash
+        env:
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
+          MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ steps.preparar_pr.outputs.pr_number }}
+          PR_URL: ${{ steps.preparar_pr.outputs.pr_url }}
+          PR_BRANCH: ${{ steps.preparar_pr.outputs.branch }}
+          RESUMEN_B64: ${{ steps.preparar_pr.outputs.resumen_b64 }}
+        run: |
+          RESUMEN=$(printf '%s' "$RESUMEN_B64" | base64 --decode)
+          BODY=$(jq -n \
+            --argjson numeroPR "$PR_NUMBER" \
+            --arg rama "$PR_BRANCH" \
+            --arg urlPR "$PR_URL" \
+            --arg resumen "$RESUMEN" \
+            --argjson chatId "$CHAT_ID" \
+            --arg messageId "${MESSAGE_ID:-}" \
+            --argjson issueNumero "$ISSUE_NUMBER" \
+            '{numeroPR:$numeroPR,rama:$rama,urlPR:$urlPR,resumen:$resumen,chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero}')
+          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix" \
             -H "Authorization: Bearer ${ADMIN_SECRET}" \
             -H "Content-Type: application/json" \
             -d "$BODY"
@@ -266,6 +338,8 @@ jobs:
         env:
           STRUCTURED_OUTPUT: ${{ steps.fix.outputs.structured_output }}
           FIX_OUTCOME: ${{ steps.fix.outcome }}
+          PREPARE_OUTCOME: ${{ steps.preparar_pr.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verificar_ci.outcome }}
           DELIVERY_OUTCOME: ${{ steps.entregar.outcome }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
@@ -278,9 +352,15 @@ jobs:
             exit 0
           fi
 
-          if [ "$STATUS" = "branch_ready" ]; then
+          if [ "$STATUS" = "branch_ready" ] && [ "$PREPARE_OUTCOME" != "success" ]; then
             ESTADO="fallo"
-            RESUMEN="Development subió una rama verificada, pero el puente seguro de WOBI no pudo abrir o registrar el Pull Request. La rama se conserva para reintentar sin volver a gastar IA."
+            RESUMEN="Development subió una rama verificada, pero el puente seguro de WOBI no pudo preparar el Pull Request. La rama se conserva para reintentar sin volver a gastar IA."
+          elif [ "$STATUS" = "branch_ready" ] && [ "$VERIFY_OUTCOME" != "success" ]; then
+            ESTADO="requiere_revision"
+            RESUMEN="Development abrió el Pull Request, pero no quedó sincronizado y con CI verde. Por seguridad no se mostraron botones de despliegue."
+          elif [ "$STATUS" = "branch_ready" ]; then
+            ESTADO="fallo"
+            RESUMEN="El Pull Request pasó el CI, pero WOBI no pudo entregar los botones de aprobación."
           elif [ "$FIX_OUTCOME" = "failure" ] || [ "$FIX_OUTCOME" = "cancelled" ]; then
             ESTADO="fallo"
             RESUMEN="La sesión aislada de Development terminó con error antes de proponer un arreglo. Revisa el run de GitHub Actions."
