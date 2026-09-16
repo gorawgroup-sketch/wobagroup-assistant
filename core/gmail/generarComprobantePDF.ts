@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import PDFDocument from "pdfkit";
 import type { DatosFactura } from "../documental/extractInvoiceData";
+import { conTiempoMaximo } from "../utils/asyncTimeout";
 
 export interface DatosCorreoParaComprobante {
   de: string;
@@ -109,11 +110,13 @@ interface RutaChrome {
   empaquetadoServerless: boolean;
 }
 
+const ARGS_CHROME_SISTEMA = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"];
+
 async function rutaChrome(configurada?: string): Promise<RutaChrome> {
   if (configurada) {
     return {
       executablePath: configurada,
-      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+      args: ARGS_CHROME_SISTEMA,
       empaquetadoServerless: false,
     };
   }
@@ -127,7 +130,7 @@ async function rutaChrome(configurada?: string): Promise<RutaChrome> {
     if (encontrada) {
       return {
         executablePath: encontrada,
-        args: ["--no-sandbox", "--disable-dev-shm-usage"],
+        args: ARGS_CHROME_SISTEMA,
         empaquetadoServerless: false,
       };
     }
@@ -152,7 +155,7 @@ async function rutaChrome(configurada?: string): Promise<RutaChrome> {
     if (encontrada) {
       return {
         executablePath: encontrada,
-        args: ["--no-sandbox", "--disable-dev-shm-usage"],
+        args: ARGS_CHROME_SISTEMA,
         empaquetadoServerless: false,
       };
     }
@@ -175,7 +178,23 @@ export function modoHeadlessComprobante(empaquetadoServerless: boolean): true | 
   return empaquetadoServerless ? "shell" : true;
 }
 
+/**
+ * Hallazgo real de auditoría (Carlos, 2026-09-16, caso real Airbnb MEX): tras corregir el arranque de
+ * Chromium (libnspr4.so), el correo quedó "atascado varios minutos... incluso después de 2 reintentos
+ * automáticos" hasta que vigilarProcesamientoAtascado lo liberó a la fuerza. `browser.newPage()` y
+ * `browser.close()` NUNCA tuvieron ningún timeout propio — solo las operaciones DENTRO de la página
+ * (setContent, pdf) lo tenían, y esas solo empiezan a contar una vez que newPage() ya resolvió. Un
+ * Chromium que arranca pero queda con su protocolo DevTools sin responder (posible en un contenedor
+ * con restricciones de sandbox distintas a las de un Chromium normal) podía colgar la función entera
+ * sin límite, bloqueando toda la cola de correos hasta que el vigilante externo lo notara minutos
+ * después. conTiempoMaximo acota el TOTAL (arranque + página + cierre) a un límite duro: si algo se
+ * cuelga en cualquier punto, esta función falla con un error claro en vez de colgarse en silencio.
+ */
 async function generarComprobanteVisualPDF(correo: DatosCorreoParaComprobante): Promise<Buffer> {
+  return conTiempoMaximo(() => generarComprobanteVisualPDFInterno(correo), 45_000, "generarComprobanteVisualPDF");
+}
+
+async function generarComprobanteVisualPDFInterno(correo: DatosCorreoParaComprobante): Promise<Buffer> {
   const { default: puppeteer } = await import("puppeteer-core");
   const config = configuracionComprobanteVisual();
   const chrome = await rutaChrome(config.ejecutable);
@@ -191,6 +210,7 @@ async function generarComprobanteVisualPDF(correo: DatosCorreoParaComprobante): 
     // causa real (biblioteca/permiso) en vez del mensaje opaco "Code: 127".
     dumpio: true,
     defaultViewport: { width: 1280, height: 1600, deviceScaleFactor: 1 },
+    timeout: 20_000,
   });
 
   try {
@@ -223,7 +243,12 @@ async function generarComprobanteVisualPDF(correo: DatosCorreoParaComprobante): 
     }
     return pdf;
   } finally {
-    await browser.close().catch(() => undefined);
+    // Un close() colgado dejaría un proceso Chromium zombi consumiendo memoria en el contenedor
+    // indefinidamente — si no responde rápido, se mata el proceso del sistema operativo directamente
+    // en vez de esperarlo para siempre.
+    await conTiempoMaximo(() => browser.close(), 5_000, "browser.close()").catch(() => {
+      browser.process()?.kill("SIGKILL");
+    });
   }
 }
 
