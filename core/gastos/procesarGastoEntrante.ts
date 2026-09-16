@@ -352,9 +352,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const motivo = duplicadoInterno.motivo === "mismo_archivo"
       ? "el archivo es exactamente el mismo"
       : "coinciden el número de documento y el proveedor";
+    // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
+    // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
+    // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
+    // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
+    // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
+    const origenTxt = entrada.correoOrigen
+      ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
+      : "";
     await sendTelegramMessage(
       chatId,
-      `⛔ No propuse crear ni conciliar este gasto: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
+      `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
+        `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
+        `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
         `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
     );
     return "propuesta_duplicada";
