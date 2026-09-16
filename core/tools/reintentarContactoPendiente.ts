@@ -40,7 +40,7 @@ export const reintentarContactoPendienteTool: ToolDefinition = {
 
     let contacto;
     try {
-      contacto = await buscarContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor);
+      contacto = await buscarContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor, resolucion.propuesta.moneda);
     } catch (error) {
       // Se reinserta el pendiente para no perderlo por un error transitorio (ej. Holded caído un momento).
       await guardarResolucionContacto({ ...resolucion }).catch(() => {});
