@@ -460,7 +460,7 @@ export async function extraerDatosFactura(
   let documentBlock: DocumentOrImageBlock | TextBlock;
   try {
     const data = await readFile(rutaLocal);
-    documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
+    documentBlock = await mimeADocumentBlock(rutaLocal, mimeType, data);
   } catch (error) {
     console.error("[extractInvoiceData] Error leyendo/preparando el archivo:", error);
     return fallback;

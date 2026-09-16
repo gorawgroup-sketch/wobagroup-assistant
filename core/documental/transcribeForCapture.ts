@@ -62,7 +62,7 @@ export async function transcribirParaCaptura(
   const ejecucion = crearEjecucionIA("transcribir_captura");
 
   const data = await readFile(rutaLocal);
-  const documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
+  const documentBlock = await mimeADocumentBlock(rutaLocal, mimeType, data);
 
   const textoInstruccion = [
     "Transcribe el contenido real de este documento/imagen en texto, de forma clara y COMPLETA — es " +
