@@ -36,14 +36,14 @@ jobs:
         id: preflight
         shell: bash
         env:
-          CLAUDE_MAX_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -n "${CLAUDE_MAX_TOKEN:-}" ]; then
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "### Claude Max aun no esta activado" >> "$GITHUB_STEP_SUMMARY"
-            echo "Falta el secret CLAUDE_CODE_OAUTH_TOKEN. No se investigo nada." >> "$GITHUB_STEP_SUMMARY"
+            echo "### Development automatico aun no esta configurado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Falta el secret ANTHROPIC_API_KEY. No se investigo nada." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Extraer el origen del chat del cuerpo del issue
@@ -94,7 +94,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_URL: ${{ github.event.issue.html_url }}
         run: |
-          RESUMEN="Development no pudo iniciar: falta configurar CLAUDE_CODE_OAUTH_TOKEN en GitHub Actions."
+          RESUMEN="Development no pudo iniciar: falta configurar ANTHROPIC_API_KEY en GitHub Actions."
           gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$RESUMEN"
           if [ -z "${ADMIN_SECRET:-}" ] || [ -z "${CHAT_ID:-}" ]; then
             exit 0
@@ -118,12 +118,12 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Investigar y proponer arreglo con Claude Code Max
+      - name: Investigar y proponer arreglo con Claude Code
         if: steps.preflight.outputs.configured == 'true'
         id: fix
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           label_trigger: "wobi-auto-fix"
           show_full_output: false
