@@ -205,23 +205,119 @@ export async function fusionarPullRequest(numero: number, rama: string): Promise
   return true;
 }
 
+const CONFIG_ETIQUETAS_DEVELOPMENT: Record<string, { color: string; description: string }> = {
+  "wobi-auto-fix": {
+    color: "1d76db",
+    description: "Inicia una sesión aislada de Claude Code para investigar y proponer un arreglo.",
+  },
+  urgente: {
+    color: "d73a4a",
+    description: "Incidencia operativa urgente reportada desde WOBI.",
+  },
+};
+
+function nombresEtiquetas(labels: unknown): string[] {
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .map((label) => (typeof label === "string" ? label : (label as { name?: unknown })?.name))
+    .filter((name): name is string => typeof name === "string" && name.length > 0);
+}
+
 /**
- * Crea un GitHub Issue real en el repo — pedido explícito de Carlos: poder escalar un reporte desde el
- * chat directamente a development, sin tener que copiar/pegar manualmente el texto en una sesión de
- * Claude Code (ver core/tools/escalarDesarrollo.ts). No toca main ni ninguna rama, solo abre el issue.
+ * Garantiza que la etiqueta exista ANTES de abrir el issue. GitHub puede aceptar la creación de un
+ * issue y omitir silenciosamente una etiqueta inexistente; eso ocurrió en producción con el issue
+ * #82: el issue sí se creó, pero `wobi-auto-fix` no quedó aplicada y el workflow se saltó entero.
  */
-export async function crearIssue(params: { titulo: string; cuerpo: string; labels?: string[] }): Promise<{ numero: number; url: string }> {
+async function asegurarEtiquetaRepositorio(nombre: string): Promise<void> {
+  const path = `/repos/${REPO_OWNER}/${REPO_NAME}/labels/${encodeURIComponent(nombre)}`;
+  const existente = await githubFetch(path);
+  if (existente.ok) return;
+  if (existente.status !== 404) {
+    throw new Error(`No se pudo verificar la etiqueta "${nombre}" (HTTP ${existente.status}).`);
+  }
+
+  const config = CONFIG_ETIQUETAS_DEVELOPMENT[nombre] ?? {
+    color: "ededed",
+    description: "Etiqueta creada por WOBI.",
+  };
+  const creada = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/labels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: nombre, color: config.color, description: config.description }),
+  });
+  if (creada.ok) return;
+
+  // Un 422 puede ser una carrera: otra ejecución creó la etiqueta entre el GET y el POST.
+  if (creada.status === 422) {
+    const relectura = await githubFetch(path);
+    if (relectura.ok) return;
+  }
+  const detalle = await creada.text().catch(() => "");
+  throw new Error(`No se pudo crear la etiqueta "${nombre}" (HTTP ${creada.status}). ${detalle}`.trim());
+}
+
+export interface IssueCreado {
+  numero: number;
+  url: string;
+  labels: string[];
+  /** Solo true cuando GitHub devolvió todas las etiquetas requeridas tras releer/aplicar. */
+  labelsVerificadas: boolean;
+  advertenciaLabels?: string;
+}
+
+/**
+ * Crea un GitHub Issue real en el repo y verifica que las etiquetas que disparan Development hayan
+ * quedado aplicadas. No toca main ni ninguna rama; la sesión de Claude Code corre después en un
+ * runner aislado de GitHub Actions.
+ */
+export async function crearIssue(params: { titulo: string; cuerpo: string; labels?: string[] }): Promise<IssueCreado> {
+  const labelsRequeridas = [...new Set((params.labels ?? []).map((label) => label.trim()).filter(Boolean))];
+  for (const label of labelsRequeridas) await asegurarEtiquetaRepositorio(label);
+
   const resp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/issues`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: params.titulo, body: params.cuerpo, labels: params.labels ?? [] }),
+    body: JSON.stringify({ title: params.titulo, body: params.cuerpo, labels: labelsRequeridas }),
   });
   if (!resp.ok) {
     const detalle = await resp.text().catch(() => "");
     throw new Error(`No se pudo crear el issue (HTTP ${resp.status}). ${detalle}`.trim());
   }
-  const data = (await resp.json()) as { number: number; html_url: string };
-  return { numero: data.number, url: data.html_url };
+  const data = (await resp.json()) as { number: number; html_url: string; labels?: unknown };
+  let labelsAplicadas = nombresEtiquetas(data.labels);
+  const faltantes = labelsRequeridas.filter((label) => !labelsAplicadas.includes(label));
+
+  if (faltantes.length > 0) {
+    // Aplicarlas después de crear también emite el evento `issues:labeled`, por lo que el workflow
+    // arranca incluso si GitHub omitió alguna en el POST inicial.
+    const aplicar = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/issues/${data.number}/labels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels: faltantes }),
+    });
+    if (aplicar.ok) labelsAplicadas = nombresEtiquetas(await aplicar.json());
+    else {
+      const detalle = await aplicar.text().catch(() => "");
+      return {
+        numero: data.number,
+        url: data.html_url,
+        labels: labelsAplicadas,
+        labelsVerificadas: false,
+        advertenciaLabels: `GitHub creó el issue, pero no permitió aplicar ${faltantes.join(", ")} (HTTP ${aplicar.status}). ${detalle}`.trim(),
+      };
+    }
+  }
+
+  const labelsVerificadas = labelsRequeridas.every((label) => labelsAplicadas.includes(label));
+  return {
+    numero: data.number,
+    url: data.html_url,
+    labels: labelsAplicadas,
+    labelsVerificadas,
+    ...(!labelsVerificadas
+      ? { advertenciaLabels: `GitHub creó el issue, pero no confirmó las etiquetas: ${labelsRequeridas.join(", ")}.` }
+      : {}),
+  };
 }
 
 /** Descarte desde Telegram: cierra el PR sin fusionar y borra la rama. Devuelve false si el cierre en sí falló. */

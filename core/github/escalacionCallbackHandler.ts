@@ -30,8 +30,8 @@ const ETIQUETA_AUTOFIX = "wobi-auto-fix";
  * para saber a qué chat avisar cuando termine, sin necesitar ningún store aparte ni exponer el
  * chatId en el texto visible del issue.
  */
-function marcadorChatId(chatId: number): string {
-  return `<!-- wobi-chat-id:${chatId} -->`;
+function marcadorOrigen(chatId: number, messageId: number): string {
+  return `<!-- wobi-chat-id:${chatId} wobi-message-id:${messageId} -->`;
 }
 
 /**
@@ -70,7 +70,8 @@ export async function handleEscalacionCallback(callback: TelegramCallbackQuery):
   const cuerpoFinal =
     (escalacion.urgente
       ? `🔴 **URGENTE** — reportado por Carlos desde el chat.\n\n${escalacion.cuerpo}`
-      : `${escalacion.cuerpo}\n\n---\nReportado desde el chat de WOBI.`) + `\n\n${marcadorChatId(escalacion.chatId)}`;
+      : `${escalacion.cuerpo}\n\n---\nReportado desde el chat de WOBI.`) +
+    `\n\n${marcadorOrigen(escalacion.chatId, escalacion.messageId)}`;
 
   try {
     const labels = [ETIQUETA_AUTOFIX, ...(escalacion.urgente ? ["urgente"] : [])];
@@ -80,10 +81,22 @@ export async function handleEscalacionCallback(callback: TelegramCallbackQuery):
     // para poder reintentar sin perder el texto, mismo criterio que draft_enviar (correo).
     await consumirEscalacionDesarrollo(id);
 
+    if (!issue.labelsVerificadas) {
+      await editTelegramMessage(
+        escalacion.chatId,
+        escalacion.messageId,
+        `⚠️ Issue creado: ${issue.url} (#${issue.numero}), pero Development NO comenzó porque GitHub no confirmó ` +
+          `la etiqueta de automatización. ${issue.advertenciaLabels ?? "No se recibió confirmación de la etiqueta."}`,
+        []
+      );
+      return;
+    }
+
     await editTelegramMessage(
       escalacion.chatId,
       escalacion.messageId,
-      `✅ Issue creado: ${issue.url} (#${issue.numero}).\n\n🤖 Claude ya está investigando un arreglo — si propone uno, te aviso aquí mismo con un Pull Request para aprobar (nada se fusiona sin tu confirmación).`,
+      `✅ Issue creado: ${issue.url} (#${issue.numero}).\n\n⏳ Development recibió la orden y quedó en cola para ` +
+        `una sesión aislada de Claude Code. Te avisaré aquí cuando GitHub confirme que la investigación realmente comenzó.`,
       []
     );
   } catch (error) {

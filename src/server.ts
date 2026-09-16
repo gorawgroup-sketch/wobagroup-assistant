@@ -3,7 +3,7 @@ import "../core/google/globalOptions";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
-import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
+import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, editTelegramMessage, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
 import { mensajeFalloTurno } from "../core/claude/turnSafety";
 import { prepararAcuseCallback } from "../core/telegram/client";
 import {
@@ -2099,6 +2099,73 @@ app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) 
  * (Settings → Secrets and variables → Actions → New repository secret, nombre ADMIN_SECRET) para que
  * el workflow pueda autenticarse acá.
  */
+app.post("/webhook/github-autofix-status", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+
+  if (req.headers.authorization !== `Bearer ${adminSecret}`) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  const { estado, chatId, messageId, issueNumero, issueUrl, resumen } = req.body ?? {};
+  const estadosValidos = ["investigando", "bloqueado", "fallo", "requiere_revision"];
+  if (
+    !estadosValidos.includes(estado) ||
+    typeof chatId !== "number" ||
+    typeof issueNumero !== "number" ||
+    typeof issueUrl !== "string" ||
+    !issueUrl ||
+    (messageId != null && typeof messageId !== "number") ||
+    (resumen != null && typeof resumen !== "string")
+  ) {
+    res.status(400).json({
+      error: "Campos inválidos — se esperan estado, chatId, issueNumero, issueUrl y opcionalmente messageId/resumen.",
+    });
+    return;
+  }
+
+  const detalle = typeof resumen === "string" && resumen.trim() ? `\n\n${resumen.trim()}` : "";
+  const textos: Record<string, string> = {
+    investigando:
+      `🤖 Development (Claude Code) confirmó el inicio de una sesión aislada para el issue #${issueNumero}. ` +
+      `Ya está investigando y preparando un arreglo real.\n\n${issueUrl}`,
+    bloqueado:
+      `⛔ Development no pudo iniciar el issue #${issueNumero}.${detalle}\n\n${issueUrl}`,
+    fallo:
+      `⚠️ La sesión aislada de Development falló antes de proponer un arreglo para el issue #${issueNumero}.` +
+      `${detalle}\n\n${issueUrl}`,
+    requiere_revision:
+      `🟡 Development investigó el issue #${issueNumero}, pero terminó sin un Pull Request verificado.` +
+      `${detalle}\n\n${issueUrl}`,
+  };
+
+  try {
+    const texto = textos[estado];
+    if (typeof messageId === "number" && messageId > 0) {
+      try {
+        await editTelegramMessage(chatId, messageId, texto, []);
+      } catch (error) {
+        console.error(
+          "[webhook/github-autofix-status] No se pudo editar el mensaje original; se enviará uno nuevo:",
+          error instanceof Error ? error.message : String(error)
+        );
+        await sendTelegramMessage(chatId, texto);
+      }
+    } else {
+      await sendTelegramMessage(chatId, texto);
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[webhook/github-autofix-status] Error entregando el estado:", message);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
   const adminSecret = process.env.ADMIN_SECRET;
   if (!adminSecret) {
@@ -2112,7 +2179,7 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
     return;
   }
 
-  const { numeroPR, rama, urlPR, resumen, chatId, issueNumero } = req.body ?? {};
+  const { numeroPR, rama, urlPR, resumen, chatId, messageId, issueNumero } = req.body ?? {};
   if (
     typeof numeroPR !== "number" ||
     typeof rama !== "string" ||
@@ -2137,9 +2204,23 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
       chatId,
     });
 
+    if (typeof messageId === "number" && messageId > 0) {
+      await editTelegramMessage(
+        chatId,
+        messageId,
+        `✅ Development terminó el ajuste del issue #${issueNumero}: ya existe un Pull Request verificado para decidir su publicación.\n\n${urlPR}`,
+        []
+      ).catch((error) => {
+        console.error(
+          "[webhook/github-autofix] No se pudo actualizar el mensaje de estado (no crítico):",
+          error instanceof Error ? error.message : String(error)
+        );
+      });
+    }
+
     await sendTelegramMessageWithButtons(
       chatId,
-      `🔧 **Arreglo propuesto por Claude**${issueNumero ? ` para el issue #${issueNumero}` : ""}:\n\n${resumen}\n\n${urlPR}`,
+      `🔧 **Arreglo propuesto por Development (Claude Code)**${issueNumero ? ` para el issue #${issueNumero}` : ""}:\n\n${resumen}\n\n${urlPR}`,
       [
         [
           { text: "✅ Desplegar", callback_data: `autorrepair_desplegar:${numeroPR}` },
