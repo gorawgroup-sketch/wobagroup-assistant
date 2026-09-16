@@ -4178,7 +4178,13 @@ async function leerEstadoMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string
-): Promise<{ status?: string; reconciled_amount?: string; amount?: string; currency?: string } | undefined> {
+): Promise<{
+  status?: string;
+  reconciled_amount?: string;
+  amount?: string;
+  accounting_amount?: string | number | null;
+  currency?: string;
+} | undefined> {
   const fechaBase = new Date(fechaAproximada);
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
@@ -4202,7 +4208,14 @@ async function leerEstadoMovimiento(
       empresa,
       `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements?${params.toString()}`
     )) as {
-      items?: Array<{ id: string; status?: string; reconciled_amount?: string; amount?: string; currency?: string }>;
+      items?: Array<{
+        id: string;
+        status?: string;
+        reconciled_amount?: string;
+        amount?: string;
+        accounting_amount?: string | number | null;
+        currency?: string;
+      }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -4339,6 +4352,89 @@ export function verificarPagoCompraEnMovimiento(
   };
 }
 
+interface MovimientoParaAjusteCambio {
+  status?: string;
+  amount?: string | number;
+  reconciled_amount?: string | number;
+  accounting_amount?: string | number | null;
+  currency?: string;
+}
+
+export interface AjusteCambioResidualElegible {
+  monto: number;
+  monedaDocumento: string;
+  montoNativo: number;
+  montoContableMovimiento: number;
+  montoContableDocumento: number;
+  tasaCambio: number;
+}
+
+/**
+ * Decide si el único céntimo pendiente es inequívocamente un residuo de
+ * conversión y no una deuda real. Todas las comparaciones financieras se
+ * hacen en céntimos enteros:
+ *
+ * - documento y movimiento coinciden exactamente en la moneda nativa;
+ * - el movimiento quedó conciliado por el 100% de ese importe;
+ * - el pago que creó Holded pertenece a esa cuenta y fecha;
+ * - ese pago coincide con accounting_amount;
+ * - total/tipo de cambio redondeado = pago + 0,01.
+ *
+ * Si falta una sola señal, devuelve undefined y no se crea ningún pago.
+ */
+export function evaluarAjusteCambioResidual(
+  compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_pending" | "payments_detail">,
+  movimiento: MovimientoParaAjusteCambio,
+  sourceAccountId: string,
+  fechaMovimiento: string
+): AjusteCambioResidualElegible | undefined {
+  const centimos = (valor: number) => Math.round(Math.abs(valor) * 100);
+  const monedaDocumento = (compra.currency || "EUR").toUpperCase().trim();
+  const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
+  if (monedaDocumento === "EUR" || monedaDocumento !== monedaMovimiento) return undefined;
+  if (!estaConciliado(movimiento.status)) return undefined;
+
+  const pendiente = parsearMontoHolded(compra.payments_pending);
+  if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) !== 1) return undefined;
+
+  const totalNativo = Math.abs(numeroDesdeHolded(compra.total));
+  const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento.amount));
+  const montoConciliado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount));
+  const montoContable = Math.abs(parsearMontoMovimiento(movimiento.accounting_amount));
+  if ([totalNativo, montoMovimiento, montoConciliado, montoContable].some((n) => !Number.isFinite(n) || n <= 0)) {
+    return undefined;
+  }
+  if (centimos(totalNativo) !== centimos(montoMovimiento) || centimos(montoMovimiento) !== centimos(montoConciliado)) {
+    return undefined;
+  }
+
+  const pagos = compra.payments_detail ?? [];
+  if (pagos.length === 0) return undefined;
+  const pagosOrigen = pagos.filter(
+    (p) => p.bank_id === sourceAccountId && Boolean(p.date?.startsWith(fechaMovimiento))
+  );
+  if (pagosOrigen.length === 0) return undefined;
+  const totalPagos = pagos.reduce((suma, p) => suma + Math.abs(parsearMontoHolded(p.amount) || 0), 0);
+  const totalPagosOrigen = pagosOrigen.reduce((suma, p) => suma + Math.abs(parsearMontoHolded(p.amount) || 0), 0);
+  if (centimos(totalPagos) !== centimos(totalPagosOrigen) || centimos(totalPagosOrigen) !== centimos(montoContable)) {
+    return undefined;
+  }
+
+  const tasaCambio = numeroDecimalPlano(compra.currency_change);
+  if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) return undefined;
+  const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
+  if (totalContableDocumentoCentimos - centimos(totalPagosOrigen) !== 1) return undefined;
+
+  return {
+    monto: 0.01,
+    monedaDocumento,
+    montoNativo: totalNativo,
+    montoContableMovimiento: montoContable,
+    montoContableDocumento: totalContableDocumentoCentimos / 100,
+    tasaCambio,
+  };
+}
+
 /**
  * Hallazgo real de auditoría (caso Salesmate/RapidOps, Footprint, 2026-09-08): el MOVIMIENTO bancario
  * (en USD, -554.84) quedó reconciled_amount="-554.84" — coincide exacto con el total de la compra, y
@@ -4349,10 +4445,10 @@ export function verificarPagoCompraEnMovimiento(
  * SÍ quedó marcado como conciliado por completo, pero que dejó la compra con un saldo pendiente ficticio.
  * Ningún dato que mandemos nosotros causa esto (reconciliarMovimiento nunca manda un monto, Holded lo
  * calcula solo al procesar el POST /reconcile) — es un comportamiento real de Holded para documentos en
- * moneda distinta a EUR. No se puede evitar desde acá, pero SÍ se puede detectar: se relee la compra
- * después de conciliar y se compara payments_pending contra cero (en la moneda NATIVA de la compra,
- * nunca convertida) — si queda un pendiente real, el llamador debe avisarlo explícitamente en vez de
- * reportar éxito sin más.
+ * moneda distinta a EUR. La API pública no documenta la casilla especial que corrige este caso, por lo
+ * que nunca se sustituye por un pago genérico. Sí se puede detectar de forma concluyente: se releen
+ * compra, movimiento y pago, se demuestra el céntimo con el tipo de cambio y el llamador avisa la acción
+ * exacta en vez de reportar éxito sin más. Si falta una prueba, falla cerrado.
  */
 async function inspeccionarConciliacionRegistrada(
   registro: RegistroConciliacionMovimiento
@@ -4377,6 +4473,7 @@ async function inspeccionarConciliacionRegistrada(
   const tieneEnlace = (estaConciliado(movimiento?.status) || movimientoParcial) && montoEnlazado > 0;
 
   let pendienteEnCompra: number | undefined;
+  let ajusteCambioDivisa: ResultadoConciliacionMovimiento["ajusteCambioDivisa"];
   let pagoDelDocumentoConfirmado = false;
   if (tieneEnlace) {
     try {
@@ -4389,6 +4486,25 @@ async function inspeccionarConciliacionRegistrada(
       );
       pagoDelDocumentoConfirmado = Boolean(pago);
       pendienteEnCompra = pago?.pendienteEnCompra;
+      if (pago) {
+        const elegible = evaluarAjusteCambioResidual(
+          compra,
+          movimiento,
+          registro.accountId,
+          registro.fechaAproximada
+        );
+        if (elegible) {
+          ajusteCambioDivisa = {
+            estado: "requiere_revision",
+            monto: elegible.monto,
+            motivo:
+              `Residuo de conversión demostrado: ${elegible.montoNativo.toFixed(2)} ${elegible.monedaDocumento} ` +
+              `÷ ${elegible.tasaCambio} = ${elegible.montoContableDocumento.toFixed(2)} EUR, mientras el movimiento ` +
+              `registró ${elegible.montoContableMovimiento.toFixed(2)} EUR. La escritura automática permanece ` +
+              `bloqueada hasta usar exactamente la operación interna “Ajustar cambio de divisa” de Holded.`,
+          };
+        }
+      }
     } catch (error) {
       console.error(
         `[reconciliarMovimiento] Error releyendo la compra ${registro.documentId} para verificar el pago:`,
@@ -4406,6 +4522,7 @@ async function inspeccionarConciliacionRegistrada(
     statusFinal,
     montoEnlazado,
     pendienteEnCompra,
+    ajusteCambioDivisa,
     movimientoParcial: movimientoParcial || undefined,
     pendienteEnMovimiento,
   };
