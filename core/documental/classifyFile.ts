@@ -45,6 +45,20 @@ export interface ClasificacionDocumento {
    * conocimiento consultable.
    */
   pareceIntencionDeCaptura?: boolean;
+  /**
+   * Hallazgo real de auditoría (Footprint, factura Hotel Columbus/Costa Rica, 2026-09-16): este
+   * clasificador es SOLO texto (nombre de archivo + caption, nunca lee el documento real — a
+   * diferencia de extraerDatosFactura, que sí lo lee con visión) y puede reconocer por contexto que
+   * un documento es una factura de gasto de viaje aunque extraerDatosFactura, releyendo el PDF real,
+   * haya decidido lo contrario (es_factura_o_gasto=false) — ambas lecturas son independientes y
+   * pueden discrepar. Antes, cuando esto pasaba, el documento quedaba archivado como genérico sin
+   * ninguna forma de redirigirlo al flujo de gasto, aunque la propia razón de esta clasificación
+   * dijera explícitamente "debe procesarse como gasto". true SOLO si el nombre/caption sugiere
+   * fuertemente un recibo, factura o comprobante de un gasto real (transporte, hospedaje, comidas,
+   * compras) — no un contrato, certificado u otro documento administrativo que use la palabra
+   * "factura" sin ser un gasto a conciliar.
+   */
+  esProbableGasto?: boolean;
 }
 
 const REPORTAR_TOOL_NAME = "reportar_clasificacion_documento";
@@ -89,6 +103,17 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "tratarla igual aquí que en cualquier otro mensaje. No lo actives solo porque el documento sea " +
           "informativo sin ninguna de estas señales — tiene que haber una petición explícita de " +
           "recordarlo/registrarlo, no solo de archivarlo.",
+      },
+      es_probable_gasto: {
+        type: "boolean",
+        description:
+          "true SOLO si el nombre de archivo o el caption sugieren fuertemente que este documento es un " +
+          "recibo, factura o comprobante de un GASTO REAL a conciliar en Holded (transporte, hospedaje, " +
+          "comidas, compras de la empresa) — ej. nombre/asunto con 'factura', 'recibo', 'invoice', " +
+          "'receipt', un hotel/aerolínea/Uber/restaurante, o un correo que reenvía una confirmación de " +
+          "pago o cargo. false para contratos, certificados, documentación legal/administrativa, o " +
+          "cualquier cosa que no sea un gasto propio a registrar — no actives esto solo porque la " +
+          "palabra 'factura' aparezca en un contexto no relacionado a un gasto real.",
       },
     },
     required: ["empresa", "tipo_documento", "carpeta_sugerida", "confianza", "razon"],
@@ -139,6 +164,11 @@ const SYSTEM_PROMPT = [
     "documento) pide explícitamente que se RECUERDE o quede registrado — no solo que se archive — o si " +
     "contiene literalmente la palabra 'CAPTURA' (la palabra clave estándar de todo el sistema para pedir " +
     "que algo se guarde como conocimiento). Si es así, marca parece_intencion_de_captura=true.",
+  "También revisa si el nombre o el caption sugieren que este documento es en realidad un recibo/factura " +
+    "de un GASTO REAL (transporte, hospedaje, comidas, compras) que debería procesarse y conciliarse en " +
+    "Holded, no solo archivarse — marca es_probable_gasto=true en ese caso. Puede coexistir con " +
+    "cualquier tipo_documento/carpeta_sugerida: archivar y procesar como gasto no son mutuamente " +
+    "excluyentes, es al usuario a quien le toca elegir.",
   `SIEMPRE debes terminar llamando a la herramienta ${REPORTAR_TOOL_NAME} con tu conclusión final.`,
 ].join("\n\n");
 
@@ -232,6 +262,7 @@ export async function clasificarDocumento(
         razon: (input.razon as string) ?? "",
         preguntaSiAmbiguo: input.pregunta_si_ambiguo as string | undefined,
         pareceIntencionDeCaptura: input.parece_intencion_de_captura === true,
+        esProbableGasto: input.es_probable_gasto === true,
       };
     }
 
