@@ -30,3 +30,24 @@ test("un contexto que no menciona ningún país no altera el desempate entre var
   const panama = puntuarContactoParecido("Uber", "UBER PANAMA", "Viaje de negocios, sin más detalle");
   assert.equal(colombia, panama);
 });
+
+test("caso real HEMA/\"Van de Valk Hotel Venio\" (Footprint, 2026-09-16): un nombre de calle largo no gana por compartir solo el prefijo con un contacto sin relación", () => {
+  const concepto =
+    "Compra HEMA Breda — 2x mok strak 350ml, fashion sokken, herensokken, 3-pak boxershort, 3-pak regular boxer (gasto personal Simon Talloen)";
+  const nombre = "HEMA (Breda - Valkeniersplein)";
+  // "valkeniersplein" (nombre de la calle, 15 letras) comparte solo el prefijo "valk" (4 letras) con
+  // "VAN DE VALK HOTEL VENIO" — una coincidencia demasiado corta respecto al largo real de la palabra
+  // para contar como la misma palabra; no debe puntuar nada.
+  const vanDeValk = puntuarContactoParecido(nombre, "VAN DE VALK HOTEL VENIO", concepto);
+  const hema = puntuarContactoParecido(nombre, "HEMA", concepto);
+  assert.equal(vanDeValk, 0);
+  assert.ok(hema > vanDeValk, `HEMA (${hema}) debería superar a Van de Valk Hotel Venio (${vanDeValk})`);
+});
+
+test("el prefijo compartido sigue contando entre palabras de largo parecido (plural/singular, typos de OCR)", () => {
+  assert.equal(puntuarContactoParecido("Ocean Facility", "OCEAN FACILITY SERVICES SA.") > 0, true);
+  // Caso real Hotel101 (Footprint, "management"/"managers", 10-11 letras cada una, ratio ~1,25):
+  // debe seguir contando pese al fix del caso HEMA/Van de Valk (ratio 3,75) — el ratio de largo
+  // distingue exactamente estos dos casos.
+  assert.equal(puntuarContactoParecido("Hotel 101 Spain Management", "MH APARTMENTS MANAGERS SL") > 0, true);
+});
