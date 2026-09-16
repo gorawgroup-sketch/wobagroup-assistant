@@ -251,6 +251,28 @@ export async function abrirPullRequestAutofixDesdeRama(params: {
   return { numero: prData.number, url: prData.html_url, rama: params.rama, existente: false };
 }
 
+/**
+ * Sincroniza la rama del PR con main antes de habilitar la aprobación. GitHub responde 422 tanto
+ * para algunos errores como cuando la rama ya está al día; solo este último mensaje se considera
+ * éxito. Cualquier otra respuesta falla cerrada y evita mostrar un botón de despliegue prematuro.
+ */
+export async function actualizarRamaPullRequest(numero: number): Promise<"actualizada" | "ya_actualizada"> {
+  if (!Number.isInteger(numero) || numero <= 0) throw new Error("Número de Pull Request inválido.");
+
+  const resp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${numero}/update-branch`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (resp.ok) return "actualizada";
+
+  const detalle = await resp.text().catch(() => "");
+  if (resp.status === 422 && /not behind|already up[ -]to[ -]date|no está detrás|ya está actualizada/i.test(detalle)) {
+    return "ya_actualizada";
+  }
+  throw new Error(`No se pudo sincronizar la rama del Pull Request #${numero} (HTTP ${resp.status}). ${detalle}`.trim());
+}
+
 /** Aprobación desde Telegram: fusiona el PR a main (dispara el redeploy de Railway) y borra la rama. */
 export async function fusionarPullRequest(numero: number, rama: string): Promise<boolean> {
   const mergeResp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${numero}/merge`, {

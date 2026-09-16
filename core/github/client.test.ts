@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { abrirPullRequestAutofixDesdeRama, crearIssue } from "./client";
+import { abrirPullRequestAutofixDesdeRama, actualizarRamaPullRequest, crearIssue } from "./client";
 
 type Llamada = { url: string; method: string; body?: unknown };
 
@@ -182,6 +182,44 @@ test("abrirPullRequestAutofixDesdeRama reutiliza un PR abierto en reintentos", a
     assert.equal(pr.numero, 91);
     assert.equal(pr.existente, true);
     assert.equal(posts, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = tokenOriginal;
+  }
+});
+
+test("actualizarRamaPullRequest acepta una sincronización real", async () => {
+  const fetchOriginal = globalThis.fetch;
+  const tokenOriginal = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "token-prueba";
+  let body: unknown;
+
+  globalThis.fetch = async (_input, init = {}) => {
+    body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+    return respuesta(202, { message: "Updating pull request branch." });
+  };
+  try {
+    assert.equal(await actualizarRamaPullRequest(89), "actualizada");
+    assert.deepEqual(body, {});
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = tokenOriginal;
+  }
+});
+
+test("actualizarRamaPullRequest distingue rama al día de un 422 real", async () => {
+  const fetchOriginal = globalThis.fetch;
+  const tokenOriginal = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "token-prueba";
+
+  try {
+    globalThis.fetch = async () => respuesta(422, { message: "Head branch is not behind the base branch" });
+    assert.equal(await actualizarRamaPullRequest(89), "ya_actualizada");
+
+    globalThis.fetch = async () => respuesta(422, { message: "Update branch cannot be performed" });
+    await assert.rejects(actualizarRamaPullRequest(89), /No se pudo sincronizar/);
   } finally {
     globalThis.fetch = fetchOriginal;
     if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;

@@ -91,7 +91,11 @@ import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { crearRouterVoz } from "../core/cerebro/voiceRouter";
 import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
-import { abrirPullRequestAutofixDesdeRama, verificarGithubToken } from "../core/github/client";
+import {
+  abrirPullRequestAutofixDesdeRama,
+  actualizarRamaPullRequest,
+  verificarGithubToken,
+} from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { crearPendienteAutorrepair } from "../core/github/autorrepairPendienteStore";
@@ -2258,16 +2262,17 @@ app.post("/webhook/github-autofix-branch", async (req: Request, res: Response) =
         `La implementación fue generada en una sesión aislada iniciada desde WOBI y requiere aprobación manual antes de fusionarse.\n\n` +
         `Fixes #${issueNumero}`,
     });
-    await registrarYNotificarAutofix({
+    const sincronizacion = await actualizarRamaPullRequest(pr.numero);
+    // Deliberadamente NO se envían todavía los botones: el workflow debe esperar a que el CI de
+    // esta cabeza sincronizada termine en verde y solo entonces llama /webhook/github-autofix.
+    res.json({
+      ok: true,
       numeroPR: pr.numero,
-      rama: pr.rama,
       urlPR: pr.url,
-      resumen: resumen.trim(),
-      chatId,
-      ...(typeof messageId === "number" ? { messageId } : {}),
-      issueNumero,
+      rama: pr.rama,
+      existente: pr.existente,
+      sincronizacion,
     });
-    res.json({ ok: true, numeroPR: pr.numero, urlPR: pr.url, existente: pr.existente });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[webhook/github-autofix-branch] Error abriendo o registrando el PR:", message);
