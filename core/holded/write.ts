@@ -4448,17 +4448,24 @@ export async function validarCompraContraMovimiento(
  * que Wobi intentó aplicar.
  */
 export function verificarPagoCompraEnMovimiento(
-  compra: Pick<CompraHoldedCruda, "payments_detail" | "payments_pending">,
+  compra: Pick<CompraHoldedCruda, "payments_detail" | "payments_pending" | "total">,
   accountId: string,
   fechaMovimiento: string,
   montoEnlazado: number
 ): { montoPago: number; pendienteEnCompra?: number } | undefined {
   if (!Number.isFinite(montoEnlazado) || montoEnlazado <= 0) return undefined;
   const pendiente = parsearMontoHolded(compra.payments_pending);
-  // Un céntimo pendiente ya es un saldo contable real. La tolerancia usada
-  // para emparejar importes no se puede reutilizar para declarar una compra
-  // pagada: Holded puede redondear una conversión y dejar exactamente 0,01.
-  const compraTotalmentePagada = Number.isFinite(pendiente) && Math.abs(pendiente) < 0.005;
+  // Pedido explícito de Carlos (2026-09-16), tras confirmar en vivo varios casos reales (Uber Costa
+  // Rica $0,01, Subway Tocumen $0,02, Costa Azul Panama Bell $0,03, Hostel Columbus $0,13 — siempre
+  // el mismo residuo de conversión de moneda de Holded, nunca una deuda real) que un piso fijo de
+  // medio céntimo era demasiado estricto y generaba avisos manuales constantes para algo
+  // inequívocamente inofensivo: el margen ahora escala con el tamaño de la compra (0,5%, con un piso
+  // de 2 céntimos para facturas chicas y un techo de 1 unidad de moneda para no aceptar a ciegas un
+  // hueco grande en una factura grande). Carlos monitoreará las conciliaciones reales para confirmar
+  // que este margen más amplio sigue sin aceptar una deuda real por error.
+  const totalCompra = Math.abs(numeroDesdeHolded(compra.total));
+  const margenPagoCompleto = Math.min(1, Math.max(0.02, totalCompra * 0.005));
+  const compraTotalmentePagada = Number.isFinite(pendiente) && Math.abs(pendiente) <= margenPagoCompleto;
   const pago = (compra.payments_detail ?? []).find((detalle) => {
     if (detalle.bank_id !== accountId || !detalle.date?.startsWith(fechaMovimiento)) return false;
     const monto = Math.abs(parsearMontoHolded(detalle.amount));
@@ -4480,7 +4487,7 @@ export function verificarPagoCompraEnMovimiento(
   const montoPago = Math.abs(parsearMontoHolded(pago.amount));
   return {
     montoPago,
-    ...(Number.isFinite(pendiente) && Math.abs(pendiente) >= 0.005
+    ...(Number.isFinite(pendiente) && Math.abs(pendiente) > margenPagoCompleto
       ? { pendienteEnCompra: Math.abs(pendiente) }
       : {}),
   };
