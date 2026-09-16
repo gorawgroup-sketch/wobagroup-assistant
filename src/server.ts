@@ -91,7 +91,7 @@ import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { crearRouterVoz } from "../core/cerebro/voiceRouter";
 import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
-import { verificarGithubToken } from "../core/github/client";
+import { abrirPullRequestAutofixDesdeRama, verificarGithubToken } from "../core/github/client";
 import { handleAutorrepairCallback } from "../core/github/autorrepairCallbackHandler";
 import { handleEscalacionCallback } from "../core/github/escalacionCallbackHandler";
 import { crearPendienteAutorrepair } from "../core/github/autorrepairPendienteStore";
@@ -2089,10 +2089,9 @@ app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) 
  * puede tocar core/utils/ — decisión explícita de Carlos, distinta para este flujo) — ese workflow
  * corre en la infraestructura de GitHub, no en Railway, así que no puede llamar directo a
  * crearPendienteAutorrepair/sendTelegramMessageWithButtons como sí hace autorrevisionCodigo.ts (mismo
- * proceso Node). Este endpoint es el puente: una vez el workflow abre el PR real, hace un POST acá con
- * los datos, y de ahí en adelante es EXACTAMENTE el mismo mecanismo de aprobación ya usado por la
- * autorrevisión nocturna (autorrepairCallbackHandler.ts) — el PR nunca se fusiona sin el tap de
- * "✅ Desplegar" en Telegram, sin importar si lo propuso el cron nocturno o este flujo por Issue.
+ * proceso Node). Los endpoints de abajo son el puente: el workflow entrega una rama verificada,
+ * WOBI abre el PR con su token fine-grained, y de ahí en adelante usa EXACTAMENTE el mismo mecanismo
+ * de aprobación de la autorrevisión nocturna. El PR nunca se fusiona sin el tap de "✅ Desplegar".
  *
  * Reutiliza ADMIN_SECRET (ya configurado en Railway para los demás endpoints /admin/*) en vez de un
  * secreto nuevo — Carlos solo necesita copiar ese mismo valor como secret de GitHub Actions
@@ -2166,6 +2165,116 @@ app.post("/webhook/github-autofix-status", async (req: Request, res: Response) =
   }
 });
 
+interface AutofixPropuestoDesdeDevelopment {
+  numeroPR: number;
+  rama: string;
+  urlPR: string;
+  resumen: string;
+  chatId: number;
+  messageId?: number;
+  issueNumero?: number;
+}
+
+async function registrarYNotificarAutofix(params: AutofixPropuestoDesdeDevelopment): Promise<void> {
+  await crearPendienteAutorrepair({
+    numeroPR: params.numeroPR,
+    rama: params.rama,
+    ruta: params.issueNumero ? `Issue #${params.issueNumero}` : "Escalación desde el chat",
+    resumen: params.resumen,
+    urlPR: params.urlPR,
+    chatId: params.chatId,
+  });
+
+  if (typeof params.messageId === "number" && params.messageId > 0) {
+    const origen = params.issueNumero ? ` del issue #${params.issueNumero}` : "";
+    await editTelegramMessage(
+      params.chatId,
+      params.messageId,
+      `✅ Development terminó el ajuste${origen}: ya existe un Pull Request verificado para decidir su publicación.\n\n${params.urlPR}`,
+      []
+    ).catch((error) => {
+      console.error(
+        "[webhook/github-autofix] No se pudo actualizar el mensaje de estado (no crítico):",
+        error instanceof Error ? error.message : String(error)
+      );
+    });
+  }
+
+  await sendTelegramMessageWithButtons(
+    params.chatId,
+    `🔧 **Arreglo propuesto por Development (Claude Code)**${params.issueNumero ? ` para el issue #${params.issueNumero}` : ""}:\n\n${params.resumen}\n\n${params.urlPR}`,
+    [
+      [
+        { text: "✅ Desplegar", callback_data: `autorrepair_desplegar:${params.numeroPR}` },
+        { text: "❌ Descartar", callback_data: `autorrepair_descartar:${params.numeroPR}` },
+      ],
+    ]
+  );
+}
+
+/**
+ * Puente de privilegio mínimo: el runner de Development solo sube una rama con nombre ligado al
+ * issue. WOBI valida esa relación y abre el PR con su token fine-grained. Así no es necesario
+ * habilitar globalmente que GitHub Actions cree o apruebe Pull Requests.
+ */
+app.post("/webhook/github-autofix-branch", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+  if (req.headers.authorization !== `Bearer ${adminSecret}`) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  const { rama, tituloPR, resumen, chatId, messageId, issueNumero } = req.body ?? {};
+  if (
+    typeof issueNumero !== "number" ||
+    !Number.isInteger(issueNumero) ||
+    issueNumero <= 0 ||
+    typeof rama !== "string" ||
+    !rama ||
+    typeof tituloPR !== "string" ||
+    !tituloPR.trim() ||
+    typeof resumen !== "string" ||
+    !resumen.trim() ||
+    typeof chatId !== "number" ||
+    (messageId != null && typeof messageId !== "number")
+  ) {
+    res.status(400).json({
+      error: "Campos inválidos — se esperan issueNumero, rama, tituloPR, resumen, chatId y opcionalmente messageId.",
+    });
+    return;
+  }
+
+  try {
+    const pr = await abrirPullRequestAutofixDesdeRama({
+      issueNumero,
+      rama,
+      titulo: tituloPR,
+      cuerpo:
+        `## Arreglo propuesto por Development\n\n${resumen.trim()}\n\n` +
+        `La implementación fue generada en una sesión aislada iniciada desde WOBI y requiere aprobación manual antes de fusionarse.\n\n` +
+        `Fixes #${issueNumero}`,
+    });
+    await registrarYNotificarAutofix({
+      numeroPR: pr.numero,
+      rama: pr.rama,
+      urlPR: pr.url,
+      resumen: resumen.trim(),
+      chatId,
+      ...(typeof messageId === "number" ? { messageId } : {}),
+      issueNumero,
+    });
+    res.json({ ok: true, numeroPR: pr.numero, urlPR: pr.url, existente: pr.existente });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[webhook/github-autofix-branch] Error abriendo o registrando el PR:", message);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
   const adminSecret = process.env.ADMIN_SECRET;
   if (!adminSecret) {
@@ -2195,39 +2304,15 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
   }
 
   try {
-    await crearPendienteAutorrepair({
+    await registrarYNotificarAutofix({
       numeroPR,
       rama,
-      ruta: issueNumero ? `Issue #${issueNumero}` : "Escalación desde el chat",
       resumen,
       urlPR,
       chatId,
+      ...(typeof messageId === "number" ? { messageId } : {}),
+      ...(typeof issueNumero === "number" ? { issueNumero } : {}),
     });
-
-    if (typeof messageId === "number" && messageId > 0) {
-      await editTelegramMessage(
-        chatId,
-        messageId,
-        `✅ Development terminó el ajuste del issue #${issueNumero}: ya existe un Pull Request verificado para decidir su publicación.\n\n${urlPR}`,
-        []
-      ).catch((error) => {
-        console.error(
-          "[webhook/github-autofix] No se pudo actualizar el mensaje de estado (no crítico):",
-          error instanceof Error ? error.message : String(error)
-        );
-      });
-    }
-
-    await sendTelegramMessageWithButtons(
-      chatId,
-      `🔧 **Arreglo propuesto por Development (Claude Code)**${issueNumero ? ` para el issue #${issueNumero}` : ""}:\n\n${resumen}\n\n${urlPR}`,
-      [
-        [
-          { text: "✅ Desplegar", callback_data: `autorrepair_desplegar:${numeroPR}` },
-          { text: "❌ Descartar", callback_data: `autorrepair_descartar:${numeroPR}` },
-        ],
-      ]
-    );
 
     res.json({ ok: true });
   } catch (error) {

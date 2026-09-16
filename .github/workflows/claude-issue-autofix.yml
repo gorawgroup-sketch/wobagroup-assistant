@@ -6,9 +6,9 @@ name: Claude - autofix de Issue escalado desde el chat
 # archivos al azar cada noche), este workflow SI puede escribir codigo y abrir un Pull Request real —
 # decision explicita de Carlos, sin la restriccion de "solo core/utils/" de la autorrevision nocturna,
 # porque los bugs reales que se escalan normalmente tocan dinero/Holded/cashflow. La garantia de
-# seguridad no cambia: el PR nunca se fusiona solo — src/server.ts recibe el aviso via
-# /webhook/github-autofix y lo muestra en Telegram con los mismos botones "Desplegar/Descartar" ya
-# usados por la autorrevision nocturna (ver core/github/autorrepairCallbackHandler.ts).
+# seguridad no cambia: el PR nunca se fusiona solo — src/server.ts recibe la rama via
+# /webhook/github-autofix-branch, abre el PR con el token acotado de WOBI y lo muestra en Telegram
+# con los mismos botones "Desplegar/Descartar" ya usados por la autorrevision nocturna.
 on:
   issues:
     types: [opened, labeled]
@@ -166,77 +166,96 @@ jobs:
             decision que solo el usuario puede tomar (ej. cambia el comportamiento fiscal/contable
             de forma ambigua), NO lo implementes a ciegas.
 
-            Si lograste un arreglo real, verificado y completo: crea una rama nueva (con
-            `git checkout -b`), haz commit, sube la rama (`git push`), y abre un Pull Request contra la
-            rama por defecto con `gh pr create` — titulo breve y claro, cuerpo explicando el
-            diagnostico y el arreglo, y agrega literalmente "Fixes #${{ github.event.issue.number }}"
-            en el cuerpo del PR. NUNCA fusiones el PR tu mismo, ni con `gh pr merge` ni de ninguna otra
-            forma — eso requiere una aprobacion manual aparte que no te corresponde a ti.
+            Si lograste un arreglo real, verificado y completo: crea EXACTAMENTE una rama con el
+            formato `wobi-autofix/issue-${{ github.event.issue.number }}-<slug-breve>` (solo minusculas,
+            numeros, punto, guion o guion bajo en el slug), haz commit y sube esa rama. NO intentes
+            abrir el Pull Request: el backend de WOBI lo abrira con privilegio minimo al recibir tu
+            resultado. NUNCA fusiones nada ni escribas directamente en la rama principal.
 
             Si NO lograste un arreglo real y verificado, NO crees ninguna rama ni PR — en vez de eso,
             comenta en el issue (`gh issue comment`) explicando que investigaste y que haria falta para
             seguir.
 
-            Devuelve status="created" (con pr_number, pr_url y branch reales, exactos) si abriste el
-            PR, o status="skipped" (con el motivo en resumen) si no lo hiciste.
+            Devuelve status="branch_ready" (con branch real y exacta) si subiste el arreglo
+            verificado, o status="skipped" (con el motivo en resumen) si no lo hiciste.
 
             Para no desperdiciar turnos por permisos, ejecuta cada comando Bash por separado y haz
             que empiece directamente por npm, npx, git o gh. No encadenes comandos, no uses cd,
             pipes ni redirecciones.
           claude_args: |
             --model sonnet
-            --max-turns 100
-            --max-budget-usd 5
+            --max-turns 80
+            --max-budget-usd 2
             --allowedTools "Read,Glob,Grep,Edit,Write,Bash(npm:*),Bash(npx:*),Bash(git:*),Bash(gh:*)"
             --disallowedTools "WebFetch,WebSearch,Task,Skill"
-            --json-schema '{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string","enum":["created","skipped"]},"pr_number":{"type":"integer"},"pr_url":{"type":"string"},"branch":{"type":"string"},"resumen":{"type":"string","maxLength":600}},"required":["status","resumen"]}'
+            --json-schema '{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string","enum":["branch_ready","skipped"]},"branch":{"type":"string"},"resumen":{"type":"string","maxLength":600}},"required":["status","resumen"]}'
 
-      - name: Avisar a WOBI por Telegram si se creo un PR
-        # El chequeo de status="created" se hace DENTRO del script bash (no aqui con fromJSON) a
+      - name: Registrar consumo de la sesión
+        if: always() && steps.preflight.outputs.configured == 'true'
+        shell: bash
+        env:
+          EXECUTION_FILE: ${{ steps.fix.outputs.execution_file }}
+        run: |
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "### Consumo de Development" >> "$GITHUB_STEP_SUMMARY"
+            echo "No estuvo disponible el archivo de ejecución para medir esta sesión." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          RESULT=$(jq -s 'map(select(.type == "result")) | last // {}' "$EXECUTION_FILE" 2>/dev/null || echo '{}')
+          COST=$(printf '%s' "$RESULT" | jq -r '.total_cost_usd // 0')
+          TURNS=$(printf '%s' "$RESULT" | jq -r '.num_turns // 0')
+          SUBTYPE=$(printf '%s' "$RESULT" | jq -r '.subtype // "desconocido"')
+          echo "### Consumo de Development" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Costo API: USD $COST (tope duro: USD 2)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Turnos: $TURNS de 80" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Resultado: $SUBTYPE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Entregar el resultado verificado a WOBI
+        # El chequeo de status="branch_ready" se hace DENTRO del script bash (no aqui con fromJSON) a
         # proposito: si el paso anterior se salto (preflight.configured=false), structured_output
         # queda vacio, y fromJSON('') en una condicion `if:` de YAML podria fallar la evaluacion
         # entera en vez de simplemente evaluar a falso — mas seguro resolverlo con jq, que sí maneja
         # una entrada vacia sin reventar.
         if: steps.preflight.outputs.configured == 'true'
+        id: entregar
         shell: bash
         env:
           STRUCTURED_OUTPUT: ${{ steps.fix.outputs.structured_output }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
           MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
         run: |
           STATUS=$(printf '%s' "${STRUCTURED_OUTPUT:-}" | jq -r '.status // empty' 2>/dev/null || true)
-          if [ "$STATUS" != "created" ]; then
-            echo "No se creo ningun PR (status=${STATUS:-vacio}) — nada que avisar." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STATUS" != "branch_ready" ]; then
+            echo "No se entrego ninguna rama (status=${STATUS:-vacio}) — nada que publicar." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
           if [ -z "${ADMIN_SECRET:-}" ]; then
-            echo "::warning::Falta el secret ADMIN_SECRET en este repo — no se pudo avisar a WOBI por Telegram. El PR ya existe en GitHub, revisalo a mano." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error::Falta ADMIN_SECRET; la rama existe pero WOBI no puede abrir el PR." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
           if [ -z "${CHAT_ID:-}" ]; then
-            echo "::warning::No se encontro wobi-chat-id en el cuerpo del issue — no se pudo avisar a WOBI por Telegram. El PR ya existe en GitHub, revisalo a mano." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error::No se encontro wobi-chat-id; la rama existe pero WOBI no puede entregar la aprobacion." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
-          PR_NUMBER=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.pr_number')
-          PR_URL=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.pr_url')
           BRANCH=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.branch')
           RESUMEN=$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.resumen')
+          TITULO_PR="Development: $ISSUE_TITLE"
 
           BODY=$(jq -n \
-            --argjson numeroPR "$PR_NUMBER" \
             --arg rama "$BRANCH" \
-            --arg urlPR "$PR_URL" \
+            --arg tituloPR "$TITULO_PR" \
             --arg resumen "$RESUMEN" \
             --argjson chatId "$CHAT_ID" \
             --arg messageId "${MESSAGE_ID:-}" \
             --argjson issueNumero "$ISSUE_NUMBER" \
-            '{numeroPR:$numeroPR, rama:$rama, urlPR:$urlPR, resumen:$resumen, chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero}')
+            '{rama:$rama,tituloPR:$tituloPR,resumen:$resumen,chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero}')
 
-          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix" \
+          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix-branch" \
             -H "Authorization: Bearer ${ADMIN_SECRET}" \
             -H "Content-Type: application/json" \
             -d "$BODY"
@@ -247,6 +266,7 @@ jobs:
         env:
           STRUCTURED_OUTPUT: ${{ steps.fix.outputs.structured_output }}
           FIX_OUTCOME: ${{ steps.fix.outcome }}
+          DELIVERY_OUTCOME: ${{ steps.entregar.outcome }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
           MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
@@ -254,11 +274,14 @@ jobs:
           ISSUE_URL: ${{ github.event.issue.html_url }}
         run: |
           STATUS=$(printf '%s' "${STRUCTURED_OUTPUT:-}" | jq -r '.status // empty' 2>/dev/null || true)
-          if [ "$STATUS" = "created" ]; then
+          if [ "$STATUS" = "branch_ready" ] && [ "$DELIVERY_OUTCOME" = "success" ]; then
             exit 0
           fi
 
-          if [ "$FIX_OUTCOME" = "failure" ] || [ "$FIX_OUTCOME" = "cancelled" ]; then
+          if [ "$STATUS" = "branch_ready" ]; then
+            ESTADO="fallo"
+            RESUMEN="Development subió una rama verificada, pero el puente seguro de WOBI no pudo abrir o registrar el Pull Request. La rama se conserva para reintentar sin volver a gastar IA."
+          elif [ "$FIX_OUTCOME" = "failure" ] || [ "$FIX_OUTCOME" = "cancelled" ]; then
             ESTADO="fallo"
             RESUMEN="La sesión aislada de Development terminó con error antes de proponer un arreglo. Revisa el run de GitHub Actions."
           else
