@@ -2213,7 +2213,13 @@ const TAGS_VIAJE_REFERENCIA = ["transporte", "taxi", "tren", "avion", "alquilerc
 
 export async function inferirCuentaGasto(
   empresa: Empresa,
-  criterios: { proveedor: string; concepto: string; personaAsociada?: string; contextoDeViaje?: boolean }
+  criterios: {
+    proveedor: string;
+    concepto: string;
+    personaAsociada?: string;
+    contextoDeViaje?: boolean;
+    reciboSimplificado?: boolean;
+  }
 ): Promise<CuentaSugerida | undefined> {
   // Tier 0 — pedido explícito de Carlos ("que la práctica te vaya dando
   // experticia"): si revisarCorreccionesCuentaContable.ts (job semanal) ya
@@ -2292,7 +2298,19 @@ export async function inferirCuentaGasto(
   // archivado en "profesionales independientes"). Se resuelve ANTES que tiers 1/2/3 a propósito — un
   // contexto de viaje confirmado es una señal más fuerte que la inferencia estadística por
   // proveedor/concepto de ESTE ticket puntual, que nunca va a mencionar viaje por sí solo.
-  if (criterios.contextoDeViaje) {
+  //
+  // Hallazgo real de auditoría (caso real Kruidvat/Simon Talloen, Footprint, 2026-09-16): contextoDeViaje
+  // depende de que extraerDatosFactura lo detecte EN EL TEXTO del documento — un ticket en holandés,
+  // sin ninguna palabra que un extractor reconozca como "viaje", nunca lo activa, aunque el resto del
+  // contexto (persona identificada + un simple ticket de caja, nunca una factura formal) ya deje claro
+  // que no puede ser "servicios de profesionales independientes" — un profesional independiente se
+  // factura con una factura formal a nombre de su empresa, nunca con el ticket de una farmacia. Un
+  // recibo simplificado (reciboSimplificado, ver extractInvoiceData.ts) asociado a una persona
+  // concreta es, por su sola FORMA, la misma señal que contextoDeViaje — sin depender del idioma ni de
+  // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
+  // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
+  const senalDeViaje = criterios.contextoDeViaje || (Boolean(criterios.personaAsociada) && criterios.reciboSimplificado === true);
+  if (senalDeViaje) {
     const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
     const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(porViaje, "viaje", MIN_EVIDENCIA_VIAJE);
     if (sugeridoPorViaje) return sugeridoPorViaje;
@@ -2422,7 +2440,7 @@ export async function inferirCuentaGasto(
     // descarta como sospechosa y gana el tier 3 (ya calculado arriba, con evidencia agregada de TODA
     // la categoría — más confiable que el historial de un solo proveedor/concepto).
     if (hayEmpateEnElPrimerLugar) {
-      const viaIA = await elegirCuentaConIA(criterios, porConcepto);
+      const viaIA = await elegirCuentaConIA({ ...criterios, contextoDeViaje: senalDeViaje }, porConcepto);
       if (viaIA && !contradiceCategoria(viaIA.accountId)) return viaIA;
       // Hallazgo real de auditoría xhigh: si el empate es real y la IA no devolvió nada usable (sin
       // API key, vetada, o inexistente), NUNCA se debe caer al voto por mayoría de abajo — con un
@@ -2452,7 +2470,7 @@ export async function inferirCuentaGasto(
   // inventadas — mismo mecanismo ya probado en elegirCuentaConIA, ver arriba) junto con el concepto y
   // proveedor de este gasto, y decide con sentido — o dice que ninguna encaja, en cuyo caso Holded
   // sigue usando su cuenta por defecto igual que antes de esto existir.
-  return await elegirCuentaConIA(criterios, lineas);
+  return await elegirCuentaConIA({ ...criterios, contextoDeViaje: senalDeViaje }, lineas);
 }
 
 export interface GastoSinComprobante {
