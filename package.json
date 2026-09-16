@@ -8,6 +8,7 @@
     "build": "tsc && node scripts/verify-email-pdf-runtime.cjs && npm --prefix frontend-cerebro ci && npm --prefix frontend-cerebro run build",
     "start": "node dist/src/server.js",
     "dev": "tsx watch src/server.ts",
+    "auditoria:publicar": "node scripts/publicar-auditoria-programada.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test core/**/*.test.ts && node --test scripts/claude-max/*.test.mjs frontend-cerebro/src/*.test.mjs"
   },

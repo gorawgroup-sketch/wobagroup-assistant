@@ -18,6 +18,10 @@ import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunSto
 import { lunesDeEtiquetaSemana, weekLabel } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
 import { construirControlDiario, type ControlDiario } from "./controlDiario";
+import {
+  obtenerEstadoAuditoriaProgramada,
+  type EstadoAuditoriaProgramadaFront,
+} from "./auditoriaProgramadaStore";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
@@ -412,6 +416,7 @@ export interface EstadoCerebroDatos {
   conocimiento: Awaited<ReturnType<typeof construirConocimiento>>;
   accesos: Awaited<ReturnType<typeof construirAccesos>>;
   controlDiario: ControlDiario;
+  auditoriaProgramada: EstadoAuditoriaProgramadaFront;
 }
 
 export interface EstadoCerebro extends EstadoCerebroDatos {
@@ -431,7 +436,7 @@ export interface EstadoCerebro extends EstadoCerebroDatos {
  * el endpoint.
  */
 async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
-  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, usuarios, controlDiario] = await Promise.all([
+  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, usuarios, controlDiario, auditoriaProgramada] = await Promise.all([
     construirCashflow(),
     construirHolded(),
     construirCrm(),
@@ -441,10 +446,24 @@ async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
     construirConocimiento(),
     seguro("accesos.usuarios", obtenerUsuariosAutorizados, []),
     construirControlDiario(),
+    seguro("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, {
+      nombre: "Auditoría técnica diaria de WOBI",
+      descripcion:
+        "Revisa código, pruebas, rutas de IA, costes, permisos, conexiones y memoria desde una copia limpia.",
+      programacion: {
+        activa: true as const,
+        frecuencia: "Diaria",
+        horaLocal: "09:00",
+        zonaHoraria: "Europe/Lisbon",
+        modo: "Codex con suscripción de ChatGPT · sin API de IA de pago",
+      },
+      ultimaEjecucion: null,
+      historial: [],
+    } satisfies EstadoAuditoriaProgramadaFront),
   ]);
   const accesos = construirAccesos(usuarios, controlDiario);
 
-  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, controlDiario };
+  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, controlDiario, auditoriaProgramada };
 }
 
 // Dos minutos mantiene el panel suficientemente fresco para operación diaria

@@ -96,6 +96,26 @@ function timeAgo(iso) {
   return `hace ${Math.round(hrs / 24)} d`;
 }
 
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  const fecha = new Date(iso);
+  if (!Number.isFinite(fecha.getTime())) return "—";
+  return new Intl.DateTimeFormat("es-ES", {
+    timeZone: "Europe/Lisbon",
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(fecha);
+}
+
+function etiquetaEstadoAuditoria(estado) {
+  return {
+    iniciada: "En ejecución",
+    estable: "Sin incidencias",
+    atencion: "Requiere atención",
+    fallo: "Ejecución fallida",
+  }[estado] || "Sin ejecución registrada";
+}
+
 function get(obj, path, fallback = null) {
   try {
     const val = path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
@@ -114,6 +134,7 @@ const MODULES = [
   { id: "conocimiento", name: "Conocimiento", detail: "5 documentos · capturas · correcciones", note: "núcleo de memoria", desc: "La memoria compartida del sistema: documentos de proceso, capturas de conocimiento del equipo y correcciones, siempre con prioridad sobre cualquier otro dato." },
   { id: "accesos", name: "Accesos y Costos", detail: "Allowlist · gasto IA diario", note: "gobierno del sistema", desc: "Controla quién puede usar el bot y quién puede aprobar escrituras, y registra el gasto real de IA con alerta ante consumo inusual." },
   { id: "busqueda_web", name: "Búsqueda Web", detail: "Historial · costo · buscador", note: "complementa, no reemplaza", desc: "Complementa las respuestas con información pública real cuando el conocimiento interno no alcanza — cada búsqueda queda registrada con su costo. Trae un buscador propio, opcional, para lanzar una consulta directa sin pasar por el chat." },
+  { id: "auditoria", name: "Auditoría", detail: "Programación · resultados · historial", note: "control técnico visible", desc: "Control técnico diario de WOBI. Revisa desde una copia limpia el código, las pruebas, las rutas de IA, los costes, permisos, conexiones y memoria; registra cada ejecución y nunca despliega ni realiza escrituras contables por sí solo." },
   // Fusión pedida por Carlos: antes había dos nodos de calendario separados
   // (uno de actividades CRM de Holded, otro de acciones programadas) — ahora
   // es uno solo, con las dos cosas dentro (ver liveRowsForModule caso
@@ -140,7 +161,7 @@ const MODULES = [
 const GROUPS = [
   { id: "administracion", name: "Administración", note: "gobierno del sistema", children: ["conexiones", "accesos", "conocimiento", "calendario"], accent: "#FFC98A" },
   { id: "finanzas", name: "Finanzas", note: "dinero real", children: ["holded", "cashflow", "fiscal"], accent: "#7EE2C0" },
-  { id: "operacion", name: "Operación", note: "trabajo diario", children: ["drive", "correo", "busqueda_web"], accent: "#B7A6FF" },
+  { id: "operacion", name: "Operación", note: "trabajo diario", children: ["drive", "correo", "busqueda_web", "auditoria"], accent: "#B7A6FF" },
 ];
 
 function seeded(seed) {
@@ -358,6 +379,18 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
         ["Superadmin / admins / colaboradores", `${get(d, "accesos.usuariosAutorizados.superadmins", "—")} / ${get(d, "accesos.usuariosAutorizados.admins", "—")} / ${get(d, "accesos.usuariosAutorizados.colaboradores", "—")}`],
         ["Costo real de API hoy", fmtUSD(get(d, "accesos.costoIaHoy"))],
         ["Costo real de API esta semana", fmtUSD(get(d, "accesos.costoIaEstaSemana"))],
+      ];
+    }
+    case "auditoria": {
+      const programacion = get(d, "auditoriaProgramada.programacion", {});
+      const ultima = get(d, "auditoriaProgramada.ultimaEjecucion");
+      const historial = get(d, "auditoriaProgramada.historial", []);
+      return [
+        ["Programación", programacion.activa ? `${programacion.frecuencia} · ${programacion.horaLocal} · Lisboa` : "Pausada"],
+        ["Modo", programacion.modo || "—"],
+        ["Última ejecución", ultima ? `${etiquetaEstadoAuditoria(ultima.estado)} · ${fmtDateTime(ultima.inicioEn)}` : "Todavía no registrada"],
+        ["Resultado", ultima?.resumen || "Se mostrará aquí al terminar la primera ejecución."],
+        ["Ejecuciones conservadas", String(historial.length)],
       ];
     }
     default:
@@ -684,6 +717,94 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
         </div>
       )}
     </section>
+  );
+}
+
+function AuditoriaProgramadaContenido({ data }) {
+  const auditoria = get(data, "auditoriaProgramada");
+  if (!auditoria) return null;
+  const ultima = auditoria.ultimaEjecucion;
+  const historial = Array.isArray(auditoria.historial) ? auditoria.historial : [];
+  const colorEstado = {
+    iniciada: C.coreBright,
+    estable: C.ok,
+    atencion: C.amberBright,
+    fallo: C.dangerBright,
+  };
+  const simboloDetalle = { ok: "✓", atencion: "!", fallo: "×", omitido: "–" };
+
+  return (
+    <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+      <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+            Último resultado
+          </span>
+          <span style={{ fontFamily: C.mono, fontSize: 10, color: colorEstado[ultima?.estado] || C.dim }}>
+            {etiquetaEstadoAuditoria(ultima?.estado)}
+          </span>
+        </div>
+        {ultima ? (
+          <>
+            <div style={{ fontFamily: C.sans, fontSize: 12.5, color: C.cream, lineHeight: 1.5, marginTop: 9 }}>
+              {ultima.resumen}
+            </div>
+            <div style={{ fontFamily: C.mono, fontSize: 9, color: C.dim, marginTop: 6 }}>
+              Inicio {fmtDateTime(ultima.inicioEn)}{ultima.finEn ? ` · fin ${fmtDateTime(ultima.finEn)}` : " · todavía en curso"}
+              {ultima.rama ? ` · ${ultima.rama}` : ""}
+              {ultima.commit ? ` · ${ultima.commit.slice(0, 8)}` : ""}
+            </div>
+            {ultima.detalles?.length > 0 && (
+              <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
+                {ultima.detalles.map((detalle, i) => (
+                  <div key={`${detalle.nombre}-${i}`} style={{ display: "grid", gridTemplateColumns: "18px minmax(0, 1fr)", gap: 7, alignItems: "start" }}>
+                    <span aria-hidden="true" style={{ color: detalle.estado === "fallo" ? C.dangerBright : detalle.estado === "atencion" ? C.amberBright : detalle.estado === "ok" ? C.ok : C.dim, fontFamily: C.mono }}>
+                      {simboloDetalle[detalle.estado] || "·"}
+                    </span>
+                    <span style={{ fontFamily: C.sans, fontSize: 11, color: C.dim }}>
+                      <strong style={{ color: C.cream, fontWeight: 600 }}>{detalle.nombre}</strong>
+                      {detalle.detalle ? ` — ${detalle.detalle}` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, lineHeight: 1.5, marginTop: 9 }}>
+            La programación está activa. El primer resultado aparecerá aquí cuando termine la próxima auditoría; no se mostrará “sin incidencias” hasta que exista una ejecución real.
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft, overflowX: "auto" }}>
+        <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
+          Historial de ejecuciones
+        </div>
+        {historial.length > 0 ? (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.sans, fontSize: 10.5 }}>
+            <thead>
+              <tr style={{ color: C.dim, textAlign: "left" }}>
+                <th style={{ padding: "4px 5px", fontWeight: 500 }}>Fecha</th>
+                <th style={{ padding: "4px 5px", fontWeight: 500 }}>Estado</th>
+                <th style={{ padding: "4px 5px", fontWeight: 500 }}>Resultado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historial.slice(0, 10).map((ejecucion) => (
+                <tr key={ejecucion.ejecucionId} style={{ borderTop: `1px solid ${C.line}` }}>
+                  <td style={{ padding: "7px 5px", color: C.dim, whiteSpace: "nowrap", fontFamily: C.mono }}>{fmtDateTime(ejecucion.inicioEn)}</td>
+                  <td style={{ padding: "7px 5px", color: colorEstado[ejecucion.estado] || C.dim, whiteSpace: "nowrap" }}>{etiquetaEstadoAuditoria(ejecucion.estado)}</td>
+                  <td style={{ padding: "7px 5px", color: C.cream, minWidth: 180 }}>{ejecucion.resumen}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "8px 0" }}>Sin ejecuciones registradas todavía.</div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -4302,6 +4423,8 @@ export default function CerebroWoba() {
                       </Desplegable>
                     </>
                   )}
+
+                  {m.id === "auditoria" && <AuditoriaProgramadaContenido data={liveData} />}
                 </div>
               ) : (
                 <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 14, letterSpacing: "0.03em" }}>
