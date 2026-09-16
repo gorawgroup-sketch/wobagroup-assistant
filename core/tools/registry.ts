@@ -33,7 +33,7 @@ import { confirmarArchivoPendienteTool } from "./confirmarArchivoPendiente";
 import { listarCorreosSinLeerTool } from "./listarCorreosSinLeer";
 import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
-import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
+import { reintentarGastoPendienteTool, descartarGastoPendienteDatosTool } from "./reintentarGastoPendiente";
 import { reenviarBotonesPropuestaGastoTool } from "./reenviarBotonesPropuestaGasto";
 import { reclasificarDocumentoPendienteTool, descartarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
 import { saltarCorreoActivoTool } from "./saltarCorreoActivo";
@@ -91,6 +91,7 @@ const tools: ToolDefinition[] = [
   reintentarContactoPendienteTool,
   fijarAliasProveedorTool,
   reintentarGastoPendienteTool,
+  descartarGastoPendienteDatosTool,
   reenviarBotonesPropuestaGastoTool,
   reclasificarDocumentoPendienteTool,
   descartarDocumentoPendienteTool,

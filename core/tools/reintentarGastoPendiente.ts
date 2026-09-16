@@ -1,5 +1,7 @@
+import { unlink } from "node:fs/promises";
 import { consumirGastoPendienteDatosPorChat, guardarGastoPendienteDatos } from "../gastos/gastoPendienteDatosStore";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
+import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import type { ToolDefinition } from "./types";
 
 const EMPRESAS = ["WOBA", "EWORKS", "Footprint"] as const;
@@ -95,5 +97,53 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
     return resultado === "propuesta_duplicada"
       ? "Listo — la revisión encontró evidencia de que el gasto ya existe o está conciliado. No se creó ni se propuso otro gasto."
       : "Listo — con el dato que dio el usuario, ya se mandó la propuesta con botón para crear el gasto en Holded. No hace falta que lo repitas, ya se le mostró por Telegram.";
+  },
+};
+
+/**
+ * Caso real reportado por Carlos (Footprint, factura de Uber por 5690 CRC sin equivalente en EUR/USD
+ * en el correo): este tipo de pendiente (falta empresa, o falta el monto/moneda exacto de la
+ * tarjeta) nunca genera una propuesta con botones, así que "🗑️ Descartar todo" del resumen de fin de
+ * día lo excluye a propósito (ver resumenPendientesDiario.ts — mismo criterio que resolucionContacto/
+ * edicionCompraHolded, que sí traen dinero real). Pero hasta esta tool no existía NINGUNA forma de
+ * cerrarlo cuando el usuario confirma que no tiene el dato que falta y no lo va a conseguir (ni
+ * releyendo el correo/adjunto original, ni encontrando un cargo bancario real que calce) — el
+ * pendiente se quedaba acumulado sin ninguna vía real de cierre desde el chat. Mismo patrón que
+ * descartar_documento_pendiente: nunca crea el gasto, solo limpia la pregunta y la copia local.
+ */
+export const descartarGastoPendienteDatosTool: ToolDefinition = {
+  name: "descartar_gasto_pendiente_datos",
+  description:
+    "Descarta (sin crear ni proponer ningún gasto) una factura/gasto que quedó pendiente porque faltaba " +
+    "un dato (la empresa, o el monto/moneda exacto de la tarjeta/cuenta en una factura de moneda " +
+    "extranjera) — úsala SOLO cuando el usuario confirme explícitamente que no tiene ese dato y no lo va " +
+    "a conseguir (ej. 'no lo tengo', 'no lo voy a conseguir', 'los datos son los que tú mismo lees en el " +
+    "mail, si ahí no está, no lo conozco', 'descártalo'), o cuando una búsqueda proactiva en los " +
+    "movimientos bancarios reales (holded_movimientos / movimientos_sin_conciliar) no encontró ningún " +
+    "cargo sin conciliar que calce razonablemente y el usuario acepta cerrarlo así. No la uses solo " +
+    "porque tú no encontraste el dato — primero pregúntale al usuario si lo tiene o si quiere que se " +
+    "descarte.",
+  input_schema: { type: "object", properties: {} },
+  handler: async (_input, context) => {
+    const chatId = context?.chatId;
+    if (chatId === undefined) {
+      return "Error: no se pudo determinar el chat — no se puede descartar ningún gasto pendiente.";
+    }
+
+    const pendiente = await consumirGastoPendienteDatosPorChat(chatId);
+    if (!pendiente) {
+      return "No hay ninguna pregunta de factura/gasto sin responder pendiente para este chat (puede que ya se haya procesado, o que haya expirado).";
+    }
+
+    await unlink(pendiente.rutaLocal).catch(() => {});
+
+    if (pendiente.deColaCorreo) {
+      await avanzarColaCorreoSiActivo(chatId);
+    }
+
+    return (
+      `Descartado: "${pendiente.datos.proveedor}" (${pendiente.datos.monto} ${pendiente.datos.moneda}) — no se creó ni ` +
+      "se propuso ningún gasto en Holded. No hace falta que lo repitas, ya se le puede confirmar al usuario."
+    );
   },
 };

@@ -196,7 +196,7 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     if (g) {
       const queFalta = g.motivo === "empresa" ? "empresa" : "monto/moneda exactos";
       items.push({
-        descripcion: `💸 Gasto sin confirmar (falta ${queFalta}): "${g.datos.proveedor}" — ${g.datos.monto} ${g.datos.moneda} — revisar individual, no se borra con "Descartar todo"`,
+        descripcion: `💸 Gasto sin confirmar (falta ${queFalta}): "${g.datos.proveedor}" — ${g.datos.monto} ${g.datos.moneda} — revisar individual, no se borra con "Descartar todo" (si no tienes el dato y no lo vas a conseguir, dile a Wobi en el chat que lo descarte)`,
         creadoEn: g.creadoEn,
       });
     }
