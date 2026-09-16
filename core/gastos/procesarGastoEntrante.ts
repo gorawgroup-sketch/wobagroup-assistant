@@ -552,6 +552,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           concepto: datos.concepto,
           personaAsociada: datos.personaAsociada,
           contextoDeViaje: datos.contextoDeViaje,
+          reciboSimplificado: datos.reciboSimplificado,
         }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;

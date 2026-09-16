@@ -191,7 +191,10 @@ export function modoHeadlessComprobante(empaquetadoServerless: boolean): true | 
  * cuelga en cualquier punto, esta función falla con un error claro en vez de colgarse en silencio.
  */
 async function generarComprobanteVisualPDF(correo: DatosCorreoParaComprobante): Promise<Buffer> {
-  return conTiempoMaximo(() => generarComprobanteVisualPDFInterno(correo), 45_000, "generarComprobanteVisualPDF");
+  // 60s: deja margen real por encima del nuevo timeout de arranque (40s) más un colchón para
+  // operaciones normales de página — sigue siendo la red de seguridad de ÚLTIMO recurso, muy por
+  // debajo de los "varios minutos" del cuelgue real que este mecanismo existe para evitar.
+  return conTiempoMaximo(() => generarComprobanteVisualPDFInterno(correo), 60_000, "generarComprobanteVisualPDF");
 }
 
 async function generarComprobanteVisualPDFInterno(correo: DatosCorreoParaComprobante): Promise<Buffer> {
@@ -210,7 +213,13 @@ async function generarComprobanteVisualPDFInterno(correo: DatosCorreoParaComprob
     // causa real (biblioteca/permiso) en vez del mensaje opaco "Code: 127".
     dumpio: true,
     defaultViewport: { width: 1280, height: 1600, deviceScaleFactor: 1 },
-    timeout: 20_000,
+    // Hallazgo real de auditoría (CI de GitHub Actions, 2026-09-16): 20s bastaba en Railway pero un
+    // runner de CI más lento/compartido tardó ~22-25s en arrancar Chromium, disparando este timeout
+    // justo antes de completar — el propio log mostraba "DevTools listening" segundos después de que
+    // Puppeteer ya había rechazado la promesa. 40s deja margen real para arranques lentos sin volver a
+    // exponer el cuelgue indefinido que este timeout existe para evitar (ver conTiempoMaximo abajo,
+    // que sigue siendo la red de seguridad de último recurso).
+    timeout: 40_000,
   });
 
   try {
