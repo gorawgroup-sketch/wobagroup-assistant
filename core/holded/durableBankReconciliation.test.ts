@@ -350,7 +350,10 @@ test("un importe en otra moneda SÍ sigue bloqueado si la compra todavía tiene 
   assert.equal(resultado, undefined);
 });
 
-test("un céntimo pendiente se informa como saldo real aunque el pago esté enlazado", () => {
+test("un céntimo pendiente ya no se informa como saldo real: cae dentro del margen mínimo de conversión", () => {
+  // Pedido explícito de Carlos (2026-09-16): un céntimo pendiente es sistemáticamente el residuo de
+  // redondeo de una conversión de moneda de Holded (Uber Costa Rica, Subway Tocumen, Costa Azul Panama
+  // Bell...), nunca deuda real. El margen mínimo (piso de 2 céntimos) ya lo cubre sin necesitar el total.
   const resultado = verificarPagoCompraEnMovimiento(
     {
       payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
@@ -360,10 +363,10 @@ test("un céntimo pendiente se informa como saldo real aunque el pago esté enla
     "2026-09-08",
     3.77
   );
-  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
+  assert.deepEqual(resultado, { montoPago: 3.77 });
 });
 
-test("un céntimo sobrepagado también se informa y nunca se trata como cero", () => {
+test("un céntimo sobrepagado también cae dentro del margen y no se informa como saldo pendiente", () => {
   const resultado = verificarPagoCompraEnMovimiento(
     {
       payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
@@ -373,7 +376,65 @@ test("un céntimo sobrepagado también se informa y nunca se trata como cero", (
     "2026-09-08",
     3.77
   );
-  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
+  assert.deepEqual(resultado, { montoPago: 3.77 });
+});
+
+test("caso real Footprint (Subway Aeropuerto/AEROPUERTO TOCUMEN, Compra 0000072199): dos céntimos pendientes en una factura de 17,55 caen dentro del margen porcentual", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      total: "17,55",
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-16", amount: "15,12" }],
+      payments_pending: "0,02",
+    },
+    "account-1",
+    "2026-09-16",
+    15.12
+  );
+  assert.deepEqual(resultado, { montoPago: 15.12 });
+});
+
+test("caso real Footprint (Hostel Columbus Cafe): trece céntimos pendientes en una factura de 86,04 caen dentro del margen porcentual", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      total: "86,04",
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-12", amount: "85,91" }],
+      payments_pending: "0,13",
+    },
+    "account-1",
+    "2026-09-12",
+    85.91
+  );
+  assert.deepEqual(resultado, { montoPago: 85.91 });
+});
+
+test("el margen porcentual tiene un techo de 1 unidad de moneda: no acepta a ciegas un hueco grande en una factura grande", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      // 0,5% de 500 serían 2,50 — pero el techo de 1 unidad evita tratar 1,50 pendientes como pagado.
+      total: "500,00",
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-10", amount: "60,70" }],
+      payments_pending: "1,50",
+    },
+    "account-1",
+    "2026-09-10",
+    70.76
+  );
+  assert.equal(resultado, undefined);
+});
+
+test("el margen porcentual sigue exigiendo revisión manual cuando el pendiente supera el margen aunque sea pequeño en términos absolutos", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      // 0,5% de 100 son 0,50 — 0,60 pendientes sigue siendo más que el margen, no se da por pagado.
+      total: "100,00",
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-10", amount: "60,70" }],
+      payments_pending: "0,60",
+    },
+    "account-1",
+    "2026-09-10",
+    70.76
+  );
+  assert.equal(resultado, undefined);
 });
 
 test("caso real Uber USD: identifica el céntimo solo cuando todas las pruebas de cambio coinciden", () => {
