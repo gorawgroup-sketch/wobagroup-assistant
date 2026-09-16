@@ -447,18 +447,30 @@ async function conciliarContraMovimientoEspecifico(
       // lado de Holded, queda con un saldo pendiente ficticio — comportamiento real de Holded al
       // aplicar el equivalente en EUR en vez del monto nativo para documentos en otra moneda. Nunca se
       // reporta éxito sin más cuando eso pasa — se avisa explícitamente para que se revise a mano.
-      const notaPendiente = resultado.ajusteCambioDivisa?.estado === "requiere_revision"
-        ? `\n\n🟠 Detecté y demostré un residuo de cambio de divisa de ` +
-          `${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR; no es una deuda real ni una conciliación parcial. ` +
-          `${resultado.ajusteCambioDivisa.motivo ?? ""} Por seguridad no creé un pago normal. Hasta activar la operación ` +
-          `interna exacta, corrígelo solo en ESTE gasto con “Añadir pago” → “Ajustar cambio de divisa” → “Guardar”, ` +
-          `y comprueba que el pendiente quede en 0,00 EUR.`
-        : resultado.pendienteEnCompra !== undefined
-          ? `\n\n⚠️ OJO: el movimiento quedó conciliado por completo, pero la compra en Holded sigue mostrando ` +
-            `${resultado.pendienteEnCompra.toFixed(2)} pendiente de pago. No cumple todas las pruebas para considerarlo ` +
-            `un residuo automático de cambio; no se regularizó ni se modificó ninguna otra operación. Revísalo a mano ` +
-            `en Holded (sección Pagos del documento).`
-          : "";
+      //
+      // Pedido explícito de Carlos (2026-09-16): el ajuste ahora se aplica automáticamente (sin botón
+      // de confirmación) cuando el residuo queda matemáticamente demostrado — "aplicado" avisa lo que
+      // ya se pagó solo; "incierto" (Holded no confirmó tras el POST) sigue bloqueando cualquier
+      // repetición automática, igual que el resto de las escrituras durables del proyecto.
+      const notaPendiente = resultado.ajusteCambioDivisa?.estado === "aplicado"
+        ? `\n\n✅ Detecté y regularicé automáticamente un residuo de cambio de divisa de ` +
+          `${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR contra la cuenta contable ` +
+          `"Main" EUR — no era una deuda real ni una conciliación parcial. ${resultado.ajusteCambioDivisa.motivo ?? ""}`
+        : resultado.ajusteCambioDivisa?.estado === "incierto"
+          ? `\n\n🟠 Detecté un residuo de cambio de divisa de ${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR y ` +
+            `traté de regularizarlo automáticamente, pero Holded no confirmó el resultado. ` +
+            `${resultado.ajusteCambioDivisa.motivo ?? ""} No repito el intento solo — revísalo en Holded ` +
+            `(sección Pagos del documento) antes de que lo vuelva a intentar.`
+          : resultado.ajusteCambioDivisa?.estado === "requiere_revision"
+            ? `\n\n🟠 Detecté y demostré un residuo de cambio de divisa de ` +
+              `${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR; no es una deuda real ni una conciliación parcial. ` +
+              `${resultado.ajusteCambioDivisa.motivo ?? ""} Corrígelo a mano en Holded (sección Pagos del documento).`
+            : resultado.pendienteEnCompra !== undefined
+              ? `\n\n⚠️ OJO: el movimiento quedó conciliado por completo, pero la compra en Holded sigue mostrando ` +
+                `${resultado.pendienteEnCompra.toFixed(2)} pendiente de pago. No cumple todas las pruebas para considerarlo ` +
+                `un residuo automático de cambio; no se regularizó ni se modificó ninguna otra operación. Revísalo a mano ` +
+                `en Holded (sección Pagos del documento).`
+              : "";
       const notaMovimientoParcial = resultado.movimientoParcial
         ? `\n\n⚠️ La compra quedó pagada y el vínculo fue confirmado, pero el movimiento bancario continúa ` +
           `parcialmente conciliado${resultado.pendienteEnMovimiento !== undefined

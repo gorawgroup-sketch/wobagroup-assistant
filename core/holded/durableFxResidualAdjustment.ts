@@ -66,6 +66,17 @@ function hash(valor: string): string {
   return createHash("sha256").update(valor).digest("hex");
 }
 
+/**
+ * MISMA fórmula que margenResiduoConversion en core/holded/write.ts — duplicada acá (no importada,
+ * para no crear un ciclo write.ts -> durableFxResidualAdjustment.ts -> write.ts) pero debe mantenerse
+ * sincronizada si cambia allá. Pedido explícito de Carlos (2026-09-16, caso real Airbnb MEX, 0,26 en
+ * una compra de 255,68): el límite fijo de exactamente 0,01 era demasiado estricto para residuos
+ * reales de compras más grandes — escala con el tamaño de la compra.
+ */
+function margenResiduoConversion(total: number): number {
+  return Math.min(1, Math.max(0.02, Math.abs(total) * 0.005));
+}
+
 export function identidadAjusteCambio(
   entrada: {
     empresa: Empresa;
@@ -75,6 +86,7 @@ export function identidadAjusteCambio(
     targetTreasuryId: string;
     fecha: string;
     monto: number;
+    totalNativoCompra: number;
   },
   proceso = "ajuste_cambio_divisa_post_conciliacion",
   ahora = Date.now()
@@ -92,8 +104,11 @@ export function identidadAjusteCambio(
     throw new Error("El ajuste de cambio no puede registrarse en la misma cuenta extranjera conciliada.");
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new Error("La fecha del ajuste debe usar YYYY-MM-DD.");
-  if (montoCentimos !== 1) {
-    throw new Error("La regularización automática solo admite el residuo seguro de 0,01.");
+  const margenCentimos = Math.round(margenResiduoConversion(entrada.totalNativoCompra) * 100);
+  if (montoCentimos <= 0 || montoCentimos > margenCentimos) {
+    throw new Error(
+      `La regularización automática solo admite un residuo entre 0,01 y el margen de esta compra (${(margenCentimos / 100).toFixed(2)}).`
+    );
   }
 
   const clave = hash(`wobi-holded-fx-residual-v1\0${entrada.empresa}\0${purchaseId}\0${movementId}`);
