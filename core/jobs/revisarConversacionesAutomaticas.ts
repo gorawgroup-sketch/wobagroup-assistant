@@ -1,8 +1,12 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { listarContactosAutorespuesta } from "../gmail/autorespuestaContactoStore";
-import { listarHilosNoLeidosDe, obtenerHiloCompleto, marcarHiloComoLeido, enviarCorreo, consultarEnvioCorreoExistente } from "../gmail/client";
+import { listarHilosNoLeidosDe, obtenerHiloCompleto, marcarHiloComoLeido, enviarCorreo, consultarEnvioCorreoExistente, type MensajeDeHilo } from "../gmail/client";
 import { obtenerEstadoHiloAutorespuesta, crearPendienteAprobacionHilo } from "../gmail/hiloAutorespuestaStore";
 import { responderCorreoAutomatico } from "../claude/client";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
+import { crearMensajeAnthropic } from "../ai/anthropicGateway";
+import { crearEjecucionIA } from "../ai/policy";
+import { resolverModeloDocumental } from "../ai/modelRouting";
 
 /**
  * Pequeña, discreta y aparte del cuerpo redactado por Claude — pedido
@@ -119,6 +123,55 @@ export async function procesarHiloAutorespuestaAprobado(threadId: string, chatId
  *   (nunca escribir — ver responderCorreoAutomatico), lleva la leyenda de
  *   "respuesta automática" al final, y avisa a Carlos por Telegram sin botón.
  */
+
+let clienteResumen: Anthropic | null = null;
+function getClienteResumen(): Anthropic {
+  if (clienteResumen) return clienteResumen;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("Falta la variable de entorno ANTHROPIC_API_KEY");
+  clienteResumen = new Anthropic({ apiKey });
+  return clienteResumen;
+}
+
+/**
+ * Pedido explícito de Carlos (2026-09-16): la pregunta "¿esta conversación también es automática?"
+ * solo mostraba remitente y asunto — sin haber leído nada del hilo, era imposible decidir con
+ * criterio si activar la auto-respuesta. obtenerHiloCompleto YA trae todos los mensajes reales antes
+ * de preguntar; este resumen solo los aprovecha. Nunca decide nada por Carlos — solo describe de qué
+ * trata la conversación y qué se ha dicho hasta ahora, para que la decisión "sí/no automática" sea
+ * informada. Si falla (sin API key, error de red), se degrada a la pregunta sin resumen — preguntar
+ * sigue siendo mejor que no preguntar, aunque falte el contexto.
+ */
+async function resumirHiloParaAprobacion(mensajes: MensajeDeHilo[]): Promise<string | undefined> {
+  try {
+    const anthropic = getClienteResumen();
+    const transcripcion = mensajes
+      .slice(-6) // suficiente para juzgar el tema y el estado actual sin gastar de más en hilos largos
+      .map((m) => `De: ${m.de}\n${m.cuerpo.trim().slice(0, 1500)}`)
+      .join("\n---\n");
+    const response = await crearMensajeAnthropic(anthropic, crearEjecucionIA("resumir_hilo_aprobacion"), {
+      model: resolverModeloDocumental("resumir_hilo_aprobacion"),
+      max_tokens: 200,
+      messages: [
+        {
+          role: "user",
+          content:
+            `Resume en 2-3 frases, en español, de qué trata esta conversación de correo y qué se ha ` +
+            `dicho o decidido hasta ahora (si hay algún acuerdo, pregunta pendiente, o dato concreto, ` +
+            `inclúyelo). Es para que un humano decida si activar respuestas automáticas para este hilo, ` +
+            `así que prioriza lo que ayude a esa decisión. Sin introducción ni encabezado, solo el resumen.\n\n${transcripcion}`,
+        },
+      ],
+    });
+    const textBlock = response.content.find((b) => b.type === "text");
+    const resumen = textBlock && textBlock.type === "text" ? textBlock.text.trim() : "";
+    return resumen || undefined;
+  } catch (error) {
+    console.error("[revisarConversacionesAutomaticas] Error resumiendo el hilo para la pregunta de aprobación (no crítico, se pregunta sin resumen):", error);
+    return undefined;
+  }
+}
+
 export async function revisarConversacionesAutomaticas(): Promise<{ respondidos: number; preguntados: number }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
   if (!chatId) {
@@ -148,10 +201,12 @@ export async function revisarConversacionesAutomaticas(): Promise<{ respondidos:
         if (!ultimoMensaje || ultimoMensaje.esNuestro) continue;
 
         await crearPendienteAprobacionHilo(threadId, chatId, hilo.ultimoDe, hilo.asunto || "(sin asunto)");
+        const resumen = await resumirHiloParaAprobacion(hilo.mensajes);
         await sendTelegramMessageWithButtons(
           chatId,
-          `🤖 Nueva conversación con ${hilo.ultimoDe} ("${hilo.asunto || "(sin asunto)"}") — ¿esta conversación también es automática ` +
-            `(respondo solo, sin pedirte aprobación cada vez)?`,
+          `🤖 Nueva conversación con ${hilo.ultimoDe} ("${hilo.asunto || "(sin asunto)"}")` +
+            (resumen ? `\n\n${resumen}` : "") +
+            `\n\n¿esta conversación también es automática (respondo solo, sin pedirte aprobación cada vez)?`,
           [
             [
               { text: "✅ Sí, automática", callback_data: `autohilo_aprobar:${threadId}` },
