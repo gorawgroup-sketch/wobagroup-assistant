@@ -1489,7 +1489,14 @@ async function crearGastoYReportar(
   const lineas =
     propuesta.lineas.length > 0
       ? propuesta.lineas
-      : [{ concepto: descripcionFinal, base: propuesta.monto, tipoIvaPct: 0 }];
+      : [
+          {
+            concepto: descripcionFinal,
+            base: propuesta.monto,
+            tipoIvaPct: 0,
+            tratamientoFiscal: "inversion_sujeto_pasivo" as const,
+          },
+        ];
 
   // Pedido explícito de Carlos, tras un caso real: una factura de alquiler
   // con retención de IRPF se registró en Holded sin la retención — el
@@ -2258,7 +2265,14 @@ interface ResultadoAplicarTexto {
 function reescalarLineas(propuesta: PropuestaGasto, nuevoMonto: number): LineaFactura[] {
   return propuesta.monto > 0 && propuesta.lineas.length > 0
     ? propuesta.lineas.map((l) => ({ ...l, base: (l.base * nuevoMonto) / propuesta.monto }))
-    : [{ concepto: propuesta.concepto, base: nuevoMonto, tipoIvaPct: 0 }];
+    : [
+        {
+          concepto: propuesta.concepto,
+          base: nuevoMonto,
+          tipoIvaPct: 0,
+          tratamientoFiscal: "inversion_sujeto_pasivo",
+        },
+      ];
 }
 
 async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {

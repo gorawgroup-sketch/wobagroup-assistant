@@ -2892,14 +2892,21 @@ export async function adjuntarComprobanteHolded(
 
 export interface TaxCatalogEntry {
   key: string;
-  amount: number;
+  name?: string;
+  amount: number | null;
+  type?: string;
+  visible?: boolean;
+  items?: string[];
 }
 
 const catalogoImpuestosCache = new Map<Empresa, TaxCatalogEntry[]>();
 
 /**
  * Catálogo real de códigos de impuesto de Holded (GET /taxes, filtrado a
- * compras). Se consulta en vez de adivinar un código — verificado en vivo
+ * compras). Incluye también los grupos visibles: "Inv. Suj. Pasivo" es un
+ * grupo que Holded guarda en las líneas como `p_iva_invsuj`; descartar los
+ * grupos obligaba a elegir incorrectamente uno de sus componentes internos.
+ * Se consulta en vez de adivinar un código — verificado en vivo
  * que mandar el key real (ej. "p_iva_21") calcula correctamente el IVA de
  * la línea (probado: 10€ base + p_iva_21 → tax 2,10€, total 12,10€).
  * Cacheado en memoria por empresa (el catálogo no cambia en caliente).
@@ -2909,12 +2916,27 @@ export async function obtenerCatalogoImpuestos(empresa: Empresa): Promise<TaxCat
   if (cached) return cached;
 
   const data = (await holdedWriteCall(empresa, "GET", "/taxes")) as {
-    items?: Array<{ key?: string; amount?: string | number; scope?: string; type?: string }>;
+    items?: Array<{
+      key?: string;
+      name?: string;
+      amount?: string | number | null;
+      scope?: string;
+      type?: string;
+      visible?: boolean;
+      items?: string[];
+    }>;
   };
 
   const catalogo = (data.items ?? [])
-    .filter((t) => t.scope === "purchases" && t.type !== "group" && t.key)
-    .map((t) => ({ key: t.key as string, amount: Number(t.amount) || 0 }));
+    .filter((t) => t.scope === "purchases" && t.key)
+    .map((t) => ({
+      key: t.key as string,
+      name: t.name,
+      amount: t.amount === null || t.amount === undefined || t.amount === "" ? null : Number(t.amount),
+      type: t.type,
+      visible: t.visible,
+      items: t.items,
+    }));
 
   catalogoImpuestosCache.set(empresa, catalogo);
   return catalogo;
@@ -2929,10 +2951,64 @@ export async function obtenerCatalogoImpuestos(empresa: Empresa): Promise<TaxCat
  */
 export function mapearPorcentajeATaxKey(catalogo: TaxCatalogEntry[], pct: number): string | undefined {
   const claveDirecta = `p_iva_${String(pct).replace(".", "")}`;
-  const directo = catalogo.find((t) => t.key === claveDirecta);
+  const directo = catalogo.find((t) => t.type !== "group" && t.key === claveDirecta);
   if (directo) return directo.key;
 
-  return catalogo.find((t) => t.amount === pct)?.key;
+  return catalogo.find((t) => t.type !== "group" && t.amount === pct)?.key;
+}
+
+/**
+ * Resuelve el grupo visible y completo "Inv. Suj. Pasivo". No sirve elegir
+ * por `amount=0`: el catálogo contiene IVA 0 %, exento, no sujeto y bienes
+ * de inversión ISP, todos con el mismo importe. Tampoco sirve enviar solo
+ * `p_iva_invsuj_2`: es el componente interno de compra al 21 %, mientras que
+ * Holded guarda las compras corregidas por el operador con el grupo
+ * `p_iva_invsuj`, que aplica el par de autorrepercusión correspondiente.
+ */
+export function mapearInversionSujetoPasivoATaxKey(catalogo: TaxCatalogEntry[]): string | undefined {
+  const exacto = catalogo.find(
+    (t) => t.key === "p_iva_invsuj" && t.type === "group" && t.visible !== false
+  );
+  if (exacto) return exacto.key;
+
+  const normalizar = (valor: string | undefined): string =>
+    (valor ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+  const semanticos = catalogo.filter((t) => {
+    if (t.type !== "group" || t.visible === false) return false;
+    const nombre = normalizar(t.name);
+    return nombre === "inv suj pasivo" || nombre === "inversion sujeto pasivo";
+  });
+
+  return semanticos.length === 1 ? semanticos[0].key : undefined;
+}
+
+export class ImpuestoSujetoPasivoNoDisponibleError extends Error {
+  constructor() {
+    super(
+      'Holded no ofrece de forma inequívoca el impuesto visible "Inv. Suj. Pasivo"; no se creó ni editó el gasto.'
+    );
+    this.name = "ImpuestoSujetoPasivoNoDisponibleError";
+  }
+}
+
+export function mapearImpuestoPrincipalATaxKey(
+  catalogo: TaxCatalogEntry[],
+  linea: Pick<LineaGastoHolded, "tipoIvaPct" | "tratamientoFiscal">
+): string | undefined {
+  const requiereSujetoPasivo =
+    linea.tratamientoFiscal === "inversion_sujeto_pasivo" || linea.tipoIvaPct === 0;
+  if (requiereSujetoPasivo) {
+    const taxKey = mapearInversionSujetoPasivoATaxKey(catalogo);
+    if (!taxKey) throw new ImpuestoSujetoPasivoNoDisponibleError();
+    return taxKey;
+  }
+  return mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
 }
 
 /**
@@ -2956,17 +3032,23 @@ export function mapearRetencionATaxKey(catalogo: TaxCatalogEntry[], pct: number,
 
   for (const prefijo of familias) {
     const claveDirecta = `${prefijo}${String(Math.round(pct)).replace(".", "")}`;
-    const directo = catalogo.find((t) => t.key === claveDirecta);
+    const directo = catalogo.find((t) => t.type !== "group" && t.key === claveDirecta);
     if (directo) return directo.key;
   }
 
-  return catalogo.find((t) => t.amount === -pct)?.key;
+  return catalogo.find((t) => t.type !== "group" && t.amount === -pct)?.key;
 }
 
 export interface LineaGastoHolded {
   concepto: string;
   base: number;
   tipoIvaPct: number;
+  /**
+   * Tratamiento fiscal explícito. Compatibilidad segura con propuestas
+   * anteriores: una línea antigua a 0 % se interpreta como sujeto pasivo,
+   * porque IVA 0 % no se usa en la contabilidad del grupo.
+   */
+  tratamientoFiscal?: "iva" | "inversion_sujeto_pasivo";
   /** Porcentaje de retención de IRPF de esta línea (ver mapearRetencionATaxKey) — 0/undefined si no aplica. */
   retencionPct?: number;
 }
@@ -3181,7 +3263,7 @@ export async function crearGastoHolded(
   ]);
 
   const items = gasto.lineas.map((linea) => {
-    const taxKey = mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
+    const taxKey = mapearImpuestoPrincipalATaxKey(catalogo, linea);
     const retencionKey =
       linea.retencionPct && linea.retencionPct > 0
         ? mapearRetencionATaxKey(catalogo, linea.retencionPct, linea.concepto || gasto.descripcion)
@@ -3514,7 +3596,7 @@ async function prepararEdicionCompraHolded(
 
   const items = cambios.lineas
     ? cambios.lineas.map((linea) => {
-        const taxKey = catalogo ? mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct) : undefined;
+        const taxKey = catalogo ? mapearImpuestoPrincipalATaxKey(catalogo, linea) : undefined;
         const retencionKey =
           catalogo && linea.retencionPct && linea.retencionPct > 0
             ? mapearRetencionATaxKey(catalogo, linea.retencionPct, linea.concepto)
