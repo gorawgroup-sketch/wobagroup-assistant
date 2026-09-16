@@ -58,6 +58,7 @@ function registro() {
     targetTreasuryId: "main-eur",
     fecha: "2026-09-16",
     monto: 0.01,
+    totalNativoCompra: 100,
   }, "test", 1);
 }
 
@@ -79,19 +80,26 @@ function transporte(opciones: { aplicadoInicial?: boolean; falla?: boolean; apli
   return valor;
 }
 
-test("crea una identidad opaca y solo acepta el residuo seguro de un céntimo", () => {
+test("crea una identidad opaca y solo acepta un residuo dentro del margen de la compra", () => {
   const a = registro();
   const b = registro();
   assert.equal(a.clave, b.clave);
   assert.equal(a.clave.includes("purchase-1"), false);
+  // Compra chica (total 1): margen = piso de 0,02 — 0,03 queda fuera.
   assert.throws(() => identidadAjusteCambio({
     empresa: "Footprint", purchaseId: "p", movementId: "m", sourceAccountId: "a", targetTreasuryId: "b",
-    fecha: "2026-09-16", monto: 0.02,
-  }), /0,01/);
+    fecha: "2026-09-16", monto: 0.03, totalNativoCompra: 1,
+  }), /margen/);
   assert.throws(() => identidadAjusteCambio({
     empresa: "Footprint", purchaseId: "p", movementId: "m", sourceAccountId: "a", targetTreasuryId: "a",
-    fecha: "2026-09-16", monto: 0.01,
+    fecha: "2026-09-16", monto: 0.01, totalNativoCompra: 100,
   }), /misma cuenta/);
+  // Compra grande (total 255,68, caso real Airbnb MEX): 0,26 cabe dentro del margen (techo 1).
+  const grande = identidadAjusteCambio({
+    empresa: "Footprint", purchaseId: "p", movementId: "m", sourceAccountId: "a", targetTreasuryId: "b",
+    fecha: "2026-09-16", monto: 0.26, totalNativoCompra: 255.68,
+  });
+  assert.equal(grande.montoCentimos, 26);
 });
 
 test("aplica una vez y verifica el saldo cero", async () => {

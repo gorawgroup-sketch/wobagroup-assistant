@@ -17,6 +17,7 @@ import { autoAuditarOperacionesDiarias } from "./autoAuditarOperaciones";
 import { invalidarEstadoCerebro } from "../cerebro/estadoAgregado";
 import { publicarCambioCerebro } from "../cerebro/realtime";
 import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaContable";
+import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos";
 import { esperarPrioridadInteractiva } from "./jobPriority";
 
 const TIMEZONE = "Europe/Madrid";
@@ -204,6 +205,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarCorreccionesCuentaContable programado: lunes 8:40 (${TIMEZONE})`);
+
+  cron.schedule(
+    "45 8 * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarAjustesCambioRevertidos", () => revisarAjustesCambioRevertidos());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarAjustesCambioRevertidos programado: diario 8:45 (${TIMEZONE})`);
 
   cron.schedule(
     "5 * * * *",
