@@ -969,7 +969,11 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       // primera acaba de crear, en vez de duplicarlo.
       const claveMutexContacto = `crearContacto:${resolucion.empresaFinal}:${resolucion.propuesta.proveedor.trim().toLowerCase()}`;
       const contactoNuevo = await conMutex(claveMutexContacto, async () => {
-        const existente = await buscarContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor);
+        const existente = await buscarContactoHolded(
+          resolucion.empresaFinal,
+          resolucion.propuesta.proveedor,
+          resolucion.propuesta.moneda
+        );
         if (existente) {
           return { id: existente.id, name: existente.name ?? resolucion.propuesta.proveedor.trim() };
         }
@@ -1461,7 +1465,7 @@ async function crearGastoYReportar(
    */
   movimientoObjetivo?: MovimientoBancarioCandidato
 ): Promise<ResultadoCrearGasto> {
-  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuesta.proveedor));
+  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuesta.proveedor, propuesta.moneda));
   if (!contacto) {
     throw new ContactoNoEncontradoError(propuesta.proveedor, empresaFinal);
   }
@@ -1686,9 +1690,13 @@ async function crearGastoYReportar(
         }).catch((error) => console.error("[gastoCallbackHandler] No se pudo registrar el gasto por correo (no crítico):", error))
       : Promise.resolve(),
     contactoForzado && aprenderAlias
-      ? registrarAliasProveedor(empresaFinal, propuesta.proveedor, contactoForzado.id, contactoForzado.name).catch(
-          (error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error)
-        )
+      ? registrarAliasProveedor(
+          empresaFinal,
+          propuesta.proveedor,
+          contactoForzado.id,
+          contactoForzado.name,
+          propuesta.moneda
+        ).catch((error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error))
       : Promise.resolve(),
     propuesta.cuentaId && empresaFinal === propuesta.empresa
       ? registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: propuesta.cuentaId }).catch(

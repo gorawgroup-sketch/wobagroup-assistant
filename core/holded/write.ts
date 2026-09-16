@@ -732,9 +732,21 @@ function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLo
  * genérica, ver compartenPalabraDistintiva), devuelve undefined — el
  * llamador cae al flujo de alternativas (buscarContactosParecidos) en vez
  * de asignar un contacto sin verificar.
+ *
+ * Hallazgo real de auditoría (Footprint, Uber, 2026-09-16): una marca multinacional emite recibos con
+ * el mismo texto de proveedor ("Uber") sin importar el país — confirmar UNA vez "Uber" → "UBER SYSTEMS
+ * SPAIN SL" (viaje real en España) hacía que CUALQUIER viaje de Uber futuro, de cualquier país,
+ * reutilizara ese mismo contacto sin verificar nada más: varios comprobantes reales de Costa Rica
+ * (colones, San José↔Curridabat) terminaron asignados a la razón social española. Cuando el llamador
+ * conoce la moneda del gasto (`monedaEsperada`), se la pasa a buscarAliasProveedor para que un alias
+ * confirmado en OTRA moneda no cuente como el mismo proveedor — ver su comentario.
  */
-export async function buscarContactoHolded(empresa: Empresa, nombre: string): Promise<HoldedContact | undefined> {
-  const alias = await buscarAliasProveedor(empresa, nombre).catch(() => undefined);
+export async function buscarContactoHolded(
+  empresa: Empresa,
+  nombre: string,
+  monedaEsperada?: string
+): Promise<HoldedContact | undefined> {
+  const alias = await buscarAliasProveedor(empresa, nombre, monedaEsperada).catch(() => undefined);
   if (alias) return { id: alias.contactId, name: alias.contactName };
 
   const contactos = await obtenerTodosLosContactos(empresa);
