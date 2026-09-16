@@ -71,6 +71,10 @@ import { handleRegistroManualCashflowCallback } from "../core/google/registroMan
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
+import {
+  registrarEjecucionAuditoriaProgramada,
+  type EstadoAuditoriaProgramada,
+} from "../core/cerebro/auditoriaProgramadaStore";
 import { obtenerRevisionCerebro, publicarCambioCerebro, suscribirCambiosCerebro } from "../core/cerebro/realtime";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
@@ -2079,6 +2083,61 @@ app.post("/admin/run-autorrevision-codigo", async (req: Request, res: Response) 
     res.json({ ok: true, ...resultado });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+/**
+ * Registro visible de la auditoría técnica programada que ejecuta Codex fuera
+ * de Railway. El proceso externo solo puede publicar estado y resultados; no
+ * recibe capacidad para desplegar, modificar Holded ni ejecutar otras rutas.
+ */
+app.post("/webhook/auditoria-programada", async (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!adminSecret) {
+    res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." });
+    return;
+  }
+  if (req.headers.authorization !== `Bearer ${adminSecret}`) {
+    res.status(403).json({ error: "Secret inválido." });
+    return;
+  }
+
+  const { ejecucionId, estado, inicioEn, finEn, resumen, detalles, rama, commit } = req.body ?? {};
+  const estadosValidos = new Set<EstadoAuditoriaProgramada>(["iniciada", "estable", "atencion", "fallo"]);
+  if (
+    typeof ejecucionId !== "string" ||
+    ejecucionId.length > 120 ||
+    typeof estado !== "string" ||
+    !estadosValidos.has(estado as EstadoAuditoriaProgramada) ||
+    (inicioEn != null && typeof inicioEn !== "string") ||
+    (finEn != null && typeof finEn !== "string") ||
+    (resumen != null && (typeof resumen !== "string" || resumen.length > 2_000)) ||
+    (detalles != null && !Array.isArray(detalles)) ||
+    (rama != null && (typeof rama !== "string" || rama.length > 200)) ||
+    (commit != null && (typeof commit !== "string" || commit.length > 64))
+  ) {
+    res.status(400).json({ error: "Resultado de auditoría inválido." });
+    return;
+  }
+
+  try {
+    const registro = await registrarEjecucionAuditoriaProgramada({
+      ejecucionId,
+      estado: estado as EstadoAuditoriaProgramada,
+      ...(typeof inicioEn === "string" ? { inicioEn } : {}),
+      ...(typeof finEn === "string" ? { finEn } : {}),
+      ...(typeof resumen === "string" ? { resumen } : {}),
+      ...(Array.isArray(detalles) ? { detalles } : {}),
+      ...(typeof rama === "string" ? { rama } : {}),
+      ...(typeof commit === "string" ? { commit } : {}),
+    });
+    invalidarEstadoCerebro();
+    publicarCambioCerebro(`auditoria_programada:${registro.estado}`);
+    res.json({ ok: true, registro });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[webhook/auditoria-programada] Error registrando resultado:", message);
     res.status(500).json({ ok: false, error: message });
   }
 });
