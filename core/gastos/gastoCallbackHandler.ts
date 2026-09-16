@@ -427,7 +427,14 @@ async function conciliarContraMovimientoEspecifico(
       );
     }
 
-    const resultado = await reconciliarMovimiento(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha, gastoId);
+    const resultado = await reconciliarMovimiento(
+      empresa,
+      movimiento.accountId,
+      movimiento.movementId,
+      movimiento.fecha,
+      gastoId,
+      { permitirMonedaDistinta: movimiento.origenCoincidencia === "tipo_cambio" }
+    );
 
     if (resultado.ok) {
       if (proveedorParaAprender && movimiento.descripcion) {

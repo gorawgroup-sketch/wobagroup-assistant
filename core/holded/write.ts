@@ -4178,7 +4178,7 @@ async function leerEstadoMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string
-): Promise<{ status?: string; reconciled_amount?: string; amount?: string } | undefined> {
+): Promise<{ status?: string; reconciled_amount?: string; amount?: string; currency?: string } | undefined> {
   const fechaBase = new Date(fechaAproximada);
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
@@ -4202,7 +4202,7 @@ async function leerEstadoMovimiento(
       empresa,
       `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements?${params.toString()}`
     )) as {
-      items?: Array<{ id: string; status?: string; reconciled_amount?: string; amount?: string }>;
+      items?: Array<{ id: string; status?: string; reconciled_amount?: string; amount?: string; currency?: string }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -4236,6 +4236,65 @@ export async function estaMovimientoYaConciliado(
 }
 
 /**
+ * Última barrera antes de escribir: vuelve a leer documento, movimiento y
+ * cuenta bancaria. Un candidato guardado puede quedar obsoleto entre la
+ * propuesta y la aprobación; nunca se concilia si moneda, cuenta o importe
+ * ya no coinciden. Las conciliaciones entre monedas diferentes solo se
+ * permiten cuando el usuario eligió expresamente un candidato multimoneda.
+ */
+export async function validarCompraContraMovimiento(
+  empresa: Empresa,
+  documentoId: string,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string,
+  permitirMonedaDistinta = false
+): Promise<{ monedaCompra: string; monedaMovimiento: string }> {
+  const [compra, movimiento, cuentasData] = await Promise.all([
+    obtenerCompraHoldedPorId(empresa, documentoId),
+    leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada),
+    holdedWriteCall(empresa, "GET", "/treasury/accounts") as Promise<
+      | { items?: Array<{ id: string; name?: string; currency?: string; archived?: boolean }> }
+      | Array<{ id: string; name?: string; currency?: string; archived?: boolean }>
+    >,
+  ]);
+  if (!movimiento) throw new Error("No se encontró el movimiento elegido al preparar la conciliación.");
+
+  const monedaCompra = (compra.currency || "EUR").toUpperCase().trim();
+  const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
+  const cuentas = Array.isArray(cuentasData) ? cuentasData : (cuentasData.items ?? []);
+  const cuenta = cuentas.find((item) => item.id === accountId);
+  if (!cuenta) throw new Error("La cuenta bancaria elegida ya no existe o no está disponible en Holded.");
+  if (cuenta.archived) throw new Error(`La cuenta bancaria "${cuenta.name || accountId}" está archivada.`);
+  const monedaCuenta = (cuenta.currency || monedaMovimiento).toUpperCase().trim();
+  if (monedaCuenta !== monedaMovimiento) {
+    throw new Error(
+      `Holded devolvió una contradicción: la cuenta "${cuenta.name || accountId}" está en ${monedaCuenta}, ` +
+      `pero el movimiento figura en ${monedaMovimiento}. Wobi bloqueó la conciliación.`
+    );
+  }
+  if (monedaCompra !== monedaMovimiento && !permitirMonedaDistinta) {
+    throw new Error(
+      `No es seguro conciliar: el documento está en ${monedaCompra} y el movimiento pertenece a una cuenta ${monedaMovimiento}.`
+    );
+  }
+
+  const totalCompra = Math.abs(numeroDesdeHolded(compra.total));
+  const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento.amount));
+  if (!Number.isFinite(totalCompra) || !Number.isFinite(montoMovimiento)) {
+    throw new Error("Holded no devolvió importes válidos para comprobar la conciliación.");
+  }
+  if (monedaCompra === monedaMovimiento && Math.abs(totalCompra - montoMovimiento) > TOLERANCIA_MONTO) {
+    throw new Error(
+      `No es seguro conciliar: el documento suma ${totalCompra.toFixed(2)} ${monedaCompra} y el movimiento ` +
+      `suma ${montoMovimiento.toFixed(2)} ${monedaMovimiento}.`
+    );
+  }
+
+  return { monedaCompra, monedaMovimiento };
+}
+
+/**
  * Confirma que el importe conciliado del movimiento terminó como pago del
  * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
  * confundir un movimiento conciliado contra otro documento con el efecto
@@ -4249,7 +4308,10 @@ export function verificarPagoCompraEnMovimiento(
 ): { montoPago: number; pendienteEnCompra?: number } | undefined {
   if (!Number.isFinite(montoEnlazado) || montoEnlazado <= 0) return undefined;
   const pendiente = parsearMontoHolded(compra.payments_pending);
-  const compraTotalmentePagada = Number.isFinite(pendiente) && pendiente <= TOLERANCIA_MONTO;
+  // Un céntimo pendiente ya es un saldo contable real. La tolerancia usada
+  // para emparejar importes no se puede reutilizar para declarar una compra
+  // pagada: Holded puede redondear una conversión y dejar exactamente 0,01.
+  const compraTotalmentePagada = Number.isFinite(pendiente) && Math.abs(pendiente) < 0.005;
   const pago = (compra.payments_detail ?? []).find((detalle) => {
     if (detalle.bank_id !== accountId || !detalle.date?.startsWith(fechaMovimiento)) return false;
     const monto = Math.abs(parsearMontoHolded(detalle.amount));
@@ -4271,7 +4333,9 @@ export function verificarPagoCompraEnMovimiento(
   const montoPago = Math.abs(parsearMontoHolded(pago.amount));
   return {
     montoPago,
-    ...(Number.isFinite(pendiente) && pendiente > TOLERANCIA_MONTO ? { pendienteEnCompra: pendiente } : {}),
+    ...(Number.isFinite(pendiente) && Math.abs(pendiente) >= 0.005
+      ? { pendienteEnCompra: Math.abs(pendiente) }
+      : {}),
   };
 }
 
@@ -4350,7 +4414,18 @@ async function inspeccionarConciliacionRegistrada(
   return { estado: "libre", resultado };
 }
 
-async function aplicarConciliacionRegistrada(registro: RegistroConciliacionMovimiento): Promise<void> {
+async function aplicarConciliacionRegistrada(
+  registro: RegistroConciliacionMovimiento,
+  permitirMonedaDistinta = false
+): Promise<void> {
+  await validarCompraContraMovimiento(
+    registro.empresa,
+    registro.documentId,
+    registro.accountId,
+    registro.movementId,
+    registro.fechaAproximada,
+    permitirMonedaDistinta
+  );
   invalidarCacheCuentasTesoreria(registro.empresa);
   try {
     await holdedWriteCall(
@@ -4370,7 +4445,8 @@ export async function reconciliarMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string,
-  documentoId: string
+  documentoId: string,
+  opciones: { permitirMonedaDistinta?: boolean } = {}
 ): Promise<ResultadoConciliacionMovimiento> {
   const registro = identidadConciliacionMovimiento(
     empresa,
@@ -4382,7 +4458,7 @@ export async function reconciliarMovimiento(
   );
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
-    await aplicarConciliacionRegistrada(registro);
+    await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
     const inspeccion = await inspeccionarConciliacionRegistrada(registro);
     return inspeccion.estado === "no_encontrada"
       ? { ok: false, statusFinal: "(no encontrado al releer)", montoEnlazado: 0 }
@@ -4395,7 +4471,11 @@ export async function reconciliarMovimiento(
       const ejecucion = await ejecutarConciliacionMovimientoDurable(
         registro,
         durableBankReconciliationStore,
-        { inspeccionar: inspeccionarConciliacionRegistrada, conciliar: aplicarConciliacionRegistrada }
+        {
+          inspeccionar: inspeccionarConciliacionRegistrada,
+          conciliar: (pendiente) =>
+            aplicarConciliacionRegistrada(pendiente, opciones.permitirMonedaDistinta === true),
+        }
       );
       if (ejecucion.reutilizada) metricasConciliacionesMovimientoDurables.reutilizadas++;
       else metricasConciliacionesMovimientoDurables.conciliadas++;

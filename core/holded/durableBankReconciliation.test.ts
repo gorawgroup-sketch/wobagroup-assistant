@@ -346,6 +346,32 @@ test("un importe en otra moneda SÍ sigue bloqueado si la compra todavía tiene 
   assert.equal(resultado, undefined);
 });
 
+test("un céntimo pendiente se informa como saldo real aunque el pago esté enlazado", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
+      payments_pending: "0,01",
+    },
+    "account-1",
+    "2026-09-08",
+    3.77
+  );
+  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
+});
+
+test("un céntimo sobrepagado también se informa y nunca se trata como cero", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
+      payments_pending: "-0,01",
+    },
+    "account-1",
+    "2026-09-08",
+    3.77
+  );
+  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
+});
+
 test("un enlace fantasma (importe cero) nunca se acepta, ni siquiera con la compra en cero pendiente", () => {
   const resultado = verificarPagoCompraEnMovimiento(
     {
