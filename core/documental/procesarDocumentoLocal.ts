@@ -3,7 +3,12 @@ import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { manejarClasificacion } from "./processClassification";
 import { sendTelegramMessage } from "../telegram/client";
 
-export const MIMES_LEGIBLES_COMO_FACTURA = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
+// image/heic e image/heif — hallazgo real de auditoría (Footprint, factura Hotel Columbus/Costa
+// Rica, 2026-09-16): una foto de recibo tomada con iPhone (formato por defecto) nunca se intentaba
+// leer como factura, aunque mimeADocumentBlock (documentBlock.ts) ya la convierte a JPEG antes de
+// mandarla a Claude — el caso más común de comprobante de gasto (una foto desde el celular) quedaba
+// completamente fuera de la detección automática.
+export const MIMES_LEGIBLES_COMO_FACTURA = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"];
 
 export interface DocumentoLocalEntrante {
   chatId: number;
