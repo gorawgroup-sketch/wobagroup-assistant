@@ -133,6 +133,31 @@ async function rutaChrome(configurada?: string): Promise<RutaChrome> {
     }
   }
 
+  // Hallazgo real de auditoría (Carlos, 2026-09-16): en producción (Railway) esta función siempre
+  // caía al binario headless_shell empaquetado de @sparticuz/chromium, pensado para entornos
+  // serverless tipo Lambda que NO permiten instalar paquetes del sistema. Railway sí lo permite, pero
+  // sin railpack.json ese binario terminaba en un contenedor de despliegue que nunca recibió las
+  // librerías NSS/NSPR que Chromium necesita para arrancar ("libnspr4.so: cannot open shared object
+  // file") — el chequeo de vida en el build (verificarMotorComprobanteVisual) nunca lo detectaba
+  // porque corre en el contenedor de BUILD, que sí tenía esas librerías; el contenedor de RUNTIME es
+  // una imagen distinta y más mínima. La causa de fondo era la imagen de despliegue, no el código de
+  // lectura del correo. Con railpack.json ahora instalando el paquete `chromium` de Debian en esa
+  // imagen (que resuelve automáticamente TODAS sus dependencias reales, sin tener que adivinar cada
+  // nombre de librería a mano), se usa ese Chromium completo del sistema — el mismo camino, ya
+  // probado durante años por Puppeteer, que la rama de macOS de arriba usa en desarrollo — y
+  // @sparticuz/chromium queda solo como último recurso si el paquete del sistema no está disponible.
+  if (process.platform === "linux") {
+    const candidatas = ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome"];
+    const encontrada = candidatas.find(existsSync);
+    if (encontrada) {
+      return {
+        executablePath: encontrada,
+        args: ["--no-sandbox", "--disable-dev-shm-usage"],
+        empaquetadoServerless: false,
+      };
+    }
+  }
+
   const { default: chromium } = await import("@sparticuz/chromium");
   return {
     executablePath: await chromium.executablePath(),

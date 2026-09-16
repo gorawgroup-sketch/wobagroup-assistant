@@ -1,0 +1,7 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "buildAptPackages": ["...", "chromium", "fonts-liberation"],
+  "deploy": {
+    "aptPackages": ["...", "chromium", "fonts-liberation"]
+  }
+}
