@@ -347,7 +347,11 @@ async function buildSystemPromptDinamico(
           `(${gastoPendiente.datos.monto} ${gastoPendiente.datos.moneda}) pero todavía NO se mandó ninguna propuesta con ` +
           `botón — falta ${queFalta}. Si su mensaje actual responde eso o pide reintentar, usa la herramienta ` +
           "reintentar_gasto_pendiente con el dato que dio — nunca le pidas que reenvíe el documento, ya se leyó, y " +
-          "nunca le digas que 'ya se la mandaste' hasta que esta herramienta confirme que la propuesta salió. Si su " +
+          "nunca le digas que 'ya se la mandaste' hasta que esta herramienta confirme que la propuesta salió. Si en " +
+          "cambio confirma que NO tiene ese dato y no lo va a conseguir (ej. 'no lo tengo', 'no lo voy a conseguir', " +
+          "'si no está en el mail no lo conozco'), o si ya intentaste buscar un cargo bancario real que calzara " +
+          "(holded_movimientos / movimientos_sin_conciliar) y no encontraste ninguno razonable, usa " +
+          "descartar_gasto_pendiente_datos para cerrarlo sin crear ningún gasto. Si su " +
           "mensaje pide algo distinto (programar un recordatorio, guardar algo en la memoria del sistema, o " +
           "cualquier otra instrucción), atiende esa petición con la herramienta que corresponda — no repitas " +
           "esta pregunta ni inventes una aclaración propia sobre el pendiente."
