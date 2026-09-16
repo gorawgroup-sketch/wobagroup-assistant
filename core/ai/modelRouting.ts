@@ -6,7 +6,8 @@ export type ProcesoDocumentalIA =
   | "clasificar_documento"
   | "extraer_factura"
   | "extraer_gasto_correo"
-  | "transcribir_captura";
+  | "transcribir_captura"
+  | "resumir_hilo_aprobacion";
 
 const VARIABLE_POR_PROCESO: Record<ProcesoDocumentalIA, string> = {
   clasificar_correo: "WOBI_AI_MODEL_CLASIFICAR_CORREO",
@@ -14,6 +15,7 @@ const VARIABLE_POR_PROCESO: Record<ProcesoDocumentalIA, string> = {
   extraer_factura: "WOBI_AI_MODEL_EXTRAER_FACTURA",
   extraer_gasto_correo: "WOBI_AI_MODEL_EXTRAER_GASTO_CORREO",
   transcribir_captura: "WOBI_AI_MODEL_TRANSCRIBIR_CAPTURA",
+  resumir_hilo_aprobacion: "WOBI_AI_MODEL_RESUMIR_HILO_APROBACION",
 };
 
 const MODELOS_SEGUROS = new Set([MODELO_SONNET_5, MODELO_SONNET_4_6]);
