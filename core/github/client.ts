@@ -192,6 +192,65 @@ export async function proponerCorreccionComoPR(params: {
   return { numero: prData.number, url: prData.html_url, rama };
 }
 
+/**
+ * Abre un PR para una rama que ya fue creada y subida por la sesión aislada de Development.
+ * El token del runner de GitHub Actions NO recibe permiso global para aprobar PRs: el runner solo
+ * puede empujar la rama, y WOBI abre el PR con su token fine-grained ya acotado a este repositorio.
+ *
+ * La rama debe pertenecer inequívocamente al issue indicado. Esto evita que el webhook autenticado
+ * pueda usarse para abrir un PR de una rama arbitraria o ajena a la sesión que lo originó.
+ */
+export async function abrirPullRequestAutofixDesdeRama(params: {
+  issueNumero: number;
+  rama: string;
+  titulo: string;
+  cuerpo: string;
+}): Promise<{ numero: number; url: string; rama: string; existente: boolean }> {
+  if (!Number.isInteger(params.issueNumero) || params.issueNumero <= 0) {
+    throw new Error("Número de issue inválido para abrir el Pull Request de Development.");
+  }
+
+  const prefijo = `wobi-autofix/issue-${params.issueNumero}-`;
+  const sufijo = params.rama.slice(prefijo.length);
+  if (!params.rama.startsWith(prefijo) || !/^[a-z0-9][a-z0-9._-]{0,80}$/.test(sufijo)) {
+    throw new Error(`Rama de Development inválida: debe comenzar por ${prefijo}.`);
+  }
+
+  const titulo = params.titulo.trim();
+  const cuerpo = params.cuerpo.trim();
+  if (!titulo || titulo.length > 256 || !cuerpo) {
+    throw new Error("Título o cuerpo inválido para el Pull Request de Development.");
+  }
+
+  const head = `${REPO_OWNER}:${params.rama}`;
+  const existentesResp = await githubFetch(
+    `/repos/${REPO_OWNER}/${REPO_NAME}/pulls?state=open&head=${encodeURIComponent(head)}&per_page=1`
+  );
+  if (!existentesResp.ok) {
+    throw new Error(`No se pudo verificar si la rama ya tenía un Pull Request (HTTP ${existentesResp.status}).`);
+  }
+  const existentes = (await existentesResp.json()) as { number: number; html_url: string }[];
+  const existente = existentes[0];
+  if (existente) {
+    return { numero: existente.number, url: existente.html_url, rama: params.rama, existente: true };
+  }
+
+  const { ramaDefault } = await obtenerShaRamaDefault();
+  const prResp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/pulls`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: titulo, body: cuerpo, head: params.rama, base: ramaDefault }),
+  });
+  if (!prResp.ok) {
+    const detalle = await prResp.text().catch(() => "");
+    // La rama contiene trabajo ya verificado: nunca borrarla si abrir el PR falla. Así se puede
+    // reintentar sin volver a gastar otra sesión de IA.
+    throw new Error(`No se pudo abrir el Pull Request de Development (HTTP ${prResp.status}). ${detalle}`.trim());
+  }
+  const prData = (await prResp.json()) as { number: number; html_url: string };
+  return { numero: prData.number, url: prData.html_url, rama: params.rama, existente: false };
+}
+
 /** Aprobación desde Telegram: fusiona el PR a main (dispara el redeploy de Railway) y borra la rama. */
 export async function fusionarPullRequest(numero: number, rama: string): Promise<boolean> {
   const mergeResp = await githubFetch(`/repos/${REPO_OWNER}/${REPO_NAME}/pulls/${numero}/merge`, {
