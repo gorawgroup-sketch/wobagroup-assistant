@@ -24,10 +24,19 @@ function getClient(): Anthropic {
 
 export type EmpresaGasto = "WOBA" | "EWORKS" | "Footprint" | "desconocida";
 
+/**
+ * Tratamiento fiscal que debe seleccionar Holded para la línea. No se puede
+ * deducir únicamente de un porcentaje: para la contabilidad del grupo, una
+ * línea sin IVA repercutido no se registra como "IVA 0 %", sino con el grupo
+ * real de Holded "Inv. Suj. Pasivo".
+ */
+export type TratamientoFiscalLinea = "iva" | "inversion_sujeto_pasivo";
+
 export interface LineaFactura {
   concepto: string;
   base: number;
   tipoIvaPct: number;
+  tratamientoFiscal?: TratamientoFiscalLinea;
   /**
    * Porcentaje de retención de IRPF de esta línea, SI la factura lo muestra
    * (típico en alquileres/arrendamientos y servicios profesionales en
@@ -107,7 +116,10 @@ export interface DatosFactura {
    * desglose venga impreso en el propio tique.
    */
   reciboSimplificado: boolean;
-  /** Desglose por tipo de IVA (una o varias líneas). El % es el que aparece impreso, no un código de Holded. */
+  /**
+   * Desglose fiscal (una o varias líneas). El % es el que aparece impreso;
+   * `tratamientoFiscal` decide si Holded usa IVA real o Inv. Suj. Pasivo.
+   */
   lineas: LineaFactura[];
   empresaProbable: EmpresaGasto;
   confianza: "alta" | "media" | "baja";
@@ -253,19 +265,23 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "español en absoluto). Pedido explícito de Carlos, caso real: factura de Anthropic, PBC (San " +
           "Francisco, EEUU, 'EU VAT: IE...' — un número irlandés) a nombre de la empresa compradora " +
           "española, con una línea 'VAT - Spain (21%)' impresa — ese IVA cobrado por un proveedor " +
-          "extranjero NO es deducible por el mecanismo normal de IVA doméstico español (requeriría " +
-          "inversión del sujeto pasivo/autoliquidación, un trámite fiscal aparte que este sistema no " +
-          "hace), así que sigue siendo un recibo, no una factura con IVA deducible directo.",
+          "extranjero NO es deducible por el mecanismo normal de IVA doméstico español: el sistema " +
+          "debe registrarlo con el tratamiento 'inversion_sujeto_pasivo', nunca como IVA 0 % ni como " +
+          "IVA doméstico deducible directo.",
       },
       lineas: {
         type: "array",
         description:
           "Desglose por tipo de IVA, tal como aparece en la factura (una línea por cada base+IVA " +
           "distinto). Si la factura no desglosa nada (un solo total, sin IVA separado), reporta UNA " +
-          "línea con base = monto y tipo_iva_pct = 0 (nunca inventes un desglose que no está impreso). " +
-          "Si 'recibo_simplificado' es true, reporta SIEMPRE una sola línea con base = monto y " +
-          "tipo_iva_pct = 0, sin importar qué desglose de IVA traiga impreso el propio tique — ese " +
-          "desglose no tiene validez fiscal para el grupo en un recibo simplificado.",
+          "línea con base = monto, tipo_iva_pct = 0 y tratamiento_fiscal = 'inversion_sujeto_pasivo' " +
+          "(nunca inventes un desglose que no está impreso). Para la contabilidad de este grupo NO se " +
+          "usa 'IVA 0 %': toda línea que antes habrías dejado a 0 % debe marcarse como inversión del " +
+          "sujeto pasivo. Si 'recibo_simplificado' es true, reporta SIEMPRE una sola línea con base = " +
+          "monto, tipo_iva_pct = 0 y tratamiento_fiscal = 'inversion_sujeto_pasivo', sin importar qué " +
+          "desglose de IVA traiga impreso el propio tique — ese desglose no tiene validez fiscal para " +
+          "el grupo en un recibo simplificado. En una factura española con IVA real repercutido, usa " +
+          "tratamiento_fiscal = 'iva' y conserva su porcentaje real.",
         items: {
           type: "object",
           properties: {
@@ -274,6 +290,15 @@ const REPORTAR_TOOL: Anthropic.Tool = {
             tipo_iva_pct: {
               type: "number",
               description: "Porcentaje de IVA de esta línea tal como aparece impreso (ej. 21, 10, 0). NUNCA un código de Holded.",
+            },
+            tratamiento_fiscal: {
+              type: "string",
+              enum: ["iva", "inversion_sujeto_pasivo"],
+              description:
+                "Usa 'inversion_sujeto_pasivo' en toda línea sin IVA español repercutido que antes " +
+                "habrías registrado como IVA 0 %, incluidos recibos/tickets sin datos fiscales " +
+                "completos del comprador y documentos de proveedores fuera de España. Usa 'iva' " +
+                "solo cuando exista un IVA real que deba registrarse con su porcentaje.",
             },
             retencion_pct: {
               type: "number",
@@ -284,7 +309,7 @@ const REPORTAR_TOOL: Anthropic.Tool = {
                 "retención — nunca la inventes.",
             },
           },
-          required: ["concepto", "base", "tipo_iva_pct"],
+          required: ["concepto", "base", "tipo_iva_pct", "tratamiento_fiscal"],
         },
       },
       empresa_probable: {
@@ -314,11 +339,14 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "emite/cobra.",
     "Si sí es un gasto, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
       "aparecen en el documento — no inventes ni redondees.",
-    "Extrae también el desglose de IVA en 'lineas': si la factura muestra bases y tipos de IVA " +
+    "Extrae también el desglose fiscal en 'lineas': si la factura muestra bases y tipos de IVA " +
       "distintos (ej. una parte al 21% y otra al 10%), repórtalos como líneas separadas. Si solo hay un " +
       "total sin desglose, repórtalo como una sola línea. El porcentaje de IVA es el que está impreso " +
       "en el documento (un número como 21 o 10) — nunca un código interno de Holded, eso se resuelve " +
-      "después con datos reales del sistema.",
+      "después con datos reales del sistema. En cada línea informa también 'tratamiento_fiscal'. Para " +
+      "esta contabilidad no existe la clasificación operativa 'IVA 0 %': toda línea que antes habrías " +
+      "dejado a 0 % debe usar 'inversion_sujeto_pasivo'. Reserva 'iva' para un IVA español real " +
+      "repercutido que sí corresponda registrar por su porcentaje.",
     "IMPORTANTE — recibo simplificado vs. factura formal: antes de desglosar IVA en 'lineas', decide " +
       "si el documento es un recibo/tique SIMPLIFICADO (no muestra el nombre y NIF/CIF/RFC de la " +
       "empresa compradora, solo un total al consumidor final — típico de tickets de supermercado, " +
@@ -327,7 +355,8 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "documento imprime literalmente 'Factura Simplificada' (caso real: ticket de Nori Nori) es la " +
       "señal más fuerte posible — repórtalo true sin dudar, no hace falta ningún otro análisis. Reporta " +
       "'recibo_simplificado'. Un recibo simplificado NO se puede usar legalmente para deducir IVA, así " +
-      "que su 'lineas' debe reportarse como UNA sola línea con base = monto y tipo_iva_pct = 0 — nunca " +
+      "que su 'lineas' debe reportarse como UNA sola línea con base = monto, tipo_iva_pct = 0 y " +
+      "tratamiento_fiscal = 'inversion_sujeto_pasivo' — nunca " +
       "reportes el desglose de IVA que traiga impreso, aunque lo traiga. Ante la duda, marca " +
       "recibo_simplificado=true (mejor no deducir un IVA real que deducir uno que luego no se pueda " +
       "justificar ante Hacienda).",
@@ -528,15 +557,28 @@ export async function extraerDatosFactura(
         .map((l): LineaFactura | null => {
           if (typeof l !== "object" || l === null) return null;
           const linea = l as Record<string, unknown>;
+          const tipoIvaPct = typeof linea.tipo_iva_pct === "number" ? linea.tipo_iva_pct : 0;
+          const tratamientoFiscal =
+            linea.tratamiento_fiscal === "iva" || linea.tratamiento_fiscal === "inversion_sujeto_pasivo"
+              ? linea.tratamiento_fiscal
+              : tipoIvaPct === 0
+                ? "inversion_sujeto_pasivo"
+                : "iva";
           return {
             concepto: typeof linea.concepto === "string" ? linea.concepto : "",
             base: typeof linea.base === "number" ? linea.base : 0,
-            tipoIvaPct: typeof linea.tipo_iva_pct === "number" ? linea.tipo_iva_pct : 0,
+            tipoIvaPct,
+            tratamientoFiscal,
             retencionPct: typeof linea.retencion_pct === "number" && linea.retencion_pct > 0 ? linea.retencion_pct : undefined,
           };
         })
         .filter((l): l is LineaFactura => l !== null);
-      const lineaUnica: LineaFactura = { concepto: (input.concepto as string) ?? "", base: monto, tipoIvaPct: 0 };
+      const lineaUnica: LineaFactura = {
+        concepto: (input.concepto as string) ?? "",
+        base: monto,
+        tipoIvaPct: 0,
+        tratamientoFiscal: "inversion_sujeto_pasivo",
+      };
 
       return {
         esFacturaOGasto: Boolean(input.es_factura_o_gasto),
@@ -555,7 +597,8 @@ export async function extraerDatosFactura(
         concepto: (input.concepto as string) ?? "",
         reciboSimplificado,
         // Si Claude no reportó líneas (o vinieron vacías), se usa una sola
-        // línea con el total completo a 0% en vez de perder el importe —
+        // línea con el total completo y sujeto pasivo en vez de perder el
+        // importe — para esta contabilidad nunca se envía IVA 0 % a Holded.
         // crearGastoHolded siempre necesita al menos una línea. En un recibo
         // simplificado se fuerza el colapso acá también (no solo aguas abajo
         // en procesarGastoEntrante.ts) aunque Claude haya reportado un

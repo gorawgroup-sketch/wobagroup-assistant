@@ -14,7 +14,11 @@ import {
   type RepositorioConciliacionesMovimiento,
   type TransporteConciliacionMovimiento,
 } from "./durableBankReconciliation";
-import { configuracionConciliacionesMovimientoDurables, verificarPagoCompraEnMovimiento } from "./write";
+import {
+  configuracionConciliacionesMovimientoDurables,
+  evaluarAjusteCambioResidual,
+  verificarPagoCompraEnMovimiento,
+} from "./write";
 
 class RepoMemoria implements RepositorioConciliacionesMovimiento {
   filas = new Map<string, RegistroConciliacionMovimiento>();
@@ -344,6 +348,91 @@ test("un importe en otra moneda SÍ sigue bloqueado si la compra todavía tiene 
     70.76
   );
   assert.equal(resultado, undefined);
+});
+
+test("un céntimo pendiente se informa como saldo real aunque el pago esté enlazado", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
+      payments_pending: "0,01",
+    },
+    "account-1",
+    "2026-09-08",
+    3.77
+  );
+  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
+});
+
+test("un céntimo sobrepagado también se informa y nunca se trata como cero", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
+      payments_pending: "-0,01",
+    },
+    "account-1",
+    "2026-09-08",
+    3.77
+  );
+  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
+});
+
+test("caso real Uber USD: identifica el céntimo solo cuando todas las pruebas de cambio coinciden", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "USD",
+      currency_change: "1.1614",
+      total: "3,77",
+      payments_pending: "0,01",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-08", amount: "3,24" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-3.77",
+      reconciled_amount: "-3.77",
+      accounting_amount: "-3.24",
+    },
+    "ftg-usd",
+    "2026-09-08"
+  );
+  assert.deepEqual(resultado, {
+    monto: 0.01,
+    monedaDocumento: "USD",
+    montoNativo: 3.77,
+    montoContableMovimiento: 3.24,
+    montoContableDocumento: 3.25,
+    tasaCambio: 1.1614,
+  });
+});
+
+test("no ajusta si el céntimo puede ser deuda real, pago parcial o una cuenta distinta", () => {
+  const compra = {
+    currency: "USD",
+    currency_change: "1.1614",
+    total: "3,77",
+    payments_pending: "0,01",
+    payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-08", amount: "3,24" }],
+  };
+  const movimiento = {
+    status: "reconciled",
+    currency: "USD",
+    amount: "-3.77",
+    reconciled_amount: "-3.77",
+    accounting_amount: "-3.24",
+  };
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_pending: "0,02" }, movimiento, "ftg-usd", "2026-09-08"), undefined);
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_pending: "-0,01" }, movimiento, "ftg-usd", "2026-09-08"), undefined);
+  assert.equal(evaluarAjusteCambioResidual(compra, { ...movimiento, reconciled_amount: "-3.76" }, "ftg-usd", "2026-09-08"), undefined);
+  assert.equal(evaluarAjusteCambioResidual(compra, movimiento, "otra-cuenta", "2026-09-08"), undefined);
+  assert.equal(evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-09-09"), undefined);
+  assert.equal(evaluarAjusteCambioResidual({
+    ...compra,
+    payments_detail: [
+      ...(compra.payments_detail ?? []),
+      { bank_id: "main-eur", date: "2026-09-16", amount: "0,01" },
+    ],
+  }, movimiento, "ftg-usd", "2026-09-08"), undefined);
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, currency: "EUR" }, { ...movimiento, currency: "EUR" }, "ftg-usd", "2026-09-08"), undefined);
 });
 
 test("un enlace fantasma (importe cero) nunca se acepta, ni siquiera con la compra en cero pendiente", () => {

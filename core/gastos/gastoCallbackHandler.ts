@@ -427,7 +427,14 @@ async function conciliarContraMovimientoEspecifico(
       );
     }
 
-    const resultado = await reconciliarMovimiento(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha, gastoId);
+    const resultado = await reconciliarMovimiento(
+      empresa,
+      movimiento.accountId,
+      movimiento.movementId,
+      movimiento.fecha,
+      gastoId,
+      { permitirMonedaDistinta: movimiento.origenCoincidencia === "tipo_cambio" }
+    );
 
     if (resultado.ok) {
       if (proveedorParaAprender && movimiento.descripcion) {
@@ -440,12 +447,17 @@ async function conciliarContraMovimientoEspecifico(
       // lado de Holded, queda con un saldo pendiente ficticio — comportamiento real de Holded al
       // aplicar el equivalente en EUR en vez del monto nativo para documentos en otra moneda. Nunca se
       // reporta éxito sin más cuando eso pasa — se avisa explícitamente para que se revise a mano.
-      const notaPendiente =
-        resultado.pendienteEnCompra !== undefined
+      const notaPendiente = resultado.ajusteCambioDivisa?.estado === "requiere_revision"
+        ? `\n\n🟠 Detecté y demostré un residuo de cambio de divisa de ` +
+          `${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR; no es una deuda real ni una conciliación parcial. ` +
+          `${resultado.ajusteCambioDivisa.motivo ?? ""} Por seguridad no creé un pago normal. Hasta activar la operación ` +
+          `interna exacta, corrígelo solo en ESTE gasto con “Añadir pago” → “Ajustar cambio de divisa” → “Guardar”, ` +
+          `y comprueba que el pendiente quede en 0,00 EUR.`
+        : resultado.pendienteEnCompra !== undefined
           ? `\n\n⚠️ OJO: el movimiento quedó conciliado por completo, pero la compra en Holded sigue mostrando ` +
-            `${resultado.pendienteEnCompra.toFixed(2)} pendiente de pago — es un comportamiento conocido de Holded con ` +
-            `documentos en moneda distinta a EUR (aplica el equivalente en EUR en vez del monto real). Revísalo a mano ` +
-            `en Holded (sección Pagos del documento) para corregir el saldo.`
+            `${resultado.pendienteEnCompra.toFixed(2)} pendiente de pago. No cumple todas las pruebas para considerarlo ` +
+            `un residuo automático de cambio; no se regularizó ni se modificó ninguna otra operación. Revísalo a mano ` +
+            `en Holded (sección Pagos del documento).`
           : "";
       const notaMovimientoParcial = resultado.movimientoParcial
         ? `\n\n⚠️ La compra quedó pagada y el vínculo fue confirmado, pero el movimiento bancario continúa ` +
@@ -1481,7 +1493,14 @@ async function crearGastoYReportar(
   const lineas =
     propuesta.lineas.length > 0
       ? propuesta.lineas
-      : [{ concepto: descripcionFinal, base: propuesta.monto, tipoIvaPct: 0 }];
+      : [
+          {
+            concepto: descripcionFinal,
+            base: propuesta.monto,
+            tipoIvaPct: 0,
+            tratamientoFiscal: "inversion_sujeto_pasivo" as const,
+          },
+        ];
 
   // Pedido explícito de Carlos, tras un caso real: una factura de alquiler
   // con retención de IRPF se registró en Holded sin la retención — el
@@ -2254,7 +2273,14 @@ interface ResultadoAplicarTexto {
 function reescalarLineas(propuesta: PropuestaGasto, nuevoMonto: number): LineaFactura[] {
   return propuesta.monto > 0 && propuesta.lineas.length > 0
     ? propuesta.lineas.map((l) => ({ ...l, base: (l.base * nuevoMonto) / propuesta.monto }))
-    : [{ concepto: propuesta.concepto, base: nuevoMonto, tipoIvaPct: 0 }];
+    : [
+        {
+          concepto: propuesta.concepto,
+          base: nuevoMonto,
+          tipoIvaPct: 0,
+          tratamientoFiscal: "inversion_sujeto_pasivo",
+        },
+      ];
 }
 
 async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {

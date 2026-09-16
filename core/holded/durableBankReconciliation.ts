@@ -10,6 +10,12 @@ export interface ResultadoConciliacionMovimiento {
   pendienteEnCompra?: number;
   movimientoParcial?: boolean;
   pendienteEnMovimiento?: number;
+  ajusteCambioDivisa?: {
+    estado: "aplicado" | "ya_aplicado" | "incierto" | "requiere_revision";
+    monto: number;
+    cuenta?: string;
+    motivo?: string;
+  };
 }
 
 export interface RegistroConciliacionMovimiento {

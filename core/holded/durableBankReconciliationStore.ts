@@ -1,4 +1,4 @@
-import { actualizarFila, agregarFila, eliminarFilas, leerFila, leerFilas } from "../google/sheetsKeyValueStore";
+import { actualizarFila, agregarFilaAtomica, eliminarFilas, leerFilas } from "../google/sheetsKeyValueStore";
 import { conMutex } from "../utils/asyncMutex";
 import { enteroAcotado } from "../utils/asyncTimeout";
 import type {
@@ -79,7 +79,11 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
       await this.inicializarYPurgar();
       const existente = this.registros.get(registro.clave);
       if (existente) return { registro: this.publico(existente), nuevo: false };
-      const rowIndex = await agregarFila(TAB_NAME, NUM_COLS, HEADERS, aFila(registro));
+      // El ledger es append-only, con headers y columna A estables. Usar el
+      // append atómico evita dos GET por conciliación (buscar la fila libre y
+      // releerla), que agotaban la cuota de lectura de Sheets antes de que el
+      // POST llegara siquiera a Holded.
+      const rowIndex = await agregarFilaAtomica(TAB_NAME, NUM_COLS, HEADERS, aFila(registro));
       const guardado = { ...registro, rowIndex };
       this.registros.set(registro.clave, guardado);
       return { registro: this.publico(guardado), nuevo: true };
@@ -89,7 +93,11 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
   async obtener(clave: string) {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const registro = await this.refrescar(clave);
+      // Producción mantiene una sola réplica y todas las mutaciones de este
+      // store pasan por CLAVE_MUTEX. El mapa ya contiene el último estado
+      // confirmado por una escritura durable; releer la fila en cada paso
+      // solo consumía cuota y podía bloquear una operación segura.
+      const registro = this.registros.get(clave);
       return registro ? this.publico(registro) : undefined;
     });
   }
@@ -97,7 +105,7 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
   async actualizarPreparada(clave: string, registro: RegistroConciliacionMovimiento) {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const actual = await this.refrescar(clave);
+      const actual = this.registros.get(clave);
       if (!actual || actual.estado !== "preparada") return undefined;
       const siguiente: RegistroConFila = {
         ...actual,
@@ -128,7 +136,7 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
   async marcarVerificada(clave: string): Promise<void> {
     await conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const actual = await this.refrescar(clave);
+      const actual = this.registros.get(clave);
       if (!actual || actual.estado === "verificada") return;
       const ahora = Date.now();
       const siguiente: RegistroConFila = {
@@ -178,7 +186,7 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
   ) {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
-      const actual = await this.refrescar(clave);
+      const actual = this.registros.get(clave);
       if (!actual || !permitidos.includes(actual.estado)) return undefined;
       const siguiente = { ...actual, estado, actualizadoEn: Date.now() };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
@@ -192,19 +200,6 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
       await this.recargarYPurgar();
       this.inicializado = true;
     }
-  }
-
-  private async refrescar(clave: string): Promise<RegistroConFila | undefined> {
-    const conocido = this.registros.get(clave);
-    if (!conocido) return undefined;
-    const fila = await leerFila(TAB_NAME, conocido.rowIndex, NUM_COLS, HEADERS);
-    const actual = fila ? desdeFila(fila.rowIndex, fila.valores) : undefined;
-    if (actual?.clave === clave) {
-      this.registros.set(clave, actual);
-      return actual;
-    }
-    await this.recargarYPurgar();
-    return this.registros.get(clave);
   }
 
   private async recargarYPurgar(): Promise<void> {

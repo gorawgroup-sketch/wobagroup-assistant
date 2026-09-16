@@ -98,7 +98,13 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
   const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));
 
   const desgloseIva = propuesta.lineas
-    .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} ${propuesta.moneda} + IVA ${l.tipoIvaPct}%`)
+    .map(
+      (l) =>
+        `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} ${propuesta.moneda} + ` +
+        (l.tratamientoFiscal === "inversion_sujeto_pasivo" || l.tipoIvaPct === 0
+          ? "Inv. Suj. Pasivo"
+          : `IVA ${l.tipoIvaPct}%`)
+    )
     .join("\n");
 
   const notaCuenta = propuesta.cuentaId
@@ -136,7 +142,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     `Fecha: ${propuesta.fecha}\n` +
     (propuesta.numeroDocumento ? `Número de documento: ${propuesta.numeroDocumento}\n` : "") +
     `Concepto: ${propuesta.concepto}\n` +
-    `Desglose de IVA:\n${desgloseIva}` +
+    `Tratamiento fiscal:\n${desgloseIva}` +
     notaCuenta +
     notaCandidatos +
     notaMovimiento;

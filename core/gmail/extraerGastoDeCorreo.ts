@@ -137,6 +137,9 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "concluir que es un gasto, confirma que el grupo es quien PAGA en esa transacción, no quien cobra.",
     "Si sí es un gasto real, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
       "aparecen en el correo — no inventes ni redondees.",
+    "Este tipo de gasto descrito solo en el cuerpo no trae un desglose fiscal válido ni los datos " +
+      "completos del comprador. Para la contabilidad del grupo debe llegar a Holded como 'Inv. Suj. " +
+      "Pasivo', nunca como IVA 0 %.",
     "Para decidir la empresa probable (WOBA, EWORKS o Footprint), usa consultar_base_conocimiento si hace " +
       "falta contexto sobre qué proveedores/gastos son de cada empresa.",
     "Si el correo muestra un monto equivalente al que trae el propio gasto (típico en notificaciones de " +
@@ -280,7 +283,14 @@ export async function extraerGastoDeCorreo(
         // siempre como recibo simplificado: una sola línea con el total, sin discriminar IVA. Mismo
         // criterio que extraerDatosFactura aplica cuando el propio documento no muestra esos datos.
         reciboSimplificado: true,
-        lineas: [{ concepto, base: monto, tipoIvaPct: 0 }],
+        lineas: [
+          {
+            concepto,
+            base: monto,
+            tipoIvaPct: 0,
+            tratamientoFiscal: "inversion_sujeto_pasivo",
+          },
+        ],
         empresaProbable: (input.empresa_probable as DatosFactura["empresaProbable"]) ?? "desconocida",
         confianza: (input.confianza as DatosFactura["confianza"]) ?? "baja",
         razon: (input.razon as string) ?? "",
