@@ -36,25 +36,81 @@ jobs:
         id: preflight
         shell: bash
         env:
-          CLAUDE_MAX_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -n "${CLAUDE_MAX_TOKEN:-}" ]; then
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "### Claude Max aun no esta activado" >> "$GITHUB_STEP_SUMMARY"
-            echo "Falta el secret CLAUDE_CODE_OAUTH_TOKEN. No se investigo nada." >> "$GITHUB_STEP_SUMMARY"
+            echo "### Development automatico aun no esta configurado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Falta el secret ANTHROPIC_API_KEY. No se investigo nada." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Extraer el chatId de Telegram del cuerpo del issue
+      - name: Extraer el origen del chat del cuerpo del issue
         id: extraer
-        if: steps.preflight.outputs.configured == 'true'
         shell: bash
         run: |
           CHAT_ID=$(printf '%s' "${ISSUE_BODY}" | grep -oP '(?<=wobi-chat-id:)-?\d+' | head -1 || true)
+          MESSAGE_ID=$(printf '%s' "${ISSUE_BODY}" | grep -oP '(?<=wobi-message-id:)\d+' | head -1 || true)
           echo "chat_id=$CHAT_ID" >> "$GITHUB_OUTPUT"
+          echo "message_id=$MESSAGE_ID" >> "$GITHUB_OUTPUT"
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
+
+      - name: Confirmar al chat que la sesión empezó
+        if: steps.preflight.outputs.configured == 'true'
+        shell: bash
+        env:
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
+          MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          if [ -z "${ADMIN_SECRET:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+            echo "::warning::No se pudo confirmar el inicio en WOBI: falta ADMIN_SECRET o wobi-chat-id."
+            exit 0
+          fi
+          BODY=$(jq -n \
+            --arg estado "investigando" \
+            --argjson chatId "$CHAT_ID" \
+            --arg messageId "${MESSAGE_ID:-}" \
+            --argjson issueNumero "$ISSUE_NUMBER" \
+            --arg issueUrl "$ISSUE_URL" \
+            '{estado:$estado,chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero,issueUrl:$issueUrl}')
+          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix-status" \
+            -H "Authorization: Bearer ${ADMIN_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" || echo "::warning::La sesión empezó, pero WOBI no pudo confirmar el estado en el chat."
+
+      - name: Registrar bloqueo si Claude Code no está configurado
+        if: steps.preflight.outputs.configured != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
+          MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          RESUMEN="Development no pudo iniciar: falta configurar ANTHROPIC_API_KEY en GitHub Actions."
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$RESUMEN"
+          if [ -z "${ADMIN_SECRET:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+            exit 0
+          fi
+          BODY=$(jq -n \
+            --arg estado "bloqueado" \
+            --argjson chatId "$CHAT_ID" \
+            --arg messageId "${MESSAGE_ID:-}" \
+            --argjson issueNumero "$ISSUE_NUMBER" \
+            --arg issueUrl "$ISSUE_URL" \
+            --arg resumen "$RESUMEN" \
+            '{estado:$estado,chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero,issueUrl:$issueUrl,resumen:$resumen}')
+          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix-status" \
+            -H "Authorization: Bearer ${ADMIN_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" || true
 
       - name: Descargar codigo
         if: steps.preflight.outputs.configured == 'true'
@@ -62,12 +118,12 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Investigar y proponer arreglo con Claude Code Max
+      - name: Investigar y proponer arreglo con Claude Code
         if: steps.preflight.outputs.configured == 'true'
         id: fix
         uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           label_trigger: "wobi-auto-fix"
           show_full_output: false
@@ -81,6 +137,9 @@ jobs:
 
             Este issue fue escalado desde el chat de WOBI (un asistente de contabilidad/operaciones
             para varias empresas) por Carlos, su CAO. Investiga a fondo el bug o la mejora descrita,
+            trabajando EXCLUSIVAMENTE en el alcance de este issue durante esta sesión aislada; no hagas
+            auditorías generales ni cambios laterales no pedidos. El issue es una orden real de ajuste,
+            no una solicitud de redactar recomendaciones.
             confirma la causa real LEYENDO el codigo relevante (nunca asumas sin verificar contra el
             codigo real), e implementa un arreglo de RAIZ — nunca un parche superficial ni una
             abstraccion/funcionalidad mas alla de lo que el issue pide. Nunca inventes datos ni
@@ -124,6 +183,7 @@ jobs:
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
         run: |
           STATUS=$(printf '%s' "${STRUCTURED_OUTPUT:-}" | jq -r '.status // empty' 2>/dev/null || true)
           if [ "$STATUS" != "created" ]; then
@@ -151,10 +211,54 @@ jobs:
             --arg urlPR "$PR_URL" \
             --arg resumen "$RESUMEN" \
             --argjson chatId "$CHAT_ID" \
+            --arg messageId "${MESSAGE_ID:-}" \
             --argjson issueNumero "$ISSUE_NUMBER" \
-            '{numeroPR:$numeroPR, rama:$rama, urlPR:$urlPR, resumen:$resumen, chatId:$chatId, issueNumero:$issueNumero}')
+            '{numeroPR:$numeroPR, rama:$rama, urlPR:$urlPR, resumen:$resumen, chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero}')
 
           curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix" \
             -H "Authorization: Bearer ${ADMIN_SECRET}" \
             -H "Content-Type: application/json" \
             -d "$BODY"
+
+      - name: Informar si la sesión terminó sin Pull Request
+        if: always() && steps.preflight.outputs.configured == 'true'
+        shell: bash
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.fix.outputs.structured_output }}
+          FIX_OUTCOME: ${{ steps.fix.outcome }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          CHAT_ID: ${{ steps.extraer.outputs.chat_id }}
+          MESSAGE_ID: ${{ steps.extraer.outputs.message_id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          STATUS=$(printf '%s' "${STRUCTURED_OUTPUT:-}" | jq -r '.status // empty' 2>/dev/null || true)
+          if [ "$STATUS" = "created" ]; then
+            exit 0
+          fi
+
+          if [ "$FIX_OUTCOME" = "failure" ] || [ "$FIX_OUTCOME" = "cancelled" ]; then
+            ESTADO="fallo"
+            RESUMEN="La sesión aislada de Development terminó con error antes de proponer un arreglo. Revisa el run de GitHub Actions."
+          else
+            ESTADO="requiere_revision"
+            RESUMEN=$(printf '%s' "${STRUCTURED_OUTPUT:-}" | jq -r '.resumen // "Development investigó, pero no pudo proponer un arreglo verificado."' 2>/dev/null || true)
+            [ -n "$RESUMEN" ] || RESUMEN="Development investigó, pero no pudo proponer un arreglo verificado."
+          fi
+
+          if [ -z "${ADMIN_SECRET:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+            echo "::warning::No se pudo avisar el resultado sin PR a WOBI."
+            exit 0
+          fi
+          BODY=$(jq -n \
+            --arg estado "$ESTADO" \
+            --argjson chatId "$CHAT_ID" \
+            --arg messageId "${MESSAGE_ID:-}" \
+            --argjson issueNumero "$ISSUE_NUMBER" \
+            --arg issueUrl "$ISSUE_URL" \
+            --arg resumen "$RESUMEN" \
+            '{estado:$estado,chatId:$chatId,messageId:($messageId | if length > 0 then tonumber else null end),issueNumero:$issueNumero,issueUrl:$issueUrl,resumen:$resumen}')
+          curl -sf -X POST "https://copilot.wobagroup.com/webhook/github-autofix-status" \
+            -H "Authorization: Bearer ${ADMIN_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" || echo "::warning::No se pudo entregar el estado final a WOBI."
