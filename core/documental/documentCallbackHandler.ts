@@ -10,6 +10,9 @@ import { registrarDocumentoArchivadoDesdeCorreo } from "./documentoArchivadoPorC
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
+import { extraerDatosFactura } from "./extractInvoiceData";
+import { MIMES_LEGIBLES_COMO_FACTURA } from "./procesarDocumentoLocal";
+import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -177,6 +180,104 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       await consumirPropuestaClasificacion(id).catch((error) =>
         console.error("[documentCallbackHandler] No se pudo consumir la propuesta de clasificación tras guardar como conocimiento (no crítico):", error)
       );
+    }
+    return;
+  }
+
+  // "💰 Es un gasto — procesarlo en Holded" — hallazgo real de auditoría (Footprint, factura Hotel
+  // Columbus/Costa Rica, 2026-09-16): el clasificador de documentos (solo texto) reconoció por
+  // contexto que esto es un gasto de viaje real, pero solo podía ofrecer archivarlo — no había forma
+  // de redirigirlo al flujo real de gasto. Relee el documento con extraerDatosFactura (la misma
+  // lectura con visión que procesarDocumentoLocal.ts usa siempre) pero, a diferencia del camino
+  // automático, el usuario YA confirmó que es un gasto — se fuerza esFacturaOGasto=true y se usan los
+  // demás datos que sí haya logrado leer (proveedor/monto/fecha/líneas), aunque el modelo haya dudado
+  // del tipo de documento. No consume la propuesta de clasificación (igual que "🧠 Guardar como
+  // conocimiento") — "Sí, archivar aquí" sigue disponible después, por si también quiere archivarlo.
+  if (accion === "doc_esgasto") {
+    const propuestaPeek = await obtenerPropuestaClasificacion(id);
+    if (!propuestaPeek) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      return;
+    }
+
+    if (!propuestaPeek.mimeType || !MIMES_LEGIBLES_COMO_FACTURA.includes(propuestaPeek.mimeType)) {
+      await answerCallbackQuerySafe(callback.id);
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        `⚠️ "${propuestaPeek.nombreArchivoOriginal}" no es un PDF ni una imagen — no lo puedo leer como comprobante de gasto directamente. Reenvíalo como PDF/imagen si quieres que lo procese como gasto.`
+      );
+      return;
+    }
+
+    const deColaCorreo = propuestaPeek.correoOrigen?.deColaCorreo === true;
+    await answerCallbackQuerySafe(callback.id, "Leyendo el comprobante...");
+
+    // Mismo motivo que en "🧠 Guardar como conocimiento": si viene de la cola, se le quitan los
+    // botones al mensaje original YA MISMO (antes de la relectura, que tarda varios segundos) para
+    // reducir la ventana de un doble-tap que resuelva el mismo adjunto dos veces.
+    if (deColaCorreo) {
+      await editTelegramMessage(
+        propuestaPeek.chatId,
+        propuestaPeek.messageId,
+        `💰 Procesando "${propuestaPeek.nombreArchivoOriginal}" como gasto...`,
+        []
+      ).catch((error) => console.error("[documentCallbackHandler] No se pudo limpiar los botones del mensaje original (no crítico):", error));
+    }
+
+    const captionReconstruido = propuestaPeek.correoOrigen
+      ? `Adjunto de correo. De: ${propuestaPeek.correoOrigen.de}. Asunto: ${propuestaPeek.correoOrigen.asunto}.`
+      : undefined;
+
+    let gastoIniciado = false;
+    try {
+      const datosFactura = await extraerDatosFactura(
+        propuestaPeek.rutaLocal,
+        propuestaPeek.mimeType,
+        captionReconstruido,
+        propuestaPeek.nombreArchivoOriginal
+      );
+      const resultado = await procesarGastoEntrante({
+        chatId: propuestaPeek.chatId,
+        rutaLocal: propuestaPeek.rutaLocal,
+        nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
+        mimeType: propuestaPeek.mimeType,
+        // El usuario ya confirmó con este botón que SÍ es un gasto — se fuerza el campo aunque la
+        // relectura vuelva a dudarlo, pero se conservan los demás datos que sí logró leer.
+        datos: { ...datosFactura, esFacturaOGasto: true },
+        deColaCorreo,
+        origenAdjuntoGmail:
+          propuestaPeek.correoOrigen?.mensajeIdGmail && propuestaPeek.correoOrigen?.attachmentIdGmail
+            ? { mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail, attachmentIdGmail: propuestaPeek.correoOrigen.attachmentIdGmail }
+            : undefined,
+        correoOrigen: propuestaPeek.correoOrigen
+          ? {
+              de: propuestaPeek.correoOrigen.de,
+              asunto: propuestaPeek.correoOrigen.asunto,
+              threadId: propuestaPeek.correoOrigen.threadId,
+              messageIdHeader: propuestaPeek.correoOrigen.messageIdHeader,
+              mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
+            }
+          : undefined,
+      });
+      gastoIniciado = resultado !== "pendiente_datos";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[documentCallbackHandler] Error procesando documento como gasto:", message);
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        `⚠️ No se pudo procesar "${propuestaPeek.nombreArchivoOriginal}" como gasto: ${message}` +
+          (deColaCorreo ? " Si igual quieres archivarlo en Drive, reenvíalo — esta propuesta ya no tiene botones activos." : "")
+      );
+    }
+
+    // Igual criterio que "🧠 Guardar como conocimiento": solo se consume (y avanza la cola) cuando el
+    // gasto realmente arrancó y venía de la cola — procesarGastoEntrante ya deja su propio pendiente
+    // (gastoPendienteDatosStore) cuando faltan datos, así que "pendiente_datos" NO avanza la cola acá.
+    if (gastoIniciado && deColaCorreo) {
+      await consumirPropuestaClasificacion(id).catch((error) =>
+        console.error("[documentCallbackHandler] No se pudo consumir la propuesta de clasificación tras procesar como gasto (no crítico):", error)
+      );
+      await avanzarColaCorreoSiActivo(propuestaPeek.chatId);
     }
     return;
   }

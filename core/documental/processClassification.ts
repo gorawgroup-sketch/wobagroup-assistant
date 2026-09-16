@@ -192,7 +192,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
 
   const textoPropuesta = archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${textoPropuestaBase}` : textoPropuestaBase;
 
-  const messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, [
+  const filasBotones = [
     [
       { text: "✅ Sí, archivar aquí", callback_data: `doc_confirm:${propuesta.id}` },
       { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}` },
@@ -221,7 +221,19 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     // descartar un documento propuesto (a diferencia de los correos sin
     // adjunto, que sí tienen "❌ Descartar").
     [{ text: "❌ Descartar, no archivar", callback_data: `doc_descartar:${propuesta.id}` }],
-  ]);
+  ];
+
+  // Hallazgo real de auditoría (Footprint, factura Hotel Columbus/Costa Rica, 2026-09-16): este
+  // clasificador (solo texto) puede reconocer por contexto que un documento es en realidad un gasto
+  // real aunque extraerDatosFactura, leyendo el PDF de verdad, haya decidido lo contrario — antes no
+  // había forma de redirigirlo al flujo de gasto desde acá, aunque la propia razón ya lo dijera
+  // ("debe procesarse como gasto"). No consume la propuesta — "Sí, archivar aquí" sigue disponible
+  // después, por si además quiere archivarlo.
+  if (clasificacion.esProbableGasto) {
+    filasBotones.splice(1, 0, [{ text: "💰 Es un gasto — procesarlo en Holded", callback_data: `doc_esgasto:${propuesta.id}` }]);
+  }
+
+  const messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, filasBotones);
 
   await actualizarMessageIdClasificacion(propuesta.id, messageId);
 }
