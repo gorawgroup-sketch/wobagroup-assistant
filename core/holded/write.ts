@@ -938,8 +938,54 @@ function palabrasParecidas(a: string, b: string): boolean {
  * que "facility"/"ocean" (específicas) pesen más que "sa"/"sl"/"service"
  * (genéricas y compartidas por muchos contactos). Nunca decide sola — solo
  * devuelve candidatos para que el usuario elija.
+ *
+ * Hallazgo real de auditoría (Footprint, Uber Costa Rica, 2026-09-16): para una marca global con un
+ * contacto real POR PAÍS (Footprint tiene 16+: "UBER COLOMBIA", "UBER PANAMA", "UBER COSTA RICA"...),
+ * el proveedor detectado ("Uber") comparte la MISMA palabra con todos ellos por igual — ningún nombre
+ * de país aparece en "Uber" — así que todos empatan en puntaje y cuáles 5 se muestran termina siendo
+ * arbitrario (orden de creación en Holded), no el país real de ESTE gasto. "UBER COSTA RICA" existía
+ * de verdad y nunca apareció entre las alternativas de un recibo de Costa Rica. `pistaContextual`
+ * (normalmente el concepto ya extraído del comprobante — trae ciudad/país reales, ej. "San José,
+ * Costa Rica") rompe ese empate con un bonus, sin inventar candidatos: solo reordena contactos que
+ * YA coincidían por nombre.
  */
-export async function buscarContactosParecidos(empresa: Empresa, nombre: string, limite = 5): Promise<HoldedContact[]> {
+/**
+ * Puntúa qué tan parecido es `nombreCandidato` a `nombre`, con un bonus si además comparte palabras
+ * con `pistaContextual` — extraída como función pura para poder probar el desempate sin depender de
+ * Holded. Ver el comentario de buscarContactosParecidos para el caso real que motivó el bonus.
+ */
+export function puntuarContactoParecido(nombre: string, nombreCandidato: string, pistaContextual?: string): number {
+  const palabrasObjetivo = normalizar(nombre)
+    .split(" ")
+    .filter((p) => p.length >= 3);
+  const palabrasCandidato = normalizar(nombreCandidato)
+    .split(" ")
+    .filter((p) => p.length >= 3);
+  const scoreNombre = palabrasObjetivo
+    .filter((po) => palabrasCandidato.some((pc) => palabrasParecidas(po, pc)))
+    .reduce((suma, p) => suma + p.length, 0);
+  if (scoreNombre === 0) return 0;
+
+  // Bonus de contexto — solo aplica sobre un candidato que YA coincidió por nombre real; nunca hace
+  // que un contacto sin relación aparezca solo por compartir contexto.
+  const palabrasContexto = pistaContextual
+    ? normalizar(pistaContextual)
+        .split(" ")
+        .filter((p) => p.length >= 4)
+    : [];
+  const scoreContexto = palabrasContexto
+    .filter((pctx) => palabrasCandidato.some((pc) => palabrasParecidas(pctx, pc)))
+    .reduce((suma, p) => suma + p.length, 0);
+
+  return scoreNombre + scoreContexto * 2;
+}
+
+export async function buscarContactosParecidos(
+  empresa: Empresa,
+  nombre: string,
+  limite = 5,
+  pistaContextual?: string
+): Promise<HoldedContact[]> {
   const palabrasObjetivo = normalizar(nombre)
     .split(" ")
     .filter((p) => p.length >= 3);
@@ -948,16 +994,10 @@ export async function buscarContactosParecidos(empresa: Empresa, nombre: string,
   const contactos = await obtenerTodosLosContactos(empresa);
 
   const puntuados = contactos
-    .map((c) => {
-      if (typeof c.name !== "string") return { contacto: c, score: 0 };
-      const palabrasCandidato = normalizar(c.name)
-        .split(" ")
-        .filter((p) => p.length >= 3);
-      const score = palabrasObjetivo
-        .filter((po) => palabrasCandidato.some((pc) => palabrasParecidas(po, pc)))
-        .reduce((suma, p) => suma + p.length, 0);
-      return { contacto: c, score };
-    })
+    .map((c) => ({
+      contacto: c,
+      score: typeof c.name === "string" ? puntuarContactoParecido(nombre, c.name, pistaContextual) : 0,
+    }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score);
 
