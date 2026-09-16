@@ -1816,7 +1816,7 @@ async function construirAlternativasContacto(
   empresaFinal: PropuestaGasto["empresa"]
 ): Promise<AlternativaContacto[]> {
   const [porNombre, porMonto] = await Promise.all([
-    buscarContactosParecidos(empresaFinal, propuesta.proveedor, 5),
+    buscarContactosParecidos(empresaFinal, propuesta.proveedor, 5, propuesta.concepto),
     buscarComprasPorMonto(empresaFinal, propuesta.monto, propuesta.fecha, 15),
   ]);
 
