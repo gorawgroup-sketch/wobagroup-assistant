@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { crearIssue } from "./client";
+import { abrirPullRequestAutofixDesdeRama, crearIssue } from "./client";
 
 type Llamada = { url: string; method: string; body?: unknown };
 
@@ -75,6 +75,113 @@ test("crearIssue no abre un issue si no puede asegurar previamente la etiqueta q
       /No se pudo verificar la etiqueta/
     );
     assert.equal(intentoCrearIssue, false);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = tokenOriginal;
+  }
+});
+
+test("abrirPullRequestAutofixDesdeRama solo abre el PR de la rama exacta del issue", async () => {
+  const fetchOriginal = globalThis.fetch;
+  const tokenOriginal = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "token-prueba";
+  const llamadas: Llamada[] = [];
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+    const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+    llamadas.push({ url, method, body });
+
+    if (url.includes("/pulls?state=open&")) return respuesta(200, []);
+    if (url.endsWith("/wobagroup-assistant") && method === "GET") return respuesta(200, { default_branch: "main" });
+    if (url.endsWith("/git/ref/heads/main")) return respuesta(200, { object: { sha: "abc123" } });
+    if (url.endsWith("/pulls") && method === "POST") {
+      return respuesta(201, { number: 90, html_url: "https://github.test/pull/90" });
+    }
+    return respuesta(500, { unexpected: { url, method } });
+  };
+
+  try {
+    const pr = await abrirPullRequestAutofixDesdeRama({
+      issueNumero: 82,
+      rama: "wobi-autofix/issue-82-descartar-pendiente",
+      titulo: "Permite descartar el pendiente",
+      cuerpo: "Fixes #82",
+    });
+    assert.deepEqual(pr, {
+      numero: 90,
+      url: "https://github.test/pull/90",
+      rama: "wobi-autofix/issue-82-descartar-pendiente",
+      existente: false,
+    });
+    assert.deepEqual(llamadas.at(-1)?.body, {
+      title: "Permite descartar el pendiente",
+      body: "Fixes #82",
+      head: "wobi-autofix/issue-82-descartar-pendiente",
+      base: "main",
+    });
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = tokenOriginal;
+  }
+});
+
+test("abrirPullRequestAutofixDesdeRama rechaza ramas ajenas antes de llamar a GitHub", async () => {
+  const fetchOriginal = globalThis.fetch;
+  const tokenOriginal = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "token-prueba";
+  let llamadas = 0;
+  globalThis.fetch = async () => {
+    llamadas += 1;
+    return respuesta(500, {});
+  };
+
+  try {
+    await assert.rejects(
+      abrirPullRequestAutofixDesdeRama({
+        issueNumero: 82,
+        rama: "main",
+        titulo: "No permitido",
+        cuerpo: "Fixes #82",
+      }),
+      /Rama de Development inválida/
+    );
+    assert.equal(llamadas, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = tokenOriginal;
+  }
+});
+
+test("abrirPullRequestAutofixDesdeRama reutiliza un PR abierto en reintentos", async () => {
+  const fetchOriginal = globalThis.fetch;
+  const tokenOriginal = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = "token-prueba";
+  let posts = 0;
+
+  globalThis.fetch = async (input, init = {}) => {
+    if ((init.method ?? "GET") === "POST") posts += 1;
+    const url = String(input);
+    if (url.includes("/pulls?state=open&")) {
+      return respuesta(200, [{ number: 91, html_url: "https://github.test/pull/91" }]);
+    }
+    return respuesta(500, {});
+  };
+
+  try {
+    const pr = await abrirPullRequestAutofixDesdeRama({
+      issueNumero: 82,
+      rama: "wobi-autofix/issue-82-descartar-pendiente",
+      titulo: "Permite descartar el pendiente",
+      cuerpo: "Fixes #82",
+    });
+    assert.equal(pr.numero, 91);
+    assert.equal(pr.existente, true);
+    assert.equal(posts, 0);
   } finally {
     globalThis.fetch = fetchOriginal;
     if (tokenOriginal === undefined) delete process.env.GITHUB_TOKEN;
