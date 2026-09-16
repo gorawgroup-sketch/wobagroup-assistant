@@ -351,6 +351,54 @@ export async function agregarFila(tabName: string, numCols: number, headers: str
   });
 }
 
+/**
+ * Añade una fila mediante `values.append` y devuelve la fila que Google
+ * confirmó en `updatedRange`, sin gastar las dos lecturas adicionales que
+ * necesita `agregarFila` para descubrir y verificar una posición libre.
+ *
+ * Esta variante queda reservada para ledgers append-only con encabezados
+ * estables y columna A siempre informada. En ellos la API puede localizar la
+ * tabla de forma inequívoca y el append es atómico incluso si otro proceso
+ * escribe al mismo tiempo. No debe usarse en stores con filas partidas,
+ * encabezados variables o huecos estructurales: para esos casos se conserva
+ * `agregarFila`, que hace la comprobación completa.
+ */
+export async function agregarFilaAtomica(
+  tabName: string,
+  numCols: number,
+  headers: string[],
+  valores: (string | number)[]
+): Promise<number> {
+  if (valores[0] === undefined || valores[0] === "") {
+    throw new Error(`No se puede añadir una fila atómica sin clave en la columna A de "${tabName}".`);
+  }
+  await obtenerOCrearTab(tabName, headers);
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  return conMutex(claveMutex(tabName), async () => {
+    const respuesta = await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${tabName}!A1:${colLetter(numCols)}`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [valores] },
+    });
+    const rango = respuesta.data.updates?.updatedRange ?? "";
+    const rowIndex = filaDesdeRangoActualizado(rango);
+    if (!Number.isInteger(rowIndex) || rowIndex < 2) {
+      throw new Error(`Google Sheets añadió la fila en "${tabName}", pero no devolvió un rango verificable.`);
+    }
+    return rowIndex;
+  });
+}
+
+/** Extrae el índice 1-based que devuelve `values.append` (incluye nombres de pestaña entre comillas). */
+export function filaDesdeRangoActualizado(rango: string): number {
+  const coincidencia = rango.match(/![A-Z]+(\d+):[A-Z]+\d+$/i);
+  return coincidencia ? Number(coincidencia[1]) : NaN;
+}
+
 /** Sobrescribe una fila existente (por su rowIndex, ver leerFilas). Mismo conMutex que agregarFila/eliminarFila — ver su comentario. */
 export async function actualizarFila(tabName: string, rowIndex: number, numCols: number, valores: (string | number)[]): Promise<void> {
   const sheetId = assertSheetId();

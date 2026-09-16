@@ -367,7 +367,14 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // donde de verdad se decide qué llega a Holded, sin depender solo de lo que venga ya colapsado.
   const lineasParaHolded =
     usarEquivalente || datos.reciboSimplificado
-      ? [{ concepto: datos.concepto, base: montoParaHolded, tipoIvaPct: 0 }]
+      ? [
+          {
+            concepto: datos.concepto,
+            base: montoParaHolded,
+            tipoIvaPct: 0,
+            tratamientoFiscal: "inversion_sujeto_pasivo" as const,
+          },
+        ]
       : datos.lineas;
 
   let candidatos: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"] = [];
@@ -594,7 +601,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   });
 
   const desgloseIva = lineasParaHolded
-    .map((l) => `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} ${monedaParaHolded} + IVA ${l.tipoIvaPct}%`)
+    .map(
+      (l) =>
+        `  • ${l.concepto || "(línea)"}: ${l.base.toFixed(2)} ${monedaParaHolded} + ` +
+        (l.tratamientoFiscal === "inversion_sujeto_pasivo" || l.tipoIvaPct === 0
+          ? "Inv. Suj. Pasivo"
+          : `IVA ${l.tipoIvaPct}%`)
+    )
     .join("\n");
 
   const importeTexto = usarEquivalente
@@ -870,9 +883,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       `Importe: ${importeTexto}`,
       `Fecha: ${datos.fecha}`,
       `Concepto: ${conceptoConMonedaOriginal}`,
-      `Desglose de IVA:`,
+      `Tratamiento fiscal:`,
       datos.reciboSimplificado
-        ? `${desgloseIva} — recibo simplificado (sin datos fiscales de la empresa), registrado sin discriminar IVA, no deducible.`
+        ? `${desgloseIva} — recibo simplificado (sin datos fiscales completos), sujeto pasivo.`
         : desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
     ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento;

@@ -2892,14 +2892,21 @@ export async function adjuntarComprobanteHolded(
 
 export interface TaxCatalogEntry {
   key: string;
-  amount: number;
+  name?: string;
+  amount: number | null;
+  type?: string;
+  visible?: boolean;
+  items?: string[];
 }
 
 const catalogoImpuestosCache = new Map<Empresa, TaxCatalogEntry[]>();
 
 /**
  * Catálogo real de códigos de impuesto de Holded (GET /taxes, filtrado a
- * compras). Se consulta en vez de adivinar un código — verificado en vivo
+ * compras). Incluye también los grupos visibles: "Inv. Suj. Pasivo" es un
+ * grupo que Holded guarda en las líneas como `p_iva_invsuj`; descartar los
+ * grupos obligaba a elegir incorrectamente uno de sus componentes internos.
+ * Se consulta en vez de adivinar un código — verificado en vivo
  * que mandar el key real (ej. "p_iva_21") calcula correctamente el IVA de
  * la línea (probado: 10€ base + p_iva_21 → tax 2,10€, total 12,10€).
  * Cacheado en memoria por empresa (el catálogo no cambia en caliente).
@@ -2909,12 +2916,27 @@ export async function obtenerCatalogoImpuestos(empresa: Empresa): Promise<TaxCat
   if (cached) return cached;
 
   const data = (await holdedWriteCall(empresa, "GET", "/taxes")) as {
-    items?: Array<{ key?: string; amount?: string | number; scope?: string; type?: string }>;
+    items?: Array<{
+      key?: string;
+      name?: string;
+      amount?: string | number | null;
+      scope?: string;
+      type?: string;
+      visible?: boolean;
+      items?: string[];
+    }>;
   };
 
   const catalogo = (data.items ?? [])
-    .filter((t) => t.scope === "purchases" && t.type !== "group" && t.key)
-    .map((t) => ({ key: t.key as string, amount: Number(t.amount) || 0 }));
+    .filter((t) => t.scope === "purchases" && t.key)
+    .map((t) => ({
+      key: t.key as string,
+      name: t.name,
+      amount: t.amount === null || t.amount === undefined || t.amount === "" ? null : Number(t.amount),
+      type: t.type,
+      visible: t.visible,
+      items: t.items,
+    }));
 
   catalogoImpuestosCache.set(empresa, catalogo);
   return catalogo;
@@ -2929,10 +2951,64 @@ export async function obtenerCatalogoImpuestos(empresa: Empresa): Promise<TaxCat
  */
 export function mapearPorcentajeATaxKey(catalogo: TaxCatalogEntry[], pct: number): string | undefined {
   const claveDirecta = `p_iva_${String(pct).replace(".", "")}`;
-  const directo = catalogo.find((t) => t.key === claveDirecta);
+  const directo = catalogo.find((t) => t.type !== "group" && t.key === claveDirecta);
   if (directo) return directo.key;
 
-  return catalogo.find((t) => t.amount === pct)?.key;
+  return catalogo.find((t) => t.type !== "group" && t.amount === pct)?.key;
+}
+
+/**
+ * Resuelve el grupo visible y completo "Inv. Suj. Pasivo". No sirve elegir
+ * por `amount=0`: el catálogo contiene IVA 0 %, exento, no sujeto y bienes
+ * de inversión ISP, todos con el mismo importe. Tampoco sirve enviar solo
+ * `p_iva_invsuj_2`: es el componente interno de compra al 21 %, mientras que
+ * Holded guarda las compras corregidas por el operador con el grupo
+ * `p_iva_invsuj`, que aplica el par de autorrepercusión correspondiente.
+ */
+export function mapearInversionSujetoPasivoATaxKey(catalogo: TaxCatalogEntry[]): string | undefined {
+  const exacto = catalogo.find(
+    (t) => t.key === "p_iva_invsuj" && t.type === "group" && t.visible !== false
+  );
+  if (exacto) return exacto.key;
+
+  const normalizar = (valor: string | undefined): string =>
+    (valor ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+  const semanticos = catalogo.filter((t) => {
+    if (t.type !== "group" || t.visible === false) return false;
+    const nombre = normalizar(t.name);
+    return nombre === "inv suj pasivo" || nombre === "inversion sujeto pasivo";
+  });
+
+  return semanticos.length === 1 ? semanticos[0].key : undefined;
+}
+
+export class ImpuestoSujetoPasivoNoDisponibleError extends Error {
+  constructor() {
+    super(
+      'Holded no ofrece de forma inequívoca el impuesto visible "Inv. Suj. Pasivo"; no se creó ni editó el gasto.'
+    );
+    this.name = "ImpuestoSujetoPasivoNoDisponibleError";
+  }
+}
+
+export function mapearImpuestoPrincipalATaxKey(
+  catalogo: TaxCatalogEntry[],
+  linea: Pick<LineaGastoHolded, "tipoIvaPct" | "tratamientoFiscal">
+): string | undefined {
+  const requiereSujetoPasivo =
+    linea.tratamientoFiscal === "inversion_sujeto_pasivo" || linea.tipoIvaPct === 0;
+  if (requiereSujetoPasivo) {
+    const taxKey = mapearInversionSujetoPasivoATaxKey(catalogo);
+    if (!taxKey) throw new ImpuestoSujetoPasivoNoDisponibleError();
+    return taxKey;
+  }
+  return mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
 }
 
 /**
@@ -2956,17 +3032,23 @@ export function mapearRetencionATaxKey(catalogo: TaxCatalogEntry[], pct: number,
 
   for (const prefijo of familias) {
     const claveDirecta = `${prefijo}${String(Math.round(pct)).replace(".", "")}`;
-    const directo = catalogo.find((t) => t.key === claveDirecta);
+    const directo = catalogo.find((t) => t.type !== "group" && t.key === claveDirecta);
     if (directo) return directo.key;
   }
 
-  return catalogo.find((t) => t.amount === -pct)?.key;
+  return catalogo.find((t) => t.type !== "group" && t.amount === -pct)?.key;
 }
 
 export interface LineaGastoHolded {
   concepto: string;
   base: number;
   tipoIvaPct: number;
+  /**
+   * Tratamiento fiscal explícito. Compatibilidad segura con propuestas
+   * anteriores: una línea antigua a 0 % se interpreta como sujeto pasivo,
+   * porque IVA 0 % no se usa en la contabilidad del grupo.
+   */
+  tratamientoFiscal?: "iva" | "inversion_sujeto_pasivo";
   /** Porcentaje de retención de IRPF de esta línea (ver mapearRetencionATaxKey) — 0/undefined si no aplica. */
   retencionPct?: number;
 }
@@ -3181,7 +3263,7 @@ export async function crearGastoHolded(
   ]);
 
   const items = gasto.lineas.map((linea) => {
-    const taxKey = mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct);
+    const taxKey = mapearImpuestoPrincipalATaxKey(catalogo, linea);
     const retencionKey =
       linea.retencionPct && linea.retencionPct > 0
         ? mapearRetencionATaxKey(catalogo, linea.retencionPct, linea.concepto || gasto.descripcion)
@@ -3514,7 +3596,7 @@ async function prepararEdicionCompraHolded(
 
   const items = cambios.lineas
     ? cambios.lineas.map((linea) => {
-        const taxKey = catalogo ? mapearPorcentajeATaxKey(catalogo, linea.tipoIvaPct) : undefined;
+        const taxKey = catalogo ? mapearImpuestoPrincipalATaxKey(catalogo, linea) : undefined;
         const retencionKey =
           catalogo && linea.retencionPct && linea.retencionPct > 0
             ? mapearRetencionATaxKey(catalogo, linea.retencionPct, linea.concepto)
@@ -4178,7 +4260,13 @@ async function leerEstadoMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string
-): Promise<{ status?: string; reconciled_amount?: string; amount?: string } | undefined> {
+): Promise<{
+  status?: string;
+  reconciled_amount?: string;
+  amount?: string;
+  accounting_amount?: string | number | null;
+  currency?: string;
+} | undefined> {
   const fechaBase = new Date(fechaAproximada);
   const desde = new Date(fechaBase);
   desde.setDate(desde.getDate() - VENTANA_DIAS_MOVIMIENTO);
@@ -4202,7 +4290,14 @@ async function leerEstadoMovimiento(
       empresa,
       `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements?${params.toString()}`
     )) as {
-      items?: Array<{ id: string; status?: string; reconciled_amount?: string; amount?: string }>;
+      items?: Array<{
+        id: string;
+        status?: string;
+        reconciled_amount?: string;
+        amount?: string;
+        accounting_amount?: string | number | null;
+        currency?: string;
+      }>;
       cursor?: string;
       has_more?: boolean;
     };
@@ -4236,6 +4331,65 @@ export async function estaMovimientoYaConciliado(
 }
 
 /**
+ * Última barrera antes de escribir: vuelve a leer documento, movimiento y
+ * cuenta bancaria. Un candidato guardado puede quedar obsoleto entre la
+ * propuesta y la aprobación; nunca se concilia si moneda, cuenta o importe
+ * ya no coinciden. Las conciliaciones entre monedas diferentes solo se
+ * permiten cuando el usuario eligió expresamente un candidato multimoneda.
+ */
+export async function validarCompraContraMovimiento(
+  empresa: Empresa,
+  documentoId: string,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string,
+  permitirMonedaDistinta = false
+): Promise<{ monedaCompra: string; monedaMovimiento: string }> {
+  const [compra, movimiento, cuentasData] = await Promise.all([
+    obtenerCompraHoldedPorId(empresa, documentoId),
+    leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada),
+    holdedWriteCall(empresa, "GET", "/treasury/accounts") as Promise<
+      | { items?: Array<{ id: string; name?: string; currency?: string; archived?: boolean }> }
+      | Array<{ id: string; name?: string; currency?: string; archived?: boolean }>
+    >,
+  ]);
+  if (!movimiento) throw new Error("No se encontró el movimiento elegido al preparar la conciliación.");
+
+  const monedaCompra = (compra.currency || "EUR").toUpperCase().trim();
+  const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
+  const cuentas = Array.isArray(cuentasData) ? cuentasData : (cuentasData.items ?? []);
+  const cuenta = cuentas.find((item) => item.id === accountId);
+  if (!cuenta) throw new Error("La cuenta bancaria elegida ya no existe o no está disponible en Holded.");
+  if (cuenta.archived) throw new Error(`La cuenta bancaria "${cuenta.name || accountId}" está archivada.`);
+  const monedaCuenta = (cuenta.currency || monedaMovimiento).toUpperCase().trim();
+  if (monedaCuenta !== monedaMovimiento) {
+    throw new Error(
+      `Holded devolvió una contradicción: la cuenta "${cuenta.name || accountId}" está en ${monedaCuenta}, ` +
+      `pero el movimiento figura en ${monedaMovimiento}. Wobi bloqueó la conciliación.`
+    );
+  }
+  if (monedaCompra !== monedaMovimiento && !permitirMonedaDistinta) {
+    throw new Error(
+      `No es seguro conciliar: el documento está en ${monedaCompra} y el movimiento pertenece a una cuenta ${monedaMovimiento}.`
+    );
+  }
+
+  const totalCompra = Math.abs(numeroDesdeHolded(compra.total));
+  const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento.amount));
+  if (!Number.isFinite(totalCompra) || !Number.isFinite(montoMovimiento)) {
+    throw new Error("Holded no devolvió importes válidos para comprobar la conciliación.");
+  }
+  if (monedaCompra === monedaMovimiento && Math.abs(totalCompra - montoMovimiento) > TOLERANCIA_MONTO) {
+    throw new Error(
+      `No es seguro conciliar: el documento suma ${totalCompra.toFixed(2)} ${monedaCompra} y el movimiento ` +
+      `suma ${montoMovimiento.toFixed(2)} ${monedaMovimiento}.`
+    );
+  }
+
+  return { monedaCompra, monedaMovimiento };
+}
+
+/**
  * Confirma que el importe conciliado del movimiento terminó como pago del
  * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
  * confundir un movimiento conciliado contra otro documento con el efecto
@@ -4249,7 +4403,10 @@ export function verificarPagoCompraEnMovimiento(
 ): { montoPago: number; pendienteEnCompra?: number } | undefined {
   if (!Number.isFinite(montoEnlazado) || montoEnlazado <= 0) return undefined;
   const pendiente = parsearMontoHolded(compra.payments_pending);
-  const compraTotalmentePagada = Number.isFinite(pendiente) && pendiente <= TOLERANCIA_MONTO;
+  // Un céntimo pendiente ya es un saldo contable real. La tolerancia usada
+  // para emparejar importes no se puede reutilizar para declarar una compra
+  // pagada: Holded puede redondear una conversión y dejar exactamente 0,01.
+  const compraTotalmentePagada = Number.isFinite(pendiente) && Math.abs(pendiente) < 0.005;
   const pago = (compra.payments_detail ?? []).find((detalle) => {
     if (detalle.bank_id !== accountId || !detalle.date?.startsWith(fechaMovimiento)) return false;
     const monto = Math.abs(parsearMontoHolded(detalle.amount));
@@ -4271,7 +4428,92 @@ export function verificarPagoCompraEnMovimiento(
   const montoPago = Math.abs(parsearMontoHolded(pago.amount));
   return {
     montoPago,
-    ...(Number.isFinite(pendiente) && pendiente > TOLERANCIA_MONTO ? { pendienteEnCompra: pendiente } : {}),
+    ...(Number.isFinite(pendiente) && Math.abs(pendiente) >= 0.005
+      ? { pendienteEnCompra: Math.abs(pendiente) }
+      : {}),
+  };
+}
+
+interface MovimientoParaAjusteCambio {
+  status?: string;
+  amount?: string | number;
+  reconciled_amount?: string | number;
+  accounting_amount?: string | number | null;
+  currency?: string;
+}
+
+export interface AjusteCambioResidualElegible {
+  monto: number;
+  monedaDocumento: string;
+  montoNativo: number;
+  montoContableMovimiento: number;
+  montoContableDocumento: number;
+  tasaCambio: number;
+}
+
+/**
+ * Decide si el único céntimo pendiente es inequívocamente un residuo de
+ * conversión y no una deuda real. Todas las comparaciones financieras se
+ * hacen en céntimos enteros:
+ *
+ * - documento y movimiento coinciden exactamente en la moneda nativa;
+ * - el movimiento quedó conciliado por el 100% de ese importe;
+ * - el pago que creó Holded pertenece a esa cuenta y fecha;
+ * - ese pago coincide con accounting_amount;
+ * - total/tipo de cambio redondeado = pago + 0,01.
+ *
+ * Si falta una sola señal, devuelve undefined y no se crea ningún pago.
+ */
+export function evaluarAjusteCambioResidual(
+  compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_pending" | "payments_detail">,
+  movimiento: MovimientoParaAjusteCambio,
+  sourceAccountId: string,
+  fechaMovimiento: string
+): AjusteCambioResidualElegible | undefined {
+  const centimos = (valor: number) => Math.round(Math.abs(valor) * 100);
+  const monedaDocumento = (compra.currency || "EUR").toUpperCase().trim();
+  const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
+  if (monedaDocumento === "EUR" || monedaDocumento !== monedaMovimiento) return undefined;
+  if (!estaConciliado(movimiento.status)) return undefined;
+
+  const pendiente = parsearMontoHolded(compra.payments_pending);
+  if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) !== 1) return undefined;
+
+  const totalNativo = Math.abs(numeroDesdeHolded(compra.total));
+  const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento.amount));
+  const montoConciliado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount));
+  const montoContable = Math.abs(parsearMontoMovimiento(movimiento.accounting_amount));
+  if ([totalNativo, montoMovimiento, montoConciliado, montoContable].some((n) => !Number.isFinite(n) || n <= 0)) {
+    return undefined;
+  }
+  if (centimos(totalNativo) !== centimos(montoMovimiento) || centimos(montoMovimiento) !== centimos(montoConciliado)) {
+    return undefined;
+  }
+
+  const pagos = compra.payments_detail ?? [];
+  if (pagos.length === 0) return undefined;
+  const pagosOrigen = pagos.filter(
+    (p) => p.bank_id === sourceAccountId && Boolean(p.date?.startsWith(fechaMovimiento))
+  );
+  if (pagosOrigen.length === 0) return undefined;
+  const totalPagos = pagos.reduce((suma, p) => suma + Math.abs(parsearMontoHolded(p.amount) || 0), 0);
+  const totalPagosOrigen = pagosOrigen.reduce((suma, p) => suma + Math.abs(parsearMontoHolded(p.amount) || 0), 0);
+  if (centimos(totalPagos) !== centimos(totalPagosOrigen) || centimos(totalPagosOrigen) !== centimos(montoContable)) {
+    return undefined;
+  }
+
+  const tasaCambio = numeroDecimalPlano(compra.currency_change);
+  if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) return undefined;
+  const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
+  if (totalContableDocumentoCentimos - centimos(totalPagosOrigen) !== 1) return undefined;
+
+  return {
+    monto: 0.01,
+    monedaDocumento,
+    montoNativo: totalNativo,
+    montoContableMovimiento: montoContable,
+    montoContableDocumento: totalContableDocumentoCentimos / 100,
+    tasaCambio,
   };
 }
 
@@ -4285,10 +4527,10 @@ export function verificarPagoCompraEnMovimiento(
  * SÍ quedó marcado como conciliado por completo, pero que dejó la compra con un saldo pendiente ficticio.
  * Ningún dato que mandemos nosotros causa esto (reconciliarMovimiento nunca manda un monto, Holded lo
  * calcula solo al procesar el POST /reconcile) — es un comportamiento real de Holded para documentos en
- * moneda distinta a EUR. No se puede evitar desde acá, pero SÍ se puede detectar: se relee la compra
- * después de conciliar y se compara payments_pending contra cero (en la moneda NATIVA de la compra,
- * nunca convertida) — si queda un pendiente real, el llamador debe avisarlo explícitamente en vez de
- * reportar éxito sin más.
+ * moneda distinta a EUR. La API pública no documenta la casilla especial que corrige este caso, por lo
+ * que nunca se sustituye por un pago genérico. Sí se puede detectar de forma concluyente: se releen
+ * compra, movimiento y pago, se demuestra el céntimo con el tipo de cambio y el llamador avisa la acción
+ * exacta en vez de reportar éxito sin más. Si falta una prueba, falla cerrado.
  */
 async function inspeccionarConciliacionRegistrada(
   registro: RegistroConciliacionMovimiento
@@ -4313,6 +4555,7 @@ async function inspeccionarConciliacionRegistrada(
   const tieneEnlace = (estaConciliado(movimiento?.status) || movimientoParcial) && montoEnlazado > 0;
 
   let pendienteEnCompra: number | undefined;
+  let ajusteCambioDivisa: ResultadoConciliacionMovimiento["ajusteCambioDivisa"];
   let pagoDelDocumentoConfirmado = false;
   if (tieneEnlace) {
     try {
@@ -4325,6 +4568,25 @@ async function inspeccionarConciliacionRegistrada(
       );
       pagoDelDocumentoConfirmado = Boolean(pago);
       pendienteEnCompra = pago?.pendienteEnCompra;
+      if (pago) {
+        const elegible = evaluarAjusteCambioResidual(
+          compra,
+          movimiento,
+          registro.accountId,
+          registro.fechaAproximada
+        );
+        if (elegible) {
+          ajusteCambioDivisa = {
+            estado: "requiere_revision",
+            monto: elegible.monto,
+            motivo:
+              `Residuo de conversión demostrado: ${elegible.montoNativo.toFixed(2)} ${elegible.monedaDocumento} ` +
+              `÷ ${elegible.tasaCambio} = ${elegible.montoContableDocumento.toFixed(2)} EUR, mientras el movimiento ` +
+              `registró ${elegible.montoContableMovimiento.toFixed(2)} EUR. La escritura automática permanece ` +
+              `bloqueada hasta usar exactamente la operación interna “Ajustar cambio de divisa” de Holded.`,
+          };
+        }
+      }
     } catch (error) {
       console.error(
         `[reconciliarMovimiento] Error releyendo la compra ${registro.documentId} para verificar el pago:`,
@@ -4342,6 +4604,7 @@ async function inspeccionarConciliacionRegistrada(
     statusFinal,
     montoEnlazado,
     pendienteEnCompra,
+    ajusteCambioDivisa,
     movimientoParcial: movimientoParcial || undefined,
     pendienteEnMovimiento,
   };
@@ -4350,7 +4613,18 @@ async function inspeccionarConciliacionRegistrada(
   return { estado: "libre", resultado };
 }
 
-async function aplicarConciliacionRegistrada(registro: RegistroConciliacionMovimiento): Promise<void> {
+async function aplicarConciliacionRegistrada(
+  registro: RegistroConciliacionMovimiento,
+  permitirMonedaDistinta = false
+): Promise<void> {
+  await validarCompraContraMovimiento(
+    registro.empresa,
+    registro.documentId,
+    registro.accountId,
+    registro.movementId,
+    registro.fechaAproximada,
+    permitirMonedaDistinta
+  );
   invalidarCacheCuentasTesoreria(registro.empresa);
   try {
     await holdedWriteCall(
@@ -4370,7 +4644,8 @@ export async function reconciliarMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string,
-  documentoId: string
+  documentoId: string,
+  opciones: { permitirMonedaDistinta?: boolean } = {}
 ): Promise<ResultadoConciliacionMovimiento> {
   const registro = identidadConciliacionMovimiento(
     empresa,
@@ -4382,7 +4657,7 @@ export async function reconciliarMovimiento(
   );
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
-    await aplicarConciliacionRegistrada(registro);
+    await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
     const inspeccion = await inspeccionarConciliacionRegistrada(registro);
     return inspeccion.estado === "no_encontrada"
       ? { ok: false, statusFinal: "(no encontrado al releer)", montoEnlazado: 0 }
@@ -4395,7 +4670,11 @@ export async function reconciliarMovimiento(
       const ejecucion = await ejecutarConciliacionMovimientoDurable(
         registro,
         durableBankReconciliationStore,
-        { inspeccionar: inspeccionarConciliacionRegistrada, conciliar: aplicarConciliacionRegistrada }
+        {
+          inspeccionar: inspeccionarConciliacionRegistrada,
+          conciliar: (pendiente) =>
+            aplicarConciliacionRegistrada(pendiente, opciones.permitirMonedaDistinta === true),
+        }
       );
       if (ejecucion.reutilizada) metricasConciliacionesMovimientoDurables.reutilizadas++;
       else metricasConciliacionesMovimientoDurables.conciliadas++;

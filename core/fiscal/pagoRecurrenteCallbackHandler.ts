@@ -188,9 +188,16 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
             fecha: fechaBusqueda,
             descripcion: conceptoEtiquetado,
             // Pagos recurrentes no traen desglose de IVA (el monto lo da el
-            // usuario a mano, no una factura leída) — una sola línea al 0%,
-            // igual que el comportamiento anterior.
-            lineas: [{ concepto: conceptoEtiquetado, base: propuesta.monto, tipoIvaPct: 0 }],
+            // usuario a mano, no una factura leída). Para la contabilidad
+            // del grupo nunca se manda IVA 0 %: se aplica sujeto pasivo.
+            lineas: [
+              {
+                concepto: conceptoEtiquetado,
+                base: propuesta.monto,
+                tipoIvaPct: 0,
+                tratamientoFiscal: "inversion_sujeto_pasivo",
+              },
+            ],
           },
           { idempotencyKey: `pago-recurrente:${propuesta.id}`, proceso: "pago_recurrente_aprobado" }
         );
