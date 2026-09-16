@@ -746,12 +746,30 @@ export async function buscarContactoHolded(
   nombre: string,
   monedaEsperada?: string
 ): Promise<HoldedContact | undefined> {
-  const alias = await buscarAliasProveedor(empresa, nombre, monedaEsperada).catch(() => undefined);
-  if (alias) return { id: alias.contactId, name: alias.contactName };
-
   const contactos = await obtenerTodosLosContactos(empresa);
   const conNombre = contactos.filter((c): c is HoldedContact & { name: string } => typeof c.name === "string");
   const todosLosNombres = conNombre.map((c) => c.name);
+
+  const alias = await buscarAliasProveedor(empresa, nombre, monedaEsperada).catch(() => undefined);
+  // Hallazgo real de auditoría (caso real Uber, Simon Talloen, Footprint, 2026-09-16): un alias
+  // aprendido de UN viaje real de Uber Costa Rica se reutilizó a ciegas para un viaje DISTINTO
+  // (cancelado, sin ninguna mención de Costa Rica) solo porque ambos comparten proveedor detectado
+  // ("Uber") y moneda (EUR, misma tarjeta corporativa en cualquier país) — la protección por moneda no
+  // distingue entre países que facturan en la misma divisa. Footprint tiene 26+ contactos "UBER <país>"
+  // reales — para una marca así, un alias fijo por texto de proveedor nunca puede ser confiable sin
+  // repetir, cada vez, la señal geográfica real de ESE gasto puntual. Si el nombre del contacto
+  // aprendido comparte su primera palabra con 2+ contactos reales distintos, se descarta el alias y se
+  // cae al flujo normal de abajo (puntuarDistintividad + pistaContextual en buscarContactosParecidos),
+  // que sí compara el contexto de cada gasto en concreto en vez de repetir una decisión vieja.
+  if (alias) {
+    const primeraPalabraAlias = normalizar(alias.contactName).split(" ")[0];
+    const variantesDeMarca = primeraPalabraAlias
+      ? new Set(
+          todosLosNombres.filter((n) => normalizar(n).split(" ")[0] === primeraPalabraAlias)
+        ).size
+      : 1;
+    if (variantesDeMarca < 2) return { id: alias.contactId, name: alias.contactName };
+  }
 
   // textosParecidos, no un substring simple — mismo bug real que
   // buscarGastoSimilar: un nombre comercial ("Booking.com") nunca es
@@ -920,11 +938,26 @@ export async function crearContactoHolded(
  * ("facilities"/"facility") y variantes cortas ("oceana"/"ocean") sin
  * exigir coincidencia exacta, que es justo lo que falla cuando el nombre
  * viene de una extracción de factura con OCR/lectura imprecisa.
+ *
+ * Hallazgo real de auditoría (caso real HEMA/"Van de Valk Hotel Venio", Footprint, 2026-09-16): el
+ * proveedor extraído "HEMA (Breda - Valkeniersplein)" (Valkeniersplein es el nombre de la CALLE, no
+ * del negocio) puntuó más alto contra el contacto real "VAN DE VALK HOTEL VENIO" que contra el
+ * contacto correcto "HEMA" — "valkeniersplein" (15 letras) y "valk" (4 letras) comparten un prefijo de
+ * solo 4 caracteres, pero esa coincidencia de 4 sobre 15 se contaba con el peso COMPLETO de la palabra
+ * larga (15 puntos), superando el match exacto+contexto de "hema" (12 puntos) — el mismo patrón que ya
+ * causó el caso real Hotel101 ("management"/"managers"), pero ahí la palabra corta candidata (8+
+ * letras) todavía era razonablemente larga; acá la candidata es MUY corta (4 letras), así que ni
+ * siquiera calificaba para palabrasParecidasEstricto (exige minLen>=6). Un prefijo compartido solo es
+ * señal real de la MISMA palabra (typo/OCR, plural/singular) cuando ambas tienen un largo parecido —
+ * "oceana"/"ocean" (ratio 1,2) y "management"/"managers" (ratio 1,25) sí lo son; "valkeniersplein"/
+ * "valk" (ratio 3,75) no. Rechazar cuando una palabra es más del doble de larga que la otra cierra
+ * este patrón sin afectar ningún caso real ya cubierto por esta función.
  */
 function palabrasParecidas(a: string, b: string): boolean {
   if (a === b) return true;
   const minLen = Math.min(a.length, b.length);
-  if (minLen < 4) return false;
+  const maxLen = Math.max(a.length, b.length);
+  if (minLen < 4 || maxLen > minLen * 2) return false;
   const prefijo = Math.min(5, minLen);
   return a.slice(0, prefijo) === b.slice(0, prefijo);
 }
@@ -3593,6 +3626,18 @@ export interface CambiosCompraHolded {
    * y la relectura posterior incluye las cuentas en su huella.
    */
   cuentaIdNueva?: string;
+  /**
+   * Reasigna el proveedor (contact_id) del documento a un contacto REAL ya
+   * validado contra Holded — pensado para corregir una resolución de
+   * contacto equivocada (ej. un alias aprendido demasiado genérico para un
+   * proveedor multinacional con entidad por país, como Uber). contact_id no
+   * está en el PUT documentado de Holded, pero prepararEdicionCompraHolded
+   * ya lo reenvía SIEMPRE para preservarlo del reemplazo completo del
+   * recurso — confirmado en vivo que Holded sí lo acepta y aplica. Se usa
+   * únicamente tras una aprobación explícita; la relectura posterior
+   * incluye el contacto en su huella (huellaEstadoCompra ya lo hacía).
+   */
+  contactoIdNuevo?: string;
 }
 
 /**
@@ -3661,6 +3706,18 @@ async function prepararEdicionCompraHolded(
     const cuentaExiste = (await obtenerPlanContable(empresa)).some((cuenta) => cuenta.id === cuentaNueva);
     if (!cuentaExiste) {
       throw new Error("La cuenta contable nueva no existe en el plan contable actual de Holded.");
+    }
+  }
+  const contactoNuevo = cambios.contactoIdNuevo?.trim();
+  if (cambios.contactoIdNuevo !== undefined && !contactoNuevo) {
+    throw new Error("El contacto nuevo no puede estar vacío.");
+  }
+  if (contactoNuevo) {
+    const contactoExiste = (await holdedWriteCall(empresa, "GET", `/contacts/${contactoNuevo}`).catch(() => undefined)) as
+      | { id?: string }
+      | undefined;
+    if (!contactoExiste?.id) {
+      throw new Error("El contacto nuevo no existe en Holded.");
     }
   }
 
@@ -3761,9 +3818,9 @@ async function prepararEdicionCompraHolded(
     // contact_id (el proveedor real del gasto) tampoco está en el PUT
     // documentado de Holded, pero si se omitiera y el reemplazo completo lo
     // resetea, un gasto quedaría atribuido a ningún proveedor (o al
-    // genérico) sin ningún aviso — se preserva tal cual, esta función nunca
-    // reasigna el proveedor por sí sola.
-    ...(actual.contact_id ? { contact_id: actual.contact_id } : {}),
+    // genérico) sin ningún aviso — se preserva tal cual salvo que
+    // contactoIdNuevo pida explícitamente reasignarlo.
+    ...(contactoNuevo || actual.contact_id ? { contact_id: contactoNuevo || actual.contact_id } : {}),
     // design_id SÍ es un campo editable documentado de este PUT (verificado
     // en vivo contra la API real) — se preserva tal cual, igual que due_date.
     ...(actual.design_id ? { design_id: actual.design_id } : {}),
@@ -3789,7 +3846,7 @@ async function prepararEdicionCompraHolded(
     due_date: (body.due_date as string | null | undefined) ?? null,
     currency: monedaFinal,
     currency_change: tasaCambioActual,
-    contact_id: actual.contact_id,
+    contact_id: contactoNuevo || actual.contact_id,
     design_id: actual.design_id,
     lines: items as LineaCompraHoldedCruda[],
     total: cambios.montoNuevo ?? actual.total,
