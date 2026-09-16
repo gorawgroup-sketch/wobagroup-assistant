@@ -466,6 +466,59 @@ test("caso real Uber USD: identifica el céntimo solo cuando todas las pruebas d
   });
 });
 
+test("caso real Airbnb MEX (Footprint, 2026-09-16): un residuo de varios céntimos también se demuestra en una compra grande", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "USD",
+      currency_change: "1.16",
+      total: "255,68",
+      payments_pending: "0,26",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-13", amount: "220,15" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-255.68",
+      reconciled_amount: "-255.68",
+      accounting_amount: "-220.15",
+    },
+    "ftg-usd",
+    "2026-09-13"
+  );
+  assert.deepEqual(resultado, {
+    monto: 0.26,
+    monedaDocumento: "USD",
+    montoNativo: 255.68,
+    montoContableMovimiento: 220.15,
+    montoContableDocumento: 220.41,
+    tasaCambio: 1.16,
+  });
+});
+
+test("el margen del ajuste de cambio tiene techo: un residuo que cuadra matemáticamente pero supera el margen de la compra no se acepta", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "USD",
+      currency_change: "1.1",
+      // Compra de 100: margen = max(0,02, 100*0,005) = 0,50 — un residuo de 0,60 cuadra con el
+      // cálculo (100/1.1=90,91, pago 90,31) pero excede ese margen, así que sigue sin aceptarse.
+      total: "100,00",
+      payments_pending: "0,60",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-10", amount: "90,31" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-100.00",
+      reconciled_amount: "-100.00",
+      accounting_amount: "-90.31",
+    },
+    "ftg-usd",
+    "2026-09-10"
+  );
+  assert.equal(resultado, undefined);
+});
+
 test("no ajusta si el céntimo puede ser deuda real, pago parcial o una cuenta distinta", () => {
   const compra = {
     currency: "USD",

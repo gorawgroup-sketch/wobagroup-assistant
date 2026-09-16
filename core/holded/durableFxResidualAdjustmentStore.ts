@@ -30,7 +30,10 @@ function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undef
   }
   if (!( ["WOBA", "EWORKS", "Footprint"] as string[]).includes(empresa)) return undefined;
   const montoCentimos = Number(valores[9]);
-  if (montoCentimos !== 1) return undefined;
+  // Defensa de integridad de la fila, no la regla de negocio (esa la aplica evaluarAjusteCambioResidual
+  // / identidadAjusteCambio antes de llegar acá) — un techo amplio y fijo detecta corrupción de datos
+  // sin tener que conocer el total de cada compra para recalcular su margen real.
+  if (!Number.isFinite(montoCentimos) || montoCentimos <= 0 || montoCentimos > 100_00) return undefined;
   const paymentId = valores[11] || undefined;
   const estado = estadoLeido === "verificado" && !paymentId ? "incierto" : estadoLeido;
   const verificadoEn = Number(valores[14]);
@@ -159,6 +162,21 @@ class StoreAjustesCambio implements RepositorioAjustesCambio {
       await this.inicializarYPurgar();
       return [...this.registros.values()]
         .filter((r) => r.estado === "aplicando" || r.estado === "incierto")
+        .map((r) => this.publico(r));
+    });
+  }
+
+  /**
+   * Ajustes ya verificados (pago confirmado en Holded) dentro de la ventana — usado por
+   * revisarAjustesCambioRevertidos.ts para detectar si Carlos borró a mano un pago que Wobi ya dio
+   * por hecho. Nunca incluye los purgados (más viejos que RETENCION_MS, ver recargarYPurgar).
+   */
+  async listarVerificadosRecientes(dias: number): Promise<RegistroAjusteCambio[]> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const limite = Date.now() - dias * 24 * 60 * 60 * 1000;
+      return [...this.registros.values()]
+        .filter((r) => r.estado === "verificado" && r.verificadoEn && r.verificadoEn >= limite)
         .map((r) => this.publico(r));
     });
   }

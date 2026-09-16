@@ -27,6 +27,16 @@ import {
 } from "./durablePurchase";
 import { durablePurchaseStore } from "./durablePurchaseStore";
 import {
+  AjusteCambioInciertoError,
+  ejecutarAjusteCambioDurable,
+  identidadAjusteCambio,
+  type RegistroAjusteCambio,
+  type ResultadoAjusteCambio,
+  type TransporteAjusteCambio,
+} from "./durableFxResidualAdjustment";
+import { durableFxResidualAdjustmentStore } from "./durableFxResidualAdjustmentStore";
+import { proveedorExcluidoDeAjusteCambio, registrarAjusteCambioAplicado } from "./ajusteCambioAprendidoSheet";
+import {
   EdicionCompraInciertaError,
   ejecutarEdicionCompraDurable,
   reconciliarEdicionesCompraPendientes,
@@ -4517,6 +4527,21 @@ export async function validarCompraContraMovimiento(
 }
 
 /**
+ * Margen compartido para tratar un residuo pequeño como redondeo de
+ * conversión de moneda y no como deuda real — pedido explícito de Carlos
+ * (2026-09-16, casos reales Uber Costa Rica, Subway Aeropuerto, Costa Azul
+ * Panama Bell, Hostel Columbus, Airbnb MEX): escala con el tamaño de la
+ * compra (0,5% del total), con un piso de 2 céntimos (facturas chicas) y un
+ * techo de 1 unidad de moneda (nunca aceptar a ciegas un hueco grande en una
+ * factura grande). Única fuente de verdad — reutilizada tanto para decidir
+ * si una compra ya está pagada del todo como para decidir si un residuo es
+ * elegible para el ajuste automático de cambio de divisa.
+ */
+export function margenResiduoConversion(total: number): number {
+  return Math.min(1, Math.max(0.02, Math.abs(total) * 0.005));
+}
+
+/**
  * Confirma que el importe conciliado del movimiento terminó como pago del
  * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
  * confundir un movimiento conciliado contra otro documento con el efecto
@@ -4539,7 +4564,7 @@ export function verificarPagoCompraEnMovimiento(
   // hueco grande en una factura grande). Carlos monitoreará las conciliaciones reales para confirmar
   // que este margen más amplio sigue sin aceptar una deuda real por error.
   const totalCompra = Math.abs(numeroDesdeHolded(compra.total));
-  const margenPagoCompleto = Math.min(1, Math.max(0.02, totalCompra * 0.005));
+  const margenPagoCompleto = margenResiduoConversion(totalCompra);
   const compraTotalmentePagada = Number.isFinite(pendiente) && Math.abs(pendiente) <= margenPagoCompleto;
   const pago = (compra.payments_detail ?? []).find((detalle) => {
     if (detalle.bank_id !== accountId || !detalle.date?.startsWith(fechaMovimiento)) return false;
@@ -4594,7 +4619,11 @@ export interface AjusteCambioResidualElegible {
  * - el movimiento quedó conciliado por el 100% de ese importe;
  * - el pago que creó Holded pertenece a esa cuenta y fecha;
  * - ese pago coincide con accounting_amount;
- * - total/tipo de cambio redondeado = pago + 0,01.
+ * - total/tipo de cambio redondeado = pago + residuo, dentro del margen
+ *   compartido de margenResiduoConversion (antes exigía exactamente 0,01 —
+ *   pedido explícito de Carlos, 2026-09-16, tras confirmar en vivo casos
+ *   reales hasta 0,26: el mismo residuo de redondeo de Holded, solo que más
+ *   grande cuando el total de la compra también lo es).
  *
  * Si falta una sola señal, devuelve undefined y no se crea ningún pago.
  */
@@ -4610,9 +4639,6 @@ export function evaluarAjusteCambioResidual(
   if (monedaDocumento === "EUR" || monedaDocumento !== monedaMovimiento) return undefined;
   if (!estaConciliado(movimiento.status)) return undefined;
 
-  const pendiente = parsearMontoHolded(compra.payments_pending);
-  if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) !== 1) return undefined;
-
   const totalNativo = Math.abs(numeroDesdeHolded(compra.total));
   const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento.amount));
   const montoConciliado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount));
@@ -4620,6 +4646,13 @@ export function evaluarAjusteCambioResidual(
   if ([totalNativo, montoMovimiento, montoConciliado, montoContable].some((n) => !Number.isFinite(n) || n <= 0)) {
     return undefined;
   }
+
+  const pendiente = parsearMontoHolded(compra.payments_pending);
+  const margenCentimos = Math.round(margenResiduoConversion(totalNativo) * 100);
+  if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) <= 0 || Math.round(pendiente * 100) > margenCentimos) {
+    return undefined;
+  }
+
   if (centimos(totalNativo) !== centimos(montoMovimiento) || centimos(montoMovimiento) !== centimos(montoConciliado)) {
     return undefined;
   }
@@ -4639,16 +4672,164 @@ export function evaluarAjusteCambioResidual(
   const tasaCambio = numeroDecimalPlano(compra.currency_change);
   if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) return undefined;
   const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
-  if (totalContableDocumentoCentimos - centimos(totalPagosOrigen) !== 1) return undefined;
+  const residuoCentimos = totalContableDocumentoCentimos - centimos(totalPagosOrigen);
+  // El saldo pendiente DECLARADO por Holded debe coincidir exactamente con el residuo CALCULADO a
+  // partir de total/tipo de cambio/pagos — no basta con que ambos, por separado, quepan bajo el
+  // margen: si no coinciden entre sí, algo más está pasando (un pago adicional no contemplado, un
+  // saldo que no es puro redondeo) y no se demuestra nada, así que no se ajusta nada.
+  if (residuoCentimos <= 0 || residuoCentimos > margenCentimos || residuoCentimos !== Math.round(pendiente * 100)) {
+    return undefined;
+  }
 
   return {
-    monto: 0.01,
+    monto: residuoCentimos / 100,
     monedaDocumento,
     montoNativo: totalNativo,
     montoContableMovimiento: montoContable,
     montoContableDocumento: totalContableDocumentoCentimos / 100,
     tasaCambio,
   };
+}
+
+const cacheCuentaAjusteCambio = new Map<Empresa, string>();
+
+/**
+ * Resuelve la cuenta contable "Main" en EUR de la empresa — la misma cuenta que usa la operación
+ * interna "Añadir pago → Ajustar cambio de divisa" de Holded (confirmado en vivo, caso real Subway
+ * Aeropuerto, 2026-09-16): nunca la cuenta bancaria extranjera real del pago ya conciliado, para no
+ * mezclar un residuo puramente contable con el saldo real de esa cuenta. Falla cerrado si no la
+ * encuentra por nombre exacto — nunca adivina otra cuenta EUR.
+ */
+async function cuentaAjusteCambioDivisa(empresa: Empresa): Promise<string> {
+  const cacheada = cacheCuentaAjusteCambio.get(empresa);
+  if (cacheada) return cacheada;
+  const cuentas = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+    items?: Array<{ id: string; name?: string; currency?: string; archived?: boolean }>;
+  };
+  const main = (cuentas.items ?? []).find(
+    (c) => !c.archived && (c.currency ?? "").toUpperCase().trim() === "EUR" && (c.name ?? "").trim().toLowerCase() === "main"
+  );
+  if (!main) {
+    throw new Error(
+      `No se encontró la cuenta contable "Main" en EUR para ${empresa} — el ajuste automático de cambio de ` +
+        `divisa exige esa cuenta exacta, la misma que usa Holded internamente, para no mezclar el ajuste con ` +
+        `el saldo real de una cuenta bancaria.`
+    );
+  }
+  cacheCuentaAjusteCambio.set(empresa, main.id);
+  return main.id;
+}
+
+/**
+ * Implementación real de TransporteAjusteCambio (core/holded/durableFxResidualAdjustment.ts) —
+ * verificada en vivo contra un caso real (Airbnb MEX, Footprint, 2026-09-16, con confirmación
+ * explícita de Carlos) usando el endpoint oficial y documentado de Holded para pagos de compra
+ * (POST /purchases/{id}/payments — api.holded.com/openapi/api2.json). NUNCA usa la casilla interna
+ * "Ajustar cambio de divisa" de la web de Holded: no es parte de la API pública y no expone ningún
+ * payload documentado, así que replicarla sería adivinar un mecanismo no verificado. El mismo
+ * resultado final (saldo pendiente en cero) se logra con un pago normal contra la cuenta contable
+ * "Main" EUR — exactamente donde Holded registra ese mismo ajuste internamente.
+ *
+ * Hallazgo real de auditoría xhigh (caso real Airbnb MEX, mismo día): `amount` en este POST se
+ * interpreta SIEMPRE en la moneda BASE de la cuenta (EUR para las cuentas "Main" de este proyecto —
+ * confirmado también por el GET /payments/{id} oficial: "in the account's base currency"), NUNCA en
+ * la moneda nativa del documento — a diferencia de `payments_pending`/`payments_total`, que SÍ vienen
+ * expresados en la moneda nativa del documento al LEER. Un primer intento manual pasó el
+ * `payments_pending` crudo (en USD) directamente como `amount`, y Holded lo registró como si ya fuera
+ * EUR — un sobrepago real que hubo que corregir a mano (eliminando el pago vía DELETE
+ * /payments/{id} y creando uno nuevo). `montoCentimos` acá SIEMPRE viene de
+ * evaluarAjusteCambioResidual, que ya lo calcula en EUR (derivado de total/tipo de cambio) — nunca
+ * pasar acá un valor leído directo de payments_pending sin convertir.
+ */
+const transporteAjusteCambioHolded: TransporteAjusteCambio = {
+  async aplicar(registro: RegistroAjusteCambio): Promise<void> {
+    await holdedWriteCall(registro.empresa, "POST", `/purchases/${registro.purchaseId}/payments`, {
+      amount: (registro.montoCentimos / 100).toFixed(2),
+      treasury_id: registro.targetTreasuryId,
+      date: registro.fecha,
+      description:
+        "Ajuste automático de residuo de conversión de moneda (aplicado por Holded al convertir a EUR) — registrado por Wobi",
+    });
+  },
+  async inspeccionar(registro: RegistroAjusteCambio): Promise<ResultadoAjusteCambio | undefined> {
+    const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.purchaseId);
+    const montoEsperado = registro.montoCentimos / 100;
+    const pago = (compra.payments_detail ?? []).find((detalle) => {
+      if (detalle.bank_id !== registro.targetTreasuryId || !detalle.date?.startsWith(registro.fecha)) return false;
+      const monto = Math.abs(parsearMontoHolded(detalle.amount));
+      return Number.isFinite(monto) && Math.abs(monto - montoEsperado) <= 0.005;
+    });
+    if (!pago?.id) return undefined;
+    const pendiente = parsearMontoHolded(compra.payments_pending);
+    if (!Number.isFinite(pendiente) || Math.abs(pendiente) >= 0.005) return undefined;
+    return { paymentId: pago.id, monto: montoEsperado, pendienteFinal: Math.abs(pendiente) };
+  },
+};
+
+/**
+ * Pedido explícito de Carlos (2026-09-16): el ajuste corre TOTALMENTE AUTOMÁTICO, sin botón de
+ * confirmación por caso — la única red de seguridad es (a) las pruebas matemáticas estrictas de
+ * evaluarAjusteCambioResidual (nunca se llega acá si el residuo no está demostrado) y (b)
+ * ajusteCambioAprendidoSheet.ts: si Carlos borra a mano un ajuste ya aplicado, ese proveedor deja de
+ * recibir ajustes automáticos y cae de vuelta a "requiere_revision" — pedido explícito también, "que
+ * la inteligencia del sistema vaya aprendiendo... si en algún momento yo lo corrijo, el sistema debe
+ * identificar que ahí no va".
+ */
+async function aplicarOReportarAjusteCambio(
+  registro: RegistroConciliacionMovimiento,
+  compra: CompraHoldedCruda,
+  elegible: AjusteCambioResidualElegible
+): Promise<ResultadoConciliacionMovimiento["ajusteCambioDivisa"]> {
+  const motivoDemostrado =
+    `Residuo de conversión demostrado: ${elegible.montoNativo.toFixed(2)} ${elegible.monedaDocumento} ` +
+    `÷ ${elegible.tasaCambio} = ${elegible.montoContableDocumento.toFixed(2)} EUR, mientras el movimiento ` +
+    `registró ${elegible.montoContableMovimiento.toFixed(2)} EUR.`;
+  const contactId = compra.contact_id ?? "";
+  const contactName = (compra["contact_name"] as string | undefined) ?? contactId;
+
+  try {
+    if (contactId && (await proveedorExcluidoDeAjusteCambio(registro.empresa, contactId))) {
+      return {
+        estado: "requiere_revision",
+        monto: elegible.monto,
+        motivo: `${motivoDemostrado} Ajuste automático desactivado para "${contactName}" — lo corregiste a mano antes.`,
+      };
+    }
+
+    const targetTreasuryId = await cuentaAjusteCambioDivisa(registro.empresa);
+    const solicitud = identidadAjusteCambio({
+      empresa: registro.empresa,
+      purchaseId: registro.documentId,
+      movementId: registro.movementId,
+      sourceAccountId: registro.accountId,
+      targetTreasuryId,
+      fecha: registro.fechaAproximada,
+      monto: elegible.monto,
+      totalNativoCompra: elegible.montoNativo,
+    });
+    const { resultado } = await ejecutarAjusteCambioDurable(solicitud, durableFxResidualAdjustmentStore, transporteAjusteCambioHolded);
+    if (contactId) {
+      await registrarAjusteCambioAplicado(registro.empresa, contactId, contactName).catch((error) =>
+        console.error("[reconciliarMovimiento] Error registrando el aprendizaje del ajuste de cambio (no crítico):", error)
+      );
+    }
+    return {
+      estado: "aplicado",
+      monto: resultado.monto,
+      cuenta: targetTreasuryId,
+      motivo: `${motivoDemostrado} Pagado automáticamente contra la cuenta contable "Main" EUR.`,
+    };
+  } catch (error) {
+    if (error instanceof AjusteCambioInciertoError) {
+      return { estado: "incierto", monto: elegible.monto, motivo: `${motivoDemostrado} ${error.message}` };
+    }
+    console.error(`[reconciliarMovimiento] Error aplicando el ajuste de cambio para ${registro.documentId}:`, error);
+    return {
+      estado: "requiere_revision",
+      monto: elegible.monto,
+      motivo: `${motivoDemostrado} No se pudo aplicar automáticamente (${error instanceof Error ? error.message : String(error)}).`,
+    };
+  }
 }
 
 /**
@@ -4710,15 +4891,7 @@ async function inspeccionarConciliacionRegistrada(
           registro.fechaAproximada
         );
         if (elegible) {
-          ajusteCambioDivisa = {
-            estado: "requiere_revision",
-            monto: elegible.monto,
-            motivo:
-              `Residuo de conversión demostrado: ${elegible.montoNativo.toFixed(2)} ${elegible.monedaDocumento} ` +
-              `÷ ${elegible.tasaCambio} = ${elegible.montoContableDocumento.toFixed(2)} EUR, mientras el movimiento ` +
-              `registró ${elegible.montoContableMovimiento.toFixed(2)} EUR. La escritura automática permanece ` +
-              `bloqueada hasta usar exactamente la operación interna “Ajustar cambio de divisa” de Holded.`,
-          };
+          ajusteCambioDivisa = await aplicarOReportarAjusteCambio(registro, compra, elegible);
         }
       }
     } catch (error) {
