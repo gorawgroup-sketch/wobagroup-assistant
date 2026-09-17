@@ -13,6 +13,7 @@ import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { extraerDatosFactura } from "./extractInvoiceData";
 import { MIMES_LEGIBLES_COMO_FACTURA } from "./procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
+import { ofrecerResponderCorreo } from "../gmail/emailCallbackHandler";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -31,13 +32,15 @@ async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): 
  * desde cero (ver documentoArchivadoPorCorreoStore.ts). Deliberadamente se llama SOLO en los puntos
  * de resolución REAL, nunca al proponer — mismo criterio ya usado para gastos
  * (registrarGastoDesdeCorreo se llama tras la creación real en Holded, nunca al proponer). Sin
- * mensajeIdGmail/attachmentIdGmail (documento no venía de un correo) no hay nada que registrar.
+ * mensajeIdGmail/partId (documento no venía de un correo) no hay nada que registrar. Usa `partId`,
+ * no `attachmentIdGmail` — ver AdjuntoCorreo.partId en gmail/client.ts: attachmentIdGmail cambia en
+ * cada lectura del correo, así que registrar con ese valor nunca coincide en un reproceso futuro.
  */
-async function registrarResolucionDesdeCorreo(correoOrigen: { mensajeIdGmail?: string; attachmentIdGmail?: string } | undefined): Promise<void> {
-  if (!correoOrigen?.mensajeIdGmail || !correoOrigen?.attachmentIdGmail) return;
+async function registrarResolucionDesdeCorreo(correoOrigen: { mensajeIdGmail?: string; partId?: string } | undefined): Promise<void> {
+  if (!correoOrigen?.mensajeIdGmail || !correoOrigen?.partId) return;
   await registrarDocumentoArchivadoDesdeCorreo({
     mensajeIdGmail: correoOrigen.mensajeIdGmail,
-    attachmentId: correoOrigen.attachmentIdGmail,
+    attachmentId: correoOrigen.partId,
   }).catch((error) => console.error("[documentCallbackHandler] Error registrando adjunto resuelto (no crítico):", error));
 }
 
@@ -107,6 +110,41 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
         `⏰ Ok — respóndeme qué quieres que te recuerde sobre "${propuestaPeek.nombreArchivoOriginal}" y cuándo (ej. "avísame en 3 días si no se ha enviado a aduana", o "recuérdame el jueves confirmar con Alberto").`
       );
     }
+    return;
+  }
+
+  // "✍️ Generar respuesta al correo" — tampoco consume la propuesta (mismo criterio que
+  // doc_regla/doc_alerta). Pedido explícito de Carlos: para un correo con adjuntos que NO es un
+  // gasto, debe poder pedir una respuesta al remitente sin salir del flujo de archivo — reutiliza
+  // ofrecerResponderCorreo tal cual (mismo mecanismo de aprobación con botones "Enviar así/Editar/No
+  // enviar" que ya usa el resto del sistema, nunca envía nada por sí sola).
+  if (accion === "doc_responder") {
+    const propuestaPeek = await obtenerPropuestaClasificacion(id);
+    if (!propuestaPeek) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      return;
+    }
+    if (!propuestaPeek.correoOrigen) {
+      await answerCallbackQuerySafe(callback.id, "Este documento no vino de un correo — no hay nada que responder.");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id);
+
+    const contexto =
+      `Se recibió "${propuestaPeek.nombreArchivoOriginal}" (${propuestaPeek.clasificacion.tipoDocumento}, ` +
+      `${propuestaPeek.clasificacion.empresa}) — ${propuestaPeek.clasificacion.razon} Redacta una respuesta breve ` +
+      `y profesional acorde a este documento (ej. acuse de recibo, confirmación de que quedó archivado, o lo que ` +
+      `el contexto sugiera).`;
+
+    await ofrecerResponderCorreo(
+      propuestaPeek.chatId,
+      propuestaPeek.correoOrigen.de,
+      propuestaPeek.correoOrigen.asunto,
+      propuestaPeek.correoOrigen.threadId,
+      propuestaPeek.correoOrigen.messageIdHeader,
+      contexto
+    );
     return;
   }
 
@@ -247,7 +285,11 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
         deColaCorreo,
         origenAdjuntoGmail:
           propuestaPeek.correoOrigen?.mensajeIdGmail && propuestaPeek.correoOrigen?.attachmentIdGmail
-            ? { mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail, attachmentIdGmail: propuestaPeek.correoOrigen.attachmentIdGmail }
+            ? {
+                mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
+                attachmentIdGmail: propuestaPeek.correoOrigen.attachmentIdGmail,
+                partId: propuestaPeek.correoOrigen.partId,
+              }
             : undefined,
         correoOrigen: propuestaPeek.correoOrigen
           ? {
