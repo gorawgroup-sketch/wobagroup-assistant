@@ -208,3 +208,72 @@ export async function contarMovimientosSinConciliar(empresa: Empresa, dias: numb
 
   return total;
 }
+
+/**
+ * Los importes de /treasury/.../bank-movements vienen en formato decimal normal ("-3.77"), NO en
+ * formato ES como /purchases (ver el mismo hallazgo, ya documentado, en core/holded/write.ts —
+ * duplicado acá para no crear un ciclo write.ts -> client.ts -> write.ts).
+ */
+function parsearMontoMovimientoCliente(raw: unknown): number {
+  if (typeof raw === "number") return raw;
+  if (typeof raw !== "string") return NaN;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+export interface SaldoHistoricoCuenta {
+  balance: number;
+  /** Fecha real (YYYY-MM-DD) del último movimiento encontrado en o antes de la fecha pedida — puede
+   *  ser anterior a la fecha pedida si la cuenta no tuvo movimientos justo esos días. */
+  fechaMovimiento: string;
+}
+
+/**
+ * Pedido explícito de Carlos (2026-09-17, caso real: saldo de WOBA/EWORKS al domingo 13 de
+ * septiembre): la herramienta de saldos solo daba el saldo de HOY — Holded no expone un endpoint de
+ * "saldo a fecha pasada", pero cada movimiento bancario SÍ trae el saldo de la cuenta inmediatamente
+ * DESPUÉS de ese movimiento (BankMovement.balance, ver arriba — ya confirmado en vivo contra la API
+ * real). Reconstruir sumando movimientos a mano sería frágil (un movimiento no capturado desalinea
+ * todo lo posterior); en cambio, basta encontrar el ÚLTIMO movimiento en o antes de la fecha pedida y
+ * leer su balance directamente — ese es, por definición, el saldo real de la cuenta al cierre de esa
+ * fecha (si no hubo movimientos después de ese día hasta la fecha pedida, el saldo no cambió).
+ *
+ * Se ordena explícitamente por fecha (nunca se confía en el orden del array que devuelve Holded, aun
+ * habiéndolo verificado en vivo una vez — el orden no está documentado) y se amplía la ventana de
+ * búsqueda hacia atrás si la cuenta no tuvo movimientos en la ventana inicial (cuentas con poca
+ * actividad), hasta un límite razonable antes de rendirse.
+ */
+export async function obtenerSaldoHistoricoCuenta(
+  empresa: Empresa,
+  accountId: string,
+  fecha: string
+): Promise<SaldoHistoricoCuenta | undefined> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    throw new Error("La fecha debe usar el formato YYYY-MM-DD.");
+  }
+  const objetivo = new Date(`${fecha}T00:00:00Z`);
+  if (Number.isNaN(objetivo.getTime())) {
+    throw new Error("Fecha inválida.");
+  }
+
+  const VENTANAS_DIAS = [60, 180, 365, 730];
+  for (const dias of VENTANAS_DIAS) {
+    const desde = new Date(objetivo.getTime() - dias * 24 * 60 * 60 * 1000);
+    const movimientos = await listBankMovements(empresa, accountId, formatDateLocal(desde), fecha);
+    if (movimientos.length === 0) continue;
+
+    // Sort estable por fecha descendente — con empate (varios movimientos el mismo día), Array.sort
+    // en JS moderno conserva el orden relativo original entre elementos empatados, que ya se
+    // confirmó en vivo que refleja el orden real de aplicación de Holded para ese mismo día.
+    const ordenados = [...movimientos].sort((a, b) => (b.booking_date ?? "").localeCompare(a.booking_date ?? ""));
+    const conBalanceValido = ordenados.find((m) => Number.isFinite(parsearMontoMovimientoCliente(m.balance)));
+    if (!conBalanceValido) continue;
+
+    return {
+      balance: parsearMontoMovimientoCliente(conBalanceValido.balance),
+      fechaMovimiento: (conBalanceValido.booking_date ?? fecha).slice(0, 10),
+    };
+  }
+
+  return undefined;
+}
