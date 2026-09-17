@@ -26,6 +26,7 @@ class RepoMemoria implements RepositorioSubidasDrive {
   async obtener(clave: string) { const r = this.filas.get(clave); return r ? { ...r } : undefined; }
   async marcarSubiendo(clave: string) { return this.cambiar(clave, ["preparada"], "subiendo"); }
   async marcarPreparada(clave: string) { this.cambiar(clave, ["subiendo"], "preparada"); }
+  async liberarIncierta(clave: string) { this.cambiar(clave, ["incierta"], "preparada"); }
   async marcarIncierta(clave: string) { this.cambiar(clave, ["subiendo"], "incierta"); }
   async marcarVerificada(clave: string, resultado: ResultadoSubidaDrive) {
     if (this.fallarCheckpoint) throw new Error("Sheets no responde");
@@ -167,12 +168,31 @@ test("la reconciliación confirma encontrados y conserva inciertos sin subir", a
   const b = { ...identidadSubidaDrive("b", "folder-1", 1), estado: "incierta" as const };
   repo.filas.set(a.clave, a);
   repo.filas.set(b.clave, b);
-  const resumen = await reconciliarSubidasDrivePendientes(repo, async (marcador) =>
-    marcador === a.marcador ? { fileId: "encontrado", webViewLink: "https://drive/encontrado" } : undefined
+  const resumen = await reconciliarSubidasDrivePendientes(
+    repo,
+    async (marcador) => marcador === a.marcador
+      ? { fileId: "encontrado", webViewLink: "https://drive/encontrado" }
+      : undefined,
+    500,
+    1_000
   );
-  assert.deepEqual(resumen, { revisadas: 2, verificadas: 1, inciertas: 1, errores: 0 });
+  assert.deepEqual(resumen, { revisadas: 2, verificadas: 1, liberadas: 0, inciertas: 1, errores: 0 });
   assert.equal(repo.filas.get(a.clave)?.estado, "verificada");
   assert.equal(repo.filas.get(b.clave)?.estado, "incierta");
+});
+
+test("libera una incertidumbre antigua solo después de una búsqueda completa sin marcador", async () => {
+  const repo = new RepoMemoria();
+  const registro = { ...identidadSubidaDrive("antigua", "folder-1", 1), estado: "incierta" as const, actualizadoEn: 100 };
+  repo.filas.set(registro.clave, registro);
+
+  const antes = await reconciliarSubidasDrivePendientes(repo, async () => undefined, 999, 1_000);
+  assert.deepEqual(antes, { revisadas: 1, verificadas: 0, liberadas: 0, inciertas: 1, errores: 0 });
+  assert.equal(repo.filas.get(registro.clave)?.estado, "incierta");
+
+  const despues = await reconciliarSubidasDrivePendientes(repo, async () => undefined, 1_100, 1_000);
+  assert.deepEqual(despues, { revisadas: 1, verificadas: 0, liberadas: 1, inciertas: 0, errores: 0 });
+  assert.equal(repo.filas.get(registro.clave)?.estado, "preparada");
 });
 
 test("si falla el checkpoint posterior a files.create, nunca se ejecuta una segunda subida", async () => {

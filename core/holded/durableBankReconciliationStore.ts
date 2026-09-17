@@ -5,18 +5,23 @@ import type {
   EstadoConciliacionMovimiento,
   RegistroConciliacionMovimiento,
   RepositorioConciliacionesMovimiento,
+  ResultadoConciliacionMovimiento,
 } from "./durableBankReconciliation";
+import { conciliacionRequiereRevision } from "./durableBankReconciliation";
 
 const TAB_NAME = "_conciliaciones_holded_durables";
 const HEADERS = [
-  "clave", "proceso", "estado", "empresa", "accountId", "movementId", "documentId", "fechaAproximada", "huellaSolicitud", "creadoEn", "actualizadoEn", "verificadoEn",
+  "clave", "proceso", "estado", "empresa", "accountId", "movementId", "documentId", "fechaAproximada", "huellaSolicitud", "creadoEn", "actualizadoEn", "verificadoEn", "resueltoEn", "resolucion", "historialResoluciones",
 ];
 const NUM_COLS = HEADERS.length;
 const CLAVE_MUTEX = `holded-conciliaciones:${TAB_NAME}`;
 const RETENCION_MS =
   enteroAcotado(process.env.WOBI_HOLDED_RECONCILIATION_LEDGER_RETENTION_DAYS, 365, 90, 1095) * 24 * 60 * 60 * 1000;
 const PURGA_CADA_MS = 6 * 60 * 60 * 1000;
-const ESTADOS = new Set<EstadoConciliacionMovimiento>(["preparada", "conciliando", "verificada", "incierta"]);
+const REFRESCO_PENDIENTES_MS = 30_000;
+const ESTADOS = new Set<EstadoConciliacionMovimiento>([
+  "preparada", "conciliando", "verificada", "verificada_revision", "incierta", "cancelada",
+]);
 
 interface RegistroConFila extends RegistroConciliacionMovimiento { rowIndex: number; }
 
@@ -24,9 +29,12 @@ export interface ResumenLedgerConciliacionesMovimiento {
   preparada: number;
   conciliando: number;
   verificada: number;
+  verificadaRevision: number;
   incierta: number;
+  cancelada: number;
   /** Empresas (WOBA/EWORKS/Footprint) con al menos una conciliación en estado "incierta" — sin esto no se sabe en qué Holded mirar. */
   empresasConIncertidumbre: string[];
+  empresasConRevision: string[];
 }
 
 function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undefined {
@@ -35,6 +43,7 @@ function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undef
   if (!valores[0] || !valores[4] || !valores[5] || !valores[6] || !valores[8] || !ESTADOS.has(estado)) return undefined;
   if (!(["WOBA", "EWORKS", "Footprint"] as string[]).includes(empresa)) return undefined;
   const verificadoEn = Number(valores[11]);
+  const resueltoEn = Number(valores[12]);
   return {
     rowIndex,
     clave: valores[0],
@@ -49,6 +58,9 @@ function desdeFila(rowIndex: number, valores: string[]): RegistroConFila | undef
     creadoEn: Number(valores[9]) || 0,
     actualizadoEn: Number(valores[10]) || 0,
     verificadoEn: Number.isFinite(verificadoEn) && verificadoEn > 0 ? verificadoEn : undefined,
+    resueltoEn: Number.isFinite(resueltoEn) && resueltoEn > 0 ? resueltoEn : undefined,
+    resolucion: valores[13] || undefined,
+    historialResoluciones: valores[14] || undefined,
   };
 }
 
@@ -66,6 +78,9 @@ function aFila(registro: RegistroConciliacionMovimiento): (string | number)[] {
     registro.creadoEn,
     registro.actualizadoEn,
     registro.verificadoEn ?? "",
+    registro.resueltoEn ?? "",
+    registro.resolucion ?? "",
+    registro.historialResoluciones ?? "",
   ];
 }
 
@@ -78,7 +93,23 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
       const existente = this.registros.get(registro.clave);
-      if (existente) return { registro: this.publico(existente), nuevo: false };
+      if (existente) {
+        if (existente.estado === "cancelada" && existente.huellaSolicitud !== registro.huellaSolicitud) {
+          const reactivado: RegistroConFila = {
+            ...registro,
+            rowIndex: existente.rowIndex,
+            estado: "preparada",
+            verificadoEn: undefined,
+            resueltoEn: undefined,
+            resolucion: undefined,
+            historialResoluciones: existente.historialResoluciones,
+          };
+          await actualizarFila(TAB_NAME, existente.rowIndex, NUM_COLS, aFila(reactivado));
+          this.registros.set(registro.clave, reactivado);
+          return { registro: this.publico(reactivado), nuevo: false };
+        }
+        return { registro: this.publico(existente), nuevo: false };
+      }
       // El ledger es append-only, con headers y columna A estables. Usar el
       // append atómico evita dos GET por conciliación (buscar la fila libre y
       // releerla), que agotaban la cuota de lectura de Sheets antes de que el
@@ -114,6 +145,9 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
         fechaAproximada: registro.fechaAproximada,
         huellaSolicitud: registro.huellaSolicitud,
         actualizadoEn: Date.now(),
+        verificadoEn: undefined,
+        resueltoEn: undefined,
+        resolucion: undefined,
       };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
       this.registros.set(clave, siguiente);
@@ -133,17 +167,53 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
     await this.cambiarEstado(clave, ["conciliando"], "incierta");
   }
 
-  async marcarVerificada(clave: string): Promise<void> {
+  async marcarVerificada(clave: string, resultado: ResultadoConciliacionMovimiento): Promise<void> {
     await conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
       const actual = this.registros.get(clave);
-      if (!actual || actual.estado === "verificada") return;
+      if (!actual || actual.estado === "cancelada") return;
       const ahora = Date.now();
+      const requiereRevision = conciliacionRequiereRevision(resultado);
       const siguiente: RegistroConFila = {
         ...actual,
-        estado: "verificada",
+        estado: requiereRevision ? "verificada_revision" : "verificada",
         actualizadoEn: ahora,
         verificadoEn: ahora,
+        resueltoEn: requiereRevision ? undefined : ahora,
+        resolucion: requiereRevision
+          ? "La conciliación está confirmada, pero conserva un saldo o ajuste que requiere revisión contable."
+          : "Conciliación confirmada por lectura de movimiento y pago del documento.",
+      };
+      await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
+      this.registros.set(clave, siguiente);
+    });
+  }
+
+  async marcarCancelada(clave: string, motivo: string): Promise<void> {
+    const resolucion = motivo.trim();
+    if (!resolucion) throw new Error("La cancelación auditada requiere un motivo.");
+    if (resolucion.length > 1000) throw new Error("El motivo de cancelación no puede superar 1000 caracteres.");
+    await conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const actual = this.registros.get(clave);
+      if (!actual || actual.estado === "cancelada") return;
+      if (actual.estado !== "incierta") {
+        throw new Error(`Solo se puede cancelar una conciliación incierta; estado actual: ${actual.estado}.`);
+      }
+      const ahora = Date.now();
+      const motivoUnaLinea = resolucion.replace(/\s+/g, " ");
+      const entradaHistorial = `${new Date(ahora).toISOString()} | documento ${actual.documentId} | ${motivoUnaLinea}`;
+      const historialResoluciones = [actual.historialResoluciones, entradaHistorial]
+        .filter(Boolean)
+        .join("\n")
+        .slice(-10_000);
+      const siguiente: RegistroConFila = {
+        ...actual,
+        estado: "cancelada",
+        actualizadoEn: ahora,
+        resueltoEn: ahora,
+        resolucion,
+        historialResoluciones,
       };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
       this.registros.set(clave, siguiente);
@@ -153,8 +223,15 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
   async listarPendientes(): Promise<RegistroConciliacionMovimiento[]> {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
+      // Las resoluciones auditadas pueden aplicarse desde un proceso de
+      // mantenimiento separado. Mientras existan pendientes, se relee con
+      // una cadencia acotada para que el servidor deje de reportarlos sin
+      // necesitar un redeploy ni esperar las seis horas de la purga.
+      if (Date.now() - this.ultimaPurgaEn >= REFRESCO_PENDIENTES_MS) {
+        await this.recargarYPurgar();
+      }
       return [...this.registros.values()]
-        .filter((r) => r.estado === "conciliando" || r.estado === "incierta")
+        .filter((r) => r.estado === "conciliando" || r.estado === "incierta" || r.estado === "verificada_revision")
         .map((r) => this.publico(r));
     });
   }
@@ -166,15 +243,22 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
         preparada: 0,
         conciliando: 0,
         verificada: 0,
+        verificadaRevision: 0,
         incierta: 0,
+        cancelada: 0,
         empresasConIncertidumbre: [],
+        empresasConRevision: [],
       };
       const empresasInciertas = new Set<string>();
+      const empresasRevision = new Set<string>();
       for (const registro of this.registros.values()) {
-        resumen[registro.estado]++;
+        if (registro.estado === "verificada_revision") resumen.verificadaRevision++;
+        else resumen[registro.estado]++;
         if (registro.estado === "incierta") empresasInciertas.add(registro.empresa);
+        if (registro.estado === "verificada_revision") empresasRevision.add(registro.empresa);
       }
       resumen.empresasConIncertidumbre = [...empresasInciertas].sort();
+      resumen.empresasConRevision = [...empresasRevision].sort();
       return resumen;
     });
   }

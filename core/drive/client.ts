@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { access } from "node:fs/promises";
 import { google, drive_v3 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { conMutex } from "../utils/asyncMutex";
@@ -559,6 +560,7 @@ const metricasSubidasDurables = {
   subidas: 0,
   reutilizadas: 0,
   verificadasRecuperadas: 0,
+  liberadasParaReintento: 0,
   incertidumbresDetectadas: 0,
   errores: 0,
   inciertasUltimaRevision: 0,
@@ -636,10 +638,11 @@ async function subirArchivoADriveDirecto(
 /** Reconciliación de arranque: únicamente busca marcadores privados; nunca vuelve a subir. */
 export async function reconciliarSubidasDriveAlArrancar() {
   if (!configuracionSubidasDriveDurables().habilitado) {
-    return { revisadas: 0, verificadas: 0, inciertas: 0, errores: 0 };
+    return { revisadas: 0, verificadas: 0, liberadas: 0, inciertas: 0, errores: 0 };
   }
   const resumen = await reconciliarSubidasDrivePendientes(durableUploadStore, buscarArchivoPorMarcador);
   metricasSubidasDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasSubidasDurables.liberadasParaReintento += resumen.liberadas;
   metricasSubidasDurables.incertidumbresDetectadas += resumen.inciertas;
   metricasSubidasDurables.errores += resumen.errores;
   metricasSubidasDurables.inciertasUltimaRevision = resumen.inciertas;
@@ -647,24 +650,37 @@ export async function reconciliarSubidasDriveAlArrancar() {
   return resumen;
 }
 
-/** Reintentos acotados de solo lectura después de una respuesta ambigua. */
-function programarReconciliacionSubidasDrive(demoraMs: number, intentosRestantes: number): void {
+/** Reintentos rápidos y luego una comprobación de solo lectura cada 15 min mientras siga pendiente. */
+function programarReconciliacionSubidasDrive(
+  demoraMs: number,
+  intentosRestantes: number,
+  revisionFinal = false
+): void {
   if (timerReconciliacionSubidas || intentosRestantes <= 0) return;
   timerReconciliacionSubidas = setTimeout(() => {
     timerReconciliacionSubidas = null;
     void reconciliarSubidasDrivePendientes(durableUploadStore, buscarArchivoPorMarcador)
       .then((resumen) => {
         metricasSubidasDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasSubidasDurables.liberadasParaReintento += resumen.liberadas;
         metricasSubidasDurables.incertidumbresDetectadas += resumen.inciertas;
         metricasSubidasDurables.errores += resumen.errores;
         metricasSubidasDurables.inciertasUltimaRevision = resumen.inciertas;
         if (resumen.inciertas > 0 || resumen.errores > 0) {
-          programarReconciliacionSubidasDrive(60_000, intentosRestantes - 1);
+          if (!revisionFinal && intentosRestantes > 1) {
+            programarReconciliacionSubidasDrive(60_000, intentosRestantes - 1);
+          } else {
+            programarReconciliacionSubidasDrive(15 * 60 * 1000, 1, true);
+          }
         }
       })
       .catch(() => {
         metricasSubidasDurables.errores++;
-        programarReconciliacionSubidasDrive(60_000, intentosRestantes - 1);
+        if (!revisionFinal && intentosRestantes > 1) {
+          programarReconciliacionSubidasDrive(60_000, intentosRestantes - 1);
+        } else {
+          programarReconciliacionSubidasDrive(15 * 60 * 1000, 1, true);
+        }
       });
   }, demoraMs);
   timerReconciliacionSubidas.unref();
@@ -685,6 +701,12 @@ export async function subirArchivoADrive(
   idempotencyKey: string,
   proceso: string = "archivo_aprobado"
 ): Promise<ArchivoSubido> {
+  // La copia temporal debe existir antes de reservar el efecto durable. Si
+  // falta tras un redeploy, archiveFile la recupera desde Gmail y vuelve a
+  // entrar con el mismo id. Así un ENOENT local nunca deja una falsa subida
+  // incierta ni obliga a tocar el ledger a mano.
+  await access(rutaLocal);
+
   if (!configuracionSubidasDriveDurables().habilitado) {
     return subirArchivoADriveDirecto(rutaLocal, nombreArchivo, mimeType, folderId);
   }
