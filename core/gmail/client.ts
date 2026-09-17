@@ -374,6 +374,21 @@ export interface AdjuntoCorreo {
   mimeType: string;
   attachmentId: string;
   size: number;
+  /**
+   * Hallazgo real de auditoría (caso Footprint, Modelo 303/349, 2026-09-17): `attachmentId` NO es
+   * estable — Gmail devuelve un valor DISTINTO en cada llamada a messages.get para el mismo adjunto
+   * físico del mismo correo (verificado en vivo: 2 lecturas seguidas del mismo mensaje dieron 3
+   * attachmentId completamente distintos para los mismos 3 archivos). Cualquier chequeo de "¿ya
+   * procesé este adjunto antes?" que compare por attachmentId entre lecturas separadas del correo
+   * NUNCA coincide, así que cada reintento (cron automático o revisar_correo_puntual) trata los
+   * mismos archivos como nuevos, generando propuestas desconectadas de las anteriores sin que el
+   * usuario pueda resolverlas con una sola respuesta. `partId` (la posición del adjunto dentro de la
+   * estructura MIME del mensaje, ej. "1", "2", "0.1") SÍ es estable entre lecturas — verificado en
+   * vivo con el mismo experimento. Úsalo para cualquier identidad "¿ya vi este adjunto de este
+   * correo?" (documentoArchivadoPorCorreoStore, gastoPorCorreoStore) — attachmentId sigue siendo el
+   * único valor válido para descargar los bytes reales (descargarAdjunto), nunca lo reemplaces ahí.
+   */
+  partId: string;
 }
 
 export interface CorreoResumen {
@@ -516,6 +531,7 @@ function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): Adju
         mimeType: part.mimeType ?? "application/octet-stream",
         attachmentId: part.body.attachmentId,
         size: part.body.size ?? 0,
+        partId: part.partId ?? "",
       });
     }
     part.parts?.forEach(recorrer);

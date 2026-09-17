@@ -1705,8 +1705,9 @@ async function crearGastoYReportar(
       ? registrarGastoDesdeCorreo({
           mensajeIdGmail: propuesta.correoOrigen.mensajeIdGmail,
           // Distingue CUÁL adjunto de un correo con varios ya se resolvió — ver el comentario de
-          // gastoPorCorreoStore.ts sobre por qué esto no puede ser solo por mensajeIdGmail.
-          attachmentId: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
+          // gastoPorCorreoStore.ts sobre por qué esto no puede ser solo por mensajeIdGmail. Usa partId
+          // (estable entre lecturas), no attachmentIdGmail — ver AdjuntoCorreo.partId en gmail/client.ts.
+          attachmentId: propuesta.origenAdjuntoGmail?.partId,
           gastoId: gasto.id,
           empresa: empresaFinal,
           identidad: {

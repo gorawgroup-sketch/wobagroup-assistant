@@ -44,7 +44,7 @@ export interface GastoEntrante {
    * sobrevive un redeploy de Railway) se pierde antes de adjuntarlo al gasto
    * en Holded. Ver core/gmail/reDescargarAdjunto.ts.
    */
-  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
+  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string; /** Identidad ESTABLE entre lecturas del correo (a diferencia de attachmentIdGmail) — ver AdjuntoCorreo.partId en gmail/client.ts. Se usa para "¿ya generó este adjunto un gasto?", nunca para descargar. */ partId?: string };
   /**
    * Datos del correo del que vino esta factura/gasto — ver
    * PropuestaGasto.correoOrigen (gastoProposalSheet.ts) para el porqué:

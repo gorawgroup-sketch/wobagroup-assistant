@@ -95,7 +95,7 @@ export interface PropuestaGasto {
    * SIN su comprobante porque la propuesta en Sheets sobrevivió un redeploy
    * pero la copia local no. Ver core/gmail/reDescargarAdjunto.ts.
    */
-  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
+  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string; /** Identidad ESTABLE entre lecturas del correo — ver AdjuntoCorreo.partId en gmail/client.ts. */ partId?: string };
   /**
    * Pedido explícito de Carlos: el número real del documento (factura/
    * recibo/ticket), tal como aparece impreso — se usa para diligenciar

@@ -15,7 +15,7 @@ export interface ArchivoParaClasificar {
   /** Caption original del usuario, o el texto ya enriquecido con su aclaración. */
   captionEfectivo?: string;
   /** Si vino de un correo, sus datos — para poder responderlo después de archivar (ver DocumentoLocalEntrante). */
-  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string };
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string; /** Identidad ESTABLE del adjunto entre lecturas del correo (a diferencia de attachmentIdGmail) — ver AdjuntoCorreo.partId en gmail/client.ts. Se usa para "¿ya procesé este adjunto?", nunca para descargar. */ partId?: string };
   /**
    * true cuando esta llamada es la continuación tras responder una pregunta
    * de desambiguación (ver server.ts) — evita ofrecer captura/respuesta una
@@ -222,6 +222,15 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     // adjunto, que sí tienen "❌ Descartar").
     [{ text: "❌ Descartar, no archivar", callback_data: `doc_descartar:${propuesta.id}` }],
   ];
+
+  // Pedido explícito de Carlos, tras un caso real (Footprint, Modelo 303/349 de IVA, 2026-09-17):
+  // cuando un correo con adjuntos NO es un gasto, además de archivar debe poder generar una
+  // respuesta al correo original — reutiliza ofrecerResponderCorreo (mismo flujo ya usado cuando el
+  // clasificador detecta intención de captura), disponible siempre que el documento venga de un
+  // correo real. No consume la propuesta — "Sí, archivar aquí" sigue disponible después.
+  if (archivo.correoOrigen) {
+    filasBotones.push([{ text: "✍️ Generar respuesta al correo", callback_data: `doc_responder:${propuesta.id}` }]);
+  }
 
   // Hallazgo real de auditoría (Footprint, factura Hotel Columbus/Costa Rica, 2026-09-16): este
   // clasificador (solo texto) puede reconocer por contexto que un documento es en realidad un gasto

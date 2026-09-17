@@ -25,7 +25,7 @@ export interface DocumentoLocalEntrante {
    * y sin esto el asistente no tenía forma de saber a qué correo/hilo
    * contestar.
    */
-  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string };
+  correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string; /** Identidad ESTABLE del adjunto entre lecturas del correo (a diferencia de attachmentIdGmail) — ver AdjuntoCorreo.partId en gmail/client.ts. Se usa para "¿ya procesé este adjunto?", nunca para descargar. */ partId?: string };
   /**
    * Pedido explícito de Carlos, tras un caso real: un correo con 2 adjuntos
    * distintos (mismo expediente de envío marítimo) mandó 2 propuestas
@@ -80,7 +80,11 @@ export async function procesarDocumentoLocal(
         deColaCorreo: entrada.correoOrigen?.deColaCorreo,
         origenAdjuntoGmail:
           entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
-            ? { mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail }
+            ? {
+                mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
+                attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail,
+                partId: entrada.correoOrigen.partId,
+              }
             : undefined,
         correoOrigen: entrada.correoOrigen
           ? {

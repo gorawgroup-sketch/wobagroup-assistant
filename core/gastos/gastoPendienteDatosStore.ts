@@ -62,7 +62,7 @@ export interface GastoPendienteDatos {
    * el cuerpo del correo (pensado solo para cuando nunca hubo un adjunto real), adjuntando un
    * documento que no es la factura real. Ver PropuestaGasto.origenAdjuntoGmail (gastoProposalSheet.ts).
    */
-  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string };
+  origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string; partId?: string };
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;

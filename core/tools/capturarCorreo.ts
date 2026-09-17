@@ -176,6 +176,7 @@ export const capturarCorreoTool: ToolDefinition = {
             // descargar el adjunto (resumen.id = Gmail interno).
             mensajeIdGmail: resumen.id,
             attachmentIdGmail: adjunto.attachmentId,
+            partId: adjunto.partId,
           },
         });
 

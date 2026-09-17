@@ -110,10 +110,11 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
     // Ya se archivó de verdad (resultado.ok) — registra la resolución para que un reproceso futuro
     // del mismo correo no vuelva a descargar este adjunto (ver documentoArchivadoPorCorreoStore.ts;
     // mismo criterio que documentCallbackHandler.ts, solo en el punto real de éxito, nunca al proponer).
-    if (pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.attachmentIdGmail) {
+    if (pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.partId) {
       await registrarDocumentoArchivadoDesdeCorreo({
         mensajeIdGmail: pendiente.correoOrigen.mensajeIdGmail,
-        attachmentId: pendiente.correoOrigen.attachmentIdGmail,
+        // partId (estable entre lecturas), no attachmentIdGmail — ver AdjuntoCorreo.partId en gmail/client.ts.
+        attachmentId: pendiente.correoOrigen.partId,
       }).catch((error) => console.error("[reclasificarDocumentoPendiente] Error registrando adjunto archivado (no crítico):", error));
     }
 
@@ -160,10 +161,10 @@ export const descartarDocumentoPendienteTool: ToolDefinition = {
 
     // Descartar es una decisión final legítima — registra la resolución igual que un archivado
     // exitoso, para que un reproceso futuro del mismo correo no vuelva a descargar este adjunto.
-    if (pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.attachmentIdGmail) {
+    if (pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.partId) {
       await registrarDocumentoArchivadoDesdeCorreo({
         mensajeIdGmail: pendiente.correoOrigen.mensajeIdGmail,
-        attachmentId: pendiente.correoOrigen.attachmentIdGmail,
+        attachmentId: pendiente.correoOrigen.partId,
       }).catch((error) => console.error("[reclasificarDocumentoPendiente] Error registrando adjunto descartado (no crítico):", error));
     }
 

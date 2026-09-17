@@ -354,8 +354,15 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     // de las `correo.adjuntos.length` decisiones que establecerPendientesActivo reserva para este
     // correo (ver esa llamada, en avanzarColaCorreoSiActivo) — solo las decisiones reales sobre cada
     // adjunto avanzan la cola, para no desincronizar el contador.
+    // Pedido explícito de Carlos, tras un caso real (Footprint, Modelo 303/349 de IVA, 2026-09-17):
+    // cuando un correo trae varios adjuntos, cada uno mandaba su propia propuesta SIN decir de qué
+    // correo venía ni de qué trataba — "no sé de qué se trata el contexto completo del mail al que
+    // corresponden esos archivos". Se reutiliza el resumen que analizarCorreo ya calculó arriba (sin
+    // costo extra) para dar contexto real en CADA mensaje de adjunto, no solo un contador "N de M".
+    let resumenCorreoParaAdjuntos: string | undefined;
     try {
       const analisisConAdjuntos = await analizarCorreo(correo, cuerpoCompleto, true);
+      resumenCorreoParaAdjuntos = analisisConAdjuntos.resumen;
       if (analisisConAdjuntos.tipo === "necesita_respuesta" || analisisConAdjuntos.tipo === "instruccion_jefe") {
         const propuestaSolicitud = await crearPropuestaAccionCorreo({
           chatId,
@@ -402,12 +409,20 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       // adjuntos distintos (mismo expediente de envío marítimo) generó 2
       // propuestas seguidas y pareció que había llegado duplicado — eran
       // documentos reales distintos, cada uno con su propia decisión, pero
-      // nada en el mensaje lo aclaraba. Solo se agrega la nota cuando hay
-      // más de un adjunto — un correo con uno solo no la necesita.
+      // nada en el mensaje lo aclaraba. El contador "N de M" solo hace
+      // falta con más de un adjunto — un correo con uno solo no lo
+      // necesita, pero el contexto del correo (de/asunto/resumen) sí va
+      // SIEMPRE, para no repetir el caso de Footprint (ver hallazgo arriba).
+      const contextoCorreo = [
+        `📧 De: ${correo.de} — Asunto: "${correo.asunto || "(sin asunto)"}"`,
+        resumenCorreoParaAdjuntos,
+      ]
+        .filter(Boolean)
+        .join("\n");
       const notaAdjunto =
         correo.adjuntos.length > 1
-          ? `📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
-          : undefined;
+          ? `${contextoCorreo}\n📎 Adjunto ${indiceAdjunto} de ${correo.adjuntos.length} de este correo — cada uno es una decisión independiente, no es que se haya repetido.`
+          : contextoCorreo;
 
       // Hallazgo real de auditoría (caso Avianca/Larrauri, 2026-09-10, causa confirmada 2026-09-14
       // con el caso Eurohotel Gran Via Fira — ver resolverUnoActivo en colaRevisionStore.ts): este
@@ -424,7 +439,9 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       // no una sola vez antes del loop, a propósito: un correo con varios adjuntos reales y distintos
       // (ver el caso citado arriba) puede tener UNO ya resuelto y OTRO genuinamente pendiente todavía —
       // un chequeo a nivel de correo entero habría saltado también ese otro, sin resolver, por error.
-      const gastoYaCreado = await buscarGastoDesdeCorreo(correo.id, adjunto.attachmentId).catch((error) => {
+      // partId (no attachmentId) — ver el comentario de AdjuntoCorreo.partId en gmail/client.ts:
+      // attachmentId cambia en cada lectura del correo, partId no.
+      const gastoYaCreado = await buscarGastoDesdeCorreo(correo.id, adjunto.partId).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya generó un gasto (no crítico, sigue igual):`, error);
         return undefined;
       });
@@ -446,7 +463,7 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       // revisar_correo_puntual — ambos pasan por este mismo loop) lo volvía a descargar y clasificar
       // desde cero. Mismo criterio granular que el chequeo de arriba: por adjunto, no por correo
       // entero, para no saltarse por error un adjunto real y distinto que sí siga pendiente.
-      const yaArchivado = await yaSeArchivoDesdeCorreo(correo.id, adjunto.attachmentId).catch((error) => {
+      const yaArchivado = await yaSeArchivoDesdeCorreo(correo.id, adjunto.partId).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya se archivó (no crítico, sigue igual):`, error);
         return false;
       });
@@ -513,6 +530,9 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
             // reDescargarAdjuntoSiFalta.ts).
             mensajeIdGmail: correo.id,
             attachmentIdGmail: adjunto.attachmentId,
+            // Estable entre lecturas (a diferencia de attachmentIdGmail) — es lo que se usa para
+            // registrar/consultar "¿ya se resolvió este adjunto?" (ver AdjuntoCorreo.partId).
+            partId: adjunto.partId,
           },
           notaAdjunto,
         });
