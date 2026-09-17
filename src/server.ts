@@ -326,6 +326,19 @@ function notificarEstadoSolicitudChat(estado: string): void {
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
+/**
+ * Sonda mínima de arranque para Railway.
+ *
+ * No consulta Holded, Sheets, Drive ni proveedores de IA: su único propósito
+ * es confirmar que el proceso HTTP terminó de arrancar y puede responder. Al
+ * no exponer colas, cuentas ni configuración interna, también es segura como
+ * ruta pública sin autenticación.
+ */
+app.get("/healthz", (_req: Request, res: Response) => {
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ status: "ok" });
+});
+
 app.get("/health", (_req: Request, res: Response) => {
   const herramientas = obtenerEstadoPlanificadorHerramientas();
   res.json({
