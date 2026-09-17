@@ -1,7 +1,6 @@
 import { fetchDetalleRegistros, obtenerUltimaVerificacionEstructura, invalidarCacheDetalleRegistros } from "../google/cashflowSheet";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
-import { esDiaHabilEspana } from "../utils/diaHabil";
 
 /**
  * Job diario: pedido explícito de Carlos (2026-09-09) — "algunas veces incluimos o quitamos filas o
@@ -16,16 +15,7 @@ import { esDiaHabilEspana } from "../utils/diaHabil";
  * cambió de lugar, mismo criterio de "silencio = todo bien" que revisarNumeracionCashflow.ts.
  */
 export async function revisarEstructuraCashflow(referenceDate: Date = new Date()): Promise<{ problemas: number }> {
-  if (!esDiaHabilEspana(referenceDate)) {
-    console.log("[revisarEstructuraCashflow] Fin de semana, no se envía el aviso.");
-    return { problemas: 0 };
-  }
-
-  const admins = await obtenerAdmins();
-  if (admins.length === 0) {
-    console.error("[revisarEstructuraCashflow] No hay ningún admin registrado, no se puede notificar.");
-    return { problemas: 0 };
-  }
+  void referenceDate;
 
   invalidarCacheDetalleRegistros();
   await fetchDetalleRegistros();
@@ -36,12 +26,20 @@ export async function revisarEstructuraCashflow(referenceDate: Date = new Date()
     return { problemas: 0 };
   }
 
+  // La revisión no depende de que Telegram esté configurado. Los destinatarios se consultan
+  // únicamente si hay algo accionable, evitando además una lectura externa en los días sanos.
+  const admins = await obtenerAdmins();
+  if (admins.length === 0) {
+    console.error("[revisarEstructuraCashflow] Hay problemas, pero no existe ningún admin para notificarlos.");
+    return { problemas: problemas.length };
+  }
+
   const lineas = problemas.map((p) => `  • [${p.bloque}] ${p.detalle}`).join("\n");
   const texto = [
-    `⚠️ Detecté ${problemas.length} posible(s) cambio(s) de estructura en la hoja DATOS del cashflow:`,
+    `⚠️ WOBI releyó toda la hoja DATOS y encontró ${problemas.length} punto(s) que no puede resolver sin inventar información:`,
     lineas,
     "",
-    "Si moviste/agregaste/quitaste filas o columnas a mano, avísame qué cambió para que ajuste la lectura — mientras tanto, algunos datos de esa área podrían estar leyéndose mal o quedando invisibles.",
+    "Los movimientos de filas o columnas se corrigen automáticamente a partir de los títulos y encabezados actuales. Solo las filas indicadas quedan excluidas de los cálculos hasta que su dato fuente vuelva a ser inequívoco.",
   ].join("\n");
 
   for (const admin of admins) {
