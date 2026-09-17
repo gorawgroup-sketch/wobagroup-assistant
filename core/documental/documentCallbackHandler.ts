@@ -466,18 +466,22 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
 }
 
 /**
- * Maneja el botón "❌ Descartar, no hacer nada" de la pregunta de
- * desambiguación (ver processClassification.ts) — pedido explícito de
- * Carlos: siempre debe existir una forma de decir "no hagas nada con esto"
- * en vez de verse forzado a responder con empresa/carpeta o quedar
- * atrapado. PendienteDesambiguacion no guarda messageId (a diferencia de
- * las propuestas de clasificación), así que la confirmación se manda como
- * mensaje nuevo en vez de editar el original.
+ * Maneja los botones de la pregunta de desambiguación (ver processClassification.ts) — pedido
+ * explícito de Carlos: siempre debe existir una forma de decir "no hagas nada con esto" en vez de
+ * verse forzado a responder con empresa/carpeta o quedar atrapado. PendienteDesambiguacion no guarda
+ * messageId (a diferencia de las propuestas de clasificación), así que las confirmaciones se mandan
+ * como mensaje nuevo en vez de editar el original.
  *
  * Caso real (2026-09-07): con varios adjuntos ambiguos del mismo correo, cada uno manda su propia
- * pregunta — resuelve SIEMPRE por id (consumirPendienteDesambiguacionPorId), nunca comparando
- * contra "la" pendiente del chat, porque ahora pueden coexistir varias a la vez (ver
- * disambiguationStore.ts) y cada botón debe poder resolverse en cualquier orden.
+ * pregunta — resuelve SIEMPRE por id, nunca comparando contra "la" pendiente del chat, porque ahora
+ * pueden coexistir varias a la vez (ver disambiguationStore.ts) y cada botón debe poder resolverse
+ * en cualquier orden.
+ *
+ * Segundo hallazgo real (Footprint, Modelo 303/349, 2026-09-17): "❌ Descartar" era la ÚNICA acción
+ * con botón acá — un documento ambiguo tenía MENOS alternativas reales que uno bien clasificado. Los
+ * 3 botones nuevos (guardar conocimiento/crear alerta/generar respuesta) NO consumen la pregunta —
+ * mismo criterio que sus equivalentes doc_conocimiento/doc_alerta/doc_responder — así que responder
+ * por texto la empresa/carpeta, o "❌ Descartar" después, siguen disponibles.
  */
 export async function handleDesambiguacionCallback(callback: TelegramCallbackQuery): Promise<void> {
   const chatId = callback.message?.chat.id;
@@ -486,7 +490,67 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     return;
   }
 
-  const [, idBoton] = (callback.data ?? "").split(":");
+  const [accion, idBoton] = (callback.data ?? "").split(":");
+
+  if (accion === "desamb_conocimiento" || accion === "desamb_alerta" || accion === "desamb_responder") {
+    const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
+    const pendientePeek = todas.find((p) => p.id === idBoton);
+    if (!pendientePeek) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id);
+
+    if (accion === "desamb_alerta") {
+      await guardarPendienteAlertaDocumento({
+        chatId,
+        nombreArchivoOriginal: pendientePeek.nombreArchivoOriginal,
+        empresa: "desconocida",
+        tipoDocumento: pendientePeek.preguntaFormulada,
+      });
+      await sendTelegramMessage(
+        chatId,
+        `⏰ Ok — respóndeme qué quieres que te recuerde sobre "${pendientePeek.nombreArchivoOriginal}" y cuándo (ej. "avísame en 3 días si no se ha enviado a aduana").`
+      );
+      return;
+    }
+
+    if (accion === "desamb_responder") {
+      if (!pendientePeek.correoOrigen) {
+        await sendTelegramMessage(chatId, "Este documento no vino de un correo — no hay nada que responder.");
+        return;
+      }
+      await ofrecerResponderCorreo(
+        chatId,
+        pendientePeek.correoOrigen.de,
+        pendientePeek.correoOrigen.asunto,
+        pendientePeek.correoOrigen.threadId,
+        pendientePeek.correoOrigen.messageIdHeader,
+        `Se recibió "${pendientePeek.nombreArchivoOriginal}", todavía sin identificar con certeza a qué empresa/carpeta pertenece. Redacta una respuesta breve y profesional (ej. acuse de recibo).`
+      );
+      return;
+    }
+
+    // desamb_conocimiento
+    try {
+      const transcripcion = await transcribirParaCaptura(pendientePeek.rutaLocal, pendientePeek.mimeType, pendientePeek.captionOriginal);
+      const contenido = [
+        pendientePeek.correoOrigen
+          ? `De: ${pendientePeek.correoOrigen.de}\nAsunto: ${pendientePeek.correoOrigen.asunto}`
+          : `Archivo: ${pendientePeek.nombreArchivoOriginal}`,
+        "",
+        transcripcion,
+      ].join("\n");
+      await iniciarSeleccionEmpresaCaptura(chatId, contenido, pendientePeek.nombreArchivoOriginal, undefined, pendientePeek.correoOrigen?.deColaCorreo === true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[documentCallbackHandler] Error leyendo documento ambiguo para guardar como conocimiento:", message);
+      await sendTelegramMessage(chatId, `⚠️ No se pudo leer "${pendientePeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}`);
+    }
+    return;
+  }
+
   await answerCallbackQuerySafe(callback.id);
 
   const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;

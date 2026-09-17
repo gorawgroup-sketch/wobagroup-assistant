@@ -151,9 +151,28 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     // el callback_data (bug real de auditoría: sin id, un botón viejo de una
     // pregunta ya reemplazada por un documento más reciente del mismo chat
     // podía descartar el documento ACTUAL sin relación con ese botón).
-    await sendTelegramMessageWithButtons(archivo.chatId, textoPregunta, [
+    //
+    // Segundo hallazgo real de auditoría (Footprint, Modelo 303/349, 2026-09-17): "Descartar" era la
+    // ÚNICA opción con botón — el resto ("guardar como conocimiento", "crear alerta", "generar
+    // respuesta") solo existían del lado del flujo de confianza alta/media, así que un documento
+    // ambiguo quedaba con menos alternativas reales que uno bien clasificado, justo al revés de lo
+    // que hace falta. Ninguno de estos 3 consume la pregunta (igual que su equivalente en el flujo de
+    // confianza alta/media) — responder por texto la empresa/carpeta, o "❌ Descartar", siguen
+    // disponibles después.
+    const filasBotonesDesambiguacion = [
+      [
+        { text: "🧠 Guardar como conocimiento", callback_data: `desamb_conocimiento:${pendiente.id}` },
+        { text: "⏰ Crear alerta", callback_data: `desamb_alerta:${pendiente.id}` },
+      ],
       [{ text: "❌ Descartar, no hacer nada", callback_data: `desamb_descartar:${pendiente.id}` }],
-    ]);
+    ];
+    if (archivo.correoOrigen) {
+      filasBotonesDesambiguacion.splice(1, 0, [
+        { text: "✍️ Generar respuesta al correo", callback_data: `desamb_responder:${pendiente.id}` },
+      ]);
+    }
+
+    await sendTelegramMessageWithButtons(archivo.chatId, textoPregunta, filasBotonesDesambiguacion);
     return;
   }
 
