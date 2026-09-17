@@ -190,6 +190,7 @@ async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): 
     const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
       mensajeIdGmail: propuesta.origenAdjuntoGmail?.mensajeIdGmail,
       attachmentIdGmail: propuesta.origenAdjuntoGmail?.attachmentIdGmail,
+      partId: propuesta.origenAdjuntoGmail?.partId,
     });
     if (recuperado) {
       await adjuntar(propuesta.mimeType, propuesta.nombreArchivoOriginal);

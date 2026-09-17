@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Empresa } from "./client";
 
-export type EstadoConciliacionMovimiento = "preparada" | "conciliando" | "verificada" | "incierta";
+export type EstadoConciliacionMovimiento =
+  | "preparada"
+  | "conciliando"
+  | "verificada"
+  | "verificada_revision"
+  | "incierta"
+  | "cancelada";
 
 export interface ResultadoConciliacionMovimiento {
   ok: boolean;
@@ -31,6 +37,9 @@ export interface RegistroConciliacionMovimiento {
   creadoEn: number;
   actualizadoEn: number;
   verificadoEn?: number;
+  resueltoEn?: number;
+  resolucion?: string;
+  historialResoluciones?: string;
 }
 
 export interface RepositorioConciliacionesMovimiento {
@@ -39,8 +48,9 @@ export interface RepositorioConciliacionesMovimiento {
   actualizarPreparada(clave: string, registro: RegistroConciliacionMovimiento): Promise<RegistroConciliacionMovimiento | undefined>;
   marcarConciliando(clave: string): Promise<RegistroConciliacionMovimiento | undefined>;
   marcarPreparada(clave: string): Promise<void>;
-  marcarVerificada(clave: string): Promise<void>;
+  marcarVerificada(clave: string, resultado: ResultadoConciliacionMovimiento): Promise<void>;
   marcarIncierta(clave: string): Promise<void>;
+  marcarCancelada(clave: string, motivo: string): Promise<void>;
   listarPendientes(): Promise<RegistroConciliacionMovimiento[]>;
 }
 
@@ -78,6 +88,27 @@ export class MovimientoYaConciliadoError extends Error {
     super("El movimiento ya estaba conciliado antes de esta operación; Wobi no envió otro POST.");
     this.name = "MovimientoYaConciliadoError";
   }
+}
+
+export class ConciliacionMovimientoCanceladaError extends Error {
+  constructor(motivo?: string) {
+    super(
+      motivo
+        ? `Esta conciliación fue cancelada de forma auditada: ${motivo}`
+        : "Esta conciliación fue cancelada de forma auditada y no se puede repetir con el mismo documento."
+    );
+    this.name = "ConciliacionMovimientoCanceladaError";
+  }
+}
+
+export function conciliacionRequiereRevision(resultado: ResultadoConciliacionMovimiento): boolean {
+  return Boolean(
+    resultado.movimientoParcial ||
+    (resultado.pendienteEnCompra !== undefined && resultado.pendienteEnCompra > 0) ||
+    (resultado.pendienteEnMovimiento !== undefined && resultado.pendienteEnMovimiento > 0) ||
+    resultado.ajusteCambioDivisa?.estado === "requiere_revision" ||
+    resultado.ajusteCambioDivisa?.estado === "incierto"
+  );
 }
 
 function hash(valor: string): string {
@@ -139,7 +170,7 @@ async function confirmar(
 ): Promise<ResultadoConciliacionMovimiento | undefined> {
   const inspeccion = await transporte.inspeccionar(registro);
   if (inspeccion.estado !== "verificada") return undefined;
-  await repositorio.marcarVerificada(registro.clave);
+  await repositorio.marcarVerificada(registro.clave, inspeccion.resultado);
   return inspeccion.resultado;
 }
 
@@ -157,7 +188,11 @@ export async function ejecutarConciliacionMovimientoDurable(
     registro = actualizado;
   }
 
-  if (registro.estado === "verificada") {
+  if (registro.estado === "cancelada") {
+    throw new ConciliacionMovimientoCanceladaError(registro.resolucion);
+  }
+
+  if (registro.estado === "verificada" || registro.estado === "verificada_revision") {
     try {
       const inspeccion = await transporte.inspeccionar(registro);
       if (inspeccion.estado === "verificada") return { resultado: inspeccion.resultado, reutilizada: true };
@@ -219,17 +254,19 @@ export async function ejecutarConciliacionMovimientoDurable(
 export async function reconciliarConciliacionesMovimientoPendientes(
   repositorio: RepositorioConciliacionesMovimiento,
   inspeccionar: TransporteConciliacionMovimiento["inspeccionar"]
-): Promise<{ revisadas: number; verificadas: number; inciertas: number; errores: number }> {
+): Promise<{ revisadas: number; verificadas: number; revisiones: number; inciertas: number; errores: number }> {
   const pendientes = await repositorio.listarPendientes();
   let verificadas = 0;
+  let revisiones = 0;
   let inciertas = 0;
   let errores = 0;
   for (const registro of pendientes) {
     try {
       const inspeccion = await inspeccionar(registro);
       if (inspeccion.estado === "verificada") {
-        await repositorio.marcarVerificada(registro.clave);
-        verificadas++;
+        await repositorio.marcarVerificada(registro.clave, inspeccion.resultado);
+        if (conciliacionRequiereRevision(inspeccion.resultado)) revisiones++;
+        else verificadas++;
       } else {
         if (registro.estado === "conciliando") await repositorio.marcarIncierta(registro.clave);
         inciertas++;
@@ -238,5 +275,5 @@ export async function reconciliarConciliacionesMovimientoPendientes(
       errores++;
     }
   }
-  return { revisadas: pendientes.length, verificadas, inciertas, errores };
+  return { revisadas: pendientes.length, verificadas, revisiones, inciertas, errores };
 }
