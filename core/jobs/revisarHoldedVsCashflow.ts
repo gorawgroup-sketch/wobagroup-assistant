@@ -218,8 +218,17 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     "APLAZAMIENTO_IMPUESTOS",
   ]);
   const todosLosRegistros = await fetchDetalleRegistros();
+  // Hallazgo real de auditoría (Carlos, 2026-09-17, caso real S37 — ver el mismo fix en
+  // detectarSinMovimientoBancario más abajo): cuando el registro SÍ trae empresa (columna real en la
+  // hoja — INGRESOS, PAGOS_PROYECTOS, PAGOS_EXTRAS), se exige que coincida con la empresa consultada;
+  // cuando no la trae (GASTOS_FIJOS y las demás categorías sin esa columna en la hoja), se conserva
+  // igual que antes — es la única opción posible sin esa columna, pero ya no se descarta a ciegas un
+  // registro que SÍ declara la empresa contraria.
   const registrosSemana = todosLosRegistros.filter(
-    (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_EJECUCION_SEMANAL.has(r.categoria)
+    (r) =>
+      r.semana.toUpperCase() === semanaLabel &&
+      CATEGORIAS_EJECUCION_SEMANAL.has(r.categoria) &&
+      (r.empresa === undefined || r.empresa === empresa)
   );
   const duplicadosAprendidos = await obtenerTodosLosDuplicadosConfirmados().catch((error) => {
     console.error("[revisarHoldedVsCashflow] Error leyendo duplicados aprendidos (no crítico):", error);
@@ -305,19 +314,24 @@ export interface CandidatoSinMovimientoBancario {
   valorAbs: number;
 }
 
-/**
- * Dirección INVERSA de detectarNoRegistrados: en vez de "¿qué hay en el
- * banco que no está en el cashflow?", busca "¿qué gasto está registrado en
- * el cashflow de esta semana que NO tiene un movimiento bancario real que
- * lo respalde?" — un pago que se anotó como hecho/programado pero el banco
- * todavía no refleja ninguna salida de dinero equivalente. Mismo matching
- * por monto (con tolerancia de 1 céntimo) que detectarNoRegistrados, solo
- * que comparando en el sentido contrario. Nace de un pedido real: "para
- * esto debes buscar que los gastos estén en el cashflow para esta semana,
- * pero los pagos efectivamente se ven reflejados en bancos... es básicamente
- * un cruce de info entre el área de bancos y las cuentas y el cashflow".
- */
-export async function detectarSinMovimientoBancario(
+// Mismo ajuste que detectarNoRegistrados: incluye GASTOS_FIJOS y
+// APLAZAMIENTO_IMPUESTOS, que también son ejecución real de la semana y
+// antes quedaban fuera de esta comparación.
+const CATEGORIAS_GASTO_SEMANAL = new Set([
+  "PAGOS_PROYECTOS",
+  "PAGOS_EXTRAS",
+  "GASTOS_FIJOS",
+  "GASTOS_CONSULTORES_MES_ACTUAL",
+  "GASTOS_CONSULTORES_PROXIMO_MES",
+  "IMPUESTOS_POR_PAGAR",
+  "APLAZAMIENTO_IMPUESTOS",
+]);
+
+function claveCandidatoSinMovimiento(c: CandidatoSinMovimientoBancario): string {
+  return `${c.descripcion.trim().toLowerCase()}|${c.valorAbs.toFixed(2)}|${c.categoria}`;
+}
+
+async function calcularCandidatosSinMovimientoUnaPasada(
   empresa: EmpresaCashflow,
   semanaLabel: string,
   desde: string,
@@ -330,20 +344,14 @@ export async function detectarSinMovimientoBancario(
   ).flat();
   const valoresBanco = movimientosHolded.map((m) => Math.abs(valorEnEuros(m)));
 
-  // Mismo ajuste que detectarNoRegistrados: incluye GASTOS_FIJOS y
-  // APLAZAMIENTO_IMPUESTOS, que también son ejecución real de la semana y
-  // antes quedaban fuera de esta comparación.
-  const CATEGORIAS_GASTO_SEMANAL = new Set([
-    "PAGOS_PROYECTOS",
-    "PAGOS_EXTRAS",
-    "GASTOS_FIJOS",
-    "GASTOS_CONSULTORES_MES_ACTUAL",
-    "GASTOS_CONSULTORES_PROXIMO_MES",
-    "IMPUESTOS_POR_PAGAR",
-    "APLAZAMIENTO_IMPUESTOS",
-  ]);
+  // Cuando el registro SÍ trae empresa (columna real en la hoja), se exige que coincida con la
+  // empresa consultada — ver el hallazgo real de auditoría completo en el docstring de
+  // detectarSinMovimientoBancario, más abajo.
   const registrosGastos = (await fetchDetalleRegistros()).filter(
-    (r) => r.semana.toUpperCase() === semanaLabel && CATEGORIAS_GASTO_SEMANAL.has(r.categoria)
+    (r) =>
+      r.semana.toUpperCase() === semanaLabel &&
+      CATEGORIAS_GASTO_SEMANAL.has(r.categoria) &&
+      (r.empresa === undefined || r.empresa === empresa)
   );
 
   const candidatos: CandidatoSinMovimientoBancario[] = [];
@@ -364,6 +372,45 @@ export async function detectarSinMovimientoBancario(
   }
 
   return candidatos;
+}
+
+/**
+ * Dirección INVERSA de detectarNoRegistrados: en vez de "¿qué hay en el
+ * banco que no está en el cashflow?", busca "¿qué gasto está registrado en
+ * el cashflow de esta semana que NO tiene un movimiento bancario real que
+ * lo respalde?" — un pago que se anotó como hecho/programado pero el banco
+ * todavía no refleja ninguna salida de dinero equivalente. Mismo matching
+ * por monto (con tolerancia de 1 céntimo) que detectarNoRegistrados, solo
+ * que comparando en el sentido contrario. Nace de un pedido real: "para
+ * esto debes buscar que los gastos estén en el cashflow para esta semana,
+ * pero los pagos efectivamente se ven reflejados en bancos... es básicamente
+ * un cruce de info entre el área de bancos y las cuentas y el cashflow".
+ *
+ * Hallazgo real de auditoría (Carlos, 2026-09-17, caso real S37 — "Efectoled" 82,80€ y "Rist Pizz
+ * Tovo" 47,40€): una sola lectura de listBankMovements reportó estos dos gastos como "sin movimiento
+ * bancario" aunque el movimiento real, ya existente en Holded desde varios días antes (no algo recién
+ * escrito), sí estaba ahí — confirmado releyendo minutos después, de forma repetida y consistente, que
+ * el mismo movimiento SÍ aparece y SÍ hace match. Es decir: una lectura puntual de la API de Holded
+ * puede, de forma transitoria, no reflejar un movimiento real que sí existe — y reportar eso como una
+ * alerta contable definitiva es inaceptable ("esto es contabilidad, estas equivocaciones pueden salir
+ * muy caras", pedido explícito de Carlos). Nunca se confía en una sola lectura: un candidato solo se
+ * reporta como realmente "sin movimiento bancario" si sigue apareciendo así en DOS lecturas
+ * independientes y consecutivas — un movimiento real que existe de verdad aparece en ambas; una
+ * inconsistencia transitoria de la API, con altísima probabilidad, no se repite dos veces seguidas.
+ */
+export async function detectarSinMovimientoBancario(
+  empresa: EmpresaCashflow,
+  semanaLabel: string,
+  desde: string,
+  hasta: string
+): Promise<CandidatoSinMovimientoBancario[]> {
+  const primeraPasada = await calcularCandidatosSinMovimientoUnaPasada(empresa, semanaLabel, desde, hasta);
+  if (primeraPasada.length === 0) return [];
+
+  const segundaPasada = await calcularCandidatosSinMovimientoUnaPasada(empresa, semanaLabel, desde, hasta);
+  const clavesSegundaPasada = new Set(segundaPasada.map(claveCandidatoSinMovimiento));
+
+  return primeraPasada.filter((c) => clavesSegundaPasada.has(claveCandidatoSinMovimiento(c)));
 }
 
 /**
