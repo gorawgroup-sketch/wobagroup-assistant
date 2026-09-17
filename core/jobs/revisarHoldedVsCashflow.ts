@@ -1,4 +1,3 @@
-import { listBankMovements, listTreasuryAccounts, type BankMovement } from "../holded/client";
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
@@ -9,15 +8,9 @@ import type { BloqueEscritura } from "../google/cashflowWrite";
 import { montosCercanos } from "../utils/montos";
 import { textosParecidos } from "../utils/textoParecido";
 import { obtenerTodosLosDuplicadosConfirmados, type FilaDuplicado } from "../cashflow/duplicadosConfirmadosSheet";
+import { generarCruceCashflowHolded, parsearImporteCashflow } from "../cashflow/cruceHoldedCashflow";
 
 const TOLERANCIA_EUR = 0.01;
-// Tolerancia más ancha para montos que vienen de una conversión de divisa
-// (accounting_amount, ver valorEnEuros) — verificado en vivo un caso real:
-// Holded convirtió un abono en USD a 7.964,16 €, pero el cashflow lo tenía
-// registrado a mano en 7.964,17 € (redondeo de tipo de cambio distinto al
-// calcular en momentos diferentes) — la diferencia real es de un céntimo,
-// legítima, no un error de nadie.
-const TOLERANCIA_EUR_CONVERTIDO = 0.05;
 // Deliberadamente acotado a WOBA/EWORKS (no el tipo Empresa completo de
 // holded/client.ts, que ya incluye Footprint) — esta reconciliación escribe
 // en el cashflow de Sheets, y Footprint no tiene acceso a cashflow todavía.
@@ -25,9 +18,7 @@ export type EmpresaCashflow = "WOBA" | "EWORKS";
 const EMPRESAS: EmpresaCashflow[] = ["WOBA", "EWORKS"];
 
 export function parseValorFormateado(valor: string): number {
-  const limpio = valor.replace(/[^0-9.\-]/g, "");
-  const numero = Number(limpio);
-  return Number.isFinite(numero) ? numero : 0;
+  return parsearImporteCashflow(valor);
 }
 
 
@@ -65,53 +56,6 @@ function construirOpcionesBloque(
   return opciones;
 }
 
-// El cashflow solo registra ingresos externos o pagos a externos — pedido
-// explícito de Carlos: conversiones de moneda y traslados entre cuentas
-// propias de la misma empresa NUNCA van ahí, así que nunca deben salir como
-// "sin registrar". Verificado en vivo el patrón real de Holded/Wise: una
-// conversión aparece como DOS movimientos con la MISMA descripción literal
-// "Converted Usd To Eur" (uno en cada cuenta propia — ej. "Emoney EUR" y
-// "Emoney USD" de WOBA), a veces con "(fee: XXX)" al final.
-const RE_CONVERSION_MONEDA = /^converted\s+\S+\s+to\s+\S+/i;
-
-// Hallazgo real de auditoría (Carlos, 2026-09-14 — transferencia de 500€, WOBA, 07/09/2026): "Business
-// Atelier Europa" es una entidad propia del grupo usada como cuenta puente/tesorería entre WOBA y
-// EWORKS, no un tercero — verificado en vivo contra el histórico real de movimientos bancarios de
-// ambas empresas (docenas de casos, 2025-2026): la propia descripción bancaria ya lo dice literalmente
-// ("Transferencia Propia", "Gastos Internos", "Entre Company"), y varios pares casan en monto y fecha
-// exacta entre dos cuentas propias distintas (ej. WOBA 07/09/2026: -500€ en BBVA "TRANSFERENCIAS
-// BUSINESS ATELIER EUROPA S.L." + 500€ en Main "Payment From Business Atelier Europa S.l." — el mismo
-// caso que reportó Carlos). Nunca aparece "Business Atelier LLC" (proveedor real y NO relacionado de
-// Footprint, ver core/holded/write.ts) en ningún movimiento bancario real de WOBA/EWORKS — el patrón
-// exige "europa" para no arriesgarse a confundirlos si alguna vez coinciden.
-const RE_CUENTA_PROPIA_BUSINESS_ATELIER_EUROPA = /business\s+atelier\s+europa/i;
-
-function esMovimientoInternoOConversion(descripcion: string | undefined): boolean {
-  return RE_CONVERSION_MONEDA.test(descripcion ?? "") || RE_CUENTA_PROPIA_BUSINESS_ATELIER_EUROPA.test(descripcion ?? "");
-}
-
-/**
- * El cashflow SIEMPRE está en EUR, pero varias cuentas de Holded operan en
- * otras divisas (USD, GBP...) — `amount` viene en la divisa nativa de la
- * cuenta. Cuando `currency` no es EUR, Holded ya trae el equivalente
- * convertido en `accounting_amount`/`accounting_currency` (visible en el
- * propio Holded como la cifra en gris debajo del monto) — verificado en
- * vivo (pedido explícito de Carlos, con capturas de Holded): comparar el
- * monto nativo en USD contra el cashflow en EUR daba falsos "sin
- * registrar" para movimientos que sí estaban, solo que registrados por su
- * valor ya convertido a euros.
- */
-function valorEnEuros(mov: BankMovement): number {
-  const monedaNativa = (mov.currency ?? "EUR").toUpperCase();
-  if (monedaNativa !== "EUR" && mov.accounting_amount != null) {
-    const convertido =
-      typeof mov.accounting_amount === "number" ? mov.accounting_amount : Number(mov.accounting_amount);
-    if (Number.isFinite(convertido)) return convertido;
-  }
-  const nativo = typeof mov.amount === "number" ? mov.amount : Number(mov.amount ?? 0);
-  return Number.isFinite(nativo) ? nativo : 0;
-}
-
 export interface PosibleDuplicado {
   descripcionRegistro: string;
   /** Monto ya registrado en el cashflow para la fila parecida — necesario para registrarDuplicadoConfirmado si el usuario confirma. */
@@ -122,6 +66,10 @@ export interface PosibleDuplicado {
 
 export interface CandidatoNoRegistrado {
   empresa: EmpresaCashflow;
+  accountId?: string;
+  movementId?: string;
+  cuenta?: string;
+  moneda?: string;
   descripcion: string;
   fecha?: string;
   valorAbs: number;
@@ -187,105 +135,33 @@ function buscarPosibleDuplicado(
  * (core/tools/verificarCashflowActualizado.ts) sin duplicarla.
  */
 export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: string, desde: string, hasta: string) {
-  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived);
+  const cruce = await generarCruceCashflowHolded(empresa, semanaLabel, desde, hasta);
+  if (cruce.problemasCobertura.length > 0) {
+    throw new Error(
+      `No se puede afirmar que el cruce esté completo: ${cruce.problemasCobertura.join(" | ")}`
+    );
+  }
 
-  const movimientosHolded = (
-    await Promise.all(cuentas.map((c) => listBankMovements(empresa, c.id, desde, hasta)))
-  ).flat();
-
-  // Incluye GASTOS_FIJOS y APLAZAMIENTO_IMPUESTOS además de los 3 bloques
-  // originales — verificado en vivo que un gasto real (ej. "Sunreuse Woba",
-  // S35, 110€) vive en GASTOS_FIJOS y NO se estaba comparando contra los
-  // movimientos de Holded, generando un falso "sin registrar" para algo que
-  // ya estaba en la hoja (con el mismo monto e incluso el mismo mes).
-  // IMPUESTOS_POR_PAGAR se agregó junto con la corrección de lectura de la
-  // columna N (ver parsearSeccionesColumnaN en cashflowSheet.ts) — misma
-  // ejecución semanal real que APLAZAMIENTO_IMPUESTOS, solo que sin
-  // aplazamiento. GASTOS_CONSULTORES_MES_ACTUAL/PROXIMO_MES se agregaron
-  // junto con la corrección de lectura de la columna I (parsearSeccionesColumnaI)
-  // — misma ejecución semanal real que GASTOS_FIJOS, solo que separadas por
-  // categoría. PAGOS_PENDIENTES_ALBERTO/DEUDAS_PENDIENTES se dejan fuera a
-  // propósito: son saldos pendientes sin semana asignada, no ejecución de
-  // esta semana.
-  const CATEGORIAS_EJECUCION_SEMANAL = new Set([
-    "INGRESOS",
-    "PAGOS_PROYECTOS",
-    "PAGOS_EXTRAS",
-    "GASTOS_FIJOS",
-    "GASTOS_CONSULTORES_MES_ACTUAL",
-    "GASTOS_CONSULTORES_PROXIMO_MES",
-    "IMPUESTOS_POR_PAGAR",
-    "APLAZAMIENTO_IMPUESTOS",
-  ]);
   const todosLosRegistros = await fetchDetalleRegistros();
-  // Hallazgo real de auditoría (Carlos, 2026-09-17, caso real S37 — ver el mismo fix en
-  // detectarSinMovimientoBancario más abajo): cuando el registro SÍ trae empresa (columna real en la
-  // hoja — INGRESOS, PAGOS_PROYECTOS, PAGOS_EXTRAS), se exige que coincida con la empresa consultada;
-  // cuando no la trae (GASTOS_FIJOS y las demás categorías sin esa columna en la hoja), se conserva
-  // igual que antes — es la única opción posible sin esa columna, pero ya no se descarta a ciegas un
-  // registro que SÍ declara la empresa contraria.
   const registrosSemana = todosLosRegistros.filter(
-    (r) =>
-      r.semana.toUpperCase() === semanaLabel &&
-      CATEGORIAS_EJECUCION_SEMANAL.has(r.categoria) &&
-      (r.empresa === undefined || r.empresa === empresa)
+    (r) => r.semana.toUpperCase() === semanaLabel && r.empresa === empresa
   );
   const duplicadosAprendidos = await obtenerTodosLosDuplicadosConfirmados().catch((error) => {
     console.error("[revisarHoldedVsCashflow] Error leyendo duplicados aprendidos (no crítico):", error);
     return [] as FilaDuplicado[];
   });
 
-  const valoresRegistrados = registrosSemana.map((r) => Math.abs(parseValorFormateado(r.valor)));
-
-  const sinMatchIndividual: CandidatoNoRegistrado[] = [];
-
-  for (const mov of movimientosHolded) {
-    if (esMovimientoInternoOConversion(mov.description)) continue;
-
-    const amountEur = valorEnEuros(mov);
-    const valorAbs = Math.abs(amountEur);
-    const esConvertido = (mov.currency ?? "EUR").toUpperCase() !== "EUR";
-    const tolerancia = esConvertido ? TOLERANCIA_EUR_CONVERTIDO : TOLERANCIA_EUR;
-
-    const yaExiste = valoresRegistrados.some((v) => montosCercanos(v, valorAbs, tolerancia));
-    if (yaExiste) continue; // conservador: si hay duda razonable de match, no se propone
-
-    sinMatchIndividual.push({
+  const candidatos: CandidatoNoRegistrado[] = cruce.movimientosSinCashflow.map((mov) => ({
       empresa,
-      descripcion: mov.description ?? "(sin descripción)",
-      fecha: mov.booking_date?.slice(0, 10),
-      valorAbs,
-      esIngreso: amountEur > 0,
-    });
-  }
-
-  // Segunda pasada, pedida explícitamente: varios cargos del mismo
-  // proveedor (ej. varias compras de "Www.amazon" la misma semana) a veces
-  // no se registran uno a uno en el cashflow, sino como un solo total
-  // agrupado. Se agrupan por descripción exacta (normalizada) los que NO
-  // matchearon individualmente, y si la SUMA del grupo sí coincide con
-  // algún valor ya registrado, se da por registrado el grupo completo —
-  // mismo criterio conservador que el match individual (tolerancia de 1
-  // céntimo, nunca inventa un total que no está). Grupos de un solo
-  // movimiento no aportan nada nuevo (ya se probaron arriba), se dejan tal
-  // cual.
-  const porDescripcion = new Map<string, CandidatoNoRegistrado[]>();
-  for (const c of sinMatchIndividual) {
-    const clave = c.descripcion.trim().toLowerCase();
-    const grupo = porDescripcion.get(clave);
-    if (grupo) grupo.push(c);
-    else porDescripcion.set(clave, [c]);
-  }
-
-  const candidatos: CandidatoNoRegistrado[] = [];
-  for (const grupo of porDescripcion.values()) {
-    if (grupo.length > 1) {
-      const suma = grupo.reduce((acc, c) => acc + c.valorAbs, 0);
-      const sumaYaExiste = valoresRegistrados.some((v) => montosCercanos(v, suma, TOLERANCIA_EUR));
-      if (sumaYaExiste) continue;
-    }
-    candidatos.push(...grupo);
-  }
+      accountId: mov.accountId,
+      movementId: mov.id,
+      cuenta: mov.cuenta,
+      moneda: mov.moneda,
+      descripcion: mov.descripcion,
+      fecha: mov.fecha,
+      valorAbs: Math.abs(mov.valorEur),
+      esIngreso: mov.valorEur > 0,
+  }));
 
   // Clasifica solo los gastos (los ingresos se resuelven solos por el
   // signo) contra TODO el historial de la empresa, sin filtrar por semana —
@@ -312,66 +188,7 @@ export interface CandidatoSinMovimientoBancario {
   descripcion: string;
   categoria: string;
   valorAbs: number;
-}
-
-// Mismo ajuste que detectarNoRegistrados: incluye GASTOS_FIJOS y
-// APLAZAMIENTO_IMPUESTOS, que también son ejecución real de la semana y
-// antes quedaban fuera de esta comparación.
-const CATEGORIAS_GASTO_SEMANAL = new Set([
-  "PAGOS_PROYECTOS",
-  "PAGOS_EXTRAS",
-  "GASTOS_FIJOS",
-  "GASTOS_CONSULTORES_MES_ACTUAL",
-  "GASTOS_CONSULTORES_PROXIMO_MES",
-  "IMPUESTOS_POR_PAGAR",
-  "APLAZAMIENTO_IMPUESTOS",
-]);
-
-function claveCandidatoSinMovimiento(c: CandidatoSinMovimientoBancario): string {
-  return `${c.descripcion.trim().toLowerCase()}|${c.valorAbs.toFixed(2)}|${c.categoria}`;
-}
-
-async function calcularCandidatosSinMovimientoUnaPasada(
-  empresa: EmpresaCashflow,
-  semanaLabel: string,
-  desde: string,
-  hasta: string
-): Promise<CandidatoSinMovimientoBancario[]> {
-  const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived);
-
-  const movimientosHolded = (
-    await Promise.all(cuentas.map((c) => listBankMovements(empresa, c.id, desde, hasta)))
-  ).flat();
-  const valoresBanco = movimientosHolded.map((m) => Math.abs(valorEnEuros(m)));
-
-  // Cuando el registro SÍ trae empresa (columna real en la hoja), se exige que coincida con la
-  // empresa consultada — ver el hallazgo real de auditoría completo en el docstring de
-  // detectarSinMovimientoBancario, más abajo.
-  const registrosGastos = (await fetchDetalleRegistros()).filter(
-    (r) =>
-      r.semana.toUpperCase() === semanaLabel &&
-      CATEGORIAS_GASTO_SEMANAL.has(r.categoria) &&
-      (r.empresa === undefined || r.empresa === empresa)
-  );
-
-  const candidatos: CandidatoSinMovimientoBancario[] = [];
-
-  for (const registro of registrosGastos) {
-    const valorAbs = Math.abs(parseValorFormateado(registro.valor));
-    if (valorAbs === 0) continue;
-
-    const yaEnBanco = valoresBanco.some((v) => montosCercanos(v, valorAbs, TOLERANCIA_EUR));
-    if (yaEnBanco) continue;
-
-    candidatos.push({
-      empresa,
-      descripcion: registro.concepto || registro.cliente || registro.proyecto || "(sin descripción)",
-      categoria: registro.categoria,
-      valorAbs,
-    });
-  }
-
-  return candidatos;
+  fila?: number;
 }
 
 /**
@@ -386,17 +203,11 @@ async function calcularCandidatosSinMovimientoUnaPasada(
  * pero los pagos efectivamente se ven reflejados en bancos... es básicamente
  * un cruce de info entre el área de bancos y las cuentas y el cashflow".
  *
- * Hallazgo real de auditoría (Carlos, 2026-09-17, caso real S37 — "Efectoled" 82,80€ y "Rist Pizz
- * Tovo" 47,40€): una sola lectura de listBankMovements reportó estos dos gastos como "sin movimiento
- * bancario" aunque el movimiento real, ya existente en Holded desde varios días antes (no algo recién
- * escrito), sí estaba ahí — confirmado releyendo minutos después, de forma repetida y consistente, que
- * el mismo movimiento SÍ aparece y SÍ hace match. Es decir: una lectura puntual de la API de Holded
- * puede, de forma transitoria, no reflejar un movimiento real que sí existe — y reportar eso como una
- * alerta contable definitiva es inaceptable ("esto es contabilidad, estas equivocaciones pueden salir
- * muy caras", pedido explícito de Carlos). Nunca se confía en una sola lectura: un candidato solo se
- * reporta como realmente "sin movimiento bancario" si sigue apareciendo así en DOS lecturas
- * independientes y consecutivas — un movimiento real que existe de verdad aparece en ambas; una
- * inconsistencia transitoria de la API, con altísima probabilidad, no se repite dos veces seguidas.
+ * La comparación usa el mismo motor bidireccional que la dirección banco →
+ * cashflow. Así no mezcla empresas, no reutiliza un movimiento para varias
+ * filas y no declara faltante un caso ambiguo. También amplía unos días la
+ * ventana bancaria para contemplar pagos contabilizados después del domingo
+ * de la semana del cashflow (caso real S37/RAMINATRANS).
  */
 export async function detectarSinMovimientoBancario(
   empresa: EmpresaCashflow,
@@ -404,13 +215,22 @@ export async function detectarSinMovimientoBancario(
   desde: string,
   hasta: string
 ): Promise<CandidatoSinMovimientoBancario[]> {
-  const primeraPasada = await calcularCandidatosSinMovimientoUnaPasada(empresa, semanaLabel, desde, hasta);
-  if (primeraPasada.length === 0) return [];
+  const cruce = await generarCruceCashflowHolded(empresa, semanaLabel, desde, hasta);
+  if (cruce.problemasCobertura.length > 0) {
+    throw new Error(
+      `No se puede afirmar que el cruce esté completo: ${cruce.problemasCobertura.join(" | ")}`
+    );
+  }
 
-  const segundaPasada = await calcularCandidatosSinMovimientoUnaPasada(empresa, semanaLabel, desde, hasta);
-  const clavesSegundaPasada = new Set(segundaPasada.map(claveCandidatoSinMovimiento));
-
-  return primeraPasada.filter((c) => clavesSegundaPasada.has(claveCandidatoSinMovimiento(c)));
+  return cruce.filasSinMovimiento
+    .filter((fila) => fila.tipo === "gasto")
+    .map((fila) => ({
+      empresa,
+      descripcion: fila.descripcion,
+      categoria: fila.categoria,
+      valorAbs: Math.abs(fila.valorEur),
+      fila: fila.fila,
+    }));
 }
 
 /**
