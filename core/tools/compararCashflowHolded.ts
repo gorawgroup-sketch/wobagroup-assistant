@@ -107,7 +107,7 @@ function referenciaFila(resultado: ResultadoCruceCashflowHolded, indice: number)
   return fila.fila ? `fila ${fila.fila}` : fila.id;
 }
 
-function formatearEmpresa(
+export function formatearEmpresa(
   resultado: ResultadoCruceCashflowHolded,
   direccion: Direccion,
   resolucionGlobal: ResolucionFilasSinEmpresa
@@ -117,6 +117,9 @@ function formatearEmpresa(
     (caso) =>
       !caso.movimiento ||
       !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(caso.movimiento))
+  );
+  const movimientosSinCashflowVisibles = resultado.movimientosSinCashflow.filter(
+    (movimiento) => !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(movimiento))
   );
   const lineas: string[] = [
     `\n${resultado.empresa} — ${resultado.coincidencias.length + atribuciones.length} coincidencia(s) verificadas`,
@@ -142,12 +145,12 @@ function formatearEmpresa(
   }
 
   if (direccion !== "cashflow_a_banco") {
-    if (resultado.movimientosSinCashflow.length === 0) {
+    if (movimientosSinCashflowVisibles.length === 0) {
       lineas.push("✅ Banco → cashflow: no hay movimientos confirmados como ausentes.");
     } else {
-      lineas.push(`⚠️ Banco → cashflow: ${resultado.movimientosSinCashflow.length} movimiento(s) sin fila confirmada:`);
+      lineas.push(`⚠️ Banco → cashflow: ${movimientosSinCashflowVisibles.length} movimiento(s) sin fila confirmada:`);
       lineas.push(
-        ...resultado.movimientosSinCashflow.map(
+        ...movimientosSinCashflowVisibles.map(
           (movimiento) =>
             `  • ${movimiento.fecha} · ${movimiento.descripcion} · ${Math.abs(movimiento.valorEur).toFixed(2)} EUR · ${movimiento.cuenta} (${movimiento.moneda}) · id ${movimiento.id}`
         )
@@ -189,7 +192,7 @@ function formatearEmpresa(
   return lineas.join("\n");
 }
 
-function formatearGastosHolded(
+export function formatearGastosHolded(
   resultado: ResultadoCruceCashflowGastosHolded,
   resolucionGlobal: ResolucionFilasSinEmpresa,
   direccion: Direccion
@@ -199,6 +202,9 @@ function formatearGastosHolded(
     (caso) =>
       !caso.movimiento ||
       !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(caso.movimiento))
+  );
+  const gastosSinCashflowVisibles = resultado.gastosHoldedSinCashflow.filter(
+    (movimiento) => !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(movimiento))
   );
   const lineas: string[] = [
     `\n${resultado.empresa} · gastos Holded — ${resultado.coincidencias.length + atribuciones.length} coincidencia(s) verificadas`,
@@ -221,12 +227,12 @@ function formatearGastosHolded(
   }
   if (direccion !== "cashflow_a_banco") {
     lineas.push(
-      resultado.gastosHoldedSinCashflow.length === 0
+      gastosSinCashflowVisibles.length === 0
         ? "✅ Gastos Holded → cashflow: no hay documentos EUR confirmados como ausentes."
-        : `⚠️ Gastos Holded → cashflow: ${resultado.gastosHoldedSinCashflow.length} documento(s) EUR sin fila confirmada:`
+        : `⚠️ Gastos Holded → cashflow: ${gastosSinCashflowVisibles.length} documento(s) EUR sin fila confirmada:`
     );
     lineas.push(
-      ...resultado.gastosHoldedSinCashflow.map(
+      ...gastosSinCashflowVisibles.map(
         (gasto) =>
           `  • ${gasto.fecha} · ${gasto.descripcion} · ${Math.abs(gasto.valorEur).toFixed(2)} EUR · id ${gasto.id}`
       )

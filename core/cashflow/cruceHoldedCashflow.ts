@@ -33,19 +33,6 @@ const PALABRAS_GENERICAS_CRUCE = new Set([
   "transferencia", "online", "merchant", "main", "expense", "expenses", "restaurante",
   "restaurant", "taxi", "fijo", "fijos", "mensual", "septiembre",
 ]);
-const GRUPOS_EQUIVALENCIA_OPERATIVA: ReadonlyArray<{
-  cashflow: readonly string[];
-  banco: readonly string[];
-}> = [
-  {
-    cashflow: ["limpieza", "cleaning", "cleaner", "janitorial", "housekeeping"],
-    banco: ["limpieza", "cleaning", "cleaner", "janitorial", "housekeeping", "ocean facility services"],
-  },
-  {
-    cashflow: ["mantenimiento cuenta", "comision bancaria", "cuota bancaria"],
-    banco: ["bank fee", "bank commission", "account fee", "company free plan fee"],
-  },
-];
 
 export interface FilaCashflowCruce {
   id: string;
@@ -165,6 +152,12 @@ export interface FuentesCruceCashflowHolded {
   listBankMovements: typeof listBankMovements;
 }
 
+export interface FuentesCruceGastosHolded {
+  fetchDetalleRegistros: typeof fetchDetalleRegistros;
+  obtenerUltimaVerificacionEstructura: typeof obtenerUltimaVerificacionEstructura;
+  obtenerComprasDelDia: typeof obtenerComprasDelDia;
+}
+
 export interface OpcionesCruceCashflowHolded {
   /** Relee residuos antes de afirmar cashflow→banco. Se omite en consultas exclusivas banco→cashflow. */
   confirmarAusencias?: boolean;
@@ -177,6 +170,12 @@ const FUENTES_CRUCE_REALES: FuentesCruceCashflowHolded = {
   listBankMovements,
 };
 
+const FUENTES_CRUCE_GASTOS_REALES: FuentesCruceGastosHolded = {
+  fetchDetalleRegistros,
+  obtenerUltimaVerificacionEstructura,
+  obtenerComprasDelDia,
+};
+
 interface Arista {
   fila: FilaCashflowCruce;
   movimiento: MovimientoHoldedCruce;
@@ -186,7 +185,6 @@ interface Arista {
 
 interface AristaFilaSinEmpresa extends Arista {
   importeExacto: boolean;
-  evidenciaSemantica: boolean;
 }
 
 interface GrupoMovimientos {
@@ -275,6 +273,21 @@ function desplazarFecha(fecha: string, dias: number): string {
   return valor.toISOString().slice(0, 10);
 }
 
+export function fechaISOEnZona(fecha: Date, zona = "Europe/Madrid"): string {
+  const partes = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zona,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(fecha);
+  const valor = (tipo: "year" | "month" | "day") => partes.find((parte) => parte.type === tipo)?.value;
+  const year = valor("year");
+  const month = valor("month");
+  const day = valor("day");
+  if (!year || !month || !day) throw new Error(`No se pudo calcular la fecha local en ${zona}.`);
+  return `${year}-${month}-${day}`;
+}
+
 function normalizarTexto(valor: string): string {
   return valor
     .normalize("NFD")
@@ -304,24 +317,9 @@ function puntajeTexto(fila: string, banco: string): number {
   return 0;
 }
 
-function puntajeSemantico(fila: string, banco: string): number {
-  const filaNormalizada = normalizarTexto(fila);
-  const bancoNormalizado = normalizarTexto(banco);
-  for (const grupo of GRUPOS_EQUIVALENCIA_OPERATIVA) {
-    const filaRelacionada = grupo.cashflow.some((frase) =>
-      filaNormalizada.includes(normalizarTexto(frase))
-    );
-    const bancoRelacionado = grupo.banco.some((frase) =>
-      bancoNormalizado.includes(normalizarTexto(frase))
-    );
-    if (filaRelacionada && bancoRelacionado) return 30;
-  }
-  return 0;
-}
-
 function toleranciaImporteGlobal(valor: number, toleranciaBase: number): number {
-  // El importe aproximado solo se usa con evidencia de proveedor/categoría y nunca se abre más de
-  // 1 EUR. Esto cubre redondeos/contabilización sin convertir importes parecidos en matches libres.
+  // Un importe aproximado solo genera un candidato para revisión: nunca una atribución automática.
+  // El margen queda acotado a 1 EUR para no relacionar libremente importes parecidos.
   return Math.max(toleranciaBase, Math.min(1, Math.max(0.05, Math.abs(valor) * 0.005)));
 }
 
@@ -340,22 +338,18 @@ function construirAristasFilasSinEmpresa(
         movimiento.toleranciaEur
       );
       const texto = puntajeTexto(fila.descripcion, movimiento.descripcion);
-      const semantica = puntajeSemantico(fila.descripcion, movimiento.descripcion);
-      const evidencia = Math.max(texto, semantica);
       const importeAproximado =
         diferencia <= toleranciaImporteGlobal(fila.valorEur, movimiento.toleranciaEur);
 
       // Exactos y cercanos se conservan como alternativas aunque la descripción bancaria sea opaca.
-      // La relación débil jamás se confirma automáticamente: solo evita afirmar "no ejecutado" cuando
-      // todavía existe un cargo razonablemente cercano que el operador debe poder validar.
+      // Solo proveedor inequívoco + importe exacto permite atribuir automáticamente una empresa.
       if (!importeAproximado) continue;
       aristas.push({
         fila,
         movimiento,
-        puntaje: evidencia + (importeExacto ? 15 : 5) + (movimiento.enPeriodo ? 10 : 5),
-        textoFuerte: evidencia >= 20,
+        puntaje: texto + (importeExacto ? 15 : 5) + (movimiento.enPeriodo ? 10 : 5),
+        textoFuerte: texto >= 20,
         importeExacto,
-        evidenciaSemantica: semantica > texto,
       });
     }
   }
@@ -600,7 +594,7 @@ export function resolverFilasSinEmpresaGlobal(
         (deFila[0]?.movimiento ? claveMovimientoGlobal(deFila[0].movimiento) : "") === claveMovimiento &&
         deFila[1]?.puntaje !== arista.puntaje;
       const mejorMovimientoUnico = deMovimiento[0]?.fila.id === arista.fila.id && deMovimiento[1]?.puntaje !== arista.puntaje;
-      return mejorFilaUnico && mejorMovimientoUnico && arista.textoFuerte;
+      return mejorFilaUnico && mejorMovimientoUnico && arista.importeExacto && arista.textoFuerte;
     });
     if (!aceptada) break;
 
@@ -608,11 +602,7 @@ export function resolverFilasSinEmpresaGlobal(
       fila: aceptada.fila,
       movimiento: aceptada.movimiento,
       empresa: aceptada.movimiento.empresa,
-      criterio: !aceptada.importeExacto
-        ? "proveedor_importe_aproximado"
-        : aceptada.evidenciaSemantica
-          ? "categoria_importe_unico"
-          : "proveedor_importe_unico",
+      criterio: "proveedor_importe_unico",
     });
     filas = filas.filter((fila) => fila.id !== aceptada.fila.id);
     movimientos = movimientos.filter(
@@ -655,10 +645,22 @@ export async function generarCruceCashflowGastosHolded(
   empresa: EmpresaCashflowCruce,
   semana: string,
   desde: string,
-  hasta: string
+  hasta: string,
+  hoy = new Date(),
+  fuentesParciales: Partial<FuentesCruceGastosHolded> = {}
 ): Promise<ResultadoCruceCashflowGastosHolded> {
-  const registros = await fetchDetalleRegistros();
-  const problemasCobertura = obtenerUltimaVerificacionEstructura().map((p) => `[${p.bloque}] ${p.detalle}`);
+  const fuentes: FuentesCruceGastosHolded = { ...FUENTES_CRUCE_GASTOS_REALES, ...fuentesParciales };
+  const problemasCobertura: string[] = [];
+  let registros: DetalleRegistro[] = [];
+  try {
+    registros = await fuentes.fetchDetalleRegistros();
+    problemasCobertura.push(
+      ...fuentes.obtenerUltimaVerificacionEstructura().map((p) => `[${p.bloque}] ${p.detalle}`)
+    );
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    problemasCobertura.push(`Falló la lectura del cashflow: ${detalle}`);
+  }
   const filasSemana = registros
     .map(convertirFila)
     .filter(
@@ -667,17 +669,33 @@ export async function generarCruceCashflowGastosHolded(
     );
   const filasSinEmpresa = filasSemana.filter((fila) => fila.empresa === undefined);
   const filasEmpresa = filasSemana.filter((fila) => fila.empresa === empresa);
-  const compras = await obtenerComprasDelDia(empresa, desde, hasta);
-  if (compras.length >= 300) {
-    problemasCobertura.push(
-      `Holded alcanzó el límite de 300 gastos en ${empresa}; el informe de documentos no se declara completo.`
-    );
+
+  // Las facturas pueden contabilizarse unos días alrededor del cierre semanal. La ventana ampliada
+  // solo aporta candidatos; `enPeriodo` conserva qué documentos pertenecen estrictamente a la semana.
+  const desdeDocumentos = desplazarFecha(desde, -2);
+  const limiteConGracia = desplazarFecha(hasta, 3);
+  const hoyIso = fechaISOEnZona(hoy);
+  const hastaDocumentos = limiteConGracia < hoyIso ? limiteConGracia : hoyIso;
+
+  const leerCompras = async (): Promise<CompraDelDia[]> => {
+    const compras = await fuentes.obtenerComprasDelDia(empresa, desdeDocumentos, hastaDocumentos);
+    if (compras.length >= 300) {
+      problemasCobertura.push(
+        `Holded alcanzó el límite de 300 gastos en ${empresa}; el informe de documentos no se declara completo.`
+      );
+    }
+    return compras;
+  };
+
+  let compras: CompraDelDia[] = [];
+  try {
+    compras = await leerCompras();
+  } catch (error) {
+    const detalle = error instanceof Error ? error.message : String(error);
+    problemasCobertura.push(`Falló la lectura de gastos de Holded para ${empresa}: ${detalle}`);
   }
 
-  const gastosNoComparables = compras.filter(
-    (compra) => compra.moneda !== "EUR" || !Number.isFinite(compra.total) || compra.total === 0
-  );
-  const documentos: MovimientoHoldedCruce[] = compras
+  const convertirCompras = (lista: CompraDelDia[]): MovimientoHoldedCruce[] => lista
     .filter((compra) => compra.moneda === "EUR" && Number.isFinite(compra.total) && compra.total !== 0)
     .map((compra) => ({
       id: compra.id,
@@ -690,11 +708,36 @@ export async function generarCruceCashflowGastosHolded(
       valorNativo: compra.total,
       moneda: compra.moneda,
       estado: compra.pagosPendiente > 0.01 ? "pendiente_pago" : "pagado",
-      enPeriodo: true,
+      enPeriodo: fechaIso(compra.fecha) >= desde && fechaIso(compra.fecha) <= hasta,
       toleranciaEur: 0.01,
     }));
 
-  const cruce = cruzarListasUnoAUno(filasEmpresa, documentos);
+  let documentos = convertirCompras(compras);
+  let cruce = cruzarListasUnoAUno(filasEmpresa, documentos);
+
+  // Una ausencia documental también es una conclusión negativa: exige una segunda lectura completa.
+  if (
+    (cruce.filasSinMovimiento.length > 0 || filasSinEmpresa.length > 0) &&
+    problemasCobertura.length === 0
+  ) {
+    try {
+      const segundaLectura = await leerCompras();
+      const porId = new Map<string, CompraDelDia>();
+      for (const compra of [...compras, ...segundaLectura]) porId.set(compra.id, compra);
+      compras = [...porId.values()];
+      documentos = convertirCompras(compras);
+      cruce = cruzarListasUnoAUno(filasEmpresa, documentos);
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : String(error);
+      problemasCobertura.push(
+        `Falló la segunda lectura obligatoria de gastos de Holded para ${empresa}: ${detalle}`
+      );
+    }
+  }
+
+  const gastosNoComparables = compras.filter(
+    (compra) => compra.moneda !== "EUR" || !Number.isFinite(compra.total) || compra.total === 0
+  );
   const documentosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map(claveMovimientoLocal)));
   const documentosDisponibles = documentos.filter((documento) => !documentosYaAsignados.has(claveMovimientoLocal(documento)));
   const aristasSinEmpresa = construirAristasFilasSinEmpresa(filasSinEmpresa, documentosDisponibles);
@@ -773,7 +816,7 @@ export async function generarCruceCashflowHolded(
 
   const desdeBancos = desplazarFecha(desde, -2);
   const limiteConGracia = desplazarFecha(hasta, 3);
-  const hoyIso = hoy.toISOString().slice(0, 10);
+  const hoyIso = fechaISOEnZona(hoy);
   const hastaBancos = limiteConGracia < hoyIso ? limiteConGracia : hoyIso;
   // Una cuenta archivada puede contener justamente el pago histórico que se está auditando. Excluirla
   // convierte un cambio administrativo posterior en un falso "no salió del banco". Se consultan todas

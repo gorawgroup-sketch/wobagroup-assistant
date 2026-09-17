@@ -139,3 +139,38 @@ test("rechaza Pagos Extras sin EMPRESA en vez de mezclar las compañías", () =>
   assert.equal(resultado.registros.some((registro) => registro.categoria === "PAGOS_EXTRAS"), false);
   assert.equal(resultado.problemas.some((problema) => problema.bloque === "PAGOS_EXTRAS"), true);
 });
+
+test("lee filas reales después de un hueco visual y declara la cobertura", () => {
+  const matriz = tablaBase();
+  poner(matriz, 10, 8, "Seguro oficina");
+  poner(matriz, 10, 9, "S41");
+  poner(matriz, 10, 10, "€125.00");
+
+  const resultado = analizarMatrizCashflow(matriz);
+
+  assert.equal(
+    resultado.registros.some(
+      (registro) => registro.categoria === "GASTOS_FIJOS" && registro.concepto === "Seguro oficina"
+    ),
+    true
+  );
+  assert.equal(
+    resultado.problemas.some(
+      (problema) => problema.bloque === "GASTOS_FIJOS" && /continúa.*filas vacías/i.test(problema.detalle)
+    ),
+    true
+  );
+});
+
+test("no completa encabezados faltantes con columnas de una tabla vecina", () => {
+  const matriz = tablaBase();
+  poner(matriz, 4, 10, "");
+
+  const resultado = analizarMatrizCashflow(matriz);
+
+  assert.equal(resultado.registros.some((registro) => registro.categoria === "GASTOS_FIJOS"), false);
+  assert.equal(
+    resultado.problemas.some((problema) => problema.bloque === "GASTOS_FIJOS"),
+    true
+  );
+});

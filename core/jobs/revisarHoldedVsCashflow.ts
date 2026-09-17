@@ -1,5 +1,5 @@
 import { fetchDetalleRegistros } from "../google/cashflowSheet";
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { crearPropuesta, actualizarMessageId, consumirPropuesta } from "../google/proposalSheet";
 import { previousWeekRange, currentWeekRangeToDate, weekLabel, formatDateISO } from "../utils/isoWeek";
 import { guardarUltimoRunHoldedCashflow } from "./holdedCashflowLastRunStore";
@@ -62,6 +62,8 @@ export interface PosibleDuplicado {
   montoRegistrado: number;
   /** true si hizo falta el margen APRENDIDO (más ancho que el genérico de 5€) para reconocerlo — ver duplicadosConfirmadosSheet.ts. */
   aprendido: boolean;
+  /** También coincide dentro de la tolerancia contable de un céntimo. */
+  montoExacto: boolean;
 }
 
 export interface CandidatoNoRegistrado {
@@ -94,12 +96,13 @@ export interface CandidatoNoRegistrado {
 // preguntar).
 const POSIBLE_DUPLICADO_TOLERANCIA_EUR = 5;
 
-function buscarPosibleDuplicado(
+export function buscarPosibleDuplicado(
   descripcion: string,
   empresa: EmpresaCashflow,
   valorAbs: number,
   registrosSemana: Array<{ cliente?: string; concepto?: string; semana: string; valor: string }>,
-  duplicadosAprendidos: FilaDuplicado[]
+  duplicadosAprendidos: FilaDuplicado[],
+  incluirMontoExacto = false
 ): PosibleDuplicado | undefined {
   const aprendidosDeEsteProveedor = duplicadosAprendidos.filter(
     (d) => d.empresa === empresa && textosParecidos(descripcion, d.proveedor)
@@ -113,7 +116,8 @@ function buscarPosibleDuplicado(
     if (!textoRegistro) return false;
     if (!textosParecidos(descripcion, textoRegistro)) return false;
     const valorRegistro = Math.abs(parseValorFormateado(r.valor));
-    return montosCercanos(valorRegistro, valorAbs, toleranciaEfectiva) && !montosCercanos(valorRegistro, valorAbs, TOLERANCIA_EUR);
+    return montosCercanos(valorRegistro, valorAbs, toleranciaEfectiva) &&
+      (incluirMontoExacto || !montosCercanos(valorRegistro, valorAbs, TOLERANCIA_EUR));
   });
 
   if (!match) return undefined;
@@ -122,7 +126,34 @@ function buscarPosibleDuplicado(
     descripcionRegistro: `${match.cliente ?? match.concepto} — ${match.semana} — ${match.valor}`,
     montoRegistrado: Math.abs(parseValorFormateado(match.valor)),
     aprendido: aprendidosDeEsteProveedor.length > 0,
+    montoExacto: montosCercanos(Math.abs(parseValorFormateado(match.valor)), valorAbs, TOLERANCIA_EUR),
   };
+}
+
+/** Relee el cashflow justo antes de escribir para cerrar carreras entre propuesta y aprobación. */
+export async function buscarDuplicadoCashflowActual(
+  empresa: EmpresaCashflow,
+  semanaLabel: string,
+  descripcion: string,
+  valorAbs: number
+): Promise<PosibleDuplicado | undefined> {
+  const [registros, duplicadosAprendidos] = await Promise.all([
+    fetchDetalleRegistros(),
+    obtenerTodosLosDuplicadosConfirmados().catch(() => [] as FilaDuplicado[]),
+  ]);
+  const registrosSemana = registros.filter(
+    (registro) =>
+      registro.semana.toUpperCase() === semanaLabel.toUpperCase() &&
+      (registro.empresa === empresa || registro.empresa === undefined)
+  );
+  return buscarPosibleDuplicado(
+    descripcion,
+    empresa,
+    valorAbs,
+    registrosSemana,
+    duplicadosAprendidos,
+    true
+  );
 }
 
 /**
@@ -144,7 +175,9 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
 
   const todosLosRegistros = await fetchDetalleRegistros();
   const registrosSemana = todosLosRegistros.filter(
-    (r) => r.semana.toUpperCase() === semanaLabel && r.empresa === empresa
+    (r) =>
+      r.semana.toUpperCase() === semanaLabel &&
+      (r.empresa === empresa || r.empresa === undefined)
   );
   const duplicadosAprendidos = await obtenerTodosLosDuplicadosConfirmados().catch((error) => {
     console.error("[revisarHoldedVsCashflow] Error leyendo duplicados aprendidos (no crítico):", error);
@@ -176,61 +209,12 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
       candidato.empresa,
       candidato.valorAbs,
       registrosSemana,
-      duplicadosAprendidos
+      duplicadosAprendidos,
+      true
     );
   }
 
   return candidatos;
-}
-
-export interface CandidatoSinMovimientoBancario {
-  empresa: EmpresaCashflow;
-  descripcion: string;
-  categoria: string;
-  valorAbs: number;
-  fila?: number;
-}
-
-/**
- * Dirección INVERSA de detectarNoRegistrados: en vez de "¿qué hay en el
- * banco que no está en el cashflow?", busca "¿qué gasto está registrado en
- * el cashflow de esta semana que NO tiene un movimiento bancario real que
- * lo respalde?" — un pago que se anotó como hecho/programado pero el banco
- * todavía no refleja ninguna salida de dinero equivalente. Mismo matching
- * por monto (con tolerancia de 1 céntimo) que detectarNoRegistrados, solo
- * que comparando en el sentido contrario. Nace de un pedido real: "para
- * esto debes buscar que los gastos estén en el cashflow para esta semana,
- * pero los pagos efectivamente se ven reflejados en bancos... es básicamente
- * un cruce de info entre el área de bancos y las cuentas y el cashflow".
- *
- * La comparación usa el mismo motor bidireccional que la dirección banco →
- * cashflow. Así no mezcla empresas, no reutiliza un movimiento para varias
- * filas y no declara faltante un caso ambiguo. También amplía unos días la
- * ventana bancaria para contemplar pagos contabilizados después del domingo
- * de la semana del cashflow (caso real S37/RAMINATRANS).
- */
-export async function detectarSinMovimientoBancario(
-  empresa: EmpresaCashflow,
-  semanaLabel: string,
-  desde: string,
-  hasta: string
-): Promise<CandidatoSinMovimientoBancario[]> {
-  const cruce = await generarCruceCashflowHolded(empresa, semanaLabel, desde, hasta);
-  if (cruce.problemasCobertura.length > 0) {
-    throw new Error(
-      `No se puede afirmar que el cruce esté completo: ${cruce.problemasCobertura.join(" | ")}`
-    );
-  }
-
-  return cruce.filasSinMovimiento
-    .filter((fila) => fila.tipo === "gasto")
-    .map((fila) => ({
-      empresa,
-      descripcion: fila.descripcion,
-      categoria: fila.categoria,
-      valorAbs: Math.abs(fila.valorEur),
-      fila: fila.fila,
-    }));
 }
 
 /**
@@ -262,7 +246,9 @@ export async function enviarPropuestaCandidato(
 
   const notaPosibleDuplicado = candidato.posibleDuplicadoDe
     ? `\n\n🔎 POSIBLE DUPLICADO — ya hay una fila parecida registrada esta semana: "${candidato.posibleDuplicadoDe.descripcionRegistro}". ` +
-      `El monto no es idéntico (puede ser un cambio de tarifa real, o el mismo pago con una cifra distinta) — ` +
+      (candidato.posibleDuplicadoDe.montoExacto
+        ? `El monto también coincide exactamente — `
+        : `El monto no es idéntico (puede ser un cambio de tarifa real, o el mismo pago con una cifra distinta) — `) +
       (candidato.posibleDuplicadoDe.aprendido
         ? `ya has confirmado antes un caso parecido con este proveedor. `
         : "") +
@@ -369,6 +355,7 @@ export async function revisarHoldedVsCashflow(
   );
 
   let propuestasCreadas = 0;
+  const empresasConError: EmpresaCashflow[] = [];
 
   for (const empresa of EMPRESAS) {
     let candidatos: CandidatoNoRegistrado[] = [];
@@ -378,6 +365,13 @@ export async function revisarHoldedVsCashflow(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[revisarHoldedVsCashflow] Error revisando ${empresa}:`, message);
+      empresasConError.push(empresa);
+      await sendTelegramMessage(
+        chatId,
+        `⛔ Revisión cashflow ↔ Holded incompleta para ${empresa}. No se generaron conclusiones ni propuestas para esa empresa. Detalle: ${message}`
+      ).catch((notifyError) => {
+        console.error(`[revisarHoldedVsCashflow] No se pudo avisar el fallo de ${empresa}:`, notifyError);
+      });
       continue;
     }
 
@@ -392,9 +386,15 @@ export async function revisarHoldedVsCashflow(
       (esChequeoPreliminar ? " (chequeo preliminar)." : ".")
   );
 
-  await guardarUltimoRunHoldedCashflow(Math.floor(Date.now() / 1000)).catch((error) => {
-    console.error("[revisarHoldedVsCashflow] Error guardando último run (no crítico):", error);
-  });
+  if (empresasConError.length === 0) {
+    await guardarUltimoRunHoldedCashflow(Math.floor(Date.now() / 1000)).catch((error) => {
+      console.error("[revisarHoldedVsCashflow] Error guardando último run (no crítico):", error);
+    });
+  } else {
+    console.error(
+      `[revisarHoldedVsCashflow] Ejecución incompleta; no se actualiza último run. Empresas: ${empresasConError.join(", ")}`
+    );
+  }
 
   return { propuestasCreadas };
 }

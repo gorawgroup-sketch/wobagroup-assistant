@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   cruzarListasUnoAUno,
+  fechaISOEnZona,
+  generarCruceCashflowGastosHolded,
   generarCruceCashflowHolded,
   parsearImporteCashflow,
   resolverFilasSinEmpresaGlobal,
@@ -65,6 +67,10 @@ test("normaliza importes europeos y anglosajones sin cambiar su valor", () => {
   assert.equal(parsearImporteCashflow("€6,892.73"), 6892.73);
   assert.equal(parsearImporteCashflow("6.892,73 €"), 6892.73);
   assert.equal(parsearImporteCashflow("(1.234,56 €)"), -1234.56);
+});
+
+test("calcula hoy en Madrid durante la madrugada local", () => {
+  assert.equal(fechaISOEnZona(new Date("2026-09-16T22:30:00Z")), "2026-09-17");
 });
 
 test("asigna uno a uno por proveedor cuando hay dos cargos del mismo importe", () => {
@@ -212,7 +218,7 @@ test("no atribuye una fila sin empresa por importe único si el proveedor no coi
   assert.equal(resolucion.filasSinResolver.length, 1);
 });
 
-test("atribuye Limpieza a Ocean Facility Services por equivalencia operativa global", () => {
+test("una categoría genérica no atribuye empresa aunque importe y candidato sean únicos", () => {
   const sinEmpresa = { ...fila("f1", "Limpieza", 393.4), empresa: undefined };
   const movimientoEworks = movimiento("m-limpieza", "To Ocean Facility Services", -393.4, {
     empresa: "EWORKS",
@@ -223,14 +229,12 @@ test("atribuye Limpieza a Ocean Facility Services por equivalencia operativa glo
     resultado("EWORKS", [sinEmpresa], [movimientoEworks]),
   ]);
 
-  assert.equal(resolucion.atribuciones.length, 1);
-  assert.equal(resolucion.atribuciones[0].empresa, "EWORKS");
-  assert.equal(resolucion.atribuciones[0].criterio, "categoria_importe_unico");
-  assert.equal(resolucion.filasAmbiguas.length, 0);
+  assert.equal(resolucion.atribuciones.length, 0);
+  assert.deepEqual(resolucion.filasAmbiguas.map((item) => item.id), [sinEmpresa.id]);
   assert.equal(resolucion.filasSinMovimiento.length, 0);
 });
 
-test("un importe cercano solo se atribuye con equivalencia semántica fuerte", () => {
+test("un importe cercano nunca atribuye empresa automáticamente", () => {
   const sinEmpresa = { ...fila("f1", "Limpieza", 393.4), empresa: undefined };
   const semantico = resolverFilasSinEmpresaGlobal([
     resultado("WOBA", [sinEmpresa], []),
@@ -241,8 +245,8 @@ test("un importe cercano solo se atribuye con equivalencia semántica fuerte", (
       }),
     ]),
   ]);
-  assert.equal(semantico.atribuciones.length, 1);
-  assert.equal(semantico.atribuciones[0].criterio, "proveedor_importe_aproximado");
+  assert.equal(semantico.atribuciones.length, 0);
+  assert.deepEqual(semantico.filasAmbiguas.map((item) => item.id), [sinEmpresa.id]);
 
   const opaco = resolverFilasSinEmpresaGlobal([
     resultado("WOBA", [sinEmpresa], [movimiento("m2", "ACME", -393.35)]),
@@ -508,4 +512,63 @@ test("un fallo de una cuenta se devuelve como cobertura incompleta y no lanza", 
   );
 
   assert.match(resultado.problemasCobertura.join("\n"), /timeout simulado/i);
+});
+
+test("una segunda lectura documental recupera una compra omitida", async () => {
+  let lecturas = 0;
+  const resultado = await generarCruceCashflowGastosHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        { categoria: "PAGOS_EXTRAS", fila: 8, cliente: "Proveedor", semana: "S37", valor: "90", empresa: "WOBA" },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      obtenerComprasDelDia: async () => {
+        lecturas += 1;
+        return lecturas === 1
+          ? []
+          : [{
+              id: "compra-1",
+              contactName: "Proveedor",
+              total: 90,
+              moneda: "EUR",
+              fecha: "2026-09-10",
+              descripcion: "Servicio",
+              tags: [],
+              nombresLinea: [],
+              pagosTotal: 90,
+              pagosPendiente: 0,
+            }];
+      },
+    }
+  );
+
+  assert.equal(lecturas, 2);
+  assert.equal(resultado.coincidencias.length, 1);
+  assert.equal(resultado.filasSinGastoHolded.length, 0);
+  assert.deepEqual(resultado.problemasCobertura, []);
+});
+
+test("un fallo leyendo gastos de Holded deja solo un informe incompleto", async () => {
+  const resultado = await generarCruceCashflowGastosHolded(
+    "EWORKS",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [],
+      obtenerUltimaVerificacionEstructura: () => [],
+      obtenerComprasDelDia: async () => {
+        throw new Error("timeout de compras");
+      },
+    }
+  );
+
+  assert.match(resultado.problemasCobertura.join("\n"), /timeout de compras/i);
+  assert.equal(resultado.gastosHoldedSinCashflow.length, 0);
 });
