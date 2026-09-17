@@ -33,6 +33,19 @@ const PALABRAS_GENERICAS_CRUCE = new Set([
   "transferencia", "online", "merchant", "main", "expense", "expenses", "restaurante",
   "restaurant", "taxi", "fijo", "fijos", "mensual", "septiembre",
 ]);
+const GRUPOS_EQUIVALENCIA_OPERATIVA: ReadonlyArray<{
+  cashflow: readonly string[];
+  banco: readonly string[];
+}> = [
+  {
+    cashflow: ["limpieza", "cleaning", "cleaner", "janitorial", "housekeeping"],
+    banco: ["limpieza", "cleaning", "cleaner", "janitorial", "housekeeping", "ocean facility services"],
+  },
+  {
+    cashflow: ["mantenimiento cuenta", "comision bancaria", "cuota bancaria"],
+    banco: ["bank fee", "bank commission", "account fee", "company free plan fee"],
+  },
+];
 
 export interface FilaCashflowCruce {
   id: string;
@@ -74,6 +87,7 @@ export interface AmbiguedadCashflowHolded {
   movimiento?: MovimientoHoldedCruce;
   alternativas: string[];
   motivo: string;
+  origen?: "fila_sin_empresa";
 }
 
 export interface ResultadoCruceCashflowHolded {
@@ -109,12 +123,25 @@ export interface AtribucionFilaSinEmpresa {
   fila: FilaCashflowCruce;
   movimiento: MovimientoHoldedCruce;
   empresa: EmpresaCashflowCruce;
-  criterio: "proveedor_importe_unico" | "importe_unico_global";
+  criterio:
+    | "proveedor_importe_unico"
+    | "categoria_importe_unico"
+    | "proveedor_importe_aproximado";
+}
+
+export interface CandidatosFilaSinEmpresa {
+  fila: FilaCashflowCruce;
+  movimientos: MovimientoHoldedCruce[];
 }
 
 export interface ResolucionFilasSinEmpresa {
   atribuciones: AtribucionFilaSinEmpresa[];
   filasSinResolver: FilaCashflowCruce[];
+  /** Sin candidato único: se muestran las alternativas y nunca se adivina. */
+  filasAmbiguas: FilaCashflowCruce[];
+  /** Solo se llena con cobertura completa de ambas empresas y cero candidatos en sus bancos. */
+  filasSinMovimiento: FilaCashflowCruce[];
+  candidatosPorFila: CandidatosFilaSinEmpresa[];
   movimientosResueltos: Set<string>;
 }
 
@@ -155,6 +182,11 @@ interface Arista {
   movimiento: MovimientoHoldedCruce;
   puntaje: number;
   textoFuerte: boolean;
+}
+
+interface AristaFilaSinEmpresa extends Arista {
+  importeExacto: boolean;
+  evidenciaSemantica: boolean;
 }
 
 interface GrupoMovimientos {
@@ -270,6 +302,64 @@ function puntajeTexto(fila: string, banco: string): number {
   if (coincidencias >= 2) return 35 + Math.min(coincidencias, 5);
   if (coincidencias === 1) return 20;
   return 0;
+}
+
+function puntajeSemantico(fila: string, banco: string): number {
+  const filaNormalizada = normalizarTexto(fila);
+  const bancoNormalizado = normalizarTexto(banco);
+  for (const grupo of GRUPOS_EQUIVALENCIA_OPERATIVA) {
+    const filaRelacionada = grupo.cashflow.some((frase) =>
+      filaNormalizada.includes(normalizarTexto(frase))
+    );
+    const bancoRelacionado = grupo.banco.some((frase) =>
+      bancoNormalizado.includes(normalizarTexto(frase))
+    );
+    if (filaRelacionada && bancoRelacionado) return 30;
+  }
+  return 0;
+}
+
+function toleranciaImporteGlobal(valor: number, toleranciaBase: number): number {
+  // El importe aproximado solo se usa con evidencia de proveedor/categoría y nunca se abre más de
+  // 1 EUR. Esto cubre redondeos/contabilización sin convertir importes parecidos en matches libres.
+  return Math.max(toleranciaBase, Math.min(1, Math.max(0.05, Math.abs(valor) * 0.005)));
+}
+
+function construirAristasFilasSinEmpresa(
+  filas: FilaCashflowCruce[],
+  movimientos: MovimientoHoldedCruce[]
+): AristaFilaSinEmpresa[] {
+  const aristas: AristaFilaSinEmpresa[] = [];
+  for (const fila of filas) {
+    for (const movimiento of movimientos) {
+      if (fila.tipo !== (movimiento.valorEur > 0 ? "ingreso" : "gasto")) continue;
+      const diferencia = Math.abs(Math.abs(fila.valorEur) - Math.abs(movimiento.valorEur));
+      const importeExacto = montosCercanos(
+        Math.abs(fila.valorEur),
+        Math.abs(movimiento.valorEur),
+        movimiento.toleranciaEur
+      );
+      const texto = puntajeTexto(fila.descripcion, movimiento.descripcion);
+      const semantica = puntajeSemantico(fila.descripcion, movimiento.descripcion);
+      const evidencia = Math.max(texto, semantica);
+      const importeAproximado =
+        diferencia <= toleranciaImporteGlobal(fila.valorEur, movimiento.toleranciaEur);
+
+      // Exactos y cercanos se conservan como alternativas aunque la descripción bancaria sea opaca.
+      // La relación débil jamás se confirma automáticamente: solo evita afirmar "no ejecutado" cuando
+      // todavía existe un cargo razonablemente cercano que el operador debe poder validar.
+      if (!importeAproximado) continue;
+      aristas.push({
+        fila,
+        movimiento,
+        puntaje: evidencia + (importeExacto ? 15 : 5) + (movimiento.enPeriodo ? 10 : 5),
+        textoFuerte: evidencia >= 20,
+        importeExacto,
+        evidenciaSemantica: semantica > texto,
+      });
+    }
+  }
+  return aristas;
 }
 
 function construirAristas(filas: FilaCashflowCruce[], movimientos: MovimientoHoldedCruce[]): Arista[] {
@@ -479,26 +569,26 @@ export function resolverFilasSinEmpresaGlobal(
   const movimientosPorId = new Map<string, MovimientoHoldedCruce>();
   for (const resultado of resultados) {
     for (const caso of resultado.ambiguos) {
-      if (!caso.movimiento || !caso.motivo.includes("no tiene EMPRESA")) continue;
+      if (
+        !caso.movimiento ||
+        (caso.origen !== "fila_sin_empresa" && !caso.motivo.includes("no tiene EMPRESA"))
+      ) continue;
       movimientosPorId.set(claveMovimientoGlobal(caso.movimiento), caso.movimiento);
     }
   }
   let movimientos = [...movimientosPorId.values()];
   const atribuciones: AtribucionFilaSinEmpresa[] = [];
+  const aristasIniciales = construirAristasFilasSinEmpresa(filas, movimientos);
+  const candidatosPorFila: CandidatosFilaSinEmpresa[] = filas.map((fila) => {
+    const candidatos = new Map<string, MovimientoHoldedCruce>();
+    for (const arista of aristasIniciales.filter((item) => item.fila.id === fila.id)) {
+      candidatos.set(claveMovimientoGlobal(arista.movimiento), arista.movimiento);
+    }
+    return { fila, movimientos: [...candidatos.values()] };
+  });
 
   while (true) {
-    const aristas = filas.flatMap((fila) =>
-      movimientos
-        .filter(
-          (movimiento) =>
-            fila.tipo === (movimiento.valorEur > 0 ? "ingreso" : "gasto") &&
-            montosCercanos(Math.abs(fila.valorEur), Math.abs(movimiento.valorEur), movimiento.toleranciaEur)
-        )
-        .map((movimiento) => {
-          const texto = puntajeTexto(fila.descripcion, movimiento.descripcion);
-          return { fila, movimiento, texto, puntaje: texto + (movimiento.enPeriodo ? 10 : 5) };
-        })
-    );
+    const aristas = construirAristasFilasSinEmpresa(filas, movimientos);
 
     const aceptada = aristas.find((arista) => {
       const deFila = aristas.filter((item) => item.fila.id === arista.fila.id).sort((a, b) => b.puntaje - a.puntaje);
@@ -510,7 +600,7 @@ export function resolverFilasSinEmpresaGlobal(
         (deFila[0]?.movimiento ? claveMovimientoGlobal(deFila[0].movimiento) : "") === claveMovimiento &&
         deFila[1]?.puntaje !== arista.puntaje;
       const mejorMovimientoUnico = deMovimiento[0]?.fila.id === arista.fila.id && deMovimiento[1]?.puntaje !== arista.puntaje;
-      return mejorFilaUnico && mejorMovimientoUnico && arista.texto >= 20;
+      return mejorFilaUnico && mejorMovimientoUnico && arista.textoFuerte;
     });
     if (!aceptada) break;
 
@@ -518,7 +608,11 @@ export function resolverFilasSinEmpresaGlobal(
       fila: aceptada.fila,
       movimiento: aceptada.movimiento,
       empresa: aceptada.movimiento.empresa,
-      criterio: aceptada.texto >= 20 ? "proveedor_importe_unico" : "importe_unico_global",
+      criterio: !aceptada.importeExacto
+        ? "proveedor_importe_aproximado"
+        : aceptada.evidenciaSemantica
+          ? "categoria_importe_unico"
+          : "proveedor_importe_unico",
     });
     filas = filas.filter((fila) => fila.id !== aceptada.fila.id);
     movimientos = movimientos.filter(
@@ -527,9 +621,24 @@ export function resolverFilasSinEmpresaGlobal(
     );
   }
 
+  const candidatosRestantes = new Map(
+    candidatosPorFila.map((item) => [item.fila.id, item.movimientos])
+  );
+  const filasAmbiguas = filas.filter(
+    (fila) => (candidatosRestantes.get(fila.id)?.length ?? 0) > 0
+  );
+  const filasSinMovimiento = filas.filter(
+    (fila) => (candidatosRestantes.get(fila.id)?.length ?? 0) === 0
+  );
+
   return {
     atribuciones,
     filasSinResolver: filas,
+    filasAmbiguas,
+    filasSinMovimiento,
+    candidatosPorFila: candidatosPorFila.filter((item) =>
+      filas.some((fila) => fila.id === item.fila.id)
+    ),
     movimientosResueltos: new Set(
       atribuciones.map(({ movimiento }) => claveMovimientoGlobal(movimiento))
     ),
@@ -588,8 +697,7 @@ export async function generarCruceCashflowGastosHolded(
   const cruce = cruzarListasUnoAUno(filasEmpresa, documentos);
   const documentosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map(claveMovimientoLocal)));
   const documentosDisponibles = documentos.filter((documento) => !documentosYaAsignados.has(claveMovimientoLocal(documento)));
-  const filasSinEmpresaComoCandidatas = filasSinEmpresa.map((fila) => ({ ...fila, empresa }));
-  const aristasSinEmpresa = construirAristas(filasSinEmpresaComoCandidatas, documentosDisponibles);
+  const aristasSinEmpresa = construirAristasFilasSinEmpresa(filasSinEmpresa, documentosDisponibles);
   const documentosBloqueados = new Set(aristasSinEmpresa.map((arista) => claveMovimientoLocal(arista.movimiento)));
   const ambiguos = [
     ...cruce.ambiguos,
@@ -602,6 +710,7 @@ export async function generarCruceCashflowGastosHolded(
           .map((arista) => arista.fila.id),
         motivo:
           "El gasto puede corresponder a una fila del cashflow que no tiene EMPRESA; no se atribuye ni se declara ausente hasta completar o demostrar ese dato.",
+        origen: "fila_sin_empresa",
       })),
   ];
 
@@ -754,7 +863,7 @@ export async function generarCruceCashflowHolded(
   // informe queda INCOMPLETO y el formateador se niega a emitir conclusiones de ausencia.
   if (
     (opciones.confirmarAusencias ?? true) &&
-    cruce.filasSinMovimiento.length > 0 &&
+    (cruce.filasSinMovimiento.length > 0 || filasSinEmpresa.length > 0) &&
     cuentas.length > 0 &&
     problemasCobertura.length === 0
   ) {
@@ -780,19 +889,19 @@ export async function generarCruceCashflowHolded(
   // se publican como ambiguos hasta completar la empresa en el cashflow.
   const movimientosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map(claveMovimientoLocal)));
   const movimientosDisponibles = movimientos.filter((m) => !movimientosYaAsignados.has(claveMovimientoLocal(m)));
-  const filasSinEmpresaComoCandidatas = filasSinEmpresa.map((fila) => ({ ...fila, empresa }));
-  const aristasSinEmpresa = construirAristas(filasSinEmpresaComoCandidatas, movimientosDisponibles);
+  const aristasSinEmpresa = construirAristasFilasSinEmpresa(filasSinEmpresa, movimientosDisponibles);
   const movimientosBloqueados = new Set(aristasSinEmpresa.map((a) => claveMovimientoLocal(a.movimiento)));
   const ambiguos = [
     ...cruce.ambiguos,
     ...movimientosDisponibles
-      .filter((movimiento) => movimiento.enPeriodo && movimientosBloqueados.has(claveMovimientoLocal(movimiento)))
+      .filter((movimiento) => movimientosBloqueados.has(claveMovimientoLocal(movimiento)))
       .map((movimiento): AmbiguedadCashflowHolded => ({
         movimiento,
         alternativas: aristasSinEmpresa
           .filter((a) => claveMovimientoLocal(a.movimiento) === claveMovimientoLocal(movimiento))
           .map((a) => a.fila.id),
         motivo: "El importe puede corresponder a una fila del cashflow que no tiene EMPRESA; no se atribuye ni se declara ausente hasta completar ese dato.",
+        origen: "fila_sin_empresa",
       })),
   ];
 

@@ -212,6 +212,77 @@ test("no atribuye una fila sin empresa por importe único si el proveedor no coi
   assert.equal(resolucion.filasSinResolver.length, 1);
 });
 
+test("atribuye Limpieza a Ocean Facility Services por equivalencia operativa global", () => {
+  const sinEmpresa = { ...fila("f1", "Limpieza", 393.4), empresa: undefined };
+  const movimientoEworks = movimiento("m-limpieza", "To Ocean Facility Services", -393.4, {
+    empresa: "EWORKS",
+    accountId: "ew-main",
+  });
+  const resolucion = resolverFilasSinEmpresaGlobal([
+    resultado("WOBA", [sinEmpresa], []),
+    resultado("EWORKS", [sinEmpresa], [movimientoEworks]),
+  ]);
+
+  assert.equal(resolucion.atribuciones.length, 1);
+  assert.equal(resolucion.atribuciones[0].empresa, "EWORKS");
+  assert.equal(resolucion.atribuciones[0].criterio, "categoria_importe_unico");
+  assert.equal(resolucion.filasAmbiguas.length, 0);
+  assert.equal(resolucion.filasSinMovimiento.length, 0);
+});
+
+test("un importe cercano solo se atribuye con equivalencia semántica fuerte", () => {
+  const sinEmpresa = { ...fila("f1", "Limpieza", 393.4), empresa: undefined };
+  const semantico = resolverFilasSinEmpresaGlobal([
+    resultado("WOBA", [sinEmpresa], []),
+    resultado("EWORKS", [sinEmpresa], [
+      movimiento("m1", "Ocean Facility Services", -393.35, {
+        empresa: "EWORKS",
+        accountId: "ew-main",
+      }),
+    ]),
+  ]);
+  assert.equal(semantico.atribuciones.length, 1);
+  assert.equal(semantico.atribuciones[0].criterio, "proveedor_importe_aproximado");
+
+  const opaco = resolverFilasSinEmpresaGlobal([
+    resultado("WOBA", [sinEmpresa], [movimiento("m2", "ACME", -393.35)]),
+    resultado("EWORKS", [sinEmpresa], []),
+  ]);
+  assert.equal(opaco.atribuciones.length, 0);
+  assert.deepEqual(opaco.filasAmbiguas.map((item) => item.id), [sinEmpresa.id]);
+  assert.equal(opaco.filasSinMovimiento.length, 0);
+});
+
+test("una fila sin empresa con candidatos en ambas compañías permanece ambigua", () => {
+  const sinEmpresa = { ...fila("f1", "Limpieza", 393.4), empresa: undefined };
+  const resolucion = resolverFilasSinEmpresaGlobal([
+    resultado("WOBA", [sinEmpresa], [movimiento("m1", "Ocean Facility Services", -393.4)]),
+    resultado("EWORKS", [sinEmpresa], [
+      movimiento("m2", "Ocean Facility Services", -393.4, {
+        empresa: "EWORKS",
+        accountId: "ew-main",
+      }),
+    ]),
+  ]);
+
+  assert.equal(resolucion.atribuciones.length, 0);
+  assert.deepEqual(resolucion.filasAmbiguas.map((item) => item.id), [sinEmpresa.id]);
+  assert.equal(resolucion.filasSinMovimiento.length, 0);
+  assert.equal(resolucion.candidatosPorFila[0].movimientos.length, 2);
+});
+
+test("una fila sin empresa sin candidato queda separada como ausencia global", () => {
+  const sinEmpresa = { ...fila("f1", "Restaurante ADEL", 108.96), empresa: undefined };
+  const resolucion = resolverFilasSinEmpresaGlobal([
+    resultado("WOBA", [sinEmpresa], []),
+    resultado("EWORKS", [sinEmpresa], []),
+  ]);
+
+  assert.equal(resolucion.atribuciones.length, 0);
+  assert.equal(resolucion.filasAmbiguas.length, 0);
+  assert.deepEqual(resolucion.filasSinMovimiento.map((item) => item.id), [sinEmpresa.id]);
+});
+
 test("una segunda lectura recupera un movimiento omitido y evita un falso impago", async () => {
   let lecturas = 0;
   const resultado = await generarCruceCashflowHolded(
@@ -246,6 +317,38 @@ test("una segunda lectura recupera un movimiento omitido y evita un falso impago
   assert.equal(resultado.filasSinMovimiento.length, 0);
   assert.equal(resultado.coincidencias.length, 1);
   assert.equal(resultado.problemasCobertura.length, 0);
+});
+
+test("una fila sin empresa también exige una segunda lectura antes de confirmar ausencia", async () => {
+  let lecturas = 0;
+  const resultadoEmpresa = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        {
+          categoria: "GASTOS_FIJOS",
+          fila: 21,
+          cliente: "Limpieza",
+          semana: "S37",
+          valor: "393,40 €",
+        },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [{ id: "main", name: "Main", currency: "EUR" }],
+      listBankMovements: async () => {
+        lecturas += 1;
+        return [];
+      },
+    }
+  );
+
+  assert.equal(lecturas, 2);
+  assert.equal(resultadoEmpresa.problemasCobertura.length, 0);
+  assert.equal(resultadoEmpresa.filasSinEmpresa.length, 1);
 });
 
 test("consulta cuentas archivadas al auditar una semana histórica", async () => {

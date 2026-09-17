@@ -19,6 +19,17 @@ import type { ToolDefinition } from "./types";
 
 const EMPRESAS: EmpresaCashflowCruce[] = ["WOBA", "EWORKS"];
 
+/**
+ * El filtro visible nunca recorta la investigación de filas históricas sin EMPRESA.
+ * Son solo dos compañías, por lo que consultar ambas mantiene el costo acotado y evita
+ * declarar un impago en WOBA cuando el cargo real está en EWORKS (o al revés).
+ */
+export function empresasBancariasAConsultar(
+  _empresaVisible?: EmpresaCashflowCruce
+): EmpresaCashflowCruce[] {
+  return [...EMPRESAS];
+}
+
 type Direccion = "ambas" | "banco_a_cashflow" | "cashflow_a_banco";
 type Fuente = "bancos" | "gastos" | "ambos";
 type ResultadoAtribuible = Pick<
@@ -47,9 +58,16 @@ export function resolverFilasSinEmpresaConCobertura(
   ) {
     return resolverFilasSinEmpresaGlobal(resultados);
   }
+  const filasPorId = new Map<string, ResultadoAtribuible["filasSinEmpresa"][number]>();
+  for (const resultado of resultados) {
+    for (const fila of resultado.filasSinEmpresa) filasPorId.set(fila.id, fila);
+  }
   return {
     atribuciones: [],
-    filasSinResolver: resultados[0]?.filasSinEmpresa ?? [],
+    filasSinResolver: [...filasPorId.values()],
+    filasAmbiguas: [],
+    filasSinMovimiento: [],
+    candidatosPorFila: [],
     movimientosResueltos: new Set<string>(),
   };
 }
@@ -140,9 +158,13 @@ function formatearEmpresa(
   if (direccion !== "banco_a_cashflow") {
     const gastosSinMovimiento = resultado.filasSinMovimiento.filter((fila) => fila.tipo === "gasto");
     if (gastosSinMovimiento.length === 0) {
-      lineas.push("✅ Cashflow → banco: no hay gastos confirmados como ausentes.");
+      lineas.push(
+        `✅ Cashflow → banco (filas etiquetadas ${resultado.empresa}): no hay gastos confirmados como ausentes.`
+      );
     } else {
-      lineas.push(`⚠️ Cashflow → banco: ${gastosSinMovimiento.length} gasto(s) sin salida bancaria confirmada:`);
+      lineas.push(
+        `⚠️ Cashflow → banco (filas etiquetadas ${resultado.empresa}): ${gastosSinMovimiento.length} gasto(s) sin salida bancaria confirmada:`
+      );
       for (const fila of gastosSinMovimiento) {
         const indice = resultado.filasSinMovimiento.indexOf(fila);
         lineas.push(
@@ -307,12 +329,15 @@ export const compararCashflowHoldedTool: ToolDefinition = {
     const rango = rangoPedido(input);
     if ("error" in rango) return `Error: ${rango.error}`;
 
-    const empresas = empresa ? [empresa] : EMPRESAS;
+    const empresasMostradas = empresa ? [empresa] : EMPRESAS;
+    // Las filas etiquetadas siguen respetando su empresa. Las filas sin EMPRESA se resuelven
+    // globalmente y por eso la fotografía de investigación siempre incluye WOBA y EWORKS.
+    const empresasInvestigadas = empresasBancariasAConsultar(empresa);
     const resultados =
       fuente === "gastos"
         ? []
         : await Promise.all(
-            empresas.map((item) =>
+            empresasInvestigadas.map((item) =>
               generarCruceCashflowHolded(
                 item,
                 rango.semana,
@@ -328,8 +353,14 @@ export const compararCashflowHoldedTool: ToolDefinition = {
       fuente === "bancos"
         ? []
         : await Promise.all(
-            empresas.map((item) => generarCruceCashflowGastosHolded(item, rango.semana, rango.desde, rango.hasta))
+            empresasInvestigadas.map((item) => generarCruceCashflowGastosHolded(item, rango.semana, rango.desde, rango.hasta))
           );
+    const resultadosVisibles = resultados.filter((resultado) =>
+      empresasMostradas.includes(resultado.empresa)
+    );
+    const resultadosGastosVisibles = resultadosGastos.filter((resultado) =>
+      empresasMostradas.includes(resultado.empresa)
+    );
     // Una fila sin EMPRESA solo puede atribuirse si se consultaron AMBAS
     // compañías: de otro modo una coincidencia "única" en WOBA podría tener
     // una gemela no consultada en EWORKS (o viceversa).
@@ -353,6 +384,9 @@ export const compararCashflowHoldedTool: ToolDefinition = {
       return {
         atribuciones,
         filasSinResolver: resolucion.filasSinResolver,
+        filasAmbiguas: resolucion.filasAmbiguas,
+        filasSinMovimiento: resolucion.filasSinMovimiento,
+        candidatosPorFila: resolucion.candidatosPorFila,
         movimientosResueltos: new Set(
           atribuciones.map(({ movimiento }) => claveMovimientoGlobal(movimiento))
         ),
@@ -360,13 +394,6 @@ export const compararCashflowHoldedTool: ToolDefinition = {
     };
     const resolucionGlobalSegura = sinAtribucionesConflictivas(resolucionGlobal);
     const resolucionGastosSegura = sinAtribucionesConflictivas(resolucionGastos);
-    const resueltasSinConflicto = new Set(
-      [...atribucionesPorFila.entries()].filter(([, dueños]) => dueños.size === 1).map(([id]) => id)
-    );
-    const universoFilasSinEmpresa =
-      resultados[0]?.filasSinEmpresa ?? resultadosGastos[0]?.filasSinEmpresa ?? [];
-    const filasSinEmpresa = universoFilasSinEmpresa.filter((fila) => !resueltasSinConflicto.has(fila.id));
-
     const incompleto = [...resultados, ...resultadosGastos].some(
       (resultado) => resultado.problemasCobertura.length > 0
     );
@@ -374,8 +401,8 @@ export const compararCashflowHoldedTool: ToolDefinition = {
     // aparece primero como atribuida y después como conflicto en la misma respuesta.
     const partes = [
       `${incompleto ? "⛔ INFORME INCOMPLETO" : "Informe verificado"} cashflow ↔ Holded — ${rango.etiqueta} (${rango.desde} a ${rango.hasta})`,
-      ...resultados.map((resultado) => formatearEmpresa(resultado, direccion, resolucionGlobalSegura)),
-      ...resultadosGastos.map((resultado) =>
+      ...resultadosVisibles.map((resultado) => formatearEmpresa(resultado, direccion, resolucionGlobalSegura)),
+      ...resultadosGastosVisibles.map((resultado) =>
         formatearGastosHolded(resultado, resolucionGastosSegura, direccion)
       ),
     ];
@@ -386,18 +413,71 @@ export const compararCashflowHoldedTool: ToolDefinition = {
         ...conflictos.map(([id, dueños]) => `  • ${id}: ${[...dueños].join(" frente a ")}`)
       );
     }
-    if (filasSinEmpresa.length > 0) {
+
+    const atribucionesBancariasOcultas = resolucionGlobalSegura.atribuciones.filter(
+      (atribucion) => !empresasMostradas.includes(atribucion.empresa)
+    );
+    if (atribucionesBancariasOcultas.length > 0) {
       partes.push(
-        "\n🟠 Filas sin EMPRESA: no se atribuyeron ni a WOBA ni a EWORKS y no se duplicaron en el informe:",
-        ...filasSinEmpresa.map(
-          (fila) =>
-            `  • ${fila.descripcion} · ${Math.abs(fila.valorEur).toFixed(2)} EUR · ${fila.categoria}${fila.fila ? ` · fila ${fila.fila}` : ""}`
+        "\n🔎 Búsqueda global de filas sin EMPRESA: se encontraron fuera del filtro visible:",
+        ...atribucionesBancariasOcultas.map(
+          ({ fila, movimiento, empresa: empresaEncontrada }) =>
+            `  • ${fila.descripcion} · ${Math.abs(fila.valorEur).toFixed(2)} EUR → ${empresaEncontrada}/${movimiento.cuenta} · ${movimiento.fecha} · ${movimiento.descripcion} · id ${movimiento.id}`
+        )
+      );
+    }
+
+    if (fuente !== "gastos" && direccion !== "banco_a_cashflow") {
+      if (resolucionGlobalSegura.filasAmbiguas.length > 0) {
+        partes.push(
+          "\n🟠 Filas sin EMPRESA con candidatos bancarios: requieren validación; no se consideran ejecutadas ni pendientes todavía:",
+          ...resolucionGlobalSegura.filasAmbiguas.map((fila) => {
+            const candidatos = resolucionGlobalSegura.candidatosPorFila.find(
+              (item) => item.fila.id === fila.id
+            )?.movimientos ?? [];
+            const detalle = candidatos
+              .map(
+                (movimiento) =>
+                  `${movimiento.empresa}/${movimiento.cuenta} · ${movimiento.fecha} · ${movimiento.descripcion} · ${Math.abs(movimiento.valorEur).toFixed(2)} EUR · id ${movimiento.id}`
+              )
+              .join(" | ");
+            return `  • ${fila.descripcion} · ${Math.abs(fila.valorEur).toFixed(2)} EUR${detalle ? ` → ${detalle}` : ""}`;
+          })
+        );
+      }
+      if (resolucionGlobalSegura.filasSinMovimiento.length > 0) {
+        partes.push(
+          "\n🔴 Sin salida bancaria en WOBA ni EWORKS al momento del corte (dos lecturas completas): operacionalmente, estos gastos aún no se han ejecutado:",
+          ...resolucionGlobalSegura.filasSinMovimiento.map(
+            (fila) =>
+              `  • ${fila.descripcion} · ${Math.abs(fila.valorEur).toFixed(2)} EUR · ${fila.categoria}${fila.fila ? ` · fila ${fila.fila}` : ""}`
+          )
+        );
+      }
+      const bancosCompletos =
+        resultados.length === EMPRESAS.length &&
+        resultados.every((resultado) => resultado.problemasCobertura.length === 0);
+      if (!bancosCompletos && resolucionGlobalSegura.filasSinResolver.length > 0) {
+        partes.push(
+          "\n⛔ Filas sin EMPRESA y sin conclusión bancaria: la cobertura de ambas compañías no fue completa; no se las declara ejecutadas ni pendientes:",
+          ...resolucionGlobalSegura.filasSinResolver.map(
+            (fila) => `  • ${fila.descripcion} · ${Math.abs(fila.valorEur).toFixed(2)} EUR`
+          )
+        );
+      }
+    }
+
+    if (fuente !== "bancos" && resolucionGastosSegura.filasSinResolver.length > 0) {
+      partes.push(
+        "\n🟠 Filas sin EMPRESA aún no resueltas contra documentos de gasto (esto no determina si el dinero salió del banco):",
+        ...resolucionGastosSegura.filasSinResolver.map(
+          (fila) => `  • ${fila.descripcion} · ${Math.abs(fila.valorEur).toFixed(2)} EUR`
         )
       );
     }
     partes.push(
-      "\nCriterio: empresa + sentido (ingreso/gasto) + importe EUR + proveedor + fechas; cada movimiento/documento se usa una sola vez. Los casos dudosos se muestran como ambiguos, no como faltantes.",
-      "REGLA DE RESPUESTA: reproduce estas categorías sin reinterpretarlas. No llames impago/faltante a un caso ambiguo, a una fila sin EMPRESA ni a un informe incompleto."
+      "\nCriterio: la EMPRESA se usa cuando está informada; si falta, se busca globalmente en WOBA y EWORKS por sentido, importe EUR exacto o cercano, proveedor/categoría y fechas. Cada movimiento/documento se usa una sola vez.",
+      "REGLA DE RESPUESTA: reproduce estas categorías sin reinterpretarlas. Solo llama no ejecutado a 'Sin salida bancaria' tras cobertura completa de ambas empresas y doble lectura; nunca a un caso ambiguo o informe incompleto."
     );
     return partes.join("\n");
   },

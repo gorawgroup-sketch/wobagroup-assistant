@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fuenteSolicitada, resolverFilasSinEmpresaConCobertura } from "./compararCashflowHolded";
+import {
+  empresasBancariasAConsultar,
+  fuenteSolicitada,
+  resolverFilasSinEmpresaConCobertura,
+} from "./compararCashflowHolded";
 import type { FilaCashflowCruce, MovimientoHoldedCruce } from "../cashflow/cruceHoldedCashflow";
 
 const filaSinEmpresa: FilaCashflowCruce = {
@@ -43,6 +47,11 @@ test("una dirección bancaria sin fuente explícita no agrega documentos ajenos"
   assert.equal(fuenteSolicitada({ direccion: "cashflow_a_banco", fuente: "gastos" }), "gastos");
 });
 
+test("el filtro visible de empresa no recorta la investigación bancaria global", () => {
+  assert.deepEqual(empresasBancariasAConsultar("WOBA"), ["WOBA", "EWORKS"]);
+  assert.deepEqual(empresasBancariasAConsultar("EWORKS"), ["WOBA", "EWORKS"]);
+});
+
 test("no atribuye filas sin EMPRESA si una compañía tiene cobertura incompleta", () => {
   const resolucion = resolverFilasSinEmpresaConCobertura([
     resultado("WOBA", [], true),
@@ -51,4 +60,16 @@ test("no atribuye filas sin EMPRESA si una compañía tiene cobertura incompleta
 
   assert.equal(resolucion.atribuciones.length, 0);
   assert.equal(resolucion.filasSinResolver.length, 1);
+  assert.equal(resolucion.filasSinMovimiento.length, 0);
+});
+
+test("solo la cobertura completa de ambas empresas permite confirmar ausencia global", () => {
+  const resolucion = resolverFilasSinEmpresaConCobertura([
+    resultado("WOBA", [], false),
+    resultado("EWORKS", [], false),
+  ]);
+
+  assert.equal(resolucion.atribuciones.length, 0);
+  assert.equal(resolucion.filasAmbiguas.length, 0);
+  assert.deepEqual(resolucion.filasSinMovimiento.map((fila) => fila.id), [filaSinEmpresa.id]);
 });
