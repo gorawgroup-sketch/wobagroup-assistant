@@ -1,4 +1,5 @@
 import {
+  claveMovimientoGlobal,
   generarCruceCashflowGastosHolded,
   generarCruceCashflowHolded,
   resolverFilasSinEmpresaGlobal,
@@ -20,6 +21,38 @@ const EMPRESAS: EmpresaCashflowCruce[] = ["WOBA", "EWORKS"];
 
 type Direccion = "ambas" | "banco_a_cashflow" | "cashflow_a_banco";
 type Fuente = "bancos" | "gastos" | "ambos";
+type ResultadoAtribuible = Pick<
+  ResultadoCruceCashflowHolded,
+  "filasSinEmpresa" | "ambiguos" | "problemasCobertura"
+>;
+
+export function fuenteSolicitada(input: Record<string, unknown>): Fuente {
+  if (input.fuente === "bancos" || input.fuente === "gastos" || input.fuente === "ambos") {
+    return input.fuente;
+  }
+  // `direccion` describe específicamente el cruce con bancos. Si está presente y el llamador no
+  // pidió documentos, traer también gastos de Holded añade ruido y puede contradecir el pedido.
+  return input.direccion === "banco_a_cashflow" || input.direccion === "cashflow_a_banco"
+    ? "bancos"
+    : "ambos";
+}
+
+export function resolverFilasSinEmpresaConCobertura(
+  resultados: ResultadoAtribuible[],
+  cantidadEsperada = EMPRESAS.length
+): ResolucionFilasSinEmpresa {
+  if (
+    resultados.length === cantidadEsperada &&
+    resultados.every((resultado) => resultado.problemasCobertura.length === 0)
+  ) {
+    return resolverFilasSinEmpresaGlobal(resultados);
+  }
+  return {
+    atribuciones: [],
+    filasSinResolver: resultados[0]?.filasSinEmpresa ?? [],
+    movimientosResueltos: new Set<string>(),
+  };
+}
 
 function rangoPedido(input: Record<string, unknown>):
   | { semana: string; desde: string; hasta: string; etiqueta: string }
@@ -65,7 +98,7 @@ function formatearEmpresa(
   const ambiguosVisibles = resultado.ambiguos.filter(
     (caso) =>
       !caso.movimiento ||
-      !resolucionGlobal.movimientosResueltos.has(`${caso.movimiento.empresa}:${caso.movimiento.id}`)
+      !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(caso.movimiento))
   );
   const lineas: string[] = [
     `\n${resultado.empresa} — ${resultado.coincidencias.length + atribuciones.length} coincidencia(s) verificadas`,
@@ -136,13 +169,14 @@ function formatearEmpresa(
 
 function formatearGastosHolded(
   resultado: ResultadoCruceCashflowGastosHolded,
-  resolucionGlobal: ResolucionFilasSinEmpresa
+  resolucionGlobal: ResolucionFilasSinEmpresa,
+  direccion: Direccion
 ): string {
   const atribuciones = resolucionGlobal.atribuciones.filter((item) => item.empresa === resultado.empresa);
   const ambiguosVisibles = resultado.ambiguos.filter(
     (caso) =>
       !caso.movimiento ||
-      !resolucionGlobal.movimientosResueltos.has(`${caso.movimiento.empresa}:${caso.movimiento.id}`)
+      !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(caso.movimiento))
   );
   const lineas: string[] = [
     `\n${resultado.empresa} · gastos Holded — ${resultado.coincidencias.length + atribuciones.length} coincidencia(s) verificadas`,
@@ -163,28 +197,32 @@ function formatearGastosHolded(
       )
     );
   }
-  lineas.push(
-    resultado.gastosHoldedSinCashflow.length === 0
-      ? "✅ Gastos Holded → cashflow: no hay documentos EUR confirmados como ausentes."
-      : `⚠️ Gastos Holded → cashflow: ${resultado.gastosHoldedSinCashflow.length} documento(s) EUR sin fila confirmada:`
-  );
-  lineas.push(
-    ...resultado.gastosHoldedSinCashflow.map(
-      (gasto) =>
-        `  • ${gasto.fecha} · ${gasto.descripcion} · ${Math.abs(gasto.valorEur).toFixed(2)} EUR · id ${gasto.id}`
-    )
-  );
-  lineas.push(
-    resultado.filasSinGastoHolded.length === 0
-      ? "✅ Cashflow → gastos Holded: no hay filas confirmadas como ausentes."
-      : `⚠️ Cashflow → gastos Holded: ${resultado.filasSinGastoHolded.length} fila(s) sin documento EUR confirmado:`
-  );
-  lineas.push(
-    ...resultado.filasSinGastoHolded.map(
-      (fila) =>
-        `  • ${fila.descripcion} · ${fila.valorEur.toFixed(2)} EUR · ${fila.categoria}${fila.fila ? ` · fila ${fila.fila}` : ""}`
-    )
-  );
+  if (direccion !== "cashflow_a_banco") {
+    lineas.push(
+      resultado.gastosHoldedSinCashflow.length === 0
+        ? "✅ Gastos Holded → cashflow: no hay documentos EUR confirmados como ausentes."
+        : `⚠️ Gastos Holded → cashflow: ${resultado.gastosHoldedSinCashflow.length} documento(s) EUR sin fila confirmada:`
+    );
+    lineas.push(
+      ...resultado.gastosHoldedSinCashflow.map(
+        (gasto) =>
+          `  • ${gasto.fecha} · ${gasto.descripcion} · ${Math.abs(gasto.valorEur).toFixed(2)} EUR · id ${gasto.id}`
+      )
+    );
+  }
+  if (direccion !== "banco_a_cashflow") {
+    lineas.push(
+      resultado.filasSinGastoHolded.length === 0
+        ? "✅ Cashflow → gastos Holded: no hay filas confirmadas como ausentes."
+        : `⚠️ Cashflow → gastos Holded: ${resultado.filasSinGastoHolded.length} fila(s) sin documento EUR confirmado:`
+    );
+    lineas.push(
+      ...resultado.filasSinGastoHolded.map(
+        (fila) =>
+          `  • ${fila.descripcion} · ${fila.valorEur.toFixed(2)} EUR · ${fila.categoria}${fila.fila ? ` · fila ${fila.fila}` : ""}`
+      )
+    );
+  }
   if (resultado.gastosNoComparables.length > 0) {
     lineas.push(
       `🟠 ${resultado.gastosNoComparables.length} gasto(s) no EUR/no numérico separados: no se fuerza una paridad falsa contra el cashflow EUR.`
@@ -262,8 +300,10 @@ export const compararCashflowHoldedTool: ToolDefinition = {
     if (!["ambas", "banco_a_cashflow", "cashflow_a_banco"].includes(direccion)) {
       return "Error: dirección no válida.";
     }
-    const fuente = (input.fuente ?? "ambos") as Fuente;
-    if (!["bancos", "gastos", "ambos"].includes(fuente)) return "Error: fuente no válida.";
+    if (input.fuente !== undefined && !["bancos", "gastos", "ambos"].includes(String(input.fuente))) {
+      return "Error: fuente no válida.";
+    }
+    const fuente = fuenteSolicitada(input);
     const rango = rangoPedido(input);
     if ("error" in rango) return `Error: ${rango.error}`;
 
@@ -272,7 +312,17 @@ export const compararCashflowHoldedTool: ToolDefinition = {
       fuente === "gastos"
         ? []
         : await Promise.all(
-            empresas.map((item) => generarCruceCashflowHolded(item, rango.semana, rango.desde, rango.hasta))
+            empresas.map((item) =>
+              generarCruceCashflowHolded(
+                item,
+                rango.semana,
+                rango.desde,
+                rango.hasta,
+                new Date(),
+                {},
+                { confirmarAusencias: direccion !== "banco_a_cashflow" }
+              )
+            )
           );
     const resultadosGastos =
       fuente === "bancos"
@@ -283,31 +333,8 @@ export const compararCashflowHoldedTool: ToolDefinition = {
     // Una fila sin EMPRESA solo puede atribuirse si se consultaron AMBAS
     // compañías: de otro modo una coincidencia "única" en WOBA podría tener
     // una gemela no consultada en EWORKS (o viceversa).
-    const resolucionGlobal: ResolucionFilasSinEmpresa =
-      resultados.length === EMPRESAS.length
-        ? resolverFilasSinEmpresaGlobal(resultados)
-        : {
-            atribuciones: [],
-            filasSinResolver: resultados[0]?.filasSinEmpresa ?? [],
-            movimientosResueltos: new Set<string>(),
-          };
-    const resolucionGastos: ResolucionFilasSinEmpresa =
-      resultadosGastos.length === EMPRESAS.length
-        ? resolverFilasSinEmpresaGlobal(resultadosGastos)
-        : {
-            atribuciones: [],
-            filasSinResolver: resultadosGastos[0]?.filasSinEmpresa ?? [],
-            movimientosResueltos: new Set<string>(),
-          };
-
-    const incompleto = [...resultados, ...resultadosGastos].some(
-      (resultado) => resultado.problemasCobertura.length > 0
-    );
-    const partes = [
-      `${incompleto ? "⛔ INFORME INCOMPLETO" : "Informe verificado"} cashflow ↔ Holded — ${rango.etiqueta} (${rango.desde} a ${rango.hasta})`,
-      ...resultados.map((resultado) => formatearEmpresa(resultado, direccion, resolucionGlobal)),
-      ...resultadosGastos.map((resultado) => formatearGastosHolded(resultado, resolucionGastos)),
-    ];
+    const resolucionGlobal = resolverFilasSinEmpresaConCobertura(resultados);
+    const resolucionGastos = resolverFilasSinEmpresaConCobertura(resultadosGastos);
 
     const atribucionesPorFila = new Map<string, Set<EmpresaCashflowCruce>>();
     for (const atribucion of [...resolucionGlobal.atribuciones, ...resolucionGastos.atribuciones]) {
@@ -316,12 +343,42 @@ export const compararCashflowHoldedTool: ToolDefinition = {
       atribucionesPorFila.set(atribucion.fila.id, dueños);
     }
     const conflictos = [...atribucionesPorFila.entries()].filter(([, dueños]) => dueños.size > 1);
+    const idsConflictivos = new Set(conflictos.map(([id]) => id));
+    const sinAtribucionesConflictivas = (
+      resolucion: ResolucionFilasSinEmpresa
+    ): ResolucionFilasSinEmpresa => {
+      const atribuciones = resolucion.atribuciones.filter(
+        (atribucion) => !idsConflictivos.has(atribucion.fila.id)
+      );
+      return {
+        atribuciones,
+        filasSinResolver: resolucion.filasSinResolver,
+        movimientosResueltos: new Set(
+          atribuciones.map(({ movimiento }) => claveMovimientoGlobal(movimiento))
+        ),
+      };
+    };
+    const resolucionGlobalSegura = sinAtribucionesConflictivas(resolucionGlobal);
+    const resolucionGastosSegura = sinAtribucionesConflictivas(resolucionGastos);
     const resueltasSinConflicto = new Set(
       [...atribucionesPorFila.entries()].filter(([, dueños]) => dueños.size === 1).map(([id]) => id)
     );
     const universoFilasSinEmpresa =
       resultados[0]?.filasSinEmpresa ?? resultadosGastos[0]?.filasSinEmpresa ?? [];
     const filasSinEmpresa = universoFilasSinEmpresa.filter((fila) => !resueltasSinConflicto.has(fila.id));
+
+    const incompleto = [...resultados, ...resultadosGastos].some(
+      (resultado) => resultado.problemasCobertura.length > 0
+    );
+    // Solo después de retirar atribuciones contradictorias se construye el texto. Así una fila nunca
+    // aparece primero como atribuida y después como conflicto en la misma respuesta.
+    const partes = [
+      `${incompleto ? "⛔ INFORME INCOMPLETO" : "Informe verificado"} cashflow ↔ Holded — ${rango.etiqueta} (${rango.desde} a ${rango.hasta})`,
+      ...resultados.map((resultado) => formatearEmpresa(resultado, direccion, resolucionGlobalSegura)),
+      ...resultadosGastos.map((resultado) =>
+        formatearGastosHolded(resultado, resolucionGastosSegura, direccion)
+      ),
+    ];
 
     if (conflictos.length > 0) {
       partes.push(

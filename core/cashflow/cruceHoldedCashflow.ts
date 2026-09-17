@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { fetchDetalleRegistros, obtenerUltimaVerificacionEstructura, type DetalleRegistro } from "../google/cashflowSheet";
 import {
   listBankMovements,
@@ -25,6 +26,13 @@ const CATEGORIAS_EJECUCION = new Set([
 
 const RE_CONVERSION_MONEDA = /^converted\s+\S+\s+to\s+\S+/i;
 const RE_CUENTA_PROPIA = /business\s+atelier\s+europa/i;
+const PALABRAS_GENERICAS_CRUCE = new Set([
+  "pago", "pagos", "compra", "compras", "gasto", "gastos", "factura", "recibo",
+  "hotel", "viaje", "viajes", "pending", "pendiente", "trip", "servicio", "servicios",
+  "cuota", "cuotas", "tarjeta", "card", "debit", "credit", "banco", "bank", "transfer",
+  "transferencia", "online", "merchant", "main", "expense", "expenses", "restaurante",
+  "restaurant", "taxi", "fijo", "fijos", "mensual", "septiembre",
+]);
 
 export interface FilaCashflowCruce {
   id: string;
@@ -110,6 +118,14 @@ export interface ResolucionFilasSinEmpresa {
   movimientosResueltos: Set<string>;
 }
 
+function claveMovimientoLocal(movimiento: MovimientoHoldedCruce): string {
+  return `${movimiento.accountId}:${movimiento.id}`;
+}
+
+export function claveMovimientoGlobal(movimiento: MovimientoHoldedCruce): string {
+  return `${movimiento.empresa}:${claveMovimientoLocal(movimiento)}`;
+}
+
 /**
  * Dependencias de lectura inyectables para probar el recorrido completo sin tocar Sheets ni Holded.
  * Producción usa las implementaciones reales; los tests pueden reproducir snapshots omitidos o
@@ -120,6 +136,11 @@ export interface FuentesCruceCashflowHolded {
   obtenerUltimaVerificacionEstructura: typeof obtenerUltimaVerificacionEstructura;
   listTreasuryAccounts: typeof listTreasuryAccounts;
   listBankMovements: typeof listBankMovements;
+}
+
+export interface OpcionesCruceCashflowHolded {
+  /** Relee residuos antes de afirmar cashflow→banco. Se omite en consultas exclusivas banco→cashflow. */
+  confirmarAusencias?: boolean;
 }
 
 const FUENTES_CRUCE_REALES: FuentesCruceCashflowHolded = {
@@ -172,12 +193,44 @@ export function parsearImporteCashflow(valor: string): number {
   return negativoPorParentesis || original.includes("-") ? -numero : numero;
 }
 
-function valorEnEuros(movimiento: BankMovement): number {
-  const moneda = String(movimiento.currency ?? "EUR").toUpperCase();
-  const candidato = moneda !== "EUR" && movimiento.accounting_amount != null
-    ? Number(movimiento.accounting_amount)
-    : Number(movimiento.amount ?? 0);
-  return Number.isFinite(candidato) ? candidato : 0;
+function valorEnEuros(movimiento: BankMovement, monedaCuenta?: string): number | undefined {
+  const moneda = String(movimiento.currency ?? monedaCuenta ?? "EUR").toUpperCase();
+  // Nunca se puede asumir que 1 USD/GBP/... equivale a 1 EUR. Para divisa extranjera Holded debe
+  // entregar el importe contable convertido; si no lo hace, el informe completo queda bloqueado.
+  if (moneda !== "EUR") {
+    if (movimiento.accounting_amount == null) return undefined;
+    if (movimiento.accounting_currency && String(movimiento.accounting_currency).toUpperCase() !== "EUR") {
+      return undefined;
+    }
+    const contable = Number(movimiento.accounting_amount);
+    return Number.isFinite(contable) ? contable : undefined;
+  }
+  const importe = Number(movimiento.amount ?? 0);
+  return Number.isFinite(importe) ? importe : undefined;
+}
+
+function idSinteticoMovimiento(
+  cuentaId: string,
+  movimiento: BankMovement,
+  descripcion: string,
+  fecha: string,
+  moneda: string,
+  ocurrencias: Map<string, number>
+): string {
+  const base = [
+    cuentaId,
+    fecha,
+    moneda,
+    String(movimiento.amount ?? ""),
+    String(movimiento.accounting_amount ?? ""),
+    normalizarTexto(descripcion),
+    String(movimiento.status ?? ""),
+  ].join("|");
+  const numero = (ocurrencias.get(base) ?? 0) + 1;
+  ocurrencias.set(base, numero);
+  // El ordinal preserva cargos idénticos reales; la huella estable evita duplicarlos si Holded cambia
+  // el orden entre la primera y la segunda lectura.
+  return `synthetic:${createHash("sha256").update(base).digest("hex").slice(0, 20)}:${numero}`;
 }
 
 function fechaIso(valor: string | undefined): string {
@@ -203,12 +256,17 @@ function puntajeTexto(fila: string, banco: string): number {
   const a = normalizarTexto(fila);
   const b = normalizarTexto(banco);
   if (!a || !b) return 0;
-  if (a === b) return 60;
-  if (a.length >= 5 && b.length >= 5 && (a.includes(b) || b.includes(a))) return 45;
-
-  const palabrasA = palabrasDe(a, 4);
-  const palabrasB = palabrasDe(b, 4);
+  const palabrasA = palabrasDe(a, 4).filter(
+    (palabra) => !PALABRAS_GENERICAS_CRUCE.has(palabra) && !/^\d+$/.test(palabra)
+  );
+  const palabrasB = palabrasDe(b, 4).filter(
+    (palabra) => !PALABRAS_GENERICAS_CRUCE.has(palabra) && !/^\d+$/.test(palabra)
+  );
   const coincidencias = palabrasA.filter((pa) => palabrasB.some((pb) => palabrasParecidas(pa, pb))).length;
+  // Una frase genérica idéntica ("pago", "hotel", "viaje") no identifica al proveedor. Exactitud y
+  // contención solo son evidencia fuerte cuando comparten al menos un token distintivo.
+  if (coincidencias > 0 && a === b) return 60;
+  if (coincidencias > 0 && a.length >= 5 && b.length >= 5 && (a.includes(b) || b.includes(a))) return 45;
   if (coincidencias >= 2) return 35 + Math.min(coincidencias, 5);
   if (coincidencias === 1) return 20;
   return 0;
@@ -275,8 +333,11 @@ export function cruzarListasUnoAUno(
 
     for (const arista of aristas) {
       const deFila = aristas.filter((a) => a.fila.id === arista.fila.id).sort((a, b) => b.puntaje - a.puntaje);
-      const deMovimiento = aristas.filter((a) => a.movimiento.id === arista.movimiento.id).sort((a, b) => b.puntaje - a.puntaje);
-      const mejorFilaUnico = deFila[0]?.movimiento.id === arista.movimiento.id && deFila[1]?.puntaje !== arista.puntaje;
+      const claveArista = claveMovimientoLocal(arista.movimiento);
+      const deMovimiento = aristas.filter((a) => claveMovimientoLocal(a.movimiento) === claveArista).sort((a, b) => b.puntaje - a.puntaje);
+      const mejorFilaUnico =
+        (deFila[0]?.movimiento ? claveMovimientoLocal(deFila[0].movimiento) : "") === claveArista &&
+        deFila[1]?.puntaje !== arista.puntaje;
       const mejorMovimientoUnico = deMovimiento[0]?.fila.id === arista.fila.id && deMovimiento[1]?.puntaje !== arista.puntaje;
       // Un importe único NO identifica por sí solo a un proveedor. El caso real S37 demostró que
       // hacerlo oculta errores cuando hay importes iguales en empresas/cuentas distintas. Sin
@@ -288,9 +349,10 @@ export function cruzarListasUnoAUno(
     const filasUsadas = new Set<string>();
     const movimientosUsados = new Set<string>();
     for (const arista of aceptadas.sort((a, b) => b.puntaje - a.puntaje)) {
-      if (filasUsadas.has(arista.fila.id) || movimientosUsados.has(arista.movimiento.id)) continue;
+      const clave = claveMovimientoLocal(arista.movimiento);
+      if (filasUsadas.has(arista.fila.id) || movimientosUsados.has(clave)) continue;
       filasUsadas.add(arista.fila.id);
-      movimientosUsados.add(arista.movimiento.id);
+      movimientosUsados.add(clave);
       coincidencias.push({
         fila: arista.fila,
         movimiento: arista.movimiento,
@@ -299,7 +361,7 @@ export function cruzarListasUnoAUno(
       });
     }
     pendientesFilas = pendientesFilas.filter((fila) => !filasUsadas.has(fila.id));
-    pendientesMovimientos = pendientesMovimientos.filter((movimiento) => !movimientosUsados.has(movimiento.id));
+    pendientesMovimientos = pendientesMovimientos.filter((movimiento) => !movimientosUsados.has(claveMovimientoLocal(movimiento)));
   }
 
   // Algunos proveedores (por ejemplo, varias compras de Amazon) se
@@ -334,9 +396,9 @@ export function cruzarListasUnoAUno(
       movimientos: aceptada.grupo.movimientos,
       criterio: "proveedor_total_agrupado",
     });
-    const idsGrupo = new Set(aceptada.grupo.movimientos.map((movimiento) => movimiento.id));
+    const idsGrupo = new Set(aceptada.grupo.movimientos.map(claveMovimientoLocal));
     pendientesFilas = pendientesFilas.filter((fila) => fila.id !== aceptada.fila.id);
-    pendientesMovimientos = pendientesMovimientos.filter((movimiento) => !idsGrupo.has(movimiento.id));
+    pendientesMovimientos = pendientesMovimientos.filter((movimiento) => !idsGrupo.has(claveMovimientoLocal(movimiento)));
   }
 
   const aristasRestantes = construirAristas(pendientesFilas, pendientesMovimientos);
@@ -357,26 +419,33 @@ export function cruzarListasUnoAUno(
     ...candidatosGrupoRestantes.map((c) => c.fila.id),
   ]);
   const movimientosAmbiguos = new Set([
-    ...aristasRestantes.map((a) => a.movimiento.id),
-    ...candidatosGrupoRestantes.flatMap((c) => c.grupo.movimientos.map((movimiento) => movimiento.id)),
+    ...aristasRestantes.map((a) => claveMovimientoLocal(a.movimiento)),
+    ...candidatosGrupoRestantes.flatMap((c) => c.grupo.movimientos.map(claveMovimientoLocal)),
   ]);
 
   for (const fila of pendientesFilas.filter((f) => filasAmbiguas.has(f.id))) {
     ambiguos.push({
       fila,
       alternativas: [
-        ...aristasRestantes.filter((a) => a.fila.id === fila.id).map((a) => a.movimiento.id),
+        ...aristasRestantes.filter((a) => a.fila.id === fila.id).map((a) => claveMovimientoLocal(a.movimiento)),
         ...candidatosGrupoRestantes
           .filter((c) => c.fila.id === fila.id)
-          .map((c) => c.grupo.movimientos.map((movimiento) => movimiento.id).join("+")),
+          .map((c) => c.grupo.movimientos.map(claveMovimientoLocal).join("+")),
       ],
       motivo: "Hay más de un movimiento compatible o la evidencia de proveedor no permite elegir uno sin riesgo.",
     });
   }
-  for (const movimiento of pendientesMovimientos.filter((m) => movimientosAmbiguos.has(m.id) && m.enPeriodo)) {
+  const movimientosYaExplicados = new Set(
+    ambiguos.flatMap((caso) => (caso.fila ? caso.alternativas.flatMap((alternativa) => alternativa.split("+")) : []))
+  );
+  for (const movimiento of pendientesMovimientos.filter(
+    (m) => movimientosAmbiguos.has(claveMovimientoLocal(m)) && !movimientosYaExplicados.has(claveMovimientoLocal(m)) && m.enPeriodo
+  )) {
     ambiguos.push({
       movimiento,
-      alternativas: aristasRestantes.filter((a) => a.movimiento.id === movimiento.id).map((a) => a.fila.id),
+      alternativas: aristasRestantes
+        .filter((a) => claveMovimientoLocal(a.movimiento) === claveMovimientoLocal(movimiento))
+        .map((a) => a.fila.id),
       motivo: "Hay más de una fila compatible o la evidencia del cashflow no permite elegir una sin riesgo.",
     });
   }
@@ -384,7 +453,9 @@ export function cruzarListasUnoAUno(
   return {
     coincidencias,
     filasSinMovimiento: pendientesFilas.filter((fila) => !filasAmbiguas.has(fila.id)),
-    movimientosSinCashflow: pendientesMovimientos.filter((movimiento) => movimiento.enPeriodo && !movimientosAmbiguos.has(movimiento.id)),
+    movimientosSinCashflow: pendientesMovimientos.filter(
+      (movimiento) => movimiento.enPeriodo && !movimientosAmbiguos.has(claveMovimientoLocal(movimiento))
+    ),
     ambiguos,
   };
 }
@@ -409,7 +480,7 @@ export function resolverFilasSinEmpresaGlobal(
   for (const resultado of resultados) {
     for (const caso of resultado.ambiguos) {
       if (!caso.movimiento || !caso.motivo.includes("no tiene EMPRESA")) continue;
-      movimientosPorId.set(`${caso.movimiento.empresa}:${caso.movimiento.id}`, caso.movimiento);
+      movimientosPorId.set(claveMovimientoGlobal(caso.movimiento), caso.movimiento);
     }
   }
   let movimientos = [...movimientosPorId.values()];
@@ -431,12 +502,12 @@ export function resolverFilasSinEmpresaGlobal(
 
     const aceptada = aristas.find((arista) => {
       const deFila = aristas.filter((item) => item.fila.id === arista.fila.id).sort((a, b) => b.puntaje - a.puntaje);
-      const claveMovimiento = `${arista.movimiento.empresa}:${arista.movimiento.id}`;
+      const claveMovimiento = claveMovimientoGlobal(arista.movimiento);
       const deMovimiento = aristas
-        .filter((item) => `${item.movimiento.empresa}:${item.movimiento.id}` === claveMovimiento)
+        .filter((item) => claveMovimientoGlobal(item.movimiento) === claveMovimiento)
         .sort((a, b) => b.puntaje - a.puntaje);
       const mejorFilaUnico =
-        `${deFila[0]?.movimiento.empresa}:${deFila[0]?.movimiento.id}` === claveMovimiento &&
+        (deFila[0]?.movimiento ? claveMovimientoGlobal(deFila[0].movimiento) : "") === claveMovimiento &&
         deFila[1]?.puntaje !== arista.puntaje;
       const mejorMovimientoUnico = deMovimiento[0]?.fila.id === arista.fila.id && deMovimiento[1]?.puntaje !== arista.puntaje;
       return mejorFilaUnico && mejorMovimientoUnico && arista.texto >= 20;
@@ -452,7 +523,7 @@ export function resolverFilasSinEmpresaGlobal(
     filas = filas.filter((fila) => fila.id !== aceptada.fila.id);
     movimientos = movimientos.filter(
       (movimiento) =>
-        `${movimiento.empresa}:${movimiento.id}` !== `${aceptada.movimiento.empresa}:${aceptada.movimiento.id}`
+        claveMovimientoGlobal(movimiento) !== claveMovimientoGlobal(aceptada.movimiento)
     );
   }
 
@@ -460,7 +531,7 @@ export function resolverFilasSinEmpresaGlobal(
     atribuciones,
     filasSinResolver: filas,
     movimientosResueltos: new Set(
-      atribuciones.map(({ movimiento }) => `${movimiento.empresa}:${movimiento.id}`)
+      atribuciones.map(({ movimiento }) => claveMovimientoGlobal(movimiento))
     ),
   };
 }
@@ -515,19 +586,19 @@ export async function generarCruceCashflowGastosHolded(
     }));
 
   const cruce = cruzarListasUnoAUno(filasEmpresa, documentos);
-  const documentosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map((m) => m.id)));
-  const documentosDisponibles = documentos.filter((documento) => !documentosYaAsignados.has(documento.id));
+  const documentosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map(claveMovimientoLocal)));
+  const documentosDisponibles = documentos.filter((documento) => !documentosYaAsignados.has(claveMovimientoLocal(documento)));
   const filasSinEmpresaComoCandidatas = filasSinEmpresa.map((fila) => ({ ...fila, empresa }));
   const aristasSinEmpresa = construirAristas(filasSinEmpresaComoCandidatas, documentosDisponibles);
-  const documentosBloqueados = new Set(aristasSinEmpresa.map((arista) => arista.movimiento.id));
+  const documentosBloqueados = new Set(aristasSinEmpresa.map((arista) => claveMovimientoLocal(arista.movimiento)));
   const ambiguos = [
     ...cruce.ambiguos,
     ...documentosDisponibles
-      .filter((documento) => documentosBloqueados.has(documento.id))
+      .filter((documento) => documentosBloqueados.has(claveMovimientoLocal(documento)))
       .map((documento): AmbiguedadCashflowHolded => ({
         movimiento: documento,
         alternativas: aristasSinEmpresa
-          .filter((arista) => arista.movimiento.id === documento.id)
+          .filter((arista) => claveMovimientoLocal(arista.movimiento) === claveMovimientoLocal(documento))
           .map((arista) => arista.fila.id),
         motivo:
           "El gasto puede corresponder a una fila del cashflow que no tiene EMPRESA; no se atribuye ni se declara ausente hasta completar o demostrar ese dato.",
@@ -542,7 +613,7 @@ export async function generarCruceCashflowGastosHolded(
     coincidencias: cruce.coincidencias,
     filasSinGastoHolded: cruce.filasSinMovimiento,
     gastosHoldedSinCashflow: cruce.movimientosSinCashflow.filter(
-      (documento) => !documentosBloqueados.has(documento.id)
+      (documento) => !documentosBloqueados.has(claveMovimientoLocal(documento))
     ),
     ambiguos,
     filasSinEmpresa,
@@ -577,7 +648,8 @@ export async function generarCruceCashflowHolded(
   desde: string,
   hasta: string,
   hoy = new Date(),
-  fuentesParciales: Partial<FuentesCruceCashflowHolded> = {}
+  fuentesParciales: Partial<FuentesCruceCashflowHolded> = {},
+  opciones: OpcionesCruceCashflowHolded = {}
 ): Promise<ResultadoCruceCashflowHolded> {
   const fuentes: FuentesCruceCashflowHolded = { ...FUENTES_CRUCE_REALES, ...fuentesParciales };
   const registros = await fuentes.fetchDetalleRegistros();
@@ -597,10 +669,18 @@ export async function generarCruceCashflowHolded(
   // Una cuenta archivada puede contener justamente el pago histórico que se está auditando. Excluirla
   // convierte un cambio administrativo posterior en un falso "no salió del banco". Se consultan todas
   // las cuentas devueltas por Holded; solo se descartan entradas sin id, que no son consultables.
-  const cuentas = (await fuentes.listTreasuryAccounts(empresa)).filter(
-    (cuenta): cuenta is TreasuryAccount => typeof cuenta.id === "string" && cuenta.id.trim().length > 0
-  );
-  if (cuentas.length === 0) {
+  let cuentas: TreasuryAccount[] = [];
+  let falloListadoCuentas = false;
+  try {
+    cuentas = (await fuentes.listTreasuryAccounts(empresa)).filter(
+      (cuenta): cuenta is TreasuryAccount => typeof cuenta.id === "string" && cuenta.id.trim().length > 0
+    );
+  } catch (error) {
+    falloListadoCuentas = true;
+    const detalle = error instanceof Error ? error.message : String(error);
+    problemasCobertura.push(`Falló la lectura de cuentas de tesorería de ${empresa}: ${detalle}`);
+  }
+  if (cuentas.length === 0 && !falloListadoCuentas) {
     problemasCobertura.push(
       `Holded no devolvió ninguna cuenta de tesorería para ${empresa}; no se puede afirmar que falte una salida bancaria.`
     );
@@ -609,21 +689,38 @@ export async function generarCruceCashflowHolded(
   const leerSnapshot = async (): Promise<MovimientoHoldedCruce[]> => {
     const snapshot: MovimientoHoldedCruce[] = [];
     for (const cuenta of cuentas) {
-      const leidos = await fuentes.listBankMovements(empresa, cuenta.id, desdeBancos, hastaBancos);
+      let leidos: BankMovement[];
+      try {
+        leidos = await fuentes.listBankMovements(empresa, cuenta.id, desdeBancos, hastaBancos);
+      } catch (error) {
+        const detalle = error instanceof Error ? error.message : String(error);
+        problemasCobertura.push(
+          `Falló la lectura de la cuenta ${cuenta.name ?? cuenta.id} (${cuenta.id}): ${detalle}`
+        );
+        continue;
+      }
+      const ocurrenciasSinId = new Map<string, number>();
+      let noComparablesPorDivisa = 0;
       if (leidos.length >= 200) {
         problemasCobertura.push(
           `La cuenta ${cuenta.name ?? cuenta.id} devolvió 200 movimientos; Holded pudo truncar la consulta y el informe no se declara completo.`
         );
       }
-      leidos.forEach((movimiento, indice) => {
+      leidos.forEach((movimiento) => {
         const descripcion = movimiento.description ?? "(sin descripción)";
         if (esMovimientoInterno(descripcion)) return;
-        const valorEur = valorEnEuros(movimiento);
-        if (!valorEur) return;
-        const fecha = fechaIso(movimiento.booking_date);
         const moneda = String(movimiento.currency ?? cuenta.currency ?? "EUR").toUpperCase();
+        const valorEur = valorEnEuros(movimiento, cuenta.currency);
+        if (valorEur === undefined) {
+          noComparablesPorDivisa += 1;
+          return;
+        }
+        if (valorEur === 0) return;
+        const fecha = fechaIso(movimiento.booking_date);
         snapshot.push({
-          id: movimiento.id || `${cuenta.id}:${fecha}:${valorEur}:${indice}`,
+          id:
+            movimiento.id ||
+            idSinteticoMovimiento(cuenta.id, movimiento, descripcion, fecha, moneda, ocurrenciasSinId),
           empresa,
           accountId: cuenta.id,
           cuenta: cuenta.name ?? cuenta.id,
@@ -637,6 +734,11 @@ export async function generarCruceCashflowHolded(
           toleranciaEur: moneda === "EUR" ? 0.01 : 0.05,
         });
       });
+      if (noComparablesPorDivisa > 0) {
+        problemasCobertura.push(
+          `${noComparablesPorDivisa} movimiento(s) en divisa extranjera de ${cuenta.name ?? cuenta.id} no traen importe contable en EUR; no se emiten conclusiones de ausencia.`
+        );
+      }
     }
     return snapshot;
   };
@@ -650,7 +752,12 @@ export async function generarCruceCashflowHolded(
   // Un movimiento visto en cualquiera de las dos lecturas existe; unir ambos snapshots evita que una
   // omisión transitoria de Holded vuelva a convertirse en un falso impago. Si la validación falla, el
   // informe queda INCOMPLETO y el formateador se niega a emitir conclusiones de ausencia.
-  if (cruce.filasSinMovimiento.length > 0 && cuentas.length > 0 && problemasCobertura.length === 0) {
+  if (
+    (opciones.confirmarAusencias ?? true) &&
+    cruce.filasSinMovimiento.length > 0 &&
+    cuentas.length > 0 &&
+    problemasCobertura.length === 0
+  ) {
     try {
       const segundoSnapshot = await leerSnapshot();
       const porId = new Map<string, MovimientoHoldedCruce>();
@@ -671,19 +778,19 @@ export async function generarCruceCashflowHolded(
   // pero tampoco puede ignorarse y convertir su cargo compatible en un falso
   // "falta registrar". Esos casos se retiran de las afirmaciones definitivas y
   // se publican como ambiguos hasta completar la empresa en el cashflow.
-  const movimientosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map((m) => m.id)));
-  const movimientosDisponibles = movimientos.filter((m) => !movimientosYaAsignados.has(m.id));
+  const movimientosYaAsignados = new Set(cruce.coincidencias.flatMap((c) => c.movimientos.map(claveMovimientoLocal)));
+  const movimientosDisponibles = movimientos.filter((m) => !movimientosYaAsignados.has(claveMovimientoLocal(m)));
   const filasSinEmpresaComoCandidatas = filasSinEmpresa.map((fila) => ({ ...fila, empresa }));
   const aristasSinEmpresa = construirAristas(filasSinEmpresaComoCandidatas, movimientosDisponibles);
-  const movimientosBloqueados = new Set(aristasSinEmpresa.map((a) => a.movimiento.id));
+  const movimientosBloqueados = new Set(aristasSinEmpresa.map((a) => claveMovimientoLocal(a.movimiento)));
   const ambiguos = [
     ...cruce.ambiguos,
     ...movimientosDisponibles
-      .filter((movimiento) => movimiento.enPeriodo && movimientosBloqueados.has(movimiento.id))
+      .filter((movimiento) => movimiento.enPeriodo && movimientosBloqueados.has(claveMovimientoLocal(movimiento)))
       .map((movimiento): AmbiguedadCashflowHolded => ({
         movimiento,
         alternativas: aristasSinEmpresa
-          .filter((a) => a.movimiento.id === movimiento.id)
+          .filter((a) => claveMovimientoLocal(a.movimiento) === claveMovimientoLocal(movimiento))
           .map((a) => a.fila.id),
         motivo: "El importe puede corresponder a una fila del cashflow que no tiene EMPRESA; no se atribuye ni se declara ausente hasta completar ese dato.",
       })),
@@ -697,7 +804,7 @@ export async function generarCruceCashflowHolded(
     desdeBancos,
     hastaBancos,
     ...cruce,
-    movimientosSinCashflow: cruce.movimientosSinCashflow.filter((m) => !movimientosBloqueados.has(m.id)),
+    movimientosSinCashflow: cruce.movimientosSinCashflow.filter((m) => !movimientosBloqueados.has(claveMovimientoLocal(m))),
     ambiguos,
     filasSinEmpresa,
     problemasCobertura,

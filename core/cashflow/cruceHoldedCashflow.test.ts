@@ -90,6 +90,31 @@ test("un solo movimiento nunca cubre dos filas iguales", () => {
   assert.equal(resultado.coincidencias.length, 0);
   assert.equal(resultado.filasSinMovimiento.length, 0);
   assert.equal(resultado.ambiguos.filter((a) => a.fila).length, 2);
+  assert.equal(resultado.ambiguos.length, 2, "no duplica además la misma duda desde el movimiento");
+});
+
+test("una palabra genérica no confirma una coincidencia contable", () => {
+  const resultado = cruzarListasUnoAUno(
+    [fila("f1", "Hotel", 106.92)],
+    [movimiento("m1", "HOTEL CENTRAL", -106.92)]
+  );
+
+  assert.equal(resultado.coincidencias.length, 0);
+  assert.equal(resultado.filasSinMovimiento.length, 0);
+  assert.equal(resultado.ambiguos.length, 1);
+});
+
+test("el mismo id de Holded en cuentas distintas no colisiona", () => {
+  const resultado = cruzarListasUnoAUno(
+    [fila("f1", "Iberdrola", 50), fila("f2", "Anthropic", 50)],
+    [
+      movimiento("repetido", "IBERDROLA", -50, { accountId: "main" }),
+      movimiento("repetido", "ANTHROPIC", -50, { accountId: "usd" }),
+    ]
+  );
+
+  assert.equal(resultado.coincidencias.length, 2);
+  assert.equal(resultado.ambiguos.length, 0);
 });
 
 test("un abono no respalda un gasto aunque el importe sea idéntico", () => {
@@ -283,4 +308,101 @@ test("sin cuentas de tesorería falla cerrado y no autoriza conclusiones de ause
   );
 
   assert.match(resultado.problemasCobertura.join("\n"), /ninguna cuenta de tesorería/i);
+});
+
+test("una divisa extranjera sin importe contable EUR deja el informe incompleto", async () => {
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        { categoria: "PAGOS_EXTRAS", fila: 8, cliente: "Anthropic", semana: "S37", valor: "90", empresa: "WOBA" },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [{ id: "usd", name: "USD", currency: "USD" }],
+      listBankMovements: async () => [
+        { id: "mov-usd", booking_date: "2026-09-10", description: "ANTHROPIC", amount: -90, currency: "USD" },
+      ],
+    }
+  );
+
+  assert.match(resultado.problemasCobertura.join("\n"), /divisa extranjera/i);
+  assert.equal(resultado.coincidencias.length, 0);
+});
+
+test("la huella estable no duplica movimientos sin id si cambia el orden entre lecturas", async () => {
+  let lecturas = 0;
+  const proveedor = { booking_date: "2026-09-10", description: "PROVEEDOR", amount: -10, currency: "EUR" };
+  const otro = { booking_date: "2026-09-10", description: "OTRO", amount: -99, currency: "EUR" };
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        { categoria: "PAGOS_EXTRAS", fila: 8, cliente: "Proveedor", semana: "S37", valor: "20", empresa: "WOBA" },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [{ id: "main", name: "Main", currency: "EUR" }],
+      listBankMovements: async () => {
+        lecturas += 1;
+        return lecturas === 1 ? [proveedor, otro] : [otro, proveedor];
+      },
+    }
+  );
+
+  assert.equal(lecturas, 2);
+  assert.equal(resultado.coincidencias.length, 0, "no fabrica un total 10+10 usando dos snapshots");
+  assert.equal(resultado.filasSinMovimiento.length, 1);
+});
+
+test("banco a cashflow evita la segunda lectura que solo confirma ausencias inversas", async () => {
+  let lecturas = 0;
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        { categoria: "PAGOS_EXTRAS", fila: 8, cliente: "Proveedor", semana: "S37", valor: "90", empresa: "WOBA" },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [{ id: "main", name: "Main", currency: "EUR" }],
+      listBankMovements: async () => {
+        lecturas += 1;
+        return [];
+      },
+    },
+    { confirmarAusencias: false }
+  );
+
+  assert.equal(lecturas, 1);
+  assert.equal(resultado.filasSinMovimiento.length, 1);
+});
+
+test("un fallo de una cuenta se devuelve como cobertura incompleta y no lanza", async () => {
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [{ id: "main", name: "Main", currency: "EUR" }],
+      listBankMovements: async () => {
+        throw new Error("timeout simulado");
+      },
+    }
+  );
+
+  assert.match(resultado.problemasCobertura.join("\n"), /timeout simulado/i);
 });
