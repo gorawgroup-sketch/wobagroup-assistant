@@ -2,6 +2,7 @@ import { answerCallbackQuery, editTelegramMessage } from "./client";
 import { consumirPropuesta } from "../google/proposalSheet";
 import { cashflowEscrituraTool } from "../tools/cashflowEscritura";
 import { registrarDuplicadoConfirmado } from "../cashflow/duplicadosConfirmadosSheet";
+import { buscarDuplicadoCashflowActual } from "../jobs/revisarHoldedVsCashflow";
 import type { TelegramCallbackQuery } from "./types";
 
 /**
@@ -99,6 +100,28 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
   await answerCallbackQuerySafe(callback.id, "Registrando...");
 
   try {
+    // Si la propuesta nació sin advertencia de duplicado, se relee el cashflow antes de escribir.
+    // Puede haberse registrado una fila mientras el botón esperaba, o tratarse de una categoría sin
+    // columna EMPRESA que la detección antigua no veía. Ante cualquier duda se bloquea la escritura.
+    if (propuesta.montoDuplicado === undefined) {
+      const duplicadoActual = await buscarDuplicadoCashflowActual(
+        propuesta.empresa,
+        propuesta.semana,
+        propuesta.clienteOConcepto,
+        propuesta.valor
+      );
+      if (duplicadoActual) {
+        await editTelegramMessage(
+          propuesta.chatId,
+          propuesta.messageId,
+          `⛔ No se agregó — al releer el cashflow encontré una fila posiblemente duplicada: "${duplicadoActual.descripcionRegistro}". ` +
+            `Genera una revisión nueva para decidir explícitamente si es el mismo pago o un cargo distinto.`,
+          []
+        );
+        return;
+      }
+    }
+
     // El callback_data lleva la categoría que el usuario eligió por botón
     // (cf_approve:<id>:<bloque>) — es la fuente de verdad sobre cuál usar,
     // no el bloqueSugerido guardado (que es solo el top-1 al momento de

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   empresasBancariasAConsultar,
+  formatearEmpresa,
   fuenteSolicitada,
   resolverFilasSinEmpresaConCobertura,
 } from "./compararCashflowHolded";
@@ -72,4 +73,36 @@ test("solo la cobertura completa de ambas empresas permite confirmar ausencia gl
   assert.equal(resolucion.atribuciones.length, 0);
   assert.equal(resolucion.filasAmbiguas.length, 0);
   assert.deepEqual(resolucion.filasSinMovimiento.map((fila) => fila.id), [filaSinEmpresa.id]);
+});
+
+test("un movimiento atribuido globalmente no reaparece como faltante", () => {
+  const texto = formatearEmpresa(
+    {
+      empresa: "WOBA",
+      semana: "S37",
+      desde: "2026-09-07",
+      hasta: "2026-09-13",
+      desdeBancos: "2026-09-05",
+      hastaBancos: "2026-09-16",
+      coincidencias: [],
+      filasSinMovimiento: [],
+      movimientosSinCashflow: [movimiento],
+      ambiguos: [{ movimiento, alternativas: [filaSinEmpresa.id], motivo: "no tiene EMPRESA" }],
+      filasSinEmpresa: [filaSinEmpresa],
+      problemasCobertura: [],
+    },
+    "ambas",
+    {
+      atribuciones: [{ fila: filaSinEmpresa, movimiento, empresa: "WOBA", criterio: "proveedor_importe_unico" }],
+      filasSinResolver: [],
+      filasAmbiguas: [],
+      filasSinMovimiento: [],
+      candidatosPorFila: [],
+      movimientosResueltos: new Set(["WOBA:main:mov-1"]),
+    }
+  );
+
+  assert.match(texto, /1 coincidencia\(s\) verificadas/);
+  assert.match(texto, /no hay movimientos confirmados como ausentes/i);
+  assert.doesNotMatch(texto, /1 movimiento\(s\) sin fila confirmada/i);
 });

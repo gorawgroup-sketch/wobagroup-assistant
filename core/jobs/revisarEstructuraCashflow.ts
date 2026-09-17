@@ -1,6 +1,7 @@
 import { fetchDetalleRegistros, obtenerUltimaVerificacionEstructura, invalidarCacheDetalleRegistros } from "../google/cashflowSheet";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import { sendTelegramMessage } from "../telegram/client";
+import { esDiaHabilEspana } from "../utils/diaHabil";
 
 /**
  * Job diario: pedido explícito de Carlos (2026-09-09) — "algunas veces incluimos o quitamos filas o
@@ -15,7 +16,10 @@ import { sendTelegramMessage } from "../telegram/client";
  * cambió de lugar, mismo criterio de "silencio = todo bien" que revisarNumeracionCashflow.ts.
  */
 export async function revisarEstructuraCashflow(referenceDate: Date = new Date()): Promise<{ problemas: number }> {
-  void referenceDate;
+  if (!esDiaHabilEspana(referenceDate)) {
+    console.log("[revisarEstructuraCashflow] Fin de semana, no se envía el aviso.");
+    return { problemas: 0 };
+  }
 
   invalidarCacheDetalleRegistros();
   await fetchDetalleRegistros();

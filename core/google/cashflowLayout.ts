@@ -54,6 +54,8 @@ export interface ResultadoMatrizCashflow {
 
 const MAX_DESPLAZAMIENTO_ENCABEZADO = 6;
 const RADIO_COLUMNAS_ENCABEZADO = 8;
+const RADIO_COLUMNA_PRINCIPAL = 3;
+const RADIO_COLUMNAS_IZQUIERDA = 4;
 const FILAS_VACIAS_PARA_FIN = 3;
 
 const SECCIONES: EspecificacionSeccion[] = [
@@ -247,8 +249,8 @@ function descubrirEncabezado(
     const columnaPrincipal = buscarColumna(
       fila,
       campoPrincipal.encabezados,
-      titulo.columna - RADIO_COLUMNAS_ENCABEZADO,
-      titulo.columna + RADIO_COLUMNAS_ENCABEZADO,
+      titulo.columna - RADIO_COLUMNA_PRINCIPAL,
+      titulo.columna + RADIO_COLUMNA_PRINCIPAL,
       titulo.columna
     );
     if (columnaPrincipal === undefined) continue;
@@ -258,6 +260,8 @@ function descubrirEncabezado(
     };
     let columnaDerecha = columnaPrincipal;
     let valida = true;
+    const camposDerecha = especificacion.campos.filter((campo) => campo.lado !== "izquierda").length;
+    const limiteDerecha = columnaPrincipal + Math.max(2, camposDerecha + 1);
 
     for (const campo of especificacion.campos) {
       if (campo.campo === especificacion.principal || campo.lado === "izquierda") continue;
@@ -265,7 +269,7 @@ function descubrirEncabezado(
         fila,
         campo.encabezados,
         columnaDerecha + 1,
-        columnaPrincipal + RADIO_COLUMNAS_ENCABEZADO,
+        Math.min(columnaPrincipal + RADIO_COLUMNAS_ENCABEZADO, limiteDerecha),
         columnaDerecha + 1
       );
       if (columna === undefined) {
@@ -280,7 +284,7 @@ function descubrirEncabezado(
       const columna = buscarColumna(
         fila,
         campo.encabezados,
-        columnaPrincipal - RADIO_COLUMNAS_ENCABEZADO,
+        columnaPrincipal - RADIO_COLUMNAS_IZQUIERDA,
         columnaPrincipal - 1,
         columnaPrincipal - 1
       );
@@ -379,22 +383,38 @@ function parsearSeccion(
   const limitePorTitulo = siguienteTituloMismaZona(disposicion, todas) ?? filas.length;
   let vaciasConsecutivas = 0;
   let encontroContenido = false;
+  let avisoHuecoRegistrado = false;
 
   for (let filaIdx = disposicion.filaEncabezado + 1; filaIdx < limitePorTitulo; filaIdx += 1) {
-    const columnasPresentes = Object.values(columnas).filter((valor): valor is number => valor !== undefined);
-    const tieneContenido = columnasPresentes.some((columna) => textoCelda(filas, filaIdx, columna) !== "");
+    // El campo principal obligatorio define si esta fila pertenece a la tabla. Columnas opcionales
+    // pueden solaparse verticalmente con tablas vecinas y no deben prolongar esta sección por sí solas.
+    const principal = textoCelda(filas, filaIdx, columnaPrincipal);
+    const valor = textoCelda(filas, filaIdx, columnaValor);
+    const tieneContenido = principal !== "";
 
     if (!tieneContenido) {
       if (encontroContenido) vaciasConsecutivas += 1;
-      if (vaciasConsecutivas >= FILAS_VACIAS_PARA_FIN) break;
       continue;
+    }
+    if (encontroContenido && vaciasConsecutivas >= FILAS_VACIAS_PARA_FIN && !avisoHuecoRegistrado) {
+      problemas.push({
+        bloque: especificacion.categoria,
+        detalle:
+          `La tabla ${especificacion.categoria} continúa en la fila ${filaIdx + 1} después de ` +
+          `${vaciasConsecutivas} filas vacías. WOBI leyó las filas posteriores, pero marca la cobertura para revisión.`,
+      });
+      avisoHuecoRegistrado = true;
     }
     encontroContenido = true;
     vaciasConsecutivas = 0;
 
-    const principal = textoCelda(filas, filaIdx, columnaPrincipal);
-    const valor = textoCelda(filas, filaIdx, columnaValor);
-    if (!principal || !valor) continue;
+    if (!valor) {
+      problemas.push({
+        bloque: especificacion.categoria,
+        detalle: `La fila ${filaIdx + 1} de ${especificacion.categoria} tiene concepto pero no importe; WOBI la excluyó.`,
+      });
+      continue;
+    }
 
     if (!FORMA_VALOR_VALIDO.test(valor)) {
       problemas.push({
