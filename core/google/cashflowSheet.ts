@@ -99,10 +99,14 @@ export interface DetalleRegistro {
   anio?: string;
   /**
    * Empresa DUEÑA del movimiento (WOBA | EWORKS), leída de la columna de tag.
-   * undefined cuando el bloque no tiene esa columna (Pagos Extras, Impuestos
-   * por Pagar, Aplazamiento Impuestos, Gastos Fijos) — no debe confundirse
-   * con el nombre del cliente/proveedor. Pendientes SÍ la tiene desde que
-   * Carlos la agregó (columna W) — ver hallazgo en parsearSeccionesPendientes.
+   * undefined cuando el bloque no tiene esa columna en la hoja (Impuestos por
+   * Pagar, Aplazamiento Impuestos, Gastos Fijos, Gastos Consultores — ver
+   * SECCION_COLUMNA_I_RANGE/SECCION_COLUMNA_N_RANGE, que no tienen columna
+   * EMPRESA real ahí) — no debe confundirse con el nombre del cliente/
+   * proveedor. INGRESOS, PAGOS_PROYECTOS y PENDIENTES sí la tienen. PAGOS_EXTRAS
+   * también la tiene (columna W) desde el hallazgo real de auditoría del
+   * 2026-09-17 (ver HEADERS_ESPERADOS_PAGOS_EXTRAS) — antes el rango de
+   * lectura se detenía en V y esa columna nunca se leía, aunque sí existía.
    */
   empresa?: EmpresaTag;
 }
@@ -124,7 +128,7 @@ interface DetalleBlock {
 // abajo porque no tienen un rango de filas fijo propio.
 const DETALLE_BLOCKS: DetalleBlock[] = [
   { categoria: "INGRESOS", range: "DATOS!B6:F500", fields: ["cliente", "proyecto", "semana", "valor", "empresa"] },
-  { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:V500", fields: ["cliente", "semana", "valor"] },
+  { categoria: "PAGOS_EXTRAS", range: "DATOS!T6:W500", fields: ["cliente", "semana", "valor", "empresa"] },
 ];
 
 // Hallazgo real de auditoría (2026-09-09, pedido explícito de Carlos de ser
@@ -338,7 +342,16 @@ const cacheDetalle = new CacheLectura<DetalleRegistro[]>("cashflow_detalle", CAC
 
 // Encabezados esperados fila 5 (verificado en vivo) para los 2 bloques de columnas fijas.
 const HEADERS_ESPERADOS_INGRESOS = ["CLIENTE", "PROYECTO", "SEMANA", "VALOR", "EMPRESA"];
-const HEADERS_ESPERADOS_PAGOS_EXTRAS = ["CLIENTE", "SEMANA", "VALOR"];
+// Hallazgo real de auditoría (Carlos, 2026-09-17, caso real S37 — "Efectoled" y "Rist Pizz Tovo"
+// reportados como gastos de la empresa contraria a la real): la hoja SÍ tiene una columna EMPRESA
+// real en Pagos Extras (columna W, justo después de VALOR) — verificado en vivo leyendo la hoja
+// cruda — pero el rango que se leía se detenía en V, así que esa columna nunca se leía. Sin ella,
+// detectarSinMovimientoBancario/detectarNoRegistrados (core/jobs/revisarHoldedVsCashflow.ts)
+// comparaban los Pagos Extras de AMBAS empresas mezclados contra los movimientos bancarios de solo
+// una — un gasto real de WOBA podía "tomar prestado" por casualidad de monto el movimiento bancario
+// de un gasto de EWORKS (o viceversa), dando resultados contradictorios y potencialmente costosos si
+// se actúa sobre ellos sin revisar. Ver el uso de este campo en revisarHoldedVsCashflow.ts.
+const HEADERS_ESPERADOS_PAGOS_EXTRAS = ["CLIENTE", "SEMANA", "VALOR", "EMPRESA"];
 
 /**
  * Pedido explícito de Carlos (2026-09-09): "algunas veces incluimos o
@@ -449,7 +462,7 @@ async function cargarDetalleRegistros(): Promise<DetalleRegistro[]> {
       SECCION_COLUMNA_N_RANGE,
       SECCION_COLUMNA_I_RANGE,
       "DATOS!B5:F5",
-      "DATOS!T5:V5",
+      "DATOS!T5:W5",
     ],
     valueRenderOption: "FORMATTED_VALUE",
   });

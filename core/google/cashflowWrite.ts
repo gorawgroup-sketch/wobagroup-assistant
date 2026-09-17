@@ -97,12 +97,19 @@ const BLOQUE_CONFIG: Partial<Record<BloqueEscritura, BloqueColumnas>> = {
     campos: ["cliente", "proyecto", "semana", "valor", "empresa"],
     tieneEmpresa: true,
   },
+  // Hallazgo real de auditoría (Carlos, 2026-09-17, caso real S37 — "Efectoled" y "Rist Pizz Tovo"
+  // escritos automáticamente sin su empresa, mezclándose con los de la empresa contraria en el cruce
+  // contra bancos): la hoja SÍ tiene una columna EMPRESA real para Pagos Extras (columna W, justo
+  // después de VALOR — verificado en vivo, ya la usan filas escritas a mano por Carlos), pero este
+  // bloque nunca la escribía — se perdía en silencio aunque NuevoMovimiento.empresa siempre estaba
+  // disponible en el momento de escribir. Mismo hallazgo aplicado también del lado de lectura, ver
+  // HEADERS_ESPERADOS_PAGOS_EXTRAS en cashflowSheet.ts.
   pagos_extras: {
     columnaChequeo: "V",
     columnaInicio: "T",
-    columnaFin: "V",
-    campos: ["cliente", "semana", "valor"],
-    tieneEmpresa: false,
+    columnaFin: "W",
+    campos: ["cliente", "semana", "valor", "empresa"],
+    tieneEmpresa: true,
   },
   // Columnas I:L de DATOS (GASTO/SEMANA/VALOR/BANCO) — mismo bloque que ya
   // se lee para consultar_cashflow_detalle y para el comparativo contra
