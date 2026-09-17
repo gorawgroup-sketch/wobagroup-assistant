@@ -24,7 +24,7 @@ import { consumirPendienteDesambiguacion } from "../core/documental/disambiguati
 import { consumirPendienteReglaClasificacion } from "../core/documental/pendienteReglaClasificacionStore";
 import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStore";
 import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAlertaDocumentoStore";
-import { manejarClasificacion } from "../core/documental/processClassification";
+import { guardarPendienteReclasificacion } from "../core/documental/pendienteReclasificacionStore";
 import { esMensajeCaptura } from "../core/knowledge/capture";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
@@ -1574,22 +1574,43 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
   const pendienteDesambiguacion = await consumirPendienteDesambiguacion(chatId);
   if (pendienteDesambiguacion) {
     try {
-      await manejarClasificacion({
+      // Hallazgo real de auditoría (Footprint, Modelo 303/349, 2026-09-17), pedido explícito de
+      // Carlos: antes, la respuesta de texto libre volvía a pasar por el clasificador de texto
+      // (manejarClasificacion con esContinuacionDesambiguacion=true) — el mismo modelo que ya dudó
+      // podía reinterpretar o incluso ignorar lo que el usuario acababa de decir, en vez de archivar
+      // EXACTAMENTE donde se le pidió. "cuando yo te diga la tomes, la asumas y actúes archivándolos
+      // exactamente en esa carpeta" — se crea el mismo pendiente de reclasificación que ya usa
+      // '✏️ Elegir otra carpeta' (reclasificar_documento_pendiente, ver reclasificarDocumentoPendiente.ts)
+      // y se deja que la conversación normal llame a esa tool con la respuesta literal del usuario —
+      // confía en lo que dijo, nunca vuelve a adivinar. Si el usuario no especificó empresa/carpeta con
+      // claridad, el pendiente de reclasificación queda ahí sin consumir y su respuesta SIGUIENTE lo
+      // resuelve igual (mismo mecanismo ya usado por "Elegir otra carpeta").
+      await guardarPendienteReclasificacion({
         chatId: pendienteDesambiguacion.chatId,
         rutaLocal: pendienteDesambiguacion.rutaLocal,
         nombreArchivoOriginal: pendienteDesambiguacion.nombreArchivoOriginal,
         mimeType: pendienteDesambiguacion.mimeType,
-        nombreParaClasificar: pendienteDesambiguacion.nombreParaClasificar,
-        captionEfectivo:
-          `${pendienteDesambiguacion.captionOriginal ?? ""}\n\n` +
-          `Pregunta que se le hizo al usuario para desambiguar: ${pendienteDesambiguacion.preguntaFormulada}\n` +
-          `Respuesta del usuario: ${texto}`,
+        tipoDocumentoOriginal: pendienteDesambiguacion.nombreParaClasificar,
         correoOrigen: pendienteDesambiguacion.correoOrigen,
-        esContinuacionDesambiguacion: true,
       });
+      const instruccion =
+        `El usuario está respondiendo a una pregunta pendiente sobre dónde archivar ` +
+        `"${pendienteDesambiguacion.nombreArchivoOriginal}" (se le preguntó: "${pendienteDesambiguacion.preguntaFormulada}"). ` +
+        `Su respuesta es: "${texto}". Si menciona una empresa (WOBA/EWORKS/Footprint) y una carpeta (o pide que ` +
+        `crees una nueva), usa reclasificar_documento_pendiente con EXACTAMENTE lo que dijo — no reinterpretes ni ` +
+        `sugieras otra carpeta distinta, confía en su respuesta directamente. Si de verdad no especificó empresa/` +
+        `carpeta con claridad, pregúntale qué falta (usa listar_carpetas_drive primero si no sabe qué carpetas existen).`;
+      const respuesta = await askClaude(instruccion, chatId, undefined, "resolver_desambiguacion_documento");
+      await sendTelegramMessageSmart(chatId, respuesta);
     } catch (error) {
       console.error("Error procesando respuesta de desambiguación:", error);
-      await sendTelegramMessage(chatId, "Hubo un error procesando tu respuesta. Intenta reenviar el archivo.");
+      // Ver hallazgo real de auditoría junto al catch de "capturar_correo_chat" en procesarUpdateTelegram.
+      await sendTelegramMessage(
+        chatId,
+        esErrorSaldoAnthropicAgotado(error)
+          ? "🚨 El saldo de la cuenta de Anthropic se agotó — no puedo procesar tu respuesta hasta que se recargue crédito. Ya avisé a los administradores."
+          : "Hubo un error procesando tu respuesta. Intenta de nuevo."
+      );
     }
     return true;
   }

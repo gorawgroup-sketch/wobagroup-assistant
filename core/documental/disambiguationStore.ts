@@ -31,6 +31,16 @@ export interface PendienteDesambiguacion {
   creadoEn: number;
   /** Si el archivo vino de un correo, sus datos — para poder responderlo después de archivar. */
   correoOrigen?: { de: string; asunto: string; threadId: string; messageIdHeader: string; deColaCorreo?: boolean; /** Gmail interno (correo.id) + attachmentId del adjunto real — permite volver a descargarlo de Gmail si la copia local en tmp/uploads se pierde (ej. un redeploy de Railway entre que se descarga y que se usa). */ mensajeIdGmail?: string; attachmentIdGmail?: string; /** Identidad ESTABLE del adjunto entre lecturas del correo (a diferencia de attachmentIdGmail) — ver AdjuntoCorreo.partId en gmail/client.ts. Se usa para "¿ya procesé este adjunto?", nunca para descargar. */ partId?: string };
+  /**
+   * Hallazgo real de auditoría (Footprint, Modelo 303/349, 2026-09-17): la pregunta ya mencionaba las
+   * carpetas reales candidatas por nombre en `preguntaFormulada` (texto libre), pero no había NINGÚN
+   * botón para elegir una directamente — el usuario tenía que escribirla a mano. `empresa` (ya
+   * identificada, aunque la carpeta no) y `carpetasCandidatas` (nombres EXACTOS de Drive, mismos que
+   * el clasificador ya vio con listar_carpetas_drive) permiten ofrecer un botón por candidata que
+   * archiva directo — ver processClassification.ts / documentCallbackHandler.ts (desamb_elegir).
+   */
+  empresa?: string;
+  carpetasCandidatas?: string[];
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -56,6 +66,8 @@ const HEADERS = [
   "preguntaFormulada",
   "creadoEn",
   "correoOrigenJSON",
+  "empresa",
+  "carpetasCandidatasJSON",
 ];
 
 function assertSheetId(): string {
@@ -108,7 +120,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:J1`,
+    range: `${TAB_NAME}!A1:L1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -127,6 +139,13 @@ function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
     correoOrigen = undefined;
   }
 
+  let carpetasCandidatas: string[] | undefined;
+  try {
+    carpetasCandidatas = row[11] ? JSON.parse(String(row[11])) : undefined;
+  } catch {
+    carpetasCandidatas = undefined;
+  }
+
   return {
     // Filas de antes de agregar esta columna no tienen id — se cae al
     // chatId+creadoEn como identificador estable de todas formas único para
@@ -141,6 +160,8 @@ function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
     preguntaFormulada: row[7] ? String(row[7]) : "",
     creadoEn: Number(row[8]) || 0,
     correoOrigen,
+    empresa: row[10] ? String(row[10]) : undefined,
+    carpetasCandidatas,
   };
 }
 
@@ -156,6 +177,8 @@ function pendienteToRow(p: PendienteDesambiguacion): (string | number)[] {
     p.preguntaFormulada,
     p.creadoEn,
     p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
+    p.empresa ?? "",
+    p.carpetasCandidatas && p.carpetasCandidatas.length > 0 ? JSON.stringify(p.carpetasCandidatas) : "",
   ];
 }
 
@@ -171,7 +194,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:J10000`,
+    range: `${TAB_NAME}!A2:L10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -244,7 +267,7 @@ export async function guardarPendienteDesambiguacion(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:J`,
+    range: `${TAB_NAME}!A:L`,
     valueInputOption: "RAW",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [pendienteToRow(pendiente)] },
