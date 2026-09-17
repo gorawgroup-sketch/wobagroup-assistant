@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ConciliacionMovimientoInciertaError,
+  ConciliacionMovimientoCanceladaError,
   ConflictoConciliacionMovimientoError,
   MovimientoYaConciliadoError,
   ejecutarConciliacionMovimientoDurable,
   esRechazoDefinitivoConciliacion,
   identidadConciliacionMovimiento,
+  conciliacionRequiereRevision,
   reconciliarConciliacionesMovimientoPendientes,
   type EstadoConciliacionMovimiento,
   type InspeccionConciliacionMovimiento,
   type RegistroConciliacionMovimiento,
   type RepositorioConciliacionesMovimiento,
+  type ResultadoConciliacionMovimiento,
   type TransporteConciliacionMovimiento,
 } from "./durableBankReconciliation";
 import {
@@ -26,7 +29,13 @@ class RepoMemoria implements RepositorioConciliacionesMovimiento {
 
   async reservar(registro: RegistroConciliacionMovimiento) {
     const existente = this.filas.get(registro.clave);
-    if (existente) return { registro: { ...existente }, nuevo: false };
+    if (existente) {
+      if (existente.estado === "cancelada" && existente.huellaSolicitud !== registro.huellaSolicitud) {
+        this.filas.set(registro.clave, { ...registro, estado: "preparada" });
+        return { registro: { ...registro, estado: "preparada" as const }, nuevo: false };
+      }
+      return { registro: { ...existente }, nuevo: false };
+    }
     this.filas.set(registro.clave, { ...registro });
     return { registro: { ...registro }, nuevo: true };
   }
@@ -41,13 +50,22 @@ class RepoMemoria implements RepositorioConciliacionesMovimiento {
   async marcarConciliando(clave: string) { return this.cambiar(clave, ["preparada"], "conciliando"); }
   async marcarPreparada(clave: string) { this.cambiar(clave, ["conciliando"], "preparada"); }
   async marcarIncierta(clave: string) { this.cambiar(clave, ["conciliando"], "incierta"); }
-  async marcarVerificada(clave: string) {
+  async marcarCancelada(clave: string, motivo: string) {
+    const actual = this.filas.get(clave);
+    if (!actual) return;
+    this.filas.set(clave, { ...actual, estado: "cancelada", resolucion: motivo, resueltoEn: 500 });
+  }
+  async marcarVerificada(clave: string, resultado: ResultadoConciliacionMovimiento) {
     if (this.fallarCheckpoint) throw new Error("Sheets no responde");
-    this.cambiar(clave, ["conciliando", "incierta"], "verificada");
+    this.cambiar(
+      clave,
+      ["conciliando", "incierta", "verificada_revision"],
+      conciliacionRequiereRevision(resultado) ? "verificada_revision" : "verificada"
+    );
   }
   async listarPendientes() {
     return [...this.filas.values()]
-      .filter((r) => r.estado === "conciliando" || r.estado === "incierta")
+      .filter((r) => r.estado === "conciliando" || r.estado === "incierta" || r.estado === "verificada_revision")
       .map((r) => ({ ...r }));
   }
   private cambiar(
@@ -61,7 +79,7 @@ class RepoMemoria implements RepositorioConciliacionesMovimiento {
       ...actual,
       estado,
       actualizadoEn: 500,
-      ...(estado === "verificada" ? { verificadoEn: 500 } : {}),
+      ...(estado === "verificada" || estado === "verificada_revision" ? { verificadoEn: 500 } : {}),
     };
     this.filas.set(clave, siguiente);
     return { ...siguiente };
@@ -255,10 +273,49 @@ test("la reconciliación de arranque confirma sin ejecutar escrituras", async ()
       ? holded.inspeccionar(registro)
       : { estado: "libre", resultado: { ok: false, statusFinal: "pending", montoEnlazado: 0 } }
   );
-  assert.deepEqual(resumen, { revisadas: 2, verificadas: 1, inciertas: 1, errores: 0 });
+  assert.deepEqual(resumen, { revisadas: 2, verificadas: 1, revisiones: 0, inciertas: 1, errores: 0 });
   assert.equal(repo.filas.get(a.clave)?.estado, "verificada");
   assert.equal(repo.filas.get(b.clave)?.estado, "incierta");
   assert.equal(holded.conciliaciones.length, 0);
+});
+
+test("la recuperación distingue una conciliación confirmada que conserva saldo para revisión", async () => {
+  const repo = new RepoMemoria();
+  const registro = { ...identidad(), estado: "incierta" as const };
+  repo.filas.set(registro.clave, registro);
+  const resumen = await reconciliarConciliacionesMovimientoPendientes(repo, async () => ({
+    estado: "verificada",
+    resultado: {
+      ok: true,
+      statusFinal: "reconciled",
+      montoEnlazado: 243.98,
+      pendienteEnCompra: 1.19,
+    },
+  }));
+  assert.deepEqual(resumen, { revisadas: 1, verificadas: 0, revisiones: 1, inciertas: 0, errores: 0 });
+  assert.equal(repo.filas.get(registro.clave)?.estado, "verificada_revision");
+});
+
+test("una conciliación cancelada con el mismo documento jamás vuelve a ejecutar POST", async () => {
+  const repo = new RepoMemoria();
+  const registro = { ...identidad(), estado: "cancelada" as const, resolucion: "El documento ya estaba pagado." };
+  repo.filas.set(registro.clave, registro);
+  const holded = transporte();
+  await assert.rejects(
+    ejecutarConciliacionMovimientoDurable(identidad(), repo, holded),
+    ConciliacionMovimientoCanceladaError
+  );
+  assert.equal(holded.conciliaciones.length, 0);
+});
+
+test("una cancelación no bloquea conciliar el movimiento con otro documento correcto", async () => {
+  const repo = new RepoMemoria();
+  const cancelada = { ...identidad(), estado: "cancelada" as const, resolucion: "Documento incorrecto." };
+  repo.filas.set(cancelada.clave, cancelada);
+  const holded = transporte();
+  const resultado = await ejecutarConciliacionMovimientoDurable(identidad("purchase-2", 2), repo, holded);
+  assert.equal(resultado.reutilizada, false);
+  assert.deepEqual(holded.conciliaciones, ["purchase-2"]);
 });
 
 test("la identidad es estable, opaca y única por movimiento", () => {
@@ -319,6 +376,36 @@ test("conserva el saldo pendiente de una compra aunque el vínculo esté confirm
     554.84
   );
   assert.deepEqual(resultado, { montoPago: 554.84, pendienteEnCompra: 76.45 });
+});
+
+test("caso real Frontier Web: confirma por el importe contable exacto y conserva el saldo para revisión", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      total: "243,98",
+      payments_detail: [{ bank_id: "account-usd", date: "2026-09-15", amount: "211,47" }],
+      payments_pending: "1,19",
+    },
+    "account-usd",
+    "2026-09-15",
+    243.98,
+    211.47
+  );
+  assert.deepEqual(resultado, { montoPago: 211.47, pendienteEnCompra: 1.19 });
+});
+
+test("un importe contable distinto no confirma una compra que conserva saldo", () => {
+  const resultado = verificarPagoCompraEnMovimiento(
+    {
+      total: "243,98",
+      payments_detail: [{ bank_id: "account-usd", date: "2026-09-15", amount: "211,45" }],
+      payments_pending: "1,19",
+    },
+    "account-usd",
+    "2026-09-15",
+    243.98,
+    211.47
+  );
+  assert.equal(resultado, undefined);
 });
 
 test("caso real Footprint (Costa Azul Panama Bell, 2026-09-07): un importe en otra moneda no bloquea una compra ya pagada del todo", () => {

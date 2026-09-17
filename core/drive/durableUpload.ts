@@ -25,6 +25,7 @@ export interface RepositorioSubidasDrive {
   obtener(clave: string): Promise<RegistroSubidaDrive | undefined>;
   marcarSubiendo(clave: string): Promise<RegistroSubidaDrive | undefined>;
   marcarPreparada(clave: string): Promise<void>;
+  liberarIncierta(clave: string): Promise<void>;
   marcarVerificada(clave: string, resultado: ResultadoSubidaDrive): Promise<void>;
   marcarIncierta(clave: string): Promise<void>;
   listarPendientes(): Promise<RegistroSubidaDrive[]>;
@@ -187,10 +188,13 @@ export async function ejecutarSubidaDriveDurable(
 /** Reconciliación de solo lectura; jamás invoca files.create. */
 export async function reconciliarSubidasDrivePendientes(
   repositorio: RepositorioSubidasDrive,
-  buscar: TransporteSubidaDrive["buscar"]
-): Promise<{ revisadas: number; verificadas: number; inciertas: number; errores: number }> {
+  buscar: TransporteSubidaDrive["buscar"],
+  ahora = Date.now(),
+  graciaLiberacionMs = 15 * 60 * 1000
+): Promise<{ revisadas: number; verificadas: number; liberadas: number; inciertas: number; errores: number }> {
   const pendientes = await repositorio.listarPendientes();
   let verificadas = 0;
+  let liberadas = 0;
   let inciertas = 0;
   let errores = 0;
   for (const registro of pendientes) {
@@ -200,12 +204,22 @@ export async function reconciliarSubidasDrivePendientes(
         await repositorio.marcarVerificada(registro.clave, encontrado);
         verificadas++;
       } else {
-        if (registro.estado === "subiendo") await repositorio.marcarIncierta(registro.clave);
-        inciertas++;
+        if (registro.estado === "subiendo") {
+          await repositorio.marcarIncierta(registro.clave);
+          inciertas++;
+        } else if (ahora - registro.actualizadoEn >= graciaLiberacionMs) {
+          // Una búsqueda completa sin resultados, repetida después de la
+          // ventana de gracia, demuestra que files.create no dejó efecto.
+          // Solo se libera el ledger: nunca se sube nada desde recuperación.
+          await repositorio.liberarIncierta(registro.clave);
+          liberadas++;
+        } else {
+          inciertas++;
+        }
       }
     } catch {
       errores++;
     }
   }
-  return { revisadas: pendientes.length, verificadas, inciertas, errores };
+  return { revisadas: pendientes.length, verificadas, liberadas, inciertas, errores };
 }

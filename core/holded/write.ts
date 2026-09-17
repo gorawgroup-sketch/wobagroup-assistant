@@ -433,6 +433,7 @@ const metricasConciliacionesMovimientoDurables = {
   conciliadas: 0,
   reutilizadas: 0,
   verificadasRecuperadas: 0,
+  revisionesDetectadas: 0,
   incertidumbresDetectadas: 0,
   errores: 0,
   inciertasUltimaRevision: 0,
@@ -455,13 +456,14 @@ export function obtenerEstadoConciliacionesMovimientoDurables() {
 /** Reconciliación de arranque exclusivamente por GET; nunca llama a POST /reconcile. */
 export async function reconciliarMovimientosAlArrancar() {
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
-    return { revisadas: 0, verificadas: 0, inciertas: 0, errores: 0 };
+    return { revisadas: 0, verificadas: 0, revisiones: 0, inciertas: 0, errores: 0 };
   }
   const resumen = await reconciliarConciliacionesMovimientoPendientes(
     durableBankReconciliationStore,
-    inspeccionarConciliacionRegistrada
+    (registro) => inspeccionarConciliacionRegistrada(registro, { permitirAjusteCambioAutomatico: false })
   );
   metricasConciliacionesMovimientoDurables.verificadasRecuperadas += resumen.verificadas;
+  metricasConciliacionesMovimientoDurables.revisionesDetectadas += resumen.revisiones;
   metricasConciliacionesMovimientoDurables.incertidumbresDetectadas += resumen.inciertas;
   metricasConciliacionesMovimientoDurables.errores += resumen.errores;
   metricasConciliacionesMovimientoDurables.inciertasUltimaRevision = resumen.inciertas;
@@ -475,10 +477,11 @@ function programarReconciliacionMovimientos(demoraMs: number, intentosRestantes:
     timerReconciliacionMovimientos = null;
     void reconciliarConciliacionesMovimientoPendientes(
       durableBankReconciliationStore,
-      inspeccionarConciliacionRegistrada
+      (registro) => inspeccionarConciliacionRegistrada(registro, { permitirAjusteCambioAutomatico: false })
     )
       .then((resumen) => {
         metricasConciliacionesMovimientoDurables.verificadasRecuperadas += resumen.verificadas;
+        metricasConciliacionesMovimientoDurables.revisionesDetectadas += resumen.revisiones;
         metricasConciliacionesMovimientoDurables.incertidumbresDetectadas += resumen.inciertas;
         metricasConciliacionesMovimientoDurables.errores += resumen.errores;
         metricasConciliacionesMovimientoDurables.inciertasUltimaRevision = resumen.inciertas;
@@ -4551,7 +4554,8 @@ export function verificarPagoCompraEnMovimiento(
   compra: Pick<CompraHoldedCruda, "payments_detail" | "payments_pending" | "total">,
   accountId: string,
   fechaMovimiento: string,
-  montoEnlazado: number
+  montoEnlazado: number,
+  montoContableMovimiento?: number
 ): { montoPago: number; pendienteEnCompra?: number } | undefined {
   if (!Number.isFinite(montoEnlazado) || montoEnlazado <= 0) return undefined;
   const pendiente = parsearMontoHolded(compra.payments_pending);
@@ -4571,6 +4575,12 @@ export function verificarPagoCompraEnMovimiento(
     const monto = Math.abs(parsearMontoHolded(detalle.amount));
     if (!Number.isFinite(monto) || monto <= 0) return false;
     if (Math.abs(monto - montoEnlazado) <= TOLERANCIA_MONTO) return true;
+    if (
+      montoContableMovimiento !== undefined &&
+      Number.isFinite(montoContableMovimiento) &&
+      montoContableMovimiento > 0 &&
+      Math.abs(monto - montoContableMovimiento) <= TOLERANCIA_MONTO
+    ) return true;
     // Hallazgo real de auditoría (Footprint, cuenta USD "Costa Azul Panama Bell", 2026-09-07):
     // reconciled_amount del movimiento fue 70.76 (moneda nativa, USD) pero payments_detail.amount
     // de la compra quedó en 60,70 — Holded a veces registra este importe ya convertido a la moneda
@@ -4848,7 +4858,8 @@ async function aplicarOReportarAjusteCambio(
  * exacta en vez de reportar éxito sin más. Si falta una prueba, falla cerrado.
  */
 async function inspeccionarConciliacionRegistrada(
-  registro: RegistroConciliacionMovimiento
+  registro: RegistroConciliacionMovimiento,
+  opciones: { permitirAjusteCambioAutomatico?: boolean } = { permitirAjusteCambioAutomatico: true }
 ): Promise<InspeccionConciliacionMovimiento> {
   const movimiento = await leerEstadoMovimiento(
     registro.empresa,
@@ -4859,6 +4870,7 @@ async function inspeccionarConciliacionRegistrada(
   if (!movimiento) return { estado: "no_encontrada" };
   const statusFinal = movimiento?.status ?? "(no encontrado al releer)";
   const montoEnlazado = Math.abs(parsearMontoMovimiento(movimiento?.reconciled_amount) || 0);
+  const montoContableMovimiento = Math.abs(parsearMontoMovimiento(movimiento?.accounting_amount) || 0);
   const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento?.amount) || 0);
 
   // No basta con que el status diga "conciliado" — así es exactamente como
@@ -4879,7 +4891,8 @@ async function inspeccionarConciliacionRegistrada(
         compra,
         registro.accountId,
         registro.fechaAproximada,
-        montoEnlazado
+        montoEnlazado,
+        montoContableMovimiento
       );
       pagoDelDocumentoConfirmado = Boolean(pago);
       pendienteEnCompra = pago?.pendienteEnCompra;
@@ -4891,7 +4904,15 @@ async function inspeccionarConciliacionRegistrada(
           registro.fechaAproximada
         );
         if (elegible) {
-          ajusteCambioDivisa = await aplicarOReportarAjusteCambio(registro, compra, elegible);
+          ajusteCambioDivisa = opciones.permitirAjusteCambioAutomatico === false
+            ? {
+                estado: "requiere_revision",
+                monto: elegible.monto,
+                motivo:
+                  "Residuo de conversión detectado durante una recuperación de solo lectura; " +
+                  "no se creó ningún pago automático al arrancar.",
+              }
+            : await aplicarOReportarAjusteCambio(registro, compra, elegible);
         }
       }
     } catch (error) {

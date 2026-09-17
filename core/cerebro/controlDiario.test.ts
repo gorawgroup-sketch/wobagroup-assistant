@@ -43,7 +43,7 @@ function entradaBase(): EntradaControlDiario {
     comprasHolded: { preparada: 0, creando: 0, verificada: 5, incierta: 0, empresasConIncertidumbre: [] },
     edicionesHolded: { preparada: 0, editando: 0, verificada: 2, incierta: 0, empresasConIncertidumbre: [] },
     adjuntosHolded: { preparado: 0, subiendo: 0, verificado: 3, incierto: 0, empresasConIncertidumbre: [] },
-    conciliacionesHolded: { preparada: 0, conciliando: 0, verificada: 2, incierta: 0, empresasConIncertidumbre: [] },
+    conciliacionesHolded: { preparada: 0, conciliando: 0, verificada: 2, verificadaRevision: 0, incierta: 0, cancelada: 0, empresasConIncertidumbre: [], empresasConRevision: [] },
     contactosHolded: { preparada: 0, creando: 0, verificada: 2, incierta: 0, empresasConIncertidumbre: [] },
     generadoEn: new Date("2026-09-09T09:00:00Z"),
   };
@@ -204,7 +204,7 @@ test("un fallo leyendo el ledger de adjuntos nunca se representa como cero", () 
 
 test("una conciliación bancaria incierta se eleva como crítica y dice en qué empresa mirar", () => {
   const entrada = entradaBase();
-  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, verificadaRevision: 0, incierta: 1, cancelada: 0, empresasConIncertidumbre: ["Footprint"], empresasConRevision: [] };
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   const recomendacion = control.recomendaciones.find((r) => r.id === "conciliaciones-holded-inciertas");
@@ -212,9 +212,28 @@ test("una conciliación bancaria incierta se eleva como crítica y dice en qué 
   assert.match(recomendacion.detalle, /Footprint/);
 });
 
+test("una conciliación confirmada con saldo residual queda visible como revisión sin pedir repetirla", () => {
+  const entrada = entradaBase();
+  entrada.conciliacionesHolded = {
+    preparada: 0,
+    conciliando: 0,
+    verificada: 1,
+    verificadaRevision: 1,
+    incierta: 0,
+    cancelada: 0,
+    empresasConIncertidumbre: [],
+    empresasConRevision: ["Footprint"],
+  };
+  const control = generarControlDiario(entrada);
+  const recomendacion = control.recomendaciones.find((r) => r.id === "conciliaciones-holded-revision");
+  assert.equal(recomendacion?.prioridad, "alta");
+  assert.match(recomendacion?.detalle ?? "", /Footprint/);
+  assert.match(recomendacion?.siguientePaso ?? "", /no repetir/i);
+});
+
 test("caso real Carlos: descartar una recomendación quita la tarjeta y recalcula el estado general", () => {
   const entrada = entradaBase();
-  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, verificadaRevision: 0, incierta: 1, cancelada: 0, empresasConIncertidumbre: ["Footprint"], empresasConRevision: [] };
   entrada.recomendacionesDescartadas = new Set(["conciliaciones-holded-inciertas"]);
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "estable");
@@ -223,7 +242,7 @@ test("caso real Carlos: descartar una recomendación quita la tarjeta y recalcul
 
 test("descartar una recomendación no oculta las demás que sigan vigentes", () => {
   const entrada = entradaBase();
-  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["Footprint"] };
+  entrada.conciliacionesHolded = { preparada: 0, conciliando: 0, verificada: 1, verificadaRevision: 0, incierta: 1, cancelada: 0, empresasConIncertidumbre: ["Footprint"], empresasConRevision: [] };
   entrada.contactosHolded = { preparada: 0, creando: 0, verificada: 1, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
   entrada.recomendacionesDescartadas = new Set(["conciliaciones-holded-inciertas"]);
   const control = generarControlDiario(entrada);

@@ -94,6 +94,10 @@ class StoreSubidasDrive implements RepositorioSubidasDrive {
     await this.cambiarEstado(clave, ["subiendo"], "preparada");
   }
 
+  async liberarIncierta(clave: string): Promise<void> {
+    await this.cambiarEstado(clave, ["incierta"], "preparada");
+  }
+
   async marcarIncierta(clave: string): Promise<void> {
     await this.cambiarEstado(clave, ["subiendo"], "incierta");
   }

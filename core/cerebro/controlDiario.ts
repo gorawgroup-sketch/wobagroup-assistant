@@ -231,6 +231,16 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       modulo: "conexiones",
     });
   }
+  if (entrada.conciliacionesHolded && entrada.conciliacionesHolded.verificadaRevision > 0) {
+    recomendaciones.push({
+      id: "conciliaciones-holded-revision",
+      prioridad: "alta",
+      titulo: "Hay conciliaciones confirmadas con saldo por revisar",
+      detalle: `${entrada.conciliacionesHolded.verificadaRevision} conciliación(es) sí quedaron vinculadas, pero conservan un saldo, pago parcial o ajuste pendiente (Holded ${listaEmpresas(entrada.conciliacionesHolded.empresasConRevision)}).`,
+      siguientePaso: "Revisar el saldo residual en el documento; no repetir la conciliación bancaria.",
+      modulo: "conexiones",
+    });
+  }
 
   if (entrada.contactosHolded === null) {
     recomendaciones.push({

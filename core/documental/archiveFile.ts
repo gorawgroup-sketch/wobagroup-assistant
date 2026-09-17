@@ -85,6 +85,7 @@ export async function archivarDocumentoEnDrive(
       const recuperado = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, {
         mensajeIdGmail: propuesta.correoOrigen?.mensajeIdGmail,
         attachmentIdGmail: propuesta.correoOrigen?.attachmentIdGmail,
+        partId: propuesta.correoOrigen?.partId,
       });
       if (!recuperado) throw error;
       subida = await subirArchivoADrive(

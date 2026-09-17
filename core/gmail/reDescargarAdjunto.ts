@@ -1,6 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { descargarAdjunto, obtenerCuerpoCompletoCorreo, obtenerHtmlVisualCorreo } from "./client";
+import {
+  descargarAdjunto,
+  obtenerCuerpoCompletoCorreo,
+  obtenerHtmlVisualCorreo,
+  obtenerResumenCorreo,
+  type AdjuntoCorreo,
+} from "./client";
 import { generarComprobantePDF } from "./generarComprobantePDF";
 
 /**
@@ -21,12 +27,21 @@ import { generarComprobantePDF } from "./generarComprobantePDF";
  */
 export async function reDescargarAdjuntoSiFalta(
   rutaLocal: string,
-  origen: { mensajeIdGmail?: string; attachmentIdGmail?: string } | undefined
+  origen: { mensajeIdGmail?: string; attachmentIdGmail?: string; partId?: string } | undefined
 ): Promise<boolean> {
-  if (!origen?.mensajeIdGmail || !origen?.attachmentIdGmail) return false;
+  if (!origen?.mensajeIdGmail || (!origen.attachmentIdGmail && !origen.partId)) return false;
 
   try {
-    const bytes = await descargarAdjunto(origen.mensajeIdGmail, origen.attachmentIdGmail);
+    let attachmentId = origen.attachmentIdGmail;
+    if (origen.partId) {
+      // PR #104 demostró en vivo que attachmentId cambia entre lecturas del
+      // mismo mensaje. partId sí es estable: releemos el MIME y recuperamos
+      // el attachmentId vigente de esa parte exacta antes de descargar.
+      const correoActual = await obtenerResumenCorreo(origen.mensajeIdGmail);
+      attachmentId = seleccionarAttachmentIdActual(correoActual.adjuntos, origen.partId);
+    }
+    if (!attachmentId) return false;
+    const bytes = await descargarAdjunto(origen.mensajeIdGmail, attachmentId);
     await mkdir(dirname(rutaLocal), { recursive: true });
     await writeFile(rutaLocal, bytes);
     return true;
@@ -34,6 +49,16 @@ export async function reDescargarAdjuntoSiFalta(
     console.error("[reDescargarAdjunto] No se pudo volver a descargar el adjunto original de Gmail:", error);
     return false;
   }
+}
+
+export function seleccionarAttachmentIdActual(
+  adjuntos: ReadonlyArray<Pick<AdjuntoCorreo, "partId" | "attachmentId">>,
+  partId: string
+): string | undefined {
+  const parte = partId.trim();
+  if (!parte) return undefined;
+  const coincidencias = adjuntos.filter((adjunto) => adjunto.partId === parte && adjunto.attachmentId);
+  return coincidencias.length === 1 ? coincidencias[0].attachmentId : undefined;
 }
 
 /**
