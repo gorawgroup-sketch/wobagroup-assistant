@@ -137,6 +137,8 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       captionOriginal: archivo.captionEfectivo,
       preguntaFormulada: pregunta,
       correoOrigen: archivo.correoOrigen,
+      empresa: clasificacion.empresa !== "desconocida" ? clasificacion.empresa : undefined,
+      carpetasCandidatas: clasificacion.carpetasCandidatas,
     });
 
     const notaVariasPendientes =
@@ -170,6 +172,21 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       filasBotonesDesambiguacion.splice(1, 0, [
         { text: "✍️ Generar respuesta al correo", callback_data: `desamb_responder:${pendiente.id}` },
       ]);
+    }
+
+    // Tercer hallazgo real de auditoría, mismo caso: la pregunta ya mencionaba las carpetas reales
+    // candidatas POR NOMBRE en el texto, pero ningún botón permitía elegirlas — había que escribirlas
+    // a mano. Solo si el clasificador SÍ trae empresa identificada y carpetas candidatas reales
+    // (ver ClasificacionDocumento.carpetasCandidatas): un botón por candidata (máx 3, por índice — el
+    // nombre completo puede exceder el límite de callback_data de Telegram) que archiva DIRECTO ahí,
+    // igual que "✅ Sí, archivar aquí" en el flujo de confianza alta/media.
+    if (pendiente.empresa && pendiente.carpetasCandidatas && pendiente.carpetasCandidatas.length > 0) {
+      filasBotonesDesambiguacion.unshift(
+        pendiente.carpetasCandidatas.map((carpeta, indice) => ({
+          text: `📁 ${carpeta}`,
+          callback_data: `desamb_elegir:${pendiente.id}:${indice}`,
+        }))
+      );
     }
 
     await sendTelegramMessageWithButtons(archivo.chatId, textoPregunta, filasBotonesDesambiguacion);
