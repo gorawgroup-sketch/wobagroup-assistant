@@ -43,6 +43,13 @@ test("la consulta de vacaciones está disponible en chat y autorrespuesta como l
   assert.equal(permitidos.has("consultar_vacaciones_holded"), true);
 });
 
+test("el motor oficial y sus alias de cashflow-Holded están disponibles en el modo de lectura", () => {
+  const permitidos = new Set(getToolDefinitions(true).map((tool) => tool.name));
+  assert.equal(permitidos.has("comparar_cashflow_holded"), true);
+  assert.equal(permitidos.has("verificar_cashflow_actualizado"), true);
+  assert.equal(permitidos.has("verificar_gastos_sin_movimiento_bancario"), true);
+});
+
 test("fallo real de lectura auditada detiene lote antes de una acción", async (t) => {
   t.mock.method(cashflowResumenTool, "handler", async () => { throw new Error("Sheets no disponible"); });
   t.mock.method(registrarCorreccionTool, "handler", () => assert.fail("no debe escribir"));

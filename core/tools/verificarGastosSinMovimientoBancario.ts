@@ -10,6 +10,8 @@ import { compararCashflowHoldedTool } from "./compararCashflowHolded";
  */
 export const verificarGastosSinMovimientoBancarioTool: ToolDefinition = {
   name: "verificar_gastos_sin_movimiento_bancario",
+  seguraParaModoRapido: true,
+  lecturaAcotable: true,
   description:
     "Compara los gastos ya registrados en el cashflow de esta semana (o la anterior) de WOBA/EWORKS " +
     "contra los movimientos bancarios REALES de Holded, y reporta cuáles NO tienen un movimiento " +

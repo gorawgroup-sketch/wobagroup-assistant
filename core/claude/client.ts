@@ -133,12 +133,20 @@ const SYSTEM_PROMPT_ESTATICO = [
     "Holded, no la hoja de cashflow; caso real que esto corrigió: reportó un pago de 500€ como " +
     "'faltante' que ya estaba en el cashflow, y mezcló movimientos de semanas anteriores por no " +
     "entender 'semana'), NO respondas solo con el resumen de consultar_cashflow_resumen (esos números " +
-    "pueden estar completos en la hoja sin que reflejen la realidad del banco) — usa " +
-    "verificar_cashflow_actualizado, que compara los movimientos reales de Holded contra lo ya " +
-    "registrado y te dice específicamente qué falta, si falta algo. Reserva consultar_cashflow_resumen " +
+    "pueden estar completos en la hoja sin que reflejen la realidad del banco) — usa SIEMPRE " +
+    "comparar_cashflow_holded, el único motor oficial para este cruce. Para saber qué movimientos del " +
+    "banco faltan en el cashflow usa direccion='banco_a_cashflow'; para saber qué filas del cashflow aún " +
+    "no tienen salida bancaria usa direccion='cashflow_a_banco'. Si el usuario dice banco, salida, cargo, " +
+    "descontado o tesorería, fija fuente='bancos'; si pide documentos/facturas/gastos creados, fija " +
+    "fuente='gastos'. verificar_cashflow_actualizado y " +
+    "verificar_gastos_sin_movimiento_bancario son alias compatibles que delegan al mismo motor, nunca " +
+    "rutas de cálculo diferentes. Reserva consultar_cashflow_resumen " +
     "para preguntas de balance/cifras sin pedir verificación contra Holded. Para el sentido CONTRARIO — " +
     "qué gasto ya está en el cashflow pero el banco todavía no refleja ninguna salida real de dinero — " +
-    "usa verificar_gastos_sin_movimiento_bancario en vez de verificar_cashflow_actualizado. " +
+    "usa comparar_cashflow_holded con direccion='cashflow_a_banco' y fuente='bancos'. Reproduce la " +
+    "clasificación del motor literalmente: NUNCA conviertas un caso ambiguo, una fila sin EMPRESA o un " +
+    "informe incompleto en 'sin pagar', 'sin movimiento' o 'faltante'; tampoco vuelvas a calcular el " +
+    "cruce por tu cuenta. " +
     "verificar_cashflow_actualizado SOLO reporta texto, nunca escribe nada — si el usuario además pide " +
     "que lo registres/actualices/agregues, o dice que sí quiere verlos con botón (ej. tras preguntarle " +
     "'¿quieres que te los muestre uno a uno con botón?'), usa proponer_registro_cashflow, que sí manda " +

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   cruzarListasUnoAUno,
+  generarCruceCashflowHolded,
   parsearImporteCashflow,
   resolverFilasSinEmpresaGlobal,
   type FilaCashflowCruce,
@@ -113,14 +114,15 @@ test("un cargo del margen posterior puede respaldar la fila sin convertirse en o
   assert.equal(resultado.movimientosSinCashflow.length, 0);
 });
 
-test("una coincidencia única de empresa, signo, importe y fecha puede verificarse aunque el banco abrevie el texto", () => {
+test("un importe único con proveedor distinto queda ambiguo y nunca se confirma por monto solamente", () => {
   const resultado = cruzarListasUnoAUno(
     [fila("f1", "Cuota servicio septiembre", 10.89)],
     [movimiento("m1", "DD 482991", -10.89)]
   );
 
-  assert.equal(resultado.coincidencias.length, 1);
-  assert.equal(resultado.coincidencias[0].criterio, "importe_fecha_unico");
+  assert.equal(resultado.coincidencias.length, 0);
+  assert.equal(resultado.filasSinMovimiento.length, 0);
+  assert.equal(resultado.ambiguos.filter((caso) => caso.fila?.id === "f1").length, 1);
 });
 
 test("reconoce un total consolidado solo cuando agrupa el mismo proveedor", () => {
@@ -171,4 +173,114 @@ test("no atribuye una fila sin empresa si ambas compañías tienen un cargo comp
 
   assert.equal(resolucion.atribuciones.length, 0);
   assert.equal(resolucion.filasSinResolver.length, 1);
+});
+
+test("no atribuye una fila sin empresa por importe único si el proveedor no coincide", () => {
+  const sinEmpresa = { ...fila("f1", "Holded Woba", 10.89), empresa: undefined };
+  const movimientoWoba = movimiento("m1", "DD 482991", -10.89);
+  const resolucion = resolverFilasSinEmpresaGlobal([
+    resultado("WOBA", [sinEmpresa], [movimientoWoba]),
+    resultado("EWORKS", [sinEmpresa], []),
+  ]);
+
+  assert.equal(resolucion.atribuciones.length, 0);
+  assert.equal(resolucion.filasSinResolver.length, 1);
+});
+
+test("una segunda lectura recupera un movimiento omitido y evita un falso impago", async () => {
+  let lecturas = 0;
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        {
+          categoria: "PAGOS_PROYECTOS",
+          fila: 12,
+          cliente: "RAMINATRANS",
+          semana: "S37",
+          valor: "2.844,86 €",
+          empresa: "WOBA",
+        },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [{ id: "main", name: "Main", currency: "EUR" }],
+      listBankMovements: async () => {
+        lecturas += 1;
+        return lecturas === 1
+          ? []
+          : [{ id: "mov-1", booking_date: "2026-09-14", description: "RAMINATRANS S.L.", amount: -2844.86, currency: "EUR" }];
+      },
+    }
+  );
+
+  assert.equal(lecturas, 2);
+  assert.equal(resultado.filasSinMovimiento.length, 0);
+  assert.equal(resultado.coincidencias.length, 1);
+  assert.equal(resultado.problemasCobertura.length, 0);
+});
+
+test("consulta cuentas archivadas al auditar una semana histórica", async () => {
+  let cuentaConsultada = "";
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        {
+          categoria: "PAGOS_EXTRAS",
+          fila: 8,
+          cliente: "Proveedor histórico",
+          semana: "S37",
+          valor: "90.00",
+          empresa: "WOBA",
+        },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [
+        { id: "archivada", name: "Cuenta antigua", currency: "EUR", archived: true },
+      ],
+      listBankMovements: async (_empresa, accountId) => {
+        cuentaConsultada = accountId;
+        return [{ id: "mov-arch", booking_date: "2026-09-10", description: "PROVEEDOR HISTORICO", amount: -90, currency: "EUR" }];
+      },
+    }
+  );
+
+  assert.equal(cuentaConsultada, "archivada");
+  assert.equal(resultado.filasSinMovimiento.length, 0);
+  assert.equal(resultado.coincidencias.length, 1);
+});
+
+test("sin cuentas de tesorería falla cerrado y no autoriza conclusiones de ausencia", async () => {
+  const resultado = await generarCruceCashflowHolded(
+    "WOBA",
+    "S37",
+    "2026-09-07",
+    "2026-09-13",
+    new Date("2026-09-17T12:00:00Z"),
+    {
+      fetchDetalleRegistros: async () => [
+        {
+          categoria: "PAGOS_EXTRAS",
+          fila: 8,
+          cliente: "Proveedor",
+          semana: "S37",
+          valor: "90.00",
+          empresa: "WOBA",
+        },
+      ],
+      obtenerUltimaVerificacionEstructura: () => [],
+      listTreasuryAccounts: async () => [],
+      listBankMovements: async () => assert.fail("no debe consultar una cuenta inexistente"),
+    }
+  );
+
+  assert.match(resultado.problemasCobertura.join("\n"), /ninguna cuenta de tesorería/i);
 });

@@ -339,7 +339,8 @@ export const compararCashflowHoldedTool: ToolDefinition = {
       );
     }
     partes.push(
-      "\nCriterio: empresa + sentido (ingreso/gasto) + importe EUR + proveedor + fechas; cada movimiento/documento se usa una sola vez. Los casos dudosos se muestran como ambiguos, no como faltantes."
+      "\nCriterio: empresa + sentido (ingreso/gasto) + importe EUR + proveedor + fechas; cada movimiento/documento se usa una sola vez. Los casos dudosos se muestran como ambiguos, no como faltantes.",
+      "REGLA DE RESPUESTA: reproduce estas categorías sin reinterpretarlas. No llames impago/faltante a un caso ambiguo, a una fila sin EMPRESA ni a un informe incompleto."
     );
     return partes.join("\n");
   },

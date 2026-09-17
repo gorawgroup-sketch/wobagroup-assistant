@@ -1,5 +1,10 @@
 import { fetchDetalleRegistros, obtenerUltimaVerificacionEstructura, type DetalleRegistro } from "../google/cashflowSheet";
-import { listBankMovements, listTreasuryAccounts, type BankMovement } from "../holded/client";
+import {
+  listBankMovements,
+  listTreasuryAccounts,
+  type BankMovement,
+  type TreasuryAccount,
+} from "../holded/client";
 import { obtenerComprasDelDia, type CompraDelDia } from "../holded/write";
 import { montosCercanos } from "../utils/montos";
 import { palabrasDe, palabrasParecidas } from "../utils/textoParecido";
@@ -104,6 +109,25 @@ export interface ResolucionFilasSinEmpresa {
   filasSinResolver: FilaCashflowCruce[];
   movimientosResueltos: Set<string>;
 }
+
+/**
+ * Dependencias de lectura inyectables para probar el recorrido completo sin tocar Sheets ni Holded.
+ * Producción usa las implementaciones reales; los tests pueden reproducir snapshots omitidos o
+ * cuentas archivadas de forma determinista.
+ */
+export interface FuentesCruceCashflowHolded {
+  fetchDetalleRegistros: typeof fetchDetalleRegistros;
+  obtenerUltimaVerificacionEstructura: typeof obtenerUltimaVerificacionEstructura;
+  listTreasuryAccounts: typeof listTreasuryAccounts;
+  listBankMovements: typeof listBankMovements;
+}
+
+const FUENTES_CRUCE_REALES: FuentesCruceCashflowHolded = {
+  fetchDetalleRegistros,
+  obtenerUltimaVerificacionEstructura,
+  listTreasuryAccounts,
+  listBankMovements,
+};
 
 interface Arista {
   fila: FilaCashflowCruce;
@@ -254,8 +278,10 @@ export function cruzarListasUnoAUno(
       const deMovimiento = aristas.filter((a) => a.movimiento.id === arista.movimiento.id).sort((a, b) => b.puntaje - a.puntaje);
       const mejorFilaUnico = deFila[0]?.movimiento.id === arista.movimiento.id && deFila[1]?.puntaje !== arista.puntaje;
       const mejorMovimientoUnico = deMovimiento[0]?.fila.id === arista.fila.id && deMovimiento[1]?.puntaje !== arista.puntaje;
-      const unicoPorImporte = deFila.length === 1 && deMovimiento.length === 1;
-      if (mejorFilaUnico && mejorMovimientoUnico && (arista.textoFuerte || unicoPorImporte)) aceptadas.push(arista);
+      // Un importe único NO identifica por sí solo a un proveedor. El caso real S37 demostró que
+      // hacerlo oculta errores cuando hay importes iguales en empresas/cuentas distintas. Sin
+      // evidencia textual suficiente se conserva como ambiguo, nunca como coincidencia confirmada.
+      if (mejorFilaUnico && mejorMovimientoUnico && arista.textoFuerte) aceptadas.push(arista);
     }
 
     if (aceptadas.length === 0) break;
@@ -413,8 +439,7 @@ export function resolverFilasSinEmpresaGlobal(
         `${deFila[0]?.movimiento.empresa}:${deFila[0]?.movimiento.id}` === claveMovimiento &&
         deFila[1]?.puntaje !== arista.puntaje;
       const mejorMovimientoUnico = deMovimiento[0]?.fila.id === arista.fila.id && deMovimiento[1]?.puntaje !== arista.puntaje;
-      const importeUnicoGlobal = deFila.length === 1 && deMovimiento.length === 1;
-      return mejorFilaUnico && mejorMovimientoUnico && (arista.texto >= 20 || importeUnicoGlobal);
+      return mejorFilaUnico && mejorMovimientoUnico && arista.texto >= 20;
     });
     if (!aceptada) break;
 
@@ -551,10 +576,14 @@ export async function generarCruceCashflowHolded(
   semana: string,
   desde: string,
   hasta: string,
-  hoy = new Date()
+  hoy = new Date(),
+  fuentesParciales: Partial<FuentesCruceCashflowHolded> = {}
 ): Promise<ResultadoCruceCashflowHolded> {
-  const registros = await fetchDetalleRegistros();
-  const problemasCobertura = obtenerUltimaVerificacionEstructura().map((p) => `[${p.bloque}] ${p.detalle}`);
+  const fuentes: FuentesCruceCashflowHolded = { ...FUENTES_CRUCE_REALES, ...fuentesParciales };
+  const registros = await fuentes.fetchDetalleRegistros();
+  const problemasCobertura = fuentes
+    .obtenerUltimaVerificacionEstructura()
+    .map((p) => `[${p.bloque}] ${p.detalle}`);
   const filasSemana = registros
     .map(convertirFila)
     .filter((fila): fila is FilaCashflowCruce => fila !== null && fila.semana === semana.toUpperCase());
@@ -565,39 +594,78 @@ export async function generarCruceCashflowHolded(
   const limiteConGracia = desplazarFecha(hasta, 3);
   const hoyIso = hoy.toISOString().slice(0, 10);
   const hastaBancos = limiteConGracia < hoyIso ? limiteConGracia : hoyIso;
-  const cuentas = (await listTreasuryAccounts(empresa)).filter((cuenta) => !cuenta.archived);
-  const movimientos: MovimientoHoldedCruce[] = [];
-
-  for (const cuenta of cuentas) {
-    const leidos = await listBankMovements(empresa, cuenta.id, desdeBancos, hastaBancos);
-    if (leidos.length >= 200) {
-      problemasCobertura.push(`La cuenta ${cuenta.name ?? cuenta.id} devolvió 200 movimientos; Holded pudo truncar la consulta y el informe no se declara completo.`);
-    }
-    leidos.forEach((movimiento, indice) => {
-      const descripcion = movimiento.description ?? "(sin descripción)";
-      if (esMovimientoInterno(descripcion)) return;
-      const valorEur = valorEnEuros(movimiento);
-      if (!valorEur) return;
-      const fecha = fechaIso(movimiento.booking_date);
-      const moneda = String(movimiento.currency ?? cuenta.currency ?? "EUR").toUpperCase();
-      movimientos.push({
-        id: movimiento.id || `${cuenta.id}:${fecha}:${valorEur}:${indice}`,
-        empresa,
-        accountId: cuenta.id,
-        cuenta: cuenta.name ?? cuenta.id,
-        descripcion,
-        fecha,
-        valorEur,
-        valorNativo: Number(movimiento.amount ?? 0),
-        moneda,
-        estado: movimiento.status,
-        enPeriodo: fecha >= desde && fecha <= hasta,
-        toleranciaEur: moneda === "EUR" ? 0.01 : 0.05,
-      });
-    });
+  // Una cuenta archivada puede contener justamente el pago histórico que se está auditando. Excluirla
+  // convierte un cambio administrativo posterior en un falso "no salió del banco". Se consultan todas
+  // las cuentas devueltas por Holded; solo se descartan entradas sin id, que no son consultables.
+  const cuentas = (await fuentes.listTreasuryAccounts(empresa)).filter(
+    (cuenta): cuenta is TreasuryAccount => typeof cuenta.id === "string" && cuenta.id.trim().length > 0
+  );
+  if (cuentas.length === 0) {
+    problemasCobertura.push(
+      `Holded no devolvió ninguna cuenta de tesorería para ${empresa}; no se puede afirmar que falte una salida bancaria.`
+    );
   }
 
-  const cruce = cruzarListasUnoAUno(filasEmpresa, movimientos);
+  const leerSnapshot = async (): Promise<MovimientoHoldedCruce[]> => {
+    const snapshot: MovimientoHoldedCruce[] = [];
+    for (const cuenta of cuentas) {
+      const leidos = await fuentes.listBankMovements(empresa, cuenta.id, desdeBancos, hastaBancos);
+      if (leidos.length >= 200) {
+        problemasCobertura.push(
+          `La cuenta ${cuenta.name ?? cuenta.id} devolvió 200 movimientos; Holded pudo truncar la consulta y el informe no se declara completo.`
+        );
+      }
+      leidos.forEach((movimiento, indice) => {
+        const descripcion = movimiento.description ?? "(sin descripción)";
+        if (esMovimientoInterno(descripcion)) return;
+        const valorEur = valorEnEuros(movimiento);
+        if (!valorEur) return;
+        const fecha = fechaIso(movimiento.booking_date);
+        const moneda = String(movimiento.currency ?? cuenta.currency ?? "EUR").toUpperCase();
+        snapshot.push({
+          id: movimiento.id || `${cuenta.id}:${fecha}:${valorEur}:${indice}`,
+          empresa,
+          accountId: cuenta.id,
+          cuenta: cuenta.name ?? cuenta.id,
+          descripcion,
+          fecha,
+          valorEur,
+          valorNativo: Number(movimiento.amount ?? 0),
+          moneda,
+          estado: movimiento.status,
+          enPeriodo: fecha >= desde && fecha <= hasta,
+          toleranciaEur: moneda === "EUR" ? 0.01 : 0.05,
+        });
+      });
+    }
+    return snapshot;
+  };
+
+  const primerSnapshot = await leerSnapshot();
+  let movimientos = primerSnapshot;
+  let cruce = cruzarListasUnoAUno(filasEmpresa, movimientos);
+
+  // Una ausencia es una conclusión negativa y exige más evidencia que una coincidencia positiva.
+  // Solo si el primer snapshot deja residuos hacemos una segunda lectura fresca (costo bajo y acotado).
+  // Un movimiento visto en cualquiera de las dos lecturas existe; unir ambos snapshots evita que una
+  // omisión transitoria de Holded vuelva a convertirse en un falso impago. Si la validación falla, el
+  // informe queda INCOMPLETO y el formateador se niega a emitir conclusiones de ausencia.
+  if (cruce.filasSinMovimiento.length > 0 && cuentas.length > 0 && problemasCobertura.length === 0) {
+    try {
+      const segundoSnapshot = await leerSnapshot();
+      const porId = new Map<string, MovimientoHoldedCruce>();
+      for (const movimiento of [...primerSnapshot, ...segundoSnapshot]) {
+        porId.set(`${movimiento.accountId}:${movimiento.id}`, movimiento);
+      }
+      movimientos = [...porId.values()];
+      cruce = cruzarListasUnoAUno(filasEmpresa, movimientos);
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : String(error);
+      problemasCobertura.push(
+        `Falló la segunda lectura obligatoria para confirmar ausencias en ${empresa}: ${detalle}`
+      );
+    }
+  }
 
   // Una fila antigua sin EMPRESA no prueba pertenencia a ninguna compañía,
   // pero tampoco puede ignorarse y convertir su cargo compatible en un falso

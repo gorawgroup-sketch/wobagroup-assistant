@@ -27,6 +27,8 @@ import { compararCashflowHoldedTool } from "./compararCashflowHolded";
  */
 export const verificarCashflowActualizadoTool: ToolDefinition = {
   name: "verificar_cashflow_actualizado",
+  seguraParaModoRapido: true,
+  lecturaAcotable: true,
   description:
     "Verifica si el cashflow de WOBA y/o EWORKS está REALMENTE al día, comparando los movimientos " +
     "bancarios reales de Holded contra lo ya registrado en la hoja DATOS — no es un resumen de números, " +
