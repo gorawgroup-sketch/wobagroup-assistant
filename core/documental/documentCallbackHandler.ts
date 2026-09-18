@@ -546,6 +546,89 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     return;
   }
 
+  // "💰 Es un gasto — procesarlo en Holded" — pedido explícito de Carlos (mismo caso Footprint,
+  // hotel APECS Noruega, 2026-09-18): "a todos los botones que me des, siempre... inclúyele un botón
+  // que dice procesar como gasto. De esa manera nos aseguramos que si lo procesas mal, lo podemos
+  // reencaminar inmediatamente" — este botón faltaba por completo en la pregunta de desambiguación
+  // (solo existía en el flujo de confianza alta/media, doc_esgasto), así que un documento realmente
+  // ambiguo tenía MENOS forma de corregirse hacia gasto que uno bien clasificado. Mismo mecanismo que
+  // doc_esgasto: relee con extraerDatosFactura, fuerza esFacturaOGasto=true. No consume la pregunta
+  // de desambiguación salvo que el gasto arranque bien Y venga de la cola (evita avanzar la cola dos
+  // veces si después también se resuelve "a qué carpeta" — mismo criterio que doc_esgasto con
+  // consumirPropuestaClasificacion).
+  if (accion === "desamb_esgasto") {
+    const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
+    const pendientePeek = todas.find((p) => p.id === idBoton);
+    if (!pendientePeek) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+      return;
+    }
+
+    if (!pendientePeek.mimeType || !MIMES_LEGIBLES_COMO_FACTURA.includes(pendientePeek.mimeType)) {
+      await answerCallbackQuerySafe(callback.id);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ "${pendientePeek.nombreArchivoOriginal}" no es un PDF ni una imagen — no lo puedo leer como comprobante de gasto directamente. Reenvíalo como PDF/imagen si quieres que lo procese como gasto.`
+      );
+      return;
+    }
+
+    const deColaCorreo = pendientePeek.correoOrigen?.deColaCorreo === true;
+    await answerCallbackQuerySafe(callback.id, "Leyendo el comprobante...");
+
+    const captionReconstruido = pendientePeek.correoOrigen
+      ? `Adjunto de correo. De: ${pendientePeek.correoOrigen.de}. Asunto: ${pendientePeek.correoOrigen.asunto}.`
+      : undefined;
+
+    let gastoIniciado = false;
+    try {
+      const datosFactura = await extraerDatosFactura(
+        pendientePeek.rutaLocal,
+        pendientePeek.mimeType,
+        captionReconstruido,
+        pendientePeek.nombreArchivoOriginal
+      );
+      const resultado = await procesarGastoEntrante({
+        chatId,
+        rutaLocal: pendientePeek.rutaLocal,
+        nombreArchivoOriginal: pendientePeek.nombreArchivoOriginal,
+        mimeType: pendientePeek.mimeType,
+        datos: { ...datosFactura, esFacturaOGasto: true },
+        deColaCorreo,
+        origenAdjuntoGmail:
+          pendientePeek.correoOrigen?.mensajeIdGmail && pendientePeek.correoOrigen?.attachmentIdGmail
+            ? {
+                mensajeIdGmail: pendientePeek.correoOrigen.mensajeIdGmail,
+                attachmentIdGmail: pendientePeek.correoOrigen.attachmentIdGmail,
+                partId: pendientePeek.correoOrigen.partId,
+              }
+            : undefined,
+        correoOrigen: pendientePeek.correoOrigen
+          ? {
+              de: pendientePeek.correoOrigen.de,
+              asunto: pendientePeek.correoOrigen.asunto,
+              threadId: pendientePeek.correoOrigen.threadId,
+              messageIdHeader: pendientePeek.correoOrigen.messageIdHeader,
+              mensajeIdGmail: pendientePeek.correoOrigen.mensajeIdGmail,
+            }
+          : undefined,
+      });
+      gastoIniciado = resultado !== "pendiente_datos";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[documentCallbackHandler] Error procesando documento ambiguo como gasto:", message);
+      await sendTelegramMessage(chatId, `⚠️ No se pudo procesar "${pendientePeek.nombreArchivoOriginal}" como gasto: ${message}`);
+    }
+
+    if (gastoIniciado && deColaCorreo) {
+      await consumirPendienteDesambiguacionPorId(pendientePeek.id, chatId).catch((error) =>
+        console.error("[documentCallbackHandler] No se pudo consumir la pregunta de desambiguación tras procesar como gasto (no crítico):", error)
+      );
+      await avanzarColaCorreoSiActivo(chatId);
+    }
+    return;
+  }
+
   if (accion === "desamb_conocimiento" || accion === "desamb_alerta" || accion === "desamb_responder") {
     const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
     const pendientePeek = todas.find((p) => p.id === idBoton);
