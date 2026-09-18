@@ -797,6 +797,30 @@ export async function buscarContactoHolded(
     if (variantesDeMarca < 2) return { id: alias.contactId, name: alias.contactName };
   }
 
+  // Hallazgo real de auditoría (Carlos, caso DHL Express Spain SLU, Footprint, 2026-09-18): un nombre
+  // que es EL MISMO tras normalizar (mayúsculas/acentos/puntuación — "DHL Express Spain SLU" del
+  // documento vs "DHL EXPRESS SPAIN SLU" en Holded) igual caía en "no encontré exactamente el
+  // proveedor", porque este buscador nunca cortocircuitaba por identidad exacta: SIEMPRE pasaba el
+  // candidato por puntuarDistintividad, el filtro anti-falso-positivo pensado para matches PARCIALES
+  // por palabra (ver su comentario — casos reales Hotel101/MH Apartments, taxi/Consorcio,
+  // Intermodalidad/Gastro Levante). Si las palabras compartidas ("Express", "Spain") también aparecen
+  // en otros contactos reales de esa empresa, ese filtro puntúa 0 aunque el nombre sea IDÉNTICO letra
+  // por letra tras normalizar — el filtro está diseñado para desconfiar de coincidencias parciales,
+  // nunca debería aplicarse a una identidad total. Inmediatamente después, buscarContactosParecidos
+  // (más abajo) SÍ encontraba y ofrecía ese mismo contacto como "nombre parecido", generando el mensaje
+  // contradictorio "no encontré exactamente... pero hay un nombre parecido" con el MISMO nombre.
+  //
+  // normalizarNombreContacto (durableContact.ts) es la normalización más rigurosa del repo — ya se usa
+  // en este mismo archivo para detectar duplicados al CREAR un contacto, se reutiliza acá para
+  // detectar identidad al BUSCARLO. Solo se acepta automáticamente si hay UN ÚNICO contacto real con
+  // ese nombre normalizado exacto — si hubiera dos (coincidencia rarísima entre dos razones sociales
+  // distintas), no hay identidad segura y se cae al flujo normal de abajo, igual que antes.
+  const nombreNormalizadoExacto = normalizarNombreContacto(nombre);
+  if (nombreNormalizadoExacto) {
+    const exactos = conNombre.filter((c) => normalizarNombreContacto(c.name) === nombreNormalizadoExacto);
+    if (exactos.length === 1) return exactos[0];
+  }
+
   // textosParecidos, no un substring simple — mismo bug real que
   // buscarGastoSimilar: un nombre comercial ("Booking.com") nunca es
   // substring de la razón social real del contacto en Holded ("BOOKING

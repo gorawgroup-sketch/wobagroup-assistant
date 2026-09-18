@@ -1,4 +1,5 @@
 import { obtenerComprasDelDia, type CompraDelDia } from "../holded/write";
+import { normalizarNombreContacto } from "../holded/durableContact";
 import type { Empresa } from "../holded/client";
 import { palabrasDe } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
@@ -81,7 +82,12 @@ function detectarPosiblesDuplicados(compras: CompraDelDia[]): Hallazgo[] {
       if (yaMarcados.has(compras[j].id)) continue;
       const a = compras[i];
       const b = compras[j];
-      const mismoProveedor = a.contactName === b.contactName;
+      // Hallazgo real de auditoría (2026-09-18, radio del caso DHL Express Spain SLU): única
+      // comparación de nombre de contacto del repo sin normalizar — inofensivo hoy porque ambos lados
+      // vienen del mismo contact_id real de Holded, pero por consistencia (Carlos: "asegúrate que para
+      // todos los proveedores... la diferencia sea de mayúsculas a minúsculas, lo reconozca como el
+      // mismo nombre") se normaliza igual que el resto del repo.
+      const mismoProveedor = normalizarNombreContacto(a.contactName) === normalizarNombreContacto(b.contactName);
       const montoParecido = a.moneda === b.moneda && montosCercanos(a.total, b.total, TOLERANCIA_DUPLICADO_EUR);
       if (mismoProveedor && montoParecido) {
         hallazgos.push({
