@@ -29,6 +29,7 @@ import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad } from "./gastoPorCorreoStore";
 import { calcularHuellaContenido } from "./identidadGasto";
+import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
 
 export interface GastoEntrante {
   chatId: number;
@@ -284,27 +285,77 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   const usarEquivalente = hayEquivalenteExplicito || esMonedaExtranjera;
 
   if (esMonedaExtranjera && !hayEquivalenteExplicito) {
-    const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
-    await sendTelegramMessage(
-      chatId,
-      `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
-        `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
-        `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), y el documento ` +
-        `no trae el monto equivalente en alguna de esas monedas. Necesito el monto EXACTO y la moneda que salió de ` +
-        `la cuenta real (no voy a calcular un tipo de cambio yo mismo) antes de registrar nada. ¿Cuánto fue, y en qué moneda?`
-    );
-    await guardarGastoPendienteDatos({
-      chatId,
-      rutaLocal: entrada.rutaLocal,
-      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-      mimeType: entrada.mimeType,
-      datos,
-      motivo: "moneda",
-      deColaCorreo: entrada.deColaCorreo,
-      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-      correoOrigen: entrada.correoOrigen,
-    }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
-    return "pendiente_datos";
+    // Pedido explícito de Carlos, caso real (Footprint, hotel Scandic Holmenkollen Park, 1549 NOK,
+    // 2026-09-18): "si es necesario entras al internet y ves la tasa de cambio del día" — antes de
+    // preguntar, busca en TODAS las cuentas bancarias reales de la empresa (mismo mecanismo que la
+    // rama de política de liquidación de arriba: buscarMovimientosPorTipoCambio usa la tasa histórica
+    // SOLO para encontrar candidatos, nunca para inventar el importe — ver el comentario de
+    // obtenerTasaCambioHistorica en utils/exchangeRate.ts, "esto NUNCA debe usarse para decidir un
+    // monto correcto"). Si hay un único cargo real que coincide, ESE es el monto — no un cálculo.
+    const fechaBusquedaFx = datos.fecha || new Date().toISOString().slice(0, 10);
+    const candidatosFx = await buscarMovimientosPorTipoCambio(
+      empresa,
+      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor },
+      monedasReales
+    ).catch((error) => {
+      console.error("[procesarGastoEntrante] Error buscando movimientos bancarios por tipo de cambio (se sigue con la pregunta manual):", error);
+      return [] as Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>;
+    });
+
+    if (candidatosFx.length === 1) {
+      const unico = candidatosFx[0];
+      montoEquivalenteResuelto = Math.abs(unico.monto);
+      monedaEquivalenteResuelta = unico.moneda;
+      datos.razon =
+        (datos.razon ? `${datos.razon} ` : "") +
+        `[Resuelto automáticamente contra un único cargo bancario real: ${describirMovimientoMultimoneda(unico)}.]`;
+    } else {
+      const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
+      let pistas = "";
+      if (candidatosFx.length > 1) {
+        pistas =
+          `\n\nEncontré ${candidatosFx.length} cargos bancarios que podrían corresponder (importe cercano según la tasa ` +
+          `de la fecha), pero no pude confirmar cuál sin ambigüedad:\n` +
+          candidatosFx.map((c, i) => describirMovimientoMultimoneda(c, i)).join("\n");
+      } else {
+        const referencias: string[] = [];
+        for (const destino of Array.from(monedasReales).sort()) {
+          const tasa =
+            (await obtenerTasaCambioHistorica(fechaBusquedaFx, monedaOriginal, destino).catch(() => undefined)) ??
+            (await obtenerTasaCambioActual(monedaOriginal, destino).catch(() => undefined));
+          if (tasa !== undefined) {
+            referencias.push(`≈${(datos.monto * tasa).toFixed(2)} ${destino}`);
+          }
+        }
+        if (referencias.length > 0) {
+          pistas =
+            `\n\nSolo como referencia de la tasa de cambio del día (nunca el cargo real — puede diferir por el ` +
+            `spread de la tarjeta, por eso no lo registro directamente): ${referencias.join(" / ")}.`;
+        }
+      }
+      await sendTelegramMessage(
+        chatId,
+        `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
+          `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
+          `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
+          `trae el monto equivalente en alguna de esas monedas, y no encontré un único cargo bancario real que lo ` +
+          `confirme sin ambigüedad.${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
+          `a calcular un tipo de cambio yo mismo) antes de registrar nada. Respóndeme aquí mismo en texto libre con el ` +
+          `monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`
+      );
+      await guardarGastoPendienteDatos({
+        chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos,
+        motivo: "moneda",
+        deColaCorreo: entrada.deColaCorreo,
+        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+        correoOrigen: entrada.correoOrigen,
+      }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
+      return "pendiente_datos";
+    }
   }
 
   const monedaParaHolded = usarEquivalente ? (monedaEquivalenteResuelta as string) : monedaOriginal;

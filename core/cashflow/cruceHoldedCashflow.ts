@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { fetchDetalleRegistros, obtenerUltimaVerificacionEstructura, type DetalleRegistro } from "../google/cashflowSheet";
+import type { ProblemaEstructuraDatos } from "../google/cashflowLayout";
 import {
   listBankMovements,
   listTreasuryAccounts,
@@ -12,6 +13,38 @@ import { palabrasDe, palabrasParecidas } from "../utils/textoParecido";
 
 export type EmpresaCashflowCruce = "WOBA" | "EWORKS";
 export type TipoMovimientoCruce = "ingreso" | "gasto";
+
+/**
+ * Hallazgo real de auditoría (2026-09-18, corrigiendo una regresión propia del mismo día — PR #109):
+ * obtenerUltimaVerificacionEstructura() junta 4 problemas de severidad muy distinta bajo un mismo
+ * array plano. 3 son de fila (concepto sin importe, celda con formato inválido, hueco de filas vacías)
+ * — no pierden ninguna categoría completa, solo una fila puntual; correctamente informativos, nunca
+ * deben bloquear el reporte. El cuarto (descubrirEncabezado en cashflowLayout.ts no localiza de forma
+ * inequívoca el título/encabezado de una sección — 0 o más de 1 candidato) es GRAVE: la categoría
+ * entera devuelve cero filas, indistinguible de "de verdad no hay gastos" para quien lee el reporte.
+ * Mover TODO el array a advertenciasEstructura (no bloqueante) fue una sobrecorrección: dejaba pasar
+ * silenciosamente justo el caso severo que este mecanismo existe para atrapar. Se distingue por texto
+ * porque ProblemaEstructuraDatos no lleva un campo de severidad — ver los dos mensajes exactos en
+ * obtenerDisposiciones (cashflowLayout.ts).
+ */
+function esProblemaEstructuraSevero(problema: ProblemaEstructuraDatos): boolean {
+  return (
+    problema.detalle.includes("no pudo localizar de forma inequívoca") ||
+    problema.detalle.includes("encontró más de una tabla válida")
+  );
+}
+
+function clasificarProblemasEstructura(
+  problemas: ProblemaEstructuraDatos[]
+): { severos: string[]; advertencias: string[] } {
+  const severos: string[] = [];
+  const advertencias: string[] = [];
+  for (const problema of problemas) {
+    const texto = `[${problema.bloque}] ${problema.detalle}`;
+    (esProblemaEstructuraSevero(problema) ? severos : advertencias).push(texto);
+  }
+  return { severos, advertencias };
+}
 
 const CATEGORIAS_EJECUCION = new Set([
   "INGRESOS",
@@ -670,9 +703,9 @@ export async function generarCruceCashflowGastosHolded(
   let registros: DetalleRegistro[] = [];
   try {
     registros = await fuentes.fetchDetalleRegistros();
-    advertenciasEstructura.push(
-      ...fuentes.obtenerUltimaVerificacionEstructura().map((p) => `[${p.bloque}] ${p.detalle}`)
-    );
+    const { severos, advertencias } = clasificarProblemasEstructura(fuentes.obtenerUltimaVerificacionEstructura());
+    problemasCobertura.push(...severos);
+    advertenciasEstructura.push(...advertencias);
   } catch (error) {
     const detalle = error instanceof Error ? error.message : String(error);
     problemasCobertura.push(`Falló la lectura del cashflow: ${detalle}`);
@@ -822,10 +855,9 @@ export async function generarCruceCashflowHolded(
 ): Promise<ResultadoCruceCashflowHolded> {
   const fuentes: FuentesCruceCashflowHolded = { ...FUENTES_CRUCE_REALES, ...fuentesParciales };
   const registros = await fuentes.fetchDetalleRegistros();
-  const problemasCobertura: string[] = [];
-  const advertenciasEstructura = fuentes
-    .obtenerUltimaVerificacionEstructura()
-    .map((p) => `[${p.bloque}] ${p.detalle}`);
+  const { severos: problemasCobertura, advertencias: advertenciasEstructura } = clasificarProblemasEstructura(
+    fuentes.obtenerUltimaVerificacionEstructura()
+  );
   const filasSemana = registros
     .map(convertirFila)
     .filter((fila): fila is FilaCashflowCruce => fila !== null && fila.semana === semana.toUpperCase());
