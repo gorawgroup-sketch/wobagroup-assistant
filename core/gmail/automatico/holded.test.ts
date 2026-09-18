@@ -73,6 +73,7 @@ test("crear un borrador sin cuenta inferida no agrega una cuenta inventada", asy
 });
 test("las variantes inequívocas de forma societaria conservan coincidencia exacta", () => {
   assert.equal(normalizarProveedorExacto("OUIGO ESPAÑA S.A.U."), normalizarProveedorExacto("OUIGO ESPAÑA SA."));
+  assert.equal(normalizarProveedorExacto("Nieuwe Veste (Restaurant, Breda)"), normalizarProveedorExacto("Nieuwe Veste"));
   assert.notEqual(normalizarProveedorExacto("DHL"), normalizarProveedorExacto("DHL Express Spain SLU"));
 });
 test("comprobante verificado por contenido binario y sin reconstruir un adjunto real", async () => {

@@ -8,7 +8,7 @@ export function objeto(raw: unknown): Registro {
 }
 function texto(raw: unknown): string { if (typeof raw !== "string" || !raw) throw new Error("Campo Holded ausente."); return raw; }
 const idUrl = (id: string) => encodeURIComponent(id);
-export const normalizarProveedorExacto = (valor: string): string => normalizar(valor)
+export const normalizarProveedorExacto = (valor: string): string => normalizar(valor.replace(/\s*\([^)]*\)\s*$/, ""))
   .replace(/\b(sociedad anonima unipersonal|sociedad anonima|sociedad limitada unipersonal|sociedad limitada|sau|sa|slu|sl|sro|llc|ltd|inc)\b/g, " ")
   .replace(/\s+/g, " ").trim();
 function centimos(raw: unknown, admiteFormatoES = false): number {
