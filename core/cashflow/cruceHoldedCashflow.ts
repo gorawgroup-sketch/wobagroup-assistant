@@ -90,6 +90,19 @@ export interface ResultadoCruceCashflowHolded {
   ambiguos: AmbiguedadCashflowHolded[];
   filasSinEmpresa: FilaCashflowCruce[];
   problemasCobertura: string[];
+  /**
+   * Hallazgo real de auditoría (Carlos, S37, 2026-09-18): `obtenerUltimaVerificacionEstructura()`
+   * (avisos de que una fila de GASTOS_FIJOS u otra sección tiene concepto pero no importe, o una
+   * cabecera se movió) se empujaba dentro de `problemasCobertura` — el MISMO array que también marca
+   * "no pudimos leer bien el banco". Como `bancosCompletos`/`incompleto` exigen `problemasCobertura`
+   * vacío, UN solo dato mal cargado en una sección del cashflow (sin relación alguna con esas filas)
+   * bloqueaba la conclusión de las OTRAS 23 filas sin EMPRESA, aunque el banco de ambas empresas se
+   * hubiera leído por completo (7 coincidencias verificadas en cada una, cero fallos reales de
+   * lectura). Se separan: `problemasCobertura` queda SOLO para fallos reales de lectura bancaria/de
+   * documentos (los únicos que de verdad impiden afirmar una ausencia); `advertenciasEstructura` es
+   * informativo — se sigue mostrando al usuario, nunca bloquea el resto del informe.
+   */
+  advertenciasEstructura: string[];
 }
 
 export interface ResultadoCruceCashflowGastosHolded {
@@ -104,6 +117,8 @@ export interface ResultadoCruceCashflowGastosHolded {
   filasSinEmpresa: FilaCashflowCruce[];
   gastosNoComparables: CompraDelDia[];
   problemasCobertura: string[];
+  /** Ver el comentario equivalente en ResultadoCruceCashflowHolded.advertenciasEstructura. */
+  advertenciasEstructura: string[];
 }
 
 export interface AtribucionFilaSinEmpresa {
@@ -651,10 +666,11 @@ export async function generarCruceCashflowGastosHolded(
 ): Promise<ResultadoCruceCashflowGastosHolded> {
   const fuentes: FuentesCruceGastosHolded = { ...FUENTES_CRUCE_GASTOS_REALES, ...fuentesParciales };
   const problemasCobertura: string[] = [];
+  const advertenciasEstructura: string[] = [];
   let registros: DetalleRegistro[] = [];
   try {
     registros = await fuentes.fetchDetalleRegistros();
-    problemasCobertura.push(
+    advertenciasEstructura.push(
       ...fuentes.obtenerUltimaVerificacionEstructura().map((p) => `[${p.bloque}] ${p.detalle}`)
     );
   } catch (error) {
@@ -771,6 +787,7 @@ export async function generarCruceCashflowGastosHolded(
     filasSinEmpresa,
     gastosNoComparables,
     problemasCobertura,
+    advertenciasEstructura,
   };
 }
 
@@ -805,7 +822,8 @@ export async function generarCruceCashflowHolded(
 ): Promise<ResultadoCruceCashflowHolded> {
   const fuentes: FuentesCruceCashflowHolded = { ...FUENTES_CRUCE_REALES, ...fuentesParciales };
   const registros = await fuentes.fetchDetalleRegistros();
-  const problemasCobertura = fuentes
+  const problemasCobertura: string[] = [];
+  const advertenciasEstructura = fuentes
     .obtenerUltimaVerificacionEstructura()
     .map((p) => `[${p.bloque}] ${p.detalle}`);
   const filasSemana = registros
@@ -960,5 +978,6 @@ export async function generarCruceCashflowHolded(
     ambiguos,
     filasSinEmpresa,
     problemasCobertura,
+    advertenciasEstructura,
   };
 }

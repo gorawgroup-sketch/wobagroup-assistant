@@ -126,6 +126,13 @@ export function formatearEmpresa(
     `Cobertura bancaria consultada: ${resultado.desdeBancos} a ${resultado.hastaBancos}.`,
   ];
 
+  // Informativo, nunca bloquea el resto del informe — ver el comentario de
+  // ResultadoCruceCashflowHolded.advertenciasEstructura sobre por qué esto se separó de problemasCobertura.
+  if (resultado.advertenciasEstructura.length > 0) {
+    lineas.push("⚠️ Datos del cashflow con estructura incompleta (no afecta la lectura del banco, corrígelos en el Sheet cuando puedas):");
+    lineas.push(...resultado.advertenciasEstructura.map((advertencia) => `  • ${advertencia}`));
+  }
+
   if (resultado.problemasCobertura.length > 0) {
     lineas.push("⛔ INFORME INCOMPLETO: no se emiten conclusiones de ausencia mientras exista este problema:");
     lineas.push(...resultado.problemasCobertura.map((problema) => `  • ${problema}`));
@@ -210,6 +217,10 @@ export function formatearGastosHolded(
     `\n${resultado.empresa} · gastos Holded — ${resultado.coincidencias.length + atribuciones.length} coincidencia(s) verificadas`,
     `Cobertura de documentos: ${resultado.desde} a ${resultado.hasta}.`,
   ];
+  if (resultado.advertenciasEstructura.length > 0) {
+    lineas.push("⚠️ Datos del cashflow con estructura incompleta (no afecta la lectura de Holded, corrígelos en el Sheet cuando puedas):");
+    lineas.push(...resultado.advertenciasEstructura.map((advertencia) => `  • ${advertencia}`));
+  }
   if (resultado.problemasCobertura.length > 0) {
     lineas.push("⛔ INFORME INCOMPLETO: no se emiten conclusiones de ausencia:");
     lineas.push(...resultado.problemasCobertura.map((problema) => `  • ${problema}`));

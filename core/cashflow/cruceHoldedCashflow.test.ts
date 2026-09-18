@@ -55,6 +55,7 @@ function resultado(
     movimientosSinCashflow: [],
     filasSinEmpresa,
     problemasCobertura: [],
+    advertenciasEstructura: [],
     ambiguos: movimientos.map((item) => ({
       movimiento: item,
       alternativas: filasSinEmpresa.map((fila) => fila.id),

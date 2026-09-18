@@ -90,6 +90,7 @@ test("un movimiento atribuido globalmente no reaparece como faltante", () => {
       ambiguos: [{ movimiento, alternativas: [filaSinEmpresa.id], motivo: "no tiene EMPRESA" }],
       filasSinEmpresa: [filaSinEmpresa],
       problemasCobertura: [],
+      advertenciasEstructura: [],
     },
     "ambas",
     {
