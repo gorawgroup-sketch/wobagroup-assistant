@@ -1,3 +1,4 @@
+import { createRefreshCoordinator, necesitaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import WobiAvatar, { WOBI_IMAGE } from "./WobiAvatar.jsx";
 import WobiVoice from "./WobiVoice.jsx";
@@ -427,11 +428,11 @@ function AtencionAhora({ data, onAbrir }) {
       <div className="atencion-rail-cabecera">
         <div id="atencion-ahora-titulo" className="atencion-rail-titulo">
           <span className="atencion-rail-pulso" aria-hidden="true" />
-          <span>{items.length > 0 ? "Prioridades de hoy" : "Todo bajo control"}</span>
+          <span>{data?.actualizacionParcial ? "Revisión pendiente: datos incompletos" : items.length > 0 ? "Prioridades de hoy" : "Todo bajo control"}</span>
           {items.length > 0 && <strong>{totalPendientes}</strong>}
         </div>
         <div className="atencion-rail-fuente">
-          Datos en vivo · {timeAgo(get(data, "cacheadoEn")) || "actualizados"}
+          {data?.actualizacionParcial ? "Actualización parcial" : "Última lectura"} · {timeAgo(get(data, "cacheadoEn")) || "pendiente"}
         </div>
       </div>
 
@@ -891,7 +892,7 @@ function KeyGate({ onUnlocked }) {
           return;
         }
 
-        const resEstado = await fetch(CEREBRO_ENDPOINT, { headers: { "X-Cerebro-Key": json.token } });
+        const resEstado = await fetch(`${CEREBRO_ENDPOINT}?actualizar=1`, { cache: "no-store", headers: { "X-Cerebro-Key": json.token } });
         if (!resEstado.ok) {
           setFase("error");
           setErrMsg("Tu acceso fue aprobado pero hubo un error conectando. Recarga la página.");
@@ -1443,45 +1444,32 @@ function UsuariosPanel({ apiKey, actualizacionId }) {
  * sean las neuronas". Ahora solo existe DENTRO del panel de detalle del
  * nodo — se monta (y sondea) únicamente mientras ese nodo está abierto.
  */
-function ConexionesContenido({ apiKey, puedeArreglar }) {
-  const [conexiones, setConexiones] = useState(null);
+function ConexionesContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
+  const [conexiones, setConexiones] = useState(estado ?? null);
   const [arreglandoId, setArreglandoId] = useState(null);
-
-  const cargar = useCallback(() => {
-    if (!apiKey) return;
-    fetch(CONEXIONES_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((json) => {
-        if (json?.conexiones) setConexiones(json.conexiones);
-      })
-      .catch(() => {
-        // silencioso: si falla el chequeo del chequeo, se sigue mostrando el último dato bueno
-      });
-  }, [apiKey]);
-
-  useEffect(() => {
-    cargar();
-    const id = setInterval(cargar, CONEXIONES_POLL_MS);
-    return () => clearInterval(id);
-  }, [cargar]);
+  const [errorConexion, setErrorConexion] = useState("");
+  useEffect(() => { setConexiones(estado ?? null); }, [estado]);
 
   const arreglar = async (id) => {
     if (!apiKey || arreglandoId) return;
     setArreglandoId(id);
+    setErrorConexion("");
     try {
       const res = await fetch(ARREGLAR_CONEXION_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
         body: JSON.stringify({ id }),
       });
+      if (!res.ok) throw new Error("No se pudo verificar la conexión.");
       if (res.ok) {
         const json = await res.json();
         if (json?.conexion) {
           setConexiones((prev) => (prev ? prev.map((c) => (c.id === id ? json.conexion : c)) : prev));
         }
       }
+      await onRefresh("manual");
     } catch {
-      // silencioso: el chip se queda en rojo, el usuario puede volver a intentar
+      setErrorConexion("No se pudo verificar la conexión. Vuelve a intentarlo.");
     } finally {
       setArreglandoId(null);
     }
@@ -1497,8 +1485,9 @@ function ConexionesContenido({ apiKey, puedeArreglar }) {
   return (
     <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
       <div style={{ fontFamily: C.mono, fontSize: 10.5, color: todoBien ? C.ok : C.dangerBright, marginBottom: 8 }}>
-        {todoBien ? `Todo activo (${conexiones.length}/${conexiones.length})` : `${caidas.length} con problemas`}
+        {todoBien ? "Sin errores detectados en las conexiones" : `${caidas.length} con problemas`}
       </div>
+      {errorConexion && <div role="status">{errorConexion}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {conexiones.map((c) => (
           <div
@@ -1526,7 +1515,8 @@ function ConexionesContenido({ apiKey, puedeArreglar }) {
               />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontFamily: C.sans, fontSize: 12, color: C.cream }}>{c.nombre}</div>
-                {!c.ok && c.detalle && (
+                <div style={{ fontSize: 10, color: C.dim }}>Última comprobación: {timeAgo(c.verificadoEn)}</div>
+                {c.detalle && (
                   <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 2, wordBreak: "break-word" }}>
                     {c.detalle}
                   </div>
@@ -2861,7 +2851,8 @@ export default function CerebroWoba() {
   const [ultimoContactoEn, setUltimoContactoEn] = useState(null);
   const [revisionSolicitudesChat, setRevisionSolicitudesChat] = useState(0);
   const [errorSincronizacion, setErrorSincronizacion] = useState("");
-  const refreshEnCursoRef = useRef(null);
+  const [relojDatos, setRelojDatos] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setRelojDatos(Date.now()), 10_000); return () => clearInterval(id); }, []);
   const [verificandoSesion, setVerificandoSesion] = useState(true);
   const [esAdmin, setEsAdmin] = useState(false);
   const [nombreUsuario, setNombreUsuario] = useState("");
@@ -2910,7 +2901,7 @@ export default function CerebroWoba() {
       }
 
       try {
-        const res = await fetch(CEREBRO_ENDPOINT, { headers: { "X-Cerebro-Key": sesionGuardada.token } });
+        const res = await fetch(`${CEREBRO_ENDPOINT}?actualizar=1`, { cache: "no-store", headers: { "X-Cerebro-Key": sesionGuardada.token } });
         if (cancelado) return;
 
         if (res.ok) {
@@ -2922,16 +2913,23 @@ export default function CerebroWoba() {
           // Una sesión válida no vuelve a obligar a pasar por la animación de
           // bienvenida en cada visita.
           setEntered(true);
-        } else {
-          // token vencido o revocado — se limpia para no reintentar con uno inválido
+        } else if (res.status === 403) {
+          // Solo un rechazo de acceso invalida la sesión; una caída temporal no.
           try {
             localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY);
           } catch {
             // no crítico
           }
+        } else {
+          throw new Error("No se pudo actualizar al entrar");
         }
       } catch {
-        // red caída al cargar — no borra la sesión guardada, se reintenta la próxima visita
+        if (!cancelado) {
+          setApiKey(sesionGuardada.token);
+          setNombreUsuario(sesionGuardada.nombre || "");
+          setEntered(true);
+          setErrorSincronizacion("No se pudieron consultar los datos al entrar. WOBi reintentará automáticamente.");
+        }
       } finally {
         if (!cancelado) setVerificandoSesion(false);
       }
@@ -2962,59 +2960,36 @@ export default function CerebroWoba() {
     };
   }, [apiKey]);
 
-  const refreshLiveData = useCallback(
-    (motivo = "manual") => {
-      if (!apiKey) return Promise.resolve(false);
-      if (refreshEnCursoRef.current) return refreshEnCursoRef.current;
-
-      const tarea = (async () => {
-        setRefreshing(true);
-        setEstadoTiempoReal("actualizando");
-        try {
-          const res = await fetch(CEREBRO_ENDPOINT, {
-            headers: { "X-Cerebro-Key": apiKey },
-            cache: "no-store",
-          });
-          if (res.status === 403) {
-            try {
-              localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY);
-            } catch {
-              // no crítico
-            }
-            setApiKey(null);
-            setLiveData(null);
-            setEsAdmin(false);
-            setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
-            return false;
-          }
-          if (!res.ok) throw new Error(`estado_${res.status}`);
-
-          setLiveData(await res.json());
-          setUltimoContactoEn(new Date().toISOString());
-          setErrorSincronizacion("");
-          setEstadoTiempoReal("en_vivo");
-          return true;
-        } catch {
-          // Se conserva el último snapshot bueno; la conexión y el polling
-          // reintentan solos sin dejar el panel en blanco.
-          setErrorSincronizacion(
-            motivo === "online"
-              ? "La red volvió, pero Wobi aún no pudo sincronizar. Reintentará automáticamente."
-              : "No se pudo sincronizar. Mostrando el último estado disponible."
-          );
-          setEstadoTiempoReal(navigator.onLine ? "reconectando" : "sin_conexion");
-          return false;
-        } finally {
-          setRefreshing(false);
-          refreshEnCursoRef.current = null;
-        }
-      })();
-
-      refreshEnCursoRef.current = tarea;
-      return tarea;
-    },
-    [apiKey]
-  );
+  const actualizador = useMemo(() => createRefreshCoordinator(async (motivo, signal) => {
+    if (!apiKey) return false;
+    setRefreshing(true);
+    try {
+      const url = necesitaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1` : CEREBRO_ENDPOINT;
+      const res = await fetch(url, { headers: { "X-Cerebro-Key": apiKey }, cache: "no-store", signal });
+      signal.throwIfAborted();
+      if (res.status === 403) {
+        try { localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY); } catch { /* no crítico */ }
+        setApiKey(null); setLiveData(null); setEsAdmin(false);
+        setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
+        return false;
+      }
+      if (!res.ok) throw new Error(`estado_${res.status}`);
+      const json = await res.json();
+      signal.throwIfAborted();
+      setLiveData(json);
+      setUltimoContactoEn(new Date().toISOString());
+      setErrorSincronizacion("");
+      return true;
+    } catch (error) {
+      if (error?.name === "AbortError") return false;
+      setErrorSincronizacion("No se pudo completar la actualización. Se conserva el último estado; WOBi reintentará automáticamente.");
+      return false;
+    } finally {
+      if (signal.reason?.name !== "AbortError") setRefreshing(false);
+    }
+  }), [apiKey]);
+  useEffect(() => { actualizador.activate(); return () => actualizador.dispose(); }, [actualizador]);
+  const refreshLiveData = useCallback((motivo = "manual") => actualizador.refresh(motivo), [actualizador]);
 
   const manejarEventoTiempoReal = useCallback((evento) => {
     if (evento?.tipo?.startsWith("chat_solicitud:")) {
@@ -3070,21 +3045,30 @@ export default function CerebroWoba() {
   // Indicadores operativos calculados solo desde datos reales. Se retiraron
   // los antiguos conteos fijos de tools/crons porque podían parecer "en vivo"
   // aun cuando ya no coincidían con el sistema desplegado.
+  const disponible = fuente => liveData && !liveData.fuentes?.some(f => f.fuente === fuente && !f.ok && !f.conservado);
   const liveStats = [
-    { n: String(get(liveData, "cashflow.propuestasPendientes", []).length), l: "propuestas cashflow" },
-    { n: String(get(liveData, "correo.borradoresPendientesDeAprobacion", 0)), l: "borradores pendientes" },
-    { n: String(get(liveData, "conocimiento.documentos", 0)), l: "documentos de memoria" },
-    { n: fmtUSD(get(liveData, "accesos.costoIaHoy", 0)), l: "API hoy" },
+    { n: disponible("cashflow.propuestas") ? String(get(liveData, "cashflow.propuestasPendientes", []).length) : "—", l: "propuestas cashflow" },
+    { n: disponible("correo.borradores") ? String(get(liveData, "correo.borradoresPendientesDeAprobacion", 0)) : "—", l: "borradores pendientes" },
+    { n: disponible("conocimiento.modo") ? String(get(liveData, "conocimiento.documentos", 0)) : "—", l: "documentos de memoria" },
+    { n: liveData?.accesos?.costoIaHoy != null ? fmtUSD(liveData.accesos.costoIaHoy) : "—", l: "API hoy" },
   ];
 
-  const estadoVisual = {
-    en_vivo: { texto: "En vivo", color: C.ok },
+  const frescura = estadoFrescura(liveData, relojDatos);
+  const fuentesFallidas = liveData?.fuentes?.filter(f => !f.ok) ?? [];
+  const conexionesCaidas = liveData?.conexiones?.filter(c => !c.ok) ?? [];
+  const estadoVisualBase = {
+    en_vivo: { texto: "Actualización automática", color: C.ok },
     actualizando: { texto: "Actualizando…", color: C.amberBright },
     conectando: { texto: "Conectando…", color: C.amberBright },
     reconectando: { texto: "Reconectando…", color: C.amberBright },
     sin_conexion: { texto: "Sin conexión", color: C.dangerBright },
     desconectado: { texto: "Desconectado", color: C.dim },
   }[estadoTiempoReal] || { texto: "Sincronizando…", color: C.dim };
+
+  const estadoVisual = refreshing ? { texto: "Consultando las fuentes…", color: C.amberBright }
+    : errorSincronizacion || frescura === "antiguo" ? { texto: "Datos pendientes de actualizar", color: C.dangerBright }
+    : frescura === "parcial" || conexionesCaidas.length ? { texto: "Actualización con incidencias", color: C.amberBright }
+    : estadoVisualBase;
 
   return (
     <div
@@ -3973,7 +3957,7 @@ export default function CerebroWoba() {
                 style={{ width: 7, height: 7, borderRadius: "50%", background: estadoVisual.color, boxShadow: `0 0 8px ${estadoVisual.color}` }}
               />
               {estadoVisual.texto}
-              {ultimoContactoEn ? ` · contacto ${timeAgo(ultimoContactoEn)}` : ""}
+              {liveData?.cacheadoEn ? ` · datos consultados ${timeAgo(liveData.cacheadoEn)}` : ""}
             </span>
             <button
               type="button"
@@ -3990,6 +3974,14 @@ export default function CerebroWoba() {
             >
               cerrar sesión
             </button>
+          </div>
+        )}
+
+        {apiKey && <div style={{ textAlign: "center", color: C.dim, fontSize: 11, marginTop: 8 }}>Comprobación automática cada 30 segundos y al volver a esta pestaña.</div>}
+        {apiKey && (fuentesFallidas.length > 0 || conexionesCaidas.length > 0) && (
+          <div role="status" style={{ color: C.amberBright, maxWidth: 640, margin: "12px auto", fontSize: 12 }}>
+            {fuentesFallidas.length > 0 && <div>No se pudieron actualizar: {[...new Set(fuentesFallidas.map(f => f.fuente.split(".")[0]))].join(", ")}. Los datos anteriores se conservan; las fuentes sin lecturas válidas no están disponibles.</div>}
+            {conexionesCaidas.length > 0 && <div>Conexiones con incidencias: {conexionesCaidas.map(c => c.nombre).join(", ")}. Abre Conexiones para ver el detalle.</div>}
           </div>
         )}
 
@@ -4307,7 +4299,12 @@ export default function CerebroWoba() {
                 </div>
               )}
 
-              {liveData ? (
+              {fuentesFallidas.some(f => f.fuente.split(".")[0] === m.id && f.conservado) && (
+                <div role="status" style={{ color: C.amberBright, marginTop: 12 }}>Esta fuente no respondió. Se muestran datos de su última lectura válida: {fuentesFallidas.filter(f => f.fuente.split(".")[0] === m.id && f.conservado).map(f => timeAgo(f.ultimoExitoEn)).join(", ")}.</div>
+              )}
+              {liveData && fuentesFallidas.some(f => f.fuente.split(".")[0] === m.id && !f.conservado) ? (
+                <div role="status" style={{ color: C.amberBright, marginTop: 14 }}>Datos no disponibles: no se pudo verificar esta fuente. Se reintentará automáticamente.</div>
+              ) : liveData ? (
                 <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
                   {liveRowsForModule(m.id, liveData, periodoCashflow).map(([label, value], i) => (
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12.5 }}>
@@ -4432,11 +4429,10 @@ export default function CerebroWoba() {
                 </div>
               )}
 
-              {/* Estos tres módulos no dependen del bloque agregado (2 min de caché) — tienen su propio
-                  endpoint, así que se montan (y sondean) solo mientras su nodo está abierto. */}
+              {/* Las conexiones se verifican con el panel completo, incluso si este nodo está cerrado. */}
               {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
               {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
-              {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} />}
+              {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.conexiones} onRefresh={refreshLiveData} />}
             </div>
               </div>
             );
@@ -4472,7 +4468,7 @@ export default function CerebroWoba() {
       <div style={{ textAlign: "center", marginTop: 18, fontFamily: C.mono, fontSize: 10, color: C.dim, letterSpacing: "0.04em" }}>
         {liveData ? (
           <>
-            toca cualquier nodo para abrir su detalle · actualizado {timeAgo(get(liveData, "cacheadoEn") || get(liveData, "generadoEn"))}
+            toca cualquier nodo para abrir su detalle · última consulta {timeAgo(get(liveData, "cacheadoEn") || get(liveData, "generadoEn"))}
             {"  "}
             <button
               type="button"
