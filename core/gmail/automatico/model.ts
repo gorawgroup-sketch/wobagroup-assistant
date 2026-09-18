@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v4";
+export const VERSION_POLITICA = "correo-gastos-v5";
 export interface ConfigAuto {
   modo: ModoAuto;
   empresas: EmpresaAuto[];
@@ -56,6 +56,7 @@ export interface MovimientoAuto {
   conciliadoCentimos: number; estado: string; descripcion: string; origen: string;
 }
 export interface EvidenciaAuto {
+  empresaDetectada?: EmpresaAuto;
   contacto?: { id: string; nombre: string; exacto: boolean };
   cuenta?: { id: string; evidencia: string };
   duplicados: string[];
@@ -78,10 +79,11 @@ export type DecisionAuto = { apto: true; plan: PlanAuto } | { apto: false; motiv
 /** La clasificación nunca autoriza una escritura sin contrastes deterministas. */
 export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: EvidenciaAuto, config: ConfigAuto): DecisionAuto {
   const motivos: string[] = [];
+  const empresaEvaluada = e.empresaDetectada ?? r.empresa;
   if (!a.completo) motivos.push("lectura_incompleta");
   if (!new Set(["ticket", "recibo"]).has(r.tipo)) motivos.push("no_es_ticket_o_recibo_pagado");
   if (!r.evidencia.trim() || !r.evidenciaEmpresa.trim()) motivos.push("falta_evidencia");
-  if (r.empresa === "desconocida" || !config.empresas.includes(r.empresa)) motivos.push("empresa_no_habilitada_o_ambigua");
+  if (empresaEvaluada === "desconocida" || !config.empresas.includes(empresaEvaluada)) motivos.push("empresa_no_habilitada_o_ambigua");
   if (!fechaValida(r.fecha)) motivos.push("fecha_invalida");
   if (!/^[A-Z]{3}$/.test(r.moneda)) motivos.push("moneda_invalida");
   if (!r.proveedor.trim() || !r.concepto.trim()) motivos.push("datos_incompletos");
@@ -120,13 +122,14 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   // Con equivalente explícito sí se registra la liquidación real, conservando ambos importes.
   if (m && !convertido && -m.centimos !== esperado) motivos.push("diferencia_requiere_revision");
   if (motivos.length) return { apto: false, motivos };
-  const empresa = r.empresa as EmpresaAuto;
+  const empresa = empresaEvaluada as EmpresaAuto;
   const fuenteHash = hash(r.fuente === "cuerpo" ? c.cuerpo : c.adjuntos.find(x => x.id === r.fuente)!.data);
   const numero = r.numero?.trim().toUpperCase().replace(/\s+/g, " ");
   const claves = [`fuente:${hash(`${config.buzon}:${c.id}:${r.fuente}`)}`, `archivo:${empresa}:${fuenteHash}`,
     `movimiento:${empresa}:${m.cuentaId}:${m.id}`];
   if (numero && numero !== "00000") claves.push(`documento:${hash(`${empresa}:${e.contacto!.id}:${numero}`)}`);
-  const reciboPlan = confianzaReforzada ? { ...r, confianza: "alta" as const } : r;
+  const reciboConEmpresa = e.empresaDetectada ? { ...r, empresa: e.empresaDetectada } : r;
+  const reciboPlan = confianzaReforzada ? { ...reciboConEmpresa, confianza: "alta" as const } : reciboConEmpresa;
   const evidenciaPlan = confianzaReforzada
     ? { ...e, confianzaReforzada: "contacto_exacto_y_movimiento_unico_con_proveedor" }
     : e;

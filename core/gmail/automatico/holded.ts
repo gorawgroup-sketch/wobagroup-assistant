@@ -35,7 +35,8 @@ export interface MemoriaHoldedAuto {
 // Procedimiento autorizado: crear compra, conciliar y convertir a ticket manualmente en Holded.
 // La conversión pendiente se informa en el resumen; no bloquea registrar el gasto.
 export class HoldedAuto {
-  constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch) {}
+  constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch,
+    private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"]) {}
   private async get(empresa: EmpresaAuto, path: string): Promise<Registro> {
     const key = process.env[KEYS[empresa]];
     if (!key) throw new Error(`Falta ${KEYS[empresa]}.`);
@@ -66,8 +67,31 @@ export class HoldedAuto {
   }
   async evidencias(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
-    if (r.empresa === "desconocida" || !new Set(["ticket", "recibo"]).has(r.tipo) || r.confianza === "baja" || !fechaValida(r.fecha)) return e;
-    const empresa = r.empresa;
+    if (!new Set(["ticket", "recibo"]).has(r.tipo) || r.confianza === "baja" || !fechaValida(r.fecha)) return e;
+    if (r.empresa !== "desconocida") {
+      return this.empresas.includes(r.empresa) ? this.evidenciasEmpresa(c, r) : e;
+    }
+    const candidatas: Array<{ empresa: EmpresaAuto; evidencia: EvidenciaAuto }> = [];
+    for (const empresa of this.empresas) {
+      const evidencia = await this.evidenciasEmpresa(c, { ...r, empresa });
+      if (this.identificaEmpresa(r, evidencia)) candidatas.push({ empresa, evidencia });
+    }
+    if (candidatas.length !== 1) return { ...e, consultasCompletas: true };
+    return { ...candidatas[0].evidencia, empresaDetectada: candidatas[0].empresa };
+  }
+  private identificaEmpresa(r: ReciboAuto, e: EvidenciaAuto): boolean {
+    if (!e.consultasCompletas || !e.contacto?.id || e.contacto.exacto !== true || e.duplicados.length) return false;
+    const moneda = r.equivalente?.moneda ?? r.moneda;
+    const importe = centimos(r.equivalente?.monto ?? r.monto);
+    const tolerancia = r.equivalente ? Math.max(5, Math.round(importe * 0.02)) : 1;
+    const candidatas = e.movimientos.filter(m => m.moneda === moneda && m.fecha === r.fecha && m.centimos < 0 &&
+      Math.abs(-m.centimos - importe) <= tolerancia && m.estado === "pending" && m.conciliadoCentimos === 0 &&
+      Boolean(m.origen) && m.origen !== "manual");
+    return candidatas.length === 1 && new Set(candidatas.map(m => `${m.cuentaId}/${m.id}`)).size === 1;
+  }
+  private async evidenciasEmpresa(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
+    const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
+    const empresa = r.empresa as EmpresaAuto;
     const contactos = await this.listar(empresa, "/contacts");
     const alias = await this.memoria.alias(empresa, r.proveedor);
     const directos = contactos.filter(x => typeof x.name === "string" && normalizarProveedorExacto(x.name) === normalizarProveedorExacto(r.proveedor));
