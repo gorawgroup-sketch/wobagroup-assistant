@@ -863,7 +863,40 @@ async function procesarCorreoPuntualInterno(
  * handleColaCorreoSiguienteCallback más abajo para el porqué).
  */
 export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
-  return conCoordinadorCorreo(() => avanzarColaCorreoSiActivoInterno(chatId));
+  try {
+    await conCoordinadorCorreo(() => avanzarColaCorreoSiActivoInterno(chatId));
+    limpiarReintentoAvanceCola(chatId);
+  } catch (error) {
+    // La acción que llamó a esta función ya terminó (crear, conciliar, cancelar, archivar, etc.). Un
+    // lock_timeout acá solo significa que otra revisión de correo conserva el coordinador global;
+    // propagarlo hacía que el callback mostrara "no pude confirmar cómo terminó tu selección" aunque
+    // el resultado real ya estuviera aplicado. El avance de cola es idempotente cuando llega a cero,
+    // así que se reintenta aparte y el resultado contable no se vuelve a ejecutar.
+    console.error("[revisarCorreoNuevo] No se pudo adquirir el coordinador para cerrar la cola; se reintentará sin repetir la acción:", error);
+    programarReintentoAvanceCola(chatId);
+  }
+}
+
+const reintentosAvanceCola = new Map<number, { intentos: number; timer?: ReturnType<typeof setTimeout> }>();
+const MAX_REINTENTOS_AVANCE_COLA = 5;
+
+function limpiarReintentoAvanceCola(chatId: number): void {
+  const pendiente = reintentosAvanceCola.get(chatId);
+  if (pendiente?.timer) clearTimeout(pendiente.timer);
+  reintentosAvanceCola.delete(chatId);
+}
+
+function programarReintentoAvanceCola(chatId: number): void {
+  const actual = reintentosAvanceCola.get(chatId) ?? { intentos: 0 };
+  if (actual.timer || actual.intentos >= MAX_REINTENTOS_AVANCE_COLA) return;
+  const intentos = actual.intentos + 1;
+  const demoraMs = Math.min(60_000, 5_000 * 2 ** (intentos - 1));
+  const timer = setTimeout(() => {
+    reintentosAvanceCola.set(chatId, { intentos });
+    void avanzarColaCorreoSiActivo(chatId);
+  }, demoraMs);
+  timer.unref();
+  reintentosAvanceCola.set(chatId, { intentos, timer });
 }
 async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
   const resultado = await resolverUnoActivo(chatId).catch((error) => {

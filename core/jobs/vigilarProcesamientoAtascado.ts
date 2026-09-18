@@ -11,6 +11,7 @@ import { obtenerResolucionesContactoPorChat } from "../gastos/contactoResolucion
 import { obtenerPropuestasGastoPorChat } from "../gastos/gastoProposalSheet";
 import { obtenerPropuestasAccionCorreoPorChat } from "../gmail/emailActionStore";
 import { obtenerConciliacionesPendientesPorChat } from "../gastos/conciliacionPendienteStore";
+import { hayActividadCallbackReciente } from "../telegram/callbackActivity";
 
 /**
  * Caso real reportado por Carlos (2026-09-07): un correo quedó "activo" más de 7 minutos sin que
@@ -169,6 +170,12 @@ export async function vigilarProcesamientoAtascado(): Promise<void> {
 }
 
 async function vigilarUnChat(chatId: number): Promise<void> {
+  // Un botón puede consumir su propuesta antes de terminar la creación/conciliación y el cierre de
+  // la cola. Durante esa transición no queda ninguna de las señales de huboSenalDeEntrega, pero sí
+  // hay trabajo legítimo en curso. Reprocesar el correo en paralelo fue la causa real de avisos
+  // duplicados y de un lock_timeout al intentar cerrar la misma cola desde el callback.
+  if (hayActividadCallbackReciente(chatId)) return;
+
   // obtenerActivoEstancado ya hace exactamente "¿hay un activo Y lleva más de X ms así?" — se
   // reutiliza en vez de reimplementar la misma comparación a mano por segunda vez en este archivo.
   const activo = await obtenerActivoEstancado(chatId, UMBRAL_ATASCADO_MS);
@@ -188,6 +195,10 @@ async function vigilarUnChat(chatId: number): Promise<void> {
     reintentosPorGmailId.delete(activo.id);
     return;
   }
+
+  // La interacción puede haber empezado mientras se consultaban los ocho stores de arriba. Esta
+  // segunda comprobación cierra esa carrera antes de tocar el estado durable de la cola.
+  if (hayActividadCallbackReciente(chatId)) return;
 
   const intentos = reintentosPorGmailId.get(activo.id) ?? 0;
 
