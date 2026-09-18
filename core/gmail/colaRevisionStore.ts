@@ -167,16 +167,14 @@ export async function encolarCorreos(
     }
 
     if (existente.item.estado === "cola" && existente.item.mensajeId !== item.mensajeId) {
-      // fechaOrden NUNCA se actualiza acá a propósito: sigue reflejando cuándo empezó a esperar sin
-      // leer (lo que de verdad importa para "más antiguo primero") — solo el CONTENIDO (de quién es,
-      // asunto, y sobre todo mensajeId, que es lo que procesarSiguienteCorreoActivo usa para traer el
-      // texto real) se refresca, para que al activarse por fin muestre la conversación tal como está
-      // AHORA, no como estaba cuando se encoló.
+      // El mensaje anterior pudo resolverse automáticamente o a mano. La
+      // prioridad pasa a ser la fecha del mensaje que realmente sigue sin leer.
       const actualizado: ItemColaCorreo = {
         ...existente.item,
         mensajeId: item.mensajeId,
         de: item.de,
         asunto: item.asunto,
+        fechaOrden: item.fechaOrden,
       };
       await actualizarFila(TAB_NAME, existente.rowIndex, NUM_COLS, objetoAFila(actualizado));
     }

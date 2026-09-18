@@ -8,13 +8,13 @@ const rutaJob = join(process.cwd(), "core/jobs/revisarCorreoNuevo.ts");
 const rutaPuntual = join(process.cwd(), "core/tools/revisarCorreoPuntual.ts");
 const rutaCaptura = join(process.cwd(), "core/tools/capturarCorreo.ts");
 
-test("la revisión general consulta exclusivamente hilos no leídos de inbox", async () => {
+test("la revisión general incluye todos los hilos no leídos salvo spam y papelera", async () => {
   const fuente = await readFile(rutaCliente, "utf8");
   const inicio = fuente.indexOf("export async function listarHilosNoLeidos");
   const final = fuente.indexOf("export async function listarHilosNoLeidosDe", inicio);
   assert.notEqual(inicio, -1);
   assert.notEqual(final, -1);
-  assert.match(fuente.slice(inicio, final), /q:\s*["']is:unread in:inbox["']/);
+  assert.match(fuente.slice(inicio, final), /q:\s*["']is:unread -in:spam -in:trash["']/);
 });
 test("la búsqueda puntual exige una referencia concreta y puede incluir correos leídos", async () => {
   const [job, tool] = await Promise.all([

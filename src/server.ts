@@ -2010,9 +2010,9 @@ app.get("/admin/conocimiento-capturado", async (req: Request, res: Response) => 
 
 /**
  * Dispara manualmente el job revisarCorreoNuevo, sin esperar al cron.
- * Protegido por ADMIN_SECRET (query param ?secret=...). Solo detecta y
- * propone (documentos van por el flujo de aprobación existente) — nunca
- * responde correos ni ejecuta instrucciones que vengan en ellos.
+ * Protegido por ADMIN_SECRET (query param ?secret=...). Ejecuta primero el
+ * pase automático según WOBI_MAIL_AUTO_MODE y después actualiza la cola
+ * manual. Nunca responde correos ni ejecuta instrucciones que vengan en ellos.
  *
  * Con muchos correos nuevos esto puede tardar minutos (una llamada a Claude
  * por correo, más por cada adjunto a clasificar), así que responde de
@@ -2031,7 +2031,7 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
     return;
   }
 
-  res.json({ ok: true, mensaje: "Revisión de correo iniciada en segundo plano." });
+  res.json({ ok: true, mensaje: "Revisión automática y cola manual iniciadas en segundo plano." });
 
   trackearEnSegundoPlano(
     revisarCorreoNuevo(true).catch((error) => { // forzarAviso: se disparó a mano vía este endpoint admin

@@ -22,7 +22,7 @@ let gmailClient: gmail_v1.Gmail | null = null;
  * delegación de dominio autoriza impersonar a cualquier usuario del
  * dominio, por scope — no hace falta configurar nada extra por persona.
  */
-function getGmailClient(): gmail_v1.Gmail {
+export function getGmailClient(): gmail_v1.Gmail {
   if (gmailClient) return gmailClient;
 
   const credentials = loadServiceAccountCredentials();
@@ -149,7 +149,7 @@ let gmailModifyClient: gmail_v1.Gmail | null = null;
  * falla con "insufficient authentication scopes" (mismo patrón que se vivió
  * al agregar Calendar).
  */
-function getGmailModifyClient(): gmail_v1.Gmail {
+export function getGmailModifyClient(): gmail_v1.Gmail {
   if (gmailModifyClient) return gmailModifyClient;
 
   const credentials = loadServiceAccountCredentials();
@@ -194,6 +194,24 @@ export async function marcarHiloComoLeido(threadId: string): Promise<boolean> {
   }
 }
 
+/** Quita UNREAD de un único mensaje y comprueba el resultado. La revisión
+ * automática trabaja por mensaje para no consumir respuestas nuevas que
+ * hayan llegado al mismo hilo mientras se procesaba el comprobante. */
+export async function marcarMensajeComoLeido(messageId: string): Promise<boolean> {
+  try {
+    await getGmailModifyClient().users.messages.modify({
+      userId: "me",
+      id: messageId,
+      requestBody: { removeLabelIds: ["UNREAD"] },
+    });
+    const verificacion = await getGmailClient().users.messages.get({ userId: "me", id: messageId, format: "minimal" });
+    return verificacion.data.id === messageId && !verificacion.data.labelIds?.includes("UNREAD");
+  } catch (error) {
+    console.error(`[gmail] Error marcando el mensaje ${messageId} como leído:`, error);
+    return false;
+  }
+}
+
 /**
  * Lista los IDs de HILOS (conversaciones) SIN LEER de la bandeja de entrada
  * — no de mensajes individuales. Bug real encontrado en vivo: contar/listar
@@ -213,18 +231,15 @@ export async function listarHilosNoLeidos(): Promise<string[]> {
   do {
     const res = await gmail.users.threads.list({
       userId: "me",
-      q: "is:unread in:inbox",
+      q: "is:unread -in:spam -in:trash",
       maxResults: 500,
       pageToken,
     });
     (res.data.threads ?? []).forEach((t) => t.id && ids.push(t.id));
     pageToken = res.data.nextPageToken ?? undefined;
     paginas += 1;
-  } while (pageToken && paginas < 10);
-
-  if (pageToken) {
-    throw new Error("Gmail devolvió más páginas de hilos sin leer de las que se pudieron revisar con seguridad.");
-  }
+    if (paginas > 10_000) throw new Error("Paginación Gmail fuera de límite; no se considera completa.");
+  } while (pageToken);
 
   return ids;
 }
@@ -366,6 +381,32 @@ export async function obtenerUltimoMensajeDeHilo(
     fechaPrimerNoLeido: leerHeader(primerNoLeido.payload?.headers, "Date"),
     de: leerHeader(ultimo.payload?.headers, "From"),
     asunto: leerHeader(ultimo.payload?.headers, "Subject"),
+  };
+}
+
+/** Primer mensaje que todavía conserva UNREAD dentro del hilo. Se usa para
+ * mantener el orden real de la revisión manual y resolver solo ese mensaje. */
+export async function obtenerPrimerMensajeNoLeidoDeHilo(
+  threadId: string
+): Promise<{ messageId: string; recibidoEn: number; de: string; asunto: string } | undefined> {
+  const res = await getGmailClient().users.threads.get({
+    userId: "me",
+    id: threadId,
+    format: "metadata",
+    metadataHeaders: ["Date", "From", "Subject"],
+  });
+  const noLeidos = (res.data.messages ?? [])
+    .filter((m) => Boolean(m.id && m.labelIds?.includes("UNREAD")))
+    .sort((a, b) => Number(a.internalDate ?? 0) - Number(b.internalDate ?? 0));
+  const primero = noLeidos[0];
+  if (!primero?.id) return undefined;
+  const recibidoEn = Number(primero.internalDate);
+  if (!Number.isFinite(recibidoEn)) throw new Error("Mensaje sin fecha interna verificable.");
+  return {
+    messageId: primero.id,
+    recibidoEn,
+    de: leerHeader(primero.payload?.headers, "From"),
+    asunto: leerHeader(primero.payload?.headers, "Subject"),
   };
 }
 
