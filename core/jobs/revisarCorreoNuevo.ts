@@ -868,11 +868,11 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
     limpiarReintentoAvanceCola(chatId);
   } catch (error) {
     // La acción que llamó a esta función ya terminó (crear, conciliar, cancelar, archivar, etc.). Un
-    // lock_timeout acá solo significa que otra revisión de correo conserva el coordinador global;
-    // propagarlo hacía que el callback mostrara "no pude confirmar cómo terminó tu selección" aunque
-    // el resultado real ya estuviera aplicado. El avance de cola es idempotente cuando llega a cero,
+    // lock_timeout del coordinador o un 429 transitorio de Sheets solo impide confirmar el cierre de
+    // la cola; propagarlo hacía que el callback mostrara "no pude confirmar cómo terminó tu selección"
+    // aunque el resultado real ya estuviera aplicado. El avance es idempotente cuando llega a cero,
     // así que se reintenta aparte y el resultado contable no se vuelve a ejecutar.
-    console.error("[revisarCorreoNuevo] No se pudo adquirir el coordinador para cerrar la cola; se reintentará sin repetir la acción:", error);
+    console.error("[revisarCorreoNuevo] No se pudo cerrar la cola; se reintentará sin repetir la acción:", error);
     programarReintentoAvanceCola(chatId);
   }
 }
@@ -899,10 +899,10 @@ function programarReintentoAvanceCola(chatId: number): void {
   reintentosAvanceCola.set(chatId, { intentos, timer });
 }
 async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
-  const resultado = await resolverUnoActivo(chatId).catch((error) => {
-    console.error("[revisarCorreoNuevo] Error avanzando la cola de revisión de correo (no crítico):", error);
-    return { terminado: false as const };
-  });
+  // Los fallos transitorios deben llegar al wrapper para que programe el reintento. Antes se
+  // convertían en `terminado:false`, indistinguible de un correo con más decisiones pendientes: un
+  // 429 de Sheets dejaba el correo activo sin ningún reintento y el vigilante lo reprocesaba entero.
+  const resultado = await resolverUnoActivo(chatId);
 
   if (!resultado.terminado) return;
 
