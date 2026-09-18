@@ -490,7 +490,61 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     return;
   }
 
-  const [accion, idBoton] = (callback.data ?? "").split(":");
+  const [accion, idBoton, indiceCarpetaRaw] = (callback.data ?? "").split(":");
+
+  // "📁 <carpeta>" — botón directo por cada carpeta candidata que el clasificador ya identificó como
+  // real (ver ClasificacionDocumento.carpetasCandidatas / processClassification.ts). A diferencia de
+  // los 3 de arriba, este SÍ consume la pregunta — archiva de una vez, igual que "✅ Sí, archivar
+  // aquí" en el flujo de confianza alta/media, sin volver a pasar por el clasificador de texto.
+  if (accion === "desamb_elegir") {
+    const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;
+    if (!pendiente) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+      return;
+    }
+    const indice = Number(indiceCarpetaRaw);
+    const carpeta = pendiente.empresa && pendiente.carpetasCandidatas ? pendiente.carpetasCandidatas[indice] : undefined;
+    if (!pendiente.empresa || !carpeta) {
+      await answerCallbackQuerySafe(callback.id, "Esa opción ya no es válida.");
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Subiendo a Drive...");
+
+    const propuestaSintetica = {
+      id: pendiente.id,
+      nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
+      rutaLocal: pendiente.rutaLocal,
+      mimeType: pendiente.mimeType,
+      clasificacion: {
+        empresa: pendiente.empresa as "WOBA" | "EWORKS" | "Footprint",
+        tipoDocumento: pendiente.nombreParaClasificar,
+        carpetaSugerida: carpeta,
+        confianza: "alta" as const,
+        razon: "Elegida por botón entre las carpetas candidatas.",
+      },
+      chatId,
+      messageId: 0,
+      creadoEn: pendiente.creadoEn,
+      correoOrigen: pendiente.correoOrigen,
+    };
+
+    const resultado = await archivarDocumentoEnDrive(propuestaSintetica);
+
+    if (resultado.ok) {
+      await registrarResolucionDesdeCorreo(pendiente.correoOrigen);
+      await sendTelegramMessage(chatId, `✅ Archivado — ${pendiente.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`);
+      if (pendiente.correoOrigen?.deColaCorreo) {
+        await avanzarColaCorreoSiActivo(chatId);
+      }
+    } else {
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ No se pudo archivar "${pendiente.nombreArchivoOriginal}" en "${carpeta}": ${resultado.mensaje} La copia local no se borró — dime la empresa/carpeta de nuevo, o reenvía el archivo.`
+      );
+    }
+    return;
+  }
 
   if (accion === "desamb_conocimiento" || accion === "desamb_alerta" || accion === "desamb_responder") {
     const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];

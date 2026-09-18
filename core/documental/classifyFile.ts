@@ -59,6 +59,16 @@ export interface ClasificacionDocumento {
    * "factura" sin ser un gasto a conciliar.
    */
   esProbableGasto?: boolean;
+  /**
+   * Hallazgo real de auditoría (Footprint, Modelo 303/349, 2026-09-17): pregunta_si_ambiguo ya
+   * mencionaba las carpetas reales candidatas por nombre, pero solo como texto libre — no había forma
+   * de ofrecer un botón por candidata, el usuario tenía que escribirla a mano. Solo cuando
+   * confianza='baja' por HABER VARIAS carpetas reales igual de plausibles (no cuando la empresa misma
+   * es incierta, ni cuando no se encontró ninguna candidata real): los mismos nombres EXACTOS de Drive
+   * ya mencionados en pregunta_si_ambiguo, para poder ofrecerlos como botones (ver
+   * processClassification.ts).
+   */
+  carpetasCandidatas?: string[];
 }
 
 const REPORTAR_TOOL_NAME = "reportar_clasificacion_documento";
@@ -90,6 +100,16 @@ const REPORTAR_TOOL: Anthropic.Tool = {
         description:
           "Solo si confianza='baja': la pregunta exacta para desambiguar con el usuario, en vez de " +
           "adivinar. Si hay varias carpetas reales igual de plausibles, menciónalas por su nombre real.",
+      },
+      carpetas_candidatas: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Solo si confianza='baja' Y la ambigüedad es por tener VARIAS carpetas reales igual de " +
+          "plausibles (mismo caso que activa pregunta_si_ambiguo mencionándolas por nombre): la lista " +
+          "de esos nombres EXACTOS (los mismos que ya viste con listar_carpetas_drive, tal cual, " +
+          "máximo 3) para poder ofrecerlos como botones. Déjalo vacío si la duda es sobre la EMPRESA " +
+          "(no la carpeta), o si no encontraste ninguna carpeta real candidata que valga la pena ofrecer.",
       },
       parece_intencion_de_captura: {
         type: "boolean",
@@ -154,7 +174,9 @@ const SYSTEM_PROMPT = [
   "Si al explorar encuentras más de una carpeta igual de plausible para este documento (ej. una carpeta " +
     "general de 'Seguros' y también una carpeta específica de un activo, como un vehículo, que podría " +
     "aplicar), NO elijas una al azar: marca confianza='baja' y en pregunta_si_ambiguo pregunta al " +
-    "usuario mencionando los nombres reales de esas carpetas para que elija.",
+    "usuario mencionando los nombres reales de esas carpetas para que elija — y en ese mismo caso " +
+    "(varias carpetas reales candidatas, no duda sobre la empresa) pon esos mismos nombres exactos " +
+    "también en carpetas_candidatas, para poder ofrecerlos como botones.",
   "Si hace falta contexto sobre qué tipos de documentos van a qué carpetas (ej. documentos de un " +
     "colaborador nuevo, de un proveedor, de ISO...), usa también consultar_base_conocimiento " +
     "(documento de responsabilidades del grupo).",
@@ -263,6 +285,9 @@ export async function clasificarDocumento(
         preguntaSiAmbiguo: input.pregunta_si_ambiguo as string | undefined,
         pareceIntencionDeCaptura: input.parece_intencion_de_captura === true,
         esProbableGasto: input.es_probable_gasto === true,
+        carpetasCandidatas: Array.isArray(input.carpetas_candidatas)
+          ? (input.carpetas_candidatas as unknown[]).filter((c): c is string => typeof c === "string" && c.trim().length > 0).slice(0, 3)
+          : undefined,
       };
     }
 
