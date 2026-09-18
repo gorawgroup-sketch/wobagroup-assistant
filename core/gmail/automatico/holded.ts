@@ -66,7 +66,7 @@ export class HoldedAuto {
   }
   async evidencias(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
-    if (r.empresa === "desconocida" || !new Set(["ticket", "recibo"]).has(r.tipo) || r.confianza !== "alta" || !fechaValida(r.fecha)) return e;
+    if (r.empresa === "desconocida" || !new Set(["ticket", "recibo"]).has(r.tipo) || r.confianza === "baja" || !fechaValida(r.fecha)) return e;
     const empresa = r.empresa;
     const contactos = await this.listar(empresa, "/contacts");
     const alias = await this.memoria.alias(empresa, r.proveedor);

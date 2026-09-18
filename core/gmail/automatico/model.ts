@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v2";
+export const VERSION_POLITICA = "correo-gastos-v3";
 export interface ConfigAuto {
   modo: ModoAuto;
   empresas: EmpresaAuto[];
@@ -64,6 +64,7 @@ export interface EvidenciaAuto {
   /** Procedimiento autorizado: compra seguida de conversión manual a ticket. */
   permiteTicket: boolean;
   motivoTipoDocumento?: string;
+  confianzaReforzada?: string;
 }
 export interface PlanAuto {
   empresa: EmpresaAuto; contactoId: string; cuentaId?: string;
@@ -79,7 +80,6 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const motivos: string[] = [];
   if (!a.completo) motivos.push("lectura_incompleta");
   if (!new Set(["ticket", "recibo"]).has(r.tipo)) motivos.push("no_es_ticket_o_recibo_pagado");
-  if (r.confianza !== "alta") motivos.push("confianza_insuficiente");
   if (!r.evidencia.trim() || !r.evidenciaEmpresa.trim()) motivos.push("falta_evidencia");
   if (r.empresa === "desconocida" || !config.empresas.includes(r.empresa)) motivos.push("empresa_no_habilitada_o_ambigua");
   if (!fechaValida(r.fecha)) motivos.push("fecha_invalida");
@@ -108,6 +108,11 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const candidatos = e.movimientos.filter(m => m.moneda === moneda && m.fecha === r.fecha &&
     Number.isSafeInteger(m.centimos) && m.centimos < 0 && Math.abs(-m.centimos - esperado) <= tolerancia);
   const ids = new Set(candidatos.map(m => `${m.cuentaId}/${m.id}`));
+  const proveedor = normalizar(r.proveedor);
+  const descripcion = normalizar(candidatos[0]?.descripcion ?? "");
+  const confianzaReforzada = r.confianza === "media" && e.contacto?.exacto === true && candidatos.length === 1 && ids.size === 1 &&
+    proveedor.length >= 4 && descripcion.length >= 4 && (descripcion.includes(proveedor) || proveedor.includes(descripcion));
+  if (r.confianza !== "alta" && !confianzaReforzada) motivos.push("confianza_insuficiente");
   if (candidatos.length !== 1 || ids.size !== 1) motivos.push(candidatos.length ? "movimiento_ambiguo" : "sin_movimiento_exacto");
   const m = candidatos[0];
   if (m && (!m.id || !m.cuentaId || !m.origen || m.origen === "manual" || m.estado !== "pending" || m.conciliadoCentimos !== 0)) motivos.push("movimiento_no_libre");
@@ -121,14 +126,18 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const claves = [`fuente:${hash(`${config.buzon}:${c.id}:${r.fuente}`)}`, `archivo:${empresa}:${fuenteHash}`,
     `movimiento:${empresa}:${m.cuentaId}:${m.id}`];
   if (numero && numero !== "00000") claves.push(`documento:${hash(`${empresa}:${e.contacto!.id}:${numero}`)}`);
-  return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta?.id, recibo: r,
+  const reciboPlan = confianzaReforzada ? { ...r, confianza: "alta" as const } : r;
+  const evidenciaPlan = confianzaReforzada
+    ? { ...e, confianzaReforzada: "contacto_exacto_y_movimiento_unico_con_proveedor" }
+    : e;
+  return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta?.id, recibo: reciboPlan,
     movimiento: m, totalCentimos: -m.centimos, toleranciaCentimos: tolerancia, diferenciaCentimos: -m.centimos - esperado,
     regla: convertido ? "equivalente_explicito_2pct_min_005" : "moneda_nativa_001", claves, fuenteHash,
     correo: { id: c.id, threadId: c.threadId, buzon: config.buzon }, version: VERSION_POLITICA,
     // La decisión ya quedó auditada por separado. La operación durable solo
     // necesita conservar el movimiento elegido, no todo el historial bancario
     // consultado para demostrar que la coincidencia era única.
-    evidencia: { ...e, movimientos: [m] } } };
+    evidencia: { ...evidenciaPlan, movimientos: [m] } } };
 }
 
 export type EstadoOperacion = "reservada" | "creando" | "creada" | "adjuntando" | "adjuntada" | "conciliando" | "completada" | "incierta" | "rechazada";
