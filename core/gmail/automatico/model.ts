@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v1";
+export const VERSION_POLITICA = "correo-gastos-v2";
 export interface ConfigAuto {
   modo: ModoAuto;
   empresas: EmpresaAuto[];
@@ -39,7 +39,7 @@ export interface CorreoAuto {
 }
 export interface ReciboAuto {
   fuente: string; // "cuerpo" o ID de adjunto, siempre contrastado contra Gmail
-  tipo: "ticket" | "factura" | "otro";
+  tipo: "ticket" | "recibo" | "factura" | "otro";
   confianza: "alta" | "media" | "baja";
   empresa: EmpresaAuto | "desconocida";
   proveedor: string; numero?: string; fecha: string; moneda: string; monto: number;
@@ -66,7 +66,7 @@ export interface EvidenciaAuto {
   motivoTipoDocumento?: string;
 }
 export interface PlanAuto {
-  empresa: EmpresaAuto; contactoId: string; cuentaId: string;
+  empresa: EmpresaAuto; contactoId: string; cuentaId?: string;
   recibo: ReciboAuto; movimiento: MovimientoAuto; totalCentimos: number;
   toleranciaCentimos: number; diferenciaCentimos: number; regla: string;
   claves: string[]; fuenteHash: string; correo: { id: string; threadId: string; buzon: string };
@@ -78,7 +78,7 @@ export type DecisionAuto = { apto: true; plan: PlanAuto } | { apto: false; motiv
 export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: EvidenciaAuto, config: ConfigAuto): DecisionAuto {
   const motivos: string[] = [];
   if (!a.completo) motivos.push("lectura_incompleta");
-  if (r.tipo !== "ticket") motivos.push("no_es_ticket");
+  if (!new Set(["ticket", "recibo"]).has(r.tipo)) motivos.push("no_es_ticket_o_recibo_pagado");
   if (r.confianza !== "alta") motivos.push("confianza_insuficiente");
   if (!r.evidencia.trim() || !r.evidenciaEmpresa.trim()) motivos.push("falta_evidencia");
   if (r.empresa === "desconocida" || !config.empresas.includes(r.empresa)) motivos.push("empresa_no_habilitada_o_ambigua");
@@ -88,7 +88,6 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   if (!e.consultasCompletas) motivos.push("verificacion_incompleta");
   if (e.duplicados.length) motivos.push("posible_duplicado");
   if (!e.contacto?.id || e.contacto.exacto !== true) motivos.push("proveedor_no_exacto");
-  if (!e.cuenta?.id) motivos.push("cuenta_contable_pendiente");
   if (!e.permiteTicket) motivos.push(e.motivoTipoDocumento ?? "tipo_ticket_no_soportado");
   if (r.fuente !== "cuerpo" && !c.adjuntos.some(x => x.id === r.fuente)) motivos.push("fuente_inexistente");
   if (a.recibos.filter(x => x.fuente === r.fuente).length !== 1) motivos.push("varios_gastos_en_misma_fuente");
@@ -122,7 +121,7 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const claves = [`fuente:${hash(`${config.buzon}:${c.id}:${r.fuente}`)}`, `archivo:${empresa}:${fuenteHash}`,
     `movimiento:${empresa}:${m.cuentaId}:${m.id}`];
   if (numero && numero !== "00000") claves.push(`documento:${hash(`${empresa}:${e.contacto!.id}:${numero}`)}`);
-  return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta!.id, recibo: r,
+  return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta?.id, recibo: r,
     movimiento: m, totalCentimos: -m.centimos, toleranciaCentimos: tolerancia, diferenciaCentimos: -m.centimos - esperado,
     regla: convertido ? "equivalente_explicito_2pct_min_005" : "moneda_nativa_001", claves, fuenteHash,
     correo: { id: c.id, threadId: c.threadId, buzon: config.buzon }, version: VERSION_POLITICA,

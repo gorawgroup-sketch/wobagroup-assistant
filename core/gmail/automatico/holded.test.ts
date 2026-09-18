@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HoldedAuto, type MemoriaHoldedAuto } from "./holded";
+import { HoldedAuto, normalizarProveedorExacto, type MemoriaHoldedAuto } from "./holded";
 import { evaluarAuto, hash, type OperacionAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 
@@ -56,6 +56,17 @@ test("crear usa la compra en borrador, sin IVA, con cuenta y marcador recuperabl
   assert.deepEqual((body.items as unknown[])[0], { name: "Transporte", units: 1, price: 20, taxes: [], account: "c1" });
   assert.equal(await e.adapter.verificarCreacion(e.op), true);
   e.compra.total = "21.00"; assert.equal(await e.adapter.verificarCreacion(e.op), false);
+});
+test("crear un borrador sin cuenta inferida no agrega una cuenta inventada", async () => {
+  const e = escenario(); e.op.plan.cuentaId = undefined;
+  e.op.compraId = await e.adapter.crear(e.op);
+  const body = e.posts[0].body as Record<string, unknown>;
+  assert.deepEqual((body.items as unknown[])[0], { name: "Transporte", units: 1, price: 20, taxes: [] });
+  assert.equal(await e.adapter.verificarCreacion(e.op), true);
+});
+test("las variantes inequívocas de forma societaria conservan coincidencia exacta", () => {
+  assert.equal(normalizarProveedorExacto("OUIGO ESPAÑA S.A.U."), normalizarProveedorExacto("OUIGO ESPAÑA SA."));
+  assert.notEqual(normalizarProveedorExacto("DHL"), normalizarProveedorExacto("DHL Express Spain SLU"));
 });
 test("comprobante verificado por contenido binario y sin reconstruir un adjunto real", async () => {
   const e = escenario(); e.op.compraId = "creada";
