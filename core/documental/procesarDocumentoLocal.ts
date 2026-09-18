@@ -190,9 +190,22 @@ async function procesarAdjuntoEml(
     });
   }
 
+  // Hallazgo real de auditoría (Footprint, hotel Scandic Holmenkollen Park/Oslo, 2026-09-18): el .eml
+  // adjunto es la confirmación del HOTEL (en su moneda local, NOK) — pero el correo EXTERIOR que lo
+  // reenvía suele traer el equivalente real en EUR/la moneda de la cuenta (ej. asunto "143,44€ HOTEL...",
+  // ya construido por quien reenvía, mismo patrón que "un asunto de reenvío que solo menciona el
+  // equivalente" que el propio prompt de extraerGastoDeCorreo ya sabe reconocer — ver su comentario
+  // sobre monto_equivalente/moneda_equivalente). Sin este contexto exterior, el lector solo ve la
+  // moneda local del comercio y procesarGastoEntrante no puede resolver el gasto contra ninguna cuenta
+  // real, dejando un mensaje sin botones pidiendo el monto/moneda exactos — exactamente lo que ya
+  // sabíamos que había salido del banco, solo que nunca llegó al lector.
+  const cuerpoParaLeer = [entrada.captionEfectivo, contenido.textoPlano || contenido.html || ""]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+
   let datosGasto: DatosFactura | undefined;
   try {
-    datosGasto = await extraerGastoDeCorreo(contenido.textoPlano || contenido.html || "", {
+    datosGasto = await extraerGastoDeCorreo(cuerpoParaLeer, {
       de: contenido.de,
       asunto: contenido.asunto,
       fecha: contenido.fecha ?? "",
