@@ -11,7 +11,8 @@ import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { extraerDatosFactura } from "./extractInvoiceData";
-import { MIMES_LEGIBLES_COMO_FACTURA } from "./procesarDocumentoLocal";
+import { MIMES_LEGIBLES_COMO_FACTURA, procesarEmlComoGastoForzado } from "./procesarDocumentoLocal";
+import { esArchivoEml } from "./parseEml";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { ofrecerResponderCorreo } from "../gmail/emailCallbackHandler";
 import type { TelegramCallbackQuery } from "../telegram/types";
@@ -238,11 +239,17 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       return;
     }
 
-    if (!propuestaPeek.mimeType || !MIMES_LEGIBLES_COMO_FACTURA.includes(propuestaPeek.mimeType)) {
+    // Hallazgo real de auditoría (2026-09-18, caso real Footprint, hotel Scandic Holmenkollen Park):
+    // este botón rechazaba cualquier .eml (correo reenviado como archivo) porque solo sabía leer
+    // PDF/imagen — justo el caso que motivó agregar soporte de lectura de .eml el mismo día, sin
+    // conectar ambas funciones. Un .eml se procesa por procesarEmlComoGastoForzado en vez de
+    // extraerDatosFactura.
+    const esEml = esArchivoEml(propuestaPeek.mimeType, propuestaPeek.nombreArchivoOriginal);
+    if (!esEml && (!propuestaPeek.mimeType || !MIMES_LEGIBLES_COMO_FACTURA.includes(propuestaPeek.mimeType))) {
       await answerCallbackQuerySafe(callback.id);
       await sendTelegramMessage(
         propuestaPeek.chatId,
-        `⚠️ "${propuestaPeek.nombreArchivoOriginal}" no es un PDF ni una imagen — no lo puedo leer como comprobante de gasto directamente. Reenvíalo como PDF/imagen si quieres que lo procese como gasto.`
+        `⚠️ "${propuestaPeek.nombreArchivoOriginal}" no es un PDF, una imagen ni un correo reenviado (.eml) — no lo puedo leer como comprobante de gasto directamente. Reenvíalo como PDF/imagen si quieres que lo procese como gasto.`
       );
       return;
     }
@@ -268,40 +275,56 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
 
     let gastoIniciado = false;
     try {
-      const datosFactura = await extraerDatosFactura(
-        propuestaPeek.rutaLocal,
-        propuestaPeek.mimeType,
-        captionReconstruido,
-        propuestaPeek.nombreArchivoOriginal
-      );
-      const resultado = await procesarGastoEntrante({
-        chatId: propuestaPeek.chatId,
-        rutaLocal: propuestaPeek.rutaLocal,
-        nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
-        mimeType: propuestaPeek.mimeType,
-        // El usuario ya confirmó con este botón que SÍ es un gasto — se fuerza el campo aunque la
-        // relectura vuelva a dudarlo, pero se conservan los demás datos que sí logró leer.
-        datos: { ...datosFactura, esFacturaOGasto: true },
-        deColaCorreo,
-        origenAdjuntoGmail:
-          propuestaPeek.correoOrigen?.mensajeIdGmail && propuestaPeek.correoOrigen?.attachmentIdGmail
+      if (esEml) {
+        const resultadoEml = await procesarEmlComoGastoForzado({
+          chatId: propuestaPeek.chatId,
+          rutaLocal: propuestaPeek.rutaLocal,
+          nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
+          mimeType: propuestaPeek.mimeType,
+          nombreParaClasificar: propuestaPeek.nombreArchivoOriginal,
+          captionEfectivo: captionReconstruido,
+          correoOrigen: propuestaPeek.correoOrigen,
+        });
+        if (resultadoEml.error) {
+          throw new Error(resultadoEml.error);
+        }
+        gastoIniciado = resultadoEml.resultado !== "gasto_pendiente_datos";
+      } else {
+        const datosFactura = await extraerDatosFactura(
+          propuestaPeek.rutaLocal,
+          propuestaPeek.mimeType,
+          captionReconstruido,
+          propuestaPeek.nombreArchivoOriginal
+        );
+        const resultado = await procesarGastoEntrante({
+          chatId: propuestaPeek.chatId,
+          rutaLocal: propuestaPeek.rutaLocal,
+          nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
+          mimeType: propuestaPeek.mimeType,
+          // El usuario ya confirmó con este botón que SÍ es un gasto — se fuerza el campo aunque la
+          // relectura vuelva a dudarlo, pero se conservan los demás datos que sí logró leer.
+          datos: { ...datosFactura, esFacturaOGasto: true },
+          deColaCorreo,
+          origenAdjuntoGmail:
+            propuestaPeek.correoOrigen?.mensajeIdGmail && propuestaPeek.correoOrigen?.attachmentIdGmail
+              ? {
+                  mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
+                  attachmentIdGmail: propuestaPeek.correoOrigen.attachmentIdGmail,
+                  partId: propuestaPeek.correoOrigen.partId,
+                }
+              : undefined,
+          correoOrigen: propuestaPeek.correoOrigen
             ? {
+                de: propuestaPeek.correoOrigen.de,
+                asunto: propuestaPeek.correoOrigen.asunto,
+                threadId: propuestaPeek.correoOrigen.threadId,
+                messageIdHeader: propuestaPeek.correoOrigen.messageIdHeader,
                 mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
-                attachmentIdGmail: propuestaPeek.correoOrigen.attachmentIdGmail,
-                partId: propuestaPeek.correoOrigen.partId,
               }
             : undefined,
-        correoOrigen: propuestaPeek.correoOrigen
-          ? {
-              de: propuestaPeek.correoOrigen.de,
-              asunto: propuestaPeek.correoOrigen.asunto,
-              threadId: propuestaPeek.correoOrigen.threadId,
-              messageIdHeader: propuestaPeek.correoOrigen.messageIdHeader,
-              mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
-            }
-          : undefined,
-      });
-      gastoIniciado = resultado !== "pendiente_datos";
+        });
+        gastoIniciado = resultado !== "pendiente_datos";
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error procesando documento como gasto:", message);
@@ -564,66 +587,96 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
       return;
     }
 
-    if (!pendientePeek.mimeType || !MIMES_LEGIBLES_COMO_FACTURA.includes(pendientePeek.mimeType)) {
+    // Hallazgo real de auditoría (2026-09-18): igual que doc_esgasto, ahora también reconoce un .eml
+    // (correo reenviado como archivo) — antes lo rechazaba siempre, justo el caso real (hotel Scandic
+    // Holmenkollen Park) que motivó agregar soporte de lectura de .eml el mismo día.
+    const esEml = esArchivoEml(pendientePeek.mimeType, pendientePeek.nombreArchivoOriginal);
+    if (!esEml && (!pendientePeek.mimeType || !MIMES_LEGIBLES_COMO_FACTURA.includes(pendientePeek.mimeType))) {
       await answerCallbackQuerySafe(callback.id);
       await sendTelegramMessage(
         chatId,
-        `⚠️ "${pendientePeek.nombreArchivoOriginal}" no es un PDF ni una imagen — no lo puedo leer como comprobante de gasto directamente. Reenvíalo como PDF/imagen si quieres que lo procese como gasto.`
+        `⚠️ "${pendientePeek.nombreArchivoOriginal}" no es un PDF, una imagen ni un correo reenviado (.eml) — no lo puedo leer como comprobante de gasto directamente. Reenvíalo como PDF/imagen si quieres que lo procese como gasto.`
       );
       return;
     }
 
-    const deColaCorreo = pendientePeek.correoOrigen?.deColaCorreo === true;
+    // Hallazgo real de auditoría (2026-09-18): PendienteDesambiguacion no guarda messageId, así que a
+    // diferencia de doc_esgasto no se pueden limpiar los botones del mensaje original antes de la
+    // relectura lenta. Consumir el registro mismo, ACÁ, logra el mismo efecto: si "desamb_elegir" se
+    // pulsa mientras esto sigue en curso, su propio consumo no encuentra nada y avisa que ya se
+    // resolvió, en vez de avanzar la cola una segunda vez con datos obsoletos.
+    const pendiente = await consumirPendienteDesambiguacionPorId(pendientePeek.id, chatId).catch(() => undefined);
+    if (!pendiente) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró, ya se respondió, o se resolvió con otro botón).");
+      return;
+    }
+
+    const deColaCorreo = pendiente.correoOrigen?.deColaCorreo === true;
     await answerCallbackQuerySafe(callback.id, "Leyendo el comprobante...");
 
-    const captionReconstruido = pendientePeek.correoOrigen
-      ? `Adjunto de correo. De: ${pendientePeek.correoOrigen.de}. Asunto: ${pendientePeek.correoOrigen.asunto}.`
+    const captionReconstruido = pendiente.correoOrigen
+      ? `Adjunto de correo. De: ${pendiente.correoOrigen.de}. Asunto: ${pendiente.correoOrigen.asunto}.`
       : undefined;
 
     let gastoIniciado = false;
     try {
-      const datosFactura = await extraerDatosFactura(
-        pendientePeek.rutaLocal,
-        pendientePeek.mimeType,
-        captionReconstruido,
-        pendientePeek.nombreArchivoOriginal
-      );
-      const resultado = await procesarGastoEntrante({
-        chatId,
-        rutaLocal: pendientePeek.rutaLocal,
-        nombreArchivoOriginal: pendientePeek.nombreArchivoOriginal,
-        mimeType: pendientePeek.mimeType,
-        datos: { ...datosFactura, esFacturaOGasto: true },
-        deColaCorreo,
-        origenAdjuntoGmail:
-          pendientePeek.correoOrigen?.mensajeIdGmail && pendientePeek.correoOrigen?.attachmentIdGmail
+      if (esEml) {
+        const resultadoEml = await procesarEmlComoGastoForzado({
+          chatId,
+          rutaLocal: pendiente.rutaLocal,
+          nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
+          mimeType: pendiente.mimeType,
+          nombreParaClasificar: pendiente.nombreArchivoOriginal,
+          captionEfectivo: captionReconstruido,
+          correoOrigen: pendiente.correoOrigen,
+        });
+        if (resultadoEml.error) {
+          throw new Error(resultadoEml.error);
+        }
+        gastoIniciado = resultadoEml.resultado !== "gasto_pendiente_datos";
+      } else {
+        const datosFactura = await extraerDatosFactura(
+          pendiente.rutaLocal,
+          pendiente.mimeType,
+          captionReconstruido,
+          pendiente.nombreArchivoOriginal
+        );
+        const resultado = await procesarGastoEntrante({
+          chatId,
+          rutaLocal: pendiente.rutaLocal,
+          nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
+          mimeType: pendiente.mimeType,
+          datos: { ...datosFactura, esFacturaOGasto: true },
+          deColaCorreo,
+          origenAdjuntoGmail:
+            pendiente.correoOrigen?.mensajeIdGmail && pendiente.correoOrigen?.attachmentIdGmail
+              ? {
+                  mensajeIdGmail: pendiente.correoOrigen.mensajeIdGmail,
+                  attachmentIdGmail: pendiente.correoOrigen.attachmentIdGmail,
+                  partId: pendiente.correoOrigen.partId,
+                }
+              : undefined,
+          correoOrigen: pendiente.correoOrigen
             ? {
-                mensajeIdGmail: pendientePeek.correoOrigen.mensajeIdGmail,
-                attachmentIdGmail: pendientePeek.correoOrigen.attachmentIdGmail,
-                partId: pendientePeek.correoOrigen.partId,
+                de: pendiente.correoOrigen.de,
+                asunto: pendiente.correoOrigen.asunto,
+                threadId: pendiente.correoOrigen.threadId,
+                messageIdHeader: pendiente.correoOrigen.messageIdHeader,
+                mensajeIdGmail: pendiente.correoOrigen.mensajeIdGmail,
               }
             : undefined,
-        correoOrigen: pendientePeek.correoOrigen
-          ? {
-              de: pendientePeek.correoOrigen.de,
-              asunto: pendientePeek.correoOrigen.asunto,
-              threadId: pendientePeek.correoOrigen.threadId,
-              messageIdHeader: pendientePeek.correoOrigen.messageIdHeader,
-              mensajeIdGmail: pendientePeek.correoOrigen.mensajeIdGmail,
-            }
-          : undefined,
-      });
-      gastoIniciado = resultado !== "pendiente_datos";
+        });
+        gastoIniciado = resultado !== "pendiente_datos";
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error procesando documento ambiguo como gasto:", message);
-      await sendTelegramMessage(chatId, `⚠️ No se pudo procesar "${pendientePeek.nombreArchivoOriginal}" como gasto: ${message}`);
+      await sendTelegramMessage(chatId, `⚠️ No se pudo procesar "${pendiente.nombreArchivoOriginal}" como gasto: ${message}`);
     }
 
+    // El registro ya se consumió arriba (antes de la relectura) — acá solo falta avanzar la cola si
+    // el gasto realmente arrancó y venía de ahí.
     if (gastoIniciado && deColaCorreo) {
-      await consumirPendienteDesambiguacionPorId(pendientePeek.id, chatId).catch((error) =>
-        console.error("[documentCallbackHandler] No se pudo consumir la pregunta de desambiguación tras procesar como gasto (no crítico):", error)
-      );
       await avanzarColaCorreoSiActivo(chatId);
     }
     return;

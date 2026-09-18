@@ -172,6 +172,16 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
       `No se puede afirmar que el cruce esté completo: ${cruce.problemasCobertura.join(" | ")}`
     );
   }
+  // Hallazgo real de auditoría (2026-09-18): a diferencia de la herramienta manual
+  // (compararCashflowHolded.ts), este cron nunca mostraba advertenciasEstructura — quedaban
+  // completamente invisibles en el camino automático. No bloquean (son informativas, ver
+  // clasificarProblemasEstructura en cruceHoldedCashflow.ts), pero sí quedan en el log de Railway.
+  if (cruce.advertenciasEstructura.length > 0) {
+    console.warn(
+      `[revisarHoldedVsCashflow] Advertencias de estructura del cashflow (${empresa}, ${semanaLabel}, no bloquean):`,
+      cruce.advertenciasEstructura
+    );
+  }
 
   const todosLosRegistros = await fetchDetalleRegistros();
   const registrosSemana = todosLosRegistros.filter(
