@@ -166,10 +166,16 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
         { text: "🧠 Guardar como conocimiento", callback_data: `desamb_conocimiento:${pendiente.id}` },
         { text: "⏰ Crear alerta", callback_data: `desamb_alerta:${pendiente.id}` },
       ],
+      // Pedido explícito de Carlos (Footprint, hotel APECS Noruega, 2026-09-18): red de seguridad
+      // SIEMPRE presente, incluso (sobre todo) cuando el documento es tan ambiguo que ni siquiera se
+      // pudo proponer una carpeta — "así creas que sea para procesar de manera diferente, inclúyele
+      // un botón que dice procesar como gasto... si lo procesas mal, lo podemos reencaminar
+      // inmediatamente". No depende de esProbableGasto ni de nada que el clasificador haya adivinado.
+      [{ text: "💰 Es un gasto — procesarlo en Holded", callback_data: `desamb_esgasto:${pendiente.id}` }],
       [{ text: "❌ Descartar, no hacer nada", callback_data: `desamb_descartar:${pendiente.id}` }],
     ];
     if (archivo.correoOrigen) {
-      filasBotonesDesambiguacion.splice(1, 0, [
+      filasBotonesDesambiguacion.splice(2, 0, [
         { text: "✍️ Generar respuesta al correo", callback_data: `desamb_responder:${pendiente.id}` },
       ]);
     }
@@ -274,9 +280,14 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
   // había forma de redirigirlo al flujo de gasto desde acá, aunque la propia razón ya lo dijera
   // ("debe procesarse como gasto"). No consume la propuesta — "Sí, archivar aquí" sigue disponible
   // después, por si además quiere archivarlo.
-  if (clasificacion.esProbableGasto) {
-    filasBotones.splice(1, 0, [{ text: "💰 Es un gasto — procesarlo en Holded", callback_data: `doc_esgasto:${propuesta.id}` }]);
-  }
+  //
+  // Segundo pedido explícito de Carlos (Footprint, hotel APECS Noruega, 2026-09-18): "a todos los
+  // botones que me des, siempre, así creas que sea para procesar de manera diferente, inclúyele un
+  // botón que dice procesar como gasto... así, si lo procesas mal, lo podemos reencaminar
+  // inmediatamente" — ya NO depende de esProbableGasto (una suposición del clasificador de solo
+  // texto, que puede fallar): el botón va SIEMPRE, como red de seguridad, sin importar qué tan
+  // seguro esté el clasificador de que NO es un gasto.
+  filasBotones.splice(1, 0, [{ text: "💰 Es un gasto — procesarlo en Holded", callback_data: `doc_esgasto:${propuesta.id}` }]);
 
   const messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, filasBotones);
 
