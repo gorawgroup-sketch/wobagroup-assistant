@@ -37,11 +37,12 @@ export function useCerebroRealtime({ apiKey, onRefresh, onStatus, onEvent }) {
     let reintentoId = null;
     let intentos = 0;
     let conectadoAlgunaVez = false;
+    let ultimoLatido = Date.now();
 
     const estaVisible = () => document.visibilityState === "visible";
 
     const refrescar = (motivo) => {
-      if (!detenido && estaVisible()) return refreshRef.current?.(motivo);
+      if (!detenido && estaVisible() && navigator.onLine) return refreshRef.current?.(motivo);
       return undefined;
     };
 
@@ -90,6 +91,7 @@ export function useCerebroRealtime({ apiKey, onRefresh, onStatus, onEvent }) {
         intentos = 0;
         statusRef.current?.("en_vivo");
         if (esReconexion) refrescar("reconexion");
+        ultimoLatido = Date.now();
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let pendiente = "";
@@ -97,6 +99,7 @@ export function useCerebroRealtime({ apiKey, onRefresh, onStatus, onEvent }) {
         while (!detenido) {
           const { value, done } = await reader.read();
           if (done) break;
+          ultimoLatido = Date.now();
           pendiente += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
           let separador = pendiente.indexOf("\n\n");
           while (separador >= 0) {
@@ -112,6 +115,7 @@ export function useCerebroRealtime({ apiKey, onRefresh, onStatus, onEvent }) {
         }
       } finally {
         controller = null;
+        if (!detenido && estaVisible()) statusRef.current?.(navigator.onLine ? "reconectando" : "sin_conexion");
         programarReconexion();
       }
     };
@@ -135,7 +139,10 @@ export function useCerebroRealtime({ apiKey, onRefresh, onStatus, onEvent }) {
       controller?.abort();
     };
 
-    const fallbackId = window.setInterval(() => refrescar("intervalo"), REFRESH_FALLBACK_MS);
+    const fallbackId = window.setInterval(() => {
+      if (controller && Date.now() - ultimoLatido > 45_000) controller.abort();
+      refrescar("intervalo");
+    }, REFRESH_FALLBACK_MS);
     document.addEventListener("visibilitychange", alCambiarVisibilidad);
     window.addEventListener("online", alConectar);
     window.addEventListener("offline", alDesconectar);

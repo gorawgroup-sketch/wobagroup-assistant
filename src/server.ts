@@ -421,7 +421,8 @@ app.get("/api/cerebro/estado", async (req: Request, res: Response) => {
   }
 
   try {
-    const estado = await obtenerEstadoCerebro();
+    res.set("Cache-Control", "no-store");
+    const estado = await obtenerEstadoCerebro(req.query.actualizar === "1");
     res.json(estado);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -509,7 +510,8 @@ app.get("/api/cerebro/conexiones", async (req: Request, res: Response) => {
   if (!(await exigeAccesoValido(req, res))) return;
 
   try {
-    const conexiones = await obtenerEstadoConexiones();
+    res.set("Cache-Control", "no-store");
+    const conexiones = await obtenerEstadoConexiones(req.query.actualizar === "1");
     res.json({ conexiones });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

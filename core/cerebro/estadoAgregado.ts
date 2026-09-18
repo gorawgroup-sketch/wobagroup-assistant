@@ -1,9 +1,12 @@
-import { fetchResumenSemanas, type ResumenSemana } from "../google/cashflowSheet";
+import { crearSnapshot } from "./snapshot";
+import { LecturaFuentes, type EstadoFuente } from "./lecturaFuentes";
+import { obtenerEstadoConexiones, type ConexionEstado } from "./conexiones";
+import { fetchResumenSemanas, invalidarCachesCashflow, type ResumenSemana } from "../google/cashflowSheet";
 import { listarPropuestasPendientes } from "../google/proposalSheet";
 import { parseValorFormateado } from "../jobs/revisarHoldedVsCashflow";
 import { loadCalendarioFiscal, calcularProximasAlertas, calcularProximaFecha } from "../fiscal/calendario";
-import { contarFacturasRecientes, listarProximosEventosHolded, buscarGastosSinComprobante } from "../holded/write";
-import { contarMovimientosSinConciliar } from "../holded/client";
+import { contarFacturasRecientes, listarProximosEventosHolded, buscarGastosSinComprobante, invalidarCacheEventosHolded } from "../holded/write";
+import { contarMovimientosSinConciliar, invalidarCacheCuentasTesoreria } from "../holded/client";
 import type { Empresa } from "../holded/client";
 import { contarNoLeidos } from "../gmail/client";
 import { obtenerUltimoCheck } from "../gmail/lastCheckStore";
@@ -25,19 +28,8 @@ import {
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
-/**
- * Ejecuta `fn` y devuelve su resultado, o `fallback` + log de error si falla
- * — así una fuente de datos caída (Holded, Gmail, Drive...) no tumba todo el
- * endpoint, solo deja esa sección en su valor por defecto.
- */
-async function seguro<T>(etiqueta: string, fn: () => Promise<T>, fallback: T): Promise<T> {
-  try {
-    return await fn();
-  } catch (error) {
-    console.error(`[cerebro/estadoAgregado] Error en "${etiqueta}":`, error);
-    return fallback;
-  }
-}
+const lecturas = new LecturaFuentes();
+const seguro = <T>(etiqueta: string, fn: () => Promise<T>, fallback: T) => lecturas.leer(etiqueta, fn, fallback);
 
 const NOMBRES_MES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -389,9 +381,9 @@ async function construirConocimiento() {
 
 function construirAccesos(
   usuarios: Awaited<ReturnType<typeof obtenerUsuariosAutorizados>>,
-  controlDiario: ControlDiario
+  controlDiario: ControlDiario | null
 ) {
-  const costos = controlDiario.costos;
+  const costos = controlDiario?.costos;
   return {
     usuariosAutorizados: {
       superadmins: usuarios.filter((u) => u.rol === "superadmin").length,
@@ -415,14 +407,17 @@ export interface EstadoCerebroDatos {
   drive: Awaited<ReturnType<typeof construirDrive>>;
   conocimiento: Awaited<ReturnType<typeof construirConocimiento>>;
   accesos: Awaited<ReturnType<typeof construirAccesos>>;
-  controlDiario: ControlDiario;
+  controlDiario: ControlDiario | null;
   auditoriaProgramada: EstadoAuditoriaProgramadaFront;
 }
 
 export interface EstadoCerebro extends EstadoCerebroDatos {
+  fuentes: EstadoFuente[];
+  conexiones: ConexionEstado[];
+  actualizacionParcial: boolean;
   /** Instante de ESTA respuesta HTTP — cambia en cada request, cacheado o no. */
   generadoEn: string;
-  /** Instante en que se calcularon realmente los datos de abajo — solo cambia cada CACHE_TTL_MS. Compara con generadoEn para saber si esta respuesta vino del caché. */
+  /** Instante en que se calcularon realmente los datos de abajo — cambia al completar una consulta nueva. Compara con generadoEn para saber si esta respuesta vino del caché. */
   cacheadoEn: string;
 }
 
@@ -445,7 +440,7 @@ async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
     construirDrive(),
     construirConocimiento(),
     seguro("accesos.usuarios", obtenerUsuariosAutorizados, []),
-    construirControlDiario(),
+    seguro("controlDiario", construirControlDiario, null),
     seguro("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, {
       nombre: "Auditoría técnica diaria de WOBI",
       descripcion:
@@ -466,46 +461,30 @@ async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
   return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, controlDiario, auditoriaProgramada };
 }
 
-// Dos minutos mantiene el panel suficientemente fresco para operación diaria
-// sin convertir cada polling del navegador en una ráfaga contra Holded,
-// Google y Gmail. Los cambios ejecutados por Wobi invalidan este caché de
-// inmediato y llegan al navegador por el stream en tiempo real.
-const CACHE_TTL_MS = 2 * 60 * 1000;
+// Una lectura compartida por proceso; el botón manual invalida también los caches
+// cortos de las fuentes. CacheLectura descarta cálculos invalidados en pleno vuelo.
+const snapshot = crearSnapshot(async () => {
+  const [estado, conexiones] = await Promise.all([
+    lecturas.ejecutar(construirEstadoCerebro),
+    obtenerEstadoConexiones(true),
+  ]);
+  return { ...estado, conexiones };
+}, () => {
+  invalidarCachesCashflow();
+  invalidarCacheCuentasTesoreria();
+  invalidarCacheEventosHolded();
+});
 
-let cache: { datos: EstadoCerebroDatos; cacheadoEnMs: number } | null = null;
-let recalculoEnCurso: Promise<{ datos: EstadoCerebroDatos; cacheadoEnMs: number }> | null = null;
+export function invalidarEstadoCerebro(): void { snapshot.invalidar(); }
 
-/** Marca el snapshot como vencido sin interrumpir un cálculo ya iniciado. */
-export function invalidarEstadoCerebro(): void {
-  cache = null;
-}
-
-/**
- * Caché de proceso de 2 minutos: agregar todo (Sheets, Holded ×3 empresas,
- * Drive, Gmail...) toma 12-22s en vivo, demasiado para que un front lo pida
- * en cada carga de página. `cacheadoEn` en la respuesta indica cuándo se
- * calcularon realmente los datos — si es igual a `generadoEn`, esta
- * respuesta se calculó de cero; si es anterior, vino del caché.
- * `recalculoEnCurso` evita que dos requests simultáneas que lleguen justo
- * cuando el caché expiró disparen el cálculo completo dos veces en paralelo.
- */
-export async function obtenerEstadoCerebro(): Promise<EstadoCerebro> {
-  const ahora = Date.now();
-
-  if (!cache || ahora - cache.cacheadoEnMs >= CACHE_TTL_MS) {
-    if (!recalculoEnCurso) {
-      recalculoEnCurso = construirEstadoCerebro()
-        .then((datos) => ({ datos, cacheadoEnMs: Date.now() }))
-        .finally(() => {
-          recalculoEnCurso = null;
-        });
-    }
-    cache = await recalculoEnCurso;
-  }
-
+export async function obtenerEstadoCerebro(forzar = false): Promise<EstadoCerebro> {
+  const lectura = await snapshot.obtener(forzar);
   return {
     generadoEn: new Date().toISOString(),
-    cacheadoEn: new Date(cache.cacheadoEnMs).toISOString(),
-    ...cache.datos,
+    cacheadoEn: new Date(lectura.meta.obtenidoEn).toISOString(),
+    ...lectura.datos.datos,
+    fuentes: lectura.datos.fuentes,
+    conexiones: lectura.datos.conexiones,
+    actualizacionParcial: lectura.datos.fuentes.some(f => !f.ok),
   };
 }

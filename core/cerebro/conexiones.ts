@@ -1,3 +1,4 @@
+import { CacheLectura } from "../utils/readCache";
 import {
   getTelegramWebhookInfo,
   setTelegramWebhook,
@@ -81,11 +82,13 @@ async function verificarTelegram(): Promise<{ ok: boolean; detalle?: string }> {
   }
 }
 
-function conConTimeout<T>(promesa: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promesa,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Tiempo de espera agotado (${ms}ms)`)), ms)),
-  ]);
+async function conConTimeout<T>(promesa: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promesa, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Tiempo de espera agotado (${ms}ms)`)), ms);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
@@ -180,16 +183,11 @@ async function verificarTodas(): Promise<ConexionEstado[]> {
   return [claudeEstado, busquedaWebEstado, ...resultados];
 }
 
-let cache: { en: number; datos: ConexionEstado[] } | null = null;
-const CACHE_TTL_MS = 2 * 60 * 1000; // 2 min — varias APIs son de pago o tienen cuota, no se golpean en cada carga
+const cache = new CacheLectura<ConexionEstado[]>("cerebro_conexiones", 30_000);
 
 export async function obtenerEstadoConexiones(forzar = false): Promise<ConexionEstado[]> {
-  if (!forzar && cache && Date.now() - cache.en < CACHE_TTL_MS) {
-    return cache.datos;
-  }
-  const datos = await verificarTodas();
-  cache = { en: Date.now(), datos };
-  return datos;
+  if (forzar) cache.invalidar();
+  return (await cache.obtener(verificarTodas)).datos;
 }
 
 /**
@@ -223,12 +221,11 @@ export async function arreglarConexion(id: string): Promise<ConexionEstado> {
       accionLabel: resultado.ok ? null : "🔄 Reintentar",
       verificadoEn: new Date().toISOString(),
     };
-    if (cache) cache.datos = cache.datos.map((c) => (c.id === id ? estado : c));
+    cache.invalidar();
     return estado;
   }
 
-  const todas = await verificarTodas();
-  cache = { en: Date.now(), datos: todas };
+  const todas = await obtenerEstadoConexiones(true);
   const actualizado = todas.find((c) => c.id === id);
   if (!actualizado) {
     throw new Error(`Conexión desconocida: ${id}`);
