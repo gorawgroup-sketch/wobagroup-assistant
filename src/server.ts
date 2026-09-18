@@ -111,6 +111,7 @@ import {
   type EntregaTelegramDurable,
 } from "../core/telegram/durableDelivery";
 import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
+import { iniciarActividadCallback } from "../core/telegram/callbackActivity";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
 import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
@@ -1307,6 +1308,15 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
  * canal.
  */
 async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<boolean> {
+  const finalizarActividad = iniciarActividadCallback(callback.message?.chat.id ?? callback.from.id);
+  try {
+    return await despacharCallbackQuerySinSeguimiento(callback);
+  } finally {
+    finalizarActividad();
+  }
+}
+
+async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQuery): Promise<boolean> {
   const data = callback.data ?? "";
 
   if (data.startsWith("auth_")) {
