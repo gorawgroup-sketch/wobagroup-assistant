@@ -55,6 +55,14 @@ test("consulta evidencias deterministas para una clasificación media y permite 
   assert.equal(ev.contacto?.id, "p1");
   assert.equal(ev.movimientos.length, 1);
 });
+test("detecta empresa desconocida solo si un Holded tiene contacto y movimiento exactos", async () => {
+  const e = escenario(); e.r.empresa = "desconocida";
+  const adapter = new HoldedAuto(e.memoria, e.request, ["WOBA"]);
+  const ev = await adapter.evidencias(e.c, e.r);
+  assert.equal(ev.empresaDetectada, "WOBA");
+  assert.equal(ev.contacto?.id, "p1");
+  assert.equal(ev.movimientos.length, 1);
+});
 test("crear usa la compra en borrador, sin IVA, con cuenta y marcador recuperable", async () => {
   const e = escenario(); e.op.compraId = await e.adapter.crear(e.op);
   assert.equal(e.op.compraId, "creada"); assert.equal(e.posts.length, 1);

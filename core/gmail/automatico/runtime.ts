@@ -35,7 +35,7 @@ export async function revisarGastosAutomaticos(chatId: number): Promise<Resultad
       if (r.empresa === "desconocida") return true;
       return Boolean(await buscarPropuestaGastoPendiente(r.empresa, r.proveedor, r.equivalente?.monto ?? r.monto));
     },
-  });
+  }, fetch, config.empresas);
   const chats = [...new Set([chatId, Number(process.env.CASHFLOW_ALERTS_CHAT_ID)].filter(Number.isFinite))];
   const manuales = new Set<string>();
   for (const chat of chats) {

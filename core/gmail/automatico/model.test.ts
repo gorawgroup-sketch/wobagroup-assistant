@@ -24,6 +24,16 @@ test("contacto exacto y cargo único con el proveedor refuerzan una confianza me
     assert.equal(d.plan.evidencia.confianzaReforzada, "contacto_exacto_y_movimiento_unico_con_proveedor");
   }
 });
+test("una empresa desconocida queda resuelta solo por evidencia determinista de Holded", () => {
+  const r = reciboFixture(); r.empresa = "desconocida"; r.confianza = "media";
+  const e = evidenciaFixture(); e.empresaDetectada = "WOBA";
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) {
+    assert.equal(d.plan.empresa, "WOBA");
+    assert.equal(d.plan.recibo.empresa, "WOBA");
+  }
+});
 test("rechaza falta de datos, factura, contacto aproximado, empresa ajena y consultas fallidas", () => {
   const casos = [
     () => { const r = reciboFixture(); const e = evidenciaFixture(); r.confianza = "media"; e.movimientos[0].descripcion = "Comercio sin relación"; return { r, e }; },
