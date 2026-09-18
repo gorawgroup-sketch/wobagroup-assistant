@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v3";
+export const VERSION_POLITICA = "correo-gastos-v4";
 export interface ConfigAuto {
   modo: ModoAuto;
   empresas: EmpresaAuto[];
@@ -108,7 +108,7 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const candidatos = e.movimientos.filter(m => m.moneda === moneda && m.fecha === r.fecha &&
     Number.isSafeInteger(m.centimos) && m.centimos < 0 && Math.abs(-m.centimos - esperado) <= tolerancia);
   const ids = new Set(candidatos.map(m => `${m.cuentaId}/${m.id}`));
-  const proveedor = normalizar(r.proveedor);
+  const proveedor = normalizar(r.proveedor.replace(/\s*\([^)]*\)\s*$/, ""));
   const descripcion = normalizar(candidatos[0]?.descripcion ?? "");
   const confianzaReforzada = r.confianza === "media" && e.contacto?.exacto === true && candidatos.length === 1 && ids.size === 1 &&
     proveedor.length >= 4 && descripcion.length >= 4 && (descripcion.includes(proveedor) || proveedor.includes(descripcion));

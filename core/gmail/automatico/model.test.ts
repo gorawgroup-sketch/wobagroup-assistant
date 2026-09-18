@@ -16,7 +16,7 @@ test("un recibo pagado es elegible y la cuenta contable previa no es una barrera
   if (d.apto) assert.equal(d.plan.cuentaId, undefined);
 });
 test("contacto exacto y cargo único con el proveedor refuerzan una confianza media hasta alta", () => {
-  const r = reciboFixture(); r.confianza = "media";
+  const r = reciboFixture(); r.confianza = "media"; r.proveedor = "Proveedor (Restaurante, Breda)";
   const d = evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture);
   assert.equal(d.apto, true);
   if (d.apto) {
