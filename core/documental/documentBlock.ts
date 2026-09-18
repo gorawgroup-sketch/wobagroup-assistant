@@ -37,15 +37,22 @@ const MIMES_HEIC = ["image/heic", "image/heif"];
  * formato que la API sí acepta.
  */
 export async function mimeADocumentBlock(rutaLocal: string, mimeType: string | undefined, data: Buffer): Promise<DocumentOrImageBlock | TextBlock> {
-  if (mimeType && MIMES_TEXTO_PLANO.includes(mimeType)) {
+  const mime = mimeType?.split(";", 1)[0].trim().toLowerCase();
+  if (mime && MIMES_TEXTO_PLANO.includes(mime)) {
     return { type: "text", text: data.toString("utf-8") };
   }
 
-  if (mimeType === "application/pdf") {
+  // Gmail y otros proveedores entregan algunos PDF reales como
+  // application/octet-stream. Solo corregimos un MIME ausente/genérico si
+  // coinciden la extensión y la firma binaria; el nombre por sí solo nunca
+  // convierte bytes arbitrarios en un documento autorizado.
+  const pdfGenerico = (!mime || mime === "application/octet-stream") && /\.pdf$/i.test(rutaLocal) &&
+    data.length >= 5 && data.subarray(0, 5).toString("ascii") === "%PDF-";
+  if (mime === "application/pdf" || pdfGenerico) {
     return { type: "document", source: { type: "base64", media_type: "application/pdf", data: data.toString("base64") } };
   }
 
-  if (mimeType && MIMES_HEIC.includes(mimeType)) {
+  if (mime && MIMES_HEIC.includes(mime)) {
     let jpegBytes: Uint8Array;
     try {
       jpegBytes = await convertirHeic({ buffer: data, format: "JPEG", quality: 0.92 });
@@ -57,8 +64,8 @@ export async function mimeADocumentBlock(rutaLocal: string, mimeType: string | u
   }
 
   const imageMimes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
-  if (mimeType && imageMimes.includes(mimeType)) {
-    return { type: "image", source: { type: "base64", media_type: mimeType, data: data.toString("base64") } };
+  if (mime && imageMimes.includes(mime)) {
+    return { type: "image", source: { type: "base64", media_type: mime, data: data.toString("base64") } };
   }
 
   throw new Error(`Tipo de archivo no soportado para lectura de documentos: ${mimeType ?? "(desconocido)"} (${rutaLocal})`);
