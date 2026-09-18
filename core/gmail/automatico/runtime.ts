@@ -56,8 +56,10 @@ export async function revisarGastosAutomaticos(chatId: number): Promise<Resultad
     registrarFinalizada: async op => {
       const attachmentId = op.plan.recibo.fuente === "cuerpo" ? undefined : op.plan.recibo.fuente;
       if (!await buscarGastoDesdeCorreo(op.plan.correo.id, attachmentId)) {
-        await registrarAsignacionCuenta({ gastoId: op.compraId!, empresa: op.plan.empresa,
-          proveedor: op.plan.recibo.proveedor, cuentaIdAsignada: op.plan.cuentaId });
+        if (op.plan.cuentaId) {
+          await registrarAsignacionCuenta({ gastoId: op.compraId!, empresa: op.plan.empresa,
+            proveedor: op.plan.recibo.proveedor, cuentaIdAsignada: op.plan.cuentaId });
+        }
         await registrarGastoDesdeCorreo({ mensajeIdGmail: op.plan.correo.id, attachmentId,
           gastoId: op.compraId!, empresa: op.plan.empresa });
       }

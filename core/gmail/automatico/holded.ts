@@ -8,6 +8,9 @@ export function objeto(raw: unknown): Registro {
 }
 function texto(raw: unknown): string { if (typeof raw !== "string" || !raw) throw new Error("Campo Holded ausente."); return raw; }
 const idUrl = (id: string) => encodeURIComponent(id);
+export const normalizarProveedorExacto = (valor: string): string => normalizar(valor)
+  .replace(/\b(sociedad anonima unipersonal|sociedad anonima|sociedad limitada unipersonal|sociedad limitada|sau|sa|slu|sl|sro|llc|ltd|inc)\b/g, " ")
+  .replace(/\s+/g, " ").trim();
 function centimos(raw: unknown, admiteFormatoES = false): number {
   if (typeof raw !== "number" && typeof raw !== "string") throw new Error("Importe ausente o inválido.");
   let valor = String(raw);
@@ -63,11 +66,11 @@ export class HoldedAuto {
   }
   async evidencias(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
-    if (r.empresa === "desconocida" || r.tipo !== "ticket" || r.confianza !== "alta" || !fechaValida(r.fecha)) return e;
+    if (r.empresa === "desconocida" || !new Set(["ticket", "recibo"]).has(r.tipo) || r.confianza !== "alta" || !fechaValida(r.fecha)) return e;
     const empresa = r.empresa;
     const contactos = await this.listar(empresa, "/contacts");
     const alias = await this.memoria.alias(empresa, r.proveedor);
-    const directos = contactos.filter(x => typeof x.name === "string" && normalizar(x.name) === normalizar(r.proveedor));
+    const directos = contactos.filter(x => typeof x.name === "string" && normalizarProveedorExacto(x.name) === normalizarProveedorExacto(r.proveedor));
     const idsAlias = new Set(alias.map(x => x.contactId));
     // Alias contradictorios nunca se reducen al primer match de Sheets.
     const encontrados = idsAlias.size === 1 && directos.length <= 1
@@ -90,7 +93,7 @@ export class HoldedAuto {
     const tolerancia = r.equivalente ? Math.max(5, Math.round(importe * 0.02)) : 1;
     const numero = r.numero?.trim().toUpperCase();
     for (const p of compras) {
-      const mismoContacto = p.contact_id === e.contacto?.id || normalizar(String(p.contact_name ?? "")) === normalizar(r.proveedor);
+      const mismoContacto = p.contact_id === e.contacto?.id || normalizarProveedorExacto(String(p.contact_name ?? "")) === normalizarProveedorExacto(r.proveedor);
       const mismoNumero = numero && numero !== "00000" && numero === String(p.document_number ?? "").trim().toUpperCase();
       const dias = Math.abs(Date.parse(String(p.date).slice(0, 10)) - Date.parse(r.fecha)) / 86400000;
       if ((mismoContacto && mismoNumero) || (p.currency === moneda && dias <= 15 && Math.abs(centimos(p.total, true) - importe) <= tolerancia)) {
@@ -167,7 +170,7 @@ export class HoldedAuto {
       description: `${p.recibo.concepto} — recibo original ${p.recibo.monto} ${p.recibo.moneda}; convertir a ticket.`,
       notes: `WOBI_AUTO:${op.id}`, tags: [`wobi-auto-${op.id}`, "wobi-ticket-pendiente"],
       currency: p.movimiento.moneda, ...(cambio ? { currency_change: cambio } : {}), draft: true,
-      items: [{ name: p.recibo.concepto, units: 1, price: p.totalCentimos / 100, taxes: [], account: p.cuentaId }],
+      items: [{ name: p.recibo.concepto, units: 1, price: p.totalCentimos / 100, taxes: [], ...(p.cuentaId ? { account: p.cuentaId } : {}) }],
     });
     return texto(objeto(await response.json()).id);
   }
@@ -182,7 +185,7 @@ export class HoldedAuto {
     const c = await this.compra(op); const p = op.plan;
     return c.id === op.compraId && c.contact_id === p.contactoId && c.currency === p.movimiento.moneda &&
       String(c.date).slice(0, 10) === p.recibo.fecha && centimos(c.total, true) === p.totalCentimos &&
-      Array.isArray(c.lines) && c.lines.length === 1 && objeto(c.lines[0]).account === p.cuentaId &&
+      Array.isArray(c.lines) && c.lines.length === 1 && (!p.cuentaId || objeto(c.lines[0]).account === p.cuentaId) &&
       centimos(c.tax, true) === 0 && Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`) &&
       String(c.document_number) === (p.recibo.numero || "00000");
   }

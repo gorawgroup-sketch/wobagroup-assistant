@@ -8,6 +8,13 @@ test("solo un recibo de alta confianza con proveedor exacto y un cargo libre es 
   assert.equal(d.apto, true);
   if (d.apto) assert.equal(d.plan.totalCentimos, 2000);
 });
+test("un recibo pagado es elegible y la cuenta contable previa no es una barrera adicional", () => {
+  const r = reciboFixture(); r.tipo = "recibo";
+  const e = evidenciaFixture(); e.cuenta = undefined;
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) assert.equal(d.plan.cuentaId, undefined);
+});
 test("rechaza falta de datos, factura, contacto aproximado, empresa ajena y consultas fallidas", () => {
   const casos = [
     () => { const r = reciboFixture(); r.confianza = "media"; return { r }; },
