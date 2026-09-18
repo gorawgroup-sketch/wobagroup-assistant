@@ -221,6 +221,13 @@ export async function entregarRespuestaTrasTrabajar(
   if (mensajeTrabajandoId !== undefined) {
     try {
       await editTelegramMessageSmart(chatId, mensajeTrabajandoId, texto);
+      // La respuesta final reemplazó al aviso temporal; si no la guardamos,
+      // el siguiente turno solo recuerda al usuario pero no lo que Wobi
+      // realmente contestó. Este fue uno de los factores que hizo que el
+      // chat perdiera el contexto del DHL recién procesado.
+      registrarMensajeSaliente(chatId, texto).catch((error) =>
+        console.error("[telegram/client] Error registrando respuesta final editada en el historial:", error)
+      );
       return;
     } catch (error) {
       console.error("[telegram] Error editando el aviso de 'trabajando' con la respuesta final (no crítico):", error);
@@ -516,6 +523,32 @@ export async function editTelegramMessage(
   } else {
     await actualizarBotonesActivos(chatId, messageId, []);
   }
+
+  registrarEdicionTerminalEnHistorial(chatId, text, buttons);
+}
+
+/**
+ * Los callbacks suelen editar la propuesta original: primero muestran un
+ * estado temporal ("Procesando...") y luego el resultado definitivo. Los
+ * envíos normales ya se registran en la memoria conversacional, pero las
+ * ediciones no; por eso el chat podía olvidar segundos después qué gasto
+ * acababa de crear o rechazar. Solo guardamos ediciones terminales que
+ * retiran todos los botones, excluyendo estados de progreso para no llenar
+ * la memoria de ruido ni duplicar trabajo.
+ */
+function registrarEdicionTerminalEnHistorial(
+  chatId: number,
+  texto: string,
+  buttons: InlineKeyboardButton[][] | undefined
+): void {
+  if (buttons === undefined || buttons.length > 0) return;
+  const limpio = texto.trim();
+  if (!limpio || /^(?:🔄|⏳|⌛) ?/u.test(limpio) || /^(?:procesando|aplicando|guardando|redactando)\b/i.test(limpio)) {
+    return;
+  }
+  registrarMensajeSaliente(chatId, texto).catch((error) =>
+    console.error("[telegram/client] Error registrando edición terminal en el historial:", error)
+  );
 }
 
 /**
@@ -610,6 +643,7 @@ export async function editTelegramMessageExpandable(
   } else {
     await actualizarBotonesActivos(chatId, messageId, []);
   }
+  registrarEdicionTerminalEnHistorial(chatId, textoPlano, buttons);
 }
 
 /** Igual que sendTelegramMessageSmart pero editando un mensaje existente (ver entregarRespuestaTrasTrabajar). */

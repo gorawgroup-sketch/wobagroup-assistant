@@ -5,6 +5,7 @@ import { obtenerActivoActual } from "../colaRevisionStore";
 import { obtenerEstadoHiloAutorespuesta } from "../hiloAutorespuestaStore";
 import { obtenerTodosLosAlias } from "../../gastos/proveedorAliasSheet";
 import { buscarGastoDesdeCorreo, registrarGastoDesdeCorreo } from "../../gastos/gastoPorCorreoStore";
+import { revalidarRegistroRecienteDeCorreo } from "../../gastos/verificarGastoPorCorreo";
 import { buscarPropuestaGastoPendiente, obtenerPropuestasGastoPorChat } from "../../gastos/gastoProposalSheet";
 import { obtenerPropuestasAccionCorreoPorChat } from "../emailActionStore";
 import { GmailAuto } from "./gmail";
@@ -23,7 +24,14 @@ export async function revisarGastosAutomaticos(chatId: number): Promise<Resultad
     alias: async (empresa, proveedor) => (await obtenerTodosLosAlias())
       .filter(a => a.empresa === empresa && normalizar(a.nombreDetectado) === normalizar(proveedor)),
     duplicadoInterno: async (c, r) => {
-      if (await buscarGastoDesdeCorreo(c.id, r.fuente === "cuerpo" ? undefined : r.fuente)) return true;
+      const registro = await buscarGastoDesdeCorreo(c.id, r.fuente === "cuerpo" ? undefined : r.fuente);
+      if (registro) {
+        const estado = await revalidarRegistroRecienteDeCorreo(registro);
+        if (estado !== "fantasma_eliminado") return true;
+        // El 404 reciente demostró que esa referencia era fantasma. El
+        // analizador automático puede continuar con los bytes reales de
+        // este recibo; las barreras estrictas de Holded se aplican después.
+      }
       if (r.empresa === "desconocida") return true;
       return Boolean(await buscarPropuestaGastoPendiente(r.empresa, r.proveedor, r.equivalente?.monto ?? r.monto));
     },

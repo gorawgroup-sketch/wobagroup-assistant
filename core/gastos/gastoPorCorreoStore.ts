@@ -191,6 +191,35 @@ export async function buscarGastoDesdeCorreo(mensajeIdGmail: string, attachmentI
 }
 
 /**
+ * Elimina exclusivamente una referencia correo/adjunto/id que se demostró
+ * inválida. No borra otros adjuntos del mismo mensaje ni otros gastos del
+ * mismo proveedor. Se usa solo tras un 404 real de Holded sobre un registro
+ * reciente, para que el correo pueda volver a descargar y leer SU PDF en vez
+ * de quedar bloqueado para siempre por un id fantasma.
+ */
+export async function eliminarGastoDesdeCorreo(
+  mensajeIdGmail: string,
+  attachmentId: string | undefined,
+  gastoId: string
+): Promise<number> {
+  if (!mensajeIdGmail || !gastoId) return 0;
+  const attachmentBuscado = attachmentId ?? "";
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const coincidentes = filas
+    .filter(
+      (fila) =>
+        fila.valores[0] === mensajeIdGmail &&
+        (fila.valores[1] ?? "") === attachmentBuscado &&
+        fila.valores[2] === gastoId
+    )
+    .sort((a, b) => b.rowIndex - a.rowIndex);
+  for (const fila of coincidentes) {
+    await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  }
+  return coincidentes.length;
+}
+
+/**
  * Detecta el mismo comprobante aunque llegue reenviado en otro mensaje de
  * Gmail. Esta consulta no depende de que Holded siga listando el documento
  * como /purchases (los tickets pueden desaparecer de esa vista).

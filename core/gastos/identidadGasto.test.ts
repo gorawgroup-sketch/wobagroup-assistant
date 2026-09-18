@@ -50,11 +50,29 @@ test("la clave durable es estable entre propuestas del mismo documento", () => {
     contactId: "contacto-uber",
     numeroDocumento: "HCJCHBFC-03-2026-0001761",
     fecha: "2026-09-08",
+    monto: 22.96,
+    moneda: "EUR",
   };
   assert.equal(
     claveIdempotenciaGasto({ ...base, propuestaId: "propuesta-a" }),
     claveIdempotenciaGasto({ ...base, propuestaId: "propuesta-b" })
   );
+});
+
+test("la clave durable no mezcla documentos con importe o moneda diferentes", () => {
+  const base = {
+    empresa: "WOBA",
+    contactId: "dhl",
+    numeroDocumento: "MADIR00754136",
+    fecha: "2026-09-18",
+    propuestaId: "p",
+  };
+  const gasto9349 = claveIdempotenciaGasto({ ...base, monto: 93.49, moneda: "EUR" });
+  const gasto50386 = claveIdempotenciaGasto({ ...base, monto: 503.86, moneda: "EUR" });
+  const gastoUsd = claveIdempotenciaGasto({ ...base, monto: 503.86, moneda: "USD" });
+
+  assert.notEqual(gasto9349, gasto50386);
+  assert.notEqual(gasto50386, gastoUsd);
 });
 
 test("sin identidad documental mantiene idempotencia por propuesta", () => {

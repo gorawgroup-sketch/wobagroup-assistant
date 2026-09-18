@@ -36,6 +36,16 @@ export interface RepositorioCreacionesCompra {
 export interface TransporteCreacionCompra {
   buscar(registro: RegistroCreacionCompra): Promise<ResultadoCreacionCompra | undefined>;
   crear(marcador: string): Promise<ResultadoCreacionCompra>;
+  /**
+   * Confirma por lectura directa que el id devuelto por el POST existe y
+   * corresponde a ESTA operación. Un JSON con `{ id }` no es evidencia
+   * suficiente: Holded puede devolver un identificador que todavía no sea
+   * legible (o que finalmente no exista), como ocurrió con el gasto DHL.
+   */
+  confirmar(
+    registro: RegistroCreacionCompra,
+    resultado: ResultadoCreacionCompra
+  ): Promise<ResultadoCreacionCompra | undefined>;
 }
 
 export class CreacionCompraInciertaError extends Error {
@@ -213,6 +223,26 @@ export async function ejecutarCreacionCompraDurable(
       // La lectura también falló o fue ambigua: se conserva la salida segura.
     }
     await repositorio.marcarIncierta(creando.clave);
+    throw new CreacionCompraInciertaError();
+  }
+
+  // El POST solo informa que Holded recibió la solicitud. Antes se marcaba
+  // el ledger como "verificado" inmediatamente con el id de esa respuesta y
+  // todo el flujo posterior (adjunto, memoria del correo y conciliación)
+  // afirmaba que el gasto existía. En el incidente DHL, el GET y el adjunto
+  // respondían 404: el id nunca fue una compra confirmada. Se exige ahora
+  // una lectura directa antes de declarar el efecto como real. Si no aparece,
+  // queda incierto y JAMÁS se repite el POST automáticamente.
+  try {
+    const confirmado = await transporte.confirmar(creando, resultado);
+    if (!confirmado) {
+      await repositorio.marcarIncierta(creando.clave);
+      throw new CreacionCompraInciertaError();
+    }
+    resultado = confirmado;
+  } catch (error) {
+    if (error instanceof CreacionCompraInciertaError) throw error;
+    await repositorio.marcarIncierta(creando.clave).catch(() => undefined);
     throw new CreacionCompraInciertaError();
   }
 

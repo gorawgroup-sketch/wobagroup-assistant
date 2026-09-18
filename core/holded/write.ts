@@ -277,6 +277,52 @@ async function buscarCompraPorMarcador(registro: RegistroCreacionCompra): Promis
   return encontrados[0] ? { id: encontrados[0] } : undefined;
 }
 
+/**
+ * Verificación inmediata del id que acaba de devolver POST /purchases.
+ *
+ * La búsqueda por marcador de arriba es ideal para recuperar operaciones
+ * inciertas tiempo después, pero depende del índice de la lista de compras.
+ * Para confirmar el POST usamos primero el GET individual, que además permite
+ * comprobar que no recibimos por error el id de otra compra. Un 404 significa
+ * simplemente "todavía no confirmado"; cualquier otro fallo o discrepancia
+ * mantiene la operación incierta y bloquea efectos posteriores.
+ */
+async function confirmarCompraRecienCreada(
+  registro: RegistroCreacionCompra,
+  resultado: ResultadoCreacionCompra
+): Promise<ResultadoCreacionCompra | undefined> {
+  try {
+    const compra = (await holdedWriteCall(
+      registro.empresa,
+      "GET",
+      `/purchases/${encodeURIComponent(resultado.id)}`
+    )) as {
+      id?: string;
+      notes?: string | null;
+      contact_id?: string | null;
+      date?: string | null;
+    };
+
+    if (!compra?.id) return undefined;
+    if (compra.id !== resultado.id) {
+      throw new Error(`Holded devolvió una compra distinta al id creado (${compra.id} != ${resultado.id}).`);
+    }
+    if (compra.notes?.trim() !== registro.marcador) {
+      throw new Error(`La compra ${resultado.id} no conserva el marcador de esta operación.`);
+    }
+    if (compra.contact_id && compra.contact_id !== registro.contactId) {
+      throw new Error(`La compra ${resultado.id} pertenece a otro contacto.`);
+    }
+    if (compra.date && compra.date.slice(0, 10) !== registro.fecha) {
+      throw new Error(`La compra ${resultado.id} tiene una fecha distinta a la aprobada.`);
+    }
+    return { id: compra.id };
+  } catch (error) {
+    if (error instanceof HoldedApiError && error.status === 404) return undefined;
+    throw error;
+  }
+}
+
 /** Reconciliación de arranque: solo consulta Holded; jamás crea compras. */
 export async function reconciliarCreacionesCompraAlArrancar() {
   if (!configuracionCreacionesCompraDurables().habilitado) {
@@ -1551,7 +1597,12 @@ export interface DocumentoHoldedEstado {
 // fecha de bastante antes de cuando se pregunta por ellas (ej. servicio de
 // junio con vencimiento en agosto, factura de limpieza del mes anterior).
 const VENTANA_DIAS_BUSQUEDA_DOCUMENTOS = 120;
-const TOLERANCIA_MONTO_DOCUMENTO = 1;
+// Identificar una factura concreta exige el total contable, no una cercanía
+// amplia. El margen anterior de 1 EUR servía para exploraciones de cashflow,
+// pero no para afirmar "es el mismo gasto": dos documentos distintos del
+// mismo proveedor podían entrar en ese rango. Se conserva solo el margen de
+// representación de un céntimo usado por el resto del motor financiero.
+const TOLERANCIA_MONTO_DOCUMENTO = 0.011;
 const MAX_PAGINAS_BUSQUEDA_DOCUMENTOS = 15;
 
 async function buscarEnEndpointDocumentos(
@@ -1561,6 +1612,9 @@ async function buscarEnEndpointDocumentos(
   // undefined = no filtra por nombre, solo por monto (ver segunda pasada en buscarDocumentosHolded).
   contactoObjetivo: string | undefined,
   monto: number | undefined,
+  moneda: string | undefined,
+  numeroDocumento: string | undefined,
+  fechaDocumento: string | undefined,
   desde: string,
   hasta: string
 ): Promise<DocumentoHoldedEstado[]> {
@@ -1613,6 +1667,12 @@ async function buscarEnEndpointDocumentos(
       if (monto !== undefined && Number.isFinite(total) && !montosCercanos(total, monto, TOLERANCIA_MONTO_DOCUMENTO)) {
         continue;
       }
+      const monedaItem = (item.currency ?? "EUR").toUpperCase().trim();
+      if (moneda && monedaItem !== moneda.toUpperCase().trim()) continue;
+      const numeroObjetivo = numeroDocumento?.trim().toUpperCase().replace(/\s+/g, " ");
+      const numeroItem = (item.document_number ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+      if (numeroObjetivo && numeroItem !== numeroObjetivo) continue;
+      if (fechaDocumento && (item.date ?? "").slice(0, 10) !== fechaDocumento.slice(0, 10)) continue;
       // Sin nombre Y sin monto no hay ningún criterio real de búsqueda — no debería llegar acá (buscarDocumentosHolded ya lo evita), pero por si acaso no se lista todo el histórico.
       if (!contactoObjetivo && monto === undefined) continue;
 
@@ -1624,7 +1684,7 @@ async function buscarEnEndpointDocumentos(
         fecha: item.date ?? "",
         dueDate: item.due_date,
         total,
-        moneda: (item.currency ?? "EUR").toUpperCase().trim(),
+        moneda: monedaItem,
         pagado: parsearMontoHolded(item.payments_total),
         pendiente: parsearMontoHolded(item.payments_pending),
         status: item.status ?? "desconocido",
@@ -1664,7 +1724,15 @@ async function buscarEnEndpointDocumentos(
  */
 export async function buscarDocumentosHolded(
   empresa: Empresa,
-  criterios: { contacto: string; monto?: number; tipo?: "gasto" | "ingreso" | "ambos"; dias?: number }
+  criterios: {
+    contacto: string;
+    monto?: number;
+    moneda?: string;
+    numeroDocumento?: string;
+    fecha?: string;
+    tipo?: "gasto" | "ingreso" | "ambos";
+    dias?: number;
+  }
 ): Promise<DocumentoHoldedEstado[]> {
   const dias = criterios.dias && criterios.dias > 0 ? criterios.dias : VENTANA_DIAS_BUSQUEDA_DOCUMENTOS;
   const ahora = new Date();
@@ -1691,7 +1759,18 @@ export async function buscarDocumentosHolded(
   const porNombre = (
     await Promise.all(
       paths.map((p) =>
-        buscarEnEndpointDocumentos(empresa, p.path, p.tipoDoc, criterios.contacto, criterios.monto, desdeStr, hastaStr)
+        buscarEnEndpointDocumentos(
+          empresa,
+          p.path,
+          p.tipoDoc,
+          criterios.contacto,
+          criterios.monto,
+          criterios.moneda,
+          criterios.numeroDocumento,
+          criterios.fecha,
+          desdeStr,
+          hastaStr
+        )
       )
     )
   ).flat();
@@ -1701,7 +1780,18 @@ export async function buscarDocumentosHolded(
   const porMonto = (
     await Promise.all(
       paths.map((p) =>
-        buscarEnEndpointDocumentos(empresa, p.path, p.tipoDoc, undefined, criterios.monto, desdeStr, hastaStr)
+        buscarEnEndpointDocumentos(
+          empresa,
+          p.path,
+          p.tipoDoc,
+          undefined,
+          criterios.monto,
+          criterios.moneda,
+          criterios.numeroDocumento,
+          criterios.fecha,
+          desdeStr,
+          hastaStr
+        )
       )
     )
   ).flat();
@@ -3486,6 +3576,7 @@ export async function crearGastoHolded(
           {
             buscar: buscarCompraPorMarcador,
             crear: crearDirecto,
+            confirmar: confirmarCompraRecienCreada,
           }
         );
         if (creacion.reutilizado) metricasCreacionesCompraDurables.reutilizadas++;
