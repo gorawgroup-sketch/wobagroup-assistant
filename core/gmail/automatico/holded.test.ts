@@ -48,6 +48,13 @@ test("consulta proveedor exacto, catálogo no paginado, memoria y cargo real", a
   assert.equal(ev.consultasCompletas, true); assert.equal(ev.contacto?.id, "p1"); assert.equal(ev.cuenta?.id, "c1");
   assert.equal(ev.permiteTicket, true); assert.equal(ev.movimientos[0].origen, "bank");
 });
+test("consulta evidencias deterministas para una clasificación media y permite reforzarla", async () => {
+  const e = escenario(); e.r.confianza = "media";
+  const ev = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(ev.consultasCompletas, true);
+  assert.equal(ev.contacto?.id, "p1");
+  assert.equal(ev.movimientos.length, 1);
+});
 test("crear usa la compra en borrador, sin IVA, con cuenta y marcador recuperable", async () => {
   const e = escenario(); e.op.compraId = await e.adapter.crear(e.op);
   assert.equal(e.op.compraId, "creada"); assert.equal(e.posts.length, 1);

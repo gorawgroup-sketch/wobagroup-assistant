@@ -15,9 +15,18 @@ test("un recibo pagado es elegible y la cuenta contable previa no es una barrera
   assert.equal(d.apto, true);
   if (d.apto) assert.equal(d.plan.cuentaId, undefined);
 });
+test("contacto exacto y cargo único con el proveedor refuerzan una confianza media hasta alta", () => {
+  const r = reciboFixture(); r.confianza = "media";
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) {
+    assert.equal(d.plan.recibo.confianza, "alta");
+    assert.equal(d.plan.evidencia.confianzaReforzada, "contacto_exacto_y_movimiento_unico_con_proveedor");
+  }
+});
 test("rechaza falta de datos, factura, contacto aproximado, empresa ajena y consultas fallidas", () => {
   const casos = [
-    () => { const r = reciboFixture(); r.confianza = "media"; return { r }; },
+    () => { const r = reciboFixture(); const e = evidenciaFixture(); r.confianza = "media"; e.movimientos[0].descripcion = "Comercio sin relación"; return { r, e }; },
     () => { const r = reciboFixture(); r.tipo = "factura"; return { r }; },
     () => { const r = reciboFixture(); r.fecha = "2026-02-31"; return { r }; },
     () => { const r = reciboFixture(); r.monto = NaN; return { r }; },
