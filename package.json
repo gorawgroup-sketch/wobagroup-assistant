@@ -6,7 +6,7 @@
   "main": "dist/src/server.js",
   "scripts": {
     "build": "tsc && node scripts/verify-email-pdf-runtime.cjs && npm --prefix frontend-cerebro ci && npm --prefix frontend-cerebro run build",
-    "start": "node dist/src/server.js",
+    "start": "node dist/scripts/start.js",
     "dev": "tsx watch src/server.ts",
     "auditoria:publicar": "node scripts/publicar-auditoria-programada.mjs",
     "mail:auto:setup": "tsx scripts/mail-auto-db.ts setup",

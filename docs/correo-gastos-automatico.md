@@ -41,7 +41,7 @@ El código se entrega desactivado por defecto; instalarlo no ejecuta gastos real
 
 1. Configurar una base PostgreSQL persistente en `WOBI_MAIL_DATABASE_URL`, con acceso restringido al servicio y copias de seguridad. Los bloqueos necesitan conexiones de sesión; no usar un pooler en modo transacción.
 2. Mantener las credenciales existentes de Gmail, Holded, Sheets y Anthropic. Configurar `GMAIL_IMPERSONATE_EMAIL` y el chat de avisos.
-3. Ejecutar `npm run mail:auto:setup` para aplicar el esquema de las tres tablas. No modifica Gmail ni Holded.
+3. El arranque del servicio aplica el esquema idempotente antes de abrir el servidor. `npm run mail:auto:setup` permite prepararlo o repararlo manualmente; ninguna de las dos rutas modifica Gmail ni Holded.
 4. Definir `WOBI_MAIL_AUTO_COMPANIES=WOBA,EWORKS,Footprint` (o la lista habilitada) y `WOBI_MAIL_AUTO_MODE=simulate`. Reiniciar el servicio y lanzar la revisión existente. La simulación analiza y audita sin reservar gastos, escribir en Holded ni marcar leído.
 5. Tras comprobar la simulación, establecer `WOBI_MAIL_AUTO_MODE=execute` y reiniciar. El cron existente y las órdenes usarán automáticamente el mismo flujo.
 
