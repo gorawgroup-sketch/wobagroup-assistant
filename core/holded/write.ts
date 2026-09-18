@@ -1,4 +1,5 @@
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -171,6 +172,18 @@ export class HoldedApiError extends Error {
 }
 
 async function holdedWriteCall(
+  empresa: Empresa,
+  method: "GET" | "POST" | "PUT",
+  path: string,
+  body?: unknown
+): Promise<unknown> {
+  return method === "GET"
+    ? holdedWriteCallSinGuardia(empresa, method, path, body)
+    : protegerEscrituraHolded(empresa, () => holdedWriteCallSinGuardia(empresa, method, path, body),
+      method === "POST" ? { path, body } : undefined);
+}
+
+async function holdedWriteCallSinGuardia(
   empresa: Empresa,
   method: "GET" | "POST" | "PUT",
   path: string,
@@ -2917,6 +2930,17 @@ async function buscarAdjuntoPorHuella(registro: RegistroAdjuntoCompra): Promise<
 }
 
 async function subirAdjuntoDirecto(
+  empresa: Empresa,
+  purchaseId: string,
+  bytes: Uint8Array,
+  fileName: string,
+  mimeType: string | undefined
+): Promise<ResultadoAdjuntoCompra> {
+  return protegerEscrituraHolded(empresa,
+    () => subirAdjuntoDirectoSinGuardia(empresa, purchaseId, bytes, fileName, mimeType));
+}
+
+async function subirAdjuntoDirectoSinGuardia(
   empresa: Empresa,
   purchaseId: string,
   bytes: Uint8Array,

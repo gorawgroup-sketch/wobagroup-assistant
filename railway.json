@@ -4,6 +4,7 @@
     "drainingSeconds": 60,
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 60,
+    "preDeployCommand": "node dist/scripts/mail-auto-db.js setup",
     "startCommand": "node dist/src/server.js"
   }
 }

@@ -11,6 +11,7 @@ const PRESUPUESTOS_POR_PROCESO: Record<string, PresupuestoSolicitudIA> = {
   clasificar_correo: { maxLlamadasPorEjecucion: 4, maxCaracteresEntrada: 160_000 },
   extraer_factura: { maxLlamadasPorEjecucion: 4, maxCaracteresEntrada: 220_000 },
   extraer_gasto_correo: { maxLlamadasPorEjecucion: 4, maxCaracteresEntrada: 180_000 },
+  correo_gastos_automatico: { maxLlamadasPorEjecucion: 1, maxCaracteresEntrada: 300_000 },
   transcribir_captura: { maxLlamadasPorEjecucion: 3, maxCaracteresEntrada: 220_000 },
   chat_conversacional: { maxLlamadasPorEjecucion: 24, maxCaracteresEntrada: 900_000 },
 };

@@ -12,6 +12,7 @@ test("los procesos documentales usan Sonnet 5 por defecto", () => {
     "clasificar_documento",
     "extraer_factura",
     "extraer_gasto_correo",
+    "correo_gastos_automatico",
     "transcribir_captura",
   ] as const) {
     assert.equal(resolverModeloDocumental(proceso, {}), MODELO_SONNET_5);
