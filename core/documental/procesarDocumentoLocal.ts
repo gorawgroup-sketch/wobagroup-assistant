@@ -1,7 +1,18 @@
-import { extraerDatosFactura } from "./extractInvoiceData";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { extraerDatosFactura, type DatosFactura } from "./extractInvoiceData";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { manejarClasificacion } from "./processClassification";
 import { sendTelegramMessage } from "../telegram/client";
+import { esArchivoEml, parsearEml } from "./parseEml";
+import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
+import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
+
+const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
+
+function sanitizarNombre(nombre: string): string {
+  return nombre.replace(/[^\w.\-]+/g, "_").slice(0, 150);
+}
 
 // image/heic e image/heif — hallazgo real de auditoría (Footprint, factura Hotel Columbus/Costa
 // Rica, 2026-09-16): una foto de recibo tomada con iPhone (formato por defecto) nunca se intentaba
@@ -49,6 +60,10 @@ export interface DocumentoLocalEntrante {
 export async function procesarDocumentoLocal(
   entrada: DocumentoLocalEntrante
 ): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "gasto_duplicado" | "archivo"> {
+  if (esArchivoEml(entrada.mimeType, entrada.nombreArchivoOriginal)) {
+    return procesarAdjuntoEml(entrada);
+  }
+
   if (entrada.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(entrada.mimeType)) {
     // Hallazgo real de auditoría (correo con 8 adjuntos de banca móvil, 6 clasificados mal como
     // "no es un gasto"): antes, CUALQUIER excepción real de extraerDatosFactura (un fallo transitorio
@@ -117,6 +132,126 @@ export async function procesarDocumentoLocal(
     mimeType: entrada.mimeType,
     nombreParaClasificar: entrada.nombreParaClasificar,
     captionEfectivo: entrada.captionEfectivo,
+    correoOrigen: entrada.correoOrigen,
+    notaAdjunto: entrada.notaAdjunto,
+  });
+  return "archivo";
+}
+
+/**
+ * Un .eml es el "sobre" de un correo entero reenviado como archivo — nunca el comprobante en sí.
+ * Se abre con parsearEml y, en orden: (1) si trae un adjunto real legible (PDF/imagen), ESE es el
+ * comprobante — se procesa recursivamente por el camino normal, con el contexto del .eml (de/asunto)
+ * como caption; (2) si no, el propio cuerpo del .eml puede describir un gasto real (ej. una
+ * confirmación de reserva de hotel en texto/HTML, sin PDF adjunto) — mismo criterio que
+ * revisarCorreoNuevo.ts usa para un correo sin adjunto: se intenta leer como gasto
+ * (extraerGastoDeCorreo) y, si lo es, se genera un comprobante visual (generarComprobantePDF, mismo
+ * motor ya usado para ese caso) antes de procesarlo; (3) si tampoco, se archiva el .eml original con
+ * el contexto ya extraído como caption enriquecido, en vez de un genérico "no sé qué es esto".
+ */
+async function procesarAdjuntoEml(
+  entrada: DocumentoLocalEntrante
+): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "gasto_duplicado" | "archivo"> {
+  let contenido: Awaited<ReturnType<typeof parsearEml>>;
+  try {
+    const bytes = await readFile(entrada.rutaLocal);
+    contenido = await parsearEml(bytes);
+  } catch (error) {
+    console.error(`[procesarDocumentoLocal] Error parseando el .eml "${entrada.nombreArchivoOriginal}" (se archiva como documento genérico):`, error);
+    await manejarClasificacion({
+      chatId: entrada.chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      nombreParaClasificar: entrada.nombreParaClasificar,
+      captionEfectivo: entrada.captionEfectivo,
+      correoOrigen: entrada.correoOrigen,
+      notaAdjunto: entrada.notaAdjunto,
+    });
+    return "archivo";
+  }
+
+  const contextoEml =
+    `Correo original reenviado como archivo .eml. De: ${contenido.de}. Asunto: ${contenido.asunto}.` +
+    (entrada.captionEfectivo ? ` ${entrada.captionEfectivo}` : "");
+
+  const adjuntoUtil = contenido.adjuntos.find((adjunto) => MIMES_LEGIBLES_COMO_FACTURA.includes(adjunto.mimeType));
+  if (adjuntoUtil) {
+    await mkdir(UPLOADS_DIR, { recursive: true });
+    const rutaInterna = join(UPLOADS_DIR, `${Date.now()}_${sanitizarNombre(adjuntoUtil.filename)}`);
+    await writeFile(rutaInterna, adjuntoUtil.content);
+    return procesarDocumentoLocal({
+      ...entrada,
+      rutaLocal: rutaInterna,
+      nombreArchivoOriginal: adjuntoUtil.filename,
+      mimeType: adjuntoUtil.mimeType,
+      nombreParaClasificar: adjuntoUtil.filename,
+      captionEfectivo: contextoEml,
+    });
+  }
+
+  let datosGasto: DatosFactura | undefined;
+  try {
+    datosGasto = await extraerGastoDeCorreo(contenido.textoPlano || contenido.html || "", {
+      de: contenido.de,
+      asunto: contenido.asunto,
+      fecha: contenido.fecha ?? "",
+    });
+  } catch (error) {
+    console.error(`[procesarDocumentoLocal] Error leyendo el .eml "${entrada.nombreArchivoOriginal}" como gasto (se archiva como documento genérico):`, error);
+  }
+
+  if (datosGasto?.esFacturaOGasto) {
+    try {
+      const bytesComprobante = await generarComprobantePDF(
+        { de: contenido.de, asunto: contenido.asunto, fecha: contenido.fecha ?? "", cuerpoCompleto: contenido.textoPlano, htmlOriginal: contenido.html },
+        datosGasto
+      );
+      await mkdir(UPLOADS_DIR, { recursive: true });
+      const nombreComprobante = `comprobante_${sanitizarNombre(entrada.nombreArchivoOriginal.replace(/\.eml$/i, ".pdf"))}`;
+      const rutaComprobante = join(UPLOADS_DIR, `${Date.now()}_${nombreComprobante}`);
+      await writeFile(rutaComprobante, bytesComprobante);
+
+      const resultado = await procesarGastoEntrante({
+        chatId: entrada.chatId,
+        rutaLocal: rutaComprobante,
+        nombreArchivoOriginal: nombreComprobante,
+        mimeType: "application/pdf",
+        datos: datosGasto,
+        deColaCorreo: entrada.correoOrigen?.deColaCorreo,
+        origenAdjuntoGmail:
+          entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
+            ? {
+                mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
+                attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail,
+                partId: entrada.correoOrigen.partId,
+              }
+            : undefined,
+        correoOrigen: entrada.correoOrigen
+          ? {
+              de: entrada.correoOrigen.de,
+              asunto: entrada.correoOrigen.asunto,
+              threadId: entrada.correoOrigen.threadId,
+              messageIdHeader: entrada.correoOrigen.messageIdHeader,
+              mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
+            }
+          : undefined,
+      });
+      if (resultado === "propuesta_enviada") return "gasto_propuesto";
+      if (resultado === "propuesta_duplicada") return "gasto_duplicado";
+      return "gasto_pendiente_datos";
+    } catch (error) {
+      console.error(`[procesarDocumentoLocal] Error generando el comprobante visual del .eml "${entrada.nombreArchivoOriginal}" (se archiva como documento genérico):`, error);
+    }
+  }
+
+  await manejarClasificacion({
+    chatId: entrada.chatId,
+    rutaLocal: entrada.rutaLocal,
+    nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+    mimeType: entrada.mimeType,
+    nombreParaClasificar: entrada.nombreParaClasificar,
+    captionEfectivo: contextoEml,
     correoOrigen: entrada.correoOrigen,
     notaAdjunto: entrada.notaAdjunto,
   });
