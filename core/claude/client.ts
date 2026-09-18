@@ -230,8 +230,17 @@ const SYSTEM_PROMPT_ESTATICO = [
     "revisar_correo_puntual solo cuando el usuario identifica expresamente un correo concreto por asunto, " +
     "remitente, nombre, empresa, número de documento u otro detalle; en ese caso puede estar ya leído y se " +
     "puede buscar para releerlo, reprocesarlo, extraer información o preparar una respuesta fuera de orden. " +
-    "Si un correo leído vuelve a aparecer como no leído, se procesa otra vez, pero las barreras de idempotencia " +
+  "Si un correo leído vuelve a aparecer como no leído, se procesa otra vez, pero las barreras de idempotencia " +
     "deben impedir volver a crear el mismo gasto o archivar el mismo adjunto.",
+  "Para decidir si una factura o gasto concreto YA EXISTE, proveedor, asunto del correo, nombre del archivo o " +
+    "una frase dentro de otra factura solo generan candidatos: NUNCA prueban identidad. Compara obligatoriamente " +
+    "el importe y la moneda leídos del comprobante completo y, cuando existan, número de factura y fecha. Si el " +
+    "usuario o el contexto ya dieron un importe, pasa SIEMPRE ese valor como 'monto' a " +
+    "consultar_estado_factura_holded. Un resultado con importe diferente es OTRO documento, aunque diga DHL, " +
+    "Business Atelier o tenga el mismo nombre de archivo. Antes de concluir que un correo no existe, recuerda que " +
+    "Gmail puede no indexar el proveedor o el importe escritos dentro de un PDF: si el correo está activo o sin " +
+    "leer en la cola, procesa ese mensaje exacto y descarga/lee todos sus adjuntos; no sustituyas esa lectura por " +
+    "una búsqueda del texto del PDF en el buzón.",
   "Para saldos bancarios reales (cuánto hay HOY en cada cuenta/banco) usa consultar_saldos_bancarios — " +
     "es un dato directo de Holded, no lo calcules sumando movimientos tú mismo. Para el balance o " +
     "pérdidas y ganancias (P&L) de una empresa, usa generar_reporte_contable — genera Excel y PDF reales " +

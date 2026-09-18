@@ -30,7 +30,10 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
     "nombre de proveedor/cliente, esta herramienta también revisa las líneas de concepto/producto de cada " +
     "documento antes de rendirse, porque el proveedor real puede ser un intermediario (ej. se compró un " +
     "producto Logitech a través de Amazon o un distribuidor, no a Logitech directamente) — el resultado " +
-    "indica claramente si la coincidencia fue por proveedor o por línea de producto.",
+    "indica claramente si la coincidencia fue por proveedor o por línea de producto. REGLA DE IDENTIDAD: " +
+    "si en el mensaje o el contexto ya se conoce el importe de la factura, debes enviar siempre 'monto'. " +
+    "Una coincidencia solo por proveedor, asunto, nombre de archivo o texto de una línea es exploratoria y " +
+    "NUNCA demuestra que sea el mismo gasto. Si los importes difieren, son documentos distintos.",
   input_schema: {
     type: "object",
     properties: {
@@ -45,7 +48,22 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
       },
       monto: {
         type: "number",
-        description: "Monto total aproximado de la factura, para acotar la búsqueda si hay varios documentos del mismo contacto. Opcional.",
+        description:
+          "Monto total de la factura. Es OBLIGATORIO cuando el usuario o el contexto ya dieron un importe; " +
+          "la identidad exige coincidencia a un céntimo y no acepta otro gasto del mismo proveedor.",
+      },
+      moneda: {
+        type: "string",
+        description:
+          "Moneda ISO del documento (EUR, USD, GBP...). Debe enviarse cuando se conoce; una igualdad numérica en otra moneda no identifica la misma factura.",
+      },
+      numeroDocumento: {
+        type: "string",
+        description: "Número exacto de factura/comprobante, si fue leído del adjunto.",
+      },
+      fecha: {
+        type: "string",
+        description: "Fecha exacta del documento en YYYY-MM-DD, si fue leída del adjunto.",
       },
       tipo: {
         type: "string",
@@ -71,16 +89,35 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
     }
 
     const monto = typeof input.monto === "number" ? input.monto : undefined;
+    const moneda = typeof input.moneda === "string" && input.moneda.trim()
+      ? input.moneda.trim().toUpperCase()
+      : undefined;
+    const numeroDocumento = typeof input.numeroDocumento === "string" && input.numeroDocumento.trim()
+      ? input.numeroDocumento.trim()
+      : undefined;
+    const fecha = typeof input.fecha === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.fecha.trim())
+      ? input.fecha.trim()
+      : undefined;
     const tipo =
       input.tipo === "gasto" || input.tipo === "ingreso" || input.tipo === "ambos"
         ? input.tipo
         : "ambos";
     const dias = typeof input.dias === "number" && input.dias > 0 ? input.dias : undefined;
 
-    const resultados = await buscarDocumentosHolded(empresa, { contacto, monto, tipo, dias });
+    const resultados = await buscarDocumentosHolded(empresa, {
+      contacto,
+      monto,
+      moneda,
+      numeroDocumento,
+      fecha,
+      tipo,
+      dias,
+    });
 
     if (resultados.length === 0) {
-      const montoTexto = monto !== undefined ? ` con monto cercano a ${monto.toFixed(2)} €` : "";
+      const montoTexto = monto !== undefined
+        ? ` con monto ${monto.toFixed(2)} ${moneda ?? "(moneda no indicada)"}`
+        : "";
       const ventanaTexto = dias ?? 120;
       return (
         `No encontré ninguna factura de "${contacto}"${montoTexto} en Holded (${empresa}) en los últimos ` +
@@ -122,6 +159,12 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
       ? `\n\n(No encontré coincidencia por nombre de "${contacto}" — esto(s) resultado(s) matchearon SOLO por el monto, confírmalo con el usuario antes de darlo por seguro.)`
       : "";
 
-    return `${resultados.length} factura(s) encontrada(s) en Holded (${empresa}) para "${contacto}":\n\n${lineas.join("\n")}${nota}`;
+    const notaSinMonto = monto === undefined
+      ? `\n\n⚠️ Esta fue una búsqueda EXPLORATORIA sin importe. Los resultados comparten proveedor o texto, pero ` +
+        `NO identifican la factura concreta. No afirmes que "ya existe" ni que es el mismo documento hasta ` +
+        `comparar importe, moneda, número de factura y fecha.`
+      : "";
+
+    return `${resultados.length} factura(s) encontrada(s) en Holded (${empresa}) para "${contacto}":\n\n${lineas.join("\n")}${nota}${notaSinMonto}`;
   },
 };

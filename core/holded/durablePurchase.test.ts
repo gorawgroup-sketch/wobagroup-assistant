@@ -57,12 +57,19 @@ class RepoMemoria implements RepositorioCreacionesCompra {
   }
 }
 
-function transporte(opciones: { encontrado?: ResultadoCreacionCompra; errorCreacion?: unknown } = {}) {
+function transporte(opciones: {
+  encontrado?: ResultadoCreacionCompra;
+  errorCreacion?: unknown;
+  confirmacion?: ResultadoCreacionCompra | null;
+  errorConfirmacion?: unknown;
+} = {}) {
   const creaciones: string[] = [];
   const busquedas: string[] = [];
-  const valor: TransporteCreacionCompra & { creaciones: string[]; busquedas: string[] } = {
+  const confirmaciones: string[] = [];
+  const valor: TransporteCreacionCompra & { creaciones: string[]; busquedas: string[]; confirmaciones: string[] } = {
     creaciones,
     busquedas,
+    confirmaciones,
     async buscar(registro) {
       busquedas.push(registro.marcador);
       return opciones.encontrado;
@@ -71,6 +78,11 @@ function transporte(opciones: { encontrado?: ResultadoCreacionCompra; errorCreac
       creaciones.push(marcador);
       if (opciones.errorCreacion) throw opciones.errorCreacion;
       return { id: "purchase-1" };
+    },
+    async confirmar(_registro, resultado) {
+      confirmaciones.push(resultado.id);
+      if (opciones.errorConfirmacion) throw opciones.errorConfirmacion;
+      return opciones.confirmacion === null ? undefined : (opciones.confirmacion ?? resultado);
     },
   };
   return valor;
@@ -94,6 +106,20 @@ test("una aprobación crea una compra una sola vez y reutiliza su id", async () 
   assert.equal(segundo.resultado.id, "purchase-1");
   assert.equal(holded.creaciones.length, 1);
   assert.equal(holded.busquedas.length, 0);
+  assert.equal(holded.confirmaciones.length, 1);
+});
+
+test("un id devuelto por POST que no existe por GET queda incierto y nunca se anuncia como creado", async () => {
+  const repo = new RepoMemoria();
+  const holded = transporte({ confirmacion: null });
+
+  await assert.rejects(ejecutar(repo, holded, DATOS, 1), CreacionCompraInciertaError);
+  await assert.rejects(ejecutar(repo, holded, DATOS, 2), CreacionCompraInciertaError);
+
+  assert.equal(holded.creaciones.length, 1, "no debe repetir el POST ambiguo");
+  assert.equal(holded.confirmaciones.length, 1, "el id del POST se comprueba por lectura directa");
+  assert.equal(holded.busquedas.length, 1, "el segundo intento solo reconcilia por lectura");
+  assert.equal([...repo.filas.values()][0]?.estado, "incierta");
 });
 
 test("dos aprobaciones distintas pueden crear dos compras legítimas aunque sus datos coincidan", async () => {

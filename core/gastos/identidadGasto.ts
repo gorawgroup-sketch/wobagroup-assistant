@@ -72,10 +72,18 @@ export function claveIdempotenciaGasto(params: {
   numeroDocumento?: string;
   huellaContenido?: string;
   fecha?: string;
+  monto?: number;
+  moneda?: string;
 }): string {
   const numero = normalizarNumeroDocumentoIdentidad(params.numeroDocumento);
+  const monto = Number.isFinite(params.monto) ? Math.abs(params.monto as number).toFixed(2) : "";
+  const moneda = params.moneda?.trim().toUpperCase() ?? "";
   const identidad = esNumeroDocumentoIdentificable(numero)
-    ? `documento\0${params.empresa}\0${params.contactId}\0${numero}\0${params.fecha?.slice(0, 10) ?? ""}`
+    // Número/proveedor/fecha sin importe y moneda no distinguen una
+    // factura rectificativa, una cuota distinta o un OCR equivocado. El caso
+    // DHL (93,49 EUR frente a 503,86 EUR) demostró que nunca se debe
+    // reutilizar una operación durable solo por compartir texto documental.
+    ? `documento\0${params.empresa}\0${params.contactId}\0${numero}\0${params.fecha?.slice(0, 10) ?? ""}\0${monto}\0${moneda}`
     : params.huellaContenido?.trim()
       ? `archivo\0${params.empresa}\0${params.huellaContenido.trim().toLowerCase()}`
       : `propuesta\0${params.empresa}\0${params.propuestaId}`;

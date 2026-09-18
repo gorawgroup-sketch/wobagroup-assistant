@@ -31,6 +31,7 @@ import type { DatosFactura } from "../documental/extractInvoiceData";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
+import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import {
   encolarCorreos,
@@ -52,7 +53,6 @@ import {
 const UMBRAL_ACTIVO_ESTANCADO_MS = 48 * 60 * 60 * 1000;
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
-
 const TEMA_AVISO_CORREO_PENDIENTE = "correo_nuevo_pendiente";
 
 function sanitizarNombre(nombre: string): string {
@@ -463,12 +463,31 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         return undefined;
       });
       if (gastoYaCreado) {
+        const estadoRegistro = await revalidarRegistroRecienteDeCorreo(gastoYaCreado).catch((error) => {
+          console.error(`[revisarCorreoNuevo] Error revalidando gasto ${gastoYaCreado.gastoId}:`, error);
+          return "no_verificable" as const;
+        });
+        if (estadoRegistro === "confirmado") {
+          await sendTelegramMessage(
+            chatId,
+            `📄 "${adjunto.filename}" (${correo.asunto}) — ya generó el gasto VERIFICADO ${gastoYaCreado.gastoId} (${gastoYaCreado.empresa}) antes, no propongo uno nuevo.`
+          ).catch(() => {});
+          if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+          continue;
+        }
+        if (estadoRegistro === "no_verificable") {
+          await sendTelegramMessage(
+            chatId,
+            `⚠️ No pude confirmar en Holded si el gasto ${gastoYaCreado.gastoId} asociado a "${adjunto.filename}" existe. ` +
+              `Por seguridad no lo doy por creado, no genero otro y dejo este correo pendiente para reintentar la verificación.`
+          ).catch(() => {});
+          continue;
+        }
         await sendTelegramMessage(
           chatId,
-          `📄 "${adjunto.filename}" (${correo.asunto}) — ya generó el gasto ${gastoYaCreado.gastoId} (${gastoYaCreado.empresa}) antes, no propongo uno nuevo.`
+          `⚠️ El registro reciente decía que "${adjunto.filename}" había creado el gasto ${gastoYaCreado.gastoId}, ` +
+            `pero Holded devolvió 404. Invalidé solo esa referencia fantasma; ahora vuelvo a descargar y leer este adjunto completo antes de proponer nada.`
         ).catch(() => {});
-        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
-        continue;
       }
 
       // Hallazgo real (caso real Carlos, 2026-09-10 — correo con 8 adjuntos, pidió revisar de nuevo
@@ -636,12 +655,31 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       return undefined;
     });
     if (gastoYaCreadoEnCuerpo) {
+      const estadoRegistro = await revalidarRegistroRecienteDeCorreo(gastoYaCreadoEnCuerpo).catch((error) => {
+        console.error(`[revisarCorreoNuevo] Error revalidando gasto ${gastoYaCreadoEnCuerpo.gastoId}:`, error);
+        return "no_verificable" as const;
+      });
+      if (estadoRegistro === "confirmado") {
+        await sendTelegramMessage(
+          chatId,
+          `📄 "${correo.asunto}" — ya generó el gasto VERIFICADO ${gastoYaCreadoEnCuerpo.gastoId} (${gastoYaCreadoEnCuerpo.empresa}) antes, no propongo uno nuevo.`
+        ).catch(() => {});
+        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+        return;
+      }
+      if (estadoRegistro === "no_verificable") {
+        await sendTelegramMessage(
+          chatId,
+          `⚠️ No pude confirmar en Holded si el gasto ${gastoYaCreadoEnCuerpo.gastoId} asociado a este correo existe. ` +
+            `Por seguridad no lo doy por creado, no genero otro y dejo el correo pendiente.`
+        ).catch(() => {});
+        return;
+      }
       await sendTelegramMessage(
         chatId,
-        `📄 "${correo.asunto}" — ya generó el gasto ${gastoYaCreadoEnCuerpo.gastoId} (${gastoYaCreadoEnCuerpo.empresa}) antes, no propongo uno nuevo.`
+        `⚠️ El registro reciente de este correo apuntaba al gasto ${gastoYaCreadoEnCuerpo.gastoId}, pero Holded devolvió 404. ` +
+          `Invalidé solo esa referencia fantasma y vuelvo a leer el cuerpo completo antes de proponer nada.`
       ).catch(() => {});
-      if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
-      return;
     }
 
     try {

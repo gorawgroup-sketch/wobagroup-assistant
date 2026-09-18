@@ -1635,6 +1635,8 @@ async function crearGastoYReportar(
           numeroDocumento: propuesta.numeroDocumento,
           huellaContenido: propuesta.huellaContenido,
           fecha: propuesta.fecha,
+          monto: propuesta.monto,
+          moneda: propuesta.moneda,
         }),
         proceso: "gasto_aprobado",
       }
