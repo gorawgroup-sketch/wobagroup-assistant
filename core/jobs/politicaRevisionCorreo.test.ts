@@ -7,6 +7,7 @@ import {
   CRON_CORREO_INFORME_TARDE,
   debeEjecutarAnalisisAutomatico,
   debePublicarInformeCorreo,
+  lecturasCorreoAutomaticasHabilitadas,
 } from "./politicaRevisionCorreo";
 
 test("la programación de correo usa expresiones cron válidas y separa los dos informes", () => {
@@ -16,6 +17,14 @@ test("la programación de correo usa expresiones cron válidas y separa los dos 
   assert.equal(CRON_CORREO_HABIL_SILENCIOSO, "0 0,2,4,6,8,12,14,16,20,22 * * 1-5");
   assert.equal(CRON_CORREO_INFORME_MANANA, "0 10 * * *");
   assert.equal(CRON_CORREO_INFORME_TARDE, "0 18 * * *");
+});
+
+test("las lecturas automáticas se pueden apagar sin bloquear las órdenes manuales", () => {
+  assert.equal(lecturasCorreoAutomaticasHabilitadas({}), true);
+  assert.equal(lecturasCorreoAutomaticasHabilitadas({ WOBI_MAIL_AUTOMATIC_READS_ENABLED: "false" }), false);
+  assert.equal(lecturasCorreoAutomaticasHabilitadas({ WOBI_MAIL_AUTOMATIC_READS_ENABLED: "0" }), false);
+  assert.equal(lecturasCorreoAutomaticasHabilitadas({ WOBI_MAIL_AUTOMATIC_READS_ENABLED: "TRUE" }), true);
+  assert.equal(debeEjecutarAnalisisAutomatico({ origen: "manual" }), true);
 });
 
 test("solo los informes y las órdenes manuales ejecutan análisis automático con IA", () => {

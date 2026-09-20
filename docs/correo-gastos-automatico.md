@@ -49,6 +49,8 @@ El código se entrega desactivado por defecto; instalarlo no ejecuta gastos real
 
 `npm run mail:auto:status` muestra modo, empresas y operaciones por estado. `WOBI_MAIL_AUTO_KILL_SWITCH=true` desactiva el pase automático; tras cambiar el entorno hay que reiniciar el proceso. No elimina las reservas ni oculta operaciones incompletas.
 
+`WOBI_MAIL_AUTOMATIC_READS_ENABLED=false` desactiva todas las lecturas de Gmail en segundo plano, incluidas la revisión programada, las conversaciones automáticas y el vigilante de correo. `/revisarcorreo` y `/admin/run-gmail-check` siguen disponibles y ejecutan el flujo completo únicamente bajo pedido.
+
 Si una operación continúa incierta, revisar su evento, etiquetas y estado real en Holded antes de intervenir. No borrar reservas ni cambiarla a rechazada para forzar un reintento de un POST que pudo ejecutarse. Resolver primero la operación externa y reanudar la revisión; la recuperación de resultados confirmados es por lectura.
 
 ## Verificación
