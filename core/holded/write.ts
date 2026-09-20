@@ -1163,6 +1163,10 @@ export interface PurchaseCandidato {
   cuentaBancaria?: string;
   /** Confianza de la evidencia compuesta. */
   nivelCoincidencia?: "exacta" | "probable";
+  /** El gasto ya existe; esta opción solo reintenta/verifica su soporte durable. */
+  soportePendiente?: boolean;
+  /** El gasto y su soporte ya existen; esta opción retoma únicamente la conciliación. */
+  conciliacionPendiente?: boolean;
 }
 
 /**
@@ -2826,6 +2830,16 @@ export async function buscarGastosSinComprobante(
   }
 
   return { sinComprobante, totalRevisados: revisados.length, limiteAlcanzado };
+}
+
+/** Verificación puntual y de solo lectura del soporte de una compra ya creada. */
+export async function compraTieneComprobante(empresa: Empresa, purchaseId: string): Promise<boolean> {
+  const attachments = (await holdedWriteCall(
+    empresa,
+    "GET",
+    `/purchases/${encodeURIComponent(purchaseId)}/attachments`
+  )) as { items?: unknown[] };
+  return (attachments.items ?? []).length > 0;
 }
 
 export interface CompraDelDia {

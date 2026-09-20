@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/sheetsKeyValueStore";
+import { conMutex } from "../utils/asyncMutex";
 import type { TipoCorreo } from "./classifyEmail";
 
 /** Sheets, no un archivo local — ver core/jobs/cashflowAnnotationActionStore.ts para el bug real que esto corrige. */
@@ -48,6 +49,7 @@ const HEADERS = [
 ];
 const NUM_COLS = HEADERS.length;
 const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas
+const MUTEX_TRANSICIONES = "emailActionStore:transiciones";
 
 function filaAObjeto(valores: string[]): PropuestaAccionCorreo {
   return {
@@ -90,7 +92,7 @@ async function leerVigentes(): Promise<{ rowIndex: number; propuesta: PropuestaA
   const ahora = Date.now();
   return filas
     .map((f) => ({ rowIndex: f.rowIndex, propuesta: filaAObjeto(f.valores) }))
-    .filter((f) => ahora - f.propuesta.creadoEn <= TTL_MS);
+    .filter((f) => f.propuesta.deColaCorreo || ahora - f.propuesta.creadoEn <= TTL_MS);
 }
 
 export async function crearPropuestaAccionCorreo(
@@ -119,11 +121,38 @@ export async function obtenerPropuestasAccionCorreoPorChat(chatId: number): Prom
   return vigentes.filter((f) => f.propuesta.chatId === chatId).map((f) => f.propuesta);
 }
 
-/** Devuelve la propuesta y la elimina (se llama al descartar o proceder). */
+/**
+ * Devuelve la propuesta y la elimina para reclamarla durante un callback.
+ *
+ * El llamador DEBE restaurarla con `restaurarPropuestaAccionCorreo` si el
+ * trabajo terminal falla. El mutex cubre el read+delete completo: un doble
+ * toque en Telegram dentro del proceso no puede reclamar dos veces la misma
+ * acción ni borrar por desplazamiento la fila contigua.
+ */
 export async function consumirPropuestaAccionCorreo(id: string): Promise<PropuestaAccionCorreo | undefined> {
-  const vigentes = await leerVigentes();
-  const fila = vigentes.find((f) => f.propuesta.id === id);
-  if (!fila) return undefined;
-  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
-  return fila.propuesta;
+  return conMutex(MUTEX_TRANSICIONES, async () => {
+    const vigentes = await leerVigentes();
+    const fila = vigentes.find((f) => f.propuesta.id === id);
+    if (!fila) return undefined;
+    await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+    return fila.propuesta;
+  });
+}
+
+/**
+ * Devuelve al store una propuesta reclamada cuyo trabajo no llegó a éxito.
+ * Conserva el mismo id para que los botones publicados sigan siendo válidos
+ * y renueva el TTL para dar una ventana real de reintento tras el fallo.
+ */
+export async function restaurarPropuestaAccionCorreo(propuesta: PropuestaAccionCorreo): Promise<void> {
+  await conMutex(MUTEX_TRANSICIONES, async () => {
+    const vigentes = await leerVigentes();
+    if (vigentes.some((fila) => fila.propuesta.id === propuesta.id)) return;
+    await agregarFila(
+      TAB_NAME,
+      NUM_COLS,
+      HEADERS,
+      objetoAFila({ ...propuesta, creadoEn: Date.now() })
+    );
+  });
 }

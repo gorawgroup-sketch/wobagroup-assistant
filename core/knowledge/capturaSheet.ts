@@ -1,9 +1,12 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_capturas";
-const HEADERS = ["fecha", "autor", "texto", "empresas"];
+// `idempotencyKey` va al final para que las capturas históricas A:D sigan
+// leyéndose sin migración destructiva.
+const HEADERS = ["fecha", "autor", "texto", "empresas", "idempotencyKey"];
 
 /**
  * Conocimiento capturado por el equipo (mensajes con la palabra CAPTURA), en
@@ -61,7 +64,7 @@ async function ensureTab(): Promise<void> {
   // queda migrada sola en el siguiente registro, sin script aparte.
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:D1`,
+    range: `${TAB_NAME}!A1:E1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -76,19 +79,79 @@ async function ensureTab(): Promise<void> {
  * avisar explícitamente si la captura NO se guardó, en vez de confirmar
  * "guardado" sin haberlo verificado.
  */
-export async function registrarCaptura(textoCompleto: string, autor?: string, empresas?: string[]): Promise<void> {
+export interface DependenciasRegistroCapturaIdempotente {
+  existe: () => Promise<boolean>;
+  anexar: () => Promise<void>;
+}
+
+/**
+ * Ejecuta un append idempotente y confirma por lectura un ACK incierto. La
+ * clave de mutex evita dos appends simultáneos dentro del proceso; la lectura
+ * por clave permite reanudar tras un reinicio sin duplicar conocimiento.
+ */
+export async function registrarCapturaIdempotenteUnaVez(
+  idempotencyKey: string,
+  dependencias: DependenciasRegistroCapturaIdempotente,
+  claveMutex = `capturaSheet:idempotencia:${idempotencyKey}`
+): Promise<"creada" | "existente"> {
+  return conMutex(claveMutex, async () => {
+    if (await dependencias.existe()) return "existente";
+    try {
+      await dependencias.anexar();
+    } catch (error) {
+      // Un timeout puede llegar después de que Sheets sí aplicó el append.
+      // Verificar antes de propagar evita que el reintento cree otra fila.
+      if (await dependencias.existe().catch(() => false)) return "existente";
+      throw error;
+    }
+    if (!(await dependencias.existe())) {
+      throw new Error("Sheets no confirmó la captura después de escribirla.");
+    }
+    return "creada";
+  });
+}
+
+async function existeCapturaConClave(idempotencyKey: string): Promise<boolean> {
+  const resp = await getClient().spreadsheets.values.get({
+    spreadsheetId: assertSheetId(),
+    range: `${TAB_NAME}!E2:E10000`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+  });
+  return (resp.data.values ?? []).some((fila) => String(fila[0] ?? "") === idempotencyKey);
+}
+
+export async function registrarCaptura(
+  textoCompleto: string,
+  autor?: string,
+  empresas?: string[],
+  idempotencyKey?: string
+): Promise<void> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
 
   const fecha = new Date().toISOString();
+  const clave = idempotencyKey?.trim() || undefined;
+  const anexar = async () => {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A:E`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: {
+        values: [[fecha, autor ?? "", textoCompleto.trim(), (empresas ?? []).join(", "), clave ?? ""]],
+      },
+    });
+  };
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:D`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [[fecha, autor ?? "", textoCompleto.trim(), (empresas ?? []).join(", ")]] },
+  if (!clave) {
+    await anexar();
+    return;
+  }
+
+  await registrarCapturaIdempotenteUnaVez(clave, {
+    existe: () => existeCapturaConClave(clave),
+    anexar,
   });
 }
 
@@ -111,7 +174,7 @@ export async function obtenerCapturasFormateadas(): Promise<string | null> {
 
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A2:D10000`,
+      range: `${TAB_NAME}!A2:E10000`,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
 
@@ -144,7 +207,7 @@ export async function obtenerCapturasCrudas(): Promise<
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:D10000`,
+    range: `${TAB_NAME}!A2:E10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 

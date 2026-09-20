@@ -1,4 +1,4 @@
-import { consumirResolucionContactoPorChat, guardarResolucionContacto } from "../gastos/contactoResolucionStore";
+import { consumirResolucionContactoPorChat, restaurarResolucionContacto } from "../gastos/contactoResolucionStore";
 import { buscarContactoHolded } from "../holded/write";
 import { procesarGastoConContactoResuelto } from "../gastos/gastoCallbackHandler";
 import { sendTelegramMessage } from "../telegram/client";
@@ -43,14 +43,14 @@ export const reintentarContactoPendienteTool: ToolDefinition = {
       contacto = await buscarContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor, resolucion.propuesta.moneda);
     } catch (error) {
       // Se reinserta el pendiente para no perderlo por un error transitorio (ej. Holded caído un momento).
-      await guardarResolucionContacto({ ...resolucion }).catch(() => {});
+      await restaurarResolucionContacto(resolucion).catch(() => {});
       const message = error instanceof Error ? error.message : String(error);
       return `Error consultando Holded: ${message}. La pregunta sigue pendiente, se puede reintentar.`;
     }
 
     if (!contacto) {
       // Sigue sin existir — se reinserta el pendiente para poder reintentar de nuevo más tarde.
-      await guardarResolucionContacto({ ...resolucion }).catch((error) =>
+      await restaurarResolucionContacto(resolucion).catch((error) =>
         console.error("[reintentarContactoPendiente] Error reinsertando el pendiente:", error)
       );
       return (
@@ -60,8 +60,18 @@ export const reintentarContactoPendienteTool: ToolDefinition = {
       );
     }
 
-    await sendTelegramMessage(chatId, `🔄 Encontré "${contacto.name}" — procesando "${resolucion.propuesta.proveedor}"...`);
-    await procesarGastoConContactoResuelto(resolucion, { id: contacto.id, name: contacto.name ?? resolucion.propuesta.proveedor });
+    await sendTelegramMessage(chatId, `🔄 Encontré "${contacto.name}" — procesando "${resolucion.propuesta.proveedor}"...`).catch(
+      (error) => console.error("[reintentarContactoPendiente] No se pudo mostrar el progreso (no crítico):", error)
+    );
+    try {
+      await procesarGastoConContactoResuelto(resolucion, { id: contacto.id, name: contacto.name ?? resolucion.propuesta.proveedor });
+    } catch (error) {
+      await restaurarResolucionContacto(resolucion).catch((errorRestaurando) =>
+        console.error("[reintentarContactoPendiente] Error restaurando la resolución:", errorRestaurando)
+      );
+      const message = error instanceof Error ? error.message : String(error);
+      return `No pude completar el gasto (${message}). La selección de proveedor sigue pendiente y se puede reintentar.`;
+    }
 
     return (
       `Contacto encontrado ("${contacto.name}") y gasto procesado — el resultado real ya se le mostró al ` +

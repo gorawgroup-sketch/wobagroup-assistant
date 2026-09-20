@@ -35,3 +35,14 @@ test("capturar sin referencia usa el no leído más antiguo y no marca leído an
   const marcarLeido = fuente.indexOf("marcarHiloComoLeido(resumen.threadId)");
   assert.ok(sinAdjuntos >= 0 && marcarLeido > sinAdjuntos, "el marcado como leído debe ocurrir solo después de comprobar que no hay decisiones pendientes");
 });
+
+test("la revisión nunca continúa ni cierra un correo si falló su lectura completa o su evaluación como gasto", async () => {
+  const fuente = await readFile(rutaJob, "utf8");
+  const inicio = fuente.indexOf("async function procesarCorreoLocalizado");
+  const fin = fuente.indexOf("export async function procesarSiguienteCorreoActivo", inicio);
+  const flujo = fuente.slice(inicio, fin);
+
+  assert.doesNotMatch(flujo, /Error leyendo el cuerpo completo[\s\S]{0,300}return ""/);
+  assert.match(flujo, /cuerpoCompleto = await obtenerCuerpoCompletoCorreo\(correo\.id\)[\s\S]{0,500}throw error/);
+  assert.match(flujo, /gastoDetectado = await extraerGastoDeCorreo[\s\S]{0,700}No se pudo determinar si[\s\S]{0,300}throw error/);
+});

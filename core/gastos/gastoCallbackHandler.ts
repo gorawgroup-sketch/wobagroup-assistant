@@ -1,4 +1,5 @@
 import { unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { conMutex } from "../utils/asyncMutex";
 import {
   answerCallbackQuery,
@@ -11,6 +12,7 @@ import {
 import type { InlineKeyboardButton } from "../telegram/types";
 import {
   consumirPropuestaGasto,
+  restaurarPropuestaGasto,
   obtenerPropuestaGasto,
   crearPropuestaGasto,
   actualizarMessageIdGasto,
@@ -46,16 +48,27 @@ import { guardarPendienteSeleccionGasto, type PendienteSeleccionGasto } from "./
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { registrarAliasProveedor } from "./proveedorAliasSheet";
 import { registrarAsignacionCuenta } from "../holded/asignacionCuentaLogSheet";
-import { registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
+import { marcarGastoDesdeCorreoCompletado, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
 import {
   guardarResolucionContacto,
   consumirResolucionContacto,
+  restaurarResolucionContacto,
   actualizarMessageIdResolucionContacto,
   type AlternativaContacto,
   type ResolucionContactoPendiente,
 } from "./contactoResolucionStore";
-import { guardarConciliacionPendiente, consumirConciliacionPendiente } from "./conciliacionPendienteStore";
-import { guardarConciliacionAmbiguaPendiente, consumirConciliacionAmbiguaPendiente } from "./conciliacionAmbiguaPendienteStore";
+import {
+  guardarConciliacionPendiente,
+  consumirConciliacionPendiente,
+  restaurarConciliacionPendiente,
+  type ConciliacionPendiente,
+} from "./conciliacionPendienteStore";
+import {
+  guardarConciliacionAmbiguaPendiente,
+  consumirConciliacionAmbiguaPendiente,
+  restaurarConciliacionAmbiguaPendiente,
+  type ConciliacionAmbiguaPendiente,
+} from "./conciliacionAmbiguaPendienteStore";
 import {
   buscarContactoHolded,
   buscarContactosParecidos,
@@ -77,6 +90,9 @@ import {
   CreacionContactoInciertaError,
   CreacionCompraInciertaError,
   esArchivoLocalInexistente,
+  compraTieneComprobante,
+  combinarTagsGastoAprendidos,
+  inferirCuentaGasto,
   ContactoNoEncontradoError,
   FechaBloqueadaError,
   PosibleDuplicadoGastoError,
@@ -90,14 +106,26 @@ import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { reDescargarAdjuntoSiFalta, regenerarComprobanteDesdeCuerpoSiFalta } from "../gmail/reDescargarAdjunto";
 import { generarBorradorYOfrecer } from "../gmail/emailCallbackHandler";
+import {
+  obtenerBorradoresCorreoPorChat,
+  seleccionarBorradorCorrelacionado,
+  vincularBorradorACola,
+} from "../gmail/emailDraftStore";
+import {
+  incrementarPendientesActivo,
+  revertirIncrementoPendientesActivo,
+  type IdentidadCorreoCola,
+} from "../gmail/colaRevisionStore";
 import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
+import { obtenerPendientesCapturaEmpresaPorChat } from "../knowledge/pendienteCapturaEmpresaStore";
 import { askClaude, interpretarCorreccionGasto, type CorreccionGasto } from "../claude/client";
 import type { Empresa } from "../holded/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import type { LineaFactura } from "../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { claveIdempotenciaGasto } from "./identidadGasto";
+import { conciliacionRequiereRevision } from "../holded/durableBankReconciliation";
 
 /**
  * Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE PANAMA
@@ -147,6 +175,329 @@ function resumenTextoPropuestaGasto(propuesta: PropuestaGasto): string {
   return `📄 ${propuesta.proveedor} — ${propuesta.monto.toFixed(2)} ${propuesta.moneda} (${propuesta.fecha}) — ${propuesta.concepto}`;
 }
 
+export interface DependenciasAccionLateralGasto {
+  yaPublicada: () => Promise<boolean>;
+  reservar: (identidad: Required<IdentidadCorreoCola>) => Promise<boolean>;
+  publicar: (identidad?: Required<IdentidadCorreoCola>) => Promise<boolean>;
+  compensar: (identidad: Required<IdentidadCorreoCola>) => Promise<boolean>;
+}
+
+/**
+ * Publica una decisión lateral (borrador/captura) con una unidad propia de
+ * la cola. El mutex y la consulta durable previa hacen que dos callbacks del
+ * mismo botón converjan en una sola publicación y un solo incremento.
+ */
+export async function ejecutarAccionLateralGastoConReserva(
+  clave: string,
+  deColaCorreo: boolean,
+  identidad: IdentidadCorreoCola | undefined,
+  dependencias: DependenciasAccionLateralGasto
+): Promise<boolean> {
+  const threadId = identidad?.threadId?.trim();
+  const mensajeId = identidad?.mensajeId?.trim();
+  const identidadExacta = deColaCorreo && threadId && mensajeId ? { threadId, mensajeId } : undefined;
+  if (deColaCorreo && !identidadExacta) {
+    console.error("[gastoCallbackHandler] Se rechazó una acción lateral de cola sin identidad exacta.");
+    return false;
+  }
+
+  return conMutex(`gasto:accion-lateral:${clave}`, async () => {
+    if (await dependencias.yaPublicada()) return true;
+
+    let reservada = false;
+    try {
+      if (identidadExacta) {
+        reservada = await dependencias.reservar(identidadExacta);
+        if (!reservada) {
+          console.error("[gastoCallbackHandler] El correo dejó de ser el activo antes de reservar la acción lateral.");
+          return false;
+        }
+      }
+
+      const publicada = await dependencias.publicar(identidadExacta);
+      if (publicada) return true;
+
+      if (reservada && identidadExacta) {
+        const compensada = await dependencias.compensar(identidadExacta);
+        if (!compensada) {
+          console.error("[gastoCallbackHandler] La acción lateral falló y la cola no confirmó la compensación de su reserva.");
+        }
+      }
+      return false;
+    } catch (error) {
+      if (reservada && identidadExacta) {
+        try {
+          const compensada = await dependencias.compensar(identidadExacta);
+          if (!compensada) {
+            console.error("[gastoCallbackHandler] La cola no confirmó la compensación tras fallar la acción lateral.");
+          }
+        } catch (errorCompensando) {
+          console.error("[gastoCallbackHandler] No se pudo compensar la reserva de la acción lateral fallida:", errorCompensando);
+        }
+      }
+      throw error;
+    }
+  });
+}
+
+function identidadCorreoDePropuestaGasto(propuesta: PropuestaGasto): Required<IdentidadCorreoCola> | undefined {
+  const threadId = propuesta.correoOrigen?.threadId?.trim();
+  const mensajeId = propuesta.correoOrigen?.mensajeIdGmail?.trim();
+  return threadId && mensajeId ? { threadId, mensajeId } : undefined;
+}
+
+export const TOLERANCIA_TOTAL_FISCAL_GASTO = 0.05;
+
+export class DescuadreFiscalGastoError extends Error {
+  constructor(
+    public readonly totalFiscal: number,
+    public readonly totalDocumento: number,
+    public readonly moneda: string
+  ) {
+    super(
+      `El total fiscal calculado (${totalFiscal.toFixed(2)} ${moneda}) difiere del total del documento ` +
+        `(${totalDocumento.toFixed(2)} ${moneda}) por más de ${TOLERANCIA_TOTAL_FISCAL_GASTO.toFixed(2)}. ` +
+        "No se creó ni se concilió el gasto; corrige las bases, impuestos o retenciones antes de reintentar."
+    );
+    this.name = "DescuadreFiscalGastoError";
+  }
+}
+
+export class CuentaContableNoInferidaError extends Error {
+  constructor(public readonly empresa: Empresa, public readonly proveedor: string) {
+    super(
+      `No pude inferir con el aprendizaje existente una cuenta contable segura para "${proveedor}" en ${empresa}. ` +
+        "El gasto queda pendiente y no se usará la cuenta genérica de Holded."
+    );
+    this.name = "CuentaContableNoInferidaError";
+  }
+}
+
+/**
+ * Calcula y valida el total que Holded obtendrá de las líneas fiscales.
+ * La validación ocurre antes de cualquier POST o conciliación: avisar después
+ * de crear dejaba un documento contablemente incorrecto que ya no se podía
+ * deshacer de forma segura desde el callback.
+ */
+export function validarTotalFiscalGasto(
+  propuesta: Pick<PropuestaGasto, "monto" | "moneda" | "lineas">
+): number {
+  // Sin desglose fiscal, la única línea que se enviará usa el total del
+  // documento como base a 0 %, de modo que no existe un descuadre que validar.
+  if (propuesta.lineas.length === 0) return propuesta.monto;
+
+  const totalFiscal = propuesta.lineas.reduce(
+    (acc, linea) => acc + linea.base * (1 + linea.tipoIvaPct / 100 - (linea.retencionPct ?? 0) / 100),
+    0
+  );
+  const diferencia = Math.abs(totalFiscal - propuesta.monto);
+  // El epsilon evita que 0,05 binario se convierta accidentalmente en
+  // 0,05000000000001. La regla funcional sigue siendo estrictamente > 0,05.
+  if (diferencia - TOLERANCIA_TOTAL_FISCAL_GASTO > Number.EPSILON * 100) {
+    throw new DescuadreFiscalGastoError(totalFiscal, propuesta.monto, propuesta.moneda);
+  }
+  return totalFiscal;
+}
+
+export interface CambiosClasificacionGasto {
+  empresa: Empresa;
+  concepto: string;
+  /** Nombre corregido o contacto exacto elegido para consultar el aprendizaje. */
+  proveedor?: string;
+  /** Persona corregida/confirmada por el documento u operador. */
+  personaAsociada?: string;
+  contextoDeViaje?: boolean;
+  reciboSimplificado?: boolean;
+  /** Una corrección explícita siempre obliga a consultar de nuevo el aprendizaje. */
+  forzarReinferencia?: boolean;
+}
+
+export interface DependenciasReinferenciaGasto {
+  inferirCuenta: typeof inferirCuentaGasto;
+  combinarTags: typeof combinarTagsGastoAprendidos;
+}
+
+const CATEGORIAS_CONTABLES_GASTO = new Set([
+  "suscripcion", "alimentacion", "transporte", "taxi", "tren", "avion", "alquilercoche",
+  "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche",
+]);
+
+function esTagCategoriaContable(tag: string): boolean {
+  const normalizado = tag.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return CATEGORIAS_CONTABLES_GASTO.has(normalizado);
+}
+
+/**
+ * Construye la única propuesta que puede llegar a Holded después de una
+ * corrección. Reutiliza el mismo aprendizaje del flujo uno a uno y falla
+ * cerrado si no existe una cuenta segura; nunca cae en el default de Holded.
+ */
+export async function prepararPropuestaFinalGasto(
+  propuesta: PropuestaGasto,
+  cambios: CambiosClasificacionGasto,
+  dependencias: DependenciasReinferenciaGasto = {
+    inferirCuenta: inferirCuentaGasto,
+    combinarTags: combinarTagsGastoAprendidos,
+  }
+): Promise<PropuestaGasto> {
+  const concepto = cambios.concepto.trim() || propuesta.concepto;
+  const proveedorAprendizaje = cambios.proveedor?.trim() || propuesta.proveedor;
+  const cambioSemantico =
+    cambios.forzarReinferencia === true ||
+    cambios.empresa !== propuesta.empresa ||
+    concepto.toLowerCase() !== propuesta.concepto.trim().toLowerCase() ||
+    proveedorAprendizaje.toLowerCase() !== propuesta.proveedor.trim().toLowerCase() ||
+    Boolean(cambios.personaAsociada);
+
+  let cuentaId = propuesta.cuentaId;
+  let tagsAprendidos = propuesta.cuentaTags ?? [];
+  if (cambioSemantico || !cuentaId) {
+    // Una categoría anterior pertenece a la clasificación que se acaba de
+    // invalidar. Solo se conservan tags personales/no contables; la nueva
+    // categoría debe venir del documento corregido o de la reinferencia.
+    tagsAprendidos = cambioSemantico
+      ? tagsAprendidos.filter((tag) => !esTagCategoriaContable(tag))
+      : tagsAprendidos;
+    const sugerencia = await dependencias.inferirCuenta(cambios.empresa, {
+      proveedor: proveedorAprendizaje,
+      concepto,
+      personaAsociada: cambios.personaAsociada,
+      contextoDeViaje: cambios.contextoDeViaje,
+      reciboSimplificado: cambios.reciboSimplificado,
+    });
+    cuentaId = sugerencia?.accountId;
+    tagsAprendidos = [...tagsAprendidos, ...(sugerencia?.tags ?? [])];
+  }
+
+  if (!cuentaId) {
+    throw new CuentaContableNoInferidaError(cambios.empresa, proveedorAprendizaje);
+  }
+
+  const cuentaTags = dependencias.combinarTags(
+    concepto,
+    proveedorAprendizaje,
+    cambios.personaAsociada,
+    tagsAprendidos
+  );
+  return {
+    ...propuesta,
+    empresa: cambios.empresa,
+    concepto,
+    cuentaId,
+    cuentaTags,
+  };
+}
+
+async function reponerPropuestaParaReintento(
+  propuesta: PropuestaGasto,
+  mensaje: string,
+  candidatoSeguimiento?: PurchaseCandidato
+): Promise<void> {
+  const restaurada = await restaurarPropuestaGasto({
+    ...propuesta,
+    candidatos: candidatoSeguimiento ? [candidatoSeguimiento] : propuesta.candidatos,
+    seleccionAcciones: [],
+  });
+  const teclado = construirTecladoGasto(restaurada, opcionesTecladoDesdePropuesta(restaurada));
+  try {
+    await editTelegramMessage(restaurada.chatId, restaurada.messageId, mensaje, teclado);
+  } catch (errorEdicion) {
+    console.error("[gastoCallbackHandler] No se pudo reponer el teclado en el mensaje original; se enviara uno nuevo:", errorEdicion);
+    const messageId = await sendTelegramMessageWithButtons(restaurada.chatId, mensaje, teclado);
+    await actualizarMessageIdGasto(restaurada.id, messageId);
+  }
+}
+
+async function reponerVerificacionCreacionIncierta(propuesta: PropuestaGasto, mensaje: string): Promise<void> {
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
+  const teclado = [[{
+    text: "🔎 Verificar estado sin repetir la creación",
+    callback_data: `gasto_nuevo:${restaurada.id}`,
+  }]];
+  try {
+    await editTelegramMessage(restaurada.chatId, restaurada.messageId, mensaje, teclado);
+  } catch (errorEdicion) {
+    console.error("[gastoCallbackHandler] No se pudo publicar la verificación incierta en el mensaje original; se enviara uno nuevo:", errorEdicion);
+    const messageId = await sendTelegramMessageWithButtons(restaurada.chatId, mensaje, teclado);
+    await actualizarMessageIdGasto(restaurada.id, messageId);
+  }
+}
+
+/**
+ * Ejecuta el cierre técnico en el único orden seguro: memoria durable,
+ * avance/marcado READ de la identidad exacta y, al final, render de Telegram.
+ * Si falla cualquiera de los dos primeros pasos, `recuperar` debe reponer la
+ * misma entidad consumida con una acción de cierre únicamente; nunca repite
+ * la creación, el adjunto ni la conciliación financiera ya confirmados.
+ */
+export async function finalizarGastoCorreoAntesDeRender(
+  persistirCierre: () => Promise<unknown>,
+  avanzarCorreo: () => Promise<boolean>,
+  recuperar: (error: unknown) => Promise<void>,
+  renderizar: () => Promise<unknown>
+): Promise<boolean> {
+  try {
+    await persistirCierre();
+    const avanceConfirmado = await avanzarCorreo();
+    if (!avanceConfirmado) {
+      throw new Error("La cola no confirmó el cierre; conserva el reintento durable aunque también haya programado un reintento técnico.");
+    }
+  } catch (error) {
+    console.error("[gastoCallbackHandler] No se pudo cerrar durablemente el correo de gasto; se repone una acción de cierre:", error);
+    try {
+      await recuperar(error);
+    } catch (errorRecuperacion) {
+      console.error("[gastoCallbackHandler] Tampoco se pudo publicar la recuperación del cierre; el store durable conserva el intento cuando alcanzó a restaurarse:", errorRecuperacion);
+    }
+    return false;
+  }
+
+  try {
+    await renderizar();
+  } catch (error) {
+    // La contabilidad y Gmail ya quedaron cerrados. Un fallo visual nunca
+    // debe reabrir ni repetir una escritura financiera confirmada.
+    console.error("[gastoCallbackHandler] El cierre terminó, pero no se pudo reflejar en Telegram (no crítico):", error);
+  }
+  return true;
+}
+
+function botonesResolucionContacto(resolucion: ResolucionContactoPendiente): InlineKeyboardButton[][] {
+  const botones: InlineKeyboardButton[][] = resolucion.alternativas.map((alternativa, indice) => [{
+    text: `✅ ${alternativa.contactName}`,
+    callback_data: `gasto_usarcontacto:${resolucion.id}:${indice}`,
+  }]);
+  if (resolucion.propuesta.proveedor.trim()) {
+    botones.push([{
+      text: `🆕 Crear contacto nuevo: "${resolucion.propuesta.proveedor}"`,
+      callback_data: `gasto_crearcontactonuevo:${resolucion.id}`,
+    }]);
+  }
+  botones.push([{
+    text: "🆗 Crear sin proveedor real",
+    callback_data: `gasto_crearsinproveedor:${resolucion.id}`,
+  }]);
+  return botones;
+}
+
+/** Repone el mismo id y deja el render de Telegram como best-effort. */
+export async function reponerResolucionContactoTrasFallo(
+  resolucion: ResolucionContactoPendiente,
+  aviso: string,
+  restaurar: (resolucion: ResolucionContactoPendiente) => Promise<ResolucionContactoPendiente> = restaurarResolucionContacto,
+  renderizar: (
+    resolucion: ResolucionContactoPendiente,
+    aviso: string,
+    botones: InlineKeyboardButton[][]
+  ) => Promise<unknown> = (restaurada, texto, botones) =>
+    editTelegramMessage(restaurada.chatId, restaurada.messageId, texto, botones)
+): Promise<void> {
+  const restaurada = await restaurar(resolucion);
+  await renderizar(restaurada, aviso, botonesResolucionContacto(restaurada)).catch((error) =>
+    console.error("[gastoCallbackHandler] La resolución se restauró, pero no se pudo repintar Telegram (no crítico):", error)
+  );
+}
+
 /**
  * Adjunta el comprobante a un gasto de Holded y borra la copia local
  * temporal (solo si tuvo éxito).
@@ -167,9 +518,13 @@ function resumenTextoPropuestaGasto(propuesta: PropuestaGasto): string {
  * comprobante (ver revisarGastosSinComprobante.ts) en vez de darse por
  * cerrado sin serlo.
  */
-async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): Promise<void> {
+async function adjuntarYLimpiar(
+  propuesta: PropuestaGasto,
+  purchaseId: string,
+  empresaDestino: Empresa = propuesta.empresa
+): Promise<void> {
   const adjuntar = (mimeType: string | undefined, nombreArchivo: string) =>
-    adjuntarComprobanteHolded(propuesta.empresa, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType, {
+    adjuntarComprobanteHolded(empresaDestino, purchaseId, propuesta.rutaLocal, nombreArchivo, mimeType, {
       idempotencyKey: `gasto:${propuesta.id}:adjunto:${purchaseId}`,
       proceso: "comprobante_gasto_aprobado",
     });
@@ -219,15 +574,90 @@ async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): 
   await limpiarArchivoLocal(propuesta.rutaLocal);
 }
 
+async function registrarCierreGastoDePropuesta(
+  propuesta: PropuestaGasto,
+  gastoId: string,
+  empresa = propuesta.empresa
+): Promise<void> {
+  const mensajeIdGmail = propuesta.correoOrigen?.mensajeIdGmail;
+  if (!mensajeIdGmail) return;
+  const actualizados = await marcarGastoDesdeCorreoCompletado({ mensajeIdGmail, gastoId });
+  if (actualizados > 0) return;
+  await registrarGastoDesdeCorreo({
+    mensajeIdGmail,
+    attachmentId: propuesta.origenAdjuntoGmail?.partId,
+    gastoId,
+    empresa,
+    completado: true,
+    identidad: {
+      huellaContenido: propuesta.huellaContenido,
+      numeroDocumento: propuesta.numeroDocumento,
+      proveedor: propuesta.proveedor,
+      monto: propuesta.monto,
+      moneda: propuesta.moneda,
+      fecha: propuesta.fecha,
+      concepto: propuesta.concepto,
+    },
+  });
+}
+
+async function registrarCierreGastoPendiente(
+  pendiente: {
+    mensajeIdGmail?: string;
+    gastoId: string;
+    empresa: Empresa;
+    proveedor?: string;
+    monto?: number;
+    moneda?: string;
+    fecha?: string;
+    descripcionGasto: string;
+  }
+): Promise<void> {
+  const mensajeIdGmail = pendiente.mensajeIdGmail?.trim();
+  if (!mensajeIdGmail) throw new Error("La conciliación perdió el id de Gmail; no se cierra otro correo por accidente.");
+  const actualizados = await marcarGastoDesdeCorreoCompletado({
+    mensajeIdGmail,
+    gastoId: pendiente.gastoId,
+  });
+  if (actualizados > 0) return;
+
+  // Recuperación ante un fallo previo al guardar la memoria inicial. La
+  // compra ya está confirmada y esta decisión es terminal; se crea una
+  // referencia mínima para no perder la barrera contra duplicados.
+  await registrarGastoDesdeCorreo({
+    mensajeIdGmail,
+    gastoId: pendiente.gastoId,
+    empresa: pendiente.empresa,
+    completado: true,
+    identidad: {
+      proveedor: pendiente.proveedor,
+      monto: pendiente.monto,
+      moneda: pendiente.moneda,
+      fecha: pendiente.fecha,
+      concepto: pendiente.descripcionGasto,
+    },
+  });
+}
+
+export type EstadoIntentoConciliacion =
+  | "conciliada"
+  | "esperando_eleccion"
+  | "sin_candidato"
+  | "fallida"
+  | "incierta";
+
 interface ResultadoIntentarConciliar {
   nota: string;
-  /**
-   * true si se mandó un mensaje aparte con botones para elegir entre varios movimientos parecidos
-   * (ver ofrecerEleccionMovimientosAmbiguos) y todavía no hay respuesta — el llamador debe tratarlo
-   * igual que conciliacionPendiente (no avanzar la cola de correo todavía, ver gasto_conciliar_elegir
-   * / gasto_conciliar_elegir_no) para no dar el gasto por resuelto antes de tiempo.
-   */
-  esperandoEleccion: boolean;
+  /** Solo `conciliada` permite cerrar el correo automáticamente. Cualquier otro estado conserva
+   * el mensaje UNREAD hasta que exista una decisión humana o una verificación terminal real. */
+  estado: EstadoIntentoConciliacion;
+}
+
+export function gastoPermiteCerrarCorreo(
+  comprobanteConfirmado: boolean,
+  resultado: Pick<ResultadoIntentarConciliar, "estado">
+): boolean {
+  return comprobanteConfirmado && resultado.estado === "conciliada";
 }
 
 /**
@@ -247,15 +677,20 @@ async function ofrecerEleccionMovimientosAmbiguos(
   candidatos: MovimientoBancarioCandidato[],
   deColaCorreo: boolean,
   esAproximado: boolean,
-  proveedor?: string
+  proveedor?: string,
+  mensajeIdGmail?: string,
+  comprobanteConfirmado: boolean = true,
+  threadIdGmail?: string
 ): Promise<ResultadoIntentarConciliar> {
+  let pendienteGuardada: ConciliacionAmbiguaPendiente | undefined;
   try {
     // Hallazgo real de auditoría xhigh (efficiency): guardarConciliacionAmbiguaPendiente y
     // sugerirCandidatoAprendido son independientes entre sí (ninguna depende del resultado de la
     // otra — la primera solo necesita los datos ya recibidos como parámetros, no `pendiente.id`) así
     // que no hay razón para esperarlas una tras otra antes de mandarle el mensaje a Carlos.
     const [pendiente, indiceSugerido] = await Promise.all([
-      guardarConciliacionAmbiguaPendiente({ empresa, gastoId, descripcionGasto, chatId, candidatos, deColaCorreo, esAproximado, proveedor }),
+      guardarConciliacionAmbiguaPendiente({ empresa, gastoId, descripcionGasto, chatId, candidatos, deColaCorreo,
+        esAproximado, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail }),
       // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
       // nunca decide sola (Carlos siempre elige con el botón, es dinero), solo
       // resalta con ⭐ la opción que ya coincidió con algo confirmado antes
@@ -268,6 +703,7 @@ async function ofrecerEleccionMovimientosAmbiguos(
           })
         : Promise.resolve(undefined),
     ]);
+    pendienteGuardada = pendiente;
     const filas: InlineKeyboardButton[][] = candidatos.map((_, i) => [
       {
         text: `${i === indiceSugerido ? "⭐ " : ""}🔗 Conciliar con #${i + 1}`,
@@ -292,11 +728,20 @@ async function ofrecerEleccionMovimientosAmbiguos(
     );
     return {
       nota: `\n\n💳 Encontré ${candidatos.length} movimientos parecidos — te mandé aparte los botones para elegir con cuál conciliar (o descartarlo).`,
-      esperandoEleccion: true,
+      estado: "esperando_eleccion",
     };
   } catch (error) {
     console.error("[gastoCallbackHandler] Error ofreciendo elección de movimientos ambiguos (no crítico):", error);
-    return { nota: `\n\n💳 Hay ${candidatos.length} movimientos bancarios parecidos — revísalo a mano en Holded.`, esperandoEleccion: false };
+    // Si Sheets aceptó la pendiente pero Telegram no publicó sus botones,
+    // no debe quedar una segunda decisión invisible compitiendo con la
+    // recuperación visible que el llamador repone a continuación.
+    if (pendienteGuardada) {
+      await consumirConciliacionAmbiguaPendiente(pendienteGuardada.id).catch((errorLimpieza) =>
+        console.error("[gastoCallbackHandler] No se pudo retirar la conciliación ambigua que no llegó a publicarse:", errorLimpieza)
+      );
+    }
+    return { nota: `\n\n⚠️ Hay ${candidatos.length} movimientos bancarios parecidos, pero no pude guardar los botones para elegir. ` +
+      `El correo seguirá sin leer; vuelve a intentar la conciliación.`, estado: "fallida" };
   }
 }
 
@@ -320,7 +765,10 @@ async function intentarConciliar(
   descripcionGasto: string,
   moneda: string = "EUR",
   proveedor?: string,
-  deColaCorreo: boolean = false
+  deColaCorreo: boolean = false,
+  mensajeIdGmail?: string,
+  comprobanteConfirmado: boolean = true,
+  threadIdGmail?: string
 ): Promise<ResultadoIntentarConciliar> {
   try {
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
@@ -332,7 +780,8 @@ async function intentarConciliar(
     if (candidatos.length === 1) {
       candidato = candidatos[0];
     } else if (candidatos.length > 1) {
-      return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, candidatos, deColaCorreo, false, proveedor);
+      return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, candidatos,
+        deColaCorreo, false, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail);
     } else if (proveedor) {
       // Mismo fallback que procesarGastoEntrante.ts (ver ese archivo para el
       // caso real que lo motivó): el match exacto puede no encontrar nada
@@ -342,7 +791,8 @@ async function intentarConciliar(
         candidato = aproximados[0];
         esAproximado = true;
       } else if (aproximados.length > 1) {
-        return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, aproximados, deColaCorreo, true, proveedor);
+        return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, aproximados,
+          deColaCorreo, true, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail);
       }
     }
 
@@ -366,10 +816,14 @@ async function intentarConciliar(
           porTipoCambio,
           deColaCorreo,
           true,
-          proveedor
+          proveedor,
+          mensajeIdGmail,
+          comprobanteConfirmado,
+          threadIdGmail
         );
       }
-      return { nota: "", esperandoEleccion: false };
+      return { nota: `\n\n⚠️ No encontré un movimiento bancario libre que coincida. El correo seguirá sin leer ` +
+        `para reintentar o resolverlo manualmente.`, estado: "sin_candidato" };
     }
 
     // Reutiliza conciliarContraMovimientoEspecifico en vez de repetir la llamada a
@@ -377,11 +831,11 @@ async function intentarConciliar(
     // reconciliarMovimiento DIRECTO, sin el chequeo de estaMovimientoYaConciliado que la otra ruta
     // (checkboxes "🔗 Conciliar con #N") sí tiene, una inconsistencia real entre dos caminos que
     // hacen la misma acción con dinero real.
-    const nota = await conciliarContraMovimientoEspecifico(empresa, candidato, gastoId, esAproximado);
-    return { nota, esperandoEleccion: false };
+    return await conciliarContraMovimientoEspecifico(empresa, candidato, gastoId, esAproximado);
   } catch (error) {
     console.error("[gastoCallbackHandler] Error intentando conciliar movimiento bancario:", error);
-    return { nota: "", esperandoEleccion: false };
+    return { nota: "\n\n⚠️ No pude completar ni verificar la conciliación. El correo seguirá sin leer para reintentarla.",
+      estado: error instanceof ConciliacionMovimientoInciertaError ? "incierta" : "fallida" };
   }
 }
 
@@ -413,7 +867,7 @@ async function conciliarContraMovimientoEspecifico(
    * nunca decide nada, solo alimenta la sugerencia ⭐ de la próxima vez.
    */
   proveedorParaAprender?: string
-): Promise<string> {
+): Promise<ResultadoIntentarConciliar> {
   const notaAprox = movimiento.origenCoincidencia === "tipo_cambio"
     ? ` — coincidencia MULTIMONEDA por tasa de referencia: ${describirMovimientoMultimoneda(movimiento)}; confírmalo en Holded`
     : esAproximado
@@ -422,10 +876,10 @@ async function conciliarContraMovimientoEspecifico(
   try {
     const yaConciliado = await estaMovimientoYaConciliado(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha);
     if (yaConciliado) {
-      return (
+      return { nota:
         `\n\n⚠️ Elegiste conciliar contra "${movimiento.descripcion || "sin descripción"}" (${movimiento.monto.toFixed(2)} ${movimiento.moneda}) ` +
         `pero ese movimiento ya quedó conciliado por otra vía mientras esperaba tu aprobación — revísalo a mano en Holded.`
-      );
+      , estado: "fallida" };
     }
 
     const resultado = await reconciliarMovimiento(
@@ -478,25 +932,29 @@ async function conciliarContraMovimientoEspecifico(
             ? ` (${resultado.pendienteEnMovimiento.toFixed(2)} ${movimiento.moneda} todavía sin asignar)`
             : ""}. Revisa si el resto corresponde a otra partida.`
         : "";
-      return (
+      const requiereRevision = conciliacionRequiereRevision(resultado);
+      return { nota:
         `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${movimiento.descripcion || "sin descripción"}, ` +
         `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}${notaMovimientoParcial}`
-      );
+      , estado: requiereRevision
+          ? resultado.ajusteCambioDivisa?.estado === "incierto" ? "incierta" : "fallida"
+          : "conciliada" };
     }
-    return (
+    return { nota:
       `\n\n⚠️ Elegiste conciliar contra "${movimiento.descripcion || "sin descripción"}" (${movimiento.monto.toFixed(2)} ${movimiento.moneda}) ` +
       `pero no pude confirmar que quedó conciliado Y enlazado al gasto (estado: ${resultado.statusFinal}, monto enlazado: ` +
       `${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda}) — revísalo a mano en Holded.`
-    );
+    , estado: "fallida" };
   } catch (error) {
     console.error("[gastoCallbackHandler] Error conciliando contra el movimiento elegido:", error);
     if (error instanceof ConciliacionMovimientoInciertaError) {
-      return (
+      return { nota:
         `\n\n⏳ Holded no confirmó si concilió el movimiento "${movimiento.descripcion || "sin descripción"}". ` +
         "Wobi bloqueó toda repetición y lo verificará solo por lectura. No vuelvas a conciliarlo manualmente hasta comprobar su estado en Holded."
-      );
+      , estado: "incierta" };
     }
-    return `\n\n⚠️ El gasto se creó, pero hubo un error al conciliar contra "${movimiento.descripcion || "sin descripción"}" — revísalo a mano en Holded.`;
+    return { nota: `\n\n⚠️ El gasto se creó, pero hubo un error al conciliar contra "${movimiento.descripcion || "sin descripción"}" — ` +
+      `el correo seguirá sin leer para reintentarlo.`, estado: "fallida" };
   }
 }
 
@@ -525,10 +983,14 @@ async function preguntarSiConciliar(
   moneda: string = "EUR",
   proveedor: string = "",
   deColaCorreo: boolean = false,
-  mensajeIdGmail?: string
+  mensajeIdGmail?: string,
+  comprobanteConfirmado: boolean = true,
+  mensajeFallbackId?: number,
+  threadIdGmail?: string
 ): Promise<boolean> {
+  let pendiente: Awaited<ReturnType<typeof guardarConciliacionPendiente>> | undefined;
   try {
-    const pendiente = await guardarConciliacionPendiente({
+    pendiente = await guardarConciliacionPendiente({
       empresa,
       monto,
       fecha,
@@ -539,22 +1001,149 @@ async function preguntarSiConciliar(
       proveedor,
       deColaCorreo,
       mensajeIdGmail,
+      comprobanteConfirmado,
+      threadIdGmail,
     });
-    await sendTelegramMessageWithButtons(
-      chatId,
-      `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`,
-      [
-        [
-          { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
-          { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
-        ],
-      ]
-    );
+    const texto = `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`;
+    const botones = [[
+      { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
+      { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
+    ]];
+    try {
+      await sendTelegramMessageWithButtons(chatId, texto, botones);
+    } catch (errorEnvio) {
+      if (mensajeFallbackId == null) throw errorEnvio;
+      await editTelegramMessage(chatId, mensajeFallbackId, texto, botones);
+    }
     return true;
   } catch (error) {
     console.error("[gastoCallbackHandler] Error preguntando si conciliar (no crítico):", error);
+    if (pendiente) await consumirConciliacionPendiente(pendiente.id).catch(() => undefined);
     return false;
   }
+}
+
+async function reponerPreguntaConciliacion(
+  pendiente: ConciliacionPendiente,
+  mensajeId: number | undefined,
+  aviso: string
+): Promise<void> {
+  const restaurada = await restaurarConciliacionPendiente(pendiente);
+  const botones = [[
+    { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${restaurada.id}` },
+    { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${restaurada.id}` },
+  ]];
+  if (mensajeId != null) {
+    try {
+      await editTelegramMessage(restaurada.chatId, mensajeId, aviso, botones);
+      return;
+    } catch (error) {
+      console.error("[gastoCallbackHandler] No se pudo reponer la pregunta de conciliación en el mensaje original; se enviará una nueva:", error);
+    }
+  }
+  await sendTelegramMessageWithButtons(restaurada.chatId, aviso, botones);
+}
+
+async function reponerPreguntaConciliacionAmbigua(
+  pendiente: ConciliacionAmbiguaPendiente,
+  mensajeId: number | undefined,
+  aviso: string
+): Promise<void> {
+  const restaurada = await restaurarConciliacionAmbiguaPendiente(pendiente);
+  const botones = [
+    ...restaurada.candidatos.map((c, i) => [{
+      text: `${i + 1}. ${c.descripcion || "sin descripción"} — ${c.monto.toFixed(2)} ${c.moneda} (${c.fecha})`,
+      callback_data: `gasto_conciliar_elegir:${restaurada.id}:${i}`,
+    }]),
+    [{ text: "❌ Ninguno / no conciliar", callback_data: `gasto_conciliar_elegir_no:${restaurada.id}` }],
+  ];
+  if (mensajeId != null) {
+    try {
+      await editTelegramMessage(restaurada.chatId, mensajeId, aviso, botones);
+      return;
+    } catch (error) {
+      console.error("[gastoCallbackHandler] No se pudo reponer la conciliación ambigua en el mensaje original; se enviará una nueva:", error);
+    }
+  }
+  await sendTelegramMessageWithButtons(restaurada.chatId, aviso, botones);
+}
+
+async function reponerSoloCierrePropuesta(
+  propuesta: PropuestaGasto,
+  mensaje: string
+): Promise<void> {
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
+  const botones = [[{
+    text: "✅ Finalizar correo ya resuelto",
+    callback_data: `gasto_cerrar_propuesta:${restaurada.id}`,
+  }]];
+  try {
+    await editTelegramMessage(restaurada.chatId, restaurada.messageId, mensaje, botones);
+  } catch (error) {
+    console.error("[gastoCallbackHandler] No se pudo reponer el cierre en el mensaje original; se enviará uno nuevo:", error);
+    const messageId = await sendTelegramMessageWithButtons(restaurada.chatId, mensaje, botones);
+    await actualizarMessageIdGasto(restaurada.id, messageId);
+  }
+}
+
+async function reponerSoloCierreCancelacion(
+  propuesta: PropuestaGasto,
+  mensaje: string
+): Promise<void> {
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
+  const botones = [[{
+    text: "✅ Finalizar descarte del correo",
+    callback_data: `gasto_cancelar:${restaurada.id}`,
+  }]];
+  try {
+    await editTelegramMessage(restaurada.chatId, restaurada.messageId, mensaje, botones);
+  } catch (error) {
+    console.error("[gastoCallbackHandler] No se pudo reponer el cierre del descarte en el mensaje original; se enviará uno nuevo:", error);
+    const messageId = await sendTelegramMessageWithButtons(restaurada.chatId, mensaje, botones);
+    await actualizarMessageIdGasto(restaurada.id, messageId);
+  }
+}
+
+async function reponerSoloCierreConciliacion(
+  pendiente: ConciliacionPendiente,
+  mensajeId: number | undefined,
+  mensaje: string
+): Promise<void> {
+  const restaurada = await restaurarConciliacionPendiente(pendiente);
+  const botones = [[{
+    text: "✅ Finalizar correo ya resuelto",
+    callback_data: `gasto_cerrar_conciliacion:${restaurada.id}`,
+  }]];
+  if (mensajeId != null) {
+    try {
+      await editTelegramMessage(restaurada.chatId, mensajeId, mensaje, botones);
+      return;
+    } catch (error) {
+      console.error("[gastoCallbackHandler] No se pudo reponer el cierre de conciliación en el mensaje original; se enviará uno nuevo:", error);
+    }
+  }
+  await sendTelegramMessageWithButtons(restaurada.chatId, mensaje, botones);
+}
+
+async function reponerSoloCierreConciliacionAmbigua(
+  pendiente: ConciliacionAmbiguaPendiente,
+  mensajeId: number | undefined,
+  mensaje: string
+): Promise<void> {
+  const restaurada = await restaurarConciliacionAmbiguaPendiente(pendiente);
+  const botones = [[{
+    text: "✅ Finalizar correo ya resuelto",
+    callback_data: `gasto_cerrar_ambigua:${restaurada.id}`,
+  }]];
+  if (mensajeId != null) {
+    try {
+      await editTelegramMessage(restaurada.chatId, mensajeId, mensaje, botones);
+      return;
+    } catch (error) {
+      console.error("[gastoCallbackHandler] No se pudo reponer el cierre ambiguo en el mensaje original; se enviará uno nuevo:", error);
+    }
+  }
+  await sendTelegramMessageWithButtons(restaurada.chatId, mensaje, botones);
 }
 
 /**
@@ -573,18 +1162,163 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 
   const [accion, propuestaId, extra] = data.split(":");
 
+  if (accion === "gasto_cerrar_propuesta") {
+    const propuesta = await consumirPropuestaGasto(propuestaId);
+    if (!propuesta) {
+      await answerCallbackQuerySafe(callback.id, "Este cierre ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id, "Finalizando correo...");
+    await finalizarGastoCorreoAntesDeRender(
+      () => {
+        const gastoId = propuesta.candidatos[0]?.id;
+        if (!gastoId) throw new Error("La recuperación perdió el id del gasto ya resuelto.");
+        return registrarCierreGastoDePropuesta(propuesta, gastoId);
+      },
+      () => avanzarColaCorreoSiActivo(
+        propuesta.chatId,
+        { threadId: propuesta.correoOrigen?.threadId, mensajeId: propuesta.correoOrigen?.mensajeIdGmail },
+        `gasto:${propuesta.id}:cierre`
+      ),
+      () => reponerSoloCierrePropuesta(
+        propuesta,
+        "⚠️ La compra, el soporte y la conciliación ya terminaron, pero no pude cerrar su registro técnico. " +
+          "El correo sigue sin leer. Este botón solo reintenta el cierre; no repite ninguna operación financiera."
+      ),
+      () => editTelegramMessage(
+        propuesta.chatId,
+        propuesta.messageId,
+        "✅ Gasto, soporte y conciliación confirmados. El correo quedó procesado.",
+        []
+      )
+    );
+    return;
+  }
+
+  if (accion === "gasto_cerrar_conciliacion") {
+    const pendiente = await consumirConciliacionPendiente(propuestaId);
+    if (!pendiente) {
+      await answerCallbackQuerySafe(callback.id, "Este cierre ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id, "Finalizando correo...");
+    await finalizarGastoCorreoAntesDeRender(
+      () => registrarCierreGastoPendiente(pendiente),
+      () => avanzarColaCorreoSiActivo(
+        pendiente.chatId,
+        { threadId: pendiente.threadIdGmail, mensajeId: pendiente.mensajeIdGmail },
+        `gasto:conciliacion:${pendiente.id}:cierre`
+      ),
+      () => reponerSoloCierreConciliacion(
+        pendiente,
+        callback.message?.message_id,
+        "⚠️ La decisión financiera ya terminó, pero no pude cerrar su registro técnico. El correo sigue sin leer. " +
+          "Este botón solo reintenta el cierre."
+      ),
+      () => editTelegramMessage(
+        pendiente.chatId,
+        callback.message?.message_id ?? 0,
+        `✅ “${pendiente.descripcionGasto}” quedó procesado y el correo fue cerrado.`,
+        []
+      )
+    );
+    return;
+  }
+
+  if (accion === "gasto_cerrar_ambigua") {
+    const pendiente = await consumirConciliacionAmbiguaPendiente(propuestaId);
+    if (!pendiente) {
+      await answerCallbackQuerySafe(callback.id, "Este cierre ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id, "Finalizando correo...");
+    await finalizarGastoCorreoAntesDeRender(
+      () => registrarCierreGastoPendiente(pendiente),
+      () => avanzarColaCorreoSiActivo(
+        pendiente.chatId,
+        { threadId: pendiente.threadIdGmail, mensajeId: pendiente.mensajeIdGmail },
+        `gasto:conciliacion-ambigua:${pendiente.id}:cierre`
+      ),
+      () => reponerSoloCierreConciliacionAmbigua(
+        pendiente,
+        callback.message?.message_id,
+        "⚠️ La decisión financiera ya terminó, pero no pude cerrar su registro técnico. El correo sigue sin leer. " +
+          "Este botón solo reintenta el cierre."
+      ),
+      () => editTelegramMessage(
+        pendiente.chatId,
+        callback.message?.message_id ?? 0,
+        `✅ “${pendiente.descripcionGasto}” quedó procesado y el correo fue cerrado.`,
+        []
+      )
+    );
+    return;
+  }
+
+  if (accion === "gasto_espera") {
+    const propuesta = await obtenerPropuestaGasto(propuestaId);
+    if (!propuesta) {
+      await answerCallbackQuerySafe(callback.id, "Esta espera ya no está disponible.");
+      return;
+    }
+    const bloqueante = extra ? await obtenerPropuestaGasto(extra) : undefined;
+    if (bloqueante) {
+      await answerCallbackQuerySafe(callback.id, "La propuesta anterior todavía sigue pendiente.");
+      await editTelegramMessage(
+        propuesta.chatId,
+        propuesta.messageId,
+        `⏳ La propuesta anterior de ${bloqueante.proveedor} por ${bloqueante.monto.toFixed(2)} ${bloqueante.moneda} ` +
+          `todavía no se ha resuelto. Este correo seguirá sin leer para evitar una creación duplicada.`,
+        [
+          [{ text: "🔎 Verificar y continuar", callback_data: `gasto_espera:${propuesta.id}:${bloqueante.id}` }],
+          [{ text: "❌ Descartar este correo", callback_data: `gasto_cancelar:${propuesta.id}` }],
+        ]
+      );
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "La propuesta anterior ya se resolvió.");
+    await editTelegramMessage(
+      propuesta.chatId,
+      propuesta.messageId,
+      `✅ La propuesta anterior ya se resolvió. Revisa esta operación antes de aprobarla:\n\n${resumenTextoPropuestaGasto(propuesta)}`,
+      construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta))
+    );
+    return;
+  }
+
   if (accion === "gasto_cancelar") {
     const propuesta = await consumirPropuestaGasto(propuestaId);
     await answerCallbackQuerySafe(callback.id, "Cancelado.");
     if (propuesta) {
       await limpiarArchivoLocal(propuesta.rutaLocal);
-      await editTelegramMessage(
-        propuesta.chatId,
-        propuesta.messageId,
-        `❌ Cancelado — ${propuesta.proveedor} (${propuesta.monto} ${propuesta.moneda})`,
-        []
-      );
-      if (propuesta.deColaCorreo) await avanzarColaCorreoSiActivo(propuesta.chatId);
+      if (propuesta.deColaCorreo) {
+        await finalizarGastoCorreoAntesDeRender(
+          async () => undefined,
+          () => avanzarColaCorreoSiActivo(
+            propuesta.chatId,
+            { threadId: propuesta.correoOrigen?.threadId, mensajeId: propuesta.correoOrigen?.mensajeIdGmail },
+            `gasto:${propuesta.id}:cancelar`
+          ),
+          () => reponerSoloCierreCancelacion(
+            propuesta,
+            "⚠️ El descarte ya fue solicitado, pero no pude cerrar el correo. Sigue sin leer; este botón solo reintenta el cierre."
+          ),
+          () => editTelegramMessage(
+            propuesta.chatId,
+            propuesta.messageId,
+            `❌ Cancelado — ${propuesta.proveedor} (${propuesta.monto} ${propuesta.moneda})`,
+            []
+          )
+        );
+      } else {
+        await editTelegramMessage(
+          propuesta.chatId,
+          propuesta.messageId,
+          `❌ Cancelado — ${propuesta.proveedor} (${propuesta.monto} ${propuesta.moneda})`,
+          []
+        ).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la cancelación ya aplicada (no crítico):", error));
+      }
     }
     return;
   }
@@ -597,13 +1331,16 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id);
+    // La respuesta de texto ya tiene dueño durable antes de retirar el
+    // teclado. Si Telegram o el proceso fallan después, el usuario no queda
+    // con un mensaje sin botones y sin estado recuperable.
+    await guardarPendienteCorreccionGasto(propuesta.chatId, propuesta.id);
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
       `✏️ Ok — dime la empresa y el concepto correctos (ej. "EWORKS, servicio de limpieza").`,
       []
     );
-    await guardarPendienteCorreccionGasto(propuesta.chatId, propuesta.id);
     return;
   }
 
@@ -627,6 +1364,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id);
+    await guardarPendienteAjusteMontoGasto(propuesta.chatId, propuesta.id);
     // Bug real de auditoría (2026-09-03): este botón (mensaje VIEJO, ya en
     // vuelo desde antes del teclado de selección) dejaba los DEMÁS botones
     // del mismo mensaje intactos — incluido "✏️ Corregir clasificación",
@@ -640,7 +1378,6 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
       console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
     );
-    await guardarPendienteAjusteMontoGasto(propuesta.chatId, propuesta.id);
     await sendTelegramMessage(
       propuesta.chatId,
       `💰 Ok — dime el monto real a registrar para "${propuesta.proveedor}" (ej. "251.30", o "la mitad" de ` +
@@ -667,10 +1404,12 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     // Mismo criterio que gasto_ajustarmonto arriba — se quita el teclado del
     // mensaje viejo al usar cualquiera de sus botones, para que no queden
     // dos pendientes de texto libre vivos a la vez sobre la misma propuesta.
-    await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
-      console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
-    );
-    await ejecutarResponderCorreo(propuesta);
+    const iniciada = await ejecutarResponderCorreo(propuesta);
+    if (iniciada) {
+      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+        console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
+      );
+    }
     return;
   }
 
@@ -681,10 +1420,12 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Leyendo el correo...");
-    await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
-      console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
-    );
-    await ejecutarGuardarConocimiento(propuesta);
+    const iniciada = await ejecutarGuardarConocimiento(propuesta);
+    if (iniciada) {
+      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+        console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
+      );
+    }
     return;
   }
 
@@ -695,6 +1436,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
     await answerCallbackQuerySafe(callback.id);
+    await guardarPendienteAccionGasto(propuesta.chatId, propuesta.id);
     await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
       console.error("[gastoCallbackHandler] Error quitando el teclado del mensaje viejo (no crítico):", error)
     );
@@ -703,7 +1445,6 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       `✏️ Ok — dime qué más quieres hacer con el correo "${propuesta.correoOrigen.asunto}" de ${propuesta.correoOrigen.de} ` +
         `(ej. "prográmame un recordatorio para conciliar mañana", o combina varias cosas en el mismo mensaje).`
     );
-    await guardarPendienteAccionGasto(propuesta.chatId, propuesta.id);
     return;
   }
 
@@ -725,25 +1466,37 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Procesando...");
-    await editTelegramMessage(propuesta.chatId, propuesta.messageId, `🔄 Procesando "${propuesta.proveedor}"...`, []);
+    await editTelegramMessage(propuesta.chatId, propuesta.messageId, `🔄 Procesando "${propuesta.proveedor}"...`, []).catch(
+      (error) => console.error("[gastoCallbackHandler] No se pudo mostrar el progreso (no crítico):", error)
+    );
 
     let preguntaConciliacionPendiente = false;
+    let cierreCorreoVerificado = false;
+    let gastoIdProcesado: string | undefined;
+    let mensajeCierreTerminal: string | undefined;
+    let propuestaEnProceso = propuesta;
     try {
+      // También protege el camino "adjuntar a existente": un desglose
+      // inconsistente no puede terminar conciliando un gasto equivocado.
+      validarTotalFiscalGasto(propuesta);
       if (accion === "gasto_adjuntar") {
         const indice = Number(extra);
         const candidato = propuesta.candidatos[indice];
         if (!candidato) {
           throw new Error(`No se encontró el candidato #${indice + 1}.`);
         }
+        gastoIdProcesado = candidato.id;
 
         // El gasto candidato YA EXISTE en Holded desde antes — un fallo al
         // adjuntar el comprobante nunca debe verse como un error total (no
         // se creó ni se rompió nada), mismo criterio que crearGastoYReportar
         // aplica cuando el gasto se acaba de crear.
         let notaComprobante = "";
+        let comprobanteConfirmado = true;
         try {
           await adjuntarYLimpiar(propuesta, candidato.id);
         } catch (error) {
+          comprobanteConfirmado = false;
           const message = error instanceof Error ? error.message : String(error);
           console.error(`[gastoCallbackHandler] Gasto ${candidato.id} ya existía pero falló adjuntar el comprobante:`, message);
           notaComprobante = error instanceof AdjuntoCompraInciertoError
@@ -751,10 +1504,39 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             : `\n\n⚠️ No pude adjuntar el comprobante (${message}). Súbelo a mano en Holded (id ${candidato.id}) si tienes el archivo.`;
         }
 
+        if (!comprobanteConfirmado) {
+          await reponerPropuestaParaReintento(
+            propuesta,
+            `⚠️ El gasto ya existe en Holded, pero el soporte todavía no está confirmado.${notaComprobante}\n\n` +
+              `El correo seguirá sin leer. Usa “Reintentar/verificar soporte del gasto creado”; la operación durable ` +
+              `primero comprobará Holded y nunca repetirá una subida incierta.`,
+            { ...candidato, soportePendiente: true }
+          );
+          return;
+        }
+
         await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto).catch(
           (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
         );
-        const { nota: notaConciliacion, esperandoEleccion } = await intentarConciliar(
+        if (propuesta.correoOrigen?.mensajeIdGmail) {
+          await registrarGastoDesdeCorreo({
+            mensajeIdGmail: propuesta.correoOrigen.mensajeIdGmail,
+            attachmentId: propuesta.origenAdjuntoGmail?.partId,
+            gastoId: candidato.id,
+            empresa: propuesta.empresa,
+            completado: false,
+            identidad: {
+              huellaContenido: propuesta.huellaContenido,
+              numeroDocumento: propuesta.numeroDocumento,
+              proveedor: propuesta.proveedor,
+              monto: propuesta.monto,
+              moneda: propuesta.moneda,
+              fecha: propuesta.fecha,
+              concepto: propuesta.concepto,
+            },
+          });
+        }
+        const resultadoConciliacion = await intentarConciliar(
           propuesta.empresa,
           propuesta.monto,
           propuesta.fecha,
@@ -763,18 +1545,29 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           `${candidato.contactName} — ${propuesta.monto} ${propuesta.moneda}`,
           propuesta.moneda,
           propuesta.proveedor,
-          propuesta.deColaCorreo === true
+          propuesta.deColaCorreo === true,
+          propuesta.correoOrigen?.mensajeIdGmail,
+          comprobanteConfirmado,
+          propuesta.correoOrigen?.threadId
         );
-        preguntaConciliacionPendiente = esperandoEleccion;
+        preguntaConciliacionPendiente = resultadoConciliacion.estado === "esperando_eleccion";
+        cierreCorreoVerificado = gastoPermiteCerrarCorreo(comprobanteConfirmado, resultadoConciliacion);
 
-        await editTelegramMessage(
-          propuesta.chatId,
-          propuesta.messageId,
+        if (!cierreCorreoVerificado && !preguntaConciliacionPendiente) {
+          await reponerPropuestaParaReintento(
+            propuesta,
+            `✅ El soporte del gasto ${candidato.id} quedó confirmado, pero la conciliación todavía no terminó.` +
+              `${resultadoConciliacion.nota}\n\nEl correo seguirá sin leer. Usa “Retomar conciliación del gasto creado”; ` +
+              `la operación durable primero verifica el estado y no repite una escritura incierta.`,
+            { ...candidato, conciliacionPendiente: true }
+          );
+          return;
+        }
+
+        mensajeCierreTerminal =
           `✅ Gasto de ${candidato.contactName} (${candidato.total.toFixed(2)} €, ${candidato.fecha}) en Holded` +
-            (notaComprobante ? "." : " — comprobante adjuntado.") +
-            `${notaComprobante}${notaConciliacion}`,
-          []
-        );
+          (notaComprobante ? "." : " — comprobante adjuntado.") +
+          `${notaComprobante}${resultadoConciliacion.nota}`;
       } else {
         // gasto_nuevo_conciliar: procesarGastoEntrante ya confirmó un
         // movimiento bancario coincidente ANTES de proponer — suficiente
@@ -792,9 +1585,34 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           indiceMovAmbiguo !== undefined && Number.isFinite(indiceMovAmbiguo)
             ? propuesta.movimientosAmbiguos?.[indiceMovAmbiguo]
             : undefined;
-        const resultado = await crearGastoYReportar(propuesta, propuesta.empresa, propuesta.concepto, undefined, conciliarInline, true, movimientoObjetivo);
-        await editTelegramMessage(propuesta.chatId, propuesta.messageId, resultado.mensaje, []);
+        propuestaEnProceso = await prepararPropuestaFinalGasto(propuesta, {
+          empresa: propuesta.empresa,
+          concepto: propuesta.concepto,
+          forzarReinferencia: !propuesta.cuentaId,
+        });
+        const resultado = await crearGastoYReportar(
+          propuestaEnProceso,
+          propuestaEnProceso.empresa,
+          propuestaEnProceso.concepto,
+          undefined,
+          conciliarInline,
+          true,
+          movimientoObjetivo
+        );
+        gastoIdProcesado = resultado.gastoId;
+        if (!resultado.comprobanteConfirmado && resultado.soportePendiente) {
+          await reponerPropuestaParaReintento(
+            propuestaEnProceso,
+            `${resultado.mensaje}\n\nEl correo seguirá sin leer y no se intentará conciliar hasta confirmar el soporte. ` +
+              `Usa “Reintentar/verificar soporte del gasto creado”; la verificación durable evita duplicar la compra o el archivo.`,
+            resultado.soportePendiente
+          );
+          return;
+        }
         if (resultado.conciliacionPendiente) {
+          await editTelegramMessage(propuesta.chatId, propuesta.messageId, resultado.mensaje, []).catch(
+            (error) => console.error("[gastoCallbackHandler] No se pudo reflejar el gasto creado antes de preguntar la conciliación (no crítico):", error)
+          );
           preguntaConciliacionPendiente = await preguntarSiConciliar(
             propuesta.chatId,
             resultado.conciliacionPendiente.empresa,
@@ -805,40 +1623,88 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             resultado.conciliacionPendiente.moneda,
             resultado.conciliacionPendiente.proveedor,
             propuesta.deColaCorreo === true,
-            propuesta.correoOrigen?.mensajeIdGmail
+            propuesta.correoOrigen?.mensajeIdGmail,
+            resultado.comprobanteConfirmado,
+            propuesta.messageId,
+            propuesta.correoOrigen?.threadId
           );
+          if (!preguntaConciliacionPendiente) {
+            const seguimiento = resultado.conciliacionPendiente;
+            await reponerPropuestaParaReintento(
+              propuestaEnProceso,
+              `${resultado.mensaje}\n\n⚠️ No pude publicar la pregunta de conciliación. El correo seguirá sin leer. ` +
+                `Usa “Retomar conciliación del gasto creado”; la compra y su soporte ya están protegidos contra duplicados.`,
+              {
+                id: seguimiento.gastoId,
+                contactName: propuesta.proveedor,
+                fecha: seguimiento.fecha,
+                total: seguimiento.monto,
+                descripcion: seguimiento.descripcionGasto,
+                moneda: seguimiento.moneda,
+                conciliacionPendiente: true,
+              }
+            );
+            return;
+          }
         } else if (resultado.esperandoEleccionConciliacion) {
           preguntaConciliacionPendiente = true;
+          await editTelegramMessage(propuesta.chatId, propuesta.messageId, resultado.mensaje, []).catch(
+            (error) => console.error("[gastoCallbackHandler] No se pudo reflejar la espera de conciliación ambigua (no crítico):", error)
+          );
         }
+        cierreCorreoVerificado = resultado.comprobanteConfirmado && resultado.estadoConciliacion === "conciliada";
+        if (cierreCorreoVerificado) mensajeCierreTerminal = resultado.mensaje;
       }
     } catch (error) {
       if (error instanceof ContactoNoEncontradoError) {
-        await manejarContactoNoEncontrado(propuesta, propuesta.empresa, propuesta.concepto, propuesta.chatId, propuesta.messageId);
+        await manejarContactoNoEncontrado(
+          propuestaEnProceso,
+          propuestaEnProceso.empresa,
+          propuestaEnProceso.concepto,
+          propuestaEnProceso.chatId,
+          propuestaEnProceso.messageId
+        );
         return;
       }
       if (error instanceof FechaBloqueadaError) {
-        await manejarFechaBloqueada(propuesta, propuesta.empresa, propuesta.concepto, error, propuesta.chatId, propuesta.messageId);
+        await manejarFechaBloqueada(
+          propuestaEnProceso,
+          propuestaEnProceso.empresa,
+          propuestaEnProceso.concepto,
+          error,
+          propuestaEnProceso.chatId,
+          propuestaEnProceso.messageId
+        );
         return;
       }
       if (error instanceof PosibleDuplicadoGastoError) {
-        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeDuplicadoDetectado(error.candidatos), []);
+        const propuestaConCandidatos = { ...propuestaEnProceso, candidatos: error.candidatos };
+        await reponerPropuestaParaReintento(
+          propuestaConCandidatos,
+          `${mensajeDuplicadoDetectado(error.candidatos)}\n\nEl correo seguirá sin leer. Selecciona el gasto correcto para adjuntar el soporte o confirma que es uno nuevo.`
+        );
         return;
       }
       if (error instanceof VerificacionDuplicadoFallidaError) {
-        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeVerificacionDuplicadoFallida(error), []);
+        await reponerPropuestaParaReintento(
+          propuestaEnProceso,
+          `${mensajeVerificacionDuplicadoFallida(error)}\n\nEl correo seguirá sin leer; usa los botones para reintentar cuando Holded responda.`
+        );
         return;
       }
       if (error instanceof CreacionCompraInciertaError) {
-        await editTelegramMessage(propuesta.chatId, propuesta.messageId, mensajeCreacionCompraIncierta(propuesta.proveedor), []);
+        await reponerVerificacionCreacionIncierta(
+          propuestaEnProceso,
+          `${mensajeCreacionCompraIncierta(propuestaEnProceso.proveedor)}\n\nEl correo seguirá sin leer. El único botón disponible verifica el ledger y Holded; nunca repite un POST incierto.`
+        );
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error procesando gasto:", message);
-      await editTelegramMessage(
-        propuesta.chatId,
-        propuesta.messageId,
-        `⚠️ Error procesando "${propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
-        []
+      await reponerPropuestaParaReintento(
+        propuestaEnProceso,
+        `⚠️ Error procesando "${propuestaEnProceso.proveedor}"\n\n${message}\n\n` +
+          `El correo sigue sin leer y la misma propuesta quedó disponible para reintentar sin reenviar el documento.`
       );
       // No avanza la cola en el error — mejor dejarlo "activo" (visible,
       // pendiente) que marcar leído un correo cuyo gasto en realidad nunca
@@ -853,7 +1719,50 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     // hacen falta para dar el correo por resuelto, no solo el primero — bug
     // real encontrado al revisar el código: antes avanzaba apenas se creaba
     // el gasto, dejando la pregunta de conciliación desconectada de la cola.
-    if (propuesta.deColaCorreo && !preguntaConciliacionPendiente) await avanzarColaCorreoSiActivo(propuesta.chatId);
+    if (propuestaEnProceso.deColaCorreo && cierreCorreoVerificado && !preguntaConciliacionPendiente) {
+      const gastoId = gastoIdProcesado;
+      if (!gastoId) {
+        await reponerSoloCierrePropuesta(
+          propuestaEnProceso,
+          "⚠️ La operación terminó, pero se perdió el identificador del gasto antes de cerrar el correo. " +
+            "El correo sigue sin leer y no se repetirá ninguna operación financiera."
+        );
+        return;
+      }
+      await finalizarGastoCorreoAntesDeRender(
+        () => registrarCierreGastoDePropuesta(propuestaEnProceso, gastoId),
+        () => avanzarColaCorreoSiActivo(
+          propuestaEnProceso.chatId,
+          { threadId: propuestaEnProceso.correoOrigen?.threadId, mensajeId: propuestaEnProceso.correoOrigen?.mensajeIdGmail },
+          `gasto:${propuestaEnProceso.id}:cierre`
+        ),
+        () => reponerSoloCierrePropuesta(
+          { ...propuestaEnProceso, candidatos: [{
+            id: gastoId,
+            contactName: propuestaEnProceso.proveedor,
+            fecha: propuestaEnProceso.fecha,
+            total: propuestaEnProceso.monto,
+            descripcion: propuestaEnProceso.concepto,
+            moneda: propuestaEnProceso.moneda,
+            conciliacionPendiente: true,
+          }] },
+          "⚠️ El gasto, el soporte y la conciliación ya terminaron, pero no pude cerrar su registro técnico. " +
+            "El correo sigue sin leer. El botón disponible solo reintenta el cierre y no repite ninguna operación financiera."
+        ),
+        () => editTelegramMessage(
+          propuestaEnProceso.chatId,
+          propuestaEnProceso.messageId,
+          mensajeCierreTerminal ?? `✅ Gasto ${gastoId} procesado, soportado y conciliado.`,
+          []
+        )
+      );
+    } else if (mensajeCierreTerminal) {
+      // Fuera de la cola no hay Gmail que cerrar, pero el resultado visual
+      // sigue siendo best-effort y nunca afecta el resultado financiero.
+      await editTelegramMessage(propuestaEnProceso.chatId, propuestaEnProceso.messageId, mensajeCierreTerminal, []).catch(
+        (error) => console.error("[gastoCallbackHandler] No se pudo reflejar el gasto terminal fuera de cola (no crítico):", error)
+      );
+    }
     return;
   }
 
@@ -864,15 +1773,64 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
 
+    if (!pendiente.comprobanteConfirmado) {
+      try {
+        pendiente.comprobanteConfirmado = await compraTieneComprobante(pendiente.empresa, pendiente.gastoId);
+      } catch (error) {
+        await reponerPreguntaConciliacion(
+          pendiente,
+          callback.message?.message_id,
+          `⚠️ No pude verificar por lectura si el gasto tiene soporte. El correo sigue sin leer; vuelve a intentarlo cuando Holded responda.`
+        );
+        return;
+      }
+      if (!pendiente.comprobanteConfirmado) {
+        await reponerPreguntaConciliacion(
+          pendiente,
+          callback.message?.message_id,
+          `⚠️ Este gasto todavía no tiene comprobante en Holded. Adjunta el soporte y vuelve a pulsar una opción; ` +
+            `Wobi lo verificará por lectura antes de cerrar el correo.`
+        );
+        return;
+      }
+    }
+
     if (accion === "gasto_conciliar_no") {
       await answerCallbackQuerySafe(callback.id, "Ok, no se concilia.");
-      await sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`);
-      if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(pendiente.chatId);
+      if (pendiente.deColaCorreo && pendiente.comprobanteConfirmado) {
+        await finalizarGastoCorreoAntesDeRender(
+          () => registrarCierreGastoPendiente(pendiente),
+          () => avanzarColaCorreoSiActivo(
+            pendiente.chatId,
+            { threadId: pendiente.threadIdGmail, mensajeId: pendiente.mensajeIdGmail },
+            `gasto:conciliacion:${pendiente.id}:cierre`
+          ),
+          () => reponerSoloCierreConciliacion(
+            pendiente,
+            callback.message?.message_id,
+            "⚠️ La decisión de dejar el gasto sin conciliar ya quedó tomada, pero no pude cerrar su registro técnico. " +
+              "El correo sigue sin leer. Este botón solo reintenta el cierre."
+          ),
+          () => sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`)
+        );
+        return;
+      } else if (!pendiente.comprobanteConfirmado) {
+        await reponerPreguntaConciliacion(
+          pendiente,
+          callback.message?.message_id,
+          `⚠️ No puedo cerrar este correo: el gasto todavía no tiene soporte confirmado. ` +
+          `Adjunta o verifica el comprobante en Holded y luego vuelve a esta pregunta.`
+        );
+        return;
+      }
+      await sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`).catch(
+        (error) => console.error("[gastoCallbackHandler] No se pudo reflejar la decisión de no conciliar (no crítico):", error)
+      );
       return;
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const { nota: notaConciliacion, esperandoEleccion } = await intentarConciliar(
+    const resultadoConciliacion = await intentarConciliar(
       pendiente.empresa,
       pendiente.monto,
       pendiente.fecha,
@@ -881,21 +1839,52 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       pendiente.descripcionGasto,
       pendiente.moneda,
       pendiente.proveedor,
-      pendiente.deColaCorreo === true
+      pendiente.deColaCorreo === true,
+      pendiente.mensajeIdGmail,
+      pendiente.comprobanteConfirmado,
+      pendiente.threadIdGmail
     );
     // Si intentarConciliar mandó los botones de "🔗 Conciliar con #N" aparte (esperandoEleccion),
     // ese mensaje YA incluye la nota — no repetirla acá para no duplicar la pregunta.
-    if (!esperandoEleccion) {
-      await sendTelegramMessage(
-        pendiente.chatId,
-        notaConciliacion
-          ? `"${pendiente.descripcionGasto}"${notaConciliacion}`
-          : `No encontré ningún movimiento bancario sin conciliar que coincida con "${pendiente.descripcionGasto}" — revísalo a mano en Holded si crees que ya debería estar.`
+    if (pendiente.deColaCorreo && gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
+      await finalizarGastoCorreoAntesDeRender(
+        () => registrarCierreGastoPendiente(pendiente),
+        () => avanzarColaCorreoSiActivo(
+          pendiente.chatId,
+          { threadId: pendiente.threadIdGmail, mensajeId: pendiente.mensajeIdGmail },
+          `gasto:conciliacion:${pendiente.id}:cierre`
+        ),
+        () => reponerSoloCierreConciliacion(
+          pendiente,
+          callback.message?.message_id,
+          "⚠️ La conciliación ya quedó confirmada, pero no pude cerrar su registro técnico. " +
+            "El correo sigue sin leer. Este botón solo reintenta el cierre; no vuelve a conciliar."
+        ),
+        () => sendTelegramMessage(
+          pendiente.chatId,
+          `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`
+        )
+      );
+      return;
+    } else if (resultadoConciliacion.estado !== "esperando_eleccion" &&
+      !gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
+      // La pregunta consumida se repone con botones reales: el correo sigue UNREAD, pero el operador
+      // no queda bloqueado sin una forma de reintentar o descartarlo explícitamente.
+      await reponerPreguntaConciliacion(
+        pendiente,
+        callback.message?.message_id,
+        `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +
+        `Puedes reintentar de forma idempotente o decidir dejarla sin conciliar.`
       );
     }
-    // Igual que preguntaConciliacionPendiente arriba: si quedó esperando que Carlos elija cuál,
-    // la cola de correo espera esa respuesta (ver gasto_conciliar_elegir/_no) en vez de avanzar ya.
-    if (pendiente.deColaCorreo && !esperandoEleccion) await avanzarColaCorreoSiActivo(pendiente.chatId);
+    if (resultadoConciliacion.estado !== "esperando_eleccion") {
+      await sendTelegramMessage(
+        pendiente.chatId,
+        resultadoConciliacion.nota
+          ? `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`
+          : `No encontré ningún movimiento bancario sin conciliar que coincida con "${pendiente.descripcionGasto}" — revísalo a mano en Holded si crees que ya debería estar.`
+      ).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la conciliación en Telegram (no crítico):", error));
+    }
     return;
   }
 
@@ -908,10 +1897,60 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
 
+
+    if (!pendiente.comprobanteConfirmado) {
+      try {
+        pendiente.comprobanteConfirmado = await compraTieneComprobante(pendiente.empresa, pendiente.gastoId);
+      } catch (error) {
+        await reponerPreguntaConciliacionAmbigua(
+          pendiente,
+          callback.message?.message_id,
+          `⚠️ No pude verificar por lectura si el gasto tiene soporte. El correo sigue sin leer; vuelve a intentarlo cuando Holded responda.`
+        );
+        return;
+      }
+      if (!pendiente.comprobanteConfirmado) {
+        await reponerPreguntaConciliacionAmbigua(
+          pendiente,
+          callback.message?.message_id,
+          `⚠️ Este gasto todavía no tiene comprobante en Holded. Adjunta el soporte y vuelve a elegir; ` +
+            `Wobi lo verificará antes de cerrar el correo.`
+        );
+        return;
+      }
+    }
+
     if (accion === "gasto_conciliar_elegir_no") {
       await answerCallbackQuerySafe(callback.id, "Ok, no se concilia.");
-      await sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`);
-      if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(pendiente.chatId);
+      if (pendiente.deColaCorreo && pendiente.comprobanteConfirmado) {
+        await finalizarGastoCorreoAntesDeRender(
+          () => registrarCierreGastoPendiente(pendiente),
+          () => avanzarColaCorreoSiActivo(
+            pendiente.chatId,
+            { threadId: pendiente.threadIdGmail, mensajeId: pendiente.mensajeIdGmail },
+            `gasto:conciliacion-ambigua:${pendiente.id}:cierre`
+          ),
+          () => reponerSoloCierreConciliacionAmbigua(
+            pendiente,
+            callback.message?.message_id,
+            "⚠️ La decisión de dejar el gasto sin conciliar ya quedó tomada, pero no pude cerrar su registro técnico. " +
+              "El correo sigue sin leer. Este botón solo reintenta el cierre."
+          ),
+          () => sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`)
+        );
+        return;
+      } else if (!pendiente.comprobanteConfirmado) {
+        await reponerPreguntaConciliacionAmbigua(
+          pendiente,
+          callback.message?.message_id,
+          `⚠️ El soporte del gasto todavía no está confirmado. El correo seguirá sin leer; ` +
+            `verifica el comprobante antes de cerrar esta decisión.`
+        );
+        return;
+      }
+      await sendTelegramMessage(pendiente.chatId,
+        `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`
+      ).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la decisión ambigua (no crítico):", error));
       return;
     }
 
@@ -919,17 +1958,45 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     const movimiento = pendiente.candidatos[indice];
     if (!movimiento) {
       await answerCallbackQuerySafe(callback.id, "Movimiento inválido.");
-      // Hallazgo real de auditoría: sin esto, un índice inválido (ej. candidatosJSON corrupto)
-      // dejaba la pregunta consumida (ya se borró arriba) pero la cola de correo esperando para
-      // siempre una respuesta que nunca va a llegar — mismo criterio que gasto_conciliar_elegir_no.
-      if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(pendiente.chatId);
+      await reponerPreguntaConciliacionAmbigua(
+        pendiente,
+        callback.message?.message_id,
+        `⚠️ La opción elegida no era válida. La pregunta se conservó; selecciona uno de los movimientos listados.`
+      );
       return;
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const notaConciliacion = await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento, pendiente.gastoId, pendiente.esAproximado, pendiente.proveedor);
-    await sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${notaConciliacion}`);
-    if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(pendiente.chatId);
+    const resultadoConciliacion = await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento,
+      pendiente.gastoId, pendiente.esAproximado, pendiente.proveedor);
+    if (pendiente.deColaCorreo && gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
+      await finalizarGastoCorreoAntesDeRender(
+        () => registrarCierreGastoPendiente(pendiente),
+        () => avanzarColaCorreoSiActivo(
+          pendiente.chatId,
+          { threadId: pendiente.threadIdGmail, mensajeId: pendiente.mensajeIdGmail },
+          `gasto:conciliacion-ambigua:${pendiente.id}:cierre`
+        ),
+        () => reponerSoloCierreConciliacionAmbigua(
+          pendiente,
+          callback.message?.message_id,
+          "⚠️ La conciliación ya quedó confirmada, pero no pude cerrar su registro técnico. " +
+            "El correo sigue sin leer. Este botón solo reintenta el cierre; no vuelve a conciliar."
+        ),
+        () => sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`)
+      );
+      return;
+    } else if (!gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
+      await reponerPreguntaConciliacionAmbigua(
+        pendiente,
+        callback.message?.message_id,
+        `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +
+        `puedes verificar/reintentar una opción o dejarla sin conciliar.`
+      );
+    }
+    await sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`).catch(
+      (error) => console.error("[gastoCallbackHandler] No se pudo reflejar la conciliación ambigua (no crítico):", error)
+    );
     return;
   }
 
@@ -942,13 +2009,27 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     const alternativa = resolucion.alternativas[Number(extra)];
     if (!alternativa) {
       await answerCallbackQuerySafe(callback.id, "Alternativa inválida.");
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        "⚠️ La alternativa elegida no era válida. La selección se conservó; elige nuevamente."
+      );
       return;
     }
 
     await answerCallbackQuerySafe(callback.id, "Procesando...");
-    await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Procesando con "${alternativa.contactName}"...`, []);
+    await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Procesando con "${alternativa.contactName}"...`, []).catch(
+      (error) => console.error("[gastoCallbackHandler] No se pudo mostrar el procesamiento de contacto (no crítico):", error)
+    );
 
-    await procesarGastoConContactoResuelto(resolucion, { id: alternativa.contactId, name: alternativa.contactName });
+    try {
+      await procesarGastoConContactoResuelto(resolucion, { id: alternativa.contactId, name: alternativa.contactName });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        `⚠️ No pude completar la selección de proveedor (${message}). La acción quedó disponible para reintentar.`
+      );
+    }
     return;
   }
 
@@ -965,10 +2046,20 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       resolucion.messageId,
       `🔄 Creando el gasto con el contacto genérico "PROVEEDOR SIN IDENTIFICAR"...`,
       []
+    ).catch((error) =>
+      console.error("[gastoCallbackHandler] No se pudo mostrar el procesamiento sin proveedor (no crítico):", error)
     );
 
     const placeholder = CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA[resolucion.empresaFinal];
-    await procesarGastoConContactoResuelto(resolucion, placeholder, false);
+    try {
+      await procesarGastoConContactoResuelto(resolucion, placeholder, false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        `⚠️ No pude completar el gasto con el contacto genérico (${message}). La acción quedó disponible para reintentar.`
+      );
+    }
     return;
   }
 
@@ -980,7 +2071,14 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Creando contacto...");
-    await editTelegramMessage(resolucion.chatId, resolucion.messageId, `🔄 Creando el contacto "${resolucion.propuesta.proveedor}" en Holded...`, []);
+    await editTelegramMessage(
+      resolucion.chatId,
+      resolucion.messageId,
+      `🔄 Creando el contacto "${resolucion.propuesta.proveedor}" en Holded...`,
+      []
+    ).catch((error) =>
+      console.error("[gastoCallbackHandler] No se pudo mostrar la creación del contacto (no crítico):", error)
+    );
 
     try {
       // Hallazgo real de auditoría: sin esto, dos propuestas del MISMO proveedor nuevo (ej. dos
@@ -1008,25 +2106,19 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       // es real y propio de este proveedor, así que la próxima factura del mismo debe resolver directo.
       await procesarGastoConContactoResuelto(resolucion, contactoNuevo);
     } catch (error) {
-      // Mismo criterio que el catch general de procesarGastoConContactoResuelto (arriba): la
-      // resolución ya se consumió (consumirResolucionContacto), así que ningún botón nuevo con este
-      // mismo id serviría para reintentar — se avisa el error real y se pide reenviar el documento en
-      // vez de ofrecer un botón que ya no apunta a nada.
       const message = error instanceof Error ? error.message : String(error);
       console.error("[gastoCallbackHandler] Error creando contacto nuevo en Holded:", message);
       const detalle =
         error instanceof ContactosHoldedAmbiguosError
           ? error.despuesDeEscritura
-            ? `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s) después del intento. Wobi bloqueó cualquier repetición; revisa cuál contacto quedó creado antes de reenviar el documento.`
-            : `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s). Wobi no creó otro contacto; revisa los duplicados en Holded antes de reenviar el documento.`
+            ? `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s) después del intento. Wobi bloqueó cualquier repetición; revisa cuál contacto quedó creado y vuelve a verificar desde estos botones.`
+            : `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s). Wobi no creó otro contacto; revisa los duplicados en Holded y vuelve a elegir.`
           : error instanceof CreacionContactoInciertaError
-            ? "Holded no confirmó si creó el contacto. Wobi bloqueó cualquier repetición; no reenvíes el documento ni lo crees manualmente hasta comprobar el proveedor en Holded."
-            : `No pude crear el contacto (${message}); el gasto NO se creó. Reenvía el documento original para intentarlo de nuevo.`;
-      await editTelegramMessage(
-        resolucion.chatId,
-        resolucion.messageId,
-        `⚠️ ${detalle}`,
-        []
+            ? "Holded no confirmó si creó el contacto. Wobi conservará esta acción y, al reintentar, verificará el proveedor antes de cualquier creación. No reenvíes el documento."
+            : `No pude crear el contacto (${message}); el gasto NO se creó. La selección quedó disponible para reintentar sin reenviar el documento.`;
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        `⚠️ ${detalle}`
       );
     }
     return;
@@ -1187,6 +2279,15 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
     return;
   }
 
+  const colaTexto = ["corregir", "ajustarmonto", "otrasacciones"].filter((k) => necesitaTexto(k) && seleccion.includes(k));
+  const decisionFinal = seleccion.find((k) => esAccionFinal(k));
+
+  // Si la selección necesita una respuesta del usuario, ese siguiente
+  // estado debe existir en Sheets antes de quitar el teclado actual.
+  if (colaTexto.length > 0) {
+    await guardarPendienteSeleccionGasto(propuesta.chatId, propuesta.id, colaTexto, decisionFinal);
+  }
+
   await answerCallbackQuerySafe(callback.id, "Aplicando...");
 
   // Pedido explícito de Carlos, tras el aviso de que un doble-toque en este
@@ -1199,9 +2300,6 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
   // avisar de que existe. El aviso de "procesando" va en un mensaje NUEVO
   // (no reemplaza el texto de la propuesta, que Carlos puede querer seguir
   // viendo con su desglose completo).
-  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
-    console.error("[gastoCallbackHandler] Error quitando el teclado antes de aplicar (no crítico):", error)
-  );
   await sendTelegramMessage(propuesta.chatId, "🔄 Aplicando tu selección...").catch((error) =>
     console.error("[gastoCallbackHandler] Error avisando que se está procesando (no crítico):", error)
   );
@@ -1221,23 +2319,32 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
   // cuando ejecutarResponderCorreo/ejecutarGuardarConocimiento en realidad
   // no hicieron nada (las dos ya no-opean en silencio sin correoOrigen).
   if (seleccion.includes("responder") && propuesta.correoOrigen) {
-    await ejecutarResponderCorreo(propuesta).catch((error) =>
-      console.error("[gastoCallbackHandler] Error ejecutando 'Responder correo' desde Aprobar selección:", error)
-    );
-    resumen.push("✉️ Responder correo — ya en camino.");
+    const iniciada = await ejecutarResponderCorreo(propuesta).catch((error) => {
+      console.error("[gastoCallbackHandler] Error ejecutando 'Responder correo' desde Aprobar selección:", error);
+      return false;
+    });
+    resumen.push(iniciada
+      ? "✉️ Responder correo — borrador pendiente de tu revisión."
+      : "⚠️ Responder correo — no se pudo preparar; no quedó una acción huérfana.");
   }
   if (seleccion.includes("guardarconocimiento") && propuesta.correoOrigen) {
-    await ejecutarGuardarConocimiento(propuesta).catch((error) =>
-      console.error("[gastoCallbackHandler] Error ejecutando 'Guardar como conocimiento' desde Aprobar selección:", error)
-    );
-    resumen.push("🧠 Guardar como conocimiento — en curso.");
+    const iniciada = await ejecutarGuardarConocimiento(propuesta).catch((error) => {
+      console.error("[gastoCallbackHandler] Error ejecutando 'Guardar como conocimiento' desde Aprobar selección:", error);
+      return false;
+    });
+    resumen.push(iniciada
+      ? "🧠 Guardar como conocimiento — pendiente de confirmar empresa."
+      : "⚠️ Guardar como conocimiento — no se pudo preparar; no quedó una acción huérfana.");
   }
 
-  const colaTexto = ["corregir", "ajustarmonto", "otrasacciones"].filter((k) => necesitaTexto(k) && seleccion.includes(k));
-  const decisionFinal = seleccion.find((k) => esAccionFinal(k));
+  // Las acciones sin texto ya publicaron su propio estado durable y la cola
+  // de texto, cuando existe, ya quedó guardada arriba. Recién ahora se
+  // retiran los botones del mensaje anterior.
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch((error) =>
+    console.error("[gastoCallbackHandler] Error quitando el teclado antes de aplicar (no crítico):", error)
+  );
 
   if (colaTexto.length > 0) {
-    await guardarPendienteSeleccionGasto(propuesta.chatId, propuesta.id, colaTexto, decisionFinal);
     const restantes = colaTexto.slice(1).map((k) => etiquetaAccion(k));
     await sendTelegramMessage(
       propuesta.chatId,
@@ -1377,7 +2484,14 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
 }
 
 interface ResultadoCrearGasto {
+  gastoId: string;
   mensaje: string;
+  /** Holded confirmó la presencia del soporte; si es false el correo debe seguir UNREAD. */
+  comprobanteConfirmado: boolean;
+  /** Estado terminal de la conciliación inline. Solo `conciliada` permite cerrar la cola. */
+  estadoConciliacion?: EstadoIntentoConciliacion;
+  /** Compra ya creada a la que todavía falta confirmar/adjuntar el soporte. */
+  soportePendiente?: PurchaseCandidato;
   /** Presente solo cuando conciliarInline=false — el llamador debe preguntar con preguntarSiConciliar. */
   conciliacionPendiente?: {
     empresa: Empresa;
@@ -1490,9 +2604,29 @@ async function crearGastoYReportar(
    */
   movimientoObjetivo?: MovimientoBancarioCandidato
 ): Promise<ResultadoCrearGasto> {
-  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuesta.proveedor, propuesta.moneda));
+  // Bloqueo previo a cualquier escritura financiera. Si el desglose no
+  // reproduce el total del documento, tampoco se permite llegar al camino
+  // de conciliación inline.
+  validarTotalFiscalGasto(propuesta);
+
+  const propuestaFinal = await prepararPropuestaFinalGasto(propuesta, {
+    empresa: empresaFinal,
+    concepto: conceptoFinal || propuesta.concepto,
+    forzarReinferencia:
+      empresaFinal !== propuesta.empresa ||
+      (conceptoFinal || propuesta.concepto).trim().toLowerCase() !== propuesta.concepto.trim().toLowerCase() ||
+      !propuesta.cuentaId,
+  });
+  // A partir de aquí no debe sobrevivir ninguna lectura de la propuesta
+  // previa a la corrección: creación, soporte, aprendizaje, conciliación e
+  // idempotencia trabajan todos sobre la misma propuesta final.
+  propuesta = propuestaFinal;
+  const cuentaIdFinal = propuestaFinal.cuentaId!;
+  const tagsFinales = propuestaFinal.cuentaTags ?? [];
+
+  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuestaFinal.proveedor, propuestaFinal.moneda));
   if (!contacto) {
-    throw new ContactoNoEncontradoError(propuesta.proveedor, empresaFinal);
+    throw new ContactoNoEncontradoError(propuestaFinal.proveedor, empresaFinal);
   }
 
   // Con el contacto placeholder, el nombre real del proveedor NUNCA debe
@@ -1500,57 +2634,20 @@ async function crearGastoYReportar(
   // aunque el contacto en sí sea genérico.
   const descripcionFinal =
     !aprenderAlias && contactoForzado
-      ? `[Proveedor real: ${propuesta.proveedor}] ${conceptoFinal || propuesta.concepto}`
-      : conceptoFinal || propuesta.concepto;
+      ? `[Proveedor real: ${propuestaFinal.proveedor}] ${propuestaFinal.concepto}`
+      : propuestaFinal.concepto;
 
   const lineas =
-    propuesta.lineas.length > 0
-      ? propuesta.lineas
+    propuestaFinal.lineas.length > 0
+      ? propuestaFinal.lineas
       : [
           {
             concepto: descripcionFinal,
-            base: propuesta.monto,
+            base: propuestaFinal.monto,
             tipoIvaPct: 0,
             tratamientoFiscal: "inversion_sujeto_pasivo" as const,
           },
         ];
-
-  // Pedido explícito de Carlos, tras un caso real: una factura de alquiler
-  // con retención de IRPF se registró en Holded sin la retención — el
-  // gasto quedó con un total que no coincidía con el de la factura real
-  // (ni con lo que de verdad salió del banco), y el chat lo reportó como
-  // "conciliado" sin avisar del descuadre. Se calcula acá el total que
-  // debería dar Holded a partir de las mismas líneas que se le mandan
-  // (base + IVA - retención de cada una) y se compara contra el total real
-  // de la propuesta — si no coincide, se avisa explícitamente en vez de
-  // reportar éxito sin más, para que se pueda corregir a mano en Holded.
-  const totalCalculado = lineas.reduce(
-    (acc, l) => acc + l.base * (1 + l.tipoIvaPct / 100 - (l.retencionPct ?? 0) / 100),
-    0
-  );
-  const notaDescuadre =
-    Math.abs(totalCalculado - propuesta.monto) > 0.05
-      ? `\n\n⚠️ El total que va a quedar registrado en Holded (${totalCalculado.toFixed(2)} ${propuesta.moneda}, según las líneas) ` +
-        `NO coincide con el total real de la factura (${propuesta.monto.toFixed(2)} ${propuesta.moneda}) — revísalo y corrígelo a mano en Holded ` +
-        `(puede ser una retención de IRPF u otro descuento que no se haya interpretado bien).`
-      : "";
-
-  // Pedido explícito de Carlos, tras un caso real: un billete de tren OUIGO
-  // se registró con la cuenta contable por defecto de Holded ("Compras de
-  // mercaderías") en vez de algo relacionado con viajes — inferirCuentaGasto
-  // (core/holded/write.ts) SOLO puede sugerir una cuenta que YA esté en uso
-  // real en otra compra parecida (Holded no expone su plan de cuentas
-  // completo por API, así que nunca puede inventar un id) — cuando no
-  // encuentra ninguna coincidencia razonable (ej. el primer gasto de este
-  // tipo para esta empresa), deja que Holded use su cuenta genérica en
-  // silencio. Ahora se avisa explícitamente en vez de dejarlo pasar sin
-  // decir nada — "buscar en Holded o preguntar": ya se buscó y no había
-  // nada parecido, así que toca preguntar/corregir a mano.
-  const notaCuentaSinInferir = !propuesta.cuentaId
-    ? `\n\n⚠️ No encontré ninguna compra parecida ya registrada para elegir la cuenta contable — Holded lo dejó en su ` +
-      `cuenta genérica por defecto. Revisa y corrige la "Cuenta contable" a mano en Holded si no es la correcta ` +
-      `(la próxima vez que aparezca algo parecido, ya la usaré directo).`
-    : "";
 
   // Pedido explícito de Carlos, tras un caso real (recibo de Uber sin
   // ningún folio/número visible): "recuerda que si no lo identificas en el
@@ -1622,8 +2719,8 @@ async function crearGastoYReportar(
         fecha: fechaBusqueda,
         descripcion: descripcionFinal,
         lineas,
-        cuentaId: propuesta.cuentaId,
-        tags: propuesta.cuentaTags,
+        cuentaId: cuentaIdFinal,
+        tags: tagsFinales,
         moneda: propuesta.moneda,
         numeroDocumento: propuesta.numeroDocumento,
       },
@@ -1653,9 +2750,11 @@ async function crearGastoYReportar(
   // DUPLICADO. Ahora se captura acá y se reporta con claridad qué sí y qué
   // no se logró, y el flujo sigue hasta la pregunta de conciliación.
   let notaComprobante = "";
+  let comprobanteConfirmado = true;
   try {
-    await adjuntarYLimpiar(propuesta, gasto.id);
+    await adjuntarYLimpiar(propuesta, gasto.id, empresaFinal);
   } catch (error) {
+    comprobanteConfirmado = false;
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[gastoCallbackHandler] Gasto ${gasto.id} creado pero falló adjuntar el comprobante:`, message);
     notaComprobante = error instanceof AdjuntoCompraInciertoError
@@ -1702,8 +2801,9 @@ async function crearGastoYReportar(
     // Hallazgo real de auditoría (caso Avianca/Larrauri, 2026-09-10): registro directo de "este correo
     // ya se convirtió en este gasto" — ver gastoPorCorreoStore.ts para el bug real que esto cierra
     // (el mismo correo reprocesado generaba una propuesta duplicada, a veces sin que buscarGastoSimilar
-    // la atrapara a tiempo por depender de la propia búsqueda de Holded). No crítico: si esto falla, la
-    // protección normal de duplicados (buscarGastoSimilar) sigue siendo la primera línea de defensa.
+    // la atrapara a tiempo por depender de la propia búsqueda de Holded). Para un origen Gmail esta
+    // escritura sí es parte del cierre durable: si falla, el callback conserva la misma propuesta y
+    // el idempotency key de Holded permite reintentar sin crear otra compra.
     propuesta.correoOrigen?.mensajeIdGmail
       ? registrarGastoDesdeCorreo({
           mensajeIdGmail: propuesta.correoOrigen.mensajeIdGmail,
@@ -1713,6 +2813,7 @@ async function crearGastoYReportar(
           attachmentId: propuesta.origenAdjuntoGmail?.partId,
           gastoId: gasto.id,
           empresa: empresaFinal,
+          completado: false,
           identidad: {
             huellaContenido: propuesta.huellaContenido,
             numeroDocumento: propuesta.numeroDocumento,
@@ -1722,7 +2823,7 @@ async function crearGastoYReportar(
             fecha: propuesta.fecha,
             concepto: propuesta.concepto,
           },
-        }).catch((error) => console.error("[gastoCallbackHandler] No se pudo registrar el gasto por correo (no crítico):", error))
+        })
       : Promise.resolve(),
     contactoForzado && aprenderAlias
       ? registrarAliasProveedor(
@@ -1733,8 +2834,8 @@ async function crearGastoYReportar(
           propuesta.moneda
         ).catch((error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error))
       : Promise.resolve(),
-    propuesta.cuentaId && empresaFinal === propuesta.empresa
-      ? registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: propuesta.cuentaId }).catch(
+    cuentaIdFinal
+      ? registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: cuentaIdFinal }).catch(
           (error) => console.error("[gastoCallbackHandler] No se pudo registrar la asignación de cuenta (no crítico):", error)
         )
       : Promise.resolve(),
@@ -1763,9 +2864,35 @@ async function crearGastoYReportar(
     (notaComprobante ? "." : " y comprobante adjuntado.") +
     notaComprobante +
     notaPlaceholder +
-    notaDescuadre +
-    notaCuentaSinInferir +
     notaNumeroDocumento;
+
+  if (!comprobanteConfirmado) {
+    return {
+      gastoId: gasto.id,
+      mensaje: baseMensaje,
+      comprobanteConfirmado: false,
+      soportePendiente: {
+        id: gasto.id,
+        contactName: nombreContacto,
+        fecha: propuesta.fecha,
+        total: propuesta.monto,
+        descripcion: conceptoFinal || propuesta.concepto,
+        documentNumber: propuesta.numeroDocumento,
+        moneda: propuesta.moneda,
+        soportePendiente: true,
+      },
+    };
+  }
+
+  const datosConciliacionPendiente = {
+    empresa: empresaFinal,
+    monto: propuesta.monto,
+    fecha: propuesta.fecha,
+    descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
+    gastoId: gasto.id,
+    moneda: propuesta.moneda,
+    proveedor: propuesta.proveedor,
+  };
 
   if (conciliarInline) {
     if (movimientoObjetivo) {
@@ -1776,14 +2903,17 @@ async function crearGastoYReportar(
       // pasar propuesta.proveedor acá, así que este camino (posiblemente el
       // más común, ya que resuelve la ambigüedad en el mismo tap que crea el
       // gasto) nunca alimentaba movimientoAmbiguoAprendidoSheet.ts.
-      const notaConciliacion = await conciliarContraMovimientoEspecifico(
+      const resultadoConciliacion = await conciliarContraMovimientoEspecifico(
         empresaFinal,
         movimientoObjetivo,
         gasto.id,
         movimientoObjetivo.origenCoincidencia === "tipo_cambio" || movimientoObjetivo.origenCoincidencia === "aproximada",
         propuesta.proveedor
       );
-      return { mensaje: `${baseMensaje}${notaConciliacion}` };
+      return { gastoId: gasto.id, mensaje: `${baseMensaje}${resultadoConciliacion.nota}`, comprobanteConfirmado,
+        estadoConciliacion: resultadoConciliacion.estado,
+        conciliacionPendiente: resultadoConciliacion.estado === "conciliada" ||
+          resultadoConciliacion.estado === "esperando_eleccion" ? undefined : datosConciliacionPendiente };
     }
     // propuesta.proveedor (el texto real leído de la factura/correo, ej.
     // "Uber"), NO nombreContacto — bug real encontrado en auditoría:
@@ -1792,7 +2922,7 @@ async function crearGastoYReportar(
     // aparecer en la descripción de ningún movimiento bancario real, así
     // que la búsqueda aproximada nunca encontraba nada aunque el nombre
     // real (que sí se conocía) hubiera hecho match.
-    const { nota: notaConciliacion, esperandoEleccion } = await intentarConciliar(
+    const resultadoConciliacion = await intentarConciliar(
       empresaFinal,
       propuesta.monto,
       propuesta.fecha,
@@ -1801,23 +2931,23 @@ async function crearGastoYReportar(
       `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
       propuesta.moneda,
       propuesta.proveedor,
-      propuesta.deColaCorreo === true
+      propuesta.deColaCorreo === true,
+      propuesta.correoOrigen?.mensajeIdGmail,
+      comprobanteConfirmado,
+      propuesta.correoOrigen?.threadId
     );
-    return { mensaje: `${baseMensaje}${notaConciliacion}`, esperandoEleccionConciliacion: esperandoEleccion };
+    return { gastoId: gasto.id, mensaje: `${baseMensaje}${resultadoConciliacion.nota}`, comprobanteConfirmado,
+      estadoConciliacion: resultadoConciliacion.estado,
+      esperandoEleccionConciliacion: resultadoConciliacion.estado === "esperando_eleccion",
+      conciliacionPendiente: resultadoConciliacion.estado === "conciliada" ||
+        resultadoConciliacion.estado === "esperando_eleccion" ? undefined : datosConciliacionPendiente };
   }
 
   return {
+    gastoId: gasto.id,
     mensaje: baseMensaje,
-    conciliacionPendiente: {
-      empresa: empresaFinal,
-      monto: propuesta.monto,
-      fecha: propuesta.fecha,
-      descripcionGasto: `${nombreContacto} — ${propuesta.monto} ${propuesta.moneda}`,
-      gastoId: gasto.id,
-      moneda: propuesta.moneda,
-      // propuesta.proveedor, no nombreContacto — mismo motivo que arriba.
-      proveedor: propuesta.proveedor,
-    },
+    comprobanteConfirmado,
+    conciliacionPendiente: datosConciliacionPendiente,
   };
 }
 
@@ -1905,12 +3035,16 @@ async function manejarFechaBloqueada(
   ];
 
   if (messageId != null) {
-    await editTelegramMessage(chatId, messageId, texto, botones);
-    await actualizarMessageIdGasto(nuevaPropuesta.id, messageId);
-  } else {
-    const mensajeIdFinal = await sendTelegramMessageWithButtons(chatId, texto, botones);
-    await actualizarMessageIdGasto(nuevaPropuesta.id, mensajeIdFinal);
+    try {
+      await editTelegramMessage(chatId, messageId, texto, botones);
+      await actualizarMessageIdGasto(nuevaPropuesta.id, messageId);
+      return;
+    } catch (error) {
+      console.error("[gastoCallbackHandler] No se pudo publicar la fecha alternativa en el mensaje original; se enviará uno nuevo:", error);
+    }
   }
+  const mensajeIdFinal = await sendTelegramMessageWithButtons(chatId, texto, botones);
+  await actualizarMessageIdGasto(nuevaPropuesta.id, mensajeIdFinal);
 }
 
 /**
@@ -1927,16 +3061,42 @@ export async function procesarGastoConContactoResuelto(
   contacto: { id: string; name: string },
   aprenderAlias: boolean = true
 ): Promise<void> {
+  const propuestaCorregidaBase: PropuestaGasto = {
+    ...resolucion.propuesta,
+    empresa: resolucion.empresaFinal,
+    concepto: resolucion.conceptoFinal || resolucion.propuesta.concepto,
+  };
+  let propuestaFinal = propuestaCorregidaBase;
   try {
+    propuestaFinal = await prepararPropuestaFinalGasto(propuestaCorregidaBase, {
+      empresa: resolucion.empresaFinal,
+      concepto: resolucion.conceptoFinal || resolucion.propuesta.concepto,
+      proveedor: contacto.name,
+      forzarReinferencia: true,
+    });
     const resultado = await crearGastoYReportar(
-      resolucion.propuesta,
-      resolucion.empresaFinal,
-      resolucion.conceptoFinal,
+      propuestaFinal,
+      propuestaFinal.empresa,
+      propuestaFinal.concepto,
       contacto,
       false,
       aprenderAlias
     );
-    await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []);
+    if (!resultado.comprobanteConfirmado && resultado.soportePendiente) {
+      await reponerPropuestaParaReintento(
+        propuestaFinal,
+        `${resultado.mensaje}\n\nEl correo seguirá sin leer y no se intentará conciliar hasta confirmar el soporte. ` +
+          `Usa “Reintentar/verificar soporte del gasto creado”.`,
+        resultado.soportePendiente
+      );
+      return;
+    }
+    const cierreTerminal = resultado.comprobanteConfirmado && resultado.estadoConciliacion === "conciliada";
+    if (!cierreTerminal) {
+      await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []).catch(
+        (error) => console.error("[gastoCallbackHandler] No se pudo reflejar el gasto con contacto resuelto (no crítico):", error)
+      );
+    }
     let preguntaConciliacionPendiente = false;
     if (resultado.conciliacionPendiente) {
       preguntaConciliacionPendiente = await preguntarSiConciliar(
@@ -1949,17 +3109,52 @@ export async function procesarGastoConContactoResuelto(
         resultado.conciliacionPendiente.moneda,
         resultado.conciliacionPendiente.proveedor,
         resolucion.propuesta.deColaCorreo === true,
-        resolucion.propuesta.correoOrigen?.mensajeIdGmail
+        resolucion.propuesta.correoOrigen?.mensajeIdGmail,
+        resultado.comprobanteConfirmado,
+        resolucion.messageId,
+        resolucion.propuesta.correoOrigen?.threadId
+      );
+      if (!preguntaConciliacionPendiente) {
+        const seguimiento = resultado.conciliacionPendiente;
+        await reponerPropuestaParaReintento(
+          propuestaFinal,
+          `${resultado.mensaje}\n\n⚠️ No pude publicar la pregunta de conciliación. El correo seguirá sin leer.`,
+          { id: seguimiento.gastoId, contactName: contacto.name, fecha: seguimiento.fecha,
+            total: seguimiento.monto, descripcion: seguimiento.descripcionGasto,
+            moneda: seguimiento.moneda, conciliacionPendiente: true }
+        );
+        return;
+      }
+    }
+    if (resolucion.propuesta.deColaCorreo && !preguntaConciliacionPendiente && cierreTerminal) {
+      await finalizarGastoCorreoAntesDeRender(
+        () => registrarCierreGastoDePropuesta(propuestaFinal, resultado.gastoId, resolucion.empresaFinal),
+        () => avanzarColaCorreoSiActivo(
+          resolucion.chatId,
+          { threadId: resolucion.propuesta.correoOrigen?.threadId,
+            mensajeId: resolucion.propuesta.correoOrigen?.mensajeIdGmail },
+          `gasto:${propuestaFinal.id}:contacto-cierre`
+        ),
+        () => reponerSoloCierrePropuesta(
+          { ...propuestaFinal, candidatos: [{ id: resultado.gastoId, contactName: contacto.name,
+            fecha: propuestaFinal.fecha, total: propuestaFinal.monto, descripcion: propuestaFinal.concepto,
+            moneda: propuestaFinal.moneda, conciliacionPendiente: true }] },
+          "⚠️ El gasto corregido ya terminó, pero no pude cerrar su registro técnico. " +
+            "El correo sigue sin leer y el botón disponible no repite ninguna operación financiera."
+        ),
+        () => editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, [])
+      );
+    } else if (!resolucion.propuesta.deColaCorreo && cierreTerminal) {
+      await editTelegramMessage(resolucion.chatId, resolucion.messageId, resultado.mensaje, []).catch(
+        (error) => console.error("[gastoCallbackHandler] No se pudo reflejar el cierre con contacto resuelto (no crítico):", error)
       );
     }
-    // Ver comentario equivalente en el handler principal (handleGastoCallback) — crear el gasto no basta si todavía falta la decisión de conciliar.
-    if (resolucion.propuesta.deColaCorreo && !preguntaConciliacionPendiente) await avanzarColaCorreoSiActivo(resolucion.chatId);
   } catch (error) {
     if (error instanceof FechaBloqueadaError) {
       await manejarFechaBloqueada(
-        resolucion.propuesta,
-        resolucion.empresaFinal,
-        resolucion.conceptoFinal,
+        propuestaFinal,
+        propuestaFinal.empresa,
+        propuestaFinal.concepto,
         error,
         resolucion.chatId,
         resolucion.messageId
@@ -1967,29 +3162,33 @@ export async function procesarGastoConContactoResuelto(
       return;
     }
     if (error instanceof PosibleDuplicadoGastoError) {
-      await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensajeDuplicadoDetectado(error.candidatos), []);
+      await reponerPropuestaParaReintento(
+        { ...propuestaFinal, candidatos: error.candidatos },
+        `${mensajeDuplicadoDetectado(error.candidatos)}\n\nEl correo seguirá sin leer; elige el gasto correcto o confirma uno nuevo.`
+      );
       return;
     }
     if (error instanceof VerificacionDuplicadoFallidaError) {
-      await editTelegramMessage(resolucion.chatId, resolucion.messageId, mensajeVerificacionDuplicadoFallida(error), []);
+      await reponerPropuestaParaReintento(
+        propuestaFinal,
+        `${mensajeVerificacionDuplicadoFallida(error)}\n\nEl correo seguirá sin leer y la propuesta queda disponible para reintentar.`
+      );
       return;
     }
     if (error instanceof CreacionCompraInciertaError) {
-      await editTelegramMessage(
-        resolucion.chatId,
-        resolucion.messageId,
-        mensajeCreacionCompraIncierta(resolucion.propuesta.proveedor),
-        []
+      await reponerVerificacionCreacionIncierta(
+        propuestaFinal,
+        `${mensajeCreacionCompraIncierta(resolucion.propuesta.proveedor)}\n\n` +
+          `El correo seguirá sin leer; verifica el estado sin repetir la creación.`
       );
       return;
     }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando gasto con contacto resuelto:", message);
-    await editTelegramMessage(
-      resolucion.chatId,
-      resolucion.messageId,
-      `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\nEl archivo local no se borró — puedes reenviarlo.`,
-      []
+    await reponerPropuestaParaReintento(
+      propuestaFinal,
+      `⚠️ Error procesando "${resolucion.propuesta.proveedor}"\n\n${message}\n\n` +
+        `El correo sigue sin leer y la propuesta quedó disponible para reintentar sin reenviar el documento.`
     );
     // No avanza la cola en el error — mismo criterio que arriba.
   }
@@ -2157,12 +3356,43 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
   }
 
   const { empresa: empresaFinal, concepto: conceptoFinal } = parsearCorreccionClasificacion(textoUsuario, propuesta.empresa);
+  const propuestaCorregidaBase: PropuestaGasto = {
+    ...propuesta,
+    empresa: empresaFinal,
+    concepto: conceptoFinal || propuesta.concepto,
+  };
+  let propuestaCorregida = propuestaCorregidaBase;
 
-  await sendTelegramMessage(pendiente.chatId, `🔄 Procesando "${propuesta.proveedor}" con la corrección...`);
+  await sendTelegramMessage(pendiente.chatId, `🔄 Procesando "${propuesta.proveedor}" con la corrección...`).catch(
+    (error) => console.error("[gastoCallbackHandler] No se pudo mostrar el progreso de la corrección (no crítico):", error)
+  );
 
   try {
-    const resultado = await crearGastoYReportar(propuesta, empresaFinal, conceptoFinal);
-    await sendTelegramMessage(propuesta.chatId, resultado.mensaje);
+    propuestaCorregida = await prepararPropuestaFinalGasto(propuestaCorregidaBase, {
+      empresa: empresaFinal,
+      concepto: conceptoFinal || propuesta.concepto,
+      forzarReinferencia: true,
+    });
+    const resultado = await crearGastoYReportar(
+      propuestaCorregida,
+      propuestaCorregida.empresa,
+      propuestaCorregida.concepto
+    );
+    if (!resultado.comprobanteConfirmado && resultado.soportePendiente) {
+      await reponerPropuestaParaReintento(
+        propuestaCorregida,
+        `${resultado.mensaje}\n\nEl correo seguirá sin leer y no se intentará conciliar hasta confirmar el soporte. ` +
+          `Usa “Reintentar/verificar soporte del gasto creado”.`,
+        resultado.soportePendiente
+      );
+      return;
+    }
+    const cierreTerminal = resultado.comprobanteConfirmado && resultado.estadoConciliacion === "conciliada";
+    if (!cierreTerminal) {
+      await sendTelegramMessage(propuesta.chatId, resultado.mensaje).catch(
+        (error) => console.error("[gastoCallbackHandler] No se pudo reflejar el gasto corregido (no crítico):", error)
+      );
+    }
     let preguntaConciliacionPendiente = false;
     if (resultado.conciliacionPendiente) {
       preguntaConciliacionPendiente = await preguntarSiConciliar(
@@ -2175,35 +3405,82 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         resultado.conciliacionPendiente.moneda,
         resultado.conciliacionPendiente.proveedor,
         propuesta.deColaCorreo === true,
-        propuesta.correoOrigen?.mensajeIdGmail
+        propuesta.correoOrigen?.mensajeIdGmail,
+        resultado.comprobanteConfirmado,
+        propuesta.messageId,
+        propuesta.correoOrigen?.threadId
+      );
+      if (!preguntaConciliacionPendiente) {
+        const seguimiento = resultado.conciliacionPendiente;
+        await reponerPropuestaParaReintento(
+          propuestaCorregida,
+          `${resultado.mensaje}\n\n⚠️ No pude publicar la pregunta de conciliación. El correo seguirá sin leer.`,
+          { id: seguimiento.gastoId, contactName: propuesta.proveedor, fecha: seguimiento.fecha,
+            total: seguimiento.monto, descripcion: seguimiento.descripcionGasto,
+            moneda: seguimiento.moneda, conciliacionPendiente: true }
+        );
+        return;
+      }
+    }
+    if (propuesta.deColaCorreo && !preguntaConciliacionPendiente && cierreTerminal) {
+      await finalizarGastoCorreoAntesDeRender(
+        () => registrarCierreGastoDePropuesta(propuestaCorregida, resultado.gastoId, empresaFinal),
+        () => avanzarColaCorreoSiActivo(
+          propuesta.chatId,
+          { threadId: propuesta.correoOrigen?.threadId, mensajeId: propuesta.correoOrigen?.mensajeIdGmail },
+          `gasto:${propuestaCorregida.id}:correccion-cierre`
+        ),
+        () => reponerSoloCierrePropuesta(
+          { ...propuestaCorregida, candidatos: [{ id: resultado.gastoId,
+            contactName: propuestaCorregida.proveedor, fecha: propuestaCorregida.fecha,
+            total: propuestaCorregida.monto, descripcion: propuestaCorregida.concepto,
+            moneda: propuestaCorregida.moneda, conciliacionPendiente: true }] },
+          "⚠️ El gasto corregido ya terminó, pero no pude cerrar su registro técnico. " +
+            "El correo sigue sin leer y el botón disponible no repite ninguna operación financiera."
+        ),
+        () => sendTelegramMessage(propuesta.chatId, resultado.mensaje)
+      );
+    } else if (!propuesta.deColaCorreo && cierreTerminal) {
+      await sendTelegramMessage(propuesta.chatId, resultado.mensaje).catch(
+        (error) => console.error("[gastoCallbackHandler] No se pudo reflejar el cierre corregido (no crítico):", error)
       );
     }
-    // Ver comentario equivalente en el handler principal (handleGastoCallback) — crear el gasto no basta si todavía falta la decisión de conciliar.
-    if (propuesta.deColaCorreo && !preguntaConciliacionPendiente) await avanzarColaCorreoSiActivo(propuesta.chatId);
   } catch (error) {
     if (error instanceof ContactoNoEncontradoError) {
-      await manejarContactoNoEncontrado(propuesta, empresaFinal, conceptoFinal, propuesta.chatId, undefined);
+      await manejarContactoNoEncontrado(propuestaCorregida, empresaFinal, conceptoFinal, propuesta.chatId, undefined);
       return;
     }
     if (error instanceof FechaBloqueadaError) {
-      await manejarFechaBloqueada(propuesta, empresaFinal, conceptoFinal, error, propuesta.chatId, undefined);
+      await manejarFechaBloqueada(propuestaCorregida, empresaFinal, conceptoFinal, error, propuesta.chatId, undefined);
       return;
     }
     if (error instanceof PosibleDuplicadoGastoError) {
-      await sendTelegramMessage(propuesta.chatId, mensajeDuplicadoDetectado(error.candidatos));
+      await reponerPropuestaParaReintento(
+        { ...propuestaCorregida, candidatos: error.candidatos },
+        `${mensajeDuplicadoDetectado(error.candidatos)}\n\nEl correo seguirá sin leer; elige el gasto correcto o confirma uno nuevo.`
+      );
       return;
     }
     if (error instanceof VerificacionDuplicadoFallidaError) {
-      await sendTelegramMessage(propuesta.chatId, mensajeVerificacionDuplicadoFallida(error));
+      await reponerPropuestaParaReintento(
+        propuestaCorregida,
+        `${mensajeVerificacionDuplicadoFallida(error)}\n\nEl correo seguirá sin leer y la propuesta queda disponible para reintentar.`
+      );
       return;
     }
     if (error instanceof CreacionCompraInciertaError) {
-      await sendTelegramMessage(propuesta.chatId, mensajeCreacionCompraIncierta(propuesta.proveedor));
+      await reponerVerificacionCreacionIncierta(
+        propuestaCorregida,
+        `${mensajeCreacionCompraIncierta(propuesta.proveedor)}\n\nEl correo seguirá sin leer; verifica el estado sin repetir la creación.`
+      );
       return;
     }
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error procesando corrección de gasto:", message);
-    await sendTelegramMessage(pendiente.chatId, `⚠️ Error: ${message}\n\nEl archivo local no se borró — puedes reenviarlo.`);
+    await reponerPropuestaParaReintento(
+      propuestaCorregida,
+      `⚠️ Error: ${message}\n\nEl correo sigue sin leer y la propuesta quedó disponible para reintentar sin reenviar el documento.`
+    );
     // No avanza la cola en el error — mismo criterio que arriba.
   }
 }
@@ -2531,8 +3808,79 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
     `para que quede enhebrado como una respuesta real. Investiga y ejecuta lo que corresponda con las herramientas ` +
     `disponibles, y reporta el resultado.`;
 
-  const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
-  return { ok: true, mensaje: respuesta };
+  if (!propuesta.deColaCorreo) {
+    const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
+    return { ok: true, mensaje: respuesta };
+  }
+
+  const identidad = identidadCorreoDePropuestaGasto(propuesta);
+  if (!identidad) {
+    return {
+      ok: false,
+      reintentable: true,
+      mensaje:
+        "⚠️ Este correo pertenece a la cola, pero no conserva threadId y mensajeId de Gmail completos. " +
+        "No ejecuté la acción para evitar que un borrador quede asociado al correo equivocado.",
+    };
+  }
+
+  let respuesta = "";
+  const huellaInstruccion = createHash("sha256").update(textoUsuario.trim().toLowerCase()).digest("hex").slice(0, 16);
+  const unidadColaId = `${propuesta.id}:otras-acciones:${huellaInstruccion}`;
+  try {
+    const publicada = await ejecutarAccionLateralGastoConReserva(
+      unidadColaId,
+      true,
+      identidad,
+      {
+        yaPublicada: async () => {
+          const borradores = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
+          return borradores.some((borrador) =>
+            borrador.deColaCorreo === true &&
+            borrador.correoThreadId === identidad.threadId &&
+            borrador.correoMensajeId === identidad.mensajeId &&
+            borrador.unidadColaId === unidadColaId
+          );
+        },
+        reservar: (identidadExacta) => incrementarPendientesActivo(propuesta.chatId, identidadExacta),
+        publicar: async (identidadExacta) => {
+          const antes = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
+          const idsAnteriores = new Set(antes.map((borrador) => borrador.id));
+          respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
+          const despues = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
+          const nuevos = despues.filter((borrador) => !idsAnteriores.has(borrador.id));
+          const borradorNuevo = seleccionarBorradorCorrelacionado(nuevos, {
+            threadId: propuesta.correoOrigen?.threadId,
+          });
+
+          // Una instrucción puede ser solo un recordatorio u otra acción sin
+          // correo. En ese caso la reserva lateral se compensa y la propuesta
+          // de gasto conserva su unidad original de la cola.
+          if (!borradorNuevo) return false;
+          const vinculado = await vincularBorradorACola(borradorNuevo.id, identidadExacta!, unidadColaId);
+          return Boolean(vinculado);
+        },
+        compensar: (identidadExacta) => revertirIncrementoPendientesActivo(propuesta.chatId, identidadExacta),
+      }
+    );
+
+    if (!respuesta && publicada) {
+      respuesta =
+        "✉️ Ya existe un borrador pendiente para este mismo correo. Conserva la unidad exacta de la cola " +
+        "hasta que lo envíes o lo canceles.";
+    }
+    return { ok: true, mensaje: respuesta || "✅ La acción adicional quedó procesada." };
+  } catch (error) {
+    const mensaje = error instanceof Error ? error.message : String(error);
+    console.error("[gastoCallbackHandler] Error ejecutando otras acciones del gasto:", error);
+    return {
+      ok: false,
+      reintentable: true,
+      mensaje:
+        `⚠️ No pude dejar la acción adicional en un estado durable (${mensaje}). ` +
+        "El correo sigue sin leer y puedes reintentarlo.",
+    };
+  }
 }
 
 /**
@@ -2560,6 +3908,9 @@ export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, t
   );
 
   const resultado = await aplicarTextoOtrasAcciones(propuesta, textoUsuario);
+  if (!resultado.ok && resultado.reintentable) {
+    await guardarPendienteAccionGasto(pendiente.chatId, pendiente.propuestaId);
+  }
   await sendTelegramMessageSmart(pendiente.chatId, resultado.mensaje, undefined, `✅ ${propuesta.correoOrigen.asunto} (${propuesta.correoOrigen.de})`);
 }
 
@@ -2571,11 +3922,33 @@ export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, t
  */
 async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
   const { empresa, concepto } = parsearCorreccionClasificacion(textoUsuario, propuesta.empresa);
-  const actualizado = await actualizarClasificacionPropuestaGasto(propuesta.id, empresa, concepto);
+  let propuestaFinal: PropuestaGasto;
+  try {
+    propuestaFinal = await prepararPropuestaFinalGasto(propuesta, {
+      empresa,
+      concepto,
+      forzarReinferencia: true,
+    });
+  } catch (error) {
+    const mensaje = error instanceof Error ? error.message : String(error);
+    return { ok: false, reintentable: true, mensaje: `⚠️ ${mensaje}` };
+  }
+  const actualizado = await actualizarClasificacionPropuestaGasto(
+    propuesta.id,
+    propuestaFinal.empresa,
+    propuestaFinal.concepto,
+    propuestaFinal.cuentaId,
+    propuestaFinal.cuentaTags
+  );
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
-  return { ok: true, mensaje: `✏️ Clasificación corregida — empresa: ${empresa}, concepto: ${concepto}.` };
+  return {
+    ok: true,
+    mensaje:
+      `✏️ Clasificación corregida — empresa: ${propuestaFinal.empresa}, concepto: ${propuestaFinal.concepto}. ` +
+      `Cuenta y tags se recalcularon con el aprendizaje existente.`,
+  };
 }
 
 /**
@@ -2585,36 +3958,103 @@ async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: s
  * (handleGastoAprobarCallback). Ninguna necesita texto del usuario, así que
  * se disparan de inmediato al aprobar, sin entrar en la cola secuencial.
  */
-async function ejecutarResponderCorreo(propuesta: PropuestaGasto): Promise<void> {
-  if (!propuesta.correoOrigen) return;
+async function ejecutarResponderCorreo(propuesta: PropuestaGasto): Promise<boolean> {
+  if (!propuesta.correoOrigen) return false;
+  const identidad = propuesta.deColaCorreo === true ? identidadCorreoDePropuestaGasto(propuesta) : undefined;
   const contexto =
     `Factura/gasto detectado en este correo: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ` +
     `${propuesta.fecha}, concepto: ${propuesta.concepto}.`;
-  await generarBorradorYOfrecer(
-    propuesta.chatId,
-    propuesta.correoOrigen.de,
-    propuesta.correoOrigen.asunto,
-    propuesta.correoOrigen.threadId,
-    propuesta.correoOrigen.messageIdHeader,
-    contexto
-  );
+  let iniciada = false;
+  try {
+    iniciada = await ejecutarAccionLateralGastoConReserva(
+      `${propuesta.id}:responder`,
+      propuesta.deColaCorreo === true,
+      identidad,
+      {
+        yaPublicada: async () => {
+          const borradores = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
+          return borradores.some((borrador) =>
+            identidad
+              ? borrador.deColaCorreo === true &&
+                borrador.correoThreadId === identidad.threadId &&
+                borrador.correoMensajeId === identidad.mensajeId
+              : borrador.threadId === propuesta.correoOrigen?.threadId &&
+                borrador.messageIdHeader === propuesta.correoOrigen?.messageIdHeader
+          );
+        },
+        reservar: (identidadExacta) => incrementarPendientesActivo(propuesta.chatId, identidadExacta),
+        publicar: (identidadExacta) => generarBorradorYOfrecer(
+          propuesta.chatId,
+          propuesta.correoOrigen!.de,
+          propuesta.correoOrigen!.asunto,
+          propuesta.correoOrigen!.threadId,
+          propuesta.correoOrigen!.messageIdHeader,
+          contexto,
+          identidadExacta
+        ),
+        compensar: (identidadExacta) => revertirIncrementoPendientesActivo(propuesta.chatId, identidadExacta),
+      }
+    );
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error preparando el borrador lateral del gasto:", error);
+  }
+  if (!iniciada) {
+    await sendTelegramMessage(
+      propuesta.chatId,
+      `⚠️ No pude dejar preparado el borrador para "${propuesta.correoOrigen.asunto}". El gasto puede continuar, pero la respuesta no quedó pendiente.`
+    ).catch(() => {});
+  }
+  return iniciada;
 }
 
-async function ejecutarGuardarConocimiento(propuesta: PropuestaGasto): Promise<void> {
-  if (!propuesta.correoOrigen) return;
+async function ejecutarGuardarConocimiento(propuesta: PropuestaGasto): Promise<boolean> {
+  if (!propuesta.correoOrigen) return false;
   try {
     const cuerpo = propuesta.correoOrigen.mensajeIdGmail
       ? await obtenerCuerpoCompletoCorreo(propuesta.correoOrigen.mensajeIdGmail)
       : "(no se pudo releer el cuerpo completo — sin id de mensaje de Gmail)";
     const contenido = [`De: ${propuesta.correoOrigen.de}`, `Asunto: ${propuesta.correoOrigen.asunto}`, "", cuerpo].join("\n");
-    // false: esto es una side-action sobre una propuesta de gasto, no una
-    // de las 4 decisiones de la cola de revisión de correo — el avance de
-    // esa cola ya lo maneja la resolución del gasto en sí (deColaCorreo),
-    // pasar true acá la avanzaría DOS veces.
-    await iniciarSeleccionEmpresaCaptura(propuesta.chatId, contenido, propuesta.correoOrigen.de, undefined, false);
+    const identidad = propuesta.deColaCorreo === true ? identidadCorreoDePropuestaGasto(propuesta) : undefined;
+    const iniciada = await ejecutarAccionLateralGastoConReserva(
+      `${propuesta.id}:guardar-conocimiento`,
+      propuesta.deColaCorreo === true,
+      identidad,
+      {
+        yaPublicada: async () => {
+          if (!identidad) return false;
+          const capturas = await obtenerPendientesCapturaEmpresaPorChat(propuesta.chatId);
+          return capturas.some((captura) =>
+            captura.deColaCorreo === true &&
+            captura.threadId === identidad.threadId &&
+            captura.mensajeId === identidad.mensajeId
+          );
+        },
+        reservar: (identidadExacta) => incrementarPendientesActivo(propuesta.chatId, identidadExacta),
+        publicar: async (identidadExacta) => {
+          await iniciarSeleccionEmpresaCaptura(
+            propuesta.chatId,
+            contenido,
+            propuesta.correoOrigen!.de,
+            undefined,
+            Boolean(identidadExacta),
+            identidadExacta
+          );
+          return true;
+        },
+        compensar: (identidadExacta) => revertirIncrementoPendientesActivo(propuesta.chatId, identidadExacta),
+      }
+    );
+    if (!iniciada) {
+      await sendTelegramMessage(
+        propuesta.chatId,
+        `⚠️ No pude preparar "${propuesta.correoOrigen.asunto}" para guardarlo como conocimiento. El gasto puede continuar, pero la captura no quedó pendiente.`
+      ).catch(() => {});
+    }
+    return iniciada;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error preparando la captura del correo de un gasto:", message);
     await sendTelegramMessage(propuesta.chatId, `⚠️ No pude leer "${propuesta.correoOrigen.asunto}" para guardarlo como conocimiento.`);
+    return false;
   }
 }

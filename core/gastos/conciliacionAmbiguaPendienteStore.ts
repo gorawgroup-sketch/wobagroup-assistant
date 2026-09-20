@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { leerFilas, agregarFila, eliminarFila } from "../google/sheetsKeyValueStore";
 import type { Empresa } from "../holded/client";
 import type { MovimientoBancarioCandidato } from "../holded/write";
+import { conMutex } from "../utils/asyncMutex";
 
 /**
  * Caso real reportado por Carlos: al responder "🔗 Sí, conciliar" a la pregunta de después de crear
@@ -40,18 +41,28 @@ export interface ConciliacionAmbiguaPendiente {
    * opcional (no siempre disponible en los 3 caminos que lo llaman).
    */
   proveedor?: string;
+  /** Mensaje concreto de Gmail que originó esta decisión. Permite que un callback tardío
+   * nunca avance otro correo que haya pasado a estar activo en el mismo chat. */
+  mensajeIdGmail?: string;
+  /** Hilo concreto de Gmail que originó esta decisión. Las filas anteriores a esta columna
+   * siguen siendo legibles, pero no prueban ownership exacto ante el watchdog. */
+  threadIdGmail?: string;
+  /** Solo true cuando el soporte del gasto ya fue confirmado en Holded. */
+  comprobanteConfirmado: boolean;
 }
 
 const TAB_NAME = "_conciliaciones_ambiguas_pendientes";
-const HEADERS = ["id", "empresa", "gastoId", "descripcionGasto", "chatId", "creadoEn", "candidatosJSON", "deColaCorreo", "esAproximado", "proveedor"];
+const HEADERS = ["id", "empresa", "gastoId", "descripcionGasto", "chatId", "creadoEn", "candidatosJSON", "deColaCorreo", "esAproximado", "proveedor", "mensajeIdGmail", "comprobanteConfirmado", "threadIdGmail"];
 const NUM_COLS = HEADERS.length;
+const MUTEX_CONCILIACIONES_AMBIGUAS = "conciliacionAmbiguaPendienteStore:transiciones";
 // Mismo TTL que conciliacionPendienteStore.ts (24h) y mismo motivo: no puede
 // ser más largo que el umbral de "correo atascado" de revisarCorreoNuevo.ts,
 // o una respuesta tardía podría avanzar/resolver un correo que para
 // entonces ya es otro.
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-function filaAObjeto(valores: string[]): ConciliacionAmbiguaPendiente {
+/** Codec exportado para probar y auditar migraciones de filas legacy. */
+export function deserializarFilaConciliacionAmbigua(valores: string[]): ConciliacionAmbiguaPendiente {
   let candidatos: MovimientoBancarioCandidato[] = [];
   try {
     candidatos = valores[6] ? JSON.parse(valores[6]) : [];
@@ -70,10 +81,16 @@ function filaAObjeto(valores: string[]): ConciliacionAmbiguaPendiente {
     deColaCorreo: valores[7] === "true",
     esAproximado: valores[8] === "true",
     proveedor: valores[9] || undefined,
+    mensajeIdGmail: valores[10] || undefined,
+    comprobanteConfirmado: valores[11] === "true",
+    // Columna agregada al final: una fila legacy termina en el índice 11 y
+    // conserva threadIdGmail=undefined, sin desplazar ningún campo previo.
+    threadIdGmail: valores[12] || undefined,
   };
 }
 
-function objetoAFila(p: ConciliacionAmbiguaPendiente): (string | number)[] {
+/** Mantiene las columnas históricas en su posición y agrega campos solo al final. */
+export function serializarFilaConciliacionAmbigua(p: ConciliacionAmbiguaPendiente): (string | number)[] {
   return [
     p.id,
     p.empresa,
@@ -85,6 +102,9 @@ function objetoAFila(p: ConciliacionAmbiguaPendiente): (string | number)[] {
     p.deColaCorreo === true ? "true" : "",
     p.esAproximado ? "true" : "",
     p.proveedor ?? "",
+    p.mensajeIdGmail ?? "",
+    p.comprobanteConfirmado ? "true" : "",
+    p.threadIdGmail ?? "",
   ];
 }
 
@@ -92,29 +112,79 @@ async function leerVigentes(): Promise<{ rowIndex: number; pendiente: Conciliaci
   const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const ahora = Date.now();
   return filas
-    .map((f) => ({ rowIndex: f.rowIndex, pendiente: filaAObjeto(f.valores) }))
-    .filter((f) => ahora - f.pendiente.creadoEn <= TTL_MS);
+    .map((f) => ({ rowIndex: f.rowIndex, pendiente: deserializarFilaConciliacionAmbigua(f.valores) }))
+    // Si pertenece a la cola, esta pregunta conserva una unidad activa y el
+    // correo sigue UNREAD: no puede desaparecer solo por cumplir el TTL.
+    .filter((f) => f.pendiente.deColaCorreo || ahora - f.pendiente.creadoEn <= TTL_MS);
+}
+
+export interface FilaConciliacionAmbiguaConIndice {
+  rowIndex: number;
+  pendiente: ConciliacionAmbiguaPendiente;
+}
+
+export interface DependenciasConsumoConciliacionAmbigua {
+  leer: () => Promise<FilaConciliacionAmbiguaConIndice[]>;
+  eliminar: (rowIndex: number) => Promise<void>;
 }
 
 export async function guardarConciliacionAmbiguaPendiente(
   datos: Omit<ConciliacionAmbiguaPendiente, "id" | "creadoEn">
 ): Promise<ConciliacionAmbiguaPendiente> {
-  const pendiente: ConciliacionAmbiguaPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
-  await agregarFila(TAB_NAME, NUM_COLS, HEADERS, objetoAFila(pendiente));
-  return pendiente;
+  if (datos.deColaCorreo && (!datos.mensajeIdGmail?.trim() || !datos.threadIdGmail?.trim())) {
+    throw new Error("Una conciliación ambigua de la cola requiere mensajeIdGmail y threadIdGmail exactos.");
+  }
+  return conMutex(MUTEX_CONCILIACIONES_AMBIGUAS, async () => {
+    const pendiente: ConciliacionAmbiguaPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+    await agregarFila(TAB_NAME, NUM_COLS, HEADERS, serializarFilaConciliacionAmbigua(pendiente));
+    return pendiente;
+  });
+}
+
+/**
+ * Primitivo probado que reclama una conciliación ambigua una sola vez. Las
+ * dependencias inyectables permiten ejercer la carrera de dos callbacks sin
+ * hablar con Sheets; producción usa exactamente el mismo read→delete.
+ */
+export async function consumirConciliacionAmbiguaUnaVez(
+  id: string,
+  dependencias: DependenciasConsumoConciliacionAmbigua = {
+    leer: leerVigentes,
+    eliminar: (rowIndex) => eliminarFila(TAB_NAME, rowIndex, HEADERS),
+  },
+  claveMutex = MUTEX_CONCILIACIONES_AMBIGUAS
+): Promise<ConciliacionAmbiguaPendiente | undefined> {
+  return conMutex(claveMutex, async () => {
+    const vigentes = await dependencias.leer();
+    const fila = vigentes.find((f) => f.pendiente.id === id);
+    if (!fila) return undefined;
+    await dependencias.eliminar(fila.rowIndex);
+    return fila.pendiente;
+  });
 }
 
 /** Devuelve la pendiente y ELIMINA su fila (respondida, ya no debe quedar registro). */
 export async function consumirConciliacionAmbiguaPendiente(id: string): Promise<ConciliacionAmbiguaPendiente | undefined> {
-  const vigentes = await leerVigentes();
-  const fila = vigentes.find((f) => f.pendiente.id === id);
-  if (!fila) return undefined;
-  await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
-  return fila.pendiente;
+  return consumirConciliacionAmbiguaUnaVez(id);
+}
+
+/** Repone el mismo id para que los botones ya publicados sigan siendo válidos tras un fallo. */
+export async function restaurarConciliacionAmbiguaPendiente(
+  pendiente: ConciliacionAmbiguaPendiente
+): Promise<ConciliacionAmbiguaPendiente> {
+  return conMutex(MUTEX_CONCILIACIONES_AMBIGUAS, async () => {
+    const existente = (await leerVigentes()).find((f) => f.pendiente.id === pendiente.id)?.pendiente;
+    if (existente) return existente;
+    const restaurada = { ...pendiente, creadoEn: Date.now() };
+    await agregarFila(TAB_NAME, NUM_COLS, HEADERS, serializarFilaConciliacionAmbigua(restaurada));
+    return restaurada;
+  });
 }
 
 /** Lectura sin consumir — para el resumen diario de pendientes (ver core/jobs/resumenPendientesDiario.ts). */
 export async function obtenerConciliacionesAmbiguasPendientesPorChat(chatId: number): Promise<ConciliacionAmbiguaPendiente[]> {
-  const vigentes = await leerVigentes();
-  return vigentes.filter((f) => f.pendiente.chatId === chatId).map((f) => f.pendiente);
+  return conMutex(MUTEX_CONCILIACIONES_AMBIGUAS, async () => {
+    const vigentes = await leerVigentes();
+    return vigentes.filter((f) => f.pendiente.chatId === chatId).map((f) => f.pendiente);
+  });
 }

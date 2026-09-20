@@ -119,7 +119,10 @@ export const reclasificarDocumentoPendienteTool: ToolDefinition = {
     }
 
     if (pendiente.correoOrigen?.deColaCorreo) {
-      await avanzarColaCorreoSiActivo(chatId);
+      await avanzarColaCorreoSiActivo(chatId, {
+        threadId: pendiente.correoOrigen.threadId,
+        mensajeId: pendiente.correoOrigen.mensajeIdGmail,
+      }, `documento-reclasificacion:${pendiente.id}:resolver`);
     }
 
     return (
@@ -169,7 +172,10 @@ export const descartarDocumentoPendienteTool: ToolDefinition = {
     }
 
     if (pendiente.correoOrigen?.deColaCorreo) {
-      await avanzarColaCorreoSiActivo(chatId);
+      await avanzarColaCorreoSiActivo(chatId, {
+        threadId: pendiente.correoOrigen.threadId,
+        mensajeId: pendiente.correoOrigen.mensajeIdGmail,
+      }, `documento-reclasificacion:${pendiente.id}:resolver`);
     }
 
     return `Descartado: "${pendiente.nombreArchivoOriginal}" — no se archivó ni se guardó nada. No hace falta que lo repitas, ya se le puede confirmar al usuario.`;

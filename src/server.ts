@@ -36,7 +36,13 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
-import { revisarCorreoNuevo, RevisionCorreoOcupadaError, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
+import {
+  revisarCorreoNuevo,
+  RevisionCorreoOcupadaError,
+  handleColaCorreoSiguienteCallback,
+  handleDescartarActivoCallback,
+  handleReintentarActivoCallback,
+} from "../core/jobs/revisarCorreoNuevo";
 import {
   handleCancelarDescartarTodoPendienteCallback,
   handleConfirmarDescartarTodoPendienteCallback,
@@ -45,11 +51,17 @@ import {
 } from "../core/jobs/resumenPendientesDiario";
 import { handleEmailActionCallback, continuarConOrientacion, handleDraftCallback, continuarConEdicionBorrador } from "../core/gmail/emailCallbackHandler";
 import { obtenerEstadoEnviosCorreoDurables, reconciliarEnviosCorreoAlArrancar } from "../core/gmail/client";
-import { consumirPendienteOrientacionCorreo } from "../core/gmail/emailOrientationStore";
+import {
+  reclamarPendienteOrientacionCorreo,
+  restaurarPendienteOrientacionCorreo,
+} from "../core/gmail/emailOrientationStore";
 import { handleCashflowAnnotationActionCallback, continuarConOrientacionAnotacion } from "../core/jobs/cashflowAnnotationCallbackHandler";
 import { consumirPendienteOrientacionAnotacion } from "../core/jobs/cashflowAnnotationOrientationStore";
 import { handleAccionProgramadaCallback } from "../core/jobs/accionesProgramadasCallbackHandler";
-import { consumirPendienteEdicionBorrador } from "../core/gmail/emailDraftEditStore";
+import {
+  consumirPendienteEdicionBorrador,
+  restaurarPendienteEdicionBorrador,
+} from "../core/gmail/emailDraftEditStore";
 import { handlePagoRecurrenteCallback, continuarConMontoPago } from "../core/fiscal/pagoRecurrenteCallbackHandler";
 import { consumirPendienteMontoPago, guardarPendienteMontoPago } from "../core/fiscal/pendienteMontoStore";
 import { revisarCostosIA } from "../core/jobs/revisarCostosIA";
@@ -60,10 +72,22 @@ import {
   continuarConAccionGasto,
   continuarConSeleccionGasto,
 } from "../core/gastos/gastoCallbackHandler";
-import { consumirPendienteCorreccionGasto } from "../core/gastos/pendienteCorreccionGastoStore";
-import { consumirPendienteAjusteMontoGasto } from "../core/gastos/pendienteAjusteMontoGastoStore";
-import { consumirPendienteAccionGasto } from "../core/gastos/pendienteAccionGastoStore";
-import { consumirPendienteSeleccionGasto } from "../core/gastos/pendienteSeleccionGastoStore";
+import {
+  consumirPendienteCorreccionGasto,
+  restaurarPendienteCorreccionGasto,
+} from "../core/gastos/pendienteCorreccionGastoStore";
+import {
+  consumirPendienteAjusteMontoGasto,
+  restaurarPendienteAjusteMontoGasto,
+} from "../core/gastos/pendienteAjusteMontoGastoStore";
+import {
+  consumirPendienteAccionGasto,
+  restaurarPendienteAccionGasto,
+} from "../core/gastos/pendienteAccionGastoStore";
+import {
+  consumirPendienteSeleccionGasto,
+  restaurarPendienteSeleccionGasto,
+} from "../core/gastos/pendienteSeleccionGastoStore";
 import { obtenerDiagnosticoMetadataPestanas } from "../core/google/sheetsKeyValueStore";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
@@ -1400,6 +1424,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
     } else if (data.startsWith("colacorreo_")) {
       if (data === "colacorreo_descartaractivo") {
         await handleDescartarActivoCallback(callback);
+      } else if (data.startsWith("colacorreo_reintentar:")) {
+        await handleReintentarActivoCallback(callback);
       } else {
         await handleColaCorreoSiguienteCallback(callback);
       }
@@ -1515,7 +1541,10 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       await continuarConCorreccionGasto(pendienteCorreccionGasto, texto);
     } catch (error) {
       console.error("Error procesando corrección de clasificación de gasto:", error);
-      await sendTelegramMessage(chatId, "Hubo un error procesando la corrección.");
+      await restaurarPendienteCorreccionGasto(pendienteCorreccionGasto).catch((errorRestaurando) => {
+        console.error("Error restaurando corrección de clasificación de gasto:", errorRestaurando);
+      });
+      await sendTelegramMessage(chatId, "Hubo un error procesando la corrección. Sigue pendiente y puedes reintentarlo.");
     }
     return true;
   }
@@ -1526,7 +1555,10 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       await continuarConAjusteMonto(pendienteAjusteMontoGasto, texto);
     } catch (error) {
       console.error("Error procesando ajuste de monto de gasto:", error);
-      await sendTelegramMessage(chatId, "Hubo un error procesando el ajuste de monto.");
+      await restaurarPendienteAjusteMontoGasto(pendienteAjusteMontoGasto).catch((errorRestaurando) => {
+        console.error("Error restaurando ajuste de monto de gasto:", errorRestaurando);
+      });
+      await sendTelegramMessage(chatId, "Hubo un error procesando el ajuste de monto. Sigue pendiente y puedes reintentarlo.");
     }
     return true;
   }
@@ -1537,7 +1569,10 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       await continuarConAccionGasto(pendienteAccionGasto, texto);
     } catch (error) {
       console.error("Error procesando otras acciones sobre una propuesta de gasto:", error);
-      await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción.");
+      await restaurarPendienteAccionGasto(pendienteAccionGasto).catch((errorRestaurando) => {
+        console.error("Error restaurando otras acciones sobre una propuesta de gasto:", errorRestaurando);
+      });
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción. Sigue pendiente y puedes reintentarlo.");
     }
     return true;
   }
@@ -1548,7 +1583,10 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       await continuarConSeleccionGasto(pendienteSeleccionGasto, texto);
     } catch (error) {
       console.error("Error procesando la cola de selección de una propuesta de gasto:", error);
-      await sendTelegramMessage(chatId, "Hubo un error procesando tu respuesta.");
+      await restaurarPendienteSeleccionGasto(pendienteSeleccionGasto).catch((errorRestaurando) => {
+        console.error("Error restaurando la cola de selección de una propuesta de gasto:", errorRestaurando);
+      });
+      await sendTelegramMessage(chatId, "Hubo un error procesando tu respuesta. Sigue pendiente y puedes reintentarlo.");
     }
     return true;
   }
@@ -1559,13 +1597,24 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       await continuarConEdicionBorrador(pendienteEdicionBorrador.chatId, pendienteEdicionBorrador.borradorId, texto);
     } catch (error) {
       console.error("Error procesando edición de borrador de correo:", error);
-      await sendTelegramMessage(chatId, "Hubo un error actualizando el borrador.");
+      await restaurarPendienteEdicionBorrador(pendienteEdicionBorrador).catch((errorRestaurando) => {
+        console.error("Error restaurando edición de borrador de correo:", errorRestaurando);
+      });
+      await sendTelegramMessage(chatId, "Hubo un error actualizando el borrador. La edición sigue pendiente y puedes reintentarla.");
     }
     return true;
   }
 
-  const pendienteOrientacion = await consumirPendienteOrientacionCorreo(chatId);
-  if (pendienteOrientacion) {
+  const reclamoOrientacion = await reclamarPendienteOrientacionCorreo(chatId);
+  if (reclamoOrientacion.estado === "ambigua") {
+    await sendTelegramMessage(
+      chatId,
+      `⚠️ Hay ${reclamoOrientacion.cantidad} correos esperando una orientación en este chat. No apliqué tu texto a ninguno para evitar procesar el correo equivocado; vuelve a abrir la acción del correo que quieres atender.`
+    );
+    return true;
+  }
+  if (reclamoOrientacion.estado === "consumida") {
+    const pendienteOrientacion = reclamoOrientacion.pendiente;
     try {
       await continuarConOrientacion(
         pendienteOrientacion.chatId,
@@ -1575,11 +1624,18 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
         texto,
         pendienteOrientacion.threadId,
         pendienteOrientacion.messageIdHeader,
-        pendienteOrientacion.deColaCorreo
+        pendienteOrientacion.deColaCorreo,
+        pendienteOrientacion.mensajeId
       );
     } catch (error) {
       console.error("Error procesando orientación específica de correo:", error);
-      await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción.");
+      await restaurarPendienteOrientacionCorreo(pendienteOrientacion).catch((errorRestaurando) => {
+        console.error("Error restaurando orientación específica de correo:", errorRestaurando);
+      });
+      await sendTelegramMessage(
+        chatId,
+        "Hubo un error procesando tu instrucción. El correo sigue pendiente y sin marcar como leído; puedes reintentar enviando la instrucción de nuevo."
+      );
     }
     return true;
   }

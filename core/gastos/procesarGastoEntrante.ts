@@ -16,6 +16,7 @@ import {
   buscarPropuestaGastoPendiente,
   actualizarFlagMovimientoBancarioGasto,
   actualizarMovimientosAmbiguosPropuestaGasto,
+  type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import { construirTecladoGasto } from "./gastoTeclado";
@@ -66,7 +67,11 @@ export interface GastoEntrante {
  * reportar un envío que no ocurrió — mismo principio que ya se aplica en
  * reconciliarMovimiento (core/holded/write.ts).
  */
-export type ResultadoGastoEntrante = "propuesta_enviada" | "pendiente_datos" | "propuesta_duplicada";
+export type ResultadoGastoEntrante =
+  | "propuesta_enviada"
+  | "pendiente_datos"
+  | "propuesta_duplicada"
+  | "propuesta_pendiente_existente";
 
 function esEmpresaHolded(empresa: string): empresa is Empresa {
   return empresa === "WOBA" || empresa === "EWORKS" || empresa === "Footprint";
@@ -367,6 +372,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // consultar o proponer nada, revisamos una identidad durable que conserva
   // el mismo archivo y el número legal+proveedor del gasto ya creado.
   let duplicadoInterno: Awaited<ReturnType<typeof buscarGastoProcesadoPorIdentidad>>;
+  let candidatoRecuperacion: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"][number] | undefined;
   try {
     duplicadoInterno = await buscarGastoProcesadoPorIdentidad(empresa, {
       huellaContenido,
@@ -401,25 +407,48 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return "pendiente_datos";
   }
   if (duplicadoInterno) {
-    const motivo = duplicadoInterno.motivo === "mismo_archivo"
-      ? "el archivo es exactamente el mismo"
-      : "coinciden el número de documento y el proveedor";
-    // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
-    // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
-    // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
-    // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
-    // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
-    const origenTxt = entrada.correoOrigen
-      ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
-      : "";
-    await sendTelegramMessage(
-      chatId,
-      `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
-        `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
-        `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
-        `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
-    );
-    return "propuesta_duplicada";
+    // Un registro interno se escribe inmediatamente después del POST para impedir que un
+    // reintento cree un segundo gasto. Desde ahí hasta que soporte y conciliación terminan,
+    // `completado` sigue en false. Ese estado prueba que el gasto existe, pero NO que el correo
+    // esté resuelto: tratarlo como duplicado terminal hacía que la cola marcara el mensaje como
+    // leído aunque el gasto hubiese quedado sin archivo o sin conciliar tras una caída.
+    if (!duplicadoInterno.registro.completado) {
+      // Recupera el MISMO gasto con el flujo uno-a-uno ya aprendido. El
+      // candidato queda marcado como recuperación, por lo que el teclado no
+      // ofrece crear otro: solo verifica/adjunta el soporte de forma durable
+      // y retoma la conciliación. Esto cubre una caída posterior al POST en
+      // la que la propuesta original ya se había consumido.
+      candidatoRecuperacion = {
+        id: duplicadoInterno.registro.gastoId,
+        contactName: datos.proveedor,
+        fecha: datos.fecha,
+        total: montoParaHolded,
+        descripcion: datos.concepto,
+        documentNumber: datos.numeroDocumento,
+        moneda: monedaParaHolded,
+        soportePendiente: true,
+      };
+    } else {
+      const motivo = duplicadoInterno.motivo === "mismo_archivo"
+        ? "el archivo es exactamente el mismo"
+        : "coinciden el número de documento y el proveedor";
+      // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
+      // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
+      // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
+      // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
+      // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
+      const origenTxt = entrada.correoOrigen
+        ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
+        : "";
+      await sendTelegramMessage(
+        chatId,
+        `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
+          `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
+          `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
+          `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
+      );
+      return "propuesta_duplicada";
+    }
   }
   // Pedido explícito de Carlos, casos reales ALDI/Ahorramas: un recibo simplificado (sin los datos
   // fiscales de la empresa compradora impresos) no se puede usar legalmente para deducir IVA — se
@@ -439,18 +468,24 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         ]
       : datos.lineas;
 
-  let candidatos: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"] = [];
+  let candidatos: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["compras"] =
+    candidatoRecuperacion ? [candidatoRecuperacion] : [];
   let movimientosYaConciliados: Awaited<ReturnType<typeof verificarDuplicadoGastoEstricto>>["movimientosConciliados"] = [];
   try {
-    const verificacion = await verificarDuplicadoGastoEstricto(empresa, {
-      proveedor: datos.proveedor,
-      monto: montoParaHolded,
-      fecha: datos.fecha || new Date().toISOString().slice(0, 10),
-      moneda: monedaParaHolded,
-      numeroDocumento: datos.numeroDocumento,
-    });
-    candidatos = verificacion.compras;
-    movimientosYaConciliados = verificacion.movimientosConciliados;
+    if (!candidatoRecuperacion) {
+      const verificacion = await verificarDuplicadoGastoEstricto(empresa, {
+        proveedor: datos.proveedor,
+        monto: montoParaHolded,
+        fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+        moneda: monedaParaHolded,
+        numeroDocumento: datos.numeroDocumento,
+      });
+      candidatos = verificacion.compras;
+      movimientosYaConciliados = verificacion.movimientosConciliados;
+    }
+    // Si hay candidatoRecuperacion, la identidad durable ya fija el gasto
+    // exacto. Una búsqueda genérica podría ocultarlo (tickets) o reemplazarlo
+    // por uno parecido; la recuperación nunca cambia de purchase id.
   } catch (error) {
     console.error("[procesarGastoEntrante] Error buscando gasto similar en Holded:", error);
     const detalle = error instanceof Error ? error.message : String(error);
@@ -549,6 +584,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     ? compararNumeroDocumento(datos.numeroDocumento, propuestaYaPendiente.numeroDocumento)
     : undefined;
 
+  let propuestaPendienteBloqueante: PropuestaGasto | undefined;
   if (propuestaYaPendiente) {
     // Bug real encontrado en vivo (2026-09-07, y confirmado que ya había pasado el 2026-09-02 con
     // otra factura): crearPropuestaGasto guarda la propuesta en Sheets con messageId=0 ANTES de
@@ -582,13 +618,30 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : comparacionPendiente === "coincide"
           ? ` Además, el número de documento coincide (${datos.numeroDocumento}) — es casi con toda seguridad la misma factura.`
           : "";
-    await sendTelegramMessage(
-      chatId,
-      `📄 "${entrada.nombreArchivoOriginal}" parece la MISMA factura de una propuesta que ya te mandé antes y sigue sin resolver ` +
-        `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}) — revisa esa antes, no mandé una segunda ` +
-        `para no arriesgar un gasto duplicado en Holded.${notaNumeroDocumento}`
+    const mismaIdentidadDeCola = Boolean(
+      entrada.deColaCorreo &&
+      propuestaYaPendiente.deColaCorreo &&
+      entrada.correoOrigen?.threadId &&
+      propuestaYaPendiente.correoOrigen?.threadId === entrada.correoOrigen.threadId &&
+      (!entrada.correoOrigen.mensajeIdGmail ||
+        propuestaYaPendiente.correoOrigen?.mensajeIdGmail === entrada.correoOrigen.mensajeIdGmail)
     );
-    return "propuesta_duplicada";
+    if (mismaIdentidadDeCola) {
+      await sendTelegramMessage(
+        chatId,
+        `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta visible y pendiente para este mismo correo ` +
+          `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +
+          `No envié otra; resuelve la propuesta existente.${notaNumeroDocumento}`
+      );
+      return "propuesta_pendiente_existente";
+    }
+
+    // La propuesta anterior pertenece a otro origen (o nació fuera de la
+    // cola). Este correo necesita su propia acción durable: se crea abajo
+    // una propuesta en espera, sin botones de creación, que solo se habilita
+    // cuando la anterior ya se resolvió. Así nunca queda UNREAD sin salida y
+    // tampoco existen dos botones capaces de crear el mismo gasto a la vez.
+    propuestaPendienteBloqueante = propuestaYaPendiente;
   }
 
   // Solo importa inferir la cuenta contable cuando de verdad vamos a CREAR
@@ -662,6 +715,20 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     huellaContenido,
   });
 
+  if (propuestaPendienteBloqueante) {
+    const textoEspera =
+      `📄 "${entrada.nombreArchivoOriginal}" coincide con una propuesta anterior todavía pendiente ` +
+      `(${propuestaPendienteBloqueante.proveedor} — ${propuestaPendienteBloqueante.monto.toFixed(2)} ` +
+      `${propuestaPendienteBloqueante.moneda}). Para evitar dos creaciones simultáneas, esta segunda queda en espera.\n\n` +
+      `Cuando resuelvas la propuesta anterior, pulsa “Verificar y continuar”. Este correo permanecerá sin leer hasta entonces.`;
+    const messageId = await sendTelegramMessageWithButtons(chatId, textoEspera, [
+      [{ text: "🔎 Verificar y continuar", callback_data: `gasto_espera:${propuesta.id}:${propuestaPendienteBloqueante.id}` }],
+      [{ text: "❌ Descartar este correo", callback_data: `gasto_cancelar:${propuesta.id}` }],
+    ]);
+    await actualizarMessageIdGasto(propuesta.id, messageId);
+    return "propuesta_enviada";
+  }
+
   const desgloseIva = lineasParaHolded
     .map(
       (l) =>
@@ -688,6 +755,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   let botones: { text: string; callback_data: string }[][];
 
   if (candidatos.length > 0) {
+    const esRecuperacionIncompleta = candidatos.some((c) => c.soportePendiente || c.conciliacionPendiente);
     // Pedido explícito de Carlos: proveedor+monto+fecha cercana solos no bastan para distinguir "ya
     // registré este MISMO gasto" de "son dos gastos reales distintos por el mismo importe" — compara
     // también el número de documento/comprobante contra cada candidato (ver compararNumeroDocumento).
@@ -698,7 +766,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const algunaCoincide = comparaciones.some((r) => r === "coincide");
     const algunaDistinta = comparaciones.some((r) => r === "distinto");
 
-    const avisoNumeroDocumento = algunaCoincide
+    const avisoNumeroDocumento = esRecuperacionIncompleta
+      ? ""
+      : algunaCoincide
       ? `⚠️ El número de documento coincide con uno de estos — probablemente sea el MISMO gasto, no uno distinto por el mismo importe (aunque un OCR mal leído también podría coincidir por casualidad). Revísalo bien antes de crear uno nuevo.`
       : algunaDistinta
         ? `${candidatos.length === 1 ? "Este tiene" : "Al menos uno de estos tiene"} un número de documento DISTINTO al de esta factura (${datos.numeroDocumento}) — podría ser un gasto real distinto por el mismo importe, aunque también podría ser el mismo con el número mal leído por OCR en alguno de los dos lados. Revísalo con atención antes de decidir.`
@@ -717,7 +787,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const algunoProveedorDistinto = candidatos.some((c) => c.proveedorDistinto);
     lineasTexto.push(
       ``,
-      `Encontré ${candidatos.length === 1 ? "un gasto" : "estos gastos"} ya registrado(s) en Holded que podría(n) corresponder:`,
+      esRecuperacionIncompleta
+        ? `Este mismo gasto ya fue creado, pero su soporte y conciliación todavía no constan como proceso completo. No se permitirá crear otro:`
+        : `Encontré ${candidatos.length === 1 ? "un gasto" : "estos gastos"} ya registrado(s) en Holded que podría(n) corresponder:`,
       ...candidatos.map((c, i) => {
         const notaDoc =
           comparaciones[i] === "coincide"
@@ -738,7 +810,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     }
     if (avisoNumeroDocumento) lineasTexto.push(``, avisoNumeroDocumento);
     if (notaTicket) lineasTexto.push(``, notaTicket);
-    lineasTexto.push(``, `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`);
+    lineasTexto.push(
+      ``,
+      esRecuperacionIncompleta
+        ? `¿Verifico y termino el soporte y la conciliación de este mismo gasto? El correo seguirá sin leer hasta completarlo.`
+        : `¿Adjunto el comprobante a alguno de estos, o creo un gasto nuevo?`
+    );
 
     texto = lineasTexto.join("\n");
 

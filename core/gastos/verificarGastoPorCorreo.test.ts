@@ -13,62 +13,83 @@ function registro(creadoEn = AHORA - 60_000): GastoPorCorreo {
     gastoId: "purchase-fantasma",
     empresa: "WOBA",
     creadoEn,
+    completado: true,
   };
 }
 
 test("confirma por lectura directa un gasto reciente antes de saltar su PDF", async () => {
-  let eliminaciones = 0;
   const estado = await revalidarRegistroRecienteDeCorreo(registro(), AHORA, {
     obtenerCompra: async () => ({ id: "purchase-fantasma" }),
-    eliminarRegistro: async () => ++eliminaciones,
   });
 
   assert.equal(estado, "confirmado");
-  assert.equal(eliminaciones, 0);
 });
 
-test("un 404 invalida solo la referencia exacta y permite releer el adjunto", async () => {
-  const eliminados: Array<[string, string | undefined, string]> = [];
+test("un gasto existente pero sin cierre terminal no permite marcar el correo leído", async () => {
+  let cierres = 0;
+  const estado = await revalidarRegistroRecienteDeCorreo({ ...registro(), completado: false }, AHORA, {
+    obtenerCompra: async () => ({ id: "purchase-fantasma", payments_pending: "5,40" }),
+    tieneComprobante: async () => true,
+    marcarCompletado: async () => ++cierres,
+  });
+
+  assert.equal(estado, "incompleto");
+  assert.equal(cierres, 0);
+});
+
+test("recupera por lectura un crash posterior a soporte y conciliación", async () => {
+  let cierres = 0;
+  const estado = await revalidarRegistroRecienteDeCorreo({ ...registro(), completado: false }, AHORA, {
+    obtenerCompra: async () => ({ id: "purchase-fantasma", payments_pending: "0,00" }),
+    tieneComprobante: async () => true,
+    marcarCompletado: async () => { cierres++; return 1; },
+  });
+
+  assert.equal(estado, "confirmado");
+  assert.equal(cierres, 1);
+});
+
+test("un 404 de una compra completada conserva la barrera porque puede ser un ticket", async () => {
   const estado = await revalidarRegistroRecienteDeCorreo(registro(), AHORA, {
     obtenerCompra: async () => {
       throw new HoldedApiError(404, "WOBA", "not found");
     },
-    eliminarRegistro: async (mensajeId, attachmentId, gastoId) => {
-      eliminados.push([mensajeId, attachmentId, gastoId]);
-      return 1;
-    },
   });
 
-  assert.equal(estado, "fantasma_eliminado");
-  assert.deepEqual(eliminados, [["gmail-dhl", "1", "purchase-fantasma"]]);
+  assert.equal(estado, "confirmado");
 });
 
-test("un error distinto de 404 falla cerrado y no elimina memoria", async () => {
-  let eliminaciones = 0;
+test("un error distinto de 404 falla cerrado", async () => {
   const estado = await revalidarRegistroRecienteDeCorreo(registro(), AHORA, {
     obtenerCompra: async () => {
       throw new HoldedApiError(429, "WOBA", "rate limited");
     },
-    eliminarRegistro: async () => ++eliminaciones,
   });
 
   assert.equal(estado, "no_verificable");
-  assert.equal(eliminaciones, 0);
+});
+
+test("un registro abierto o legacy con 404 permanece no verificable y nunca habilita recrear", async () => {
+  for (const completado of [false, undefined]) {
+    const estado = await revalidarRegistroRecienteDeCorreo({ ...registro(), completado }, AHORA, {
+      obtenerCompra: async () => {
+        throw new HoldedApiError(404, "WOBA", "puede ser ticket");
+      },
+    });
+    assert.equal(estado, "no_verificable");
+  }
 });
 
 test("un registro histórico no se borra por una limitación actual de /purchases", async () => {
   let lecturas = 0;
-  let eliminaciones = 0;
   const haceTresDias = AHORA - 3 * 24 * 60 * 60 * 1000;
   const estado = await revalidarRegistroRecienteDeCorreo(registro(haceTresDias), AHORA, {
     obtenerCompra: async () => {
       lecturas++;
       throw new Error("no debería consultar");
     },
-    eliminarRegistro: async () => ++eliminaciones,
   });
 
   assert.equal(estado, "confirmado");
   assert.equal(lecturas, 0);
-  assert.equal(eliminaciones, 0);
 });

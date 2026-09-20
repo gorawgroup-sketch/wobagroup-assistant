@@ -257,7 +257,12 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 async function purgarVencidas(): Promise<void> {
   const todas = await leerTodas();
   const ahora = Date.now();
-  const vencidas = todas.filter(({ pendiente }) => ahora - pendiente.creadoEn > TTL_MS);
+  // Las preguntas originadas por la cola son estado durable del correo:
+  // mientras sigan pendientes, ese mensaje debe permanecer UNREAD. Solo las
+  // preguntas sueltas/manuales pueden vencer por antigüedad.
+  const vencidas = todas.filter(({ pendiente }) =>
+    pendiente.deColaCorreo !== true && ahora - pendiente.creadoEn > TTL_MS
+  );
 
   vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
   for (const { rowIndex } of vencidas) {

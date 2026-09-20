@@ -31,6 +31,8 @@ const HEADERS = [
   "proveedor",
   "deColaCorreo",
   "mensajeIdGmail",
+  "comprobanteConfirmado",
+  "threadIdGmail",
 ];
 
 /**
@@ -76,6 +78,12 @@ async function ensureTab(): Promise<void> {
   const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
   if (existing) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A1:N1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [HEADERS] },
+    });
     tabAsegurada = true;
     return;
   }
@@ -87,7 +95,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:L1`,
+    range: `${TAB_NAME}!A1:N1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -125,6 +133,11 @@ export interface ConciliacionPendiente {
    * dejando la primera huérfana. Ver huboSenalDeEntrega en vigilarProcesamientoAtascado.ts.
    */
   mensajeIdGmail?: string;
+  /** Thread de Gmail preservado para que una eventual elección ambigua
+   * mantenga la identidad exacta incluso después de responder “Sí”. */
+  threadIdGmail?: string;
+  /** Solo true cuando Holded confirmó que el soporte quedó adjunto. */
+  comprobanteConfirmado: boolean;
 }
 
 interface FilaConIndice {
@@ -139,7 +152,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:L10000`,
+    range: `${TAB_NAME}!A2:N10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -162,6 +175,8 @@ async function leerTodas(): Promise<FilaConIndice[]> {
         proveedor: row[9] ? String(row[9]) : "",
         deColaCorreo: row[10] === true || row[10] === "true",
         mensajeIdGmail: row[11] ? String(row[11]) : undefined,
+        comprobanteConfirmado: row[12] === true || row[12] === "true",
+        threadIdGmail: row[13] ? String(row[13]) : undefined,
       },
     });
   });
@@ -193,7 +208,9 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 async function purgarVencidas(): Promise<void> {
   const todas = await leerTodas();
   const ahora = Date.now();
-  const vencidas = todas.filter(({ pendiente }) => ahora - pendiente.creadoEn > TTL_MS);
+  const vencidas = todas.filter(({ pendiente }) =>
+    !pendiente.deColaCorreo && ahora - pendiente.creadoEn > TTL_MS
+  );
   vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
   for (const { rowIndex } of vencidas) await eliminarFila(rowIndex);
 }
@@ -201,7 +218,7 @@ async function purgarVencidas(): Promise<void> {
 /**
  * Nunca usar values.append con un rango de columnas (ver el mismo hallazgo, mucho más grave, en
  * crearPropuestaGasto de gastoProposalSheet.ts): la fila de encabezados de este tab quedó
- * desactualizada (7 columnas reales contra las 12 que ya tiene ConciliacionPendiente), y esa forma
+ * desactualizada (7 columnas reales contra las 14 que ya tiene ConciliacionPendiente), y esa forma
  * irregular puede hacer que Sheets adivine mal en qué columna empieza la fila nueva — la fila se
  * escribe completa, sin ningún error, pero termina invisible para cualquier lectura posterior. Se
  * calcula la fila libre a mano y se escribe con un rango explícito, igual que allá.
@@ -211,7 +228,7 @@ async function siguienteFilaLibre(): Promise<number> {
   const sheets = getClient();
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:L`,
+    range: `${TAB_NAME}!A:N`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
   const rows = resp.data.values ?? [];
@@ -231,6 +248,9 @@ const MAX_INTENTOS_ESCRITURA = 3;
 export async function guardarConciliacionPendiente(
   datos: Omit<ConciliacionPendiente, "id" | "creadoEn">
 ): Promise<ConciliacionPendiente> {
+  if (datos.deColaCorreo && (!datos.mensajeIdGmail?.trim() || !datos.threadIdGmail?.trim())) {
+    throw new Error("Una conciliación de la cola requiere mensajeIdGmail y threadIdGmail exactos.");
+  }
   return conMutex(TAB_NAME, async () => {
     await purgarVencidas();
     const sheetId = assertSheetId();
@@ -251,13 +271,15 @@ export async function guardarConciliacionPendiente(
       pendiente.proveedor,
       pendiente.deColaCorreo === true ? "true" : "",
       pendiente.mensajeIdGmail ?? "",
+      pendiente.comprobanteConfirmado ? "true" : "",
+      pendiente.threadIdGmail ?? "",
     ];
 
     for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:L${fila}`,
+        range: `${TAB_NAME}!A${fila}:N${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [fila_valores] },
       });
@@ -294,5 +316,31 @@ export async function consumirConciliacionPendiente(id: string): Promise<Concili
 
     await eliminarFila(match.rowIndex);
     return match.pendiente;
+  });
+}
+
+/** Repone exactamente la misma pregunta tras un resultado no terminal o un fallo de publicación. */
+export async function restaurarConciliacionPendiente(
+  pendiente: ConciliacionPendiente
+): Promise<ConciliacionPendiente> {
+  return conMutex(TAB_NAME, async () => {
+    const existente = (await leerTodas()).find(({ pendiente: actual }) => actual.id === pendiente.id)?.pendiente;
+    if (existente) return existente;
+    const restaurada = { ...pendiente, creadoEn: Date.now() };
+    const filaValores = [
+      restaurada.id, restaurada.empresa, restaurada.monto, restaurada.fecha,
+      restaurada.descripcionGasto, restaurada.chatId, restaurada.creadoEn,
+      restaurada.gastoId, restaurada.moneda, restaurada.proveedor,
+      restaurada.deColaCorreo === true ? "true" : "", restaurada.mensajeIdGmail ?? "",
+      restaurada.comprobanteConfirmado ? "true" : "", restaurada.threadIdGmail ?? "",
+    ];
+    const fila = await siguienteFilaLibre();
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A${fila}:N${fila}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [filaValores] },
+    });
+    return restaurada;
   });
 }

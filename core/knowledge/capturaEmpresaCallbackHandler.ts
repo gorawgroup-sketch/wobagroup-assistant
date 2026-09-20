@@ -3,12 +3,20 @@ import { registrarCaptura } from "./capturaSheet";
 import {
   guardarPendienteCapturaEmpresa,
   obtenerPendienteCapturaEmpresa,
-  eliminarPendienteCapturaEmpresa,
+  consumirPendienteCapturaEmpresa,
+  cancelarPendienteCapturaEmpresa,
+  reclamarPendienteCapturaParaConfirmar,
+  marcarPendienteCapturaRegistrada,
+  restaurarPendienteCapturaEmpresa,
+  actualizarEmpresasPendienteCaptura,
+  identidadCorreoDeCaptura,
   type EmpresaCaptura,
+  type PendienteCapturaEmpresa,
 } from "./pendienteCapturaEmpresaStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import type { InlineKeyboardButton } from "../telegram/types";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
+import type { IdentidadCorreoCola } from "../gmail/colaRevisionStore";
 
 const EMPRESAS: EmpresaCaptura[] = ["WOBA", "EWORKS", "Footprint", "General"];
 
@@ -41,6 +49,22 @@ function mensajePregunta(): string {
   return "📌 Antes de guardar: ¿a qué empresa corresponde? Puedes elegir varias.";
 }
 
+async function avanzarCapturaDeCorreoSiCorresponde(pendiente: PendienteCapturaEmpresa): Promise<boolean> {
+  if (!pendiente.deColaCorreo) return true;
+  const identidad = identidadCorreoDeCaptura(pendiente);
+  if (!identidad) {
+    // Una captura histórica sin identidad jamás debe cerrar por accidente el
+    // correo que esté activo ahora.
+    console.error("[capturaEmpresaCallbackHandler] Captura de correo sin identidad; no se avanza la cola.");
+    return false;
+  }
+  return avanzarColaCorreoSiActivo(
+    pendiente.chatId,
+    identidad,
+    `captura-cola:${pendiente.idempotencyKey ?? `${pendiente.chatId}:${pendiente.messageId}`}`
+  );
+}
+
 /**
  * Envía el mensaje con los botones de selección de empresa y guarda el
  * pendiente correspondiente — el guardado real (registrarCaptura) ocurre
@@ -70,11 +94,21 @@ export async function iniciarSeleccionEmpresaCaptura(
   // documento adjunto (documentCallbackHandler.ts, condicional según de
   // dónde vino el documento) — comentario corregido en la auditoría, antes
   // decía "solo" un único lugar y ya no era cierto.
-  deColaCorreo?: boolean
+  deColaCorreo?: boolean,
+  identidadCorreo?: IdentidadCorreoCola
 ): Promise<void> {
   const pregunta = mensajeIntro ? `${mensajeIntro}\n\n${mensajePregunta()}` : mensajePregunta();
   const messageId = await sendTelegramMessageWithButtons(chatId, pregunta, construirTeclado([]));
-  await guardarPendienteCapturaEmpresa({ chatId, messageId, texto, autor, empresasSeleccionadas: [], deColaCorreo });
+  await guardarPendienteCapturaEmpresa({
+    chatId,
+    messageId,
+    texto,
+    autor,
+    empresasSeleccionadas: [],
+    deColaCorreo,
+    threadId: identidadCorreo?.threadId,
+    mensajeId: identidadCorreo?.mensajeId,
+  });
 }
 
 export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQuery): Promise<void> {
@@ -94,10 +128,16 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
   }
 
   if (data === "capturaempresa_cancelar") {
-    await eliminarPendienteCapturaEmpresa(chatId, messageId);
+    const reclamada = await cancelarPendienteCapturaEmpresa(chatId, messageId);
+    if (!reclamada) {
+      await answerCallbackQuerySafe(callback.id, "Esta captura ya se está guardando o fue procesada; no se puede cancelar.");
+      return;
+    }
     await answerCallbackQuerySafe(callback.id);
-    await editTelegramMessage(chatId, pendiente.messageId, "❌ Captura descartada — no se guardó nada.", []);
-    if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+    await editTelegramMessage(chatId, reclamada.messageId, "❌ Captura descartada — no se guardó nada.", []).catch(
+      (error) => console.error("[capturaEmpresaCallbackHandler] No se pudo reflejar la cancelación en Telegram (no crítico):", error)
+    );
+    await avanzarCapturaDeCorreoSiCorresponde(reclamada);
     return;
   }
 
@@ -107,7 +147,18 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
       return;
     }
 
-    await answerCallbackQuerySafe(callback.id, "Guardando...");
+    const claim = await reclamarPendienteCapturaParaConfirmar(chatId, messageId);
+    if (claim.estado === "ausente") {
+      await answerCallbackQuerySafe(callback.id, "Esta selección ya fue procesada.");
+      return;
+    }
+    if (claim.estado === "en_proceso") {
+      await answerCallbackQuerySafe(callback.id, "Esta captura ya se está guardando. Espera un momento antes de reintentar.");
+      return;
+    }
+    let reclamada = claim.pendiente;
+
+    await answerCallbackQuerySafe(callback.id, claim.estado === "registrada" ? "Confirmando cierre..." : "Guardando...");
 
     // El guardado es lo único que de verdad importa acá — solo se elimina el
     // pendiente y se confirma al usuario DESPUÉS de que registrarCaptura
@@ -115,24 +166,66 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
     // poder reintentar con los mismos botones, y se avisa explícitamente en
     // vez de decir "guardado" sobre algo que no se guardó.
     try {
-      await registrarCaptura(pendiente.texto, pendiente.autor, pendiente.empresasSeleccionadas);
-      await eliminarPendienteCapturaEmpresa(chatId, messageId);
+      if (claim.estado !== "registrada") {
+        await registrarCaptura(
+          reclamada.texto,
+          reclamada.autor,
+          reclamada.empresasSeleccionadas,
+          reclamada.idempotencyKey
+        );
+        const registrada = await marcarPendienteCapturaRegistrada(reclamada);
+        if (!registrada) {
+          throw new Error("La captura se guardó, pero no pude confirmar su estado durable.");
+        }
+        reclamada = registrada;
+      }
+
+      const cierreConfirmado = await avanzarCapturaDeCorreoSiCorresponde(reclamada);
+      if (!cierreConfirmado) {
+        await editTelegramMessage(
+          chatId,
+          reclamada.messageId,
+          `✅ El conocimiento ya quedó guardado — ${reclamada.empresasSeleccionadas.join(", ")}.\n\n` +
+            "⚠️ Aún no pude confirmar el cierre del correo. Vuelve a pulsar el botón; no se duplicará la captura.",
+          [[{ text: "🔄 Confirmar cierre del correo", callback_data: "capturaempresa_confirmar" }]]
+        ).catch((error) =>
+          console.error("[capturaEmpresaCallbackHandler] No se pudo mostrar el reintento de cierre (no crítico):", error)
+        );
+        return;
+      }
+
+      await consumirPendienteCapturaEmpresa(chatId, messageId);
       await editTelegramMessage(
         chatId,
-        pendiente.messageId,
-        `✅ Guardado — ${pendiente.empresasSeleccionadas.join(", ")}.`,
+        reclamada.messageId,
+        `✅ Guardado — ${reclamada.empresasSeleccionadas.join(", ")}.`,
         []
+      ).catch((error) =>
+        console.error("[capturaEmpresaCallbackHandler] No se pudo reflejar el guardado en Telegram (no crítico):", error)
       );
-      if (pendiente.deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("Error guardando captura de conocimiento:", message);
+      try {
+        await restaurarPendienteCapturaEmpresa(reclamada);
+      } catch (errorRestaurando) {
+        const detalle = errorRestaurando instanceof Error ? errorRestaurando.message : String(errorRestaurando);
+        console.error("[capturaEmpresaCallbackHandler] No se pudo restaurar la captura tras el fallo:", detalle);
+        await editTelegramMessage(
+          chatId,
+          reclamada.messageId,
+          `❌ No se pudo guardar la captura (error: ${message}) y tampoco pude restaurar la selección (${detalle}). ` +
+            "El correo sigue sin leer; vuelve a iniciar Guardar como conocimiento.",
+          []
+        ).catch(() => {});
+        return;
+      }
       await editTelegramMessage(
         chatId,
-        pendiente.messageId,
+        reclamada.messageId,
         `❌ No se pudo guardar la captura (error: ${message}). La selección de empresa se mantiene — puedes ` +
           "volver a presionar Confirmar para reintentar, o escribir el CAPTURA de nuevo.",
-        construirTeclado(pendiente.empresasSeleccionadas)
+        construirTeclado(reclamada.empresasSeleccionadas)
       );
     }
     return;
@@ -156,9 +249,13 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
       seleccionadas = [...pendiente.empresasSeleccionadas.filter((e) => e !== "General"), empresa];
     }
 
-    await guardarPendienteCapturaEmpresa({ ...pendiente, empresasSeleccionadas: seleccionadas });
+    const actualizada = await actualizarEmpresasPendienteCaptura(chatId, messageId, seleccionadas);
+    if (!actualizada) {
+      await answerCallbackQuerySafe(callback.id, "Esta selección ya fue procesada.");
+      return;
+    }
     await answerCallbackQuerySafe(callback.id);
-    await editTelegramMessage(chatId, pendiente.messageId, mensajePregunta(), construirTeclado(seleccionadas));
+    await editTelegramMessage(chatId, actualizada.messageId, mensajePregunta(), construirTeclado(actualizada.empresasSeleccionadas));
     return;
   }
 

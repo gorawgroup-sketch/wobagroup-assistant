@@ -35,7 +35,13 @@ import { debeEjecutarAnalisisAutomatico, debePublicarInformeCorreo,
 import { marcarInformeCronPublicado, prepararInformeCron, registrarRevisionCron,
   reservarSlotInformeCron } from "../gmail/automatico/reportes";
 import type { DatosFactura } from "../documental/extractInvoiceData";
-import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
+import {
+  crearPropuestaAccionCorreo,
+  actualizarMessageIdAccionCorreo,
+  consumirPropuestaAccionCorreo,
+  restaurarPropuestaAccionCorreo,
+  type PropuestaAccionCorreo,
+} from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
@@ -46,12 +52,16 @@ import {
   contarPendientesTotal,
   iniciarSiguienteActivo,
   establecerPendientesActivo,
+  incrementarPendientesActivo,
+  revertirIncrementoPendientesActivo,
   resolverUnoActivo,
   obtenerActivoEstancado,
   descartarActivoEstancado,
   obtenerActivoActual,
   confirmarActivoResueltoTrasMarcarLeido,
+  prepararCierreExplicitoActivo,
   reintentarActivoPendienteDeMarcarLeido,
+  type IdentidadCorreoCola,
 } from "../gmail/colaRevisionStore";
 
 // 48h — mismo criterio que classificationStore.ts (48h) y otras propuestas
@@ -61,6 +71,73 @@ const UMBRAL_ACTIVO_ESTANCADO_MS = 48 * 60 * 60 * 1000;
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 const TEMA_AVISO_CORREO_PENDIENTE = "correo_nuevo_pendiente";
+const PREFIJO_REINTENTO_TECNICO = "__reintento_tecnico__:";
+
+type AlcanceReintentoTecnico = "correo" | "cuerpo" | `adjunto:${string}`;
+
+function alcanceReintentoDePropuesta(propuesta: PropuestaAccionCorreo): AlcanceReintentoTecnico | undefined {
+  if (!propuesta.accionSugerida.startsWith(PREFIJO_REINTENTO_TECNICO)) return undefined;
+  const alcance = propuesta.accionSugerida.slice(PREFIJO_REINTENTO_TECNICO.length);
+  if (alcance === "correo" || alcance === "cuerpo" || alcance.startsWith("adjunto:")) {
+    return alcance as AlcanceReintentoTecnico;
+  }
+  return undefined;
+}
+
+function botonesReintentoTecnico(id: string, alcance: AlcanceReintentoTecnico) {
+  return [
+    [{ text: "🔄 Reintentar", callback_data: `colacorreo_reintentar:${id}` }],
+    [{
+      text: alcance === "correo" ? "🗑️ Descartar correo y marcar leído" : "🗑️ Descartar esta parte",
+      callback_data: alcance === "correo" ? "colacorreo_descartaractivo" : `email_descartar:${id}`,
+    }],
+  ];
+}
+
+/**
+ * Convierte un fallo técnico en una decisión durable y visible. La fila usa
+ * el mismo store transaccional de las acciones de correo: un doble toque solo
+ * puede reclamarla una vez y la identidad exacta impide que cierre otro mail.
+ * No suma contador: sustituye la unidad que no alcanzó a producir su propuesta.
+ */
+async function publicarReintentoTecnico(
+  chatId: number,
+  correo: Pick<CorreoResumen, "de" | "asunto" | "threadId" | "messageIdHeader" | "id">,
+  alcance: AlcanceReintentoTecnico,
+  detalle: string
+): Promise<void> {
+  const propuesta = await crearPropuestaAccionCorreo({
+    chatId,
+    messageId: 0,
+    de: correo.de,
+    asunto: correo.asunto || "(sin asunto)",
+    tipo: "instruccion_jefe",
+    resumen: detalle,
+    accionSugerida: `${PREFIJO_REINTENTO_TECNICO}${alcance}`,
+    threadId: correo.threadId,
+    messageIdHeader: correo.messageIdHeader,
+    mensajeId: correo.id,
+    deColaCorreo: true,
+  });
+
+  let messageId: number;
+  try {
+    messageId = await sendTelegramMessageWithButtons(
+      chatId,
+      `${detalle}\n\nEl correo permanece *sin leer*. Puedes reintentar esta parte o descartarla explícitamente.`,
+      botonesReintentoTecnico(propuesta.id, alcance)
+    );
+  } catch (error) {
+    await consumirPropuestaAccionCorreo(propuesta.id).catch(() => undefined);
+    throw error;
+  }
+
+  // Los botones ya son visibles y llevan el id durable. No duplicarlos por
+  // un fallo secundario al persistir el messageId de Telegram.
+  await actualizarMessageIdAccionCorreo(propuesta.id, messageId).catch((error) =>
+    console.error("[revisarCorreoNuevo] Reintento publicado; no se pudo guardar su messageId:", error)
+  );
+}
 
 function sanitizarNombre(nombre: string): string {
   return nombre.replace(/[^\w.\-]+/g, "_").slice(0, 150);
@@ -289,7 +366,10 @@ async function sincronizarColaCorreo(
       return false;
     });
     if (marcado) {
-      await confirmarActivoResueltoTrasMarcarLeido(chatId, pendienteDeConfirmar.id).catch((error) =>
+      await confirmarActivoResueltoTrasMarcarLeido(chatId, {
+        threadId: pendienteDeConfirmar.id,
+        mensajeId: pendienteDeConfirmar.mensajeId,
+      }).catch((error) =>
         console.error("[revisarCorreoNuevo] Error confirmando el correo reintentado (no crítico):", error)
       );
     }
@@ -307,14 +387,20 @@ async function sincronizarColaCorreo(
     return undefined;
   });
   if (estancado) {
-    await descartarActivoEstancado(chatId, estancado.id).catch((error) =>
-      console.error("[revisarCorreoNuevo] Error descartando correo activo estancado:", error)
-    );
-    await sendTelegramMessage(
-      chatId,
-      `⚠️ "${estancado.asunto}" (de ${estancado.de}) llevaba más de 48h abierto sin resolverse — lo salto para no ` +
-        `trabar el resto de la cola. Sigue sin marcar como leído en Gmail; revísalo a mano si todavía hace falta.`
-    ).catch(() => {});
+    const descartado = await descartarActivoEstancado(chatId, {
+      threadId: estancado.id,
+      mensajeId: estancado.mensajeId,
+    }).catch((error) => {
+      console.error("[revisarCorreoNuevo] Error descartando correo activo estancado:", error);
+      return false;
+    });
+    if (descartado) {
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ "${estancado.asunto}" (de ${estancado.de}) llevaba más de 48h abierto sin resolverse — lo salto para no ` +
+          `trabar el resto de la cola. Sigue sin marcar como leído en Gmail; revísalo a mano si todavía hace falta.`
+      ).catch(() => {});
+    }
     // Bug real encontrado en auditoría: acá antes también se mandaba su
     // propio aviso de "¿seguimos con el siguiente?" — pero más abajo, la
     // rama unificada (!habiaActivoAntes && quedan pendientes) SIEMPRE se
@@ -478,7 +564,22 @@ async function sincronizarColaCorreo(
  * una rama termina SIN mandar ninguna propuesta real (gasto duplicado, error
  * leyendo un adjunto), y solo si deColaCorreo=true.
  */
-async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, deColaCorreo: boolean): Promise<void> {
+interface OpcionesProcesamientoCorreo {
+  /** Reintento de un único adjunto: no vuelve a publicar la solicitud independiente del cuerpo. */
+  omitirSolicitudCuerpo?: boolean;
+}
+
+async function procesarCorreoLocalizado(
+  chatId: number,
+  correo: CorreoResumen,
+  deColaCorreo: boolean,
+  opciones: OpcionesProcesamientoCorreo = {}
+): Promise<void> {
+  const identidadCola: IdentidadCorreoCola = {
+    threadId: correo.threadId,
+    mensajeId: correo.id,
+  };
+
   // No crítico — nunca debe bloquear el procesamiento real del correo.
   registrarPersonaDesdeCorreo(correo.de, "correo_entrante").catch((error) =>
     console.error("[revisarCorreoNuevo] Error registrando remitente en el directorio de personas:", error)
@@ -489,10 +590,17 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
   // Gmail) que se le pasaba a procesarDocumentoLocal. Se hoistea acá arriba porque ahora hace falta en
   // AMBOS caminos: un correo con adjuntos también puede traer una instrucción real en el cuerpo (ver
   // más abajo) que hay que leer, no solo mirar el snippet.
-  const cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id).catch((error) => {
-    console.error(`[revisarCorreoNuevo] Error leyendo el cuerpo completo de ${correo.id} (se analiza con lo que haya):`, error);
-    return "";
-  });
+  let cuerpoCompleto: string;
+  try {
+    cuerpoCompleto = await obtenerCuerpoCompletoCorreo(correo.id);
+  } catch (error) {
+    // El cuerpo completo es obligatorio. Continuar con una cadena vacía
+    // permitiría clasificar, proponer y finalmente marcar READ un correo que
+    // nunca se leyó de verdad. El wrapper de la cola convierte este fallo en
+    // una acción durable de reintento y conserva el mensaje UNREAD.
+    console.error(`[revisarCorreoNuevo] No se pudo leer el cuerpo completo de ${correo.id}:`, error);
+    throw error;
+  }
 
   // Pedido explícito de Carlos: analizar el direccionamiento de CADA
   // correo (qué acción hay que tomar, y si el camino está claro,
@@ -514,10 +622,11 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     // tiene alguna solicitud que debe procesar" — un documento real y una solicitud real sobre ese
     // documento no son mutuamente excluyentes, así que esto se atiende ANTES de procesar los adjuntos
     // como posible gasto, nunca en su lugar (el loop de abajo sigue corriendo igual, sin cambios).
-    // `deColaCorreo: false` a propósito: esta propuesta es informativa/adicional, nunca cuenta como una
-    // de las `correo.adjuntos.length` decisiones que establecerPendientesActivo reserva para este
-    // correo (ver esa llamada, en avanzarColaCorreoSiActivo) — solo las decisiones reales sobre cada
-    // adjunto avanzan la cola, para no desincronizar el contador.
+    // La solicitud del cuerpo es una decisión REAL y separada de cada adjunto. Antes se guardaba con
+    // el marcador de cola desactivado, por lo que podía quedar sin resolver y aun así el último adjunto llevaba el
+    // contador a cero y marcaba Gmail como leído. Ahora incrementa el contador del activo verificando
+    // thread+message exactos y conserva esa misma identidad en la propuesta. Así el correo solo queda
+    // leído cuando se resolvieron tanto los adjuntos como lo que pidió el remitente.
     // Pedido explícito de Carlos, tras un caso real (Footprint, Modelo 303/349 de IVA, 2026-09-17):
     // cuando un correo trae varios adjuntos, cada uno mandaba su propia propuesta SIN decir de qué
     // correo venía ni de qué trataba — "no sé de qué se trata el contexto completo del mail al que
@@ -527,20 +636,35 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     try {
       const analisisConAdjuntos = await analizarCorreo(correo, cuerpoCompleto, true);
       resumenCorreoParaAdjuntos = analisisConAdjuntos.resumen;
-      if (analisisConAdjuntos.tipo === "necesita_respuesta" || analisisConAdjuntos.tipo === "instruccion_jefe") {
-        const propuestaSolicitud = await crearPropuestaAccionCorreo({
-          chatId,
-          messageId: 0,
-          de: correo.de,
-          asunto: correo.asunto || "(sin asunto)",
-          tipo: analisisConAdjuntos.tipo,
-          resumen: analisisConAdjuntos.resumen,
-          accionSugerida: analisisConAdjuntos.accionSugerida,
-          threadId: correo.threadId,
-          messageIdHeader: correo.messageIdHeader,
-          mensajeId: correo.id,
-          deColaCorreo: false,
-        });
+      if (!opciones.omitirSolicitudCuerpo &&
+          (analisisConAdjuntos.tipo === "necesita_respuesta" || analisisConAdjuntos.tipo === "instruccion_jefe")) {
+        let contadorReservado = false;
+        let propuestaSolicitud: Awaited<ReturnType<typeof crearPropuestaAccionCorreo>> | undefined;
+        if (deColaCorreo) {
+          const incrementado = await incrementarPendientesActivo(chatId, identidadCola);
+          if (!incrementado) {
+            throw new Error("el correo ya no coincide con el activo; no se publica una solicitud que podría cerrar otro correo");
+          }
+          contadorReservado = true;
+        }
+        try {
+          propuestaSolicitud = await crearPropuestaAccionCorreo({
+            chatId,
+            messageId: 0,
+            de: correo.de,
+            asunto: correo.asunto || "(sin asunto)",
+            tipo: analisisConAdjuntos.tipo,
+            resumen: analisisConAdjuntos.resumen,
+            accionSugerida: analisisConAdjuntos.accionSugerida,
+            threadId: correo.threadId,
+            messageIdHeader: correo.messageIdHeader,
+            mensajeId: correo.id,
+            deColaCorreo,
+          });
+        } catch (error) {
+          if (contadorReservado) await revertirIncrementoPendientesActivo(chatId, identidadCola);
+          throw error;
+        }
 
         const textoSolicitud = [
           `📧 *${propuestaSolicitud.asunto}* — este correo trae ${correo.adjuntos.length === 1 ? "un adjunto" : "adjuntos"} Y además pide algo:`,
@@ -549,21 +673,41 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           `→ ${propuestaSolicitud.accionSugerida}`,
         ].join("\n");
 
-        const messageIdSolicitud = await sendTelegramMessageWithButtons(chatId, textoSolicitud, [
-          [
-            { text: "✅ Proceder", callback_data: `email_proceder:${propuestaSolicitud.id}` },
-            { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuestaSolicitud.id}` },
-          ],
-          [
-            { text: "❌ Descartar", callback_data: `email_descartar:${propuestaSolicitud.id}` },
-            { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuestaSolicitud.id}` },
-          ],
-        ]);
+        let messageIdSolicitud: number;
+        try {
+          messageIdSolicitud = await sendTelegramMessageWithButtons(chatId, textoSolicitud, [
+            [
+              { text: "✅ Proceder", callback_data: `email_proceder:${propuestaSolicitud.id}` },
+              { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuestaSolicitud.id}` },
+            ],
+            [
+              { text: "❌ Descartar", callback_data: `email_descartar:${propuestaSolicitud.id}` },
+              { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuestaSolicitud.id}` },
+            ],
+          ]);
+        } catch (error) {
+          await consumirPropuestaAccionCorreo(propuestaSolicitud.id).catch(() => undefined);
+          if (contadorReservado) await revertirIncrementoPendientesActivo(chatId, identidadCola);
+          throw error;
+        }
 
-        await actualizarMessageIdAccionCorreo(propuestaSolicitud.id, messageIdSolicitud);
+        // La propuesta ya es visible y clicable; un fallo al guardar el id
+        // de Telegram no invalida esa decisión ni justifica publicarla otra
+        // vez. El callback usa el id de propuesta incluido en sus botones.
+        await actualizarMessageIdAccionCorreo(propuestaSolicitud.id, messageIdSolicitud).catch((error) =>
+          console.error("[revisarCorreoNuevo] Solicitud adicional publicada, pero no se pudo guardar su messageId:", error)
+        );
       }
     } catch (error) {
-      console.error(`[revisarCorreoNuevo] Error analizando si el correo ${correo.id} pide algo más allá del adjunto (no crítico, sigue con el adjunto igual):`, error);
+      console.error(
+        `[revisarCorreoNuevo] Error preparando la solicitud adicional del correo ${correo.id}; si ya se contó, permanece pendiente y Gmail no se marcará leído:`,
+        error
+      );
+      // No continuar con los adjuntos: si el análisis o la publicación de
+      // la solicitud falló, permitir que los adjuntos agoten el contador
+      // podría marcar el mensaje leído dejando la petición del cuerpo sin
+      // atender. El wrapper mantiene el activo y avisa para reintentar.
+      throw error;
     }
 
     let indiceAdjunto = 0;
@@ -619,22 +763,42 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
             chatId,
             `📄 "${adjunto.filename}" (${correo.asunto}) — ya generó el gasto VERIFICADO ${gastoYaCreado.gastoId} (${gastoYaCreado.empresa}) antes, no propongo uno nuevo.`
           ).catch(() => {});
-          if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+          if (deColaCorreo) {
+            await avanzarColaCorreoSiActivo(
+              chatId,
+              identidadCola,
+              `correo:${correo.id}:adjunto:${adjunto.partId}:resolver`
+            );
+          }
           continue;
         }
-        if (estadoRegistro === "no_verificable") {
+        if (estadoRegistro === "incompleto") {
           await sendTelegramMessage(
             chatId,
-            `⚠️ No pude confirmar en Holded si el gasto ${gastoYaCreado.gastoId} asociado a "${adjunto.filename}" existe. ` +
-              `Por seguridad no lo doy por creado, no genero otro y dejo este correo pendiente para reintentar la verificación.`
+            `🔄 El gasto ${gastoYaCreado.gastoId} ya existe, pero quedó incompleto. Voy a reutilizar el flujo ` +
+              `uno a uno para verificar/adjuntar este mismo soporte y retomar su conciliación; no se podrá crear otro gasto.`
           ).catch(() => {});
+          // Sigue con la descarga y lectura del adjunto. procesarGastoEntrante
+          // reconoce el registro incompleto y crea únicamente una propuesta
+          // de recuperación para SU mismo purchase id.
+        }
+        if (estadoRegistro === "no_verificable") {
+          await publicarReintentoTecnico(
+            chatId,
+            correo,
+            `adjunto:${adjunto.partId}`,
+            `⚠️ No pude confirmar en Holded si el gasto ${gastoYaCreado.gastoId} asociado a "${adjunto.filename}" existe. ` +
+              `Por seguridad no lo doy por creado ni genero otro.`
+          );
           continue;
         }
-        await sendTelegramMessage(
-          chatId,
-          `⚠️ El registro reciente decía que "${adjunto.filename}" había creado el gasto ${gastoYaCreado.gastoId}, ` +
-            `pero Holded devolvió 404. Invalidé solo esa referencia fantasma; ahora vuelvo a descargar y leer este adjunto completo antes de proponer nada.`
-        ).catch(() => {});
+        if (estadoRegistro === "fantasma_eliminado") {
+          await sendTelegramMessage(
+            chatId,
+            `⚠️ El registro reciente decía que "${adjunto.filename}" había creado el gasto ${gastoYaCreado.gastoId}, ` +
+              `pero Holded devolvió 404. Invalidé solo esa referencia fantasma; ahora vuelvo a descargar y leer este adjunto completo antes de proponer nada.`
+          ).catch(() => {});
+        }
       }
 
       // Hallazgo real (caso real Carlos, 2026-09-10 — correo con 8 adjuntos, pidió revisar de nuevo
@@ -655,7 +819,13 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           chatId,
           `📄 "${adjunto.filename}" (${correo.asunto}) — ya se revisó antes y se archivó como documento (no era un gasto), no lo vuelvo a descargar.`
         ).catch(() => {});
-        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+        if (deColaCorreo) {
+          await avanzarColaCorreoSiActivo(
+            chatId,
+            identidadCola,
+            `correo:${correo.id}:adjunto:${adjunto.partId}:resolver`
+          );
+        }
         continue;
       }
 
@@ -730,7 +900,11 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         // ninguna propuesta real (ver el catch de abajo) — solo si esto
         // sí vino de la cola.
         if (resultadoDocumento === "gasto_duplicado" && deColaCorreo) {
-          await avanzarColaCorreoSiActivo(chatId);
+          await avanzarColaCorreoSiActivo(
+            chatId,
+            identidadCola,
+            `correo:${correo.id}:adjunto:${adjunto.partId}:resolver`
+          );
         }
 
         // NO se registra "ya archivado" acá — procesarDocumentoLocal retornando "archivo" solo
@@ -743,13 +917,14 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
-        // No marcar como leído ni avanzar: el adjunto NO se procesó. Queda
-        // activo para que el usuario pueda reintentarlo o descartarlo de
-        // forma explícita, sin perder el tracking de Gmail.
-        await sendTelegramMessage(
+        // No marcar como leído ni avanzar: el adjunto NO se procesó. La
+        // acción persistida evita que el activo quede bloqueado sin botones.
+        await publicarReintentoTecnico(
           chatId,
-          `⚠️ Hubo un error leyendo el adjunto "${adjunto.filename}" de "${correo.asunto}" — no lo marqué como leído ni avancé la cola. Puedes reintentarlo o descartarlo explícitamente.`
-        ).catch(() => {});
+          correo,
+          `adjunto:${adjunto.partId}`,
+          `⚠️ No pude procesar el adjunto "${adjunto.filename}" de "${correo.asunto}" (${message}).`
+        );
       }
     }
     return;
@@ -801,7 +976,12 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         fecha: correo.fecha,
       });
     } catch (error) {
-      console.error(`[revisarCorreoNuevo] Error intentando leer el correo ${correo.id} como gasto (sigue como correo normal):`, error);
+      // Un fallo del extractor no demuestra que el correo no sea un gasto.
+      // Caer al clasificador genérico ocultaba el fallo y podía cerrar el
+      // correo sin haber despejado la ruta contable. Se reintenta de forma
+      // durable y el mensaje permanece UNREAD.
+      console.error(`[revisarCorreoNuevo] No se pudo determinar si ${correo.id} contiene un gasto:`, error);
+      throw error;
     }
   }
 
@@ -821,22 +1001,37 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
           chatId,
           `📄 "${correo.asunto}" — ya generó el gasto VERIFICADO ${gastoYaCreadoEnCuerpo.gastoId} (${gastoYaCreadoEnCuerpo.empresa}) antes, no propongo uno nuevo.`
         ).catch(() => {});
-        if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId);
+        if (deColaCorreo) {
+          await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
+        }
         return;
       }
-      if (estadoRegistro === "no_verificable") {
+      if (estadoRegistro === "incompleto") {
         await sendTelegramMessage(
           chatId,
-          `⚠️ No pude confirmar en Holded si el gasto ${gastoYaCreadoEnCuerpo.gastoId} asociado a este correo existe. ` +
-            `Por seguridad no lo doy por creado, no genero otro y dejo el correo pendiente.`
+          `🔄 El gasto ${gastoYaCreadoEnCuerpo.gastoId} ya existe, pero quedó incompleto. Voy a reconstruir fielmente ` +
+            `el soporte desde este correo y retomar ese mismo gasto; no se podrá crear otro.`
         ).catch(() => {});
+        // Sigue hasta procesarGastoEntrante, que convierte el registro
+        // incompleto en una propuesta de recuperación del mismo purchase id.
+      }
+      if (estadoRegistro === "no_verificable") {
+        await publicarReintentoTecnico(
+          chatId,
+          correo,
+          "cuerpo",
+          `⚠️ No pude confirmar en Holded si el gasto ${gastoYaCreadoEnCuerpo.gastoId} asociado a este correo existe. ` +
+            `Por seguridad no lo doy por creado ni genero otro.`
+        );
         return;
       }
-      await sendTelegramMessage(
-        chatId,
-        `⚠️ El registro reciente de este correo apuntaba al gasto ${gastoYaCreadoEnCuerpo.gastoId}, pero Holded devolvió 404. ` +
-          `Invalidé solo esa referencia fantasma y vuelvo a leer el cuerpo completo antes de proponer nada.`
-      ).catch(() => {});
+      if (estadoRegistro === "fantasma_eliminado") {
+        await sendTelegramMessage(
+          chatId,
+          `⚠️ El registro reciente de este correo apuntaba al gasto ${gastoYaCreadoEnCuerpo.gastoId}, pero Holded devolvió 404. ` +
+            `Invalidé solo esa referencia fantasma y vuelvo a leer el cuerpo completo antes de proponer nada.`
+        ).catch(() => {});
+      }
     }
 
     try {
@@ -877,17 +1072,19 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
         },
       });
       if (resultadoGasto === "propuesta_duplicada" && deColaCorreo) {
-        await avanzarColaCorreoSiActivo(chatId);
+        await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
       }
       return;
     } catch (error) {
       const detalle = error instanceof Error ? error.message : String(error);
       console.error(`[revisarCorreoNuevo] Error generando la propuesta de gasto desde el cuerpo del correo ${correo.id}:`, error);
-      await sendTelegramMessage(
+      await publicarReintentoTecnico(
         chatId,
+        correo,
+        "cuerpo",
         `⚠️ Detecté un gasto en "${correo.asunto}", pero no pude conservar fielmente el diseño de su comprobante ` +
-          `(${detalle}). No creé ni adjunté una reconstrucción deformada. El correo permanece sin procesar y sin marcar como leído para reintentarlo.`
-      ).catch(() => {});
+          `(${detalle}). No creé ni adjunté una reconstrucción deformada.`
+      );
       // No convertirlo en una propuesta genérica ni avanzar la cola: ambas
       // cosas ocultarían que el soporte contable aún no está resuelto.
       return;
@@ -914,18 +1111,26 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
     "\n"
   );
 
-  const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-    [
-      { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
-      { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuesta.id}` },
-    ],
-    [
-      { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
-      { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` },
-    ],
-  ]);
+  let messageId: number;
+  try {
+    messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+      [
+        { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
+        { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuesta.id}` },
+      ],
+      [
+        { text: "❌ Descartar", callback_data: `email_descartar:${propuesta.id}` },
+        { text: "✏️ Dar instrucciones específicas", callback_data: `email_orientar:${propuesta.id}` },
+      ],
+    ]);
+  } catch (error) {
+    await consumirPropuestaAccionCorreo(propuesta.id).catch(() => undefined);
+    throw error;
+  }
 
-  await actualizarMessageIdAccionCorreo(propuesta.id, messageId);
+  await actualizarMessageIdAccionCorreo(propuesta.id, messageId).catch((error) =>
+    console.error("[revisarCorreoNuevo] Propuesta publicada; no se pudo guardar su messageId:", error)
+  );
 }
 
 /**
@@ -938,21 +1143,156 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
 export async function procesarSiguienteCorreoActivo(chatId: number): Promise<void> {
   return conCoordinadorCorreo(() => procesarSiguienteCorreoActivoInterno(chatId));
 }
+/**
+ * Variante para llamadores que YA poseen conCoordinadorCorreo durante toda
+ * su transacción (watchdog). No usar fuera de ese contexto.
+ */
+export async function procesarSiguienteCorreoActivoYaCoordinado(chatId: number): Promise<void> {
+  return procesarSiguienteCorreoActivoInterno(chatId);
+}
 async function procesarSiguienteCorreoActivoInterno(chatId: number): Promise<void> {
   const activo = await iniciarSiguienteActivo(chatId);
   if (!activo) return; // cola vacía — nada más que revisar.
 
   try {
     const correo = await obtenerResumenCorreo(activo.mensajeId);
+    if (correo.id !== activo.mensajeId || correo.threadId !== activo.id) {
+      throw new Error("Gmail devolvió una identidad distinta a la fila activa; se conserva sin leer");
+    }
     await comprobarCorreoDisponible(correo.threadId);
-    await establecerPendientesActivo(chatId, activo.id, correo.adjuntos.length > 0 ? correo.adjuntos.length : 1);
+    const identidadActiva = { threadId: activo.id, mensajeId: activo.mensajeId };
+    const inicializado = await establecerPendientesActivo(
+      chatId,
+      identidadActiva,
+      correo.adjuntos.length > 0 ? correo.adjuntos.length : 1
+    );
+    if (!inicializado) {
+      throw new Error("el correo cambió antes de inicializar sus decisiones pendientes");
+    }
     await procesarCorreoLocalizado(chatId, correo, true);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error procesando correo activo ${activo.id}:`, error);
-    await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — permanece sin leer y activo; no avancé la cola. Reinténtalo o descártalo explícitamente.`).catch(
-      () => {}
+    const detalle = error instanceof Error ? error.message : String(error);
+    await publicarReintentoTecnico(
+      chatId,
+      {
+        de: activo.de,
+        asunto: activo.asunto,
+        threadId: activo.id,
+        messageIdHeader: "",
+        id: activo.mensajeId,
+      },
+      "correo",
+      `⚠️ Hubo un error revisando "${activo.asunto}" (${detalle}); no avancé la cola.`
+    ).catch(async (errorPublicando) => {
+      console.error("[revisarCorreoNuevo] Tampoco se pudo publicar la acción durable de reintento:", errorPublicando);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ Hubo un error revisando "${activo.asunto}" y no pude publicar sus botones. ` +
+          `El correo sigue sin leer y activo; el autodiagnóstico lo reintentará sin perderlo ni bloquear la bandeja.`
+      ).catch(() => {});
+    });
+  }
+}
+
+/**
+ * Reintenta únicamente la unidad que falló. La propuesta se reclama de forma
+ * atómica en emailActionStore y el coordinador serializa todo el buzón. Así un
+ * doble toque no vuelve a descargar/crear dos veces ni puede cerrar el correo
+ * que haya quedado activo después.
+ */
+export async function handleReintentarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+  const telegramMessageId = callback.message?.message_id;
+  const id = callback.data?.split(":")[1];
+
+  await answerCallbackQuery(callback.id, "Reintentando...").catch((error) =>
+    console.error("[revisarCorreoNuevo] No se pudo responder el callback de reintento (no crítico):", error)
+  );
+  if (chatId === undefined || !id) return;
+
+  if (telegramMessageId !== undefined) {
+    await editTelegramMessageReplyMarkup(chatId, telegramMessageId, []).catch((error) =>
+      console.error("[revisarCorreoNuevo] No se pudo desactivar el botón de reintento (no crítico):", error)
     );
   }
+
+  await conCoordinadorCorreo(async () => {
+    const propuesta = await consumirPropuestaAccionCorreo(id);
+    if (!propuesta) {
+      await sendTelegramMessage(chatId, "Esta acción ya fue procesada o reemplazada por una más reciente.").catch(() => {});
+      return;
+    }
+
+    const alcance = alcanceReintentoDePropuesta(propuesta);
+    const activo = await obtenerActivoActual(chatId);
+    const identidadCoincide = Boolean(
+      alcance &&
+      propuesta.deColaCorreo &&
+      activo &&
+      activo.id === propuesta.threadId &&
+      activo.mensajeId === propuesta.mensajeId
+    );
+    if (!alcance || !identidadCoincide || !activo) {
+      await sendTelegramMessage(
+        chatId,
+        "Esta acción pertenece a un correo que ya no es el activo. No ejecuté nada ni afecté la cola actual."
+      ).catch(() => {});
+      return;
+    }
+
+    try {
+      const correo = await obtenerResumenCorreo(propuesta.mensajeId);
+      if (correo.id !== propuesta.mensajeId || correo.threadId !== propuesta.threadId) {
+        throw new Error("Gmail devolvió una identidad distinta; no se ejecutó el reintento");
+      }
+      await comprobarCorreoDisponible(correo.threadId);
+
+      if (alcance === "correo") {
+        if (activo.pendientesRestantes < 1) {
+          const inicializado = await establecerPendientesActivo(
+            chatId,
+            { threadId: activo.id, mensajeId: activo.mensajeId },
+            correo.adjuntos.length > 0 ? correo.adjuntos.length : 1
+          );
+          if (!inicializado) throw new Error("el correo dejó de ser el activo antes de reiniciar");
+        }
+        await procesarCorreoLocalizado(chatId, correo, true);
+        return;
+      }
+
+      if (alcance === "cuerpo") {
+        await procesarCorreoLocalizado(chatId, { ...correo, adjuntos: [] }, true);
+        return;
+      }
+
+      const partId = alcance.slice("adjunto:".length);
+      const adjunto = correo.adjuntos.find((item) => item.partId === partId);
+      if (!adjunto) throw new Error(`el adjunto ${partId} ya no está disponible en Gmail`);
+      await procesarCorreoLocalizado(
+        chatId,
+        { ...correo, adjuntos: [adjunto] },
+        true,
+        { omitirSolicitudCuerpo: true }
+      );
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : String(error);
+      console.error("[revisarCorreoNuevo] Falló el reintento técnico:", error);
+      const restaurada: PropuestaAccionCorreo = {
+        ...propuesta,
+        messageId: telegramMessageId ?? propuesta.messageId,
+      };
+      await restaurarPropuestaAccionCorreo(restaurada);
+      const nuevoMessageId = await sendTelegramMessageWithButtons(
+        chatId,
+        `⚠️ El reintento no terminó (${detalle}). El correo sigue sin leer y puedes volver a intentarlo.`,
+        botonesReintentoTecnico(restaurada.id, alcance)
+      ).catch(() => undefined);
+      if (nuevoMessageId !== undefined) {
+        await actualizarMessageIdAccionCorreo(restaurada.id, nuevoMessageId).catch(() => undefined);
+      }
+    }
+  });
 }
 
 /**
@@ -1019,10 +1359,26 @@ async function procesarCorreoPuntualInterno(
  * confirmación antes de mostrar el siguiente (ver el comentario de
  * handleColaCorreoSiguienteCallback más abajo para el porqué).
  */
-export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
+export async function avanzarColaCorreoSiActivo(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  claveIdempotencia?: string
+): Promise<boolean> {
+  // Copia defensiva: el reintento debe conservar exactamente la identidad
+  // del clic original, no una referencia mutable de su store.
+  let identidadParaReintento: IdentidadCorreoCola = {
+    threadId: identidadEsperada.threadId,
+    mensajeId: identidadEsperada.mensajeId,
+  };
   try {
-    await conCoordinadorCorreo(() => avanzarColaCorreoSiActivoInterno(chatId));
-    limpiarReintentoAvanceCola(chatId);
+    const procesado = await conCoordinadorCorreo(() => avanzarColaCorreoSiActivoInterno(
+      chatId,
+      identidadParaReintento,
+      (identidadResuelta) => { identidadParaReintento = identidadResuelta; },
+      claveIdempotencia
+    ));
+    limpiarReintentoAvanceCola(chatId, identidadParaReintento, claveIdempotencia);
+    return procesado;
   } catch (error) {
     // La acción que llamó a esta función ya terminó (crear, conciliar, cancelar, archivar, etc.). Un
     // lock_timeout del coordinador o un 429 transitorio de Sheets solo impide confirmar el cierre de
@@ -1030,40 +1386,70 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
     // aunque el resultado real ya estuviera aplicado. El avance es idempotente cuando llega a cero,
     // así que se reintenta aparte y el resultado contable no se vuelve a ejecutar.
     console.error("[revisarCorreoNuevo] No se pudo cerrar la cola; se reintentará sin repetir la acción:", error);
-    programarReintentoAvanceCola(chatId);
+    programarReintentoAvanceCola(chatId, identidadParaReintento, claveIdempotencia);
+    return false;
   }
 }
 
-const reintentosAvanceCola = new Map<number, { intentos: number; timer?: ReturnType<typeof setTimeout> }>();
+const reintentosAvanceCola = new Map<string, { intentos: number; timer?: ReturnType<typeof setTimeout> }>();
 const MAX_REINTENTOS_AVANCE_COLA = 5;
 
-function limpiarReintentoAvanceCola(chatId: number): void {
-  const pendiente = reintentosAvanceCola.get(chatId);
-  if (pendiente?.timer) clearTimeout(pendiente.timer);
-  reintentosAvanceCola.delete(chatId);
+function claveReintentoAvance(
+  chatId: number,
+  identidad: IdentidadCorreoCola,
+  claveIdempotencia?: string
+): string {
+  return `${chatId}:${identidad.threadId ?? ""}:${identidad.mensajeId ?? ""}:${claveIdempotencia?.trim() ?? ""}`;
 }
 
-function programarReintentoAvanceCola(chatId: number): void {
-  const actual = reintentosAvanceCola.get(chatId) ?? { intentos: 0 };
+function limpiarReintentoAvanceCola(
+  chatId: number,
+  identidad: IdentidadCorreoCola,
+  claveIdempotencia?: string
+): void {
+  const clave = claveReintentoAvance(chatId, identidad, claveIdempotencia);
+  const pendiente = reintentosAvanceCola.get(clave);
+  if (pendiente?.timer) clearTimeout(pendiente.timer);
+  reintentosAvanceCola.delete(clave);
+}
+
+function programarReintentoAvanceCola(
+  chatId: number,
+  identidad: IdentidadCorreoCola,
+  claveIdempotencia?: string
+): void {
+  const identidadInmutable = { threadId: identidad.threadId, mensajeId: identidad.mensajeId };
+  const clave = claveReintentoAvance(chatId, identidadInmutable, claveIdempotencia);
+  const actual = reintentosAvanceCola.get(clave) ?? { intentos: 0 };
   if (actual.timer || actual.intentos >= MAX_REINTENTOS_AVANCE_COLA) return;
   const intentos = actual.intentos + 1;
   const demoraMs = Math.min(60_000, 5_000 * 2 ** (intentos - 1));
   const timer = setTimeout(() => {
-    reintentosAvanceCola.set(chatId, { intentos });
-    void avanzarColaCorreoSiActivo(chatId);
+    reintentosAvanceCola.set(clave, { intentos });
+    void avanzarColaCorreoSiActivo(chatId, identidadInmutable, claveIdempotencia);
   }, demoraMs);
   timer.unref();
-  reintentosAvanceCola.set(chatId, { intentos, timer });
+  reintentosAvanceCola.set(clave, { intentos, timer });
 }
-async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
+async function avanzarColaCorreoSiActivoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  alResolverIdentidad: (identidad: IdentidadCorreoCola) => void,
+  claveIdempotencia?: string
+): Promise<boolean> {
   // Los fallos transitorios deben llegar al wrapper para que programe el reintento. Antes se
   // convertían en `terminado:false`, indistinguible de un correo con más decisiones pendientes: un
   // 429 de Sheets dejaba el correo activo sin ningún reintento y el vigilante lo reprocesaba entero.
-  const resultado = await resolverUnoActivo(chatId);
+  const resultado = await resolverUnoActivo(chatId, identidadEsperada, claveIdempotencia);
 
-  if (!resultado.terminado) return;
+  // Si ya no existe ese activo exacto, la acción no puede afectar al correo
+  // siguiente y se considera cerrada para que su store durable pueda limpiar
+  // el outbox. Si sí existe, `aplicado`/`yaAplicado` prueban que el contador
+  // quedó persistido exactamente una vez.
+  if (!resultado.terminado) return true;
+  if (resultado.identidadResuelta) alResolverIdentidad(resultado.identidadResuelta);
 
-  if (resultado.gmailIdResuelto) {
+  if (resultado.gmailIdResuelto && resultado.identidadResuelta) {
     // Hallazgo real de auditoría (caso Eurohotel/Avianca/Larrauri — ver el comentario de
     // resolverUnoActivo en colaRevisionStore.ts): antes esto era fire-and-forget (sin await, .catch
     // solo logueaba) y la fila de la cola ya se había borrado ANTES de llegar acá — un fallo real
@@ -1074,8 +1460,10 @@ async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
     // reintente sola en la próxima revisión (ver reintentarActivoPendienteDeMarcarLeido, al principio
     // de esta función) o se destrabe a mano con los mecanismos ya existentes.
     const activoResuelto = await obtenerActivoActual(chatId);
-    if (!activoResuelto || activoResuelto.id !== resultado.gmailIdResuelto) return;
-    const marcado = await marcarMensajeComoLeido(activoResuelto.mensajeId).catch((error: unknown) => {
+    if (!activoResuelto ||
+        activoResuelto.id !== resultado.identidadResuelta.threadId ||
+        activoResuelto.mensajeId !== resultado.identidadResuelta.mensajeId) return true;
+    const marcado = await marcarMensajeComoLeido(resultado.identidadResuelta.mensajeId).catch((error: unknown) => {
       console.error("[revisarCorreoNuevo] Error marcando el mensaje como leído:", error);
       return false;
     });
@@ -1086,12 +1474,11 @@ async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
         "⚠️ Ya resolví este correo pero no pude marcarlo como leído en Gmail (fallo real del lado de Gmail/Sheets) " +
           "— lo dejo activo para no perder el rastro; se reintenta solo en la próxima revisión."
       ).catch(() => {});
-      return;
+      return true;
     }
 
-    await confirmarActivoResueltoTrasMarcarLeido(chatId, resultado.gmailIdResuelto).catch((error) =>
-      console.error("[revisarCorreoNuevo] Error confirmando el correo resuelto (no crítico, se reintentará):", error)
-    );
+    const confirmado = await confirmarActivoResueltoTrasMarcarLeido(chatId, resultado.identidadResuelta);
+    if (!confirmado) return true;
   }
 
   if (resultado.gmailIdResuelto) {
@@ -1103,7 +1490,7 @@ async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
   const quedan = await contarPendientesTotal(chatId);
   if (quedan === 0) {
     await sendTelegramMessage(chatId, "✅ Ya no quedan correos sin leer por resolver — al día.").catch(() => {});
-    return;
+    return true;
   }
 
   // Pedido explícito de Carlos, tras un caso real: antes esto pasaba
@@ -1120,6 +1507,7 @@ async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
     chatId,
     `✅ Resuelto. Quedan ${quedan} correo${quedan === 1 ? "" : "s"} más en la cola — ¿seguimos con el siguiente?`
   );
+  return true;
 }
 
 /**
@@ -1186,9 +1574,23 @@ async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
     return "Ya no hay ningún correo activo esperando — nada que saltar.";
   }
 
+  const identidadExacta = { threadId: activo.id, mensajeId: activo.mensajeId };
+  const cierre = await prepararCierreExplicitoActivo(
+    chatId,
+    identidadExacta,
+    `saltar:${activo.id}:${activo.mensajeId}`
+  );
+  if (!cierre.terminado || !cierre.identidadResuelta) {
+    return "No pude verificar la identidad exacta de este correo. Lo dejé activo y sin leer para no afectar otro mensaje.";
+  }
+
   const marcado = await marcarMensajeComoLeido(activo.mensajeId);
   if (!marcado) return "No pude marcar el correo como leído. Sigue activo para reintentar sin perderlo de la cola.";
-  const borrado = await descartarActivoEstancado(chatId, activo.id);
+  const borrado = await confirmarActivoResueltoTrasMarcarLeido(chatId, cierre.identidadResuelta);
+  if (!borrado) {
+    return "Marqué el mensaje exacto como leído, pero no pude confirmar todavía el cierre local. " +
+      "Lo mantengo bloqueado e idempotente para que el próximo autodiagnóstico termine el cierre sin repetir el trabajo.";
+  }
 
   // Bug real encontrado en vivo (2026-09-03): esto NO marcaba el hilo como
   // leído en Gmail — que es SIEMPRE la única fuente de verdad de qué falta
@@ -1199,16 +1601,14 @@ async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
   // 8 sin leer). A diferencia del salto automático por 48h estancado (donde
   // sí tiene sentido no marcarlo, por si de verdad hace falta revisarlo),
   // acá es una decisión EXPLÍCITA del usuario ("esto ya lo gestioné") — se
-  // marca leído para que de verdad quede resuelto, no solo oculto un rato.
-  if (borrado) {
-    const siguiente = await obtenerPrimerMensajeNoLeidoDeHilo(activo.id);
-    if (siguiente) await encolarCorreos(chatId, [{ id: activo.id, mensajeId: siguiente.messageId,
-      de: siguiente.de, asunto: siguiente.asunto, fechaOrden: siguiente.recibidoEn }], { reconciliarAusentes: false });
-  }
+  // registra primero de forma durable y después se marca leído para que de
+  // verdad quede resuelto, no solo oculto un rato.
+  const siguiente = await obtenerPrimerMensajeNoLeidoDeHilo(activo.id);
+  if (siguiente) await encolarCorreos(chatId, [{ id: activo.id, mensajeId: siguiente.messageId,
+    de: siguiente.de, asunto: siguiente.asunto, fechaOrden: siguiente.recibidoEn }], { reconciliarAusentes: false });
 
-  const notaDescartado = borrado
-    ? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.`
-    : "Ya se había resuelto por otro camino justo antes — nada que descartar.";
+  const notaDescartado = `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). ` +
+    "Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.";
 
   const quedan = await contarPendientesTotal(chatId);
   if (quedan > 0) {

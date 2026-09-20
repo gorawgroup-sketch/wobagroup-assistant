@@ -1,11 +1,21 @@
 import { unlink } from "node:fs/promises";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
-import { consumirPropuestaClasificacion, obtenerPropuestaClasificacion } from "./classificationStore";
+import {
+  consumirPropuestaClasificacion,
+  obtenerPropuestaClasificacion,
+  restaurarPropuestaClasificacion,
+  type PropuestaClasificacion,
+} from "./classificationStore";
 import { archivarDocumentoEnDrive } from "./archiveFile";
 import { guardarPendienteReglaClasificacion } from "./pendienteReglaClasificacionStore";
 import { guardarPendienteAlertaDocumento } from "./pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "./pendienteReclasificacionStore";
-import { consumirPendienteDesambiguacionPorId, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
+import {
+  consumirPendienteDesambiguacionPorId,
+  obtenerPendienteDesambiguacionPorChat,
+  restaurarPendienteDesambiguacion,
+  type PendienteDesambiguacion,
+} from "./disambiguationStore";
 import { registrarDocumentoArchivadoDesdeCorreo } from "./documentoArchivadoPorCorreoStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
@@ -14,8 +24,124 @@ import { extraerDatosFactura } from "./extractInvoiceData";
 import { MIMES_LEGIBLES_COMO_FACTURA, procesarEmlComoGastoForzado } from "./procesarDocumentoLocal";
 import { esArchivoEml } from "./parseEml";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
+import type { ResultadoGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { ofrecerResponderCorreo } from "../gmail/emailCallbackHandler";
+import type { IdentidadCorreoCola } from "../gmail/colaRevisionStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
+
+type ResultadoGastoRedirigido =
+  | ResultadoGastoEntrante
+  | "gasto_propuesto"
+  | "gasto_pendiente_datos"
+  | "gasto_duplicado";
+
+/**
+ * Redirigir un documento al flujo de gastos solo cierra el correo cuando ese mismo paso demuestra
+ * que el gasto ya estaba resuelto. `propuesta_enviada`/`gasto_propuesto` y ambos estados
+ * `pendiente_datos` son traspasos a otro estado interactivo: la creación, conciliación, descarte o
+ * resolución posterior será el único punto que avance la cola.
+ */
+export function debeAvanzarColaTrasRedirigirGasto(resultado: ResultadoGastoRedirigido): boolean {
+  return resultado === "propuesta_duplicada" || resultado === "gasto_duplicado";
+}
+
+function identidadCorreoEsperada(correoOrigen: { threadId: string; mensajeIdGmail?: string }): {
+  threadId: string;
+  mensajeId?: string;
+} {
+  return { threadId: correoOrigen.threadId, mensajeId: correoOrigen.mensajeIdGmail };
+}
+
+/**
+ * Las respuestas laterales poseen una unidad adicional de la cola. Solo
+ * pueden reservarla si el documento conserva la identidad compuesta exacta;
+ * una fila legacy parcial mantiene disponible la decisión principal, pero no
+ * publica una acción que luego pudiera cerrar otro mensaje del mismo hilo.
+ * `null` distingue un documento ajeno a la cola de uno de cola incompleto.
+ */
+export function identidadColaDocumentoParaRespuesta(
+  correoOrigen: { deColaCorreo?: boolean; threadId: string; mensajeIdGmail?: string }
+): Required<IdentidadCorreoCola> | null | undefined {
+  if (correoOrigen.deColaCorreo !== true) return null;
+  const threadId = correoOrigen.threadId?.trim();
+  const mensajeId = correoOrigen.mensajeIdGmail?.trim();
+  return threadId && mensajeId ? { threadId, mensajeId } : undefined;
+}
+
+/**
+ * Una acción documental terminal ya no depende de que Telegram acepte el
+ * mensaje de presentación. El store que originó el callback se reclama
+ * antes de llegar aquí; por eso esta función cierra exactamente esa
+ * identidad de Gmail una vez y solo después intenta renderizar el resultado.
+ */
+export async function finalizarDocumentoTerminalAntesDeRender(
+  chatId: number,
+  correoOrigen: { threadId: string; mensajeIdGmail?: string; deColaCorreo?: boolean } | undefined,
+  claveIdempotencia: string,
+  renderizar: () => Promise<unknown>,
+  avanzar: (
+    chatId: number,
+    identidad: { threadId?: string; mensajeId?: string },
+    claveIdempotencia?: string
+  ) => Promise<unknown> = avanzarColaCorreoSiActivo
+): Promise<void> {
+  if (correoOrigen?.deColaCorreo) {
+    await avanzar(chatId, identidadCorreoEsperada(correoOrigen), claveIdempotencia);
+  }
+  try {
+    await renderizar();
+  } catch (error) {
+    console.error("[documentCallbackHandler] La acción terminó, pero no se pudo reflejar en Telegram (no crítico):", error);
+  }
+}
+
+/**
+ * Transfiere una desambiguación ya reclamada al siguiente estado durable. Si
+ * crear la captura falla, repone exactamente la pregunta original para que el
+ * correo conserve una única acción resoluble.
+ */
+export async function transferirDesambiguacionACaptura(
+  pendiente: PendienteDesambiguacion,
+  crearCaptura: (pendiente: PendienteDesambiguacion) => Promise<void>,
+  restaurar: (pendiente: PendienteDesambiguacion) => Promise<unknown> = restaurarPendienteDesambiguacion
+): Promise<void> {
+  try {
+    await crearCaptura(pendiente);
+  } catch (error) {
+    await restaurar(pendiente);
+    throw error;
+  }
+}
+
+function botonesPropuestaDocumento(propuesta: PropuestaClasificacion) {
+  const filas = [
+    [
+      { text: "✅ Sí, archivar aquí", callback_data: `doc_confirm:${propuesta.id}` },
+      { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}` },
+    ],
+    [{ text: "💰 Es un gasto — procesarlo en Holded", callback_data: `doc_esgasto:${propuesta.id}` }],
+    [
+      { text: "📚 Enseñar regla", callback_data: `doc_regla:${propuesta.id}` },
+      { text: "⏰ Crear alerta", callback_data: `doc_alerta:${propuesta.id}` },
+    ],
+    [{ text: "🧠 Guardar como conocimiento", callback_data: `doc_conocimiento:${propuesta.id}` }],
+    [{ text: "❌ Descartar, no archivar", callback_data: `doc_descartar:${propuesta.id}` }],
+  ];
+  if (propuesta.correoOrigen) {
+    filas.push([{ text: "✍️ Generar respuesta al correo", callback_data: `doc_responder:${propuesta.id}` }]);
+  }
+  return filas;
+}
+
+async function restaurarBotonesDocumento(propuesta: PropuestaClasificacion, aviso: string): Promise<void> {
+  const restaurada = await restaurarPropuestaClasificacion(propuesta);
+  await editTelegramMessage(
+    restaurada.chatId,
+    restaurada.messageId,
+    aviso,
+    botonesPropuestaDocumento(restaurada)
+  );
+}
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   try {
@@ -138,14 +264,30 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       `y profesional acorde a este documento (ej. acuse de recibo, confirmación de que quedó archivado, o lo que ` +
       `el contexto sugiera).`;
 
-    await ofrecerResponderCorreo(
+    const identidadRespuesta = identidadColaDocumentoParaRespuesta(propuestaPeek.correoOrigen);
+    if (propuestaPeek.correoOrigen.deColaCorreo === true && !identidadRespuesta) {
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        "⚠️ No publiqué la respuesta porque este documento no conserva la identidad completa del correo. La propuesta principal sigue pendiente."
+      );
+      return;
+    }
+
+    const publicada = await ofrecerResponderCorreo(
       propuestaPeek.chatId,
       propuestaPeek.correoOrigen.de,
       propuestaPeek.correoOrigen.asunto,
       propuestaPeek.correoOrigen.threadId,
       propuestaPeek.correoOrigen.messageIdHeader,
-      contexto
+      contexto,
+      identidadRespuesta
     );
+    if (!publicada) {
+      await sendTelegramMessage(
+        propuestaPeek.chatId,
+        "⚠️ No pude publicar de forma segura la pregunta de respuesta. La propuesta principal sigue pendiente."
+      ).catch(() => undefined);
+    }
     return;
   }
 
@@ -162,6 +304,13 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     }
 
     const deColaCorreo = propuestaPeek.correoOrigen?.deColaCorreo === true;
+    const propuestaTrabajo = deColaCorreo
+      ? await consumirPropuestaClasificacion(id)
+      : propuestaPeek;
+    if (!propuestaTrabajo) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya está siendo procesada o ya fue resuelta.");
+      return;
+    }
 
     await answerCallbackQuerySafe(callback.id, "Leyendo el documento...");
 
@@ -183,43 +332,42 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // sentido poder guardar como conocimiento Y archivar el original.
     if (deColaCorreo) {
       await editTelegramMessage(
-        propuestaPeek.chatId,
-        propuestaPeek.messageId,
-        `🧠 Leyendo "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento...`,
+        propuestaTrabajo.chatId,
+        propuestaTrabajo.messageId,
+        `🧠 Leyendo "${propuestaTrabajo.nombreArchivoOriginal}" para guardarlo como conocimiento...`,
         []
       ).catch((error) => console.error("[documentCallbackHandler] No se pudo limpiar los botones del mensaje original (no crítico):", error));
     }
 
-    let capturaIniciada = false;
     try {
-      const transcripcion = await transcribirParaCaptura(propuestaPeek.rutaLocal, propuestaPeek.mimeType, undefined);
+      const transcripcion = await transcribirParaCaptura(propuestaTrabajo.rutaLocal, propuestaTrabajo.mimeType, undefined);
       const contenido = [
-        `Documento: ${propuestaPeek.nombreArchivoOriginal} (${propuestaPeek.clasificacion.empresa} — ${propuestaPeek.clasificacion.tipoDocumento})`,
+        `Documento: ${propuestaTrabajo.nombreArchivoOriginal} (${propuestaTrabajo.clasificacion.empresa} — ${propuestaTrabajo.clasificacion.tipoDocumento})`,
         "",
         transcripcion,
       ].join("\n");
-      await iniciarSeleccionEmpresaCaptura(propuestaPeek.chatId, contenido, propuestaPeek.nombreArchivoOriginal, undefined, deColaCorreo);
-      capturaIniciada = true;
+      await iniciarSeleccionEmpresaCaptura(propuestaTrabajo.chatId, contenido, propuestaTrabajo.nombreArchivoOriginal,
+        undefined, deColaCorreo, propuestaTrabajo.correoOrigen
+          ? { threadId: propuestaTrabajo.correoOrigen.threadId, mensajeId: propuestaTrabajo.correoOrigen.mensajeIdGmail }
+          : undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error leyendo documento para guardar como conocimiento:", message);
       await sendTelegramMessage(
-        propuestaPeek.chatId,
-        `⚠️ No se pudo leer "${propuestaPeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}` +
-          (deColaCorreo ? " Si igual quieres archivarlo en Drive, reenvíalo — esta propuesta ya no tiene botones activos." : "")
-      );
+        propuestaTrabajo.chatId,
+        `⚠️ No se pudo leer "${propuestaTrabajo.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}`
+      ).catch(() => undefined);
+      if (deColaCorreo) {
+        await restaurarBotonesDocumento(
+          propuestaTrabajo,
+          `⚠️ No se pudo leer "${propuestaTrabajo.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}\n\n` +
+            `El correo sigue sin leer y puedes reintentar o elegir otra acción sin reenviar el documento.`
+        );
+      }
     }
 
-    // Se consume la propuesta de clasificación al final (best-effort — los
-    // botones ya están fuera desde arriba, esto solo evita que quede una
-    // fila huérfana en el Sheet) solo cuando la captura arrancó bien Y viene
-    // de la cola — esta captura YA es la resolución completa de este
-    // adjunto.
-    if (capturaIniciada && deColaCorreo) {
-      await consumirPropuestaClasificacion(id).catch((error) =>
-        console.error("[documentCallbackHandler] No se pudo consumir la propuesta de clasificación tras guardar como conocimiento (no crítico):", error)
-      );
-    }
+    // En la cola la propuesta ya fue reclamada/consumida antes de la
+    // transcripción; fuera de la cola se conserva para poder archivar además.
     return;
   }
 
@@ -230,8 +378,9 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   // lectura con visión que procesarDocumentoLocal.ts usa siempre) pero, a diferencia del camino
   // automático, el usuario YA confirmó que es un gasto — se fuerza esFacturaOGasto=true y se usan los
   // demás datos que sí haya logrado leer (proveedor/monto/fecha/líneas), aunque el modelo haya dudado
-  // del tipo de documento. No consume la propuesta de clasificación (igual que "🧠 Guardar como
-  // conocimiento") — "Sí, archivar aquí" sigue disponible después, por si también quiere archivarlo.
+  // del tipo de documento. Fuera de la cola conserva la propuesta documental para que también pueda
+  // archivarse; dentro de la cola la transfiere al pendiente/propuesta de gasto y cierra estos botones,
+  // sin cerrar el correo hasta que el flujo de gasto tenga una resolución terminal real.
   if (accion === "doc_esgasto") {
     const propuestaPeek = await obtenerPropuestaClasificacion(id);
     if (!propuestaPeek) {
@@ -255,6 +404,13 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     }
 
     const deColaCorreo = propuestaPeek.correoOrigen?.deColaCorreo === true;
+    const propuestaTrabajo = deColaCorreo
+      ? await consumirPropuestaClasificacion(id)
+      : propuestaPeek;
+    if (!propuestaTrabajo) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya está siendo procesada o ya fue resuelta.");
+      return;
+    }
     await answerCallbackQuerySafe(callback.id, "Leyendo el comprobante...");
 
     // Mismo motivo que en "🧠 Guardar como conocimiento": si viene de la cola, se le quitan los
@@ -262,87 +418,98 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // reducir la ventana de un doble-tap que resuelva el mismo adjunto dos veces.
     if (deColaCorreo) {
       await editTelegramMessage(
-        propuestaPeek.chatId,
-        propuestaPeek.messageId,
-        `💰 Procesando "${propuestaPeek.nombreArchivoOriginal}" como gasto...`,
+        propuestaTrabajo.chatId,
+        propuestaTrabajo.messageId,
+        `💰 Procesando "${propuestaTrabajo.nombreArchivoOriginal}" como gasto...`,
         []
       ).catch((error) => console.error("[documentCallbackHandler] No se pudo limpiar los botones del mensaje original (no crítico):", error));
     }
 
-    const captionReconstruido = propuestaPeek.correoOrigen
-      ? `Adjunto de correo. De: ${propuestaPeek.correoOrigen.de}. Asunto: ${propuestaPeek.correoOrigen.asunto}.`
+    const captionReconstruido = propuestaTrabajo.correoOrigen
+      ? `Adjunto de correo. De: ${propuestaTrabajo.correoOrigen.de}. Asunto: ${propuestaTrabajo.correoOrigen.asunto}.`
       : undefined;
 
-    let gastoIniciado = false;
+    let resultadoGasto: ResultadoGastoRedirigido | undefined;
     try {
       if (esEml) {
         const resultadoEml = await procesarEmlComoGastoForzado({
-          chatId: propuestaPeek.chatId,
-          rutaLocal: propuestaPeek.rutaLocal,
-          nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
-          mimeType: propuestaPeek.mimeType,
-          nombreParaClasificar: propuestaPeek.nombreArchivoOriginal,
+          chatId: propuestaTrabajo.chatId,
+          rutaLocal: propuestaTrabajo.rutaLocal,
+          nombreArchivoOriginal: propuestaTrabajo.nombreArchivoOriginal,
+          mimeType: propuestaTrabajo.mimeType,
+          nombreParaClasificar: propuestaTrabajo.nombreArchivoOriginal,
           captionEfectivo: captionReconstruido,
-          correoOrigen: propuestaPeek.correoOrigen,
+          correoOrigen: propuestaTrabajo.correoOrigen,
         });
         if (resultadoEml.error) {
           throw new Error(resultadoEml.error);
         }
-        gastoIniciado = resultadoEml.resultado !== "gasto_pendiente_datos";
+        resultadoGasto = resultadoEml.resultado;
       } else {
         const datosFactura = await extraerDatosFactura(
-          propuestaPeek.rutaLocal,
-          propuestaPeek.mimeType,
+          propuestaTrabajo.rutaLocal,
+          propuestaTrabajo.mimeType,
           captionReconstruido,
-          propuestaPeek.nombreArchivoOriginal
+          propuestaTrabajo.nombreArchivoOriginal
         );
         const resultado = await procesarGastoEntrante({
-          chatId: propuestaPeek.chatId,
-          rutaLocal: propuestaPeek.rutaLocal,
-          nombreArchivoOriginal: propuestaPeek.nombreArchivoOriginal,
-          mimeType: propuestaPeek.mimeType,
+          chatId: propuestaTrabajo.chatId,
+          rutaLocal: propuestaTrabajo.rutaLocal,
+          nombreArchivoOriginal: propuestaTrabajo.nombreArchivoOriginal,
+          mimeType: propuestaTrabajo.mimeType,
           // El usuario ya confirmó con este botón que SÍ es un gasto — se fuerza el campo aunque la
           // relectura vuelva a dudarlo, pero se conservan los demás datos que sí logró leer.
           datos: { ...datosFactura, esFacturaOGasto: true },
           deColaCorreo,
           origenAdjuntoGmail:
-            propuestaPeek.correoOrigen?.mensajeIdGmail && propuestaPeek.correoOrigen?.attachmentIdGmail
+            propuestaTrabajo.correoOrigen?.mensajeIdGmail && propuestaTrabajo.correoOrigen?.attachmentIdGmail
               ? {
-                  mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
-                  attachmentIdGmail: propuestaPeek.correoOrigen.attachmentIdGmail,
-                  partId: propuestaPeek.correoOrigen.partId,
+                  mensajeIdGmail: propuestaTrabajo.correoOrigen.mensajeIdGmail,
+                  attachmentIdGmail: propuestaTrabajo.correoOrigen.attachmentIdGmail,
+                  partId: propuestaTrabajo.correoOrigen.partId,
                 }
               : undefined,
-          correoOrigen: propuestaPeek.correoOrigen
+          correoOrigen: propuestaTrabajo.correoOrigen
             ? {
-                de: propuestaPeek.correoOrigen.de,
-                asunto: propuestaPeek.correoOrigen.asunto,
-                threadId: propuestaPeek.correoOrigen.threadId,
-                messageIdHeader: propuestaPeek.correoOrigen.messageIdHeader,
-                mensajeIdGmail: propuestaPeek.correoOrigen.mensajeIdGmail,
+                de: propuestaTrabajo.correoOrigen.de,
+                asunto: propuestaTrabajo.correoOrigen.asunto,
+                threadId: propuestaTrabajo.correoOrigen.threadId,
+                messageIdHeader: propuestaTrabajo.correoOrigen.messageIdHeader,
+                mensajeIdGmail: propuestaTrabajo.correoOrigen.mensajeIdGmail,
               }
             : undefined,
         });
-        gastoIniciado = resultado !== "pendiente_datos";
+        resultadoGasto = resultado;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error procesando documento como gasto:", message);
       await sendTelegramMessage(
-        propuestaPeek.chatId,
-        `⚠️ No se pudo procesar "${propuestaPeek.nombreArchivoOriginal}" como gasto: ${message}` +
-          (deColaCorreo ? " Si igual quieres archivarlo en Drive, reenvíalo — esta propuesta ya no tiene botones activos." : "")
-      );
+        propuestaTrabajo.chatId,
+        `⚠️ No se pudo procesar "${propuestaTrabajo.nombreArchivoOriginal}" como gasto: ${message}`
+      ).catch(() => undefined);
+      if (deColaCorreo) {
+        await restaurarBotonesDocumento(
+          propuestaTrabajo,
+          `⚠️ No se pudo procesar "${propuestaTrabajo.nombreArchivoOriginal}" como gasto: ${message}\n\n` +
+            `El correo sigue sin leer y puedes reintentar o elegir otra acción sin reenviar el documento.`
+        );
+      }
     }
 
-    // Igual criterio que "🧠 Guardar como conocimiento": solo se consume (y avanza la cola) cuando el
-    // gasto realmente arrancó y venía de la cola — procesarGastoEntrante ya deja su propio pendiente
-    // (gastoPendienteDatosStore) cuando faltan datos, así que "pendiente_datos" NO avanza la cola acá.
-    if (gastoIniciado && deColaCorreo) {
-      await consumirPropuestaClasificacion(id).catch((error) =>
-        console.error("[documentCallbackHandler] No se pudo consumir la propuesta de clasificación tras procesar como gasto (no crítico):", error)
-      );
-      await avanzarColaCorreoSiActivo(propuestaPeek.chatId);
+    // Si el flujo de gasto recibió el documento, pasa a ser el único dueño de la resolución aunque
+    // todavía esté esperando datos o aprobación. Cerramos la propuesta documental para que sus
+    // botones no puedan crear un segundo flujo, pero NO avanzamos el correo por una mera propuesta:
+    // gastoCallbackHandler/reintentarGastoPendiente lo harán una sola vez cuando exista un resultado
+    // terminal real. Un duplicado ya verificado sí es terminal en este mismo paso.
+    if (resultadoGasto && deColaCorreo) {
+      if (debeAvanzarColaTrasRedirigirGasto(resultadoGasto) && propuestaTrabajo.correoOrigen) {
+        await avanzarColaCorreoSiActivo(
+          propuestaTrabajo.chatId,
+          identidadCorreoEsperada(propuestaTrabajo.correoOrigen),
+          `documento:${propuestaTrabajo.id}:resolver`
+        );
+      }
     }
     return;
   }
@@ -362,23 +529,34 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   // otro punto terminal de este flujo.
   if (accion === "doc_descartar") {
     await answerCallbackQuerySafe(callback.id);
-    await consumirPropuestaClasificacion(id);
-    await registrarResolucionDesdeCorreo(propuesta.correoOrigen);
-    await unlink(propuesta.rutaLocal).catch(() => {});
-    await editTelegramMessage(
-      propuesta.chatId,
-      propuesta.messageId,
-      `❌ Descartado — "${propuesta.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`,
-      []
-    );
-    if (propuesta.correoOrigen?.deColaCorreo) {
-      await avanzarColaCorreoSiActivo(propuesta.chatId);
+    const propuestaDescartar = await consumirPropuestaClasificacion(id);
+    if (!propuestaDescartar) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya está siendo procesada o ya fue resuelta.");
+      return;
     }
+    await registrarResolucionDesdeCorreo(propuestaDescartar.correoOrigen);
+    await unlink(propuestaDescartar.rutaLocal).catch(() => {});
+    await finalizarDocumentoTerminalAntesDeRender(
+      propuestaDescartar.chatId,
+      propuestaDescartar.correoOrigen,
+      `documento:${propuestaDescartar.id}:resolver`,
+      () => editTelegramMessage(
+        propuestaDescartar.chatId,
+        propuestaDescartar.messageId,
+        `❌ Descartado — "${propuestaDescartar.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`,
+        []
+      )
+    );
     return;
   }
 
   if (accion === "doc_reroute") {
     await answerCallbackQuerySafe(callback.id);
+    const propuestaReroute = await consumirPropuestaClasificacion(id);
+    if (!propuestaReroute) {
+      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya está siendo procesada o ya fue resuelta.");
+      return;
+    }
 
     // Bug real encontrado al verificar el sistema: esta rama borraba la
     // propuesta (consumirPropuestaClasificacion, arriba) y preguntaba la
@@ -393,13 +571,13 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // tener dónde aterrizar (bug real encontrado en la auditoría — el orden
     // original notificaba primero).
     const guardado = await guardarPendienteReclasificacion({
-      id: propuesta.id,
-      chatId: propuesta.chatId,
-      rutaLocal: propuesta.rutaLocal,
-      nombreArchivoOriginal: propuesta.nombreArchivoOriginal,
-      mimeType: propuesta.mimeType,
-      tipoDocumentoOriginal: propuesta.clasificacion.tipoDocumento,
-      correoOrigen: propuesta.correoOrigen,
+      id: propuestaReroute.id,
+      chatId: propuestaReroute.chatId,
+      rutaLocal: propuestaReroute.rutaLocal,
+      nombreArchivoOriginal: propuestaReroute.nombreArchivoOriginal,
+      mimeType: propuestaReroute.mimeType,
+      tipoDocumentoOriginal: propuestaReroute.clasificacion.tipoDocumento,
+      correoOrigen: propuestaReroute.correoOrigen,
     })
       .then(() => true)
       .catch((error) => {
@@ -408,20 +586,13 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
       });
 
     if (!guardado) {
-      // La propuesta original aún existe porque ahora solo se consume tras
-      // persistir el siguiente estado. El usuario puede volver a intentarlo.
-      await editTelegramMessage(
-        propuesta.chatId,
-        propuesta.messageId,
-        `⚠️ No pude preparar "${propuesta.nombreArchivoOriginal}" para elegir otra carpeta. La propuesta sigue pendiente; vuelve a pulsar el botón en unos segundos.`,
-        [[{ text: "✏️ Reintentar elegir carpeta", callback_data: `doc_reroute:${propuesta.id}:${Date.now().toString(36)}` }]]
+      await restaurarBotonesDocumento(
+        propuestaReroute,
+        `⚠️ No pude preparar "${propuestaReroute.nombreArchivoOriginal}" para elegir otra carpeta. ` +
+          `El correo sigue sin leer y la propuesta quedó restaurada; vuelve a intentarlo.`
       );
       return;
     }
-
-    await consumirPropuestaClasificacion(id).catch((error) =>
-      console.error("[documentCallbackHandler] No se pudo cerrar la propuesta tras guardar la reclasificación:", error instanceof Error ? error.name : "Error")
-    );
 
     // Hallazgo real de auditoría: este mensaje pedía la empresa/carpeta a ciegas, sin decir que se
     // puede pedir ver las carpetas que ya existen, crear una nueva, o simplemente descartarlo —
@@ -429,9 +600,9 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     // (listar_carpetas_drive, crearCarpetaSiNoExiste y descartar_documento_pendiente), solo hacía
     // falta decirlo.
     await editTelegramMessage(
-      propuesta.chatId,
-      propuesta.messageId,
-      `✏️ Ok — dime la empresa y carpeta correctas para "${propuesta.nombreArchivoOriginal}" (ej. "EWORKS, en Colaboradores/Alejandra"). ` +
+      propuestaReroute.chatId,
+      propuestaReroute.messageId,
+      `✏️ Ok — dime la empresa y carpeta correctas para "${propuestaReroute.nombreArchivoOriginal}" (ej. "EWORKS, en Colaboradores/Alejandra"). ` +
         `Si no sabes qué carpetas existen, dime "muéstrame las carpetas de [empresa]" y te las listo. ` +
         `Si la carpeta que quieres no existe todavía, dime que la cree ("créala") y la armo yo. ` +
         `Si en realidad no hace falta archivarlo, dime "descártalo".`,
@@ -452,36 +623,41 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
     return;
   }
   await answerCallbackQuerySafe(callback.id, "Subiendo a Drive...");
+  const propuestaConfirmar = await consumirPropuestaClasificacion(id);
+  if (!propuestaConfirmar) {
+    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya está siendo procesada o ya fue resuelta.");
+    return;
+  }
 
-  const resultado = await archivarDocumentoEnDrive(propuesta);
+  const resultado = await archivarDocumentoEnDrive(propuestaConfirmar);
 
   if (resultado.ok) {
-    await consumirPropuestaClasificacion(id).catch((error) =>
-      console.error("[documentCallbackHandler] No se pudo cerrar la propuesta después de verificar Drive:", error instanceof Error ? error.name : "Error")
-    );
-    await registrarResolucionDesdeCorreo(propuesta.correoOrigen);
-    await editTelegramMessage(
-      propuesta.chatId,
-      propuesta.messageId,
-      `✅ Archivado — ${propuesta.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`,
-      []
-    );
+    await registrarResolucionDesdeCorreo(propuestaConfirmar.correoOrigen);
     // Solo avanza la cola si de verdad se archivó — si falló, mejor dejarlo
     // "activo" (visible, pendiente) que marcarlo leído sobre un documento
     // que en realidad nunca quedó guardado en ningún lado.
-    if (propuesta.correoOrigen?.deColaCorreo) {
-      await avanzarColaCorreoSiActivo(propuesta.chatId);
-    }
+    await finalizarDocumentoTerminalAntesDeRender(
+      propuestaConfirmar.chatId,
+      propuestaConfirmar.correoOrigen,
+      `documento:${propuestaConfirmar.id}:resolver`,
+      () => editTelegramMessage(
+        propuestaConfirmar.chatId,
+        propuestaConfirmar.messageId,
+        `✅ Archivado — ${propuestaConfirmar.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`,
+        []
+      )
+    );
   } else {
+    await restaurarPropuestaClasificacion(propuestaConfirmar);
     await editTelegramMessage(
-      propuesta.chatId,
-      propuesta.messageId,
-      `⚠️ No se pudo confirmar el archivado — ${propuesta.nombreArchivoOriginal}\n\n${resultado.mensaje}\n\nLa propuesta sigue disponible. Puedes reintentar; si Drive ya lo recibió, WOBI solo lo verificará y no volverá a subirlo.`,
+      propuestaConfirmar.chatId,
+      propuestaConfirmar.messageId,
+      `⚠️ No se pudo confirmar el archivado — ${propuestaConfirmar.nombreArchivoOriginal}\n\n${resultado.mensaje}\n\nLa propuesta sigue disponible. Puedes reintentar; si Drive ya lo recibió, WOBI solo lo verificará y no volverá a subirlo.`,
       [
-        [{ text: "🔄 Verificar / reintentar", callback_data: `doc_retry:${propuesta.id}:${Date.now().toString(36)}` }],
+        [{ text: "🔄 Verificar / reintentar", callback_data: `doc_retry:${propuestaConfirmar.id}:${Date.now().toString(36)}` }],
         [
-          { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuesta.id}:${Date.now().toString(36)}` },
-          { text: "❌ Descartar", callback_data: `doc_descartar:${propuesta.id}:${Date.now().toString(36)}` },
+          { text: "✏️ Elegir otra carpeta", callback_data: `doc_reroute:${propuestaConfirmar.id}:${Date.now().toString(36)}` },
+          { text: "❌ Descartar", callback_data: `doc_descartar:${propuestaConfirmar.id}:${Date.now().toString(36)}` },
         ],
       ]
     );
@@ -520,15 +696,27 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
   // los 3 de arriba, este SÍ consume la pregunta — archiva de una vez, igual que "✅ Sí, archivar
   // aquí" en el flujo de confianza alta/media, sin volver a pasar por el clasificador de texto.
   if (accion === "desamb_elegir") {
-    const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;
-    if (!pendiente) {
+    // Validar la opción contra una lectura sin consumir. Antes se borraba la
+    // pregunta primero; un índice inválido dejaba el correo UNREAD pero sin
+    // ninguna acción disponible para resolverlo.
+    const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
+    const pendientePeek = todas.find((item) => item.id === idBoton);
+    if (!pendientePeek) {
       await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
       return;
     }
     const indice = Number(indiceCarpetaRaw);
-    const carpeta = pendiente.empresa && pendiente.carpetasCandidatas ? pendiente.carpetasCandidatas[indice] : undefined;
-    if (!pendiente.empresa || !carpeta) {
+    const carpeta = Number.isInteger(indice) && indice >= 0 && pendientePeek.empresa && pendientePeek.carpetasCandidatas
+      ? pendientePeek.carpetasCandidatas[indice]
+      : undefined;
+    if (!pendientePeek.empresa || !carpeta) {
       await answerCallbackQuerySafe(callback.id, "Esa opción ya no es válida.");
+      return;
+    }
+
+    const pendiente = await consumirPendienteDesambiguacionPorId(pendientePeek.id, chatId);
+    if (!pendiente) {
+      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya está siendo procesada o ya fue resuelta.");
       return;
     }
 
@@ -552,19 +740,39 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
       correoOrigen: pendiente.correoOrigen,
     };
 
-    const resultado = await archivarDocumentoEnDrive(propuestaSintetica);
+    try {
+      const resultado = await archivarDocumentoEnDrive(propuestaSintetica);
 
-    if (resultado.ok) {
-      await registrarResolucionDesdeCorreo(pendiente.correoOrigen);
-      await sendTelegramMessage(chatId, `✅ Archivado — ${pendiente.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`);
-      if (pendiente.correoOrigen?.deColaCorreo) {
-        await avanzarColaCorreoSiActivo(chatId);
+      if (resultado.ok) {
+        await registrarResolucionDesdeCorreo(pendiente.correoOrigen);
+        await finalizarDocumentoTerminalAntesDeRender(
+          chatId,
+          pendiente.correoOrigen,
+          `documento-desambiguacion:${pendiente.id}:resolver`,
+          () => sendTelegramMessage(chatId, `✅ Archivado — ${pendiente.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`)
+        );
+        return;
       }
-    } else {
+
+      // Drive no confirmó el archivado: la misma pregunta y sus botones
+      // vuelven al store. El operador puede reintentar sin reenviar nada.
+      await restaurarPendienteDesambiguacion(pendiente);
       await sendTelegramMessage(
         chatId,
-        `⚠️ No se pudo archivar "${pendiente.nombreArchivoOriginal}" en "${carpeta}": ${resultado.mensaje} La copia local no se borró — dime la empresa/carpeta de nuevo, o reenvía el archivo.`
+        `⚠️ No se pudo archivar "${pendiente.nombreArchivoOriginal}" en "${carpeta}": ${resultado.mensaje} ` +
+          `La pregunta sigue disponible y el correo permanece sin leer; puedes volver a usar sus botones.`
       );
+    } catch (error) {
+      await restaurarPendienteDesambiguacion(pendiente).catch((errorRestauracion) =>
+        console.error("[documentCallbackHandler] No se pudo restaurar la desambiguación tras el fallo de Drive:", errorRestauracion)
+      );
+      const detalle = error instanceof Error ? error.message : String(error);
+      console.error("[documentCallbackHandler] Error resolviendo la carpeta ambigua:", error);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ No pude terminar el archivado de "${pendiente.nombreArchivoOriginal}" (${detalle}). ` +
+          `El correo sigue sin leer y la pregunta fue restaurada para reintentar.`
+      ).catch(() => {});
     }
     return;
   }
@@ -575,10 +783,9 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
   // reencaminar inmediatamente" — este botón faltaba por completo en la pregunta de desambiguación
   // (solo existía en el flujo de confianza alta/media, doc_esgasto), así que un documento realmente
   // ambiguo tenía MENOS forma de corregirse hacia gasto que uno bien clasificado. Mismo mecanismo que
-  // doc_esgasto: relee con extraerDatosFactura, fuerza esFacturaOGasto=true. No consume la pregunta
-  // de desambiguación salvo que el gasto arranque bien Y venga de la cola (evita avanzar la cola dos
-  // veces si después también se resuelve "a qué carpeta" — mismo criterio que doc_esgasto con
-  // consumirPropuestaClasificacion).
+  // doc_esgasto: relee con extraerDatosFactura, fuerza esFacturaOGasto=true. Consume primero esta
+  // pregunta para que sus otros botones no abran un segundo flujo concurrente; si se crea una
+  // propuesta o un pendiente de datos, la cola permanece activa hasta su resolución terminal.
   if (accion === "desamb_esgasto") {
     const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
     const pendientePeek = todas.find((p) => p.id === idBoton);
@@ -618,7 +825,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
       ? `Adjunto de correo. De: ${pendiente.correoOrigen.de}. Asunto: ${pendiente.correoOrigen.asunto}.`
       : undefined;
 
-    let gastoIniciado = false;
+    let resultadoGasto: ResultadoGastoRedirigido | undefined;
     try {
       if (esEml) {
         const resultadoEml = await procesarEmlComoGastoForzado({
@@ -633,7 +840,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
         if (resultadoEml.error) {
           throw new Error(resultadoEml.error);
         }
-        gastoIniciado = resultadoEml.resultado !== "gasto_pendiente_datos";
+        resultadoGasto = resultadoEml.resultado;
       } else {
         const datosFactura = await extraerDatosFactura(
           pendiente.rutaLocal,
@@ -666,18 +873,35 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
               }
             : undefined,
         });
-        gastoIniciado = resultado !== "pendiente_datos";
+        resultadoGasto = resultado;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error procesando documento ambiguo como gasto:", message);
-      await sendTelegramMessage(chatId, `⚠️ No se pudo procesar "${pendiente.nombreArchivoOriginal}" como gasto: ${message}`);
+      await restaurarPendienteDesambiguacion(pendiente).catch((errorRestauracion) => {
+        console.error("[documentCallbackHandler] No se pudo restaurar la pregunta ambigua:", errorRestauracion);
+      });
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ No se pudo procesar "${pendiente.nombreArchivoOriginal}" como gasto: ${message}. ` +
+          `El correo sigue sin leer y los botones de la pregunta original vuelven a estar disponibles; no reenvíes el documento.`
+      );
     }
 
-    // El registro ya se consumió arriba (antes de la relectura) — acá solo falta avanzar la cola si
-    // el gasto realmente arrancó y venía de ahí.
-    if (gastoIniciado && deColaCorreo) {
-      await avanzarColaCorreoSiActivo(chatId);
+    // El registro documental ya se consumió arriba para impedir un segundo callback. La propuesta o
+    // la petición de datos del flujo de gastos siguen siendo intermedias y mantienen este correo
+    // activo; solo un duplicado ya comprobado permite cerrarlo en este paso.
+    if (
+      resultadoGasto &&
+      deColaCorreo &&
+      debeAvanzarColaTrasRedirigirGasto(resultadoGasto) &&
+      pendiente.correoOrigen
+    ) {
+      await avanzarColaCorreoSiActivo(
+        chatId,
+        identidadCorreoEsperada(pendiente.correoOrigen),
+        `documento-desambiguacion:${pendiente.id}:resolver`
+      );
     }
     return;
   }
@@ -711,32 +935,63 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
         await sendTelegramMessage(chatId, "Este documento no vino de un correo — no hay nada que responder.");
         return;
       }
-      await ofrecerResponderCorreo(
+      const identidadRespuesta = identidadColaDocumentoParaRespuesta(pendientePeek.correoOrigen);
+      if (pendientePeek.correoOrigen.deColaCorreo === true && !identidadRespuesta) {
+        await sendTelegramMessage(
+          chatId,
+          "⚠️ No publiqué la respuesta porque este documento no conserva la identidad completa del correo. La pregunta principal sigue pendiente."
+        );
+        return;
+      }
+      const publicada = await ofrecerResponderCorreo(
         chatId,
         pendientePeek.correoOrigen.de,
         pendientePeek.correoOrigen.asunto,
         pendientePeek.correoOrigen.threadId,
         pendientePeek.correoOrigen.messageIdHeader,
-        `Se recibió "${pendientePeek.nombreArchivoOriginal}", todavía sin identificar con certeza a qué empresa/carpeta pertenece. Redacta una respuesta breve y profesional (ej. acuse de recibo).`
+        `Se recibió "${pendientePeek.nombreArchivoOriginal}", todavía sin identificar con certeza a qué empresa/carpeta pertenece. Redacta una respuesta breve y profesional (ej. acuse de recibo).`,
+        identidadRespuesta
       );
+      if (!publicada) {
+        await sendTelegramMessage(
+          chatId,
+          "⚠️ No pude publicar de forma segura la pregunta de respuesta. La pregunta principal sigue pendiente."
+        ).catch(() => undefined);
+      }
       return;
     }
 
-    // desamb_conocimiento
+    // desamb_conocimiento: reclama la pregunta original ANTES de crear el
+    // nuevo pendiente. Así la decisión se transfiere, no se duplica; si el
+    // nuevo estado no llega a persistirse, la pregunta original se restaura.
+    const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;
+    if (!pendiente) {
+      await sendTelegramMessage(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).").catch(() => {});
+      return;
+    }
     try {
-      const transcripcion = await transcribirParaCaptura(pendientePeek.rutaLocal, pendientePeek.mimeType, pendientePeek.captionOriginal);
-      const contenido = [
-        pendientePeek.correoOrigen
-          ? `De: ${pendientePeek.correoOrigen.de}\nAsunto: ${pendientePeek.correoOrigen.asunto}`
-          : `Archivo: ${pendientePeek.nombreArchivoOriginal}`,
-        "",
-        transcripcion,
-      ].join("\n");
-      await iniciarSeleccionEmpresaCaptura(chatId, contenido, pendientePeek.nombreArchivoOriginal, undefined, pendientePeek.correoOrigen?.deColaCorreo === true);
+      await transferirDesambiguacionACaptura(pendiente, async (reclamada) => {
+        const transcripcion = await transcribirParaCaptura(reclamada.rutaLocal, reclamada.mimeType, reclamada.captionOriginal);
+        const contenido = [
+          reclamada.correoOrigen
+            ? `De: ${reclamada.correoOrigen.de}\nAsunto: ${reclamada.correoOrigen.asunto}`
+            : `Archivo: ${reclamada.nombreArchivoOriginal}`,
+          "",
+          transcripcion,
+        ].join("\n");
+        await iniciarSeleccionEmpresaCaptura(chatId, contenido, reclamada.nombreArchivoOriginal, undefined,
+          reclamada.correoOrigen?.deColaCorreo === true, reclamada.correoOrigen
+            ? { threadId: reclamada.correoOrigen.threadId, mensajeId: reclamada.correoOrigen.mensajeIdGmail }
+            : undefined);
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error leyendo documento ambiguo para guardar como conocimiento:", message);
-      await sendTelegramMessage(chatId, `⚠️ No se pudo leer "${pendientePeek.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}`);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ No se pudo leer "${pendiente.nombreArchivoOriginal}" para guardarlo como conocimiento: ${message}. ` +
+          "La pregunta original sigue disponible; no reenvíes el documento."
+      ).catch(() => {});
     }
     return;
   }
@@ -759,9 +1014,10 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
 
   await unlink(pendiente.rutaLocal).catch(() => {});
   await registrarResolucionDesdeCorreo(pendiente.correoOrigen);
-  await sendTelegramMessage(chatId, `❌ Descartado — "${pendiente.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`);
-
-  if (pendiente.correoOrigen?.deColaCorreo) {
-    await avanzarColaCorreoSiActivo(chatId);
-  }
+  await finalizarDocumentoTerminalAntesDeRender(
+    chatId,
+    pendiente.correoOrigen,
+    `documento-desambiguacion:${pendiente.id}:resolver`,
+    () => sendTelegramMessage(chatId, `❌ Descartado — "${pendiente.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`)
+  );
 }

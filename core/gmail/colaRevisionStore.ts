@@ -1,4 +1,5 @@
 import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/sheetsKeyValueStore";
+import { conMutex } from "../utils/asyncMutex";
 
 /**
  * Pedido explícito de Carlos: revisarCorreoNuevo.ts mandaba una propuesta
@@ -48,16 +49,90 @@ export interface ItemColaCorreo {
   estado: EstadoColaCorreo;
   pendientesRestantes: number;
   agregadoEn: number;
+  /**
+   * Claves de acciones terminales ya aplicadas al contador. Se persisten en
+   * la misma fila que `pendientesRestantes`, de modo que reanudar un callback
+   * tras un crash/ACK incierto no pueda descontar dos veces la misma decisión.
+   * Columna añadida al final para conservar compatibles las filas antiguas.
+   */
+  accionesResueltas: string[];
+}
+
+/**
+ * Identidad durable de la revisión que originó una acción asíncrona.
+ *
+ * Los botones de Telegram pueden responderse horas o días después. Para ese
+ * momento el chat puede tener otro correo activo, por lo que `chatId` nunca
+ * basta para decidir qué contador decrementar. Las filas históricas que solo
+ * conservan uno de los ids siguen siendo legibles, pero no pueden mutar ni
+ * cerrar la cola: toda transición exige threadId + mensajeId exactos.
+ */
+export interface IdentidadCorreoCola {
+  /** Gmail thread id (`ItemColaCorreo.id`). */
+  threadId?: string;
+  /** Gmail message id interno (`ItemColaCorreo.mensajeId`). */
+  mensajeId?: string;
+}
+
+function valorIdentidad(valor: string | undefined): string | undefined {
+  const limpio = valor?.trim();
+  return limpio || undefined;
+}
+
+/**
+ * Comprueba la identidad sin aceptar un objeto vacío. Exportada para que los
+ * contratos de los callbacks puedan probar exactamente la misma regla que
+ * protege las escrituras del store.
+ */
+export function coincideIdentidadCorreoCola(
+  item: Pick<ItemColaCorreo, "id" | "mensajeId">,
+  esperada: IdentidadCorreoCola
+): boolean {
+  const itemThreadId = valorIdentidad(item.id);
+  const itemMensajeId = valorIdentidad(item.mensajeId);
+  const threadId = valorIdentidad(esperada.threadId);
+  const mensajeId = valorIdentidad(esperada.mensajeId);
+  if (!itemThreadId || !itemMensajeId || !threadId || !mensajeId) return false;
+  return itemThreadId === threadId && itemMensajeId === mensajeId;
+}
+
+/** Cálculo puro usado por la mutación persistente y sus pruebas de borde. */
+export function calcularPendientesIncrementados(actual: number, incremento: number): number | undefined {
+  if (!Number.isSafeInteger(actual) || actual < 0 ||
+      !Number.isSafeInteger(incremento) || incremento <= 0) return undefined;
+  const total = actual + incremento;
+  return Number.isSafeInteger(total) ? total : undefined;
 }
 
 const TAB_NAME = "_cola_revision_correo";
 // mensajeId al FINAL (no reordenado en el medio) — para que una fila ya
 // escrita antes de este cambio (id = message id, no thread id) no quede
 // desalineada al leerse; se limpia a mano cualquier fila vieja que quede.
-const HEADERS = ["id", "chatId", "de", "asunto", "fechaOrden", "estado", "pendientesRestantes", "agregadoEn", "mensajeId"];
+const HEADERS = [
+  "id",
+  "chatId",
+  "de",
+  "asunto",
+  "fechaOrden",
+  "estado",
+  "pendientesRestantes",
+  "agregadoEn",
+  "mensajeId",
+  "accionesResueltasJSON",
+];
 const NUM_COLS = HEADERS.length;
+const MUTEX_COLA = `colaRevisionStore:${TAB_NAME}`;
 
 function filaAObjeto(valores: string[]): ItemColaCorreo {
+  let accionesResueltas: string[] = [];
+  try {
+    const parsed = valores[9] ? JSON.parse(valores[9]) : [];
+    if (Array.isArray(parsed)) {
+      accionesResueltas = parsed.filter((valor): valor is string => typeof valor === "string" && valor.trim().length > 0);
+    }
+  } catch {
+    accionesResueltas = [];
+  }
   return {
     id: valores[0],
     chatId: Number(valores[1]) || 0,
@@ -67,9 +142,12 @@ function filaAObjeto(valores: string[]): ItemColaCorreo {
     estado: valores[5] === "activo" ? "activo" : "cola",
     pendientesRestantes: Number(valores[6]) || 0,
     agregadoEn: Number(valores[7]) || 0,
-    // Filas de antes de este cambio no tienen mensajeId — se cae al id
-    // (antes era un message id) para no dejar el campo vacío.
-    mensajeId: valores[8] || valores[0],
+    // Las filas legacy no conservan ambos ids. Se dejan legibles para que el
+    // operador pueda ver/limpiar el atasco, pero el mensaje queda vacío a
+    // propósito: fingir que id era a la vez thread y message permitiría que
+    // una acción antigua cerrara o marcara leído otro mensaje del mismo hilo.
+    mensajeId: valores[8] || "",
+    accionesResueltas,
   };
 }
 
@@ -84,6 +162,7 @@ function objetoAFila(item: ItemColaCorreo): (string | number)[] {
     item.pendientesRestantes,
     item.agregadoEn,
     item.mensajeId,
+    JSON.stringify(item.accionesResueltas),
   ];
 }
 
@@ -121,7 +200,7 @@ async function leerTodas(): Promise<{ rowIndex: number; item: ItemColaCorreo }[]
  * ya se le está mostrando a Carlos, refrescarla a mitad de camino sería más
  * confuso, no menos).
  */
-export async function encolarCorreos(
+async function encolarCorreosInterno(
   chatId: number,
   items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>,
   opciones: { reconciliarAusentes?: boolean } = {}
@@ -161,6 +240,7 @@ export async function encolarCorreos(
         0,
         Date.now(),
         item.mensajeId,
+        "[]",
       ]);
       agregados += 1;
       continue;
@@ -180,6 +260,14 @@ export async function encolarCorreos(
     }
   }
   return agregados;
+}
+
+export async function encolarCorreos(
+  chatId: number,
+  items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>,
+  opciones: { reconciliarAusentes?: boolean } = {}
+): Promise<number> {
+  return conMutex(MUTEX_COLA, () => encolarCorreosInterno(chatId, items, opciones));
 }
 
 /** true si hay un correo "activo" (mostrado, esperando resolución) para este chat. */
@@ -236,7 +324,7 @@ export async function obtenerResumenColaPorChat(
  * establecerPendientesActivo) una vez que sepa cuántas decisiones hacen
  * falta para ese correo en concreto. undefined si la cola está vacía.
  */
-export async function iniciarSiguienteActivo(chatId: number): Promise<ItemColaCorreo | undefined> {
+async function iniciarSiguienteActivoInterno(chatId: number): Promise<ItemColaCorreo | undefined> {
   const todas = await leerTodas();
 
   // Defensa en profundidad encontrada en auditoría: si por algún motivo ya
@@ -260,9 +348,19 @@ export async function iniciarSiguienteActivo(chatId: number): Promise<ItemColaCo
   // agregadoEn se reutiliza acá como "activado en" (no se usaba para nada
   // más una vez encolado) — necesario para detectar un correo activo
   // estancado (ver obtenerActivoEstancado) sin agregar una columna nueva.
-  const actualizado: ItemColaCorreo = { ...siguiente.item, estado: "activo", pendientesRestantes: 0, agregadoEn: Date.now() };
+  const actualizado: ItemColaCorreo = {
+    ...siguiente.item,
+    estado: "activo",
+    pendientesRestantes: 0,
+    accionesResueltas: [],
+    agregadoEn: Date.now(),
+  };
   await actualizarFila(TAB_NAME, siguiente.rowIndex, NUM_COLS, objetoAFila(actualizado));
   return actualizado;
+}
+
+export async function iniciarSiguienteActivo(chatId: number): Promise<ItemColaCorreo | undefined> {
+  return conMutex(MUTEX_COLA, () => iniciarSiguienteActivoInterno(chatId));
 }
 
 /**
@@ -292,12 +390,26 @@ export async function obtenerActivoEstancado(chatId: number, umbralMs: number): 
  * ya no existiera (ej. dos taps seguidos del mismo botón, o resuelto por
  * otro camino justo antes).
  */
-export async function descartarActivoEstancado(chatId: number, gmailId: string): Promise<boolean> {
+async function descartarActivoEstancadoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola
+): Promise<boolean> {
   const todas = await leerTodas();
-  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
   if (!fila) return false;
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   return true;
+}
+
+export async function descartarActivoEstancado(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola
+): Promise<boolean> {
+  return conMutex(MUTEX_COLA, () => descartarActivoEstancadoInterno(chatId, identidadEsperada));
 }
 
 /**
@@ -311,20 +423,28 @@ export async function descartarActivoEstancado(chatId: number, gmailId: string):
  * mismo hilo. Esta función hace el mismo cambio en UN solo paso (actualizarFila sobre la misma fila,
  * nunca borra-y-recrea), así nunca hay un instante en que el hilo esté ausente de la cola.
  */
-export async function reencolarActivoParaReintento(
+async function reencolarActivoParaReintentoInterno(
   chatId: number,
-  gmailId: string,
-  actualizacion: { mensajeId: string; de: string; asunto: string }
+  identidadEsperada: IdentidadCorreoCola,
+  actualizacion: { de: string; asunto: string }
 ): Promise<boolean> {
   const todas = await leerTodas();
-  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
   if (!fila) return false;
 
   const actualizado: ItemColaCorreo = {
     ...fila.item,
     estado: "cola",
     pendientesRestantes: 0,
-    mensajeId: actualizacion.mensajeId,
+    accionesResueltas: [],
+    // El reintento técnico pertenece al mensaje exacto que se activó. Nunca
+    // lo sustituye por "el último del hilo": una respuesta nueva es otra
+    // unidad sin leer y se encolará después por el flujo normal de Gmail.
+    mensajeId: fila.item.mensajeId,
     de: actualizacion.de,
     asunto: actualizacion.asunto,
     // fechaOrden NUNCA se toca — sigue reflejando desde cuándo espera sin leer, para no perder su
@@ -332,6 +452,16 @@ export async function reencolarActivoParaReintento(
   };
   await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila(actualizado));
   return true;
+}
+
+export async function reencolarActivoParaReintento(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  actualizacion: { de: string; asunto: string }
+): Promise<boolean> {
+  return conMutex(MUTEX_COLA, () =>
+    reencolarActivoParaReintentoInterno(chatId, identidadEsperada, actualizacion)
+  );
 }
 
 /**
@@ -345,7 +475,7 @@ export async function reencolarActivoParaReintento(
  * siguiente sincronización. Marcar como leído queda reservado al cierre
  * exitoso de cada correo individual.
  */
-export async function vaciarColaCorreoDelChat(chatId: number): Promise<string[]> {
+async function vaciarColaCorreoDelChatInterno(chatId: number): Promise<string[]> {
   const todas = await leerTodas();
   const delChat = todas.filter((f) => f.item.chatId === chatId);
   for (const { rowIndex } of delChat.slice().sort((a, b) => b.rowIndex - a.rowIndex)) {
@@ -354,19 +484,161 @@ export async function vaciarColaCorreoDelChat(chatId: number): Promise<string[]>
   return delChat.map((f) => f.item.id);
 }
 
+export async function vaciarColaCorreoDelChat(chatId: number): Promise<string[]> {
+  return conMutex(MUTEX_COLA, () => vaciarColaCorreoDelChatInterno(chatId));
+}
+
 /** Fija cuántas decisiones independientes hacen falta para dar por resuelto el correo activo. */
-export async function establecerPendientesActivo(chatId: number, gmailId: string, n: number): Promise<void> {
+async function establecerPendientesActivoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  n: number
+): Promise<boolean> {
+  if (!Number.isSafeInteger(n) || n < 1) return false;
   const todas = await leerTodas();
-  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
-  if (!fila) return;
-  await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.item, pendientesRestantes: Math.max(1, n) }));
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
+  if (!fila) return false;
+  await actualizarFila(
+    TAB_NAME,
+    fila.rowIndex,
+    NUM_COLS,
+    objetoAFila({ ...fila.item, pendientesRestantes: n, accionesResueltas: [] })
+  );
+  return true;
+}
+
+export async function establecerPendientesActivo(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  n: number
+): Promise<boolean> {
+  return conMutex(MUTEX_COLA, () => establecerPendientesActivoInterno(chatId, identidadEsperada, n));
+}
+
+/**
+ * Suma decisiones a un correo que ya está activo, sin tocar jamás otro
+ * correo del mismo chat. Es el caso de un mensaje con adjuntos que además
+ * contiene una solicitud independiente en el cuerpo: los adjuntos ya
+ * fijaron el contador base y la solicitud agrega una resolución más.
+ *
+ * Devuelve false si la identidad ya no es la activa o el incremento no es
+ * un entero positivo. El llamador puede entonces evitar publicar una acción
+ * que no tendría un contador propio.
+ */
+async function incrementarPendientesActivoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  incremento = 1
+): Promise<boolean> {
+  const todas = await leerTodas();
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
+  if (!fila) return false;
+  const pendientes = calcularPendientesIncrementados(fila.item.pendientesRestantes, incremento);
+  if (pendientes === undefined) return false;
+
+  await actualizarFila(
+    TAB_NAME,
+    fila.rowIndex,
+    NUM_COLS,
+    objetoAFila({ ...fila.item, pendientesRestantes: pendientes })
+  );
+  return true;
+}
+
+export async function incrementarPendientesActivo(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  incremento = 1
+): Promise<boolean> {
+  return conMutex(MUTEX_COLA, () => incrementarPendientesActivoInterno(chatId, identidadEsperada, incremento));
+}
+
+/** Compensa una reserva adicional que no llegó a producir una acción visible/persistida. Nunca cierra el correo. */
+async function revertirIncrementoPendientesActivoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  decremento = 1
+): Promise<boolean> {
+  if (!Number.isSafeInteger(decremento) || decremento <= 0) return false;
+  const todas = await leerTodas();
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
+  if (!fila || fila.item.pendientesRestantes < decremento) return false;
+  await actualizarFila(
+    TAB_NAME,
+    fila.rowIndex,
+    NUM_COLS,
+    objetoAFila({ ...fila.item, pendientesRestantes: fila.item.pendientesRestantes - decremento })
+  );
+  return true;
+}
+
+export async function revertirIncrementoPendientesActivo(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  decremento = 1
+): Promise<boolean> {
+  return conMutex(MUTEX_COLA, () => revertirIncrementoPendientesActivoInterno(chatId, identidadEsperada, decremento));
 }
 
 export interface ResultadoResolverActivo {
+  /** false cuando no había activo o la identidad esperada ya no coincide. */
+  aplicado: boolean;
   /** true si el correo activo quedó completamente resuelto (pendientesRestantes llegó a 0). */
   terminado: boolean;
+  /** true cuando esa clave ya se había aplicado en un intento anterior. */
+  yaAplicado?: boolean;
   /** El id del correo que quedó resuelto, cuando terminado=true — para marcarlo como leído en Gmail. */
   gmailIdResuelto?: string;
+  /** Identidad exacta capturada en la misma lectura que actualizó el contador. */
+  identidadResuelta?: Required<IdentidadCorreoCola>;
+}
+
+export interface CalculoResolucionIdempotente {
+  pendientesRestantes: number;
+  accionesResueltas: string[];
+  aplicado: boolean;
+  yaAplicado: boolean;
+}
+
+/**
+ * Cálculo puro de un decremento terminal. Una clave vacía conserva el
+ * comportamiento histórico; una clave estable se registra junto al contador
+ * y una repetición devuelve el mismo estado sin volver a descontar.
+ */
+export function calcularResolucionIdempotente(
+  pendientesRestantes: number,
+  accionesResueltas: readonly string[],
+  claveIdempotencia?: string
+): CalculoResolucionIdempotente {
+  const clave = claveIdempotencia?.trim() || undefined;
+  const normalizadas = [...new Set(accionesResueltas.map((valor) => valor.trim()).filter(Boolean))];
+  if (clave && normalizadas.includes(clave)) {
+    return {
+      pendientesRestantes: Math.max(0, pendientesRestantes),
+      accionesResueltas: normalizadas,
+      aplicado: false,
+      yaAplicado: true,
+    };
+  }
+
+  return {
+    pendientesRestantes: Math.max(0, pendientesRestantes - 1),
+    accionesResueltas: clave ? [...normalizadas, clave] : normalizadas,
+    aplicado: true,
+    yaAplicado: false,
+  };
 }
 
 /**
@@ -394,21 +666,115 @@ export interface ResultadoResolverActivo {
  * el correo visiblemente trabado (con el mismo mecanismo ya existente para cualquier correo activo
  * atascado: aviso, reintento, 48h de auto-salto) en vez de perder el rastro en silencio.
  */
-export async function resolverUnoActivo(chatId: number): Promise<ResultadoResolverActivo> {
+async function resolverUnoActivoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  claveIdempotencia?: string
+): Promise<ResultadoResolverActivo> {
   const todas = await leerTodas();
-  const fila = todas.find((f) => f.item.chatId === chatId && f.item.estado === "activo");
-  if (!fila) return { terminado: false };
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
+  if (!fila) return { aplicado: false, terminado: false };
 
-  const restantes = fila.item.pendientesRestantes - 1;
-  if (restantes <= 0) {
-    if (fila.item.pendientesRestantes !== 0) {
-      await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.item, pendientesRestantes: 0 }));
-    }
-    return { terminado: true, gmailIdResuelto: fila.item.id };
+  const identidadResuelta = { threadId: fila.item.id, mensajeId: fila.item.mensajeId };
+  const calculo = calcularResolucionIdempotente(
+    fila.item.pendientesRestantes,
+    fila.item.accionesResueltas,
+    claveIdempotencia
+  );
+
+  if (calculo.aplicado) {
+    await actualizarFila(
+      TAB_NAME,
+      fila.rowIndex,
+      NUM_COLS,
+      objetoAFila({
+        ...fila.item,
+        pendientesRestantes: calculo.pendientesRestantes,
+        accionesResueltas: calculo.accionesResueltas,
+      })
+    );
   }
 
-  await actualizarFila(TAB_NAME, fila.rowIndex, NUM_COLS, objetoAFila({ ...fila.item, pendientesRestantes: restantes }));
-  return { terminado: false };
+  if (calculo.pendientesRestantes === 0) {
+    return {
+      aplicado: calculo.aplicado,
+      yaAplicado: calculo.yaAplicado,
+      terminado: true,
+      gmailIdResuelto: fila.item.id,
+      identidadResuelta,
+    };
+  }
+
+  return { aplicado: calculo.aplicado, yaAplicado: calculo.yaAplicado, terminado: false };
+}
+
+export async function resolverUnoActivo(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  claveIdempotencia?: string
+): Promise<ResultadoResolverActivo> {
+  return conMutex(MUTEX_COLA, () => resolverUnoActivoInterno(chatId, identidadEsperada, claveIdempotencia));
+}
+
+/**
+ * Registra una decisión explícita que resuelve el correo completo (por
+ * ejemplo, "esto ya lo gestioné / saltar"). Primero deja la fila durable en
+ * pendientes=0 y solo después el llamador puede marcar el mensaje exacto
+ * como leído. Si Gmail falla, la fila permanece activa y el reintento normal
+ * completa el cierre sin repetir ni olvidar la decisión del operador.
+ */
+async function prepararCierreExplicitoActivoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  claveIdempotencia: string
+): Promise<ResultadoResolverActivo> {
+  const clave = claveIdempotencia.trim();
+  if (!clave) return { aplicado: false, terminado: false };
+
+  const todas = await leerTodas();
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
+  if (!fila) return { aplicado: false, terminado: false };
+
+  const identidadResuelta = { threadId: fila.item.id, mensajeId: fila.item.mensajeId };
+  const yaAplicado = fila.item.accionesResueltas.includes(clave) && fila.item.pendientesRestantes === 0;
+  if (!yaAplicado) {
+    await actualizarFila(
+      TAB_NAME,
+      fila.rowIndex,
+      NUM_COLS,
+      objetoAFila({
+        ...fila.item,
+        pendientesRestantes: 0,
+        accionesResueltas: [...new Set([...fila.item.accionesResueltas, clave])],
+      })
+    );
+  }
+
+  return {
+    aplicado: !yaAplicado,
+    yaAplicado,
+    terminado: true,
+    gmailIdResuelto: fila.item.id,
+    identidadResuelta,
+  };
+}
+
+export async function prepararCierreExplicitoActivo(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola,
+  claveIdempotencia: string
+): Promise<ResultadoResolverActivo> {
+  return conMutex(MUTEX_COLA, () =>
+    prepararCierreExplicitoActivoInterno(chatId, identidadEsperada, claveIdempotencia)
+  );
 }
 
 /**
@@ -418,11 +784,27 @@ export async function resolverUnoActivo(chatId: number): Promise<ResultadoResolv
  * sigue viva y "activa" — visible, bloqueando, y recuperable con los mecanismos que ya existen para
  * cualquier correo activo atascado (48h de auto-salto, "🗑️ Descartar y liberar", saltarCorreoActivo).
  */
-export async function confirmarActivoResueltoTrasMarcarLeido(chatId: number, gmailId: string): Promise<void> {
+async function confirmarActivoResueltoTrasMarcarLeidoInterno(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola
+): Promise<boolean> {
   const todas = await leerTodas();
-  const fila = todas.find((f) => f.item.chatId === chatId && f.item.id === gmailId && f.item.estado === "activo");
-  if (!fila) return;
+  const fila = todas.find((f) =>
+    f.item.chatId === chatId &&
+    f.item.estado === "activo" &&
+    f.item.pendientesRestantes === 0 &&
+    coincideIdentidadCorreoCola(f.item, identidadEsperada)
+  );
+  if (!fila) return false;
   await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
+  return true;
+}
+
+export async function confirmarActivoResueltoTrasMarcarLeido(
+  chatId: number,
+  identidadEsperada: IdentidadCorreoCola
+): Promise<boolean> {
+  return conMutex(MUTEX_COLA, () => confirmarActivoResueltoTrasMarcarLeidoInterno(chatId, identidadEsperada));
 }
 
 /**
@@ -436,5 +818,9 @@ export async function confirmarActivoResueltoTrasMarcarLeido(chatId: number, gma
 export async function reintentarActivoPendienteDeMarcarLeido(chatId: number): Promise<ItemColaCorreo | undefined> {
   const fila = await obtenerActivoActual(chatId);
   if (!fila || fila.pendientesRestantes > 0) return undefined;
+  // Una fila legacy puede estar visible con un solo id, pero nunca autoriza
+  // una llamada a Gmail. Solo una identidad compuesta verificable llega al
+  // paso que marca el mensaje como leído.
+  if (!coincideIdentidadCorreoCola(fila, { threadId: fila.id, mensajeId: fila.mensajeId })) return undefined;
   return fila;
 }
