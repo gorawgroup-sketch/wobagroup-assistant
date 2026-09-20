@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HoldedAuto, normalizarProveedorExacto, type MemoriaHoldedAuto } from "./holded";
+import { HoldedAuto, normalizarProveedorExacto, type FlujoGastoExistente, type MemoriaHoldedAuto } from "./holded";
 import { evaluarAuto, hash, type OperacionAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 
@@ -185,4 +185,74 @@ test("un HTTP ambiguo no provoca reintento automático de POST", async () => {
   const broken = new HoldedAuto(e.memoria, async () => { intentos++; return new Response("", { status: 503 }); });
   await assert.rejects(() => broken.crear(e.op), /no se repetirá/);
   assert.equal(intentos, 1);
+});
+
+test("la automatización delega cuenta y creación al flujo aprendido uno a uno", async () => {
+  const e = escenario();
+  const llamadas: string[] = [];
+  const flujo: FlujoGastoExistente = {
+    clasificar: async () => {
+      llamadas.push("clasificar");
+      return { cuentaId: "cuenta-aprendida", nombreCuenta: "Travel Expenses",
+        tags: ["transporte", "avion"], evidencia: "precedentes confirmados" };
+    },
+    crear: async () => { llamadas.push("crear"); return "compra-aprendida"; },
+    corregir: async () => { llamadas.push("corregir"); },
+    adjuntar: async () => { llamadas.push("adjuntar"); },
+    conciliar: async () => { llamadas.push("conciliar"); },
+    verificarConciliacion: async () => true,
+  };
+  const adapter = new HoldedAuto(e.memoria, e.request, ["WOBA"], flujo);
+  const evidencia = await adapter.evidencias(e.c, e.r);
+  assert.deepEqual(evidencia.cuenta, { id: "cuenta-aprendida", nombre: "Travel Expenses",
+    tags: ["transporte", "avion"], evidencia: "precedentes confirmados" });
+  assert.equal(e.consultasGet.includes("/expenses-accounts"), false);
+  assert.equal(await adapter.crear(e.op), "compra-aprendida");
+  assert.deepEqual(llamadas, ["clasificar", "crear"]);
+});
+
+test("recupera y corrige un borrador legado por la nota privada, no por tags visibles", async () => {
+  const e = escenario();
+  e.op.compraId = "legada";
+  const corregidas: string[] = [];
+  const flujo: FlujoGastoExistente = {
+    clasificar: async () => ({ cuentaId: "c1", nombreCuenta: "Travel Expenses", tags: ["alimentacion"], evidencia: "memoria" }),
+    crear: async () => { throw new Error("no debe crear otra compra"); },
+    corregir: async (_op, id) => { corregidas.push(id); },
+    adjuntar: async () => undefined,
+    conciliar: async () => undefined,
+    verificarConciliacion: async () => false,
+  };
+  const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path === "/purchases") return json({ items: [{ id: "legada" }], has_more: false, cursor: null });
+    if (!init?.method && path === "/purchases/legada") return json({ id: "legada", notes: "WOBI_AUTO:op1" });
+    return e.request(input, init);
+  };
+  const adapter = new HoldedAuto(e.memoria, request, ["WOBA"], flujo);
+  assert.equal(await adapter.recuperarCreacion(e.op), "legada");
+  assert.deepEqual(corregidas, ["legada"]);
+});
+
+test("la verificación aprendida exige cuenta y tags funcionales exactos", async () => {
+  const e = escenario();
+  const flujo: FlujoGastoExistente = {
+    clasificar: async () => undefined,
+    crear: async () => "creada",
+    corregir: async () => undefined,
+    adjuntar: async () => undefined,
+    conciliar: async () => undefined,
+    verificarConciliacion: async () => false,
+  };
+  const adapter = new HoldedAuto(e.memoria, e.request, ["WOBA"], flujo);
+  e.op.compraId = "creada";
+  e.op.plan.evidencia.cuenta = { id: "c1", evidencia: "memoria", tags: ["Núria Ortiz", "avion"] };
+  e.compra.tags = ["nuriaortiz", "avion"];
+  assert.equal(await adapter.verificarCreacion(e.op), true);
+  e.compra.tags = ["nuriaortiz", "wobiautoop1"];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
+  e.compra.tags = ["nuriaortiz", "avion"];
+  e.compra.lines = [{ account: "otra-cuenta" }];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
 });

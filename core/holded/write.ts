@@ -645,6 +645,11 @@ function normalizar(texto: string): string {
     .trim();
 }
 
+/** La interfaz de Holded convierte sus tags a hashtags sin espacios ni signos. */
+export function normalizarEtiquetaHolded(tag: string): string {
+  return normalizar(tag).replace(/[^a-z0-9]/g, "");
+}
+
 const MAX_PAGINAS_CONTACTOS = 20;
 
 /** Trae TODOS los contactos de Holded (paginado) — base compartida de buscarContactoHolded y buscarContactosParecidos. */
@@ -1879,6 +1884,11 @@ const PALABRAS_UBER_EATS = ["uber eats", "ubereats"];
 const PALABRAS_TREN = ["tren", "renfe", "eurostar", "sncf", "trenitalia", "ouigo", "avanza"];
 const PALABRAS_AVION = [
   "vuelo",
+  "flight",
+  "tiquete aereo",
+  "billete aereo",
+  "pasaje aereo",
+  "airline ticket",
   "aerolinea",
   "boarding",
   "iberia",
@@ -2014,6 +2024,29 @@ export function inferirTagsCategoria(concepto: string, proveedor: string): strin
   if (contienePalabraClave(texto, PALABRAS_ALIMENTACION)) return ["alimentacion"];
 
   return [];
+}
+
+/**
+ * Fuente compartida para las etiquetas del gasto actual. Conserva exactamente
+ * el aprendizaje usado por la revisión uno a uno: la persona demostrada en el
+ * documento prevalece sobre una persona histórica y la categoría se deduce de
+ * la naturaleza de este gasto. La automatización de correo debe llamar esta
+ * función; no mantener otra combinación de etiquetas en paralelo.
+ */
+export function combinarTagsGastoAprendidos(
+  concepto: string,
+  proveedor: string,
+  personaAsociada: string | undefined,
+  tagsAprendidos: string[] = []
+): string[] {
+  const reemplazados: Record<string, string> = { alojamiento: "hospedaje", coche: "alquilercoche" };
+  const tagsCategoria = inferirTagsCategoria(concepto, proveedor);
+  const tagsPersonaCrudo = personaAsociada ? [personaAsociada] : tagsAprendidos;
+  const tagsPersona = tagsPersonaCrudo.filter((tag) => {
+    const reemplazo = reemplazados[tag];
+    return !(reemplazo && tagsCategoria.includes(reemplazo));
+  });
+  return Array.from(new Set([...tagsPersona, ...tagsCategoria].map(tag => tag.trim()).filter(Boolean)));
 }
 
 export interface CuentaSugerida {
@@ -3255,6 +3288,9 @@ export function mapearImpuestoPrincipalATaxKey(
   catalogo: TaxCatalogEntry[],
   linea: Pick<LineaGastoHolded, "tipoIvaPct" | "tratamientoFiscal">
 ): string | undefined {
+  // Un ticket/recibo pendiente de convertir a ticket no debe transformarse
+  // artificialmente en una compra con inversión del sujeto pasivo.
+  if (linea.tratamientoFiscal === "sin_impuesto") return undefined;
   const requiereSujetoPasivo =
     linea.tratamientoFiscal === "inversion_sujeto_pasivo" || linea.tipoIvaPct === 0;
   if (requiereSujetoPasivo) {
@@ -3302,7 +3338,7 @@ export interface LineaGastoHolded {
    * anteriores: una línea antigua a 0 % se interpreta como sujeto pasivo,
    * porque IVA 0 % no se usa en la contabilidad del grupo.
    */
-  tratamientoFiscal?: "iva" | "inversion_sujeto_pasivo";
+  tratamientoFiscal?: "iva" | "inversion_sujeto_pasivo" | "sin_impuesto";
   /** Porcentaje de retención de IRPF de esta línea (ver mapearRetencionATaxKey) — 0/undefined si no aplica. */
   retencionPct?: number;
 }
@@ -3533,12 +3569,13 @@ export async function crearGastoHolded(
     };
   });
 
+  const tagsNormalizados = Array.from(new Set((gasto.tags ?? []).map(normalizarEtiquetaHolded).filter(Boolean)));
   const solicitud = {
     contact_id: gasto.contactId,
     date: gasto.fecha,
     description: gasto.descripcion,
     items,
-    ...(gasto.tags && gasto.tags.length > 0 ? { tags: gasto.tags } : {}),
+    ...(tagsNormalizados.length > 0 ? { tags: tagsNormalizados } : {}),
     ...(gasto.moneda ? { currency: gasto.moneda } : {}),
     // Ver calcularTasaCambioParaCreacion arriba — sin esto, Holded calculaba el equivalente en EUR
     // de toda la contabilidad a paridad ficticia 1:1 para cualquier gasto nuevo en moneda extranjera.
@@ -3790,6 +3827,8 @@ export interface CambiosCompraHolded {
    * incluye el contacto en su huella (huellaEstadoCompra ya lo hacía).
    */
   contactoIdNuevo?: string;
+  /** Reemplaza las etiquetas visibles por una clasificación funcional ya verificada. */
+  tagsNuevos?: string[];
 }
 
 /**
@@ -3983,7 +4022,9 @@ async function prepararEdicionCompraHolded(
     // como currency/contact_id, por el mismo motivo de preservación).
     ...(actual.description != null ? { description: actual.description } : {}),
     ...(typeof actual.notes === "string" ? { notes: actual.notes } : {}),
-    ...(Array.isArray(actual.tags) ? { tags: actual.tags } : {}),
+    ...(cambios.tagsNuevos !== undefined
+      ? { tags: Array.from(new Set(cambios.tagsNuevos.map(normalizarEtiquetaHolded).filter(Boolean))) }
+      : Array.isArray(actual.tags) ? { tags: actual.tags } : {}),
     items,
   };
 
@@ -4000,11 +4041,12 @@ async function prepararEdicionCompraHolded(
     currency_change: tasaCambioActual,
     contact_id: contactoNuevo || actual.contact_id,
     design_id: actual.design_id,
+    tags: Array.isArray(body.tags) ? body.tags as string[] : actual.tags,
     lines: items as LineaCompraHoldedCruda[],
     total: cambios.montoNuevo ?? actual.total,
   };
   return {
-    huellaEsperada: huellaEstadoCompra(esperada, verificarTotal, Boolean(cuentaNueva)),
+    huellaEsperada: huellaEstadoCompra(esperada, verificarTotal, Boolean(cuentaNueva || cambios.tagsNuevos !== undefined)),
     verificarTotal,
     payload: {
       empresa,

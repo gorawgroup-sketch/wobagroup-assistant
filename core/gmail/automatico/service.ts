@@ -69,25 +69,31 @@ export class ServicioCorreoAutomatico {
       if (["creando", "adjuntando", "conciliando", "incierta"].includes(op.estado)) {
         // Recuperar un resultado conocido por lectura; nunca repetir el POST que quedó en vuelo.
         const paso = op.pasoIncierto ?? op.estado;
-        if (paso === "creando") {
-          op.compraId ??= await this.puerto.recuperarCreacion(op);
-          if (!op.compraId || !await this.puerto.verificarCreacion(op)) return false;
-          await this.estado(op, "creada");
-        } else if (paso === "adjuntando") {
-          if (!op.compraId || !await this.puerto.verificarCreacion(op) || !await this.puerto.verificarAdjunto(op)) return false;
-          await this.estado(op, "adjuntada");
-        } else if (paso === "conciliando" || paso === "completada") {
-          if (!op.compraId || !await this.puerto.verificarCreacion(op) ||
-            !await this.puerto.verificarAdjunto(op) || !await this.puerto.verificarConciliacion(op)) return false;
-          await this.estado(op, "completada");
-          return true;
-        } else if (paso === "creada") {
-          if (!op.compraId || !await this.puerto.verificarCreacion(op)) return false;
-          await this.estado(op, "creada");
-        } else if (paso === "adjuntada") {
-          if (!op.compraId || !await this.puerto.verificarCreacion(op) || !await this.puerto.verificarAdjunto(op)) return false;
-          await this.estado(op, "adjuntada");
-        } else return false;
+        try {
+          if (paso === "creando") {
+            const recuperada = await this.puerto.recuperarCreacion(op);
+            op.compraId = recuperada ?? op.compraId;
+            if (!op.compraId || !await this.puerto.verificarCreacion(op)) return false;
+            await this.estado(op, "creada");
+          } else if (paso === "adjuntando") {
+            if (!op.compraId || !await this.puerto.verificarCreacion(op) || !await this.puerto.verificarAdjunto(op)) return false;
+            await this.estado(op, "adjuntada");
+          } else if (paso === "conciliando" || paso === "completada") {
+            if (!op.compraId || !await this.puerto.verificarCreacion(op) ||
+              !await this.puerto.verificarAdjunto(op) || !await this.puerto.verificarConciliacion(op)) return false;
+            await this.estado(op, "completada");
+            return true;
+          } else if (paso === "creada") {
+            if (!op.compraId || !await this.puerto.verificarCreacion(op)) return false;
+            await this.estado(op, "creada");
+          } else if (paso === "adjuntada") {
+            if (!op.compraId || !await this.puerto.verificarCreacion(op) || !await this.puerto.verificarAdjunto(op)) return false;
+            await this.estado(op, "adjuntada");
+          } else return false;
+        } catch (error) {
+          await this.estado(op, "incierta", mensajeError(error));
+          return false;
+        }
       }
       try {
         if (op.estado === "reservada") {
@@ -201,7 +207,8 @@ export class ServicioCorreoAutomatico {
               motivos.push(motivoOperacion);
               detalles.push({ proveedor: recibo.proveedor, empresa: recibo.empresa, monto: recibo.monto, moneda: recibo.moneda,
                 contacto: op.plan.evidencia.contacto?.nombre, metodoContacto: op.plan.evidencia.contacto?.metodo,
-                motivoProveedor: op.plan.evidencia.motivoProveedor, motivos: [motivoOperacion] });
+                motivoProveedor: op.plan.evidencia.motivoProveedor,
+                motivos: [motivoOperacion, ...(op.detalle ? [`detalle:${op.detalle}`] : [])] });
             }
           }
           if (!motivos.length && config.modo === "execute") {

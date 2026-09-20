@@ -1,7 +1,8 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
+import { normalizarEtiquetaHolded } from "../../holded/write";
 import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, nombresProveedorCompatibles, nombresProveedorEquivalentes,
   normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
-  type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
+  VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
 type Registro = Record<string, unknown>;
@@ -32,6 +33,14 @@ export interface MemoriaHoldedAuto {
   duplicadoInterno(c: CorreoAuto, r: ReciboAuto): Promise<boolean>;
   cuentaConfirmada?(empresa: EmpresaAuto, proveedor: string): Promise<{ cuentaId: string; confirmadoEn: string } | undefined>;
 }
+export interface FlujoGastoExistente {
+  clasificar(recibo: ReciboAuto): Promise<{ cuentaId: string; nombreCuenta: string; tags: string[]; evidencia: string } | undefined>;
+  crear(op: OperacionAuto): Promise<string>;
+  corregir(op: OperacionAuto, compraId: string): Promise<void>;
+  adjuntar(op: OperacionAuto, data: Buffer, nombre: string, mime: string): Promise<void>;
+  conciliar(op: OperacionAuto): Promise<void>;
+  verificarConciliacion(op: OperacionAuto): Promise<boolean>;
+}
 
 // Procedimiento autorizado: crear compra, conciliar y convertir a ticket manualmente en Holded.
 // La conversión pendiente se informa en el resumen; no bloquea registrar el gasto.
@@ -39,7 +48,8 @@ export class HoldedAuto {
   private readonly listadosEstaticos = new Map<string, Promise<Registro[]>>();
   private readonly objetosEstaticos = new Map<string, Promise<Registro>>();
   constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch,
-    private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"]) {}
+    private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"],
+    private readonly flujoExistente?: FlujoGastoExistente) {}
   private async get(empresa: EmpresaAuto, path: string): Promise<Registro> {
     const key = process.env[KEYS[empresa]];
     if (!key) throw new Error(`Falta ${KEYS[empresa]}.`);
@@ -210,6 +220,13 @@ export class HoldedAuto {
       e.consultasCompletas = true;
       return e;
     }
+    if (this.flujoExistente) {
+      const clasificacion = await this.flujoExistente.clasificar(r);
+      if (clasificacion) e.cuenta = { id: clasificacion.cuentaId, nombre: clasificacion.nombreCuenta,
+        tags: clasificacion.tags, evidencia: clasificacion.evidencia };
+      e.consultasCompletas = true;
+      return e;
+    }
     const datosCatalogo = await this.getEstatico(empresa, "/expenses-accounts");
     if (!Array.isArray(datosCatalogo.items)) throw new Error("Catálogo contable incompleto.");
     const catalogo = datosCatalogo.items.map(objeto);
@@ -250,6 +267,7 @@ export class HoldedAuto {
     });
   }
   async crear(op: OperacionAuto): Promise<string> {
+    if (this.flujoExistente) return this.flujoExistente.crear(op);
     const p = op.plan;
     let cambio: number | undefined;
     if (p.movimiento.moneda !== "EUR") {
@@ -267,19 +285,52 @@ export class HoldedAuto {
     return texto(objeto(await response.json()).id);
   }
   async recuperarCreacion(op: OperacionAuto): Promise<string | undefined> {
-    const candidatas = (await this.listar(op.plan.empresa, "/purchases", {
+    if (op.compraId) {
+      const conocida = await this.get(op.plan.empresa, `/purchases/${idUrl(op.compraId)}`);
+      if (conocida.id !== op.compraId) throw new Error("Holded devolvió otra compra al recuperar la operación.");
+      if (conocida.notes === `WOBI_AUTO:${op.id}`) {
+        if (this.flujoExistente) await this.flujoExistente.corregir(op, op.compraId);
+        return op.compraId;
+      }
+      // Las operaciones de la política actual ya usan el ledger durable del flujo uno a uno.
+      // Volver a invocarlo solo consulta ese ledger y recupera su marcador; no repite un POST incierto.
+      if (this.flujoExistente && op.plan.version === VERSION_POLITICA) return this.flujoExistente.crear(op);
+      throw new Error("La compra persistida no conserva la identidad privada de esta operación.");
+    }
+    const candidatas = await this.listar(op.plan.empresa, "/purchases", {
       contact_id: op.plan.contactoId, start_date: op.plan.recibo.fecha, end_date: op.plan.recibo.fecha,
-    })).filter(c => Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`));
-    if (candidatas.length > 1) throw new Error("Más de una compra con la identidad de operación; revisión manual.");
-    return candidatas.length === 1 ? texto(candidatas[0].id) : undefined;
+    });
+    // El listado resumido de Holded omite notes y normaliza tags. Releer cada candidato es
+    // imprescindible para recuperar los borradores creados por la versión anterior.
+    const completas = await mapearConConcurrencia(candidatas, 4, async candidata =>
+      typeof candidata.notes === "string" ? candidata : this.get(op.plan.empresa, `/purchases/${idUrl(texto(candidata.id))}`));
+    const legado = completas.filter(c => c.notes === `WOBI_AUTO:${op.id}`);
+    if (legado.length > 1) throw new Error("Más de una compra con la identidad de operación; revisión manual.");
+    if (legado.length === 1) {
+      const id = texto(legado[0].id);
+      if (this.flujoExistente) await this.flujoExistente.corregir(op, id);
+      return id;
+    }
+    // La ruta durable usada por el flujo manual sabe recuperar su propio POST incierto por lectura
+    // y nunca lo repite a ciegas.
+    return this.flujoExistente && op.plan.version === VERSION_POLITICA
+      ? this.flujoExistente.crear(op)
+      : undefined;
   }
   async verificarCreacion(op: OperacionAuto): Promise<boolean> {
     const c = await this.compra(op); const p = op.plan;
-    return c.id === op.compraId && c.contact_id === p.contactoId && c.currency === p.movimiento.moneda &&
+    const tagsEsperados = new Set((p.evidencia.cuenta?.tags ?? []).map(normalizarEtiquetaHolded).filter(Boolean));
+    const tagsActuales = new Set(Array.isArray(c.tags)
+      ? c.tags.filter((tag): tag is string => typeof tag === "string").map(normalizarEtiquetaHolded).filter(Boolean)
+      : []);
+    const tagsCorrectos = tagsEsperados.size === tagsActuales.size &&
+      [...tagsEsperados].every(tag => tagsActuales.has(tag));
+    const base = c.id === op.compraId && c.contact_id === p.contactoId && (c.currency || "EUR") === p.movimiento.moneda &&
       String(c.date).slice(0, 10) === p.recibo.fecha && centimos(c.total, true) === p.totalCentimos &&
       Array.isArray(c.lines) && c.lines.length === 1 && (!p.cuentaId || objeto(c.lines[0]).account === p.cuentaId) &&
-      centimos(c.tax, true) === 0 && Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`) &&
-      String(c.document_number) === (p.recibo.numero || "00000");
+      centimos(c.tax, true) === 0 && String(c.document_number) === (p.recibo.numero || "00000");
+    if (this.flujoExistente) return base && tagsCorrectos;
+    return base && Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`);
   }
   private nombreAdjunto(op: OperacionAuto): string { return `wobi-${op.id}-${op.plan.fuenteHash.slice(0, 16)}`; }
   async adjuntar(op: OperacionAuto, c: CorreoAuto): Promise<void> {
@@ -288,6 +339,10 @@ export class HoldedAuto {
     const data = op.plan.recibo.fuente === "cuerpo" ? Buffer.from(c.cuerpo, "utf8") : a?.data;
     if (!data || hash(data) !== op.plan.fuenteHash) throw new Error("El comprobante cambió; no se adjuntará otro archivo.");
     const extension = a ? (a.nombre.match(/\.([a-zA-Z0-9]{1,8})$/)?.[1] ?? (a.mime === "application/pdf" ? "pdf" : "bin")) : "txt";
+    if (this.flujoExistente) {
+      await this.flujoExistente.adjuntar(op, data, a?.nombre ?? `${this.nombreAdjunto(op)}.${extension}`, a?.mime ?? "text/plain");
+      return;
+    }
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(data)], { type: a?.mime ?? "text/plain" }), `${this.nombreAdjunto(op)}.${extension}`);
     await this.post(op.plan.empresa, `/purchases/${idUrl(op.compraId)}/attachments`, form, true);
@@ -295,12 +350,16 @@ export class HoldedAuto {
   async verificarAdjunto(op: OperacionAuto): Promise<boolean> {
     if (!op.compraId) return false;
     const adjuntos = await this.listar(op.plan.empresa, `/purchases/${idUrl(op.compraId)}/attachments`);
-    const candidatos = adjuntos.filter(a => [a.id, a.name, a.filename, a.file_name].some(x => typeof x === "string" && x.startsWith(this.nombreAdjunto(op))));
-    if (candidatos.length !== 1) return false;
-    const response = await this.request(`https://api.holded.com/api/v2/purchases/${idUrl(op.compraId)}/attachments/${idUrl(texto(candidatos[0].id))}`, {
-      headers: { Authorization: `Bearer ${process.env[KEYS[op.plan.empresa]]}` }, signal: AbortSignal.timeout(30_000) });
-    if (!response.ok) throw new Error("No se pudo verificar el contenido del comprobante en Holded.");
-    return hash(Buffer.from(await response.arrayBuffer())) === op.plan.fuenteHash;
+    const candidatos = this.flujoExistente ? adjuntos : adjuntos.filter(a =>
+      [a.id, a.name, a.filename, a.file_name].some(x => typeof x === "string" && x.startsWith(this.nombreAdjunto(op))));
+    if (!candidatos.length) return false;
+    const coincidencias = await mapearConConcurrencia(candidatos, 3, async candidato => {
+      const response = await this.request(`https://api.holded.com/api/v2/purchases/${idUrl(op.compraId!)}/attachments/${idUrl(texto(candidato.id))}`, {
+        headers: { Authorization: `Bearer ${process.env[KEYS[op.plan.empresa]]}` }, signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error("No se pudo verificar el contenido del comprobante en Holded.");
+      return hash(Buffer.from(await response.arrayBuffer())) === op.plan.fuenteHash;
+    });
+    return coincidencias.filter(Boolean).length === 1;
   }
   private async movimientoActual(op: OperacionAuto): Promise<Registro> {
     const p = op.plan; const ref = p.movimiento;
@@ -315,6 +374,10 @@ export class HoldedAuto {
   async conciliar(op: OperacionAuto): Promise<void> {
     const p = op.plan;
     if (!await this.verificarCreacion(op) || !await this.verificarAdjunto(op)) throw new Error("Compra o comprobante no verificados.");
+    if (this.flujoExistente) {
+      await this.flujoExistente.conciliar(op);
+      return;
+    }
     const c = await this.compra(op); const m = await this.movimientoActual(op);
     if (centimos(c.payments_total, true) !== 0 || centimos(c.payments_pending, true) !== p.totalCentimos ||
       m.status !== "pending" || centimos(m.reconciled_amount) !== 0) throw new Error("La compra o el movimiento ya tienen pagos/conciliación.");
@@ -323,6 +386,7 @@ export class HoldedAuto {
     });
   }
   async verificarConciliacion(op: OperacionAuto): Promise<boolean> {
+    if (this.flujoExistente) return this.flujoExistente.verificarConciliacion(op);
     const c = await this.compra(op); const m = await this.movimientoActual(op); const p = op.plan;
     if (!await this.verificarCreacion(op) || !["reconciled", "forced_reconciled"].includes(String(m.status)) ||
       Math.abs(centimos(m.reconciled_amount)) !== p.totalCentimos || centimos(c.payments_pending, true) !== 0 ||
