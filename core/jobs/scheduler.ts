@@ -19,6 +19,11 @@ import { publicarCambioCerebro } from "../cerebro/realtime";
 import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaContable";
 import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos";
 import { esperarPrioridadInteractiva } from "./jobPriority";
+import {
+  CRON_CORREO_HABIL_SILENCIOSO,
+  CRON_CORREO_INFORME_MANANA,
+  CRON_CORREO_INFORME_TARDE,
+} from "./politicaRevisionCorreo";
 
 const TIMEZONE = "Europe/Madrid";
 const jobsEnCurso = new Set<string>();
@@ -123,16 +128,32 @@ export function startScheduler(): void {
   console.log(`[scheduler] revisarAlertasFiscales programado: diario 8:00 (${TIMEZONE})`);
 
   cron.schedule(
-    "0 * * * *",
+    CRON_CORREO_HABIL_SILENCIOSO,
     () => {
-      ejecutarSinSolapamiento("revisarCorreoNuevo", () => revisarCorreoNuevo());
+      ejecutarSinSolapamiento("revisarCorreoNuevo", () => revisarCorreoNuevo({ origen: "cron", informe: "silencioso" }));
     },
     { timezone: TIMEZONE }
   );
-  console.log(`[scheduler] revisarCorreoNuevo programado: cada hora (${TIMEZONE})`);
+  console.log(`[scheduler] revisarCorreoNuevo programado: días hábiles cada 2 horas (${TIMEZONE}); pases intermedios silenciosos`);
 
   cron.schedule(
-    // No coincidir con revisarCorreoNuevo, que corre al minuto 0 de cada hora
+    CRON_CORREO_INFORME_MANANA,
+    () => {
+      ejecutarSinSolapamiento("revisarCorreoNuevo", () => revisarCorreoNuevo({ origen: "cron", informe: "consolidado", slot: "10" }));
+    },
+    { timezone: TIMEZONE }
+  );
+  cron.schedule(
+    CRON_CORREO_INFORME_TARDE,
+    () => {
+      ejecutarSinSolapamiento("revisarCorreoNuevo", () => revisarCorreoNuevo({ origen: "cron", informe: "consolidado", slot: "18" }));
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarCorreoNuevo programado: informes diarios 10:00 y 18:00; en fin de semana son las únicas 2 revisiones (${TIMEZONE})`);
+
+  cron.schedule(
+    // No coincidir con revisarCorreoNuevo, que corre al minuto 0
     // y también concentra lecturas de Sheets. La separación evita competir
     // por la misma cuota por usuario durante el resumen más intensivo.
     "10 19 * * *",

@@ -36,7 +36,7 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
-import { revisarCorreoNuevo, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
+import { revisarCorreoNuevo, RevisionCorreoOcupadaError, handleColaCorreoSiguienteCallback, handleDescartarActivoCallback } from "../core/jobs/revisarCorreoNuevo";
 import {
   handleCancelarDescartarTodoPendienteCallback,
   handleConfirmarDescartarTodoPendienteCallback,
@@ -1742,7 +1742,7 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     trackearEnSegundoPlano(
-      revisarCorreoNuevo(true, incoming.chatId) // forzarAviso: lo pidió este chat ahora mismo, sin importar el día ni si ya se avisó hoy
+      revisarCorreoNuevo({ origen: "manual", chatId: incoming.chatId })
       .then((resultado) => {
         // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
         // con varios correos reales sin leer en Gmail, y el sistema
@@ -1771,7 +1771,10 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
       })
       .catch((error) => {
         console.error("Error en revisión extraordinaria de correo:", error);
-        sendTelegramMessage(incoming.chatId, "⚠️ Hubo un error revisando el correo.").catch(() => {});
+        const mensaje = error instanceof RevisionCorreoOcupadaError
+          ? "⏳ Ya hay otra revisión de correo trabajando. El proceso sigue protegido; vuelve a intentarlo en unos minutos."
+          : "⚠️ Hubo un error revisando el correo.";
+        sendTelegramMessage(incoming.chatId, mensaje).catch(() => {});
       })
     );
     return;
@@ -2044,7 +2047,7 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
   res.json({ ok: true, mensaje: "Revisión automática y cola manual iniciadas en segundo plano." });
 
   trackearEnSegundoPlano(
-    revisarCorreoNuevo(true).catch((error) => { // forzarAviso: se disparó a mano vía este endpoint admin
+    revisarCorreoNuevo({ origen: "manual" }).catch((error) => {
       console.error("[admin/run-gmail-check] Error:", error);
     })
   );

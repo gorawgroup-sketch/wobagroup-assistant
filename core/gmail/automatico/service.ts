@@ -18,7 +18,7 @@ export interface PuertoAutomatico {
   verificarAdjunto(op: OperacionAuto): Promise<boolean>;
   conciliar(op: OperacionAuto): Promise<void>;
   verificarConciliacion(op: OperacionAuto): Promise<boolean>;
-  /** Conserva UNREAD y etiqueta solo el mensaje procesado para excluirlo de revisiones posteriores. */
+  /** Marca leído y etiqueta solo el mensaje cuya creación, soporte y conciliación ya fueron verificados. */
   marcarResuelto(correo: CorreoAuto): Promise<void>;
   permitidoAhora(op: OperacionAuto): boolean;
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
@@ -434,10 +434,13 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";
 }
 
-export function resumenAutomatico(r: ResultadoAuto): string {
+export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsolidadas?: number } = {}): string {
   if (r.modo === "off") return "";
-  const lineas = [r.modo === "simulate" ? "🔎 Simulación de revisión automática terminada." : "📬 Revisión automática terminada.",
-    `Correos analizados: ${r.revisados}.`,
+  const consolidado = opciones.revisionesConsolidadas;
+  const lineas = [r.modo === "simulate" ? "🔎 Simulación de revisión automática terminada." :
+    consolidado ? "📬 Informe consolidado de revisión automática." : "📬 Revisión automática terminada.",
+    ...(consolidado ? [`Revisiones incluidas desde el informe anterior: ${consolidado}.`] : []),
+    `${consolidado ? "Correos analizados en la revisión más reciente" : "Correos analizados"}: ${r.revisados}.`,
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
     `Correos que requieren revisión manual: ${r.pendientes.length}.`];

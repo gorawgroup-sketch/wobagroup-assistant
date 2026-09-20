@@ -119,10 +119,12 @@ export class GmailAuto {
   async marcarResuelto(c: CorreoAuto): Promise<void> {
     const etiqueta = await this.idEtiquetaProcesado();
     await this.escritura.users.messages.modify({ userId: "me", id: c.id,
-      requestBody: { addLabelIds: [etiqueta, "UNREAD"] } });
+      // Se cambia solo este mensaje, nunca el hilo entero: una respuesta
+      // nueva en la misma conversación debe conservar su propio UNREAD.
+      requestBody: { addLabelIds: [etiqueta], removeLabelIds: ["UNREAD"] } });
     const r = await this.lectura.users.messages.get({ userId: "me", id: c.id, format: "minimal" });
-    if (!r.data.id || !r.data.labelIds?.includes("UNREAD") || !r.data.labelIds?.includes(etiqueta)) {
-      throw new Error("Gmail no confirmó el mensaje como no leído y procesado automáticamente.");
+    if (!r.data.id || r.data.labelIds?.includes("UNREAD") || !r.data.labelIds?.includes(etiqueta)) {
+      throw new Error("Gmail no confirmó el mensaje como leído y procesado automáticamente.");
     }
   }
 }

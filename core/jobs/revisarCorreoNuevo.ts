@@ -30,6 +30,9 @@ import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
+import { debePublicarInformeCorreo, type SolicitudRevisionCorreo } from "./politicaRevisionCorreo";
+import { marcarInformeCronPublicado, prepararInformeCron, registrarRevisionCron,
+  reservarSlotInformeCron } from "../gmail/automatico/reportes";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
@@ -85,6 +88,8 @@ function sanitizarNombre(nombre: string): string {
 export interface ResultadoRevisarCorreo {
   correosRevisados: number;
   automatico?: ResultadoAuto;
+  /** Indica si esta misma ejecución ya publicó su resumen en Telegram. */
+  informePublicado?: boolean;
   /**
    * Cuando correosRevisados=0 porque ya había un correo "activo" sin
    * resolver (no porque no hubiera nada pendiente) — para que el llamador
@@ -119,24 +124,33 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
 }
 
 /**
- * `forzarAviso`: true SOLO cuando Carlos (u otro admin) disparó esta revisión él mismo (comando
- * /revisarcorreo, o el endpoint /admin/run-gmail-check) — en ese caso el aviso de "tienes correos
- * sin leer" se manda siempre, sin importar el día ni si ya se avisó hoy, porque lo pidió a propósito
- * ahora mismo. El cron horario (scheduler.ts) llama esto SIN forzar: pedido explícito de Carlos,
- * "he recibido muchos avisos de que tengo mails sin revisar y no es necesario, con 1 al día es
- * suficiente... no envíes avisos en fin de semana" — la cola sigue actualizándose cada hora igual
- * (para que /revisarcorreo o la conversación automática siempre vean el estado real), solo el AVISO
- * proactivo de "¿empezamos?" se limita a una vez por día hábil.
+ * Las solicitudes manuales siempre reciben progreso y resultado. El cron separa los pases
+ * silenciosos de los informes consolidados de las 10:00 y 18:00. La unión discriminada evita que
+ * un booleano posicional confunda otra vez una orden del operador con una revisión programada.
  */
 const revisionesEnCurso = new Map<number, Promise<ResultadoRevisarCorreo>>();
 const revisionesInteractivas = new Set<number>();
+export class RevisionCorreoOcupadaError extends Error {
+  constructor() {
+    super("Otra revisión mantiene el buzón ocupado. Vuelve a intentarlo en unos minutos.");
+    this.name = "RevisionCorreoOcupadaError";
+  }
+}
+function esTimeoutDeBloqueo(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as { code?: unknown }).code === "55P03";
+}
 function modoAutomaticoSeguro(): ModoAuto {
   if (process.env.WOBI_MAIL_AUTO_KILL_SWITCH === "true") return "off";
   const modo = process.env.WOBI_MAIL_AUTO_MODE;
   if (modo === "off") return "off";
   return modo === "simulate" ? "simulate" : "execute";
 }
-export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?: number): Promise<ResultadoRevisarCorreo> {
+export async function revisarCorreoNuevo(
+  solicitud: SolicitudRevisionCorreo
+): Promise<ResultadoRevisarCorreo> {
+  const forzarAviso = solicitud.origen === "manual";
+  const chatIdSolicitante = solicitud.origen === "manual" ? solicitud.chatId : undefined;
   const chatId = chatIdSolicitante ?? (process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined);
 
   if (!chatId) {
@@ -151,7 +165,24 @@ export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?
         "⏳ Ya había una revisión de correo en curso (posiblemente iniciada por el cron). Me uno a esa misma revisión para no duplicar trabajo; te informaré su avance y resultado."
       ).catch(() => {});
     }
-    return existente;
+    const resultado = await existente;
+    // Cierra la carrera en la que una orden manual llega justo después de
+    // que un cron silencioso decidió no publicar, pero antes de terminar.
+    if (forzarAviso && !resultado.informePublicado && resultado.automatico) {
+      const resumen = resumenAutomatico(resultado.automatico);
+      if (resumen) {
+        // Reservar antes del await evita que dos órdenes manuales que se
+        // unan a la vez publiquen el mismo cierre dos veces.
+        resultado.informePublicado = true;
+        try {
+          await sendTelegramMessageSmart(chatId, resumen);
+        } catch (error) {
+          resultado.informePublicado = false;
+          throw error;
+        }
+      }
+    }
+    return resultado;
   }
   if (forzarAviso) revisionesInteractivas.add(chatId);
   const tarea = conCoordinadorCorreo(async () => {
@@ -167,19 +198,76 @@ export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?
         pendientes: [{ mensajeId: "sistema", asunto: "Fase automática incompleta",
           motivos: [`error_automatico:${detalle}`] }] };
     }
-    const resumen = resumenAutomatico(automatico);
-    console.log(`[correo-auto] Resultado final:\n${resumen}`);
-    const cola = await sincronizarColaCorreo(forzarAviso, chatId, resumen);
+    let resultadoParaInforme = automatico;
+    let revisionesConsolidadas: number | undefined;
+    let slotInforme: string | undefined;
+    let slotNoDisponible = false;
+    if (solicitud.origen === "cron") {
+      const revisionRegistrada = await registrarRevisionCron(automatico).catch(error => {
+        console.error("[revisarCorreoNuevo] No se pudo registrar la revisión cron para el informe consolidado:", error);
+        return false;
+      });
+      if (solicitud.informe === "consolidado") {
+        const reserva = await reservarSlotInformeCron(solicitud.slot).catch(error => {
+          console.error("[revisarCorreoNuevo] No se pudo reservar de forma segura el slot del informe; se suprime para evitar duplicados:", error);
+          return undefined;
+        });
+        slotInforme = reserva?.slot;
+        slotNoDisponible = !reserva?.reservado;
+        if (reserva?.reservado) {
+          const preparado = await prepararInformeCron(automatico, revisionRegistrada).catch(error => {
+            console.error("[revisarCorreoNuevo] No se pudo preparar el informe consolidado; se suprime este slot para no perder el acumulado:", error);
+            return undefined;
+          });
+          if (preparado) {
+            resultadoParaInforme = preparado.resultado;
+            revisionesConsolidadas = preparado.revisionesIncluidas;
+          } else {
+            slotNoDisponible = true;
+          }
+        }
+      }
+    }
+    const resumen = resumenAutomatico(resultadoParaInforme,
+      revisionesConsolidadas ? { revisionesConsolidadas } : undefined);
+    console.log(`[correo-auto] Resultado final:\n${resumenAutomatico(automatico)}`);
+    const cola = await sincronizarColaCorreo(
+      forzarAviso,
+      chatId,
+      resumen,
+      () => debePublicarInformeCorreo(solicitud, revisionesInteractivas.has(chatId), slotNoDisponible)
+    );
+    if (solicitud.origen === "cron" && solicitud.informe === "consolidado" &&
+        cola.informePublicado && slotInforme && !slotNoDisponible) {
+      await marcarInformeCronPublicado(slotInforme).catch(error =>
+        console.error("[revisarCorreoNuevo] El informe salió, pero no se pudo registrar su slot:", error)
+      );
+    }
     return { ...cola, automatico };
-  });
+  }, { lockTimeoutMs: forzarAviso ? 10 * 60_000 : 30_000 });
   revisionesEnCurso.set(chatId, tarea);
-  try { return await tarea; } finally {
+  try { return await tarea; } catch (error) {
+    if (forzarAviso && esTimeoutDeBloqueo(error)) throw new RevisionCorreoOcupadaError();
+    throw error;
+  } finally {
     revisionesEnCurso.delete(chatId);
     revisionesInteractivas.delete(chatId);
   }
 }
 
-async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resumenAuto: string): Promise<ResultadoRevisarCorreo> {
+async function sincronizarColaCorreo(
+  forzarAviso: boolean,
+  chatId: number,
+  resumenAuto: string,
+  debePublicarInforme: () => boolean
+): Promise<ResultadoRevisarCorreo> {
+  let informePublicado = false;
+  const publicarResumenSiCorresponde = async (): Promise<void> => {
+    if (!informePublicado && resumenAuto && debePublicarInforme()) {
+      await sendTelegramMessageSmart(chatId, resumenAuto);
+      informePublicado = true;
+    }
+  };
 
   // Antes que cualquier otra cosa: si el correo activo ya tomó TODAS sus decisiones reales
   // (pendientesRestantes=0) pero se quedó sin confirmar por un fallo al marcarlo leído en Gmail la
@@ -240,9 +328,11 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
     // No sincronizar con una lista vacía inventada: si Gmail falló,
     // eliminaríamos de la cola correos que siguen realmente sin leer.
     const activo = await obtenerActivoActual(chatId).catch(() => undefined);
+    await publicarResumenSiCorresponde();
     return {
       correosRevisados: 0,
       activoBloqueando: activo ? { asunto: activo.asunto, de: activo.de } : undefined,
+      informePublicado,
     };
   }
 
@@ -329,7 +419,9 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
   // pedirConfirmacionSiguienteCorreo).
   const totalPendienteTrasEncolar = await contarPendientesTotal(chatId);
   if (!habiaActivoAntes && totalPendienteTrasEncolar > 0) {
-    const debeAvisar = forzarAviso || Boolean(resumenAuto) || (esDiaHabilEspana() && !(await yaSeAvisoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId)));
+    const debeAvisar = debePublicarInforme() &&
+      (forzarAviso || Boolean(resumenAuto) ||
+        (esDiaHabilEspana() && !(await yaSeAvisoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId))));
 
     if (debeAvisar) {
       // Pedido explícito de Carlos: el aviso trae el conteo de "nuevos" solo
@@ -341,6 +433,7 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
           ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
           : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
       await pedirConfirmacionSiguienteCorreo(chatId, [resumenAuto, mensaje].filter(Boolean).join("\n\n"));
+      informePublicado = Boolean(resumenAuto);
       // Se marca SIEMPRE, incluso si este envío fue forzado (/revisarcorreo, endpoint admin) — el
       // objetivo real es "nunca el mismo aviso dos veces el mismo día" sin importar qué lo disparó
       // primero. Hallazgo real de auditoría: antes solo se marcaba en el camino sin forzar, así que
@@ -348,19 +441,19 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
       // interactuar con la cola) podía mandar el MISMO aviso dos veces el mismo día.
       await marcarAvisadoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId);
     }
-    return { correosRevisados: nuevos };
+    return { correosRevisados: nuevos, informePublicado };
   }
 
-  if (resumenAuto) await sendTelegramMessageSmart(chatId, resumenAuto);
+  await publicarResumenSiCorresponde();
 
   if (habiaActivoAntes) {
     const activo = await obtenerActivoActual(chatId).catch(() => undefined);
     if (activo) {
-      return { correosRevisados: nuevos, activoBloqueando: { asunto: activo.asunto, de: activo.de } };
+      return { correosRevisados: nuevos, activoBloqueando: { asunto: activo.asunto, de: activo.de }, informePublicado };
     }
   }
 
-  return { correosRevisados: nuevos };
+  return { correosRevisados: nuevos, informePublicado };
 }
 
 /**

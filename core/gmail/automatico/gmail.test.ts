@@ -42,19 +42,19 @@ test("un mensaje automático ya etiquetado no reaparece si llega otro mensaje al
   const r = await new GmailAuto(gmail, gmail).listar();
   assert.deepEqual(r.map(c => c.id), ["nuevo"]);
 });
-test("conserva no leído el mensaje procesado, lo etiqueta y nunca toca todo el hilo", async () => {
-  const modificados: Array<{ id: string; etiquetas: string[] }> = [];
+test("marca leído el mensaje procesado, lo etiqueta y nunca toca todo el hilo", async () => {
+  const modificados: Array<{ id: string; agregar: string[]; quitar: string[] }> = [];
   const gmail = { users: {
     labels: { list: async () => ({ data: { labels: [{ id: "label-auto", name: "WOBI_AUTO_PROCESADO" }] } }) },
     messages: {
-      modify: async ({ id, requestBody }: { id: string; requestBody: { addLabelIds: string[] } }) => {
-        modificados.push({ id, etiquetas: requestBody.addLabelIds }); return { data: {} };
+      modify: async ({ id, requestBody }: { id: string; requestBody: { addLabelIds: string[]; removeLabelIds: string[] } }) => {
+        modificados.push({ id, agregar: requestBody.addLabelIds, quitar: requestBody.removeLabelIds }); return { data: {} };
       },
-      get: async ({ id }: { id: string }) => ({ data: { id, labelIds: ["UNREAD", "label-auto"] } }),
+      get: async ({ id }: { id: string }) => ({ data: { id, labelIds: ["label-auto"] } }),
     },
   } } as unknown as gmail_v1.Gmail;
   await new GmailAuto(gmail, gmail).marcarResuelto(correoFixture());
-  assert.deepEqual(modificados, [{ id: "m1", etiquetas: ["label-auto", "UNREAD"] }]);
+  assert.deepEqual(modificados, [{ id: "m1", agregar: ["label-auto"], quitar: ["UNREAD"] }]);
 });
 test("recupera por id un mensaje ya leído para terminar una operación durable", async () => {
   const gmail = { users: { threads: {

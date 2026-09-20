@@ -151,11 +151,10 @@ async function obtenerIdEtiquetaProcesadoAutomatico(): Promise<string | undefine
 
 /**
  * Cliente separado con scope gmail.modify — el único con permiso para
- * cambiar etiquetas. La revisión manual uno a uno (ver
- * core/jobs/revisarCorreoNuevo.ts) marca como leído cada correo resuelto. La
- * revisión automática conserva UNREAD por petición del operador y añade
- * WOBI_AUTO_PROCESADO; todas las colas excluyen esa etiqueta para evitar
- * procesarlo dos veces. Requiere agregar este scope a la
+ * cambiar etiquetas. Tanto la revisión manual uno a uno como la automática
+ * marcan como leído únicamente el mensaje ya resuelto. La automática añade
+ * además WOBI_AUTO_PROCESADO como rastro durable; todas las colas excluyen
+ * esa etiqueta para evitar procesarlo dos veces. Requiere agregar este scope a la
  * Delegación de todo el dominio en Google Workspace Admin para el mismo
  * client_id que ya usan Calendar/Gmail/Drive — sin eso, marcarHiloComoLeido
  * falla con "insufficient authentication scopes" (mismo patrón que se vivió

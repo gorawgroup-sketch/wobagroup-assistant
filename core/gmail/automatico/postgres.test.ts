@@ -12,7 +12,7 @@ test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas
   const db = new Pool({ connectionString: url });
   try {
     await db.query(SCHEMA_AUTO);
-    await db.query("TRUNCATE wobi_mail_analyses,wobi_mail_events,wobi_mail_claims,wobi_mail_operations RESTART IDENTITY CASCADE");
+    await db.query("TRUNCATE wobi_mail_report_slots,wobi_mail_analyses,wobi_mail_events,wobi_mail_claims,wobi_mail_operations RESTART IDENTITY CASCADE");
     await new PostgresAutoStore(db).guardarAnalisis(configFixture.buzon, "m1", "huella", "v1", analisisFixture());
     assert.equal((await new PostgresAutoStore(db).buscarAnalisis(configFixture.buzon, "m1", "huella", "v1"))?.resumen, "Recibo");
     const decision = evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), evidenciaFixture(), configFixture);

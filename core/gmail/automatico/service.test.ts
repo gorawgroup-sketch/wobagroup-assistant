@@ -60,6 +60,13 @@ test("el informe desglosa automatizaciones por empresa y conserva el detalle ver
   assert.match(texto, /• WOBA: 2\./);
   assert.match(texto, /• Footprint · 20\.00 USD · compra f-1\./);
 });
+test("el informe consolidado explica el período sin inflar el último conteo de correos", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 2, completados: 0, simulados: 0,
+    pendientes: [], gastos: [] }, { revisionesConsolidadas: 5 });
+  assert.match(texto, /Informe consolidado de revisión automática/);
+  assert.match(texto, /Revisiones incluidas desde el informe anterior: 5/);
+  assert.match(texto, /Correos analizados en la revisión más reciente: 2/);
+});
 test("el informe organiza pendientes en lenguaje accionable sin códigos internos", () => {
   const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 0, simulados: 0, gastos: [],
     pendientes: [{ mensajeId: "m1", asunto: "Ticket de supermercado", motivos: ["proveedor_no_verificado"],

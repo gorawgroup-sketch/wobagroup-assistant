@@ -16,7 +16,7 @@ export const revisarColaCorreoTool: ToolDefinition = {
     "procesar_siguiente_correo_cola solo cuando el usuario quiera empezar o avanzar. No confundas simulación con ejecución.",
   input_schema: { type: "object", properties: {} },
   handler: async (_input, context) => {
-    const resultado = await revisarCorreoNuevo(true, context?.chatId);
+    const resultado = await revisarCorreoNuevo({ origen: "manual", chatId: context?.chatId });
     const { resumenAutomatico } = await import("../gmail/automatico/service");
     const auto = resultado.automatico ? resumenAutomatico(resultado.automatico) : "";
     if (auto) return auto + (resultado.activoBloqueando
