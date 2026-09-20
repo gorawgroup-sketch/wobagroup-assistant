@@ -2069,6 +2069,16 @@ export function combinarTagsGastoAprendidos(
   // inequívoca. Una mezcla contaminada (p. ej. alimentación + hospedaje) no se copia.
   const tagsCategoria = tagsCategoriaActual.length ? tagsCategoriaActual : categoriaAprendidaInequivoca;
 
+  // Los precedentes reales contienen también etiquetas de región, proyecto y otras
+  // clasificaciones (p. ej. "latam"). Que una etiqueta no sea una categoría de gasto
+  // conocida NO demuestra que sea una persona. Solo heredamos identidades ya observadas
+  // como etiquetas personales en el flujo uno a uno. Una persona leída del comprobante
+  // sigue teniendo prioridad y no depende de esta lista.
+  const etiquetasPersonaAprendidas = new Set([
+    "yanessy", "simontalloen", "simon", "alejandra", "nuria", "nicolasgomez",
+    "yesseniadosprazeres", "carlosg", "jorge", "jorgejcome", "kelly", "kellycorreales", "davids",
+  ]);
+
   // Cuando el comprobante identifica a la persona, esa evidencia actual prevalece
   // sobre cualquier tag histórico. Si no la identifica, conservamos únicamente los
   // tags aprendidos que no sean categorías; la categoría del gasto actual se vuelve
@@ -2077,7 +2087,7 @@ export function combinarTagsGastoAprendidos(
   const candidatosPersona = (personaAsociada ? [personaAsociada] : tagsAprendidos)
     .map(tag => tag.trim())
     .filter(Boolean)
-    .filter(tag => !categoriasConocidas.has(normalizarEtiquetaHolded(tag)));
+    .filter(tag => personaAsociada || etiquetasPersonaAprendidas.has(normalizarEtiquetaHolded(tag)));
 
   // El histórico real contiene variantes como "simon" y "simontalloen". Si una
   // etiqueta es prefijo de otra, la más completa conserva mejor la identidad sin
@@ -4942,26 +4952,23 @@ export function evaluarAjusteCambioResidual(
 
   const tasaCambio = numeroDecimalPlano(compra.currency_change);
   if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) return undefined;
-  let tasaDemostrada = tasaCambio;
-  let totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
-  let residuoCentimos = totalContableDocumentoCentimos - centimos(totalPagosOrigen);
+  const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
+  const residuoCentimos = totalContableDocumentoCentimos - centimos(totalPagosOrigen);
   const pendienteCentimos = Math.round(pendiente * 100);
   // El saldo pendiente DECLARADO por Holded debe coincidir exactamente con el residuo CALCULADO a
   // partir de total/tipo de cambio/pagos — no basta con que ambos, por separado, quepan bajo el
   // margen: si no coinciden entre sí, algo más está pasando (un pago adicional no contemplado, un
   // saldo que no es puro redondeo) y no se demuestra nada, así que no se ajusta nada. Excepción
-  // acotada: Holded a veces conserva `currency_change` con solo dos decimales. En ese caso la tasa
-  // implícita demostrada por pago + pendiente debe redondear exactamente al mismo valor visible.
+  // acotada: Holded expresa payments_pending en la moneda NATIVA del documento. Cuando
+  // `currency_change` se conserva con solo dos decimales, el residuo contable en EUR puede ser
+  // distinto numéricamente, pero al reconvertirlo debe producir exactamente el saldo nativo.
+  // Caso real Kiwi: 151 USD / 1,15 = 131,30 EUR; 131,30 - 130,81 = 0,49 EUR;
+  // 0,49 * 1,15 = 0,56 USD pendientes. Nunca se registra el 0,56 nativo como 0,56 EUR.
   if (residuoCentimos !== pendienteCentimos) {
     const tasaCruda = String(compra.currency_change ?? "").replace(",", ".");
     const decimales = tasaCruda.split(".")[1]?.length ?? 0;
-    const totalContableImplicito = totalPagosOrigen + pendiente;
-    const tasaImplicita = totalContableImplicito > 0 ? totalNativo / totalContableImplicito : NaN;
-    if (decimales > 2 || !Number.isFinite(tasaImplicita) ||
-      Math.round(tasaImplicita * 100) !== Math.round(tasaCambio * 100)) return undefined;
-    tasaDemostrada = tasaImplicita;
-    totalContableDocumentoCentimos = centimos(totalContableImplicito);
-    residuoCentimos = pendienteCentimos;
+    const pendienteNativoDesdeResiduo = Math.round((residuoCentimos / 100) * tasaCambio * 100);
+    if (decimales > 2 || pendienteNativoDesdeResiduo !== pendienteCentimos) return undefined;
   }
   if (residuoCentimos <= 0 || residuoCentimos > margenCentimos) {
     return undefined;
@@ -4973,7 +4980,7 @@ export function evaluarAjusteCambioResidual(
     montoNativo: totalNativo,
     montoContableMovimiento: montoContable,
     montoContableDocumento: totalContableDocumentoCentimos / 100,
-    tasaCambio: tasaDemostrada,
+    tasaCambio,
   };
 }
 
