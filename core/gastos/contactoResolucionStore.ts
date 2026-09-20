@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import type { PropuestaGasto } from "./gastoProposalSheet";
+import { conMutex } from "../utils/asyncMutex";
 
 export interface AlternativaContacto {
   contactId: string;
@@ -30,6 +31,7 @@ const TAB_NAME = "_resoluciones_contacto_gasto";
 // 24h — pedido explícito de Carlos (mismo criterio en todos los
 // "pendiente_*", ver pendienteCapturaEmpresaStore.ts).
 const TTL_MS = 24 * 60 * 60 * 1000;
+const CLAVE_MUTEX = `contactoResolucionStore:${TAB_NAME}`;
 
 const HEADERS = ["id", "propuestaJSON", "empresaFinal", "conceptoFinal", "alternativasJSON", "chatId", "messageId", "creadoEn"];
 
@@ -138,12 +140,12 @@ function resolucionToRow(r: ResolucionContactoPendiente): (string | number)[] {
   ];
 }
 
-interface FilaConIndice {
+export interface FilaResolucionContactoConIndice {
   rowIndex: number;
   resolucion: ResolucionContactoPendiente;
 }
 
-async function leerTodas(): Promise<FilaConIndice[]> {
+async function leerTodas(): Promise<FilaResolucionContactoConIndice[]> {
   await ensureTab();
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -155,7 +157,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
   });
 
   const rows = resp.data.values ?? [];
-  const result: FilaConIndice[] = [];
+  const result: FilaResolucionContactoConIndice[] = [];
   rows.forEach((row, i) => {
     const resolucion = rowToResolucion(row);
     if (resolucion) result.push({ rowIndex: i + 2, resolucion });
@@ -185,7 +187,12 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 async function purgarVencidas(): Promise<void> {
   const todas = await leerTodas();
   const ahora = Date.now();
-  const vencidas = todas.filter(({ resolucion }) => ahora - resolucion.creadoEn > TTL_MS);
+  // Una resolución nacida de la cola es dueña de una unidad del contador y
+  // mantiene el correo UNREAD. Expirarla por tiempo dejaría el activo sin
+  // botón capaz de cerrarlo; solo caducan resoluciones ajenas a la cola.
+  const vencidas = todas.filter(({ resolucion }) =>
+    !resolucion.propuesta.deColaCorreo && ahora - resolucion.creadoEn > TTL_MS
+  );
 
   vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
   for (const { rowIndex } of vencidas) {
@@ -196,32 +203,72 @@ async function purgarVencidas(): Promise<void> {
 export async function guardarResolucionContacto(
   datos: Omit<ResolucionContactoPendiente, "id" | "creadoEn">
 ): Promise<ResolucionContactoPendiente> {
-  await purgarVencidas();
+  return conMutex(CLAVE_MUTEX, async () => {
+    await purgarVencidas();
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  const resolucion: ResolucionContactoPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+    const resolucion: ResolucionContactoPendiente = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:H`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [resolucionToRow(resolucion)] },
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A:H`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [resolucionToRow(resolucion)] },
+    });
+
+    return resolucion;
   });
+}
 
-  return resolucion;
+export interface DependenciasConsumoResolucionContacto {
+  leer: () => Promise<FilaResolucionContactoConIndice[]>;
+  eliminar: (rowIndex: number) => Promise<void>;
+}
+
+export async function consumirResolucionContactoUnaVez(
+  id: string,
+  dependencias: DependenciasConsumoResolucionContacto = {
+    leer: leerTodas,
+    eliminar: eliminarFila,
+  },
+  claveMutex = CLAVE_MUTEX
+): Promise<ResolucionContactoPendiente | undefined> {
+  return conMutex(claveMutex, async () => {
+    const todas = await dependencias.leer();
+    const match = todas.find(({ resolucion }) => resolucion.id === id);
+    if (!match) return undefined;
+
+    await dependencias.eliminar(match.rowIndex);
+    return match.resolucion;
+  });
 }
 
 export async function consumirResolucionContacto(id: string): Promise<ResolucionContactoPendiente | undefined> {
-  const todas = await leerTodas();
-  const match = todas.find(({ resolucion }) => resolucion.id === id);
-  if (!match) return undefined;
+  return consumirResolucionContactoUnaVez(id);
+}
 
-  await eliminarFila(match.rowIndex);
-  return match.resolucion;
+/** Repone el mismo id para que los botones ya publicados sigan funcionando. */
+export async function restaurarResolucionContacto(
+  resolucion: ResolucionContactoPendiente
+): Promise<ResolucionContactoPendiente> {
+  return conMutex(CLAVE_MUTEX, async () => {
+    const existente = (await leerTodas()).find(({ resolucion: actual }) => actual.id === resolucion.id)?.resolucion;
+    if (existente) return existente;
+    const restaurada = { ...resolucion, creadoEn: Date.now() };
+    await ensureTab();
+    await getClient().spreadsheets.values.append({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A:H`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [resolucionToRow(restaurada)] },
+    });
+    return restaurada;
+  });
 }
 
 /**
@@ -233,13 +280,15 @@ export async function consumirResolucionContacto(id: string): Promise<Resolucion
  * reciente.
  */
 export async function consumirResolucionContactoPorChat(chatId: number): Promise<ResolucionContactoPendiente | undefined> {
-  const todas = await leerTodas();
-  const delChat = todas.filter(({ resolucion }) => resolucion.chatId === chatId);
-  if (delChat.length === 0) return undefined;
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const delChat = todas.filter(({ resolucion }) => resolucion.chatId === chatId);
+    if (delChat.length === 0) return undefined;
 
-  const masReciente = delChat.reduce((a, b) => (a.resolucion.creadoEn >= b.resolucion.creadoEn ? a : b));
-  await eliminarFila(masReciente.rowIndex);
-  return masReciente.resolucion;
+    const masReciente = delChat.reduce((a, b) => (a.resolucion.creadoEn >= b.resolucion.creadoEn ? a : b));
+    await eliminarFila(masReciente.rowIndex);
+    return masReciente.resolucion;
+  });
 }
 
 /** Solo lectura (no consume) — para que el asistente conversacional sepa que hay una resolución de contacto pendiente ANTES de decidir qué hacer con el mensaje del usuario. */
@@ -264,17 +313,19 @@ export async function obtenerResolucionesContactoPorChat(chatId: number): Promis
  * enviarlo, igual que actualizarMessageIdGasto en gastoProposalSheet.ts.
  */
 export async function actualizarMessageIdResolucionContacto(id: string, messageId: number): Promise<void> {
-  const todas = await leerTodas();
-  const match = todas.find(({ resolucion }) => resolucion.id === id);
-  if (!match) return;
+  await conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const match = todas.find(({ resolucion }) => resolucion.id === id);
+    if (!match) return;
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!G${match.rowIndex}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[messageId]] },
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!G${match.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[messageId]] },
+    });
   });
 }

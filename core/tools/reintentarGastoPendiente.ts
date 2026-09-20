@@ -94,6 +94,17 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
         : "El dato dado no era suficiente (o no correspondía a lo que faltaba) — se le volvió a preguntar al usuario y la pregunta sigue pendiente.";
     }
 
+    if (resultado === "propuesta_duplicada" && pendiente.deColaCorreo) {
+      await avanzarColaCorreoSiActivo(chatId, {
+        threadId: pendiente.correoOrigen?.threadId,
+        mensajeId: pendiente.correoOrigen?.mensajeIdGmail,
+      }, `gasto-pendiente-datos:${pendiente.id}:resolver`);
+    }
+
+    if (resultado === "propuesta_pendiente_existente") {
+      return "La factura ya tiene una propuesta pendiente de decisión. No se creó otra y el correo seguirá sin leer hasta que esa propuesta se resuelva.";
+    }
+
     return resultado === "propuesta_duplicada"
       ? "Listo — la revisión encontró evidencia de que el gasto ya existe o está conciliado. No se creó ni se propuso otro gasto."
       : "Listo — con el dato que dio el usuario, ya se mandó la propuesta con botón para crear el gasto en Holded. No hace falta que lo repitas, ya se le mostró por Telegram.";
@@ -138,7 +149,10 @@ export const descartarGastoPendienteDatosTool: ToolDefinition = {
     await unlink(pendiente.rutaLocal).catch(() => {});
 
     if (pendiente.deColaCorreo) {
-      await avanzarColaCorreoSiActivo(chatId);
+      await avanzarColaCorreoSiActivo(chatId, {
+        threadId: pendiente.correoOrigen?.threadId,
+        mensajeId: pendiente.correoOrigen?.mensajeIdGmail,
+      }, `gasto-pendiente-datos:${pendiente.id}:resolver`);
     }
 
     return (

@@ -154,9 +154,22 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
   const hayCandidatos = opciones.numCandidatos !== undefined && opciones.numCandidatos > 0;
 
   if (hayCandidatos) {
-    for (let i = 0; i < (opciones.numCandidatos as number); i++) filas.push([boton(`adjuntar_${i}`)]);
-    filas.push([boton("nuevo")]);
-    filas.push([boton("ajustarmonto")]);
+    const esRecuperacion = propuesta.candidatos.some((c) => c.soportePendiente || c.conciliacionPendiente);
+    for (let i = 0; i < (opciones.numCandidatos as number); i++) {
+      const candidato = propuesta.candidatos[i];
+      const etiquetaRecuperacion = candidato?.soportePendiente
+        ? "Reintentar/verificar soporte del gasto creado"
+        : candidato?.conciliacionPendiente
+          ? "Retomar conciliación del gasto creado"
+          : undefined;
+      filas.push([boton(`adjuntar_${i}`, etiquetaRecuperacion)]);
+    }
+    // Cuando la compra ya fue creada, nunca ofrecer otra creación ni cambiar
+    // el monto: esta pantalla existe únicamente para completar su soporte.
+    if (!esRecuperacion) {
+      filas.push([boton("nuevo")]);
+      filas.push([boton("ajustarmonto")]);
+    }
   } else {
     const hayMovimientosAmbiguos = opciones.numMovimientosAmbiguos !== undefined && opciones.numMovimientosAmbiguos > 0;
     if (hayMovimientosAmbiguos) {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { conMutex } from "../utils/asyncMutex";
 
 export interface PendienteDesambiguacion {
   /**
@@ -22,6 +23,8 @@ export interface PendienteDesambiguacion {
    */
   id: string;
   chatId: number;
+  /** Telegram message id que demuestra que la pregunta llego a ser visible. Cero = outbox provisional. */
+  messageId: number;
   rutaLocal: string;
   nombreArchivoOriginal: string;
   mimeType?: string;
@@ -54,6 +57,7 @@ const TAB_NAME = "_pendientes_desambiguacion_docs";
 // cubre un día completo de trabajo (mismo criterio en todos los
 // "pendiente_*" de 30 min, ver pendienteCapturaEmpresaStore.ts).
 const TTL_MS = 24 * 60 * 60 * 1000;
+const CLAVE_MUTEX = `pendientes-desambiguacion:${TAB_NAME}`;
 
 const HEADERS = [
   "id",
@@ -68,6 +72,8 @@ const HEADERS = [
   "correoOrigenJSON",
   "empresa",
   "carpetasCandidatasJSON",
+  // Aditiva al final: conserva alineadas las filas historicas.
+  "messageId",
 ];
 
 function assertSheetId(): string {
@@ -105,6 +111,12 @@ async function ensureTab(): Promise<number> {
 
   if (existing?.properties?.sheetId != null) {
     tabGridId = existing.properties.sheetId;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A1:M1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [HEADERS] },
+    });
     return tabGridId;
   }
 
@@ -120,7 +132,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:L1`,
+    range: `${TAB_NAME}!A1:M1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -152,6 +164,7 @@ function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
     // esa fila, en vez de dejarlo vacío.
     id: row[0] ? String(row[0]) : `${row[1]}-${row[8]}`,
     chatId: Number(row[1]) || 0,
+    messageId: Number(row[12]) || 0,
     rutaLocal: row[2] ? String(row[2]) : "",
     nombreArchivoOriginal: row[3] ? String(row[3]) : "",
     mimeType: row[4] ? String(row[4]) : undefined,
@@ -179,6 +192,7 @@ function pendienteToRow(p: PendienteDesambiguacion): (string | number)[] {
     p.correoOrigen ? JSON.stringify(p.correoOrigen) : "",
     p.empresa ?? "",
     p.carpetasCandidatas && p.carpetasCandidatas.length > 0 ? JSON.stringify(p.carpetasCandidatas) : "",
+    p.messageId,
   ];
 }
 
@@ -194,7 +208,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:L10000`,
+    range: `${TAB_NAME}!A2:M10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -227,21 +241,18 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 }
 
 function pendienteVencido(p: PendienteDesambiguacion): boolean {
-  return Date.now() - p.creadoEn > TTL_MS;
+  return !p.correoOrigen?.deColaCorreo && Date.now() - p.creadoEn > TTL_MS;
 }
 
 async function purgarVencidas(todas: FilaConIndice[]): Promise<FilaConIndice[]> {
   const vencidas = todas.filter(({ pendiente }) => pendienteVencido(pendiente));
   const vigentes = todas.filter(({ pendiente }) => !pendienteVencido(pendiente));
 
-  vencidas
-    .slice()
-    .sort((a, b) => b.rowIndex - a.rowIndex)
-    .forEach(({ rowIndex }) => {
-      eliminarFila(rowIndex).catch((error) =>
-        console.error("[disambiguationStore] Error purgando fila vencida (no crítico):", error)
-      );
-    });
+  for (const { rowIndex } of vencidas.slice().sort((a, b) => b.rowIndex - a.rowIndex)) {
+    await eliminarFila(rowIndex).catch((error) =>
+      console.error("[disambiguationStore] Error purgando fila vencida (no crítico):", error)
+    );
+  }
 
   return vigentes;
 }
@@ -257,23 +268,67 @@ async function purgarVencidas(todas: FilaConIndice[]): Promise<FilaConIndice[]> 
 export async function guardarPendienteDesambiguacion(
   datos: Omit<PendienteDesambiguacion, "creadoEn" | "id">
 ): Promise<PendienteDesambiguacion> {
-  await purgarVencidas(await leerTodas());
+  return conMutex(CLAVE_MUTEX, async () => {
+    await purgarVencidas(await leerTodas());
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  const pendiente: PendienteDesambiguacion = { ...datos, id: randomUUID(), creadoEn: Date.now() };
+    const pendiente: PendienteDesambiguacion = { ...datos, id: randomUUID(), creadoEn: Date.now() };
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:L`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [pendienteToRow(pendiente)] },
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A:M`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [pendienteToRow(pendiente)] },
+    });
+
+    return pendiente;
   });
+}
 
-  return pendiente;
+/** Confirma la entrega del outbox solo despues de que Telegram devolvio un message_id real. */
+export async function actualizarMessageIdDesambiguacion(
+  id: string,
+  chatId: number,
+  messageId: number
+): Promise<PendienteDesambiguacion | undefined> {
+  if (!Number.isSafeInteger(messageId) || messageId <= 0) return undefined;
+  return conMutex(CLAVE_MUTEX, async () => {
+    const fila = (await leerTodas()).find(({ pendiente }) => pendiente.id === id && pendiente.chatId === chatId);
+    if (!fila) return undefined;
+    const actualizada = { ...fila.pendiente, messageId };
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A${fila.rowIndex}:M${fila.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [pendienteToRow(actualizada)] },
+    });
+    return actualizada;
+  });
+}
+
+/** Restaura el mismo pendiente tras un fallo, conservando los callback_data existentes. */
+export async function restaurarPendienteDesambiguacion(
+  pendiente: PendienteDesambiguacion
+): Promise<PendienteDesambiguacion> {
+  return conMutex(CLAVE_MUTEX, async () => {
+    const existente = (await leerTodas()).find(({ pendiente: actual }) =>
+      actual.id === pendiente.id && actual.chatId === pendiente.chatId)?.pendiente;
+    if (existente) return existente;
+    const restaurado = { ...pendiente, creadoEn: Date.now() };
+    await ensureTab();
+    await getClient().spreadsheets.values.append({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A:M`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [pendienteToRow(restaurado)] },
+    });
+    return restaurado;
+  });
 }
 
 /** Las pendientes de un chat, de más antigua a más reciente — orden que usan tanto el consumo por texto libre como la lectura para el resumen diario. */
@@ -289,14 +344,18 @@ function porAntiguedad(filas: FilaConIndice[], chatId: number): FilaConIndice[] 
  * propuesta vista). undefined si no hay ninguna o todas vencieron.
  */
 export async function consumirPendienteDesambiguacion(chatId: number): Promise<PendienteDesambiguacion | undefined> {
-  const todas = await leerTodas();
-  const vigentes = await purgarVencidas(todas);
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const vigentes = await purgarVencidas(todas);
 
-  const match = porAntiguedad(vigentes, chatId)[0];
-  if (!match) return undefined;
+    // Una fila messageId=0 es un outbox que nunca confirmo entrega. El texto
+    // libre del operador no puede aplicarse a una pregunta que no vio.
+    const match = porAntiguedad(vigentes, chatId).find(({ pendiente }) => pendiente.messageId > 0);
+    if (!match) return undefined;
 
-  await eliminarFila(match.rowIndex);
-  return match.pendiente;
+    await eliminarFila(match.rowIndex);
+    return match.pendiente;
+  });
 }
 
 /**
@@ -306,19 +365,25 @@ export async function consumirPendienteDesambiguacion(chatId: number): Promise<P
  * se filtrara o colisionara entre chats podría dejar que uno borre/avance la cola de otro).
  */
 export async function consumirPendienteDesambiguacionPorId(id: string, chatId: number): Promise<PendienteDesambiguacion | undefined> {
-  const todas = await leerTodas();
-  const vigentes = await purgarVencidas(todas);
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const vigentes = await purgarVencidas(todas);
 
-  const match = vigentes.find(({ pendiente }) => pendiente.id === id && pendiente.chatId === chatId);
-  if (!match) return undefined;
+    const match = vigentes.find(({ pendiente }) => pendiente.id === id && pendiente.chatId === chatId);
+    if (!match) return undefined;
 
-  await eliminarFila(match.rowIndex);
-  return match.pendiente;
+    await eliminarFila(match.rowIndex);
+    return match.pendiente;
+  });
 }
 
 /** Lectura sin consumir de TODAS las pendientes de este chat (más antigua primero) — para el resumen diario (ver core/jobs/resumenPendientesDiario.ts). */
 export async function obtenerPendienteDesambiguacionPorChat(chatId: number): Promise<PendienteDesambiguacion[]> {
-  const todas = await leerTodas();
-  const vigentes = await purgarVencidas(todas);
-  return porAntiguedad(vigentes, chatId).map(({ pendiente }) => pendiente);
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const vigentes = await purgarVencidas(todas);
+    return porAntiguedad(vigentes, chatId)
+      .map(({ pendiente }) => pendiente)
+      .filter((pendiente) => pendiente.messageId > 0);
+  });
 }

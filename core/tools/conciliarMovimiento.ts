@@ -129,6 +129,9 @@ export const conciliarMovimientoTool: ToolDefinition = {
           gastoId: gasto.id,
           moneda,
           proveedor,
+          // Esta herramienta parte de un gasto ya existente; no administra el soporte del correo.
+          // El campo solo gobierna el cierre de la cola de email, que aquí siempre es false.
+          comprobanteConfirmado: true,
         }));
 
       await sendTelegramMessageWithButtons(chatId, `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`, [

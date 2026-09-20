@@ -1,10 +1,25 @@
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { editTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { clasificarDocumento, type ClasificacionDocumento } from "./classifyFile";
-import { crearPropuestaClasificacion, actualizarMessageIdClasificacion } from "./classificationStore";
-import { guardarPendienteDesambiguacion, obtenerPendienteDesambiguacionPorChat } from "./disambiguationStore";
+import {
+  crearPropuestaClasificacion,
+  actualizarMessageIdClasificacion,
+  consumirPropuestaClasificacion,
+  obtenerPropuestaClasificacion,
+} from "./classificationStore";
+import {
+  actualizarMessageIdDesambiguacion,
+  consumirPendienteDesambiguacionPorId,
+  guardarPendienteDesambiguacion,
+  obtenerPendienteDesambiguacionPorChat,
+} from "./disambiguationStore";
 import { transcribirParaCaptura } from "./transcribeForCapture";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { ofrecerResponderCorreo } from "../gmail/emailCallbackHandler";
+import {
+  incrementarPendientesActivo,
+  revertirIncrementoPendientesActivo,
+  type IdentidadCorreoCola,
+} from "../gmail/colaRevisionStore";
 
 export interface ArchivoParaClasificar {
   chatId: number;
@@ -60,7 +75,58 @@ async function ofrecerCapturaYRespuesta(archivo: ArchivoParaClasificar, clasific
     transcripcion,
   ].join("\n");
 
-  await iniciarSeleccionEmpresaCaptura(archivo.chatId, contenidoCaptura, archivo.correoOrigen?.de ?? archivo.nombreArchivoOriginal);
+  const origenEsCola = archivo.correoOrigen?.deColaCorreo === true;
+  const identidadCola: Required<IdentidadCorreoCola> | undefined =
+    origenEsCola && archivo.correoOrigen?.threadId?.trim() && archivo.correoOrigen.mensajeIdGmail?.trim()
+      ? {
+          threadId: archivo.correoOrigen.threadId.trim(),
+          mensajeId: archivo.correoOrigen.mensajeIdGmail.trim(),
+        }
+      : undefined;
+
+  if (origenEsCola && !identidadCola) {
+    // La propuesta principal del documento sigue disponible. Las propuestas
+    // laterales se omiten si no pueden poseer una unidad ligada al correo
+    // exacto; nunca se las deja capaces de cerrar otro correo por chatId.
+    console.error("[processClassification] No se ofrecieron captura/respuesta: falta identidad exacta del correo de cola.");
+    return;
+  }
+
+  if (identidadCola) {
+    let capturaReservada = false;
+    try {
+      capturaReservada = await incrementarPendientesActivo(archivo.chatId, identidadCola);
+      if (!capturaReservada) {
+        console.error("[processClassification] El correo ya no era el activo; no se publicó la captura lateral.");
+      } else {
+        // iniciarSeleccionEmpresaCaptura solo resuelve después de publicar Y
+        // persistir. Si falla cualquiera de las dos partes se compensa abajo.
+        await iniciarSeleccionEmpresaCaptura(
+          archivo.chatId,
+          contenidoCaptura,
+          archivo.correoOrigen?.de ?? archivo.nombreArchivoOriginal,
+          undefined,
+          true,
+          identidadCola
+        );
+      }
+    } catch (error) {
+      if (capturaReservada) {
+        await revertirIncrementoPendientesActivo(archivo.chatId, identidadCola).catch((errorCompensando) =>
+          console.error("[processClassification] No se pudo compensar la reserva de captura fallida:", errorCompensando)
+        );
+      }
+      console.error("[processClassification] No se pudo publicar/persistir la captura lateral:", error);
+    }
+  } else {
+    await iniciarSeleccionEmpresaCaptura(
+      archivo.chatId,
+      contenidoCaptura,
+      archivo.correoOrigen?.de ?? archivo.nombreArchivoOriginal,
+      undefined,
+      false
+    );
+  }
 
   if (archivo.correoOrigen) {
     const contextoRespuesta =
@@ -68,14 +134,18 @@ async function ofrecerCapturaYRespuesta(archivo: ArchivoParaClasificar, clasific
       `como conocimiento consultable (además de archivarlo en Drive si se aprueba). Contenido transcrito: ` +
       `${transcripcion}. Escribe una respuesta breve y cálida confirmando que quedó registrado/anotado.`;
 
-    await ofrecerResponderCorreo(
+    const respuestaPublicada = await ofrecerResponderCorreo(
       archivo.chatId,
       archivo.correoOrigen.de,
       archivo.correoOrigen.asunto,
       archivo.correoOrigen.threadId,
       archivo.correoOrigen.messageIdHeader,
-      contextoRespuesta
+      contextoRespuesta,
+      identidadCola ?? null
     );
+    if (!respuestaPublicada) {
+      console.error("[processClassification] No se pudo publicar/persistir la oferta lateral de respuesta.");
+    }
   }
 }
 
@@ -130,6 +200,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
 
     const pendiente = await guardarPendienteDesambiguacion({
       chatId: archivo.chatId,
+      messageId: 0,
       rutaLocal: archivo.rutaLocal,
       nombreArchivoOriginal: archivo.nombreArchivoOriginal,
       mimeType: archivo.mimeType,
@@ -195,7 +266,34 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       );
     }
 
-    await sendTelegramMessageWithButtons(archivo.chatId, textoPregunta, filasBotonesDesambiguacion);
+    let messageIdPregunta = 0;
+    try {
+      messageIdPregunta = await sendTelegramMessageWithButtons(
+        archivo.chatId,
+        textoPregunta,
+        filasBotonesDesambiguacion
+      );
+      const entregada = await actualizarMessageIdDesambiguacion(
+        pendiente.id,
+        archivo.chatId,
+        messageIdPregunta
+      );
+      if (!entregada) throw new Error("La pregunta se publico, pero no se pudo confirmar su entrega durable.");
+    } catch (error) {
+      // La fila provisional nunca puede quedar haciendose pasar por una
+      // pregunta visible. El wrapper del correo publicara un reintento
+      // durable; si Telegram si alcanzo a mostrarla, se desactivan sus botones.
+      await consumirPendienteDesambiguacionPorId(pendiente.id, archivo.chatId).catch(() => undefined);
+      if (messageIdPregunta > 0) {
+        await editTelegramMessage(
+          archivo.chatId,
+          messageIdPregunta,
+          `⚠️ No pude confirmar esta pregunta de forma durable. El correo sigue sin leer y se reintentara sin usar estos botones.`,
+          []
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
     return;
   }
 
@@ -289,7 +387,24 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
   // seguro esté el clasificador de que NO es un gasto.
   filasBotones.splice(1, 0, [{ text: "💰 Es un gasto — procesarlo en Holded", callback_data: `doc_esgasto:${propuesta.id}` }]);
 
-  const messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, filasBotones);
-
-  await actualizarMessageIdClasificacion(propuesta.id, messageId);
+  let messageId = 0;
+  try {
+    messageId = await sendTelegramMessageWithButtons(archivo.chatId, textoPropuesta, filasBotones);
+    await actualizarMessageIdClasificacion(propuesta.id, messageId);
+    const confirmada = await obtenerPropuestaClasificacion(propuesta.id);
+    if (!confirmada || confirmada.messageId !== messageId) {
+      throw new Error("La propuesta se publico, pero no se pudo confirmar su entrega durable.");
+    }
+  } catch (error) {
+    await consumirPropuestaClasificacion(propuesta.id).catch(() => undefined);
+    if (messageId > 0) {
+      await editTelegramMessage(
+        archivo.chatId,
+        messageId,
+        `⚠️ No pude confirmar esta propuesta de forma durable. El correo sigue sin leer y se reintentara sin usar estos botones.`,
+        []
+      ).catch(() => undefined);
+    }
+    throw error;
+  }
 }

@@ -376,8 +376,16 @@ que hacer nada más.
   quieres que lo responda (Sí/No) antes de redactar nada.
 
 ### 📧 Correo (`asistente@wobagroup.com`)
-- Revisa el correo entrante cada hora (o al pedirlo con `/revisarcorreo`) y
-  clasifica cada mensaje:
+- Revisa el correo entrante cada dos horas en días hábiles y dos veces al día
+  los fines de semana (o de inmediato al pedirlo con `/revisarcorreo`). Primero
+  intenta completar los gastos seguros de forma automática y después deja en
+  una cola, del más antiguo al más nuevo, cada mensaje que necesita una decisión.
+  Solo envía dos informes automáticos consolidados al día para no llenar el chat.
+- La unidad de control es el mensaje concreto, aunque haya varios dentro del
+  mismo hilo. Solo queda leído después de completar y verificar todas sus
+  acciones; si falta un dato, una aprobación, un soporte o una conciliación,
+  conserva la marca de no leído.
+- Clasifica cada mensaje:
   - **Si trae un adjunto real, SIEMPRE lo procesa** (analiza el
     direccionamiento del correo — qué acción hay que tomar) y lo propone
     para Drive, o para Holded si resulta ser una factura/gasto (mismo flujo
@@ -598,7 +606,7 @@ riesgo.
 ### Comando especial
 - `/revisarcorreo` (o `revisarcorreo`, o `revisamail`/`/revisamail`) — le
   pide que revise el correo entrante en ese momento, sin esperar a la
-  revisión automática de cada hora.
+  siguiente revisión automática programada.
 
 ---
 

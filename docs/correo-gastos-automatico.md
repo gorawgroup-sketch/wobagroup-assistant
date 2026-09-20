@@ -2,6 +2,8 @@
 
 La entrada existente `revisarCorreoNuevo` (cron, comando y herramienta de revisión) ejecuta primero el pase automático y después sincroniza la cola manual. No se añade otro cron ni otra cola de correo. La revisión manual conserva su aprobación individual y el orden del mensaje pendiente más antiguo al más reciente.
 
+El pase programado se ejecuta cada dos horas en días hábiles y dos veces al día los fines de semana. Para evitar ruido, solo dos pases diarios publican un informe consolidado; las demás ejecuciones permanecen silenciosas salvo que necesiten comunicar un fallo accionable. Una orden manual responde siempre con su resultado.
+
 ## Cuándo se registra un gasto
 
 Se leen todos los mensajes sin leer, incluidos los archivados, excepto spam y papelera. Se descargan el cuerpo completo, el contexto del hilo y los adjuntos. Una lectura fallida, un formato que no se puede analizar o un límite de tamaño deja el mensaje pendiente; no se clasifica un fragmento como si fuera el correo completo.
@@ -23,7 +25,7 @@ La fase automática no mantiene reglas paralelas para crear compras. Reutiliza l
 
 Se crea una compra en borrador, se adjunta el comprobante original, se concilia contra el movimiento real y se releen los resultados. Se utiliza el procedimiento acordado: **después se convierte cada compra a ticket manualmente en Holded**. Las identidades técnicas de idempotencia se conservan en los registros internos y en las notas privadas necesarias para recuperación, nunca como etiquetas visibles. El resumen indica empresa, importe e ID de cada compra. La automatización no hace la conversión a ticket.
 
-Solo se marca leído el mensaje concreto cuando todo su contenido ha quedado atendido. Si contiene otras solicitudes, se conserva sin leer aunque su gasto ya esté creado y conciliado. Los mensajes no elegibles siguen en la cola manual. Los hilos con revisión manual o conversación automática activa se respetan.
+Solo se marca leído el mensaje concreto cuando todo su contenido ha quedado atendido y las operaciones externas quedaron verificadas. Si contiene otras solicitudes, se conserva sin leer aunque su gasto ya esté creado y conciliado. Los mensajes no elegibles siguen en la cola manual. La identidad exige conjuntamente `threadId` y `messageId`: una acción antigua de otro mensaje del mismo hilo nunca puede cerrar el mensaje activo. Los hilos con revisión manual o conversación automática activa se respetan.
 
 ## Coordinación, reintentos y memoria
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import type { ClasificacionDocumento } from "./classifyFile";
+import { conMutex } from "../utils/asyncMutex";
 
 export interface PropuestaClasificacion {
   id: string;
@@ -29,6 +30,7 @@ const TAB_NAME = "_propuestas_documentos";
 // de desarrollo activas) se perdía en silencio, sin que el usuario ni el
 // asistente se enteraran. Mismo patrón que gastoProposalSheet.ts.
 const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas, igual que antes
+const CLAVE_MUTEX = `propuestas-documentos:${TAB_NAME}`;
 
 const HEADERS = [
   "id",
@@ -193,7 +195,9 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 async function purgarVencidas(): Promise<void> {
   const todas = await leerTodas();
   const ahora = Date.now();
-  const vencidas = todas.filter(({ propuesta }) => ahora - propuesta.creadoEn > TTL_MS);
+  const vencidas = todas.filter(({ propuesta }) =>
+    !propuesta.correoOrigen?.deColaCorreo && ahora - propuesta.creadoEn > TTL_MS
+  );
 
   vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
   for (const { rowIndex } of vencidas) {
@@ -204,39 +208,43 @@ async function purgarVencidas(): Promise<void> {
 export async function crearPropuestaClasificacion(
   datos: Omit<PropuestaClasificacion, "id" | "creadoEn">
 ): Promise<PropuestaClasificacion> {
-  await purgarVencidas();
+  return conMutex(CLAVE_MUTEX, async () => {
+    await purgarVencidas();
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  await ensureTab();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
 
-  const propuesta: PropuestaClasificacion = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
+    const propuesta: PropuestaClasificacion = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:I`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [propuestaToRow(propuesta)] },
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A:I`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [propuestaToRow(propuesta)] },
+    });
+
+    return propuesta;
   });
-
-  return propuesta;
 }
 
 /** Actualiza el message_id real de Telegram tras enviar el mensaje con botones. */
 export async function actualizarMessageIdClasificacion(id: string, messageId: number): Promise<void> {
-  const todas = await leerTodas();
-  const match = todas.find(({ propuesta }) => propuesta.id === id);
-  if (!match) return;
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const match = todas.find(({ propuesta }) => propuesta.id === id);
+    if (!match) return;
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
+    const sheetId = assertSheetId();
+    const sheets = getClient();
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!G${match.rowIndex}`,
-    valueInputOption: "RAW",
-    requestBody: { values: [[messageId]] },
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!G${match.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[messageId]] },
+    });
   });
 }
 
@@ -245,13 +253,36 @@ export async function actualizarMessageIdClasificacion(id: string, messageId: nu
  * quedar pendiente). También purga cualquier propuesta vencida.
  */
 export async function consumirPropuestaClasificacion(id: string): Promise<PropuestaClasificacion | undefined> {
-  await purgarVencidas();
-  const todas = await leerTodas();
-  const match = todas.find(({ propuesta }) => propuesta.id === id);
-  if (!match) return undefined;
+  return conMutex(CLAVE_MUTEX, async () => {
+    await purgarVencidas();
+    const todas = await leerTodas();
+    const match = todas.find(({ propuesta }) => propuesta.id === id);
+    if (!match) return undefined;
 
-  await eliminarFila(match.rowIndex);
-  return match.propuesta;
+    await eliminarFila(match.rowIndex);
+    return match.propuesta;
+  });
+}
+
+/** Repone el mismo id tras un fallo; así los botones existentes vuelven a ser válidos sin duplicar decisiones. */
+export async function restaurarPropuestaClasificacion(
+  propuesta: PropuestaClasificacion
+): Promise<PropuestaClasificacion> {
+  return conMutex(CLAVE_MUTEX, async () => {
+    const existente = (await leerTodas()).find(({ propuesta: actual }) => actual.id === propuesta.id)?.propuesta;
+    if (existente) return existente;
+    const restaurada = { ...propuesta, creadoEn: Date.now() };
+    const sheets = getClient();
+    await ensureTab();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!A:I`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [propuestaToRow(restaurada)] },
+    });
+    return restaurada;
+  });
 }
 
 /**
@@ -261,14 +292,16 @@ export async function consumirPropuestaClasificacion(id: string): Promise<Propue
  * Si hay varias pendientes del mismo chat, consume la más reciente.
  */
 export async function consumirPropuestaClasificacionPorChat(chatId: number): Promise<PropuestaClasificacion | undefined> {
-  await purgarVencidas();
-  const todas = await leerTodas();
-  const delChat = todas.filter(({ propuesta }) => propuesta.chatId === chatId);
-  if (delChat.length === 0) return undefined;
+  return conMutex(CLAVE_MUTEX, async () => {
+    await purgarVencidas();
+    const todas = await leerTodas();
+    const delChat = todas.filter(({ propuesta }) => propuesta.chatId === chatId);
+    if (delChat.length === 0) return undefined;
 
-  const masReciente = delChat.reduce((a, b) => (a.propuesta.creadoEn >= b.propuesta.creadoEn ? a : b));
-  await eliminarFila(masReciente.rowIndex);
-  return masReciente.propuesta;
+    const masReciente = delChat.reduce((a, b) => (a.propuesta.creadoEn >= b.propuesta.creadoEn ? a : b));
+    await eliminarFila(masReciente.rowIndex);
+    return masReciente.propuesta;
+  });
 }
 
 /**
@@ -306,5 +339,10 @@ export async function obtenerPropuestaClasificacionPendientePorChat(chatId: numb
  */
 export async function obtenerPropuestasClasificacionPorChat(chatId: number): Promise<PropuestaClasificacion[]> {
   const todas = await leerTodas();
-  return todas.filter(({ propuesta }) => propuesta.chatId === chatId).map(({ propuesta }) => propuesta);
+  // messageId=0 es solo un outbox provisional: hasta que Telegram confirme
+  // la entrega no existe una accion visible que pueda justificar mantener el
+  // correo bloqueado ni silenciar al watchdog.
+  return todas
+    .filter(({ propuesta }) => propuesta.chatId === chatId && propuesta.messageId > 0)
+    .map(({ propuesta }) => propuesta);
 }

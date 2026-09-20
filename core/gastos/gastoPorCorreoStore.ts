@@ -20,6 +20,7 @@ const HEADERS = [
   "moneda",
   "fecha",
   "concepto",
+  "completado",
 ];
 const NUM_COLS = HEADERS.length;
 // 3 años — deliberadamente mucho más largo que el TTL de 24-48h de los "pendiente_*" normales: esto
@@ -35,6 +36,12 @@ export interface GastoPorCorreo {
   empresa: Empresa;
   creadoEn: number;
   identidad?: IdentidadGastoProcesado;
+  /**
+   * true cuando soporte y conciliación (o decisión humana de no conciliar) terminaron;
+   * false para registros nuevos abiertos; undefined identifica filas legacy creadas antes de
+   * persistir este estado y obliga a comprobar Holded sin inventar una conclusión.
+   */
+  completado?: boolean;
 }
 
 export interface CoincidenciaGastoProcesado {
@@ -43,7 +50,7 @@ export interface CoincidenciaGastoProcesado {
 }
 
 function filaARegistro(valores: string[]): GastoPorCorreo | undefined {
-  const [mensajeIdGmail, attachmentId, gastoId, empresa, creadoEnRaw, huellaContenido, numeroDocumento, proveedor, montoRaw, moneda, fecha, concepto] = valores;
+  const [mensajeIdGmail, attachmentId, gastoId, empresa, creadoEnRaw, huellaContenido, numeroDocumento, proveedor, montoRaw, moneda, fecha, concepto, completadoRaw] = valores;
   const creadoEn = Number(creadoEnRaw) || 0;
   if (!mensajeIdGmail || !gastoId || !(["WOBA", "EWORKS", "Footprint"] as string[]).includes(empresa)) return undefined;
   const monto = montoRaw !== "" ? Number(montoRaw) : undefined;
@@ -63,6 +70,7 @@ function filaARegistro(valores: string[]): GastoPorCorreo | undefined {
     empresa: empresa as Empresa,
     creadoEn,
     identidad,
+    completado: completadoRaw === "true" ? true : completadoRaw === "false" ? false : undefined,
   };
 }
 
@@ -80,6 +88,7 @@ function registroAFila(registro: GastoPorCorreo): (string | number)[] {
     registro.identidad?.moneda ?? "",
     registro.identidad?.fecha ?? "",
     registro.identidad?.concepto ?? "",
+    registro.completado === true ? "true" : registro.completado === false ? "false" : "",
   ];
 }
 
@@ -113,6 +122,7 @@ export async function registrarGastoDesdeCorreo(datos: {
   gastoId: string;
   empresa: Empresa;
   identidad?: IdentidadGastoProcesado;
+  completado?: boolean;
 }): Promise<void> {
   if (!datos.mensajeIdGmail || !datos.gastoId) return;
   // Hallazgo real de auditoría: sin esta purga, esta tabla solo crece — la creación de gastos desde
@@ -131,6 +141,7 @@ export async function registrarGastoDesdeCorreo(datos: {
     empresa: datos.empresa,
     creadoEn: Date.now(),
     identidad: datos.identidad,
+    completado: datos.completado === true,
   };
   const existentes = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   const mismaResolucion = existentes.find(
@@ -144,10 +155,42 @@ export async function registrarGastoDesdeCorreo(datos: {
     await actualizarFila(TAB_NAME, mismaResolucion.rowIndex, NUM_COLS, registroAFila({
       ...registro,
       creadoEn: anterior?.creadoEn || registro.creadoEn,
+      completado: anterior?.completado === true || registro.completado,
     }));
     return;
   }
   await agregarFila(TAB_NAME, NUM_COLS, HEADERS, registroAFila(registro));
+}
+
+/**
+ * Cierra el registro intermedio creado al confirmar el POST. Busca por
+ * Gmail+gasto (sin exigir partId, que los callbacks de conciliación ya no
+ * necesitan conservar) y actualiza todas las coincidencias de forma segura.
+ */
+export async function marcarGastoDesdeCorreoCompletado(datos: {
+  mensajeIdGmail: string;
+  gastoId?: string;
+  attachmentId?: string;
+}): Promise<number> {
+  if (!datos.mensajeIdGmail || (!datos.gastoId && datos.attachmentId === undefined)) return 0;
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const coincidencias = filas
+    .map((fila) => ({ fila, registro: filaARegistro(fila.valores) }))
+    .filter(({ registro }) =>
+      registro?.mensajeIdGmail === datos.mensajeIdGmail &&
+      (datos.gastoId === undefined || registro.gastoId === datos.gastoId) &&
+      (datos.attachmentId === undefined || (registro.attachmentId ?? "") === datos.attachmentId)
+    );
+  for (const { fila, registro } of coincidencias) {
+    if (!registro || registro.completado) continue;
+    await actualizarFila(
+      TAB_NAME,
+      fila.rowIndex,
+      NUM_COLS,
+      registroAFila({ ...registro, completado: true })
+    );
+  }
+  return coincidencias.length;
 }
 
 async function purgarVencidos(): Promise<void> {

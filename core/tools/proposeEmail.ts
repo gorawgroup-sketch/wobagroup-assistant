@@ -1,5 +1,10 @@
-import { crearBorradorCorreo, actualizarMessageIdBorrador } from "../gmail/emailDraftStore";
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import {
+  crearBorradorCorreo,
+  actualizarMessageIdBorrador,
+  consumirBorradorCorreo,
+  obtenerBorradorCorreo,
+} from "../gmail/emailDraftStore";
+import { editTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -75,15 +80,34 @@ export const proponerEnvioCorreoTool: ToolDefinition = {
 
     const texto = [`✉️ Borrador de correo para ${destinatario}:`, `Asunto: ${asunto}`, "", cuerpo].join("\n");
 
-    const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-      [
-        { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
-        { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
-      ],
-      [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
-    ]);
-
-    await actualizarMessageIdBorrador(borrador.id, messageId);
+    let messageId = 0;
+    try {
+      messageId = await sendTelegramMessageWithButtons(chatId, texto, [
+        [
+          { text: "📤 Enviar así", callback_data: `draft_enviar:${borrador.id}` },
+          { text: "✏️ Editar antes de enviar", callback_data: `draft_editar:${borrador.id}` },
+        ],
+        [{ text: "❌ No enviar", callback_data: `draft_cancelar:${borrador.id}` }],
+      ]);
+      await actualizarMessageIdBorrador(borrador.id, messageId);
+      const confirmado = await obtenerBorradorCorreo(borrador.id);
+      if (!confirmado || confirmado.messageId !== messageId) {
+        throw new Error("El borrador se mostró, pero su entrega no quedó confirmada en el estado durable.");
+      }
+    } catch (error) {
+      // Sin confirmación durable, la fila provisional no puede quedar como
+      // una acción entregada ni conservar botones potencialmente huérfanos.
+      await consumirBorradorCorreo(borrador.id).catch(() => undefined);
+      if (messageId > 0) {
+        await editTelegramMessage(
+          chatId,
+          messageId,
+          "⚠️ Este borrador no quedó guardado de forma segura y sus botones fueron desactivados. Vuelve a iniciar la acción para reintentarlo.",
+          []
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
 
     return "Borrador preparado y mostrado al usuario por Telegram con botones para aprobar, editar o cancelar el envío.";
   },

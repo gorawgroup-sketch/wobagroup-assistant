@@ -4,7 +4,11 @@ import { getGmailClient, getGmailModifyClient } from "../client";
 import { obtenerActivoActual } from "../colaRevisionStore";
 import { listarHilosAutorespuesta } from "../hiloAutorespuestaStore";
 import { obtenerTodosLosAlias } from "../../gastos/proveedorAliasSheet";
-import { buscarGastoDesdeCorreo, registrarGastoDesdeCorreo } from "../../gastos/gastoPorCorreoStore";
+import {
+  buscarGastoDesdeCorreo,
+  marcarGastoDesdeCorreoCompletado,
+  registrarGastoDesdeCorreo,
+} from "../../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../../gastos/verificarGastoPorCorreo";
 import { buscarPropuestaGastoPendiente, obtenerPropuestasGastoPorChat } from "../../gastos/gastoProposalSheet";
 import { obtenerPropuestasAccionCorreoPorChat } from "../emailActionStore";
@@ -86,13 +90,24 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     recuperarCreacion: op => holded.recuperarCreacion(op),
     registrarFinalizada: async op => {
       const attachmentId = op.plan.recibo.fuente === "cuerpo" ? undefined : op.plan.recibo.fuente;
-      if (!await buscarGastoDesdeCorreo(op.plan.correo.id, attachmentId)) {
+      const existente = await buscarGastoDesdeCorreo(op.plan.correo.id, attachmentId);
+      if (!existente) {
         if (op.plan.cuentaId) {
           await registrarAsignacionCuenta({ gastoId: op.compraId!, empresa: op.plan.empresa,
             proveedor: op.plan.recibo.proveedor, cuentaIdAsignada: op.plan.cuentaId });
         }
         await registrarGastoDesdeCorreo({ mensajeIdGmail: op.plan.correo.id, attachmentId,
-          gastoId: op.compraId!, empresa: op.plan.empresa });
+          gastoId: op.compraId!, empresa: op.plan.empresa, completado: true });
+      } else if (existente.gastoId === op.compraId && existente.empresa === op.plan.empresa) {
+        // Una caída pudo dejar la fila intermedia/legacy antes de que la
+        // operación durable terminara. La creación, el soporte y la
+        // conciliación ya fueron verificados arriba; cerrar esa misma fila
+        // evita que la próxima lectura la trate como incompleta.
+        await marcarGastoDesdeCorreoCompletado({
+          mensajeIdGmail: op.plan.correo.id,
+          gastoId: op.compraId!,
+          attachmentId,
+        });
       }
     },
     crear: op => holded.crear(op), verificarCreacion: op => holded.verificarCreacion(op),

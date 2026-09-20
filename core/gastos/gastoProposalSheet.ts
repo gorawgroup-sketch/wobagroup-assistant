@@ -383,7 +383,12 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
 async function purgarVencidas(): Promise<void> {
   const todas = await leerTodas();
   const ahora = Date.now();
-  const vencidas = todas.filter(({ propuesta }) => ahora - propuesta.creadoEn > TTL_MS);
+  // Una propuesta que posee una decisión de la cola mantiene el correo
+  // UNREAD hasta que el operador la resuelva. Nunca puede desaparecer por
+  // TTL: hacerlo dejaría el activo sin botones y el watchdog lo reprocesaría.
+  const vencidas = todas.filter(({ propuesta }) =>
+    propuesta.deColaCorreo !== true && ahora - propuesta.creadoEn > TTL_MS
+  );
 
   vencidas.sort((a, b) => b.rowIndex - a.rowIndex);
   for (const { rowIndex } of vencidas) {
@@ -651,7 +656,13 @@ export async function actualizarMovimientosAmbiguosPropuestaGasto(id: string, mo
  * el lugar, deja la propuesta viva para que "Crear gasto" (más tarde, en la
  * misma aprobación o después) la relea ya corregida.
  */
-export async function actualizarClasificacionPropuestaGasto(id: string, empresa: Empresa, concepto: string): Promise<boolean> {
+export async function actualizarClasificacionPropuestaGasto(
+  id: string,
+  empresa: Empresa,
+  concepto: string,
+  cuentaId?: string,
+  cuentaTags?: string[]
+): Promise<boolean> {
   const todas = await leerTodas();
   const match = todas.find(({ propuesta }) => propuesta.id === id);
   if (!match) return false;
@@ -660,15 +671,26 @@ export async function actualizarClasificacionPropuestaGasto(id: string, empresa:
   const sheets = getClient();
   const actual = match.propuesta;
 
-  await sheets.spreadsheets.values.update({
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!B${match.rowIndex}:G${match.rowIndex}`,
-    valueInputOption: "RAW",
-    // B..G en orden: empresa, proveedor, monto, moneda, fecha, concepto —
-    // Sheets reemplaza el rango COMPLETO que se le pasa (no solo las celdas
-    // que cambian), así que se relee la fila actual para no pisar
-    // proveedor/monto/moneda/fecha con un update parcial.
-    requestBody: { values: [[empresa, actual.proveedor, actual.monto, actual.moneda, actual.fecha, concepto]] },
+    requestBody: {
+      valueInputOption: "RAW",
+      data: [
+        {
+          // B..G en orden: empresa, proveedor, monto, moneda, fecha, concepto —
+          // se relee la fila actual para no pisar los campos intermedios.
+          range: `${TAB_NAME}!B${match.rowIndex}:G${match.rowIndex}`,
+          values: [[empresa, actual.proveedor, actual.monto, actual.moneda, actual.fecha, concepto]],
+        },
+        {
+          // La clasificación contable se persiste junto con la corrección.
+          // Si se actualizara solo B:G, una creación posterior vería empresa
+          // y concepto nuevos junto con la cuenta/tags viejos.
+          range: `${TAB_NAME}!P${match.rowIndex}:Q${match.rowIndex}`,
+          values: [[cuentaId ?? actual.cuentaId ?? "", JSON.stringify(cuentaTags ?? actual.cuentaTags ?? [])]],
+        },
+      ],
+    },
   });
   return true;
 }
@@ -685,6 +707,41 @@ export async function consumirPropuestaGasto(id: string): Promise<PropuestaGasto
 
     await eliminarFila(match.rowIndex);
     return match.propuesta;
+  });
+}
+
+/**
+ * Repone exactamente la misma propuesta después de un fallo parcial ocurrido
+ * tras consumir sus botones. Conserva el id porque forma parte de las claves
+ * idempotentes de creación y adjunto: generar otro id podría permitir una
+ * segunda compra para el mismo correo. Se renueva únicamente el TTL.
+ */
+export async function restaurarPropuestaGasto(propuesta: PropuestaGasto): Promise<PropuestaGasto> {
+  return conMutex(TAB_NAME, async () => {
+    await purgarVencidas();
+    const existente = (await leerTodas()).find(({ propuesta: actual }) => actual.id === propuesta.id)?.propuesta;
+    if (existente) return existente;
+
+    const restaurada: PropuestaGasto = { ...propuesta, creadoEn: Date.now(), seleccionAcciones: [] };
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
+    for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
+      const fila = await siguienteFilaLibre();
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}:Z${fila}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [propuestaToRow(restaurada)] },
+      });
+      const verificacion = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: `${TAB_NAME}!A${fila}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      if (verificacion.data.values?.[0]?.[0] === restaurada.id) return restaurada;
+    }
+    throw new Error(`No se pudo restaurar la propuesta ${propuesta.id} tras ${MAX_INTENTOS_ESCRITURA} intentos.`);
   });
 }
 
