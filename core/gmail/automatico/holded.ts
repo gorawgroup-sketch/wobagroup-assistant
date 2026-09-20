@@ -1,6 +1,6 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
-import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, nombresProveedorCompatibles, normalizar, normalizarProveedorComparable,
-  proveedorEnDescripcion, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
+import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, nombresProveedorCompatibles, nombresProveedorEquivalentes,
+  normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
   type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
@@ -86,7 +86,7 @@ export class HoldedAuto {
   }
   async evidencias(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
-    if (!new Set(["ticket", "recibo"]).has(r.tipo) || r.confianza === "baja" || !fechaValida(r.fecha)) return e;
+    if (!new Set(["ticket", "recibo"]).has(r.tipo) || !fechaValida(r.fecha)) return e;
     if (r.empresa !== "desconocida") {
       return this.empresas.includes(r.empresa) ? this.evidenciasEmpresa(c, r) : e;
     }
@@ -106,7 +106,9 @@ export class HoldedAuto {
       (proveedorEnDescripcion(r.proveedor, candidatas[0].descripcion) || proveedorEnDescripcion(e.contacto.nombre, candidatas[0].descripcion));
     const importe = centimos(r.equivalente?.monto ?? r.monto);
     const exacta = candidatas.length === 1 && candidatas[0].fecha === r.fecha && -candidatas[0].centimos === importe;
-    const proveedorVerificado = (e.contacto.exacto === true || (e.contacto.metodo === "aproximado_unico" && proveedorBanco)) &&
+    const nombreFuerteConImporteExacto = e.contacto.metodo === "aproximado_unico" && (e.contacto.similitud ?? 0) >= 0.5 && exacta;
+    const proveedorVerificado = (e.contacto.exacto === true ||
+      (e.contacto.metodo === "aproximado_unico" && (proveedorBanco || nombreFuerteConImporteExacto))) &&
       (exacta || proveedorBanco);
     if (!proveedorVerificado) return false;
     return candidatas.length === 1 && new Set(candidatas.map(m => `${m.cuentaId}/${m.id}`)).size === 1;
@@ -114,24 +116,46 @@ export class HoldedAuto {
   private async evidenciasEmpresa(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
     const empresa = r.empresa as EmpresaAuto;
-    const contactos = await this.listarEstatico(empresa, "/contacts");
+    const contactos = (await this.listarEstatico(empresa, "/contacts"))
+      .filter(x => x.archived !== true && typeof x.id === "string" && typeof x.name === "string");
     const alias = await this.memoria.alias(empresa, r.proveedor);
     const directos = contactos.filter(x => typeof x.name === "string" && normalizarProveedorExacto(x.name) === normalizarProveedorExacto(r.proveedor));
     const idsAlias = new Set(alias.map(x => x.contactId));
-    // Alias contradictorios nunca se reducen al primer match de Sheets.
-    const encontrados = idsAlias.size === 1 && directos.length <= 1
-      ? contactos.filter(x => idsAlias.has(String(x.id)) && (directos.length === 0 || directos[0].id === x.id))
-      : idsAlias.size === 0 ? directos : [];
-    let seleccionados = encontrados;
-    let metodo: NonNullable<EvidenciaAuto["contacto"]>["metodo"] = idsAlias.size === 1 ? "alias_confirmado" : "nombre_exacto";
-    if (seleccionados.length === 0 && idsAlias.size === 0 && directos.length === 0) {
-      const aproximados = contactos.filter(x => typeof x.name === "string" && nombresProveedorCompatibles(x.name, r.proveedor));
-      if (aproximados.length === 1) { seleccionados = aproximados; metodo = "aproximado_unico"; }
+    let seleccionados: Registro[] = [];
+    let metodo: NonNullable<EvidenciaAuto["contacto"]>["metodo"] = "nombre_exacto";
+    // El nombre exacto actual de Holded prevalece sobre un alias antiguo. Si hay varios contactos
+    // idénticos, un alias confirmado puede desambiguar, pero nunca se elige el primero al azar.
+    if (directos.length === 1) seleccionados = directos;
+    else if (idsAlias.size === 1) {
+      const porAlias = contactos.filter(x => idsAlias.has(String(x.id)));
+      if (porAlias.length === 1 && (directos.length === 0 || directos.some(x => x.id === porAlias[0].id))) {
+        seleccionados = porAlias; metodo = "alias_confirmado";
+      } else e.motivoProveedor = "alias_contradictorio";
+    } else if (idsAlias.size > 1) e.motivoProveedor = "alias_contradictorio";
+    if (!seleccionados.length && directos.length > 1) e.motivoProveedor = "coincidencia_ambigua";
+    if (!seleccionados.length && directos.length === 0 && idsAlias.size <= 1) {
+      const equivalentes = contactos.filter(x => nombresProveedorEquivalentes(String(x.name), r.proveedor));
+      if (equivalentes.length === 1) { seleccionados = equivalentes; metodo = "nombre_equivalente"; }
+      else if (equivalentes.length > 1) e.motivoProveedor = "coincidencia_ambigua";
     }
+    if (!seleccionados.length && !e.motivoProveedor) {
+      const ranking = contactos.map(x => ({ contacto: x, similitud: similitudProveedor(String(x.name), r.proveedor),
+        compatible: nombresProveedorCompatibles(String(x.name), r.proveedor) }))
+        .filter(x => x.compatible || x.similitud >= 0.5).sort((a, b) => b.similitud - a.similitud);
+      const primera = ranking[0], segunda = ranking[1];
+      if (primera && (!segunda || primera.similitud - segunda.similitud >= 0.12)) {
+        seleccionados = [primera.contacto]; metodo = "aproximado_unico";
+      } else if (ranking.length) e.motivoProveedor = "coincidencia_ambigua";
+    }
+    e.candidatosProveedor = contactos.map(x => ({ id: String(x.id), nombre: String(x.name),
+      similitud: similitudProveedor(String(x.name), r.proveedor) }))
+      .sort((a, b) => b.similitud - a.similitud).slice(0, 3);
     if (seleccionados.length === 1 && typeof seleccionados[0].name === "string" &&
       !/sin identificar|desconocido|unknown|unidentified/.test(normalizar(seleccionados[0].name))) {
-      e.contacto = { id: texto(seleccionados[0].id), nombre: seleccionados[0].name, exacto: metodo !== "aproximado_unico", metodo };
+      e.contacto = { id: texto(seleccionados[0].id), nombre: seleccionados[0].name,
+        exacto: metodo !== "aproximado_unico", metodo, similitud: similitudProveedor(seleccionados[0].name, r.proveedor) };
     }
+    if (!e.contacto && !e.motivoProveedor) e.motivoProveedor = "sin_coincidencias";
     if (await this.memoria.duplicadoInterno(c, r)) e.duplicados.push("historial_o_propuesta_pendiente");
     const fecha = new Date(`${r.fecha}T00:00:00Z`);
     const formato = (d: Date) => d.toISOString().slice(0, 10);

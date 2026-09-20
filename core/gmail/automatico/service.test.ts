@@ -56,6 +56,17 @@ test("el informe desglosa automatizaciones por empresa y conserva el detalle ver
   assert.match(texto, /Automatizados por empresa: WOBA: 2; Footprint: 1\./);
   assert.match(texto, /• Footprint: 20\.00 USD — compra f-1/);
 });
+test("el informe explica el proveedor y contacto de los candidatos pendientes", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 0, simulados: 0, gastos: [],
+    pendientes: [{ mensajeId: "m1", asunto: "Ticket de supermercado", motivos: ["proveedor_no_verificado"],
+      detalles: [{ proveedor: "Delhaize", empresa: "Footprint", monto: 64.71, moneda: "EUR",
+        contacto: "Louis Delhaize Brugge", metodoContacto: "aproximado_unico",
+        motivos: ["proveedor_no_verificado"] }] }],
+  });
+  assert.match(texto, /Detalle de candidatos pendientes/);
+  assert.match(texto, /Delhaize, 64\.71 EUR, Footprint/);
+  assert.match(texto, /contacto Louis Delhaize Brugge \(aproximado_unico\)/);
+});
 test("simulación analiza y audita sin reservas, escrituras ni marcado leído", async () => {
   const e = escenario(); const r = await e.service.revisar({ ...configFixture, modo: "simulate" });
   assert.equal(r.simulados, 1); assert.equal(e.ops.size, 0);
@@ -174,17 +185,18 @@ test("interruptor apagado entre lectura y ejecución impide escrituras", async (
   await e.service.revisar(configFixture); assert.equal(e.llamadas.crear, 0);
 });
 
-test("una creación incierta no acumula reservas que impidan recuperar la primera", async () => {
+test("una creación incierta no bloquea otro gasto con recursos distintos de la misma empresa", async () => {
   const e = escenario();
+  e.a.recibos[0].numero = undefined;
   e.correos.push({ ...correoFixture("m2"), cuerpo: "otro comprobante", huella: hash("otro") });
   e.puerto.evidencias = async c => {
     const ev = evidenciaFixture(); ev.movimientos[0].id = `b-${c.id}`; return ev;
   };
   e.puerto.crear = async () => { e.llamadas.crear++; throw new Error("timeout"); };
   const r = await e.service.revisar(configFixture);
-  assert.equal(e.ops.size, 1);
-  assert.equal(e.llamadas.crear, 1);
-  assert.ok(r.pendientes.some(p => p.motivos.includes("empresa_con_operacion_pendiente_de_verificar")));
+  assert.equal(e.ops.size, 2);
+  assert.equal(e.llamadas.crear, 2);
+  assert.equal(r.pendientes.some(p => p.motivos.includes("empresa_con_operacion_pendiente_de_verificar")), false);
 });
 
 test("reanuda tras apagar entre compra y adjunto sin duplicar la compra", async () => {

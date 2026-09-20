@@ -114,6 +114,15 @@ test("un proveedor aproximado único requiere confirmación en el descriptor ban
   e.movimientos[0].descripcion = "Comercio distinto";
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
 });
+test("un nombre aproximado fuerte y único se verifica con importe y fecha bancarios exactos", () => {
+  const r = reciboFixture(); r.proveedor = "Delhaize";
+  const e = evidenciaFixture();
+  e.contacto = { id: "p1", nombre: "Louis Delhaize Brugge", exacto: false, metodo: "aproximado_unico", similitud: 0.52 };
+  e.movimientos[0].descripcion = "COMERCIO 38192";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, true);
+  e.movimientos[0].fecha = "2026-09-17";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
+});
 test("el descriptor del proveedor desempata dos movimientos cercanos", () => {
   const e = evidenciaFixture();
   e.movimientos.push({ ...e.movimientos[0], id: "otro", descripcion: "Otro comercio", fecha: "2026-09-17" });
