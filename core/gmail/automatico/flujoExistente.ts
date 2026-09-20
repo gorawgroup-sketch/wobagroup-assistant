@@ -7,6 +7,38 @@ import { conTiempoMaximo } from "../../utils/asyncTimeout";
 import type { FlujoGastoExistente } from "./holded";
 import { VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
 
+export interface MonedaDocumentoAuto {
+  moneda: string;
+  monto: number;
+  tasaCambio?: number;
+}
+
+/**
+ * El documento se registra siempre por el importe y la moneda impresos en
+ * el comprobante. El equivalente en EUR sirve para encontrar y conciliar el
+ * movimiento bancario, y aporta una conversión exacta cuando el propio
+ * recibo la demuestra. Nunca se reutiliza el cargo bancario como precio de
+ * una compra en moneda extranjera.
+ */
+export function monedaDocumentoAuto(recibo: ReciboAuto): MonedaDocumentoAuto {
+  const moneda = recibo.moneda.toUpperCase().trim();
+  if (!/^[A-Z]{3}$/.test(moneda) || !Number.isFinite(recibo.monto) || recibo.monto <= 0) {
+    throw new Error("importe_o_moneda_nativa_invalida");
+  }
+  if (moneda === "EUR") return { moneda, monto: recibo.monto };
+
+  const equivalente = recibo.equivalente;
+  if (equivalente?.moneda.toUpperCase().trim() !== "EUR" ||
+      !Number.isFinite(equivalente.monto) || equivalente.monto <= 0) {
+    return { moneda, monto: recibo.monto };
+  }
+  const tasaCambio = Number((recibo.monto / equivalente.monto).toFixed(6));
+  if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) {
+    throw new Error("tasa_cambio_recibo_invalida");
+  }
+  return { moneda, monto: recibo.monto, tasaCambio };
+}
+
 async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   if (recibo.empresa === "desconocida") return undefined;
   const textoClasificacion = [recibo.concepto, recibo.contextoClasificacion].filter(Boolean).join(" · ");
@@ -54,19 +86,24 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
     crear: async (op) => {
       const cuenta = await asegurarClasificacion(op);
       const p = op.plan;
+      const documento = monedaDocumentoAuto(p.recibo);
       const resultado = await crearGastoHolded(p.empresa, { contactId: p.contactoId, fecha: p.recibo.fecha,
         descripcion: p.recibo.concepto,
-        lineas: [{ concepto: p.recibo.concepto, base: p.totalCentimos / 100, tipoIvaPct: 0,
+        lineas: [{ concepto: p.recibo.concepto, base: documento.monto, tipoIvaPct: 0,
           tratamientoFiscal: "inversion_sujeto_pasivo" }], cuentaId: cuenta.cuentaId, tags: cuenta.tags,
-        moneda: p.movimiento.moneda, numeroDocumento: p.recibo.numero },
+        moneda: documento.moneda, tasaCambio: documento.tasaCambio, numeroDocumento: p.recibo.numero },
       { idempotencyKey: `correo-auto:${op.id}`, proceso: "correo_gasto_automatico" });
       return resultado.id;
     },
     corregir: async (op, compraId) => {
       const cuenta = await asegurarClasificacion(op);
+      const documento = monedaDocumentoAuto(op.plan.recibo);
       await editarCompraHolded(op.plan.empresa, compraId,
         { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags,
-          lineas: [{ concepto: op.plan.recibo.concepto, base: op.plan.totalCentimos / 100, tipoIvaPct: 0,
+          ...(documento.moneda === "EUR" || documento.tasaCambio !== undefined
+            ? { monedaNueva: documento.moneda, tasaCambioNueva: documento.tasaCambio ?? 1 }
+            : {}),
+          lineas: [{ concepto: op.plan.recibo.concepto, base: documento.monto, tipoIvaPct: 0,
             tratamientoFiscal: "inversion_sujeto_pasivo" }] },
         // Cada política de reparación tiene su propia frontera durable. Una edición
         // anterior incierta jamás se repite; la política nueva relee el estado actual

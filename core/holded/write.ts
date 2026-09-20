@@ -3368,6 +3368,12 @@ export interface NuevoGastoHolded {
    */
   moneda?: string;
   /**
+   * Conversión comprobada de unidades de la moneda del documento por EUR.
+   * Si el recibo aporta el importe nativo y su equivalente bancario real,
+   * este valor tiene prioridad sobre una consulta externa de mercado.
+   */
+  tasaCambio?: number;
+  /**
    * Pedido explícito de Carlos: "Número de documento" debe quedar
    * diligenciado con el número real de la factura/recibo cuando se conoce
    * — NUNCA un número inventado. Mismo campo que ya se lee de vuelta en
@@ -3551,9 +3557,22 @@ export async function crearGastoHolded(
     }
   }
 
+  const monedaNormalizada = (gasto.moneda || "EUR").toUpperCase().trim();
+  if (!/^[A-Z]{3}$/.test(monedaNormalizada)) {
+    throw new Error("La moneda del gasto debe ser un código ISO 4217 de tres letras.");
+  }
+  if (gasto.tasaCambio !== undefined && (!Number.isFinite(gasto.tasaCambio) || gasto.tasaCambio <= 0)) {
+    throw new Error("La tasa de cambio explícita del gasto debe ser positiva y finita.");
+  }
+  if (monedaNormalizada === "EUR" && gasto.tasaCambio !== undefined && gasto.tasaCambio !== 1) {
+    throw new Error("Un documento registrado en EUR debe usar tasa de cambio 1.");
+  }
+  const tasaCambioExplicita = monedaNormalizada === "EUR" ? undefined : gasto.tasaCambio;
   const [catalogo, tasaCambio] = await Promise.all([
     obtenerCatalogoImpuestos(empresa),
-    calcularTasaCambioParaCreacion(gasto.moneda, gasto.fecha),
+    tasaCambioExplicita !== undefined
+      ? Promise.resolve(tasaCambioExplicita)
+      : calcularTasaCambioParaCreacion(monedaNormalizada, gasto.fecha),
   ]);
 
   const items = gasto.lineas.map((linea) => {
@@ -3580,7 +3599,7 @@ export async function crearGastoHolded(
     description: gasto.descripcion,
     items,
     ...(tagsNormalizados.length > 0 ? { tags: tagsNormalizados } : {}),
-    ...(gasto.moneda ? { currency: gasto.moneda } : {}),
+    ...(gasto.moneda ? { currency: monedaNormalizada } : {}),
     // Ver calcularTasaCambioParaCreacion arriba — sin esto, Holded calculaba el equivalente en EUR
     // de toda la contabilidad a paridad ficticia 1:1 para cualquier gasto nuevo en moneda extranjera.
     ...(tasaCambio !== undefined ? { currency_change: tasaCambio } : {}),
