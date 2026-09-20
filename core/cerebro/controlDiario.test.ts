@@ -28,6 +28,8 @@ function entradaBase(): EntradaControlDiario {
       porProcesoAyer: [
         { ...resumen, proceso: "chat_conversacional", gastoRealApiUSD: 0.3, costoUSD: 0.3 },
       ],
+      porProcesoHoy: [],
+      porProcesoSemana: [],
       ejecucionesConMuchasLlamadasAyer: 0,
     },
     memoria: { ok: true, filas: 2, filasCorruptas: 0, filasVencidas: 0 },
@@ -65,6 +67,10 @@ test("prioriza un gasto anómalo y una política todavía abierta", () => {
     porProcesoAyer: [
       { ...entrada.costos!.ayer, proceso: "extraer_factura", gastoRealApiUSD: 5.63, costoUSD: 5.63 },
     ],
+    // "Proceso principal" ya no mira ayer sino hoy (o la semana): el gasto de hoy es de 1 USD.
+    porProcesoHoy: [
+      { ...entrada.costos!.hoy, proceso: "extraer_factura", gastoRealApiUSD: 0.9, costoUSD: 0.9 },
+    ],
   };
   entrada.politica = { ...entrada.politica, modo: "observe", limiteDiarioUSD: 0, limiteMensualUSD: 0 };
 
@@ -90,6 +96,90 @@ test("el umbral diario alerta sin confundirlo con el techo que bloquea", () => {
   const aviso = control.recomendaciones.find((r) => r.id === "umbral-diario-coste-ia");
   assert.ok(aviso);
   assert.match(aviso.detalle, /operación sigue disponible/i);
+});
+
+function puntosSemana(gastos: number[]) {
+  return gastos.map((gasto, i) => ({ fecha: `2026-09-${String(13 + i).padStart(2, "0")}`, llamadas: 10, gastoRealApiUSD: gasto }));
+}
+
+test("caso real 2026-09-20: avisa del gasto de HOY sin esperar al día siguiente y nombra el proceso que lo genera", () => {
+  const entrada = entradaBase();
+  const base = entrada.costos!;
+  entrada.costos = {
+    ...base,
+    hoy: { ...base.hoy, gastoRealApiUSD: 22.91, costoUSD: 22.91, llamadas: 410 },
+    ayer: { ...base.ayer, gastoRealApiUSD: 0.06, costoUSD: 0.06 },
+    ultimos7Dias: puntosSemana([0, 4.15, 7.19, 3.42, 6.73, 5.53, 0.06]),
+    porProcesoHoy: [
+      { ...base.hoy, proceso: "correo_gastos_automatico", llamadas: 405, gastoRealApiUSD: 22.75, costoUSD: 22.75 },
+      { ...base.hoy, proceso: "chat_conversacional", llamadas: 2, gastoRealApiUSD: 0.06, costoUSD: 0.06 },
+    ],
+    porProcesoAyer: [{ ...base.hoy, proceso: "chat_conversacional", llamadas: 2, gastoRealApiUSD: 0.058, costoUSD: 0.058 }],
+  };
+  const control = generarControlDiario(entrada);
+  const rec = control.recomendaciones.find((r) => r.id === "gasto-hoy-elevado");
+  assert.ok(rec, "debe avisar del gasto de hoy");
+  assert.equal(rec.prioridad, "alta");
+  assert.match(rec.detalle, /22\.91/);
+  assert.match(rec.detalle, /análisis automático de correo/);
+  assert.match(rec.detalle, /99%/);
+  assert.match(rec.detalle, /405 llamadas/);
+  assert.match(rec.siguientePaso, /repite el análisis de los mismos datos/);
+  assert.ok((rec.pasos?.length ?? 0) >= 3, "debe dar pasos exactos");
+  const principal = control.recomendaciones.find((r) => r.id === "proceso-principal");
+  assert.match(principal?.detalle ?? "", /gasto de hoy/, "el proceso principal se calcula sobre hoy, no sobre ayer");
+  assert.match(principal?.titulo ?? "", /análisis automático de correo/);
+});
+
+test("un gasto de hoy normal no dispara aviso, y sin media de referencia tampoco se inventa una normalidad", () => {
+  const normal = entradaBase();
+  normal.costos = { ...normal.costos!, hoy: { ...normal.costos!.hoy, gastoRealApiUSD: 3 }, ultimos7Dias: puntosSemana([4, 5, 3, 4, 6, 3, 5]) };
+  assert.ok(!generarControlDiario(normal).recomendaciones.some((r) => r.id === "gasto-hoy-elevado"));
+
+  const sinReferencia = entradaBase();
+  sinReferencia.costos = { ...sinReferencia.costos!, hoy: { ...sinReferencia.costos!.hoy, gastoRealApiUSD: 50 }, ultimos7Dias: [] };
+  assert.ok(!generarControlDiario(sinReferencia).recomendaciones.some((r) => r.id === "gasto-hoy-elevado"));
+});
+
+test("sin gasto material hoy, el proceso principal se calcula sobre la semana en curso", () => {
+  const entrada = entradaBase();
+  const base = entrada.costos!;
+  entrada.costos = {
+    ...base,
+    hoy: { ...base.hoy, gastoRealApiUSD: 0.1 },
+    semanaActual: { ...base.semanaActual, gastoRealApiUSD: 50 },
+    porProcesoHoy: [{ ...base.hoy, proceso: "chat_conversacional", gastoRealApiUSD: 0.1 }],
+    porProcesoSemana: [
+      { ...base.hoy, proceso: "correo_gastos_automatico", gastoRealApiUSD: 30 },
+      { ...base.hoy, proceso: "chat_conversacional", gastoRealApiUSD: 20 },
+    ],
+  };
+  const principal = generarControlDiario(entrada).recomendaciones.find((r) => r.id === "proceso-principal");
+  assert.match(principal?.detalle ?? "", /60% del gasto de la semana/);
+});
+
+test("cada incidencia crítica dice exactamente qué hacer y las de resultado incierto ofrecen botones", () => {
+  const entrada = entradaBase();
+  entrada.edicionesHolded = { preparada: 0, editando: 0, verificada: 1, incierta: 63, empresasConIncertidumbre: ["Footprint"] };
+  entrada.comprasHolded = { preparada: 0, creando: 0, verificada: 2, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
+  entrada.enviosCorreo = null;
+  const control = generarControlDiario(entrada);
+
+  const ediciones = control.recomendaciones.find((r) => r.id === "ediciones-holded-inciertas");
+  assert.deepEqual(ediciones?.acciones?.map((a) => a.id), ["verificar", "revisar"]);
+  assert.ok((ediciones?.pasos?.length ?? 0) === 3);
+  assert.match(ediciones?.pasos?.[0] ?? "", /Verificar ahora/);
+
+  const compras = control.recomendaciones.find((r) => r.id === "compras-holded-inciertas");
+  assert.deepEqual(compras?.acciones?.map((a) => a.id), ["verificar"]);
+
+  const ledger = control.recomendaciones.find((r) => r.id === "ledger-correo-no-disponible");
+  assert.ok((ledger?.pasos?.length ?? 0) >= 3);
+  assert.equal(ledger?.acciones, undefined, "un fallo de lectura no tiene botón: requiere acceso a la hoja");
+
+  for (const r of control.recomendaciones.filter((x) => x.prioridad === "critica")) {
+    assert.ok(r.pasos && r.pasos.length > 0, `la incidencia crítica ${r.id} debe traer pasos exactos`);
+  }
 });
 
 test("muestra ahorro de caché sin convertirlo en una incidencia", () => {
@@ -290,4 +380,82 @@ test("un fallo leyendo el ledger de contactos nunca se representa como cero", ()
   const control = generarControlDiario(entrada);
   assert.equal(control.estado, "critico");
   assert.ok(control.recomendaciones.some((r) => r.id === "ledger-contactos-holded-no-disponible"));
+});
+
+test("EXHAUSTIVO: toda incidencia crítica que el panel puede mostrar trae pasos exactos, y toda acción va con pasos", () => {
+  const fallo = entradaBase();
+  fallo.costos = null;
+  fallo.memoria = { ok: false, filas: 0, filasCorruptas: 0, filasVencidas: 0, error: "Error" };
+  fallo.enviosCorreo = null;
+  fallo.subidasDrive = null;
+  fallo.comprasHolded = null;
+  fallo.edicionesHolded = null;
+  fallo.adjuntosHolded = null;
+  fallo.conciliacionesHolded = null;
+  fallo.contactosHolded = null;
+
+  const inciertos = entradaBase();
+  inciertos.memoria = { ok: false, filas: 3, filasCorruptas: 2, filasVencidas: 0 };
+  inciertos.costos = { ...inciertos.costos!, ejecucionesConMuchasLlamadasAyer: 2 };
+  inciertos.enviosCorreo = { preparado: 0, enviando: 0, verificado: 0, incierto: 1 };
+  inciertos.subidasDrive = { preparada: 0, subiendo: 0, verificada: 0, incierta: 1 };
+  inciertos.comprasHolded = { preparada: 0, creando: 0, verificada: 0, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
+  inciertos.edicionesHolded = { preparada: 0, editando: 0, verificada: 0, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
+  inciertos.adjuntosHolded = { preparado: 0, subiendo: 0, verificado: 0, incierto: 1, empresasConIncertidumbre: ["WOBA"] };
+  inciertos.conciliacionesHolded = {
+    preparada: 0, conciliando: 0, verificada: 0, verificadaRevision: 1, incierta: 1, cancelada: 0,
+    empresasConIncertidumbre: ["WOBA"], empresasConRevision: ["WOBA"],
+  };
+  inciertos.contactosHolded = { preparada: 0, creando: 0, verificada: 0, incierta: 1, empresasConIncertidumbre: ["WOBA"] };
+
+  const criticas = [...generarControlDiario(fallo).recomendaciones, ...generarControlDiario(inciertos).recomendaciones].filter(
+    (r) => r.prioridad === "critica"
+  );
+  // 7 ledgers x (no disponible | incierto) + costos no disponible + memoria (dos formas) = 17 ids distintos como mínimo.
+  assert.ok(new Set(criticas.map((r) => r.id)).size >= 17, "el escenario debe recorrer todas las críticas conocidas");
+  for (const r of criticas) {
+    assert.ok(r.pasos && r.pasos.length >= 3, `la crítica ${r.id} debe traer pasos exactos`);
+  }
+  for (const r of [...generarControlDiario(fallo).recomendaciones, ...generarControlDiario(inciertos).recomendaciones]) {
+    if (r.acciones?.length) assert.ok((r.pasos?.length ?? 0) > 0, `${r.id} ofrece botones, así que también debe explicar los pasos`);
+  }
+});
+
+test("las recomendaciones salen ordenadas por prioridad (crítica → alta → media → informativa), de forma estable", () => {
+  const entrada = entradaBase();
+  const base = entrada.costos!;
+  entrada.edicionesHolded = { preparada: 0, editando: 0, verificada: 1, incierta: 2, empresasConIncertidumbre: ["Footprint"] };
+  entrada.politica = { ...entrada.politica, modo: "observe", limiteDiarioUSD: 20, limiteMensualUSD: 100 };
+  entrada.costos = {
+    ...base,
+    hoy: { ...base.hoy, gastoRealApiUSD: 22.91, llamadas: 410 },
+    ultimos7Dias: puntosSemana([4, 5, 3, 4, 6, 3, 5]),
+    porProcesoHoy: [{ ...base.hoy, proceso: "correo_gastos_automatico", gastoRealApiUSD: 22.75, llamadas: 405 }],
+  };
+  const ids = generarControlDiario(entrada).recomendaciones.map((r) => `${r.prioridad}:${r.id}`);
+  const rango = { critica: 0, alta: 1, media: 2, informativa: 3 } as const;
+  const prioridades = ids.map((id) => rango[id.split(":")[0] as keyof typeof rango]);
+  assert.deepEqual(prioridades, [...prioridades].sort((a, b) => a - b), `orden inesperado: ${ids.join(", ")}`);
+  assert.equal(ids[0], "critica:ediciones-holded-inciertas");
+  assert.ok(ids.indexOf("alta:gasto-hoy-elevado") < ids.indexOf("media:politica-observe"), "el gasto de hoy va antes que el ajuste de política");
+});
+
+test("si ya salta el umbral diario configurado, el gasto de hoy no duplica la tarjeta: la completa con el proceso y los pasos", () => {
+  const entrada = entradaBase();
+  const base = entrada.costos!;
+  entrada.politica = { ...entrada.politica, umbralAlertaDiariaUSD: 10, limiteDiarioUSD: 30 };
+  entrada.costos = {
+    ...base,
+    hoy: { ...base.hoy, gastoRealApiUSD: 22.91, llamadas: 410 },
+    ultimos7Dias: puntosSemana([4, 5, 3, 4, 6, 3, 5]),
+    porProcesoHoy: [{ ...base.hoy, proceso: "correo_gastos_automatico", gastoRealApiUSD: 22.75, llamadas: 405 }],
+  };
+  const recs = generarControlDiario(entrada).recomendaciones;
+  assert.ok(!recs.some((r) => r.id === "gasto-hoy-elevado"), "no debe haber dos tarjetas sobre el gasto de hoy");
+  const umbral = recs.find((r) => r.id === "umbral-diario-coste-ia");
+  assert.ok(umbral);
+  assert.match(umbral.detalle, /operación sigue disponible/i, "conserva el texto original");
+  assert.match(umbral.detalle, /análisis automático de correo/);
+  assert.match(umbral.detalle, /405 llamadas/);
+  assert.ok((umbral.pasos?.length ?? 0) >= 3);
 });
