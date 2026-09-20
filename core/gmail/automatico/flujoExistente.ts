@@ -4,13 +4,13 @@ import { basename, join } from "node:path";
 import { adjuntarComprobanteHolded, crearGastoHolded, editarCompraHolded, inferirCuentaGasto,
   combinarTagsGastoAprendidos, reconciliarMovimiento } from "../../holded/write";
 import type { FlujoGastoExistente } from "./holded";
-import type { OperacionAuto, ReciboAuto } from "./model";
+import { VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
 
-async function clasificar(recibo: ReciboAuto) {
+async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   if (recibo.empresa === "desconocida") return undefined;
   const sugerencia = await inferirCuentaGasto(recibo.empresa, { proveedor: recibo.proveedor,
     concepto: recibo.concepto, personaAsociada: recibo.persona, contextoDeViaje: recibo.viaje,
-    reciboSimplificado: true });
+    reciboSimplificado: true, excluirCompraId });
   if (!sugerencia?.accountId) return undefined;
   const tags = combinarTagsGastoAprendidos(
     recibo.concepto,
@@ -24,10 +24,14 @@ async function clasificar(recibo: ReciboAuto) {
 
 async function asegurarClasificacion(op: OperacionAuto) {
   const guardada = op.plan.evidencia.cuenta;
-  const resultado = guardada?.id && Array.isArray(guardada.tags)
+  // Los planes de políticas anteriores pueden contener precisamente la cuenta y
+  // los tags defectuosos que estamos reparando. Solo la política actual puede
+  // reutilizar su clasificación; las anteriores vuelven a pasar por el mismo
+  // aprendizaje compartido del flujo uno a uno, excluyendo su propio borrador.
+  const resultado = op.plan.version === VERSION_POLITICA && guardada?.id && Array.isArray(guardada.tags)
     ? { cuentaId: guardada.id, nombreCuenta: guardada.nombre ?? guardada.id,
         tags: guardada.tags, evidencia: guardada.evidencia }
-    : await clasificar(op.plan.recibo);
+    : await clasificar(op.plan.recibo, op.compraId);
   if (!resultado) throw new Error("cuenta_contable_no_verificada");
   op.plan.cuentaId = resultado.cuentaId;
   op.plan.evidencia.cuenta = { id: resultado.cuentaId, nombre: resultado.nombreCuenta,

@@ -183,6 +183,13 @@ export class PostgresAutoStore implements StoreAuto {
     const r = await this.db.query("SELECT data FROM wobi_mail_operations WHERE mailbox=$1 AND state NOT IN ('completada','rechazada') ORDER BY updated_at", [buzon]);
     return r.rows.map(x => x.data as OperacionAuto);
   }
+  async recuperables(buzon: string, version: string): Promise<OperacionAuto[]> {
+    const r = await this.db.query(`SELECT data FROM wobi_mail_operations WHERE mailbox=$1 AND (
+      state NOT IN ('completada','rechazada') OR
+      (state='completada' AND COALESCE(data->>'compraId','')<>'' AND COALESCE(data->'plan'->>'version','')<>$2)
+    ) ORDER BY updated_at`, [buzon, version]);
+    return r.rows.map(x => x.data as OperacionAuto);
+  }
   async auditar(e: { buzon: string; mensajeId?: string; tipo: string; datos: unknown }): Promise<void> {
     await this.db.query("INSERT INTO wobi_mail_events(mailbox,message_id,kind,data) VALUES($1,$2,$3,$4)", [e.buzon, e.mensajeId ?? null, e.tipo, JSON.stringify(e.datos)]);
   }

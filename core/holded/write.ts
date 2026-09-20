@@ -387,8 +387,9 @@ async function verificarEdicionRegistrada(
 ): Promise<{ id: string; valor: CompraHoldedCruda } | undefined> {
   if (!registro.huellaEsperada) return undefined;
   const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.purchaseId);
-  const verificarCuentas = registro.huellaEsperada.startsWith("cuentas-v1:");
-  const huella = huellaEstadoCompra(compra, registro.verificarTotal ?? false, verificarCuentas);
+  const version = registro.huellaEsperada.startsWith("cuentas-v2:") ? 2
+    : registro.huellaEsperada.startsWith("cuentas-v1:") ? 1 : 0;
+  const huella = huellaEstadoCompraVersion(compra, registro.verificarTotal ?? false, version);
   return huella === registro.huellaEsperada ? { id: compra.id, valor: compra } : undefined;
 }
 
@@ -2425,6 +2426,8 @@ export async function inferirCuentaGasto(
     personaAsociada?: string;
     contextoDeViaje?: boolean;
     reciboSimplificado?: boolean;
+    /** Omite la compra que se está reparando para que un dato erróneo no se use como aprendizaje propio. */
+    excluirCompraId?: string;
   }
 ): Promise<CuentaSugerida | undefined> {
   // Tier 0 — pedido explícito de Carlos ("que la práctica te vaya dando
@@ -2438,7 +2441,8 @@ export async function inferirCuentaGasto(
     return undefined;
   });
 
-  const lineas = await recolectarLineasConCuenta(empresa);
+  const lineas = (await recolectarLineasConCuenta(empresa))
+    .filter(linea => linea.documentId !== criterios.excluirCompraId);
   const corregida = await corregidaPromise;
   if (lineas.length === 0 && !corregida) return undefined;
 
@@ -4064,11 +4068,18 @@ interface PayloadEdicionCompraHolded {
   fecha: string;
 }
 
-export function huellaEstadoCompra(
+function huellaEstadoCompraVersion(
   compra: CompraHoldedCruda,
   verificarTotal: boolean,
-  verificarCuentas = false
+  version: 0 | 1 | 2
 ): string {
+  const canonizarTags = (tags: unknown): unknown => {
+    if (version < 2 || !Array.isArray(tags)) return tags ?? [];
+    return [...new Set(tags
+      .filter((tag): tag is string => typeof tag === "string")
+      .map(normalizarEtiquetaHolded)
+      .filter(Boolean))].sort();
+  };
   const estado: Record<string, unknown> = {
     numeroDocumento: compra.document_number || "",
     fecha: compra.date ?? "",
@@ -4080,11 +4091,11 @@ export function huellaEstadoCompra(
     numeroLineas: compra.lines?.length ?? 0,
   };
   if (verificarTotal) estado.totalCentimos = Math.round(numeroDesdeHolded(compra.total) * 100);
-  if (verificarCuentas) {
+  if (version > 0) {
     estado.metadatosProtegidos = {
       descripcion: compra.description ?? null,
       notas: compra.notes ?? null,
-      tags: compra.tags ?? [],
+      tags: canonizarTags(compra.tags),
     };
     estado.lineasProtegidas = (compra.lines ?? []).map((linea) => ({
       nombre: linea.name ?? null,
@@ -4095,7 +4106,7 @@ export function huellaEstadoCompra(
       precio: numeroDesdeHolded(linea.price),
       descuento: numeroDesdeHolded(linea.discount),
       impuestos: linea.taxes ?? [],
-      tags: linea.tags ?? [],
+      tags: canonizarTags(linea.tags),
       sku: linea.sku ?? null,
       cuenta: (linea.account ?? "").trim(),
       proyecto: linea.project_id ?? null,
@@ -4107,7 +4118,15 @@ export function huellaEstadoCompra(
   // La marca permite que la reconciliación durable sepa qué versión
   // calcular sin cambiar el esquema del ledger ni invalidar ediciones
   // anteriores que ya guardaron la huella histórica sin cuentas.
-  return verificarCuentas ? `cuentas-v1:${huella}` : huella;
+  return version > 0 ? `cuentas-v${version}:${huella}` : huella;
+}
+
+export function huellaEstadoCompra(
+  compra: CompraHoldedCruda,
+  verificarTotal: boolean,
+  verificarCuentas = false
+): string {
+  return huellaEstadoCompraVersion(compra, verificarTotal, verificarCuentas ? 2 : 0);
 }
 
 function payloadEdicion(preparacion: PreparacionEdicionCompra): PayloadEdicionCompraHolded {

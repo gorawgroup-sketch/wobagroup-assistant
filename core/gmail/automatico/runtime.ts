@@ -71,7 +71,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   }
   const estadosAutorespuesta = new Map((await listarHilosAutorespuesta()).map(estado => [estado.threadId, estado.estado]));
   const service = new ServicioCorreoAutomatico(new PostgresAutoStore(), {
-    listar: () => gmail.listar(), analizar: analizarAutomatico,
+    listar: () => gmail.listar(), obtener: (mensajeId, threadId) => gmail.obtener(mensajeId, threadId), analizar: analizarAutomatico,
     reservadoManualmente: async id => {
       if (manuales.has(id)) return true;
       const estado = estadosAutorespuesta.get(id);

@@ -295,9 +295,22 @@ test("la huella de una corrección contable verifica cada cuenta sin romper huel
   assert.equal(huellaEstadoCompra(base, true), huellaEstadoCompra(cuentaDistinta, true));
 
   const esperada = huellaEstadoCompra(base, true, true);
-  assert.match(esperada, /^cuentas-v1:[a-f0-9]{64}$/);
+  assert.match(esperada, /^cuentas-v2:[a-f0-9]{64}$/);
   assert.notEqual(esperada, huellaEstadoCompra(cuentaDistinta, true, true));
   assert.equal(esperada.includes("profesionales"), false);
+});
+
+test("la huella contable acepta el orden de tags que devuelve Holded", () => {
+  const base = {
+    id: "purchase-1", document_number: "1", date: "2026-09-11", currency: "EUR",
+    contact_id: "contact-1", total: 10, tags: ["Viaje", "Persona"],
+    lines: [{ name: "Gasto", account: "viajes", tags: ["Proyecto", "Persona"] }],
+  };
+  const reordenada = {
+    ...base, tags: ["persona", "viaje"],
+    lines: [{ ...base.lines[0], tags: ["persona", "proyecto"] }],
+  };
+  assert.equal(huellaEstadoCompra(base, true, true), huellaEstadoCompra(reordenada, true, true));
 });
 
 test("la huella distingue la reparación de USD a EUR y la tasa aplicada", () => {

@@ -34,7 +34,7 @@ export interface MemoriaHoldedAuto {
   cuentaConfirmada?(empresa: EmpresaAuto, proveedor: string): Promise<{ cuentaId: string; confirmadoEn: string } | undefined>;
 }
 export interface FlujoGastoExistente {
-  clasificar(recibo: ReciboAuto): Promise<{ cuentaId: string; nombreCuenta: string; tags: string[]; evidencia: string } | undefined>;
+  clasificar(recibo: ReciboAuto, excluirCompraId?: string): Promise<{ cuentaId: string; nombreCuenta: string; tags: string[]; evidencia: string } | undefined>;
   crear(op: OperacionAuto): Promise<string>;
   corregir(op: OperacionAuto, compraId: string): Promise<void>;
   adjuntar(op: OperacionAuto, data: Buffer, nombre: string, mime: string): Promise<void>;
@@ -289,7 +289,15 @@ export class HoldedAuto {
       const conocida = await this.get(op.plan.empresa, `/purchases/${idUrl(op.compraId)}`);
       if (conocida.id !== op.compraId) throw new Error("Holded devolvió otra compra al recuperar la operación.");
       if (conocida.notes === `WOBI_AUTO:${op.id}`) {
-        if (this.flujoExistente) await this.flujoExistente.corregir(op, op.compraId);
+        if (this.flujoExistente) {
+          try { await this.flujoExistente.corregir(op, op.compraId); }
+          catch (error) {
+            // Holded ordena sus tags. La edición durable antigua podía quedar incierta aunque
+            // cuenta, tags y demás campos sí hubieran quedado correctos. Una relectura completa
+            // con la política actual demuestra el resultado sin repetir el PUT.
+            if (!await this.verificarCreacion(op)) throw error;
+          }
+        }
         return op.compraId;
       }
       // Las operaciones de la política actual ya usan el ledger durable del flujo uno a uno.
@@ -308,7 +316,11 @@ export class HoldedAuto {
     if (legado.length > 1) throw new Error("Más de una compra con la identidad de operación; revisión manual.");
     if (legado.length === 1) {
       const id = texto(legado[0].id);
-      if (this.flujoExistente) await this.flujoExistente.corregir(op, id);
+      op.compraId = id;
+      if (this.flujoExistente) {
+        try { await this.flujoExistente.corregir(op, id); }
+        catch (error) { if (!await this.verificarCreacion(op)) throw error; }
+      }
       return id;
     }
     // La ruta durable usada por el flujo manual sabe recuperar su propio POST incierto por lectura
