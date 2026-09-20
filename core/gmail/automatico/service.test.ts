@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
-import { hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
+import { evaluarAuto, hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 
 function escenario() {
@@ -40,7 +40,7 @@ function escenario() {
   return { service: new ServicioCorreoAutomatico(store, puerto), store, puerto, ops, llamadas, eventos, correos, a,
     analisisLlamadas: () => analisisLlamadas };
 }
-test("crea, adjunta, concilia, verifica y solo entonces marca leído", async () => {
+test("crea, adjunta, concilia, verifica y solo entonces marca el correo como resuelto", async () => {
   const e = escenario(); const r = await e.service.revisar(configFixture);
   assert.equal(r.completados, 1); assert.equal(r.pendientes.length, 0);
   assert.deepEqual(e.llamadas, { crear: 1, adjuntar: 1, conciliar: 1, marcar: 1, registrar: 1 });
@@ -240,4 +240,43 @@ test("repara una operación completada con política anterior usando el correo o
   assert.equal(r.reparados?.length, 1);
   assert.equal([...e.ops.values()][0].plan.version, VERSION_POLITICA);
   assert.equal(e.llamadas.crear, 1);
+});
+
+test("una reparación relee el recibo y corrige el contacto antes de tocar Holded", async () => {
+  const e = escenario();
+  const decision = evaluarAuto(e.correos[0], e.a, e.a.recibos[0], evidenciaFixture(), configFixture);
+  assert.ok(decision.apto);
+  const op: OperacionAuto = { id: "legada", estado: "completada", compraId: "compra-legada",
+    plan: { ...decision.plan, version: "correo-gastos-v8" } };
+  e.ops.set(op.id, structuredClone(op));
+  e.a.recibos[0].proveedor = "Jumbo";
+  e.a.recibos[0].concepto = "Compra supermercado Jumbo";
+  e.puerto.evidencias = async () => ({ ...evidenciaFixture(), contacto: {
+    id: "contacto-jumbo", nombre: "JUMBO SUPERMARKTEN", exacto: false,
+    metodo: "aproximado_unico", similitud: 0.45,
+  } });
+  let contactoAlCorregir = "";
+  e.puerto.recuperarCreacion = async actual => { contactoAlCorregir = actual.plan.contactoId; return actual.compraId; };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(contactoAlCorregir, "contacto-jumbo");
+  assert.equal(r.reparados?.length, 1);
+});
+
+test("una reparación bloquea un alias no relacionado aunque el importe sea exacto", async () => {
+  const e = escenario();
+  const decision = evaluarAuto(e.correos[0], e.a, e.a.recibos[0], evidenciaFixture(), configFixture);
+  assert.ok(decision.apto);
+  const op: OperacionAuto = { id: "legada", estado: "completada", compraId: "compra-legada",
+    plan: { ...decision.plan, version: "correo-gastos-v8" } };
+  e.ops.set(op.id, structuredClone(op));
+  e.a.recibos[0].proveedor = "Parking Moraleja";
+  e.puerto.evidencias = async () => ({ ...evidenciaFixture(), contacto: {
+    id: "contacto-oxxo", nombre: "CADENA COMERCIAL OXXO SA", exacto: false,
+    metodo: "alias_confirmado", similitud: 0,
+  } });
+  let recuperaciones = 0;
+  e.puerto.recuperarCreacion = async actual => { recuperaciones++; return actual.compraId; };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(recuperaciones, 0);
+  assert.ok(r.pendientes.some(p => p.motivos.includes("proveedor_no_verificado")));
 });

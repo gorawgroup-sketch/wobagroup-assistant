@@ -180,6 +180,18 @@ test("alias contradictorios sin coincidencia por nombre no autorizan", async () 
   assert.equal(evidencia.contacto, undefined);
   assert.equal(evidencia.motivoProveedor, "alias_contradictorio");
 });
+test("un alias único no se presenta como proveedor exacto ni autoriza un contacto sin relación", async () => {
+  const e = escenario();
+  e.r.proveedor = "Parking Moraleja";
+  e.contactos[0].name = "CADENA COMERCIAL OXXO SA";
+  e.memoria.alias = async () => [{ contactId: "p1", contactName: "CADENA COMERCIAL OXXO SA" }];
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.metodo, "alias_confirmado");
+  assert.equal(evidencia.contacto?.exacto, false);
+  const decision = evaluarAuto(e.c, analisisFixture(e.r), e.r, evidencia, configFixture);
+  assert.equal(decision.apto, false);
+  if (!decision.apto) assert.ok(decision.motivos.includes("proveedor_no_verificado"));
+});
 test("un HTTP ambiguo no provoca reintento automático de POST", async () => {
   const e = escenario(); let intentos = 0;
   const broken = new HoldedAuto(e.memoria, async () => { intentos++; return new Response("", { status: 503 }); });

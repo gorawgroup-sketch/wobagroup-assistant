@@ -136,14 +136,26 @@ function getGmailSendClient(): gmail_v1.Gmail {
 }
 
 let gmailModifyClient: gmail_v1.Gmail | null = null;
+export const ETIQUETA_PROCESADO_AUTOMATICO = "WOBI_AUTO_PROCESADO";
+let idEtiquetaProcesadoAutomatico: string | undefined;
+
+async function obtenerIdEtiquetaProcesadoAutomatico(): Promise<string | undefined> {
+  if (idEtiquetaProcesadoAutomatico) return idEtiquetaProcesadoAutomatico;
+  const res = await getGmailClient().users.labels.list({ userId: "me" });
+  const id = res.data.labels?.find(label => label.name === ETIQUETA_PROCESADO_AUTOMATICO)?.id ?? undefined;
+  // No se memoriza la ausencia: la automatización puede crear la etiqueta
+  // después de que el proceso arrancó y la revisión manual debe verla.
+  if (id) idEtiquetaProcesadoAutomatico = id;
+  return id;
+}
 
 /**
  * Cliente separado con scope gmail.modify — el único con permiso para
- * cambiar etiquetas (ej. quitar UNREAD). Pedido explícito de Carlos: el
- * flujo de revisión de correo uno a uno (ver core/jobs/revisarCorreoNuevo.ts)
- * necesita marcar como leído cada correo YA resuelto en el chat, para que
- * "cuántos correos sin leer quedan" (is:unread real de Gmail, no un contador
- * propio) refleje el progreso real. Requiere agregar este scope a la
+ * cambiar etiquetas. La revisión manual uno a uno (ver
+ * core/jobs/revisarCorreoNuevo.ts) marca como leído cada correo resuelto. La
+ * revisión automática conserva UNREAD por petición del operador y añade
+ * WOBI_AUTO_PROCESADO; todas las colas excluyen esa etiqueta para evitar
+ * procesarlo dos veces. Requiere agregar este scope a la
  * Delegación de todo el dominio en Google Workspace Admin para el mismo
  * client_id que ya usan Calendar/Gmail/Drive — sin eso, marcarHiloComoLeido
  * falla con "insufficient authentication scopes" (mismo patrón que se vivió
@@ -213,8 +225,11 @@ export async function marcarMensajeComoLeido(messageId: string): Promise<boolean
 }
 
 /**
- * Lista los IDs de HILOS (conversaciones) SIN LEER de la bandeja de entrada
- * — no de mensajes individuales. Bug real encontrado en vivo: contar/listar
+ * Lista los IDs de HILOS (conversaciones) SIN LEER y todavía no resueltos por
+ * la automatización. Los mensajes con WOBI_AUTO_PROCESADO siguen visibles como
+ * no leídos en Gmail, pero quedan fuera tanto de esta cola manual como de la
+ * automática para impedir duplicados. La cola trabaja por hilo, no por mensaje
+ * individual. Bug real encontrado en vivo: contar/listar
  * por mensaje individual (como se hacía antes) no coincide con lo que
  * Carlos ve en Gmail ("Recibidos: 10") cuando un mismo hilo tiene más de un
  * mensaje sin leer — Gmail cuenta y muestra por HILO, así que la cola de
@@ -231,7 +246,7 @@ export async function listarHilosNoLeidos(): Promise<string[]> {
   do {
     const res = await gmail.users.threads.list({
       userId: "me",
-      q: "is:unread -in:spam -in:trash",
+      q: `is:unread -label:${ETIQUETA_PROCESADO_AUTOMATICO} -in:spam -in:trash`,
       maxResults: 500,
       pageToken,
     });
@@ -264,7 +279,7 @@ export async function listarHilosNoLeidosDe(remitentes: string[]): Promise<strin
   do {
     const res = await gmail.users.threads.list({
       userId: "me",
-      q: `is:unread in:inbox (${filtroRemitentes})`,
+      q: `is:unread -label:${ETIQUETA_PROCESADO_AUTOMATICO} in:inbox (${filtroRemitentes})`,
       maxResults: 100,
       pageToken,
     });
@@ -363,6 +378,7 @@ export async function obtenerUltimoMensajeDeHilo(
   threadId: string
 ): Promise<{ messageId: string; fecha: string; fechaPrimerNoLeido: string; de: string; asunto: string } | undefined> {
   const gmail = getGmailClient();
+  const etiquetaProcesado = await obtenerIdEtiquetaProcesadoAutomatico();
   const res = await gmail.users.threads.get({
     userId: "me",
     id: threadId,
@@ -373,7 +389,8 @@ export async function obtenerUltimoMensajeDeHilo(
   const mensajes = res.data.messages ?? [];
   const ultimo = mensajes[mensajes.length - 1];
   if (!ultimo?.id) return undefined;
-  const primerNoLeido = mensajes.find((m) => m.labelIds?.includes("UNREAD")) ?? ultimo;
+  const primerNoLeido = mensajes.find((m) => m.labelIds?.includes("UNREAD") &&
+    (!etiquetaProcesado || !m.labelIds?.includes(etiquetaProcesado))) ?? ultimo;
 
   return {
     messageId: ultimo.id,
@@ -389,6 +406,7 @@ export async function obtenerUltimoMensajeDeHilo(
 export async function obtenerPrimerMensajeNoLeidoDeHilo(
   threadId: string
 ): Promise<{ messageId: string; recibidoEn: number; de: string; asunto: string } | undefined> {
+  const etiquetaProcesado = await obtenerIdEtiquetaProcesadoAutomatico();
   const res = await getGmailClient().users.threads.get({
     userId: "me",
     id: threadId,
@@ -396,7 +414,8 @@ export async function obtenerPrimerMensajeNoLeidoDeHilo(
     metadataHeaders: ["Date", "From", "Subject"],
   });
   const noLeidos = (res.data.messages ?? [])
-    .filter((m) => Boolean(m.id && m.labelIds?.includes("UNREAD")))
+    .filter((m) => Boolean(m.id && m.labelIds?.includes("UNREAD") &&
+      (!etiquetaProcesado || !m.labelIds?.includes(etiquetaProcesado))))
     .sort((a, b) => Number(a.internalDate ?? 0) - Number(b.internalDate ?? 0));
   const primero = noLeidos[0];
   if (!primero?.id) return undefined;
@@ -615,9 +634,7 @@ export async function listarMensajesNuevos(afterUnixSeconds: number): Promise<st
  * es una sola llamada en vez de paginar cientos de mensajes.
  */
 export async function contarNoLeidos(): Promise<number> {
-  const gmail = getGmailClient();
-  const res = await gmail.users.labels.get({ userId: "me", id: "INBOX" });
-  return res.data.threadsUnread ?? 0;
+  return (await listarHilosNoLeidos()).length;
 }
 
 /** Busca mensajes con una consulta arbitraria de Gmail (ej. `subject:"X" from:y@z.com`). */
