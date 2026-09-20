@@ -78,6 +78,31 @@ export class HoldedAuto {
     }
     throw new Error("Límite de paginación alcanzado; no se considera verificada la ausencia de duplicados.");
   }
+  private async listarAdjuntos(empresa: EmpresaAuto, compraId: string): Promise<Registro[]> {
+    const unicos = new Map<string, Registro>();
+    const cursores = new Set<string>();
+    let cursor: string | undefined;
+    for (let pagina = 0; pagina < 100; pagina++) {
+      const params = new URLSearchParams({ limit: "200", ...(cursor ? { cursor } : {}) });
+      const data = await this.get(empresa, `/purchases/${idUrl(compraId)}/attachments?${params}`);
+      if (!Array.isArray(data.items)) throw new Error("Listado de comprobantes Holded incompleto.");
+      for (const raw of data.items) {
+        const item = objeto(raw);
+        // Holded puede devolver varias filas del mismo soporte con el mismo id.
+        // En adjuntos esa repetición no vuelve ambigua la identidad descargable:
+        // se consulta ese recurso una sola vez y se valida por sus bytes.
+        const id = texto(item.id);
+        if (!unicos.has(id)) unicos.set(id, item);
+      }
+      if (data.has_more === false) return [...unicos.values()];
+      if (data.has_more !== true || typeof data.cursor !== "string" || !data.cursor || cursores.has(data.cursor)) {
+        throw new Error("Paginación de comprobantes Holded incompleta.");
+      }
+      cursor = data.cursor;
+      cursores.add(cursor);
+    }
+    throw new Error("Límite de paginación de comprobantes alcanzado.");
+  }
   private listarEstatico(empresa: EmpresaAuto, path: string): Promise<Registro[]> {
     const clave = `${empresa}:${path}`;
     const existente = this.listadosEstaticos.get(clave);
@@ -293,7 +318,14 @@ export class HoldedAuto {
     if (op.compraId) {
       const conocida = await this.get(op.plan.empresa, `/purchases/${idUrl(op.compraId)}`);
       if (conocida.id !== op.compraId) throw new Error("Holded devolvió otra compra al recuperar la operación.");
-      if (conocida.notes === `WOBI_AUTO:${op.id}`) {
+      const identidadPorNota = conocida.notes === `WOBI_AUTO:${op.id}`;
+      // Las primeras versiones guardaron compraId de forma durable en PostgreSQL
+      // antes de añadir la nota privada a la compra. En una migración de política,
+      // ese vínculo directo sigue siendo una identidad más fuerte que una búsqueda
+      // por importe. El servicio ya releyó el recibo y validó proveedor compatible
+      // antes de llegar aquí; se corrige exactamente ese id y jamás se crea otro.
+      const identidadLegadaPorLedger = Boolean(this.flujoExistente) && op.plan.version !== VERSION_POLITICA;
+      if (identidadPorNota || identidadLegadaPorLedger) {
         if (this.flujoExistente) {
           try { await this.flujoExistente.corregir(op, op.compraId); }
           catch (error) {
@@ -394,7 +426,7 @@ export class HoldedAuto {
   }
   async verificarAdjunto(op: OperacionAuto): Promise<boolean> {
     if (!op.compraId) return false;
-    const adjuntos = await this.listar(op.plan.empresa, `/purchases/${idUrl(op.compraId)}/attachments`);
+    const adjuntos = await this.listarAdjuntos(op.plan.empresa, op.compraId);
     const candidatos = this.flujoExistente ? adjuntos : adjuntos.filter(a =>
       [a.id, a.name, a.filename, a.file_name].some(x => typeof x === "string" && x.startsWith(this.nombreAdjunto(op))));
     if (!candidatos.length) return false;

@@ -177,7 +177,7 @@ test("comprobante verificado por contenido binario y sin reconstruir un adjunto 
   assert.equal(await e.adapter.verificarAdjunto(e.op), false);
   await assert.rejects(() => e.adapter.adjuntar(e.op, e.c), /comprobante cambió/);
 });
-test("dos soportes con los mismos bytes siguen verificando el comprobante y no provocan otra carga", async () => {
+test("filas repetidas del mismo soporte se descargan una vez y no provocan otra carga", async () => {
   const e = escenario(); e.op.compraId = "creada";
   await e.adapter.adjuntar(e.op, e.c);
   const original = e.request;
@@ -186,7 +186,7 @@ test("dos soportes con los mismos bytes siguen verificando el comprobante y no p
   const request: typeof fetch = async (input, init) => {
     const path = new URL(String(input)).pathname.replace("/api/v2", "");
     if (!init?.method && path.endsWith("/attachments")) {
-      return new Response(JSON.stringify({ items: [{ id: `${prefijo}-1` }, { id: `${prefijo}-2` }], has_more: false, cursor: null }), { status: 200 });
+      return new Response(JSON.stringify({ items: [{ id: `${prefijo}-1` }, { id: `${prefijo}-1` }], has_more: false, cursor: null }), { status: 200 });
     }
     if (!init?.method && path.includes(`/attachments/${prefijo}-`)) {
       descargas++;
@@ -196,7 +196,7 @@ test("dos soportes con los mismos bytes siguen verificando el comprobante y no p
   };
   const adapter = new HoldedAuto(e.memoria, request);
   assert.equal(await adapter.verificarAdjunto(e.op), true);
-  assert.equal(descargas, 2);
+  assert.equal(descargas, 1);
 });
 test("acepta estados finales reales y rechaza importe parcial o saldo pendiente", async () => {
   const e = escenario(); e.op.compraId = "creada";
@@ -292,6 +292,30 @@ test("recupera y corrige un borrador legado por la nota privada, no por tags vis
   const adapter = new HoldedAuto(e.memoria, request, ["WOBA"], flujo);
   assert.equal(await adapter.recuperarCreacion(e.op), "legada");
   assert.deepEqual(corregidas, ["legada"]);
+});
+
+test("recupera por el compraId durable una operación antigua creada antes de guardar la nota privada", async () => {
+  const e = escenario();
+  e.op.compraId = "legada-sin-nota";
+  e.op.plan.version = "correo-gastos-v13";
+  const corregidas: string[] = [];
+  const flujo: FlujoGastoExistente = {
+    clasificar: async () => ({ cuentaId: "c1", nombreCuenta: "Travel Expenses", tags: ["alimentacion"], evidencia: "memoria" }),
+    crear: async () => { throw new Error("no debe crear otra compra"); },
+    corregir: async (_op, id) => { corregidas.push(id); },
+    adjuntar: async () => undefined,
+    conciliar: async () => undefined,
+    verificarConciliacion: async () => false,
+  };
+  const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path === "/purchases/legada-sin-nota") return json({ id: "legada-sin-nota" });
+    return e.request(input, init);
+  };
+  const adapter = new HoldedAuto(e.memoria, request, ["WOBA"], flujo);
+  assert.equal(await adapter.recuperarCreacion(e.op), "legada-sin-nota");
+  assert.deepEqual(corregidas, ["legada-sin-nota"]);
 });
 
 test("la verificación aprendida exige cuenta y tags funcionales exactos", async () => {
