@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v5";
+export const VERSION_POLITICA = "correo-gastos-v6";
+export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
   empresas: EmpresaAuto[];
@@ -19,6 +20,33 @@ export function configuracionAuto(env: NodeJS.ProcessEnv = process.env): ConfigA
 export const hash = (valor: string | Buffer): string => createHash("sha256").update(valor).digest("hex");
 export const normalizar = (s: string): string => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
   .toLowerCase().replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+export const normalizarProveedorComparable = (valor: string): string => normalizar(valor.replace(/\s*\([^)]*\)\s*$/, ""))
+  .replace(/\b(sociedad anonima unipersonal|sociedad anonima|sociedad limitada unipersonal|sociedad limitada|sau|sa|slu|sl|sro|llc|ltd|inc)\b/g, " ")
+  .replace(/\s+/g, " ").trim();
+const tokensProveedor = (valor: string): string[] => normalizarProveedorComparable(valor).split(" ").filter(t => t.length >= 3);
+/** Coincidencia conservadora: un nombre debe contener todos los tokens relevantes del nombre más corto. */
+export function nombresProveedorCompatibles(a: string, b: string): boolean {
+  const na = normalizarProveedorComparable(a), nb = normalizarProveedorComparable(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = tokensProveedor(a), tb = tokensProveedor(b);
+  if (!ta.length || !tb.length) return false;
+  const [cortos, largos] = ta.length <= tb.length ? [ta, new Set(tb)] : [tb, new Set(ta)];
+  return cortos.every(token => largos.has(token));
+}
+/** El descriptor bancario confirma el proveedor por frase o por tokens completos; nunca por fragmentos parciales. */
+export function proveedorEnDescripcion(proveedor: string, descripcion: string): boolean {
+  const p = normalizarProveedorComparable(proveedor), d = normalizar(descripcion);
+  if (!p || !d) return false;
+  if (` ${d} `.includes(` ${p} `) || (d.length >= 3 && ` ${p} `.includes(` ${d} `))) return true;
+  const tokensDescripcion = new Set(d.split(" ").filter(t => t.length >= 3));
+  const tokens = tokensProveedor(proveedor);
+  return tokens.length > 0 && tokens.every(token => tokensDescripcion.has(token));
+}
+export function diferenciaDiasCalendario(a: string, b: string): number {
+  const da = Date.parse(a.slice(0, 10)), db = Date.parse(b.slice(0, 10));
+  return Number.isFinite(da) && Number.isFinite(db) ? Math.abs(da - db) / 86_400_000 : Number.POSITIVE_INFINITY;
+}
 export function dinero(n: unknown): number {
   if (typeof n !== "number" || !Number.isFinite(n) || n <= 0 ||
       !Number.isSafeInteger(Math.round(n * 100)) || Math.abs(n * 100 - Math.round(n * 100)) > 0.000001) {
@@ -57,7 +85,7 @@ export interface MovimientoAuto {
 }
 export interface EvidenciaAuto {
   empresaDetectada?: EmpresaAuto;
-  contacto?: { id: string; nombre: string; exacto: boolean };
+  contacto?: { id: string; nombre: string; exacto: boolean; metodo?: "nombre_exacto" | "alias_confirmado" | "aproximado_unico" };
   cuenta?: { id: string; evidencia: string };
   duplicados: string[];
   consultasCompletas: boolean;
@@ -76,6 +104,35 @@ export interface PlanAuto {
 }
 export type DecisionAuto = { apto: true; plan: PlanAuto } | { apto: false; motivos: string[] };
 
+export function toleranciaMontoAuto(esperadoCentimos: number): number {
+  return Math.min(500, Math.max(5, Math.round(esperadoCentimos * 0.02)));
+}
+
+function datosMonto(r: ReciboAuto): { esperado: number; moneda: string; convertido: boolean; tolerancia: number } {
+  let esperado = dinero(r.monto), moneda = r.moneda, convertido = false;
+  if (r.equivalente) {
+    esperado = dinero(r.equivalente.monto);
+    moneda = r.equivalente.moneda;
+    if (!/^[A-Z]{3}$/.test(moneda) || moneda === r.moneda) throw new Error("Equivalente inválido.");
+    convertido = true;
+  }
+  // Un cargo bancario puede diferir por redondeo, propina o liquidación del comercio.
+  // La banda sigue siendo angosta y solo autoriza si queda un único movimiento verificable.
+  return { esperado, moneda, convertido, tolerancia: toleranciaMontoAuto(esperado) };
+}
+
+export function candidatosMovimientoAuto(r: ReciboAuto, e: EvidenciaAuto): MovimientoAuto[] {
+  let datos: ReturnType<typeof datosMonto>;
+  try { datos = datosMonto(r); } catch { return []; }
+  const porMontoYFecha = e.movimientos.filter(m => m.moneda === datos.moneda &&
+    diferenciaDiasCalendario(m.fecha, r.fecha) <= VENTANA_DIAS_MOVIMIENTO_AUTO &&
+    Number.isSafeInteger(m.centimos) && m.centimos < 0 && Math.abs(-m.centimos - datos.esperado) <= datos.tolerancia);
+  if (porMontoYFecha.length <= 1) return porMontoYFecha;
+  const porProveedor = porMontoYFecha.filter(m => proveedorEnDescripcion(r.proveedor, m.descripcion) ||
+    Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, m.descripcion)));
+  return porProveedor.length === 1 ? porProveedor : porMontoYFecha;
+}
+
 /** La clasificación nunca autoriza una escritura sin contrastes deterministas. */
 export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: EvidenciaAuto, config: ConfigAuto): DecisionAuto {
   const motivos: string[] = [];
@@ -89,38 +146,30 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   if (!r.proveedor.trim() || !r.concepto.trim()) motivos.push("datos_incompletos");
   if (!e.consultasCompletas) motivos.push("verificacion_incompleta");
   if (e.duplicados.length) motivos.push("posible_duplicado");
-  if (!e.contacto?.id || e.contacto.exacto !== true) motivos.push("proveedor_no_exacto");
+  if (!e.contacto?.id) motivos.push("proveedor_no_encontrado");
   if (!e.permiteTicket) motivos.push(e.motivoTipoDocumento ?? "tipo_ticket_no_soportado");
   if (r.fuente !== "cuerpo" && !c.adjuntos.some(x => x.id === r.fuente)) motivos.push("fuente_inexistente");
   if (a.recibos.filter(x => x.fuente === r.fuente).length !== 1) motivos.push("varios_gastos_en_misma_fuente");
   let esperado = 0;
-  let moneda = r.moneda;
   let convertido = false;
+  let tolerancia = 0;
   try {
-    esperado = dinero(r.monto);
-    if (r.equivalente) {
-      esperado = dinero(r.equivalente.monto);
-      moneda = r.equivalente.moneda;
-      if (!/^[A-Z]{3}$/.test(moneda) || moneda === r.moneda) throw new Error();
-      convertido = true;
-    }
+    ({ esperado, convertido, tolerancia } = datosMonto(r));
   } catch { motivos.push("importe_o_equivalente_invalido"); }
-  // Reglas ya presentes en el flujo manual: un céntimo; equivalente explícito, 2% / cinco céntimos.
-  const tolerancia = convertido ? Math.max(5, Math.round(esperado * 0.02)) : 1;
-  const candidatos = e.movimientos.filter(m => m.moneda === moneda && m.fecha === r.fecha &&
-    Number.isSafeInteger(m.centimos) && m.centimos < 0 && Math.abs(-m.centimos - esperado) <= tolerancia);
+  const candidatos = candidatosMovimientoAuto(r, e);
   const ids = new Set(candidatos.map(m => `${m.cuentaId}/${m.id}`));
-  const proveedor = normalizar(r.proveedor.replace(/\s*\([^)]*\)\s*$/, ""));
-  const descripcion = normalizar(candidatos[0]?.descripcion ?? "");
-  const confianzaReforzada = r.confianza === "media" && e.contacto?.exacto === true && candidatos.length === 1 && ids.size === 1 &&
-    proveedor.length >= 4 && descripcion.length >= 4 && (descripcion.includes(proveedor) || proveedor.includes(descripcion));
+  const descripcionConfirmaProveedor = candidatos.length === 1 && (proveedorEnDescripcion(r.proveedor, candidatos[0].descripcion) ||
+    Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, candidatos[0].descripcion)));
+  const contactoVerificado = e.contacto?.exacto === true ||
+    (e.contacto?.metodo === "aproximado_unico" && descripcionConfirmaProveedor);
+  if (e.contacto?.id && !contactoVerificado) motivos.push("proveedor_no_verificado");
+  const confianzaReforzada = r.confianza === "media" && contactoVerificado && candidatos.length === 1 && ids.size === 1 && descripcionConfirmaProveedor;
   if (r.confianza !== "alta" && !confianzaReforzada) motivos.push("confianza_insuficiente");
   if (candidatos.length !== 1 || ids.size !== 1) motivos.push(candidatos.length ? "movimiento_ambiguo" : "sin_movimiento_exacto");
   const m = candidatos[0];
+  const coincidenciaMontoFechaExacta = m && m.fecha === r.fecha && -m.centimos === esperado;
+  if (m && !coincidenciaMontoFechaExacta && !descripcionConfirmaProveedor) motivos.push("coincidencia_aproximada_sin_proveedor_bancario");
   if (m && (!m.id || !m.cuentaId || !m.origen || m.origen === "manual" || m.estado !== "pending" || m.conciliadoCentimos !== 0)) motivos.push("movimiento_no_libre");
-  // Una tolerancia identifica un candidato; no autoriza a alterar el importe original de un recibo.
-  // Con equivalente explícito sí se registra la liquidación real, conservando ambos importes.
-  if (m && !convertido && -m.centimos !== esperado) motivos.push("diferencia_requiere_revision");
   if (motivos.length) return { apto: false, motivos };
   const empresa = empresaEvaluada as EmpresaAuto;
   const fuenteHash = hash(r.fuente === "cuerpo" ? c.cuerpo : c.adjuntos.find(x => x.id === r.fuente)!.data);
@@ -135,7 +184,7 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
     : e;
   return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta?.id, recibo: reciboPlan,
     movimiento: m, totalCentimos: -m.centimos, toleranciaCentimos: tolerancia, diferenciaCentimos: -m.centimos - esperado,
-    regla: convertido ? "equivalente_explicito_2pct_min_005" : "moneda_nativa_001", claves, fuenteHash,
+    regla: convertido ? "equivalente_explicito_2pct_min_005_max_500" : (-m.centimos === esperado ? "moneda_nativa_exacta" : "moneda_nativa_2pct_min_005_max_500"), claves, fuenteHash,
     correo: { id: c.id, threadId: c.threadId, buzon: config.buzon }, version: VERSION_POLITICA,
     // La decisión ya quedó auditada por separado. La operación durable solo
     // necesita conservar el movimiento elegido, no todo el historial bancario

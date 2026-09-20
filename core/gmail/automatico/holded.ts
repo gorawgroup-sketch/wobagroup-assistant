@@ -1,5 +1,7 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
-import { fechaValida, hash, normalizar, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
+import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, nombresProveedorCompatibles, normalizar, normalizarProveedorComparable,
+  proveedorEnDescripcion, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
+  type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 
 type Registro = Record<string, unknown>;
 export function objeto(raw: unknown): Registro {
@@ -8,9 +10,7 @@ export function objeto(raw: unknown): Registro {
 }
 function texto(raw: unknown): string { if (typeof raw !== "string" || !raw) throw new Error("Campo Holded ausente."); return raw; }
 const idUrl = (id: string) => encodeURIComponent(id);
-export const normalizarProveedorExacto = (valor: string): string => normalizar(valor.replace(/\s*\([^)]*\)\s*$/, ""))
-  .replace(/\b(sociedad anonima unipersonal|sociedad anonima|sociedad limitada unipersonal|sociedad limitada|sau|sa|slu|sl|sro|llc|ltd|inc)\b/g, " ")
-  .replace(/\s+/g, " ").trim();
+export const normalizarProveedorExacto = normalizarProveedorComparable;
 function centimos(raw: unknown, admiteFormatoES = false): number {
   if (typeof raw !== "number" && typeof raw !== "string") throw new Error("Importe ausente o inválido.");
   let valor = String(raw);
@@ -80,13 +80,16 @@ export class HoldedAuto {
     return { ...candidatas[0].evidencia, empresaDetectada: candidatas[0].empresa };
   }
   private identificaEmpresa(r: ReciboAuto, e: EvidenciaAuto): boolean {
-    if (!e.consultasCompletas || !e.contacto?.id || e.contacto.exacto !== true || e.duplicados.length) return false;
-    const moneda = r.equivalente?.moneda ?? r.moneda;
-    const importe = centimos(r.equivalente?.monto ?? r.monto);
-    const tolerancia = r.equivalente ? Math.max(5, Math.round(importe * 0.02)) : 1;
-    const candidatas = e.movimientos.filter(m => m.moneda === moneda && m.fecha === r.fecha && m.centimos < 0 &&
-      Math.abs(-m.centimos - importe) <= tolerancia && m.estado === "pending" && m.conciliadoCentimos === 0 &&
+    if (!e.consultasCompletas || !e.contacto?.id || e.duplicados.length) return false;
+    const candidatas = candidatosMovimientoAuto(r, e).filter(m => m.estado === "pending" && m.conciliadoCentimos === 0 &&
       Boolean(m.origen) && m.origen !== "manual");
+    const proveedorBanco = candidatas.length === 1 &&
+      (proveedorEnDescripcion(r.proveedor, candidatas[0].descripcion) || proveedorEnDescripcion(e.contacto.nombre, candidatas[0].descripcion));
+    const importe = centimos(r.equivalente?.monto ?? r.monto);
+    const exacta = candidatas.length === 1 && candidatas[0].fecha === r.fecha && -candidatas[0].centimos === importe;
+    const proveedorVerificado = (e.contacto.exacto === true || (e.contacto.metodo === "aproximado_unico" && proveedorBanco)) &&
+      (exacta || proveedorBanco);
+    if (!proveedorVerificado) return false;
     return candidatas.length === 1 && new Set(candidatas.map(m => `${m.cuentaId}/${m.id}`)).size === 1;
   }
   private async evidenciasEmpresa(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
@@ -100,9 +103,15 @@ export class HoldedAuto {
     const encontrados = idsAlias.size === 1 && directos.length <= 1
       ? contactos.filter(x => idsAlias.has(String(x.id)) && (directos.length === 0 || directos[0].id === x.id))
       : idsAlias.size === 0 ? directos : [];
-    if (encontrados.length === 1 && typeof encontrados[0].name === "string" &&
-      !/sin identificar|desconocido|unknown|unidentified/.test(normalizar(encontrados[0].name))) {
-      e.contacto = { id: texto(encontrados[0].id), nombre: encontrados[0].name, exacto: true };
+    let seleccionados = encontrados;
+    let metodo: NonNullable<EvidenciaAuto["contacto"]>["metodo"] = idsAlias.size === 1 ? "alias_confirmado" : "nombre_exacto";
+    if (seleccionados.length === 0 && idsAlias.size === 0 && directos.length === 0) {
+      const aproximados = contactos.filter(x => typeof x.name === "string" && nombresProveedorCompatibles(x.name, r.proveedor));
+      if (aproximados.length === 1) { seleccionados = aproximados; metodo = "aproximado_unico"; }
+    }
+    if (seleccionados.length === 1 && typeof seleccionados[0].name === "string" &&
+      !/sin identificar|desconocido|unknown|unidentified/.test(normalizar(seleccionados[0].name))) {
+      e.contacto = { id: texto(seleccionados[0].id), nombre: seleccionados[0].name, exacto: metodo !== "aproximado_unico", metodo };
     }
     if (await this.memoria.duplicadoInterno(c, r)) e.duplicados.push("historial_o_propuesta_pendiente");
     const fecha = new Date(`${r.fecha}T00:00:00Z`);
@@ -114,22 +123,24 @@ export class HoldedAuto {
     const compras = [...new Map([...comprasVentana, ...comprasContacto].map(p => [texto(p.id), p])).values()];
     const moneda = r.equivalente?.moneda ?? r.moneda;
     const importe = centimos(r.equivalente?.monto ?? r.monto);
-    const tolerancia = r.equivalente ? Math.max(5, Math.round(importe * 0.02)) : 1;
+    const tolerancia = toleranciaMontoAuto(importe);
     const numero = r.numero?.trim().toUpperCase();
     for (const p of compras) {
       const mismoContacto = p.contact_id === e.contacto?.id || normalizarProveedorExacto(String(p.contact_name ?? "")) === normalizarProveedorExacto(r.proveedor);
       const mismoNumero = numero && numero !== "00000" && numero === String(p.document_number ?? "").trim().toUpperCase();
       const dias = Math.abs(Date.parse(String(p.date).slice(0, 10)) - Date.parse(r.fecha)) / 86400000;
-      if ((mismoContacto && mismoNumero) || (p.currency === moneda && dias <= 15 && Math.abs(centimos(p.total, true) - importe) <= tolerancia)) {
+      if (mismoContacto && (mismoNumero || (p.currency === moneda && dias <= 15 && Math.abs(centimos(p.total, true) - importe) <= tolerancia))) {
         e.duplicados.push(texto(p.id));
       }
     }
     const cuentas = await this.listar(empresa, "/treasury/accounts");
+    const desdeBanco = new Date(fecha); desdeBanco.setUTCDate(desdeBanco.getUTCDate() - VENTANA_DIAS_MOVIMIENTO_AUTO);
+    const hastaBanco = new Date(fecha); hastaBanco.setUTCDate(hastaBanco.getUTCDate() + VENTANA_DIAS_MOVIMIENTO_AUTO);
     for (const cuenta of cuentas) {
       if (cuenta.archived === true) continue;
       const cuentaId = texto(cuenta.id);
       for (const mov of await this.listar(empresa, `/treasury/accounts/${idUrl(cuentaId)}/bank-movements`, {
-        start_date: r.fecha, end_date: r.fecha,
+        start_date: formato(desdeBanco), end_date: formato(hastaBanco),
       })) {
         if (mov.banking_account_id !== cuentaId || mov.currency !== cuenta.currency) throw new Error("Identidad bancaria inconsistente.");
         const movimiento: MovimientoAuto = { id: texto(mov.id), cuentaId, fecha: texto(mov.booking_date).slice(0, 10),
@@ -137,8 +148,11 @@ export class HoldedAuto {
           estado: texto(mov.status), origen: typeof mov.origin === "string" ? mov.origin : "", descripcion: typeof mov.description === "string" ? mov.description : "" };
         e.movimientos.push(movimiento);
         // Incluye tickets ya conciliados aunque /purchases no los muestre.
-        if (movimiento.moneda === moneda && movimiento.fecha === r.fecha && movimiento.centimos < 0 &&
+        const proveedorBanco = proveedorEnDescripcion(r.proveedor, movimiento.descripcion) ||
+          Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, movimiento.descripcion));
+        if (movimiento.moneda === moneda && diferenciaDiasCalendario(movimiento.fecha, r.fecha) <= VENTANA_DIAS_MOVIMIENTO_AUTO && movimiento.centimos < 0 &&
           Math.abs(-movimiento.centimos - importe) <= tolerancia &&
+          (movimiento.fecha === r.fecha || proveedorBanco) &&
           (movimiento.estado !== "pending" || movimiento.conciliadoCentimos !== 0)) e.duplicados.push(`banco:${cuentaId}/${movimiento.id}`);
       }
     }

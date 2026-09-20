@@ -13,6 +13,7 @@ function escenario() {
     lines: [{ account: "c1" }], tags: ["wobi-auto-op1"], payments_total: "0", payments_pending: "20.00", payments_detail: [] as unknown[], draft: true };
   const movimiento = { id: "b1", banking_account_id: "a1", currency: "EUR", amount: "-20.00", reconciled_amount: "0.00", booking_date: r.fecha,
     status: "pending", description: "Proveedor", origin: "bank" };
+  const contactos = [{ id: "p1", name: "Proveedor" }];
   let attachment: { id: string } | undefined;
   const memoria: MemoriaHoldedAuto = { alias: async () => [], duplicadoInterno: async () => false,
     cuentaConfirmada: async () => ({ cuentaId: "c1", confirmadoEn: new Date().toISOString() }) };
@@ -27,7 +28,7 @@ function escenario() {
       if (path.endsWith("/attachments")) { const file = (init.body as FormData).get("file") as File; attachment = { id: file.name }; return json({}); }
       throw new Error(`POST no esperado ${path}`);
     }
-    if (path === "/contacts") return list([{ id: "p1", name: "Proveedor" }]);
+    if (path === "/contacts") return list(contactos);
     if (path === "/purchases") return list([]);
     if (path === "/expenses-accounts") return json({ items: [{ id: "c1", name: "Servicios", archived: false }] });
     if (path === "/treasury/accounts") return list([{ id: "a1", name: "Cuenta", currency: "EUR", archived: false }]);
@@ -41,7 +42,7 @@ function escenario() {
   const adapter = new HoldedAuto(memoria, request);
   const d = evaluarAuto(c, analisisFixture(), r, evidenciaFixture(), configFixture); assert.ok(d.apto);
   const op: OperacionAuto = { id: "op1", plan: d.plan, estado: "creando" };
-  return { adapter, request, memoria, compra, movimiento, posts, c, r, op };
+  return { adapter, request, memoria, compra, movimiento, contactos, posts, c, r, op };
 }
 test("consulta proveedor exacto, catálogo no paginado, memoria y cargo real", async () => {
   const e = escenario(); const ev = await e.adapter.evidencias(e.c, e.r);
@@ -83,6 +84,27 @@ test("las variantes inequívocas de forma societaria conservan coincidencia exac
   assert.equal(normalizarProveedorExacto("OUIGO ESPAÑA S.A.U."), normalizarProveedorExacto("OUIGO ESPAÑA SA."));
   assert.equal(normalizarProveedorExacto("Nieuwe Veste (Restaurant, Breda)"), normalizarProveedorExacto("Nieuwe Veste"));
   assert.notEqual(normalizarProveedorExacto("DHL"), normalizarProveedorExacto("DHL Express Spain SLU"));
+});
+test("resuelve un proveedor abreviado solo si el contacto es único y el banco lo confirma", async () => {
+  const e = escenario();
+  e.r.proveedor = "DHL";
+  e.contactos[0].name = "DHL Express Spain SLU";
+  e.movimiento.description = "DHL EXPRESS COMPRA 1234";
+  e.movimiento.booking_date = "2026-09-13";
+  e.movimiento.amount = "-19.75";
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.metodo, "aproximado_unico");
+  assert.equal(evidencia.contacto?.exacto, false);
+  const decision = evaluarAuto(e.c, analisisFixture(e.r), e.r, evidencia, configFixture);
+  assert.equal(decision.apto, true);
+  if (decision.apto) assert.equal(decision.plan.totalCentimos, 1975);
+});
+test("dos contactos aproximados continúan en revisión manual", async () => {
+  const e = escenario();
+  e.r.proveedor = "DHL";
+  e.contactos.splice(0, 1, { id: "p1", name: "DHL Express Spain SLU" }, { id: "p2", name: "DHL Freight Spain SLU" });
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto, undefined);
 });
 test("comprobante verificado por contenido binario y sin reconstruir un adjunto real", async () => {
   const e = escenario(); e.op.compraId = "creada";

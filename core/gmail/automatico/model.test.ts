@@ -34,7 +34,7 @@ test("una empresa desconocida queda resuelta solo por evidencia determinista de 
     assert.equal(d.plan.recibo.empresa, "WOBA");
   }
 });
-test("rechaza falta de datos, factura, contacto aproximado, empresa ajena y consultas fallidas", () => {
+test("rechaza falta de datos, factura, contacto aproximado no corroborado, empresa ajena y consultas fallidas", () => {
   const casos = [
     () => { const r = reciboFixture(); const e = evidenciaFixture(); r.confianza = "media"; e.movimientos[0].descripcion = "Comercio sin relación"; return { r, e }; },
     () => { const r = reciboFixture(); r.tipo = "factura"; return { r }; },
@@ -59,7 +59,7 @@ test("ni ingresos, ni conciliaciones parciales, ni estado desconocido, ni varias
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].origen = ""; },
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].origen = "manual"; },
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos.push({ ...e.movimientos[0], id: "otro" }); },
-    (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].fecha = "2026-09-17"; },
+    (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].fecha = "2026-09-11"; },
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].moneda = "USD"; },
   ]) {
     const e = evidenciaFixture(); cambiar(e);
@@ -74,11 +74,52 @@ test("equivalente explícito permite tolerancia pero conserva el cargo bancario 
   r.equivalente.monto = 21;
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture).apto, false);
 });
-test("la tolerancia no cambia el importe de un recibo en moneda nativa", () => {
+test("una diferencia nativa pequeña usa el cargo bancario real y conserva el importe del recibo", () => {
   const r = reciboFixture(); r.monto = 20.01;
   const d = evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) {
+    assert.equal(d.plan.totalCentimos, 2000);
+    assert.equal(d.plan.diferenciaCentimos, -1);
+    assert.equal(d.plan.regla, "moneda_nativa_2pct_min_005_max_500");
+  }
+  r.monto = 20.5;
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture).apto, false);
+});
+test("admite hasta cinco días de desfase bancario y rechaza el sexto", () => {
+  const e = evidenciaFixture(); e.movimientos[0].fecha = "2026-09-13";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture).apto, true);
+  e.movimientos[0].fecha = "2026-09-12";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture).apto, false);
+});
+test("una coincidencia aproximada exige que el banco confirme el proveedor", () => {
+  const r = reciboFixture(); r.monto = 20.01;
+  const e = evidenciaFixture(); e.movimientos[0].descripcion = "Comercio distinto";
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
   assert.equal(d.apto, false);
-  if (!d.apto) assert.ok(d.motivos.includes("diferencia_requiere_revision"));
+  if (!d.apto) assert.ok(d.motivos.includes("coincidencia_aproximada_sin_proveedor_bancario"));
+});
+test("la tolerancia porcentual nunca supera cinco unidades monetarias", () => {
+  const r = reciboFixture(); r.monto = 10_000;
+  const e = evidenciaFixture(); e.movimientos[0].centimos = -999_400;
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
+  e.movimientos[0].centimos = -999_500;
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, true);
+});
+test("un proveedor aproximado único requiere confirmación en el descriptor bancario", () => {
+  const r = reciboFixture(); r.proveedor = "DHL";
+  const e = evidenciaFixture(); e.contacto = { id: "p1", nombre: "DHL Express Spain SLU", exacto: false, metodo: "aproximado_unico" };
+  e.movimientos[0].descripcion = "Compra DHL Express 1234";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, true);
+  e.movimientos[0].descripcion = "Comercio distinto";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
+});
+test("el descriptor del proveedor desempata dos movimientos cercanos", () => {
+  const e = evidenciaFixture();
+  e.movimientos.push({ ...e.movimientos[0], id: "otro", descripcion: "Otro comercio", fecha: "2026-09-17" });
+  const d = evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) assert.equal(d.plan.movimiento.id, "b1");
 });
 test("lectura incompleta y adjunto inventado nunca autorizan", () => {
   const r = reciboFixture(); r.fuente = "adjunto-no-existente";
