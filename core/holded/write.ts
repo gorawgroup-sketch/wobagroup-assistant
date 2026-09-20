@@ -2038,7 +2038,8 @@ export function combinarTagsGastoAprendidos(
   concepto: string,
   proveedor: string,
   personaAsociada: string | undefined,
-  tagsAprendidos: string[] = []
+  tagsAprendidos: string[] = [],
+  contextoPersona = ""
 ): string[] {
   const tagsCategoriaActual = inferirTagsCategoria(concepto, proveedor);
   const categoriasConocidas = new Set([
@@ -2078,7 +2079,12 @@ export function combinarTagsGastoAprendidos(
     "yanessy", "simontalloen", "simon", "alejandra", "nuria", "nicolasgomez",
     "yesseniadosprazeres", "carlosg", "jorge", "jorgejcome", "kelly", "kellycorreales", "davids",
   ]);
-  const conceptoCompacto = normalizarEtiquetaHolded(concepto);
+  // El contexto del correo puede demostrar quién realizó el gasto, pero no
+  // debe participar en la categoría: asuntos como "viaje/hospedaje" también
+  // acompañan tickets de supermercado o restaurante y antes reemplazaban
+  // erróneamente "alimentacion" por "hospedaje". La categoría ya se obtuvo
+  // arriba únicamente del concepto y proveedor del comprobante.
+  const conceptoCompacto = normalizarEtiquetaHolded(`${concepto} ${contextoPersona}`);
   const personasDemostradasEnConcepto = personaAsociada ? [] : [...etiquetasPersonaAprendidas]
     .filter(tag => tag.length >= 5 && conceptoCompacto.includes(tag));
 
