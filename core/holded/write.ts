@@ -145,6 +145,7 @@ function getReadApiKey(empresa: Empresa): string {
 async function holdedReadJson(empresa: Empresa, path: string): Promise<unknown> {
   const response = await fetch(`${HOLDED_API_BASE}${path}`, {
     headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
   return response.json();
@@ -199,6 +200,7 @@ async function holdedWriteCallSinGuardia(
       Accept: "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!response.ok) {
