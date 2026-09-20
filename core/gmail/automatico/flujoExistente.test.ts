@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { monedaDocumentoAuto } from "./flujoExistente";
-import type { ReciboAuto } from "./model";
+import { monedaDocumentoAuto, type ReciboAuto } from "./model";
 
 const recibo = (cambios: Partial<ReciboAuto> = {}): ReciboAuto => ({
   fuente: "adjunto-1",

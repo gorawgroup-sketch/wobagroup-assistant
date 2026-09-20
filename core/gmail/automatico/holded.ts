@@ -1,6 +1,6 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
-import { normalizarEtiquetaHolded } from "../../holded/write";
-import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, nombresProveedorCompatibles, nombresProveedorEquivalentes,
+import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, type TaxCatalogEntry } from "../../holded/write";
+import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, monedaDocumentoAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
   normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
@@ -273,18 +273,19 @@ export class HoldedAuto {
   async crear(op: OperacionAuto): Promise<string> {
     if (this.flujoExistente) return this.flujoExistente.crear(op);
     const p = op.plan;
-    let cambio: number | undefined;
-    if (p.movimiento.moneda !== "EUR") {
+    const documento = monedaDocumentoAuto(p.recibo);
+    let cambio = documento.tasaCambio;
+    if (documento.moneda !== "EUR" && cambio === undefined) {
       const { obtenerTasaCambioHistorica } = await import("../../utils/exchangeRate");
-      cambio = await obtenerTasaCambioHistorica(p.recibo.fecha, "EUR", p.movimiento.moneda);
+      cambio = await obtenerTasaCambioHistorica(p.recibo.fecha, "EUR", documento.moneda);
       if (!cambio || !Number.isFinite(cambio)) throw new Error("Tipo de cambio contable no verificado.");
     }
     const response = await this.post(p.empresa, "/purchases", {
       contact_id: p.contactoId, date: p.recibo.fecha, number: p.recibo.numero || "00000",
       description: `${p.recibo.concepto} — recibo original ${p.recibo.monto} ${p.recibo.moneda}; convertir a ticket.`,
       notes: `WOBI_AUTO:${op.id}`, tags: [`wobi-auto-${op.id}`, "wobi-ticket-pendiente"],
-      currency: p.movimiento.moneda, ...(cambio ? { currency_change: cambio } : {}), draft: true,
-      items: [{ name: p.recibo.concepto, units: 1, price: p.totalCentimos / 100, taxes: [], ...(p.cuentaId ? { account: p.cuentaId } : {}) }],
+      currency: documento.moneda, ...(cambio ? { currency_change: cambio } : {}), draft: true,
+      items: [{ name: p.recibo.concepto, units: 1, price: documento.monto, taxes: [], ...(p.cuentaId ? { account: p.cuentaId } : {}) }],
     });
     return texto(objeto(await response.json()).id);
   }
@@ -335,16 +336,40 @@ export class HoldedAuto {
   }
   async verificarCreacion(op: OperacionAuto): Promise<boolean> {
     const c = await this.compra(op); const p = op.plan;
+    const documento = monedaDocumentoAuto(p.recibo);
     const tagsEsperados = new Set((p.evidencia.cuenta?.tags ?? []).map(normalizarEtiquetaHolded).filter(Boolean));
     const tagsActuales = new Set(Array.isArray(c.tags)
       ? c.tags.filter((tag): tag is string => typeof tag === "string").map(normalizarEtiquetaHolded).filter(Boolean)
       : []);
     const tagsCorrectos = tagsEsperados.size === tagsActuales.size &&
       [...tagsEsperados].every(tag => tagsActuales.has(tag));
-    const base = c.id === op.compraId && c.contact_id === p.contactoId && (c.currency || "EUR") === p.movimiento.moneda &&
-      String(c.date).slice(0, 10) === p.recibo.fecha && centimos(c.total, true) === p.totalCentimos &&
+    const tasaActual = Number(c.currency_change ?? (documento.moneda === "EUR" ? 1 : NaN));
+    const tasaCorrecta = documento.tasaCambio === undefined ||
+      (Number.isFinite(tasaActual) && Math.abs(tasaActual - documento.tasaCambio) < 0.000001);
+    let impuestosCorrectos = true;
+    if (this.flujoExistente) {
+      const catalogoCrudo = await this.getEstatico(p.empresa, "/taxes");
+      const catalogo = (Array.isArray(catalogoCrudo.items) ? catalogoCrudo.items : [])
+        .map(objeto)
+        .filter(item => item.scope === "purchases" && typeof item.key === "string")
+        .map(item => ({ key: String(item.key), name: typeof item.name === "string" ? item.name : undefined,
+          amount: item.amount == null || item.amount === "" ? null : Number(item.amount),
+          type: typeof item.type === "string" ? item.type : undefined,
+          visible: typeof item.visible === "boolean" ? item.visible : undefined,
+          items: Array.isArray(item.items) ? item.items.filter((id): id is string => typeof id === "string") : undefined,
+        } satisfies TaxCatalogEntry));
+      const impuestoEsperado = mapearInversionSujetoPasivoATaxKey(catalogo);
+      const impuestosActuales = Array.isArray(c.lines) && c.lines.length === 1 && Array.isArray(objeto(c.lines[0]).taxes)
+        ? objeto(c.lines[0]).taxes as unknown[] : [];
+      impuestosCorrectos = Boolean(impuestoEsperado) && impuestosActuales.length === 1 &&
+        impuestosActuales[0] === impuestoEsperado;
+    }
+    const base = c.id === op.compraId && c.contact_id === p.contactoId &&
+      String(c.currency || "EUR").toUpperCase().trim() === documento.moneda &&
+      String(c.date).slice(0, 10) === p.recibo.fecha && centimos(c.total, true) === Math.round(documento.monto * 100) &&
       Array.isArray(c.lines) && c.lines.length === 1 && (!p.cuentaId || objeto(c.lines[0]).account === p.cuentaId) &&
-      centimos(c.tax, true) === 0 && String(c.document_number) === (p.recibo.numero || "00000");
+      tasaCorrecta && impuestosCorrectos && centimos(c.tax, true) === 0 &&
+      String(c.document_number) === (p.recibo.numero || "00000");
     if (this.flujoExistente) return base && tagsCorrectos;
     return base && Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`);
   }

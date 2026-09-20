@@ -5,39 +5,7 @@ import { adjuntarComprobanteHolded, crearGastoHolded, editarCompraHolded, inferi
   combinarTagsGastoAprendidos, reconciliarMovimiento } from "../../holded/write";
 import { conTiempoMaximo } from "../../utils/asyncTimeout";
 import type { FlujoGastoExistente } from "./holded";
-import { VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
-
-export interface MonedaDocumentoAuto {
-  moneda: string;
-  monto: number;
-  tasaCambio?: number;
-}
-
-/**
- * El documento se registra siempre por el importe y la moneda impresos en
- * el comprobante. El equivalente en EUR sirve para encontrar y conciliar el
- * movimiento bancario, y aporta una conversión exacta cuando el propio
- * recibo la demuestra. Nunca se reutiliza el cargo bancario como precio de
- * una compra en moneda extranjera.
- */
-export function monedaDocumentoAuto(recibo: ReciboAuto): MonedaDocumentoAuto {
-  const moneda = recibo.moneda.toUpperCase().trim();
-  if (!/^[A-Z]{3}$/.test(moneda) || !Number.isFinite(recibo.monto) || recibo.monto <= 0) {
-    throw new Error("importe_o_moneda_nativa_invalida");
-  }
-  if (moneda === "EUR") return { moneda, monto: recibo.monto };
-
-  const equivalente = recibo.equivalente;
-  if (equivalente?.moneda.toUpperCase().trim() !== "EUR" ||
-      !Number.isFinite(equivalente.monto) || equivalente.monto <= 0) {
-    return { moneda, monto: recibo.monto };
-  }
-  const tasaCambio = Number((recibo.monto / equivalente.monto).toFixed(6));
-  if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) {
-    throw new Error("tasa_cambio_recibo_invalida");
-  }
-  return { moneda, monto: recibo.monto, tasaCambio };
-}
+import { monedaDocumentoAuto, VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
 
 async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   if (recibo.empresa === "desconocida") return undefined;

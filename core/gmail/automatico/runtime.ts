@@ -103,7 +103,10 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     if (!esHito(completados, total)) return;
     await notificar(fase === "analisis"
       ? (completados === 0 ? `⏳ Analizando ${total} mensaje(s), hasta 2 a la vez…` : `⏳ Mensajes analizados: ${completados}/${total}.`)
-      : (completados === 0 ? `⏳ Verificando candidatos en Gmail y Holded…` : `⏳ Candidatos verificados: ${completados}/${total}.`));
+      : fase === "recuperacion"
+        ? (completados === 0 ? `⏳ Revisando ${total} operación(es) anteriores antes de continuar…` :
+          `⏳ Operaciones anteriores revisadas: ${completados}/${total}.`)
+        : (completados === 0 ? `⏳ Verificando candidatos en Gmail y Holded…` : `⏳ Candidatos verificados: ${completados}/${total}.`));
   } });
   const resultado = await service.revisar(config);
   await colaNotificacion;
