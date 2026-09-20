@@ -3,15 +3,17 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { adjuntarComprobanteHolded, crearGastoHolded, editarCompraHolded, inferirCuentaGasto,
   combinarTagsGastoAprendidos, reconciliarMovimiento } from "../../holded/write";
+import { conTiempoMaximo } from "../../utils/asyncTimeout";
 import type { FlujoGastoExistente } from "./holded";
 import { VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
 
 async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   if (recibo.empresa === "desconocida") return undefined;
   const textoClasificacion = [recibo.concepto, recibo.contextoClasificacion].filter(Boolean).join(" · ");
-  const sugerencia = await inferirCuentaGasto(recibo.empresa, { proveedor: recibo.proveedor,
-    concepto: textoClasificacion, personaAsociada: recibo.persona, contextoDeViaje: recibo.viaje,
-    reciboSimplificado: true, excluirCompraId });
+  const sugerencia = await conTiempoMaximo(() => inferirCuentaGasto(recibo.empresa as Exclude<ReciboAuto["empresa"], "desconocida">, {
+    proveedor: recibo.proveedor, concepto: textoClasificacion, personaAsociada: recibo.persona,
+    contextoDeViaje: recibo.viaje, reciboSimplificado: true, excluirCompraId,
+  }), 60_000, "clasificación contable automática");
   if (!sugerencia?.accountId) return undefined;
   const tags = combinarTagsGastoAprendidos(
     textoClasificacion,
@@ -66,7 +68,11 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
         { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags,
           lineas: [{ concepto: op.plan.recibo.concepto, base: op.plan.totalCentimos / 100, tipoIvaPct: 0,
             tratamientoFiscal: "inversion_sujeto_pasivo" }] },
-        { idempotencyKey: `correo-auto-reparar:${op.id}`, proceso: "correo_gasto_automatico_reparar" });
+        // Cada política de reparación tiene su propia frontera durable. Una edición
+        // anterior incierta jamás se repite; la política nueva relee el estado actual
+        // completo y puede aplicar una corrección distinta con otra identidad.
+        { idempotencyKey: `correo-auto-reparar:${op.id}:${VERSION_POLITICA}`,
+          proceso: "correo_gasto_automatico_reparar" });
     },
     adjuntar: async (op, data, nombre, mime) => {
       if (!op.compraId) throw new Error("Compra ausente antes de adjuntar.");

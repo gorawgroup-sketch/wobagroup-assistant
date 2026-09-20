@@ -119,6 +119,16 @@ test("al agotar el tiempo informa el pendiente sin iniciar análisis ni escritur
   assert.equal(e.llamadas.crear + e.llamadas.adjuntar + e.llamadas.conciliar, 0);
   assert.deepEqual(r.pendientes[0]?.motivos, ["revision_pospuesta_por_limite_de_tiempo"]);
 });
+test("una consulta de evidencias bloqueada respeta el límite global y deja el correo pendiente", async () => {
+  const e = escenario();
+  e.puerto.evidencias = async () => new Promise(() => {});
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { fechaLimite: Date.now() + 20 });
+  const inicio = Date.now();
+  const r = await service.revisar({ ...configFixture, modo: "simulate" });
+  assert.ok(Date.now() - inicio < 1_000);
+  assert.equal(e.llamadas.crear + e.llamadas.adjuntar + e.llamadas.conciliar, 0);
+  assert.ok(r.pendientes[0]?.motivos.some(motivo => motivo.startsWith("error:")));
+});
 test("correo mixto procesa el gasto, conserva la solicitud y no vuelve a crearlo", async () => {
   const e = escenario(); e.a.otrasAcciones = true;
   await e.service.revisar(configFixture); const segunda = await e.service.revisar(configFixture);
