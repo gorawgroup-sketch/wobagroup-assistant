@@ -68,6 +68,7 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
       const documento = monedaDocumentoAuto(op.plan.recibo);
       await editarCompraHolded(op.plan.empresa, compraId,
         { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags,
+          fecha: op.plan.recibo.fecha, numeroDocumento: op.plan.recibo.numero || "00000",
           ...(documento.moneda === "EUR" || documento.tasaCambio !== undefined
             ? { monedaNueva: documento.moneda, tasaCambioNueva: documento.tasaCambio ?? 1 }
             : {}),
