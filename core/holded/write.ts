@@ -2042,10 +2042,7 @@ export function combinarTagsGastoAprendidos(
   contextoPersona = ""
 ): string[] {
   const tagsCategoriaActual = inferirTagsCategoria(concepto, proveedor);
-  const categoriasConocidas = new Set([
-    "suscripcion", "alimentacion", "transporte", "taxi", "tren", "avion", "alquilercoche",
-    "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche",
-  ]);
+  const categoriasConocidas = CATEGORIAS_GASTO_CONOCIDAS;
   const canonizarCategoria = (tag: string): string => {
     const normalizada = normalizarEtiquetaHolded(tag);
     if (normalizada === "alojamiento") return "hospedaje";
@@ -2111,6 +2108,17 @@ export function combinarTagsGastoAprendidos(
     .map(({ tag }) => tag);
 
   return Array.from(new Set([...tagsPersona, ...tagsCategoria]));
+}
+
+const CATEGORIAS_GASTO_CONOCIDAS = new Set([
+  "suscripcion", "alimentacion", "transporte", "taxi", "tren", "avion", "alquilercoche",
+  "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche",
+]);
+
+/** Indica si una clasificación conserva al menos una categoría funcional
+ * aprendida; etiquetas de persona, región o proyecto no cuentan. */
+export function tieneCategoriaGastoAprendida(tags: string[]): boolean {
+  return tags.some(tag => CATEGORIAS_GASTO_CONOCIDAS.has(normalizarEtiquetaHolded(tag)));
 }
 
 export interface CuentaSugerida {

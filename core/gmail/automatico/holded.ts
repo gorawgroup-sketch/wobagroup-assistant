@@ -1,5 +1,6 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
-import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, type TaxCatalogEntry } from "../../holded/write";
+import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, tieneCategoriaGastoAprendida,
+  type TaxCatalogEntry } from "../../holded/write";
 import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, monedaDocumentoAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
   normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
@@ -373,8 +374,14 @@ export class HoldedAuto {
     const tagsActuales = new Set(Array.isArray(c.tags)
       ? c.tags.filter((tag): tag is string => typeof tag === "string").map(normalizarEtiquetaHolded).filter(Boolean)
       : []);
-    const tagsCorrectos = tagsEsperados.size === tagsActuales.size &&
+    const coincidenciaExactaTags = tagsEsperados.size === tagsActuales.size &&
       [...tagsEsperados].every(tag => tagsActuales.has(tag));
+    const clasificacionNuevaParcial = this.flujoExistente &&
+      !tieneCategoriaGastoAprendida([...tagsEsperados]);
+    const tagsCorrectos = clasificacionNuevaParcial
+      ? [...tagsEsperados].every(tag => tagsActuales.has(tag)) &&
+        tieneCategoriaGastoAprendida([...tagsActuales])
+      : coincidenciaExactaTags;
     const tasaActual = Number(c.currency_change ?? (documento.moneda === "EUR" ? 1 : NaN));
     const tasaCorrecta = documento.tasaCambio === undefined ||
       (Number.isFinite(tasaActual) && (Math.abs(tasaActual - documento.tasaCambio) < 0.000001 ||

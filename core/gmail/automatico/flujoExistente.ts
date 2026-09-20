@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { adjuntarComprobanteHolded, crearGastoHolded, editarCompraHolded, inferirCuentaGasto,
-  combinarTagsGastoAprendidos, reconciliarMovimiento } from "../../holded/write";
+  combinarTagsGastoAprendidos, reconciliarMovimiento, tieneCategoriaGastoAprendida } from "../../holded/write";
 import { conTiempoMaximo } from "../../utils/asyncTimeout";
 import type { FlujoGastoExistente } from "./holded";
 import { monedaDocumentoAuto, VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
@@ -51,6 +51,11 @@ export function camposDocumentoParaReparacion(recibo: ReciboAuto): { fecha: stri
   return { fecha: recibo.fecha, ...(numeroDocumento ? { numeroDocumento } : {}) };
 }
 
+/** Una clasificación parcial nunca debe borrar categorías ya verificadas. */
+export function camposEtiquetasParaReparacion(tags: string[]): { tagsNuevos?: string[] } {
+  return tieneCategoriaGastoAprendida(tags) ? { tagsNuevos: tags } : {};
+}
+
 export function crearFlujoGastoExistente(): FlujoGastoExistente {
   const conciliar = async (op: OperacionAuto) => {
     if (!op.compraId) throw new Error("Compra ausente antes de conciliar.");
@@ -76,7 +81,8 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
       const cuenta = await asegurarClasificacion(op);
       const documento = monedaDocumentoAuto(op.plan.recibo);
       await editarCompraHolded(op.plan.empresa, compraId,
-        { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags,
+        { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId,
+          ...camposEtiquetasParaReparacion(cuenta.tags),
           ...camposDocumentoParaReparacion(op.plan.recibo),
           ...(documento.moneda === "EUR" || documento.tasaCambio !== undefined
             ? { monedaNueva: documento.moneda, tasaCambioNueva: documento.tasaCambio ?? 1 }

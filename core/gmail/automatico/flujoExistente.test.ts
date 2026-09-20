@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { camposDocumentoParaReparacion } from "./flujoExistente";
+import { camposDocumentoParaReparacion, camposEtiquetasParaReparacion } from "./flujoExistente";
 import { monedaDocumentoAuto, type ReciboAuto } from "./model";
 
 const recibo = (cambios: Partial<ReciboAuto> = {}): ReciboAuto => ({
@@ -56,5 +56,12 @@ test("una reparación conserva el número existente cuando la relectura no lo de
   assert.deepEqual(camposDocumentoParaReparacion(recibo({ numero: " 2026-56028514 " })), {
     fecha: "2026-09-16",
     numeroDocumento: "2026-56028514",
+  });
+});
+
+test("una reparación conserva categorías verificadas si la nueva lectura solo identifica a la persona", () => {
+  assert.deepEqual(camposEtiquetasParaReparacion(["nicolasgomez"]), {});
+  assert.deepEqual(camposEtiquetasParaReparacion(["nicolasgomez", "transporte", "avion"]), {
+    tagsNuevos: ["nicolasgomez", "transporte", "avion"],
   });
 });

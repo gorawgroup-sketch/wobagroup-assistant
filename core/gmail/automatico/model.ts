@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v20";
+export const VERSION_POLITICA = "correo-gastos-v21";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
