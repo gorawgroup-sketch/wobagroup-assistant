@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS wobi_mail_analyses (
   data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (mailbox, message_id, fingerprint, policy)
 );
+CREATE TABLE IF NOT EXISTS wobi_mail_report_slots (
+  mailbox text NOT NULL, slot text NOT NULL, state text NOT NULL,
+  data jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (mailbox, slot),
+  CHECK (state IN ('claimed','sent'))
+);
 CREATE INDEX IF NOT EXISTS wobi_mail_operations_pending ON wobi_mail_operations(mailbox, state);
 CREATE INDEX IF NOT EXISTS wobi_mail_events_message ON wobi_mail_events(mailbox, message_id);
 `;
@@ -48,7 +55,11 @@ const contexto = new AsyncLocalStorage<{ locks: Set<string>; operacion?: string 
 
 /** Bloqueo de sesión distribuido. El intento externo se persiste antes del POST, de modo que
  * perder la conexión del lock no autoriza repetir una escritura cuyo resultado es incierto. */
-export async function conBloqueoAuto<T>(clave: string, tarea: () => Promise<T>): Promise<T> {
+export async function conBloqueoAuto<T>(
+  clave: string,
+  tarea: () => Promise<T>,
+  opciones: { lockTimeoutMs?: number } = {}
+): Promise<T> {
   const actual = contexto.getStore();
   if (actual?.locks.has(clave)) return tarea();
   const client = await poolAuto().connect();
@@ -56,7 +67,8 @@ export async function conBloqueoAuto<T>(clave: string, tarea: () => Promise<T>):
   const onError = () => { roto = true; };
   client.on("error", onError);
   try {
-    await client.query("SET lock_timeout = '30s'");
+    const lockTimeoutMs = Math.max(1_000, Math.min(10 * 60_000, opciones.lockTimeoutMs ?? 30_000));
+    await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`]);
     await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
     const resultado = await contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea);
     if (roto) throw new Error("Se perdió el bloqueo distribuido; comprobar el registro antes de continuar.");
@@ -72,7 +84,10 @@ export const conOperacionAuto = <T>(id: string, tarea: () => Promise<T>): Promis
   contexto.run({ locks: contexto.getStore()?.locks ?? new Set(), operacion: id }, tarea);
 
 /** Compartido por cron, comandos y activación manual de correos. */
-export async function conCoordinadorCorreo<T>(tarea: () => Promise<T>): Promise<T> {
+export async function conCoordinadorCorreo<T>(
+  tarea: () => Promise<T>,
+  opciones: { lockTimeoutMs?: number } = {}
+): Promise<T> {
   const clave = `correo:${process.env.GMAIL_IMPERSONATE_EMAIL ?? ""}`;
   const actual = contexto.getStore();
   if (actual?.locks.has(clave)) return tarea();
@@ -81,7 +96,7 @@ export async function conCoordinadorCorreo<T>(tarea: () => Promise<T>): Promise<
     const { conMutex } = await import("../../utils/asyncMutex");
     return conMutex(clave, () => contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea));
   }
-  return conBloqueoAuto(clave, tarea);
+  return conBloqueoAuto(clave, tarea, opciones);
 }
 
 /** Las rutas manuales y múltiples respetan las operaciones automáticas incompletas. */
