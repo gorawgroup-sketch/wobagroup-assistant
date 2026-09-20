@@ -2078,13 +2078,18 @@ export function combinarTagsGastoAprendidos(
     "yanessy", "simontalloen", "simon", "alejandra", "nuria", "nicolasgomez",
     "yesseniadosprazeres", "carlosg", "jorge", "jorgejcome", "kelly", "kellycorreales", "davids",
   ]);
+  const conceptoCompacto = normalizarEtiquetaHolded(concepto);
+  const personasDemostradasEnConcepto = personaAsociada ? [] : [...etiquetasPersonaAprendidas]
+    .filter(tag => tag.length >= 5 && conceptoCompacto.includes(tag));
 
   // Cuando el comprobante identifica a la persona, esa evidencia actual prevalece
   // sobre cualquier tag histórico. Si no la identifica, conservamos únicamente los
   // tags aprendidos que no sean categorías; la categoría del gasto actual se vuelve
   // a deducir por su concepto y proveedor. Así un supermercado no hereda "hospedaje"
   // de otro gasto del mismo viaje.
-  const candidatosPersona = (personaAsociada ? [personaAsociada] : tagsAprendidos)
+  const candidatosPersona = (personaAsociada
+    ? [personaAsociada]
+    : [...tagsAprendidos, ...personasDemostradasEnConcepto])
     .map(tag => tag.trim())
     .filter(Boolean)
     .filter(tag => personaAsociada || etiquetasPersonaAprendidas.has(normalizarEtiquetaHolded(tag)));
