@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
+import { resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { hash, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 
@@ -42,6 +42,19 @@ test("crea, adjunta, concilia, verifica y solo entonces marca leído", async () 
   assert.equal(r.completados, 1); assert.equal(r.pendientes.length, 0);
   assert.deepEqual(e.llamadas, { crear: 1, adjuntar: 1, conciliar: 1, marcar: 1, registrar: 1 });
   assert.ok(e.eventos.indexOf("completada") < e.eventos.indexOf("correo_resuelto"));
+});
+test("el informe desglosa automatizaciones por empresa y conserva el detalle verificable", () => {
+  const texto = resumenAutomatico({
+    modo: "execute", revisados: 5, completados: 3, simulados: 0, pendientes: [],
+    gastos: [
+      { empresa: "WOBA", id: "w-1", centimos: 1250, moneda: "EUR" },
+      { empresa: "Footprint", id: "f-1", centimos: 2000, moneda: "USD" },
+      { empresa: "WOBA", id: "w-2", centimos: 399, moneda: "EUR" },
+    ],
+  });
+  assert.match(texto, /3 gasto\(s\) creado\(s\) y conciliado\(s\)/);
+  assert.match(texto, /Automatizados por empresa: WOBA: 2; Footprint: 1\./);
+  assert.match(texto, /• Footprint: 20\.00 USD — compra f-1/);
 });
 test("simulación analiza y audita sin reservas, escrituras ni marcado leído", async () => {
   const e = escenario(); const r = await e.service.revisar({ ...configFixture, modo: "simulate" });
