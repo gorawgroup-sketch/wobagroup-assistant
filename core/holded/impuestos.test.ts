@@ -49,6 +49,12 @@ test("una propuesta antigua a IVA 0 se migra de forma segura a sujeto pasivo", (
   );
 });
 
+test("un ticket pendiente de convertir conserva una línea sin impuesto inventado", () => {
+  assert.equal(mapearImpuestoPrincipalATaxKey(CATALOGO_REAL_MINIMO, {
+    tipoIvaPct: 0, tratamientoFiscal: "sin_impuesto",
+  }), undefined);
+});
+
 test("el IVA español real conserva su código porcentual", () => {
   assert.equal(
     mapearImpuestoPrincipalATaxKey(CATALOGO_REAL_MINIMO, {
@@ -81,4 +87,3 @@ test("si Holded no ofrece sujeto pasivo, bloquea antes de elegir un impuesto 0 a
     ImpuestoSujetoPasivoNoDisponibleError
   );
 });
-

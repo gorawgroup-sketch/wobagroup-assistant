@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  combinarTagsGastoAprendidos,
   construirSugerenciaDesdeCoincidencias,
   esImporteUtilComoPrecedenteContable,
   inferirTagsCategoria,
+  normalizarEtiquetaHolded,
   seleccionarCoincidenciasProveedor,
   type LineaConCuenta,
 } from "./write";
@@ -56,6 +58,33 @@ test("reconoce una compra de créditos de Anthropic como suscripción", () => {
     inferirTagsCategoria("Compra de créditos (one-time credit purchase) — septiembre 2026", "Anthropic, PBC"),
     ["suscripcion"]
   );
+});
+
+test("reconoce la terminología real de los billetes aéreos", () => {
+  assert.deepEqual(
+    inferirTagsCategoria("Tiquete aéreo Norwegian DY1719 Madrid a Oslo", "Norwegian Air Shuttle AOC AS"),
+    ["transporte", "avion"]
+  );
+  assert.deepEqual(
+    inferirTagsCategoria("Airline ticket Bogotá Medellín", "Kiwi.com s.r.o."),
+    ["transporte", "avion"]
+  );
+});
+
+test("el flujo compartido conserva los aprendizajes de tags del proceso uno a uno", () => {
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Tiquete aéreo", "Kiwi.com", "Nuria Ortiz", ["alojamiento", "kelly"]),
+    ["Nuria Ortiz", "transporte", "avion"]
+  );
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Hotel", "Scandic", undefined, ["alojamiento", "jorge"]),
+    ["jorge", "hospedaje"]
+  );
+});
+
+test("normaliza los tags como los hashtags visibles de Holded", () => {
+  assert.equal(normalizarEtiquetaHolded("Núria Ortiz"), "nuriaortiz");
+  assert.equal(normalizarEtiquetaHolded("wobi-ticket-pendiente"), "wobiticketpendiente");
 });
 
 test("una razón social exacta nunca se mezcla con otra sociedad de nombre parecido", () => {

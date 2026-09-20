@@ -14,14 +14,15 @@ import {
   obtenerHtmlVisualCorreo,
   descargarAdjunto,
   buscarMensajes,
+  extraerDireccionCorreo,
   type CorreoResumen,
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
-import { esContactoAutorespuesta } from "../gmail/autorespuestaContactoStore";
-import { obtenerEstadoHiloAutorespuesta } from "../gmail/hiloAutorespuestaStore";
+import { listarContactosAutorespuesta } from "../gmail/autorespuestaContactoStore";
+import { listarHilosAutorespuesta } from "../gmail/hiloAutorespuestaStore";
 import { esDiaHabilEspana } from "../utils/diaHabil";
 import { yaSeAvisoHoy, marcarAvisadoHoy } from "./avisoUnicoPorDiaStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, sendTelegramMessageSmart, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
@@ -166,7 +167,9 @@ export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?
         pendientes: [{ mensajeId: "sistema", asunto: "Fase automática incompleta",
           motivos: [`error_automatico:${detalle}`] }] };
     }
-    const cola = await sincronizarColaCorreo(forzarAviso, chatId, resumenAutomatico(automatico));
+    const resumen = resumenAutomatico(automatico);
+    console.log(`[correo-auto] Resultado final:\n${resumen}`);
+    const cola = await sincronizarColaCorreo(forzarAviso, chatId, resumen);
     return { ...cola, automatico };
   });
   revisionesEnCurso.set(chatId, tarea);
@@ -253,7 +256,20 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
     console.error("[revisarCorreoNuevo] Error guardando el último check (no crítico):", error)
   );
 
-  const [habiaActivoAntes, totalAntesDeEncolar] = await Promise.all([hayActivo(chatId), contarPendientesTotal(chatId)]);
+  const [habiaActivoAntes, totalAntesDeEncolar, contactos, estadosHilo] = await Promise.all([
+    hayActivo(chatId),
+    contarPendientesTotal(chatId),
+    listarContactosAutorespuesta().catch((error) => {
+      console.error("[revisarCorreoNuevo] No se pudo leer la lista de autorrespuesta; los hilos se conservarán en revisión manual:", error);
+      return [];
+    }),
+    listarHilosAutorespuesta().catch((error) => {
+      console.error("[revisarCorreoNuevo] No se pudo leer el estado de autorrespuesta; los hilos se conservarán en revisión manual:", error);
+      return [];
+    }),
+  ]);
+  const contactosAutorespuesta = new Set(contactos.map(contacto => contacto.email));
+  const autorespuestaPorHilo = new Map(estadosHilo.map(estado => [estado.threadId, estado.estado]));
 
   const itemsParaEncolar: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }> = [];
   let metadatosCompletos = true;
@@ -277,9 +293,9 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
       // más frecuente, ya lo está atendiendo. Un hilo del mismo contacto que
       // Carlos ya rechazó (o que todavía no se le preguntó) sigue entrando
       // acá con normalidad, para no dejarlo sin revisar nunca.
-      if (await esContactoAutorespuesta(primero.de)) {
-        const estadoHilo = await obtenerEstadoHiloAutorespuesta(threadId);
-        if (estadoHilo?.estado === "aprobado" || estadoHilo?.estado === "pendiente") return undefined;
+      if (contactosAutorespuesta.has(extraerDireccionCorreo(primero.de))) {
+        const estadoHilo = autorespuestaPorHilo.get(threadId);
+        if (estadoHilo === "aprobado" || estadoHilo === "pendiente") return undefined;
       }
 
       const fechaOrden = primero.recibidoEn;

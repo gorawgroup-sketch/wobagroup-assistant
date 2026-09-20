@@ -2,7 +2,7 @@ import { buscarCuentaCorregidaAprendida } from "../../holded/cuentaCorregidaApre
 import { registrarAsignacionCuenta } from "../../holded/asignacionCuentaLogSheet";
 import { getGmailClient, getGmailModifyClient } from "../client";
 import { obtenerActivoActual } from "../colaRevisionStore";
-import { obtenerEstadoHiloAutorespuesta } from "../hiloAutorespuestaStore";
+import { listarHilosAutorespuesta } from "../hiloAutorespuestaStore";
 import { obtenerTodosLosAlias } from "../../gastos/proveedorAliasSheet";
 import { buscarGastoDesdeCorreo, registrarGastoDesdeCorreo } from "../../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../../gastos/verificarGastoPorCorreo";
@@ -11,6 +11,7 @@ import { obtenerPropuestasAccionCorreoPorChat } from "../emailActionStore";
 import { GmailAuto } from "./gmail";
 import { analizarAutomatico } from "./analyze";
 import { HoldedAuto } from "./holded";
+import { crearFlujoGastoExistente } from "./flujoExistente";
 import { configuracionAuto, normalizar, type ResultadoAuto } from "./model";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
@@ -59,7 +60,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
       if (r.empresa === "desconocida") return true;
       return Boolean(await buscarPropuestaGastoPendiente(r.empresa, r.proveedor, r.equivalente?.monto ?? r.monto));
     },
-  }, fetch, config.empresas);
+  }, fetch, config.empresas, crearFlujoGastoExistente());
   const chats = [...new Set([chatId, Number(process.env.CASHFLOW_ALERTS_CHAT_ID)].filter(Number.isFinite))];
   const manuales = new Set<string>();
   for (const chat of chats) {
@@ -68,12 +69,13 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     for (const p of await obtenerPropuestasGastoPorChat(chat)) if (p.correoOrigen?.threadId) manuales.add(p.correoOrigen.threadId);
     for (const p of await obtenerPropuestasAccionCorreoPorChat(chat)) manuales.add(p.threadId);
   }
+  const estadosAutorespuesta = new Map((await listarHilosAutorespuesta()).map(estado => [estado.threadId, estado.estado]));
   const service = new ServicioCorreoAutomatico(new PostgresAutoStore(), {
     listar: () => gmail.listar(), analizar: analizarAutomatico,
     reservadoManualmente: async id => {
       if (manuales.has(id)) return true;
-      const estado = await obtenerEstadoHiloAutorespuesta(id);
-      return estado?.estado === "aprobado" || estado?.estado === "pendiente";
+      const estado = estadosAutorespuesta.get(id);
+      return estado === "aprobado" || estado === "pendiente";
     },
     evidencias: (c, r) => holded.evidencias(c, r),
     recuperarCreacion: op => holded.recuperarCreacion(op),

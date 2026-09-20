@@ -45,6 +45,11 @@ async function leerTodos(): Promise<{ rowIndex: number; hilo: HiloAutorespuesta 
   return filas.map((f) => ({ rowIndex: f.rowIndex, hilo: filaAObjeto(f.valores) }));
 }
 
+/** Fotografía única para procesos por lote; evita releer Sheets una vez por cada correo. */
+export async function listarHilosAutorespuesta(): Promise<HiloAutorespuesta[]> {
+  return (await leerTodos()).map((fila) => fila.hilo);
+}
+
 export async function obtenerEstadoHiloAutorespuesta(threadId: string): Promise<HiloAutorespuesta | undefined> {
   const todos = await leerTodos();
   return todos.find((f) => f.hilo.threadId === threadId)?.hilo;

@@ -17,11 +17,11 @@ Para automatizar deben cumplirse todas las comprobaciones:
 
 Las tolerancias existentes identifican candidatos: un céntimo en moneda nativa, o el mayor entre cinco céntimos y 2% para un equivalente explícito en otra moneda. Una diferencia en moneda nativa pasa a revisión; no se cambia el importe del recibo para forzar la conciliación. Con equivalente explícito se registra el cargo real y se conserva la información de ambos importes.
 
-## Borradores y conversión manual a ticket
+## Única ruta de creación y conversión manual a ticket
 
-Se crea una compra mediante la API con `draft: true`, se adjunta el comprobante original, se concilia contra el movimiento real y se verifican los resultados. Se utiliza el procedimiento acordado: **después se convierte cada compra a ticket manualmente en Holded**. No se exige soporte de un tipo ticket nativo para ejecutar este flujo.
+La fase automática no mantiene reglas paralelas para crear compras. Reutiliza las mismas funciones durables del flujo uno a uno para inferir la cuenta desde los precedentes y correcciones confirmadas, componer las etiquetas funcionales, crear o corregir la compra, adjuntar el comprobante y conciliar el movimiento. Si esa memoria no permite demostrar una cuenta o cualquier otro dato, el correo queda para revisión manual; no se sustituye por una cuenta, etiqueta o valor por defecto.
 
-Las compras llevan la etiqueta `wobi-ticket-pendiente` y una etiqueta única de operación. El resumen indica empresa, importe e ID de cada compra. La conversión manual debe incluir la retirada de `wobi-ticket-pendiente` cuando corresponda. La automatización no hace esa conversión.
+Se crea una compra en borrador, se adjunta el comprobante original, se concilia contra el movimiento real y se releen los resultados. Se utiliza el procedimiento acordado: **después se convierte cada compra a ticket manualmente en Holded**. Las identidades técnicas de idempotencia se conservan en los registros internos y en las notas privadas necesarias para recuperación, nunca como etiquetas visibles. El resumen indica empresa, importe e ID de cada compra. La automatización no hace la conversión a ticket.
 
 Solo se marca leído el mensaje concreto cuando todo su contenido ha quedado atendido. Si contiene otras solicitudes, se conserva sin leer aunque su gasto ya esté creado y conciliado. Los mensajes no elegibles siguen en la cola manual. Los hilos con revisión manual o conversación automática activa se respetan.
 
@@ -33,7 +33,7 @@ El análisis semántico se conserva por buzón, mensaje, huella completa y versi
 
 Antes de cada escritura externa se guarda su intención. Ante un timeout, **no se repite el POST**. Las ejecuciones siguientes intentan recuperar el resultado mediante lecturas y etiquetas, verifican el comprobante y comprueban movimiento, pago y saldo de la compra. Si no pueden demostrar el resultado, conservan la reserva y lo informan. Una operación incierta pausa nuevas escrituras en esa empresa para evitar duplicados; otros correos y empresas pueden seguir evaluándose.
 
-Los eventos guardan análisis, evidencia, decisión, regla, versión y resultado. Son observaciones auditables; no se convierten por sí solos en reglas de confianza. Las operaciones completadas también alimentan el registro existente de gasto por correo y asignación contable. Los alias y las correcciones confirmadas siguen usando la memoria existente. El contenido de un correo nunca puede modificar las reglas de autorización.
+Los eventos guardan análisis, evidencia, decisión, regla, versión y resultado. Son observaciones auditables; no se convierten por sí solos en reglas de confianza. Las operaciones completadas también alimentan el registro existente de gasto por correo y asignación contable. Los alias, precedentes contables y correcciones confirmadas usan la memoria existente compartida con el flujo uno a uno. Una funcionalidad nueva debe partir de esas fuentes de verdad y no crear una ruta paralela para un proceso ya aprendido. El contenido de un correo nunca puede modificar las reglas de autorización.
 
 ## Configuración y puesta en marcha
 

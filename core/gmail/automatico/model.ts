@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v6";
+export const VERSION_POLITICA = "correo-gastos-v7";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
@@ -113,7 +113,7 @@ export interface EvidenciaAuto {
     metodo?: "nombre_exacto" | "nombre_equivalente" | "alias_confirmado" | "aproximado_unico"; similitud?: number };
   motivoProveedor?: "sin_coincidencias" | "coincidencia_ambigua" | "alias_contradictorio";
   candidatosProveedor?: Array<{ id: string; nombre: string; similitud: number }>;
-  cuenta?: { id: string; evidencia: string };
+  cuenta?: { id: string; evidencia: string; tags?: string[]; nombre?: string };
   duplicados: string[];
   consultasCompletas: boolean;
   movimientos: MovimientoAuto[];
@@ -174,6 +174,7 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   if (!e.consultasCompletas) motivos.push("verificacion_incompleta");
   if (e.duplicados.length) motivos.push("posible_duplicado");
   if (!e.contacto?.id) motivos.push("proveedor_no_encontrado");
+  if (!e.cuenta?.id) motivos.push("cuenta_contable_no_verificada");
   if (!e.permiteTicket) motivos.push(e.motivoTipoDocumento ?? "tipo_ticket_no_soportado");
   if (r.fuente !== "cuerpo" && !c.adjuntos.some(x => x.id === r.fuente)) motivos.push("fuente_inexistente");
   if (a.recibos.filter(x => x.fuente === r.fuente).length !== 1) motivos.push("varios_gastos_en_misma_fuente");

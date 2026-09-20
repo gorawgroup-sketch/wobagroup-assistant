@@ -8,12 +8,12 @@ test("solo un recibo de alta confianza con proveedor exacto y un cargo libre es 
   assert.equal(d.apto, true);
   if (d.apto) assert.equal(d.plan.totalCentimos, 2000);
 });
-test("un recibo pagado es elegible y la cuenta contable previa no es una barrera adicional", () => {
+test("un recibo sin cuenta contable verificada queda para revisión manual", () => {
   const r = reciboFixture(); r.tipo = "recibo";
   const e = evidenciaFixture(); e.cuenta = undefined;
   const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
-  assert.equal(d.apto, true);
-  if (d.apto) assert.equal(d.plan.cuentaId, undefined);
+  assert.equal(d.apto, false);
+  if (!d.apto) assert.ok(d.motivos.includes("cuenta_contable_no_verificada"));
 });
 test("contacto exacto y cargo único con el proveedor refuerzan una confianza media hasta alta", () => {
   const r = reciboFixture(); r.confianza = "media"; r.proveedor = "Proveedor (Restaurante, Breda)";
