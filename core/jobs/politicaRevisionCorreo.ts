@@ -12,6 +12,16 @@ export const CRON_CORREO_HABIL_SILENCIOSO = "0 0,2,4,6,8,12,14,16,20,22 * * 1-5"
 export const CRON_CORREO_INFORME_MANANA = "0 10 * * *";
 export const CRON_CORREO_INFORME_TARDE = "0 18 * * *";
 
+/**
+ * Interruptor independiente del modo de escritura. Cuando está apagado no se
+ * registran lectores de Gmail en segundo plano; las órdenes manuales siguen
+ * usando exactamente el mismo flujo y sus controles durables.
+ */
+export function lecturasCorreoAutomaticasHabilitadas(env: NodeJS.ProcessEnv = process.env): boolean {
+  const valor = (env.WOBI_MAIL_AUTOMATIC_READS_ENABLED ?? "true").trim().toLowerCase();
+  return valor === "true" || valor === "1";
+}
+
 export type SlotInformeCorreo = "10" | "18";
 export type SolicitudRevisionCorreo =
   | { origen: "manual"; chatId?: number }
