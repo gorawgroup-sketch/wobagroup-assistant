@@ -70,6 +70,30 @@ test("un mensaje sin cambios reutiliza el análisis durable pero reevalúa evide
   assert.equal(evidencias, 2);
   assert.equal(e.eventos.filter(x => x === "analisis").length, 1);
 });
+test("analiza correos independientes con concurrencia dos y conserva el orden de verificación", async () => {
+  const e = escenario();
+  e.correos.push(...["m2", "m3", "m4"].map(id => ({ ...correoFixture(id), huella: hash(id) })));
+  let activas = 0, maximas = 0;
+  e.puerto.analizar = async correo => {
+    activas++; maximas = Math.max(maximas, activas);
+    await new Promise(resolve => setTimeout(resolve, correo.id === "m1" ? 8 : 1));
+    activas--;
+    return analisisFixture();
+  };
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { concurrenciaAnalisis: 2 });
+  const r = await service.revisar({ ...configFixture, modo: "simulate" });
+  assert.equal(r.revisados, 4);
+  assert.equal(maximas, 2);
+  assert.deepEqual(r.pendientes.map(p => p.mensajeId), ["m1", "m2", "m3", "m4"]);
+});
+test("al agotar el tiempo informa el pendiente sin iniciar análisis ni escrituras nuevas", async () => {
+  const e = escenario();
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { fechaLimite: Date.now() - 1 });
+  const r = await service.revisar(configFixture);
+  assert.equal(e.analisisLlamadas(), 0);
+  assert.equal(e.llamadas.crear + e.llamadas.adjuntar + e.llamadas.conciliar, 0);
+  assert.deepEqual(r.pendientes[0]?.motivos, ["revision_pospuesta_por_limite_de_tiempo"]);
+});
 test("correo mixto procesa el gasto, conserva la solicitud y no vuelve a crearlo", async () => {
   const e = escenario(); e.a.otrasAcciones = true;
   await e.service.revisar(configFixture); const segunda = await e.service.revisar(configFixture);

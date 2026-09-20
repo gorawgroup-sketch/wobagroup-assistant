@@ -1,5 +1,6 @@
 import { evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
   type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto, type StoreAuto, VERSION_POLITICA } from "./model";
+import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
 export interface PuertoAutomatico {
   listar(): Promise<CorreoAuto[]>;
@@ -20,9 +21,35 @@ export interface PuertoAutomatico {
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
+type ProgresoRevision = { fase: "analisis" | "verificacion"; completados: number; total: number };
+type CorreoPreparado = { correo: CorreoAuto; analisis?: AnalisisAuto; motivos: string[] };
 
 export class ServicioCorreoAutomatico {
-  constructor(private readonly store: StoreAuto, private readonly puerto: PuertoAutomatico) {}
+  constructor(private readonly store: StoreAuto, private readonly puerto: PuertoAutomatico,
+    private readonly opciones: { concurrenciaAnalisis?: number; fechaLimite?: number;
+      progreso?: (p: ProgresoRevision) => void | Promise<void> } = {}) {}
+
+  private async prepararCorreo(config: ConfigAuto, correo: CorreoAuto): Promise<CorreoPreparado> {
+    try {
+      if (await this.puerto.reservadoManualmente(correo.threadId)) {
+        return { correo, motivos: ["revision_manual_o_autorespuesta_activa"] };
+      }
+      let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA);
+      if (!analisis) {
+        if (this.opciones.fechaLimite && Date.now() >= this.opciones.fechaLimite) {
+          return { correo, motivos: ["revision_pospuesta_por_limite_de_tiempo"] };
+        }
+        analisis = await this.puerto.analizar(correo);
+        await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA, analisis);
+        await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis",
+          datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
+            otrasAcciones: analisis.otrasAcciones, origen: "observacion_automatica_no_confirmada" } });
+      }
+      return { correo, analisis, motivos: [] };
+    } catch (error) {
+      return { correo, motivos: [`error:${mensajeError(error)}`] };
+    }
+  }
 
   private async estado(op: OperacionAuto, estado: OperacionAuto["estado"], detalle?: string): Promise<void> {
     op.estado = estado;
@@ -110,39 +137,43 @@ export class ServicioCorreoAutomatico {
     if (config.modo === "off") return resultado;
     if (!config.buzon) throw new Error("Buzón no configurado.");
     const correos = (await this.puerto.listar()).sort((a, b) => a.recibidoEn - b.recibidoEn || a.id.localeCompare(b.id));
+    let analizados = 0;
+    await this.opciones.progreso?.({ fase: "analisis", completados: 0, total: correos.length });
+    const preparados = await mapearConConcurrencia(correos, this.opciones.concurrenciaAnalisis ?? 2, async correo => {
+      const preparado = await this.prepararCorreo(config, correo);
+      analizados++;
+      await this.opciones.progreso?.({ fase: "analisis", completados: analizados, total: correos.length });
+      return preparado;
+    });
     const operaciones = await this.store.pendientes(config.buzon);
     // Informar también operaciones cuyo correo fue leído fuera del sistema; nunca desaparecen por ello.
     for (const op of operaciones.filter(o => !correos.some(c => c.id === o.plan.correo.id))) {
       resultado.pendientes.push({ mensajeId: op.plan.correo.id, asunto: `Operación ${op.id}`, motivos: ["operacion_incompleta_fuera_de_no_leidos"] });
     }
-    for (const correo of correos) {
-      let motivos: string[] = [];
+    let verificados = 0;
+    await this.opciones.progreso?.({ fase: "verificacion", completados: 0, total: preparados.length });
+    for (const preparado of preparados) {
+      const { correo, analisis } = preparado;
+      const motivos = [...preparado.motivos];
       try {
-        if (await this.puerto.reservadoManualmente(correo.threadId)) {
-          motivos.push("revision_manual_o_autorespuesta_activa");
-        } else {
-          let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA);
-          const analisisNuevo = !analisis;
-          if (!analisis) {
-            analisis = await this.puerto.analizar(correo);
-            await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA, analisis);
-          }
+        if (analisis) {
           resultado.revisados++;
           if (!analisis.completo) motivos.push("lectura_incompleta");
           if (analisis.otrasAcciones) motivos.push("otras_acciones_pendientes");
           if (analisis.motivoManual) motivos.push(analisis.motivoManual);
           if (!analisis.recibos.length) motivos.push("correo_sin_gastos_automatizables");
-          // Auditoría separada del aprendizaje confirmado. Jamás alimenta reglas por sí sola.
-          if (analisisNuevo) {
-            await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis",
-              datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
-                otrasAcciones: analisis.otrasAcciones, origen: "observacion_automatica_no_confirmada" } });
-          }
           for (const recibo of analisis.recibos) {
             if (!analisis.completo) break;
             const previa = await this.store.buscarFuente(config.buzon, correo.id, recibo.fuente);
             let op = previa;
             if (!op) {
+              // Al agotar el presupuesto temporal no se inicia una consulta nueva de Holded ni una
+              // escritura. Las operaciones ya reservadas sí continúan para llevarlas a un estado
+              // durable y verificable antes de responder.
+              if (this.opciones.fechaLimite && Date.now() >= this.opciones.fechaLimite) {
+                motivos.push("revision_pospuesta_por_limite_de_tiempo");
+                continue;
+              }
               const evidencia = await this.puerto.evidencias(correo, recibo);
               const decision = evaluarAuto(correo, analisis, recibo, evidencia, config);
               await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "decision", datos: decision });
@@ -173,6 +204,8 @@ export class ServicioCorreoAutomatico {
         }
       } catch (e) { motivos.push(`error:${mensajeError(e)}`); }
       if (motivos.length) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [...new Set(motivos)] });
+      verificados++;
+      await this.opciones.progreso?.({ fase: "verificacion", completados: verificados, total: preparados.length });
     }
     await this.store.auditar({ buzon: config.buzon, tipo: "revision_terminada", datos: resultado });
     return resultado;

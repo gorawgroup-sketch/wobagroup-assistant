@@ -1,5 +1,6 @@
 import type { gmail_v1 } from "googleapis";
 import { hash, type AdjuntoAuto, type CorreoAuto } from "./model";
+import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
 const header = (m: gmail_v1.Schema$Message, nombre: string) => m.payload?.headers?.find(h => h.name?.toLowerCase() === nombre.toLowerCase())?.value ?? "";
 const decode = (s: string) => Buffer.from(s, "base64url");
@@ -40,7 +41,8 @@ export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schem
 }
 
 export class GmailAuto {
-  constructor(private readonly lectura: gmail_v1.Gmail, private readonly escritura: gmail_v1.Gmail) {}
+  constructor(private readonly lectura: gmail_v1.Gmail, private readonly escritura: gmail_v1.Gmail,
+    private readonly opciones: { concurrencia?: number; progreso?: (completados: number, total: number) => void | Promise<void> } = {}) {}
   async listar(): Promise<CorreoAuto[]> {
     const ids: string[] = [];
     let pageToken: string | undefined;
@@ -53,8 +55,10 @@ export class GmailAuto {
       if (pageToken && tokens.has(pageToken)) throw new Error("Paginación Gmail repetida.");
       if (pageToken) tokens.add(pageToken);
     } while (pageToken);
-    const correos: CorreoAuto[] = [];
-    for (const id of [...new Set(ids)]) {
+    const unicos = [...new Set(ids)];
+    let completados = 0;
+    await this.opciones.progreso?.(0, unicos.length);
+    const porHilo = await mapearConConcurrencia(unicos, this.opciones.concurrencia ?? 4, async id => {
       const r = await this.lectura.users.threads.get({ userId: "me", id, format: "full" });
       if (!r.data.messages) throw new Error("Hilo Gmail sin mensajes.");
       const leidos: Array<{ m: gmail_v1.Schema$Message; cuerpo: string; adjuntos: AdjuntoAuto[]; error?: string }> = [];
@@ -64,6 +68,7 @@ export class GmailAuto {
       }
       const contextoHilo = leidos.map(x => `Mensaje ${x.m.id}, de ${header(x.m, "From")}, fecha ${header(x.m, "Date")}:\n${x.cuerpo}`).join("\n\n");
       const errorHilo = leidos.find(x => x.error)?.error;
+      const correos: CorreoAuto[] = [];
       for (const { m, cuerpo, adjuntos } of leidos) {
         if (!m.labelIds?.includes("UNREAD")) continue;
         const recibidoEn = Number(m.internalDate);
@@ -72,8 +77,11 @@ export class GmailAuto {
           recibidoEn, cuerpo, contextoHilo, adjuntos, lecturaError: errorHilo,
           huella: hash(JSON.stringify([cuerpo, contextoHilo, errorHilo ?? "", adjuntos.map(a => [a.id, hash(a.data)])])) });
       }
-    }
-    return correos;
+      completados++;
+      await this.opciones.progreso?.(completados, unicos.length);
+      return correos;
+    });
+    return porHilo.flat();
   }
   async marcarResuelto(c: CorreoAuto): Promise<void> {
     await this.escritura.users.messages.modify({ userId: "me", id: c.id, requestBody: { removeLabelIds: ["UNREAD"] } });

@@ -44,3 +44,22 @@ test("un fallo de descarga deja evidencia incompleta, no un correo vacío proces
   const r = await new GmailAuto(gmail, gmail).listar();
   assert.match(r[0].lecturaError ?? "", /vacía inesperadamente/);
 });
+test("descarga hilos con concurrencia acotada, conserva orden e informa progreso", async () => {
+  let activas = 0, maximas = 0;
+  const progreso: number[] = [];
+  const gmail = { users: { threads: {
+    list: async () => ({ data: { threads: ["t1", "t2", "t3", "t4"].map(id => ({ id })) } }),
+    get: async ({ id }: { id: string }) => {
+      activas++; maximas = Math.max(maximas, activas);
+      await new Promise(resolve => setTimeout(resolve, id === "t1" ? 8 : 1));
+      activas--;
+      return { data: { messages: [{ id: `m-${id}`, labelIds: ["UNREAD"], internalDate: id.slice(1),
+        payload: { mimeType: "text/plain", body: { data: b64(id) } } }] } };
+    },
+  } } } as unknown as gmail_v1.Gmail;
+  const r = await new GmailAuto(gmail, gmail, { concurrencia: 2, progreso: n => { progreso.push(n); } }).listar();
+  assert.deepEqual(r.map(c => c.threadId), ["t1", "t2", "t3", "t4"]);
+  assert.equal(maximas, 2);
+  assert.equal(progreso[0], 0);
+  assert.equal(progreso.at(-1), 4);
+});

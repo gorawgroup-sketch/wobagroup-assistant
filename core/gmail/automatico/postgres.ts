@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import type { AnalisisAuto, EmpresaAuto, OperacionAuto, PlanAuto, StoreAuto } from "./model";
+import { VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto, type OperacionAuto, type PlanAuto, type StoreAuto } from "./model";
 
 // El esquema se aplica explícitamente con el script de preparación; nunca durante una escritura.
 export const SCHEMA_AUTO = `
@@ -37,6 +37,13 @@ export function poolAuto(): Pool {
   return pool;
 }
 export async function cerrarPoolAuto(): Promise<void> { if (pool) await pool.end(); pool = undefined; }
+export async function buscarAnalisisAutomaticoReciente(mensajeId: string): Promise<AnalisisAuto | undefined> {
+  if (!hayCoordinacionDurable() || !mensajeId) return undefined;
+  const r = await poolAuto().query(`SELECT data FROM wobi_mail_analyses
+    WHERE mailbox=$1 AND message_id=$2 AND policy=$3 ORDER BY updated_at DESC LIMIT 1`,
+    [process.env.GMAIL_IMPERSONATE_EMAIL ?? "", mensajeId, VERSION_POLITICA]);
+  return r.rows[0]?.data as AnalisisAuto | undefined;
+}
 const contexto = new AsyncLocalStorage<{ locks: Set<string>; operacion?: string }>();
 
 /** Bloqueo de sesión distribuido. El intento externo se persiste antes del POST, de modo que
