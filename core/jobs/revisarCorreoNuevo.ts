@@ -1,7 +1,8 @@
-import { conCoordinadorCorreo } from "../gmail/automatico/postgres";
+import { buscarAnalisisAutomaticoReciente, conCoordinadorCorreo } from "../gmail/automatico/postgres";
 import { revisarGastosAutomaticos, comprobarCorreoDisponible } from "../gmail/automatico/runtime";
 import { resumenAutomatico } from "../gmail/automatico/service";
-import type { ResultadoAuto } from "../gmail/automatico/model";
+import { reutilizarGastoDeAnalisisAutomatico } from "../gmail/automatico/reutilizarAnalisis";
+import type { ModoAuto, ResultadoAuto } from "../gmail/automatico/model";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -27,6 +28,7 @@ import { sendTelegramMessage, sendTelegramMessageWithButtons, sendTelegramMessag
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
+import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import { crearPropuestaAccionCorreo, actualizarMessageIdAccionCorreo } from "../gmail/emailActionStore";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
@@ -126,6 +128,13 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
  * proactivo de "¿empezamos?" se limita a una vez por día hábil.
  */
 const revisionesEnCurso = new Map<number, Promise<ResultadoRevisarCorreo>>();
+const revisionesInteractivas = new Set<number>();
+function modoAutomaticoSeguro(): ModoAuto {
+  if (process.env.WOBI_MAIL_AUTO_KILL_SWITCH === "true") return "off";
+  const modo = process.env.WOBI_MAIL_AUTO_MODE;
+  if (modo === "off") return "off";
+  return modo === "simulate" ? "simulate" : "execute";
+}
 export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?: number): Promise<ResultadoRevisarCorreo> {
   const chatId = chatIdSolicitante ?? (process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined);
 
@@ -134,14 +143,37 @@ export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitante?
     return { correosRevisados: 0 };
   }
   const existente = revisionesEnCurso.get(chatId);
-  if (existente) return existente;
+  if (existente) {
+    if (forzarAviso) {
+      revisionesInteractivas.add(chatId);
+      await sendTelegramMessageSmart(chatId,
+        "⏳ Ya había una revisión de correo en curso (posiblemente iniciada por el cron). Me uno a esa misma revisión para no duplicar trabajo; te informaré su avance y resultado."
+      ).catch(() => {});
+    }
+    return existente;
+  }
+  if (forzarAviso) revisionesInteractivas.add(chatId);
   const tarea = conCoordinadorCorreo(async () => {
-    const automatico = await revisarGastosAutomaticos(chatId);
+    let automatico: ResultadoAuto;
+    try {
+      automatico = await revisarGastosAutomaticos(chatId, {
+        informarProgreso: () => forzarAviso || revisionesInteractivas.has(chatId),
+      });
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : "error no identificado";
+      console.error("[revisarCorreoNuevo] La fase automática no pudo completarse; continúa la cola manual:", error);
+      automatico = { modo: modoAutomaticoSeguro(), revisados: 0, completados: 0, simulados: 0, gastos: [],
+        pendientes: [{ mensajeId: "sistema", asunto: "Fase automática incompleta",
+          motivos: [`error_automatico:${detalle}`] }] };
+    }
     const cola = await sincronizarColaCorreo(forzarAviso, chatId, resumenAutomatico(automatico));
     return { ...cola, automatico };
   });
   revisionesEnCurso.set(chatId, tarea);
-  try { return await tarea; } finally { revisionesEnCurso.delete(chatId); }
+  try { return await tarea; } finally {
+    revisionesEnCurso.delete(chatId);
+    revisionesInteractivas.delete(chatId);
+  }
 }
 
 async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resumenAuto: string): Promise<ResultadoRevisarCorreo> {
@@ -225,14 +257,14 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
 
   const itemsParaEncolar: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }> = [];
   let metadatosCompletos = true;
-  for (const threadId of ids) {
+  const metadatos = await mapearConConcurrencia(ids, 4, async threadId => {
     try {
       const primero = await obtenerPrimerMensajeNoLeidoDeHilo(threadId);
       if (!primero) {
         // No reconciliar/eliminar filas locales desde una fotografía a la
         // que le faltó un hilo real de Gmail.
         metadatosCompletos = false;
-        continue;
+        return undefined;
       }
 
       // Pedido explícito de Carlos: la aprobación de conversación automática
@@ -247,22 +279,24 @@ async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resum
       // acá con normalidad, para no dejarlo sin revisar nunca.
       if (await esContactoAutorespuesta(primero.de)) {
         const estadoHilo = await obtenerEstadoHiloAutorespuesta(threadId);
-        if (estadoHilo?.estado === "aprobado" || estadoHilo?.estado === "pendiente") continue;
+        if (estadoHilo?.estado === "aprobado" || estadoHilo?.estado === "pendiente") return undefined;
       }
 
       const fechaOrden = primero.recibidoEn;
-      itemsParaEncolar.push({
+      return {
         id: threadId,
         mensajeId: primero.messageId,
         de: primero.de,
         asunto: primero.asunto || "(sin asunto)",
         fechaOrden: Number.isFinite(fechaOrden) ? fechaOrden : Date.now(),
-      });
+      };
     } catch (error) {
       metadatosCompletos = false;
       console.error(`[revisarCorreoNuevo] Error leyendo metadatos del hilo ${threadId} (se omite de la cola):`, error);
+      return undefined;
     }
-  }
+  });
+  itemsParaEncolar.push(...metadatos.filter((item): item is NonNullable<typeof item> => Boolean(item)));
 
   // Se llama incluso con [] para reconciliar y retirar de la cola local los
   // hilos que ya no están sin leer en Gmail.
@@ -638,14 +672,24 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
   // de Holded/banco, la moneda equivalente, y la pregunta de conciliar,
   // sin duplicar nada de esa lógica.
   let gastoDetectado: DatosFactura | undefined;
-  try {
-    gastoDetectado = await extraerGastoDeCorreo(cuerpoCompleto, {
-      de: correo.de,
-      asunto: correo.asunto,
-      fecha: correo.fecha,
+  const reutilizacion = await buscarAnalisisAutomaticoReciente(correo.id)
+    .then(reutilizarGastoDeAnalisisAutomatico)
+    .catch(error => {
+      console.error(`[revisarCorreoNuevo] No se pudo reutilizar el análisis automático de ${correo.id}:`, error);
+      return { concluyente: false } as const;
     });
-  } catch (error) {
-    console.error(`[revisarCorreoNuevo] Error intentando leer el correo ${correo.id} como gasto (sigue como correo normal):`, error);
+  if (reutilizacion.concluyente) {
+    gastoDetectado = reutilizacion.gasto;
+  } else {
+    try {
+      gastoDetectado = await extraerGastoDeCorreo(cuerpoCompleto, {
+        de: correo.de,
+        asunto: correo.asunto,
+        fecha: correo.fecha,
+      });
+    } catch (error) {
+      console.error(`[revisarCorreoNuevo] Error intentando leer el correo ${correo.id} como gasto (sigue como correo normal):`, error);
+    }
   }
 
   if (gastoDetectado?.esFacturaOGasto) {

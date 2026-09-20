@@ -14,6 +14,7 @@ function escenario() {
   const movimiento = { id: "b1", banking_account_id: "a1", currency: "EUR", amount: "-20.00", reconciled_amount: "0.00", booking_date: r.fecha,
     status: "pending", description: "Proveedor", origin: "bank" };
   const contactos = [{ id: "p1", name: "Proveedor" }];
+  const consultasGet: string[] = [];
   let attachment: { id: string } | undefined;
   const memoria: MemoriaHoldedAuto = { alias: async () => [], duplicadoInterno: async () => false,
     cuentaConfirmada: async () => ({ cuentaId: "c1", confirmadoEn: new Date().toISOString() }) };
@@ -28,6 +29,7 @@ function escenario() {
       if (path.endsWith("/attachments")) { const file = (init.body as FormData).get("file") as File; attachment = { id: file.name }; return json({}); }
       throw new Error(`POST no esperado ${path}`);
     }
+    consultasGet.push(path);
     if (path === "/contacts") return list(contactos);
     if (path === "/purchases") return list([]);
     if (path === "/expenses-accounts") return json({ items: [{ id: "c1", name: "Servicios", archived: false }] });
@@ -42,7 +44,7 @@ function escenario() {
   const adapter = new HoldedAuto(memoria, request);
   const d = evaluarAuto(c, analisisFixture(), r, evidenciaFixture(), configFixture); assert.ok(d.apto);
   const op: OperacionAuto = { id: "op1", plan: d.plan, estado: "creando" };
-  return { adapter, request, memoria, compra, movimiento, contactos, posts, c, r, op };
+  return { adapter, request, memoria, compra, movimiento, contactos, consultasGet, posts, c, r, op };
 }
 test("consulta proveedor exacto, catálogo no paginado, memoria y cargo real", async () => {
   const e = escenario(); const ev = await e.adapter.evidencias(e.c, e.r);
@@ -105,6 +107,18 @@ test("dos contactos aproximados continúan en revisión manual", async () => {
   e.contactos.splice(0, 1, { id: "p1", name: "DHL Express Spain SLU" }, { id: "p2", name: "DHL Freight Spain SLU" });
   const evidencia = await e.adapter.evidencias(e.c, e.r);
   assert.equal(evidencia.contacto, undefined);
+  assert.equal(e.consultasGet.includes("/expenses-accounts"), false);
+});
+test("reutiliza catálogos estáticos pero relee compras y banco en la revalidación", async () => {
+  const e = escenario();
+  await e.adapter.evidencias(e.c, e.r);
+  await e.adapter.evidencias(e.c, e.r);
+  const veces = (path: string) => e.consultasGet.filter(p => p === path).length;
+  assert.equal(veces("/contacts"), 1);
+  assert.equal(veces("/treasury/accounts"), 1);
+  assert.equal(veces("/expenses-accounts"), 1);
+  assert.equal(veces("/purchases"), 4);
+  assert.equal(veces("/treasury/accounts/a1/bank-movements"), 2);
 });
 test("comprobante verificado por contenido binario y sin reconstruir un adjunto real", async () => {
   const e = escenario(); e.op.compraId = "creada";

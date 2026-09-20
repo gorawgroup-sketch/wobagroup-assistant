@@ -2,6 +2,7 @@ import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal }
 import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, nombresProveedorCompatibles, normalizar, normalizarProveedorComparable,
   proveedorEnDescripcion, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
   type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
+import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
 type Registro = Record<string, unknown>;
 export function objeto(raw: unknown): Registro {
@@ -35,6 +36,8 @@ export interface MemoriaHoldedAuto {
 // Procedimiento autorizado: crear compra, conciliar y convertir a ticket manualmente en Holded.
 // La conversión pendiente se informa en el resumen; no bloquea registrar el gasto.
 export class HoldedAuto {
+  private readonly listadosEstaticos = new Map<string, Promise<Registro[]>>();
+  private readonly objetosEstaticos = new Map<string, Promise<Registro>>();
   constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch,
     private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"]) {}
   private async get(empresa: EmpresaAuto, path: string): Promise<Registro> {
@@ -64,6 +67,22 @@ export class HoldedAuto {
       cursor = data.cursor; cursores.add(cursor);
     }
     throw new Error("Límite de paginación alcanzado; no se considera verificada la ausencia de duplicados.");
+  }
+  private listarEstatico(empresa: EmpresaAuto, path: string): Promise<Registro[]> {
+    const clave = `${empresa}:${path}`;
+    const existente = this.listadosEstaticos.get(clave);
+    if (existente) return existente;
+    const carga = this.listar(empresa, path);
+    this.listadosEstaticos.set(clave, carga);
+    return carga;
+  }
+  private getEstatico(empresa: EmpresaAuto, path: string): Promise<Registro> {
+    const clave = `${empresa}:${path}`;
+    const existente = this.objetosEstaticos.get(clave);
+    if (existente) return existente;
+    const carga = this.get(empresa, path);
+    this.objetosEstaticos.set(clave, carga);
+    return carga;
   }
   async evidencias(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
@@ -95,7 +114,7 @@ export class HoldedAuto {
   private async evidenciasEmpresa(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
     const empresa = r.empresa as EmpresaAuto;
-    const contactos = await this.listar(empresa, "/contacts");
+    const contactos = await this.listarEstatico(empresa, "/contacts");
     const alias = await this.memoria.alias(empresa, r.proveedor);
     const directos = contactos.filter(x => typeof x.name === "string" && normalizarProveedorExacto(x.name) === normalizarProveedorExacto(r.proveedor));
     const idsAlias = new Set(alias.map(x => x.contactId));
@@ -133,15 +152,18 @@ export class HoldedAuto {
         e.duplicados.push(texto(p.id));
       }
     }
-    const cuentas = await this.listar(empresa, "/treasury/accounts");
+    const cuentas = await this.listarEstatico(empresa, "/treasury/accounts");
     const desdeBanco = new Date(fecha); desdeBanco.setUTCDate(desdeBanco.getUTCDate() - VENTANA_DIAS_MOVIMIENTO_AUTO);
     const hastaBanco = new Date(fecha); hastaBanco.setUTCDate(hastaBanco.getUTCDate() + VENTANA_DIAS_MOVIMIENTO_AUTO);
-    for (const cuenta of cuentas) {
-      if (cuenta.archived === true) continue;
+    const movimientosPorCuenta = await mapearConConcurrencia(cuentas.filter(cuenta => cuenta.archived !== true), 4, async cuenta => {
       const cuentaId = texto(cuenta.id);
-      for (const mov of await this.listar(empresa, `/treasury/accounts/${idUrl(cuentaId)}/bank-movements`, {
+      const movimientos = await this.listar(empresa, `/treasury/accounts/${idUrl(cuentaId)}/bank-movements`, {
         start_date: formato(desdeBanco), end_date: formato(hastaBanco),
-      })) {
+      });
+      return { cuenta, cuentaId, movimientos };
+    });
+    for (const { cuenta, cuentaId, movimientos } of movimientosPorCuenta) {
+      for (const mov of movimientos) {
         if (mov.banking_account_id !== cuentaId || mov.currency !== cuenta.currency) throw new Error("Identidad bancaria inconsistente.");
         const movimiento: MovimientoAuto = { id: texto(mov.id), cuentaId, fecha: texto(mov.booking_date).slice(0, 10),
           moneda: texto(mov.currency), centimos: centimos(mov.amount), conciliadoCentimos: centimos(mov.reconciled_amount),
@@ -156,21 +178,29 @@ export class HoldedAuto {
           (movimiento.estado !== "pending" || movimiento.conciliadoCentimos !== 0)) e.duplicados.push(`banco:${cuentaId}/${movimiento.id}`);
       }
     }
-    const datosCatalogo = await this.get(empresa, "/expenses-accounts");
+    const candidatasLibres = candidatosMovimientoAuto(r, e).filter(m => m.estado === "pending" && m.conciliadoCentimos === 0 &&
+      Boolean(m.origen) && m.origen !== "manual");
+    // La cuenta contable es opcional. No descargar el catálogo ni hasta 50 compras completas cuando
+    // ya sabemos que el correo no puede automatizarse por proveedor, duplicado o movimiento bancario.
+    if (!e.contacto?.id || e.duplicados.length || candidatasLibres.length !== 1) {
+      e.consultasCompletas = true;
+      return e;
+    }
+    const datosCatalogo = await this.getEstatico(empresa, "/expenses-accounts");
     if (!Array.isArray(datosCatalogo.items)) throw new Error("Catálogo contable incompleto.");
     const catalogo = datosCatalogo.items.map(objeto);
     const precedentes: Registro[] = [];
-    if (e.contacto) {
-      const candidatosCuenta = comprasContacto.filter(p => p.contact_id === e.contacto!.id)
-        .sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 50);
-      for (const p of candidatosCuenta) {
-        const completo = typeof p.draft === "boolean" ? p : await this.get(empresa, `/purchases/${idUrl(texto(p.id))}`);
-        if (completo.id !== p.id || completo.contact_id !== e.contacto.id) throw new Error("Precedente contable inconsistente.");
-        precedentes.push(completo);
-      }
-    }
+    const contactoId = e.contacto.id;
+    const candidatosCuenta = comprasContacto.filter(p => p.contact_id === contactoId)
+      .sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 50);
+    const completos = await mapearConConcurrencia(candidatosCuenta, 4, async p => {
+      const completo = typeof p.draft === "boolean" ? p : await this.get(empresa, `/purchases/${idUrl(texto(p.id))}`);
+      if (completo.id !== p.id || completo.contact_id !== contactoId) throw new Error("Precedente contable inconsistente.");
+      return completo;
+    });
+    precedentes.push(...completos);
     const correccion = await this.memoria.cuentaConfirmada?.(empresa, r.proveedor);
-    const evaluacion = evaluarCuentaContable({ proveedor: r.proveedor, concepto: r.concepto, contactId: e.contacto?.id,
+    const evaluacion = evaluarCuentaContable({ proveedor: r.proveedor, concepto: r.concepto, contactId: contactoId,
       personaAsociada: r.persona, contextoDeViaje: r.viaje }, precedentes as unknown as CompraPrecedente[], catalogo as unknown as CuentaContableReal[], correccion);
     if (evaluacion.sugerencia) e.cuenta = { id: evaluacion.sugerencia.accountId, evidencia: evaluacion.motivo };
     e.consultasCompletas = true;

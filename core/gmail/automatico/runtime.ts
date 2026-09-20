@@ -14,14 +14,38 @@ import { HoldedAuto } from "./holded";
 import { configuracionAuto, normalizar, type ResultadoAuto } from "./model";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
+import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
+import { enteroAcotado } from "../../utils/asyncTimeout";
 
-export async function revisarGastosAutomaticos(chatId: number): Promise<ResultadoAuto> {
+export async function revisarGastosAutomaticos(chatId: number, opciones: {
+  informarProgreso?: boolean | (() => boolean);
+} = {}): Promise<ResultadoAuto> {
   const config = configuracionAuto();
   if (config.modo === "off") return { modo: "off", revisados: 0, completados: 0, simulados: 0, pendientes: [], gastos: [] };
-  const gmail = new GmailAuto(getGmailClient(), getGmailModifyClient());
+  const fechaLimite = Date.now() + enteroAcotado(process.env.WOBI_MAIL_AUTO_MAX_RUN_MS, 8 * 60_000, 2 * 60_000, 30 * 60_000);
+  let mensajeProgreso: number | undefined;
+  let colaNotificacion = Promise.resolve();
+  const notificar = (texto: string): Promise<void> => {
+    console.log(`[correo-auto] ${texto}`);
+    const informar = typeof opciones.informarProgreso === "function" ? opciones.informarProgreso() : opciones.informarProgreso;
+    if (!informar) return Promise.resolve();
+    colaNotificacion = colaNotificacion.then(async () => {
+      if (mensajeProgreso === undefined) mensajeProgreso = await sendTelegramMessageSmart(chatId, texto);
+      else await editTelegramMessage(chatId, mensajeProgreso, texto, []);
+    }).catch(error => console.error("[correo-auto] No se pudo actualizar el progreso en Telegram:", error));
+    return colaNotificacion;
+  };
+  const esHito = (completados: number, total: number): boolean => completados === 0 || completados === total ||
+    (total > 0 && completados % Math.max(1, Math.ceil(total / 4)) === 0);
+  const gmail = new GmailAuto(getGmailClient(), getGmailModifyClient(), { concurrencia: 4, progreso: async (completados, total) => {
+    if (esHito(completados, total)) await notificar(completados === 0
+      ? `⏳ Revisión automática iniciada: ${total} hilo(s) sin leer. Descargando contenido y adjuntos…`
+      : `⏳ Correo descargado: ${completados}/${total}.`);
+  } });
+  let aliasPromise: ReturnType<typeof obtenerTodosLosAlias> | undefined;
   const holded = new HoldedAuto({
     cuentaConfirmada: (empresa, proveedor) => buscarCuentaCorregidaAprendida(proveedor, empresa),
-    alias: async (empresa, proveedor) => (await obtenerTodosLosAlias())
+    alias: async (empresa, proveedor) => (await (aliasPromise ??= obtenerTodosLosAlias()))
       .filter(a => a.empresa === empresa && normalizar(a.nombreDetectado) === normalizar(proveedor)),
     duplicadoInterno: async (c, r) => {
       const registro = await buscarGastoDesdeCorreo(c.id, r.fuente === "cuerpo" ? undefined : r.fuente);
@@ -73,8 +97,15 @@ export async function revisarGastosAutomaticos(chatId: number): Promise<Resultad
       return actual.modo === "execute" && actual.empresas.includes(op.plan.empresa);
     },
     ejecutarProtegido: (op, tarea) => conOperacionAuto(op.id, () => protegerEscrituraHolded(op.plan.empresa, tarea)),
-  });
-  return service.revisar(config);
+  }, { concurrenciaAnalisis: 2, fechaLimite, progreso: async ({ fase, completados, total }) => {
+    if (!esHito(completados, total)) return;
+    await notificar(fase === "analisis"
+      ? (completados === 0 ? `⏳ Analizando ${total} mensaje(s), hasta 2 a la vez…` : `⏳ Mensajes analizados: ${completados}/${total}.`)
+      : (completados === 0 ? `⏳ Verificando candidatos en Gmail y Holded…` : `⏳ Candidatos verificados: ${completados}/${total}.`));
+  } });
+  const resultado = await service.revisar(config);
+  await colaNotificacion;
+  return resultado;
 }
 
 /** Una propuesta antigua no puede reabrir un correo con una escritura incompleta. */
