@@ -310,3 +310,23 @@ test("una reparación bloquea un alias no relacionado aunque el importe sea exac
   assert.equal(recuperaciones, 0);
   assert.ok(r.pendientes.some(p => p.motivos.includes("proveedor_no_verificado")));
 });
+
+test("una reparación acepta un alias confirmado solo cuando los nombres siguen siendo compatibles", async () => {
+  const e = escenario();
+  const decision = evaluarAuto(e.correos[0], e.a, e.a.recibos[0], evidenciaFixture(), configFixture);
+  assert.ok(decision.apto);
+  const op: OperacionAuto = { id: "legada", estado: "completada", compraId: "compra-legada",
+    plan: { ...decision.plan, version: "correo-gastos-v12" } };
+  e.ops.set(op.id, structuredClone(op));
+  e.a.recibos[0].proveedor = "Jumbo";
+  e.a.recibos[0].concepto = "Compra supermercado Jumbo";
+  e.puerto.evidencias = async () => ({ ...evidenciaFixture(), contacto: {
+    id: "contacto-jumbo", nombre: "JUMBO SUPERMARKTEN", exacto: false,
+    metodo: "alias_confirmado", similitud: 0,
+  } });
+  let contactoAlCorregir = "";
+  e.puerto.recuperarCreacion = async actual => { contactoAlCorregir = actual.plan.contactoId; return actual.compraId; };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(contactoAlCorregir, "contacto-jumbo");
+  assert.equal(r.reparados?.length, 1);
+});

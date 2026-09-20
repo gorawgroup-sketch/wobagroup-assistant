@@ -94,6 +94,8 @@ test("verifica una compra extranjera por su importe nativo y la conversión demo
   (e.compra as Record<string, unknown>).currency_change = "1.154346";
   assert.equal(await e.adapter.verificarCreacion(e.op), true);
   (e.compra as Record<string, unknown>).currency_change = "1.15";
+  assert.equal(await e.adapter.verificarCreacion(e.op), true);
+  (e.compra as Record<string, unknown>).currency_change = "1.14";
   assert.equal(await e.adapter.verificarCreacion(e.op), false);
   (e.compra as Record<string, unknown>).currency_change = "1.154346";
   e.compra.total = "130.81";
@@ -174,6 +176,27 @@ test("comprobante verificado por contenido binario y sin reconstruir un adjunto 
   e.op.plan.fuenteHash = hash("otro archivo");
   assert.equal(await e.adapter.verificarAdjunto(e.op), false);
   await assert.rejects(() => e.adapter.adjuntar(e.op, e.c), /comprobante cambió/);
+});
+test("dos soportes con los mismos bytes siguen verificando el comprobante y no provocan otra carga", async () => {
+  const e = escenario(); e.op.compraId = "creada";
+  await e.adapter.adjuntar(e.op, e.c);
+  const original = e.request;
+  let descargas = 0;
+  const prefijo = `wobi-${e.op.id}-${e.op.plan.fuenteHash.slice(0, 16)}`;
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path.endsWith("/attachments")) {
+      return new Response(JSON.stringify({ items: [{ id: `${prefijo}-1` }, { id: `${prefijo}-2` }], has_more: false, cursor: null }), { status: 200 });
+    }
+    if (!init?.method && path.includes(`/attachments/${prefijo}-`)) {
+      descargas++;
+      return new Response(e.c.cuerpo);
+    }
+    return original(input, init);
+  };
+  const adapter = new HoldedAuto(e.memoria, request);
+  assert.equal(await adapter.verificarAdjunto(e.op), true);
+  assert.equal(descargas, 2);
 });
 test("acepta estados finales reales y rechaza importe parcial o saldo pendiente", async () => {
   const e = escenario(); e.op.compraId = "creada";

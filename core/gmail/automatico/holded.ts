@@ -345,7 +345,11 @@ export class HoldedAuto {
       [...tagsEsperados].every(tag => tagsActuales.has(tag));
     const tasaActual = Number(c.currency_change ?? (documento.moneda === "EUR" ? 1 : NaN));
     const tasaCorrecta = documento.tasaCambio === undefined ||
-      (Number.isFinite(tasaActual) && Math.abs(tasaActual - documento.tasaCambio) < 0.000001);
+      (Number.isFinite(tasaActual) && (Math.abs(tasaActual - documento.tasaCambio) < 0.000001 ||
+        // Holded devuelve algunas tasas con solo dos decimales aunque el POST
+        // haya recibido más precisión. El redondeo debe coincidir; una tasa
+        // vecina (1,14 frente a 1,154346) sigue siendo incorrecta.
+        Math.round(tasaActual * 100) === Math.round(documento.tasaCambio * 100)));
     let impuestosCorrectos = true;
     if (this.flujoExistente) {
       const catalogoCrudo = await this.getEstatico(p.empresa, "/taxes");
@@ -394,13 +398,22 @@ export class HoldedAuto {
     const candidatos = this.flujoExistente ? adjuntos : adjuntos.filter(a =>
       [a.id, a.name, a.filename, a.file_name].some(x => typeof x === "string" && x.startsWith(this.nombreAdjunto(op))));
     if (!candidatos.length) return false;
-    const coincidencias = await mapearConConcurrencia(candidatos, 3, async candidato => {
+    // Holded puede repetir en el listado varias representaciones del mismo id.
+    // Verificar ese id una vez impide interpretar la repetición como soportes
+    // distintos y volver a cargar el mismo comprobante en cada reparación.
+    const candidatosUnicos = [...new Map(candidatos.map((candidato, indice) => {
+      const clave = [candidato.id, candidato.identifier, candidato.name, candidato.filename, candidato.file_name]
+        .find((valor): valor is string => typeof valor === "string" && Boolean(valor.trim()))?.trim() ??
+        `sin-referencia-${indice}`;
+      return [clave, candidato] as const;
+    })).values()];
+    const coincidencias = await mapearConConcurrencia(candidatosUnicos, 3, async candidato => {
       const response = await this.request(`https://api.holded.com/api/v2/purchases/${idUrl(op.compraId!)}/attachments/${idUrl(texto(candidato.id))}`, {
         headers: { Authorization: `Bearer ${process.env[KEYS[op.plan.empresa]]}` }, signal: AbortSignal.timeout(30_000) });
       if (!response.ok) throw new Error("No se pudo verificar el contenido del comprobante en Holded.");
       return hash(Buffer.from(await response.arrayBuffer())) === op.plan.fuenteHash;
     });
-    return coincidencias.filter(Boolean).length === 1;
+    return coincidencias.some(Boolean);
   }
   private async movimientoActual(op: OperacionAuto): Promise<Registro> {
     const p = op.plan; const ref = p.movimiento;
