@@ -16,10 +16,11 @@ async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   }), 60_000, "clasificación contable automática");
   if (!sugerencia?.accountId) return undefined;
   const tags = combinarTagsGastoAprendidos(
-    textoClasificacion,
+    recibo.concepto,
     recibo.proveedor,
     recibo.persona,
-    sugerencia.tags
+    sugerencia.tags,
+    recibo.contextoClasificacion
   );
   return { cuentaId: sugerencia.accountId, nombreCuenta: sugerencia.accountId, tags,
     evidencia: `${sugerencia.aprendidoDe}: ${sugerencia.ejemplo}` };
