@@ -402,6 +402,16 @@ export class HoldedAuto {
     }
     const unaLinea = Array.isArray(c.lines) && c.lines.length === 1;
     const lineaUnica = unaLinea ? objeto((c.lines as unknown[])[0]) : undefined;
+    const numeroEsperado = p.recibo.numero?.trim();
+    // El flujo aprendido conserva el número que ya existe cuando una
+    // relectura no logra extraerlo. En ese caso no hay un valor exacto con
+    // el cual compararlo: se exige que Holded mantenga un número no vacío,
+    // sin imponer el placeholder 00000 y sin degradar un dato anterior.
+    const numeroDocumentoCorrecto = numeroEsperado
+      ? String(c.document_number) === numeroEsperado
+      : this.flujoExistente
+        ? Boolean(String(c.document_number ?? "").trim())
+        : String(c.document_number) === "00000";
     const comprobaciones = {
       identidad: c.id === op.compraId,
       contacto: c.contact_id === p.contactoId,
@@ -412,7 +422,7 @@ export class HoldedAuto {
       cuenta: lineaUnica !== undefined && (!p.cuentaId || lineaUnica.account === p.cuentaId),
       tasaCambio: tasaCorrecta,
       impuestos: impuestosCorrectos && centimos(c.tax, true) === 0,
-      numeroDocumento: String(c.document_number) === (p.recibo.numero || "00000"),
+      numeroDocumento: numeroDocumentoCorrecto,
       tags: tagsCorrectos,
     };
     const base = Object.entries(comprobaciones).every(([nombre, ok]) => nombre === "tags" || ok);
