@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { obtenerResumenCostos } from "../claude/costTracking";
+import { obtenerConsumoActualApi } from "../claude/costTracking";
 
 export type ModoPoliticaApi = "observe" | "disabled" | "allowlist";
 
@@ -7,13 +7,16 @@ export interface ConfiguracionPoliticaApi {
   modo: ModoPoliticaApi;
   killSwitch: boolean;
   procesosPermitidos: Set<string>;
+  umbralAlertaDiariaUSD: number;
   limiteDiarioUSD: number;
   limiteMensualUSD: number;
+  limitesDiariosPorProceso: Map<string, number>;
 }
 
 export interface EstadoConsumoApi {
   gastoDiarioUSD: number;
   gastoMensualUSD: number;
+  gastoDiarioProcesoUSD?: number;
 }
 
 export interface DecisionPoliticaApi {
@@ -36,6 +39,17 @@ function numeroNoNegativo(raw: string | undefined): number {
   return Number.isFinite(valor) && valor >= 0 ? valor : 0;
 }
 
+function limitesDiariosPorProceso(raw: string | undefined): Map<string, number> {
+  const limites = new Map<string, number>();
+  for (const entrada of (raw ?? "").split(",")) {
+    const [proceso, valorRaw, ...resto] = entrada.split(":").map((parte) => parte.trim());
+    if (!proceso || !valorRaw || resto.length) continue;
+    const valor = Number(valorRaw);
+    if (Number.isFinite(valor) && valor > 0) limites.set(proceso, valor);
+  }
+  return limites;
+}
+
 export function cargarConfiguracionPoliticaApi(env: NodeJS.ProcessEnv = process.env): ConfiguracionPoliticaApi {
   const modoConfigurado = env.WOBI_AI_API_MODE;
   const modoRaw = (modoConfigurado ?? "observe").trim().toLowerCase();
@@ -53,8 +67,12 @@ export function cargarConfiguracionPoliticaApi(env: NodeJS.ProcessEnv = process.
         .map((p) => p.trim())
         .filter(Boolean)
     ),
+    umbralAlertaDiariaUSD: numeroNoNegativo(env.WOBI_AI_API_DAILY_WARNING_USD),
     limiteDiarioUSD: numeroNoNegativo(env.WOBI_AI_API_DAILY_LIMIT_USD),
     limiteMensualUSD: numeroNoNegativo(env.WOBI_AI_API_MONTHLY_LIMIT_USD),
+    limitesDiariosPorProceso: limitesDiariosPorProceso(
+      env.WOBI_AI_API_PROCESS_DAILY_LIMITS
+    ),
   };
 }
 
@@ -67,15 +85,29 @@ export function evaluarPoliticaApi(
     return { permitida: false, motivo: "kill_switch_activo", soloObservacion: false };
   }
 
-  // Fase transitoria segura: observa sin cambiar el comportamiento actual.
-  // El informe de migración define cuándo pasar cada proceso a allowlist o
-  // disabled después de validar su alternativa durante varios ciclos.
-  if (config.modo === "observe") {
-    return { permitida: true, motivo: "modo_observacion", soloObservacion: true };
-  }
-
   if (config.modo === "disabled") {
     return { permitida: false, motivo: "api_deshabilitada", soloObservacion: false };
+  }
+
+  // "observe" conserva la observación de la allowlist, pero un techo
+  // monetario configurado siempre es un techo real. El incidente del
+  // 2026-09-20 demostró que ignorarlo permitió 405 llamadas automáticas y
+  // $22,75 aunque el límite diario estaba fijado en $10.
+  if (config.limiteDiarioUSD > 0 && consumo.gastoDiarioUSD >= config.limiteDiarioUSD) {
+    return { permitida: false, motivo: "limite_diario_alcanzado", soloObservacion: false };
+  }
+  if (config.limiteMensualUSD > 0 && consumo.gastoMensualUSD >= config.limiteMensualUSD) {
+    return { permitida: false, motivo: "limite_mensual_alcanzado", soloObservacion: false };
+  }
+  const limiteProceso = config.limitesDiariosPorProceso.get(proceso);
+  if (limiteProceso && (consumo.gastoDiarioProcesoUSD ?? 0) >= limiteProceso) {
+    return { permitida: false, motivo: "limite_diario_proceso_alcanzado", soloObservacion: false };
+  }
+
+  // Fase transitoria: la allowlist todavía solo se observa. Los límites de
+  // arriba sí se aplican para que observar nunca signifique gasto ilimitado.
+  if (config.modo === "observe") {
+    return { permitida: true, motivo: "modo_observacion", soloObservacion: true };
   }
 
   if (!config.procesosPermitidos.has(proceso)) {
@@ -84,13 +116,6 @@ export function evaluarPoliticaApi(
   if (config.limiteDiarioUSD <= 0 || config.limiteMensualUSD <= 0) {
     return { permitida: false, motivo: "limites_no_configurados", soloObservacion: false };
   }
-  if (consumo.gastoDiarioUSD >= config.limiteDiarioUSD) {
-    return { permitida: false, motivo: "limite_diario_alcanzado", soloObservacion: false };
-  }
-  if (consumo.gastoMensualUSD >= config.limiteMensualUSD) {
-    return { permitida: false, motivo: "limite_mensual_alcanzado", soloObservacion: false };
-  }
-
   return { permitida: true, motivo: "proceso_y_presupuesto_autorizados", soloObservacion: false };
 }
 
@@ -112,8 +137,8 @@ export function crearEjecucionIA(proceso: string): EjecucionIA {
 
 /**
  * Guardia previa a cualquier gasto. No recibe prompts, resultados ni
- * secretos. En allowlist consulta únicamente los totales monetarios ya
- * registrados; en observe no añade latencia ni lecturas externas.
+ * secretos. Consulta únicamente los totales monetarios ya registrados
+ * cuando existe al menos un techo efectivo, también en modo observe.
  */
 export async function autorizarLlamadaApi(proceso: string, referenceDate: Date = new Date()): Promise<DecisionPoliticaApi> {
   const config = cargarConfiguracionPoliticaApi();
@@ -121,20 +146,17 @@ export async function autorizarLlamadaApi(proceso: string, referenceDate: Date =
     const decision = evaluarPoliticaApi(config, proceso, { gastoDiarioUSD: 0, gastoMensualUSD: 0 });
     throw new UsoApiNoAutorizadoError(proceso, decision.motivo);
   }
-  if (config.modo === "observe") {
+  const limiteProceso = config.limitesDiariosPorProceso.get(proceso) ?? 0;
+  const hayLimiteEfectivo = config.limiteDiarioUSD > 0 || config.limiteMensualUSD > 0 || limiteProceso > 0;
+  if (config.modo === "observe" && !hayLimiteEfectivo) {
     return evaluarPoliticaApi(config, proceso, { gastoDiarioUSD: 0, gastoMensualUSD: 0 });
   }
 
-  const inicioDia = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
-  const inicioMes = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1);
-  const fin = new Date(referenceDate.getTime() + 1);
-  const [dia, mes] = await Promise.all([
-    obtenerResumenCostos(inicioDia, fin),
-    obtenerResumenCostos(inicioMes, fin),
-  ]);
+  const consumo = await obtenerConsumoActualApi(proceso, referenceDate);
   const decision = evaluarPoliticaApi(config, proceso, {
-    gastoDiarioUSD: dia.gastoRealApiUSD,
-    gastoMensualUSD: mes.gastoRealApiUSD,
+    gastoDiarioUSD: consumo.gastoDiarioUSD,
+    gastoMensualUSD: consumo.gastoMensualUSD,
+    gastoDiarioProcesoUSD: consumo.gastoDiarioProcesoUSD,
   });
   if (!decision.permitida) throw new UsoApiNoAutorizadoError(proceso, decision.motivo);
   return decision;

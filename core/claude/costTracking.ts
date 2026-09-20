@@ -165,8 +165,8 @@ async function ensureTab(): Promise<void> {
 /**
  * Registra el costo de UNA llamada a la API de Claude (cada iteración del
  * loop de tool-use en askClaude, no solo la respuesta final — cada una se
- * factura por separado). Se llama en "fire and forget" desde askClaude para
- * no añadir la latencia de escribir en Sheets a la respuesta del usuario.
+ * factura por separado). La pasarela espera este registro antes de permitir
+ * que avance una ráfaga: la telemetría es también la barrera del presupuesto.
  */
 export type AutenticacionIA = "anthropic_api_key" | "claude_subscription" | "chatgpt_subscription";
 
@@ -356,6 +356,39 @@ function resumirFilas(filas: FilaUso[]): ResumenCostos {
       gastoRealApiUSD: 0,
     }
   );
+}
+
+export interface ConsumoActualApi {
+  gastoDiarioUSD: number;
+  gastoMensualUSD: number;
+  gastoDiarioProcesoUSD: number;
+}
+
+/**
+ * Lee la telemetría una sola vez para autorizar una llamada. Antes se hacían
+ * dos lecturas completas de Sheets (día y mes) por cada solicitud; activar
+ * límites reales no debe multiplicar la cuota ni la latencia del sistema.
+ */
+export async function obtenerConsumoActualApi(
+  proceso: string,
+  referencia: Date = new Date()
+): Promise<ConsumoActualApi> {
+  const filas = await leerFilas();
+  const inicioDiaActual = inicioDia(referencia);
+  const inicioMesActual = new Date(
+    inicioDiaActual.getFullYear(),
+    inicioDiaActual.getMonth(),
+    1
+  );
+  const fin = new Date(referencia.getTime() + 1);
+  const filasDia = filasEnRango(filas, inicioDiaActual, fin);
+  return {
+    gastoDiarioUSD: resumirFilas(filasDia).gastoRealApiUSD,
+    gastoMensualUSD: resumirFilas(filasEnRango(filas, inicioMesActual, fin)).gastoRealApiUSD,
+    gastoDiarioProcesoUSD: resumirFilas(
+      filasDia.filter((fila) => fila.proceso === proceso)
+    ).gastoRealApiUSD,
+  };
 }
 
 function filasEnRango(filas: FilaUso[], desde: Date, hasta: Date): FilaUso[] {

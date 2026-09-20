@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto, type OperacionAuto, type PlanAuto, type StoreAuto } from "./model";
+import { VERSION_ANALISIS, VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto, type OperacionAuto, type PlanAuto, type StoreAuto } from "./model";
 
 // El esquema se aplica explícitamente con el script de preparación; nunca durante una escritura.
 export const SCHEMA_AUTO = `
@@ -48,7 +48,7 @@ export async function buscarAnalisisAutomaticoReciente(mensajeId: string): Promi
   if (!hayCoordinacionDurable() || !mensajeId) return undefined;
   const r = await poolAuto().query(`SELECT data FROM wobi_mail_analyses
     WHERE mailbox=$1 AND message_id=$2 AND policy=$3 ORDER BY updated_at DESC LIMIT 1`,
-    [process.env.GMAIL_IMPERSONATE_EMAIL ?? "", mensajeId, VERSION_POLITICA]);
+    [process.env.GMAIL_IMPERSONATE_EMAIL ?? "", mensajeId, VERSION_ANALISIS]);
   return r.rows[0]?.data as AnalisisAuto | undefined;
 }
 const contexto = new AsyncLocalStorage<{ locks: Set<string>; operacion?: string }>();
@@ -141,7 +141,13 @@ export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: ()
 export class PostgresAutoStore implements StoreAuto {
   constructor(private readonly db: Pool = poolAuto()) {}
   async buscarAnalisis(buzon: string, mensajeId: string, huella: string, version: string): Promise<AnalisisAuto | undefined> {
-    const r = await this.db.query("SELECT data FROM wobi_mail_analyses WHERE mailbox=$1 AND message_id=$2 AND fingerprint=$3 AND policy=$4",
+    // Un mensaje de Gmail es inmutable. `contextoHilo` sí cambia cuando
+    // llega una respuesta y antes alteraba la huella, provocando un nuevo
+    // cobro por el mismo mensaje. Se prefiere la huella exacta, pero se
+    // reutiliza el análisis más reciente del mismo message_id y versión.
+    const r = await this.db.query(`SELECT data FROM wobi_mail_analyses
+      WHERE mailbox=$1 AND message_id=$2 AND policy=$4
+      ORDER BY (fingerprint=$3) DESC, updated_at DESC LIMIT 1`,
       [buzon, mensajeId, huella, version]);
     return r.rows[0]?.data as AnalisisAuto | undefined;
   }

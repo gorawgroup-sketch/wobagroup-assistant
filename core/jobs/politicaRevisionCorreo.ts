@@ -18,6 +18,15 @@ export type SolicitudRevisionCorreo =
   | { origen: "cron"; informe: "silencioso" }
   | { origen: "cron"; informe: "consolidado"; slot: SlotInformeCorreo };
 
+/**
+ * La cola manual puede sincronizarse cada dos horas sin pagar una lectura
+ * con IA. El análisis automático de gastos se concentra en los dos pases
+ * con informe y en órdenes manuales explícitas.
+ */
+export function debeEjecutarAnalisisAutomatico(solicitud: SolicitudRevisionCorreo): boolean {
+  return solicitud.origen === "manual" || solicitud.informe === "consolidado";
+}
+
 /** Una orden manual siempre informa, aunque se una a un pase silencioso. */
 export function debePublicarInformeCorreo(
   solicitud: SolicitudRevisionCorreo,

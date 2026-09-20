@@ -3,6 +3,14 @@ import { createHash } from "node:crypto";
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
 export const VERSION_POLITICA = "correo-gastos-v21";
+/**
+ * La lectura del mensaje es independiente de la política que decide si se
+ * crea/adjunta/concilia. Antes ambas compartían VERSION_POLITICA y cada
+ * ajuste contable forzaba a pagar otra vez el análisis de todos los correos
+ * no leídos. Se inicia con el valor ya persistido en producción para
+ * reutilizar inmediatamente los análisis v21 existentes.
+ */
+export const VERSION_ANALISIS = "correo-gastos-v21";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;

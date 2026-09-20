@@ -5,6 +5,7 @@ import {
   CRON_CORREO_HABIL_SILENCIOSO,
   CRON_CORREO_INFORME_MANANA,
   CRON_CORREO_INFORME_TARDE,
+  debeEjecutarAnalisisAutomatico,
   debePublicarInformeCorreo,
 } from "./politicaRevisionCorreo";
 
@@ -15,6 +16,12 @@ test("la programación de correo usa expresiones cron válidas y separa los dos 
   assert.equal(CRON_CORREO_HABIL_SILENCIOSO, "0 0,2,4,6,8,12,14,16,20,22 * * 1-5");
   assert.equal(CRON_CORREO_INFORME_MANANA, "0 10 * * *");
   assert.equal(CRON_CORREO_INFORME_TARDE, "0 18 * * *");
+});
+
+test("solo los informes y las órdenes manuales ejecutan análisis automático con IA", () => {
+  assert.equal(debeEjecutarAnalisisAutomatico({ origen: "cron", informe: "silencioso" }), false);
+  assert.equal(debeEjecutarAnalisisAutomatico({ origen: "cron", informe: "consolidado", slot: "10" }), true);
+  assert.equal(debeEjecutarAnalisisAutomatico({ origen: "manual" }), true);
 });
 
 test("los pases silenciosos no informan y las órdenes manuales siempre responden", () => {

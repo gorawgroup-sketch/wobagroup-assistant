@@ -74,7 +74,12 @@ export async function crearMensajeAnthropic(
     throw error;
   }
 
-  registrarUsoIA(chatId, String(params.model), response.usage, {
+  // La telemetría forma parte de la barrera de presupuesto: se espera su
+  // cierre antes de liberar la siguiente tarea para que una ráfaga no siga
+  // gastando mientras los registros aún están en vuelo. Un fallo de
+  // observabilidad se informa, pero no convierte una respuesta válida del
+  // modelo en un reintento facturable.
+  await registrarUsoIA(chatId, String(params.model), response.usage, {
     proceso: ejecucion.proceso,
     autenticacion: "anthropic_api_key",
     ejecucionId: ejecucion.id,
