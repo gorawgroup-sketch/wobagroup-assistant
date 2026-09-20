@@ -185,8 +185,13 @@ export function resumenAutomatico(r: ResultadoAuto): string {
     `${r.revisados} mensaje(s) analizado(s); ${r.completados} gasto(s) creado(s) y conciliado(s).`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
     `${r.pendientes.length} mensaje(s) o incidencia(s) pendientes de revisión.`];
-  if (r.gastos.length) lineas.push("Pendiente: convertir estas compras a ticket manualmente en Holded (etiqueta wobi-ticket-pendiente).");
-  for (const g of r.gastos) lineas.push(`${g.empresa}: ${(g.centimos / 100).toFixed(2)} ${g.moneda} — ${g.id}`);
+  if (r.gastos.length) {
+    const porEmpresa = new Map<string, number>();
+    for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);
+    lineas.push(`Automatizados por empresa: ${[...porEmpresa].map(([empresa, cantidad]) => `${empresa}: ${cantidad}`).join("; ")}.`);
+    lineas.push("Detalle para revisar en Holded y convertir a ticket (etiqueta wobi-ticket-pendiente):");
+    for (const g of r.gastos) lineas.push(`• ${g.empresa}: ${(g.centimos / 100).toFixed(2)} ${g.moneda} — compra ${g.id}`);
+  }
   const conteo = new Map<string, number>();
   for (const p of r.pendientes) for (const motivo of p.motivos) conteo.set(motivo, (conteo.get(motivo) ?? 0) + 1);
   for (const [motivo, n] of [...conteo].slice(0, 8)) lineas.push(`${n}: ${motivo}`);
