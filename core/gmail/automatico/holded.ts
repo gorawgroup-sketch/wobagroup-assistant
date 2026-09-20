@@ -400,13 +400,32 @@ export class HoldedAuto {
       impuestosCorrectos = Boolean(impuestoEsperado) && impuestosActuales.length === 1 &&
         impuestosActuales[0] === impuestoEsperado;
     }
-    const base = c.id === op.compraId && c.contact_id === p.contactoId &&
-      String(c.currency || "EUR").toUpperCase().trim() === documento.moneda &&
-      String(c.date).slice(0, 10) === p.recibo.fecha && centimos(c.total, true) === Math.round(documento.monto * 100) &&
-      Array.isArray(c.lines) && c.lines.length === 1 && (!p.cuentaId || objeto(c.lines[0]).account === p.cuentaId) &&
-      tasaCorrecta && impuestosCorrectos && centimos(c.tax, true) === 0 &&
-      String(c.document_number) === (p.recibo.numero || "00000");
-    if (this.flujoExistente) return base && tagsCorrectos;
+    const unaLinea = Array.isArray(c.lines) && c.lines.length === 1;
+    const lineaUnica = unaLinea ? objeto((c.lines as unknown[])[0]) : undefined;
+    const comprobaciones = {
+      identidad: c.id === op.compraId,
+      contacto: c.contact_id === p.contactoId,
+      moneda: String(c.currency || "EUR").toUpperCase().trim() === documento.moneda,
+      fecha: String(c.date).slice(0, 10) === p.recibo.fecha,
+      total: centimos(c.total, true) === Math.round(documento.monto * 100),
+      unaLinea,
+      cuenta: lineaUnica !== undefined && (!p.cuentaId || lineaUnica.account === p.cuentaId),
+      tasaCambio: tasaCorrecta,
+      impuestos: impuestosCorrectos && centimos(c.tax, true) === 0,
+      numeroDocumento: String(c.document_number) === (p.recibo.numero || "00000"),
+      tags: tagsCorrectos,
+    };
+    const base = Object.entries(comprobaciones).every(([nombre, ok]) => nombre === "tags" || ok);
+    if (this.flujoExistente) {
+      const verificada = base && comprobaciones.tags;
+      if (!verificada) {
+        console.warn("[correo-auto] Campos que impiden verificar la compra:", {
+          compraId: op.compraId,
+          ...comprobaciones,
+        });
+      }
+      return verificada;
+    }
     return base && Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`);
   }
   private nombreAdjunto(op: OperacionAuto): string { return `wobi-${op.id}-${op.plan.fuenteHash.slice(0, 16)}`; }
