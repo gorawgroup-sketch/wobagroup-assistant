@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
-import { hash, type OperacionAuto, type StoreAuto } from "./model";
+import { hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 
 function escenario() {
@@ -14,6 +14,8 @@ function escenario() {
     guardarAnalisis: async (b, m, h, v, analisis) => { analisisGuardados.set(`${b}:${m}:${h}:${v}`, copiar(analisis)); },
     buscarFuente: async (b, m, f) => copiar([...ops.values()].find(o => o.plan.correo.id === m && o.plan.recibo.fuente === f && o.estado !== "rechazada")),
     pendientes: async () => copiar([...ops.values()].filter(o => !["completada", "rechazada"].includes(o.estado))),
+    recuperables: async (_b, version) => copiar([...ops.values()].filter(o => !["completada", "rechazada"].includes(o.estado) ||
+      (o.estado === "completada" && Boolean(o.compraId) && o.plan.version !== version))),
     reservar: async plan => {
       const repetida = [...ops.values()].find(o => o.estado !== "rechazada" && o.plan.claves.some(k => plan.claves.includes(k)));
       if (repetida) throw new Error("Reserva duplicada");
@@ -24,7 +26,8 @@ function escenario() {
   };
   const llamadas = { crear: 0, adjuntar: 0, conciliar: 0, marcar: 0, registrar: 0 };
   const puerto: PuertoAutomatico = {
-    listar: async () => correos, reservadoManualmente: async () => false,
+    listar: async () => correos, obtener: async (mensajeId) => correos.find(c => c.id === mensajeId),
+    reservadoManualmente: async () => false,
     analizar: async () => { analisisLlamadas++; return a; }, evidencias: async () => evidenciaFixture(),
     crear: async () => { llamadas.crear++; assert.equal([...ops.values()][0].estado, "creando"); return "compra1"; },
     recuperarCreacion: async () => undefined,
@@ -52,20 +55,31 @@ test("el informe desglosa automatizaciones por empresa y conserva el detalle ver
       { empresa: "WOBA", id: "w-2", centimos: 399, moneda: "EUR" },
     ],
   });
-  assert.match(texto, /3 gasto\(s\) creado\(s\) y conciliado\(s\)/);
-  assert.match(texto, /Automatizados por empresa: WOBA: 2; Footprint: 1\./);
-  assert.match(texto, /• Footprint: 20\.00 USD — compra f-1/);
+  assert.match(texto, /Gastos creados, soportados y conciliados: 3\./);
+  assert.match(texto, /✅ Automatizados por empresa/);
+  assert.match(texto, /• WOBA: 2\./);
+  assert.match(texto, /• Footprint · 20\.00 USD · compra f-1\./);
 });
-test("el informe explica el proveedor y contacto de los candidatos pendientes", () => {
+test("el informe organiza pendientes en lenguaje accionable sin códigos internos", () => {
   const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 0, simulados: 0, gastos: [],
     pendientes: [{ mensajeId: "m1", asunto: "Ticket de supermercado", motivos: ["proveedor_no_verificado"],
       detalles: [{ proveedor: "Delhaize", empresa: "Footprint", monto: 64.71, moneda: "EUR",
         contacto: "Louis Delhaize Brugge", metodoContacto: "aproximado_unico",
         motivos: ["proveedor_no_verificado"] }] }],
   });
-  assert.match(texto, /Detalle de candidatos pendientes/);
-  assert.match(texto, /Delhaize, 64\.71 EUR, Footprint/);
-  assert.match(texto, /contacto Louis Delhaize Brugge \(aproximado_unico\)/);
+  assert.match(texto, /🟡 Por qué quedaron correos para revisión manual/);
+  assert.match(texto, /• Footprint · Delhaize · 64\.71 EUR/);
+  assert.match(texto, /Se encontró «Louis Delhaize Brugge», pero falta confirmar/);
+  assert.doesNotMatch(texto, /proveedor_no_verificado|aproximado_unico|mensajeId/);
+});
+test("el informe oculta ids de operaciones y muestra una sola causa principal por caso", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 0, simulados: 0, gastos: [],
+    pendientes: [{ mensajeId: "m1", asunto: "Recibo", motivos: ["operacion_incierta:uuid-interno", "movimiento_no_libre"],
+      detalles: [{ proveedor: "ALDI", empresa: "Footprint", monto: 82.31, moneda: "EUR",
+        motivos: ["operacion_incierta:uuid-interno", "detalle:timeout privado"] }] }],
+  });
+  assert.match(texto, /La operación ya empezó, pero falta confirmar que quedó completa en Holded/);
+  assert.doesNotMatch(texto, /uuid-interno|operacion_incierta|timeout privado|movimiento_no_libre/);
 });
 test("simulación analiza y audita sin reservas, escrituras ni marcado leído", async () => {
   const e = escenario(); const r = await e.service.revisar({ ...configFixture, modo: "simulate" });
@@ -211,4 +225,19 @@ test("reanuda tras apagar entre compra y adjunto sin duplicar la compra", async 
   assert.equal(e.llamadas.crear, 1);
   assert.equal(e.llamadas.adjuntar, 1);
   assert.equal([...e.ops.values()][0].pasoIncierto, undefined);
+});
+
+test("repara una operación completada con política anterior usando el correo original", async () => {
+  const e = escenario();
+  await e.service.revisar(configFixture);
+  const op = [...e.ops.values()][0];
+  op.plan.version = "correo-gastos-v6";
+  e.ops.set(op.id, structuredClone(op));
+  let recuperaciones = 0;
+  e.puerto.recuperarCreacion = async actual => { recuperaciones++; return actual.compraId; };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(recuperaciones, 1);
+  assert.equal(r.reparados?.length, 1);
+  assert.equal([...e.ops.values()][0].plan.version, VERSION_POLITICA);
+  assert.equal(e.llamadas.crear, 1);
 });

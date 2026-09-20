@@ -35,6 +35,15 @@ test("solo marca el mensaje procesado, nunca el hilo que recibió una respuesta 
   await new GmailAuto(gmail, gmail).marcarResuelto(correoFixture());
   assert.deepEqual(modificados, ["m1"]);
 });
+test("recupera por id un mensaje ya leído para terminar una operación durable", async () => {
+  const gmail = { users: { threads: {
+    get: async () => ({ data: { messages: [{ id: "m-leido", labelIds: [], internalDate: "1",
+      payload: { mimeType: "text/plain", body: { data: b64("comprobante") } } }] } }),
+  } } } as unknown as gmail_v1.Gmail;
+  const correo = await new GmailAuto(gmail, gmail).obtener("m-leido", "t1");
+  assert.equal(correo?.id, "m-leido");
+  assert.equal(correo?.cuerpo.includes("comprobante"), true);
+});
 test("un fallo de descarga deja evidencia incompleta, no un correo vacío procesable", async () => {
   const gmail = { users: { threads: {
     list: async () => ({ data: { threads: [{ id: "t" }] } }),

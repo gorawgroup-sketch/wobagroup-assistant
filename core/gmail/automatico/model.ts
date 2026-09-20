@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v7";
+export const VERSION_POLITICA = "correo-gastos-v8";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
@@ -231,6 +231,7 @@ export interface StoreAuto {
   buscarFuente(buzon: string, mensajeId: string, fuente: string): Promise<OperacionAuto | undefined>;
   guardar(op: OperacionAuto): Promise<void>;
   pendientes(buzon: string): Promise<OperacionAuto[]>;
+  recuperables(buzon: string, version: string): Promise<OperacionAuto[]>;
   auditar(evento: { buzon: string; mensajeId?: string; tipo: string; datos: unknown }): Promise<void>;
 }
 export interface ResultadoAuto {
@@ -240,4 +241,5 @@ export interface ResultadoAuto {
     contacto?: string; metodoContacto?: string; motivoProveedor?: string; motivos: string[];
   }> }>;
   gastos: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string }>;
+  reparados?: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string }>;
 }

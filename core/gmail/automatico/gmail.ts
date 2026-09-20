@@ -43,6 +43,25 @@ export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schem
 export class GmailAuto {
   constructor(private readonly lectura: gmail_v1.Gmail, private readonly escritura: gmail_v1.Gmail,
     private readonly opciones: { concurrencia?: number; progreso?: (completados: number, total: number) => void | Promise<void> } = {}) {}
+  private async leerHilo(id: string): Promise<Array<CorreoAuto & { noLeido: boolean }>> {
+    const r = await this.lectura.users.threads.get({ userId: "me", id, format: "full" });
+    if (!r.data.messages) throw new Error("Hilo Gmail sin mensajes.");
+    const leidos: Array<{ m: gmail_v1.Schema$Message; cuerpo: string; adjuntos: AdjuntoAuto[]; error?: string }> = [];
+    for (const m of r.data.messages) {
+      try { leidos.push({ m, ...await contenidoCompleto(this.lectura, m) }); }
+      catch (error) { leidos.push({ m, cuerpo: "", adjuntos: [], error: error instanceof Error ? error.message : "Lectura incompleta" }); }
+    }
+    const contextoHilo = leidos.map(x => `Mensaje ${x.m.id}, de ${header(x.m, "From")}, fecha ${header(x.m, "Date")}:\n${x.cuerpo}`).join("\n\n");
+    const errorHilo = leidos.find(x => x.error)?.error;
+    return leidos.map(({ m, cuerpo, adjuntos }) => {
+      const recibidoEn = Number(m.internalDate);
+      if (!Number.isFinite(recibidoEn) || !m.id) throw new Error("Mensaje sin fecha o identidad verificable.");
+      return { id: m.id, threadId: id, de: header(m, "From"), asunto: header(m, "Subject"), fecha: header(m, "Date"),
+        recibidoEn, cuerpo, contextoHilo, adjuntos, lecturaError: errorHilo,
+        huella: hash(JSON.stringify([cuerpo, contextoHilo, errorHilo ?? "", adjuntos.map(a => [a.id, hash(a.data)])])),
+        noLeido: m.labelIds?.includes("UNREAD") === true };
+    });
+  }
   async listar(): Promise<CorreoAuto[]> {
     const ids: string[] = [];
     let pageToken: string | undefined;
@@ -59,29 +78,16 @@ export class GmailAuto {
     let completados = 0;
     await this.opciones.progreso?.(0, unicos.length);
     const porHilo = await mapearConConcurrencia(unicos, this.opciones.concurrencia ?? 4, async id => {
-      const r = await this.lectura.users.threads.get({ userId: "me", id, format: "full" });
-      if (!r.data.messages) throw new Error("Hilo Gmail sin mensajes.");
-      const leidos: Array<{ m: gmail_v1.Schema$Message; cuerpo: string; adjuntos: AdjuntoAuto[]; error?: string }> = [];
-      for (const m of r.data.messages) {
-        try { leidos.push({ m, ...await contenidoCompleto(this.lectura, m) }); }
-        catch (error) { leidos.push({ m, cuerpo: "", adjuntos: [], error: error instanceof Error ? error.message : "Lectura incompleta" }); }
-      }
-      const contextoHilo = leidos.map(x => `Mensaje ${x.m.id}, de ${header(x.m, "From")}, fecha ${header(x.m, "Date")}:\n${x.cuerpo}`).join("\n\n");
-      const errorHilo = leidos.find(x => x.error)?.error;
-      const correos: CorreoAuto[] = [];
-      for (const { m, cuerpo, adjuntos } of leidos) {
-        if (!m.labelIds?.includes("UNREAD")) continue;
-        const recibidoEn = Number(m.internalDate);
-        if (!Number.isFinite(recibidoEn) || !m.id) throw new Error("Mensaje sin fecha o identidad verificable.");
-        correos.push({ id: m.id, threadId: id, de: header(m, "From"), asunto: header(m, "Subject"), fecha: header(m, "Date"),
-          recibidoEn, cuerpo, contextoHilo, adjuntos, lecturaError: errorHilo,
-          huella: hash(JSON.stringify([cuerpo, contextoHilo, errorHilo ?? "", adjuntos.map(a => [a.id, hash(a.data)])])) });
-      }
+      const correos = (await this.leerHilo(id)).filter(c => c.noLeido);
       completados++;
       await this.opciones.progreso?.(completados, unicos.length);
       return correos;
     });
     return porHilo.flat();
+  }
+  /** Recupera el mensaje original aunque ya esté leído, exclusivamente para terminar una operación durable existente. */
+  async obtener(mensajeId: string, threadId: string): Promise<CorreoAuto | undefined> {
+    return (await this.leerHilo(threadId)).find(c => c.id === mensajeId);
   }
   async marcarResuelto(c: CorreoAuto): Promise<void> {
     await this.escritura.users.messages.modify({ userId: "me", id: c.id, requestBody: { removeLabelIds: ["UNREAD"] } });
