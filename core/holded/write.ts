@@ -2040,14 +2040,56 @@ export function combinarTagsGastoAprendidos(
   personaAsociada: string | undefined,
   tagsAprendidos: string[] = []
 ): string[] {
-  const reemplazados: Record<string, string> = { alojamiento: "hospedaje", coche: "alquilercoche" };
-  const tagsCategoria = inferirTagsCategoria(concepto, proveedor);
-  const tagsPersonaCrudo = personaAsociada ? [personaAsociada] : tagsAprendidos;
-  const tagsPersona = tagsPersonaCrudo.filter((tag) => {
-    const reemplazo = reemplazados[tag];
-    return !(reemplazo && tagsCategoria.includes(reemplazo));
-  });
-  return Array.from(new Set([...tagsPersona, ...tagsCategoria].map(tag => tag.trim()).filter(Boolean)));
+  const tagsCategoriaActual = inferirTagsCategoria(concepto, proveedor);
+  const categoriasConocidas = new Set([
+    "suscripcion", "alimentacion", "transporte", "taxi", "tren", "avion", "alquilercoche",
+    "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche",
+  ]);
+  const canonizarCategoria = (tag: string): string => {
+    const normalizada = normalizarEtiquetaHolded(tag);
+    if (normalizada === "alojamiento") return "hospedaje";
+    if (normalizada === "coche") return "alquilercoche";
+    return normalizada;
+  };
+  const categoriasAprendidas = [...new Set(tagsAprendidos
+    .map(canonizarCategoria)
+    .filter(tag => categoriasConocidas.has(tag)))];
+  const patronesCategoriaValidos = [
+    ["suscripcion"], ["alimentacion"], ["transporte"], ["transporte", "taxi"],
+    ["transporte", "tren"], ["transporte", "avion"], ["transporte", "alquilercoche"],
+    ["gasolina"], ["transporte", "peaje"], ["transporte", "barco"], ["parking"], ["hospedaje"],
+  ];
+  const firmaCategoria = (tags: string[]) => [...tags].sort().join("|");
+  const firmaAprendida = firmaCategoria(categoriasAprendidas);
+  const categoriaAprendidaInequivoca = patronesCategoriaValidos.find(
+    patron => firmaCategoria(patron) === firmaAprendida
+  ) ?? [];
+  // Si el comprobante actual no contiene una palabra categórica, se conserva
+  // una categoría histórica solo cuando forma una combinación ya conocida e
+  // inequívoca. Una mezcla contaminada (p. ej. alimentación + hospedaje) no se copia.
+  const tagsCategoria = tagsCategoriaActual.length ? tagsCategoriaActual : categoriaAprendidaInequivoca;
+
+  // Cuando el comprobante identifica a la persona, esa evidencia actual prevalece
+  // sobre cualquier tag histórico. Si no la identifica, conservamos únicamente los
+  // tags aprendidos que no sean categorías; la categoría del gasto actual se vuelve
+  // a deducir por su concepto y proveedor. Así un supermercado no hereda "hospedaje"
+  // de otro gasto del mismo viaje.
+  const candidatosPersona = (personaAsociada ? [personaAsociada] : tagsAprendidos)
+    .map(tag => tag.trim())
+    .filter(Boolean)
+    .filter(tag => !categoriasConocidas.has(normalizarEtiquetaHolded(tag)));
+
+  // El histórico real contiene variantes como "simon" y "simontalloen". Si una
+  // etiqueta es prefijo de otra, la más completa conserva mejor la identidad sin
+  // escribir dos hashtags para la misma persona.
+  const normalizados = candidatosPersona.map(tag => ({ tag, clave: normalizarEtiquetaHolded(tag) }));
+  const tagsPersona = normalizados
+    .filter(({ clave }, indice) => clave && !normalizados.some((otro, otroIndice) =>
+      otroIndice !== indice && otro.clave.length > clave.length && otro.clave.startsWith(clave)))
+    .filter(({ clave }, indice, todos) => todos.findIndex(otro => otro.clave === clave) === indice)
+    .map(({ tag }) => tag);
+
+  return Array.from(new Set([...tagsPersona, ...tagsCategoria]));
 }
 
 export interface CuentaSugerida {
@@ -4900,13 +4942,28 @@ export function evaluarAjusteCambioResidual(
 
   const tasaCambio = numeroDecimalPlano(compra.currency_change);
   if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) return undefined;
-  const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
-  const residuoCentimos = totalContableDocumentoCentimos - centimos(totalPagosOrigen);
+  let tasaDemostrada = tasaCambio;
+  let totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
+  let residuoCentimos = totalContableDocumentoCentimos - centimos(totalPagosOrigen);
+  const pendienteCentimos = Math.round(pendiente * 100);
   // El saldo pendiente DECLARADO por Holded debe coincidir exactamente con el residuo CALCULADO a
   // partir de total/tipo de cambio/pagos — no basta con que ambos, por separado, quepan bajo el
   // margen: si no coinciden entre sí, algo más está pasando (un pago adicional no contemplado, un
-  // saldo que no es puro redondeo) y no se demuestra nada, así que no se ajusta nada.
-  if (residuoCentimos <= 0 || residuoCentimos > margenCentimos || residuoCentimos !== Math.round(pendiente * 100)) {
+  // saldo que no es puro redondeo) y no se demuestra nada, así que no se ajusta nada. Excepción
+  // acotada: Holded a veces conserva `currency_change` con solo dos decimales. En ese caso la tasa
+  // implícita demostrada por pago + pendiente debe redondear exactamente al mismo valor visible.
+  if (residuoCentimos !== pendienteCentimos) {
+    const tasaCruda = String(compra.currency_change ?? "").replace(",", ".");
+    const decimales = tasaCruda.split(".")[1]?.length ?? 0;
+    const totalContableImplicito = totalPagosOrigen + pendiente;
+    const tasaImplicita = totalContableImplicito > 0 ? totalNativo / totalContableImplicito : NaN;
+    if (decimales > 2 || !Number.isFinite(tasaImplicita) ||
+      Math.round(tasaImplicita * 100) !== Math.round(tasaCambio * 100)) return undefined;
+    tasaDemostrada = tasaImplicita;
+    totalContableDocumentoCentimos = centimos(totalContableImplicito);
+    residuoCentimos = pendienteCentimos;
+  }
+  if (residuoCentimos <= 0 || residuoCentimos > margenCentimos) {
     return undefined;
   }
 
@@ -4916,7 +4973,7 @@ export function evaluarAjusteCambioResidual(
     montoNativo: totalNativo,
     montoContableMovimiento: montoContable,
     montoContableDocumento: totalContableDocumentoCentimos / 100,
-    tasaCambio,
+    tasaCambio: tasaDemostrada,
   };
 }
 

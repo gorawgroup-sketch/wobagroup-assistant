@@ -84,7 +84,7 @@ export class ServicioCorreoAutomatico {
     // Compatibilidad con puertos antiguos que solo informaban `exacto`: aun así se
     // exige que el nombre leído en Holded corresponda al proveedor del comprobante.
     if (contacto.exacto && nombresProveedorCompatibles(contacto.nombre, recibo.proveedor)) return true;
-    return contacto.metodo === "aproximado_unico" &&
+    return (contacto.metodo === "aproximado_unico" || contacto.metodo === "alias_confirmado") &&
       nombresProveedorCompatibles(contacto.nombre, recibo.proveedor);
   }
 
