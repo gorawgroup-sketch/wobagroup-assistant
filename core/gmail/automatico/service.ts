@@ -24,7 +24,7 @@ export interface PuertoAutomatico {
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
-type ProgresoRevision = { fase: "analisis" | "verificacion"; completados: number; total: number };
+type ProgresoRevision = { fase: "analisis" | "recuperacion" | "verificacion"; completados: number; total: number };
 type CorreoPreparado = { correo: CorreoAuto; analisis?: AnalisisAuto; motivos: string[] };
 
 export class ServicioCorreoAutomatico {
@@ -110,7 +110,9 @@ export class ServicioCorreoAutomatico {
     return this.puerto.ejecutarProtegido(op, async () => {
       if (op.estado === "completada" && op.plan.version === VERSION_POLITICA) return true;
       if (op.estado === "rechazada") return false;
-      if (op.estado === "completada") {
+      const reparacionLegada = op.plan.version !== VERSION_POLITICA &&
+        (op.estado === "completada" || (op.estado === "incierta" && op.pasoIncierto === "completada"));
+      if (reparacionLegada) {
         // Una operación de una política anterior puede haber quedado conciliada con la
         // cuenta o los tags del prototipo. Se relee y se corrige mediante el mismo flujo
         // aprendido de la revisión uno a uno, sin repetir la creación ni la conciliación.
@@ -224,62 +226,73 @@ export class ServicioCorreoAutomatico {
     const operacionesBloqueadas = new Map<string, string>();
     if (config.modo === "execute") {
       const recuperables = await this.store.recuperables(config.buzon, VERSION_POLITICA);
+      let recuperados = 0;
+      if (recuperables.length) {
+        await this.opciones.progreso?.({ fase: "recuperacion", completados: 0, total: recuperables.length });
+      }
       for (const op of recuperables) {
-        const correoNoLeido = correos.find(c => c.id === op.plan.correo.id);
-        const debeRecuperarseAhora = op.estado === "completada" || !correoNoLeido;
-        if (!debeRecuperarseAhora) continue;
-        const correo = correoNoLeido ?? await this.puerto.obtener(op.plan.correo.id, op.plan.correo.threadId);
-        if (!correo) {
-          resultado.pendientes.push({ mensajeId: op.plan.correo.id, asunto: op.plan.recibo.concepto,
-            motivos: ["correo_original_no_disponible"], detalles: [this.detalleOperacion(op, "correo_original_no_disponible")] });
-          continue;
-        }
-        const eraCompletadaAnterior = op.estado === "completada";
-        let analisisRecuperado: AnalisisAuto = { resumen: "Recuperación de operación durable existente", completo: true,
-          recibos: [op.plan.recibo], otrasAcciones: false };
-        if (op.plan.version !== VERSION_POLITICA) {
-          try {
-            analisisRecuperado = await this.analizarParaRecuperacion(config, correo);
-            const recibosFuente = analisisRecuperado.recibos.filter(r => r.fuente === op.plan.recibo.fuente);
-            if (!analisisRecuperado.completo || recibosFuente.length !== 1 ||
-              !this.reciboCorrespondeALaMismaOperacion(op.plan.recibo, recibosFuente[0], op)) {
-              operacionesBloqueadas.set(op.id, "lectura_incompleta");
-              if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-                motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, "lectura_incompleta")] });
-              continue;
-            }
-            const reciboActual = recibosFuente[0];
-            const evidenciaActual = await this.evidenciasConLimite(correo, reciboActual);
-            op.plan.recibo = reciboActual;
-            if (!evidenciaActual.contacto?.id || !this.contactoSeguroParaReparar(reciboActual, evidenciaActual)) {
-              const motivo = evidenciaActual.contacto?.id ? "proveedor_no_verificado" : "proveedor_no_encontrado";
-              operacionesBloqueadas.set(op.id, motivo);
-              if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-                motivos: [motivo], detalles: [this.detalleOperacion(op, motivo)] });
-              continue;
-            }
-            op.plan.contactoId = evidenciaActual.contacto.id;
-            op.plan.evidencia.contacto = evidenciaActual.contacto;
-            op.plan.evidencia.motivoProveedor = evidenciaActual.motivoProveedor;
-            op.plan.evidencia.candidatosProveedor = evidenciaActual.candidatosProveedor;
-          } catch (error) {
-            operacionesBloqueadas.set(op.id, "lectura_incompleta");
-            if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-              motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, `error:${mensajeError(error)}`)] });
+        try {
+          const correoNoLeido = correos.find(c => c.id === op.plan.correo.id);
+          const reparacionLegada = op.plan.version !== VERSION_POLITICA &&
+            (op.estado === "completada" || op.pasoIncierto === "completada");
+          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido;
+          if (!debeRecuperarseAhora) continue;
+          const correo = correoNoLeido ?? await this.puerto.obtener(op.plan.correo.id, op.plan.correo.threadId);
+          if (!correo) {
+            resultado.pendientes.push({ mensajeId: op.plan.correo.id, asunto: op.plan.recibo.concepto,
+              motivos: ["correo_original_no_disponible"], detalles: [this.detalleOperacion(op, "correo_original_no_disponible")] });
             continue;
           }
-        }
-        if (await this.ejecutar(op, correo, analisisRecuperado, config)) {
-          const gasto = { empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
-            moneda: op.plan.movimiento.moneda };
-          if (eraCompletadaAnterior) resultado.reparados!.push(gasto);
-          else { resultado.completados++; resultado.gastos.push(gasto); }
-          await this.puerto.registrarFinalizada(op);
-          if (!correoNoLeido) await this.puerto.marcarResuelto(correo);
-        } else if (!correoNoLeido) {
-          const motivo = `operacion_${op.estado}:${op.id}`;
-          resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [motivo],
-            detalles: [this.detalleOperacion(op, motivo)] });
+          const eraCompletadaAnterior = op.estado === "completada" || op.pasoIncierto === "completada";
+          let analisisRecuperado: AnalisisAuto = { resumen: "Recuperación de operación durable existente", completo: true,
+            recibos: [op.plan.recibo], otrasAcciones: false };
+          if (op.plan.version !== VERSION_POLITICA) {
+            try {
+              analisisRecuperado = await this.analizarParaRecuperacion(config, correo);
+              const recibosFuente = analisisRecuperado.recibos.filter(r => r.fuente === op.plan.recibo.fuente);
+              if (!analisisRecuperado.completo || recibosFuente.length !== 1 ||
+                !this.reciboCorrespondeALaMismaOperacion(op.plan.recibo, recibosFuente[0], op)) {
+                operacionesBloqueadas.set(op.id, "lectura_incompleta");
+                if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+                  motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, "lectura_incompleta")] });
+                continue;
+              }
+              const reciboActual = recibosFuente[0];
+              const evidenciaActual = await this.evidenciasConLimite(correo, reciboActual);
+              op.plan.recibo = reciboActual;
+              if (!evidenciaActual.contacto?.id || !this.contactoSeguroParaReparar(reciboActual, evidenciaActual)) {
+                const motivo = evidenciaActual.contacto?.id ? "proveedor_no_verificado" : "proveedor_no_encontrado";
+                operacionesBloqueadas.set(op.id, motivo);
+                if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+                  motivos: [motivo], detalles: [this.detalleOperacion(op, motivo)] });
+                continue;
+              }
+              op.plan.contactoId = evidenciaActual.contacto.id;
+              op.plan.evidencia.contacto = evidenciaActual.contacto;
+              op.plan.evidencia.motivoProveedor = evidenciaActual.motivoProveedor;
+              op.plan.evidencia.candidatosProveedor = evidenciaActual.candidatosProveedor;
+            } catch (error) {
+              operacionesBloqueadas.set(op.id, "lectura_incompleta");
+              if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+                motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, `error:${mensajeError(error)}`)] });
+              continue;
+            }
+          }
+          if (await this.ejecutar(op, correo, analisisRecuperado, config)) {
+            const gasto = { empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
+              moneda: op.plan.movimiento.moneda };
+            if (eraCompletadaAnterior) resultado.reparados!.push(gasto);
+            else { resultado.completados++; resultado.gastos.push(gasto); }
+            await this.puerto.registrarFinalizada(op);
+            if (!correoNoLeido) await this.puerto.marcarResuelto(correo);
+          } else if (!correoNoLeido) {
+            const motivo = `operacion_${op.estado}:${op.id}`;
+            resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [motivo],
+              detalles: [this.detalleOperacion(op, motivo)] });
+          }
+        } finally {
+          recuperados++;
+          await this.opciones.progreso?.({ fase: "recuperacion", completados: recuperados, total: recuperables.length });
         }
       }
     }

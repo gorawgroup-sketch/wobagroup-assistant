@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v11";
+export const VERSION_POLITICA = "correo-gastos-v12";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
@@ -100,6 +100,31 @@ export interface ReciboAuto {
   /** Texto real del correo que aporta la categoría cuando el ticket solo imprime un nombre genérico. */
   contextoClasificacion?: string;
   evidencia: string; evidenciaEmpresa: string;
+}
+export interface MonedaDocumentoAuto {
+  moneda: string;
+  monto: number;
+  tasaCambio?: number;
+}
+/**
+ * Conserva el importe y la moneda impresos en el comprobante. El equivalente
+ * bancario solo aporta la conversión contable demostrada por el propio
+ * documento; nunca sustituye el precio nativo de la compra.
+ */
+export function monedaDocumentoAuto(recibo: ReciboAuto): MonedaDocumentoAuto {
+  const moneda = recibo.moneda.toUpperCase().trim();
+  if (!/^[A-Z]{3}$/.test(moneda) || !Number.isFinite(recibo.monto) || recibo.monto <= 0) {
+    throw new Error("importe_o_moneda_nativa_invalida");
+  }
+  if (moneda === "EUR") return { moneda, monto: recibo.monto };
+  const equivalente = recibo.equivalente;
+  if (equivalente?.moneda.toUpperCase().trim() !== "EUR" ||
+      !Number.isFinite(equivalente.monto) || equivalente.monto <= 0) {
+    return { moneda, monto: recibo.monto };
+  }
+  const tasaCambio = Number((recibo.monto / equivalente.monto).toFixed(6));
+  if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) throw new Error("tasa_cambio_recibo_invalida");
+  return { moneda, monto: recibo.monto, tasaCambio };
 }
 export interface AnalisisAuto {
   completo: boolean; resumen: string; otrasAcciones: boolean;

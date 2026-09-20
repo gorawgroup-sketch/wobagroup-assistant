@@ -10,7 +10,7 @@ function escenario() {
   const c = correoFixture(), r = reciboFixture();
   const posts: Array<{ path: string; body: unknown }> = [];
   const compra = { id: "creada", document_number: "R-1", contact_id: "p1", currency: "EUR", date: r.fecha, total: "20.00", tax: "0.00",
-    lines: [{ account: "c1" }], tags: ["wobi-auto-op1"], payments_total: "0", payments_pending: "20.00", payments_detail: [] as unknown[], draft: true };
+    lines: [{ account: "c1", taxes: ["p_iva_invsuj"] }], tags: ["wobi-auto-op1"], payments_total: "0", payments_pending: "20.00", payments_detail: [] as unknown[], draft: true };
   const movimiento = { id: "b1", banking_account_id: "a1", currency: "EUR", amount: "-20.00", reconciled_amount: "0.00", booking_date: r.fecha,
     status: "pending", description: "Proveedor", origin: "bank" };
   const contactos = [{ id: "p1", name: "Proveedor" }];
@@ -32,6 +32,8 @@ function escenario() {
     consultasGet.push(path);
     if (path === "/contacts") return list(contactos);
     if (path === "/purchases") return list([]);
+    if (path === "/taxes") return json({ items: [{ key: "p_iva_invsuj", name: "Inv. Suj. Pasivo",
+      amount: null, scope: "purchases", type: "group", visible: true }] });
     if (path === "/expenses-accounts") return json({ items: [{ id: "c1", name: "Servicios", archived: false }] });
     if (path === "/treasury/accounts") return list([{ id: "a1", name: "Cuenta", currency: "EUR", archived: false }]);
     if (path === "/treasury/accounts/a1") return json({ id: "a1", currency: "EUR", archived: false });
@@ -74,6 +76,28 @@ test("crear usa la compra en borrador, sin IVA, con cuenta y marcador recuperabl
   assert.deepEqual((body.items as unknown[])[0], { name: "Transporte", units: 1, price: 20, taxes: [], account: "c1" });
   assert.equal(await e.adapter.verificarCreacion(e.op), true);
   e.compra.total = "21.00"; assert.equal(await e.adapter.verificarCreacion(e.op), false);
+});
+test("verifica una compra extranjera por su importe nativo y la conversión demostrada", async () => {
+  const e = escenario();
+  e.op.plan.recibo.moneda = "USD";
+  e.op.plan.recibo.monto = 151;
+  e.op.plan.recibo.equivalente = { moneda: "EUR", monto: 130.81 };
+  e.op.plan.movimiento.moneda = "EUR";
+  e.op.plan.totalCentimos = 13081;
+  e.op.compraId = await e.adapter.crear(e.op);
+  const body = e.posts[0].body as Record<string, unknown>;
+  assert.equal(body.currency, "USD");
+  assert.equal(body.currency_change, 1.154346);
+  assert.equal((body.items as Array<{ price: number }>)[0].price, 151);
+  e.compra.currency = "USD";
+  e.compra.total = "151.00";
+  (e.compra as Record<string, unknown>).currency_change = "1.154346";
+  assert.equal(await e.adapter.verificarCreacion(e.op), true);
+  (e.compra as Record<string, unknown>).currency_change = "1.15";
+  assert.equal(await e.adapter.verificarCreacion(e.op), false);
+  (e.compra as Record<string, unknown>).currency_change = "1.154346";
+  e.compra.total = "130.81";
+  assert.equal(await e.adapter.verificarCreacion(e.op), false);
 });
 test("crear un borrador sin cuenta inferida no agrega una cuenta inventada", async () => {
   const e = escenario(); e.op.plan.cuentaId = undefined;
@@ -265,6 +289,8 @@ test("la verificación aprendida exige cuenta y tags funcionales exactos", async
   e.compra.tags = ["nuriaortiz", "wobiautoop1"];
   assert.equal(await adapter.verificarCreacion(e.op), false);
   e.compra.tags = ["nuriaortiz", "avion"];
-  e.compra.lines = [{ account: "otra-cuenta" }];
+  e.compra.lines = [{ account: "otra-cuenta", taxes: ["p_iva_invsuj"] }];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
+  e.compra.lines = [{ account: "c1", taxes: [] }];
   assert.equal(await adapter.verificarCreacion(e.op), false);
 });

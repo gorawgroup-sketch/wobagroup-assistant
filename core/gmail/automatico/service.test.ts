@@ -252,6 +252,26 @@ test("repara una operación completada con política anterior usando el correo o
   assert.equal(e.llamadas.crear, 1);
 });
 
+test("una reparación incierta de política anterior vuelve a corregirse aunque el correo siga sin leer", async () => {
+  const e = escenario();
+  await e.service.revisar(configFixture);
+  const op = [...e.ops.values()][0];
+  op.estado = "incierta";
+  op.pasoIncierto = "completada";
+  op.plan.version = "correo-gastos-v11";
+  e.ops.set(op.id, structuredClone(op));
+  let recuperaciones = 0;
+  e.puerto.recuperarCreacion = async actual => { recuperaciones++; return actual.compraId; };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(recuperaciones, 1);
+  assert.equal(r.reparados?.length, 1);
+  const guardada = [...e.ops.values()][0];
+  assert.equal(guardada.estado, "completada");
+  assert.equal(guardada.pasoIncierto, undefined);
+  assert.equal(guardada.plan.version, VERSION_POLITICA);
+  assert.equal(e.llamadas.crear, 1);
+});
+
 test("una reparación relee el recibo y corrige el contacto antes de tocar Holded", async () => {
   const e = escenario();
   const decision = evaluarAuto(e.correos[0], e.a, e.a.recibos[0], evidenciaFixture(), configFixture);
