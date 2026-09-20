@@ -92,8 +92,22 @@ export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: ()
   }
   return conBloqueoAuto(`holded:${empresa}`, async () => {
     const propias = contexto.getStore()?.operacion ?? "";
-    const r = await poolAuto().query("SELECT id FROM wobi_mail_operations WHERE company=$1 AND state NOT IN ('completada','rechazada') AND id <> $2 LIMIT 1", [empresa, propias]);
-    if (r.rowCount) throw new Error(`Holded reservado por la operación automática ${r.rows[0].id}. Resolverla antes de otra escritura.`);
+    if (propias) {
+      // Una operación incierta conserva sus propios recursos, pero no debe congelar toda la empresa.
+      // El advisory lock sigue serializando las escrituras y los claims impiden que dos operaciones
+      // distintas usen el mismo comprobante, documento o movimiento bancario.
+      const conflicto = await poolAuto().query(`SELECT DISTINCT otra.id FROM wobi_mail_claims propia
+        JOIN wobi_mail_claims compartida ON compartida.resource=propia.resource AND compartida.operation_id<>propia.operation_id
+        JOIN wobi_mail_operations otra ON otra.id=compartida.operation_id
+        WHERE propia.operation_id=$1 AND otra.company=$2 AND otra.state NOT IN ('completada','rechazada') LIMIT 1`,
+      [propias, empresa]);
+      if (conflicto.rowCount) throw new Error(`Recurso reservado por la operación automática ${conflicto.rows[0].id}.`);
+    } else {
+      // Las rutas manuales no tienen claims propios con los que demostrar independencia; conservan
+      // el bloqueo cerrado hasta que el operador resuelva la operación automática incierta.
+      const pendiente = await poolAuto().query("SELECT id FROM wobi_mail_operations WHERE company=$1 AND state NOT IN ('completada','rechazada') LIMIT 1", [empresa]);
+      if (pendiente.rowCount) throw new Error(`Holded reservado por la operación automática ${pendiente.rows[0].id}. Resolverla antes de otra escritura.`);
+    }
     const movimiento = objetivo?.path.match(/\/bank-movements\/([^/]+)\/reconcile$/)?.[1];
     const body = objetivo?.body && typeof objetivo.body === "object" ? objetivo.body as Record<string, unknown> : {};
     const numero = objetivo?.path === "/purchases" && typeof body.number === "string" && body.number !== "00000"

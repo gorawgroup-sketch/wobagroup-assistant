@@ -155,6 +155,7 @@ export class ServicioCorreoAutomatico {
     for (const preparado of preparados) {
       const { correo, analisis } = preparado;
       const motivos = [...preparado.motivos];
+      const detalles: NonNullable<ResultadoAuto["pendientes"][number]["detalles"]> = [];
       try {
         if (analisis) {
           resultado.revisados++;
@@ -177,13 +178,14 @@ export class ServicioCorreoAutomatico {
               const evidencia = await this.puerto.evidencias(correo, recibo);
               const decision = evaluarAuto(correo, analisis, recibo, evidencia, config);
               await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "decision", datos: decision });
-              if (!decision.apto) { motivos.push(...decision.motivos); continue; }
-              if (config.modo === "simulate") { resultado.simulados++; continue; }
-              // No acumular reservas que se bloqueen mutuamente tras un resultado incierto.
-              if ((await this.store.pendientes(config.buzon)).some(p => p.plan.empresa === decision.plan.empresa)) {
-                motivos.push("empresa_con_operacion_pendiente_de_verificar");
+              if (!decision.apto) {
+                motivos.push(...decision.motivos);
+                detalles.push({ proveedor: recibo.proveedor, empresa: recibo.empresa, monto: recibo.monto, moneda: recibo.moneda,
+                  contacto: evidencia.contacto?.nombre, metodoContacto: evidencia.contacto?.metodo,
+                  motivoProveedor: evidencia.motivoProveedor, motivos: decision.motivos });
                 continue;
               }
+              if (config.modo === "simulate") { resultado.simulados++; continue; }
               op = await this.store.reservar(decision.plan);
             }
             if (config.modo === "simulate") { motivos.push("operacion_pendiente_sin_escritura_en_simulacion"); continue; }
@@ -194,7 +196,13 @@ export class ServicioCorreoAutomatico {
                 resultado.gastos.push({ empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos, moneda: op.plan.movimiento.moneda });
               }
               await this.puerto.registrarFinalizada(op);
-            } else motivos.push(`operacion_${op.estado}:${op.id}`);
+            } else {
+              const motivoOperacion = `operacion_${op.estado}:${op.id}`;
+              motivos.push(motivoOperacion);
+              detalles.push({ proveedor: recibo.proveedor, empresa: recibo.empresa, monto: recibo.monto, moneda: recibo.moneda,
+                contacto: op.plan.evidencia.contacto?.nombre, metodoContacto: op.plan.evidencia.contacto?.metodo,
+                motivoProveedor: op.plan.evidencia.motivoProveedor, motivos: [motivoOperacion] });
+            }
           }
           if (!motivos.length && config.modo === "execute") {
             await this.puerto.marcarResuelto(correo);
@@ -203,7 +211,8 @@ export class ServicioCorreoAutomatico {
           if (config.modo === "simulate") motivos.push("simulacion_sin_modificar_correo");
         }
       } catch (e) { motivos.push(`error:${mensajeError(e)}`); }
-      if (motivos.length) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [...new Set(motivos)] });
+      if (motivos.length) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+        motivos: [...new Set(motivos)], ...(detalles.length ? { detalles } : {}) });
       verificados++;
       await this.opciones.progreso?.({ fase: "verificacion", completados: verificados, total: preparados.length });
     }
@@ -228,5 +237,16 @@ export function resumenAutomatico(r: ResultadoAuto): string {
   const conteo = new Map<string, number>();
   for (const p of r.pendientes) for (const motivo of p.motivos) conteo.set(motivo, (conteo.get(motivo) ?? 0) + 1);
   for (const [motivo, n] of [...conteo].slice(0, 8)) lineas.push(`${n}: ${motivo}`);
+  const detalles = r.pendientes.flatMap(p => (p.detalles ?? []).map(d => ({ asunto: p.asunto, ...d })));
+  if (detalles.length) {
+    const cortar = (s: string, n: number) => s.length > n ? `${s.slice(0, n - 1)}…` : s;
+    lineas.push("Detalle de candidatos pendientes:");
+    for (const d of detalles.slice(0, 10)) {
+      const contacto = d.contacto ? `contacto ${d.contacto} (${d.metodoContacto ?? "sin método"})`
+        : `sin contacto${d.motivoProveedor ? `: ${d.motivoProveedor}` : ""}`;
+      lineas.push(`• ${cortar(d.asunto, 55)} — ${cortar(d.proveedor, 40)}, ${d.monto} ${d.moneda}, ${d.empresa}; ${contacto}; ${d.motivos.join(", ")}.`);
+    }
+    if (detalles.length > 10) lineas.push(`… y ${detalles.length - 10} candidato(s) pendiente(s) más.`);
+  }
   return lineas.join("\n");
 }

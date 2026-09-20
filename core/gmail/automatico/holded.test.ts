@@ -85,7 +85,29 @@ test("crear un borrador sin cuenta inferida no agrega una cuenta inventada", asy
 test("las variantes inequívocas de forma societaria conservan coincidencia exacta", () => {
   assert.equal(normalizarProveedorExacto("OUIGO ESPAÑA S.A.U."), normalizarProveedorExacto("OUIGO ESPAÑA SA."));
   assert.equal(normalizarProveedorExacto("Nieuwe Veste (Restaurant, Breda)"), normalizarProveedorExacto("Nieuwe Veste"));
+  assert.equal(normalizarProveedorExacto("Soluciones Alegra S.A.S"), normalizarProveedorExacto("SOLUCIONES ALEGRA S A S"));
   assert.notEqual(normalizarProveedorExacto("DHL"), normalizarProveedorExacto("DHL Express Spain SLU"));
+});
+test("acepta espaciado equivalente y el nombre exacto prevalece sobre un alias antiguo", async () => {
+  const e = escenario();
+  e.r.proveedor = "Copa Airlines";
+  e.contactos[0].name = "CopaAirlines";
+  e.memoria.alias = async () => [{ contactId: "contacto-antiguo", contactName: "Antiguo" }];
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.id, "p1");
+  assert.equal(evidencia.contacto?.metodo, "nombre_equivalente");
+  assert.equal(evidencia.contacto?.exacto, true);
+});
+test("una confianza baja no se disfraza como proveedor ausente", async () => {
+  const e = escenario(); e.r.confianza = "baja";
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.id, "p1");
+  const decision = evaluarAuto(e.c, analisisFixture(e.r), e.r, evidencia, configFixture);
+  assert.equal(decision.apto, false);
+  if (!decision.apto) {
+    assert.ok(decision.motivos.includes("confianza_insuficiente"));
+    assert.equal(decision.motivos.includes("proveedor_no_encontrado"), false);
+  }
 });
 test("resuelve un proveedor abreviado solo si el contacto es único y el banco lo confirma", async () => {
   const e = escenario();
@@ -107,6 +129,7 @@ test("dos contactos aproximados continúan en revisión manual", async () => {
   e.contactos.splice(0, 1, { id: "p1", name: "DHL Express Spain SLU" }, { id: "p2", name: "DHL Freight Spain SLU" });
   const evidencia = await e.adapter.evidencias(e.c, e.r);
   assert.equal(evidencia.contacto, undefined);
+  assert.equal(evidencia.motivoProveedor, "coincidencia_ambigua");
   assert.equal(e.consultasGet.includes("/expenses-accounts"), false);
 });
 test("reutiliza catálogos estáticos pero relee compras y banco en la revalidación", async () => {
@@ -141,11 +164,21 @@ test("acepta estados finales reales y rechaza importe parcial o saldo pendiente"
   e.compra.payments_pending = "0"; e.movimiento.reconciled_amount = "-10.00";
   assert.equal(await e.adapter.verificarConciliacion(e.op), false);
 });
-test("alias contradictorios y respuestas paginadas incompletas no autorizan", async () => {
+test("el nombre exacto prevalece sobre alias contradictorios y las respuestas paginadas incompletas fallan", async () => {
   const e = escenario(); e.memoria.alias = async () => [{ contactId: "p1", contactName: "Proveedor" }, { contactId: "p2", contactName: "Otro" }];
-  assert.equal((await e.adapter.evidencias(e.c, e.r)).contacto, undefined);
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.id, "p1");
+  assert.equal(evidencia.contacto?.metodo, "nombre_exacto");
   const broken = new HoldedAuto(e.memoria, async () => new Response(JSON.stringify({ items: [] })));
   await assert.rejects(() => broken.listar("WOBA", "/contacts"), /Paginación/);
+});
+test("alias contradictorios sin coincidencia por nombre no autorizan", async () => {
+  const e = escenario();
+  e.r.proveedor = "ZZQVV proveedor ausente";
+  e.memoria.alias = async () => [{ contactId: "p1", contactName: "Proveedor" }, { contactId: "p2", contactName: "Otro" }];
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto, undefined);
+  assert.equal(evidencia.motivoProveedor, "alias_contradictorio");
 });
 test("un HTTP ambiguo no provoca reintento automático de POST", async () => {
   const e = escenario(); let intentos = 0;

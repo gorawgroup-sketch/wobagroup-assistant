@@ -21,9 +21,33 @@ export const hash = (valor: string | Buffer): string => createHash("sha256").upd
 export const normalizar = (s: string): string => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
   .toLowerCase().replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
 export const normalizarProveedorComparable = (valor: string): string => normalizar(valor.replace(/\s*\([^)]*\)\s*$/, ""))
-  .replace(/\b(sociedad anonima unipersonal|sociedad anonima|sociedad limitada unipersonal|sociedad limitada|sau|sa|slu|sl|sro|llc|ltd|inc)\b/g, " ")
+  .replace(/[^\p{L}\p{N}]+/gu, " ")
+  .replace(/\b(sociedad anonima unipersonal|sociedad anonima|sociedad limitada unipersonal|sociedad limitada|sociedad por acciones simplificada|s a s|s a u|s l u|s r o|s r l|s a|s l|sas|sau|sa|slu|sl|sro|srl|llc|ltd|inc)\b/g, " ")
   .replace(/\s+/g, " ").trim();
 const tokensProveedor = (valor: string): string[] => normalizarProveedorComparable(valor).split(" ").filter(t => t.length >= 3);
+const proveedorCompacto = (valor: string): string => normalizarProveedorComparable(valor).replace(/\s+/g, "");
+function bigramasProveedor(valor: string): Set<string> {
+  const compacto = proveedorCompacto(valor);
+  return new Set(Array.from({ length: Math.max(0, compacto.length - 1) }, (_, i) => compacto.slice(i, i + 2)));
+}
+/** Puntaje ortográfico auxiliar. Nunca autoriza por sí solo una escritura. */
+export function similitudProveedor(a: string, b: string): number {
+  const aa = bigramasProveedor(a), bb = bigramasProveedor(b);
+  if (!aa.size || !bb.size) return 0;
+  let comunes = 0;
+  for (const x of aa) if (bb.has(x)) comunes++;
+  return (2 * comunes) / (aa.size + bb.size);
+}
+/** Variación determinista: misma razón social compacta o nombre legal completo contenido en el otro. */
+export function nombresProveedorEquivalentes(a: string, b: string): boolean {
+  const na = normalizarProveedorComparable(a), nb = normalizarProveedorComparable(b);
+  if (!na || !nb) return false;
+  if (na === nb || proveedorCompacto(a) === proveedorCompacto(b)) return true;
+  const ta = tokensProveedor(a), tb = tokensProveedor(b);
+  if (ta.length < 2 || tb.length < 2) return false;
+  const [cortos, largos] = ta.length <= tb.length ? [ta, new Set(tb)] : [tb, new Set(ta)];
+  return cortos.length >= 2 && cortos.every(token => largos.has(token));
+}
 /** Coincidencia conservadora: un nombre debe contener todos los tokens relevantes del nombre más corto. */
 export function nombresProveedorCompatibles(a: string, b: string): boolean {
   const na = normalizarProveedorComparable(a), nb = normalizarProveedorComparable(b);
@@ -85,7 +109,10 @@ export interface MovimientoAuto {
 }
 export interface EvidenciaAuto {
   empresaDetectada?: EmpresaAuto;
-  contacto?: { id: string; nombre: string; exacto: boolean; metodo?: "nombre_exacto" | "alias_confirmado" | "aproximado_unico" };
+  contacto?: { id: string; nombre: string; exacto: boolean;
+    metodo?: "nombre_exacto" | "nombre_equivalente" | "alias_confirmado" | "aproximado_unico"; similitud?: number };
+  motivoProveedor?: "sin_coincidencias" | "coincidencia_ambigua" | "alias_contradictorio";
+  candidatosProveedor?: Array<{ id: string; nombre: string; similitud: number }>;
   cuenta?: { id: string; evidencia: string };
   duplicados: string[];
   consultasCompletas: boolean;
@@ -158,16 +185,18 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   } catch { motivos.push("importe_o_equivalente_invalido"); }
   const candidatos = candidatosMovimientoAuto(r, e);
   const ids = new Set(candidatos.map(m => `${m.cuentaId}/${m.id}`));
+  const m = candidatos[0];
+  const coincidenciaMontoFechaExacta = candidatos.length === 1 && m.fecha === r.fecha && -m.centimos === esperado;
   const descripcionConfirmaProveedor = candidatos.length === 1 && (proveedorEnDescripcion(r.proveedor, candidatos[0].descripcion) ||
     Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, candidatos[0].descripcion)));
+  const nombreAproximadoFuerte = e.contacto?.metodo === "aproximado_unico" && (e.contacto.similitud ?? 0) >= 0.5;
   const contactoVerificado = e.contacto?.exacto === true ||
-    (e.contacto?.metodo === "aproximado_unico" && descripcionConfirmaProveedor);
+    (e.contacto?.metodo === "aproximado_unico" && (descripcionConfirmaProveedor ||
+      (coincidenciaMontoFechaExacta && nombreAproximadoFuerte)));
   if (e.contacto?.id && !contactoVerificado) motivos.push("proveedor_no_verificado");
   const confianzaReforzada = r.confianza === "media" && contactoVerificado && candidatos.length === 1 && ids.size === 1 && descripcionConfirmaProveedor;
   if (r.confianza !== "alta" && !confianzaReforzada) motivos.push("confianza_insuficiente");
   if (candidatos.length !== 1 || ids.size !== 1) motivos.push(candidatos.length ? "movimiento_ambiguo" : "sin_movimiento_exacto");
-  const m = candidatos[0];
-  const coincidenciaMontoFechaExacta = m && m.fecha === r.fecha && -m.centimos === esperado;
   if (m && !coincidenciaMontoFechaExacta && !descripcionConfirmaProveedor) motivos.push("coincidencia_aproximada_sin_proveedor_bancario");
   if (m && (!m.id || !m.cuentaId || !m.origen || m.origen === "manual" || m.estado !== "pending" || m.conciliadoCentimos !== 0)) motivos.push("movimiento_no_libre");
   if (motivos.length) return { apto: false, motivos };
@@ -205,6 +234,9 @@ export interface StoreAuto {
 }
 export interface ResultadoAuto {
   modo: ModoAuto; revisados: number; completados: number; simulados: number;
-  pendientes: Array<{ mensajeId: string; asunto: string; motivos: string[] }>;
+  pendientes: Array<{ mensajeId: string; asunto: string; motivos: string[]; detalles?: Array<{
+    proveedor: string; empresa: EmpresaAuto | "desconocida"; monto: number; moneda: string;
+    contacto?: string; metodoContacto?: string; motivoProveedor?: string; motivos: string[];
+  }> }>;
   gastos: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string }>;
 }
