@@ -2,6 +2,7 @@ import { evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type 
   nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
   type StoreAuto, VERSION_POLITICA } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
+import { conTiempoMaximo } from "../../utils/asyncTimeout";
 
 export interface PuertoAutomatico {
   listar(): Promise<CorreoAuto[]>;
@@ -87,6 +88,13 @@ export class ServicioCorreoAutomatico {
       nombresProveedorCompatibles(contacto.nombre, recibo.proveedor);
   }
 
+  private evidenciasConLimite(correo: CorreoAuto, recibo: ReciboAuto): Promise<EvidenciaAuto> {
+    const restante = this.opciones.fechaLimite ? this.opciones.fechaLimite - Date.now() : 60_000;
+    if (restante <= 0) throw new Error("revision_pospuesta_por_limite_de_tiempo");
+    return conTiempoMaximo(() => this.puerto.evidencias(correo, recibo), Math.min(60_000, restante),
+      "verificación automática en Holded");
+  }
+
   private async estado(op: OperacionAuto, estado: OperacionAuto["estado"], detalle?: string): Promise<void> {
     op.estado = estado;
     op.detalle = detalle;
@@ -157,7 +165,7 @@ export class ServicioCorreoAutomatico {
       }
       try {
         if (op.estado === "reservada") {
-          const evidencia = await this.puerto.evidencias(c, op.plan.recibo);
+          const evidencia = await this.evidenciasConLimite(c, op.plan.recibo);
           const decision = evaluarAuto(c, analisis, op.plan.recibo, evidencia, config);
           if (!decision.apto) throw new Error(`Revalidación: ${decision.motivos.join(", ")}`);
           this.mismoPlan(op.plan, decision.plan);
@@ -241,7 +249,7 @@ export class ServicioCorreoAutomatico {
               continue;
             }
             const reciboActual = recibosFuente[0];
-            const evidenciaActual = await this.puerto.evidencias(correo, reciboActual);
+            const evidenciaActual = await this.evidenciasConLimite(correo, reciboActual);
             op.plan.recibo = reciboActual;
             if (!evidenciaActual.contacto?.id || !this.contactoSeguroParaReparar(reciboActual, evidenciaActual)) {
               const motivo = evidenciaActual.contacto?.id ? "proveedor_no_verificado" : "proveedor_no_encontrado";
@@ -306,7 +314,7 @@ export class ServicioCorreoAutomatico {
                 motivos.push("revision_pospuesta_por_limite_de_tiempo");
                 continue;
               }
-              const evidencia = await this.puerto.evidencias(correo, recibo);
+              const evidencia = await this.evidenciasConLimite(correo, recibo);
               const decision = evaluarAuto(correo, analisis, recibo, evidencia, config);
               await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "decision", datos: decision });
               if (!decision.apto) {
