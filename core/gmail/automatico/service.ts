@@ -131,6 +131,12 @@ export class ServicioCorreoAutomatico {
           }
           await this.estado(op, adjunto ? "adjuntada" : "creada");
         } catch (error) {
+          console.error("[correo-auto] Reparación anterior no verificada:", {
+            compraId: op.compraId,
+            estado: op.estado,
+            paso: op.pasoIncierto,
+            error: mensajeError(error),
+          });
           op.pasoIncierto = "completada";
           await this.estado(op, "incierta", mensajeError(error));
           return false;
@@ -285,10 +291,18 @@ export class ServicioCorreoAutomatico {
             else { resultado.completados++; resultado.gastos.push(gasto); }
             await this.puerto.registrarFinalizada(op);
             if (!correoNoLeido) await this.puerto.marcarResuelto(correo);
-          } else if (!correoNoLeido) {
-            const motivo = `operacion_${op.estado}:${op.id}`;
-            resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [motivo],
-              detalles: [this.detalleOperacion(op, motivo)] });
+          } else {
+            console.warn("[correo-auto] Operación durable aún no cerrada:", {
+              compraId: op.compraId,
+              estado: op.estado,
+              paso: op.pasoIncierto,
+              detalle: op.detalle,
+            });
+            if (!correoNoLeido) {
+              const motivo = `operacion_${op.estado}:${op.id}`;
+              resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [motivo],
+                detalles: [this.detalleOperacion(op, motivo)] });
+            }
           }
         } finally {
           recuperados++;
