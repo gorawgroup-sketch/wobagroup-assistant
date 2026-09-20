@@ -24,7 +24,24 @@ test("paginación completa, todos los mensajes pendientes no leídos y archivado
   } } } as unknown as gmail_v1.Gmail;
   const r = await new GmailAuto(gmail, gmail).listar();
   assert.equal(r.length, 4); assert.equal(consultas.length, 2);
-  assert.equal(consultas[0].q, "is:unread -label:WOBI_AUTO_PROCESADO -in:spam -in:trash");
+  assert.equal(consultas[0].q, "is:unread newer_than:7d -label:WOBI_AUTO_PROCESADO -in:spam -in:trash");
+});
+
+test("acota por antigüedad y cantidad el backlog automático antes de descargarlo", async () => {
+  const consultas: Record<string, unknown>[] = [];
+  const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {
+    list: async (q: Record<string, unknown>) => {
+      consultas.push(q);
+      return { data: { threads: ["t1", "t2", "t3"].map(id => ({ id })), nextPageToken: "no-debe-usarse" } };
+    },
+    get: async ({ id }: { id: string }) => ({ data: { messages: [{ id: `m-${id}`, labelIds: ["UNREAD"], internalDate: "1",
+      payload: { mimeType: "text/plain", body: { data: b64(id) } } }] } }),
+  } } } as unknown as gmail_v1.Gmail;
+  const r = await new GmailAuto(gmail, gmail, { maxAntiguedadDias: 3, maxHilos: 2 }).listar();
+  assert.deepEqual(r.map(c => c.threadId), ["t1", "t2"]);
+  assert.equal(consultas.length, 1);
+  assert.equal(consultas[0].maxResults, 2);
+  assert.match(String(consultas[0].q), /newer_than:3d/);
 });
 test("un mensaje automático ya etiquetado no reaparece si llega otro mensaje al mismo hilo", async () => {
   const gmail = { users: {

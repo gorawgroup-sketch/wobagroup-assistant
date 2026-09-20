@@ -118,6 +118,22 @@ test("analiza correos independientes con concurrencia dos y conserva el orden de
   assert.equal(maximas, 2);
   assert.deepEqual(r.pendientes.map(p => p.mensajeId), ["m1", "m2", "m3", "m4"]);
 });
+test("acota los análisis nuevos de una pasada y reutiliza los ya persistidos sin consumir el cupo", async () => {
+  const e = escenario();
+  e.correos.push(...["m2", "m3", "m4"].map(id => ({ ...correoFixture(id), huella: hash(id) })));
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, {
+    concurrenciaAnalisis: 2,
+    maxAnalisisNuevos: 2,
+  });
+  const primera = await service.revisar({ ...configFixture, modo: "simulate" });
+  assert.equal(e.analisisLlamadas(), 2);
+  assert.equal(
+    primera.pendientes.filter(p => p.motivos.includes("revision_pospuesta_por_limite_de_coste")).length,
+    2
+  );
+  await service.revisar({ ...configFixture, modo: "simulate" });
+  assert.equal(e.analisisLlamadas(), 4);
+});
 test("al agotar el tiempo informa el pendiente sin iniciar análisis ni escrituras nuevas", async () => {
   const e = escenario();
   const service = new ServicioCorreoAutomatico(e.store, e.puerto, { fechaLimite: Date.now() - 1 });

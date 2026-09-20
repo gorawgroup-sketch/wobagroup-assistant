@@ -13,6 +13,48 @@ test("observe preserva temporalmente el comportamiento durante la migración", (
   assert.equal(decision.soloObservacion, true);
 });
 
+test("observe respeta los límites monetarios configurados", () => {
+  const config = cargarConfiguracionPoliticaApi({
+    WOBI_AI_API_MODE: "observe",
+    WOBI_AI_API_DAILY_WARNING_USD: "10",
+    WOBI_AI_API_DAILY_LIMIT_USD: "30",
+    WOBI_AI_API_MONTHLY_LIMIT_USD: "200",
+    WOBI_AI_API_PROCESS_DAILY_LIMITS: "correo_gastos_automatico:1",
+  } as NodeJS.ProcessEnv);
+  assert.equal(
+    evaluarPoliticaApi(config, "chat_conversacional", {
+      gastoDiarioUSD: 30,
+      gastoMensualUSD: 20,
+    }).motivo,
+    "limite_diario_alcanzado"
+  );
+  assert.equal(config.umbralAlertaDiariaUSD, 10);
+  assert.equal(
+    evaluarPoliticaApi(config, "chat_conversacional", {
+      gastoDiarioUSD: 20,
+      gastoMensualUSD: 20,
+    }).permitida,
+    true,
+    "superar el aviso no debe bloquear trabajo útil antes del techo de emergencia"
+  );
+  assert.equal(
+    evaluarPoliticaApi(config, "correo_gastos_automatico", {
+      gastoDiarioUSD: 2,
+      gastoMensualUSD: 20,
+      gastoDiarioProcesoUSD: 1,
+    }).motivo,
+    "limite_diario_proceso_alcanzado"
+  );
+  assert.equal(
+    evaluarPoliticaApi(config, "correo_gastos_automatico", {
+      gastoDiarioUSD: 2,
+      gastoMensualUSD: 20,
+      gastoDiarioProcesoUSD: 0.5,
+    }).permitida,
+    true
+  );
+});
+
 test("kill switch bloquea incluso procesos permitidos", () => {
   const config = cargarConfiguracionPoliticaApi({
     WOBI_AI_API_MODE: "allowlist",

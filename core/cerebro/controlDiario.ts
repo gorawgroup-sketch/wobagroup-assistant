@@ -31,6 +31,7 @@ export type PrioridadRecomendacion = "critica" | "alta" | "media" | "informativa
 export interface PoliticaControlDiario {
   modo: ModoPoliticaApi;
   killSwitch: boolean;
+  umbralAlertaDiariaUSD?: number;
   limiteDiarioUSD: number;
   limiteMensualUSD: number;
   procesosPermitidos: number;
@@ -308,6 +309,18 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     });
   }
 
+  const umbralAlertaDiaria = politica.umbralAlertaDiariaUSD ?? 0;
+  if (costos && umbralAlertaDiaria > 0 && costos.hoy.gastoRealApiUSD >= umbralAlertaDiaria) {
+    recomendaciones.push({
+      id: "umbral-diario-coste-ia",
+      prioridad: "alta",
+      titulo: "El consumo de IA de hoy requiere justificación",
+      detalle: `Hoy se han consumido $${costos.hoy.gastoRealApiUSD.toFixed(2)}; el umbral informativo es $${umbralAlertaDiaria.toFixed(2)}. La operación sigue disponible hasta el techo de emergencia.`,
+      siguientePaso: "Comprobar en el desglose por proceso que el consumo corresponde a trabajo útil solicitado y no a una rutina repetitiva.",
+      modulo: "accesos",
+    });
+  }
+
   if (costos && costos.ayer.ahorroNetoCacheUSD > 0.001) {
     recomendaciones.push({
       id: "cache-efectiva",
@@ -467,6 +480,7 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
     politica: {
       modo: config.modo,
       killSwitch: config.killSwitch,
+      umbralAlertaDiariaUSD: config.umbralAlertaDiariaUSD,
       limiteDiarioUSD: config.limiteDiarioUSD,
       limiteMensualUSD: config.limiteMensualUSD,
       procesosPermitidos: config.procesosPermitidos.size,

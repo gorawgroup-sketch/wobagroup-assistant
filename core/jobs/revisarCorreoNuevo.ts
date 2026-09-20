@@ -30,7 +30,8 @@ import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
-import { debePublicarInformeCorreo, type SolicitudRevisionCorreo } from "./politicaRevisionCorreo";
+import { debeEjecutarAnalisisAutomatico, debePublicarInformeCorreo,
+  type SolicitudRevisionCorreo } from "./politicaRevisionCorreo";
 import { marcarInformeCronPublicado, prepararInformeCron, registrarRevisionCron,
   reservarSlotInformeCron } from "../gmail/automatico/reportes";
 import type { DatosFactura } from "../documental/extractInvoiceData";
@@ -187,7 +188,10 @@ export async function revisarCorreoNuevo(
   if (forzarAviso) revisionesInteractivas.add(chatId);
   const tarea = conCoordinadorCorreo(async () => {
     let automatico: ResultadoAuto;
-    try {
+    if (!debeEjecutarAnalisisAutomatico(solicitud)) {
+      automatico = { modo: modoAutomaticoSeguro(), revisados: 0, completados: 0,
+        simulados: 0, gastos: [], pendientes: [] };
+    } else try {
       automatico = await revisarGastosAutomaticos(chatId, {
         informarProgreso: () => forzarAviso || revisionesInteractivas.has(chatId),
       });

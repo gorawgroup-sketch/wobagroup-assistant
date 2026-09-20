@@ -42,6 +42,9 @@ export async function revisarCostosIA(referenceDate: Date = new Date()): Promise
   const configApi = cargarConfiguracionPoliticaApi();
   const conexionesCaidas = conexiones.filter((c) => !c.ok);
   const problemas: string[] = [];
+  if (configApi.umbralAlertaDiariaUSD > 0 && resumenAyer.gastoRealApiUSD >= configApi.umbralAlertaDiariaUSD) {
+    problemas.push(`consumo diario superior al umbral informativo de $${configApi.umbralAlertaDiariaUSD.toFixed(2)}`);
+  }
   if (esAnomalia) problemas.push(`gasto > ${UMBRAL_ANOMALIA}x el promedio reciente`);
   if (conexiones.length === 0) problemas.push("no se pudo completar el chequeo de conexiones");
   if (conexionesCaidas.length > 0) problemas.push(`servicios caídos/permisos: ${conexionesCaidas.map((c) => c.nombre).join(", ")}`);

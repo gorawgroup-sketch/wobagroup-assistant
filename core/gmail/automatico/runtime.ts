@@ -38,11 +38,16 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   };
   const esHito = (completados: number, total: number): boolean => completados === 0 || completados === total ||
     (total > 0 && completados % Math.max(1, Math.ceil(total / 4)) === 0);
-  const gmail = new GmailAuto(getGmailClient(), getGmailModifyClient(), { concurrencia: 4, progreso: async (completados, total) => {
-    if (esHito(completados, total)) await notificar(completados === 0
-      ? `⏳ Revisión automática iniciada: ${total} hilo(s) sin leer. Descargando contenido y adjuntos…`
-      : `⏳ Correo descargado: ${completados}/${total}.`);
-  } });
+  const gmail = new GmailAuto(getGmailClient(), getGmailModifyClient(), {
+    concurrencia: 4,
+    maxAntiguedadDias: enteroAcotado(process.env.WOBI_MAIL_AUTO_MAX_AGE_DAYS, 7, 1, 30),
+    maxHilos: enteroAcotado(process.env.WOBI_MAIL_AUTO_MAX_THREADS_PER_RUN, 25, 1, 100),
+    progreso: async (completados, total) => {
+      if (esHito(completados, total)) await notificar(completados === 0
+        ? `⏳ Revisión automática iniciada: ${total} hilo(s) sin leer. Descargando contenido y adjuntos…`
+        : `⏳ Correo descargado: ${completados}/${total}.`);
+    },
+  });
   let aliasPromise: ReturnType<typeof obtenerTodosLosAlias> | undefined;
   const holded = new HoldedAuto({
     cuentaConfirmada: (empresa, proveedor) => buscarCuentaCorregidaAprendida(proveedor, empresa),
@@ -99,15 +104,25 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
       return actual.modo === "execute" && actual.empresas.includes(op.plan.empresa);
     },
     ejecutarProtegido: (op, tarea) => conOperacionAuto(op.id, () => protegerEscrituraHolded(op.plan.empresa, tarea)),
-  }, { concurrenciaAnalisis: 2, fechaLimite, progreso: async ({ fase, completados, total }) => {
-    if (!esHito(completados, total)) return;
-    await notificar(fase === "analisis"
-      ? (completados === 0 ? `⏳ Analizando ${total} mensaje(s), hasta 2 a la vez…` : `⏳ Mensajes analizados: ${completados}/${total}.`)
-      : fase === "recuperacion"
-        ? (completados === 0 ? `⏳ Revisando ${total} operación(es) anteriores antes de continuar…` :
-          `⏳ Operaciones anteriores revisadas: ${completados}/${total}.`)
-        : (completados === 0 ? `⏳ Verificando candidatos en Gmail y Holded…` : `⏳ Candidatos verificados: ${completados}/${total}.`));
-  } });
+  }, {
+    concurrenciaAnalisis: 2,
+    fechaLimite,
+    maxAnalisisNuevos: enteroAcotado(
+      process.env.WOBI_MAIL_AUTO_MAX_NEW_ANALYSES_PER_RUN,
+      5,
+      1,
+      20
+    ),
+    progreso: async ({ fase, completados, total }) => {
+      if (!esHito(completados, total)) return;
+      await notificar(fase === "analisis"
+        ? (completados === 0 ? `⏳ Analizando ${total} mensaje(s), hasta 2 a la vez…` : `⏳ Mensajes analizados: ${completados}/${total}.`)
+        : fase === "recuperacion"
+          ? (completados === 0 ? `⏳ Revisando ${total} operación(es) anteriores antes de continuar…` :
+            `⏳ Operaciones anteriores revisadas: ${completados}/${total}.`)
+          : (completados === 0 ? `⏳ Verificando candidatos en Gmail y Holded…` : `⏳ Candidatos verificados: ${completados}/${total}.`));
+    },
+  });
   const resultado = await service.revisar(config);
   await colaNotificacion;
   return resultado;

@@ -1,6 +1,6 @@
 import { evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
   nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
-  type StoreAuto, VERSION_POLITICA } from "./model";
+  type StoreAuto, VERSION_ANALISIS, VERSION_POLITICA } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 import { conTiempoMaximo } from "../../utils/asyncTimeout";
 
@@ -30,20 +30,29 @@ type CorreoPreparado = { correo: CorreoAuto; analisis?: AnalisisAuto; motivos: s
 export class ServicioCorreoAutomatico {
   constructor(private readonly store: StoreAuto, private readonly puerto: PuertoAutomatico,
     private readonly opciones: { concurrenciaAnalisis?: number; fechaLimite?: number;
+      maxAnalisisNuevos?: number;
       progreso?: (p: ProgresoRevision) => void | Promise<void> } = {}) {}
 
-  private async prepararCorreo(config: ConfigAuto, correo: CorreoAuto): Promise<CorreoPreparado> {
+  private async prepararCorreo(
+    config: ConfigAuto,
+    correo: CorreoAuto,
+    presupuesto: { disponibles: number }
+  ): Promise<CorreoPreparado> {
     try {
       if (await this.puerto.reservadoManualmente(correo.threadId)) {
         return { correo, motivos: ["revision_manual_o_autorespuesta_activa"] };
       }
-      let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA);
+      let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
       if (!analisis) {
         if (this.opciones.fechaLimite && Date.now() >= this.opciones.fechaLimite) {
           return { correo, motivos: ["revision_pospuesta_por_limite_de_tiempo"] };
         }
+        if (presupuesto.disponibles <= 0) {
+          return { correo, motivos: ["revision_pospuesta_por_limite_de_coste"] };
+        }
+        presupuesto.disponibles--;
         analisis = await this.puerto.analizar(correo);
-        await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA, analisis);
+        await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS, analisis);
         await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis",
           datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
             otrasAcciones: analisis.otrasAcciones, origen: "observacion_automatica_no_confirmada" } });
@@ -55,10 +64,10 @@ export class ServicioCorreoAutomatico {
   }
 
   private async analizarParaRecuperacion(config: ConfigAuto, correo: CorreoAuto): Promise<AnalisisAuto> {
-    let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA);
+    let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
     if (!analisis) {
       analisis = await this.puerto.analizar(correo);
-      await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA, analisis);
+      await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS, analisis);
       await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "reanalisis_reparacion",
         datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos,
           completo: analisis.completo, origen: "relectura_de_operacion_anterior" } });
@@ -221,10 +230,13 @@ export class ServicioCorreoAutomatico {
     if (config.modo === "off") return resultado;
     if (!config.buzon) throw new Error("Buzón no configurado.");
     const correos = (await this.puerto.listar()).sort((a, b) => a.recibidoEn - b.recibidoEn || a.id.localeCompare(b.id));
+    const presupuestoAnalisis = {
+      disponibles: Math.max(0, this.opciones.maxAnalisisNuevos ?? Number.POSITIVE_INFINITY),
+    };
     let analizados = 0;
     await this.opciones.progreso?.({ fase: "analisis", completados: 0, total: correos.length });
     const preparados = await mapearConConcurrencia(correos, this.opciones.concurrenciaAnalisis ?? 2, async correo => {
-      const preparado = await this.prepararCorreo(config, correo);
+      const preparado = await this.prepararCorreo(config, correo, presupuestoAnalisis);
       analizados++;
       await this.opciones.progreso?.({ fase: "analisis", completados: analizados, total: correos.length });
       return preparado;
@@ -429,6 +441,7 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";
   if (tiene("revision_manual_o_autorespuesta_activa")) return "Este correo ya está reservado para otro flujo de revisión.";
   if (tiene("revision_pospuesta_por_limite_de_tiempo")) return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
+  if (tiene("revision_pospuesta_por_limite_de_coste")) return "La revisión se aplazó al alcanzar el máximo seguro de análisis nuevos de esta pasada.";
   if (tiene("correo_original_no_disponible")) return "La operación existe, pero Gmail ya no permite recuperar el comprobante original.";
   if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) return "La fase automática no terminó y el correo se conserva para revisión manual.";
   return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";

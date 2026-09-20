@@ -75,6 +75,23 @@ test("prioriza un gasto anómalo y una política todavía abierta", () => {
   assert.ok(control.recomendaciones.some((r) => r.id === "proceso-principal"));
 });
 
+test("el umbral diario alerta sin confundirlo con el techo que bloquea", () => {
+  const entrada = entradaBase();
+  entrada.costos = {
+    ...entrada.costos!,
+    hoy: { ...entrada.costos!.hoy, gastoRealApiUSD: 12, costoUSD: 12 },
+  };
+  entrada.politica = {
+    ...entrada.politica,
+    umbralAlertaDiariaUSD: 10,
+    limiteDiarioUSD: 30,
+  };
+  const control = generarControlDiario(entrada);
+  const aviso = control.recomendaciones.find((r) => r.id === "umbral-diario-coste-ia");
+  assert.ok(aviso);
+  assert.match(aviso.detalle, /operación sigue disponible/i);
+});
+
 test("muestra ahorro de caché sin convertirlo en una incidencia", () => {
   const entrada = entradaBase();
   entrada.costos = {

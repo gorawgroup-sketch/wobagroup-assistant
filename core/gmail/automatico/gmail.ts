@@ -44,7 +44,8 @@ export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schem
 export class GmailAuto {
   private etiquetaProcesado?: Promise<string>;
   constructor(private readonly lectura: gmail_v1.Gmail, private readonly escritura: gmail_v1.Gmail,
-    private readonly opciones: { concurrencia?: number; progreso?: (completados: number, total: number) => void | Promise<void> } = {}) {}
+    private readonly opciones: { concurrencia?: number; maxAntiguedadDias?: number; maxHilos?: number;
+      progreso?: (completados: number, total: number) => void | Promise<void> } = {}) {}
   private async leerHilo(id: string, excluirEtiquetaId?: string): Promise<Array<CorreoAuto & { noLeido: boolean }>> {
     const r = await this.lectura.users.threads.get({ userId: "me", id, format: "full" });
     if (!r.data.messages) throw new Error("Hilo Gmail sin mensajes.");
@@ -67,19 +68,27 @@ export class GmailAuto {
   }
   async listar(): Promise<CorreoAuto[]> {
     const etiquetaProcesado = await this.buscarIdEtiquetaProcesado();
+    const maxAntiguedadDias = Math.max(1, Math.min(30, this.opciones.maxAntiguedadDias ?? 7));
+    const maxHilos = Math.max(1, Math.min(100, this.opciones.maxHilos ?? 25));
     const ids: string[] = [];
     let pageToken: string | undefined;
     const tokens = new Set<string>();
     do {
       const r = await this.lectura.users.threads.list({ userId: "me",
-        q: `is:unread -label:${ETIQUETA_PROCESADO_AUTOMATICO} -in:spam -in:trash`, maxResults: 500, pageToken });
+        q: `is:unread newer_than:${maxAntiguedadDias}d -label:${ETIQUETA_PROCESADO_AUTOMATICO} -in:spam -in:trash`,
+        maxResults: Math.min(100, maxHilos - ids.length), pageToken });
       if (!Array.isArray(r.data.threads) && r.data.resultSizeEstimate !== 0) throw new Error("Listado Gmail incompleto.");
-      for (const t of r.data.threads ?? []) { if (!t.id) throw new Error("Hilo sin ID."); ids.push(t.id); }
+      for (const t of r.data.threads ?? []) {
+        if (!t.id) throw new Error("Hilo sin ID.");
+        if (!ids.includes(t.id)) ids.push(t.id);
+        if (ids.length >= maxHilos) break;
+      }
+      if (ids.length >= maxHilos) break;
       pageToken = r.data.nextPageToken ?? undefined;
       if (pageToken && tokens.has(pageToken)) throw new Error("Paginación Gmail repetida.");
       if (pageToken) tokens.add(pageToken);
     } while (pageToken);
-    const unicos = [...new Set(ids)];
+    const unicos = ids;
     let completados = 0;
     await this.opciones.progreso?.(0, unicos.length);
     const porHilo = await mapearConConcurrencia(unicos, this.opciones.concurrencia ?? 4, async id => {
