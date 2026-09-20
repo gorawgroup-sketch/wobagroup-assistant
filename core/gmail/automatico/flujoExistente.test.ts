@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { camposDocumentoParaReparacion } from "./flujoExistente";
 import { monedaDocumentoAuto, type ReciboAuto } from "./model";
 
 const recibo = (cambios: Partial<ReciboAuto> = {}): ReciboAuto => ({
@@ -46,4 +47,14 @@ test("rechaza importe o moneda nativa inválidos antes de escribir", () => {
     /importe_o_moneda_nativa_invalida/);
   assert.throws(() => monedaDocumentoAuto(recibo({ monto: 0 })),
     /importe_o_moneda_nativa_invalida/);
+});
+
+test("una reparación conserva el número existente cuando la relectura no lo demuestra", () => {
+  assert.deepEqual(camposDocumentoParaReparacion(recibo({ numero: undefined })), {
+    fecha: "2026-09-16",
+  });
+  assert.deepEqual(camposDocumentoParaReparacion(recibo({ numero: " 2026-56028514 " })), {
+    fecha: "2026-09-16",
+    numeroDocumento: "2026-56028514",
+  });
 });

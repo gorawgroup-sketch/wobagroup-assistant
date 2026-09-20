@@ -43,6 +43,14 @@ async function asegurarClasificacion(op: OperacionAuto) {
   return resultado;
 }
 
+/** Una relectura puede no recuperar el número aunque el documento ya lo tenga.
+ * En una reparación solo se envía un número demostrado; si falta, el editor
+ * compartido conserva el valor actual de Holded en vez de degradarlo a 00000. */
+export function camposDocumentoParaReparacion(recibo: ReciboAuto): { fecha: string; numeroDocumento?: string } {
+  const numeroDocumento = recibo.numero?.trim();
+  return { fecha: recibo.fecha, ...(numeroDocumento ? { numeroDocumento } : {}) };
+}
+
 export function crearFlujoGastoExistente(): FlujoGastoExistente {
   const conciliar = async (op: OperacionAuto) => {
     if (!op.compraId) throw new Error("Compra ausente antes de conciliar.");
@@ -69,7 +77,7 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
       const documento = monedaDocumentoAuto(op.plan.recibo);
       await editarCompraHolded(op.plan.empresa, compraId,
         { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags,
-          fecha: op.plan.recibo.fecha, numeroDocumento: op.plan.recibo.numero || "00000",
+          ...camposDocumentoParaReparacion(op.plan.recibo),
           ...(documento.moneda === "EUR" || documento.tasaCambio !== undefined
             ? { monedaNueva: documento.moneda, tasaCambioNueva: documento.tasaCambio ?? 1 }
             : {}),
