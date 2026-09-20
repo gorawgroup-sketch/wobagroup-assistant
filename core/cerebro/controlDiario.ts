@@ -37,6 +37,17 @@ export interface PoliticaControlDiario {
   procesosPermitidos: number;
 }
 
+/**
+ * Acción que el panel puede ejecutar por sí mismo sobre una recomendación — pedido explícito de
+ * Carlos: ante una incidencia crítica, poder resolverla desde el front (o saber exactamente qué
+ * hacer) en vez de solo leer un aviso. `id` es el contrato con POST /api/cerebro/control-diario/resolver.
+ */
+export interface AccionControlDiario {
+  id: "verificar" | "revisar";
+  etiqueta: string;
+  descripcion: string;
+}
+
 export interface RecomendacionControlDiario {
   id: string;
   prioridad: PrioridadRecomendacion;
@@ -44,6 +55,10 @@ export interface RecomendacionControlDiario {
   detalle: string;
   siguientePaso: string;
   modulo: "accesos" | "conocimiento" | "conexiones";
+  /** Instrucciones exactas, en orden — lo que hay que hacer para dejar esta recomendación en verde. */
+  pasos?: string[];
+  /** Botones que el panel ofrece para resolverla sin salir de la pantalla. */
+  acciones?: AccionControlDiario[];
 }
 
 export interface ControlDiario {
@@ -97,11 +112,55 @@ function nombreProceso(proceso: string): string {
     extraer_factura: "extracción de facturas",
     chat_conversacional: "chat conversacional",
     clasificar_correo: "clasificación de correo",
+    clasificar_documento: "clasificación de documentos",
     extraer_gasto_correo: "extracción de gastos desde correo",
+    correo_gastos_automatico: "análisis automático de correo (gastos)",
+    respuesta_correo_automatica: "respuestas automáticas de correo",
     autorrevision_codigo: "autorrevisión de código",
     sin_atribuir: "consumo todavía sin atribuir",
   };
   return nombres[proceso] ?? proceso.replaceAll("_", " ");
+}
+
+/** Primer paso al investigar un proceso que concentra el gasto: no presupone la causa. */
+const CONSEJO_PROCESO =
+  "Revisa cuántas llamadas hace este proceso por caso y si repite el análisis de los mismos datos (por ejemplo, el mismo correo o documento) antes de tocar modelos o calidad.";
+
+const ACCION_VERIFICAR: AccionControlDiario = {
+  id: "verificar",
+  etiqueta: "Verificar ahora",
+  descripcion:
+    "Vuelve a comprobar cada elemento incierto contra el sistema real (solo lectura, nunca repite una escritura). " +
+    "Los que ya coincidan quedan resueltos.",
+};
+
+const ACCION_REVISAR: AccionControlDiario = {
+  id: "revisar",
+  etiqueta: "Revisar y cerrar",
+  descripcion:
+    "Muestra cada documento afectado con su estado real y permite darlo por revisado (sin modificar Holded).",
+};
+
+/** Pasos comunes de las incidencias 'resultado incierto' de un ledger durable. */
+function pasosIncierto(que: string, donde: string, tieneRevision: boolean): string[] {
+  return [
+    `Pulsa «Verificar ahora»: se vuelven a leer ${que} en ${donde} (solo lectura) y se cierran solos los que ya coinciden.`,
+    tieneRevision
+      ? "Si siguen apareciendo, pulsa «Revisar y cerrar»: verás cada documento afectado con su estado real."
+      : `Si siguen apareciendo, abre ${donde} y comprueba a mano esos elementos (proveedor, fecha, importe).`,
+    tieneRevision
+      ? "Si los datos son correctos, marca esas compras y pulsa «Dar por revisadas las seleccionadas» (pide confirmación y no toca Holded). Si algo está mal, corrígelo en Holded y vuelve a verificar."
+      : "No autorices una operación equivalente hasta confirmar que la anterior no se aplicó o quedó bien aplicada.",
+  ];
+}
+
+/** Pasos de las incidencias 'no se pudo leer' un ledger (fallo de lectura de Google Sheets). */
+function pasosLedgerNoDisponible(pestana: string): string[] {
+  return [
+    "Comprueba que la cuenta de servicio de Google conserva acceso de edición a la hoja de cálculo del cashflow.",
+    `Abre la pestaña ${pestana} y verifica que existe y que su fila 1 conserva los encabezados.`,
+    "Cuando el acceso esté correcto, esta alerta desaparece sola en la siguiente lectura (o recarga el panel).",
+  ];
 }
 
 /** Carlos gestiona 3 Holded distintos (WOBA/EWORKS/Footprint) — sin nombrar la empresa, una incidencia crítica no dice dónde corregir. */
@@ -121,6 +180,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de envíos; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _envios_correo_durables antes de reenviar correos.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_envios_correo_durables"),
     });
   } else if (entrada.enviosCorreo && entrada.enviosCorreo.incierto > 0) {
     recomendaciones.push({
@@ -130,6 +190,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.enviosCorreo.incierto} envío(s) no pudieron confirmarse contra la carpeta Enviados.`,
       siguientePaso: "Comprobar esos correos en Gmail antes de autorizar cualquier envío equivalente nuevo.",
       modulo: "conexiones",
+      pasos: pasosIncierto("los envíos", "la carpeta Enviados de Gmail", false),
+      acciones: [ACCION_VERIFICAR],
     });
   }
 
@@ -141,6 +203,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de subidas; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _subidas_drive_durables antes de repetir archivados.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_subidas_drive_durables"),
     });
   } else if (entrada.subidasDrive && entrada.subidasDrive.incierta > 0) {
     recomendaciones.push({
@@ -150,6 +213,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.subidasDrive.incierta} subida(s) no pudieron confirmarse mediante su marcador privado.`,
       siguientePaso: "Comprobar el ledger y Drive antes de autorizar otra carga equivalente.",
       modulo: "conexiones",
+      pasos: pasosIncierto("las subidas", "Google Drive", false),
+      acciones: [ACCION_VERIFICAR],
     });
   }
 
@@ -161,6 +226,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de compras; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _compras_holded_durables antes de repetir una compra.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_compras_holded_durables"),
     });
   } else if (entrada.comprasHolded && entrada.comprasHolded.incierta > 0) {
     recomendaciones.push({
@@ -170,6 +236,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.comprasHolded.incierta} compra(s) no pudieron confirmarse mediante su marcador interno (Holded ${listaEmpresas(entrada.comprasHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esas compras en Holded antes de autorizar un registro equivalente.",
       modulo: "conexiones",
+      pasos: pasosIncierto("las compras", "Holded", false),
+      acciones: [ACCION_VERIFICAR],
     });
   }
 
@@ -181,6 +249,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de ediciones; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _ediciones_holded_durables antes de repetir una corrección.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_ediciones_holded_durables"),
     });
   } else if (entrada.edicionesHolded && entrada.edicionesHolded.incierta > 0) {
     recomendaciones.push({
@@ -190,6 +259,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.edicionesHolded.incierta} edición(es) no coinciden todavía con su huella esperada (Holded ${listaEmpresas(entrada.edicionesHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos documentos en Holded antes de autorizar otra corrección equivalente.",
       modulo: "conexiones",
+      pasos: pasosIncierto("las ediciones", "Holded", true),
+      acciones: [ACCION_VERIFICAR, ACCION_REVISAR],
     });
   }
 
@@ -201,6 +272,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de adjuntos de Holded; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _adjuntos_holded_durables antes de repetir una carga.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_adjuntos_holded_durables"),
     });
   } else if (entrada.adjuntosHolded && entrada.adjuntosHolded.incierto > 0) {
     recomendaciones.push({
@@ -210,6 +282,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.adjuntosHolded.incierto} comprobante(s) no pudieron confirmarse descargando y comparando sus bytes (Holded ${listaEmpresas(entrada.adjuntosHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos adjuntos en Holded antes de autorizar otra carga equivalente.",
       modulo: "conexiones",
+      pasos: pasosIncierto("los comprobantes", "Holded", false),
+      acciones: [ACCION_VERIFICAR],
     });
   }
 
@@ -221,6 +295,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de conciliaciones bancarias; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _conciliaciones_holded_durables antes de repetir una conciliación.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_conciliaciones_holded_durables"),
     });
   } else if (entrada.conciliacionesHolded && entrada.conciliacionesHolded.incierta > 0) {
     recomendaciones.push({
@@ -230,6 +305,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.conciliacionesHolded.incierta} conciliación(es) no pudieron confirmarse contra el movimiento en Holded (${listaEmpresas(entrada.conciliacionesHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos movimientos y documentos en Holded antes de autorizar otra conciliación.",
       modulo: "conexiones",
+      pasos: pasosIncierto("las conciliaciones", "Holded", false),
+      acciones: [ACCION_VERIFICAR],
     });
   }
   if (entrada.conciliacionesHolded && entrada.conciliacionesHolded.verificadaRevision > 0) {
@@ -240,6 +317,11 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.conciliacionesHolded.verificadaRevision} conciliación(es) sí quedaron vinculadas, pero conservan un saldo, pago parcial o ajuste pendiente (Holded ${listaEmpresas(entrada.conciliacionesHolded.empresasConRevision)}).`,
       siguientePaso: "Revisar el saldo residual en el documento; no repetir la conciliación bancaria.",
       modulo: "conexiones",
+      pasos: [
+        "Abre en Holded cada documento afectado y revisa el saldo, pago parcial o ajuste que conserva.",
+        "Si el residual es correcto (por ejemplo, una diferencia de cambio), no hace falta nada más; si no lo es, regularízalo en Holded.",
+        "No repitas la conciliación bancaria: ya quedó vinculada.",
+      ],
     });
   }
 
@@ -251,6 +333,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El control diario no pudo leer el ledger durable de proveedores; no se asume que esté vacío.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _contactos_holded_durables antes de crear otro proveedor.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_contactos_holded_durables"),
     });
   } else if (entrada.contactosHolded && entrada.contactosHolded.incierta > 0) {
     recomendaciones.push({
@@ -260,6 +343,8 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${entrada.contactosHolded.incierta} contacto(s) no pudieron confirmarse por código fiscal o nombre exacto (Holded ${listaEmpresas(entrada.contactosHolded.empresasConIncertidumbre)}).`,
       siguientePaso: "Comprobar esos proveedores en Holded y resolver coincidencias duplicadas antes de autorizar otra creación.",
       modulo: "conexiones",
+      pasos: pasosIncierto("los proveedores", "Holded", false),
+      acciones: [ACCION_VERIFICAR],
     });
   }
 
@@ -271,6 +356,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: "El panel no puede confirmar llamadas, gasto ni anomalías. Nunca se representa este fallo como coste cero.",
       siguientePaso: "Revisar permisos de Google Sheets y la pestaña _costos_ia.",
       modulo: "conexiones",
+      pasos: pasosLedgerNoDisponible("_costos_ia"),
     });
   }
 
@@ -284,6 +370,15 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
         : "No fue posible confirmar la integridad de la memoria persistente.",
       siguientePaso: "Comprobar permisos y reparar únicamente las filas afectadas antes de purgar información.",
       modulo: "conocimiento",
+      pasos:
+        memoria.filasCorruptas > 0
+          ? [
+              "Abre la pestaña _historial_conversaciones de la hoja de cálculo del cashflow.",
+              "Busca las filas donde la columna B no es una lista JSON válida (debe empezar por «[») o la columna C no es una fecha.",
+              "Repara solo esas filas; si no es posible, borra únicamente esa fila: solo se pierde el contexto de esa conversación, no datos contables.",
+              "Recarga el panel: cuando ninguna fila esté corrupta, esta alerta desaparece.",
+            ]
+          : pasosLedgerNoDisponible("_historial_conversaciones"),
     });
   }
 
@@ -295,6 +390,11 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `${costos.ejecucionesConMuchasLlamadasAyer} ejecución(es) superaron 12 llamadas en un mismo proceso.`,
       siguientePaso: "Revisar la ejecución y detener la ruta con el kill switch si continúa creciendo.",
       modulo: "accesos",
+      pasos: [
+        "En «Qué está generando el gasto de hoy», localiza el proceso con más llamadas.",
+        "Revisa esa ruta: si repite llamadas sobre los mismos datos, hay que corregirla en el código.",
+        "Si el gasto sigue creciendo y no puede esperar, pon WOBI_AI_API_KILL_SWITCH=true en las variables del servicio en Railway. Bloquea TODAS las llamadas de IA hasta que lo quites.",
+      ],
     });
   }
 
@@ -306,6 +406,10 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `La API consumió $${costos.ayer.gastoRealApiUSD.toFixed(2)} frente a una media previa de $${costos.promedio7DiasPreviosUSD.toFixed(2)} al día.`,
       siguientePaso: "Revisar primero los procesos que concentran el gasto antes de modificar modelos o calidad.",
       modulo: "accesos",
+      pasos: [
+        "Abre el desglose por proceso del gasto de la semana y localiza el que concentra el aumento.",
+        "Compara sus llamadas con las de días normales antes de tocar modelos o calidad.",
+      ],
     });
   }
 
@@ -357,6 +461,11 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
           : "Se registra el consumo, pero todavía no se bloquean procesos fuera de una lista explícita.",
       siguientePaso: "Definir límites validados y pasar a allowlist después del periodo de comparación.",
       modulo: "accesos",
+      pasos: [
+        "En Railway, servicio principal → Variables: define WOBI_AI_API_DAILY_LIMIT_USD y WOBI_AI_API_MONTHLY_LIMIT_USD con valores mayores que 0.",
+        "Define WOBI_AI_API_ALLOWED_PROCESSES con TODOS los procesos que deben seguir funcionando (separados por comas). Cualquier proceso que no esté en la lista se bloqueará.",
+        "Solo entonces cambia WOBI_AI_API_MODE a allowlist. Mientras esté en observe, el consumo solo se registra y no se bloquea nada.",
+      ],
     });
   }
 
@@ -372,25 +481,83 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
       detalle: `Proyección actual: $${costos.proyeccionMensualUSD.toFixed(2)} de un límite de $${politica.limiteMensualUSD.toFixed(2)}.`,
       siguientePaso: "Priorizar filtros deterministas en el proceso más costoso y conservar las rutas críticas.",
       modulo: "accesos",
+      pasos: [
+        "Identifica en «Qué está generando el gasto de la semana» el proceso más costoso.",
+        "Aplica filtros deterministas (reglas fijas) antes de llamar a la IA en ese proceso, sin tocar las rutas críticas.",
+        "Si necesitas un tope duro, define WOBI_AI_API_MONTHLY_LIMIT_USD y el modo allowlist (ver la recomendación de política).",
+      ],
     });
   }
 
-  const procesoPrincipal = costos?.porProcesoAyer[0];
-  if (
-    procesoPrincipal &&
-    costos.ayer.gastoRealApiUSD > 0 &&
-    procesoPrincipal.gastoRealApiUSD / costos.ayer.gastoRealApiUSD >= 0.4
-  ) {
-    const porcentaje = Math.round(
-      (procesoPrincipal.gastoRealApiUSD / costos.ayer.gastoRealApiUSD) * 100
-    );
+  // Pedido explícito de Carlos: "no me interesa el gasto de ayer, me interesa qué está generando el
+  // gasto de hoy". El aviso de anomalía de arriba solo miraba el día anterior completo, así que un
+  // pico que ocurre HOY (caso real 2026-09-20: $22,91 frente a ~$4/día, 99% de un solo proceso)
+  // no avisaba hasta el día siguiente. La referencia son los 7 días completos anteriores a hoy.
+  if (costos) {
+    const puntos = costos.ultimos7Dias ?? [];
+    const promedioReciente = puntos.length
+      ? puntos.reduce((total, punto) => total + punto.gastoRealApiUSD, 0) / puntos.length
+      : 0;
+    const umbralHoy = Math.max(1, promedioReciente * 2);
+    const principal = costos.porProcesoHoy?.[0];
+    const porcentaje =
+      principal && costos.hoy.gastoRealApiUSD > 0
+        ? Math.round((principal.gastoRealApiUSD / costos.hoy.gastoRealApiUSD) * 100)
+        : 0;
+    const fraseProceso = principal
+      ? ` Lo genera sobre todo ${nombreProceso(principal.proceso)}: $${principal.gastoRealApiUSD.toFixed(2)} (${porcentaje}%, ${principal.llamadas} llamadas).`
+      : "";
+    const pasosGastoHoy = [
+      "Mira la tabla «Qué está generando el gasto de hoy» y confirma qué proceso concentra las llamadas.",
+      principal ? CONSEJO_PROCESO : "Revisa esa ruta y comprueba si repite llamadas sobre los mismos datos.",
+      "Si no puede esperar, pon WOBI_AI_API_KILL_SWITCH=true en las variables del servicio en Railway (bloquea TODAS las llamadas de IA hasta que lo quites).",
+    ];
+    // Si ya salta el umbral diario configurado (arriba), no se duplica la tarjeta: se completa esa misma con
+    // el proceso que genera el gasto y los pasos exactos.
+    const avisoUmbral = recomendaciones.find((r) => r.id === "umbral-diario-coste-ia");
+    if (avisoUmbral) {
+      avisoUmbral.detalle += fraseProceso;
+      avisoUmbral.pasos = pasosGastoHoy;
+    } else if (promedioReciente > 0 && costos.hoy.gastoRealApiUSD >= umbralHoy) {
+      // Sin media de referencia (instalación nueva o serie vacía) no hay contra qué comparar: avisar
+      // "por encima de lo normal" sería inventar una normalidad.
+      recomendaciones.push({
+        id: "gasto-hoy-elevado",
+        prioridad: "alta",
+        titulo: "El gasto de hoy va muy por encima de lo normal",
+        detalle:
+          `Hoy llevas $${costos.hoy.gastoRealApiUSD.toFixed(2)} (media de los últimos 7 días: $${promedioReciente.toFixed(2)} al día).` +
+          fraseProceso,
+        siguientePaso: principal
+          ? CONSEJO_PROCESO
+          : "Revisar en «Qué está generando el gasto de hoy» qué proceso concentra las llamadas.",
+        modulo: "accesos",
+        pasos: pasosGastoHoy,
+      });
+    }
+  }
+
+  // Antes se calculaba sobre AYER (un día completo ya pasado, casi siempre sin interés): pedido
+  // explícito de Carlos, "qué está generando el gasto de hoy". Se usa el día en curso si ya tiene un
+  // gasto material y, si no, la semana en curso.
+  const hayGastoHoy = costos ? costos.hoy.gastoRealApiUSD >= 0.5 : false;
+  const ventanaPrincipal = hayGastoHoy ? "hoy" : "la semana";
+  const gastoVentana = costos ? (hayGastoHoy ? costos.hoy.gastoRealApiUSD : costos.semanaActual?.gastoRealApiUSD ?? 0) : 0;
+  const procesoPrincipal = hayGastoHoy ? costos?.porProcesoHoy?.[0] : costos?.porProcesoSemana?.[0];
+  // Por debajo de $1 en la ventana no vale la pena recomendar optimizar nada (ruido).
+  if (procesoPrincipal && gastoVentana >= 1 && procesoPrincipal.gastoRealApiUSD / gastoVentana >= 0.4) {
+    const porcentaje = Math.round((procesoPrincipal.gastoRealApiUSD / gastoVentana) * 100);
     recomendaciones.push({
       id: "proceso-principal",
       prioridad: "media",
       titulo: `Optimizar ${nombreProceso(procesoPrincipal.proceso)}`,
-      detalle: `Concentró el ${porcentaje}% del gasto de ayer ($${procesoPrincipal.gastoRealApiUSD.toFixed(2)}).`,
+      detalle: `Concentra el ${porcentaje}% del gasto de ${ventanaPrincipal} ($${procesoPrincipal.gastoRealApiUSD.toFixed(2)}).`,
       siguientePaso: "Medir contexto, caché y llamadas por caso; aplicar cambios únicamente con casos de prueba equivalentes.",
       modulo: "accesos",
+      pasos: [
+        `Mide las llamadas, el contexto y la caché de ${nombreProceso(procesoPrincipal.proceso)} caso por caso.`,
+        "Aplica cambios solo si tienes casos de prueba equivalentes que demuestren que la calidad no baja.",
+      ],
     });
   }
 
@@ -398,9 +565,12 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
   // quita la tarjeta Y recalcula el estado/resumen general a partir de lo que quede, para que un
   // hallazgo descartado no siga mostrando "Incidencia crítica" con la tarjeta ya oculta.
   const descartadas = entrada.recomendacionesDescartadas;
-  const recomendacionesVisibles = descartadas?.size
-    ? recomendaciones.filter((r) => !descartadas.has(r.id))
-    : recomendaciones;
+  // La lista se titula "priorizadas": lo crítico y lo alto (p. ej. el gasto de HOY disparado) va antes que las
+  // recomendaciones de ajuste. Orden estable: dentro de una misma prioridad se conserva el orden de generación.
+  const ORDEN_PRIORIDAD: Record<PrioridadRecomendacion, number> = { critica: 0, alta: 1, media: 2, informativa: 3 };
+  const recomendacionesVisibles = (
+    descartadas?.size ? recomendaciones.filter((r) => !descartadas.has(r.id)) : [...recomendaciones]
+  ).sort((a, b) => ORDEN_PRIORIDAD[a.prioridad] - ORDEN_PRIORIDAD[b.prioridad]);
 
   const hayCritica = recomendacionesVisibles.some((r) => r.prioridad === "critica");
   const hayAtencion = recomendacionesVisibles.some((r) => r.prioridad === "alta" || r.prioridad === "media");

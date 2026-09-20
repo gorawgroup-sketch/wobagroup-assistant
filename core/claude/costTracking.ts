@@ -232,7 +232,7 @@ export interface ResumenCostos {
   gastoRealApiUSD: number;
 }
 
-interface FilaUso {
+export interface FilaUso {
   fecha: Date;
   modelo: string;
   costoUSD: number;
@@ -311,6 +311,14 @@ export interface AnalisisCostosDiario {
   esAnomaliaAyer: boolean;
   proyeccionMensualUSD: number;
   porProcesoAyer: ResumenProcesoIA[];
+  /**
+   * Pedido explícito de Carlos: "no me interesa el gasto de ayer, me interesa qué está generando el
+   * gasto de hoy" y "qué está generando el gasto semanal". El día en curso y la semana (lunes → hoy)
+   * se desglosan por proceso igual que ayer — es lo que permite ver, mientras ocurre, qué proceso
+   * dispara el coste en vez de descubrirlo al día siguiente.
+   */
+  porProcesoHoy: ResumenProcesoIA[];
+  porProcesoSemana: ResumenProcesoIA[];
   ejecucionesConMuchasLlamadasAyer: number;
 }
 
@@ -429,7 +437,16 @@ export async function obtenerAnalisisCostosDiario(
   multiplicadorAnomalia = 2,
   maxLlamadasPorEjecucion = 12
 ): Promise<AnalisisCostosDiario> {
-  const filas = await leerFilas();
+  return calcularAnalisisCostosDiario(await leerFilas(), referencia, multiplicadorAnomalia, maxLlamadasPorEjecucion);
+}
+
+/** Cálculo puro sobre filas ya leídas — separado de la lectura de Sheets para poder probarlo sin red. */
+export function calcularAnalisisCostosDiario(
+  filas: FilaUso[],
+  referencia: Date,
+  multiplicadorAnomalia = 2,
+  maxLlamadasPorEjecucion = 12
+): AnalisisCostosDiario {
   const hoyInicio = inicioDia(referencia);
   const mananaInicio = sumarDias(hoyInicio, 1);
   const ayerInicio = sumarDias(hoyInicio, -1);
@@ -468,11 +485,13 @@ export async function obtenerAnalisisCostosDiario(
   const diasDelMes = new Date(hoyInicio.getFullYear(), hoyInicio.getMonth() + 1, 0).getDate();
   const fraccionDia = Math.min(1, Math.max(0, (referencia.getTime() - hoyInicio.getTime()) / 86_400_000));
   const diasTranscurridos = Math.max(1, hoyInicio.getDate() - 1 + fraccionDia);
+  const filasHoy = filasEnRango(filas, hoyInicio, mananaInicio);
+  const filasSemana = filasEnRango(filas, semanaInicio, mananaInicio);
 
   return {
-    hoy: resumirFilas(filasEnRango(filas, hoyInicio, mananaInicio)),
+    hoy: resumirFilas(filasHoy),
     ayer: resumirFilas(filasAyer),
-    semanaActual: resumirFilas(filasEnRango(filas, semanaInicio, mananaInicio)),
+    semanaActual: resumirFilas(filasSemana),
     mesActual,
     ultimos7Dias,
     promedio7DiasPreviosUSD,
@@ -482,6 +501,8 @@ export async function obtenerAnalisisCostosDiario(
       resumirFilas(filasAyer).gastoRealApiUSD > umbralAnomaliaUSD,
     proyeccionMensualUSD: (mesActual.gastoRealApiUSD / diasTranscurridos) * diasDelMes,
     porProcesoAyer: resumirPorProceso(filasAyer),
+    porProcesoHoy: resumirPorProceso(filasHoy),
+    porProcesoSemana: resumirPorProceso(filasSemana),
     ejecucionesConMuchasLlamadasAyer: [...llamadasPorEjecucion.values()].filter(
       (llamadas) => llamadas > maxLlamadasPorEjecucion
     ).length,

@@ -17,6 +17,8 @@ const RETENCION_MS =
   enteroAcotado(process.env.WOBI_HOLDED_EDIT_LEDGER_RETENTION_DAYS, 365, 90, 1095) * 24 * 60 * 60 * 1000;
 const PURGA_CADA_MS = 6 * 60 * 60 * 1000;
 const ESTADOS = new Set<EstadoEdicionCompra>(["preparada", "editando", "verificada", "incierta"]);
+/** Marca visible en la hoja de los registros cerrados a mano (ver cerrarPorRevisionHumana). */
+export const SUFIJO_CIERRE_HUMANO = "|cierre_revision_humana";
 
 interface RegistroConFila extends RegistroEdicionCompra { rowIndex: number; }
 
@@ -153,6 +155,46 @@ class StoreEdicionesCompra implements RepositorioEdicionesCompra {
       };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
       this.registros.set(clave, siguiente);
+    });
+  }
+
+  /**
+   * Cierre por REVISIÓN HUMANA de una edición 'incierta' — pedido explícito de Carlos: las
+   * incidencias críticas del Diagnóstico Diario tienen que poder resolverse. Una edición queda
+   * incierta cuando, tras el PUT, la huella del documento no coincide; si después se reedita la misma
+   * compra (o alguien la toca en Holded), esa huella vieja ya NO PUEDE volver a coincidir y el registro
+   * sería crítico para siempre aunque el documento esté bien. Quien revisa el estado real y lo acepta
+   * (ver core/cerebro/resolverIncidencias.ts) da el registro por cerrado: pasa a 'verificada' y deja de
+   * elevarse como incidencia.
+   *
+   * Hallazgo de auditoría (2026-09-20): NO se reescribe huellaEsperada con la del documento actual.
+   * "Verificada" aquí significa "una persona revisó y aceptó", no "el PUT quedó aplicado": si se
+   * sobrescribiera la huella, un reintento con la misma clave idempotente (p. ej. una aprobación humana
+   * por Telegram) encontraría el documento igual a la huella nueva y devolvería un falso "✅ Editado"
+   * sin haber aplicado el cambio pedido. Conservando la huella original, ese reintento sigue chocando
+   * con EdicionCompraInciertaError (ver ejecutarEdicionCompraDurable) y nunca repite el PUT. Además la
+   * huella original queda como rastro, y el sufijo del proceso deja visible en la propia hoja que el
+   * cierre fue manual.
+   *
+   * Solo desde 'incierta': nunca toca 'editando' (un PUT que podría seguir en vuelo) ni 'preparada'.
+   * No hace ninguna llamada a Holded.
+   */
+  async cerrarPorRevisionHumana(clave: string): Promise<boolean> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const actual = await this.refrescar(clave);
+      if (!actual || actual.estado !== "incierta") return false;
+      const ahora = Date.now();
+      const siguiente: RegistroConFila = {
+        ...actual,
+        estado: "verificada",
+        proceso: actual.proceso.endsWith(SUFIJO_CIERRE_HUMANO) ? actual.proceso : `${actual.proceso}${SUFIJO_CIERRE_HUMANO}`,
+        actualizadoEn: ahora,
+        verificadoEn: ahora,
+      };
+      await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
+      this.registros.set(clave, siguiente);
+      return true;
     });
   }
 

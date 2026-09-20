@@ -50,6 +50,8 @@ const CAMBIAR_ROL_ENDPOINT = `${API_BASE}/cambiar-rol-usuario`;
 const ELIMINAR_USUARIO_ENDPOINT = `${API_BASE}/eliminar-usuario`;
 const CONEXIONES_ENDPOINT = `${API_BASE}/conexiones`;
 const ARREGLAR_CONEXION_ENDPOINT = `${API_BASE}/conexiones/arreglar`;
+const CONTROL_DIARIO_RESOLVER_ENDPOINT = `${API_BASE}/control-diario/resolver`;
+const CONTROL_DIARIO_EDICIONES_ENDPOINT = `${API_BASE}/control-diario/ediciones-inciertas`;
 const BUSQUEDA_WEB_ENDPOINT = `${API_BASE}/busqueda-web`;
 const BUSCAR_ENDPOINT = `${API_BASE}/buscar`;
 const ACCIONES_PROGRAMADAS_ENDPOINT = `${API_BASE}/acciones-programadas`;
@@ -464,12 +466,348 @@ function etiquetaProceso(proceso) {
     extraer_factura: "Extracción de facturas",
     chat_conversacional: "Chat conversacional",
     clasificar_correo: "Clasificación de correo",
+    clasificar_documento: "Clasificación de documentos",
     extraer_gasto_correo: "Gastos desde correo",
+    correo_gastos_automatico: "Análisis automático de correo",
+    respuesta_correo_automatica: "Respuestas automáticas de correo",
+    accion_correo: "Acciones de correo",
     accion_gasto: "Acciones de gasto",
     autorrevision_codigo: "Autorrevisión de código",
     sin_atribuir: "Sin atribuir",
   };
   return nombres[proceso] || String(proceso || "Proceso").replaceAll("_", " ");
+}
+
+/**
+ * Pedido explícito de Carlos: "no me interesa el gasto de ayer, me interesa qué está generando el gasto
+ * de hoy" y "qué está generando el gasto semanal". Misma tabla para ambos periodos: los 5 procesos que
+ * más gastan y el resto agrupado, para que un proceso que dispara el coste se vea de inmediato.
+ */
+function TablaGastoPorProceso({ titulo, subtitulo, procesos, total, vacio, ancho, disponible = true }) {
+  const MAXIMO = 5;
+  const lista = Array.isArray(procesos) ? procesos : [];
+  const visibles = lista.slice(0, MAXIMO);
+  const resto = lista.slice(MAXIMO);
+  const costoResto = resto.reduce((suma, p) => suma + (Number(p.gastoRealApiUSD) || 0), 0);
+  const llamadasResto = resto.reduce((suma, p) => suma + (Number(p.llamadas) || 0), 0);
+  const porcentaje = (costo) => (total > 0 ? Math.round(((Number(costo) || 0) / total) * 100) : 0);
+  return (
+    <div
+      className={ancho ? "control-detalle-ancho" : undefined}
+      style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft, overflowX: "auto" }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em" }}>{titulo}</div>
+        <div style={{ fontFamily: C.mono, fontSize: 11, color: disponible ? C.amberBright : C.dim }}>{disponible ? fmtUSD(total) : "—"}</div>
+      </div>
+      {subtitulo && <div style={{ fontFamily: C.sans, fontSize: 10, color: C.dim, marginTop: 3 }}>{subtitulo}</div>}
+      {!disponible ? (
+        // Un fallo leyendo los costes nunca se presenta como "cero consumo".
+        <div role="status" style={{ fontFamily: C.sans, fontSize: 11.5, color: C.amberBright, padding: "20px 0" }}>
+          No disponible: no se pudo leer el registro de costes. Revisa la incidencia de costes más abajo.
+        </div>
+      ) : visibles.length > 0 ? (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.sans, fontSize: 10.5, marginTop: 8 }}>
+          <thead>
+            <tr style={{ color: C.dim, textAlign: "left" }}>
+              <th style={{ padding: "4px 5px", fontWeight: 500 }}>Proceso</th>
+              <th style={{ padding: "4px 5px", fontWeight: 500, textAlign: "right" }}>Llamadas</th>
+              <th style={{ padding: "4px 5px", fontWeight: 500, textAlign: "right" }}>Coste</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibles.map((proceso) => (
+              <tr key={proceso.proceso} style={{ borderTop: `1px solid ${C.line}` }}>
+                <td style={{ padding: "7px 5px", color: C.cream }}>
+                  {etiquetaProceso(proceso.proceso)}
+                  {total > 0 && <span style={{ color: C.dim }}> · {porcentaje(proceso.gastoRealApiUSD)}%</span>}
+                </td>
+                <td style={{ padding: "7px 5px", color: C.dim, textAlign: "right", fontFamily: C.mono }}>{proceso.llamadas}</td>
+                <td style={{ padding: "7px 5px", color: C.amberBright, textAlign: "right", fontFamily: C.mono }}>{fmtUSD(proceso.gastoRealApiUSD)}</td>
+              </tr>
+            ))}
+            {resto.length > 0 && (
+              <tr style={{ borderTop: `1px solid ${C.line}` }}>
+                <td style={{ padding: "7px 5px", color: C.dim }}>
+                  Otros ({resto.length}){total > 0 && <span> · {porcentaje(costoResto)}%</span>}
+                </td>
+                <td style={{ padding: "7px 5px", color: C.dim, textAlign: "right", fontFamily: C.mono }}>{llamadasResto}</td>
+                <td style={{ padding: "7px 5px", color: C.dim, textAlign: "right", fontFamily: C.mono }}>{fmtUSD(costoResto)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      ) : (
+        <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "20px 0" }}>{vacio}</div>
+      )}
+    </div>
+  );
+}
+
+const TIEMPO_ESPERA_ACCION_MS = 60000;
+
+/**
+ * fetch de las acciones del diagnóstico: con tiempo máximo y errores en español (nunca "Failed to fetch"
+ * ni un fallo mudo). Si la solicitud se corta por tiempo, el servidor puede seguir trabajando: el mensaje lo dice
+ * para que nadie repita a ciegas una acción que quizá ya se aplicó.
+ */
+async function llamarControlDiario(url, apiKey, opciones = {}) {
+  const controlador = new AbortController();
+  const temporizador = setTimeout(() => controlador.abort(), TIEMPO_ESPERA_ACCION_MS);
+  try {
+    const res = await fetch(url, {
+      ...opciones,
+      headers: { "X-Cerebro-Key": apiKey, ...(opciones.headers || {}) },
+      cache: "no-store",
+      signal: controlador.signal,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        json?.error ||
+          (res.status === 403 || res.status === 401
+            ? "Esta acción requiere la key maestra de administrador."
+            : "No se pudo completar la acción.")
+      );
+    }
+    return json;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(
+        "La solicitud tardó demasiado. Puede que el servidor siga trabajando: actualiza el panel y comprueba el estado antes de repetirla."
+      );
+    }
+    if (error instanceof TypeError) {
+      throw new Error("No se pudo conectar con el servidor. Comprueba tu conexión y vuelve a intentarlo.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+/**
+ * Botones para resolver una incidencia desde el propio panel — pedido explícito de Carlos: "poder ir
+ * a solucionarlas, o que me digas exactamente qué debo hacer, o que con un botón vaya y lo solucione
+ * para dejarlo en verde". Nada aquí invoca un modelo: "Verificar ahora" solo relee (las mismas rutinas
+ * de solo lectura que corren en cada arranque) y "Revisar y cerrar" muestra el estado REAL de cada
+ * documento en Holded y, tras una confirmación explícita, cierra en el ledger interno las ediciones de
+ * los que están coherentes (o ya no existen). Nunca modifica Holded. El servidor exige la key maestra.
+ */
+function AccionesIncidencia({ recomendacion, apiKey, puedeResolver, onRefresh, onResultado }) {
+  const acciones = Array.isArray(recomendacion.acciones) ? recomendacion.acciones : [];
+  const [ocupado, setOcupado] = useState(null);
+  const [detalle, setDetalle] = useState(null);
+  const [seleccion, setSeleccion] = useState({});
+  const [verDetalle, setVerDetalle] = useState(false);
+  // Solo la última lectura del detalle manda: una respuesta lenta anterior no debe pisar una más reciente.
+  const cargaVigente = useRef(0);
+  const claveCompra = (compra) => `${compra.empresa}:${compra.purchaseId}`;
+  const nombreCompra = (compra) => compra.hechos?.proveedor || `compra ${String(compra.purchaseId).slice(-6)}`;
+
+  const cargarDetalle = async () => {
+    const id = ++cargaVigente.current;
+    setDetalle((previo) => (previo && typeof previo === "object" ? previo : "cargando"));
+    try {
+      const json = await llamarControlDiario(CONTROL_DIARIO_EDICIONES_ENDPOINT, apiKey);
+      if (id !== cargaVigente.current) return;
+      const compras = Array.isArray(json?.compras) ? json.compras : [];
+      setDetalle({ compras, totalEdiciones: Number(json?.totalEdiciones) || 0, truncado: Number(json?.truncado) || 0 });
+      // Se conserva lo que la persona ya había marcado o desmarcado; lo nuevo cerrable arranca marcado.
+      setSeleccion((previa) =>
+        Object.fromEntries(
+          compras.filter((c) => c.cerrable).map((c) => [claveCompra(c), claveCompra(c) in previa ? previa[claveCompra(c)] : true])
+        )
+      );
+    } catch (error) {
+      if (id !== cargaVigente.current) return;
+      setDetalle({ error: error.message });
+    }
+  };
+
+  const verificar = async () => {
+    if (ocupado) return;
+    setOcupado("verificar");
+    try {
+      const { resultado: r } = await llamarControlDiario(CONTROL_DIARIO_RESOLVER_ENDPOINT, apiKey, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: recomendacion.id, accion: "verificar" }),
+      });
+      const pendiente = (r.inciertas || 0) > 0 || (r.errores || 0) > 0 || (r.pendientesRevision || 0) > 0;
+      onResultado({ tipo: pendiente ? "aviso" : "ok", titulo: recomendacion.titulo, texto: r.mensaje });
+      await onRefresh?.("manual");
+      if (verDetalle) await cargarDetalle();
+    } catch (error) {
+      onResultado({ tipo: "error", titulo: recomendacion.titulo, texto: error.message });
+    } finally {
+      setOcupado(null);
+    }
+  };
+
+  const alternarDetalle = async () => {
+    const abrir = !verDetalle;
+    setVerDetalle(abrir);
+    if (abrir) await cargarDetalle();
+  };
+
+  const listaDetalle = detalle && Array.isArray(detalle.compras) ? detalle.compras : null;
+  const elegidas = listaDetalle ? listaDetalle.filter((c) => c.cerrable && seleccion[claveCompra(c)]) : [];
+
+  const aceptar = async () => {
+    if (ocupado || elegidas.length === 0) return;
+    const ediciones = elegidas.reduce((suma, c) => suma + c.ediciones, 0);
+    const eliminadas = elegidas.filter((c) => c.eliminada).length;
+    const confirmado = window.confirm(
+      `Vas a cerrar ${ediciones} edición(es) incierta(s) de ${elegidas.length} compra(s), dando por revisado el estado ACTUAL de esos documentos en Holded` +
+        (eliminadas > 0 ? ` (${eliminadas} ya no existe(n) en Holded)` : "") +
+        ".\n\nNo se modifica nada en Holded. Los registros quedan marcados como cerrados por revisión humana.\n" +
+        "Si el flujo automático vuelve a reeditar esas compras, las incidencias reaparecerán: en ese caso hay que corregir la causa, no volver a cerrarlas.\n\n¿Confirmas?"
+    );
+    if (!confirmado) return;
+    setOcupado("aceptar");
+    try {
+      const { resultado: r } = await llamarControlDiario(CONTROL_DIARIO_RESOLVER_ENDPOINT, apiKey, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: recomendacion.id,
+          accion: "aceptar",
+          confirmar: true,
+          compras: elegidas.map((c) => ({ empresa: c.empresa, purchaseId: c.purchaseId, huella: c.huella })),
+        }),
+      });
+      const nombres = new Map(elegidas.map((c) => [`${c.empresa}:${c.purchaseId}`, nombreCompra(c)]));
+      const omitidas = (r.compras || []).filter((c) => c.omitida);
+      onResultado({
+        tipo: omitidas.length > 0 ? "aviso" : "ok",
+        titulo: recomendacion.titulo,
+        texto:
+          `Cerradas ${r.cerradas} edición(es).` +
+          (omitidas.length > 0
+            ? ` ${omitidas.length} compra(s) no se cerraron: ${omitidas
+                .map((c) => `${nombres.get(`${c.empresa}:${c.purchaseId}`) || c.purchaseId} — ${c.omitida}`)
+                .join(" · ")}`
+            : ""),
+      });
+      await onRefresh?.("manual");
+      await cargarDetalle();
+    } catch (error) {
+      onResultado({ tipo: "error", titulo: recomendacion.titulo, texto: error.message });
+    } finally {
+      setOcupado(null);
+    }
+  };
+
+  if (acciones.length === 0) return null;
+
+  const estiloBoton = (primario, deshabilitado) => ({
+    border: `1px solid ${primario ? C.coreBright : C.line}`,
+    borderRadius: 6,
+    background: "none",
+    color: primario ? C.coreBright : C.cream,
+    fontFamily: C.mono,
+    fontSize: 10,
+    cursor: deshabilitado ? "default" : "pointer",
+    opacity: deshabilitado ? 0.6 : 1,
+    padding: "4px 9px",
+  });
+  const sinSeleccion = elegidas.length === 0;
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        {!puedeResolver && (
+          <span style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim }}>requiere admin para resolver desde aquí</span>
+        )}
+        {puedeResolver &&
+          acciones.map((accion) =>
+            accion.id === "verificar" ? (
+              <button key={accion.id} type="button" title={accion.descripcion} disabled={Boolean(ocupado)} onClick={verificar} style={estiloBoton(true, Boolean(ocupado))}>
+                {ocupado === "verificar" ? "verificando…" : `🔄 ${accion.etiqueta}`}
+              </button>
+            ) : (
+              <button key={accion.id} type="button" title={accion.descripcion} disabled={Boolean(ocupado)} onClick={alternarDetalle} aria-expanded={verDetalle} style={estiloBoton(false, Boolean(ocupado))}>
+                {verDetalle ? "Ocultar revisión" : `📋 ${accion.etiqueta}`}
+              </button>
+            )
+          )}
+      </div>
+
+      {verDetalle && puedeResolver && (
+        <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+          {detalle === "cargando" && <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim }}>leyendo el estado real en Holded…</div>}
+          {detalle?.error && (
+            <div role="alert" style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dangerBright }}>
+              No se pudo leer el estado de las compras: {detalle.error}
+            </div>
+          )}
+          {listaDetalle && listaDetalle.length === 0 && (
+            <div style={{ fontFamily: C.sans, fontSize: 10.5, color: C.ok }}>No quedan ediciones inciertas.</div>
+          )}
+          {listaDetalle && listaDetalle.length > 0 && (
+            <>
+              <div style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim }}>
+                {listaDetalle.length} compra(s) con {detalle.totalEdiciones} edición(es) incierta(s)
+                {detalle.truncado > 0 ? ` (se muestran las más recientes; quedan ${detalle.truncado} compra(s) más, aparecerán al cerrar estas)` : ""}. Estado real en Holded ahora mismo:
+              </div>
+              {listaDetalle.map((compra) => {
+                const h = compra.hechos;
+                const k = claveCompra(compra);
+                return (
+                  <label
+                    key={k}
+                    style={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr)", gap: 8, padding: "8px 9px", borderRadius: 7, border: `1px solid ${compra.cerrable ? C.line : C.dangerBright}`, background: C.void, cursor: compra.cerrable ? "pointer" : "default" }}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={!compra.cerrable || Boolean(ocupado)}
+                      checked={Boolean(seleccion[k])}
+                      onChange={(e) => setSeleccion((previa) => ({ ...previa, [k]: e.target.checked }))}
+                      aria-label={`Dar por revisada la compra ${nombreCompra(compra)}`}
+                    />
+                    <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                      <span style={{ display: "block", color: C.cream, fontFamily: C.sans, fontSize: 11.5, fontWeight: 600 }}>
+                        {h
+                          ? `${h.proveedor || "Sin proveedor"} · ${h.fecha} · ${h.total} ${h.moneda}`
+                          : compra.eliminada
+                            ? `Compra eliminada en Holded (${String(compra.purchaseId).slice(-6)})`
+                            : `Compra ${compra.purchaseId}`}
+                      </span>
+                      <span style={{ display: "block", color: C.dim, fontFamily: C.mono, fontSize: 9.5, marginTop: 2 }}>
+                        Holded {compra.empresa} · nº {h?.numero || "—"} · {compra.ediciones} edición(es)
+                      </span>
+                      {h && (
+                        <span style={{ display: "block", color: C.dim, fontFamily: C.sans, fontSize: 10.5, marginTop: 3 }}>
+                          {h.cuentas.length > 0 ? "✓ cuenta contable asignada" : "✗ sin cuenta contable"} · etiquetas: {h.etiquetas.length ? h.etiquetas.join(", ") : "ninguna"} · pagado {h.pagado || "0,00"}
+                          {h.pendiente && h.pendiente !== "0,00" ? ` · pendiente ${h.pendiente}` : ""}
+                        </span>
+                      )}
+                      {compra.problemas.map((problema, i) => (
+                        <span key={`p${i}`} style={{ display: "block", color: C.dangerBright, fontFamily: C.sans, fontSize: 10.5, marginTop: 3 }}>⚠ {problema}</span>
+                      ))}
+                      {compra.avisos.length > 0 && (
+                        <span style={{ display: "block", color: C.dim, fontFamily: C.sans, fontSize: 10, marginTop: 3 }}>{compra.avisos.join(" ")}</span>
+                      )}
+                      {compra.nota && (
+                        <span style={{ display: "block", color: C.dim, fontFamily: C.sans, fontSize: 10, marginTop: 3, fontStyle: "italic", overflowWrap: "anywhere" }}>{compra.nota}</span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button type="button" onClick={aceptar} disabled={Boolean(ocupado) || sinSeleccion} style={estiloBoton(true, Boolean(ocupado) || sinSeleccion)}>
+                  {ocupado === "aceptar" ? "cerrando…" : "✅ Dar por revisadas las seleccionadas"}
+                </button>
+                <span style={{ fontFamily: C.sans, fontSize: 10, color: C.dim }}>Pide confirmación. No modifica Holded.</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function fechaCorta(fecha) {
@@ -482,12 +820,23 @@ function fechaCorta(fecha) {
  * reglas deterministas; este componente solo lo convierte en indicadores,
  * gráfico, tabla y acciones. Abrirlo no invoca ningún modelo.
  */
-function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPreguntarWobi }) {
+function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPreguntarWobi, puedeResolver = false, onRefresh }) {
   const control = get(data, "controlDiario");
   const [abierto, setAbierto] = useState(false);
   const [conexiones, setConexiones] = useState(null);
   const [cargandoConexiones, setCargandoConexiones] = useState(false);
   const [errorConexiones, setErrorConexiones] = useState(false);
+  // Resultado de la última acción de resolución: vive a nivel de panel (no de tarjeta) porque al
+  // resolverse una incidencia su tarjeta desaparece — sin esto el usuario no vería qué pasó.
+  const [resultadoAccion, setResultadoAccion] = useState(null);
+  const bannerAccionRef = useRef(null);
+  // El botón pulsado puede estar bastante más abajo que el aviso del resultado: se lleva a la vista para
+  // que nadie se quede sin ver si la acción funcionó (y, si falló, por qué).
+  useEffect(() => {
+    if (resultadoAccion && bannerAccionRef.current?.scrollIntoView) {
+      bannerAccionRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [resultadoAccion]);
 
   const cargarConexiones = useCallback(async () => {
     if (!apiKey) return;
@@ -527,10 +876,33 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
     atencion: { texto: "Requiere atención", color: C.amberBright, fondo: "rgba(232, 167, 92, 0.07)" },
     critico: { texto: "Incidencia crítica", color: C.dangerBright, fondo: "rgba(240, 113, 120, 0.08)" },
   }[estado] || { texto: "Analizando", color: C.dim, fondo: C.voidSoft };
-  const serie = costos?.ultimos7Dias || [];
+  const serieSieteDias = costos?.ultimos7Dias || [];
+  // Pedido explícito de Carlos: le interesa el gasto de HOY, no solo días ya cerrados. El servidor entrega
+  // los 7 días completos anteriores; se añade el día en curso (todavía parcial) como última barra.
+  const fechaSiguiente = (fecha) => {
+    const partes = String(fecha || "").split("-").map(Number);
+    if (partes.length !== 3 || partes.some((n) => !Number.isFinite(n))) return "";
+    const d = new Date(Date.UTC(partes[0], partes[1] - 1, partes[2] + 1));
+    return d.toISOString().slice(0, 10);
+  };
+  const ultimoDia = serieSieteDias.length ? serieSieteDias[serieSieteDias.length - 1].fecha : "";
+  const serie =
+    costos?.hoy && serieSieteDias.length > 0
+      ? [
+          ...serieSieteDias,
+          {
+            fecha: fechaSiguiente(ultimoDia),
+            llamadas: Number(costos.hoy.llamadas) || 0,
+            gastoRealApiUSD: Number(costos.hoy.gastoRealApiUSD) || 0,
+            hoy: true,
+          },
+        ]
+      : serieSieteDias;
   const maximoSerie = Math.max(0.01, ...serie.map((punto) => Number(punto.gastoRealApiUSD) || 0));
-  const procesos = costos?.porProcesoAyer?.slice(0, 5) || [];
+  const totalHoy = Number(costos?.hoy?.gastoRealApiUSD) || 0;
+  const totalSemana = Number(costos?.semanaActual?.gastoRealApiUSD) || 0;
   const totalAyer = Number(costos?.ayer?.gastoRealApiUSD) || 0;
+  const costosOk = Boolean(control.costosDisponibles && costos);
   const prioridadColor = {
     critica: C.dangerBright,
     alta: C.amberBright,
@@ -587,22 +959,22 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
           <div className="control-detalle-grid">
             <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft }}>
               <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                Gasto real · últimos 7 días
+                Gasto real · últimos 7 días y hoy
               </div>
               {serie.length > 0 ? (
-                <div role="img" aria-label="Gráfico del gasto real de API durante los últimos siete días" style={{ display: "grid", gridTemplateColumns: `repeat(${serie.length}, minmax(24px, 1fr))`, gap: 7, height: 132, alignItems: "end", marginTop: 10 }}>
+                <div role="img" aria-label="Gráfico del gasto real de API durante los últimos siete días y el día en curso" style={{ display: "grid", gridTemplateColumns: `repeat(${serie.length}, minmax(22px, 1fr))`, gap: 7, height: 132, alignItems: "end", marginTop: 10 }}>
                   {serie.map((punto) => {
                     const costo = Number(punto.gastoRealApiUSD) || 0;
                     const altura = costo === 0 ? 3 : Math.max(8, (costo / maximoSerie) * 88);
                     return (
-                      <div key={punto.fecha} title={`${punto.fecha}: ${fmtUSD(costo)} · ${punto.llamadas} llamada(s)`} style={{ minWidth: 0, textAlign: "center" }}>
+                      <div key={punto.fecha || "hoy"} title={`${punto.hoy ? "Hoy (en curso)" : punto.fecha}: ${fmtUSD(costo)} · ${punto.llamadas} llamada(s)`} style={{ minWidth: 0, textAlign: "center" }}>
                         <div style={{ fontFamily: C.mono, fontSize: 8.5, color: costo === maximoSerie ? C.amberBright : C.dim, overflow: "hidden" }}>
                           {costo > 0 ? costo.toFixed(1) : "0"}
                         </div>
                         <div style={{ height: 92, display: "flex", alignItems: "flex-end", justifyContent: "center", margin: "3px 0" }}>
                           <div style={{ width: "68%", maxWidth: 32, height: altura, minHeight: 3, borderRadius: "4px 4px 2px 2px", background: costo === maximoSerie ? C.amberBright : C.coreBright, opacity: costo === 0 ? 0.35 : 0.82 }} />
                         </div>
-                        <div style={{ fontFamily: C.mono, fontSize: 8, color: C.dim }}>{fechaCorta(punto.fecha)}</div>
+                        <div style={{ fontFamily: C.mono, fontSize: 8, color: punto.hoy ? C.cream : C.dim, fontWeight: punto.hoy ? 700 : 400 }}>{punto.hoy ? "Hoy" : fechaCorta(punto.fecha)}</div>
                       </div>
                     );
                   })}
@@ -612,36 +984,38 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
               )}
             </div>
 
-            <div style={{ padding: 12, borderRadius: 9, border: `1px solid ${C.line}`, background: C.voidSoft, overflowX: "auto" }}>
-              <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 9 }}>
-                Qué generó el gasto de ayer
+            <TablaGastoPorProceso
+              titulo="Qué está generando el gasto de hoy"
+              subtitulo="Día en curso, actualizado con cada lectura"
+              procesos={costos?.porProcesoHoy}
+              total={totalHoy}
+              disponible={costosOk}
+              vacio="Hoy todavía no hay consumo atribuible."
+            />
+            <TablaGastoPorProceso
+              ancho
+              titulo="Qué está generando el gasto de la semana"
+              subtitulo="Semana en curso, de lunes a hoy"
+              procesos={costos?.porProcesoSemana}
+              total={totalSemana}
+              disponible={costosOk}
+              vacio="Esta semana todavía no hay consumo atribuible."
+            />
+            {/* El desglose de ayer sigue disponible (referencia para comparar), pero ya no es lo principal. */}
+            <details className="control-detalle-ancho">
+              <summary style={{ cursor: "pointer", color: C.dim, fontFamily: C.mono, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Desglose de ayer (referencia)
+              </summary>
+              <div style={{ marginTop: 8 }}>
+                <TablaGastoPorProceso
+                  titulo="Qué generó el gasto de ayer"
+                  procesos={costos?.porProcesoAyer}
+                  total={totalAyer}
+                  disponible={costosOk}
+                  vacio="Ayer no hubo consumo atribuible."
+                />
               </div>
-              {procesos.length > 0 ? (
-                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: C.sans, fontSize: 10.5 }}>
-                  <thead>
-                    <tr style={{ color: C.dim, textAlign: "left" }}>
-                      <th style={{ padding: "4px 5px", fontWeight: 500 }}>Proceso</th>
-                      <th style={{ padding: "4px 5px", fontWeight: 500, textAlign: "right" }}>Llamadas</th>
-                      <th style={{ padding: "4px 5px", fontWeight: 500, textAlign: "right" }}>Coste</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {procesos.map((proceso) => (
-                      <tr key={proceso.proceso} style={{ borderTop: `1px solid ${C.line}` }}>
-                        <td style={{ padding: "7px 5px", color: C.cream }}>
-                          {etiquetaProceso(proceso.proceso)}
-                          {totalAyer > 0 && <span style={{ color: C.dim }}> · {Math.round((proceso.gastoRealApiUSD / totalAyer) * 100)}%</span>}
-                        </td>
-                        <td style={{ padding: "7px 5px", color: C.dim, textAlign: "right", fontFamily: C.mono }}>{proceso.llamadas}</td>
-                        <td style={{ padding: "7px 5px", color: C.amberBright, textAlign: "right", fontFamily: C.mono }}>{fmtUSD(proceso.gastoRealApiUSD)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "20px 0" }}>Ayer no hubo consumo atribuible.</div>
-              )}
-            </div>
+            </details>
           </div>
 
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
@@ -653,6 +1027,36 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
                 política {control.politica?.killSwitch ? "kill switch" : control.politica?.modo} · {control.politica?.procesosPermitidos || 0} proceso(s) permitidos
               </div>
             </div>
+            {resultadoAccion && (
+              <div
+                ref={bannerAccionRef}
+                role={resultadoAccion.tipo === "error" ? "alert" : "status"}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: 10,
+                  padding: "9px 11px",
+                  borderRadius: 8,
+                  border: `1px solid ${resultadoAccion.tipo === "error" ? C.dangerBright : resultadoAccion.tipo === "aviso" ? C.amberBright : C.ok}`,
+                  color: resultadoAccion.tipo === "error" ? C.dangerBright : resultadoAccion.tipo === "aviso" ? C.amberBright : C.ok,
+                  fontFamily: C.sans,
+                  fontSize: 11,
+                }}
+              >
+                <span>
+                  <strong style={{ fontWeight: 600 }}>{resultadoAccion.titulo}:</strong> {resultadoAccion.texto}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Cerrar este aviso"
+                  onClick={() => setResultadoAccion(null)}
+                  style={{ border: "none", background: "none", color: "inherit", cursor: "pointer", fontFamily: C.mono, fontSize: 12, padding: 0 }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
             {recomendaciones.length === 0 ? (
               <div style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${C.line}`, color: C.ok, fontFamily: C.sans, fontSize: 11.5 }}>
                 No hay acciones urgentes. El control seguirá evaluando cada nuevo snapshot.
@@ -663,11 +1067,30 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
                   <span style={{ marginTop: 2, padding: "3px 6px", borderRadius: 999, border: `1px solid ${prioridadColor[recomendacion.prioridad] || C.dim}`, color: prioridadColor[recomendacion.prioridad] || C.dim, fontFamily: C.mono, fontSize: 8, textTransform: "uppercase" }}>
                     {recomendacion.prioridad}
                   </span>
-                  <span>
+                  <div style={{ minWidth: 0 }}>
                     <span style={{ display: "block", color: C.cream, fontFamily: C.sans, fontSize: 12, fontWeight: 600 }}>{recomendacion.titulo}</span>
                     <span style={{ display: "block", color: C.dim, fontFamily: C.sans, fontSize: 10.5, marginTop: 3 }}>{recomendacion.detalle}</span>
                     <span style={{ display: "block", color: C.coreBright, fontFamily: C.sans, fontSize: 10.5, marginTop: 4 }}>{recomendacion.siguientePaso}</span>
-                  </span>
+                    {Array.isArray(recomendacion.pasos) && recomendacion.pasos.length > 0 && (
+                      <details open={recomendacion.prioridad === "critica"} style={{ marginTop: 6 }}>
+                        <summary style={{ cursor: "pointer", color: C.cream, fontFamily: C.sans, fontSize: 10.5, fontWeight: 600 }}>
+                          Qué hacer, paso a paso
+                        </summary>
+                        <ol style={{ margin: "5px 0 0 18px", padding: 0, color: C.dim, fontFamily: C.sans, fontSize: 10.5, lineHeight: 1.5 }}>
+                          {recomendacion.pasos.map((paso, indice) => (
+                            <li key={indice} style={{ marginTop: indice === 0 ? 0 : 3 }}>{paso}</li>
+                          ))}
+                        </ol>
+                      </details>
+                    )}
+                    <AccionesIncidencia
+                      recomendacion={recomendacion}
+                      apiKey={apiKey}
+                      puedeResolver={puedeResolver}
+                      onRefresh={onRefresh}
+                      onResultado={setResultadoAccion}
+                    />
+                  </div>
                   <span style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
                     {onPreguntarWobi && (
                       <button
@@ -3891,6 +4314,7 @@ export default function CerebroWoba() {
           gap: 10px;
           margin-top: 10px;
         }
+        .control-detalle-ancho { grid-column: 1 / -1; }
         .control-recomendacion {
           display: grid;
           grid-template-columns: auto minmax(0, 1fr) auto;
@@ -3908,6 +4332,12 @@ export default function CerebroWoba() {
           .control-recomendacion > button {
             grid-column: 2;
             justify-self: start;
+          }
+          /* El 3.er elemento es un contenedor (no un button directo): sin esto caía en la 1.ª columna y la ensanchaba. */
+          .control-recomendacion > :last-child {
+            grid-column: 2;
+            justify-self: start;
+            align-items: flex-start !important;
           }
         }
       `}</style>
@@ -4015,6 +4445,8 @@ export default function CerebroWoba() {
           actualizacionId={get(liveData, "cacheadoEn")}
           onAbrir={abrirModuloDesdeResumen}
           onPreguntarWobi={preguntarWobi}
+          puedeResolver={esAdmin}
+          onRefresh={refreshLiveData}
         />
       )}
 

@@ -71,6 +71,7 @@ import { handleRegistroManualCashflowCallback } from "../core/google/registroMan
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
+import { detalleEdicionesInciertas, ejecutarSolicitudResolver } from "../core/cerebro/resolverIncidencias";
 import {
   registrarEjecucionAuditoriaProgramada,
   type EstadoAuditoriaProgramada,
@@ -558,6 +559,67 @@ app.options("/api/cerebro/conexiones/arreglar", (_req: Request, res: Response) =
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Diagnóstico Diario accionable — pedido explícito de Carlos: ante una incidencia crítica poder
+ * resolverla desde el front, o saber exactamente qué hacer. Ninguna de estas rutas invoca un modelo.
+ *
+ * GET  .../ediciones-inciertas → estado REAL en Holded de cada compra con ediciones inciertas (solo lectura
+ *                                sobre Holded, pero relee hasta 50 compras: por eso solo la key maestra).
+ * POST .../resolver            → { id, accion: "verificar" } relee (solo lectura) los elementos inciertos de
+ *                                un ledger; { id: "ediciones-holded-inciertas", accion: "aceptar", confirmar: true,
+ *                                compras: [{ empresa, purchaseId, huella }] } cierra en el ledger interno las
+ *                                ediciones de compras cuyo documento sigue igual que cuando se revisó y es
+ *                                coherente (o ya no existe). Nunca escribe en Holded. Responde 409 si hay una
+ *                                revisión de correo en curso. Solo la key maestra (igual que "arreglar conexiones").
+ */
+app.get("/api/cerebro/control-diario/ediciones-inciertas", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
+  if (!exigeKeyMaestra(req, res)) return;
+  try {
+    res.set("Cache-Control", "no-store");
+    res.json(await detalleEdicionesInciertas());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/control-diario/ediciones-inciertas] Error:", message);
+    res.status(500).json({ error: "No se pudo leer el estado de las ediciones inciertas." });
+  }
+});
+
+app.post("/api/cerebro/control-diario/resolver", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+
+  if (!exigeKeyMaestra(req, res)) return;
+
+  // Trackeado para que un redeploy (SIGTERM) espere a que termine el cierre en el ledger en vez de dejarlo a medias.
+  const trabajo = ejecutarSolicitudResolver(req.body);
+  trackearEnSegundoPlano(trabajo);
+  const { status, cuerpo } = await trabajo;
+  if (status === 200) {
+    // Sin esto el panel seguiría mostrando el diagnóstico en caché con la incidencia ya resuelta.
+    invalidarEstadoCerebro();
+    publicarCambioCerebro(`control_diario:${String(req.body?.id)}`);
+  }
+  res.status(status).json(cuerpo);
+});
+
+app.options("/api/cerebro/control-diario/resolver", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+app.options("/api/cerebro/control-diario/ediciones-inciertas", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key");
+  res.set("Access-Control-Allow-Methods", "GET");
   res.sendStatus(204);
 });
 
