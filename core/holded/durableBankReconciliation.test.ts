@@ -582,7 +582,7 @@ test("caso real Airbnb MEX (Footprint, 2026-09-16): un residuo de varios céntim
   });
 });
 
-test("caso real Kiwi: usa pago más saldo cuando Holded conserva la tasa redondeada a dos decimales", () => {
+test("caso real Kiwi: convierte el saldo nativo a EUR cuando Holded conserva la tasa redondeada", () => {
   const resultado = evaluarAjusteCambioResidual(
     {
       currency: "USD",
@@ -602,9 +602,31 @@ test("caso real Kiwi: usa pago más saldo cuando Holded conserva la tasa redonde
     "2026-09-16"
   );
   assert.ok(resultado);
-  assert.equal(resultado.monto, 0.56);
-  assert.equal(resultado.montoContableDocumento, 131.37);
-  assert.ok(Math.abs(resultado.tasaCambio - 151 / 131.37) < 0.000001);
+  assert.equal(resultado.monto, 0.49);
+  assert.equal(resultado.montoContableDocumento, 131.30);
+  assert.equal(resultado.tasaCambio, 1.15);
+});
+
+test("una tasa redondeada no habilita el ajuste si el residuo no explica exactamente el saldo nativo", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "USD",
+      currency_change: "1.15",
+      total: "151,00",
+      payments_pending: "0,55",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-16", amount: "130,81" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-151.00",
+      reconciled_amount: "-151.00",
+      accounting_amount: "-130.81",
+    },
+    "ftg-usd",
+    "2026-09-16"
+  );
+  assert.equal(resultado, undefined);
 });
 
 test("el margen del ajuste de cambio tiene techo: un residuo que cuadra matemáticamente pero supera el margen de la compra no se acepta", () => {

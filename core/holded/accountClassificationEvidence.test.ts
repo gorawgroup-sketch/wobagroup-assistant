@@ -106,6 +106,19 @@ test("el flujo compartido conserva los aprendizajes de tags del proceso uno a un
     combinarTagsGastoAprendidos("Consumo", "Proveedor", undefined, ["alimentacion", "hospedaje", "simontalloen"]),
     ["simontalloen"]
   );
+  assert.deepEqual(
+    combinarTagsGastoAprendidos(
+      "Compra supermercado ALDI",
+      "ALDI",
+      undefined,
+      ["alimentacion", "latam", "simontalloen"]
+    ),
+    ["simontalloen", "alimentacion"]
+  );
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Material de oficina", "Proveedor", undefined, ["oficina", "latam", "alejandra"]),
+    ["alejandra"]
+  );
 });
 
 test("normaliza los tags como los hashtags visibles de Holded", () => {
