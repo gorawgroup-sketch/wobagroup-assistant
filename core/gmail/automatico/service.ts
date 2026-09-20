@@ -1,5 +1,6 @@
 import { evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
-  type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto, type StoreAuto, VERSION_POLITICA } from "./model";
+  nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
+  type StoreAuto, VERSION_POLITICA } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
 export interface PuertoAutomatico {
@@ -16,7 +17,7 @@ export interface PuertoAutomatico {
   verificarAdjunto(op: OperacionAuto): Promise<boolean>;
   conciliar(op: OperacionAuto): Promise<void>;
   verificarConciliacion(op: OperacionAuto): Promise<boolean>;
-  /** Solo elimina UNREAD de los mensajes concretos procesados, nunca de un hilo completo. */
+  /** Conserva UNREAD y etiqueta solo el mensaje procesado para excluirlo de revisiones posteriores. */
   marcarResuelto(correo: CorreoAuto): Promise<void>;
   permitidoAhora(op: OperacionAuto): boolean;
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
@@ -50,6 +51,40 @@ export class ServicioCorreoAutomatico {
     } catch (error) {
       return { correo, motivos: [`error:${mensajeError(error)}`] };
     }
+  }
+
+  private async analizarParaRecuperacion(config: ConfigAuto, correo: CorreoAuto): Promise<AnalisisAuto> {
+    let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA);
+    if (!analisis) {
+      analisis = await this.puerto.analizar(correo);
+      await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_POLITICA, analisis);
+      await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "reanalisis_reparacion",
+        datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos,
+          completo: analisis.completo, origen: "relectura_de_operacion_anterior" } });
+    }
+    return analisis;
+  }
+
+  private reciboCorrespondeALaMismaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
+    const centimos = (monto: number) => Math.round(monto * 100);
+    const anteriorContable = anterior.equivalente ?? { monto: anterior.monto, moneda: anterior.moneda };
+    const actualContable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
+    const tolerancia = Math.max(0, op.plan.toleranciaCentimos);
+    return actual.fuente === anterior.fuente && actual.empresa === op.plan.empresa &&
+      actual.fecha === anterior.fecha && actualContable.moneda === anteriorContable.moneda &&
+      Math.abs(centimos(actualContable.monto) - centimos(anteriorContable.monto)) <= tolerancia &&
+      Math.abs(centimos(actualContable.monto) - op.plan.totalCentimos) <= tolerancia;
+  }
+
+  private contactoSeguroParaReparar(recibo: ReciboAuto, evidencia: EvidenciaAuto): boolean {
+    const contacto = evidencia.contacto;
+    if (!contacto?.id) return false;
+    if (contacto.metodo === "nombre_exacto" || contacto.metodo === "nombre_equivalente") return true;
+    // Compatibilidad con puertos antiguos que solo informaban `exacto`: aun así se
+    // exige que el nombre leído en Holded corresponda al proveedor del comprobante.
+    if (contacto.exacto && nombresProveedorCompatibles(contacto.nombre, recibo.proveedor)) return true;
+    return contacto.metodo === "aproximado_unico" &&
+      nombresProveedorCompatibles(contacto.nombre, recibo.proveedor);
   }
 
   private async estado(op: OperacionAuto, estado: OperacionAuto["estado"], detalle?: string): Promise<void> {
@@ -178,6 +213,7 @@ export class ServicioCorreoAutomatico {
       await this.opciones.progreso?.({ fase: "analisis", completados: analizados, total: correos.length });
       return preparado;
     });
+    const operacionesBloqueadas = new Map<string, string>();
     if (config.modo === "execute") {
       const recuperables = await this.store.recuperables(config.buzon, VERSION_POLITICA);
       for (const op of recuperables) {
@@ -191,14 +227,47 @@ export class ServicioCorreoAutomatico {
           continue;
         }
         const eraCompletadaAnterior = op.estado === "completada";
-        const analisisRecuperado: AnalisisAuto = { resumen: "Recuperación de operación durable existente", completo: true,
+        let analisisRecuperado: AnalisisAuto = { resumen: "Recuperación de operación durable existente", completo: true,
           recibos: [op.plan.recibo], otrasAcciones: false };
+        if (op.plan.version !== VERSION_POLITICA) {
+          try {
+            analisisRecuperado = await this.analizarParaRecuperacion(config, correo);
+            const recibosFuente = analisisRecuperado.recibos.filter(r => r.fuente === op.plan.recibo.fuente);
+            if (!analisisRecuperado.completo || recibosFuente.length !== 1 ||
+              !this.reciboCorrespondeALaMismaOperacion(op.plan.recibo, recibosFuente[0], op)) {
+              operacionesBloqueadas.set(op.id, "lectura_incompleta");
+              if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+                motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, "lectura_incompleta")] });
+              continue;
+            }
+            const reciboActual = recibosFuente[0];
+            const evidenciaActual = await this.puerto.evidencias(correo, reciboActual);
+            op.plan.recibo = reciboActual;
+            if (!evidenciaActual.contacto?.id || !this.contactoSeguroParaReparar(reciboActual, evidenciaActual)) {
+              const motivo = evidenciaActual.contacto?.id ? "proveedor_no_verificado" : "proveedor_no_encontrado";
+              operacionesBloqueadas.set(op.id, motivo);
+              if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+                motivos: [motivo], detalles: [this.detalleOperacion(op, motivo)] });
+              continue;
+            }
+            op.plan.contactoId = evidenciaActual.contacto.id;
+            op.plan.evidencia.contacto = evidenciaActual.contacto;
+            op.plan.evidencia.motivoProveedor = evidenciaActual.motivoProveedor;
+            op.plan.evidencia.candidatosProveedor = evidenciaActual.candidatosProveedor;
+          } catch (error) {
+            operacionesBloqueadas.set(op.id, "lectura_incompleta");
+            if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
+              motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, `error:${mensajeError(error)}`)] });
+            continue;
+          }
+        }
         if (await this.ejecutar(op, correo, analisisRecuperado, config)) {
           const gasto = { empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
             moneda: op.plan.movimiento.moneda };
           if (eraCompletadaAnterior) resultado.reparados!.push(gasto);
           else { resultado.completados++; resultado.gastos.push(gasto); }
           await this.puerto.registrarFinalizada(op);
+          if (!correoNoLeido) await this.puerto.marcarResuelto(correo);
         } else if (!correoNoLeido) {
           const motivo = `operacion_${op.estado}:${op.id}`;
           resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto, motivos: [motivo],
@@ -223,6 +292,12 @@ export class ServicioCorreoAutomatico {
             if (!analisis.completo) break;
             const previa = await this.store.buscarFuente(config.buzon, correo.id, recibo.fuente);
             let op = previa;
+            if (op && operacionesBloqueadas.has(op.id)) {
+              const motivo = operacionesBloqueadas.get(op.id)!;
+              motivos.push(motivo);
+              detalles.push(this.detalleOperacion(op, motivo));
+              continue;
+            }
             if (!op) {
               // Al agotar el presupuesto temporal no se inicia una consulta nueva de Holded ni una
               // escritura. Las operaciones ya reservadas sí continúan para llevarlas a un estado

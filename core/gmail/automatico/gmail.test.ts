@@ -15,25 +15,46 @@ test("lee todas las partes textuales, incluido cuerpo servido como attachmentId"
   assert.ok(r.cuerpo.length > 8000); assert.ok(r.cuerpo.endsWith("Final importante"));
   assert.equal(r.adjuntos.length, 1); assert.equal(r.adjuntos[0].id, "img");
 });
-test("paginación completa, todos los mensajes no leídos y archivados incluidos", async () => {
+test("paginación completa, todos los mensajes pendientes no leídos y archivados incluidos", async () => {
   const consultas: Record<string, unknown>[] = [];
-  const gmail = { users: { threads: {
+  const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {
     list: async (q: Record<string, unknown>) => { consultas.push(q); return { data: q.pageToken ? { threads: [{ id: "t2" }] } : { threads: [{ id: "t1" }], nextPageToken: "next" } }; },
     get: async ({ id }: { id: string }) => ({ data: { messages: [1, 2].map(n => ({ id: `${id}-${n}`, labelIds: ["UNREAD"], internalDate: String(n),
       payload: { mimeType: "text/plain", body: { data: b64(`mensaje ${n}`) } } })) } }),
   } } } as unknown as gmail_v1.Gmail;
   const r = await new GmailAuto(gmail, gmail).listar();
   assert.equal(r.length, 4); assert.equal(consultas.length, 2);
-  assert.equal(consultas[0].q, "is:unread -in:spam -in:trash");
+  assert.equal(consultas[0].q, "is:unread -label:WOBI_AUTO_PROCESADO -in:spam -in:trash");
 });
-test("solo marca el mensaje procesado, nunca el hilo que recibió una respuesta nueva", async () => {
-  const modificados: string[] = [];
-  const gmail = { users: { messages: {
-    modify: async ({ id }: { id: string }) => { modificados.push(id); return { data: {} }; },
-    get: async ({ id }: { id: string }) => ({ data: { id, labelIds: [] } }),
-  } } } as unknown as gmail_v1.Gmail;
+test("un mensaje automático ya etiquetado no reaparece si llega otro mensaje al mismo hilo", async () => {
+  const gmail = { users: {
+    labels: { list: async () => ({ data: { labels: [{ id: "label-auto", name: "WOBI_AUTO_PROCESADO" }] } }) },
+    threads: {
+      list: async () => ({ data: { threads: [{ id: "t1" }] } }),
+      get: async () => ({ data: { messages: [
+        { id: "anterior", labelIds: ["UNREAD", "label-auto"], internalDate: "1",
+          payload: { mimeType: "text/plain", body: { data: b64("ya procesado") } } },
+        { id: "nuevo", labelIds: ["UNREAD"], internalDate: "2",
+          payload: { mimeType: "text/plain", body: { data: b64("nuevo mensaje") } } },
+      ] } }),
+    },
+  } } as unknown as gmail_v1.Gmail;
+  const r = await new GmailAuto(gmail, gmail).listar();
+  assert.deepEqual(r.map(c => c.id), ["nuevo"]);
+});
+test("conserva no leído el mensaje procesado, lo etiqueta y nunca toca todo el hilo", async () => {
+  const modificados: Array<{ id: string; etiquetas: string[] }> = [];
+  const gmail = { users: {
+    labels: { list: async () => ({ data: { labels: [{ id: "label-auto", name: "WOBI_AUTO_PROCESADO" }] } }) },
+    messages: {
+      modify: async ({ id, requestBody }: { id: string; requestBody: { addLabelIds: string[] } }) => {
+        modificados.push({ id, etiquetas: requestBody.addLabelIds }); return { data: {} };
+      },
+      get: async ({ id }: { id: string }) => ({ data: { id, labelIds: ["UNREAD", "label-auto"] } }),
+    },
+  } } as unknown as gmail_v1.Gmail;
   await new GmailAuto(gmail, gmail).marcarResuelto(correoFixture());
-  assert.deepEqual(modificados, ["m1"]);
+  assert.deepEqual(modificados, [{ id: "m1", etiquetas: ["label-auto", "UNREAD"] }]);
 });
 test("recupera por id un mensaje ya leído para terminar una operación durable", async () => {
   const gmail = { users: { threads: {
@@ -45,7 +66,7 @@ test("recupera por id un mensaje ya leído para terminar una operación durable"
   assert.equal(correo?.cuerpo.includes("comprobante"), true);
 });
 test("un fallo de descarga deja evidencia incompleta, no un correo vacío procesable", async () => {
-  const gmail = { users: { threads: {
+  const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {
     list: async () => ({ data: { threads: [{ id: "t" }] } }),
     get: async () => ({ data: { messages: [{ id: "m", labelIds: ["UNREAD"], internalDate: "1",
       payload: { mimeType: "text/plain", body: { size: 10 } } }] } }),
@@ -56,7 +77,7 @@ test("un fallo de descarga deja evidencia incompleta, no un correo vacío proces
 test("descarga hilos con concurrencia acotada, conserva orden e informa progreso", async () => {
   let activas = 0, maximas = 0;
   const progreso: number[] = [];
-  const gmail = { users: { threads: {
+  const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {
     list: async () => ({ data: { threads: ["t1", "t2", "t3", "t4"].map(id => ({ id })) } }),
     get: async ({ id }: { id: string }) => {
       activas++; maximas = Math.max(maximas, activas);

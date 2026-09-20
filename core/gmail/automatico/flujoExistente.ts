@@ -8,12 +8,13 @@ import { VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
 
 async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   if (recibo.empresa === "desconocida") return undefined;
+  const textoClasificacion = [recibo.concepto, recibo.contextoClasificacion].filter(Boolean).join(" · ");
   const sugerencia = await inferirCuentaGasto(recibo.empresa, { proveedor: recibo.proveedor,
-    concepto: recibo.concepto, personaAsociada: recibo.persona, contextoDeViaje: recibo.viaje,
+    concepto: textoClasificacion, personaAsociada: recibo.persona, contextoDeViaje: recibo.viaje,
     reciboSimplificado: true, excluirCompraId });
   if (!sugerencia?.accountId) return undefined;
   const tags = combinarTagsGastoAprendidos(
-    recibo.concepto,
+    textoClasificacion,
     recibo.proveedor,
     recibo.persona,
     sugerencia.tags
@@ -54,7 +55,7 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
       const resultado = await crearGastoHolded(p.empresa, { contactId: p.contactoId, fecha: p.recibo.fecha,
         descripcion: p.recibo.concepto,
         lineas: [{ concepto: p.recibo.concepto, base: p.totalCentimos / 100, tipoIvaPct: 0,
-          tratamientoFiscal: "sin_impuesto" }], cuentaId: cuenta.cuentaId, tags: cuenta.tags,
+          tratamientoFiscal: "inversion_sujeto_pasivo" }], cuentaId: cuenta.cuentaId, tags: cuenta.tags,
         moneda: p.movimiento.moneda, numeroDocumento: p.recibo.numero },
       { idempotencyKey: `correo-auto:${op.id}`, proceso: "correo_gasto_automatico" });
       return resultado.id;
@@ -62,7 +63,9 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
     corregir: async (op, compraId) => {
       const cuenta = await asegurarClasificacion(op);
       await editarCompraHolded(op.plan.empresa, compraId,
-        { cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags },
+        { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId, tagsNuevos: cuenta.tags,
+          lineas: [{ concepto: op.plan.recibo.concepto, base: op.plan.totalCentimos / 100, tipoIvaPct: 0,
+            tratamientoFiscal: "inversion_sujeto_pasivo" }] },
         { idempotencyKey: `correo-auto-reparar:${op.id}`, proceso: "correo_gasto_automatico_reparar" });
     },
     adjuntar: async (op, data, nombre, mime) => {

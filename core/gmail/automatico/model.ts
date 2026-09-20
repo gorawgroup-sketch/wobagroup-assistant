@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v8";
+export const VERSION_POLITICA = "correo-gastos-v9";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
@@ -97,6 +97,8 @@ export interface ReciboAuto {
   proveedor: string; numero?: string; fecha: string; moneda: string; monto: number;
   equivalente?: { moneda: string; monto: number };
   concepto: string; persona?: string; viaje?: boolean;
+  /** Texto real del correo que aporta la categoría cuando el ticket solo imprime un nombre genérico. */
+  contextoClasificacion?: string;
   evidencia: string; evidenciaEmpresa: string;
 }
 export interface AnalisisAuto {

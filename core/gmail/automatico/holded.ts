@@ -163,7 +163,11 @@ export class HoldedAuto {
     if (seleccionados.length === 1 && typeof seleccionados[0].name === "string" &&
       !/sin identificar|desconocido|unknown|unidentified/.test(normalizar(seleccionados[0].name))) {
       e.contacto = { id: texto(seleccionados[0].id), nombre: seleccionados[0].name,
-        exacto: metodo !== "aproximado_unico", metodo, similitud: similitudProveedor(seleccionados[0].name, r.proveedor) };
+        // Un alias aprendido no demuestra por sí solo que ESTE comprobante pertenezca al
+        // contacto. Solo la identidad/equivalencia del nombre real se considera exacta;
+        // los alias quedan para revisión manual y nunca autorizan una escritura automática.
+        exacto: metodo === "nombre_exacto" || metodo === "nombre_equivalente", metodo,
+        similitud: similitudProveedor(seleccionados[0].name, r.proveedor) };
     }
     if (!e.contacto && !e.motivoProveedor) e.motivoProveedor = "sin_coincidencias";
     if (await this.memoria.duplicadoInterno(c, r)) e.duplicados.push("historial_o_propuesta_pendiente");

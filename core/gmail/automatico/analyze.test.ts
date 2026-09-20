@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validarAnalisis } from "./analyze";
+import { incorporarContextoClasificacion, validarAnalisis } from "./analyze";
 
 test("normaliza fecha española, moneda y equivalente redundante de un recibo pagado", () => {
   const resultado = validarAnalisis({
@@ -25,4 +25,16 @@ test("normaliza fecha española, moneda y equivalente redundante de un recibo pa
   assert.equal(resultado.recibos[0].fecha, "2026-09-09");
   assert.equal(resultado.recibos[0].moneda, "EUR");
   assert.equal(resultado.recibos[0].equivalente, undefined);
+});
+
+test("usa la categoría explícita del asunto cuando el ticket solo describe un consumo genérico", () => {
+  const recibo = {
+    fuente: "cuerpo", tipo: "ticket" as const, confianza: "alta" as const, empresa: "Footprint" as const,
+    proveedor: "Nieuwe Veste", fecha: "2026-09-16", moneda: "EUR", monto: 5.4,
+    concepto: "Consumo Nieuwe Veste – Breda", evidencia: "Nieuwe Veste 5,40 EUR",
+    evidenciaEmpresa: "Footprint", persona: "Simon Talloen", viaje: true,
+  };
+  const resultado = incorporarContextoClasificacion({ completo: true, otrasAcciones: false,
+    resumen: "Ticket", recibos: [recibo] }, "Fwd: Café - 5.4 eur - revolut");
+  assert.equal(resultado.recibos[0].contextoClasificacion, "Fwd: Café - 5.4 eur - revolut");
 });
