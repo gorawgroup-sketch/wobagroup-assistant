@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { avisoInterrumpido, claveAviso, decodificarClaveAviso, resumirSolicitudInterrumpida } from './interruptedNotice';
 import { crearEntregaTelegram } from './durableDelivery';
-const e = crearEntregaTelegram({update_id:1,callback_query:{id:'q',from:{id:7},data:'gasto_aprobar:p:hash',message:{message_id:3,date:1,chat:{id:7,type:'private'},text:'Bonhomía — Footprint — 213,75 EUR'}}},true);
+const e = crearEntregaTelegram({update_id:1,callback_query:{id:'q',from:{id:7,is_bot:false},data:'gasto_aprobar:p:hash',message:{message_id:3,date:1,chat:{id:7,type:'private'},text:'Bonhomía — Footprint — 213,75 EUR'}}},true);
 test('conserva contexto al iniciar sin guardar un update ejecutable',()=>{
  const s=resumirSolicitudInterrumpida(e.payload),c=JSON.parse(s);
  assert.equal(c.accion,'gasto_aprobar:p:hash');assert.match(c.texto,/213,75/);
