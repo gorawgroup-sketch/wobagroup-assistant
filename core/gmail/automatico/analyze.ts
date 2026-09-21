@@ -1,3 +1,4 @@
+import { INSTRUCCION_GEOGRAFIA_UBER } from "../../gastos/proveedorUber";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearMensajeAnthropic } from "../../ai/anthropicGateway";
 import { crearEjecucionIA } from "../../ai/policy";
@@ -21,7 +22,7 @@ const schema: Anthropic.Tool = {
         empresa: { type: "string", enum: ["WOBA", "EWORKS", "Footprint", "desconocida"] },
         proveedor: { type: "string" }, numero: { type: "string" }, fecha: { type: "string", description: "YYYY-MM-DD. Usa la fecha explícita de pago/cargo; si no existe, la fecha de emisión. Nunca uses la fecha futura del vuelo, reserva o servicio como fecha del gasto." }, moneda: { type: "string" }, monto: { type: "number" },
         equivalente: { type: "object", required: ["moneda", "monto"], properties: { moneda: { type: "string" }, monto: { type: "number" } } },
-        concepto: { type: "string" }, persona: { type: "string" }, viaje: { type: "boolean" },
+        concepto: { type: "string", description: INSTRUCCION_GEOGRAFIA_UBER }, persona: { type: "string" }, viaje: { type: "boolean" },
         evidencia: { type: "string", description: "Cita literal que demuestra proveedor, importe y fecha; describe la ubicación si proviene de una imagen." },
         evidenciaEmpresa: { type: "string", description: "Dato explícito del documento/correo o regla confirmada que identifica la empresa. Nunca inferirla solo del remitente." },
       } } },

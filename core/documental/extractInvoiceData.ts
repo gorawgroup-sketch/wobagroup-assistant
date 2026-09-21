@@ -1,3 +1,4 @@
+import { INSTRUCCION_GEOGRAFIA_UBER } from "../gastos/proveedorUber";
 import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
@@ -248,7 +249,7 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "documento genuinamente no trae NINGÚN número/folio/referencia identificable — NUNCA inventes ni " +
           "adivines uno, y nunca uses un número parecido a falta de uno real.",
       },
-      concepto: { type: "string", description: "Breve descripción de qué es el gasto." },
+      concepto: { type: "string", description: "Breve descripción de qué es el gasto. " + INSTRUCCION_GEOGRAFIA_UBER },
       recibo_simplificado: {
         type: "boolean",
         description:
