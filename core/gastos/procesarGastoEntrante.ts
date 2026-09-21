@@ -157,6 +157,31 @@ function compararNumeroDocumento(numeroEntrante: string | undefined, candidato: 
 export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<ResultadoGastoEntrante> {
   const { chatId, datos } = entrada;
 
+  // Defensa independiente del extractor: ningún camino (correo, Telegram, reintento o dato legado)
+  // puede convertir un proveedor vacío/no identificado en un contacto contable genérico. El gasto y
+  // su correo permanecen pendientes hasta conocer el nombre real; al responderlo, la tool de reintento
+  // retoma exactamente este mismo documento sin pedir que lo reenvíen.
+  if (esProveedorNoIdentificado(datos.proveedor)) {
+    await sendTelegramMessage(
+      chatId,
+      `⚠️ Leí el comprobante de ${datos.monto} ${datos.moneda}, pero no pude identificar con certeza ` +
+        `el proveedor real. No crearé ningún gasto con un proveedor vacío o genérico. Dime el nombre ` +
+        `exacto que aparece en el recibo y retomaré este mismo documento.`
+    );
+    await guardarGastoPendienteDatos({
+      chatId,
+      rutaLocal: entrada.rutaLocal,
+      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType,
+      datos,
+      motivo: "proveedor",
+      deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+      correoOrigen: entrada.correoOrigen,
+    }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (proveedor):", error));
+    return "pendiente_datos";
+  }
+
   if (!esEmpresaHolded(datos.empresaProbable)) {
     await sendTelegramMessage(
       chatId,

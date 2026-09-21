@@ -23,15 +23,19 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
   name: "reintentar_gasto_pendiente",
   description:
     "Retoma el procesamiento de una factura/gasto que quedó pendiente porque faltaba un dato (la empresa o " +
-    "el monto/moneda equivalente) o porque falló la verificación estricta de duplicados en Holded. Úsala cuando el usuario responda " +
-    "en texto libre a esa pregunta pendiente (ej. 'son 17.95 USD', 'es de Footprint', 'son 40 euros'). Nunca " +
+    "el proveedor real, el monto/moneda equivalente) o porque falló la verificación estricta de duplicados en Holded. Úsala cuando el usuario responda " +
+    "en texto libre a esa pregunta pendiente (ej. 'el proveedor es Parking Moraleja', 'son 17.95 USD', 'es de Footprint'). Nunca " +
     "vuelvas a pedir que reenvíen el documento — ya se leyó, solo falta el dato puntual que el usuario acaba " +
     "de dar. Si el dato que falta era la empresa, pásala en 'empresa'. Si era el monto/moneda equivalente, " +
-    "pasa ambos en 'monto_equivalente' y 'moneda_equivalente'.",
+    "pasa ambos en 'monto_equivalente' y 'moneda_equivalente'. Si faltaba el proveedor, pasa su nombre real en 'proveedor'.",
   input_schema: {
     type: "object",
     properties: {
       empresa: { type: "string", enum: [...EMPRESAS], description: "La empresa que el usuario acaba de confirmar, si eso era lo que faltaba." },
+      proveedor: {
+        type: "string",
+        description: "Nombre real y exacto del proveedor que el usuario acaba de confirmar, si eso era lo que faltaba.",
+      },
       monto_equivalente: {
         type: "number",
         description: "El monto exacto en la moneda real de la tarjeta/cuenta, tal como lo acaba de confirmar el usuario.",
@@ -55,11 +59,15 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
 
     const datos = { ...pendiente.datos };
     const empresa = typeof input.empresa === "string" ? input.empresa : undefined;
+    const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : undefined;
     const montoEquivalente = typeof input.monto_equivalente === "number" ? input.monto_equivalente : undefined;
     const monedaEquivalente = typeof input.moneda_equivalente === "string" ? input.moneda_equivalente : undefined;
 
     if (pendiente.motivo === "empresa" && empresa && (EMPRESAS as readonly string[]).includes(empresa)) {
       datos.empresaProbable = empresa as (typeof EMPRESAS)[number];
+    }
+    if (pendiente.motivo === "proveedor" && proveedor) {
+      datos.proveedor = proveedor;
     }
     if (pendiente.motivo === "moneda" && montoEquivalente !== undefined && monedaEquivalente) {
       datos.montoEquivalente = montoEquivalente;

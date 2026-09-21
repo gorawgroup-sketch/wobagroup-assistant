@@ -11,6 +11,7 @@ import {
   validarTotalFiscalGasto,
   CuentaContableNoInferidaError,
   DescuadreFiscalGastoError,
+  botonesResolucionContacto,
   type EstadoIntentoConciliacion,
 } from "./gastoCallbackHandler";
 import { combinarTagsGastoAprendidos } from "../holded/write";
@@ -60,6 +61,32 @@ test("un fallo no terminal restaura la misma resolución aunque Telegram tambié
   );
 
   assert.deepEqual(restauradas, ["resolucion-estable"]);
+});
+
+test("la resolución de contacto conserva alternativas y nunca ofrece crear sin proveedor real", () => {
+  const base = {
+    id: "resolucion-segura",
+    propuesta: { id: "propuesta", proveedor: "Parking Moraleja" } as PropuestaGasto,
+    empresaFinal: "Footprint" as const,
+    conceptoFinal: "Parking",
+    alternativas: [{ contactId: "contacto-1", contactName: "Parking Moraleja", motivo: "nombre_parecido" as const }],
+    chatId: 77,
+    messageId: 800,
+    creadoEn: Date.now(),
+  };
+
+  const botones = botonesResolucionContacto(base).flat();
+  assert.deepEqual(
+    botones.map((boton) => boton.text),
+    ['✅ Parking Moraleja', '🆕 Crear contacto nuevo: "Parking Moraleja"']
+  );
+  assert.equal(botones.some((boton) => boton.callback_data.startsWith("gasto_crearsinproveedor:")), false);
+
+  const proveedorVacio = botonesResolucionContacto({
+    ...base,
+    propuesta: { ...base.propuesta, proveedor: "   " },
+  }).flat();
+  assert.deepEqual(proveedorVacio.map((boton) => boton.text), ["✅ Parking Moraleja"]);
 });
 
 test("un fallo de Telegram ocurre después del cierre durable y no reabre la operación financiera", async (t) => {
