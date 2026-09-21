@@ -4,6 +4,7 @@ import { obtenerTodosLosDuplicadosConfirmados } from "../cashflow/duplicadosConf
 import { obtenerTodosLosMovimientosAprendidos } from "../holded/movimientoAmbiguoAprendidoSheet";
 import { obtenerTodasLasFilasAprendidas } from "../google/cashflowFilaAprendidaSheet";
 import { obtenerTodasLasCuentasCorregidas } from "../holded/cuentaCorregidaAprendidaSheet";
+import { obtenerTodasLasConciliacionesAprendidas } from "../holded/conciliacionAprendidaSheet";
 import { obtenerCorreccionesCrudas } from "../knowledge/correctionsStore";
 import type { ToolDefinition } from "./types";
 
@@ -11,23 +12,23 @@ import type { ToolDefinition } from "./types";
  * Pedido explícito de Carlos: "que la práctica y los días te vayan dando la
  * experiencia... asegúrate de hacerme recomendaciones" — sin esto, no había
  * ninguna forma de VER que el sistema efectivamente está aprendiendo, solo
- * confiar en que los 5 mecanismos de memoria (alias de proveedor,
- * clasificación, duplicados confirmados, conciliación ambigua aprendida,
- * correcciones generales) están acumulando algo real. Este reporte lee los
- * 5 y muestra cuánto hay acumulado, con los casos más reforzados (mayor
+ * confiar en mecanismos dispersos de memoria (alias de proveedor,
+ * clasificación, duplicados confirmados, conciliaciones verificadas,
+ * correcciones generales, etc.). Este reporte los reúne y muestra cuánto
+ * hay acumulado, con los casos más reforzados (mayor
  * "vecesConfirmado") como evidencia concreta — no solo un conteo ciego.
  */
 export const reporteAprendizajeTool: ToolDefinition = {
   name: "reporte_aprendizaje",
   description:
     "Muestra cuánto ha aprendido el sistema hasta ahora: alias de proveedores confirmados, clasificaciones de gastos " +
-    "aprendidas, tolerancias de duplicados confirmadas, patrones de conciliación bancaria ambigua aprendidos, y " +
+    "aprendidas, tolerancias de duplicados confirmadas, conciliaciones bancarias verificadas, y " +
     "correcciones generales guardadas. Úsala cuando te pregunten algo como '¿cuánto has aprendido?', '¿está " +
     "funcionando la memoria?', 'muéstrame qué has aprendido' o similar.",
   input_schema: { type: "object", properties: {} },
   seguraParaModoRapido: true,
   handler: async () => {
-    const [alias, clasificaciones, duplicados, movimientos, filasCashflow, cuentasCorregidas, correcciones] = await Promise.all([
+    const [alias, clasificaciones, duplicados, movimientos, conciliacionesVerificadas, filasCashflow, cuentasCorregidas, correcciones] = await Promise.all([
       obtenerTodosLosAlias().catch((error) => {
         console.error("[reporteAprendizaje] Error leyendo alias de proveedor:", error);
         return [];
@@ -42,6 +43,10 @@ export const reporteAprendizajeTool: ToolDefinition = {
       }),
       obtenerTodosLosMovimientosAprendidos().catch((error) => {
         console.error("[reporteAprendizaje] Error leyendo conciliaciones ambiguas aprendidas:", error);
+        return [];
+      }),
+      obtenerTodasLasConciliacionesAprendidas().catch((error) => {
+        console.error("[reporteAprendizaje] Error leyendo conciliaciones verificadas aprendidas:", error);
         return [];
       }),
       obtenerTodasLasFilasAprendidas().catch((error) => {
@@ -60,6 +65,9 @@ export const reporteAprendizajeTool: ToolDefinition = {
 
     const topAlias = [...alias].sort((a, b) => b.vecesConfirmado - a.vecesConfirmado).slice(0, 3);
     const topClasificaciones = [...clasificaciones].sort((a, b) => b.vecesConfirmado - a.vecesConfirmado).slice(0, 3);
+    const topConciliaciones = [...conciliacionesVerificadas]
+      .sort((a, b) => b.vecesConfirmado - a.vecesConfirmado)
+      .slice(0, 3);
 
     const lineas = [
       `📚 *Reporte de aprendizaje acumulado*`,
@@ -72,15 +80,20 @@ export const reporteAprendizajeTool: ToolDefinition = {
           : ""),
       `• Tolerancias de duplicado confirmadas: ${duplicados.length}`,
       `• Patrones de conciliación ambigua aprendidos: ${movimientos.length}`,
+      `• Conciliaciones bancarias verificadas aprendidas: ${conciliacionesVerificadas.length}` +
+        (topConciliaciones.length > 0
+          ? ` — más reforzadas: ${topConciliaciones.map((c) => `"${c.proveedor}" → "${c.descripcionMovimiento}" (${c.vecesConfirmado}x)`).join(", ")}`
+          : ""),
       `• Filas de cashflow recordadas (búsqueda instantánea): ${filasCashflow.length}`,
       `• Cuentas contables corregidas a mano y aprendidas: ${cuentasCorregidas.length}`,
       `• Correcciones generales guardadas: ${correcciones.length}`,
       ``,
-      `Total de casos reales que ya no se vuelven a preguntar/buscar desde cero: ${
+      `Total de evidencias reales que el sistema ya reutiliza en vez de razonar desde cero: ${
         alias.length +
         clasificaciones.length +
         duplicados.length +
         movimientos.length +
+        conciliacionesVerificadas.length +
         filasCashflow.length +
         cuentasCorregidas.length +
         correcciones.length
