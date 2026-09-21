@@ -1,3 +1,4 @@
+import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { conMutex } from "../utils/asyncMutex";
@@ -137,18 +138,6 @@ import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "
 import { claveIdempotenciaGasto } from "./identidadGasto";
 import { conciliacionRequiereRevision } from "../holded/durableBankReconciliation";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
-
-/**
- * Holded exige contact_id incluso cuando el operador decide avanzar sin un
- * contacto real. Estos contactos técnicos ya existen en cada empresa. El
- * nombre real extraído del comprobante permanece en la descripción y este
- * contacto nunca se aprende como alias.
- */
-const CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA: Record<Empresa, { id: string; name: string }> = {
-  WOBA: { id: "6a96da7947b9d9c436035b7a", name: "PROVEEDOR SIN IDENTIFICAR" },
-  EWORKS: { id: "6a96da80d133ca5bab0ec4e8", name: "PROVEEDOR SIN IDENTIFICAR" },
-  Footprint: { id: "6a96da888467c6eb35096adc", name: "PROVEEDOR SIN IDENTIFICAR" },
-};
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   // Identificador interno de dispararDecisionFinal: no es un callback de Telegram.
@@ -2105,7 +2094,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     );
 
     try {
-      const placeholder = CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA[resolucion.empresaFinal];
+      const placeholder = await obtenerContactoSinIdentificar(resolucion.empresaFinal);
       await procesarGastoConContactoResuelto(resolucion, placeholder, false);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2737,7 +2726,7 @@ async function crearGastoYReportar(
   // aunque el contacto en sí sea genérico.
   const descripcionFinal =
     !aprenderAlias && contactoForzado
-      ? `[Proveedor real: ${propuestaFinal.proveedor}] ${propuestaFinal.concepto}`
+      ? `${esProveedorNoIdentificado(propuestaFinal.proveedor) ? "[Proveedor sin identificar]" : `[Proveedor real: ${propuestaFinal.proveedor}]`} ${propuestaFinal.concepto}`
       : propuestaFinal.concepto;
 
   const lineas =
