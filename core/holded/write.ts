@@ -1130,6 +1130,12 @@ export async function buscarContactosParecidos(
 
   const contactos = await obtenerTodosLosContactos(empresa);
 
+  // Si ya existen fichas con el nombre completo, no contaminar las
+  // alternativas con comercios que solo comparten una palabra.
+  const exactos = contactosUnicosPorId(contactos).filter(c => typeof c.name === "string" &&
+    normalizarNombreContacto(c.name) === normalizarNombreContacto(nombre));
+  if (exactos.length) return exactos.slice(0, limite);
+
   const puntuados = contactos
     .map((c) => ({
       contacto: c,
