@@ -27,6 +27,28 @@ const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de 
 type ProgresoRevision = { fase: "analisis" | "recuperacion" | "verificacion"; completados: number; total: number };
 type CorreoPreparado = { correo: CorreoAuto; analisis?: AnalisisAuto; motivos: string[] };
 
+/**
+ * Ordena el presupuesto limitado de análisis nuevos sin hacer otra llamada a
+ * Gmail ni a IA. La puntuación usa únicamente el mensaje que GmailAuto ya
+ * leyó por completo. No decide si se crea un gasto: solo procura que los
+ * comprobantes probables lleguen antes al análisis caro; evaluarAuto conserva
+ * todas las barreras deterministas antes de cualquier escritura.
+ */
+export function prioridadAnalisisAutomatico(correo: CorreoAuto): number {
+  const asunto = correo.asunto.toLowerCase();
+  const texto = `${correo.asunto}\n${correo.cuerpo.slice(0, 40_000)}`.toLowerCase();
+  let puntos = 0;
+  if (correo.adjuntos.some(adjunto =>
+    /^(application\/pdf|image\/)/i.test(adjunto.mime) ||
+    /\.(pdf|jpe?g|png|heic|webp)$/i.test(adjunto.nombre)
+  )) puntos += 100;
+  if (/\b(ticket|recibo|factura|invoice|receipt|comprobante)\b/i.test(texto)) puntos += 50;
+  if (/(?:\b\d{1,6}(?:[.,]\d{1,2})?\s*(?:eur|usd|cop|mxn|gbp)\b|[$€£]\s*\d)/i.test(texto)) puntos += 30;
+  if (/\b(total|importe|pagad[oa]|paid|visa|mastercard|revolut|compra|purchase)\b/i.test(texto)) puntos += 10;
+  if (/^(?:re|fw|fwd):/i.test(asunto)) puntos += 1;
+  return puntos;
+}
+
 export class ServicioCorreoAutomatico {
   constructor(private readonly store: StoreAuto, private readonly puerto: PuertoAutomatico,
     private readonly opciones: { concurrenciaAnalisis?: number; fechaLimite?: number;
@@ -229,7 +251,11 @@ export class ServicioCorreoAutomatico {
       pendientes: [], gastos: [], reparados: [] };
     if (config.modo === "off") return resultado;
     if (!config.buzon) throw new Error("Buzón no configurado.");
-    const correos = (await this.puerto.listar()).sort((a, b) => a.recibidoEn - b.recibidoEn || a.id.localeCompare(b.id));
+    const correos = [...await this.puerto.listar()].sort((a, b) =>
+      prioridadAnalisisAutomatico(b) - prioridadAnalisisAutomatico(a) ||
+      a.recibidoEn - b.recibidoEn ||
+      a.id.localeCompare(b.id)
+    );
     const presupuestoAnalisis = {
       disponibles: Math.max(0, this.opciones.maxAnalisisNuevos ?? Number.POSITIVE_INFINITY),
     };

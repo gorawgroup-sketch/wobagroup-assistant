@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
+import { prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { evaluarAuto, hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 
@@ -133,6 +133,31 @@ test("acota los análisis nuevos de una pasada y reutiliza los ya persistidos si
   );
   await service.revisar({ ...configFixture, modo: "simulate" });
   assert.equal(e.analisisLlamadas(), 4);
+});
+test("con presupuesto limitado analiza primero el recibo probable sin gastar más IA", async () => {
+  const e = escenario();
+  e.correos[0] = { ...correoFixture("mensaje-general"), recibidoEn: 1, asunto: "Seguimiento comercial",
+    cuerpo: "Revisemos el proyecto durante la próxima reunión.", adjuntos: [], huella: hash("general") };
+  e.correos.push({ ...correoFixture("mensaje-recibo"), recibidoEn: 2,
+    asunto: "Fwd: Café - 6.00 EUR - Revolut", cuerpo: "Recibo pagado con Visa. Total 6,00 EUR.",
+    adjuntos: [{ id: "ticket", nombre: "receipt.pdf", mime: "application/pdf", data: Buffer.from("pdf") }],
+    huella: hash("recibo") });
+  const analizados: string[] = [];
+  e.puerto.analizar = async correo => { analizados.push(correo.id); return e.a; };
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, {
+    concurrenciaAnalisis: 1,
+    maxAnalisisNuevos: 1,
+  });
+  const prioridadGeneral = prioridadAnalisisAutomatico(e.correos[0]);
+  const prioridadRecibo = prioridadAnalisisAutomatico(e.correos[1]);
+
+  const resultado = await service.revisar({ ...configFixture, modo: "simulate" });
+
+  assert.deepEqual(analizados, ["mensaje-recibo"]);
+  assert.equal(resultado.pendientes.some(p =>
+    p.mensajeId === "mensaje-general" && p.motivos.includes("revision_pospuesta_por_limite_de_coste")
+  ), true);
+  assert.ok(prioridadRecibo > prioridadGeneral);
 });
 test("al agotar el tiempo informa el pendiente sin iniciar análisis ni escrituras nuevas", async () => {
   const e = escenario();
