@@ -358,7 +358,11 @@ async function buildSystemPromptDinamico(
           "de la factura, ya se leyeron antes. Si su mensaje pide algo distinto (programar un recordatorio, " +
           "guardar algo en la memoria del sistema, o cualquier otra instrucción), atiende esa petición con " +
           "la herramienta que corresponda — no repitas esta pregunta ni inventes una aclaración propia " +
-          "sobre el pendiente."
+          "sobre el pendiente. Esta fila pendiente significa que el sistema está ESPERANDO una decisión del " +
+          "usuario; no significa que siga procesando el buzón ni que esté leyendo todos los correos en segundo " +
+          "plano. Si el usuario pregunta por demora, bloqueo o estado, explica ese estado individual exacto y " +
+          "NUNCA afirmes que se están procesando todos los correos sin leer salvo que una herramienta de revisión " +
+          "lo haya confirmado en este mismo turno."
       );
     }
 

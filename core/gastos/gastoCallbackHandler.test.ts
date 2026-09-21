@@ -118,6 +118,14 @@ test("crear sin contacto conserva el proveedor real para inferir cuenta y tags",
   assert.match(fuente, /proveedor: proveedorParaInferencia/);
 });
 
+test("una resolución republicada usa el mensaje vigente para reponer cualquier resultado", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+  assert.match(
+    fuente,
+    /const propuestaCorregidaBase: PropuestaGasto = \{[\s\S]*?\.\.\.resolucion\.propuesta,[\s\S]*?messageId: resolucion\.messageId,/
+  );
+});
+
 test("un movimiento aproximado confirmado ajusta monto y líneas antes de crear", () => {
   const propuesta = {
     id: "p-ajuste-banco",

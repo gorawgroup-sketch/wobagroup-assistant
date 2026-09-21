@@ -83,6 +83,87 @@ export async function conBloqueoAuto<T>(
 export const conOperacionAuto = <T>(id: string, tarea: () => Promise<T>): Promise<T> =>
   contexto.run({ locks: contexto.getStore()?.locks ?? new Set(), operacion: id }, tarea);
 
+export interface ObjetivoEscrituraHolded {
+  path: string;
+  body?: unknown;
+}
+
+function cuerpoObjetivo(objetivo?: ObjetivoEscrituraHolded): Record<string, unknown> {
+  return objetivo?.body && typeof objetivo.body === "object"
+    ? objetivo.body as Record<string, unknown>
+    : {};
+}
+
+function numeroDocumentoObjetivo(objetivo?: ObjetivoEscrituraHolded): string | undefined {
+  const body = cuerpoObjetivo(objetivo);
+  if (objetivo?.path !== "/purchases" || typeof body.number !== "string") return undefined;
+  const numero = body.number.trim().toUpperCase().replace(/\s+/g, " ");
+  return numero && numero !== "00000" ? numero : undefined;
+}
+
+function centimosItemsObjetivo(body: Record<string, unknown>): number | undefined {
+  if (!Array.isArray(body.items) || body.items.length === 0) return undefined;
+  let total = 0;
+  for (const item of body.items) {
+    if (!item || typeof item !== "object") return undefined;
+    const fila = item as Record<string, unknown>;
+    const precio = typeof fila.price === "number" ? fila.price : Number(fila.price);
+    const unidades = typeof fila.units === "number" ? fila.units : Number(fila.units ?? 1);
+    if (!Number.isFinite(precio) || !Number.isFinite(unidades)) return undefined;
+    total += precio * unidades;
+  }
+  return Math.round(total * 100);
+}
+
+/**
+ * Decide si una escritura manual apunta al MISMO recurso que una operación
+ * automática pendiente. Una operación incierta de Airbnb, por ejemplo, no
+ * puede inmovilizar un gasto manual distinto de Albert Heijn; el advisory
+ * lock ya serializa ambas escrituras mientras están ejecutándose.
+ */
+export function operacionPendienteConflictaConObjetivo(
+  operacion: OperacionAuto,
+  objetivo?: ObjetivoEscrituraHolded
+): boolean {
+  if (!objetivo) return false;
+
+  const movimiento = objetivo.path.match(/\/bank-movements\/([^/]+)\/reconcile$/)?.[1];
+  if (movimiento) return operacion.plan.movimiento.id === decodeURIComponent(movimiento);
+
+  const compraEnRuta = objetivo.path.match(/^\/purchases\/([^/]+)\/(?:attachments|payments)$/)?.[1];
+  if (compraEnRuta) return operacion.compraId === decodeURIComponent(compraEnRuta);
+
+  if (objetivo.path !== "/purchases") return false;
+  const body = cuerpoObjetivo(objetivo);
+  const contacto = typeof body.contact_id === "string" ? body.contact_id : "";
+  if (!contacto || contacto !== operacion.plan.contactoId) return false;
+
+  const numero = numeroDocumentoObjetivo(objetivo);
+  const numeroPlan = operacion.plan.recibo.numero?.trim().toUpperCase().replace(/\s+/g, " ");
+  if (numero && numeroPlan && numero === numeroPlan) return true;
+
+  // Respaldo para tickets sin número: exige conjuntamente contacto, fecha,
+  // moneda e importe. El importe acepta el nativo, su equivalente explícito
+  // o el cargo bancario real; una coincidencia parcial nunca bloquea.
+  const fecha = typeof body.date === "string" ? body.date.slice(0, 10) : "";
+  const moneda = typeof body.currency === "string" ? body.currency.trim().toUpperCase() : "";
+  const centimos = centimosItemsObjetivo(body);
+  if (!fecha || fecha !== operacion.plan.recibo.fecha || !moneda || centimos == null) return false;
+  const importes = new Set<number>([
+    Math.round(operacion.plan.recibo.monto * 100),
+    Math.abs(operacion.plan.totalCentimos),
+  ]);
+  if (operacion.plan.recibo.equivalente) {
+    importes.add(Math.round(operacion.plan.recibo.equivalente.monto * 100));
+  }
+  const monedas = new Set([
+    operacion.plan.recibo.moneda.trim().toUpperCase(),
+    operacion.plan.movimiento.moneda.trim().toUpperCase(),
+    operacion.plan.recibo.equivalente?.moneda.trim().toUpperCase(),
+  ].filter((valor): valor is string => Boolean(valor)));
+  return monedas.has(moneda) && importes.has(Math.abs(centimos));
+}
+
 /** Compartido por cron, comandos y activación manual de correos. */
 export async function conCoordinadorCorreo<T>(
   tarea: () => Promise<T>,
@@ -100,7 +181,7 @@ export async function conCoordinadorCorreo<T>(
 }
 
 /** Las rutas manuales y múltiples respetan las operaciones automáticas incompletas. */
-export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: () => Promise<T>, objetivo?: { path: string; body?: unknown }): Promise<T> {
+export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: () => Promise<T>, objetivo?: ObjetivoEscrituraHolded): Promise<T> {
   if (!hayCoordinacionDurable()) {
     if (process.env.WOBI_MAIL_AUTO_MODE === "execute") throw new Error("Coordinación durable no disponible.");
     return tarea();
@@ -118,15 +199,24 @@ export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: ()
       [propias, empresa]);
       if (conflicto.rowCount) throw new Error(`Recurso reservado por la operación automática ${conflicto.rows[0].id}.`);
     } else {
-      // Las rutas manuales no tienen claims propios con los que demostrar independencia; conservan
-      // el bloqueo cerrado hasta que el operador resuelva la operación automática incierta.
-      const pendiente = await poolAuto().query("SELECT id FROM wobi_mail_operations WHERE company=$1 AND state NOT IN ('completada','rechazada') LIMIT 1", [empresa]);
-      if (pendiente.rowCount) throw new Error(`Holded reservado por la operación automática ${pendiente.rows[0].id}. Resolverla antes de otra escritura.`);
+      // Una operación automática incierta conserva SU compra/documento/movimiento,
+      // pero no congela todas las acciones manuales de la empresa. El lock de empresa
+      // sigue evitando escrituras simultáneas y esta comparación impide tocar el mismo
+      // recurso desde un botón antiguo o desde otro flujo.
+      const pendientes = await poolAuto().query(
+        "SELECT id,data FROM wobi_mail_operations WHERE company=$1 AND state NOT IN ('completada','rechazada')",
+        [empresa]
+      );
+      const conflicto = pendientes.rows.find((fila) =>
+        operacionPendienteConflictaConObjetivo(fila.data as OperacionAuto, objetivo)
+      );
+      if (conflicto) {
+        throw new Error(`Recurso reservado por la operación automática ${conflicto.id}. Resolverla antes de repetir esta misma escritura.`);
+      }
     }
     const movimiento = objetivo?.path.match(/\/bank-movements\/([^/]+)\/reconcile$/)?.[1];
-    const body = objetivo?.body && typeof objetivo.body === "object" ? objetivo.body as Record<string, unknown> : {};
-    const numero = objetivo?.path === "/purchases" && typeof body.number === "string" && body.number !== "00000"
-      ? body.number.trim().toUpperCase().replace(/\s+/g, " ") : null;
+    const body = cuerpoObjetivo(objetivo);
+    const numero = numeroDocumentoObjetivo(objetivo) ?? null;
     if (movimiento || numero) {
       const anteriores = await poolAuto().query(`SELECT id FROM wobi_mail_operations WHERE company=$1 AND id<>$2 AND state='completada'
         AND (($3::text IS NOT NULL AND data->'plan'->'movimiento'->>'id'=$3)

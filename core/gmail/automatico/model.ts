@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v22";
+export const VERSION_POLITICA = "correo-gastos-v23";
 /**
  * La lectura del mensaje es independiente de la política que decide si se
  * crea/adjunta/concilia. Antes ambas compartían VERSION_POLITICA y cada
@@ -171,6 +171,15 @@ export interface EvidenciaAuto {
   permiteTicket: boolean;
   motivoTipoDocumento?: string;
   confianzaReforzada?: string;
+  /**
+   * Importe real de liquidación encontrado por la misma ruta multimoneda del
+   * flujo uno a uno. La tasa histórica solo localiza el candidato; este monto
+   * siempre procede del movimiento bancario de Holded.
+   */
+  equivalenteBancario?: {
+    cuentaId: string; movimientoId: string; moneda: string; montoCentimos: number;
+    tasaReferencia?: number; monedaOrigen: string;
+  };
 }
 export interface PlanAuto {
   empresa: EmpresaAuto; contactoId: string; cuentaId?: string;
@@ -181,18 +190,33 @@ export interface PlanAuto {
   soporteHash?: string; soporteNombre?: string; soporteMime?: string;
   version: string; evidencia: EvidenciaAuto;
 }
+
+/** Moneda e importe que deben registrarse para que el documento refleje el cargo bancario real. */
+export function monedaRegistroPlanAuto(plan: PlanAuto): MonedaDocumentoAuto {
+  // Operaciones persistidas por políticas antiguas pueden no contener aún
+  // el bloque de evidencia. Se conservan en su moneda nativa al repararlas.
+  const equivalente = plan.evidencia?.equivalenteBancario;
+  if (!equivalente) return monedaDocumentoAuto(plan.recibo);
+  if (!/^[A-Z]{3}$/.test(equivalente.moneda) || !Number.isSafeInteger(equivalente.montoCentimos) ||
+      equivalente.montoCentimos <= 0) throw new Error("equivalente_bancario_invalido");
+  return { moneda: equivalente.moneda, monto: equivalente.montoCentimos / 100 };
+}
 export type DecisionAuto = { apto: true; plan: PlanAuto } | { apto: false; motivos: string[] };
 
 export function toleranciaMontoAuto(esperadoCentimos: number): number {
   return Math.min(500, Math.max(5, Math.round(esperadoCentimos * 0.02)));
 }
 
-function datosMonto(r: ReciboAuto): { esperado: number; moneda: string; convertido: boolean; tolerancia: number } {
+function datosMonto(r: ReciboAuto, e?: EvidenciaAuto): { esperado: number; moneda: string; convertido: boolean; tolerancia: number } {
   let esperado = dinero(r.monto), moneda = r.moneda, convertido = false;
   if (r.equivalente) {
     esperado = dinero(r.equivalente.monto);
     moneda = r.equivalente.moneda;
     if (!/^[A-Z]{3}$/.test(moneda) || moneda === r.moneda) throw new Error("Equivalente inválido.");
+    convertido = true;
+  } else if (e?.equivalenteBancario) {
+    esperado = e.equivalenteBancario.montoCentimos;
+    moneda = e.equivalenteBancario.moneda;
     convertido = true;
   }
   // Un cargo bancario puede diferir por redondeo, propina o liquidación del comercio.
@@ -200,10 +224,20 @@ function datosMonto(r: ReciboAuto): { esperado: number; moneda: string; converti
   return { esperado, moneda, convertido, tolerancia: toleranciaMontoAuto(esperado) };
 }
 
-/** Importe comparable sin inventar una conversión. */
-function centimosComparables(m: MovimientoAuto, moneda: string, permitirContabilidad: boolean): number | undefined {
+/**
+ * Importe comparable sin inventar una conversión.
+ *
+ * `accounting_amount` no es una tasa calculada por Wobi: es el importe
+ * contable que Holded devuelve para ese movimiento bancario. Por eso puede
+ * compararse siempre que su moneda sea exactamente la moneda objetivo. La
+ * versión anterior lo ignoraba salvo que el propio correo repitiera un
+ * equivalente explícito; eso hacía que un recibo en EUR nunca encontrara un
+ * cargo de una cuenta USD aunque Holded ya entregara su equivalente exacto
+ * en EUR.
+ */
+export function centimosComparablesMovimientoAuto(m: MovimientoAuto, moneda: string): number | undefined {
   if (m.moneda === moneda) return m.centimos;
-  if (permitirContabilidad && moneda === "EUR" && m.monedaContable === "EUR" && Number.isSafeInteger(m.contabilidadCentimos)) {
+  if (m.monedaContable === moneda && Number.isSafeInteger(m.contabilidadCentimos)) {
     return m.contabilidadCentimos;
   }
   return undefined;
@@ -219,9 +253,11 @@ export function movimientoEnVentanaAuto(fechaMovimiento: string, fechaRecibo: st
 
 export function candidatosMovimientoAuto(r: ReciboAuto, e: EvidenciaAuto): MovimientoAuto[] {
   let datos: ReturnType<typeof datosMonto>;
-  try { datos = datosMonto(r); } catch { return []; }
+  try { datos = datosMonto(r, e); } catch { return []; }
   const porMontoYFecha = e.movimientos.filter(m => {
-    const comparable = centimosComparables(m, datos.moneda, datos.convertido);
+    if (e.equivalenteBancario &&
+        (m.id !== e.equivalenteBancario.movimientoId || m.cuentaId !== e.equivalenteBancario.cuentaId)) return false;
+    const comparable = centimosComparablesMovimientoAuto(m, datos.moneda);
     return movimientoEnVentanaAuto(m.fecha, r.fecha) && comparable !== undefined &&
       Number.isSafeInteger(comparable) && comparable < 0 && Math.abs(-comparable - datos.esperado) <= datos.tolerancia;
   });
@@ -254,12 +290,12 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   let tolerancia = 0;
   let monedaObjetivo = "";
   try {
-    ({ esperado, convertido, tolerancia, moneda: monedaObjetivo } = datosMonto(r));
+    ({ esperado, convertido, tolerancia, moneda: monedaObjetivo } = datosMonto(r, e));
   } catch { motivos.push("importe_o_equivalente_invalido"); }
   const candidatos = candidatosMovimientoAuto(r, e);
   const ids = new Set(candidatos.map(m => `${m.cuentaId}/${m.id}`));
   const m = candidatos[0];
-  const importeMovimiento = m ? centimosComparables(m, monedaObjetivo, convertido) : undefined;
+  const importeMovimiento = m ? centimosComparablesMovimientoAuto(m, monedaObjetivo) : undefined;
   const coincidenciaMontoFechaExacta = candidatos.length === 1 && m.fecha === r.fecha &&
     importeMovimiento !== undefined && -importeMovimiento === esperado;
   const descripcionConfirmaProveedor = candidatos.length === 1 && (proveedorEnDescripcion(r.proveedor, candidatos[0].descripcion) ||
@@ -289,9 +325,13 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta?.id, recibo: reciboPlan,
     movimiento: m, totalCentimos: -(importeMovimiento ?? m.centimos), toleranciaCentimos: tolerancia,
     diferenciaCentimos: -(importeMovimiento ?? m.centimos) - esperado,
-    regla: convertido
-      ? (m.moneda === monedaObjetivo ? "equivalente_explicito_2pct_min_005_max_500" : "equivalente_contable_holded_2pct_min_005_max_500")
-      : (-(importeMovimiento ?? m.centimos) === esperado ? "moneda_nativa_exacta" : "moneda_nativa_2pct_min_005_max_500"), claves, fuenteHash,
+    regla: e.equivalenteBancario
+      ? "equivalente_bancario_real_tipo_cambio"
+      : m.moneda !== monedaObjetivo
+      ? "equivalente_contable_holded_2pct_min_005_max_500"
+      : convertido
+        ? "equivalente_explicito_2pct_min_005_max_500"
+        : (-(importeMovimiento ?? m.centimos) === esperado ? "moneda_nativa_exacta" : "moneda_nativa_2pct_min_005_max_500"), claves, fuenteHash,
     correo: { id: c.id, threadId: c.threadId, buzon: config.buzon }, version: VERSION_POLITICA,
     // La decisión ya quedó auditada por separado. La operación durable solo
     // necesita conservar el movimiento elegido, no todo el historial bancario

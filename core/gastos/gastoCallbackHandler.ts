@@ -2206,7 +2206,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             ? `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s) después del intento. Wobi bloqueó cualquier repetición; revisa cuál contacto quedó creado y vuelve a verificar desde estos botones.`
             : `Holded devuelve ${error.cantidad} coincidencia(s) exacta(s). Wobi no creó otro contacto; revisa los duplicados en Holded y vuelve a elegir.`
           : error instanceof CreacionContactoInciertaError
-            ? "Holded no confirmó si creó el contacto. Wobi conservará esta acción y, al reintentar, verificará el proveedor antes de cualquier creación. No reenvíes el documento."
+            ? "El intento ya terminó y el chat está libre. Holded no confirmó si creó el contacto. Wobi conservará esta acción y, al reintentar, verificará el proveedor antes de cualquier creación. No hay una revisión masiva ejecutándose por este caso y no necesitas reenviar el documento."
             : `No pude crear el contacto (${message}); el gasto NO se creó. La selección quedó disponible para reintentar sin reenviar el documento.`;
       await reponerResolucionContactoTrasFallo(
         resolucion,
@@ -3209,8 +3209,14 @@ export async function procesarGastoConContactoResuelto(
   contacto: { id: string; name: string },
   aprenderAlias: boolean = true
 ): Promise<void> {
+  // La resolución puede haberse republicado en un mensaje nuevo después de
+  // un fallo. Su messageId es la identidad visual vigente; el messageId
+  // anidado en la propuesta conserva el mensaje original y no debe usarse
+  // para reponer errores o botones, porque dejaría el mensaje nuevo mostrando
+  // "Procesando..." para siempre mientras edita uno antiguo fuera de vista.
   const propuestaCorregidaBase: PropuestaGasto = {
     ...resolucion.propuesta,
+    messageId: resolucion.messageId,
     empresa: resolucion.empresaFinal,
     concepto: resolucion.conceptoFinal || resolucion.propuesta.concepto,
   };

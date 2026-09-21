@@ -5,7 +5,7 @@ import { adjuntarComprobanteHolded, crearGastoHolded, editarCompraHolded, inferi
   combinarTagsGastoAprendidos, reconciliarMovimiento, tieneCategoriaGastoAprendida } from "../../holded/write";
 import { conTiempoMaximo } from "../../utils/asyncTimeout";
 import type { FlujoGastoExistente } from "./holded";
-import { monedaDocumentoAuto, VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
+import { monedaRegistroPlanAuto, VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
 import { conciliacionRequiereRevision } from "../../holded/durableBankReconciliation";
 
 async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
@@ -44,6 +44,27 @@ async function asegurarClasificacion(op: OperacionAuto) {
   return resultado;
 }
 
+/**
+ * Autoriza una conciliación entre monedas solo cuando el propio plan conserva
+ * una cifra verificable en la moneda del movimiento o el equivalente contable
+ * oficial que Holded devolvió para ese movimiento. No se calcula ningún tipo
+ * de cambio ni se confía en una aproximación generada por el modelo.
+ */
+export function conciliacionMultimonedaDemostrada(op: OperacionAuto): boolean {
+  const p = op.plan;
+  const documento = monedaRegistroPlanAuto(p);
+  if (documento.moneda.toUpperCase().trim() === p.movimiento.moneda.toUpperCase().trim()) return false;
+  const equivalenteExplicito = p.recibo.equivalente;
+  const porEquivalenteExplicito = Boolean(equivalenteExplicito &&
+    equivalenteExplicito.moneda.toUpperCase().trim() === p.movimiento.moneda.toUpperCase().trim() &&
+    Math.abs(Math.round(equivalenteExplicito.monto * 100) - p.totalCentimos) <= p.toleranciaCentimos);
+  const porContabilidadHolded = p.movimiento.monedaContable?.toUpperCase().trim() ===
+      (equivalenteExplicito?.moneda ?? p.recibo.moneda).toUpperCase().trim() &&
+    Number.isSafeInteger(p.movimiento.contabilidadCentimos) &&
+    Math.abs(Math.abs(p.movimiento.contabilidadCentimos!) - p.totalCentimos) <= p.toleranciaCentimos;
+  return porEquivalenteExplicito || porContabilidadHolded;
+}
+
 /** Una relectura puede no recuperar el número aunque el documento ya lo tenga.
  * En una reparación solo se envía un número demostrado; si falta, el editor
  * compartido conserva el valor actual de Holded en vez de degradarlo a 00000. */
@@ -61,22 +82,21 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
   const conciliar = async (op: OperacionAuto) => {
     if (!op.compraId) throw new Error("Compra ausente antes de conciliar.");
     const p = op.plan;
-    const equivalenteExplicito = p.recibo.equivalente;
-    const permitirMonedaDistinta = Boolean(equivalenteExplicito &&
-      equivalenteExplicito.moneda.toUpperCase().trim() === p.movimiento.moneda.toUpperCase().trim() &&
-      Math.abs(Math.round(equivalenteExplicito.monto * 100) - p.totalCentimos) <= p.toleranciaCentimos);
     return reconciliarMovimiento(p.empresa, p.movimiento.cuentaId, p.movimiento.id,
-      p.movimiento.fecha, op.compraId, { permitirMonedaDistinta });
+      p.movimiento.fecha, op.compraId, { permitirMonedaDistinta: conciliacionMultimonedaDemostrada(op) });
   };
   return {
     clasificar,
     crear: async (op) => {
       const cuenta = await asegurarClasificacion(op);
       const p = op.plan;
-      const documento = monedaDocumentoAuto(p.recibo);
+      const documento = monedaRegistroPlanAuto(p);
+      const descripcion = documento.moneda === p.recibo.moneda
+        ? p.recibo.concepto
+        : `${p.recibo.concepto} (comprobante original ${p.recibo.monto} ${p.recibo.moneda})`;
       const resultado = await crearGastoHolded(p.empresa, { contactId: p.contactoId, fecha: p.recibo.fecha,
-        descripcion: p.recibo.concepto,
-        lineas: [{ concepto: p.recibo.concepto, base: documento.monto, tipoIvaPct: 0,
+        descripcion,
+        lineas: [{ concepto: descripcion, base: documento.monto, tipoIvaPct: 0,
           tratamientoFiscal: "inversion_sujeto_pasivo" }], cuentaId: cuenta.cuentaId, tags: cuenta.tags,
         moneda: documento.moneda, tasaCambio: documento.tasaCambio, numeroDocumento: p.recibo.numero },
       { idempotencyKey: `correo-auto:${op.id}`, proceso: "correo_gasto_automatico" });
@@ -84,7 +104,10 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
     },
     corregir: async (op, compraId) => {
       const cuenta = await asegurarClasificacion(op);
-      const documento = monedaDocumentoAuto(op.plan.recibo);
+      const documento = monedaRegistroPlanAuto(op.plan);
+      const concepto = documento.moneda === op.plan.recibo.moneda
+        ? op.plan.recibo.concepto
+        : `${op.plan.recibo.concepto} (comprobante original ${op.plan.recibo.monto} ${op.plan.recibo.moneda})`;
       await editarCompraHolded(op.plan.empresa, compraId,
         { contactoIdNuevo: op.plan.contactoId, cuentaIdNueva: cuenta.cuentaId,
           ...camposEtiquetasParaReparacion(cuenta.tags),
@@ -92,7 +115,7 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
           ...(documento.moneda === "EUR" || documento.tasaCambio !== undefined
             ? { monedaNueva: documento.moneda, tasaCambioNueva: documento.tasaCambio ?? 1 }
             : {}),
-          lineas: [{ concepto: op.plan.recibo.concepto, base: documento.monto, tipoIvaPct: 0,
+          lineas: [{ concepto, base: documento.monto, tipoIvaPct: 0,
             tratamientoFiscal: "inversion_sujeto_pasivo" }] },
         // Cada política de reparación tiene su propia frontera durable. Una edición
         // anterior incierta jamás se repite; la política nueva relee el estado actual

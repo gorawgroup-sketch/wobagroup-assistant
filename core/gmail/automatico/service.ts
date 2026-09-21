@@ -490,8 +490,8 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
     return "El importe y la fecha se aproximan, pero el banco no confirma al proveedor.";
   }
   if (tiene("sin_movimiento_exacto")) {
-    return "No se encontró una coincidencia directa en la misma moneda ni mediante un equivalente explícito; " +
-      "si el banco cobró en otra divisa, el candidato cambiario debe confirmarse en la revisión manual.";
+    return "No se encontró un movimiento único y libre en la misma moneda, mediante el equivalente contable de Holded " +
+      "ni mediante una conversión respaldada por el proveedor y la fecha; requiere revisión manual.";
   }
   if (tiene("proveedor_no_encontrado") || tiene("proveedor_no_verificado")) {
     if (detalle?.motivoProveedor === "coincidencia_ambigua") {

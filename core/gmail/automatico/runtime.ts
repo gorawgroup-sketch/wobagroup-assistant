@@ -3,7 +3,7 @@ import { registrarAsignacionCuenta } from "../../holded/asignacionCuentaLogSheet
 import { getGmailClient, getGmailModifyClient } from "../client";
 import { obtenerActivoActual } from "../colaRevisionStore";
 import { listarHilosAutorespuesta } from "../hiloAutorespuestaStore";
-import { obtenerTodosLosAlias } from "../../gastos/proveedorAliasSheet";
+import { monedaDeAliasCoincide, obtenerTodosLosAlias } from "../../gastos/proveedorAliasSheet";
 import {
   buscarGastoDesdeCorreo,
   marcarGastoDesdeCorreoCompletado,
@@ -103,8 +103,9 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     : "correo_gastos_automatico";
   const holded = new HoldedAuto({
     cuentaConfirmada: (empresa, proveedor) => buscarCuentaCorregidaAprendida(proveedor, empresa),
-    alias: async (empresa, proveedor) => (await (aliasPromise ??= obtenerTodosLosAlias()))
-      .filter(a => a.empresa === empresa && normalizar(a.nombreDetectado) === normalizar(proveedor)),
+    alias: async (empresa, proveedor, moneda) => (await (aliasPromise ??= obtenerTodosLosAlias()))
+      .filter(a => a.empresa === empresa && normalizar(a.nombreDetectado) === normalizar(proveedor) &&
+        monedaDeAliasCoincide(a.moneda, moneda)),
     duplicadoInterno: async (c, r) => {
       const registro = await buscarGastoDesdeCorreo(c.id, r.fuente === "cuerpo" ? undefined : r.fuente);
       if (registro) {
