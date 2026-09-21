@@ -1,6 +1,6 @@
 import { fetchDetalleRegistros, type DetalleCategoria, type DetalleRegistro, type EmpresaTag } from "./cashflowSheet";
 import type { ProblemaEstructuraDatos } from "./cashflowLayout";
-import { esProblemaEstructuraSevero, parsearImporteCashflow } from "../cashflow/cruceHoldedCashflow";
+import { esProblemaEstructuraSevero, parsearImporteCashflow } from "../cashflow/parseoImportes";
 import { montosCercanos } from "../utils/montos";
 import { esSemanaValida, normalizarSemana } from "../utils/semanaCashflow";
 import { palabrasParecidas, textosParecidos } from "../utils/textoParecido";
@@ -128,26 +128,39 @@ function prepararFila(r: DetalleRegistro): Fila {
   return { r, texto, textoLigero: sinTildes(crudo), palabras: texto.split(" ").filter(Boolean) };
 }
 
-const RE_IMPORTE = /^[€$£\s]*-?\d[\d.,]*\s*(?:€|eur|euros?)?\s*$/i;
+// Sin cuantificadores anidados sobre \s: una cadena enorme no puede provocar backtracking cuadrático.
+const RE_IMPORTE = /^[€$£\s]*-?\d[\d.,]*(?:\s*(?:€|eur|euros?))?\s*$/i;
 
 /** Si el texto es en realidad un importe ("747", "747,31 €", "€137.62"), devuelve su valor. */
 export function importeDeTexto(texto: string): number | undefined {
-  if (!RE_IMPORTE.test(String(texto ?? ""))) return undefined;
+  if (String(texto ?? "").length > 60 || !RE_IMPORTE.test(String(texto ?? ""))) return undefined;
   const valor = parsearImporteCashflow(texto);
   return Number.isFinite(valor) && valor !== 0 ? valor : undefined;
 }
 
 /**
- * "Providencia de apremio 747,31" → nombre + importe. Solo se toma como importe un número con decimales o
- * con símbolo de moneda: "MOD 303" es un nombre, no 303 €.
+ * "Providencia de apremio 747,31" → nombre + importe. Solo se toma como importe un número con dos decimales
+ * ("747,31", "1186,00", "1.186,00") o con símbolo de moneda ("137€", "€137", "137 €", "137 euros"); nunca fechas
+ * ("12.05.2025"), porcentajes ("21,00%") ni números sueltos: "MOD 303" es un nombre, no 303 €.
  */
 function separarTextoEImporte(texto: string): { texto: string; valor?: number } {
-  const m = texto.match(/(?:€\s*)?\b\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\b(?:\s*(?:€|eur|euros?))?|\b\d+(?:[.,]\d+)?\s*(?:€|eur|euros?)\b/i);
-  if (!m) return { texto };
-  const resto = (texto.slice(0, m.index) + " " + texto.slice((m.index ?? 0) + m[0].length)).replace(/\s+/g, " ").trim();
-  const valor = parsearImporteCashflow(m[0]);
-  if (!resto || !Number.isFinite(valor) || valor === 0) return { texto };
-  return { texto: resto, valor };
+  const fichas = texto.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < fichas.length; i++) {
+    const ficha = fichas[i];
+    const siguiente = fichas[i + 1];
+    const monedaSiguiente = siguiente !== undefined && /^(?:€|eur|euros?)$/i.test(siguiente);
+    const monedaPegada = /^[€$£]\d/.test(ficha) || /\d[€$£]$/.test(ficha) || /\d(?:eur|euros?)$/i.test(ficha);
+    const limpio = ficha.replace(/^[€$£]/, "").replace(/(?:[€$£]|eur|euros?)$/i, "");
+    if (!/^\d+(?:[.,]\d+)*$/.test(limpio)) continue;
+    const esFecha = /^\d{1,2}[.,]\d{1,2}[.,]\d{2,4}$/.test(limpio);
+    const dosDecimales = /[.,]\d{2}$/.test(limpio) && !esFecha;
+    if (!monedaSiguiente && !monedaPegada && !dosDecimales) continue;
+    const valor = parsearImporteCashflow(limpio);
+    const resto = fichas.filter((_, j) => j !== i && !(monedaSiguiente && j === i + 1)).join(" ").trim();
+    if (!resto || !Number.isFinite(valor) || valor === 0) return { texto };
+    return { texto: resto, valor };
+  }
+  return { texto };
 }
 
 /**
@@ -176,15 +189,16 @@ export function categoriasPorTitulo(texto: string, exactoUnicamente = false): De
 }
 
 /**
- * Una sola palabra que nombra en parte el título de una o dos secciones ("impuestos", "consultores",
- * "aplazamiento"): se ofrece esa sección como coincidencia aproximada. Palabras que están en tres o más
- * títulos ("gastos", "pagos") no distinguen nada y se ignoran.
+ * Palabras que identifican por sí solas una o dos secciones. Una palabra genérica del título ("proyectos", "otros",
+ * "actual", "gastos", "pagos") no distingue nada: volcaría tablas enteras.
  */
+const PALABRAS_DISTINTIVAS_SECCION = ["impuestos", "aplazamiento", "aplazamientos", "consultores", "ingresos", "deudas", "alberto"];
+
+/** Una sola palabra distintiva ("impuestos", "consultores", "aplazamiento"): se ofrece esa sección como coincidencia aproximada. */
 function seccionesPorPalabraDistintiva(texto: string): DetalleCategoria[] {
   const palabras = palabrasSignificativas(texto);
-  if (palabras.length !== 1 || palabras[0].length < 5) return [];
-  const candidatas = categoriasPorTitulo(texto);
-  return candidatas.length > 0 && candidatas.length <= 2 ? candidatas : [];
+  if (palabras.length !== 1 || !PALABRAS_DISTINTIVAS_SECCION.some((d) => palabrasParecidas(palabras[0], d))) return [];
+  return categoriasPorTitulo(texto);
 }
 
 export { normalizarSemana };
@@ -212,6 +226,10 @@ export interface CoincidenciaCashflow {
   calidad: CalidadCoincidencia;
   motivos: string[];
   atribucion: AtribucionEmpresa;
+  /** Empresa que el NOMBRE de la fila indica ("MOD 303 EWORKS Q2"), cuando la hoja no la etiqueta. */
+  empresaPorNombre?: EmpresaTag;
+  /** El nombre coincide solo por palabras parecidas (la evidencia más débil). */
+  debil: boolean;
 }
 
 export interface ApartadaPorEmpresa {
@@ -240,12 +258,18 @@ export interface ResultadoConsultaCashflow {
   consultaEfectiva: ConsultaCashflow;
 }
 
-function atribuir(f: Fila, empresa: EmpresaTag): AtribucionEmpresa {
-  if (f.r.empresa) return f.r.empresa === empresa ? "confirmada" : "otra";
-  const otra: EmpresaTag = empresa === "WOBA" ? "EWORKS" : "WOBA";
-  if (f.palabras.includes(empresa.toLowerCase())) return "inferida_por_nombre";
-  if (f.palabras.includes(otra.toLowerCase())) return "otra";
-  return "sin_empresa";
+/** Empresa que indica el nombre de una fila sin etiqueta: solo si nombra a UNA de las dos, como palabra completa. */
+function empresaPorNombre(f: Fila): EmpresaTag | undefined {
+  const woba = f.palabras.includes("woba");
+  const eworks = f.palabras.includes("eworks");
+  return woba && !eworks ? "WOBA" : eworks && !woba ? "EWORKS" : undefined;
+}
+
+function atribuir(f: Fila, empresa?: EmpresaTag): { atribucion: AtribucionEmpresa; empresaPorNombre?: EmpresaTag } {
+  if (f.r.empresa) return { atribucion: !empresa || f.r.empresa === empresa ? "confirmada" : "otra" };
+  const porNombre = empresaPorNombre(f);
+  if (!porNombre) return { atribucion: "sin_empresa" };
+  return { atribucion: !empresa || porNombre === empresa ? "inferida_por_nombre" : "otra", empresaPorNombre: porNombre };
 }
 
 function toleranciaCentimos(valor: number, explicita?: number): number {
@@ -298,6 +322,8 @@ function evaluarPorSinonimos(consulta: string, f: Fila): Evaluacion | undefined 
 }
 
 function evaluarValor(objetivo: number, toleranciaEur: number | undefined, valorFila: string): Evaluacion | undefined {
+  // Una celda vacía o sin dígitos no es "0 €": parsearImporteCashflow la devuelve como 0 y casaría con importes pequeños.
+  if (!/\d/.test(String(valorFila ?? ""))) return undefined;
   const cent = Math.round(Math.abs(parsearImporteCashflow(valorFila)) * 100);
   const buscado = Math.round(Math.abs(objetivo) * 100);
   if (!Number.isFinite(cent)) return undefined;
@@ -329,7 +355,8 @@ type Estrategia = "directo" | "sinonimos";
 interface Contenido {
   calidad: CalidadCoincidencia;
   motivos: string[];
-  parecido: boolean;
+  /** El nombre solo coincide por palabras parecidas. */
+  debil: boolean;
 }
 
 /** Evalúa lo que el usuario pidió (nombre / importe) sobre una fila, exigiendo solo los criterios vigentes. */
@@ -344,7 +371,8 @@ function evaluarContenido(f: Fila, c: Contexto, exige: Set<Criterio>, estrategia
       porTexto = evaluarTexto(c.texto as string, f, c.modo);
       if (c.seccionesDelTexto.has(f.r.categoria)) {
         porTexto = { calidad: "exacta", motivo: `pertenece a la sección «${CATEGORIAS_CASHFLOW[f.r.categoria].titulo}»` };
-      } else if (!porTexto && c.seccionesParciales.has(f.r.categoria)) {
+      } else if ((!porTexto || porTexto.parecido) && c.seccionesParciales.has(f.r.categoria)) {
+        // La sección nombrada en parte promueve a la fila por encima de un simple parecido de palabras.
         porTexto = { calidad: "aproximada", motivo: `el texto nombra la sección «${CATEGORIAS_CASHFLOW[f.r.categoria].titulo}»` };
       }
       if (!porTexto && c.valorDeTexto !== undefined) porTexto = evaluarValor(c.valorDeTexto, c.toleranciaEur, f.r.valor);
@@ -359,7 +387,7 @@ function evaluarContenido(f: Fila, c: Contexto, exige: Set<Criterio>, estrategia
   return {
     calidad: estrategia === "sinonimos" || evs.some((e) => e.calidad === "aproximada") ? "aproximada" : "exacta",
     motivos: evs.map((e) => e.motivo),
-    parecido: evs.length > 0 && evs.every((e) => e.parecido),
+    debil: porTexto?.parecido === true,
   };
 }
 
@@ -381,15 +409,33 @@ const NOMBRE_CRITERIO: Record<Criterio, string> = {
   texto: "el nombre",
 };
 
-function descripcionIntento(relajados: Criterio[], estrategias: Estrategia[]): string {
+/** Describe lo que REALMENTE se probó en un intento (no una fórmula fija). */
+function descripcionIntento(relajados: Criterio[], exige: Set<Criterio>, estrategias: Estrategia[], textoEsImporte: boolean): string {
   const base = relajados.length === 0 ? "con todos los criterios" : `sin exigir ${relajados.map((c) => NOMBRE_CRITERIO[c]).join(" ni ")}`;
-  return estrategias.includes("sinonimos") ? `${base} (nombre, importe y sinónimos)` : base;
+  const que: string[] = [];
+  if (exige.has("texto")) que.push(textoEsImporte ? "nombre o importe" : "nombre");
+  if (exige.has("valor")) que.push("importe");
+  if (exige.has("categoria")) que.push("sección");
+  if (estrategias.includes("sinonimos")) que.push("sinónimos");
+  return que.length > 0 ? `${base} (${que.join(", ")})` : base;
 }
+
+/** Exactas primero; los parecidos por palabras (evidencia más débil) solo acompañan si no hay ninguna exacta. */
+function seleccionar(candidatas: CoincidenciaCashflow[], modo: ModoBusqueda): CoincidenciaCashflow[] {
+  const exactas = candidatas.filter((c) => c.calidad === "exacta");
+  if (exactas.length === 0) return candidatas;
+  // En modo "concepto" (que suma importes) solo cuentan las exactas si las hay.
+  return modo === "concepto" ? exactas : [...exactas, ...candidatas.filter((c) => c.calidad === "aproximada" && !c.debil)];
+}
+
+const esFuerte = (sel: CoincidenciaCashflow[]) => sel.some((c) => c.calidad === "exacta" || !c.debil);
 
 /**
  * Ejecuta la consulta sobre registros ya leídos (función pura, sin red). Si con todas las pistas no hay
- * nada, las va relajando de una en una (semana, empresa, sección, importe, nombre; primero las
- * combinaciones que quitan menos) y devuelve la primera que da resultados, diciendo cuáles quitó.
+ * nada, las va relajando (semana, empresa, sección, importe, nombre; primero las combinaciones que quitan
+ * menos) y devuelve la primera que da un resultado sólido, diciendo cuáles quitó. Un resultado que solo
+ * coincide por palabras parecidas no detiene la búsqueda: si relajando una pista aparece una coincidencia
+ * exacta, se devuelve esa (junto a los parecidos).
  */
 export function consultarCashflow(
   registros: DetalleRegistro[],
@@ -402,17 +448,21 @@ export function consultarCashflow(
   for (const r of registros) porCategoria[r.categoria] = (porCategoria[r.categoria] ?? 0) + 1;
   const filas = registros.map(prepararFila);
 
-  let texto = consultaEntrada.texto?.trim() || undefined;
+  const textoOriginal = consultaEntrada.texto?.trim() || undefined;
+  let texto = textoOriginal;
   let valor = consultaEntrada.valor !== undefined && Number.isFinite(consultaEntrada.valor) && consultaEntrada.valor !== 0 ? Math.abs(consultaEntrada.valor) : undefined;
   const toleranciaEur =
     consultaEntrada.toleranciaEur !== undefined && Number.isFinite(consultaEntrada.toleranciaEur) && consultaEntrada.toleranciaEur >= 0
       ? consultaEntrada.toleranciaEur
       : undefined;
+  // "Providencia de apremio 747,31": nombre e importe juntos. Si luego hay que relajar el importe, se vuelve al texto original.
+  let importeSeparadoDelTexto = false;
   if (modo === "interactivo" && texto && valor === undefined) {
     const separado = separarTextoEImporte(texto);
     if (separado.valor !== undefined) {
       texto = separado.texto;
       valor = Math.abs(separado.valor);
+      importeSeparadoDelTexto = true;
     }
   }
   const semana = consultaEntrada.semana?.trim() ? normalizarSemana(consultaEntrada.semana) : undefined;
@@ -422,33 +472,38 @@ export function consultarCashflow(
   const categoriaNoReconocida = categoriaPedida && seccionesPedidas.length === 0 ? categoriaPedida : undefined;
   if (categoriaNoReconocida && !texto) texto = categoriaNoReconocida;
 
-  const interactivoConTexto = modo === "interactivo" && texto !== undefined;
-  const esImporte = texto !== undefined && importeDeTexto(texto) !== undefined;
-  const contexto: Contexto = {
-    texto,
-    valorDeTexto: interactivoConTexto && esImporte ? importeDeTexto(texto as string) : undefined,
-    valor,
-    toleranciaEur,
-    categorias: seccionesPedidas.length > 0 ? new Set(seccionesPedidas) : undefined,
-    seccionesDelTexto: new Set(interactivoConTexto && !esImporte ? categoriasPorTitulo(texto as string, true) : []),
-    seccionesParciales: new Set(interactivoConTexto && !esImporte ? seccionesPorPalabraDistintiva(texto as string) : []),
-    semana,
-    empresa: consultaEntrada.empresa,
-    modo,
+  const contextoPara = (textoEfectivo: string | undefined, valorEfectivo: number | undefined): Contexto => {
+    const interactivoConTexto = modo === "interactivo" && textoEfectivo !== undefined;
+    const esImporte = textoEfectivo !== undefined && importeDeTexto(textoEfectivo) !== undefined;
+    return {
+      texto: textoEfectivo,
+      valorDeTexto: interactivoConTexto && esImporte ? importeDeTexto(textoEfectivo as string) : undefined,
+      valor: valorEfectivo,
+      toleranciaEur,
+      categorias: seccionesPedidas.length > 0 ? new Set(seccionesPedidas) : undefined,
+      seccionesDelTexto: new Set(interactivoConTexto && !esImporte ? categoriasPorTitulo(textoEfectivo as string, true) : []),
+      seccionesParciales: new Set(interactivoConTexto && !esImporte ? seccionesPorPalabraDistintiva(textoEfectivo as string) : []),
+      semana,
+      empresa: consultaEntrada.empresa,
+      modo,
+    };
   };
-  const reconocidas = [...new Set([...seccionesPedidas, ...contexto.seccionesDelTexto])];
+  const contextoNormal = contextoPara(texto, valor);
+  const contextoTextoOriginal = importeSeparadoDelTexto ? contextoPara(textoOriginal, undefined) : contextoNormal;
+  const empresa = consultaEntrada.empresa;
 
   const presentes = new Set<Criterio>();
   if (semana) presentes.add("semana");
-  if (contexto.empresa) presentes.add("empresa");
-  if (contexto.categorias) presentes.add("categoria");
+  if (empresa) presentes.add("empresa");
+  if (contextoNormal.categorias) presentes.add("categoria");
   if (valor !== undefined) presentes.add("valor");
   if (texto !== undefined) presentes.add("texto");
   const hayContenido = presentes.has("texto") || presentes.has("valor") || presentes.has("categoria");
+  const textoEsImporte = texto !== undefined && importeDeTexto(texto) !== undefined;
 
   const consultaEfectiva: ConsultaCashflow = {
     ...(semana ? { semana } : {}),
-    ...(contexto.empresa ? { empresa: contexto.empresa } : {}),
+    ...(empresa ? { empresa } : {}),
     ...(texto !== undefined ? { texto } : {}),
     ...(valor !== undefined ? { valor } : {}),
     ...(toleranciaEur !== undefined ? { toleranciaEur } : {}),
@@ -467,74 +522,94 @@ export function consultarCashflow(
     }
   }
 
-  const intentos: Array<{ descripcion: string; filas: number }> = [];
-  const apartadas: ApartadaPorEmpresa[] = [];
-
-  const construir = (coincidencias: CoincidenciaCashflow[], relajados: Criterio[]): ResultadoConsultaCashflow => ({
-    coincidencias,
-    aproximado: coincidencias.length > 0 && coincidencias.every((c) => c.calidad === "aproximada"),
-    filtrosRelajados: relajados,
-    apartadasPorEmpresa: apartadas,
-    intentos,
-    totalRegistros: registros.length,
-    porCategoria,
-    categoriasReconocidas: reconocidas,
-    ...(categoriaNoReconocida ? { categoriaNoReconocida } : {}),
-    consultaEfectiva,
-  });
-
-  for (const [indice, relajados] of subconjuntos.entries()) {
-    const exige = new Set<Criterio>([...presentes].filter((c) => !relajados.includes(c)));
+  /** Todas las coincidencias de un intento (antes de elegir entre exactas y aproximadas). */
+  const ejecutar = (exige: Set<Criterio>, ctx: Contexto): CoincidenciaCashflow[] => {
     const estrategias: Estrategia[] = modo === "interactivo" && exige.has("texto") ? ["directo", "sinonimos"] : ["directo"];
-    const vistos = new Set<DetalleRegistro>();
-    const coincidencias: CoincidenciaCashflow[] = [];
+    const porRegistro = new Map<DetalleRegistro, CoincidenciaCashflow>();
+    const contenidoExigido = exige.has("texto") || exige.has("valor");
+    const contenidoPedido = presentes.has("texto") || presentes.has("valor");
 
     for (const estrategia of estrategias) {
       for (const f of filas) {
-        if (vistos.has(f.r)) continue;
+        const previa = porRegistro.get(f.r);
+        if (previa && !previa.debil) continue;
         if (exige.has("semana") && semana && normalizarSemana(f.r.semana) !== semana) continue;
-        if (exige.has("categoria") && contexto.categorias && !contexto.categorias.has(f.r.categoria)) continue;
+        if (exige.has("categoria") && ctx.categorias && !ctx.categorias.has(f.r.categoria)) continue;
 
-        const contenido = hayContenido ? evaluarContenido(f, contexto, exige, estrategia) : { calidad: "exacta" as const, motivos: [], parecido: false };
+        let contenido: Contenido | undefined;
+        if (!hayContenido) contenido = { calidad: "exacta", motivos: [], debil: false };
+        else if (!contenidoExigido && contenidoPedido) {
+          // Se relajaron nombre e importe: solo queda la sección; se dice claramente que no es una coincidencia de lo pedido.
+          contenido = { calidad: "aproximada", motivos: ["no coincide lo buscado (nombre/importe); solo pertenece a la sección pedida"], debil: false };
+        } else contenido = evaluarContenido(f, ctx, exige, estrategia);
         if (!contenido) continue;
 
-        let atribucion: AtribucionEmpresa = f.r.empresa ? "confirmada" : "sin_empresa";
-        if (contexto.empresa) {
-          atribucion = atribuir(f, contexto.empresa);
-          if (atribucion === "otra" && exige.has("empresa")) {
-            if (indice === 0 && estrategia === "directo") apartadas.push({ nombre: f.r.cliente ?? f.r.concepto ?? "(sin nombre)", semana: f.r.semana, valor: f.r.valor });
-            continue;
-          }
-        }
-        vistos.add(f.r);
-        coincidencias.push({ registro: f.r, calidad: contenido.calidad, motivos: contenido.motivos, atribucion });
+        const { atribucion, empresaPorNombre: porNombre } = atribuir(f, empresa);
+        if (empresa && exige.has("empresa") && atribucion === "otra") continue;
+        // Un parecido débil previo no bloquea que un sinónimo real (no débil) promueva la fila.
+        if (previa && contenido.debil) continue;
+        porRegistro.set(f.r, { registro: f.r, calidad: contenido.calidad, motivos: contenido.motivos, atribucion, empresaPorNombre: porNombre, debil: contenido.debil });
       }
     }
+    return [...porRegistro.values()];
+  };
 
-    intentos.push({ descripcion: descripcionIntento(relajados, estrategias), filas: coincidencias.length });
-    if (coincidencias.length === 0) continue;
+  const intentos: Array<{ descripcion: string; filas: number }> = [];
 
-    // Exactas primero. El parecido por palabras (la evidencia más débil) solo acompaña si no hay ninguna exacta;
-    // en modo "concepto" (que suma importes) solo cuentan las exactas si las hay.
-    const exactas = coincidencias.filter((c) => c.calidad === "exacta");
-    let resultado = coincidencias;
-    if (exactas.length > 0) {
-      resultado = modo === "concepto" ? exactas : [...exactas, ...coincidencias.filter((c) => c.calidad === "aproximada" && !esParecidoDebil(c))];
+  const construir = (coincidencias: CoincidenciaCashflow[], relajados: Criterio[], exige: Set<Criterio>): ResultadoConsultaCashflow => {
+    // Filas que el filtro de empresa apartó: se calculan sobre el intento ganador, con la misma selección, restando lo mostrado.
+    let apartadas: ApartadaPorEmpresa[] = [];
+    if (empresa && exige.has("empresa")) {
+      const sinEmpresa = new Set(exige);
+      sinEmpresa.delete("empresa");
+      const mostradas = new Set(coincidencias.map((c) => c.registro));
+      apartadas = seleccionar(ejecutar(sinEmpresa, relajados.includes("valor") ? contextoTextoOriginal : contextoNormal), modo)
+        .filter((c) => c.atribucion === "otra" && !mostradas.has(c.registro))
+        .map((c) => ({ nombre: c.registro.cliente ?? c.registro.concepto ?? "(sin nombre)", semana: c.registro.semana, valor: c.registro.valor }));
     }
-    return construir(resultado, relajados);
+    const reconocidas = [
+      ...(relajados.includes("categoria") ? [] : seccionesPedidas),
+      ...(relajados.includes("texto") ? [] : [...contextoNormal.seccionesDelTexto]),
+    ];
+    return {
+      coincidencias,
+      aproximado: coincidencias.length > 0 && coincidencias.every((c) => c.calidad === "aproximada"),
+      filtrosRelajados: relajados,
+      apartadasPorEmpresa: apartadas,
+      intentos,
+      totalRegistros: registros.length,
+      porCategoria,
+      categoriasReconocidas: [...new Set(reconocidas)],
+      ...(categoriaNoReconocida ? { categoriaNoReconocida } : {}),
+      consultaEfectiva,
+    };
+  };
+
+  let respaldoDebil: { sel: CoincidenciaCashflow[]; relajados: Criterio[]; exige: Set<Criterio> } | undefined;
+  for (const relajados of subconjuntos) {
+    const exige = new Set<Criterio>([...presentes].filter((c) => !relajados.includes(c)));
+    const ctx = relajados.includes("valor") ? contextoTextoOriginal : contextoNormal;
+    const estrategias: Estrategia[] = modo === "interactivo" && exige.has("texto") ? ["directo", "sinonimos"] : ["directo"];
+    const sel = seleccionar(ejecutar(exige, ctx), modo);
+    intentos.push({ descripcion: descripcionIntento(relajados, exige, estrategias, textoEsImporte), filas: sel.length });
+    if (sel.length === 0) continue;
+    if (modo === "concepto") return construir(sel, relajados, exige);
+    if (esFuerte(sel)) {
+      // Lo que ya había (parecidos débiles de un intento anterior) acompaña a lo nuevo, sin duplicar.
+      const propias = new Set(sel.map((c) => c.registro));
+      const junto = respaldoDebil ? [...sel, ...respaldoDebil.sel.filter((c) => !propias.has(c.registro))] : sel;
+      return construir(junto, relajados, exige);
+    }
+    respaldoDebil ??= { sel, relajados, exige };
   }
-
-  return construir([], []);
-}
-
-function esParecidoDebil(c: CoincidenciaCashflow): boolean {
-  return c.motivos.length > 0 && c.motivos.every((m) => m.startsWith("el nombre es parecido") || m.includes("dentro de otra palabra"));
+  if (respaldoDebil) return construir(respaldoDebil.sel, respaldoDebil.relajados, respaldoDebil.exige);
+  return construir([], [], new Set(presentes));
 }
 
 function etiquetaEmpresa(c: CoincidenciaCashflow): string {
   if (c.registro.empresa) return c.atribucion === "otra" ? ` [${c.registro.empresa} — otra empresa]` : ` [${c.registro.empresa}]`;
-  if (c.atribucion === "inferida_por_nombre") return " [empresa por el nombre]";
-  if (c.atribucion === "otra") return " [el nombre indica la otra empresa]";
+  if (c.atribucion === "inferida_por_nombre") return ` [${c.empresaPorNombre} por el nombre]`;
+  if (c.atribucion === "otra") return ` [el nombre indica ${c.empresaPorNombre}]`;
   return " [sin empresa]";
 }
 
@@ -589,7 +664,7 @@ export function formatearResultadoCashflow(
   const filasRelevantes = vacio ? deFila : deFila.filter((p) => bloqueAfectado(p, categoriasRelevantes));
   if (filasRelevantes.length > 0) {
     avisos.push(
-      "⚠️ Filas de la hoja que WOBI NO pudo leer (no aparecen en ninguna búsqueda; si el usuario dice que el dato existe, puede estar ahí):\n" +
+      "⚠️ Avisos de lectura de la hoja (las filas que WOBI no pudo interpretar NO aparecen en ninguna búsqueda; si el usuario dice que el dato existe, puede estar ahí):\n" +
         filasRelevantes.slice(0, 6).map((p) => `  • [${p.bloque}] ${p.detalle}`).join("\n") +
         (filasRelevantes.length > 6 ? `\n  … y ${filasRelevantes.length - 6} más.` : "")
     );
@@ -615,7 +690,12 @@ export function formatearResultadoCashflow(
       const noLocalizada = severos.some((p) => p.bloque === c);
       return `${CATEGORIAS_CASHFLOW[c].titulo}: ${n}${n === 0 ? (noLocalizada ? " (NO SE PUDO LOCALIZAR)" : " (vacía)") : ""}`;
     }).join("; ");
-    const intentos = resultado.intentos.map((i, n) => `${n + 1}) ${i.descripcion}: ${i.filas} filas`).join("; ");
+    const MAX_INTENTOS_MOSTRADOS = 8;
+    const intentos =
+      resultado.intentos.slice(0, MAX_INTENTOS_MOSTRADOS).map((i, n) => `${n + 1}) ${i.descripcion}: ${i.filas} filas`).join("; ") +
+      (resultado.intentos.length > MAX_INTENTOS_MOSTRADOS
+        ? `; … y ${resultado.intentos.length - MAX_INTENTOS_MOSTRADOS} intentos más quitando más pistas (todos con 0 filas)`
+        : "");
     return [
       ...avisos,
       `No se encontraron movimientos para: ${describirConsulta(consulta)}.`,
@@ -695,12 +775,31 @@ export interface EntradaConsultaValida {
  * Convierte la entrada cruda de la herramienta en una consulta, SIN descartar nada en silencio: lo que no es
  * válido se enumera en `ignorados`, y si no queda ninguna pista válida se pide aclaración en vez de volcar la hoja.
  */
-export function parsearEntradaConsulta(input: Record<string, unknown>): EntradaConsultaValida {
+const MAX_CARACTERES_TEXTO = 200;
+
+export function parsearEntradaConsulta(entrada: unknown): EntradaConsultaValida {
+  const input = (entrada && typeof entrada === "object" && !Array.isArray(entrada) ? entrada : {}) as Record<string, unknown>;
   const ignorados: string[] = [];
-  const cadena = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
   const consulta: ConsultaCashflow = {};
 
-  const empresaCruda = cadena(input.empresa);
+  /** Texto de un parámetro: acepta cadenas y números; cualquier otro tipo presente se enumera como ignorado. */
+  const cadena = (nombre: string, limite = MAX_CARACTERES_TEXTO): string | undefined => {
+    const v = input[nombre];
+    if (v === undefined || v === null || v === "") return undefined;
+    if (typeof v !== "string" && typeof v !== "number") {
+      ignorados.push(`${nombre} (se esperaba texto, llegó ${Array.isArray(v) ? "una lista" : typeof v})`);
+      return undefined;
+    }
+    const t = String(v).trim();
+    if (!t) return undefined;
+    if (t.length > limite) {
+      ignorados.push(`${nombre} (demasiado largo: se usaron los primeros ${limite} caracteres)`);
+      return t.slice(0, limite);
+    }
+    return t;
+  };
+
+  const empresaCruda = cadena("empresa", 60);
   if (empresaCruda) {
     const e = empresaCruda.toUpperCase();
     if (e.includes("FOOTPRINT")) {
@@ -718,27 +817,28 @@ export function parsearEntradaConsulta(input: Record<string, unknown>): EntradaC
     else ignorados.push(`empresa «${empresaCruda}» (solo WOBA o EWORKS)`);
   }
 
-  const semanaCruda = cadena(input.semana);
+  const semanaCruda = cadena("semana", 30);
   if (semanaCruda) {
     if (esSemanaValida(semanaCruda)) consulta.semana = normalizarSemana(semanaCruda);
     else ignorados.push(`semana «${semanaCruda}» (formato esperado: S38)`);
   }
 
-  const texto = cadena(input.contraparte);
+  const texto = cadena("contraparte");
   if (texto) consulta.texto = texto;
-  const categoria = cadena(input.categoria);
+  const categoria = cadena("categoria");
   if (categoria) consulta.categoria = categoria;
 
   if (input.valor !== undefined && input.valor !== null && input.valor !== "") {
     const crudo = input.valor;
-    const numero = typeof crudo === "number" ? crudo : typeof crudo === "string" ? parsearImporteCashflow(crudo) : Number.NaN;
-    if (Number.isFinite(numero) && numero !== 0) consulta.valor = Math.abs(numero);
-    else ignorados.push(`valor «${String(crudo)}» (no es un importe válido distinto de 0)`);
+    const numero =
+      typeof crudo === "number" ? crudo : typeof crudo === "string" && importeDeTexto(crudo) !== undefined ? parsearImporteCashflow(crudo) : Number.NaN;
+    if (Number.isFinite(numero) && Math.abs(numero) >= 0.01) consulta.valor = Math.abs(numero);
+    else ignorados.push(`valor «${String(crudo).slice(0, 40)}» (no es un importe válido de al menos 0,01)`);
   }
   if (input.tolerancia_eur !== undefined && input.tolerancia_eur !== null) {
     const t = input.tolerancia_eur;
     if (typeof t === "number" && Number.isFinite(t) && t >= 0) consulta.toleranciaEur = t;
-    else ignorados.push(`tolerancia_eur «${String(t)}» (debe ser un número ≥ 0)`);
+    else ignorados.push(`tolerancia_eur «${String(t).slice(0, 40)}» (debe ser un número ≥ 0)`);
   }
 
   const hayAlgunaPista = Boolean(consulta.empresa || consulta.semana || consulta.texto || consulta.categoria || consulta.valor !== undefined);

@@ -160,7 +160,7 @@ test("con la empresa relajada, una fila que el nombre atribuye a la otra empresa
   assert.deepEqual(r.filtrosRelajados, ["empresa"]);
   assert.equal(r.coincidencias[0].atribucion, "otra");
   const texto = formatearResultadoCashflow(r, { texto: "MOD 115", empresa: "EWORKS" });
-  assert.match(texto, /\[el nombre indica la otra empresa\]/);
+  assert.match(texto, /\[el nombre indica WOBA\]/);
   assert.doesNotMatch(texto, /figuran «sin empresa»/);
 });
 
@@ -252,7 +252,8 @@ test("sin resultados: enumera los intentos REALES y la cobertura, y prohíbe con
   assert.equal(r.coincidencias.length, 0);
   const texto = formatearResultadoCashflow(r, consulta);
   assert.match(texto, /No se encontraron movimientos para: texto «qwertyzz», empresa EWORKS, semana S38/);
-  assert.match(texto, /1\) con todos los criterios \(nombre, importe y sinónimos\): 0 filas/);
+  assert.match(texto, /1\) con todos los criterios \(nombre, sinónimos\): 0 filas/);
+  assert.doesNotMatch(texto.split("\n").find((l) => l.startsWith("Se probó")) ?? "", /importe/, "no afirma haber probado el importe si no se pidió");
   assert.match(texto, /sin exigir la semana ni la empresa/);
   assert.match(texto, /16 movimientos leídos/);
   assert.match(texto, /Impuestos por Pagar: 8/);
@@ -262,7 +263,7 @@ test("sin resultados: enumera los intentos REALES y la cobertura, y prohíbe con
   // Una consulta solo de semana no puede afirmar que se probó por nombre o importe.
   const soloSemana = q({ semana: "S99" });
   assert.equal(soloSemana.intentos.length, 1);
-  assert.doesNotMatch(formatearResultadoCashflow(soloSemana, { semana: "S99" }), /nombre.*importe.*sinónimos/);
+  assert.doesNotMatch(formatearResultadoCashflow(soloSemana, { semana: "S99" }), /nombre.*sinónimos/);
 });
 
 test("lectura: hoja vacía = fallo de lectura (no 'no hay'); secciones no localizadas y filas ilegibles se avisan siempre que importan", () => {
@@ -277,7 +278,7 @@ test("lectura: hoja vacía = fallo de lectura (no 'no hay'); secciones no locali
   const rVacia = q(consultaVacia);
   const tVacia = formatearResultadoCashflow(rVacia, consultaVacia, { problemasLectura: [severo, fila, otra] });
   assert.match(tVacia, /LECTURA INCOMPLETA DE LA HOJA/);
-  assert.match(tVacia, /Filas de la hoja que WOBI NO pudo leer/);
+  assert.match(tVacia, /Avisos de lectura de la hoja/);
   assert.match(tVacia, /La fila 36 de IMPUESTOS_POR_PAGAR/);
   assert.match(tVacia, /Impuestos por Pagar: 8/);
 
@@ -344,4 +345,152 @@ test("sin pistas de contenido (solo semana/empresa) lista sin relajar nada", () 
   assert.deepEqual(nombres(r).sort(), ["MOD 200 205 EWORKS", "Sanción AEAT", "Telefonica"].sort());
   assert.equal(r.filtrosRelajados.length, 0);
   assert.equal(q({ semana: "S99" }).coincidencias.length, 0);
+});
+
+const fila = (categoria: DetalleRegistro["categoria"], concepto: string, semana: string, valor: string, extra: Partial<DetalleRegistro> = {}): DetalleRegistro => ({
+  categoria, fila: Math.floor(Math.random() * 1e6), concepto, semana, valor, ...extra,
+});
+
+test("un parecido débil NO detiene la búsqueda: si relajando una pista aparece la EXACTA, se devuelve y los parecidos la acompañan", () => {
+  const filas = [fila("GASTOS_FIJOS", "Alquiler oficina Madrid", "S10", "€1,000.00"), fila("GASTOS_FIJOS", "Alquiler local Barcelona", "S20", "€900.00")];
+  const semana = consultarCashflow(filas, { texto: "Alquiler oficina", semana: "S20" });
+  assert.deepEqual(semana.filtrosRelajados, ["semana"]);
+  assert.equal(semana.coincidencias[0].registro.concepto, "Alquiler oficina Madrid", "la exacta primero");
+  assert.equal(semana.coincidencias[0].calidad, "exacta");
+  assert.ok(semana.coincidencias.some((c) => c.registro.concepto === "Alquiler local Barcelona"), "el parecido de esa semana también se cita");
+
+  const importe = consultarCashflow(filas, { texto: "Alquiler oficina", valor: 900 });
+  assert.equal(importe.coincidencias[0].registro.concepto, "Alquiler oficina Madrid");
+  assert.deepEqual(importe.filtrosRelajados, ["valor"]);
+
+  // Sin exacta en ningún intento, el parecido débil sí se devuelve (aproximado y sin relajar nada).
+  const solo = consultarCashflow([filas[1]], { texto: "Alquiler oficina", semana: "S20" });
+  assert.equal(solo.aproximado, true);
+  assert.deepEqual(solo.filtrosRelajados, []);
+});
+
+test("menos pistas quitadas primero: quitar solo la semana antes que semana+empresa", () => {
+  const r = q({ texto: "apremio", empresa: "EWORKS", semana: "S99" });
+  assert.deepEqual(r.filtrosRelajados, ["semana"]);
+  assert.deepEqual(nombres(r), ["Providencia de apremio"]);
+});
+
+test("apartadas por empresa: se calculan sobre el intento ganador (sinónimos incluidos), sin duplicados ni obsoletas", () => {
+  // Empresa relajada: nada queda 'apartado' (se muestra).
+  assert.deepEqual(q({ texto: "MOD 115", empresa: "EWORKS" }).apartadasPorEmpresa, []);
+  // Semana relajada: se cuentan las de la otra empresa de TODAS las semanas, cada una una vez.
+  const mod303 = q({ texto: "MOD 303", empresa: "EWORKS", semana: "S30" });
+  assert.deepEqual(mod303.filtrosRelajados, ["semana"]);
+  assert.deepEqual(mod303.apartadasPorEmpresa.map((a) => a.nombre).sort(), ["MOD 303 Q3 WOBA 2024", "MOD 303 WOBA"]);
+  // Por sinónimo: 'Hacienda' con empresa=EWORKS aparta también los MOD de WOBA.
+  const hacienda = q({ texto: "Hacienda", empresa: "EWORKS" });
+  const apartadas = hacienda.apartadasPorEmpresa.map((a) => a.nombre);
+  assert.ok(apartadas.includes("MOD 115 WOBA Q2") && apartadas.includes("MOD 111 WOBA Q2"), apartadas.join());
+  assert.equal(new Set(apartadas).size, apartadas.length, "sin duplicados");
+});
+
+test("un sinónimo real promueve la fila que antes solo era un parecido débil (Seguridad social ≈ seg social)", () => {
+  const filas = [fila("GASTOS_FIJOS", "Seguridad Social autonomos", "S40", "€300.00"), fila("GASTOS_FIJOS", "Impuestos seg social", "S40", "€12,000.00")];
+  const r = consultarCashflow(filas, { texto: "Seguridad Social" });
+  assert.deepEqual(nombres(r), ["Seguridad Social autonomos", "Impuestos seg social"]);
+  assert.equal(r.coincidencias[1].calidad, "aproximada");
+  assert.match(r.coincidencias[1].motivos.join(), /sinónimo/);
+});
+
+test("'impuestos' ofrece la sección entera aunque una fila solo case por palabras parecidas (Impuesto de sociedades)", () => {
+  const filas = [...hoja(), impuesto(40, "Impuesto de sociedades", "S45", "€5,000.00")];
+  const r = consultarCashflow(filas, { texto: "impuestos" });
+  assert.ok(nombres(r).includes("Impuesto de sociedades"));
+  assert.ok(nombres(r).includes("Providencia de apremio"));
+});
+
+test("palabras genéricas del título ('proyectos', 'otros', 'actual') NO vuelcan tablas enteras", () => {
+  const filas = [...Array.from({ length: 30 }, (_, i) => fila("PAGOS_PROYECTOS", `Cliente ${i}`, "S40", "€10.00")), fila("GASTOS_FIJOS", "Material proyectos vario", "S40", "€5.00")];
+  assert.deepEqual(nombres(consultarCashflow(filas, { texto: "proyectos" })), ["Material proyectos vario"]);
+  assert.equal(consultarCashflow(filas, { texto: "otros" }).coincidencias.length, 0);
+});
+
+test("nombre + importe juntos en todos los formatos; fechas, porcentajes y versiones NO se parten", () => {
+  const filas = [
+    fila("IMPUESTOS_POR_PAGAR", "Sanción AEAT", "S41", "€137.62"),
+    fila("IMPUESTOS_POR_PAGAR", "Sanción tráfico", "S41", "€200.00"),
+    fila("APLAZAMIENTO_IMPUESTOS", "MOD 200 205 EWORKS", "S41", "€1,186.00"),
+    fila("GASTOS_FIJOS", "Fee 1,50 meses", "S01", "€10.00"),
+    fila("GASTOS_FIJOS", "Pago 12.05.2025", "S02", "€11.00"),
+    fila("GASTOS_FIJOS", "IVA 21,00%", "S03", "€12.00"),
+  ];
+  for (const texto of ["Sanción AEAT 137,62", "Sanción AEAT 137,62€", "Sanción AEAT €137.62", "Sanción AEAT 137,62 €", "Sanción AEAT 137,62 euros"]) {
+    const r = consultarCashflow(filas, { texto });
+    assert.deepEqual(r.coincidencias.map((c) => c.registro.concepto), ["Sanción AEAT"], texto);
+    assert.equal(r.aproximado, false, texto);
+  }
+  for (const texto of ["MOD 200 205 EWORKS 1186,00", "MOD 200 205 EWORKS 1.186,00", "MOD 200 205 EWORKS 1186 €"]) {
+    assert.deepEqual(consultarCashflow(filas, { texto }).coincidencias.map((c) => c.registro.concepto), ["MOD 200 205 EWORKS"], texto);
+  }
+  for (const texto of ["Pago 12.05.2025", "IVA 21,00%"]) {
+    const r = consultarCashflow(filas, { texto });
+    assert.equal(r.consultaEfectiva.texto, texto, `no se reescribe: ${texto}`);
+    assert.equal(r.coincidencias[0]?.registro.concepto, texto);
+  }
+  assert.equal(consultarCashflow(filas, { texto: "Fee 1,50 meses" }).coincidencias[0]?.registro.concepto, "Fee 1,50 meses", "'1,50' se separa como importe, pero se vuelve al texto original si no casa");
+  assert.equal(consultarCashflow(filas, { texto: "MOD 200 205 EWORKS" }).consultaEfectiva.valor, undefined, "MOD 200 205 no es un importe");
+});
+
+test("con nombre+importe separados, si el importe no casa se vuelve al texto original antes de relajar el nombre", () => {
+  const filas = [fila("GASTOS_FIJOS", "Fee 1,50 meses", "S01", "€10.00")];
+  const r = consultarCashflow(filas, { texto: "Fee 1,50 meses" });
+  assert.deepEqual(nombres(r), ["Fee 1,50 meses"]);
+  assert.equal(r.aproximado, false);
+});
+
+test("las secciones reconocidas solo se citan si se aplicaron; al relajar el nombre queda solo la sección y se marca aproximada", () => {
+  const relajada = q({ texto: "apremio", categoria: "gastos fijos" });
+  assert.deepEqual(relajada.filtrosRelajados, ["categoria"]);
+  assert.deepEqual(relajada.categoriasReconocidas, []);
+  assert.doesNotMatch(formatearResultadoCashflow(relajada, { texto: "apremio", categoria: "gastos fijos" }), /Sección\(es\)/);
+
+  const soloSeccion = q({ texto: "algo que no existe", categoria: "gastos fijos" });
+  assert.deepEqual(soloSeccion.filtrosRelajados, ["texto"]);
+  assert.equal(soloSeccion.aproximado, true);
+  assert.match(soloSeccion.coincidencias[0].motivos.join(), /solo pertenece a la sección/);
+});
+
+test("la etiqueta de empresa es la misma con o sin filtro: '[EWORKS por el nombre]'", () => {
+  const sin = formatearResultadoCashflow(q({ texto: "MOD 303 EWORKS Q2" }), { texto: "MOD 303 EWORKS Q2" });
+  const con = formatearResultadoCashflow(q({ texto: "MOD 303 EWORKS Q2", empresa: "EWORKS" }), { texto: "MOD 303 EWORKS Q2", empresa: "EWORKS" });
+  for (const t of [sin, con]) assert.match(t, /\[EWORKS por el nombre\] MOD 303 EWORKS Q2/);
+  assert.doesNotMatch(sin, /figuran «sin empresa»/);
+});
+
+test("una celda de importe vacía o ilegible NO es 0 €: no casa con importes pequeños", () => {
+  const filas = [fila("IMPUESTOS_POR_PAGAR", "Sin importe aún", "S01", ""), fila("IMPUESTOS_POR_PAGAR", "Pendiente confirmar", "S02", "pendiente")];
+  assert.equal(consultarCashflow(filas, { valor: 0.5 }).coincidencias.length, 0);
+  assert.equal(consultarCashflow(filas, { valor: 1 }).coincidencias.length, 0);
+});
+
+test("modo concepto: una exacta oculta las parecidas (de eso depende la SUMA de vencimientos) y no relaja ni con empresa", () => {
+  const filas = [fila("GASTOS_FIJOS", "Cuotas préstamo", "S01", "€100.00"), fila("GASTOS_FIJOS", "Cuota autónomos", "S01", "€50.00")];
+  assert.deepEqual(nombres(consultarCashflow(filas, { texto: "cuotas" }, { modo: "concepto" })), ["Cuotas préstamo"]);
+  const sinRelajar = consultarCashflow(hoja(), { texto: "MOD 115", empresa: "EWORKS" }, { modo: "concepto" });
+  assert.deepEqual(sinRelajar.filtrosRelajados, []);
+  assert.equal(sinRelajar.coincidencias.length, 0, "en modo concepto nunca suma dinero de la otra empresa");
+});
+
+test("entrada rara del modelo: tipos inesperados se enumeran, números valen como texto, nada revienta ni tarda", () => {
+  assert.equal(parsearEntradaConsulta({ semana: 38 }).consulta?.semana, "S38");
+  assert.equal(parsearEntradaConsulta({ contraparte: 747.31 }).consulta?.texto, "747.31");
+  const lista = parsearEntradaConsulta({ contraparte: ["apremio"], semana: "S38" });
+  assert.match(lista.ignorados.join(), /contraparte \(se esperaba texto, llegó una lista\)/);
+  assert.equal(parsearEntradaConsulta({ empresa: ["WOBA"] }).rechazo === undefined, false, "solo una pista inválida → se pide aclaración");
+  assert.match(parsearEntradaConsulta(null).rechazo ?? "", /^$|.*/);
+  assert.deepEqual(parsearEntradaConsulta(undefined).ignorados, []);
+  const larga = parsearEntradaConsulta({ contraparte: "a".repeat(5000) });
+  assert.equal(larga.consulta?.texto?.length, 200);
+  assert.match(larga.ignorados.join(), /demasiado largo/);
+  assert.match(parsearEntradaConsulta({ valor: 0.004, contraparte: "x" }).ignorados.join(), /al menos 0,01/);
+  assert.match(parsearEntradaConsulta({ valor: "1e3" }).rechazo ?? "", /No se aplicó ningún filtro válido/);
+  const t0 = Date.now();
+  importeDeTexto("1" + " ".repeat(200_000) + "x");
+  consultarCashflow(hoja(), { texto: "palabra ".repeat(500) });
+  assert.ok(Date.now() - t0 < 1500, "sin backtracking cuadrático");
 });

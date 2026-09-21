@@ -57,16 +57,26 @@ export function minusculasSinTildes(texto: string): string {
     .toLowerCase();
 }
 
+function limpiarNombre(t: string): string {
+  return minusculasSinTildes(t).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
 /**
- * true si el nombre buscado aparece COMPLETO como palabra o frase dentro del candidato (o al revés), sin
- * distinguir tildes ni mayúsculas. Cubre lo que textosParecidos no puede por diseño — sus palabras de menos de
- * 5 letras se ignoran a propósito para no dar falsos positivos —: nombres cortos idénticos como "Luz", "AWS" o
- * "IVA". Solo para rutas donde otros criterios (semana, importe) ya acotan el candidato.
+ * true si el nombre buscado aparece COMPLETO, como palabra o frase, dentro del candidato ("Luz" en "Luz oficina"),
+ * sin distinguir tildes ni mayúsculas. Cubre lo que textosParecidos no puede por diseño — sus palabras de menos
+ * de 5 letras se ignoran a propósito para no dar falsos positivos —: nombres cortos idénticos como "Luz", "AWS"
+ * o "IVA". Solo en un sentido (el candidato contiene lo buscado) para que un candidato genérico y corto ("Gas")
+ * no case con un nombre largo. Pensado para rutas donde otros criterios (semana, importe) ya acotan el candidato.
  */
 export function nombresCoinciden(buscado: string, candidato: string): boolean {
-  const limpiar = (t: string) => ` ${minusculasSinTildes(t).replace(/[^a-z0-9]+/g, " ").trim()} `;
-  const a = limpiar(buscado);
-  const b = limpiar(candidato);
-  if (a.trim().length < 2 || b.trim().length < 2) return false;
-  return b.includes(a) || a.includes(b);
+  const a = limpiarNombre(buscado);
+  const b = limpiarNombre(candidato);
+  if (a.length < 2 || b.length < 2) return false;
+  return ` ${b} `.includes(` ${a} `);
+}
+
+/** true si los dos nombres son el mismo (sin tildes, mayúsculas ni puntuación). */
+export function nombresIguales(a: string, b: string): boolean {
+  const x = limpiarNombre(a);
+  return x.length >= 2 && x === limpiarNombre(b);
 }
