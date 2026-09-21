@@ -6,6 +6,8 @@ import { candidatosMovimientoAuto, fechaValida, hash, monedaDocumentoAuto, movim
   VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE, VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
+import { generarComprobantePDF } from "../generarComprobantePDF";
+import type { DatosFactura } from "../../documental/extractInvoiceData";
 
 type Registro = Record<string, unknown>;
 export function objeto(raw: unknown): Registro {
@@ -55,9 +57,11 @@ export class HoldedAuto {
    * comprobante; se invalida la cuenta apenas se concilia un movimiento.
    */
   private readonly movimientosPorVentana = new Map<string, Promise<Registro[]>>();
+  private readonly soportesPreparados = new Map<string, { data: Buffer; nombre: string; mime: string }>();
   constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch,
     private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"],
-    private readonly flujoExistente?: FlujoGastoExistente) {}
+    private readonly flujoExistente?: FlujoGastoExistente,
+    private readonly renderizarComprobante: typeof generarComprobantePDF = generarComprobantePDF) {}
   private async get(empresa: EmpresaAuto, path: string): Promise<Registro> {
     const key = process.env[KEYS[empresa]];
     if (!key) throw new Error(`Falta ${KEYS[empresa]}.`);
@@ -478,18 +482,77 @@ export class HoldedAuto {
     return base && Array.isArray(c.tags) && c.tags.includes(`wobi-auto-${op.id}`);
   }
   private nombreAdjunto(op: OperacionAuto): string { return `wobi-${op.id}-${op.plan.fuenteHash.slice(0, 16)}`; }
+  private datosFactura(op: OperacionAuto): DatosFactura {
+    const r = op.plan.recibo;
+    return {
+      esFacturaOGasto: true,
+      proveedor: r.proveedor,
+      monto: r.monto,
+      moneda: r.moneda,
+      montoEquivalente: r.equivalente?.monto,
+      monedaEquivalente: r.equivalente?.moneda,
+      personaAsociada: r.persona,
+      contextoDeViaje: r.viaje,
+      fecha: r.fecha,
+      concepto: r.concepto,
+      numeroDocumento: r.numero,
+      reciboSimplificado: r.tipo !== "factura",
+      lineas: [{ concepto: r.concepto, base: r.monto, tipoIvaPct: 0 }],
+      empresaProbable: r.empresa,
+      confianza: r.confianza,
+      razon: r.evidencia,
+    };
+  }
+  async prepararAdjunto(op: OperacionAuto, c: CorreoAuto): Promise<void> {
+    const a = c.adjuntos.find(x => x.id === op.plan.recibo.fuente);
+    let data: Buffer;
+    let nombre: string;
+    let mime: string;
+    if (op.plan.recibo.fuente === "cuerpo") {
+      if (hash(c.cuerpo) !== op.plan.fuenteHash) throw new Error("El correo cambió; no se generará otro comprobante.");
+      data = await this.renderizarComprobante({
+        de: c.de,
+        asunto: c.asunto,
+        fecha: c.fecha,
+        cuerpoCompleto: c.cuerpo,
+        htmlOriginal: c.htmlOriginal,
+      }, this.datosFactura(op));
+      if (data.subarray(0, 4).toString("ascii") !== "%PDF") throw new Error("El comprobante generado no es un PDF válido.");
+      nombre = `${this.nombreAdjunto(op)}.pdf`;
+      mime = "application/pdf";
+    } else {
+      if (!a || hash(a.data) !== op.plan.fuenteHash) throw new Error("El comprobante cambió; no se adjuntará otro archivo.");
+      data = a.data;
+      nombre = a.nombre;
+      mime = a.mime || "application/octet-stream";
+    }
+    const soporteHash = hash(data);
+    if (op.plan.soporteHash && op.plan.soporteHash !== soporteHash) {
+      throw new Error("El archivo contable preparado cambió; requiere revisión manual.");
+    }
+    if (op.plan.soporteNombre && op.plan.soporteNombre !== nombre) throw new Error("El nombre del soporte preparado cambió.");
+    if (op.plan.soporteMime && op.plan.soporteMime !== mime) throw new Error("El tipo del soporte preparado cambió.");
+    op.plan.soporteHash = soporteHash;
+    op.plan.soporteNombre = nombre;
+    op.plan.soporteMime = mime;
+    this.soportesPreparados.set(op.id, { data, nombre, mime });
+  }
   async adjuntar(op: OperacionAuto, c: CorreoAuto): Promise<void> {
     if (!op.compraId || !await this.verificarCreacion(op)) throw new Error("Compra no verificada antes de adjuntar.");
-    const a = c.adjuntos.find(x => x.id === op.plan.recibo.fuente);
-    const data = op.plan.recibo.fuente === "cuerpo" ? Buffer.from(c.cuerpo, "utf8") : a?.data;
-    if (!data || hash(data) !== op.plan.fuenteHash) throw new Error("El comprobante cambió; no se adjuntará otro archivo.");
-    const extension = a ? (a.nombre.match(/\.([a-zA-Z0-9]{1,8})$/)?.[1] ?? (a.mime === "application/pdf" ? "pdf" : "bin")) : "txt";
+    let soporte = this.soportesPreparados.get(op.id);
+    if (!soporte) {
+      await this.prepararAdjunto(op, c);
+      soporte = this.soportesPreparados.get(op.id);
+    }
+    if (!soporte || !op.plan.soporteHash || hash(soporte.data) !== op.plan.soporteHash) {
+      throw new Error("El archivo contable preparado no coincide con la operación durable.");
+    }
     if (this.flujoExistente) {
-      await this.flujoExistente.adjuntar(op, data, a?.nombre ?? `${this.nombreAdjunto(op)}.${extension}`, a?.mime ?? "text/plain");
+      await this.flujoExistente.adjuntar(op, soporte.data, soporte.nombre, soporte.mime);
       return;
     }
     const form = new FormData();
-    form.append("file", new Blob([new Uint8Array(data)], { type: a?.mime ?? "text/plain" }), `${this.nombreAdjunto(op)}.${extension}`);
+    form.append("file", new Blob([new Uint8Array(soporte.data)], { type: soporte.mime }), soporte.nombre);
     await this.post(op.plan.empresa, `/purchases/${idUrl(op.compraId)}/attachments`, form, true);
   }
   async verificarAdjunto(op: OperacionAuto): Promise<boolean> {
@@ -511,7 +574,7 @@ export class HoldedAuto {
       const response = await this.request(`https://api.holded.com/api/v2/purchases/${idUrl(op.compraId!)}/attachments/${idUrl(texto(candidato.id))}`, {
         headers: { Authorization: `Bearer ${process.env[KEYS[op.plan.empresa]]}` }, signal: AbortSignal.timeout(30_000) });
       if (!response.ok) throw new Error("No se pudo verificar el contenido del comprobante en Holded.");
-      return hash(Buffer.from(await response.arrayBuffer())) === op.plan.fuenteHash;
+      return hash(Buffer.from(await response.arrayBuffer())) === (op.plan.soporteHash ?? op.plan.fuenteHash);
     });
     return coincidencias.some(Boolean);
   }

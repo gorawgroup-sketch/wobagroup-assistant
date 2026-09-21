@@ -15,6 +15,16 @@ test("lee todas las partes textuales, incluido cuerpo servido como attachmentId"
   assert.ok(r.cuerpo.length > 8000); assert.ok(r.cuerpo.endsWith("Final importante"));
   assert.equal(r.adjuntos.length, 1); assert.equal(r.adjuntos[0].id, "img");
 });
+test("conserva el HTML original por separado para generar un comprobante visual", async () => {
+  const gmail = { users: { messages: { attachments: { get: async () => ({ data: {} }) } } } } as unknown as gmail_v1.Gmail;
+  const r = await contenidoCompleto(gmail, { id: "m", payload: { parts: [
+    { mimeType: "text/plain", body: { data: b64("Recibo 20 EUR") } },
+    { mimeType: "text/html", body: { data: b64("<html><body><strong>Total 20 EUR</strong></body></html>") } },
+  ] } });
+  assert.match(r.cuerpo, /\[text\/plain\]/);
+  assert.match(r.cuerpo, /\[text\/html\]/);
+  assert.equal(r.htmlOriginal, "<html><body><strong>Total 20 EUR</strong></body></html>");
+});
 test("paginación completa, todos los mensajes pendientes no leídos y archivados incluidos", async () => {
   const consultas: Record<string, unknown>[] = [];
   const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {

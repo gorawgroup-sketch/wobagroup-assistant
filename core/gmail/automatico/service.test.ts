@@ -25,7 +25,7 @@ function escenario() {
     guardar: async op => { eventos.push(op.estado); ops.set(op.id, copiar(op)); },
     auditar: async e => { eventos.push(e.tipo); },
   };
-  const llamadas = { crear: 0, adjuntar: 0, conciliar: 0, marcar: 0, registrar: 0 };
+  const llamadas = { crear: 0, preparar: 0, adjuntar: 0, conciliar: 0, marcar: 0, registrar: 0 };
   const puerto: PuertoAutomatico = {
     listar: async () => correos, obtener: async (mensajeId) => correos.find(c => c.id === mensajeId),
     reservadoManualmente: async () => false,
@@ -33,7 +33,19 @@ function escenario() {
     crear: async () => { llamadas.crear++; assert.equal([...ops.values()][0].estado, "creando"); return "compra1"; },
     recuperarCreacion: async () => undefined,
     verificarCreacion: async () => true,
-    adjuntar: async () => { llamadas.adjuntar++; assert.equal([...ops.values()][0].estado, "adjuntando"); }, verificarAdjunto: async () => true,
+    prepararAdjunto: async op => {
+      llamadas.preparar++;
+      op.plan.soporteHash = hash("pdf-final");
+      op.plan.soporteNombre = "comprobante.pdf";
+      op.plan.soporteMime = "application/pdf";
+    },
+    adjuntar: async () => {
+      llamadas.adjuntar++;
+      const guardada = [...ops.values()][0];
+      assert.equal(guardada.estado, "adjuntando");
+      assert.equal(guardada.plan.soporteHash, hash("pdf-final"));
+      assert.equal(guardada.plan.soporteMime, "application/pdf");
+    }, verificarAdjunto: async () => true,
     conciliar: async () => { llamadas.conciliar++; assert.equal([...ops.values()][0].estado, "conciliando"); }, verificarConciliacion: async () => true,
     marcarResuelto: async () => { llamadas.marcar++; }, registrarFinalizada: async () => { llamadas.registrar++; },
     permitidoAhora: () => true, ejecutarProtegido: async (_op, f) => f(),
@@ -45,7 +57,7 @@ test("crea, adjunta, concilia, verifica y solo entonces marca el correo como res
   const e = escenario(); const r = await e.service.revisar(configFixture);
   assert.equal(r.completados, 1); assert.equal(r.pendientes.length, 0);
   assert.equal(r.encontrados, 1); assert.equal(r.aplazados, 0); assert.equal(r.reservados, 0);
-  assert.deepEqual(e.llamadas, { crear: 1, adjuntar: 1, conciliar: 1, marcar: 1, registrar: 1 });
+  assert.deepEqual(e.llamadas, { crear: 1, preparar: 1, adjuntar: 1, conciliar: 1, marcar: 1, registrar: 1 });
   assert.ok(e.eventos.indexOf("completada") < e.eventos.indexOf("correo_resuelto"));
 });
 test("el informe desglosa automatizaciones por empresa y conserva el detalle verificable", () => {
