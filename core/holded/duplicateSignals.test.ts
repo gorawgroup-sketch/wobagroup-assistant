@@ -216,3 +216,20 @@ test("sin proveedor no bloquea por fecha lejana, conciliación parcial o importe
   assert.equal(evaluarMovimientoConciliadoComoDuplicado({ ...base, status: "partial", reconciled_amount: "-3.30" }, criterios), undefined);
   assert.equal(evaluarMovimientoConciliadoComoDuplicado({ ...base, amount: "-6.55", reconciled_amount: "-6.55" }, criterios), undefined);
 });
+
+import { esCargoLibreExactoParaDuplicado, priorizarCargoLibreExacto } from "./duplicateSignals";
+test("Uber 9.89 libre exacto prevalece sobre 9.83 conciliado probable, no sobre uno exacto", () => {
+  const c={proveedor:"Uber",monto:9.89,moneda:"EUR",fecha:"2026-09-07"};
+  const libre={id:"libre",origin:"bankin",description:"Dlo Uberrides",amount:"-9.89",currency:"EUR",booking_date:"2026-09-07",status:"pending",reconciled_amount:"0.00"};
+  assert.equal(esCargoLibreExactoParaDuplicado(libre,c),true);
+  const probable={nivel:"probable" as const,monto:9.83,moneda:"EUR"};
+  const exacto={nivel:"exacta" as const,monto:9.89,moneda:"EUR"};
+  assert.deepEqual(priorizarCargoLibreExacto([probable,exacto],new Set(["cuenta/libre"]),9.89,"EUR"),[exacto]);
+  for(const cambio of [{amount:"9.89"},{currency:"USD"},{status:"partial"},{reconciled_amount:"0.01"},{origin:"manual"},{booking_date:"2026-09-08"},{description:"Otro comercio"}]) {
+    assert.equal(esCargoLibreExactoParaDuplicado({...libre,...cambio},c),false);
+  }
+  assert.deepEqual(priorizarCargoLibreExacto([probable],new Set(),9.89),[probable]);
+  assert.deepEqual(priorizarCargoLibreExacto([probable],new Set(["a/1","b/2"]),9.89),[probable]);
+  const mismoImporte={...probable,monto:9.89};
+  assert.deepEqual(priorizarCargoLibreExacto([mismoImporte],new Set(["a/1"]),9.89),[mismoImporte]);
+});
