@@ -314,6 +314,11 @@ const ACCIONES_SENSIBLES = new Set([
   // decisión centralizada en superadmin.
   "colacorreo_siguiente",
   "colacorreo_descartaractivo",
+  // Decisiones sobre una verificacion de duplicado que mantiene un correo
+  // activo. Reintentar solo relee, pero confirmar cierra ese correo y puede
+  // avanzar la cola; ambas quedan centralizadas en el superadministrador.
+  "gpd_reintentar",
+  "gpd_confirmar",
   "resumen_descartar_todo",
   // Mismo criterio: descartar UN pendiente individual del resumen de fin de día (ver
   // resumenPendientesDiario.ts) es la misma clase de decisión que "Descartar todo", solo que a

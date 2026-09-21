@@ -1362,7 +1362,8 @@ async function procesarCorreoPuntualInterno(
 export async function avanzarColaCorreoSiActivo(
   chatId: number,
   identidadEsperada: IdentidadCorreoCola,
-  claveIdempotencia?: string
+  claveIdempotencia?: string,
+  opciones: { continuarAutomaticamente?: boolean } = {}
 ): Promise<boolean> {
   // Copia defensiva: el reintento debe conservar exactamente la identidad
   // del clic original, no una referencia mutable de su store.
@@ -1375,7 +1376,8 @@ export async function avanzarColaCorreoSiActivo(
       chatId,
       identidadParaReintento,
       (identidadResuelta) => { identidadParaReintento = identidadResuelta; },
-      claveIdempotencia
+      claveIdempotencia,
+      opciones.continuarAutomaticamente === true
     ));
     limpiarReintentoAvanceCola(chatId, identidadParaReintento, claveIdempotencia);
     return procesado;
@@ -1386,12 +1388,16 @@ export async function avanzarColaCorreoSiActivo(
     // aunque el resultado real ya estuviera aplicado. El avance es idempotente cuando llega a cero,
     // así que se reintenta aparte y el resultado contable no se vuelve a ejecutar.
     console.error("[revisarCorreoNuevo] No se pudo cerrar la cola; se reintentará sin repetir la acción:", error);
-    programarReintentoAvanceCola(chatId, identidadParaReintento, claveIdempotencia);
+    programarReintentoAvanceCola(chatId, identidadParaReintento, claveIdempotencia, opciones);
     return false;
   }
 }
 
-const reintentosAvanceCola = new Map<string, { intentos: number; timer?: ReturnType<typeof setTimeout> }>();
+const reintentosAvanceCola = new Map<string, {
+  intentos: number;
+  timer?: ReturnType<typeof setTimeout>;
+  continuarAutomaticamente?: boolean;
+}>();
 const MAX_REINTENTOS_AVANCE_COLA = 5;
 
 function claveReintentoAvance(
@@ -1416,26 +1422,33 @@ function limpiarReintentoAvanceCola(
 function programarReintentoAvanceCola(
   chatId: number,
   identidad: IdentidadCorreoCola,
-  claveIdempotencia?: string
+  claveIdempotencia?: string,
+  opciones: { continuarAutomaticamente?: boolean } = {}
 ): void {
   const identidadInmutable = { threadId: identidad.threadId, mensajeId: identidad.mensajeId };
   const clave = claveReintentoAvance(chatId, identidadInmutable, claveIdempotencia);
   const actual = reintentosAvanceCola.get(clave) ?? { intentos: 0 };
   if (actual.timer || actual.intentos >= MAX_REINTENTOS_AVANCE_COLA) return;
   const intentos = actual.intentos + 1;
+  const continuarAutomaticamente = opciones.continuarAutomaticamente === true || actual.continuarAutomaticamente === true;
   const demoraMs = Math.min(60_000, 5_000 * 2 ** (intentos - 1));
   const timer = setTimeout(() => {
-    reintentosAvanceCola.set(clave, { intentos });
-    void avanzarColaCorreoSiActivo(chatId, identidadInmutable, claveIdempotencia);
+    reintentosAvanceCola.set(clave, { intentos, continuarAutomaticamente });
+    if (continuarAutomaticamente) {
+      void avanzarColaCorreoSiActivo(chatId, identidadInmutable, claveIdempotencia, { continuarAutomaticamente: true });
+    } else {
+      void avanzarColaCorreoSiActivo(chatId, identidadInmutable, claveIdempotencia);
+    }
   }, demoraMs);
   timer.unref();
-  reintentosAvanceCola.set(clave, { intentos, timer });
+  reintentosAvanceCola.set(clave, { intentos, timer, continuarAutomaticamente });
 }
 async function avanzarColaCorreoSiActivoInterno(
   chatId: number,
   identidadEsperada: IdentidadCorreoCola,
   alResolverIdentidad: (identidad: IdentidadCorreoCola) => void,
-  claveIdempotencia?: string
+  claveIdempotencia?: string,
+  continuarAutomaticamente = false
 ): Promise<boolean> {
   // Los fallos transitorios deben llegar al wrapper para que programe el reintento. Antes se
   // convertían en `terminado:false`, indistinguible de un correo con más decisiones pendientes: un
@@ -1490,6 +1503,16 @@ async function avanzarColaCorreoSiActivoInterno(
   const quedan = await contarPendientesTotal(chatId);
   if (quedan === 0) {
     await sendTelegramMessage(chatId, "✅ Ya no quedan correos sin leer por resolver — al día.").catch(() => {});
+    return true;
+  }
+
+  // Este modo solo se usa cuando el propio boton ya dice de forma explicita
+  // "cerrar y seguir". No cambia el comportamiento conservador del resto de
+  // decisiones: evita pedir una segunda confirmacion inmediatamente despues
+  // de que el operador ya autorizo avanzar en este mismo clic.
+  if (continuarAutomaticamente) {
+    await sendTelegramMessage(chatId, "🔄 Análisis confirmado. Revisando el siguiente correo...").catch(() => {});
+    await procesarSiguienteCorreoActivoYaCoordinado(chatId);
     return true;
   }
 
