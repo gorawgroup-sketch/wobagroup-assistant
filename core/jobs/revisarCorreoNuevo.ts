@@ -1,3 +1,4 @@
+import { entregarRevisionCorreo } from "./entregarRevisionCorreo";
 import { buscarAnalisisAutomaticoReciente, conCoordinadorCorreo } from "../gmail/automatico/postgres";
 import { revisarGastosAutomaticos, comprobarCorreoDisponible } from "../gmail/automatico/runtime";
 import { resumenAutomatico } from "../gmail/automatico/service";
@@ -339,12 +340,25 @@ export async function revisarCorreoNuevo(
     const resumen = resumenAutomatico(resultadoParaInforme,
       revisionesConsolidadas ? { revisionesConsolidadas } : undefined);
     console.log(`[correo-auto] Resultado final:\n${resumenAutomatico(automatico)}`);
-    const cola = await sincronizarColaCorreo(
-      forzarAviso,
-      chatId,
+    // Entregar el resultado financiero antes de tocar la cola de Sheets.
+    // Un 429 de la cola no debe ocultar gastos ya completados.
+    const publicar = () => debePublicarInformeCorreo(solicitud, revisionesInteractivas.has(chatId), slotNoDisponible);
+    const cola = await entregarRevisionCorreo<ResultadoRevisarCorreo>({
       resumen,
-      () => debePublicarInformeCorreo(solicitud, revisionesInteractivas.has(chatId), slotNoDisponible)
-    );
+      publicar,
+      enviar: texto => sendTelegramMessageSmart(chatId, texto),
+      sincronizar: pendiente => sincronizarColaCorreo(forzarAviso, chatId, pendiente, publicar),
+      recuperar: async error => {
+        console.error("[revisarCorreoNuevo] Fase automática terminada; cola manual pendiente:",
+          error instanceof Error ? error.message : String(error));
+        if (publicar()) await sendTelegramMessageSmart(chatId,
+          "⚠️ La revisión automática terminó; el resultado anterior se conserva. " +
+          "No pude preparar la cola manual por un fallo temporal. Usa ‘Recuperar cola manual’ para retomar; " +
+          "no necesitas repetir /revisarcorreo.",
+          [[{ text: "▶️ Recuperar cola manual", callback_data: "colacorreo_recuperarcola" }]]);
+        return { correosRevisados: 0, informePublicado: false };
+      },
+    });
     if (solicitud.origen === "cron" && solicitud.informe === "consolidado" &&
         cola.informePublicado && slotInforme && !slotNoDisponible) {
       await marcarInformeCronPublicado(slotInforme).catch(error =>
@@ -1594,7 +1608,14 @@ export async function handleColaCorreoSiguienteCallback(callback: TelegramCallba
   }
   await sendTelegramMessage(chatId, "🔄 Revisando el siguiente correo...").catch(() => {});
 
-  await procesarSiguienteCorreoActivo(chatId);
+  if (callback.data === "colacorreo_recuperarcola") {
+    await conCoordinadorCorreo(async () => {
+      await sincronizarColaCorreo(false, chatId, "", () => false);
+      await procesarSiguienteCorreoActivo(chatId);
+    });
+  } else {
+    await procesarSiguienteCorreoActivo(chatId);
+  }
 }
 
 /**

@@ -92,7 +92,7 @@ test("el watchdog consulta todas las decisiones intermedias que pueden mantener 
 
 test("el watchdog serializa inspección y reintento, conservando el mensaje exacto", async () => {
   const fuente = await readFile(join(process.cwd(), "core/jobs/vigilarProcesamientoAtascado.ts"), "utf8");
-  assert.match(fuente, /return conCoordinadorCorreo\(\(\) => vigilarUnChatYaCoordinado\(chatId\)\)/);
+  assert.match(fuente, /return conCoordinadorCorreo\(\(\) => vigilarUnChatYaCoordinado\(chatId\), \{ lockTimeoutMs: 1_000 \}\)/);
   assert.match(fuente, /procesarSiguienteCorreoActivoYaCoordinado\(chatId\)/);
   assert.doesNotMatch(fuente, /obtenerUltimoMensajeDeHilo/);
   assert.match(

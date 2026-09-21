@@ -5,6 +5,13 @@ import { VERSION_ANALISIS, VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto
 
 // El esquema se aplica explícitamente con el script de preparación; nunca durante una escritura.
 export const SCHEMA_AUTO = `
+CREATE TABLE IF NOT EXISTS wobi_mail_queue_migrations (
+ namespace text PRIMARY KEY, rows_imported integer NOT NULL, migrated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS wobi_mail_queue_rows (
+ id bigserial PRIMARY KEY, namespace text NOT NULL, data jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wobi_mail_queue_namespace ON wobi_mail_queue_rows(namespace);
 CREATE TABLE IF NOT EXISTS wobi_mail_operations (
   id text PRIMARY KEY, mailbox text NOT NULL, company text NOT NULL,
   state text NOT NULL, data jsonb NOT NULL, version integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now()

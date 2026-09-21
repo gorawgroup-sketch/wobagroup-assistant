@@ -313,6 +313,7 @@ const ACCIONES_SENSIBLES = new Set([
   // correo, o descartar el que está bloqueando, son parte de esa misma
   // decisión centralizada en superadmin.
   "colacorreo_siguiente",
+  "colacorreo_recuperarcola",
   "colacorreo_descartaractivo",
   // Decisiones sobre una verificacion de duplicado que mantiene un correo
   // activo. Reintentar solo relee, pero confirmar cierra ese correo y puede

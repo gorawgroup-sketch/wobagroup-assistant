@@ -1,4 +1,5 @@
-import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "../google/sheetsKeyValueStore";
+import { leerFilas, agregarFila, actualizarFila, eliminarFila } from "./colaStorage";
+import { conCoordinadorCorreo } from "./automatico/postgres";
 import { conMutex } from "../utils/asyncMutex";
 
 /**
@@ -267,7 +268,7 @@ export async function encolarCorreos(
   items: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }>,
   opciones: { reconciliarAusentes?: boolean } = {}
 ): Promise<number> {
-  return conMutex(MUTEX_COLA, () => encolarCorreosInterno(chatId, items, opciones));
+  return conMutacionCola(() => encolarCorreosInterno(chatId, items, opciones));
 }
 
 /** true si hay un correo "activo" (mostrado, esperando resolución) para este chat. */
@@ -360,7 +361,7 @@ async function iniciarSiguienteActivoInterno(chatId: number): Promise<ItemColaCo
 }
 
 export async function iniciarSiguienteActivo(chatId: number): Promise<ItemColaCorreo | undefined> {
-  return conMutex(MUTEX_COLA, () => iniciarSiguienteActivoInterno(chatId));
+  return conMutacionCola(() => iniciarSiguienteActivoInterno(chatId));
 }
 
 /**
@@ -409,7 +410,7 @@ export async function descartarActivoEstancado(
   chatId: number,
   identidadEsperada: IdentidadCorreoCola
 ): Promise<boolean> {
-  return conMutex(MUTEX_COLA, () => descartarActivoEstancadoInterno(chatId, identidadEsperada));
+  return conMutacionCola(() => descartarActivoEstancadoInterno(chatId, identidadEsperada));
 }
 
 /**
@@ -459,7 +460,7 @@ export async function reencolarActivoParaReintento(
   identidadEsperada: IdentidadCorreoCola,
   actualizacion: { de: string; asunto: string }
 ): Promise<boolean> {
-  return conMutex(MUTEX_COLA, () =>
+  return conMutacionCola(() =>
     reencolarActivoParaReintentoInterno(chatId, identidadEsperada, actualizacion)
   );
 }
@@ -485,7 +486,7 @@ async function vaciarColaCorreoDelChatInterno(chatId: number): Promise<string[]>
 }
 
 export async function vaciarColaCorreoDelChat(chatId: number): Promise<string[]> {
-  return conMutex(MUTEX_COLA, () => vaciarColaCorreoDelChatInterno(chatId));
+  return conMutacionCola(() => vaciarColaCorreoDelChatInterno(chatId));
 }
 
 /** Fija cuántas decisiones independientes hacen falta para dar por resuelto el correo activo. */
@@ -516,7 +517,7 @@ export async function establecerPendientesActivo(
   identidadEsperada: IdentidadCorreoCola,
   n: number
 ): Promise<boolean> {
-  return conMutex(MUTEX_COLA, () => establecerPendientesActivoInterno(chatId, identidadEsperada, n));
+  return conMutacionCola(() => establecerPendientesActivoInterno(chatId, identidadEsperada, n));
 }
 
 /**
@@ -558,7 +559,7 @@ export async function incrementarPendientesActivo(
   identidadEsperada: IdentidadCorreoCola,
   incremento = 1
 ): Promise<boolean> {
-  return conMutex(MUTEX_COLA, () => incrementarPendientesActivoInterno(chatId, identidadEsperada, incremento));
+  return conMutacionCola(() => incrementarPendientesActivoInterno(chatId, identidadEsperada, incremento));
 }
 
 /** Compensa una reserva adicional que no llegó a producir una acción visible/persistida. Nunca cierra el correo. */
@@ -589,7 +590,7 @@ export async function revertirIncrementoPendientesActivo(
   identidadEsperada: IdentidadCorreoCola,
   decremento = 1
 ): Promise<boolean> {
-  return conMutex(MUTEX_COLA, () => revertirIncrementoPendientesActivoInterno(chatId, identidadEsperada, decremento));
+  return conMutacionCola(() => revertirIncrementoPendientesActivoInterno(chatId, identidadEsperada, decremento));
 }
 
 export interface ResultadoResolverActivo {
@@ -717,7 +718,7 @@ export async function resolverUnoActivo(
   identidadEsperada: IdentidadCorreoCola,
   claveIdempotencia?: string
 ): Promise<ResultadoResolverActivo> {
-  return conMutex(MUTEX_COLA, () => resolverUnoActivoInterno(chatId, identidadEsperada, claveIdempotencia));
+  return conMutacionCola(() => resolverUnoActivoInterno(chatId, identidadEsperada, claveIdempotencia));
 }
 
 /**
@@ -772,7 +773,7 @@ export async function prepararCierreExplicitoActivo(
   identidadEsperada: IdentidadCorreoCola,
   claveIdempotencia: string
 ): Promise<ResultadoResolverActivo> {
-  return conMutex(MUTEX_COLA, () =>
+  return conMutacionCola(() =>
     prepararCierreExplicitoActivoInterno(chatId, identidadEsperada, claveIdempotencia)
   );
 }
@@ -804,7 +805,7 @@ export async function confirmarActivoResueltoTrasMarcarLeido(
   chatId: number,
   identidadEsperada: IdentidadCorreoCola
 ): Promise<boolean> {
-  return conMutex(MUTEX_COLA, () => confirmarActivoResueltoTrasMarcarLeidoInterno(chatId, identidadEsperada));
+  return conMutacionCola(() => confirmarActivoResueltoTrasMarcarLeidoInterno(chatId, identidadEsperada));
 }
 
 /**
@@ -823,4 +824,8 @@ export async function reintentarActivoPendienteDeMarcarLeido(chatId: number): Pr
   // paso que marca el mensaje como leído.
   if (!coincideIdentidadCorreoCola(fila, { threadId: fila.id, mensajeId: fila.mensajeId })) return undefined;
   return fila;
+}
+
+function conMutacionCola<T>(tarea: () => Promise<T>): Promise<T> {
+  return conCoordinadorCorreo(() => conMutex(MUTEX_COLA, tarea));
 }

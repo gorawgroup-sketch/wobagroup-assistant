@@ -1,4 +1,6 @@
 import "dotenv/config";
+import "../core/google/globalOptions";
+import { prepararColaPostgres } from "../core/gmail/colaStorage";
 import { configuracionAuto } from "../core/gmail/automatico/model";
 import { poolAuto, SCHEMA_AUTO } from "../core/gmail/automatico/postgres";
 
@@ -6,7 +8,8 @@ async function start(): Promise<void> {
   const config = configuracionAuto();
   if (process.env.WOBI_MAIL_DATABASE_URL) {
     await poolAuto().query(SCHEMA_AUTO);
-    console.log("[startup] Registro durable de correo preparado.");
+    await prepararColaPostgres();
+    console.log("[startup] Registro durable y cola de correo preparados.");
   } else if (config.modo !== "off") {
     throw new Error("WOBI_MAIL_DATABASE_URL es obligatoria antes de activar la revisión automática.");
   }
