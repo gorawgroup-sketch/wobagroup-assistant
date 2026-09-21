@@ -502,3 +502,14 @@ test("busca cargo multimoneda aunque el contacto siga ambiguo, sin autorizar cre
   if(!decision.apto){assert.ok(decision.motivos.includes("proveedor_no_encontrado"));assert.ok(!decision.motivos.includes("sin_movimiento_exacto"));}
   assert.equal(e.posts.length,0);
 });
+test("alias confirmado desambigua fichas del mismo proveedor sin bloquear por SA o acentos", async () => {
+  const e=escenario(); e.r.proveedor="Inter Rapidísimo";
+  e.contactos[0].name="INTER RAPIDISIMO S.A";
+  e.contactos.push({id:"p2",name:"INTER RAPIDISIMO S.A"});
+  e.memoria.alias=async()=>[{contactId:"p2",contactName:"INTER RAPIDISIMO S.A"}];
+  const ev=await e.adapter.evidencias(e.c,e.r);
+  assert.equal(ev.contacto?.id,"p2");
+  assert.equal(ev.contacto?.metodo,"alias_confirmado");
+  assert.equal(ev.contacto?.exacto,true);
+  assert.equal(evaluarAuto(e.c,analisisFixture(e.r),e.r,ev,configFixture).apto,true);
+});

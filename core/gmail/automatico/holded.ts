@@ -326,10 +326,11 @@ export class HoldedAuto {
     if (seleccionados.length === 1 && typeof seleccionados[0].name === "string" &&
       !/sin identificar|desconocido|unknown|unidentified/.test(normalizar(seleccionados[0].name))) {
       e.contacto = { id: texto(seleccionados[0].id), nombre: seleccionados[0].name,
-        // Un alias aprendido no demuestra por sí solo que ESTE comprobante pertenezca al
-        // contacto. Solo la identidad/equivalencia del nombre real se considera exacta;
-        // los alias quedan para revisión manual y nunca autorizan una escritura automática.
-        exacto: metodo === "nombre_exacto" || metodo === "nombre_equivalente", metodo,
+        // Un alias confirmado puede elegir entre fichas duplicadas solo cuando
+        // además coincide la identidad normalizada del proveedor de este recibo.
+        // No autoriza alias sin relación ni variantes geográficas de una marca.
+        exacto: metodo === "nombre_exacto" || metodo === "nombre_equivalente" ||
+          (metodo === "alias_confirmado" && normalizarProveedorExacto(seleccionados[0].name) === normalizarProveedorExacto(r.proveedor)), metodo,
         similitud: similitudProveedor(seleccionados[0].name, r.proveedor) };
     }
     if (!e.contacto && !e.motivoProveedor) e.motivoProveedor = "sin_coincidencias";
