@@ -1,3 +1,4 @@
+import { resumirSolicitudInterrumpida } from "./interruptedNotice";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -42,7 +43,7 @@ class RepoMemoria implements RepositorioEntregasTelegram {
   ) {
     const actual = this.filas.get(clave);
     if (!actual || !permitidos.includes(actual.estado)) return undefined;
-    const siguiente = { ...actual, estado, payload: limpiar ? "" : actual.payload, actualizadoEn: 500 };
+    const siguiente = { ...actual, estado, payload: limpiar ? (estado === "completada" ? "" : resumirSolicitudInterrumpida(actual.payload)) : actual.payload, actualizadoEn: 500 };
     this.filas.set(clave, siguiente);
     return { ...siguiente };
   }
