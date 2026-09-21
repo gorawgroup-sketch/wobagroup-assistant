@@ -14,12 +14,9 @@ import type { ToolDefinition } from "./types";
 export const saltarCorreoActivoTool: ToolDefinition = {
   name: "saltar_correo_activo",
   description:
-    "Salta/descarta el correo ACTIVO de la cola de revisión de correo — el que está bloqueando pasar " +
-    "al siguiente — y ofrece continuar con el resto. Úsala cuando el usuario pida explícitamente saltar, " +
-    "posponer o dejar de lado el correo/pregunta actual para seguir revisando otros (ej. 'sáltate este " +
-    "correo', 'este está atascado, sigue con el siguiente', 'déjalo por ahora y continúa'). NO la uses " +
-    "para responder una pregunta pendiente normal (esa se resuelve respondiéndola, no saltándola) — solo " +
-    "cuando el usuario de verdad quiere dejarla de lado por ahora. Marca el correo como leído en Gmail.",
+    "Descarta definitivamente el correo activo y lo marca leído en Gmail. Úsala SOLO cuando el usuario " +
+    "pida descartarlo o confirme que ya lo resolvió. Para continuar con otros correos dejando este pendiente " +
+    "y sin leer, usa procesar_siguiente_correo_cola con aplazar_actual=true. No confundas posponer con descartar.",
   input_schema: { type: "object", properties: {} },
   handler: async (_input, context) => {
     const chatId = context?.chatId;
