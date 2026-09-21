@@ -53,6 +53,9 @@ import {
   guardarResolucionContacto,
   consumirResolucionContacto,
   restaurarResolucionContacto,
+  obtenerResolucionContacto,
+  priorizarResolucionContacto,
+  actualizarAlternativasResolucionContacto,
   actualizarMessageIdResolucionContacto,
   type AlternativaContacto,
   type ResolucionContactoPendiente,
@@ -126,6 +129,19 @@ import type { LineaFactura } from "../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { claveIdempotenciaGasto } from "./identidadGasto";
 import { conciliacionRequiereRevision } from "../holded/durableBankReconciliation";
+import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
+
+/**
+ * Holded exige contact_id incluso cuando el operador decide avanzar sin un
+ * contacto real. Estos contactos técnicos ya existen en cada empresa. El
+ * nombre real extraído del comprobante permanece en la descripción y este
+ * contacto nunca se aprende como alias.
+ */
+const CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA: Record<Empresa, { id: string; name: string }> = {
+  WOBA: { id: "6a96da7947b9d9c436035b7a", name: "PROVEEDOR SIN IDENTIFICAR" },
+  EWORKS: { id: "6a96da80d133ca5bab0ec4e8", name: "PROVEEDOR SIN IDENTIFICAR" },
+  Footprint: { id: "6a96da888467c6eb35096adc", name: "PROVEEDOR SIN IDENTIFICAR" },
+};
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   // Identificador interno de dispararDecisionFinal: no es un callback de Telegram.
@@ -444,13 +460,44 @@ export function botonesResolucionContacto(resolucion: ResolucionContactoPendient
     text: `✅ ${alternativa.contactName}`,
     callback_data: `gasto_usarcontacto:${resolucion.id}:${indice}`,
   }]);
-  if (resolucion.propuesta.proveedor.trim()) {
+  const proveedorReal = !esProveedorNoIdentificado(resolucion.propuesta.proveedor);
+  if (proveedorReal) {
     botones.push([{
       text: `🆕 Crear contacto nuevo: "${resolucion.propuesta.proveedor}"`,
       callback_data: `gasto_crearcontactonuevo:${resolucion.id}`,
     }]);
+    botones.push([{
+      text: "🆗 Crear sin contacto",
+      callback_data: `gasto_crearsinproveedor:${resolucion.id}`,
+    }]);
   }
+  botones.push([{
+    text: "✏️ Dar instrucciones específicas",
+    callback_data: `gasto_contactoinstrucciones:${resolucion.id}`,
+  }]);
   return botones;
+}
+
+export function textoResolucionContacto(resolucion: ResolucionContactoPendiente): string {
+  const encabezado =
+    `⚠️ No encontré exactamente el proveedor "${resolucion.propuesta.proveedor}" en los contactos de Holded ` +
+    `(${resolucion.empresaFinal}).`;
+  if (resolucion.alternativas.length === 0) {
+    const opciones = esProveedorNoIdentificado(resolucion.propuesta.proveedor)
+      ? "indicarme exactamente qué proveedor debo usar"
+      : "crear el contacto real, avanzar sin contacto, o indicarme exactamente qué proveedor debo usar";
+    return (
+      `${encabezado}\n\nNo encontré una alternativa suficientemente parecida. Puedes ${opciones}. ` +
+      `El gasto no se crea hasta que elijas.`
+    );
+  }
+  const etiquetaMotivo = (a: AlternativaContacto) =>
+    a.motivo === "nombre_parecido" ? "nombre parecido" : `mismo importe — ${a.detalle}`;
+  return (
+    `${encabezado}\n\nAlternativas encontradas:\n\n` +
+    resolucion.alternativas.map((a, i) => `${i + 1}. ${a.contactName} (${etiquetaMotivo(a)})`).join("\n") +
+    "\n\nElige una alternativa o una de las demás acciones."
+  );
 }
 
 /** Repone el mismo id y deja el render de Telegram como best-effort. */
@@ -2013,12 +2060,53 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
 
-    await answerCallbackQuerySafe(callback.id, "Esta opción fue retirada: se requiere el proveedor real.");
-    await reponerResolucionContactoTrasFallo(
-      resolucion,
-      resolucion.propuesta.proveedor.trim()
-        ? `ℹ️ No creé el gasto: ahora siempre se exige un proveedor real. Elige una alternativa o crea el contacto exacto "${resolucion.propuesta.proveedor.trim()}".`
-        : "ℹ️ No creé el gasto: el proveedor quedó vacío por una lectura incompleta. Este comprobante debe reprocesarse para recuperar el nombre real."
+    if (esProveedorNoIdentificado(resolucion.propuesta.proveedor)) {
+      await answerCallbackQuerySafe(callback.id, "Falta identificar el proveedor real.");
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        "⚠️ No creé el gasto: el comprobante no contiene un nombre de proveedor válido. " +
+          "Usa “Dar instrucciones específicas” para indicarlo; el correo y la resolución siguen pendientes."
+      );
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Procesando sin contacto real...");
+    await editTelegramMessage(
+      resolucion.chatId,
+      resolucion.messageId,
+      `🔄 Creando el gasto de "${resolucion.propuesta.proveedor}" sin contacto real...`,
+      []
+    ).catch((error) =>
+      console.error("[gastoCallbackHandler] No se pudo mostrar el procesamiento sin contacto (no crítico):", error)
+    );
+
+    try {
+      const placeholder = CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA[resolucion.empresaFinal];
+      await procesarGastoConContactoResuelto(resolucion, placeholder, false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        `⚠️ No pude completar el gasto sin contacto (${message}). La acción quedó disponible para reintentar.`
+      );
+    }
+    return;
+  }
+
+  if (accion === "gasto_contactoinstrucciones") {
+    // Si el chat tiene varias facturas pendientes, la siguiente instrucción
+    // libre debe aplicarse exactamente a la del botón tocado.
+    const resolucion = await priorizarResolucionContacto(propuestaId);
+    if (!resolucion) {
+      await answerCallbackQuerySafe(callback.id, "Esta selección ya no está disponible.");
+      return;
+    }
+    await answerCallbackQuerySafe(callback.id, "Escribe tu instrucción en el chat.");
+    await sendTelegramMessage(
+      resolucion.chatId,
+      `✏️ Indícame qué hacer con el proveedor "${resolucion.propuesta.proveedor}". Por ejemplo: ` +
+        `“usa el contacto EPAYCO”, “búscalo como PAYCO” o “crea el contacto como EPAYCO SAS”. ` +
+        `La factura ya está leída y la resolución sigue pendiente; no necesitas reenviarla.`
     );
     return;
   }
@@ -2027,6 +2115,16 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     const resolucion = await consumirResolucionContacto(propuestaId);
     if (!resolucion) {
       await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      return;
+    }
+
+    if (esProveedorNoIdentificado(resolucion.propuesta.proveedor)) {
+      await answerCallbackQuerySafe(callback.id, "Falta identificar el proveedor real.");
+      await reponerResolucionContactoTrasFallo(
+        resolucion,
+        "⚠️ No creé ningún contacto: el proveedor está vacío o es genérico. " +
+          "Usa “Dar instrucciones específicas” para indicar el nombre real."
+      );
       return;
     }
 
@@ -2917,12 +3015,22 @@ async function crearGastoYReportar(
  * importe (resolviendo cada uno a su contact_id real). Deduplica por
  * contactId y se queda con hasta 5. Nunca decide sola cuál usar.
  */
-async function construirAlternativasContacto(
+export function nombreProveedorParaBusqueda(nombre: string): string {
+  const limpio = nombre
+    .replace(/\s*[([{]\s*(?:pasarela|procesador|plataforma)\s+de\s+pagos?\s*[)\]}]\s*/giu, " ")
+    .replace(/\s*[([{]\s*payment\s+(?:gateway|processor|platform)\s*[)\]}]\s*/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return limpio.length >= 3 ? limpio : nombre.trim();
+}
+
+export async function construirAlternativasContacto(
   propuesta: PropuestaGasto,
   empresaFinal: PropuestaGasto["empresa"]
 ): Promise<AlternativaContacto[]> {
+  const proveedorBusqueda = nombreProveedorParaBusqueda(propuesta.proveedor);
   const [porNombre, porMonto] = await Promise.all([
-    buscarContactosParecidos(empresaFinal, propuesta.proveedor, 5, propuesta.concepto),
+    buscarContactosParecidos(empresaFinal, proveedorBusqueda, 5, propuesta.concepto),
     buscarComprasPorMonto(empresaFinal, propuesta.monto, propuesta.fecha, 15),
   ]);
 
@@ -2955,6 +3063,26 @@ async function construirAlternativasContacto(
   }
 
   return alternativas.slice(0, 5);
+}
+
+/**
+ * Recalcula y repinta una resolución ya publicada sin consumirla ni volver
+ * a leer Gmail. Se usa para recuperar mensajes creados antes de una mejora
+ * del buscador, conservando el mismo identificador y sus callbacks.
+ */
+export async function refrescarResolucionContacto(id: string): Promise<ResolucionContactoPendiente | undefined> {
+  const actual = await obtenerResolucionContacto(id);
+  if (!actual) return undefined;
+  const alternativas = await construirAlternativasContacto(actual.propuesta, actual.empresaFinal);
+  const actualizada = await actualizarAlternativasResolucionContacto(id, alternativas);
+  if (!actualizada) return undefined;
+  await editTelegramMessage(
+    actualizada.chatId,
+    actualizada.messageId,
+    textoResolucionContacto(actualizada),
+    botonesResolucionContacto(actualizada)
+  );
+  return actualizada;
 }
 
 /**
@@ -3028,10 +3156,15 @@ export async function procesarGastoConContactoResuelto(
   };
   let propuestaFinal = propuestaCorregidaBase;
   try {
+    // El placeholder solo satisface el contact_id obligatorio de Holded. La
+    // cuenta, categoría y tags deben seguir saliendo del proveedor real del
+    // comprobante y de los aprendizajes existentes, nunca del contacto
+    // técnico compartido.
+    const proveedorParaInferencia = aprenderAlias ? contacto.name : resolucion.propuesta.proveedor;
     propuestaFinal = await prepararPropuestaFinalGasto(propuestaCorregidaBase, {
       empresa: resolucion.empresaFinal,
       concepto: resolucion.conceptoFinal || resolucion.propuesta.concepto,
-      proveedor: contacto.name,
+      proveedor: proveedorParaInferencia,
       forzarReinferencia: true,
     });
     const resultado = await crearGastoYReportar(
@@ -3175,20 +3308,6 @@ async function manejarContactoNoEncontrado(
     return [] as AlternativaContacto[];
   });
 
-  const encabezado =
-    `⚠️ No encontré exactamente el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}).`;
-
-  // Hallazgo real de auditoría (caso "CAFÉ PINO" → "Lidl Breda", Footprint, tercera vez que el
-  // contacto placeholder compartido termina renombrado en Holded — ver crearContactoHolded en
-  // core/holded/write.ts): cuando SÍ se identificó un proveedor real con confianza desde el documento
-  // (propuesta.proveedor no vacío), pero no existe todavía en Holded, ofrece crear un contacto NUEVO Y
-  // PROPIO en vez de forzar la elección entre "alternativa parecida" o "genérico compartido" — evita
-  // de raíz que un gasto futuro no relacionado termine mostrando este mismo nombre por error.
-  const botonContactoNuevo = (resolucionId: string): InlineKeyboardButton[] =>
-    propuesta.proveedor.trim()
-      ? [{ text: `🆕 Crear contacto nuevo: "${propuesta.proveedor}"`, callback_data: `gasto_crearcontactonuevo:${resolucionId}` }]
-      : [];
-
   if (alternativas.length === 0) {
     // Pedido explícito de Carlos: si respondes en este mismo chat (ej. "ya
     // lo creé") en vez de reenviar la factura, el asistente debe reconocer
@@ -3198,11 +3317,6 @@ async function manejarContactoNoEncontrado(
     // alternativas (mismo store), solo que con alternativas=[] — el aviso
     // de que hay una resolución de contacto pendiente (buildSystemPromptDinamico)
     // y la tool reintentar_contacto_pendiente (core/tools/) hacen el resto.
-    const textoFinal =
-      `${encabezado}\n\nPuedes crearlo en Holded y avisarme aquí mismo (ej. "ya lo creé") — reintento solo, ` +
-      `sin que tengas que reenviar la factura. También puedo crear un contacto nuevo con el nombre real ` +
-      `"${propuesta.proveedor.trim()}".`;
-
     const resolucion = await guardarResolucionContacto({
       propuesta,
       empresaFinal,
@@ -3212,6 +3326,7 @@ async function manejarContactoNoEncontrado(
       messageId: messageId ?? 0,
     });
 
+    const textoFinal = textoResolucionContacto(resolucion);
     const botones = botonesResolucionContacto(resolucion);
 
     if (messageId != null) {
@@ -3225,7 +3340,11 @@ async function manejarContactoNoEncontrado(
     return;
   }
 
-  const mensajeIdFinal = messageId ?? (await sendTelegramMessageWithButtons(chatId, `${encabezado}\n\nBuscando alternativas...`, []));
+  const mensajeIdFinal = messageId ?? (await sendTelegramMessageWithButtons(
+    chatId,
+    `⚠️ No encontré exactamente el proveedor "${propuesta.proveedor}" en Holded. Buscando alternativas...`,
+    []
+  ));
 
   const resolucion = await guardarResolucionContacto({
     propuesta,
@@ -3236,20 +3355,12 @@ async function manejarContactoNoEncontrado(
     messageId: mensajeIdFinal,
   });
 
-  const etiquetaMotivo = (a: AlternativaContacto) =>
-    a.motivo === "nombre_parecido" ? "nombre parecido" : `mismo importe — ${a.detalle}`;
-
-  const texto =
-    `${encabezado}\n\nEncontré estas alternativas — ¿alguna es la que debo registrar?\n\n` +
-    alternativas.map((a, i) => `${i + 1}. ${a.contactName} (${etiquetaMotivo(a)})`).join("\n");
-
-  const botones: InlineKeyboardButton[][] = alternativas.map((a, i) => [
-    { text: `✅ ${a.contactName}`, callback_data: `gasto_usarcontacto:${resolucion.id}:${i}` },
-  ]);
-  const filaContactoNuevo = botonContactoNuevo(resolucion.id);
-  if (filaContactoNuevo.length > 0) botones.push(filaContactoNuevo);
-
-  await editTelegramMessage(chatId, mensajeIdFinal, texto, botones);
+  await editTelegramMessage(
+    chatId,
+    mensajeIdFinal,
+    textoResolucionContacto(resolucion),
+    botonesResolucionContacto(resolucion)
+  );
 }
 
 /**

@@ -300,6 +300,50 @@ export async function obtenerResolucionContactoPendientePorChat(chatId: number):
   return delChat.reduce((a, b) => (a.resolucion.creadoEn >= b.resolucion.creadoEn ? a : b)).resolucion;
 }
 
+/** Consulta una resolución concreta sin consumirla; la usan los botones que solo orientan o refrescan. */
+export async function obtenerResolucionContacto(id: string): Promise<ResolucionContactoPendiente | undefined> {
+  return (await leerTodas()).find(({ resolucion }) => resolucion.id === id)?.resolucion;
+}
+
+/** Hace que la próxima instrucción de texto del chat se aplique a la resolución cuyo botón se tocó. */
+export async function priorizarResolucionContacto(id: string): Promise<ResolucionContactoPendiente | undefined> {
+  return conMutex(CLAVE_MUTEX, async () => {
+    const match = (await leerTodas()).find(({ resolucion }) => resolucion.id === id);
+    if (!match) return undefined;
+    const creadoEn = Date.now();
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!H${match.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[creadoEn]] },
+    });
+    return { ...match.resolucion, creadoEn };
+  });
+}
+
+/**
+ * Reemplaza únicamente las alternativas de una resolución vigente. Mantiene
+ * el mismo id para que todos los botones ya publicados sigan siendo válidos.
+ */
+export async function actualizarAlternativasResolucionContacto(
+  id: string,
+  alternativas: AlternativaContacto[]
+): Promise<ResolucionContactoPendiente | undefined> {
+  return conMutex(CLAVE_MUTEX, async () => {
+    const match = (await leerTodas()).find(({ resolucion }) => resolucion.id === id);
+    if (!match) return undefined;
+
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!E${match.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[JSON.stringify(alternativas)]] },
+    });
+
+    return { ...match.resolucion, alternativas };
+  });
+}
+
 /** Todas las resoluciones vigentes de un chat (no solo la más reciente) — ver el comentario equivalente en classificationStore.ts, mismo motivo: vigilarProcesamientoAtascado.ts. */
 export async function obtenerResolucionesContactoPorChat(chatId: number): Promise<ResolucionContactoPendiente[]> {
   const todas = await leerTodas();
