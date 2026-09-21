@@ -43,6 +43,16 @@ test("acota por antigüedad y cantidad el backlog automático antes de descargar
   assert.equal(consultas[0].maxResults, 2);
   assert.match(String(consultas[0].q), /newer_than:3d/);
 });
+test("una orden exhaustiva incluye todos los no leídos sin filtro de antigüedad", async () => {
+  const consultas: Record<string, unknown>[] = [];
+  const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {
+    list: async (q: Record<string, unknown>) => { consultas.push(q); return { data: { threads: [] } }; },
+  } } } as unknown as gmail_v1.Gmail;
+  await new GmailAuto(gmail, gmail, { sinLimiteAntiguedad: true, maxHilos: 100 }).listar();
+  assert.equal(consultas[0].maxResults, 100);
+  assert.doesNotMatch(String(consultas[0].q), /newer_than:/);
+  assert.match(String(consultas[0].q), /is:unread/);
+});
 test("un mensaje automático ya etiquetado no reaparece si llega otro mensaje al mismo hilo", async () => {
   const gmail = { users: {
     labels: { list: async () => ({ data: { labels: [{ id: "label-auto", name: "WOBI_AUTO_PROCESADO" }] } }) },

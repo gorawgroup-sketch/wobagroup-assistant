@@ -271,6 +271,12 @@ export interface StoreAuto {
 }
 export interface ResultadoAuto {
   modo: ModoAuto; revisados: number; completados: number; simulados: number;
+  /** Mensajes incluidos en el lote automático, aunque alguno ya estuviera reservado por el flujo manual. */
+  encontrados?: number;
+  /** Mensajes que no recibieron análisis nuevo por límite de coste o tiempo. */
+  aplazados?: number;
+  /** Mensajes que ya estaban bajo una decisión manual o autorrespuesta activa. */
+  reservados?: number;
   pendientes: Array<{ mensajeId: string; asunto: string; motivos: string[]; detalles?: Array<{
     proveedor: string; empresa: EmpresaAuto | "desconocida"; monto: number; moneda: string;
     contacto?: string; metodoContacto?: string; motivoProveedor?: string; motivos: string[];

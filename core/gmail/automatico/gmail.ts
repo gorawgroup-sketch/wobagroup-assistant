@@ -45,6 +45,7 @@ export class GmailAuto {
   private etiquetaProcesado?: Promise<string>;
   constructor(private readonly lectura: gmail_v1.Gmail, private readonly escritura: gmail_v1.Gmail,
     private readonly opciones: { concurrencia?: number; maxAntiguedadDias?: number; maxHilos?: number;
+      sinLimiteAntiguedad?: boolean;
       progreso?: (completados: number, total: number) => void | Promise<void> } = {}) {}
   private async leerHilo(id: string, excluirEtiquetaId?: string): Promise<Array<CorreoAuto & { noLeido: boolean }>> {
     const r = await this.lectura.users.threads.get({ userId: "me", id, format: "full" });
@@ -74,8 +75,9 @@ export class GmailAuto {
     let pageToken: string | undefined;
     const tokens = new Set<string>();
     do {
+      const filtroAntiguedad = this.opciones.sinLimiteAntiguedad ? "" : ` newer_than:${maxAntiguedadDias}d`;
       const r = await this.lectura.users.threads.list({ userId: "me",
-        q: `is:unread newer_than:${maxAntiguedadDias}d -label:${ETIQUETA_PROCESADO_AUTOMATICO} -in:spam -in:trash`,
+        q: `is:unread${filtroAntiguedad} -label:${ETIQUETA_PROCESADO_AUTOMATICO} -in:spam -in:trash`,
         maxResults: Math.min(100, maxHilos - ids.length), pageToken });
       if (!Array.isArray(r.data.threads) && r.data.resultSizeEstimate !== 0) throw new Error("Listado Gmail incompleto.");
       for (const t of r.data.threads ?? []) {

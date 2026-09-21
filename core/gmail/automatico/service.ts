@@ -256,6 +256,7 @@ export class ServicioCorreoAutomatico {
       a.recibidoEn - b.recibidoEn ||
       a.id.localeCompare(b.id)
     );
+    resultado.encontrados = correos.length;
     const presupuestoAnalisis = {
       disponibles: Math.max(0, this.opciones.maxAnalisisNuevos ?? Number.POSITIVE_INFINITY),
     };
@@ -267,6 +268,12 @@ export class ServicioCorreoAutomatico {
       await this.opciones.progreso?.({ fase: "analisis", completados: analizados, total: correos.length });
       return preparado;
     });
+    resultado.aplazados = preparados.filter(preparado => preparado.motivos.some(motivo =>
+      motivo === "revision_pospuesta_por_limite_de_coste" || motivo === "revision_pospuesta_por_limite_de_tiempo"
+    )).length;
+    resultado.reservados = preparados.filter(preparado =>
+      preparado.motivos.includes("revision_manual_o_autorespuesta_activa")
+    ).length;
     const operacionesBloqueadas = new Map<string, string>();
     if (config.modo === "execute") {
       const recuperables = await this.store.recuperables(config.buzon, VERSION_POLITICA);
@@ -479,7 +486,10 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
   const lineas = [r.modo === "simulate" ? "🔎 Simulación de revisión automática terminada." :
     consolidado ? "📬 Informe consolidado de revisión automática." : "📬 Revisión automática terminada.",
     ...(consolidado ? [`Revisiones incluidas desde el informe anterior: ${consolidado}.`] : []),
-    `${consolidado ? "Correos analizados en la revisión más reciente" : "Correos analizados"}: ${r.revisados}.`,
+    ...(r.encontrados !== undefined ? [`Correos encontrados para el pase automático: ${r.encontrados}.`] : []),
+    `${consolidado ? "Correos analizados en la revisión más reciente" : "Correos analizados automáticamente"}: ${r.revisados}.`,
+    ...(r.reservados ? [`Ya estaban bajo revisión manual o autorrespuesta: ${r.reservados}.`] : []),
+    ...(r.aplazados ? [`Correos aplazados sin analizar en esta pasada: ${r.aplazados}.`] : []),
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
     `Correos que requieren revisión manual: ${r.pendientes.length}.`];

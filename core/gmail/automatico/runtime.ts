@@ -22,12 +22,52 @@ import { ServicioCorreoAutomatico } from "./service";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
 import { enteroAcotado } from "../../utils/asyncTimeout";
 
+export interface LimitesRevisionAutomatica {
+  maxDuracionMs: number;
+  maxHilos: number;
+  maxAnalisisNuevos: number;
+  concurrenciaAnalisis: number;
+  sinLimiteAntiguedad: boolean;
+}
+
+/**
+ * Una orden explícita revisa el lote completo solicitado. Los límites bajos
+ * siguen aplicando únicamente a pases programados para controlar consumo.
+ */
+export function limitesRevisionAutomatica(
+  exhaustiva: boolean,
+  env: NodeJS.ProcessEnv = process.env
+): LimitesRevisionAutomatica {
+  if (exhaustiva) {
+    const maxHilos = enteroAcotado(env.WOBI_MAIL_MANUAL_MAX_THREADS_PER_RUN, 100, 1, 100);
+    return {
+      maxDuracionMs: enteroAcotado(env.WOBI_MAIL_MANUAL_MAX_RUN_MS, 30 * 60_000, 2 * 60_000, 60 * 60_000),
+      maxHilos,
+      // Una conversación puede contener varios mensajes no leídos. El tope
+      // del lote ya lo aplica Gmail por hilos; aquí no se vuelve a recortar
+      // por número de mensajes después de haberlos descargado.
+      maxAnalisisNuevos: Number.POSITIVE_INFINITY,
+      concurrenciaAnalisis: enteroAcotado(env.WOBI_MAIL_MANUAL_ANALYSIS_CONCURRENCY, 4, 1, 6),
+      sinLimiteAntiguedad: true,
+    };
+  }
+  return {
+    maxDuracionMs: enteroAcotado(env.WOBI_MAIL_AUTO_MAX_RUN_MS, 8 * 60_000, 2 * 60_000, 30 * 60_000),
+    maxHilos: enteroAcotado(env.WOBI_MAIL_AUTO_MAX_THREADS_PER_RUN, 25, 1, 100),
+    maxAnalisisNuevos: enteroAcotado(env.WOBI_MAIL_AUTO_MAX_NEW_ANALYSES_PER_RUN, 5, 1, 20),
+    concurrenciaAnalisis: 2,
+    sinLimiteAntiguedad: false,
+  };
+}
+
 export async function revisarGastosAutomaticos(chatId: number, opciones: {
   informarProgreso?: boolean | (() => boolean);
+  exhaustiva?: boolean;
 } = {}): Promise<ResultadoAuto> {
   const config = configuracionAuto();
   if (config.modo === "off") return { modo: "off", revisados: 0, completados: 0, simulados: 0, pendientes: [], gastos: [] };
-  const fechaLimite = Date.now() + enteroAcotado(process.env.WOBI_MAIL_AUTO_MAX_RUN_MS, 8 * 60_000, 2 * 60_000, 30 * 60_000);
+  const limites = limitesRevisionAutomatica(opciones.exhaustiva === true);
+  const fechaLimite = Date.now() + limites.maxDuracionMs;
   let mensajeProgreso: number | undefined;
   let colaNotificacion = Promise.resolve();
   const notificar = (texto: string): Promise<void> => {
@@ -45,7 +85,8 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   const gmail = new GmailAuto(getGmailClient(), getGmailModifyClient(), {
     concurrencia: 4,
     maxAntiguedadDias: enteroAcotado(process.env.WOBI_MAIL_AUTO_MAX_AGE_DAYS, 7, 1, 30),
-    maxHilos: enteroAcotado(process.env.WOBI_MAIL_AUTO_MAX_THREADS_PER_RUN, 25, 1, 100),
+    maxHilos: limites.maxHilos,
+    sinLimiteAntiguedad: limites.sinLimiteAntiguedad,
     progreso: async (completados, total) => {
       if (esHito(completados, total)) await notificar(completados === 0
         ? `⏳ Revisión automática iniciada: ${total} hilo(s) sin leer. Descargando contenido y adjuntos…`
@@ -120,14 +161,9 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     },
     ejecutarProtegido: (op, tarea) => conOperacionAuto(op.id, () => protegerEscrituraHolded(op.plan.empresa, tarea)),
   }, {
-    concurrenciaAnalisis: 2,
+    concurrenciaAnalisis: limites.concurrenciaAnalisis,
     fechaLimite,
-    maxAnalisisNuevos: enteroAcotado(
-      process.env.WOBI_MAIL_AUTO_MAX_NEW_ANALYSES_PER_RUN,
-      5,
-      1,
-      20
-    ),
+    maxAnalisisNuevos: limites.maxAnalisisNuevos,
     progreso: async ({ fase, completados, total }) => {
       if (!esHito(completados, total)) return;
       await notificar(fase === "analisis"

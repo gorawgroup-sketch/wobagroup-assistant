@@ -31,6 +31,7 @@ import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { debeEjecutarAnalisisAutomatico, debePublicarInformeCorreo,
+  revisionCorreoExhaustiva,
   type SolicitudRevisionCorreo } from "./politicaRevisionCorreo";
 import { marcarInformeCronPublicado, prepararInformeCron, registrarRevisionCron,
   reservarSlotInformeCron } from "../gmail/automatico/reportes";
@@ -208,6 +209,7 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
  */
 const revisionesEnCurso = new Map<number, Promise<ResultadoRevisarCorreo>>();
 const revisionesInteractivas = new Set<number>();
+const revisionesExhaustivas = new Set<number>();
 export class RevisionCorreoOcupadaError extends Error {
   constructor() {
     super("Otra revisión mantiene el buzón ocupado. Vuelve a intentarlo en unos minutos.");
@@ -217,6 +219,14 @@ export class RevisionCorreoOcupadaError extends Error {
 function esTimeoutDeBloqueo(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error &&
     (error as { code?: unknown }).code === "55P03";
+}
+async function esperarLiberacionRevision(chatId: number, existente: Promise<ResultadoRevisarCorreo>): Promise<void> {
+  for (let intento = 0; intento < 100 && revisionesEnCurso.get(chatId) === existente; intento++) {
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+  }
+  if (revisionesEnCurso.get(chatId) === existente) {
+    throw new RevisionCorreoOcupadaError();
+  }
 }
 function modoAutomaticoSeguro(): ModoAuto {
   if (process.env.WOBI_MAIL_AUTO_KILL_SWITCH === "true") return "off";
@@ -237,13 +247,26 @@ export async function revisarCorreoNuevo(
   }
   const existente = revisionesEnCurso.get(chatId);
   if (existente) {
+    const existenteEsExhaustiva = revisionesExhaustivas.has(chatId);
     if (forzarAviso) {
-      revisionesInteractivas.add(chatId);
+      // Solo una revisión ya exhaustiva puede convertirse en la respuesta
+      // interactiva. Si era un pase limitado, no publicamos su resumen
+      // intermedio: se espera y luego se lanza el pase completo solicitado.
+      if (existenteEsExhaustiva) revisionesInteractivas.add(chatId);
       await sendTelegramMessageSmart(chatId,
-        "⏳ Ya había una revisión de correo en curso (posiblemente iniciada por el cron). Me uno a esa misma revisión para no duplicar trabajo; te informaré su avance y resultado."
+        existenteEsExhaustiva
+          ? "⏳ Ya había una revisión completa de correo en curso. Me uno a ella para no duplicar trabajo; te informaré su avance y resultado."
+          : "⏳ Había una revisión programada limitada en curso. Esperaré a que termine y después completaré automáticamente todo el lote solicitado."
       ).catch(() => {});
     }
     const resultado = await existente;
+    if (forzarAviso && !existenteEsExhaustiva) {
+      // El pase programado ya consumió y guardó lo que alcanzó a analizar.
+      // La continuación manual reutiliza ese caché, por lo que completa el
+      // lote sin pagar dos veces ni ejecutar dos revisiones simultáneas.
+      await esperarLiberacionRevision(chatId, existente);
+      return revisarCorreoNuevo(solicitud);
+    }
     // Cierra la carrera en la que una orden manual llega justo después de
     // que un cron silencioso decidió no publicar, pero antes de terminar.
     if (forzarAviso && !resultado.informePublicado && resultado.automatico) {
@@ -262,7 +285,10 @@ export async function revisarCorreoNuevo(
     }
     return resultado;
   }
-  if (forzarAviso) revisionesInteractivas.add(chatId);
+  if (forzarAviso) {
+    revisionesInteractivas.add(chatId);
+    revisionesExhaustivas.add(chatId);
+  }
   const tarea = conCoordinadorCorreo(async () => {
     let automatico: ResultadoAuto;
     if (!debeEjecutarAnalisisAutomatico(solicitud)) {
@@ -271,6 +297,7 @@ export async function revisarCorreoNuevo(
     } else try {
       automatico = await revisarGastosAutomaticos(chatId, {
         informarProgreso: () => forzarAviso || revisionesInteractivas.has(chatId),
+        exhaustiva: revisionCorreoExhaustiva(solicitud),
       });
     } catch (error) {
       const detalle = error instanceof Error ? error.message : "error no identificado";
@@ -333,6 +360,7 @@ export async function revisarCorreoNuevo(
   } finally {
     revisionesEnCurso.delete(chatId);
     revisionesInteractivas.delete(chatId);
+    revisionesExhaustivas.delete(chatId);
   }
 }
 
@@ -521,7 +549,10 @@ async function sincronizarColaCorreo(
       const mensaje =
         nuevos > 0 && totalAntesDeEncolar === 0
           ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
-          : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
+          : forzarAviso && resumenAuto
+            ? `La revisión automática ya terminó. Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer ` +
+              `porque requieren revisión manual o contienen acciones adicionales — ¿empezamos por el más antiguo?`
+            : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer pendientes de revisión manual — ¿seguimos?`;
       await pedirConfirmacionSiguienteCorreo(chatId, [resumenAuto, mensaje].filter(Boolean).join("\n\n"));
       informePublicado = Boolean(resumenAuto);
       // Se marca SIEMPRE, incluso si este envío fue forzado (/revisarcorreo, endpoint admin) — el

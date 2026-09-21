@@ -43,12 +43,13 @@ function escenario() {
 test("crea, adjunta, concilia, verifica y solo entonces marca el correo como resuelto", async () => {
   const e = escenario(); const r = await e.service.revisar(configFixture);
   assert.equal(r.completados, 1); assert.equal(r.pendientes.length, 0);
+  assert.equal(r.encontrados, 1); assert.equal(r.aplazados, 0); assert.equal(r.reservados, 0);
   assert.deepEqual(e.llamadas, { crear: 1, adjuntar: 1, conciliar: 1, marcar: 1, registrar: 1 });
   assert.ok(e.eventos.indexOf("completada") < e.eventos.indexOf("correo_resuelto"));
 });
 test("el informe desglosa automatizaciones por empresa y conserva el detalle verificable", () => {
   const texto = resumenAutomatico({
-    modo: "execute", revisados: 5, completados: 3, simulados: 0, pendientes: [],
+    modo: "execute", encontrados: 5, revisados: 5, completados: 3, simulados: 0, pendientes: [],
     gastos: [
       { empresa: "WOBA", id: "w-1", centimos: 1250, moneda: "EUR" },
       { empresa: "Footprint", id: "f-1", centimos: 2000, moneda: "USD" },
@@ -56,6 +57,8 @@ test("el informe desglosa automatizaciones por empresa y conserva el detalle ver
     ],
   });
   assert.match(texto, /Gastos creados, soportados y conciliados: 3\./);
+  assert.match(texto, /Correos encontrados para el pase automático: 5\./);
+  assert.match(texto, /Correos analizados automáticamente: 5\./);
   assert.match(texto, /✅ Automatizados por empresa/);
   assert.match(texto, /• WOBA: 2\./);
   assert.match(texto, /• Footprint · 20\.00 USD · compra f-1\./);
@@ -66,6 +69,13 @@ test("el informe consolidado explica el período sin inflar el último conteo de
   assert.match(texto, /Informe consolidado de revisión automática/);
   assert.match(texto, /Revisiones incluidas desde el informe anterior: 5/);
   assert.match(texto, /Correos analizados en la revisión más reciente: 2/);
+});
+test("el informe distingue encontrados, analizados y aplazados", () => {
+  const texto = resumenAutomatico({ modo: "execute", encontrados: 25, revisados: 4, aplazados: 21,
+    reservados: 0, completados: 0, simulados: 0, pendientes: [], gastos: [] });
+  assert.match(texto, /Correos encontrados para el pase automático: 25\./);
+  assert.match(texto, /Correos analizados automáticamente: 4\./);
+  assert.match(texto, /Correos aplazados sin analizar en esta pasada: 21\./);
 });
 test("el informe organiza pendientes en lenguaje accionable sin códigos internos", () => {
   const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 0, simulados: 0, gastos: [],
