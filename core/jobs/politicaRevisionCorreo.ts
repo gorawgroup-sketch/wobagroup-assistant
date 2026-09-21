@@ -17,8 +17,11 @@ export const CRON_CORREO_INFORME_TARDE = "0 18 * * *";
  * registran lectores de Gmail en segundo plano; las órdenes manuales siguen
  * usando exactamente el mismo flujo y sus controles durables.
  */
-export function lecturasCorreoAutomaticasHabilitadas(env: NodeJS.ProcessEnv = process.env): boolean {
-  const valor = (env.WOBI_MAIL_AUTOMATIC_READS_ENABLED ?? "true").trim().toLowerCase();
+export function revisionCorreoProgramadaHabilitada(env: NodeJS.ProcessEnv = process.env): boolean {
+  // El nombre anterior se conserva como alias para que un despliegue pueda
+  // cambiar de versión sin abrir accidentalmente la revisión masiva.
+  const valor = (env.WOBI_MAIL_SCHEDULED_REVIEW_ENABLED ??
+    env.WOBI_MAIL_AUTOMATIC_READS_ENABLED ?? "true").trim().toLowerCase();
   return valor === "true" || valor === "1";
 }
 
