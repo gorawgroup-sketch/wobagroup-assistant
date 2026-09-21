@@ -65,7 +65,7 @@ test("un fallo no terminal restaura la misma resolución aunque Telegram tambié
   assert.deepEqual(restauradas, ["resolucion-estable"]);
 });
 
-test("la resolución de un proveedor real ofrece todas las vías y bloquea las inseguras si no hay proveedor", () => {
+test("la resolución permite el genérico autorizado sin inventar un contacto nuevo", () => {
   const base = {
     id: "resolucion-segura",
     propuesta: { id: "propuesta", proveedor: "Parking Moraleja" } as PropuestaGasto,
@@ -95,14 +95,14 @@ test("la resolución de un proveedor real ofrece todas las vías y bloquea las i
   }).flat();
   assert.deepEqual(
     proveedorVacio.map((boton) => boton.text),
-    ["✅ Parking Moraleja", "✏️ Dar instrucciones específicas"]
+    ["✅ Parking Moraleja", "🆗 Crear sin contacto", "✏️ Dar instrucciones específicas"]
   );
 
   const proveedorGenerico = botonesResolucionContacto({
     ...base,
     propuesta: { ...base.propuesta, proveedor: "Aerolínea no identificada" },
   }).flat();
-  assert.equal(proveedorGenerico.some((boton) => boton.callback_data.startsWith("gasto_crearsinproveedor:")), false);
+  assert.equal(proveedorGenerico.some((boton) => boton.callback_data.startsWith("gasto_crearsinproveedor:")), true);
   assert.equal(proveedorGenerico.some((boton) => boton.callback_data.startsWith("gasto_crearcontactonuevo:")), false);
 });
 

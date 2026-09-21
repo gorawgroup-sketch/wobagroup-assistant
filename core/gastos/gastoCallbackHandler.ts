@@ -473,11 +473,11 @@ export function botonesResolucionContacto(resolucion: ResolucionContactoPendient
       text: `🆕 Crear contacto nuevo: "${resolucion.propuesta.proveedor}"`,
       callback_data: `gasto_crearcontactonuevo:${resolucion.id}`,
     }]);
-    botones.push([{
-      text: "🆗 Crear sin contacto",
-      callback_data: `gasto_crearsinproveedor:${resolucion.id}`,
-    }]);
   }
+  botones.push([{
+    text: "🆗 Crear sin contacto",
+    callback_data: `gasto_crearsinproveedor:${resolucion.id}`,
+  }]);
   botones.push([{
     text: "✏️ Dar instrucciones específicas",
     callback_data: `gasto_contactoinstrucciones:${resolucion.id}`,
@@ -491,7 +491,7 @@ export function textoResolucionContacto(resolucion: ResolucionContactoPendiente)
     `(${resolucion.empresaFinal}).`;
   if (resolucion.alternativas.length === 0) {
     const opciones = esProveedorNoIdentificado(resolucion.propuesta.proveedor)
-      ? "indicarme exactamente qué proveedor debo usar"
+      ? "avanzar sin contacto o indicarme exactamente qué proveedor debo usar"
       : "crear el contacto real, avanzar sin contacto, o indicarme exactamente qué proveedor debo usar";
     return (
       `${encabezado}\n\nNo encontré una alternativa suficientemente parecida. Puedes ${opciones}. ` +
@@ -2091,16 +2091,6 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     const resolucion = await consumirResolucionContacto(propuestaId);
     if (!resolucion) {
       await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
-      return;
-    }
-
-    if (esProveedorNoIdentificado(resolucion.propuesta.proveedor)) {
-      await answerCallbackQuerySafe(callback.id, "Falta identificar el proveedor real.");
-      await reponerResolucionContactoTrasFallo(
-        resolucion,
-        "⚠️ No creé el gasto: el comprobante no contiene un nombre de proveedor válido. " +
-          "Usa “Dar instrucciones específicas” para indicarlo; el correo y la resolución siguen pendientes."
-      );
       return;
     }
 
