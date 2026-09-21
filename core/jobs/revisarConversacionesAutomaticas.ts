@@ -7,6 +7,7 @@ import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
+import { enteroAcotado } from "../utils/asyncTimeout";
 
 /**
  * Pequeña, discreta y aparte del cuerpo redactado por Claude — pedido
@@ -182,7 +183,15 @@ export async function revisarConversacionesAutomaticas(): Promise<{ respondidos:
   const contactos = await listarContactosAutorespuesta();
   if (contactos.length === 0) return { respondidos: 0, preguntados: 0 }; // lista vacía — nunca escanea nada de más
 
-  const threadIds = await listarHilosNoLeidosDe(contactos.map((c) => c.email));
+  // Una sola consulta de Gmail, ya filtrada por los remitentes aprobados. El
+  // tope evita que una avalancha o un buzón atrasado dispare muchas llamadas
+  // de IA en una misma corrida; el resto queda sin leer para el siguiente pase.
+  const todosLosThreadIds = await listarHilosNoLeidosDe(contactos.map((c) => c.email));
+  const maxHilos = enteroAcotado(process.env.WOBI_AUTOREPLY_MAX_THREADS_PER_RUN, 3, 1, 20);
+  const threadIds = todosLosThreadIds.slice(0, maxHilos);
+  if (todosLosThreadIds.length > threadIds.length) {
+    console.log(`[revisarConversacionesAutomaticas] ${todosLosThreadIds.length - threadIds.length} hilo(s) quedan para el próximo pase por el límite de costo.`);
+  }
 
   let respondidos = 0;
   let preguntados = 0;

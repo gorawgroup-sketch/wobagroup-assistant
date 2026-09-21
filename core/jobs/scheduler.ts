@@ -23,7 +23,7 @@ import {
   CRON_CORREO_HABIL_SILENCIOSO,
   CRON_CORREO_INFORME_MANANA,
   CRON_CORREO_INFORME_TARDE,
-  lecturasCorreoAutomaticasHabilitadas,
+  revisionCorreoProgramadaHabilitada,
 } from "./politicaRevisionCorreo";
 
 const TIMEZONE = "Europe/Madrid";
@@ -101,7 +101,7 @@ function ejecutarSinSolapamiento(nombre: string, tarea: () => Promise<unknown>):
  * aprobación en Telegram (ver autorrepairCallbackHandler.ts).
  */
 export function startScheduler(): void {
-  const lecturasAutomaticasCorreo = lecturasCorreoAutomaticasHabilitadas();
+  const revisionProgramadaCorreo = revisionCorreoProgramadaHabilitada();
   cron.schedule(
     "0 8 * * 1",
     () => {
@@ -129,7 +129,7 @@ export function startScheduler(): void {
   );
   console.log(`[scheduler] revisarAlertasFiscales programado: diario 8:00 (${TIMEZONE})`);
 
-  if (lecturasAutomaticasCorreo) {
+  if (revisionProgramadaCorreo) {
     cron.schedule(
       CRON_CORREO_HABIL_SILENCIOSO,
       () => {
@@ -155,7 +155,7 @@ export function startScheduler(): void {
     );
     console.log(`[scheduler] revisarCorreoNuevo programado: informes diarios 10:00 y 18:00; en fin de semana son las únicas 2 revisiones (${TIMEZONE})`);
   } else {
-    console.log("[scheduler] Lecturas automáticas de correo deshabilitadas; Gmail solo se revisa por orden manual.");
+    console.log("[scheduler] Revisión general programada de Gmail deshabilitada; se ejecuta solo por orden manual.");
   }
 
   cron.schedule(
@@ -265,16 +265,14 @@ export function startScheduler(): void {
   // de remitentes es prácticamente gratis; el costo real (Claude) solo se
   // paga cuando de verdad hay un mensaje nuevo de un contacto aprobado, así
   // que revisar cada 15 min no dispara gasto salvo que haya trabajo real.
-  if (lecturasAutomaticasCorreo) {
-    cron.schedule(
-      "*/15 * * * *",
-      () => {
-        ejecutarSinSolapamiento("revisarConversacionesAutomaticas", () => revisarConversacionesAutomaticas());
-      },
-      { timezone: TIMEZONE }
-    );
-    console.log(`[scheduler] revisarConversacionesAutomaticas programado: cada 15 minutos (${TIMEZONE})`);
-  }
+  cron.schedule(
+    "*/15 * * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarConversacionesAutomaticas", () => revisarConversacionesAutomaticas());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarConversacionesAutomaticas programado: cada 15 minutos (${TIMEZONE}); solo contactos aprobados`);
 
   // "Al final del día" — pedido explícito de Carlos. 22:00, después de todos los demás avisos del
   // día (el más tardío hasta ahora es el resumen de pendientes a las 19:00).
@@ -293,14 +291,12 @@ export function startScheduler(): void {
   // errores... de manera inmediata... y lo corrija inmediatamente para que no nos quedemos esperando
   // una respuesta." Cada 2 minutos es suficientemente frecuente para reaccionar rápido sin generar
   // carga real (son lecturas de Sheets, no llamadas a Claude, salvo que de verdad haya algo atascado).
-  if (lecturasAutomaticasCorreo) {
-    cron.schedule(
-      "*/2 * * * *",
-      () => {
-        ejecutarSinSolapamiento("vigilarProcesamientoAtascado", () => vigilarProcesamientoAtascado());
-      },
-      { timezone: TIMEZONE }
-    );
-    console.log(`[scheduler] vigilarProcesamientoAtascado programado: cada 2 minutos (${TIMEZONE})`);
-  }
+  cron.schedule(
+    "*/2 * * * *",
+    () => {
+      ejecutarSinSolapamiento("vigilarProcesamientoAtascado", () => vigilarProcesamientoAtascado());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] vigilarProcesamientoAtascado programado: cada 2 minutos (${TIMEZONE})`);
 }
