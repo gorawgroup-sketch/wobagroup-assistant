@@ -3996,6 +3996,30 @@ export function etiquetasEdicionCompra<T extends object>(
   return items.map(item => ({ ...item, tags: [...tags] }));
 }
 
+/** Conserva el valor ya pagado cuando Holded redondea currency_change a dos
+ * decimales. Los detalles de pago se expresan en EUR contables; payments_total
+ * está en la divisa del documento. No estima un cambio de mercado. */
+export function tasaCambioParaEdicion(compra: CompraHoldedCruda): number {
+  const tasa = numeroDecimalPlano(compra.currency_change) || 1;
+  if ((compra.currency || "EUR").toUpperCase().trim() === "EUR") return tasa;
+  const pagos = compra.payments_detail ?? [];
+  if (pagos.length === 0 || Math.abs(tasa * 100 - Math.round(tasa * 100)) > 0.000001) return tasa;
+  const pagado = numeroDesdeHolded(compra.payments_total);
+  const total = numeroDesdeHolded(compra.total);
+  const pendiente = numeroDesdeHolded(compra.payments_pending);
+  const importes = pagos.map(pago => numeroDesdeHolded(pago.amount));
+  const contable = importes.reduce((suma, importe) => suma + importe, 0);
+  const precisa = pagado / contable;
+  if (compra.payments_total == null || compra.payments_pending == null ||
+      !Number.isFinite(precisa) || pagado <= 0 || importes.some(importe => importe <= 0) ||
+      numeroDesdeHolded(compra.payments_refunds as string | number | undefined) !== 0 ||
+      Math.round((pagado + pendiente) * 100) !== Math.round(total * 100) ||
+      Math.round(precisa * 100) !== Math.round(tasa * 100)) {
+    throw new Error("No se puede preservar el cambio de la compra pagada: verificar pagos y tasa antes de editar.");
+  }
+  return precisa;
+}
+
 async function prepararEdicionCompraHolded(
   empresa: Empresa,
   purchaseId: string,
@@ -4121,7 +4145,7 @@ async function prepararEdicionCompraHolded(
   // corrompido (ver su comentario en CambiosCompraHolded) — fuera de eso,
   // esta función nunca inventa una conversión, solo preserva la que ya
   // había.
-  const tasaCambioActual = cambios.tasaCambioNueva ?? (numeroDecimalPlano(actual.currency_change) || 1);
+  const tasaCambioActual = cambios.tasaCambioNueva ?? tasaCambioParaEdicion(actual);
 
   const body: Record<string, unknown> = {
     number: cambios.numeroDocumento ?? actual.document_number ?? "00000",
