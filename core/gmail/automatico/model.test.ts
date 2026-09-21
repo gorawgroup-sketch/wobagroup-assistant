@@ -59,7 +59,7 @@ test("ni ingresos, ni conciliaciones parciales, ni estado desconocido, ni varias
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].origen = ""; },
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].origen = "manual"; },
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos.push({ ...e.movimientos[0], id: "otro" }); },
-    (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].fecha = "2026-09-11"; },
+    (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].fecha = "2026-09-24"; },
     (e: ReturnType<typeof evidenciaFixture>) => { e.movimientos[0].moneda = "USD"; },
   ]) {
     const e = evidenciaFixture(); cambiar(e);
@@ -74,6 +74,25 @@ test("equivalente explícito permite tolerancia pero conserva el cargo bancario 
   r.equivalente.monto = 21;
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture).apto, false);
 });
+test("usa el equivalente contable real de Holded cuando la cuenta bancaria está en otra moneda", () => {
+  const r = reciboFixture(); r.moneda = "USD"; r.monto = 23; r.equivalente = { moneda: "EUR", monto: 20 };
+  const e = evidenciaFixture();
+  e.movimientos[0] = { ...e.movimientos[0], moneda: "USD", centimos: -2300,
+    contabilidadCentimos: -2000, monedaContable: "EUR" };
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) {
+    assert.equal(d.plan.totalCentimos, 2000);
+    assert.equal(d.plan.regla, "equivalente_contable_holded_2pct_min_005_max_500");
+  }
+});
+test("no infiere una conversión contable si el comprobante no declara un equivalente", () => {
+  const r = reciboFixture();
+  const e = evidenciaFixture();
+  e.movimientos[0] = { ...e.movimientos[0], moneda: "USD", centimos: -2300,
+    contabilidadCentimos: -2000, monedaContable: "EUR" };
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
+});
 test("una diferencia nativa pequeña usa el cargo bancario real y conserva el importe del recibo", () => {
   const r = reciboFixture(); r.monto = 20.01;
   const d = evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture);
@@ -86,10 +105,16 @@ test("una diferencia nativa pequeña usa el cargo bancario real y conserva el im
   r.monto = 20.5;
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, evidenciaFixture(), configFixture).apto, false);
 });
-test("admite hasta cinco días de desfase bancario y rechaza el sexto", () => {
-  const e = evidenciaFixture(); e.movimientos[0].fecha = "2026-09-13";
+test("admite hasta noventa días hacia atrás, cinco hacia adelante y rechaza el sexto futuro", () => {
+  const e = evidenciaFixture(); e.movimientos[0].fecha = "2026-09-23";
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture).apto, true);
-  e.movimientos[0].fecha = "2026-09-12";
+  e.movimientos[0].fecha = "2026-09-24";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture).apto, false);
+});
+test("admite un cargo exacto ocurrido noventa días antes de la fecha de servicio", () => {
+  const e = evidenciaFixture(); e.movimientos[0].fecha = "2026-06-20";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture).apto, true);
+  e.movimientos[0].fecha = "2026-06-19";
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), e, configFixture).apto, false);
 });
 test("una coincidencia aproximada exige que el banco confirme el proveedor", () => {

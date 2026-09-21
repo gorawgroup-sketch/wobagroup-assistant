@@ -53,6 +53,23 @@ test("consulta proveedor exacto, catálogo no paginado, memoria y cargo real", a
   assert.equal(ev.consultasCompletas, true); assert.equal(ev.contacto?.id, "p1"); assert.equal(ev.cuenta?.id, "c1");
   assert.equal(ev.permiteTicket, true); assert.equal(ev.movimientos[0].origen, "bank");
 });
+test("conserva el equivalente contable que Holded entrega para una cuenta extranjera", async () => {
+  const e = escenario();
+  e.movimiento.currency = "USD";
+  (e.movimiento as Record<string, unknown>).accounting_amount = "-17.35";
+  (e.movimiento as Record<string, unknown>).accounting_currency = "EUR";
+  const original = e.request;
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path === "/treasury/accounts") {
+      return new Response(JSON.stringify({ items: [{ id: "a1", name: "Cuenta", currency: "USD", archived: false }], has_more: false, cursor: null }));
+    }
+    return original(input, init);
+  };
+  const ev = await new HoldedAuto(e.memoria, request).evidencias(e.c, e.r);
+  assert.equal(ev.movimientos[0].contabilidadCentimos, -1735);
+  assert.equal(ev.movimientos[0].monedaContable, "EUR");
+});
 test("consulta evidencias deterministas para una clasificación media y permite reforzarla", async () => {
   const e = escenario(); e.r.confianza = "media";
   const ev = await e.adapter.evidencias(e.c, e.r);
@@ -158,7 +175,7 @@ test("dos contactos aproximados continúan en revisión manual", async () => {
   assert.equal(evidencia.motivoProveedor, "coincidencia_ambigua");
   assert.equal(e.consultasGet.includes("/expenses-accounts"), false);
 });
-test("reutiliza catálogos estáticos pero relee compras y banco en la revalidación", async () => {
+test("reutiliza catálogos y la misma ventana bancaria durante una pasada", async () => {
   const e = escenario();
   await e.adapter.evidencias(e.c, e.r);
   await e.adapter.evidencias(e.c, e.r);
@@ -167,7 +184,7 @@ test("reutiliza catálogos estáticos pero relee compras y banco en la revalidac
   assert.equal(veces("/treasury/accounts"), 1);
   assert.equal(veces("/expenses-accounts"), 1);
   assert.equal(veces("/purchases"), 4);
-  assert.equal(veces("/treasury/accounts/a1/bank-movements"), 2);
+  assert.equal(veces("/treasury/accounts/a1/bank-movements"), 1);
 });
 test("comprobante verificado por contenido binario y sin reconstruir un adjunto real", async () => {
   const e = escenario(); e.op.compraId = "creada";

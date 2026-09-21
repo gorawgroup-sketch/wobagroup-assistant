@@ -6,6 +6,7 @@ import { adjuntarComprobanteHolded, crearGastoHolded, editarCompraHolded, inferi
 import { conTiempoMaximo } from "../../utils/asyncTimeout";
 import type { FlujoGastoExistente } from "./holded";
 import { monedaDocumentoAuto, VERSION_POLITICA, type OperacionAuto, type ReciboAuto } from "./model";
+import { conciliacionRequiereRevision } from "../../holded/durableBankReconciliation";
 
 async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
   if (recibo.empresa === "desconocida") return undefined;
@@ -60,8 +61,12 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
   const conciliar = async (op: OperacionAuto) => {
     if (!op.compraId) throw new Error("Compra ausente antes de conciliar.");
     const p = op.plan;
+    const equivalenteExplicito = p.recibo.equivalente;
+    const permitirMonedaDistinta = Boolean(equivalenteExplicito &&
+      equivalenteExplicito.moneda.toUpperCase().trim() === p.movimiento.moneda.toUpperCase().trim() &&
+      Math.abs(Math.round(equivalenteExplicito.monto * 100) - p.totalCentimos) <= p.toleranciaCentimos);
     return reconciliarMovimiento(p.empresa, p.movimiento.cuentaId, p.movimiento.id,
-      p.movimiento.fecha, op.compraId);
+      p.movimiento.fecha, op.compraId, { permitirMonedaDistinta });
   };
   return {
     clasificar,
@@ -107,8 +112,13 @@ export function crearFlujoGastoExistente(): FlujoGastoExistente {
     },
     conciliar: async (op) => {
       const resultado = await conciliar(op);
-      if (!resultado.ok) throw new Error(`Conciliación no confirmada: ${resultado.statusFinal}.`);
+      if (!resultado.ok || conciliacionRequiereRevision(resultado)) {
+        throw new Error(`Conciliación no confirmada al 100 %: ${resultado.statusFinal}.`);
+      }
     },
-    verificarConciliacion: async (op) => (await conciliar(op)).ok,
+    verificarConciliacion: async (op) => {
+      const resultado = await conciliar(op);
+      return resultado.ok && !conciliacionRequiereRevision(resultado);
+    },
   };
 }
