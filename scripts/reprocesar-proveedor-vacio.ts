@@ -1,7 +1,11 @@
 import "dotenv/config";
 import { obtenerAdmins } from "../core/telegram/authorizedUsersSheet";
 import { obtenerResolucionesContactoPorChat } from "../core/gastos/contactoResolucionStore";
-import { reprocesarResolucionConProveedorVacio } from "../core/gastos/reprocesarResolucionProveedor";
+import {
+  reprocesarAdjuntoCorreoConProveedorBancario,
+  reprocesarResolucionConProveedorVacio,
+} from "../core/gastos/reprocesarResolucionProveedor";
+import type { Empresa } from "../core/holded/client";
 
 async function obtenerPendientes() {
   const admins = await obtenerAdmins();
@@ -15,9 +19,9 @@ async function obtenerPendientes() {
 
 async function main(): Promise<void> {
   const accion = process.argv[2] ?? "listar";
-  const pendientes = await obtenerPendientes();
 
   if (accion === "listar") {
+    const pendientes = await obtenerPendientes();
     console.log(JSON.stringify(pendientes.map((r) => ({
       id: r.id,
       creadoEn: new Date(r.creadoEn).toISOString(),
@@ -30,9 +34,28 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (accion === "reprocesar-correo") {
+    const mensajeIdGmail = process.argv[3];
+    const chatId = Number(process.argv[4]);
+    const empresa = process.argv[5] as Empresa;
+    const nombreArchivo = process.argv[6];
+    if (!mensajeIdGmail || !Number.isSafeInteger(chatId) || !["WOBA", "EWORKS", "Footprint"].includes(empresa)) {
+      throw new Error("Uso: reprocesar-proveedor-vacio reprocesar-correo <mensajeIdGmail> <chatId> <WOBA|EWORKS|Footprint> [nombreArchivo]");
+    }
+    const resultado = await reprocesarAdjuntoCorreoConProveedorBancario(
+      mensajeIdGmail,
+      chatId,
+      empresa,
+      nombreArchivo
+    );
+    console.log(JSON.stringify({ mensajeIdGmail, ...resultado }));
+    return;
+  }
+
   if (accion !== "reprocesar") {
     throw new Error("Uso: reprocesar-proveedor-vacio listar | reprocesar <id>");
   }
+  const pendientes = await obtenerPendientes();
   const id = process.argv[3];
   if (!id) throw new Error("Falta el id exacto de la resolución que se va a reprocesar.");
   const resolucion = pendientes.find((actual) => actual.id === id);

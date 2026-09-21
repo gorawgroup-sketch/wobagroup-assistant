@@ -6,6 +6,7 @@ import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
+import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 
 const MODEL = resolverModeloDocumental("extraer_factura");
 const MAX_ITERATIONS = 4;
@@ -128,10 +129,10 @@ export interface DatosFactura {
 
 const REPORTAR_TOOL_NAME = "reportar_datos_factura";
 
-export function reporteGastoSinProveedor(input: Record<string, unknown>): boolean {
+export function reporteGastoSinProveedorReal(input: Record<string, unknown>): boolean {
   const esFacturaOGasto = input.es_factura_o_gasto === true || input.es_factura_o_gasto === "true";
   const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : "";
-  return esFacturaOGasto && !proveedor;
+  return esFacturaOGasto && esProveedorNoIdentificado(proveedor);
 }
 
 const REPORTAR_TOOL: Anthropic.Tool = {
@@ -558,7 +559,7 @@ export async function extraerDatosFactura(
       // devolvemos el error a la MISMA lectura, con el documento y el correo todavía en contexto, para
       // que vuelva a mirar el emisor. En el último intento se devuelve el proveedor vacío de forma
       // explícita; procesarGastoEntrante lo retiene como dato pendiente y nunca crea nada.
-      if (reporteGastoSinProveedor(input) && i < MAX_ITERATIONS - 1) {
+      if (reporteGastoSinProveedorReal(input) && i < MAX_ITERATIONS - 1) {
         messages.push({ role: "assistant", content: response.content });
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
         for (const block of toolUseBlocks) {

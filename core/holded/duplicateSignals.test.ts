@@ -92,6 +92,8 @@ test("trata las etiquetas descriptivas de proveedor desconocido como ausencia de
     "Establecimiento no identificado (cafetería)",
     "Proveedor no identificado en el ticket",
     "Proveedor desconocido",
+    "Aerolínea no identificada en el documento",
+    "Comercio desconocido en el recibo",
     "Sin proveedor real",
     "Unknown merchant (coffee shop)",
   ]) {

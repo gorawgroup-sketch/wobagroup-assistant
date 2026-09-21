@@ -87,6 +87,12 @@ export function esProveedorNoIdentificado(proveedor: string | undefined): boolea
     /^sin proveedor(?:\b|$)/,
     /^unknown (?:merchant|vendor|supplier)(?:\b|$)/,
     /^unidentified (?:merchant|vendor|supplier)(?:\b|$)/,
+    // El modelo también puede anteponer una categoría (caso real: "Aerolínea no identificada en el
+    // documento"). Sigue siendo una descripción de ausencia, no la identidad legal/comercial de un
+    // proveedor. Se exige la frase completa para no confundir empresas reales que contengan una sola
+    // de estas palabras fuera de este patrón.
+    /\bno identificad[oa](?:\b|$)/,
+    /\b(?:proveedor|comercio|empresa|aerolinea) desconocid[oa](?:\b|$)/,
   ].some((patron) => patron.test(normalizado));
 }
 
