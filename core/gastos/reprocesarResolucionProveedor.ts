@@ -1,9 +1,12 @@
 import { access } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { extraerDatosFactura } from "../documental/extractInvoiceData";
-import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
+import { extraerDatosFactura, type DatosFactura } from "../documental/extractInvoiceData";
+import { obtenerCuerpoCompletoCorreo, obtenerResumenCorreo } from "../gmail/client";
 import { reDescargarAdjuntoSiFalta, regenerarComprobanteDesdeCuerpoSiFalta } from "../gmail/reDescargarAdjunto";
 import { editTelegramMessage } from "../telegram/client";
+import type { Empresa } from "../holded/client";
+import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
+import { buscarMovimientoSimilar } from "../holded/write";
 import {
   consumirResolucionContacto,
   type ResolucionContactoPendiente,
@@ -17,6 +20,107 @@ async function archivoExiste(ruta: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function resolverProveedorRealDesdeMovimiento(
+  datos: DatosFactura,
+  empresa: Empresa,
+  buscar: typeof buscarMovimientoSimilar = buscarMovimientoSimilar
+): Promise<string> {
+  const proveedorLeido = datos.proveedor.trim();
+  if (!esProveedorNoIdentificado(proveedorLeido)) return proveedorLeido;
+
+  const usaEquivalente =
+    typeof datos.montoEquivalente === "number" &&
+    Boolean(datos.monedaEquivalente?.trim());
+  const monto = usaEquivalente ? datos.montoEquivalente! : datos.monto;
+  const moneda = usaEquivalente ? datos.monedaEquivalente!.trim().toUpperCase() : datos.moneda.trim().toUpperCase();
+  const tolerancia = usaEquivalente ? Math.max(0.05, Math.abs(monto) * 0.02) : undefined;
+  const candidatos = await buscar(
+    empresa,
+    { monto, moneda, fecha: datos.fecha || new Date().toISOString().slice(0, 10) },
+    tolerancia
+  );
+  const proveedores = [...new Set(
+    candidatos
+      .map((movimiento) => movimiento.descripcion.trim())
+      .filter((nombre) => nombre && !esProveedorNoIdentificado(nombre))
+  )];
+  if (proveedores.length !== 1) {
+    throw new Error(
+      proveedores.length === 0
+        ? "El documento no identifica al proveedor y no existe un único movimiento bancario exacto que permita recuperarlo."
+        : `El documento no identifica al proveedor y hay ${proveedores.length} movimientos/proveedores posibles; hace falta revisión humana.`
+    );
+  }
+  return proveedores[0];
+}
+
+async function leerAdjuntoCorreo(
+  mensajeIdGmail: string,
+  chatId: number,
+  empresa: Empresa,
+  nombreArchivo?: string
+): Promise<{ proveedor: string; resultado: ResultadoGastoEntrante }> {
+  const correo = await obtenerResumenCorreo(mensajeIdGmail);
+  const adjuntos = nombreArchivo
+    ? correo.adjuntos.filter((adjunto) => adjunto.filename === nombreArchivo)
+    : correo.adjuntos;
+  if (adjuntos.length !== 1) {
+    throw new Error(`Se esperaba un adjunto exacto y se encontraron ${adjuntos.length}; no se procesó nada.`);
+  }
+  const adjunto = adjuntos[0];
+  const rutaTrabajo = join("/tmp", `wobi-reprocesar-${mensajeIdGmail}-${basename(adjunto.filename)}`);
+  const recuperado = await reDescargarAdjuntoSiFalta(rutaTrabajo, {
+    mensajeIdGmail,
+    attachmentIdGmail: adjunto.attachmentId,
+    partId: adjunto.partId,
+  });
+  if (!recuperado) throw new Error("No se pudo recuperar el adjunto exacto desde Gmail.");
+
+  const cuerpo = await obtenerCuerpoCompletoCorreo(mensajeIdGmail);
+  const datosLeidos = await extraerDatosFactura(
+    rutaTrabajo,
+    adjunto.mimeType,
+    `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpo}`,
+    adjunto.filename
+  );
+  if (!datosLeidos.esFacturaOGasto) throw new Error("La lectura no confirmó que el documento sea un gasto.");
+  const proveedor = await resolverProveedorRealDesdeMovimiento(datosLeidos, empresa);
+  const datos = { ...datosLeidos, proveedor, empresaProbable: empresa };
+  const resultado = await procesarGastoEntrante({
+    chatId,
+    rutaLocal: rutaTrabajo,
+    nombreArchivoOriginal: adjunto.filename,
+    mimeType: adjunto.mimeType,
+    datos,
+    deColaCorreo: true,
+    origenAdjuntoGmail: {
+      mensajeIdGmail,
+      attachmentIdGmail: adjunto.attachmentId,
+      partId: adjunto.partId,
+    },
+    correoOrigen: {
+      de: correo.de,
+      asunto: correo.asunto,
+      threadId: correo.threadId,
+      messageIdHeader: correo.messageIdHeader,
+      mensajeIdGmail,
+    },
+  });
+  if (resultado !== "propuesta_enviada" && resultado !== "propuesta_pendiente_existente") {
+    throw new Error(`El reproceso terminó como ${resultado}; no se entregó una propuesta nueva.`);
+  }
+  return { proveedor, resultado };
+}
+
+export async function reprocesarAdjuntoCorreoConProveedorBancario(
+  mensajeIdGmail: string,
+  chatId: number,
+  empresa: Empresa,
+  nombreArchivo?: string
+): Promise<{ proveedor: string; resultado: ResultadoGastoEntrante }> {
+  return leerAdjuntoCorreo(mensajeIdGmail, chatId, empresa, nombreArchivo);
 }
 
 /**
@@ -62,20 +166,17 @@ export async function reprocesarResolucionConProveedorVacio(
   if (!datosReleidos.esFacturaOGasto) {
     throw new Error("La nueva lectura no confirmó que el documento sea un gasto; no se modificó la resolución anterior.");
   }
-  const proveedor = datosReleidos.proveedor.trim();
-  if (!proveedor) {
-    throw new Error("La nueva lectura tampoco pudo identificar el proveedor real; no se creó ni modificó ningún gasto.");
-  }
-
   // Conserva la empresa que el flujo original ya había resuelto si la nueva lectura no logra
   // determinarla. El resto de los datos se vuelve a leer del comprobante y del correo completos.
-  const datos = {
+  const datosBase = {
     ...datosReleidos,
     empresaProbable:
       datosReleidos.empresaProbable === "desconocida"
         ? resolucion.empresaFinal
         : datosReleidos.empresaProbable,
   };
+  const proveedor = await resolverProveedorRealDesdeMovimiento(datosBase, resolucion.empresaFinal);
+  const datos = { ...datosBase, proveedor };
 
   const resultado = await procesarGastoEntrante({
     chatId: resolucion.chatId,
