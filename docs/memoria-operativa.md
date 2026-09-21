@@ -11,6 +11,7 @@ La memoria de WOBI no entrena un modelo con datos contables ni convierte cualqui
 | Cuenta contable corregida y comprobada en Holded | `_cuentas_corregidas_aprendidas` | Prioridad máxima, con vigencia acotada |
 | Movimiento elegido entre candidatos ambiguos | `_movimientos_ambiguos_aprendidos` | Compatibilidad con el historial anterior |
 | Toda conciliación confirmada y realmente enlazada | `_conciliaciones_verificadas_aprendidas` | Destaca el candidato más consistente por empresa, proveedor, moneda, cuenta y descripción bancaria |
+| Instrucción futura y explícita del operador para un correo | `_instrucciones_correo_aprendidas` | Orienta propuestas posteriores del mismo remitente y tipo de asunto, sin ejecutar acciones por sí sola |
 | Correcciones explícitas del operador | `_correcciones` | Contexto prioritario en consultas posteriores |
 
 ## Cuándo aprende
@@ -23,6 +24,8 @@ Una conciliación solo alimenta la memoria después de que la operación durable
 - operaciones fallidas;
 - coincidencias basadas únicamente en importe o cuenta bancaria.
 
+Las instrucciones de correo se aprenden por una vía separada. Solo se guardan cuando el operador expresa de forma inequívoca que deben reutilizarse (por ejemplo, "siempre", "cada vez" o "de ahora en adelante"). Una orden puntual como "responde este correo hoy" no se convierte en regla. El contenido del correo o sus adjuntos nunca puede crear una regla de memoria: únicamente lo hace el texto escrito por el operador en el flujo de instrucciones específicas.
+
 ## Cómo se autorregula
 
 - Empresa, proveedor y moneda deben coincidir exactamente antes de reutilizar un patrón.
@@ -31,5 +34,9 @@ Una conciliación solo alimenta la memoria después de que la operación durable
 - La memoria solo recomienda en una ambigüedad; el operador conserva la decisión financiera.
 - Las escrituras financieras siguen usando idempotencia y verificación posterior. Una incertidumbre bloquea la repetición automática.
 - Las reparaciones automáticas quedan reservadas a inconsistencias matemáticamente demostrables y acotadas, como el residuo de cambio de divisa ya validado por el flujo durable.
+- Una instrucción de correo se limita por defecto al remitente y a la familia del asunto. Solo se amplía a todos los correos de ese remitente cuando el operador lo dice expresamente.
+- "Ya no", "en vez de" o una corrección equivalente desactiva las reglas anteriores del mismo alcance y conserva su historial para auditoría.
+- Las reglas aprendidas orientan la propuesta, pero no eliminan las aprobaciones, permisos, idempotencia ni verificaciones posteriores de cada operación real.
+- Las instrucciones excesivamente largas no se convierten en reglas. Como máximo se cargan cinco reglas aplicables y se reutilizan durante dos minutos en memoria, sin abrir una llamada adicional de IA.
 
 El comando `reporte_aprendizaje` muestra cuántas evidencias acumula cada mecanismo y cuáles están más reforzadas. Esto permite comprobar que el sistema aprende de casos reales sin ocultar las reglas que está aplicando.

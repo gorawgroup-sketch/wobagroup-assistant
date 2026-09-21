@@ -124,6 +124,7 @@ import {
   type IdentidadCorreoCola,
 } from "../gmail/colaRevisionStore";
 import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
+import { registrarInstruccionCorreoAprendida } from "../gmail/instruccionesAprendidasStore";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendientesCapturaEmpresaPorChat } from "../knowledge/pendienteCapturaEmpresaStore";
 import { askClaude, interpretarCorreccionGasto, type CorreccionGasto } from "../claude/client";
@@ -3894,9 +3895,31 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
     `para que quede enhebrado como una respuesta real. Investiga y ejecuta lo que corresponda con las herramientas ` +
     `disponibles, y reporta el resultado.`;
 
+  let aprendizajeGuardado = false;
+  let aprendizajeReemplazo = false;
+  const guardarAprendizaje = async (): Promise<void> => {
+    const aprendizaje = await registrarInstruccionCorreoAprendida({
+      de: propuesta.correoOrigen!.de,
+      asunto: propuesta.correoOrigen!.asunto,
+      instruccion: textoUsuario,
+      mensajeIdOrigen: propuesta.correoOrigen!.mensajeIdGmail,
+    }).catch((error) => {
+      console.error("[gastoCallbackHandler] No se pudo guardar la instrucción reutilizable (no crítico):", error);
+      return { guardada: false, reemplazo: false };
+    });
+    aprendizajeGuardado = aprendizaje.guardada;
+    aprendizajeReemplazo = aprendizaje.reemplazo;
+  };
+  const conConfirmacionAprendizaje = (mensaje: string): string => {
+    if (!aprendizajeGuardado) return mensaje;
+    return `${mensaje}\n\n🧠 Instrucción guardada para futuros correos del mismo alcance.` +
+      (aprendizajeReemplazo ? " La regla anterior de ese alcance quedó desactivada." : "");
+  };
+
   if (!propuesta.deColaCorreo) {
     const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
-    return { ok: true, mensaje: respuesta };
+    await guardarAprendizaje();
+    return { ok: true, mensaje: conConfirmacionAprendizaje(respuesta) };
   }
 
   const identidad = identidadCorreoDePropuestaGasto(propuesta);
@@ -3933,6 +3956,7 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
           const antes = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
           const idsAnteriores = new Set(antes.map((borrador) => borrador.id));
           respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
+          await guardarAprendizaje();
           const despues = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
           const nuevos = despues.filter((borrador) => !idsAnteriores.has(borrador.id));
           const borradorNuevo = seleccionarBorradorCorrelacionado(nuevos, {
@@ -3955,7 +3979,7 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
         "✉️ Ya existe un borrador pendiente para este mismo correo. Conserva la unidad exacta de la cola " +
         "hasta que lo envíes o lo canceles.";
     }
-    return { ok: true, mensaje: respuesta || "✅ La acción adicional quedó procesada." };
+    return { ok: true, mensaje: conConfirmacionAprendizaje(respuesta || "✅ La acción adicional quedó procesada.") };
   } catch (error) {
     const mensaje = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error ejecutando otras acciones del gasto:", error);

@@ -41,6 +41,7 @@ import {
   type IdentidadCorreoCola,
 } from "./colaRevisionStore";
 import { conMutex } from "../utils/asyncMutex";
+import { registrarInstruccionCorreoAprendida } from "./instruccionesAprendidasStore";
 
 /**
  * Genera un borrador de respuesta y lo ofrece por Telegram con botones de
@@ -671,7 +672,33 @@ export async function continuarConOrientacion(
   // (ni se debe) generar otro.
   const antesDeAskClaude = Date.now();
   const respuesta = await askClaude(instruccion, chatId, undefined, "orientacion_correo");
+
+  // La memoria operativa solo acepta indicaciones explícitamente reutilizables
+  // ("siempre", "cada vez", "de ahora en adelante", etc.). Una orden puntual
+  // sigue siendo puntual. Este registro es auxiliar: si Sheets falla, nunca
+  // bloquea ni cambia el resultado de la operación que el usuario acaba de pedir.
+  const aprendizaje = await registrarInstruccionCorreoAprendida({
+    de,
+    asunto,
+    instruccion: instruccionUsuario,
+    mensajeIdOrigen: mensajeId,
+  }).catch((error) => {
+    console.error("[emailCallbackHandler] No se pudo guardar la instrucción reutilizable (no crítico):", error);
+    return { guardada: false, reemplazo: false };
+  });
+
   await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${asunto} (${de})`);
+  if (aprendizaje.guardada) {
+    const detalle = aprendizaje.reemplazo
+      ? " La regla anterior para este mismo remitente y tipo de correo quedó desactivada."
+      : "";
+    await sendTelegramMessage(
+      chatId,
+      `🧠 Instrucción guardada para futuros correos del mismo alcance.${detalle}`
+    ).catch((error) =>
+      console.error("[emailCallbackHandler] No se pudo confirmar la memoria de instrucción (no crítico):", error)
+    );
+  }
 
   const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);
   let borradorPendiente = await obtenerBorradorCreadoDesde(
