@@ -101,6 +101,22 @@ test("un fallo de descarga deja evidencia incompleta, no un correo vacío proces
   const r = await new GmailAuto(gmail, gmail).listar();
   assert.match(r[0].lecturaError ?? "", /vacía inesperadamente/);
 });
+test("un mensaje anterior ilegible no contamina otro mensaje legible del mismo hilo", async () => {
+  const gmail = { users: { labels: { list: async () => ({ data: { labels: [] } }) }, threads: {
+    list: async () => ({ data: { threads: [{ id: "t" }] } }),
+    get: async () => ({ data: { messages: [
+      { id: "anterior", labelIds: [], internalDate: "1",
+        payload: { mimeType: "text/plain", body: { size: 10 } } },
+      { id: "actual", labelIds: ["UNREAD"], internalDate: "2",
+        payload: { mimeType: "text/plain", body: { data: b64("recibo legible") } } },
+    ] } }),
+  } } } as unknown as gmail_v1.Gmail;
+  const r = await new GmailAuto(gmail, gmail).listar();
+  assert.equal(r.length, 1);
+  assert.equal(r[0].id, "actual");
+  assert.equal(r[0].lecturaError, undefined);
+  assert.match(r[0].contextoHilo, /No se pudo leer este mensaje anterior/);
+});
 test("descarga hilos con concurrencia acotada, conserva orden e informa progreso", async () => {
   let activas = 0, maximas = 0;
   const progreso: number[] = [];

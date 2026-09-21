@@ -3,6 +3,7 @@ import { evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type 
   type StoreAuto, VERSION_ANALISIS, VERSION_POLITICA } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 import { conTiempoMaximo } from "../../utils/asyncTimeout";
+import { UsoApiNoAutorizadoError } from "../../ai/policy";
 
 export interface PuertoAutomatico {
   listar(): Promise<CorreoAuto[]>;
@@ -24,6 +25,16 @@ export interface PuertoAutomatico {
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
+function motivoFalloAnalisis(error: unknown): string {
+  if (error instanceof UsoApiNoAutorizadoError) {
+    if (["limite_diario_alcanzado", "limite_mensual_alcanzado", "limite_diario_proceso_alcanzado"]
+      .includes(error.motivo)) return "revision_pospuesta_por_limite_de_ia";
+    return "analisis_ia_no_disponible";
+  }
+  const nombre = error instanceof Error ? error.name : "Error";
+  if (/TiempoMaximo|Timeout|APIConnection|RateLimit/i.test(nombre)) return "fallo_temporal_analisis_ia";
+  return "fallo_tecnico_analisis_ia";
+}
 type ProgresoRevision = { fase: "analisis" | "recuperacion" | "verificacion"; completados: number; total: number };
 type CorreoPreparado = { correo: CorreoAuto; analisis?: AnalisisAuto; motivos: string[] };
 
@@ -81,7 +92,18 @@ export class ServicioCorreoAutomatico {
       }
       return { correo, analisis, motivos: [] };
     } catch (error) {
-      return { correo, motivos: [`error:${mensajeError(error)}`] };
+      const motivo = motivoFalloAnalisis(error);
+      console.warn("[correo-auto] No se completó el análisis del mensaje:", {
+        mensajeId: correo.id,
+        motivo,
+        error: error instanceof Error ? error.name : "Error",
+      });
+      await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis_no_completado",
+        datos: { motivo, error: error instanceof Error ? error.name : "Error" } }).catch(auditError =>
+        console.warn("[correo-auto] No se pudo auditar el fallo del analizador:",
+          auditError instanceof Error ? auditError.name : "Error")
+      );
+      return { correo, motivos: [motivo] };
     }
   }
 
@@ -269,7 +291,15 @@ export class ServicioCorreoAutomatico {
       return preparado;
     });
     resultado.aplazados = preparados.filter(preparado => preparado.motivos.some(motivo =>
-      motivo === "revision_pospuesta_por_limite_de_coste" || motivo === "revision_pospuesta_por_limite_de_tiempo"
+      motivo === "revision_pospuesta_por_limite_de_coste" || motivo === "revision_pospuesta_por_limite_de_tiempo" ||
+      motivo === "revision_pospuesta_por_limite_de_ia"
+    )).length;
+    resultado.bloqueadosPorPresupuestoIA = preparados.filter(preparado =>
+      preparado.motivos.includes("revision_pospuesta_por_limite_de_ia")
+    ).length;
+    resultado.fallosAnalisis = preparados.filter(preparado => preparado.motivos.some(motivo =>
+      motivo === "analisis_ia_no_disponible" || motivo === "fallo_temporal_analisis_ia" ||
+      motivo === "fallo_tecnico_analisis_ia"
     )).length;
     resultado.reservados = preparados.filter(preparado =>
       preparado.motivos.includes("revision_manual_o_autorespuesta_activa")
@@ -475,6 +505,10 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   if (tiene("revision_manual_o_autorespuesta_activa")) return "Este correo ya está reservado para otro flujo de revisión.";
   if (tiene("revision_pospuesta_por_limite_de_tiempo")) return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
   if (tiene("revision_pospuesta_por_limite_de_coste")) return "La revisión se aplazó al alcanzar el máximo seguro de análisis nuevos de esta pasada.";
+  if (tiene("revision_pospuesta_por_limite_de_ia")) return "El análisis no se ejecutó porque se alcanzó el presupuesto diario de IA configurado.";
+  if (tiene("analisis_ia_no_disponible")) return "La política de IA no autorizó este análisis.";
+  if (tiene("fallo_temporal_analisis_ia")) return "El servicio de análisis tuvo un fallo temporal; el correo se conserva para reintento.";
+  if (tiene("fallo_tecnico_analisis_ia")) return "El analizador no pudo completar este correo; el motivo técnico quedó registrado.";
   if (tiene("correo_original_no_disponible")) return "La operación existe, pero Gmail ya no permite recuperar el comprobante original.";
   if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) return "La fase automática no terminó y el correo se conserva para revisión manual.";
   return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";
@@ -490,6 +524,9 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     `${consolidado ? "Correos analizados en la revisión más reciente" : "Correos analizados automáticamente"}: ${r.revisados}.`,
     ...(r.reservados ? [`Ya estaban bajo revisión manual o autorrespuesta: ${r.reservados}.`] : []),
     ...(r.aplazados ? [`Correos aplazados sin analizar en esta pasada: ${r.aplazados}.`] : []),
+    ...(r.bloqueadosPorPresupuestoIA ?
+      [`Análisis detenidos por el presupuesto diario de IA: ${r.bloqueadosPorPresupuestoIA}. No se clasificaron como correos ilegibles.`] : []),
+    ...(r.fallosAnalisis ? [`Fallos técnicos del analizador: ${r.fallosAnalisis}. Los correos permanecen sin leer para reintento.`] : []),
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
     `Correos que requieren revisión manual: ${r.pendientes.length}.`];

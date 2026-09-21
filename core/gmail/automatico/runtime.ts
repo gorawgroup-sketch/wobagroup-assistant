@@ -14,6 +14,7 @@ import { buscarPropuestaGastoPendiente, obtenerPropuestasGastoPorChat } from "..
 import { obtenerPropuestasAccionCorreoPorChat } from "../emailActionStore";
 import { GmailAuto } from "./gmail";
 import { analizarAutomatico } from "./analyze";
+import { obtenerClasificacionesAprendidas } from "../../gastos/clasificacionAprendidaSheet";
 import { HoldedAuto } from "./holded";
 import { crearFlujoGastoExistente } from "./flujoExistente";
 import { configuracionAuto, normalizar, type ResultadoAuto } from "./model";
@@ -94,6 +95,12 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     },
   });
   let aliasPromise: ReturnType<typeof obtenerTodosLosAlias> | undefined;
+  // La memoria es igual para todos los mensajes del lote. Antes se pedía a
+  // Sheets una vez por correo, multiplicando latencia y riesgo de cuota.
+  let memoriaClasificaciones: ReturnType<typeof obtenerClasificacionesAprendidas> | undefined;
+  const procesoAnalisis = opciones.exhaustiva === true
+    ? "correo_gastos_automatico_manual"
+    : "correo_gastos_automatico";
   const holded = new HoldedAuto({
     cuentaConfirmada: (empresa, proveedor) => buscarCuentaCorregidaAprendida(proveedor, empresa),
     alias: async (empresa, proveedor) => (await (aliasPromise ??= obtenerTodosLosAlias()))
@@ -121,7 +128,11 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   }
   const estadosAutorespuesta = new Map((await listarHilosAutorespuesta()).map(estado => [estado.threadId, estado.estado]));
   const service = new ServicioCorreoAutomatico(new PostgresAutoStore(), {
-    listar: () => gmail.listar(), obtener: (mensajeId, threadId) => gmail.obtener(mensajeId, threadId), analizar: analizarAutomatico,
+    listar: () => gmail.listar(), obtener: (mensajeId, threadId) => gmail.obtener(mensajeId, threadId),
+    analizar: async correo => analizarAutomatico(correo, {
+      memoria: await (memoriaClasificaciones ??= obtenerClasificacionesAprendidas()),
+      proceso: procesoAnalisis,
+    }),
     reservadoManualmente: async id => {
       if (manuales.has(id)) return true;
       const estado = estadosAutorespuesta.get(id);
@@ -167,7 +178,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     progreso: async ({ fase, completados, total }) => {
       if (!esHito(completados, total)) return;
       await notificar(fase === "analisis"
-        ? (completados === 0 ? `⏳ Analizando ${total} mensaje(s), hasta 2 a la vez…` : `⏳ Mensajes analizados: ${completados}/${total}.`)
+        ? (completados === 0 ? `⏳ Analizando ${total} mensaje(s), hasta ${limites.concurrenciaAnalisis} a la vez…` : `⏳ Mensajes analizados: ${completados}/${total}.`)
         : fase === "recuperacion"
           ? (completados === 0 ? `⏳ Revisando ${total} operación(es) anteriores antes de continuar…` :
             `⏳ Operaciones anteriores revisadas: ${completados}/${total}.`)

@@ -10,7 +10,10 @@ export const VERSION_POLITICA = "correo-gastos-v21";
  * no leídos. Se inicia con el valor ya persistido en producción para
  * reutilizar inmediatamente los análisis v21 existentes.
  */
-export const VERSION_ANALISIS = "correo-gastos-v21";
+// v22 invalida únicamente las lecturas automáticas antiguas. Varias quedaron
+// persistidas como incompletas durante el incidente del límite diario de IA;
+// conservarlas para siempre impediría que una orden manual pudiera repararlas.
+export const VERSION_ANALISIS = "correo-gastos-analysis-v22";
 export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
@@ -275,6 +278,10 @@ export interface ResultadoAuto {
   encontrados?: number;
   /** Mensajes que no recibieron análisis nuevo por límite de coste o tiempo. */
   aplazados?: number;
+  /** Subconjunto aplazado porque la política monetaria de IA alcanzó su techo. */
+  bloqueadosPorPresupuestoIA?: number;
+  /** Mensajes cuyo analizador falló por una causa técnica distinta del presupuesto. */
+  fallosAnalisis?: number;
   /** Mensajes que ya estaban bajo una decisión manual o autorrespuesta activa. */
   reservados?: number;
   pendientes: Array<{ mensajeId: string; asunto: string; motivos: string[]; detalles?: Array<{
