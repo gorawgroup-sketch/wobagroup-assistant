@@ -142,12 +142,34 @@ async function leerAdjuntoCorreo(
   if (!recuperado) throw new Error("No se pudo recuperar el adjunto exacto desde Gmail.");
 
   const cuerpo = await obtenerCuerpoCompletoCorreo(mensajeIdGmail);
-  const datosLeidos = await extraerDatosFactura(
-    rutaTrabajo,
-    adjunto.mimeType,
-    `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpo}`,
-    adjunto.filename
-  );
+  let datosLeidos: DatosFactura;
+  try {
+    datosLeidos = await extraerDatosFactura(
+      rutaTrabajo,
+      adjunto.mimeType,
+      `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpo}`,
+      adjunto.filename
+    );
+  } catch (error) {
+    // Un comprobante emitido por el banco puede no contener el comercio y hacer que el lector
+    // documental agote sus intentos. El reproceso puntual todavía puede continuar de forma segura
+    // con los importes LITERALES del asunto y un único movimiento bancario exacto; no se degrada a
+    // una decisión inventada ni se aplica este fallback al flujo normal del buzón.
+    console.error("[reprocesarResolucionProveedor] La lectura documental no concluyó; se intenta el respaldo bancario exacto:", error);
+    datosLeidos = {
+      esFacturaOGasto: false,
+      proveedor: "",
+      monto: 0,
+      moneda: "",
+      fecha: "",
+      concepto: "",
+      reciboSimplificado: true,
+      lineas: [],
+      empresaProbable: empresa,
+      confianza: "baja",
+      razon: "La lectura documental no concluyó; pendiente de evidencia bancaria exacta.",
+    };
+  }
   const datosBase = datosLeidos.esFacturaOGasto
     ? datosLeidos
     : reconstruirGastoDesdeAsuntoPago(correo.asunto, cuerpo, correo.fecha, datosLeidos);
