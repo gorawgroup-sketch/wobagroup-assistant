@@ -4557,6 +4557,9 @@ const TOLERANCIA_APROXIMADA_PORCENTAJE = 0.15;
 // porcentaje solo sería demasiado angosto para cubrir redondeos reales de
 // conversión de moneda.
 const TOLERANCIA_APROXIMADA_PISO = 1;
+export function margenImporteAproximado(monto: number): number {
+  return Math.max(TOLERANCIA_APROXIMADA_PISO, Math.abs(monto) * TOLERANCIA_APROXIMADA_PORCENTAJE);
+}
 
 /**
  * true si `proveedor` parece estar mencionado en `descripcion` (o viceversa)
@@ -4744,7 +4747,7 @@ export async function buscarMovimientoEnMonedaAlternativa(
  * dentro de esos resultados. Compartida por reconciliarMovimiento (verificación post-llamada) y
  * estaMovimientoYaConciliado (chequeo previo antes de conciliar un candidato ya elegido).
  */
-async function leerEstadoMovimiento(
+export async function leerEstadoMovimiento(
   empresa: Empresa,
   accountId: string,
   movementId: string,
@@ -5382,6 +5385,10 @@ export async function reconciliarMovimiento(
   }
 
   return conMutex(`holded-bank-reconciliation:${empresa}:${accountId}:${movementId}`, async () => {
+    // Un rechazo local no es un POST incierto. Validar antes de reservar la escritura;
+    // aplicarConciliacionRegistrada vuelve a validar justo antes del POST.
+    await validarCompraContraMovimiento(empresa, documentoId, accountId, movementId, fechaAproximada,
+      opciones.permitirMonedaDistinta === true);
     metricasConciliacionesMovimientoDurables.activas++;
     try {
       const ejecucion = await ejecutarConciliacionMovimientoDurable(

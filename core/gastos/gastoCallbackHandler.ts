@@ -1,3 +1,4 @@
+import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -911,6 +912,9 @@ async function conciliarContraMovimientoEspecifico(
       , estado: "fallida" };
     }
 
+    if (esAproximado || movimiento.origenCoincidencia === "aproximada") {
+      await ajustarCompraAlMovimientoElegido(empresa, gastoId, movimiento);
+    }
     const resultado = await reconciliarMovimiento(
       empresa,
       movimiento.accountId,
