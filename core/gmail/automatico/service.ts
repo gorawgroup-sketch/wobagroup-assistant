@@ -1,4 +1,5 @@
-import { evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
+import { completarEquivalenteExplicito } from "./equivalenteExplicito";
+import { candidatosMovimientoAuto, evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
   nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
   type StoreAuto, VERSION_ANALISIS, VERSION_POLITICA } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
@@ -92,7 +93,7 @@ export class ServicioCorreoAutomatico {
           datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
             otrasAcciones: analisis.otrasAcciones, origen: "observacion_automatica_no_confirmada" } });
       }
-      return { correo, analisis, motivos: [] };
+      return { correo, analisis: completarEquivalenteExplicito(analisis, correo.asunto), motivos: [] };
     } catch (error) {
       const motivo = motivoFalloAnalisis(error);
       console.warn("[correo-auto] No se completó el análisis del mensaje:", {
@@ -424,7 +425,20 @@ export class ServicioCorreoAutomatico {
               }
               const evidencia = await this.evidenciasConLimite(correo, recibo);
               const decision = evaluarAuto(correo, analisis, recibo, evidencia, config);
-              await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "decision", datos: decision });
+              await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "decision", datos: {
+                ...decision,
+                diagnostico: {
+                  proveedor: recibo.proveedor, fecha: recibo.fecha, moneda: recibo.moneda, monto: recibo.monto,
+                  equivalente: recibo.equivalente ?? evidencia.equivalenteBancario,
+                  consultasCompletas: evidencia.consultasCompletas,
+                  movimientosConsultados: evidencia.movimientos.length,
+                  candidatos: candidatosMovimientoAuto(recibo, evidencia).slice(0, 10).map(m => ({
+                    cuentaId: m.cuentaId, id: m.id, fecha: m.fecha, moneda: m.moneda,
+                    centimos: m.centimos, estado: m.estado, conciliadoCentimos: m.conciliadoCentimos,
+                  })),
+                  motivoProveedor: evidencia.motivoProveedor,
+                },
+              } });
               if (!decision.apto) {
                 motivos.push(...decision.motivos);
                 detalles.push({ proveedor: recibo.proveedor, empresa: recibo.empresa, monto: recibo.monto, moneda: recibo.moneda,
@@ -484,15 +498,8 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
     return "La operación ya empezó, pero falta confirmar que quedó completa en Holded.";
   }
   if (tiene("posible_duplicado")) return "Puede estar registrado previamente; hay que comprobarlo antes de crear otro gasto.";
-  if (tiene("movimiento_no_libre")) return "El movimiento bancario compatible ya está usado o no está disponible para conciliar.";
-  if (tiene("movimiento_ambiguo")) return "Hay más de un movimiento bancario posible y el sistema no puede elegir uno con seguridad.";
-  if (tiene("coincidencia_aproximada_sin_proveedor_bancario")) {
-    return "El importe y la fecha se aproximan, pero el banco no confirma al proveedor.";
-  }
-  if (tiene("sin_movimiento_exacto")) {
-    return "No se encontró un movimiento único y libre en la misma moneda, mediante el equivalente contable de Holded " +
-      "ni mediante una conversión respaldada por el proveedor y la fecha; requiere revisión manual.";
-  }
+  if (tiene("no_es_ticket_o_recibo_pagado")) return "El documento no se identificó como recibo de pago; la búsqueda bancaria automática no se ejecutó.";
+  if (tiene("verificacion_incompleta")) return "No se completaron las consultas de verificación; no se puede concluir que falte el cargo bancario.";
   if (tiene("proveedor_no_encontrado") || tiene("proveedor_no_verificado")) {
     if (detalle?.motivoProveedor === "coincidencia_ambigua") {
       return "Hay varios contactos posibles en Holded; el operador debe elegir el proveedor correcto.";
@@ -501,6 +508,15 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
       return `Se encontró «${detalle.contacto}», pero falta confirmar que sea el proveedor correcto.`;
     }
     return "No se encontró un contacto único y verificable para el proveedor en Holded.";
+  }
+  if (tiene("movimiento_no_libre")) return "El movimiento bancario compatible ya está usado o no está disponible para conciliar.";
+  if (tiene("movimiento_ambiguo")) return "Hay más de un movimiento bancario posible y el sistema no puede elegir uno con seguridad.";
+  if (tiene("coincidencia_aproximada_sin_proveedor_bancario")) {
+    return "El importe y la fecha se aproximan, pero el banco no confirma al proveedor.";
+  }
+  if (tiene("sin_movimiento_exacto")) {
+    return "No se encontró un movimiento compatible con las reglas de importe, moneda y fecha, mediante el equivalente contable de Holded " +
+      "ni mediante una conversión respaldada por el proveedor y la fecha; requiere revisión manual.";
   }
   if (tiene("cuenta_contable_no_verificada")) {
     return "Los aprendizajes actuales no permiten elegir una cuenta contable con seguridad.";
@@ -538,7 +554,7 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     ...(r.fallosAnalisis ? [`Fallos técnicos del analizador: ${r.fallosAnalisis}. Los correos permanecen sin leer para reintento.`] : []),
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
-    `Correos que requieren revisión manual: ${r.pendientes.length}.`];
+    `Correos con asuntos pendientes de revisión: ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`];
   if (r.gastos.length) {
     const porEmpresa = new Map<string, number>();
     for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);

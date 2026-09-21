@@ -261,6 +261,11 @@ export function candidatosMovimientoAuto(r: ReciboAuto, e: EvidenciaAuto): Movim
     return movimientoEnVentanaAuto(m.fecha, r.fecha) && comparable !== undefined &&
       Number.isSafeInteger(comparable) && comparable < 0 && Math.abs(-comparable - datos.esperado) <= datos.tolerancia;
   });
+  // Una coincidencia exacta de importe y fecha prevalece sobre cargos próximos
+  // de la ventana histórica. No se filtra su estado: si ya está usada, se bloquea.
+  const exactos = porMontoYFecha.filter(m => m.fecha === r.fecha &&
+    centimosComparablesMovimientoAuto(m, datos.moneda) === -datos.esperado);
+  if (exactos.length) return exactos;
   if (porMontoYFecha.length <= 1) return porMontoYFecha;
   const porProveedor = porMontoYFecha.filter(m => proveedorEnDescripcion(r.proveedor, m.descripcion) ||
     Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, m.descripcion)));

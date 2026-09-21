@@ -111,7 +111,7 @@ export class HoldedAuto {
     e: EvidenciaAuto,
     monedasCuentas: Set<string>
   ): Promise<void> {
-    if (r.equivalente || !e.contacto?.id) return;
+    if (r.equivalente) return;
     const directos = candidatosMovimientoAuto(r, e).filter((m) =>
       m.estado === "pending" && m.conciliadoCentimos === 0 && Boolean(m.origen) && m.origen !== "manual");
     if (directos.length > 0) return;
@@ -132,7 +132,7 @@ export class HoldedAuto {
       ...candidato,
       coincideProveedor:
         proveedorPareceEnDescripcion(r.proveedor, candidato.descripcion) ||
-        proveedorPareceEnDescripcion(e.contacto!.nombre, candidato.descripcion),
+        Boolean(e.contacto?.nombre && proveedorPareceEnDescripcion(e.contacto.nombre, candidato.descripcion)),
     }));
     const elegido = politica
       ? seleccionarMovimientoLiquidacionSeguro(candidatos, r.proveedor, r.fecha, politica.moneda)
@@ -369,14 +369,7 @@ export class HoldedAuto {
             ? { contabilidadCentimos: centimos(mov.accounting_amount), monedaContable: String(mov.accounting_currency ?? "EUR").toUpperCase().trim() }
             : {}) };
         e.movimientos.push(movimiento);
-        // Incluye tickets ya conciliados aunque /purchases no los muestre.
-        const proveedorBanco = proveedorEnDescripcion(r.proveedor, movimiento.descripcion) ||
-          Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, movimiento.descripcion));
-        const importeComparable = centimosComparablesMovimientoAuto(movimiento, moneda);
-        if (importeComparable !== undefined && movimientoEnVentanaAuto(movimiento.fecha, r.fecha) && importeComparable < 0 &&
-          Math.abs(-importeComparable - importe) <= tolerancia &&
-          (movimiento.fecha === r.fecha || proveedorBanco) &&
-          (movimiento.estado !== "pending" || movimiento.conciliadoCentimos !== 0)) e.duplicados.push(`banco:${cuentaId}/${movimiento.id}`);
+
       }
     }
     const monedasDetectadas = cuentas
@@ -384,6 +377,12 @@ export class HoldedAuto {
       .map((cuenta) => String(cuenta.currency).toUpperCase().trim());
     const monedasCuentas = new Set(monedasDetectadas.length ? monedasDetectadas : ["EUR"]);
     await this.resolverEquivalenteBancario(empresa, r, e, monedasCuentas);
+    // Comprobar duplicados sobre los candidatos priorizados: un cargo cercano
+    // antiguo no debe ocultar el cargo exacto y libre de este recibo.
+    for (const m of candidatosMovimientoAuto(r, e)) {
+      if (m.estado !== "pending" || m.conciliadoCentimos !== 0)
+        e.duplicados.push(`banco:${m.cuentaId}/${m.id}`);
+    }
     const candidatasLibres = candidatosMovimientoAuto(r, e).filter(m => m.estado === "pending" && m.conciliadoCentimos === 0 &&
       Boolean(m.origen) && m.origen !== "manual");
     // La cuenta contable es opcional. No descargar el catálogo ni hasta 50 compras completas cuando

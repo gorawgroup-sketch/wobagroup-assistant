@@ -179,3 +179,12 @@ test("configuración inválida falla cerrada y el interruptor prevalece", () => 
   assert.equal(configuracionAuto({ WOBI_MAIL_AUTO_MODE: "execute", WOBI_MAIL_AUTO_KILL_SWITCH: "true" }).modo, "off");
   assert.equal(configuracionAuto({}).modo, "off");
 });
+test("el cargo exacto del mismo día prevalece sobre cargos próximos ya conciliados", () => {
+  const r = reciboFixture(), e = evidenciaFixture(), c = correoFixture();
+  e.movimientos.push({...e.movimientos[0],id:"viejo",fecha:"2026-09-17",centimos:-1999,estado:"reconciled",conciliadoCentimos:-1999});
+  const decision=evaluarAuto(c,analisisFixture(r),r,e,configFixture);
+  assert.equal(decision.apto,true);
+  if(decision.apto)assert.equal(decision.plan.movimiento.id,"b1");
+  e.movimientos.push({...e.movimientos[0],id:"otro-exacto"});
+  assert.equal(evaluarAuto(c,analisisFixture(r),r,e,configFixture).apto,false);
+});
