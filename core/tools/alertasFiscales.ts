@@ -80,12 +80,12 @@ export const alertasFiscalesTool: ToolDefinition = {
     const diasOverride = typeof input.dias === "number" && input.dias > 0 ? input.dias : undefined;
     // Deliberadamente SIN filtro de empresa en la búsqueda de montos: la
     // mayoría de las categorías donde vive esto (Gastos Fijos, Aplazamiento
-    // Impuestos, Pendientes) NO tienen columna de empresa — filtrar por
-    // empresa las excluiría siempre (mismo límite ya documentado en
-    // consultar_cashflow_detalle). Bug real encontrado en la primera
-    // versión de este fix: pasar empresaFiltro="WOBA" dejaba fuera
-    // "Impuestos seg social" y "Prestamo 36 meses WOBA" (sin tag de
-    // empresa), y solo sobrevivía un ingreso sin relación que sí tenía tag.
+    // Impuestos, Pendientes) NO tienen columna de empresa. Desde 2026-09-21 el
+    // motor de búsqueda ya no descarta esas filas al filtrar por empresa (las
+    // devuelve marcadas "sin empresa en la hoja"), pero aquí se mantiene sin
+    // filtro: el monto de un vencimiento no debe depender de esa inferencia.
+    // Bug real de la primera versión de este fix: pasar empresaFiltro="WOBA"
+    // dejaba fuera "Impuestos seg social" y "Prestamo 36 meses WOBA".
     const alertas = calcularProximasAlertas(new Date(), diasOverride);
 
     if (alertas.length === 0) {
