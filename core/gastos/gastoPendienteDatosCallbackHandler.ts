@@ -1,3 +1,4 @@
+import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
 import { unlink } from "node:fs/promises";
 import {
   answerCallbackQuery,
@@ -9,6 +10,7 @@ import type { TelegramCallbackQuery } from "../telegram/types";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import {
   consumirGastoPendienteDatosPorId,
+  obtenerGastosPendienteDatosPorChat,
   restaurarGastoPendienteDatos,
 } from "./gastoPendienteDatosStore";
 import { procesarGastoEntrante } from "./procesarGastoEntrante";
@@ -32,8 +34,23 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
   const messageId = callback.message?.message_id;
 
   if (chatId === undefined || !pendienteId ||
-      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar")) {
+      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer")) {
     await responderCallback(callback.id, "Esta acción no es válida.");
+    return;
+  }
+
+  if (accion === "gpd_posponer") {
+    const pendiente = (await obtenerGastosPendienteDatosPorChat(chatId)).find(p => p.id === pendienteId);
+    if (!pendiente || pendiente.motivo !== "verificacion_duplicado" || !pendiente.deColaCorreo ||
+        !pendiente.correoOrigen?.threadId || !pendiente.correoOrigen?.mensajeIdGmail) {
+      await responderCallback(callback.id, "No hay un correo exacto pendiente para este botón.");
+      return;
+    }
+    await responderCallback(callback.id, "Dejando pendiente y continuando...");
+    const resultado = await posponerCorreoActivoYContinuar(chatId, {
+      threadId: pendiente.correoOrigen.threadId, mensajeId: pendiente.correoOrigen.mensajeIdGmail,
+    });
+    if (!resultado.startsWith("Correo aplazado")) await sendTelegramMessage(chatId, resultado).catch(() => {});
     return;
   }
 

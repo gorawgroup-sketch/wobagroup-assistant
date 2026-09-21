@@ -4,6 +4,7 @@ import type { InlineKeyboardButton } from "../telegram/types";
 export function botonesVerificacionDuplicadoPendiente(id: string): InlineKeyboardButton[][] {
   return [
     [{ text: "🔄 Ya lo liberé: reprocesar", callback_data: `gpd_reintentar:${id}` }],
+    [{ text: "➡️ Dejar pendiente y seguir", callback_data: `gpd_posponer:${id}` }],
     [{ text: "✅ Análisis correcto: cerrar y seguir", callback_data: `gpd_confirmar:${id}` }],
   ];
 }

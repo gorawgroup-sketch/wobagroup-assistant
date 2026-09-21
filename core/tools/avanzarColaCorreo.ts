@@ -1,3 +1,4 @@
+import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
 import { procesarSiguienteCorreoActivo } from "../jobs/revisarCorreoNuevo";
 import { obtenerActivoActual, contarPendientesTotal } from "../gmail/colaRevisionStore";
 import type { ToolDefinition } from "./types";
@@ -29,19 +30,22 @@ export const avanzarColaCorreoTool: ToolDefinition = {
     "('procésalos uno a uno', 'procesa el siguiente', 'sigue con el que sigue', 'continúa') — nunca antes de " +
     "que haya pedido avanzar (revisar_cola_correo por sí sola solo sincroniza y muestra qué hay, no procesa " +
     "nada). Si ya hay un correo activo esperando una decisión real (ej. confirmar un posible gasto duplicado), " +
-    "esta herramienta no hace nada nuevo — resuelve esa decisión primero (o pídesela al usuario) antes de " +
+    "usa aplazar_actual=true si el usuario quiere dejarlo pendiente y continuar con OTROS correos. Si pide resolver el gasto actual, resuelve esa decisión antes de " +
     "volver a llamarla. Puedes llamarla varias veces seguidas para procesar varios correos en el mismo turno; " +
     "se detiene sola en el primero que de verdad necesite que el usuario decida algo.",
-  input_schema: { type: "object", properties: {} },
-  handler: async (_input, context) => {
+  input_schema: { type: "object", properties: {
+    aplazar_actual: { type: "boolean", description: "true cuando el usuario pide continuar con OTROS correos dejando el actual pendiente, incluso tras aceptar el análisis de movimiento ya conciliado. Conserva el actual sin leer; no crea ni concilia ni descarta gastos." },
+  } },
+  handler: async (input, context) => {
     const chatId = context?.chatId;
     if (!chatId) return "Error: no se pudo determinar la conversación para procesar la cola de correo.";
 
+    if (input.aplazar_actual === true) return posponerCorreoActivoYContinuar(chatId);
     const activoAntes = await obtenerActivoActual(chatId);
     if (activoAntes) {
       return (
         `Ya hay un correo activo esperando una decisión: "${activoAntes.asunto}" (de ${activoAntes.de}) — ` +
-        "resuélvelo primero (o pregúntale al usuario qué hacer con él) antes de seguir con el siguiente."
+        "Si el usuario ya pidió dejarlo pendiente y continuar con otros, llama esta herramienta con aplazar_actual=true; no hace falta pedir otra confirmación."
       );
     }
 
