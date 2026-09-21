@@ -35,11 +35,9 @@ export async function resolverProveedorRealDesdeMovimiento(
     Boolean(datos.monedaEquivalente?.trim());
   const monto = usaEquivalente ? datos.montoEquivalente! : datos.monto;
   const moneda = usaEquivalente ? datos.monedaEquivalente!.trim().toUpperCase() : datos.moneda.trim().toUpperCase();
-  const tolerancia = usaEquivalente ? Math.max(0.05, Math.abs(monto) * 0.02) : undefined;
   const candidatos = await buscar(
     empresa,
-    { monto, moneda, fecha: datos.fecha || new Date().toISOString().slice(0, 10) },
-    tolerancia
+    { monto, moneda, fecha: datos.fecha || new Date().toISOString().slice(0, 10) }
   );
   const proveedores = [...new Set(
     candidatos
@@ -54,6 +52,71 @@ export async function resolverProveedorRealDesdeMovimiento(
     );
   }
   return proveedores[0];
+}
+
+function parsearImporteAsunto(raw: string, moneda: string): number {
+  const limpio = raw.replace(/\s/g, "");
+  const partes = limpio.split(/[.,]/);
+  if (partes.length === 1) return Number(partes[0]);
+  const ultima = partes.at(-1) ?? "";
+  // COP suele llegar con punto de miles (690.267COP); EUR/USD con dos decimales (192.28EUR).
+  if (ultima.length === 3 && moneda !== "EUR" && moneda !== "USD" && moneda !== "GBP") {
+    return Number(partes.join(""));
+  }
+  const decimales = ultima.length <= 2;
+  return Number(decimales ? `${partes.slice(0, -1).join("")}.${ultima}` : partes.join(""));
+}
+
+export function reconstruirGastoDesdeAsuntoPago(
+  asunto: string,
+  cuerpo: string,
+  fechaCorreo: string,
+  datosParciales: DatosFactura
+): DatosFactura | undefined {
+  const importes = [...asunto.matchAll(/(\d[\d.,]*)\s*(EUR|USD|GBP|COP|MXN|CRC)\b/gi)]
+    .map((match) => {
+      const moneda = match[2].toUpperCase();
+      return { monto: parsearImporteAsunto(match[1], moneda), moneda };
+    })
+    .filter((item) => Number.isFinite(item.monto) && item.monto > 0);
+  if (importes.length === 0) return undefined;
+
+  const equivalente = importes.find((item) => item.moneda === "EUR") ?? importes[0];
+  const principal = importes.find((item) => item.moneda !== equivalente.moneda) ?? equivalente;
+  const fechaParseada = new Date(fechaCorreo.replace(/\s+at\s+/i, " "));
+  const fecha = Number.isNaN(fechaParseada.getTime())
+    ? datosParciales.fecha
+    : fechaParseada.toISOString().slice(0, 10);
+  const remitenteOriginal = cuerpo.match(/(?:^|\n)From:\s*([^<\n]+?)(?:\s*<|\n)/i)?.[1]?.trim();
+  const concepto = asunto
+    .replace(/^\s*(?:fwd?|rv):\s*/i, "")
+    .replace(/\d[\d.,]*\s*(?:EUR|USD|GBP|COP|MXN|CRC)\s*(?:\|\s*)?/gi, "")
+    .replace(/^\s*[-|:]\s*/, "")
+    .trim() || "Pago con tarjeta";
+
+  return {
+    ...datosParciales,
+    esFacturaOGasto: true,
+    proveedor: datosParciales.proveedor,
+    monto: principal.monto,
+    moneda: principal.moneda,
+    montoEquivalente: equivalente === principal ? undefined : equivalente.monto,
+    monedaEquivalente: equivalente === principal ? undefined : equivalente.moneda,
+    personaAsociada: datosParciales.personaAsociada || remitenteOriginal,
+    contextoDeViaje: datosParciales.contextoDeViaje || /\b(?:viaje|vuelo|hotel|aeropuerto)\b/i.test(asunto),
+    fecha: fecha || new Date().toISOString().slice(0, 10),
+    concepto: datosParciales.concepto || concepto,
+    reciboSimplificado: true,
+    lineas: [{
+      concepto: datosParciales.concepto || concepto,
+      base: principal.monto,
+      tipoIvaPct: 0,
+      tratamientoFiscal: "inversion_sujeto_pasivo",
+    }],
+    confianza: "alta",
+    razon:
+      "Comprobante de pago con importes explícitos en el asunto; el proveedor debe confirmarse mediante un único movimiento bancario exacto.",
+  };
 }
 
 async function leerAdjuntoCorreo(
@@ -85,9 +148,12 @@ async function leerAdjuntoCorreo(
     `Adjunto de correo. De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpo}`,
     adjunto.filename
   );
-  if (!datosLeidos.esFacturaOGasto) throw new Error("La lectura no confirmó que el documento sea un gasto.");
-  const proveedor = await resolverProveedorRealDesdeMovimiento(datosLeidos, empresa);
-  const datos = { ...datosLeidos, proveedor, empresaProbable: empresa };
+  const datosBase = datosLeidos.esFacturaOGasto
+    ? datosLeidos
+    : reconstruirGastoDesdeAsuntoPago(correo.asunto, cuerpo, correo.fecha, datosLeidos);
+  if (!datosBase) throw new Error("La lectura no confirmó el gasto y el asunto no contiene importes verificables.");
+  const proveedor = await resolverProveedorRealDesdeMovimiento(datosBase, empresa);
+  const datos = { ...datosBase, proveedor, empresaProbable: empresa };
   const resultado = await procesarGastoEntrante({
     chatId,
     rutaLocal: rutaTrabajo,
