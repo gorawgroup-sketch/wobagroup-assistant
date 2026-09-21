@@ -40,6 +40,11 @@ export function debeEjecutarAnalisisAutomatico(solicitud: SolicitudRevisionCorre
   return solicitud.origen === "manual" || solicitud.informe === "consolidado";
 }
 
+/** Una orden humana exige terminar el lote automático antes de ofrecer la cola uno a uno. */
+export function revisionCorreoExhaustiva(solicitud: SolicitudRevisionCorreo): boolean {
+  return solicitud.origen === "manual";
+}
+
 /** Una orden manual siempre informa, aunque se una a un pase silencioso. */
 export function debePublicarInformeCorreo(
   solicitud: SolicitudRevisionCorreo,

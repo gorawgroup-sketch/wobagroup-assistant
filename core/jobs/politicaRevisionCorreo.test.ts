@@ -7,6 +7,7 @@ import {
   CRON_CORREO_INFORME_TARDE,
   debeEjecutarAnalisisAutomatico,
   debePublicarInformeCorreo,
+  revisionCorreoExhaustiva,
   revisionCorreoProgramadaHabilitada,
 } from "./politicaRevisionCorreo";
 
@@ -31,6 +32,12 @@ test("solo los informes y las órdenes manuales ejecutan análisis automático c
   assert.equal(debeEjecutarAnalisisAutomatico({ origen: "cron", informe: "silencioso" }), false);
   assert.equal(debeEjecutarAnalisisAutomatico({ origen: "cron", informe: "consolidado", slot: "10" }), true);
   assert.equal(debeEjecutarAnalisisAutomatico({ origen: "manual" }), true);
+});
+
+test("solo la orden manual exige completar todo el lote antes de pasar a la cola", () => {
+  assert.equal(revisionCorreoExhaustiva({ origen: "manual" }), true);
+  assert.equal(revisionCorreoExhaustiva({ origen: "cron", informe: "silencioso" }), false);
+  assert.equal(revisionCorreoExhaustiva({ origen: "cron", informe: "consolidado", slot: "10" }), false);
 });
 
 test("los pases silenciosos no informan y las órdenes manuales siempre responden", () => {
