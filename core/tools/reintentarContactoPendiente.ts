@@ -1,8 +1,9 @@
 import { consumirResolucionContactoPorChat, restaurarResolucionContacto } from "../gastos/contactoResolucionStore";
-import { buscarContactoHolded } from "../holded/write";
+import { buscarContactoHolded, crearContactoHolded } from "../holded/write";
 import { procesarGastoConContactoResuelto } from "../gastos/gastoCallbackHandler";
 import { sendTelegramMessage } from "../telegram/client";
 import type { ToolDefinition } from "./types";
+import { conMutex } from "../utils/asyncMutex";
 
 /**
  * Pedido explícito de Carlos, tras un caso real: se le avisó que un
@@ -21,13 +22,26 @@ export const reintentarContactoPendienteTool: ToolDefinition = {
   description:
     "Reintenta encontrar el proveedor de un gasto que antes no se encontró en Holded — úsala cuando el " +
     "usuario confirme en texto libre que ya creó el contacto (ej. 'ya lo creé', 'listo', 'ya está', 'dale, " +
-    "ya lo agregué') en respuesta a un aviso de 'no encontré el proveedor'. Si ahora SÍ se encuentra, crea " +
+    "ya lo agregué') o cuando indique expresamente otro nombre de contacto existente que se debe usar. " +
+    "Si ahora SÍ se encuentra, crea " +
     "el gasto completo (con el desglose de IVA, cuenta y tags ya calculados desde el principio) y reporta " +
-    "el resultado real — nunca pidas de nuevo los datos de la factura, ya se leyeron. Si el usuario en " +
-    "cambio te da un nombre o id de contacto distinto para usar, no uses esta tool — dile que cree el " +
-    "proveedor exacto en Holded, esta tool solo reintenta la búsqueda por el nombre real de la factura.",
-  input_schema: { type: "object", properties: {} },
-  handler: async (_input, context) => {
+    "el resultado real — nunca pidas de nuevo los datos de la factura, ya se leyeron. Pasa en " +
+    "contacto_nombre el nombre existente que pidió usar. Si ordena crear uno con un nombre distinto, pasa " +
+    "crear_contacto_nuevo_como. Si omites ambos, se busca el nombre original.",
+  input_schema: {
+    type: "object",
+    properties: {
+      contacto_nombre: {
+        type: "string",
+        description: "Nombre exacto del contacto de Holded que el usuario indicó expresamente; omitir para reintentar el proveedor original.",
+      },
+      crear_contacto_nuevo_como: {
+        type: "string",
+        description: "Nombre exacto con el que el usuario ordenó crear un contacto nuevo en Holded.",
+      },
+    },
+  },
+  handler: async (input, context) => {
     const chatId = context?.chatId;
     if (chatId === undefined) {
       return "Error: no se pudo determinar el chat — no se puede reintentar ninguna resolución de contacto.";
@@ -38,9 +52,26 @@ export const reintentarContactoPendienteTool: ToolDefinition = {
       return "No hay ninguna pregunta de proveedor sin encontrar pendiente para este chat (puede que ya se haya procesado, o que haya expirado).";
     }
 
+    const nombreSolicitado =
+      typeof input.contacto_nombre === "string" && input.contacto_nombre.trim()
+        ? input.contacto_nombre.trim()
+        : resolucion.propuesta.proveedor;
+    const nombreNuevo =
+      typeof input.crear_contacto_nuevo_como === "string" && input.crear_contacto_nuevo_como.trim()
+        ? input.crear_contacto_nuevo_como.trim()
+        : undefined;
+
     let contacto;
     try {
-      contacto = await buscarContactoHolded(resolucion.empresaFinal, resolucion.propuesta.proveedor, resolucion.propuesta.moneda);
+      if (nombreNuevo) {
+        const clave = `crearContacto:${resolucion.empresaFinal}:${nombreNuevo.toLowerCase()}`;
+        contacto = await conMutex(clave, async () => {
+          const existente = await buscarContactoHolded(resolucion.empresaFinal, nombreNuevo, resolucion.propuesta.moneda);
+          return existente ?? crearContactoHolded(resolucion.empresaFinal, nombreNuevo);
+        });
+      } else {
+        contacto = await buscarContactoHolded(resolucion.empresaFinal, nombreSolicitado, resolucion.propuesta.moneda);
+      }
     } catch (error) {
       // Se reinserta el pendiente para no perderlo por un error transitorio (ej. Holded caído un momento).
       await restaurarResolucionContacto(resolucion).catch(() => {});
@@ -54,7 +85,7 @@ export const reintentarContactoPendienteTool: ToolDefinition = {
         console.error("[reintentarContactoPendiente] Error reinsertando el pendiente:", error)
       );
       return (
-        `Todavía no encuentro el proveedor "${resolucion.propuesta.proveedor}" en los contactos de Holded ` +
+        `Todavía no encuentro el contacto "${nombreSolicitado}" en Holded ` +
         `(${resolucion.empresaFinal}). Dile al usuario que confirme que lo creó con el nombre correcto, o que ` +
         `puede intentarlo de nuevo cuando lo haga.`
       );

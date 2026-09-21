@@ -342,9 +342,12 @@ async function buildSystemPromptDinamico(
       partes.push(
         `Hay una pregunta SIN RESPONDER en este chat: se avisó que el proveedor ` +
           `"${resolucionContacto.propuesta.proveedor}" no se encontró en los contactos de Holded ` +
-          `(${resolucionContacto.empresaFinal}) y se le pidió al usuario que lo creara y avisara. Si su ` +
+        `(${resolucionContacto.empresaFinal}) y se le pidió al usuario que lo creara y avisara. Si su ` +
           "mensaje actual confirma que ya lo creó (ej. 'ya lo creé', 'listo', 'ya está', 'dale, ya lo " +
-          "agregué'), usa la herramienta reintentar_contacto_pendiente — nunca le vuelvas a pedir los datos " +
+          "agregué'), usa la herramienta reintentar_contacto_pendiente. Si indica explícitamente otro contacto " +
+          "existente que debe usarse (ej. 'usa EPAYCO'), usa la misma herramienta pasando contacto_nombre. " +
+          "Si ordena crear el contacto con un nombre específico, úsala pasando crear_contacto_nuevo_como. " +
+          "Nunca le vuelvas a pedir los datos " +
           "de la factura, ya se leyeron antes. Si su mensaje pide algo distinto (programar un recordatorio, " +
           "guardar algo en la memoria del sistema, o cualquier otra instrucción), atiende esa petición con " +
           "la herramienta que corresponda — no repitas esta pregunta ni inventes una aclaración propia " +

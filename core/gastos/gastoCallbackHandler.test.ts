@@ -12,6 +12,7 @@ import {
   CuentaContableNoInferidaError,
   DescuadreFiscalGastoError,
   botonesResolucionContacto,
+  nombreProveedorParaBusqueda,
   type EstadoIntentoConciliacion,
 } from "./gastoCallbackHandler";
 import { combinarTagsGastoAprendidos } from "../holded/write";
@@ -63,7 +64,7 @@ test("un fallo no terminal restaura la misma resolución aunque Telegram tambié
   assert.deepEqual(restauradas, ["resolucion-estable"]);
 });
 
-test("la resolución de contacto conserva alternativas y nunca ofrece crear sin proveedor real", () => {
+test("la resolución de un proveedor real ofrece todas las vías y bloquea las inseguras si no hay proveedor", () => {
   const base = {
     id: "resolucion-segura",
     propuesta: { id: "propuesta", proveedor: "Parking Moraleja" } as PropuestaGasto,
@@ -78,15 +79,42 @@ test("la resolución de contacto conserva alternativas y nunca ofrece crear sin 
   const botones = botonesResolucionContacto(base).flat();
   assert.deepEqual(
     botones.map((boton) => boton.text),
-    ['✅ Parking Moraleja', '🆕 Crear contacto nuevo: "Parking Moraleja"']
+    [
+      '✅ Parking Moraleja',
+      '🆕 Crear contacto nuevo: "Parking Moraleja"',
+      "🆗 Crear sin contacto",
+      "✏️ Dar instrucciones específicas",
+    ]
   );
-  assert.equal(botones.some((boton) => boton.callback_data.startsWith("gasto_crearsinproveedor:")), false);
+  assert.equal(botones.some((boton) => boton.callback_data.startsWith("gasto_crearsinproveedor:")), true);
 
   const proveedorVacio = botonesResolucionContacto({
     ...base,
     propuesta: { ...base.propuesta, proveedor: "   " },
   }).flat();
-  assert.deepEqual(proveedorVacio.map((boton) => boton.text), ["✅ Parking Moraleja"]);
+  assert.deepEqual(
+    proveedorVacio.map((boton) => boton.text),
+    ["✅ Parking Moraleja", "✏️ Dar instrucciones específicas"]
+  );
+
+  const proveedorGenerico = botonesResolucionContacto({
+    ...base,
+    propuesta: { ...base.propuesta, proveedor: "Aerolínea no identificada" },
+  }).flat();
+  assert.equal(proveedorGenerico.some((boton) => boton.callback_data.startsWith("gasto_crearsinproveedor:")), false);
+  assert.equal(proveedorGenerico.some((boton) => boton.callback_data.startsWith("gasto_crearcontactonuevo:")), false);
+});
+
+test("la búsqueda elimina descriptores de pago sin mutilar nombres legales", () => {
+  assert.equal(nombreProveedorParaBusqueda("ePayco (pasarela de pago)"), "ePayco");
+  assert.equal(nombreProveedorParaBusqueda("Stripe [payment processor]"), "Stripe");
+  assert.equal(nombreProveedorParaBusqueda("ACME (Colombia) S.A.S."), "ACME (Colombia) S.A.S.");
+});
+
+test("crear sin contacto conserva el proveedor real para inferir cuenta y tags", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+  assert.match(fuente, /const proveedorParaInferencia = aprenderAlias \? contacto\.name : resolucion\.propuesta\.proveedor/);
+  assert.match(fuente, /proveedor: proveedorParaInferencia/);
 });
 
 test("un fallo de Telegram ocurre después del cierre durable y no reabre la operación financiera", async (t) => {
