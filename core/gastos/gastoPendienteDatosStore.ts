@@ -30,7 +30,7 @@ export interface GastoPendienteDatos {
   nombreArchivoOriginal: string;
   mimeType?: string;
   datos: DatosFactura;
-  motivo: "empresa" | "moneda" | "verificacion_duplicado";
+  motivo: "empresa" | "proveedor" | "moneda" | "verificacion_duplicado";
   creadoEn: number;
   /**
    * true si el gasto que originó esta pregunta viene de la cola de revisión
@@ -163,7 +163,10 @@ function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
   }
   if (!datos) return null;
 
-  const motivo = row[6] === "empresa" || row[6] === "moneda" || row[6] === "verificacion_duplicado" ? row[6] : "moneda";
+  const motivo =
+    row[6] === "empresa" || row[6] === "proveedor" || row[6] === "moneda" || row[6] === "verificacion_duplicado"
+      ? row[6]
+      : "moneda";
 
   let correoOrigen: GastoPendienteDatos["correoOrigen"];
   try {

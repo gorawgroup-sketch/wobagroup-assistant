@@ -128,6 +128,12 @@ export interface DatosFactura {
 
 const REPORTAR_TOOL_NAME = "reportar_datos_factura";
 
+export function reporteGastoSinProveedor(input: Record<string, unknown>): boolean {
+  const esFacturaOGasto = input.es_factura_o_gasto === true || input.es_factura_o_gasto === "true";
+  const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : "";
+  return esFacturaOGasto && !proveedor;
+}
+
 const REPORTAR_TOOL: Anthropic.Tool = {
   name: REPORTAR_TOOL_NAME,
   description:
@@ -338,7 +344,10 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "concluir que es un gasto, confirma que el grupo es quien PAGA en esa transacción, no quien la " +
       "emite/cobra.",
     "Si sí es un gasto, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
-      "aparecen en el documento — no inventes ni redondees.",
+      "aparecen en el documento — no inventes ni redondees. Un gasto con proveedor vacío es una " +
+      "lectura incompleta: vuelve a mirar el encabezado, la razón social, el nombre comercial y el " +
+      "texto principal del recibo. Solo informa es_factura_o_gasto=true cuando también hayas reportado " +
+      "el nombre real del proveedor; nunca sustituyas ese nombre por un contacto genérico.",
     "Extrae también el desglose fiscal en 'lineas': si la factura muestra bases y tipos de IVA " +
       "distintos (ej. una parte al 21% y otra al 10%), repórtalos como líneas separadas. Si solo hay un " +
       "total sin desglose, repórtalo como una sola línea. El porcentaje de IVA es el que está impreso " +
@@ -540,6 +549,38 @@ export async function extraerDatosFactura(
     if (reportar) {
       const input = reportar.input as Record<string, unknown>;
       const monto = typeof input.monto === "number" ? input.monto : 0;
+      const esFacturaOGasto = input.es_factura_o_gasto === true || input.es_factura_o_gasto === "true";
+      const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : "";
+
+      // Caso real (2026-09-21): el modelo declaró un gasto pero omitió el proveedor. Eso produjo en
+      // Telegram `proveedor ""` y dejó como única salida crear con un contacto genérico, aunque el
+      // nombre real estaba visible en el recibo. Un reporte incompleto no se acepta a la primera:
+      // devolvemos el error a la MISMA lectura, con el documento y el correo todavía en contexto, para
+      // que vuelva a mirar el emisor. En el último intento se devuelve el proveedor vacío de forma
+      // explícita; procesarGastoEntrante lo retiene como dato pendiente y nunca crea nada.
+      if (reporteGastoSinProveedor(input) && i < MAX_ITERATIONS - 1) {
+        messages.push({ role: "assistant", content: response.content });
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+        for (const block of toolUseBlocks) {
+          if (block.name === REPORTAR_TOOL_NAME) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              is_error: true,
+              content:
+                "La lectura está incompleta: marcaste que sí es un gasto, pero proveedor quedó vacío. " +
+                "Relee visualmente el recibo y el contexto del correo; identifica la razón social o el " +
+                "nombre comercial real del emisor y vuelve a llamar reportar_datos_factura. No uses un " +
+                "nombre genérico ni copies el nombre del comprador.",
+            });
+          } else if (block.name === knowledgeBaseTool.name) {
+            const resultado = await consultarConocimiento(block.input as Record<string, unknown>);
+            toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultado });
+          }
+        }
+        messages.push({ role: "user", content: toolResults });
+        continue;
+      }
 
       // Ante duda/omisión, se asume NO simplificado (preserva el comportamiento existente de
       // desglosar IVA) — el riesgo real de un falso negativo puntual (un recibo simplificado que se
@@ -581,8 +622,8 @@ export async function extraerDatosFactura(
       };
 
       return {
-        esFacturaOGasto: Boolean(input.es_factura_o_gasto),
-        proveedor: (input.proveedor as string) ?? "",
+        esFacturaOGasto,
+        proveedor,
         monto,
         moneda: (input.moneda as string) ?? "EUR",
         montoEquivalente: typeof input.monto_equivalente === "number" ? input.monto_equivalente : undefined,

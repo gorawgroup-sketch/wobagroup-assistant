@@ -127,29 +127,6 @@ import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "
 import { claveIdempotenciaGasto } from "./identidadGasto";
 import { conciliacionRequiereRevision } from "../holded/durableBankReconciliation";
 
-/**
- * Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE PANAMA
- * SA, Footprint): cuando el proveedor no se encuentra en Holded (ni por
- * nombre parecido, ni por importe) y no hay tiempo/interés de crearlo antes
- * de conciliar, el gasto queda bloqueado indefinidamente esperando que
- * alguien cree el contacto real. Verificado en vivo contra la API real de
- * Holded: /purchases EXIGE contact_id (rechaza con 400 "The contact_id
- * field is required" si se omite) — no existe forma de crear una compra sin
- * NINGÚN contacto. Se creó un contacto placeholder reutilizable por empresa
- * ("PROVEEDOR SIN IDENTIFICAR") el 2026-09-01, con autorización explícita
- * de Carlos, para estos casos — el nombre real del proveedor queda en la
- * descripción del gasto (nunca se pierde), y el contacto se puede corregir
- * a mano en Holded después. A diferencia de un contactoForzado normal,
- * NUNCA se aprende como alias — si se aprendiera, la siguiente factura del
- * mismo proveedor (incluso una vez que el contacto real ya exista) seguiría
- * yendo al placeholder para siempre.
- */
-const CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA: Record<Empresa, { id: string; name: string }> = {
-  WOBA: { id: "6a96da7947b9d9c436035b7a", name: "PROVEEDOR SIN IDENTIFICAR" },
-  EWORKS: { id: "6a96da80d133ca5bab0ec4e8", name: "PROVEEDOR SIN IDENTIFICAR" },
-  Footprint: { id: "6a96da888467c6eb35096adc", name: "PROVEEDOR SIN IDENTIFICAR" },
-};
-
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   // Identificador interno de dispararDecisionFinal: no es un callback de Telegram.
   if (callbackQueryId.startsWith("seleccion_")) return;
@@ -462,7 +439,7 @@ export async function finalizarGastoCorreoAntesDeRender(
   return true;
 }
 
-function botonesResolucionContacto(resolucion: ResolucionContactoPendiente): InlineKeyboardButton[][] {
+export function botonesResolucionContacto(resolucion: ResolucionContactoPendiente): InlineKeyboardButton[][] {
   const botones: InlineKeyboardButton[][] = resolucion.alternativas.map((alternativa, indice) => [{
     text: `✅ ${alternativa.contactName}`,
     callback_data: `gasto_usarcontacto:${resolucion.id}:${indice}`,
@@ -473,10 +450,6 @@ function botonesResolucionContacto(resolucion: ResolucionContactoPendiente): Inl
       callback_data: `gasto_crearcontactonuevo:${resolucion.id}`,
     }]);
   }
-  botones.push([{
-    text: "🆗 Crear sin proveedor real",
-    callback_data: `gasto_crearsinproveedor:${resolucion.id}`,
-  }]);
   return botones;
 }
 
@@ -2040,26 +2013,13 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       return;
     }
 
-    await answerCallbackQuerySafe(callback.id, "Procesando...");
-    await editTelegramMessage(
-      resolucion.chatId,
-      resolucion.messageId,
-      `🔄 Creando el gasto con el contacto genérico "PROVEEDOR SIN IDENTIFICAR"...`,
-      []
-    ).catch((error) =>
-      console.error("[gastoCallbackHandler] No se pudo mostrar el procesamiento sin proveedor (no crítico):", error)
+    await answerCallbackQuerySafe(callback.id, "Esta opción fue retirada: se requiere el proveedor real.");
+    await reponerResolucionContactoTrasFallo(
+      resolucion,
+      resolucion.propuesta.proveedor.trim()
+        ? `ℹ️ No creé el gasto: ahora siempre se exige un proveedor real. Elige una alternativa o crea el contacto exacto "${resolucion.propuesta.proveedor.trim()}".`
+        : "ℹ️ No creé el gasto: el proveedor quedó vacío por una lectura incompleta. Este comprobante debe reprocesarse para recuperar el nombre real."
     );
-
-    const placeholder = CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA[resolucion.empresaFinal];
-    try {
-      await procesarGastoConContactoResuelto(resolucion, placeholder, false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await reponerResolucionContactoTrasFallo(
-        resolucion,
-        `⚠️ No pude completar el gasto con el contacto genérico (${message}). La acción quedó disponible para reintentar.`
-      );
-    }
     return;
   }
 
@@ -3218,20 +3178,6 @@ async function manejarContactoNoEncontrado(
   const encabezado =
     `⚠️ No encontré exactamente el proveedor "${propuesta.proveedor}" en los contactos de Holded (${empresaFinal}).`;
 
-  // Pedido explícito de Carlos, tras un caso real (MERA AEROPUERTO DE
-  // PANAMA SA, Footprint): sin esta opción, un proveedor no encontrado
-  // bloqueaba el gasto indefinidamente hasta que alguien creara el contacto
-  // real en Holded — incluso cuando lo urgente era conciliar el movimiento
-  // bancario ya. "Crear sin proveedor" usa un contacto placeholder
-  // reutilizable ("PROVEEDOR SIN IDENTIFICAR", ver
-  // CONTACTO_SIN_IDENTIFICAR_POR_EMPRESA) — el nombre real del proveedor
-  // queda en la descripción del gasto, nunca se pierde, y se puede
-  // corregir a mano en Holded después. Disponible en AMBOS casos (con o
-  // sin alternativas de nombre parecido).
-  const botonSinProveedor = (resolucionId: string): InlineKeyboardButton[] => [
-    { text: "🆗 Crear sin proveedor real", callback_data: `gasto_crearsinproveedor:${resolucionId}` },
-  ];
-
   // Hallazgo real de auditoría (caso "CAFÉ PINO" → "Lidl Breda", Footprint, tercera vez que el
   // contacto placeholder compartido termina renombrado en Holded — ver crearContactoHolded en
   // core/holded/write.ts): cuando SÍ se identificó un proveedor real con confianza desde el documento
@@ -3254,8 +3200,8 @@ async function manejarContactoNoEncontrado(
     // y la tool reintentar_contacto_pendiente (core/tools/) hacen el resto.
     const textoFinal =
       `${encabezado}\n\nPuedes crearlo en Holded y avisarme aquí mismo (ej. "ya lo creé") — reintento solo, ` +
-      `sin que tengas que reenviar la factura. O creo un contacto nuevo yo mismo con el nombre real ` +
-      `("${propuesta.proveedor}"), o uso el genérico compartido y dejo el nombre real en la descripción.`;
+      `sin que tengas que reenviar la factura. También puedo crear un contacto nuevo con el nombre real ` +
+      `"${propuesta.proveedor.trim()}".`;
 
     const resolucion = await guardarResolucionContacto({
       propuesta,
@@ -3266,7 +3212,7 @@ async function manejarContactoNoEncontrado(
       messageId: messageId ?? 0,
     });
 
-    const botones: InlineKeyboardButton[][] = [botonContactoNuevo(resolucion.id), botonSinProveedor(resolucion.id)].filter((fila) => fila.length > 0);
+    const botones = botonesResolucionContacto(resolucion);
 
     if (messageId != null) {
       await editTelegramMessage(chatId, messageId, textoFinal, botones);
@@ -3302,7 +3248,6 @@ async function manejarContactoNoEncontrado(
   ]);
   const filaContactoNuevo = botonContactoNuevo(resolucion.id);
   if (filaContactoNuevo.length > 0) botones.push(filaContactoNuevo);
-  botones.push(botonSinProveedor(resolucion.id));
 
   await editTelegramMessage(chatId, mensajeIdFinal, texto, botones);
 }

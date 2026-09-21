@@ -356,6 +356,8 @@ async function buildSystemPromptDinamico(
       const queFalta =
         gastoPendiente.motivo === "empresa"
           ? "a qué empresa (WOBA, EWORKS o Footprint) pertenece"
+          : gastoPendiente.motivo === "proveedor"
+            ? "el nombre real y exacto del proveedor que aparece en el comprobante"
           : gastoPendiente.motivo === "verificacion_duplicado"
             ? "reintentar la verificación estricta de duplicados en Holded; no hace falta aportar otro dato"
           : "el monto y moneda EXACTOS que salieron de la cuenta (la factura está en moneda extranjera sin equivalente explícito)";
