@@ -50,6 +50,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     // #N" — mismo criterio que ya usa aplicarCorreccionMoneda (gastoCallbackHandler.ts) y el flujo
     // original (procesarGastoEntrante.ts) para este mismo caso.
     let movimientosAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
+    let movimientoRecomendado: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     try {
       const exactos = await buscarMovimientoSimilar(propuesta.empresa, {
         monto: propuesta.monto,
@@ -58,6 +59,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       });
       if (exactos.length === 1) {
         movimientoEncontrado = true;
+        movimientoRecomendado = { ...exactos[0], origenCoincidencia: "exacta" };
       } else if (exactos.length > 1) {
         movimientosAmbiguos = exactos;
       } else if (propuesta.proveedor) {
@@ -68,6 +70,9 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
           proveedor: propuesta.proveedor,
         });
         movimientoEncontrado = aproximados.length > 0;
+        if (aproximados.length > 0) {
+          movimientoRecomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
+        }
       }
 
       if (!movimientoEncontrado && movimientosAmbiguos.length === 0) {
@@ -86,13 +91,13 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     } catch (error) {
       console.error("[reenviarPropuestaGasto] Error buscando movimiento bancario (no crítico):", error);
     }
-    await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
-      console.error("[reenviarPropuestaGasto] Error guardando el flag de movimiento bancario (no crítico):", error)
-    );
-    await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosAmbiguos).catch((error) =>
-      console.error("[reenviarPropuestaGasto] Error guardando los movimientos ambiguos (no crítico):", error)
-    );
-    propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos };
+    const movimientosPersistidos = movimientoRecomendado ? [movimientoRecomendado] : movimientosAmbiguos;
+    const movimientosGuardados = await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosPersistidos);
+    const flagGuardado = await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado);
+    if (!movimientosGuardados || !flagGuardado) {
+      throw new Error("No se pudo guardar durablemente el movimiento bancario antes de reenviar la propuesta.");
+    }
+    propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos: movimientosPersistidos };
   }
 
   const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));

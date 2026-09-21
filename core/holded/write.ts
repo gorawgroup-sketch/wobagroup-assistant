@@ -4777,6 +4777,22 @@ export async function estaMovimientoYaConciliado(
 }
 
 /**
+ * Verifica que un movimiento persistido todavía existe y sigue libre. A
+ * diferencia de estaMovimientoYaConciliado, un movimiento que ya no aparece
+ * también devuelve false: no es seguro crear confiando en un objetivo que
+ * Holded dejó de devolver.
+ */
+export async function estaMovimientoDisponibleParaConciliar(
+  empresa: Empresa,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string
+): Promise<boolean> {
+  const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
+  return Boolean(movimiento && !estaConciliado(movimiento.status));
+}
+
+/**
  * Última barrera antes de escribir: vuelve a leer documento, movimiento y
  * cuenta bancaria. Un candidato guardado puede quedar obsoleto entre la
  * propuesta y la aprobación; nunca se concilia si moneda, cuenta o importe
