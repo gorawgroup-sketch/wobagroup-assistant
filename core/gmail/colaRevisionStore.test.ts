@@ -113,7 +113,7 @@ test("todas las mutaciones read-modify-write de la cola comparten un mutex", asy
     assert.notEqual(inicio, -1, nombre);
     const fin = fuente.indexOf("\n}", inicio);
     const wrapper = fuente.slice(inicio, fin + 2);
-    assert.match(wrapper, /conMutex\(MUTEX_COLA/, nombre);
+    assert.match(wrapper, /conMutacionCola\(/, nombre);
   }
 });
 

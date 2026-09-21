@@ -265,6 +265,8 @@ export async function vigilarProcesamientoAtascado(): Promise<void> {
     try {
       await vigilarUnChat(admin.userId);
     } catch (error) {
+      // Otra revisión conserva el lock: está trabajando, no está atascada.
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "55P03") continue;
       console.error(`[vigilarProcesamientoAtascado] Error vigilando el chat ${admin.userId}:`, error);
     }
   }
@@ -276,7 +278,7 @@ async function vigilarUnChat(chatId: number): Promise<void> {
   // Claude, callbacks y revisiones manuales/cron: si alguno sigue trabajando,
   // el watchdog espera o abandona por timeout; jamás arranca otro procesamiento
   // del mismo correo en paralelo.
-  return conCoordinadorCorreo(() => vigilarUnChatYaCoordinado(chatId));
+  return conCoordinadorCorreo(() => vigilarUnChatYaCoordinado(chatId), { lockTimeoutMs: 1_000 });
 }
 
 async function vigilarUnChatYaCoordinado(chatId: number): Promise<void> {
