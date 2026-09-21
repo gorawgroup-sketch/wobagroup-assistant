@@ -147,6 +147,8 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - 🧠 Guardar como conocimiento — lee el correo y lo ofrece por el flujo normal de captura (selección de empresa + "✅ Confirmar y guardar"), sin ejecutar ninguna otra acción.
 - ❌ Descartar — ignora la propuesta.
 - ✏️ Dar instrucciones específicas — te pide una instrucción tuya en texto libre antes de actuar.
+- Si esa instrucción incluye de forma explícita **"siempre"**, **"cada vez"**, **"de ahora en adelante"** o una indicación futura equivalente, se guarda como regla operativa para el mismo remitente y tipo de asunto. Si dices que aplica a todos los correos de ese remitente/contacto, se amplía solo a ese remitente. Una orden puntual no se memoriza. Para corregir una regla, usa "ya no...", "en vez de..." o "reemplaza esta regla...": la anterior queda inactiva y auditable. La regla aprendida ayuda a formular la siguiente propuesta, pero nunca evita los botones ni las aprobaciones de la operación real.
+- El mismo aprendizaje se aplica cuando das una instrucción reutilizable desde **"Otras acciones"** de un gasto detectado en un correo. Así, responder, archivar, guardar conocimiento, programar una acción u otro direccionamiento futuro no queda aislado del resto de la memoria de correo.
 - Solo el superadministrador puede presionar cualquiera de estos 4 — la decisión completa sobre un correo entrante (incluso descartarlo) está centralizada en esa persona.
 
 **Sobre movimientos de Holded sin registrar en el cashflow (WOBA/EWORKS):**

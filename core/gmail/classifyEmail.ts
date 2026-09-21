@@ -4,6 +4,7 @@ import type { CorreoResumen } from "./client";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
+import { obtenerInstruccionesAplicablesCorreo } from "./instruccionesAprendidasStore";
 
 const MODEL = resolverModeloDocumental("clasificar_correo");
 const MAX_ITERATIONS = 4;
@@ -177,13 +178,27 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
   ];
 
   const cuerpoRecortado = cuerpoCompleto.trim().slice(0, 8000); // suficiente para juzgar contenido real sin gastar de más en correos larguísimos
+  const instruccionesAprendidas = await obtenerInstruccionesAplicablesCorreo(correo.de, correo.asunto).catch((error) => {
+    console.error("[classifyEmail] No se pudo consultar la memoria de instrucciones (continúa sin ella):", error);
+    return [];
+  });
+  const contextoAprendido = instruccionesAprendidas.length > 0
+    ? [
+        "INSTRUCCIONES OPERATIVAS APRENDIDAS DEL OPERADOR (no provienen del correo y tienen prioridad para formular la propuesta):",
+        ...instruccionesAprendidas.map((regla, indice) =>
+          `${indice + 1}. ${regla.instruccion} (confirmada ${regla.vecesConfirmada}x; alcance: ${regla.alcance})`
+        ),
+        "Úsalas para recomendar el direccionamiento correcto, pero conserva la regla de seguridad: este análisis nunca ejecuta la acción ni la da por realizada.",
+      ].join("\n")
+    : "";
 
   const userText = [
     `De: ${correo.de}`,
     `Asunto: ${correo.asunto}`,
     `Fecha: ${correo.fecha}`,
+    contextoAprendido,
     `Cuerpo completo:\n${cuerpoRecortado || "(vacío)"}`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
   const consultarConocimiento = crearConsultorConocimiento({

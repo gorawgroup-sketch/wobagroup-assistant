@@ -5,6 +5,7 @@ import { obtenerTodosLosMovimientosAprendidos } from "../holded/movimientoAmbigu
 import { obtenerTodasLasFilasAprendidas } from "../google/cashflowFilaAprendidaSheet";
 import { obtenerTodasLasCuentasCorregidas } from "../holded/cuentaCorregidaAprendidaSheet";
 import { obtenerTodasLasConciliacionesAprendidas } from "../holded/conciliacionAprendidaSheet";
+import { obtenerTodasLasInstruccionesCorreoAprendidas } from "../gmail/instruccionesAprendidasStore";
 import { obtenerCorreccionesCrudas } from "../knowledge/correctionsStore";
 import type { ToolDefinition } from "./types";
 
@@ -22,13 +23,14 @@ export const reporteAprendizajeTool: ToolDefinition = {
   name: "reporte_aprendizaje",
   description:
     "Muestra cuánto ha aprendido el sistema hasta ahora: alias de proveedores confirmados, clasificaciones de gastos " +
-    "aprendidas, tolerancias de duplicados confirmadas, conciliaciones bancarias verificadas, y " +
+    "aprendidas, tolerancias de duplicados confirmadas, conciliaciones bancarias verificadas, instrucciones " +
+    "operativas de correo aprendidas, y " +
     "correcciones generales guardadas. Úsala cuando te pregunten algo como '¿cuánto has aprendido?', '¿está " +
     "funcionando la memoria?', 'muéstrame qué has aprendido' o similar.",
   input_schema: { type: "object", properties: {} },
   seguraParaModoRapido: true,
   handler: async () => {
-    const [alias, clasificaciones, duplicados, movimientos, conciliacionesVerificadas, filasCashflow, cuentasCorregidas, correcciones] = await Promise.all([
+    const [alias, clasificaciones, duplicados, movimientos, conciliacionesVerificadas, instruccionesCorreo, filasCashflow, cuentasCorregidas, correcciones] = await Promise.all([
       obtenerTodosLosAlias().catch((error) => {
         console.error("[reporteAprendizaje] Error leyendo alias de proveedor:", error);
         return [];
@@ -47,6 +49,10 @@ export const reporteAprendizajeTool: ToolDefinition = {
       }),
       obtenerTodasLasConciliacionesAprendidas().catch((error) => {
         console.error("[reporteAprendizaje] Error leyendo conciliaciones verificadas aprendidas:", error);
+        return [];
+      }),
+      obtenerTodasLasInstruccionesCorreoAprendidas().catch((error) => {
+        console.error("[reporteAprendizaje] Error leyendo instrucciones de correo aprendidas:", error);
         return [];
       }),
       obtenerTodasLasFilasAprendidas().catch((error) => {
@@ -68,6 +74,10 @@ export const reporteAprendizajeTool: ToolDefinition = {
     const topConciliaciones = [...conciliacionesVerificadas]
       .sort((a, b) => b.vecesConfirmado - a.vecesConfirmado)
       .slice(0, 3);
+    const instruccionesCorreoActivas = instruccionesCorreo.filter((instruccion) => instruccion.activa);
+    const topInstruccionesCorreo = [...instruccionesCorreoActivas]
+      .sort((a, b) => b.vecesConfirmada - a.vecesConfirmada)
+      .slice(0, 3);
 
     const lineas = [
       `📚 *Reporte de aprendizaje acumulado*`,
@@ -84,6 +94,10 @@ export const reporteAprendizajeTool: ToolDefinition = {
         (topConciliaciones.length > 0
           ? ` — más reforzadas: ${topConciliaciones.map((c) => `"${c.proveedor}" → "${c.descripcionMovimiento}" (${c.vecesConfirmado}x)`).join(", ")}`
           : ""),
+      `• Instrucciones operativas de correo activas: ${instruccionesCorreoActivas.length}` +
+        (topInstruccionesCorreo.length > 0
+          ? ` — más reforzadas: ${topInstruccionesCorreo.map((r) => `"${r.remitente}" → "${r.instruccion}" (${r.vecesConfirmada}x)`).join(", ")}`
+          : ""),
       `• Filas de cashflow recordadas (búsqueda instantánea): ${filasCashflow.length}`,
       `• Cuentas contables corregidas a mano y aprendidas: ${cuentasCorregidas.length}`,
       `• Correcciones generales guardadas: ${correcciones.length}`,
@@ -94,6 +108,7 @@ export const reporteAprendizajeTool: ToolDefinition = {
         duplicados.length +
         movimientos.length +
         conciliacionesVerificadas.length +
+        instruccionesCorreoActivas.length +
         filasCashflow.length +
         cuentasCorregidas.length +
         correcciones.length
