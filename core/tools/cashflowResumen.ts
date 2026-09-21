@@ -37,8 +37,8 @@ export const cashflowResumenTool: ToolDefinition = {
     const responder = (texto: string) => `${texto}\n${notaFrescura(lectura.meta)}`;
     const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
 
-    const desde = typeof input.semana_desde === "string" ? normalizarSemana(input.semana_desde) : undefined;
-    const hasta = typeof input.semana_hasta === "string" ? normalizarSemana(input.semana_hasta) : undefined;
+    const desde = typeof input.semana_desde === "string" || typeof input.semana_desde === "number" ? normalizarSemana(String(input.semana_desde)) : undefined;
+    const hasta = typeof input.semana_hasta === "string" || typeof input.semana_hasta === "number" ? normalizarSemana(String(input.semana_hasta)) : undefined;
 
     let seleccion: ResumenSemanaList;
 

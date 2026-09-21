@@ -2,7 +2,7 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
 import { invalidarCachesCashflow, SECCION_IDX_CLIENTE_PENDIENTES } from "./cashflowSheet";
 import { normalizarSemana } from "../utils/semanaCashflow";
-import { nombresCoinciden, textosParecidos } from "../utils/textoParecido";
+import { nombresCoinciden, nombresIguales, textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
 import { fechaHoyEspana } from "../utils/diaHabil";
 import { conMutex } from "../utils/asyncMutex";
@@ -662,7 +662,10 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
     });
   });
 
-  return encontradas;
+  // Si el usuario dio el nombre EXACTO de una fila ("Luz oficina") no se le pregunta por otras más cortas que solo lo
+  // contienen o se le parecen ("Luz"): con semana e importe iguales, la coincidencia idéntica manda.
+  const iguales = encontradas.filter((e) => nombresIguales(criterios.cliente_o_concepto, e.clienteOConcepto));
+  return iguales.length > 0 ? iguales : encontradas;
 }
 
 /**
