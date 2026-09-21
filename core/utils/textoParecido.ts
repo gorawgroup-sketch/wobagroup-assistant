@@ -48,3 +48,25 @@ export function textosParecidos(objetivo: string, candidato: string): boolean {
   const palabrasCandidato = palabrasDe(candidato, 3);
   return palabrasObjetivo.some((po) => palabrasCandidato.some((pc) => palabrasParecidas(po, pc)));
 }
+
+/** Minúsculas y sin tildes ("Sanción" → "sancion"), conservando el resto del texto. */
+export function minusculasSinTildes(texto: string): string {
+  return String(texto ?? "")
+    .normalize("NFD")
+    .replace(new RegExp("[̀-ͯ]", "g"), "")
+    .toLowerCase();
+}
+
+/**
+ * true si el nombre buscado aparece COMPLETO como palabra o frase dentro del candidato (o al revés), sin
+ * distinguir tildes ni mayúsculas. Cubre lo que textosParecidos no puede por diseño — sus palabras de menos de
+ * 5 letras se ignoran a propósito para no dar falsos positivos —: nombres cortos idénticos como "Luz", "AWS" o
+ * "IVA". Solo para rutas donde otros criterios (semana, importe) ya acotan el candidato.
+ */
+export function nombresCoinciden(buscado: string, candidato: string): boolean {
+  const limpiar = (t: string) => ` ${minusculasSinTildes(t).replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const a = limpiar(buscado);
+  const b = limpiar(candidato);
+  if (a.trim().length < 2 || b.trim().length < 2) return false;
+  return b.includes(a) || a.includes(b);
+}
