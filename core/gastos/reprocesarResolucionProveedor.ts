@@ -1,4 +1,5 @@
 import { access } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { extraerDatosFactura } from "../documental/extractInvoiceData";
 import { obtenerCuerpoCompletoCorreo } from "../gmail/client";
 import { reDescargarAdjuntoSiFalta, regenerarComprobanteDesdeCuerpoSiFalta } from "../gmail/reDescargarAdjunto";
@@ -32,9 +33,14 @@ export async function reprocesarResolucionConProveedorVacio(
   }
 
   const { propuesta } = resolucion;
-  const recuperadoDesdeAdjunto = await reDescargarAdjuntoSiFalta(propuesta.rutaLocal, propuesta.origenAdjuntoGmail);
-  if (!recuperadoDesdeAdjunto && !(await archivoExiste(propuesta.rutaLocal))) {
-    const regenerado = await regenerarComprobanteDesdeCuerpoSiFalta(propuesta.rutaLocal, propuesta);
+  // Las resoluciones durables pueden conservar una ruta `/app/tmp/...` creada dentro de un deploy
+  // anterior. Un comando de mantenimiento ejecutado con `railway run` comparte credenciales, pero no
+  // ese filesystem. `/tmp` existe en ambos entornos y la propuesta nueva conserva el origen Gmail,
+  // por lo que el callback de producción podrá volver a descargar el mismo archivo si hace falta.
+  const rutaTrabajo = join("/tmp", `wobi-reprocesar-${resolucion.id}-${basename(propuesta.nombreArchivoOriginal || "comprobante")}`);
+  const recuperadoDesdeAdjunto = await reDescargarAdjuntoSiFalta(rutaTrabajo, propuesta.origenAdjuntoGmail);
+  if (!recuperadoDesdeAdjunto && !(await archivoExiste(rutaTrabajo))) {
+    const regenerado = await regenerarComprobanteDesdeCuerpoSiFalta(rutaTrabajo, propuesta);
     if (!regenerado) {
       throw new Error("No se pudo recuperar el comprobante original desde Gmail; la resolución se conserva intacta.");
     }
@@ -47,7 +53,7 @@ export async function reprocesarResolucionConProveedorVacio(
     ? `Adjunto de correo. De: ${propuesta.correoOrigen.de}. Asunto: ${propuesta.correoOrigen.asunto}. ${cuerpo}`
     : undefined;
   const datosReleidos = await extraerDatosFactura(
-    propuesta.rutaLocal,
+    rutaTrabajo,
     propuesta.mimeType,
     contextoCorreo,
     propuesta.nombreArchivoOriginal
@@ -73,7 +79,7 @@ export async function reprocesarResolucionConProveedorVacio(
 
   const resultado = await procesarGastoEntrante({
     chatId: resolucion.chatId,
-    rutaLocal: propuesta.rutaLocal,
+    rutaLocal: rutaTrabajo,
     nombreArchivoOriginal: propuesta.nombreArchivoOriginal,
     mimeType: propuesta.mimeType,
     datos,
