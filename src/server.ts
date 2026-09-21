@@ -1,3 +1,4 @@
+import { avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
 import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
@@ -234,10 +235,8 @@ function trackearEnSegundoPlano<T>(promesa: Promise<T>): void {
 
 async function avisarEntregaTelegramIncierta(entrega: EntregaTelegramDurable): Promise<void> {
   if (!entrega.chatId) return;
-  await sendTelegramMessage(
-    entrega.chatId,
-    "⚠️ Una solicitud quedó interrumpida después de comenzar. Wobi no la repitió automáticamente para evitar duplicar una acción. Consulta el estado antes de volver a ejecutarla."
-  );
+  const aviso = avisoInterrumpido(entrega);
+  await sendTelegramMessageWithButtons(entrega.chatId, aviso.texto, aviso.botones);
 }
 
 const coordinadorEntregasTelegram = new CoordinadorEntregasTelegram(
@@ -1418,7 +1417,35 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
   }
 
   try {
-    if (data.startsWith("doc_")) {
+    if (data.startsWith("ent_ver:") || data.startsWith("ent_cerrar:")) {
+      const clave = decodificarClaveAviso(data.split(":")[1] ?? "");
+      const entrega = clave ? await durableDeliveryStore.obtener(clave) : undefined;
+      const chatId = callback.message?.chat.id;
+      if (!entrega || !chatId || entrega.chatId !== chatId) {
+        await answerCallbackQuery(callback.id, "Este aviso no está disponible en este chat.");
+        return true;
+      }
+      await answerCallbackQuery(callback.id, "Revisando aviso...");
+      if (data.startsWith("ent_cerrar:")) {
+        await editTelegramMessage(chatId, callback.message!.message_id,
+          "Aviso cerrado. No se canceló ni se volvió a ejecutar la operación.", []);
+        return true;
+      }
+      const trabajando = await avisarTrabajando(chatId);
+      try {
+        const respuesta = await askClaude(
+          "Verifica SOLO mediante lecturas el resultado de esta solicitud interrumpida. " +
+          "No ejecutes de nuevo ninguna acción ni revises toda la bandeja. Identifica la empresa, " +
+          "documento, importe y qué quedó hecho o pendiente con evidencia actual. Si no puedes " +
+          "identificarla, dilo sin atribuirle otra operación. Indica el siguiente paso concreto.\n" +
+          contextoSolicitudInterrumpida(entrega), chatId, undefined, "verificar_solicitud_interrumpida", { soloLectura: true });
+        await entregarRespuestaTrasTrabajar(chatId, trabajando, respuesta);
+      } catch {
+        await entregarRespuestaTrasTrabajar(chatId, trabajando,
+          "No pude verificar el resultado ahora. El botón «Verificar resultado» sigue disponible; no se repitió ninguna operación.");
+      }
+    } else
+ if (data.startsWith("doc_")) {
       await handleDocumentCallback(callback);
     } else if (data.startsWith("desamb_")) {
       await handleDesambiguacionCallback(callback);

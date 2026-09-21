@@ -1,3 +1,4 @@
+import { resumirSolicitudInterrumpida } from "./interruptedNotice";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { conMutex } from "../utils/asyncMutex";
 import { enteroAcotado } from "../utils/asyncTimeout";
@@ -137,8 +138,7 @@ class StoreEntregasTelegram implements RepositorioEntregasTelegram {
   }
 
   marcarIniciada(clave: string) {
-    // La fila durable se limpia ya, pero el llamador recibe el payload en
-    // memoria para ejecutar esta única vez.
+    // Conserva solo contexto cifrado de diagnóstico; el ejecutor recibe el update original.
     return this.cambiarEstado(clave, ["reservada"], "iniciada", true, true);
   }
 
@@ -184,7 +184,9 @@ class StoreEntregasTelegram implements RepositorioEntregasTelegram {
       const siguiente: EntregaConFila = {
         ...actual,
         estado,
-        payload: limpiarPayload ? "" : actual.payload,
+        payload: limpiarPayload
+          ? (estado === "completada" ? "" : resumirSolicitudInterrumpida(actual.payload))
+          : actual.payload,
         actualizadoEn: Date.now(),
       };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
