@@ -72,6 +72,7 @@ import {
   continuarConAccionGasto,
   continuarConSeleccionGasto,
 } from "../core/gastos/gastoCallbackHandler";
+import { handleGastoPendienteDatosCallback } from "../core/gastos/gastoPendienteDatosCallbackHandler";
 import {
   consumirPendienteCorreccionGasto,
   restaurarPendienteCorreccionGasto,
@@ -1443,6 +1444,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleDraftCallback(callback);
     } else if (data.startsWith("recpago_")) {
       await handlePagoRecurrenteCallback(callback);
+    } else if (data.startsWith("gpd_")) {
+      await handleGastoPendienteDatosCallback(callback);
     } else if (data.startsWith("gasto_")) {
       await handleGastoCallback(callback);
     } else if (data.startsWith("edicioncompra_")) {

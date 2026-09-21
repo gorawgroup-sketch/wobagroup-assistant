@@ -314,6 +314,45 @@ export async function consumirGastoPendienteDatosPorChat(chatId: number): Promis
   });
 }
 
+/**
+ * Reclama una pendiente concreta por id y chat. Los botones siempre usan
+ * esta variante en vez de "la mas reciente": mientras un correo esta
+ * abierto pueden existir varias decisiones y un doble toque o un mensaje
+ * atrasado nunca debe consumir la factura equivocada.
+ */
+export async function consumirGastoPendienteDatosPorId(
+  chatId: number,
+  id: string
+): Promise<GastoPendienteDatos | undefined> {
+  return conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    const encontrada = todas.find(({ pendiente }) => pendiente.chatId === chatId && pendiente.id === id);
+    if (!encontrada) return undefined;
+
+    await eliminarFila(encontrada.rowIndex);
+    return encontrada.pendiente;
+  });
+}
+
+/** Restaura exactamente la misma decision despues de un fallo transitorio. */
+export async function restaurarGastoPendienteDatos(pendiente: GastoPendienteDatos): Promise<void> {
+  await conMutex(CLAVE_MUTEX, async () => {
+    const todas = await leerTodas();
+    if (todas.some(({ pendiente: actual }) => actual.id === pendiente.id)) return;
+
+    const sheetId = assertSheetId();
+    const sheets = getClient();
+    await ensureTab();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: `${TAB_NAME}!A:K`,
+      valueInputOption: "RAW",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [pendienteToRow(pendiente)] },
+    });
+  });
+}
+
 /** Solo lectura (no consume) — para que buildSystemPromptDinamico avise de la pregunta pendiente. */
 export async function obtenerGastoPendienteDatosPorChat(chatId: number): Promise<GastoPendienteDatos | undefined> {
   const todas = await leerTodas();

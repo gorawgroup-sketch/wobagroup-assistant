@@ -19,6 +19,7 @@ import {
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
+import { botonesVerificacionDuplicadoPendiente } from "./gastoPendienteDatosActions";
 import { construirTecladoGasto } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
@@ -546,8 +547,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           `estado ${m.status}, coincidencia ${m.nivel}`
       )
       .join("\n");
-    await sendTelegramMessage(
-      chatId,
+    const mensajeMovimientoYaConciliado =
       `⛔ No propuse crear este gasto: encontré un movimiento bancario YA CONCILIADO que coincide con ` +
         `${proveedorVisible}, ${montoParaHolded.toFixed(2)} ${monedaParaHolded}, ${datos.fecha}.\n\n${lineas}\n\n` +
         (todosConConciliacionCompleta
@@ -559,10 +559,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           : `volver a conciliarlo automáticamente. Wobi no encontró una compra visible asociada mediante la API, por lo que NO afirma que el gasto ` +
             `esté creado: el movimiento puede estar vinculado a un ticket que la API no lista, a otro documento, o tener un estado incoherente. ` +
             `Abre este movimiento en Holded y revisa qué documento tiene enlazado. Si el vínculo es incorrecto, libéralo allí y dime “ya lo liberé, ` +
-            `reintenta”. El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`)
-    );
+            `reintenta”. El correo seguirá pendiente y sin marcar como leído hasta resolver esa relación.`);
 
-    if (hayCompraVisible) return "propuesta_duplicada";
+    if (hayCompraVisible) {
+      await sendTelegramMessage(chatId, mensajeMovimientoYaConciliado);
+      return "propuesta_duplicada";
+    }
 
     // Un movimiento ocupado sin una compra visible NO demuestra que el
     // gasto esté resuelto. Tratarlo como `propuesta_duplicada` hacía que la
@@ -571,7 +573,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // verificación pendiente: el vigilante reconoce esta señal, no repite
     // el análisis ni cobra otra extracción, y el usuario puede retomarlo
     // diciendo que ya revisó/liberó el movimiento.
-    await guardarGastoPendienteDatos({
+    const pendiente = await guardarGastoPendienteDatos({
       chatId,
       rutaLocal: entrada.rutaLocal,
       nombreArchivoOriginal: entrada.nombreArchivoOriginal,
@@ -582,6 +584,11 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       origenAdjuntoGmail: entrada.origenAdjuntoGmail,
       correoOrigen: entrada.correoOrigen,
     });
+    await sendTelegramMessageWithButtons(
+      chatId,
+      mensajeMovimientoYaConciliado,
+      botonesVerificacionDuplicadoPendiente(pendiente.id)
+    );
     return "pendiente_datos";
   }
 
