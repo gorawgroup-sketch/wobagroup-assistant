@@ -2,6 +2,7 @@ import { google, sheets_v4 } from "googleapis";
 import { randomUUID } from "node:crypto";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { montosCercanos } from "../utils/montos";
+import { minusculasSinTildes } from "../utils/textoParecido";
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_notas_cashflow";
@@ -140,16 +141,16 @@ async function leerTodas(): Promise<NotaCashflow[]> {
 const TOLERANCIA_VALOR = 0.01;
 
 /**
- * Busca notas por concepto (substring, sin distinguir mayúsculas/acentos
- * simples) y/o por monto (tolerancia de 1 céntimo) — con cualquiera de los
+ * Busca notas por concepto (substring, sin distinguir mayúsculas ni tildes:
+ * "sancion" encuentra "Sanción") y/o por monto (tolerancia de 1 céntimo) — con cualquiera de los
  * dos criterios presentes ya filtra; si se dan ambos, deben coincidir los dos.
  */
 export async function buscarNotasCashflow(query: { concepto?: string; valor?: number }): Promise<NotaCashflow[]> {
   const todas = await leerTodas();
-  const conceptoQ = query.concepto?.trim().toLowerCase();
+  const conceptoQ = query.concepto?.trim() ? minusculasSinTildes(query.concepto.trim()) : undefined;
 
   return todas.filter((n) => {
-    const matchConcepto = conceptoQ ? n.concepto.toLowerCase().includes(conceptoQ) : true;
+    const matchConcepto = conceptoQ ? minusculasSinTildes(n.concepto).includes(conceptoQ) : true;
     const matchValor = query.valor !== undefined ? montosCercanos(n.valor, Math.abs(query.valor), TOLERANCIA_VALOR) : true;
     return matchConcepto && matchValor;
   });

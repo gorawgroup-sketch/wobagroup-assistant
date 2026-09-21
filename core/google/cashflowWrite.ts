@@ -1,7 +1,8 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
 import { invalidarCachesCashflow, SECCION_IDX_CLIENTE_PENDIENTES } from "./cashflowSheet";
-import { textosParecidos } from "../utils/textoParecido";
+import { normalizarSemana } from "../utils/semanaCashflow";
+import { nombresCoinciden, nombresIguales, textosParecidos } from "../utils/textoParecido";
 import { montosCercanos } from "../utils/montos";
 import { fechaHoyEspana } from "../utils/diaHabil";
 import { conMutex } from "../utils/asyncMutex";
@@ -618,7 +619,7 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
   if (idxNombre === -1 || idxSemana === -1 || idxValor === -1) {
     throw new Error(`Configuración inválida para el bloque "${criterios.bloque}": faltan columnas de nombre/semana/valor en BLOQUE_CONFIG.`);
   }
-  const semanaBuscada = criterios.semana.trim().toUpperCase();
+  const semanaBuscada = normalizarSemana(criterios.semana);
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
@@ -645,8 +646,10 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
     const valor = typeof valorCrudo === "number" ? valorCrudo : Number(valorCrudo);
     if (!Number.isFinite(valor)) return;
 
-    if (!textosParecidos(criterios.cliente_o_concepto, nombre)) return;
-    if (semanaBuscada && semana.toUpperCase() !== semanaBuscada) return;
+    // textosParecidos ignora palabras de menos de 5 letras (a propósito), así que "Luz" o "AWS" nunca coincidían ni
+    // siendo idénticos; semana e importe ya acotan la fila, por eso aquí basta el nombre completo como alternativa.
+    if (!textosParecidos(criterios.cliente_o_concepto, nombre) && !nombresCoinciden(criterios.cliente_o_concepto, nombre)) return;
+    if (semanaBuscada && normalizarSemana(semana) !== semanaBuscada) return;
     if (!montosCercanos(valor, criterios.valorActual, TOLERANCIA_VALOR_ACTUAL)) return;
 
     encontradas.push({
@@ -659,7 +662,10 @@ export async function buscarFilaCashflowParaEditar(criterios: CriteriosBusquedaV
     });
   });
 
-  return encontradas;
+  // Si el usuario dio el nombre EXACTO de una fila ("Luz oficina") no se le pregunta por otras más cortas que solo lo
+  // contienen o se le parecen ("Luz"): con semana e importe iguales, la coincidencia idéntica manda.
+  const iguales = encontradas.filter((e) => nombresIguales(criterios.cliente_o_concepto, e.clienteOConcepto));
+  return iguales.length > 0 ? iguales : encontradas;
 }
 
 /**
