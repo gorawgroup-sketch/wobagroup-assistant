@@ -15,6 +15,8 @@ export interface PuertoAutomatico {
   recuperarCreacion(op: OperacionAuto): Promise<string | undefined>;
   registrarFinalizada(op: OperacionAuto): Promise<void>;
   verificarCreacion(op: OperacionAuto): Promise<boolean>;
+  /** Construye y fija de forma durable el archivo contable antes de iniciar su carga. */
+  prepararAdjunto(op: OperacionAuto, correo: CorreoAuto): Promise<void>;
   adjuntar(op: OperacionAuto, correo: CorreoAuto): Promise<void>;
   verificarAdjunto(op: OperacionAuto): Promise<boolean>;
   conciliar(op: OperacionAuto): Promise<void>;
@@ -238,6 +240,10 @@ export class ServicioCorreoAutomatico {
         }
         if (op.estado === "creada") {
           this.exigirActivado(op);
+          await this.puerto.prepararAdjunto(op, c);
+          // El hash y el nombre del soporte deben sobrevivir a un reinicio
+          // antes del POST. Así una recuperación verifica el archivo exacto.
+          await this.store.guardar(op);
           await this.estado(op, "adjuntando");
           await this.puerto.adjuntar(op, c);
           if (!await this.puerto.verificarAdjunto(op)) throw new Error("Comprobante no verificado.");

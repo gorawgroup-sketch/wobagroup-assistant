@@ -8,9 +8,12 @@ const decode = (s: string) => Buffer.from(s, "base64url");
 
 /** Todas las partes textuales, también cuando Gmail guarda el cuerpo como attachmentId.
  * Se incluyen plain y HTML: escoger solo la primera parte puede perder información. */
-export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schema$Message): Promise<{ cuerpo: string; adjuntos: AdjuntoAuto[] }> {
+export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schema$Message): Promise<{
+  cuerpo: string; htmlOriginal?: string; adjuntos: AdjuntoAuto[]
+}> {
   if (!m.id || !m.payload) throw new Error("Mensaje Gmail incompleto.");
   const textos: string[] = [];
+  const html: string[] = [];
   const adjuntos: AdjuntoAuto[] = [];
   let bytes = 0;
   async function recorrer(p: gmail_v1.Schema$MessagePart): Promise<void> {
@@ -28,7 +31,9 @@ export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schem
     if ((p.body.size ?? 0) > 0 && !data.length) throw new Error("Parte del correo vacía inesperadamente.");
     const mime = p.mimeType ?? "application/octet-stream";
     if (!p.filename && ["text/plain", "text/html"].includes(mime)) {
-      textos.push(`[${mime}]\n${data.toString("utf8")}`);
+      const contenido = data.toString("utf8");
+      textos.push(`[${mime}]\n${contenido}`);
+      if (mime === "text/html") html.push(contenido);
     } else if (data.length) {
       // Ni las imágenes inline pequeñas se descartan por tamaño: la lectura decide si son decorativas.
       // attachmentId puede cambiar entre lecturas; partId identifica de forma
@@ -38,7 +43,7 @@ export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schem
     }
   }
   await recorrer(m.payload);
-  return { cuerpo: textos.join("\n\n"), adjuntos };
+  return { cuerpo: textos.join("\n\n"), htmlOriginal: html.length ? html.join("\n") : undefined, adjuntos };
 }
 
 export class GmailAuto {
@@ -50,7 +55,8 @@ export class GmailAuto {
   private async leerHilo(id: string, excluirEtiquetaId?: string): Promise<Array<CorreoAuto & { noLeido: boolean }>> {
     const r = await this.lectura.users.threads.get({ userId: "me", id, format: "full" });
     if (!r.data.messages) throw new Error("Hilo Gmail sin mensajes.");
-    const leidos: Array<{ m: gmail_v1.Schema$Message; cuerpo: string; adjuntos: AdjuntoAuto[]; error?: string }> = [];
+    const leidos: Array<{ m: gmail_v1.Schema$Message; cuerpo: string; htmlOriginal?: string;
+      adjuntos: AdjuntoAuto[]; error?: string }> = [];
     for (const m of r.data.messages) {
       try { leidos.push({ m, ...await contenidoCompleto(this.lectura, m) }); }
       catch (error) { leidos.push({ m, cuerpo: "", adjuntos: [], error: error instanceof Error ? error.message : "Lectura incompleta" }); }
@@ -59,11 +65,11 @@ export class GmailAuto {
       x.error ? `[No se pudo leer este mensaje anterior: ${x.error}]` : x.cuerpo
     }`).join("\n\n");
     return leidos.filter(({ m }) => !excluirEtiquetaId || !m.labelIds?.includes(excluirEtiquetaId))
-      .map(({ m, cuerpo, adjuntos, error }) => {
+      .map(({ m, cuerpo, htmlOriginal, adjuntos, error }) => {
       const recibidoEn = Number(m.internalDate);
       if (!Number.isFinite(recibidoEn) || !m.id) throw new Error("Mensaje sin fecha o identidad verificable.");
       return { id: m.id, threadId: id, de: header(m, "From"), asunto: header(m, "Subject"), fecha: header(m, "Date"),
-        recibidoEn, cuerpo, contextoHilo, adjuntos, lecturaError: error,
+        recibidoEn, cuerpo, htmlOriginal, contextoHilo, adjuntos, lecturaError: error,
         huella: hash(JSON.stringify([cuerpo, contextoHilo, error ?? "", adjuntos.map(a => [a.id, hash(a.data)])])),
         noLeido: m.labelIds?.includes("UNREAD") === true };
     });

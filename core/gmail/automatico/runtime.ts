@@ -163,6 +163,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
       }
     },
     crear: op => holded.crear(op), verificarCreacion: op => holded.verificarCreacion(op),
+    prepararAdjunto: (op, c) => holded.prepararAdjunto(op, c),
     adjuntar: (op, c) => holded.adjuntar(op, c), verificarAdjunto: op => holded.verificarAdjunto(op),
     conciliar: op => holded.conciliar(op), verificarConciliacion: op => holded.verificarConciliacion(op),
     marcarResuelto: c => gmail.marcarResuelto(c),

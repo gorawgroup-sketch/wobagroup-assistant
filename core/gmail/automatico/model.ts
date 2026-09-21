@@ -104,6 +104,8 @@ export interface AdjuntoAuto { id: string; nombre: string; mime: string; data: B
 export interface CorreoAuto {
   id: string; threadId: string; de: string; asunto: string; fecha: string; recibidoEn: number;
   cuerpo: string; contextoHilo: string; adjuntos: AdjuntoAuto[];
+  /** HTML original del propio mensaje, separado del texto usado para analizarlo. */
+  htmlOriginal?: string;
   /** SHA de cuerpo y adjuntos; nunca se usa el hilo como identidad del comprobante. */
   huella: string; lecturaError?: string;
 }
@@ -175,6 +177,8 @@ export interface PlanAuto {
   recibo: ReciboAuto; movimiento: MovimientoAuto; totalCentimos: number;
   toleranciaCentimos: number; diferenciaCentimos: number; regla: string;
   claves: string[]; fuenteHash: string; correo: { id: string; threadId: string; buzon: string };
+  /** Identidad durable del archivo que realmente se carga en Holded. */
+  soporteHash?: string; soporteNombre?: string; soporteMime?: string;
   version: string; evidencia: EvidenciaAuto;
 }
 export type DecisionAuto = { apto: true; plan: PlanAuto } | { apto: false; motivos: string[] };

@@ -15,7 +15,7 @@ function escenario() {
     status: "pending", description: "Proveedor", origin: "bank" };
   const contactos = [{ id: "p1", name: "Proveedor" }];
   const consultasGet: string[] = [];
-  let attachment: { id: string } | undefined;
+  let attachment: { id: string; data: Buffer } | undefined;
   const memoria: MemoriaHoldedAuto = { alias: async () => [], duplicadoInterno: async () => false,
     cuentaConfirmada: async () => ({ cuentaId: "c1", confirmadoEn: new Date().toISOString() }) };
   const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
@@ -26,7 +26,11 @@ function escenario() {
       const body = init.body instanceof FormData ? init.body : JSON.parse(String(init.body));
       posts.push({ path, body });
       if (path === "/purchases") return json({ id: "creada" });
-      if (path.endsWith("/attachments")) { const file = (init.body as FormData).get("file") as File; attachment = { id: file.name }; return json({}); }
+      if (path.endsWith("/attachments")) {
+        const file = (init.body as FormData).get("file") as File;
+        attachment = { id: file.name, data: Buffer.from(await file.arrayBuffer()) };
+        return json({});
+      }
       throw new Error(`POST no esperado ${path}`);
     }
     consultasGet.push(path);
@@ -40,13 +44,14 @@ function escenario() {
     if (path.endsWith("/bank-movements")) return list([movimiento]);
     if (path === "/purchases/creada") return json(compra);
     if (path.endsWith("/attachments")) return list(attachment ? [attachment] : []);
-    if (path.includes("/attachments/")) return new Response(c.cuerpo);
+    if (path.includes("/attachments/")) return new Response(attachment?.data);
     throw new Error(`GET no esperado ${path}`);
   };
   const adapter = new HoldedAuto(memoria, request);
   const d = evaluarAuto(c, analisisFixture(), r, evidenciaFixture(), configFixture); assert.ok(d.apto);
   const op: OperacionAuto = { id: "op1", plan: d.plan, estado: "creando" };
-  return { adapter, request, memoria, compra, movimiento, contactos, consultasGet, posts, c, r, op };
+  return { adapter, request, memoria, compra, movimiento, contactos, consultasGet, posts, c, r, op,
+    attachment: () => attachment };
 }
 test("consulta proveedor exacto, catálogo no paginado, memoria y cargo real", async () => {
   const e = escenario(); const ev = await e.adapter.evidencias(e.c, e.r);
@@ -186,13 +191,32 @@ test("reutiliza catálogos y la misma ventana bancaria durante una pasada", asyn
   assert.equal(veces("/purchases"), 4);
   assert.equal(veces("/treasury/accounts/a1/bank-movements"), 1);
 });
-test("comprobante verificado por contenido binario y sin reconstruir un adjunto real", async () => {
+test("el cuerpo del correo se convierte en PDF y se verifica por su contenido final", async () => {
   const e = escenario(); e.op.compraId = "creada";
   await e.adapter.adjuntar(e.op, e.c);
+  assert.equal(e.op.plan.soporteMime, "application/pdf");
+  assert.match(e.op.plan.soporteNombre ?? "", /\.pdf$/);
+  assert.equal(e.attachment()?.data.subarray(0, 4).toString("ascii"), "%PDF");
   assert.equal(await e.adapter.verificarAdjunto(e.op), true);
-  e.op.plan.fuenteHash = hash("otro archivo");
+  e.op.plan.soporteHash = hash("otro archivo");
   assert.equal(await e.adapter.verificarAdjunto(e.op), false);
-  await assert.rejects(() => e.adapter.adjuntar(e.op, e.c), /comprobante cambió/);
+  await assert.rejects(() => e.adapter.adjuntar(e.op, e.c), /archivo contable preparado/);
+});
+test("el comprobante visual recibe el HTML original y nunca lo carga como texto", async () => {
+  const e = escenario(); e.op.compraId = "creada";
+  e.c.htmlOriginal = "<html><body><strong>Recibo visual</strong></body></html>";
+  let renderizado = 0;
+  const adapter = new HoldedAuto(e.memoria, e.request, ["WOBA"], undefined, async correo => {
+    renderizado++;
+    assert.equal(correo.htmlOriginal, e.c.htmlOriginal);
+    assert.match(correo.cuerpoCompleto, /Recibo real/);
+    return Buffer.from("%PDF-1.4\nrecibo visual");
+  });
+  await adapter.prepararAdjunto(e.op, e.c);
+  await adapter.adjuntar(e.op, e.c);
+  assert.equal(renderizado, 1);
+  assert.equal(e.op.plan.soporteMime, "application/pdf");
+  assert.equal(e.attachment()?.data.toString(), "%PDF-1.4\nrecibo visual");
 });
 test("filas repetidas del mismo soporte se descargan una vez y no provocan otra carga", async () => {
   const e = escenario(); e.op.compraId = "creada";
@@ -207,7 +231,7 @@ test("filas repetidas del mismo soporte se descargan una vez y no provocan otra 
     }
     if (!init?.method && path.includes(`/attachments/${prefijo}-`)) {
       descargas++;
-      return new Response(e.c.cuerpo);
+      return new Response(e.attachment()?.data);
     }
     return original(input, init);
   };
