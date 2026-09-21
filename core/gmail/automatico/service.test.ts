@@ -3,6 +3,7 @@ import test from "node:test";
 import { prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { evaluarAuto, hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
+import { UsoApiNoAutorizadoError } from "../../ai/policy";
 
 function escenario() {
   const ops = new Map<string, OperacionAuto>(); const eventos: string[] = [];
@@ -176,6 +177,20 @@ test("al agotar el tiempo informa el pendiente sin iniciar análisis ni escritur
   assert.equal(e.analisisLlamadas(), 0);
   assert.equal(e.llamadas.crear + e.llamadas.adjuntar + e.llamadas.conciliar, 0);
   assert.deepEqual(r.pendientes[0]?.motivos, ["revision_pospuesta_por_limite_de_tiempo"]);
+});
+test("un límite monetario de IA se informa como presupuesto y nunca como lectura incompleta", async () => {
+  const e = escenario();
+  e.puerto.analizar = async () => {
+    throw new UsoApiNoAutorizadoError("correo_gastos_automatico_manual", "limite_diario_proceso_alcanzado");
+  };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(r.revisados, 0);
+  assert.equal(r.aplazados, 1);
+  assert.equal(r.bloqueadosPorPresupuestoIA, 1);
+  assert.deepEqual(r.pendientes[0]?.motivos, ["revision_pospuesta_por_limite_de_ia"]);
+  const texto = resumenAutomatico(r);
+  assert.match(texto, /presupuesto diario de IA: 1/);
+  assert.doesNotMatch(texto, /No se pudo leer o verificar todo el contenido/);
 });
 test("una consulta de evidencias bloqueada respeta el límite global y deja el correo pendiente", async () => {
   const e = escenario();

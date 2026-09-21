@@ -55,15 +55,16 @@ export class GmailAuto {
       try { leidos.push({ m, ...await contenidoCompleto(this.lectura, m) }); }
       catch (error) { leidos.push({ m, cuerpo: "", adjuntos: [], error: error instanceof Error ? error.message : "Lectura incompleta" }); }
     }
-    const contextoHilo = leidos.map(x => `Mensaje ${x.m.id}, de ${header(x.m, "From")}, fecha ${header(x.m, "Date")}:\n${x.cuerpo}`).join("\n\n");
-    const errorHilo = leidos.find(x => x.error)?.error;
+    const contextoHilo = leidos.map(x => `Mensaje ${x.m.id}, de ${header(x.m, "From")}, fecha ${header(x.m, "Date")}:\n${
+      x.error ? `[No se pudo leer este mensaje anterior: ${x.error}]` : x.cuerpo
+    }`).join("\n\n");
     return leidos.filter(({ m }) => !excluirEtiquetaId || !m.labelIds?.includes(excluirEtiquetaId))
-      .map(({ m, cuerpo, adjuntos }) => {
+      .map(({ m, cuerpo, adjuntos, error }) => {
       const recibidoEn = Number(m.internalDate);
       if (!Number.isFinite(recibidoEn) || !m.id) throw new Error("Mensaje sin fecha o identidad verificable.");
       return { id: m.id, threadId: id, de: header(m, "From"), asunto: header(m, "Subject"), fecha: header(m, "Date"),
-        recibidoEn, cuerpo, contextoHilo, adjuntos, lecturaError: errorHilo,
-        huella: hash(JSON.stringify([cuerpo, contextoHilo, errorHilo ?? "", adjuntos.map(a => [a.id, hash(a.data)])])),
+        recibidoEn, cuerpo, contextoHilo, adjuntos, lecturaError: error,
+        huella: hash(JSON.stringify([cuerpo, contextoHilo, error ?? "", adjuntos.map(a => [a.id, hash(a.data)])])),
         noLeido: m.labelIds?.includes("UNREAD") === true };
     });
   }
