@@ -1,13 +1,17 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
 import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, tieneCategoriaGastoAprendida,
   type TaxCatalogEntry } from "../../holded/write";
-import { candidatosMovimientoAuto, fechaValida, hash, monedaDocumentoAuto, movimientoEnVentanaAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
+import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValida, hash, monedaRegistroPlanAuto, movimientoEnVentanaAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
   normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto,
   VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE, VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 import { generarComprobantePDF } from "../generarComprobantePDF";
 import type { DatosFactura } from "../../documental/extractInvoiceData";
+import { buscarMovimientosPorTipoCambio, type DependenciasBusquedaMultimoneda } from "../../gastos/movimientoMultimoneda";
+import { obtenerPoliticaMonedaLiquidacion, seleccionarMovimientoLiquidacionSeguro } from "../../gastos/monedaLiquidacionProveedor";
+import { proveedorPareceEnDescripcion, type MovimientoBancarioCandidato } from "../../holded/write";
+import { obtenerTasaCambioHistorica } from "../../utils/exchangeRate";
 
 type Registro = Record<string, unknown>;
 export function objeto(raw: unknown): Registro {
@@ -33,7 +37,7 @@ function centimos(raw: unknown, admiteFormatoES = false): number {
 }
 const KEYS: Record<EmpresaAuto, string> = { WOBA: "HOLDED_API_KEY_WOBA", EWORKS: "HOLDED_API_KEY_EWORKS", Footprint: "HOLDED_API_KEY_FOOTPRINT" };
 export interface MemoriaHoldedAuto {
-  alias(empresa: EmpresaAuto, proveedor: string): Promise<Array<{ contactId: string; contactName: string }>>;
+  alias(empresa: EmpresaAuto, proveedor: string, moneda?: string): Promise<Array<{ contactId: string; contactName: string }>>;
   duplicadoInterno(c: CorreoAuto, r: ReciboAuto): Promise<boolean>;
   cuentaConfirmada?(empresa: EmpresaAuto, proveedor: string): Promise<{ cuentaId: string; confirmadoEn: string } | undefined>;
 }
@@ -61,7 +65,104 @@ export class HoldedAuto {
   constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch,
     private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"],
     private readonly flujoExistente?: FlujoGastoExistente,
-    private readonly renderizarComprobante: typeof generarComprobantePDF = generarComprobantePDF) {}
+    private readonly renderizarComprobante: typeof generarComprobantePDF = generarComprobantePDF,
+    private readonly obtenerTasaCambio: typeof obtenerTasaCambioHistorica = obtenerTasaCambioHistorica) {}
+
+  /** Reutiliza el listado bancario ya descargado al aplicar las reglas multimoneda del flujo manual. */
+  private dependenciasMultimoneda(movimientos: MovimientoAuto[]): DependenciasBusquedaMultimoneda {
+    // Incluye también movimientos ocupados para detectar que el mismo cargo
+    // ya fue conciliado aunque Holded oculte el ticket en /purchases.
+    const bancarios = movimientos.filter((m) => m.centimos < 0 && Boolean(m.origen) && m.origen !== "manual");
+    const comoCandidato = (m: MovimientoAuto): MovimientoBancarioCandidato => ({
+      accountId: m.cuentaId,
+      movementId: m.id,
+      descripcion: m.descripcion,
+      monto: m.centimos / 100,
+      moneda: m.moneda,
+      fecha: m.fecha,
+    });
+    return {
+      obtenerTasa: this.obtenerTasaCambio,
+      buscarCercanos: async (_empresa, criterios, tolerancia = 0.01) => bancarios
+        .filter((m) => m.moneda === criterios.moneda && movimientoEnVentanaAuto(m.fecha, criterios.fecha) &&
+          Math.abs(Math.abs(m.centimos / 100) - Math.abs(criterios.monto)) <= tolerancia)
+        .map(comoCandidato),
+      buscarPorNombre: async (_empresa, criterios) => {
+        const tolerancia = Math.max(1, Math.abs(criterios.monto) * 0.15);
+        return bancarios
+          .filter((m) => m.moneda === criterios.moneda && movimientoEnVentanaAuto(m.fecha, criterios.fecha) &&
+            proveedorPareceEnDescripcion(criterios.proveedor, m.descripcion) &&
+            Math.abs(Math.abs(m.centimos / 100) - Math.abs(criterios.monto)) <= tolerancia)
+          .map((m) => ({
+            ...comoCandidato(m),
+            diferenciaMonto: Math.abs(Math.abs(m.centimos / 100) - Math.abs(criterios.monto)),
+          }));
+      },
+    };
+  }
+
+  /**
+   * La tasa histórica solo localiza candidatos. El importe guardado siempre
+   * sale del único cargo real del mismo día cuyo texto confirma el proveedor.
+   */
+  private async resolverEquivalenteBancario(
+    empresa: EmpresaAuto,
+    r: ReciboAuto,
+    e: EvidenciaAuto,
+    monedasCuentas: Set<string>
+  ): Promise<void> {
+    if (r.equivalente || !e.contacto?.id) return;
+    const directos = candidatosMovimientoAuto(r, e).filter((m) =>
+      m.estado === "pending" && m.conciliadoCentimos === 0 && Boolean(m.origen) && m.origen !== "manual");
+    if (directos.length > 0) return;
+
+    const monedaOrigen = r.moneda.toUpperCase().trim();
+    const politica = obtenerPoliticaMonedaLiquidacion(empresa, r.proveedor, monedaOrigen);
+    // Aunque exista una cuenta en la moneda del documento, el cargo puede
+    // haberse liquidado en otra cuenta real de la empresa. El buscador ya
+    // excluye la moneda de origen y solo devuelve importes dentro de la
+    // ventana/tolerancia aprendida; no se debe cortar esa búsqueda antes de
+    // mirar las demás monedas.
+    const candidatos = (await buscarMovimientosPorTipoCambio(
+      empresa,
+      { monto: r.monto, moneda: monedaOrigen, fecha: r.fecha, proveedor: r.proveedor },
+      politica ? [politica.moneda] : monedasCuentas,
+      this.dependenciasMultimoneda(e.movimientos)
+    )).map((candidato) => ({
+      ...candidato,
+      coincideProveedor:
+        proveedorPareceEnDescripcion(r.proveedor, candidato.descripcion) ||
+        proveedorPareceEnDescripcion(e.contacto!.nombre, candidato.descripcion),
+    }));
+    const elegido = politica
+      ? seleccionarMovimientoLiquidacionSeguro(candidatos, r.proveedor, r.fecha, politica.moneda)
+      : (() => {
+          // Misma ventana ya usada por el flujo uno a uno: viajes y reservas
+          // pueden emitir el recibo después del cargo. La identidad del
+          // proveedor en el descriptor bancario y la unicidad siguen siendo
+          // obligatorias; la fecha por sí sola nunca autoriza.
+          const seguros = candidatos.filter((c) =>
+            movimientoEnVentanaAuto(c.fecha, r.fecha) && c.coincideProveedor === true
+          );
+          return seguros.length === 1 ? seguros[0] : undefined;
+        })();
+    if (!elegido) return;
+    const movimiento = e.movimientos.find((m) =>
+      m.cuentaId === elegido.accountId && m.id === elegido.movementId && m.moneda === elegido.moneda);
+    if (!movimiento || movimiento.centimos >= 0) return;
+    if (movimiento.estado !== "pending" || movimiento.conciliadoCentimos !== 0) {
+      e.duplicados.push(`banco:${movimiento.cuentaId}/${movimiento.id}`);
+      return;
+    }
+    e.equivalenteBancario = {
+      cuentaId: movimiento.cuentaId,
+      movimientoId: movimiento.id,
+      moneda: movimiento.moneda,
+      montoCentimos: Math.abs(movimiento.centimos),
+      tasaReferencia: elegido.tasaReferencia,
+      monedaOrigen,
+    };
+  }
   private async get(empresa: EmpresaAuto, path: string): Promise<Registro> {
     const key = process.env[KEYS[empresa]];
     if (!key) throw new Error(`Falta ${KEYS[empresa]}.`);
@@ -172,8 +273,12 @@ export class HoldedAuto {
       Boolean(m.origen) && m.origen !== "manual");
     const proveedorBanco = candidatas.length === 1 &&
       (proveedorEnDescripcion(r.proveedor, candidatas[0].descripcion) || proveedorEnDescripcion(e.contacto.nombre, candidatas[0].descripcion));
-    const importe = centimos(r.equivalente?.monto ?? r.monto);
-    const exacta = candidatas.length === 1 && candidatas[0].fecha === r.fecha && -candidatas[0].centimos === importe;
+    const monedaObjetivo = e.equivalenteBancario?.moneda ?? r.equivalente?.moneda ?? r.moneda;
+    const importe = e.equivalenteBancario?.montoCentimos ?? centimos(r.equivalente?.monto ?? r.monto);
+    const comparable = candidatas.length === 1
+      ? centimosComparablesMovimientoAuto(candidatas[0], monedaObjetivo)
+      : undefined;
+    const exacta = candidatas.length === 1 && candidatas[0].fecha === r.fecha && comparable !== undefined && -comparable === importe;
     const nombreFuerteConImporteExacto = e.contacto.metodo === "aproximado_unico" && (e.contacto.similitud ?? 0) >= 0.5 && exacta;
     const proveedorVerificado = (e.contacto.exacto === true ||
       (e.contacto.metodo === "aproximado_unico" && (proveedorBanco || nombreFuerteConImporteExacto))) &&
@@ -186,7 +291,7 @@ export class HoldedAuto {
     const empresa = r.empresa as EmpresaAuto;
     const contactos = (await this.listarEstatico(empresa, "/contacts"))
       .filter(x => x.archived !== true && typeof x.id === "string" && typeof x.name === "string");
-    const alias = await this.memoria.alias(empresa, r.proveedor);
+    const alias = await this.memoria.alias(empresa, r.proveedor, r.moneda);
     const directos = contactos.filter(x => typeof x.name === "string" && normalizarProveedorExacto(x.name) === normalizarProveedorExacto(r.proveedor));
     const idsAlias = new Set(alias.map(x => x.contactId));
     let seleccionados: Registro[] = [];
@@ -267,17 +372,18 @@ export class HoldedAuto {
         // Incluye tickets ya conciliados aunque /purchases no los muestre.
         const proveedorBanco = proveedorEnDescripcion(r.proveedor, movimiento.descripcion) ||
           Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, movimiento.descripcion));
-        const importeComparable = movimiento.moneda === moneda
-          ? movimiento.centimos
-          : Boolean(r.equivalente) && moneda === "EUR" && movimiento.monedaContable === "EUR"
-            ? movimiento.contabilidadCentimos
-            : undefined;
+        const importeComparable = centimosComparablesMovimientoAuto(movimiento, moneda);
         if (importeComparable !== undefined && movimientoEnVentanaAuto(movimiento.fecha, r.fecha) && importeComparable < 0 &&
           Math.abs(-importeComparable - importe) <= tolerancia &&
           (movimiento.fecha === r.fecha || proveedorBanco) &&
           (movimiento.estado !== "pending" || movimiento.conciliadoCentimos !== 0)) e.duplicados.push(`banco:${cuentaId}/${movimiento.id}`);
       }
     }
+    const monedasDetectadas = cuentas
+      .filter((cuenta) => cuenta.archived !== true && typeof cuenta.currency === "string")
+      .map((cuenta) => String(cuenta.currency).toUpperCase().trim());
+    const monedasCuentas = new Set(monedasDetectadas.length ? monedasDetectadas : ["EUR"]);
+    await this.resolverEquivalenteBancario(empresa, r, e, monedasCuentas);
     const candidatasLibres = candidatosMovimientoAuto(r, e).filter(m => m.estado === "pending" && m.conciliadoCentimos === 0 &&
       Boolean(m.origen) && m.origen !== "manual");
     // La cuenta contable es opcional. No descargar el catálogo ni hasta 50 compras completas cuando
@@ -335,7 +441,7 @@ export class HoldedAuto {
   async crear(op: OperacionAuto): Promise<string> {
     if (this.flujoExistente) return this.flujoExistente.crear(op);
     const p = op.plan;
-    const documento = monedaDocumentoAuto(p.recibo);
+    const documento = monedaRegistroPlanAuto(p);
     let cambio = documento.tasaCambio;
     if (documento.moneda !== "EUR" && cambio === undefined) {
       const { obtenerTasaCambioHistorica } = await import("../../utils/exchangeRate");
@@ -405,7 +511,7 @@ export class HoldedAuto {
   }
   async verificarCreacion(op: OperacionAuto): Promise<boolean> {
     const c = await this.compra(op); const p = op.plan;
-    const documento = monedaDocumentoAuto(p.recibo);
+    const documento = monedaRegistroPlanAuto(p);
     const tagsEsperados = new Set((p.evidencia.cuenta?.tags ?? []).map(normalizarEtiquetaHolded).filter(Boolean));
     const tagsActuales = new Set(Array.isArray(c.tags)
       ? c.tags.filter((tag): tag is string => typeof tag === "string").map(normalizarEtiquetaHolded).filter(Boolean)

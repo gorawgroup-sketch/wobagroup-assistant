@@ -86,10 +86,24 @@ test("usa el equivalente contable real de Holded cuando la cuenta bancaria está
     assert.equal(d.plan.regla, "equivalente_contable_holded_2pct_min_005_max_500");
   }
 });
-test("no infiere una conversión contable si el comprobante no declara un equivalente", () => {
+test("un recibo EUR usa el equivalente contable oficial de una cuenta bancaria extranjera", () => {
   const r = reciboFixture();
   const e = evidenciaFixture();
-  e.movimientos[0] = { ...e.movimientos[0], moneda: "USD", centimos: -2300,
+  e.movimientos[0] = { ...e.movimientos[0], moneda: "USD", centimos: -23_00,
+    contabilidadCentimos: -20_00, monedaContable: "EUR" };
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
+  assert.equal(d.apto, true);
+  if (d.apto) {
+    assert.equal(d.plan.totalCentimos, 20_00);
+    assert.equal(d.plan.regla, "equivalente_contable_holded_2pct_min_005_max_500");
+  }
+  e.movimientos[0].contabilidadCentimos = -21_00;
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
+});
+test("no usa EUR contables para convertir un comprobante extranjero que no declara equivalente", () => {
+  const r = reciboFixture(); r.moneda = "USD"; r.monto = 23;
+  const e = evidenciaFixture();
+  e.movimientos[0] = { ...e.movimientos[0], moneda: "GBP", centimos: -1800,
     contabilidadCentimos: -2000, monedaContable: "EUR" };
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
 });

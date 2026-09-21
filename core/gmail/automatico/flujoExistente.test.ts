@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { camposDocumentoParaReparacion, camposEtiquetasParaReparacion } from "./flujoExistente";
-import { monedaDocumentoAuto, type ReciboAuto } from "./model";
+import { camposDocumentoParaReparacion, camposEtiquetasParaReparacion, conciliacionMultimonedaDemostrada } from "./flujoExistente";
+import { monedaDocumentoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 
 const recibo = (cambios: Partial<ReciboAuto> = {}): ReciboAuto => ({
   fuente: "adjunto-1",
@@ -40,6 +40,15 @@ test("una moneda extranjera sin equivalente conserva el monto nativo y deja la t
     moneda: "USD",
     monto: 151,
   });
+});
+
+test("autoriza cuenta bancaria extranjera cuando Holded demuestra el mismo importe contable", () => {
+  const r = recibo({ moneda: "EUR", monto: 20, equivalente: undefined });
+  const op = { plan: { recibo: r, totalCentimos: 2000, toleranciaCentimos: 40,
+    movimiento: { moneda: "USD", contabilidadCentimos: -2000, monedaContable: "EUR" } } } as OperacionAuto;
+  assert.equal(conciliacionMultimonedaDemostrada(op), true);
+  op.plan.movimiento.contabilidadCentimos = -2100;
+  assert.equal(conciliacionMultimonedaDemostrada(op), false);
 });
 
 test("rechaza importe o moneda nativa inválidos antes de escribir", () => {

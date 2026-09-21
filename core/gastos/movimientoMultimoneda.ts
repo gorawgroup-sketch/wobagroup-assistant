@@ -7,7 +7,7 @@ import {
 } from "../holded/write";
 import { obtenerTasaCambioHistorica } from "../utils/exchangeRate";
 
-interface DependenciasBusquedaMultimoneda {
+export interface DependenciasBusquedaMultimoneda {
   obtenerTasa: typeof obtenerTasaCambioHistorica;
   buscarCercanos: typeof buscarMovimientoSimilar;
   buscarPorNombre: typeof buscarMovimientoAproximado;

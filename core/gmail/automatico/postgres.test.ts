@@ -1,12 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Pool } from "pg";
-import { PostgresAutoStore, SCHEMA_AUTO, conBloqueoAuto, conOperacionAuto, protegerEscrituraHolded, cerrarPoolAuto } from "./postgres";
+import {
+  PostgresAutoStore,
+  SCHEMA_AUTO,
+  conBloqueoAuto,
+  conOperacionAuto,
+  protegerEscrituraHolded,
+  cerrarPoolAuto,
+  operacionPendienteConflictaConObjetivo,
+} from "./postgres";
 import { evaluarAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 
 // Base de pruebas desechable; jamás toma WOBI_MAIL_DATABASE_URL ni DATABASE_URL de producción.
 const url = process.env.WOBI_MAIL_TEST_DATABASE_URL;
+
+test("una operación automática pendiente solo bloquea el mismo recurso manual", () => {
+  const decision = evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), evidenciaFixture(), configFixture);
+  assert.ok(decision.apto);
+  const operacion = { id: "op-1", estado: "incierta" as const, plan: decision.plan };
+
+  assert.equal(operacionPendienteConflictaConObjetivo(operacion, {
+    path: `/treasury/accounts/cuenta/bank-movements/${decision.plan.movimiento.id}/reconcile`,
+  }), true);
+  assert.equal(operacionPendienteConflictaConObjetivo(operacion, {
+    path: "/treasury/accounts/cuenta/bank-movements/otro-movimiento/reconcile",
+  }), false);
+  assert.equal(operacionPendienteConflictaConObjetivo(operacion, {
+    path: "/contacts",
+    body: { name: "Proveedor distinto" },
+  }), false);
+  assert.equal(operacionPendienteConflictaConObjetivo(operacion, {
+    path: "/purchases",
+    body: {
+      contact_id: "contacto-no-relacionado",
+      date: decision.plan.recibo.fecha,
+      currency: decision.plan.recibo.moneda,
+      number: "00000",
+      items: [{ price: decision.plan.recibo.monto, units: 1 }],
+    },
+  }), false);
+  assert.equal(operacionPendienteConflictaConObjetivo(operacion, {
+    path: "/purchases",
+    body: {
+      contact_id: decision.plan.contactoId,
+      date: decision.plan.recibo.fecha,
+      currency: decision.plan.recibo.moneda,
+      number: "00000",
+      items: [{ price: decision.plan.recibo.monto, units: 1 }],
+    },
+  }), true);
+});
+
 test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas manuales", { skip: !url }, async () => {
   process.env.WOBI_MAIL_DATABASE_URL = url;
   const db = new Pool({ connectionString: url });
@@ -23,7 +69,10 @@ test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas
     assert.equal((await db.query("SELECT count(*)::int AS n FROM wobi_mail_operations")).rows[0].n, 1);
     const op = (await b.pendientes(configFixture.buzon))[0];
     assert.ok(op);
-    await assert.rejects(() => protegerEscrituraHolded("WOBA", async () => "POST"), /reservado/);
+    assert.equal(await protegerEscrituraHolded("WOBA", async () => "POST"), "POST");
+    await assert.rejects(() => protegerEscrituraHolded("WOBA", async () => "POST", {
+      path: `/treasury/accounts/a1/bank-movements/${op.plan.movimiento.id}/reconcile`,
+    }), /reservado/);
     assert.equal(await conOperacionAuto(op.id, () => protegerEscrituraHolded("WOBA", async () => "propia")), "propia");
     op.estado = "creando"; await a.guardar(op);
     assert.equal((await new PostgresAutoStore(db).pendientes(configFixture.buzon))[0].estado, "creando");

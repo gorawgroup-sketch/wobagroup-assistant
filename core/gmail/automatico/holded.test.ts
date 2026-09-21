@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HoldedAuto, normalizarProveedorExacto, type FlujoGastoExistente, type MemoriaHoldedAuto } from "./holded";
-import { evaluarAuto, hash, type OperacionAuto } from "./model";
+import { evaluarAuto, hash, monedaRegistroPlanAuto, type OperacionAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 
 function escenario() {
@@ -71,9 +71,93 @@ test("conserva el equivalente contable que Holded entrega para una cuenta extran
     }
     return original(input, init);
   };
-  const ev = await new HoldedAuto(e.memoria, request).evidencias(e.c, e.r);
+  const ev = await new HoldedAuto(e.memoria, request, ["WOBA"], undefined, undefined, async () => undefined).evidencias(e.c, e.r);
   assert.equal(ev.movimientos[0].contabilidadCentimos, -1735);
   assert.equal(ev.movimientos[0].monedaContable, "EUR");
+});
+test("reutiliza la política aprendida de Anthropic y toma el importe del cargo real", async () => {
+  const e = escenario();
+  e.r.proveedor = "Anthropic, PBC";
+  e.r.moneda = "USD";
+  e.r.monto = 24.2;
+  e.contactos[0].name = "Anthropic, PBC";
+  e.movimiento.currency = "EUR";
+  e.movimiento.amount = "-21.32";
+  e.movimiento.description = "ANTHROPIC";
+  const flujo: FlujoGastoExistente = {
+    clasificar: async () => ({ cuentaId: "c1", nombreCuenta: "Software", tags: ["software"], evidencia: "memoria" }),
+    crear: async () => "", corregir: async () => undefined, adjuntar: async () => undefined,
+    conciliar: async () => undefined, verificarConciliacion: async () => false,
+  };
+  const adapter = new HoldedAuto(e.memoria, e.request, ["WOBA"], flujo, undefined, async () => 0.880992);
+  const evidencia = await adapter.evidencias(e.c, e.r);
+  assert.deepEqual(evidencia.equivalenteBancario, {
+    cuentaId: "a1", movimientoId: "b1", moneda: "EUR", montoCentimos: 2132,
+    tasaReferencia: 0.880992, monedaOrigen: "USD",
+  });
+  const decision = evaluarAuto(e.c, analisisFixture(e.r), e.r, evidencia, configFixture);
+  assert.equal(decision.apto, true, decision.apto ? undefined : decision.motivos.join(","));
+  if (decision.apto) {
+    assert.deepEqual(monedaRegistroPlanAuto(decision.plan), { moneda: "EUR", monto: 21.32 });
+    assert.equal(decision.plan.totalCentimos, 2132);
+    assert.equal(decision.plan.movimiento.id, "b1");
+  }
+});
+test("una liquidación multimoneda ambigua permanece en revisión manual", async () => {
+  const e = escenario();
+  e.r.proveedor = "Anthropic, PBC";
+  e.r.moneda = "USD";
+  e.r.monto = 24.2;
+  e.contactos[0].name = "Anthropic, PBC";
+  const original = e.request;
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path.endsWith("/bank-movements")) {
+      const primero = { ...e.movimiento, currency: "EUR", amount: "-21.32", description: "ANTHROPIC" };
+      return new Response(JSON.stringify({ items: [primero, { ...primero, id: "b2", amount: "-21.30" }], has_more: false, cursor: null }));
+    }
+    return original(input, init);
+  };
+  const evidencia = await new HoldedAuto(e.memoria, request, ["WOBA"], undefined, undefined, async () => 0.880992)
+    .evidencias(e.c, e.r);
+  assert.equal(evidencia.equivalenteBancario, undefined);
+  const decision = evaluarAuto(e.c, analisisFixture(e.r), e.r, evidencia, configFixture);
+  assert.equal(decision.apto, false);
+  if (!decision.apto) assert.ok(decision.motivos.includes("sin_movimiento_exacto"));
+});
+test("un cambio de moneda genérico revisa todas las cuentas y admite la ventana aprendida solo con proveedor", async () => {
+  const e = escenario();
+  e.r.proveedor = "Scandic Holmenkollen Park";
+  e.r.moneda = "NOK";
+  e.r.monto = 1549;
+  e.contactos[0].name = "Scandic Holmenkollen Park";
+  e.movimiento.currency = "EUR";
+  // El banco aplicó un importe 4,8% distinto a la referencia histórica.
+  // Solo el descriptor inequívoco del proveedor permite conservarlo.
+  e.movimiento.amount = "-126.00";
+  e.movimiento.description = "SCANDIC HOLMENKOLLEN PARK";
+  e.movimiento.booking_date = "2026-08-18";
+  const original = e.request;
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path === "/treasury/accounts") {
+      return new Response(JSON.stringify({ items: [
+        { id: "a1", name: "Cuenta EUR", currency: "EUR", archived: false },
+        { id: "a2", name: "Cuenta NOK", currency: "NOK", archived: false },
+      ], has_more: false, cursor: null }));
+    }
+    if (!init?.method && path === "/treasury/accounts/a2/bank-movements") {
+      return new Response(JSON.stringify({ items: [], has_more: false, cursor: null }));
+    }
+    return original(input, init);
+  };
+  const adapter = new HoldedAuto(e.memoria, request, ["WOBA"], undefined, undefined, async () => 0.085467);
+  const evidencia = await adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.equivalenteBancario?.montoCentimos, 12600);
+  e.movimiento.description = "COMERCIO DESCONOCIDO";
+  const insegura = await new HoldedAuto(e.memoria, request, ["WOBA"], undefined, undefined, async () => 0.085467)
+    .evidencias(e.c, e.r);
+  assert.equal(insegura.equivalenteBancario, undefined);
 });
 test("consulta evidencias deterministas para una clasificación media y permite reforzarla", async () => {
   const e = escenario(); e.r.confianza = "media";
@@ -145,6 +229,18 @@ test("acepta espaciado equivalente y el nombre exacto prevalece sobre un alias a
   assert.equal(evidencia.contacto?.id, "p1");
   assert.equal(evidencia.contacto?.metodo, "nombre_equivalente");
   assert.equal(evidencia.contacto?.exacto, true);
+});
+test("mayúsculas y un sufijo de local no impiden usar el contacto real equivalente", async () => {
+  const e = escenario();
+  e.r.proveedor = "Albert Heijn 1653 Schiphol";
+  e.contactos[0].name = "ALBERT HEIJN";
+  e.movimiento.description = "ALBERT HEIJN SCHIPHOL";
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.id, "p1");
+  assert.equal(evidencia.contacto?.metodo, "nombre_equivalente");
+  assert.equal(evidencia.contacto?.exacto, true);
+  const decision = evaluarAuto(e.c, analisisFixture(e.r), e.r, evidencia, configFixture);
+  assert.equal(decision.apto, true, decision.apto ? undefined : decision.motivos.join(","));
 });
 test("una confianza baja no se disfraza como proveedor ausente", async () => {
   const e = escenario(); e.r.confianza = "baja";
