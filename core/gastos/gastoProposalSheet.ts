@@ -147,11 +147,10 @@ export interface PropuestaGasto {
    */
   hayMovimientoBancario?: boolean;
   /**
-   * Pedido explícito de Carlos, tras un caso real: cuando hay VARIOS movimientos bancarios parecidos
-   * (ninguno exacto y único), antes solo se podía elegir cuál respondiendo en texto libre — pero eso
-   * no se puede combinar con los checks del teclado ("no tengo la posibilidad de darte las dos
-   * respuestas al mismo tiempo"). Se guardan acá los candidatos para que gastoTeclado.ts pueda ofrecer
-   * un check "Conciliar con #N" por cada uno, y así elegir empresa + conciliar en la MISMA aprobación.
+   * Movimientos bancarios persistidos junto con la propuesta. Si hay varios,
+   * el operador elige “Conciliar con #N”. Si hay exactamente uno y
+   * hayMovimientoBancario=true, es el movimiento ya recomendado: “Crear y
+   * conciliar” debe usar ese mismo accountId/movementId y no buscar de nuevo.
    */
   movimientosAmbiguos?: MovimientoBancarioCandidato[];
   /** SHA-256 de los bytes del comprobante, para deduplicar reenvíos del mismo archivo. */

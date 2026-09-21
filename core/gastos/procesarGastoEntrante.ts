@@ -883,7 +883,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10), moneda: monedaParaHolded },
         toleranciaMov
       );
-      if (candidatosMov.length === 1) movimientoBancario = candidatosMov[0];
+      if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
       else if (!esProveedorNoIdentificado(datos.proveedor)) {
         // Pedido explícito de Carlos tras un caso real: el match exacto (1
@@ -905,7 +905,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           proveedor: datos.proveedor,
         });
         if (candidatosAprox.length > 0) {
-          movimientoAproximado = candidatosAprox[0];
+          movimientoAproximado = { ...candidatosAprox[0], origenCoincidencia: "aproximada" };
           otrosAproximados = candidatosAprox.length - 1;
         }
       }
@@ -1006,20 +1006,25 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
-    // igual que uno exacto — ya pasó el filtro de nombre+monto, y el texto
-    // de arriba ya deja claro que es una sugerencia a confirmar, no un
-    // hecho. gasto_nuevo_conciliar vuelve a buscar (exacto y luego
-    // aproximado) al momento de conciliar, así que encuentra lo mismo.
+    // igual que uno exacto. El movimiento recomendado se guarda completo
+    // junto con la propuesta: al aprobar “Crear y conciliar” se usa ese
+    // mismo accountId/movementId y no se repite una búsqueda mutable.
     if (movimientoAproximado) movimientoBancario = movimientoAproximado;
     const movimientosParaElegir = candidatosMovAmbiguos.length > 0 ? candidatosMovAmbiguos : movimientosTipoCambio;
+    const movimientosParaPersistir = movimientoBancario ? [movimientoBancario] : movimientosParaElegir;
 
-    await actualizarFlagMovimientoBancarioGasto(propuesta.id, Boolean(movimientoBancario)).catch((error) =>
-      console.error("[procesarGastoEntrante] Error guardando el flag de movimiento bancario (no crítico):", error)
+    // Estos dos campos forman una sola promesa al operador: mostrar
+    // “Crear y conciliar” solo si el movimiento exacto quedó durablemente
+    // ligado a la propuesta. Un fallo parcial aborta antes de publicar los
+    // botones; nunca se ofrece una acción que después tenga que buscar de
+    // nuevo y pueda perder el candidato mostrado.
+    const movimientosGuardados = await actualizarMovimientosAmbiguosPropuestaGasto(
+      propuesta.id,
+      movimientosParaPersistir
     );
-    if (movimientosParaElegir.length > 0) {
-      await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosParaElegir).catch((error) =>
-        console.error("[procesarGastoEntrante] Error guardando los movimientos ambiguos (no crítico):", error)
-      );
+    const flagGuardado = await actualizarFlagMovimientoBancarioGasto(propuesta.id, Boolean(movimientoBancario));
+    if (!movimientosGuardados || !flagGuardado) {
+      throw new Error("No se pudo guardar durablemente el movimiento bancario recomendado.");
     }
 
     const notaPersonaTxt = datos.personaAsociada

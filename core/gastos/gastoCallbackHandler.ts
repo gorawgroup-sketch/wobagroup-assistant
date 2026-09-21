@@ -32,6 +32,7 @@ import {
   indiceMovimientoAmbiguo,
   etiquetaAccion,
   opcionesTecladoDesdePropuesta,
+  movimientoRecomendadoPropuesta,
 } from "./gastoTeclado";
 import { guardarPendienteCorreccionGasto, type PendienteCorreccionGasto } from "./pendienteCorreccionGastoStore";
 import {
@@ -87,6 +88,7 @@ import {
   obtenerMonedasCuentasReales,
   reconciliarMovimiento,
   estaMovimientoYaConciliado,
+  estaMovimientoDisponibleParaConciliar,
   AdjuntoCompraInciertoError,
   ConciliacionMovimientoInciertaError,
   ContactosHoldedAmbiguosError,
@@ -1634,7 +1636,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         const movimientoObjetivo =
           indiceMovAmbiguo !== undefined && Number.isFinite(indiceMovAmbiguo)
             ? propuesta.movimientosAmbiguos?.[indiceMovAmbiguo]
-            : undefined;
+            : conciliarInline
+              ? movimientoRecomendadoPropuesta(propuesta)
+              : undefined;
         propuestaEnProceso = await prepararPropuestaFinalGasto(propuesta, {
           empresa: propuesta.empresa,
           concepto: propuesta.concepto,
@@ -2692,6 +2696,9 @@ async function crearGastoYReportar(
    */
   movimientoObjetivo?: MovimientoBancarioCandidato
 ): Promise<ResultadoCrearGasto> {
+  const montoAntesDeAjustar = propuesta.monto;
+  propuesta = ajustarPropuestaAlMovimientoRecomendado(propuesta, movimientoObjetivo);
+  const importeAjustadoAlMovimiento = Math.abs(propuesta.monto - montoAntesDeAjustar) > 0.005;
   // Bloqueo previo a cualquier escritura financiera. Si el desglose no
   // reproduce el total del documento, tampoco se permite llegar al camino
   // de conciliación inline.
@@ -2715,6 +2722,24 @@ async function crearGastoYReportar(
   const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuestaFinal.proveedor, propuestaFinal.moneda));
   if (!contacto) {
     throw new ContactoNoEncontradoError(propuestaFinal.proveedor, empresaFinal);
+  }
+
+  // La aprobación se dio sobre ESTE movimiento concreto. Si dejó de estar
+  // libre mientras esperaba el clic, se aborta antes de crear el gasto; no
+  // se sustituye silenciosamente por otro ni se deja una compra huérfana.
+  if (movimientoObjetivo) {
+    const disponible = await estaMovimientoDisponibleParaConciliar(
+      empresaFinal,
+      movimientoObjetivo.accountId,
+      movimientoObjetivo.movementId,
+      movimientoObjetivo.fecha
+    );
+    if (!disponible) {
+      throw new Error(
+        `El movimiento recomendado "${movimientoObjetivo.descripcion || "sin descripción"}" ya no existe o no está libre. ` +
+          "No se creó el gasto; revisa la operación antes de volver a aprobar."
+      );
+    }
   }
 
   // Con el contacto placeholder, el nombre real del proveedor NUNCA debe
@@ -2950,6 +2975,10 @@ async function crearGastoYReportar(
   const baseMensaje =
     `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador)` +
     (notaComprobante ? "." : " y comprobante adjuntado.") +
+    (importeAjustadoAlMovimiento && movimientoObjetivo
+      ? `\n\n💰 Importe ajustado de ${montoAntesDeAjustar.toFixed(2)} a ${propuesta.monto.toFixed(2)} ${propuesta.moneda} ` +
+        `para igualar exactamente el movimiento confirmado "${movimientoObjetivo.descripcion || "sin descripción"}".`
+      : "") +
     notaComprobante +
     notaPlaceholder +
     notaNumeroDocumento;
@@ -3663,6 +3692,25 @@ function reescalarLineas(propuesta: PropuestaGasto, nuevoMonto: number): LineaFa
       ];
 }
 
+/**
+ * Solo una coincidencia aproximada confirmada mediante “Crear y conciliar”
+ * puede cambiar el importe. Conserva impuestos y retenciones escalando las
+ * líneas en la misma proporción. Las coincidencias exactas y las de otra
+ * moneda nunca alteran el documento.
+ */
+export function ajustarPropuestaAlMovimientoRecomendado(
+  propuesta: PropuestaGasto,
+  movimiento?: MovimientoBancarioCandidato
+): PropuestaGasto {
+  if (!movimiento || movimiento.origenCoincidencia !== "aproximada") return propuesta;
+  if (movimiento.moneda.toUpperCase() !== propuesta.moneda.toUpperCase()) return propuesta;
+  const nuevoMonto = Math.abs(movimiento.monto);
+  if (!Number.isFinite(nuevoMonto) || nuevoMonto <= 0 || Math.abs(nuevoMonto - propuesta.monto) <= 0.005) {
+    return propuesta;
+  }
+  return { ...propuesta, monto: nuevoMonto, lineas: reescalarLineas(propuesta, nuevoMonto) };
+}
+
 async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {
   const actualizado = await actualizarMontoPropuestaGasto(propuesta.id, nuevoMonto, reescalarLineas(propuesta, nuevoMonto));
   if (!actualizado) {
@@ -3725,10 +3773,12 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
   if (propuesta.candidatos.length === 0) {
     let movimientoEncontrado = false;
     let movimientosAmbiguosNuevos: MovimientoBancarioCandidato[] = [];
+    let movimientoRecomendadoNuevo: MovimientoBancarioCandidato | undefined;
     try {
       const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta });
       if (candidatosMov.length === 1) {
         movimientoEncontrado = true;
+        movimientoRecomendadoNuevo = { ...candidatosMov[0], origenCoincidencia: "exacta" };
       } else if (candidatosMov.length > 1) {
         movimientosAmbiguosNuevos = candidatosMov;
       } else if (propuesta.proveedor) {
@@ -3738,21 +3788,24 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
           moneda: monedaCorrecta,
           proveedor: propuesta.proveedor,
         });
-        if (aproximados.length > 0) movimientoEncontrado = true;
+        if (aproximados.length > 0) {
+          movimientoEncontrado = true;
+          movimientoRecomendadoNuevo = { ...aproximados[0], origenCoincidencia: "aproximada" };
+        }
       }
     } catch (error) {
       console.error("[gastoCallbackHandler] Error buscando movimiento tras corregir moneda (no crítico):", error);
     }
 
-    // Hallazgo real de auditoría: hayMovimientoBancario y movimientosAmbiguos son mutuamente
-    // excluyentes por diseño (ver gastoTeclado.ts) — sin actualizar AMBOS acá, una corrección de
-    // moneda podía dejar movimientosAmbiguos VIEJO (de la moneda anterior) guardado mientras
-    // hayMovimientoBancario pasaba a true, violando esa exclusión y sin ninguna forma de mostrar los
-    // checks de un hallazgo ambiguo NUEVO en esta misma moneda corregida.
+    // Se actualizan ambos campos juntos: un match único se conserva como
+    // objetivo recomendado; varios siguen mostrándose para elegir #N.
+    const movimientosPersistidosNuevos = movimientoRecomendadoNuevo
+      ? [movimientoRecomendadoNuevo]
+      : movimientosAmbiguosNuevos;
     await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
       console.error("[gastoCallbackHandler] Error actualizando el flag de movimiento bancario (no crítico):", error)
     );
-    await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosAmbiguosNuevos).catch((error) =>
+    await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosPersistidosNuevos).catch((error) =>
       console.error("[gastoCallbackHandler] Error actualizando los movimientos ambiguos (no crítico):", error)
     );
     try {
@@ -3761,7 +3814,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
         moneda: monedaCorrecta,
         monto: montoFinal,
         hayMovimientoBancario: movimientoEncontrado,
-        movimientosAmbiguos: movimientosAmbiguosNuevos,
+        movimientosAmbiguos: movimientosPersistidosNuevos,
       };
       const botones = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuestaActualizada));
       await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones, resumenTextoPropuestaGasto(propuestaActualizada));

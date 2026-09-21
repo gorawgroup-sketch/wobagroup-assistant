@@ -13,6 +13,7 @@ import {
   DescuadreFiscalGastoError,
   botonesResolucionContacto,
   nombreProveedorParaBusqueda,
+  ajustarPropuestaAlMovimientoRecomendado,
   type EstadoIntentoConciliacion,
 } from "./gastoCallbackHandler";
 import { combinarTagsGastoAprendidos } from "../holded/write";
@@ -115,6 +116,50 @@ test("crear sin contacto conserva el proveedor real para inferir cuenta y tags",
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
   assert.match(fuente, /const proveedorParaInferencia = aprenderAlias \? contacto\.name : resolucion\.propuesta\.proveedor/);
   assert.match(fuente, /proveedor: proveedorParaInferencia/);
+});
+
+test("un movimiento aproximado confirmado ajusta monto y líneas antes de crear", () => {
+  const propuesta = {
+    id: "p-ajuste-banco",
+    empresa: "Footprint",
+    proveedor: "ESSO Minderhout",
+    monto: 87.9,
+    moneda: "EUR",
+    fecha: "2026-08-30",
+    concepto: "Gasolina",
+    rutaLocal: "/tmp/esso.pdf",
+    nombreArchivoOriginal: "esso.pdf",
+    candidatos: [],
+    lineas: [{ concepto: "Combustible", base: 72.64, tipoIvaPct: 21, tratamientoFiscal: "iva" as const }],
+    chatId: 1,
+    messageId: 2,
+    creadoEn: 3,
+  } satisfies PropuestaGasto;
+
+  const ajustada = ajustarPropuestaAlMovimientoRecomendado(propuesta, {
+    accountId: "cuenta",
+    movementId: "movimiento",
+    descripcion: "Esso Minderhout",
+    monto: -88.69,
+    moneda: "EUR",
+    fecha: "2026-08-30",
+    origenCoincidencia: "aproximada",
+  });
+
+  assert.equal(ajustada.monto, 88.69);
+  assert.equal(ajustada.lineas[0].base, 72.64 * 88.69 / 87.9);
+  assert.equal(ajustada.lineas[0].tipoIvaPct, 21);
+
+  const otraMoneda = ajustarPropuestaAlMovimientoRecomendado(propuesta, {
+    accountId: "cuenta",
+    movementId: "movimiento-usd",
+    descripcion: "Esso Minderhout",
+    monto: -88.69,
+    moneda: "USD",
+    fecha: "2026-08-30",
+    origenCoincidencia: "aproximada",
+  });
+  assert.equal(otraMoneda, propuesta);
 });
 
 test("un fallo de Telegram ocurre después del cierre durable y no reabre la operación financiera", async (t) => {

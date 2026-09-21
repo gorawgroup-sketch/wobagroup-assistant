@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { InlineKeyboardButton } from "../telegram/types";
 import type { PropuestaGasto } from "./gastoProposalSheet";
+import type { MovimientoBancarioCandidato } from "../holded/write";
 
 /**
  * Pedido explícito de Carlos, tras probar la primera versión (botones que
@@ -34,6 +35,23 @@ export interface OpcionesTecladoGasto {
 }
 
 /**
+ * Movimiento único que ya se mostró y recomendó al operador. Se conserva
+ * en la propuesta para que “Crear y conciliar” use exactamente ese id, sin
+ * repetir una búsqueda que puede devolver otro resultado o ninguno.
+ *
+ * `movimientosAmbiguos` es el campo durable histórico; cuando además
+ * hayMovimientoBancario=true y contiene un solo elemento, ese elemento no
+ * es ambiguo: es el objetivo confirmado por el operador.
+ */
+export function movimientoRecomendadoPropuesta(
+  propuesta: PropuestaGasto
+): MovimientoBancarioCandidato | undefined {
+  return propuesta.hayMovimientoBancario === true && propuesta.movimientosAmbiguos?.length === 1
+    ? propuesta.movimientosAmbiguos[0]
+    : undefined;
+}
+
+/**
  * Deriva las opciones del teclado directamente de la propuesta — hallazgo real de auditoría: cada
  * sitio que REPINTA el teclado (tras marcar un check, tras aplicar una acción de texto, tras
  * corregir la moneda...) recalculaba estos 3 campos a mano, y más de uno se quedó corto al agregar
@@ -42,10 +60,14 @@ export interface OpcionesTecladoGasto {
  * campo nuevo se olvide en alguno de los varios sitios que llaman a construirTecladoGasto.
  */
 export function opcionesTecladoDesdePropuesta(propuesta: PropuestaGasto): OpcionesTecladoGasto {
+  const recomendado = movimientoRecomendadoPropuesta(propuesta);
   return {
     numCandidatos: propuesta.candidatos.length > 0 ? propuesta.candidatos.length : undefined,
     hayMovimientoBancario: propuesta.hayMovimientoBancario,
-    numMovimientosAmbiguos: propuesta.movimientosAmbiguos && propuesta.movimientosAmbiguos.length > 0 ? propuesta.movimientosAmbiguos.length : undefined,
+    numMovimientosAmbiguos:
+      !recomendado && propuesta.movimientosAmbiguos && propuesta.movimientosAmbiguos.length > 0
+        ? propuesta.movimientosAmbiguos.length
+        : undefined,
   };
 }
 
