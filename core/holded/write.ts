@@ -3986,6 +3986,16 @@ function lineaCrudaAItem(
   };
 }
 
+/** Holded agrega las etiquetas de las líneas a las del documento. Una sustitución
+ * explícita debe actualizar ambos niveles para no recuperar etiquetas descartadas. */
+export function etiquetasEdicionCompra<T extends object>(
+  items: T[], tagsNuevos?: string[]
+): T[] {
+  if (tagsNuevos === undefined) return items;
+  const tags = [...new Set(tagsNuevos.map(normalizarEtiquetaHolded).filter(Boolean))];
+  return items.map(item => ({ ...item, tags: [...tags] }));
+}
+
 async function prepararEdicionCompraHolded(
   empresa: Empresa,
   purchaseId: string,
@@ -4023,7 +4033,7 @@ async function prepararEdicionCompraHolded(
     }
   }
 
-  const items = cambios.lineas
+  const itemsOriginales = cambios.lineas
     ? cambios.lineas.map((linea) => {
         const taxKey = catalogo ? mapearImpuestoPrincipalATaxKey(catalogo, linea) : undefined;
         const retencionKey =
@@ -4053,6 +4063,8 @@ async function prepararEdicionCompraHolded(
           // nuevo, mismo criterio que el caso degenerado de aplicarTextoAjusteMonto.
           [{ name: actual.description ?? "(línea)", type: "product", units: 1, price: cambios.montoNuevo, taxes: [] }]
       : lineasCrudasActuales.map((l) => lineaCrudaAItem(l, undefined, cuentaNueva));
+
+  const items = etiquetasEdicionCompra(itemsOriginales, cambios.tagsNuevos);
 
   // Bug real de gravedad alta encontrado en vivo (2026-09-08, gasto de Google
   // Workspace en USD, Footprint — reporte explícito de Carlos): este PUT
