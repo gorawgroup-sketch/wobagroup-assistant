@@ -1,3 +1,4 @@
+import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../../gastos/proveedorUber";
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
 import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, tieneCategoriaGastoAprendida,
   type TaxCatalogEntry } from "../../holded/write";
@@ -319,6 +320,14 @@ export class HoldedAuto {
       if (primera && (!segunda || primera.similitud - segunda.similitud >= 0.12)) {
         seleccionados = [primera.contacto]; metodo = "aproximado_unico";
       } else if (ranking.length) e.motivoProveedor = "coincidencia_ambigua";
+    }
+    // Override generic-name aliases/rankings: Uber must use this receipt's geography,
+    // or the explicitly authorized country-free contact. Never pick another country.
+    if (esProveedorUber(r.proveedor) || esProveedorUberEats(r.proveedor)) {
+      const uber = esProveedorUberEats(r.proveedor) ? seleccionarContactoUberEats(contactos, r.proveedor) : seleccionarContactoUber(contactos, r.proveedor, r.concepto);
+      seleccionados = uber ? [uber] : [];
+      metodo = "nombre_equivalente";
+      e.motivoProveedor = uber ? undefined : "sin_coincidencias";
     }
     e.candidatosProveedor = contactos.map(x => ({ id: String(x.id), nombre: String(x.name),
       similitud: similitudProveedor(String(x.name), r.proveedor) }))

@@ -513,3 +513,22 @@ test("alias confirmado desambigua fichas del mismo proveedor sin bloquear por SA
   assert.equal(ev.contacto?.exacto,true);
   assert.equal(evaluarAuto(e.c,analisisFixture(e.r),e.r,ev,configFixture).apto,true);
 });
+
+test("Uber selects receipt country over an old alias; missing geography uses generic Uber", async () => {
+  for (const [concepto, id] of [["Trayecto Bogotá, Colombia", "co"], ["Trayecto 4 km en EUR", "generic"]]) {
+    const e = escenario(); e.r.proveedor = "Uber"; e.r.concepto = concepto;
+    e.contactos.splice(0, e.contactos.length,
+      {id:"co",name:"UBER COLOMBIA"}, {id:"es",name:"UBER SYSTEMS SPAIN SL."}, {id:"generic",name:"Uber"});
+    e.memoria.alias = async () => [{contactId:"es",contactName:"UBER SYSTEMS SPAIN SL."}];
+    const ev = await e.adapter.evidencias(e.c, e.r);
+    assert.equal(ev.contacto?.id, id); assert.equal(ev.contacto?.exacto, true);
+    assert.equal(ev.motivoProveedor, undefined);
+  }
+});
+
+test("Uber Eats reuses an authorized existing duplicate without POST contact", async () => {
+  const e = escenario(); e.r.proveedor = "Uber Eats";
+  e.contactos.splice(0,e.contactos.length,{id:"z",name:"Uber eats"},{id:"a",name:"UBER EATS"});
+  const ev = await e.adapter.evidencias(e.c,e.r);
+  assert.equal(ev.contacto?.id,"a"); assert.equal(ev.contacto?.exacto,true); assert.equal(e.posts.length,0);
+});

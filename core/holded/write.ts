@@ -1,3 +1,4 @@
+import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
 import { extname, join } from "node:path";
@@ -824,10 +825,13 @@ function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLo
 export async function buscarContactoHolded(
   empresa: Empresa,
   nombre: string,
-  monedaEsperada?: string
+  monedaEsperada?: string,
+  conceptoRecibo?: string
 ): Promise<HoldedContact | undefined> {
   const contactos = await obtenerTodosLosContactos(empresa);
   const conNombre = contactos.filter((c): c is HoldedContact & { name: string } => typeof c.name === "string");
+  if (esProveedorUberEats(nombre)) return seleccionarContactoUberEats(conNombre, nombre);
+  if (esProveedorUber(nombre)) return seleccionarContactoUber(conNombre, nombre, conceptoRecibo);
   const todosLosNombres = conNombre.map((c) => c.name);
 
   const alias = await buscarAliasProveedor(empresa, nombre, monedaEsperada).catch(() => undefined);

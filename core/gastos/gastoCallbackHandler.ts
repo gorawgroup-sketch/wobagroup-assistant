@@ -2170,7 +2170,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         const existente = await buscarContactoHolded(
           resolucion.empresaFinal,
           resolucion.propuesta.proveedor,
-          resolucion.propuesta.moneda
+          resolucion.propuesta.moneda,
+          resolucion.propuesta.concepto
         );
         if (existente) {
           return { id: existente.id, name: existente.name ?? resolucion.propuesta.proveedor.trim() };
@@ -2702,7 +2703,7 @@ async function crearGastoYReportar(
   const cuentaIdFinal = propuestaFinal.cuentaId!;
   const tagsFinales = propuestaFinal.cuentaTags ?? [];
 
-  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuestaFinal.proveedor, propuestaFinal.moneda));
+  const contacto = contactoForzado ?? (await buscarContactoHolded(empresaFinal, propuestaFinal.proveedor, propuestaFinal.moneda, propuestaFinal.concepto));
   if (!contacto) {
     throw new ContactoNoEncontradoError(propuestaFinal.proveedor, empresaFinal);
   }
