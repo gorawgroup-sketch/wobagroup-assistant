@@ -8,6 +8,7 @@ export interface MovimientoHoldedParaDuplicado {
   accounting_amount?: string | number | null;
   booking_date?: string;
   status?: string;
+  origin?: string;
   reconciled_amount?: string | number | null;
 }
 
@@ -189,4 +190,28 @@ export function evaluarMovimientoConciliadoComoDuplicado(
     sinProveedorIdentificado,
     diferenciaMonto,
   };
+}
+
+/** Only a bank-origin, unused debit with exact amount/date/provider can
+ * outrank a near-amount reconciled charge. Currency conversion is not inferred.
+ */
+export function esCargoLibreExactoParaDuplicado(
+  m: MovimientoHoldedParaDuplicado,
+  c: { proveedor: string; monto: number; fecha: string; moneda?: string }
+): boolean {
+  const monto = parsearDecimal(m.amount);
+  return Boolean(m.id && m.origin && m.origin !== "manual") && m.status === "pending" &&
+    parsearDecimal(m.reconciled_amount) === 0 && monto < 0 && Number.isFinite(c.monto) && c.monto > 0 &&
+    Math.abs(-monto - c.monto) < 0.005 &&
+    (m.currency ?? "").toUpperCase() === (c.moneda ?? "EUR").toUpperCase() &&
+    fechaCalendario(m.booking_date) === c.fecha.slice(0,10) &&
+    !esProveedorNoIdentificado(c.proveedor) && proveedorPareceEnDescripcion(c.proveedor, m.description ?? "");
+}
+export function priorizarCargoLibreExacto<T extends { nivel: "exacta" | "probable"; monto: number; moneda: string }>(
+  conciliados: T[], libresExactos: Set<string>, monto: number, moneda = "EUR"
+): T[] {
+  if (libresExactos.size !== 1) return conciliados;
+  // Exact occupied matches and all registered-purchase checks still block.
+  return conciliados.filter(m => m.nivel === "exacta" || m.moneda.toUpperCase() !== moneda.toUpperCase() ||
+    Math.abs(Math.abs(m.monto) - monto) <= 0.011);
 }

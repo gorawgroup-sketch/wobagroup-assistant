@@ -18,7 +18,7 @@ import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/ex
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
 import { conMutex } from "../utils/asyncMutex";
-import { evaluarMovimientoConciliadoComoDuplicado } from "./duplicateSignals";
+import { evaluarMovimientoConciliadoComoDuplicado, esCargoLibreExactoParaDuplicado, priorizarCargoLibreExacto } from "./duplicateSignals";
 import {
   consultarCreacionCompraDurable,
   CreacionCompraInciertaError,
@@ -1417,6 +1417,7 @@ export async function buscarMovimientosYaConciliadosComoDuplicado(
   const cuentasCrudas = Array.isArray(cuentasData) ? cuentasData : (cuentasData.items ?? []);
   const cuentas = cuentasCrudas.filter((c) => !c.archived && c.id);
 
+  const libresExactos = new Set<string>();
   const porCuenta = await mapearConLimite(cuentas, CONCURRENCIA_CUENTAS_DUPLICADO, async (cuenta) => {
     const encontrados: MovimientoConciliadoDuplicado[] = [];
     let cursor: string | undefined;
@@ -1440,6 +1441,7 @@ export async function buscarMovimientosYaConciliadosComoDuplicado(
           accounting_amount?: string | number | null;
           booking_date?: string;
           status?: string;
+          origin?: string;
           reconciled_amount?: string | number | null;
         }>;
         cursor?: string;
@@ -1448,6 +1450,7 @@ export async function buscarMovimientosYaConciliadosComoDuplicado(
 
       for (const mov of data.items ?? []) {
         if (!mov.id) continue;
+        if (esCargoLibreExactoParaDuplicado(mov, criterios)) libresExactos.add(`${cuenta.id}/${mov.id}`);
         const coincidencia = evaluarMovimientoConciliadoComoDuplicado(mov, criterios);
         if (!coincidencia) continue;
         encontrados.push({
@@ -1472,7 +1475,7 @@ export async function buscarMovimientosYaConciliadosComoDuplicado(
     return encontrados;
   });
 
-  return porCuenta.flat().sort((a, b) => (a.nivel === b.nivel ? a.fecha.localeCompare(b.fecha) : a.nivel === "exacta" ? -1 : 1));
+  return priorizarCargoLibreExacto(porCuenta.flat(), libresExactos, criterios.monto, criterios.moneda).sort((a, b) => (a.nivel === b.nivel ? a.fecha.localeCompare(b.fecha) : a.nivel === "exacta" ? -1 : 1));
 }
 
 export async function verificarDuplicadoGastoEstricto(
