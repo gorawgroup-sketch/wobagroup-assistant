@@ -1,6 +1,5 @@
-import { fetchDetalleRegistrosConMeta } from "../google/cashflowSheet";
-import { consultarCashflow, formatearResultadoCashflow, type ConsultaCashflow } from "../google/buscarEnCashflow";
-import { parsearImporteCashflow } from "../cashflow/cruceHoldedCashflow";
+import { fetchDetalleRegistrosConMeta, obtenerUltimaVerificacionEstructura } from "../google/cashflowSheet";
+import { consultarCashflow, formatearResultadoCashflow, parsearEntradaConsulta } from "../google/buscarEnCashflow";
 import { notaFrescura } from "../utils/readCache";
 import type { ToolDefinition } from "./types";
 
@@ -17,13 +16,14 @@ import type { ToolDefinition } from "./types";
  *   de la columna de tag; existe en Ingresos, Pagos Proyectos, y — desde que
  *   Carlos agregó esa columna, ver hallazgo real de auditoría en
  *   cashflowSheet.ts — también en Pagos Pendientes Alberto / Deudas
- *   Pendientes. El resto de categorías (Pagos Extras, Impuestos por Pagar,
- *   Aplazamiento Impuestos, Gastos Fijos, Gastos Consultores) NO tiene esa
- *   columna: al filtrar por empresa esas filas NO se descartan — se devuelven
- *   marcadas "sin empresa en la hoja" (o con la empresa inferida por su nombre,
- *   p. ej. "MOD 303 EWORKS Q2"). Caso real 2026-09-21: filtrar por EWORKS
- *   escondía "Providencia de apremio" y "Sanción AEAT", y Wobi dijo que no
- *   estaban en el cashflow. Ver core/google/buscarEnCashflow.ts).
+ *   Pendientes. Impuestos por Pagar, Aplazamiento Impuestos, Gastos Fijos y
+ *   Gastos Consultores NO tienen esa columna (verificado en vivo 2026-09-21: las
+ *   83 filas sin empresa son de esas tablas, más algunas de Deudas Pendientes):
+ *   al filtrar por empresa esas filas NO se descartan — se devuelven marcadas
+ *   "sin empresa" (o con la empresa inferida por su nombre, p. ej. "MOD 303
+ *   EWORKS Q2"). Caso real 2026-09-21: filtrar por EWORKS escondía "Providencia
+ *   de apremio" y "Sanción AEAT", y Wobi dijo que no estaban en el cashflow.
+ *   Ver core/google/buscarEnCashflow.ts).
  * - contraparte: texto libre con el nombre de quien paga o cobra, o el
  *   concepto del gasto (ej. "Limpieza", "Google", "Renting"), que puede
  *   incluir nombres de otras empresas del grupo (ej. "Footprint" aparece como
@@ -64,8 +64,9 @@ export const cashflowDetalleTool: ToolDefinition = {
     "'sin empresa en la hoja' — nunca las des por de una empresa concreta si la hoja no lo dice. " +
     "Si el resultado viene marcado como coincidencia APROXIMADA o con un filtro relajado, dilo así al " +
     "usuario y pregunta si es lo que buscaba, no lo des por hecho. Si no hay resultados, la respuesta " +
-    "detalla qué se revisó: repítelo al usuario tal cual y NUNCA concluyas que un pago 'no está en el " +
-    "cashflow' sin haber probado nombre, importe y sección. " +
+    "detalla qué se probó (y si la lectura de la hoja tuvo filas ilegibles): repítelo al usuario tal cual y " +
+    "NUNCA concluyas que un pago 'no está en el cashflow' si el usuario te dio nombre, importe o sección y no " +
+    "los probaste todos. " +
     "Úsala cuando el usuario pida un desglose detallado en vez de solo el resumen semanal. Si en cambio " +
     "piden verificar/comparar esto contra los movimientos bancarios reales de Holded (¿qué falta " +
     "registrar?, ¿está al día?, para cualquier semana incluida una pasada concreta como 'S36') usa MEJOR " +
@@ -85,9 +86,9 @@ export const cashflowDetalleTool: ToolDefinition = {
         enum: ["WOBA", "EWORKS"],
         description:
           "Empresa del grupo DUEÑA del movimiento (WOBA o EWORKS), no el nombre del cliente/proveedor. " +
-          "Las filas sin columna de empresa (impuestos, gastos fijos, pagos extras, aplazamientos...) se " +
-          "devuelven marcadas 'sin empresa en la hoja'; solo se apartan las que la hoja o su nombre " +
-          "atribuyen a la OTRA empresa. Opcional.",
+          "Las filas sin columna de empresa (impuestos por pagar, aplazamientos, gastos fijos, gastos " +
+          "consultores) se devuelven marcadas 'sin empresa'; solo se apartan las que la hoja o su nombre " +
+          "atribuyen a la OTRA empresa (y se dice cuántas). Opcional.",
       },
       contraparte: {
         type: "string",
@@ -117,29 +118,16 @@ export const cashflowDetalleTool: ToolDefinition = {
     },
   },
   handler: async (input) => {
+    const entrada = parsearEntradaConsulta(input);
+    if (entrada.rechazo) return entrada.rechazo;
+    const consulta = entrada.consulta ?? {};
+
     const lectura = await fetchDetalleRegistrosConMeta();
-
-    const cadena = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-    const empresaTexto = cadena(input.empresa)?.toUpperCase();
-    const valorBruto = input.valor;
-    const valor =
-      typeof valorBruto === "number" && Number.isFinite(valorBruto)
-        ? valorBruto
-        : typeof valorBruto === "string" && valorBruto.trim()
-          ? parsearImporteCashflow(valorBruto)
-          : undefined;
-    const tolerancia = typeof input.tolerancia_eur === "number" && input.tolerancia_eur >= 0 ? input.tolerancia_eur : undefined;
-
-    const consulta: ConsultaCashflow = {
-      semana: cadena(input.semana)?.toUpperCase(),
-      empresa: empresaTexto === "WOBA" || empresaTexto === "EWORKS" ? empresaTexto : undefined,
-      texto: cadena(input.contraparte),
-      valor: valor !== undefined && Number.isFinite(valor) && valor !== 0 ? valor : undefined,
-      toleranciaEur: tolerancia,
-      categoria: cadena(input.categoria),
-    };
-
     const resultado = consultarCashflow(lectura.datos, consulta);
-    return `${formatearResultadoCashflow(resultado, consulta)}\n${notaFrescura(lectura.meta)}`;
+    const texto = formatearResultadoCashflow(resultado, consulta, {
+      problemasLectura: obtenerUltimaVerificacionEstructura(),
+      ignorados: entrada.ignorados,
+    });
+    return `${texto}\n${notaFrescura(lectura.meta)}`;
   },
 };

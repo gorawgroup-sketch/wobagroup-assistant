@@ -1,5 +1,6 @@
 import { fetchResumenSemanasConMeta } from "../google/cashflowSheet";
 import { notaFrescura } from "../utils/readCache";
+import { normalizarSemana } from "../utils/semanaCashflow";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -36,14 +37,14 @@ export const cashflowResumenTool: ToolDefinition = {
     const responder = (texto: string) => `${texto}\n${notaFrescura(lectura.meta)}`;
     const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
 
-    const desde = typeof input.semana_desde === "string" ? input.semana_desde.trim().toUpperCase() : undefined;
-    const hasta = typeof input.semana_hasta === "string" ? input.semana_hasta.trim().toUpperCase() : undefined;
+    const desde = typeof input.semana_desde === "string" ? normalizarSemana(input.semana_desde) : undefined;
+    const hasta = typeof input.semana_hasta === "string" ? normalizarSemana(input.semana_hasta) : undefined;
 
     let seleccion: ResumenSemanaList;
 
     if (desde || hasta) {
-      const idxDesde = desde ? conDatos.findIndex((s) => s.semana.toUpperCase() === desde) : 0;
-      const idxHasta = hasta ? conDatos.findIndex((s) => s.semana.toUpperCase() === hasta) : conDatos.length - 1;
+      const idxDesde = desde ? conDatos.findIndex((s) => normalizarSemana(s.semana) === desde) : 0;
+      const idxHasta = hasta ? conDatos.findIndex((s) => normalizarSemana(s.semana) === hasta) : conDatos.length - 1;
 
       if (idxDesde === -1 || idxHasta === -1) {
         return responder(`No se encontró alguna de las semanas solicitadas (${desde ?? "?"} - ${hasta ?? "?"}) entre las semanas con datos disponibles.`);

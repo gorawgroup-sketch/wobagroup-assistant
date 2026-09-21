@@ -27,7 +27,7 @@ export type TipoMovimientoCruce = "ingreso" | "gasto";
  * porque ProblemaEstructuraDatos no lleva un campo de severidad — ver los dos mensajes exactos en
  * obtenerDisposiciones (cashflowLayout.ts).
  */
-function esProblemaEstructuraSevero(problema: ProblemaEstructuraDatos): boolean {
+export function esProblemaEstructuraSevero(problema: ProblemaEstructuraDatos): boolean {
   return (
     problema.detalle.includes("no pudo localizar de forma inequívoca") ||
     problema.detalle.includes("encontró más de una tabla válida")
