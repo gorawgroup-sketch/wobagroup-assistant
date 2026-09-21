@@ -490,3 +490,15 @@ test("la verificación aprendida exige cuenta y tags funcionales exactos", async
   e.compra.lines = [{ account: "c1", taxes: [] }];
   assert.equal(await adapter.verificarCreacion(e.op), false);
 });
+test("busca cargo multimoneda aunque el contacto siga ambiguo, sin autorizar crear", async () => {
+  const e = escenario(); e.r.moneda = "MXN"; e.r.monto = 400;
+  e.contactos.push({id:"p2",name:"Proveedor"});
+  const adapter = new HoldedAuto(e.memoria,e.request,["WOBA"],undefined,undefined,async () => 0.05);
+  const ev = await adapter.evidencias(e.c,e.r);
+  assert.equal(ev.contacto,undefined);
+  assert.equal(ev.equivalenteBancario?.movimientoId,"b1");
+  const decision = evaluarAuto(e.c,analisisFixture(e.r),e.r,ev,configFixture);
+  assert.equal(decision.apto,false);
+  if(!decision.apto){assert.ok(decision.motivos.includes("proveedor_no_encontrado"));assert.ok(!decision.motivos.includes("sin_movimiento_exacto"));}
+  assert.equal(e.posts.length,0);
+});
