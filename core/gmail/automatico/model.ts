@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v21";
+export const VERSION_POLITICA = "correo-gastos-v22";
 /**
  * La lectura del mensaje es independiente de la política que decide si se
  * crea/adjunta/concilia. Antes ambas compartían VERSION_POLITICA y cada
@@ -14,7 +14,14 @@ export const VERSION_POLITICA = "correo-gastos-v21";
 // persistidas como incompletas durante el incidente del límite diario de IA;
 // conservarlas para siempre impediría que una orden manual pudiera repararlas.
 export const VERSION_ANALISIS = "correo-gastos-analysis-v22";
-export const VENTANA_DIAS_MOVIMIENTO_AUTO = 5;
+/**
+ * Misma ventana ya aprendida por el flujo manual. En viajes, la fecha del
+ * comprobante puede ser la del servicio y el cargo haberse producido semanas
+ * antes. Hacia adelante se conserva una banda corta para no aceptar cargos
+ * futuros poco plausibles.
+ */
+export const VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS = 90;
+export const VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE = 5;
 export interface ConfigAuto {
   modo: ModoAuto;
   empresas: EmpresaAuto[];
@@ -144,6 +151,9 @@ export interface AnalisisAuto {
 export interface MovimientoAuto {
   id: string; cuentaId: string; moneda: string; fecha: string; centimos: number;
   conciliadoCentimos: number; estado: string; descripcion: string; origen: string;
+  /** Equivalente contable devuelto por Holded para cuentas en otra moneda. */
+  contabilidadCentimos?: number;
+  monedaContable?: string;
 }
 export interface EvidenciaAuto {
   empresaDetectada?: EmpresaAuto;
@@ -186,12 +196,31 @@ function datosMonto(r: ReciboAuto): { esperado: number; moneda: string; converti
   return { esperado, moneda, convertido, tolerancia: toleranciaMontoAuto(esperado) };
 }
 
+/** Importe comparable sin inventar una conversión. */
+function centimosComparables(m: MovimientoAuto, moneda: string, permitirContabilidad: boolean): number | undefined {
+  if (m.moneda === moneda) return m.centimos;
+  if (permitirContabilidad && moneda === "EUR" && m.monedaContable === "EUR" && Number.isSafeInteger(m.contabilidadCentimos)) {
+    return m.contabilidadCentimos;
+  }
+  return undefined;
+}
+
+export function movimientoEnVentanaAuto(fechaMovimiento: string, fechaRecibo: string): boolean {
+  const movimiento = Date.parse(fechaMovimiento.slice(0, 10));
+  const recibo = Date.parse(fechaRecibo.slice(0, 10));
+  if (!Number.isFinite(movimiento) || !Number.isFinite(recibo)) return false;
+  const dias = (movimiento - recibo) / 86_400_000;
+  return dias >= -VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS && dias <= VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE;
+}
+
 export function candidatosMovimientoAuto(r: ReciboAuto, e: EvidenciaAuto): MovimientoAuto[] {
   let datos: ReturnType<typeof datosMonto>;
   try { datos = datosMonto(r); } catch { return []; }
-  const porMontoYFecha = e.movimientos.filter(m => m.moneda === datos.moneda &&
-    diferenciaDiasCalendario(m.fecha, r.fecha) <= VENTANA_DIAS_MOVIMIENTO_AUTO &&
-    Number.isSafeInteger(m.centimos) && m.centimos < 0 && Math.abs(-m.centimos - datos.esperado) <= datos.tolerancia);
+  const porMontoYFecha = e.movimientos.filter(m => {
+    const comparable = centimosComparables(m, datos.moneda, datos.convertido);
+    return movimientoEnVentanaAuto(m.fecha, r.fecha) && comparable !== undefined &&
+      Number.isSafeInteger(comparable) && comparable < 0 && Math.abs(-comparable - datos.esperado) <= datos.tolerancia;
+  });
   if (porMontoYFecha.length <= 1) return porMontoYFecha;
   const porProveedor = porMontoYFecha.filter(m => proveedorEnDescripcion(r.proveedor, m.descripcion) ||
     Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, m.descripcion)));
@@ -219,13 +248,16 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   let esperado = 0;
   let convertido = false;
   let tolerancia = 0;
+  let monedaObjetivo = "";
   try {
-    ({ esperado, convertido, tolerancia } = datosMonto(r));
+    ({ esperado, convertido, tolerancia, moneda: monedaObjetivo } = datosMonto(r));
   } catch { motivos.push("importe_o_equivalente_invalido"); }
   const candidatos = candidatosMovimientoAuto(r, e);
   const ids = new Set(candidatos.map(m => `${m.cuentaId}/${m.id}`));
   const m = candidatos[0];
-  const coincidenciaMontoFechaExacta = candidatos.length === 1 && m.fecha === r.fecha && -m.centimos === esperado;
+  const importeMovimiento = m ? centimosComparables(m, monedaObjetivo, convertido) : undefined;
+  const coincidenciaMontoFechaExacta = candidatos.length === 1 && m.fecha === r.fecha &&
+    importeMovimiento !== undefined && -importeMovimiento === esperado;
   const descripcionConfirmaProveedor = candidatos.length === 1 && (proveedorEnDescripcion(r.proveedor, candidatos[0].descripcion) ||
     Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, candidatos[0].descripcion)));
   const nombreAproximadoFuerte = e.contacto?.metodo === "aproximado_unico" && (e.contacto.similitud ?? 0) >= 0.5;
@@ -251,8 +283,11 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
     ? { ...e, confianzaReforzada: "contacto_exacto_y_movimiento_unico_con_proveedor" }
     : e;
   return { apto: true, plan: { empresa, contactoId: e.contacto!.id, cuentaId: e.cuenta?.id, recibo: reciboPlan,
-    movimiento: m, totalCentimos: -m.centimos, toleranciaCentimos: tolerancia, diferenciaCentimos: -m.centimos - esperado,
-    regla: convertido ? "equivalente_explicito_2pct_min_005_max_500" : (-m.centimos === esperado ? "moneda_nativa_exacta" : "moneda_nativa_2pct_min_005_max_500"), claves, fuenteHash,
+    movimiento: m, totalCentimos: -(importeMovimiento ?? m.centimos), toleranciaCentimos: tolerancia,
+    diferenciaCentimos: -(importeMovimiento ?? m.centimos) - esperado,
+    regla: convertido
+      ? (m.moneda === monedaObjetivo ? "equivalente_explicito_2pct_min_005_max_500" : "equivalente_contable_holded_2pct_min_005_max_500")
+      : (-(importeMovimiento ?? m.centimos) === esperado ? "moneda_nativa_exacta" : "moneda_nativa_2pct_min_005_max_500"), claves, fuenteHash,
     correo: { id: c.id, threadId: c.threadId, buzon: config.buzon }, version: VERSION_POLITICA,
     // La decisión ya quedó auditada por separado. La operación durable solo
     // necesita conservar el movimiento elegido, no todo el historial bancario

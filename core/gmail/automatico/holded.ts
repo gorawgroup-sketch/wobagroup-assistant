@@ -1,8 +1,9 @@
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
 import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, tieneCategoriaGastoAprendida,
   type TaxCatalogEntry } from "../../holded/write";
-import { candidatosMovimientoAuto, diferenciaDiasCalendario, fechaValida, hash, monedaDocumentoAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
-  normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto, VENTANA_DIAS_MOVIMIENTO_AUTO,
+import { candidatosMovimientoAuto, fechaValida, hash, monedaDocumentoAuto, movimientoEnVentanaAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
+  normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto,
+  VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE, VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
 
@@ -48,6 +49,12 @@ export interface FlujoGastoExistente {
 export class HoldedAuto {
   private readonly listadosEstaticos = new Map<string, Promise<Registro[]>>();
   private readonly objetosEstaticos = new Map<string, Promise<Registro>>();
+  /**
+   * Los correos de una misma pasada suelen pertenecer al mismo mes. Compartir
+   * este listado evita volver a descargar las mismas 12 cuentas por cada
+   * comprobante; se invalida la cuenta apenas se concilia un movimiento.
+   */
+  private readonly movimientosPorVentana = new Map<string, Promise<Registro[]>>();
   constructor(private readonly memoria: MemoriaHoldedAuto, private readonly request: typeof fetch = fetch,
     private readonly empresas: EmpresaAuto[] = ["WOBA", "EWORKS", "Footprint"],
     private readonly flujoExistente?: FlujoGastoExistente) {}
@@ -119,6 +126,27 @@ export class HoldedAuto {
     const carga = this.get(empresa, path);
     this.objetosEstaticos.set(clave, carga);
     return carga;
+  }
+  private movimientosCuenta(empresa: EmpresaAuto, cuentaId: string, fechaRecibo: string): Promise<Registro[]> {
+    const fecha = new Date(`${fechaRecibo.slice(0, 10)}T00:00:00Z`);
+    if (!Number.isFinite(fecha.getTime())) throw new Error("Fecha de recibo inválida para consultar banco.");
+    const inicioMes = new Date(Date.UTC(fecha.getUTCFullYear(), fecha.getUTCMonth(), 1));
+    const finMes = new Date(Date.UTC(fecha.getUTCFullYear(), fecha.getUTCMonth() + 1, 0));
+    const desde = new Date(inicioMes); desde.setUTCDate(desde.getUTCDate() - VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS);
+    const hasta = new Date(finMes); hasta.setUTCDate(hasta.getUTCDate() + VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE);
+    const formato = (d: Date) => d.toISOString().slice(0, 10);
+    const clave = `${empresa}:${cuentaId}:${formato(inicioMes)}`;
+    const existente = this.movimientosPorVentana.get(clave);
+    if (existente) return existente;
+    const carga = this.listar(empresa, `/treasury/accounts/${idUrl(cuentaId)}/bank-movements`, {
+      start_date: formato(desde), end_date: formato(hasta),
+    });
+    this.movimientosPorVentana.set(clave, carga);
+    return carga;
+  }
+  private invalidarMovimientosCuenta(empresa: EmpresaAuto, cuentaId: string): void {
+    const prefijo = `${empresa}:${cuentaId}:`;
+    for (const clave of this.movimientosPorVentana.keys()) if (clave.startsWith(prefijo)) this.movimientosPorVentana.delete(clave);
   }
   async evidencias(c: CorreoAuto, r: ReciboAuto): Promise<EvidenciaAuto> {
     const e: EvidenciaAuto = { consultasCompletas: false, duplicados: [], movimientos: [], permiteTicket: true };
@@ -217,13 +245,9 @@ export class HoldedAuto {
       }
     }
     const cuentas = await this.listarEstatico(empresa, "/treasury/accounts");
-    const desdeBanco = new Date(fecha); desdeBanco.setUTCDate(desdeBanco.getUTCDate() - VENTANA_DIAS_MOVIMIENTO_AUTO);
-    const hastaBanco = new Date(fecha); hastaBanco.setUTCDate(hastaBanco.getUTCDate() + VENTANA_DIAS_MOVIMIENTO_AUTO);
     const movimientosPorCuenta = await mapearConConcurrencia(cuentas.filter(cuenta => cuenta.archived !== true), 4, async cuenta => {
       const cuentaId = texto(cuenta.id);
-      const movimientos = await this.listar(empresa, `/treasury/accounts/${idUrl(cuentaId)}/bank-movements`, {
-        start_date: formato(desdeBanco), end_date: formato(hastaBanco),
-      });
+      const movimientos = await this.movimientosCuenta(empresa, cuentaId, r.fecha);
       return { cuenta, cuentaId, movimientos };
     });
     for (const { cuenta, cuentaId, movimientos } of movimientosPorCuenta) {
@@ -231,13 +255,21 @@ export class HoldedAuto {
         if (mov.banking_account_id !== cuentaId || mov.currency !== cuenta.currency) throw new Error("Identidad bancaria inconsistente.");
         const movimiento: MovimientoAuto = { id: texto(mov.id), cuentaId, fecha: texto(mov.booking_date).slice(0, 10),
           moneda: texto(mov.currency), centimos: centimos(mov.amount), conciliadoCentimos: centimos(mov.reconciled_amount),
-          estado: texto(mov.status), origen: typeof mov.origin === "string" ? mov.origin : "", descripcion: typeof mov.description === "string" ? mov.description : "" };
+          estado: texto(mov.status), origen: typeof mov.origin === "string" ? mov.origin : "", descripcion: typeof mov.description === "string" ? mov.description : "",
+          ...(mov.accounting_amount !== undefined && mov.accounting_amount !== null
+            ? { contabilidadCentimos: centimos(mov.accounting_amount), monedaContable: String(mov.accounting_currency ?? "EUR").toUpperCase().trim() }
+            : {}) };
         e.movimientos.push(movimiento);
         // Incluye tickets ya conciliados aunque /purchases no los muestre.
         const proveedorBanco = proveedorEnDescripcion(r.proveedor, movimiento.descripcion) ||
           Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, movimiento.descripcion));
-        if (movimiento.moneda === moneda && diferenciaDiasCalendario(movimiento.fecha, r.fecha) <= VENTANA_DIAS_MOVIMIENTO_AUTO && movimiento.centimos < 0 &&
-          Math.abs(-movimiento.centimos - importe) <= tolerancia &&
+        const importeComparable = movimiento.moneda === moneda
+          ? movimiento.centimos
+          : Boolean(r.equivalente) && moneda === "EUR" && movimiento.monedaContable === "EUR"
+            ? movimiento.contabilidadCentimos
+            : undefined;
+        if (importeComparable !== undefined && movimientoEnVentanaAuto(movimiento.fecha, r.fecha) && importeComparable < 0 &&
+          Math.abs(-importeComparable - importe) <= tolerancia &&
           (movimiento.fecha === r.fecha || proveedorBanco) &&
           (movimiento.estado !== "pending" || movimiento.conciliadoCentimos !== 0)) e.duplicados.push(`banco:${cuentaId}/${movimiento.id}`);
       }
@@ -497,15 +529,18 @@ export class HoldedAuto {
     const p = op.plan;
     if (!await this.verificarCreacion(op) || !await this.verificarAdjunto(op)) throw new Error("Compra o comprobante no verificados.");
     if (this.flujoExistente) {
-      await this.flujoExistente.conciliar(op);
+      try { await this.flujoExistente.conciliar(op); }
+      finally { this.invalidarMovimientosCuenta(p.empresa, p.movimiento.cuentaId); }
       return;
     }
     const c = await this.compra(op); const m = await this.movimientoActual(op);
     if (centimos(c.payments_total, true) !== 0 || centimos(c.payments_pending, true) !== p.totalCentimos ||
       m.status !== "pending" || centimos(m.reconciled_amount) !== 0) throw new Error("La compra o el movimiento ya tienen pagos/conciliación.");
-    await this.post(p.empresa, `/treasury/accounts/${idUrl(p.movimiento.cuentaId)}/bank-movements/${idUrl(p.movimiento.id)}/reconcile`, {
-      documents: [{ document_id: op.compraId, document_type: "purchase" }],
-    });
+    try {
+      await this.post(p.empresa, `/treasury/accounts/${idUrl(p.movimiento.cuentaId)}/bank-movements/${idUrl(p.movimiento.id)}/reconcile`, {
+        documents: [{ document_id: op.compraId, document_type: "purchase" }],
+      });
+    } finally { this.invalidarMovimientosCuenta(p.empresa, p.movimiento.cuentaId); }
   }
   async verificarConciliacion(op: OperacionAuto): Promise<boolean> {
     if (this.flujoExistente) return this.flujoExistente.verificarConciliacion(op);

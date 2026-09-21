@@ -3825,6 +3825,7 @@ export interface CompraHoldedCruda {
    */
   currency_change?: string | number;
   total?: string | number;
+  payments_total?: string | number;
   payments_pending?: string | number;
   payments_detail?: DetallePagoCompraHolded[];
   design_id?: string | null;
@@ -4928,7 +4929,11 @@ export function verificarPagoCompraEnMovimiento(
   const montoPago = Math.abs(parsearMontoHolded(pago.amount));
   return {
     montoPago,
-    ...(Number.isFinite(pendiente) && Math.abs(pendiente) > margenPagoCompleto
+    // Un residuo pequeño puede ser una diferencia de conversión legítima, pero
+    // sigue siendo saldo pendiente hasta que el ajuste quede realmente aplicado
+    // y verificado. Ocultarlo aquí hizo que el informe automático declarara una
+    // compra como conciliada mientras Holded aún mostraba un importe vencido.
+    ...(Number.isFinite(pendiente) && Math.abs(pendiente) >= 0.005
       ? { pendienteEnCompra: Math.abs(pendiente) }
       : {}),
   };
@@ -4952,7 +4957,7 @@ export interface AjusteCambioResidualElegible {
 }
 
 /**
- * Decide si el único céntimo pendiente es inequívocamente un residuo de
+ * Decide si el saldo pendiente es inequívocamente un residuo de
  * conversión y no una deuda real. Todas las comparaciones financieras se
  * hacen en céntimos enteros:
  *
@@ -4960,8 +4965,9 @@ export interface AjusteCambioResidualElegible {
  * - el movimiento quedó conciliado por el 100% de ese importe;
  * - el pago que creó Holded pertenece a esa cuenta y fecha;
  * - ese pago coincide con accounting_amount;
- * - total/tipo de cambio redondeado = pago + residuo, dentro del margen
- *   compartido de margenResiduoConversion (antes exigía exactamente 0,01 —
+ * - payments_total + payments_pending recompone exactamente el total nativo;
+ * - el residuo convertido a EUR queda dentro del margen compartido de
+ *   margenResiduoConversion (antes exigía exactamente 0,01 —
  *   pedido explícito de Carlos, 2026-09-16, tras confirmar en vivo casos
  *   reales hasta 0,26: el mismo residuo de redondeo de Holded, solo que más
  *   grande cuando el total de la compra también lo es).
@@ -4969,7 +4975,7 @@ export interface AjusteCambioResidualElegible {
  * Si falta una sola señal, devuelve undefined y no se crea ningún pago.
  */
 export function evaluarAjusteCambioResidual(
-  compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_pending" | "payments_detail">,
+  compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_total" | "payments_pending" | "payments_detail">,
   movimiento: MovimientoParaAjusteCambio,
   sourceAccountId: string,
   fechaMovimiento: string
@@ -5012,30 +5018,24 @@ export function evaluarAjusteCambioResidual(
 
   const tasaCambio = numeroDecimalPlano(compra.currency_change);
   if (!Number.isFinite(tasaCambio) || tasaCambio <= 0) return undefined;
-  const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
-  const residuoCentimos = totalContableDocumentoCentimos - centimos(totalPagosOrigen);
   const pendienteCentimos = Math.round(pendiente * 100);
-  // El saldo pendiente DECLARADO por Holded debe coincidir exactamente con el residuo CALCULADO a
-  // partir de total/tipo de cambio/pagos — no basta con que ambos, por separado, quepan bajo el
-  // margen: si no coinciden entre sí, algo más está pasando (un pago adicional no contemplado, un
-  // saldo que no es puro redondeo) y no se demuestra nada, así que no se ajusta nada. Excepción
-  // acotada: Holded expresa payments_pending en la moneda NATIVA del documento. Cuando
-  // `currency_change` se conserva con solo dos decimales, el residuo contable en EUR puede ser
-  // distinto numéricamente, pero al reconvertirlo debe producir exactamente el saldo nativo.
-  // Caso real Kiwi: 151 USD / 1,15 = 131,30 EUR; 131,30 - 130,81 = 0,49 EUR;
-  // 0,49 * 1,15 = 0,56 USD pendientes. Nunca se registra el 0,56 nativo como 0,56 EUR.
-  if (residuoCentimos !== pendienteCentimos) {
-    const tasaCruda = String(compra.currency_change ?? "").replace(",", ".");
-    const decimales = tasaCruda.split(".")[1]?.length ?? 0;
-    const pendienteNativoDesdeResiduo = Math.round((residuoCentimos / 100) * tasaCambio * 100);
-    if (decimales > 2 || pendienteNativoDesdeResiduo !== pendienteCentimos) return undefined;
-  }
-  if (residuoCentimos <= 0 || residuoCentimos > margenCentimos) {
-    return undefined;
-  }
+  const totalPagadoNativo = Math.abs(numeroDesdeHolded(compra.payments_total));
+  // Holded expone payments_pending/payments_total en la moneda nativa del
+  // documento. Esa igualdad es una evidencia más directa que reconstruir el
+  // saldo con currency_change: la API redondea esa tasa a dos decimales y, en
+  // casos reales como Airbnb 233,21 USD / 203,03 EUR, la reconstrucción puede
+  // quedar incluso al otro lado del cero aunque Holded muestre 0,54 USD
+  // pendientes. Se exige que no haya otros pagos y que total pagado + pendiente
+  // recomponga exactamente el total nativo.
+  if (!Number.isFinite(totalPagadoNativo) ||
+      centimos(totalPagadoNativo) + pendienteCentimos !== centimos(totalNativo)) return undefined;
+
+  const montoAjusteCentimos = Math.round((pendiente / tasaCambio) * 100);
+  if (montoAjusteCentimos <= 0 || montoAjusteCentimos > margenCentimos) return undefined;
+  const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
 
   return {
-    monto: residuoCentimos / 100,
+    monto: montoAjusteCentimos / 100,
     monedaDocumento,
     montoNativo: totalNativo,
     montoContableMovimiento: montoContable,
@@ -5256,6 +5256,9 @@ async function inspeccionarConciliacionRegistrada(
                   "no se creó ningún pago automático al arrancar.",
               }
             : await aplicarOReportarAjusteCambio(registro, compra, elegible);
+          if (ajusteCambioDivisa && (ajusteCambioDivisa.estado === "aplicado" || ajusteCambioDivisa.estado === "ya_aplicado")) {
+            pendienteEnCompra = undefined;
+          }
         }
       }
     } catch (error) {
@@ -5266,7 +5269,8 @@ async function inspeccionarConciliacionRegistrada(
     }
   }
 
-  const ok = tieneEnlace && pagoDelDocumentoConfirmado;
+  const ok = tieneEnlace && pagoDelDocumentoConfirmado && pendienteEnCompra === undefined &&
+    ajusteCambioDivisa?.estado !== "requiere_revision" && ajusteCambioDivisa?.estado !== "incierto";
   const pendienteEnMovimiento = movimientoParcial && montoMovimiento > montoEnlazado + TOLERANCIA_MONTO
     ? montoMovimiento - montoEnlazado
     : undefined;

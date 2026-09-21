@@ -446,7 +446,7 @@ test("un importe en otra moneda SÍ sigue bloqueado si la compra todavía tiene 
   assert.equal(resultado, undefined);
 });
 
-test("un céntimo pendiente ya no se informa como saldo real: cae dentro del margen mínimo de conversión", () => {
+test("un céntimo pendiente se conserva hasta que el ajuste quede aplicado", () => {
   // Pedido explícito de Carlos (2026-09-16): un céntimo pendiente es sistemáticamente el residuo de
   // redondeo de una conversión de moneda de Holded (Uber Costa Rica, Subway Tocumen, Costa Azul Panama
   // Bell...), nunca deuda real. El margen mínimo (piso de 2 céntimos) ya lo cubre sin necesitar el total.
@@ -459,10 +459,10 @@ test("un céntimo pendiente ya no se informa como saldo real: cae dentro del mar
     "2026-09-08",
     3.77
   );
-  assert.deepEqual(resultado, { montoPago: 3.77 });
+  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
 });
 
-test("un céntimo sobrepagado también cae dentro del margen y no se informa como saldo pendiente", () => {
+test("un céntimo sobrepagado se conserva para revisión", () => {
   const resultado = verificarPagoCompraEnMovimiento(
     {
       payments_detail: [{ bank_id: "account-1", date: "2026-09-08", amount: "3,77" }],
@@ -472,7 +472,7 @@ test("un céntimo sobrepagado también cae dentro del margen y no se informa com
     "2026-09-08",
     3.77
   );
-  assert.deepEqual(resultado, { montoPago: 3.77 });
+  assert.deepEqual(resultado, { montoPago: 3.77, pendienteEnCompra: 0.01 });
 });
 
 test("caso real Footprint (Subway Aeropuerto/AEROPUERTO TOCUMEN, Compra 0000072199): dos céntimos pendientes en una factura de 17,55 caen dentro del margen porcentual", () => {
@@ -486,7 +486,7 @@ test("caso real Footprint (Subway Aeropuerto/AEROPUERTO TOCUMEN, Compra 00000721
     "2026-09-16",
     15.12
   );
-  assert.deepEqual(resultado, { montoPago: 15.12 });
+  assert.deepEqual(resultado, { montoPago: 15.12, pendienteEnCompra: 0.02 });
 });
 
 test("caso real Footprint (Hostel Columbus Cafe): trece céntimos pendientes en una factura de 86,04 caen dentro del margen porcentual", () => {
@@ -500,7 +500,7 @@ test("caso real Footprint (Hostel Columbus Cafe): trece céntimos pendientes en 
     "2026-09-12",
     85.91
   );
-  assert.deepEqual(resultado, { montoPago: 85.91 });
+  assert.deepEqual(resultado, { montoPago: 85.91, pendienteEnCompra: 0.13 });
 });
 
 test("el margen porcentual tiene un techo de 1 unidad de moneda: no acepta a ciegas un hueco grande en una factura grande", () => {
@@ -539,6 +539,7 @@ test("caso real Uber USD: identifica el céntimo solo cuando todas las pruebas d
       currency: "USD",
       currency_change: "1.1614",
       total: "3,77",
+      payments_total: "3,76",
       payments_pending: "0,01",
       payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-08", amount: "3,24" }],
     },
@@ -568,6 +569,7 @@ test("caso real Airbnb MEX (Footprint, 2026-09-16): un residuo de varios céntim
       currency: "USD",
       currency_change: "1.16",
       total: "255,68",
+      payments_total: "255,42",
       payments_pending: "0,26",
       payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-13", amount: "220,15" }],
     },
@@ -582,7 +584,7 @@ test("caso real Airbnb MEX (Footprint, 2026-09-16): un residuo de varios céntim
     "2026-09-13"
   );
   assert.deepEqual(resultado, {
-    monto: 0.26,
+    monto: 0.22,
     monedaDocumento: "USD",
     montoNativo: 255.68,
     montoContableMovimiento: 220.15,
@@ -591,12 +593,38 @@ test("caso real Airbnb MEX (Footprint, 2026-09-16): un residuo de varios céntim
   });
 });
 
+test("caso real Airbnb Medellín: convierte 0,54 USD pendientes en un ajuste de 0,47 EUR", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "USD",
+      currency_change: "1.15",
+      total: "233,21",
+      payments_total: "232,67",
+      payments_pending: "0,54",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-20", amount: "203,03" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-233.21",
+      reconciled_amount: "-233.21",
+      accounting_amount: "-203.03",
+    },
+    "ftg-usd",
+    "2026-09-20"
+  );
+  assert.ok(resultado);
+  assert.equal(resultado.monto, 0.47);
+  assert.equal(resultado.montoNativo, 233.21);
+});
+
 test("caso real Kiwi: convierte el saldo nativo a EUR cuando Holded conserva la tasa redondeada", () => {
   const resultado = evaluarAjusteCambioResidual(
     {
       currency: "USD",
       currency_change: "1.15",
       total: "151,00",
+      payments_total: "150,44",
       payments_pending: "0,56",
       payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-16", amount: "130,81" }],
     },
@@ -622,6 +650,7 @@ test("una tasa redondeada no habilita el ajuste si el residuo no explica exactam
       currency: "USD",
       currency_change: "1.15",
       total: "151,00",
+      payments_total: "150,44",
       payments_pending: "0,55",
       payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-16", amount: "130,81" }],
     },
@@ -646,6 +675,7 @@ test("el margen del ajuste de cambio tiene techo: un residuo que cuadra matemát
       // Compra de 100: margen = max(0,02, 100*0,005) = 0,50 — un residuo de 0,60 cuadra con el
       // cálculo (100/1.1=90,91, pago 90,31) pero excede ese margen, así que sigue sin aceptarse.
       total: "100,00",
+      payments_total: "99,40",
       payments_pending: "0,60",
       payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-10", amount: "90,31" }],
     },
@@ -667,6 +697,7 @@ test("no ajusta si el céntimo puede ser deuda real, pago parcial o una cuenta d
     currency: "USD",
     currency_change: "1.1614",
     total: "3,77",
+    payments_total: "3,76",
     payments_pending: "0,01",
     payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-08", amount: "3,24" }],
   };
