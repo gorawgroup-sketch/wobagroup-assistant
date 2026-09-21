@@ -4789,7 +4789,16 @@ export async function estaMovimientoDisponibleParaConciliar(
   fechaAproximada: string
 ): Promise<boolean> {
   const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
-  return Boolean(movimiento && !estaConciliado(movimiento.status));
+  return movimientoLibreParaConciliar(movimiento);
+}
+
+/** Un movimiento parcialmente usado tampoco está libre, aunque Holded no lo marque aún como reconciliado. */
+export function movimientoLibreParaConciliar(
+  movimiento?: { status?: string; reconciled_amount?: string }
+): boolean {
+  if (!movimiento || movimiento.status !== "pending") return false;
+  const conciliado = numeroDesdeHolded(movimiento.reconciled_amount);
+  return Number.isFinite(conciliado) && Math.abs(conciliado) <= TOLERANCIA_MONTO;
 }
 
 /**

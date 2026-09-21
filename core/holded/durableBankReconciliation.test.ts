@@ -20,8 +20,17 @@ import {
 import {
   configuracionConciliacionesMovimientoDurables,
   evaluarAjusteCambioResidual,
+  movimientoLibreParaConciliar,
   verificarPagoCompraEnMovimiento,
 } from "./write";
+
+test("solo considera libre un movimiento pendiente y sin importe ya conciliado", () => {
+  assert.equal(movimientoLibreParaConciliar({ status: "pending", reconciled_amount: "0.00" }), true);
+  assert.equal(movimientoLibreParaConciliar({ status: "pending", reconciled_amount: "1.00" }), false);
+  assert.equal(movimientoLibreParaConciliar({ status: "partial", reconciled_amount: "1.00" }), false);
+  assert.equal(movimientoLibreParaConciliar({ status: "reconciled", reconciled_amount: "6.00" }), false);
+  assert.equal(movimientoLibreParaConciliar(undefined), false);
+});
 
 class RepoMemoria implements RepositorioConciliacionesMovimiento {
   filas = new Map<string, RegistroConciliacionMovimiento>();
