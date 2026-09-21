@@ -105,6 +105,10 @@ import {
   type PurchaseCandidato,
 } from "../holded/write";
 import { registrarMovimientoAmbiguoElegido, sugerirCandidatoAprendido } from "../holded/movimientoAmbiguoAprendidoSheet";
+import {
+  registrarConciliacionVerificada,
+  sugerirCandidatoPorConciliacionesVerificadas,
+} from "../holded/conciliacionAprendidaSheet";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { reDescargarAdjuntoSiFalta, regenerarComprobanteDesdeCuerpoSiFalta } from "../gmail/reDescargarAdjunto";
@@ -708,9 +712,15 @@ async function ofrecerEleccionMovimientosAmbiguos(
     // sugerirCandidatoAprendido son independientes entre sí (ninguna depende del resultado de la
     // otra — la primera solo necesita los datos ya recibidos como parámetros, no `pendiente.id`) así
     // que no hay razón para esperarlas una tras otra antes de mandarle el mensaje a Carlos.
-    const [pendiente, indiceSugerido] = await Promise.all([
+    const [pendiente, sugerenciaVerificada, indiceSugeridoLegado] = await Promise.all([
       guardarConciliacionAmbiguaPendiente({ empresa, gastoId, descripcionGasto, chatId, candidatos, deColaCorreo,
         esAproximado, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail }),
+      proveedor
+        ? sugerirCandidatoPorConciliacionesVerificadas(proveedor, empresa, candidatos).catch((error) => {
+            console.error("[gastoCallbackHandler] Error consultando conciliaciones verificadas aprendidas (no crítico):", error);
+            return undefined;
+          })
+        : Promise.resolve(undefined),
       // Pedido explícito de Carlos ("que la práctica te vaya dando experticia"):
       // nunca decide sola (Carlos siempre elige con el botón, es dinero), solo
       // resalta con ⭐ la opción que ya coincidió con algo confirmado antes
@@ -724,6 +734,9 @@ async function ofrecerEleccionMovimientosAmbiguos(
         : Promise.resolve(undefined),
     ]);
     pendienteGuardada = pendiente;
+    // La memoria nueva se alimenta de TODA conciliación realmente verificada. Durante la transición,
+    // conserva como fallback el historial anterior que solo aprendía elecciones ambiguas.
+    const indiceSugerido = sugerenciaVerificada?.indice ?? indiceSugeridoLegado;
     const filas: InlineKeyboardButton[][] = candidatos.map((_, i) => [
       {
         text: `${i === indiceSugerido ? "⭐ " : ""}🔗 Conciliar con #${i + 1}`,
@@ -731,7 +744,9 @@ async function ofrecerEleccionMovimientosAmbiguos(
       },
     ]);
     filas.push([{ text: "❌ Ninguno, dejar así", callback_data: `gasto_conciliar_elegir_no:${pendiente.id}` }]);
-    const notaSugerido = indiceSugerido !== undefined ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores de este proveedor.` : "";
+    const notaSugerido = indiceSugerido !== undefined
+      ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores verificadas de este proveedor.`
+      : "";
     const hayTipoCambio = candidatos.some((c) => c.origenCoincidencia === "tipo_cambio");
     const detalleCandidatos = candidatos
       .map((m, i) => hayTipoCambio
@@ -851,7 +866,7 @@ async function intentarConciliar(
     // reconciliarMovimiento DIRECTO, sin el chequeo de estaMovimientoYaConciliado que la otra ruta
     // (checkboxes "🔗 Conciliar con #N") sí tiene, una inconsistencia real entre dos caminos que
     // hacen la misma acción con dinero real.
-    return await conciliarContraMovimientoEspecifico(empresa, candidato, gastoId, esAproximado);
+    return await conciliarContraMovimientoEspecifico(empresa, candidato, gastoId, esAproximado, proveedor, false);
   } catch (error) {
     console.error("[gastoCallbackHandler] Error intentando conciliar movimiento bancario:", error);
     return { nota: "\n\n⚠️ No pude completar ni verificar la conciliación. El correo seguirá sin leer para reintentarla.",
@@ -886,7 +901,9 @@ async function conciliarContraMovimientoEspecifico(
    * correcta para este proveedor (ver movimientoAmbiguoAprendidoSheet.ts) —
    * nunca decide nada, solo alimenta la sugerencia ⭐ de la próxima vez.
    */
-  proveedorParaAprender?: string
+  proveedorParaAprender?: string,
+  /** true solo cuando un humano eligió entre varios candidatos; mantiene la memoria histórica antigua. */
+  aprendizajeAmbiguo: boolean = false
 ): Promise<ResultadoIntentarConciliar> {
   const notaAprox = movimiento.origenCoincidencia === "tipo_cambio"
     ? ` — coincidencia MULTIMONEDA por tasa de referencia: ${describirMovimientoMultimoneda(movimiento)}; confírmalo en Holded`
@@ -913,9 +930,21 @@ async function conciliarContraMovimientoEspecifico(
 
     if (resultado.ok) {
       if (proveedorParaAprender && movimiento.descripcion) {
-        await registrarMovimientoAmbiguoElegido(proveedorParaAprender, empresa, movimiento.descripcion).catch((error) =>
-          console.error("[gastoCallbackHandler] Error registrando aprendizaje de conciliación ambigua (no crítico):", error)
-        );
+        await Promise.all([
+          registrarConciliacionVerificada({
+            empresa,
+            proveedor: proveedorParaAprender,
+            movimiento,
+            gastoId,
+          }).catch((error) =>
+            console.error("[gastoCallbackHandler] Error registrando conciliación verificada aprendida (no crítico):", error)
+          ),
+          aprendizajeAmbiguo
+            ? registrarMovimientoAmbiguoElegido(proveedorParaAprender, empresa, movimiento.descripcion).catch((error) =>
+                console.error("[gastoCallbackHandler] Error registrando aprendizaje de conciliación ambigua (no crítico):", error)
+              )
+            : Promise.resolve(),
+        ]);
       }
       // Hallazgo real de auditoría (caso Salesmate/RapidOps, Footprint): el movimiento bancario puede
       // quedar marcado como conciliado por completo (esto de arriba) mientras la COMPRA misma, del
@@ -1988,7 +2017,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
     const resultadoConciliacion = await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento,
-      pendiente.gastoId, pendiente.esAproximado, pendiente.proveedor);
+      pendiente.gastoId, pendiente.esAproximado, pendiente.proveedor, true);
     if (pendiente.deColaCorreo && gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
       await finalizarGastoCorreoAntesDeRender(
         () => registrarCierreGastoPendiente(pendiente),
@@ -2966,7 +2995,8 @@ async function crearGastoYReportar(
         movimientoObjetivo,
         gasto.id,
         movimientoObjetivo.origenCoincidencia === "tipo_cambio" || movimientoObjetivo.origenCoincidencia === "aproximada",
-        propuesta.proveedor
+        propuesta.proveedor,
+        true
       );
       return { gastoId: gasto.id, mensaje: `${baseMensaje}${resultadoConciliacion.nota}`, comprobanteConfirmado,
         estadoConciliacion: resultadoConciliacion.estado,
