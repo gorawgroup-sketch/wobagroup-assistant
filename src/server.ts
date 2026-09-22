@@ -1,4 +1,5 @@
-import { avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
+import { obtenerResumenColaPorChat } from "../core/gmail/colaRevisionStore";
+import { avisoEstadoCola, esContinuacionCorreo, avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
 import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
@@ -235,7 +236,9 @@ function trackearEnSegundoPlano<T>(promesa: Promise<T>): void {
 
 async function avisarEntregaTelegramIncierta(entrega: EntregaTelegramDurable): Promise<void> {
   if (!entrega.chatId) return;
-  const aviso = avisoInterrumpido(entrega);
+  const aviso = esContinuacionCorreo(entrega)
+    ? avisoEstadoCola(entrega, await obtenerResumenColaPorChat(entrega.chatId))
+    : avisoInterrumpido(entrega);
   await sendTelegramMessageWithButtons(entrega.chatId, aviso.texto, aviso.botones);
 }
 
@@ -1429,6 +1432,11 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       if (data.startsWith("ent_cerrar:")) {
         await editTelegramMessage(chatId, callback.message!.message_id,
           "Aviso cerrado. No se canceló ni se volvió a ejecutar la operación.", []);
+        return true;
+      }
+      if (esContinuacionCorreo(entrega)) {
+        const aviso = avisoEstadoCola(entrega, await obtenerResumenColaPorChat(chatId));
+        await editTelegramMessage(chatId, callback.message!.message_id, aviso.texto, aviso.botones);
         return true;
       }
       const trabajando = await avisarTrabajando(chatId);

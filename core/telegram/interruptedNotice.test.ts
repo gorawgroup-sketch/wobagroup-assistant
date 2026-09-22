@@ -18,3 +18,15 @@ test('aviso identifica solicitud y ofrece solo verificar o cerrar',()=>{
 test('avisos antiguos sin contexto no se atribuyen a otra operación',()=>{
  assert.match(avisoInterrumpido({...e,payload:''}).texto,/no conservó la operación/);
 });
+
+test('continuar correo muestra estado actual sin confundirlo con un resultado financiero', async()=>{
+ const {esContinuacionCorreo,avisoEstadoCola}=await import('./interruptedNotice');
+ const entrega={...e,payload:JSON.stringify({diagnostico:true,accion:'colacorreo_siguiente',texto:'✅ Resuelto. Quedan 11'})};
+ assert.equal(esContinuacionCorreo(entrega),true);
+ assert.equal(esContinuacionCorreo(e),false);
+ const activo=avisoEstadoCola(entrega,{total:11,activo:{asunto:'Hacienda',pendientesRestantes:2}});
+ assert.match(activo.texto,/Hacienda/);assert.doesNotMatch(activo.texto,/✅ Resuelto/);
+ assert.ok(!activo.botones.flat().some(b=>b.callback_data==='colacorreo_siguiente'));
+ assert.ok(avisoEstadoCola(entrega,{total:10}).botones.flat().some(b=>b.callback_data==='colacorreo_siguiente'));
+ assert.ok(!avisoEstadoCola(entrega,{total:0}).botones.flat().some(b=>b.callback_data==='colacorreo_siguiente'));
+});

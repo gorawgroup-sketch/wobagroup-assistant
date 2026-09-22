@@ -25,7 +25,7 @@ export function contextoSolicitudInterrumpida(entrega: EntregaTelegramDurable): 
       : accion.startsWith('draft_') ? 'Gestionar borrador de correo'
       : accion.startsWith('colacorreo_') ? 'Continuar revisión de correo'
       : accion ? 'Aplicar selección' : 'Consulta del chat';
-    detalle = `${nombre}\n${c.texto}`;
+    detalle = `${nombre}\nMensaje de origen del botón (no es el resultado de esta solicitud):\n${c.texto}`;
   } catch { /* Entregas históricas sin contexto. */ }
   return `Solicitud del ${fecha}\n${detalle}`;
 }
@@ -40,4 +40,25 @@ export function avisoInterrumpido(entrega: EntregaTelegramDurable) {
   return { texto: `⚠️ Falta confirmar el resultado\n\n${contextoSolicitudInterrumpida(entrega)}\n\nLa solicitud pudo completar parte o toda la operación. Pulsa «Verificar resultado» para comprobar qué ocurrió y qué falta, sin volver a crear ni conciliar. «Cerrar aviso» solo oculta este aviso; no cancela la operación.`,
     botones: [[{ text: '🔎 Verificar resultado', callback_data: `ent_ver:${token}` }],
       [{ text: 'Cerrar aviso', callback_data: `ent_cerrar:${token}` }]] };
+}
+
+export function esContinuacionCorreo(entrega: EntregaTelegramDurable): boolean {
+  try {
+    return JSON.parse(resumirSolicitudInterrumpida(entrega.payload)).accion === 'colacorreo_siguiente';
+  } catch { return false; }
+}
+
+/** Estado actual, no atribución de efectos a un callback antiguo. Solo lectura. */
+export function avisoEstadoCola(entrega: EntregaTelegramDurable, estado: {
+  total: number; activo?: { asunto: string; pendientesRestantes: number };
+}) {
+  const texto = estado.activo
+    ? `Correo activo: «${estado.activo.asunto}».\nDecisiones pendientes para ese correo: ${estado.activo.pendientesRestantes}.\nUsa la propuesta de ese correo para continuar.`
+    : estado.total > 0 ? 'No hay un correo activo. Puedes continuar con el siguiente.'
+    : 'No quedan correos en esta cola de revisión.';
+  return { texto: `📬 Estado de la revisión comprobado\n\n${texto}\nCorreos en la cola, incluido el activo: ${estado.total}.\n\nEsta comprobación no repitió acciones ni confirma gastos o conciliaciones.`,
+    botones: [
+      ...(!estado.activo && estado.total > 0 ? [[{ text: '▶️ Continuar con el siguiente', callback_data: 'colacorreo_siguiente' }]] : []),
+      [{ text: 'Actualizar estado', callback_data: `ent_ver:${claveAviso(entrega.clave)}` }],
+    ] };
 }
