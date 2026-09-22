@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filaDesdeRangoActualizado } from "./sheetsKeyValueStore";
+import { filaDesdeRangoActualizado, filasConIndicesFisicos } from "./sheetsKeyValueStore";
 
 test("extrae la fila confirmada por values.append", () => {
   assert.equal(filaDesdeRangoActualizado("_conciliaciones_holded_durables!A42:L42"), 42);
@@ -10,4 +10,10 @@ test("extrae la fila confirmada por values.append", () => {
 test("rechaza rangos de append incompletos o sin fila", () => {
   assert.equal(Number.isNaN(filaDesdeRangoActualizado("")), true);
   assert.equal(Number.isNaN(filaDesdeRangoActualizado("Hoja!A:L")), true);
+});
+
+
+test("los huecos no desplazan actualizaciones hacia una operación distinta", () => {
+  const filas = filasConIndicesFisicos([["a", 10], [], ["", "fila desplazada"], ["b", 20]], 2);
+  assert.deepEqual(filas, [{ rowIndex: 2, valores: ["a", "10"] }, { rowIndex: 5, valores: ["b", "20"] }]);
 });
