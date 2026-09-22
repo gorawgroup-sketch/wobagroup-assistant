@@ -390,10 +390,8 @@ async function verificarEdicionRegistrada(
 ): Promise<{ id: string; valor: CompraHoldedCruda } | undefined> {
   if (!registro.huellaEsperada) return undefined;
   const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.purchaseId);
-  const version = registro.huellaEsperada.startsWith("cuentas-v2:") ? 2
-    : registro.huellaEsperada.startsWith("cuentas-v1:") ? 1 : 0;
-  const huella = huellaEstadoCompraVersion(compra, registro.verificarTotal ?? false, version);
-  return huella === registro.huellaEsperada ? { id: compra.id, valor: compra } : undefined;
+  return coincideEstadoCompraEsperado(compra, registro.huellaEsperada, registro.verificarTotal ?? false)
+    ? { id: compra.id, valor: compra } : undefined;
 }
 
 /** Reconciliación de arranque de solo lectura; nunca repite un PUT. */
@@ -4224,10 +4222,10 @@ interface PayloadEdicionCompraHolded {
   fecha: string;
 }
 
-function huellaEstadoCompraVersion(
+export function huellaEstadoCompraVersion(
   compra: CompraHoldedCruda,
   verificarTotal: boolean,
-  version: 0 | 1 | 2
+  version: 0 | 1 | 2 | 3
 ): string {
   const canonizarTags = (tags: unknown): unknown => {
     if (version < 2 || !Array.isArray(tags)) return tags ?? [];
@@ -4256,7 +4254,7 @@ function huellaEstadoCompraVersion(
     estado.lineasProtegidas = (compra.lines ?? []).map((linea) => ({
       nombre: linea.name ?? null,
       tipo: linea.type ?? null,
-      descripcion: linea.description ?? null,
+      descripcion: version >= 3 ? (linea.description || null) : (linea.description ?? null),
       producto: linea.product_id ?? null,
       unidades: numeroDesdeHolded(linea.units),
       precio: numeroDesdeHolded(linea.price),
@@ -4282,7 +4280,27 @@ export function huellaEstadoCompra(
   verificarTotal: boolean,
   verificarCuentas = false
 ): string {
-  return huellaEstadoCompraVersion(compra, verificarTotal, verificarCuentas ? 2 : 0);
+  return huellaEstadoCompraVersion(compra, verificarTotal, verificarCuentas ? 3 : 0);
+}
+
+/** Holded materializa como "" la descripción opcional omitida al reemplazar líneas. */
+export function coincideEstadoCompraEsperado(
+  compra: CompraHoldedCruda, esperada: string, verificarTotal: boolean
+): boolean {
+  const version = esperada.startsWith("cuentas-v3:") ? 3
+    : esperada.startsWith("cuentas-v2:") ? 2
+    : esperada.startsWith("cuentas-v1:") ? 1 : 0;
+  if (huellaEstadoCompraVersion(compra, verificarTotal, version) === esperada) return true;
+  if (version !== 1 && version !== 2) return false;
+  // Recuperar también ediciones anteriores, solo por lectura y sin relajar
+  // proveedor, importe, cuenta, impuestos ni ningún texto no vacío.
+  const sinDescripcionesVacias = {
+    ...compra,
+    lines: compra.lines?.map((linea) => ({
+      ...linea, description: linea.description === "" ? undefined : linea.description,
+    })),
+  };
+  return huellaEstadoCompraVersion(sinDescripcionesVacias, verificarTotal, version) === esperada;
 }
 
 function payloadEdicion(preparacion: PreparacionEdicionCompra): PayloadEdicionCompraHolded {
