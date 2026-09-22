@@ -234,12 +234,15 @@ export async function leerFilas(tabName: string, numCols: number, headers: strin
     tabsAseguradas.set(tabName, tab);
     rows = rows.slice(1);
   }
-  return rows
-    .filter((row) => row[0] !== undefined && row[0] !== "")
-    .map((row, i) => ({
-      rowIndex: i + 2,
-      valores: Array.from({ length: numCols }, (_, c) => (row[c] == null ? "" : String(row[c]))),
-    }));
+  return filasConIndicesFisicos(rows, numCols);
+}
+
+/** Los huecos no cambian el índice físico usado después al actualizar o borrar. */
+export function filasConIndicesFisicos(rows: unknown[][], numCols: number): FilaCruda[] {
+  return rows.flatMap((row, i) => row[0] === undefined || row[0] === "" ? [] : [{
+    rowIndex: i + 2,
+    valores: Array.from({ length: numCols }, (_, c) => row[c] == null ? "" : String(row[c])),
+  }]);
 }
 
 /** Lee una sola fila por índice; útil para refrescar leases sin volver a cargar toda la pestaña. */

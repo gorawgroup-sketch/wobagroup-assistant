@@ -2044,7 +2044,15 @@ app.post("/webhook/telegram", (req: Request, res: Response) => {
       await coordinadorEntregasTelegram.atender(entrega, nueva);
     })
     .catch((error) => {
-      console.error("Error en entrega durable de Telegram:", error instanceof Error ? error.name : "Error");
+      const fallo = error as { name?: string; message?: string; code?: string | number; response?: { status?: number } };
+      console.error("Error en entrega durable de Telegram:", {
+        etapa: res.headersSent ? "ejecucion" : "reserva",
+        nombre: fallo?.name ?? "Error",
+        codigo: fallo?.code,
+        estadoHttp: fallo?.response?.status,
+        // Solo mensaje, sin payload, cabeceras, URL ni credenciales del cliente HTTP.
+        detalle: String(fallo?.message ?? "Sin detalle").replace(/https?:\/\/\S+/g, "[URL]").replace(/Bearer\s+\S+/gi, "Bearer [oculto]").slice(0, 350),
+      });
       // Si todavía no se confirmó, Telegram puede reenviar el mismo update.
       if (!res.headersSent) res.sendStatus(503);
     })
