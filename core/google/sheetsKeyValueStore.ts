@@ -1,3 +1,4 @@
+import { leerSheetsConReintento } from "./sheetsReadRetry";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
 import { conMutex } from "../utils/asyncMutex";
@@ -66,10 +67,10 @@ const tabsAseguradas = new Map<string, TabAsegurada>();
 const preparacionesEnCurso = new Map<string, Promise<TabAsegurada>>();
 
 const metadataPestanas = new CacheMetadataPestanas(async () => {
-  const meta = await getClient().spreadsheets.get({
+  const meta = await leerSheetsConReintento(() => getClient().spreadsheets.get({
     spreadsheetId: assertSheetId(),
     fields: "sheets.properties",
-  });
+  }));
   const resultado = new Map<string, MetadataPestana>();
   for (const sheet of meta.data.sheets ?? []) {
     const title = sheet.properties?.title;
@@ -161,11 +162,11 @@ export async function ensureTab(tabName: string, headers: string[]): Promise<num
 
   const tab = await obtenerOCrearTab(tabName, headers);
   if (!tabsAseguradas.has(tabName)) {
-    const filaHeaders = await getClient().spreadsheets.values.get({
+    const filaHeaders = await leerSheetsConReintento(() => getClient().spreadsheets.values.get({
       spreadsheetId: assertSheetId(),
       range: `${tabName}!A1:${colLetter(headers.length)}1`,
       valueRenderOption: "UNFORMATTED_VALUE",
-    });
+    }));
     await completarHeaders(tabName, headers, filaHeaders.data.values?.[0] ?? []);
     tabsAseguradas.set(tabName, tab);
   }
@@ -218,14 +219,14 @@ export async function leerFilas(tabName: string, numCols: number, headers: strin
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const resp = await sheets.spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     // En el primer acceso incluimos la fila 1 en ESTA MISMA lectura para
     // verificar headers sin gastar un segundo read request. Después se lee
     // desde A2 como antes. No se cachean filas ni datos de negocio.
     range: `${tabName}!A${headersYaVerificados ? 2 : 1}:${colLetter(numCols)}`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
 
   let rows = resp.data.values ?? [];
   if (!headersYaVerificados) {
@@ -250,11 +251,11 @@ export async function leerFila(
 ): Promise<FilaCruda | undefined> {
   if (!Number.isInteger(rowIndex) || rowIndex < 2) return undefined;
   await ensureTab(tabName, headers);
-  const resp = await getClient().spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => getClient().spreadsheets.values.get({
     spreadsheetId: assertSheetId(),
     range: `${tabName}!A${rowIndex}:${colLetter(numCols)}${rowIndex}`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
   const row = resp.data.values?.[0];
   if (!row?.some((valor) => valor !== undefined && valor !== "")) return undefined;
   return {
@@ -275,11 +276,11 @@ async function siguienteFilaLibre(tabName: string, numCols: number, headers: str
   // rota (columna A vacía pero datos reales más a la derecha) igual debe
   // contarse, para no escribir encima de ella — mismo criterio ya aplicado
   // en gastoProposalSheet.ts.
-  const resp = await sheets.spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${tabName}!A:${colLetter(numCols)}`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
   const rows = resp.data.values ?? [];
   if (!tabsAseguradas.has(tabName)) {
     const tab = await obtenerOCrearTab(tabName, headers);
@@ -334,11 +335,11 @@ export async function agregarFila(tabName: string, numCols: number, headers: str
       // la fila COMPLETA que se acaba de escribir es la única verificación
       // que es válida para CUALQUIER store sin que este módulo necesite
       // conocer cuál columna es "la clave" de cada uno.
-      const verificacion = await sheets.spreadsheets.values.get({
+      const verificacion = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
         range: `${tabName}!A${fila}:${colLetter(numCols)}${fila}`,
         valueRenderOption: "UNFORMATTED_VALUE",
-      });
+      }));
       const filaEscrita = verificacion.data.values?.[0] ?? [];
       const coincide = valores.every((v, i) => String(filaEscrita[i] ?? "") === String(v));
       if (coincide) return fila;
