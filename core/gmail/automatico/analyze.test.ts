@@ -38,3 +38,14 @@ test("usa la categoría explícita del asunto cuando el ticket solo describe un 
     resumen: "Ticket", recibos: [recibo] }, "Fwd: Café - 5.4 eur - revolut");
   assert.equal(resultado.recibos[0].contextoClasificacion, "Fwd: Café - 5.4 eur - revolut");
 });
+
+test("conserva cargo explícito distinto en la misma moneda sin cambiar el recibo", () => {
+  const r = validarAnalisis({ completo: true, otrasAcciones: false, resumen: "Hotel",
+    recibos: [{ fuente: "cuerpo", tipo: "recibo", confianza: "alta", empresa: "Footprint",
+      proveedor: "Trip.com", fecha: "2026-09-18", moneda: "EUR", monto: 147.44,
+      equivalente: { moneda: "EUR", monto: 142.48 }, concepto: "Hotel",
+      evidencia: "Recibo 147.44 EUR; cargo confirmado 142.48 EUR", evidenciaEmpresa: "Footprint" }]
+  }, new Set(["cuerpo"]));
+  assert.equal(r.recibos[0].monto, 147.44);
+  assert.deepEqual(r.recibos[0].equivalente, { moneda: "EUR", monto: 142.48 });
+});

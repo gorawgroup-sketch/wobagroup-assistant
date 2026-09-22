@@ -21,6 +21,7 @@ export interface VerificacionTasaCambio {
   diferenciaPct: number;
 }
 
+const sinTasaHistorica = new Map<string, number>();
 const FRANKFURTER_BASE = "https://api.frankfurter.dev/v1";
 
 /**
@@ -36,17 +37,23 @@ export async function obtenerTasaCambioHistorica(
 ): Promise<number | undefined> {
   if (monedaOrigen === monedaDestino) return 1;
 
+  const clave = `${fecha}:${monedaOrigen}:${monedaDestino}`;
+  if ((sinTasaHistorica.get(clave) ?? 0) > Date.now()) return undefined;
   try {
     const url = `${FRANKFURTER_BASE}/${fecha}?base=${encodeURIComponent(monedaOrigen)}&symbols=${encodeURIComponent(monedaDestino)}`;
     const response = await fetch(url);
     if (!response.ok) {
+      if (response.status === 404) {
+        if (sinTasaHistorica.size >= 1000) sinTasaHistorica.clear();
+        sinTasaHistorica.set(clave, Date.now() + 15 * 60_000);
+      }
       // Hallazgo real de auditoría: sin este log, una moneda que Frankfurter simplemente no cubre
       // (ej. COP — el BCE no la reporta, confirmado en vivo contra /v1/currencies) fallaba en
       // silencio total, indistinguible de "no hacía falta convertir". Frankfurter solo cubre ~30
       // monedas del BCE — Footprint SÍ tiene una cuenta de tesorería real en COP (ver
       // core/holded/write.ts), así que este caso no es hipotético. Ver obtenerTasaCambioActual más
       // abajo para el fallback real que cubre este caso.
-      console.error(`[exchangeRate] Frankfurter no tiene tasa histórica ${monedaOrigen}->${monedaDestino} del ${fecha} (HTTP ${response.status}) — probablemente una moneda fuera de las ~30 que cubre el BCE.`);
+      console.error(`[exchangeRate] Tasa histórica no disponible ${monedaOrigen}->${monedaDestino} del ${fecha} (HTTP ${response.status}); esto no demuestra que falte el cargo bancario.`);
       return undefined;
     }
 

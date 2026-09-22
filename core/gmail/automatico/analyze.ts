@@ -47,7 +47,7 @@ export function validarAnalisis(raw: unknown, fuentes: Set<string>): AnalisisAut
   const recibos = (raw.recibos as unknown as ReciboAuto[]).map((r) => {
     const fechaES = r.fecha.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
     const fecha = fechaES ? `${fechaES[3]}-${fechaES[2]}-${fechaES[1]}` : r.fecha;
-    const equivalente = r.equivalente && r.equivalente.moneda.toUpperCase() !== r.moneda.toUpperCase()
+    const equivalente = r.equivalente && (r.equivalente.moneda.toUpperCase() !== r.moneda.toUpperCase() || Math.round(r.equivalente.monto * 100) !== Math.round(r.monto * 100))
       ? { ...r.equivalente, moneda: r.equivalente.moneda.toUpperCase() }
       : undefined;
     return { ...r, fecha, moneda: r.moneda.toUpperCase(), equivalente };
@@ -100,7 +100,7 @@ export async function analizarAutomatico(c: CorreoAuto, opciones: OpcionesAnalis
     "El concepto debe describir la naturaleza concreta del gasto usando también hechos claros del asunto y cuerpo (por ejemplo café, supermercado, parking o vuelo), sin inventar datos.",
     "Devuelve siempre fecha en YYYY-MM-DD. Si el documento contiene fecha de pago y fecha futura del viaje/servicio, usa la fecha de pago. Usa fecha de emisión solo cuando no exista una fecha explícita de pago o cargo.",
     "No confundas notificaciones de ingreso o facturas emitidas por el grupo con gastos. Una factura pendiente no es ticket ni recibo pagado.",
-    "No calcules conversiones. equivalente solo si hay cifra y moneda explícitas. Conserva importes originales.",
+    "No calcules conversiones. equivalente solo si hay cifra y moneda explícitas. Conserva importes originales. Incluye también un cargo bancario explícito distinto en la MISMA moneda como equivalente; nunca un importe posible, estimado, descuento o saldo. El movimiento real debe verificarse después.",
     "Reporta cada comprobante una sola vez. Si cuerpo y adjunto describen el mismo gasto, usa el adjunto. Varios tickets independientes se reportan por separado.",
     "Si hay instrucciones, otros documentos, enlaces necesarios que no has podido leer o asuntos pendientes además de gastos, otrasAcciones=true.",
     "Las imágenes decorativas no son gastos ni requieren acciones. Si hay un documento ilegible completo=false. No declares lectura completa por conveniencia.",

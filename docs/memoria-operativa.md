@@ -50,3 +50,9 @@ Abrir el selector conserva la propuesta y no escribe. Descartarla no borra nada 
 del banco. Solo la selección de registro activa el escritor existente, con relectura de duplicados.
 Las conversiones bancarias entre divisas no reciben una sugerencia de gasto ordinario.
 Solo se ofrecen áreas cuyo escritor está implementado; no anunciar registros que no se verificaron.
+
+### Auditoría de correo 22 septiembre: unidades, diagnóstico e importes
+- El informe cuenta mensajes pendientes, incluidas operaciones anteriores; no los presenta como hilos de Gmail sin leer. Mostrar todos los motivos, no solo los cinco primeros.
+- Conservar diagnóstico de validación/HTTP sin cuerpos remotos ni secretos. No afirmar lectura completa cuando falló el analizador.
+- Un cargo bancario explícito diferente puede estar en la misma moneda del recibo. Conservarlo para buscar y verificar el movimiento, sin inventarlo desde cifras hipotéticas ni alterar el comprobante original.
+- Cachear brevemente respuestas históricas 404 por fecha y par de monedas. Ausencia de tasa no demuestra ausencia del cargo; nunca sustituirla silenciosamente por una tasa actual.

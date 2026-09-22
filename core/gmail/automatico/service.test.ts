@@ -415,3 +415,13 @@ test("una reparación acepta un alias confirmado solo cuando los nombres siguen 
   assert.equal(contactoAlCorregir, "contacto-jumbo");
   assert.equal(r.reparados?.length, 1);
 });
+
+test("diagnóstico conserva validación y HTTP sin exponer respuestas remotas", async () => {
+  const { diagnosticoAnalisis } = await import('./service');
+  assert.match(diagnosticoAnalisis(new Error('Datos extraídos incompletos o fuente desconocida.')), /fuente desconocida/);
+  assert.equal(diagnosticoAnalisis(Object.assign(new Error('secret remote body'),{status:429})), 'Error: HTTP 429');
+});
+test("pendientes no se presentan como hilos sin leer y no se ocultan motivos", () => {
+  const texto=resumenAutomatico({modo:'execute',revisados:0,completados:0,simulados:0,gastos:[],pendientes:[]});
+  assert.match(texto,/incluye operaciones anteriores; no equivale a hilos sin leer/);
+});

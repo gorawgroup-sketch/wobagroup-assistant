@@ -28,6 +28,15 @@ export interface PuertoAutomatico {
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
+export function diagnosticoAnalisis(error: unknown): string {
+  if (!(error instanceof Error)) return "Error no estructurado";
+  // No incluir cuerpos de correos ni respuestas remotas en logs.
+  const e = error as Error & { status?: number; code?: string };
+  const validacion = /^(Análisis|Datos extraídos|Equivalente|Texto extraído|Contexto de viaje|Motivo manual)/.test(e.message);
+  return [e.name, Number.isInteger(e.status) ? `HTTP ${e.status}` : "",
+    e.code && /^[A-Z0-9_]{1,60}$/i.test(e.code) ? e.code : "",
+    validacion ? e.message.slice(0, 160).replace(/[\r\n]/g, " ") : ""].filter(Boolean).join(": ");
+}
 function motivoFalloAnalisis(error: unknown): string {
   if (error instanceof UsoApiNoAutorizadoError) {
     if (["limite_diario_alcanzado", "limite_mensual_alcanzado", "limite_diario_proceso_alcanzado"]
@@ -99,10 +108,10 @@ export class ServicioCorreoAutomatico {
       console.warn("[correo-auto] No se completó el análisis del mensaje:", {
         mensajeId: correo.id,
         motivo,
-        error: error instanceof Error ? error.name : "Error",
+        error: diagnosticoAnalisis(error),
       });
       await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis_no_completado",
-        datos: { motivo, error: error instanceof Error ? error.name : "Error" } }).catch(auditError =>
+        datos: { motivo, error: diagnosticoAnalisis(error) } }).catch(auditError =>
         console.warn("[correo-auto] No se pudo auditar el fallo del analizador:",
           auditError instanceof Error ? auditError.name : "Error")
       );
@@ -554,7 +563,7 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     ...(r.fallosAnalisis ? [`Fallos técnicos del analizador: ${r.fallosAnalisis}. Los correos permanecen sin leer para reintento.`] : []),
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
-    `Correos con asuntos pendientes de revisión: ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`];
+    `Mensajes con asuntos pendientes (incluye operaciones anteriores; no equivale a hilos sin leer): ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`];
   if (r.gastos.length) {
     const porEmpresa = new Map<string, number>();
     for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);
@@ -575,7 +584,7 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
       motivosPrincipales.set(explicacion, (motivosPrincipales.get(explicacion) ?? 0) + 1);
     }
     lineas.push("", "🟡 Por qué quedaron correos para revisión manual");
-    for (const [motivo, cantidad] of [...motivosPrincipales].slice(0, 5)) lineas.push(`• ${cantidad}: ${motivo}`);
+    for (const [motivo, cantidad] of [...motivosPrincipales]) lineas.push(`• ${cantidad}: ${motivo}`);
 
     const detalles = r.pendientes.flatMap(p => (p.detalles ?? []).map(d => ({ ...d })));
     if (detalles.length) {
