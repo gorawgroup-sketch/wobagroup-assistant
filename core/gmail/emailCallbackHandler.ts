@@ -32,6 +32,7 @@ import {
 import { consultarEnvioCorreoExistente, enviarCorreo, obtenerCuerpoCompletoCorreo, extraerDireccionCorreo } from "./client";
 import { EnvioCorreoInciertoError } from "./durableSend";
 import { askClaude } from "../claude/client";
+import { ErrorTrasEjecucion, esErrorTrasEjecucion } from "../utils/errorTrasEjecucion";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import { iniciarSeleccionEmpresaCaptura } from "../knowledge/capturaEmpresaCallbackHandler";
 import type { InlineKeyboardButton, TelegramCallbackQuery } from "../telegram/types";
@@ -307,10 +308,11 @@ export function identidadCorreoDeBorrador(
   return threadId && mensajeId ? { threadId, mensajeId } : undefined;
 }
 
-function tecladoPropuestaCorreo(propuesta: PropuestaAccionCorreo): InlineKeyboardButton[][] {
+function tecladoPropuestaCorreo(propuesta: PropuestaAccionCorreo, yaEjecutada = false): InlineKeyboardButton[][] {
   return [
     [
-      { text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` },
+      // Tras una ejecución ya iniciada, "Proceder" repetiría la acción: se retira (ver core/utils/errorTrasEjecucion.ts).
+      ...(yaEjecutada ? [] : [{ text: "✅ Proceder", callback_data: `email_proceder:${propuesta.id}` }]),
       { text: "🧠 Guardar como conocimiento", callback_data: `email_guardar:${propuesta.id}` },
     ],
     [
@@ -320,7 +322,11 @@ function tecladoPropuestaCorreo(propuesta: PropuestaAccionCorreo): InlineKeyboar
   ];
 }
 
-async function restaurarPropuestaTrasError(propuesta: PropuestaAccionCorreo, detalle: string): Promise<void> {
+async function restaurarPropuestaTrasError(
+  propuesta: PropuestaAccionCorreo,
+  detalle: string,
+  yaEjecutada = false
+): Promise<void> {
   try {
     await restaurarPropuestaAccionCorreo(propuesta);
   } catch (errorRestaurando) {
@@ -334,12 +340,16 @@ async function restaurarPropuestaTrasError(propuesta: PropuestaAccionCorreo, det
     return;
   }
 
-  const texto = `${detalle}\n\nEl correo sigue pendiente y sin marcar como leído. Puedes reintentar con los mismos botones.`;
+  const texto = yaEjecutada
+    ? `${detalle}\n\nLa acción YA se ejecutó (total o parcialmente) — revisa arriba lo que quedó hecho. ` +
+      "Quité «Proceder» para que no se repita; el correo sigue sin leer: ciérralo con «Descartar» cuando lo compruebes."
+    : `${detalle}\n\nEl correo sigue pendiente y sin marcar como leído. Puedes reintentar con los mismos botones.`;
+  const teclado = tecladoPropuestaCorreo(propuesta, yaEjecutada);
   try {
-    await editTelegramMessage(propuesta.chatId, propuesta.messageId, texto, tecladoPropuestaCorreo(propuesta));
+    await editTelegramMessage(propuesta.chatId, propuesta.messageId, texto, teclado);
   } catch (errorEditando) {
     console.error("[emailCallbackHandler] No se pudo restaurar el mensaje original; se publica un reintento nuevo:", errorEditando);
-    await sendTelegramMessageWithButtons(propuesta.chatId, texto, tecladoPropuestaCorreo(propuesta)).catch(() => {});
+    await sendTelegramMessageWithButtons(propuesta.chatId, texto, teclado).catch(() => {});
   }
 }
 
@@ -551,6 +561,10 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
     []
   ).catch((error) => console.error("[emailCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error));
 
+  // Tras askClaude la acción ya produjo efectos: un fallo posterior no debe ofrecer "Proceder" otra vez.
+  // Si askClaude falla a mitad tras iniciar una herramienta con efectos, lanza TurnoConEfectosError
+  // (core/claude/turnSafety.ts), que esErrorTrasEjecucion también reconoce; un fallo previo sí es reintentable.
+  let accionEjecutada = false;
   try {
     const identidad = identidadPropuesta;
     const requiereRespuesta = propuesta.tipo === "necesita_respuesta" || propuesta.tipo === "instruccion_jefe";
@@ -566,6 +580,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
 
     const antesDeAskClaude = Date.now();
     const respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_correo");
+    accionEjecutada = true;
 
     await editTelegramMessageSmart(
       propuesta.chatId,
@@ -586,6 +601,8 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
             threadId: propuesta.threadId,
             messageIdHeader: propuesta.messageIdHeader,
             to: extraerDireccionCorreo(propuesta.de),
+            // Si hace falta responder al remitente, un borrador a terceros del hilo no lo sustituye.
+            aceptarOtroDestinatarioDelHilo: !requiereRespuesta,
           }
         : undefined
     );
@@ -620,7 +637,8 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
     console.error("[emailCallbackHandler] Error procediendo con la acción:", message);
     await restaurarPropuestaTrasError(
       propuesta,
-      `⚠️ Error al procesar — ${propuesta.asunto} (${propuesta.de})\n\n${message}`
+      `⚠️ Error al procesar — ${propuesta.asunto} (${propuesta.de})\n\n${message}`,
+      accionEjecutada || esErrorTrasEjecucion(error)
     );
   }
 }
@@ -673,66 +691,79 @@ export async function continuarConOrientacion(
   const antesDeAskClaude = Date.now();
   const respuesta = await askClaude(instruccion, chatId, undefined, "orientacion_correo");
 
-  // La memoria operativa solo acepta indicaciones explícitamente reutilizables
-  // ("siempre", "cada vez", "de ahora en adelante", etc.). Una orden puntual
-  // sigue siendo puntual. Este registro es auxiliar: si Sheets falla, nunca
-  // bloquea ni cambia el resultado de la operación que el usuario acaba de pedir.
-  const aprendizaje = await registrarInstruccionCorreoAprendida({
-    de,
-    asunto,
-    instruccion: instruccionUsuario,
-    mensajeIdOrigen: mensajeId,
-  }).catch((error) => {
-    console.error("[emailCallbackHandler] No se pudo guardar la instrucción reutilizable (no crítico):", error);
-    return { guardada: false, reemplazo: false };
-  });
-
-  await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${asunto} (${de})`);
-  if (aprendizaje.guardada) {
-    const detalle = aprendizaje.reemplazo
-      ? " La regla anterior para este mismo remitente y tipo de correo quedó desactivada."
-      : "";
-    await sendTelegramMessage(
-      chatId,
-      `🧠 Instrucción guardada para futuros correos del mismo alcance.${detalle}`
-    ).catch((error) =>
-      console.error("[emailCallbackHandler] No se pudo confirmar la memoria de instrucción (no crítico):", error)
-    );
-  }
-
-  const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);
-  let borradorPendiente = await obtenerBorradorCreadoDesde(
-    chatId,
-    antesDeAskClaude,
-    deColaCorreo || pareceRespuesta
-      ? { threadId, messageIdHeader, to: extraerDireccionCorreo(de) }
-      : undefined
-  );
-  if (borradorPendiente && deColaCorreo && identidad) {
-    borradorPendiente = await vincularBorradorACola(borradorPendiente.id, identidad);
-    if (!borradorPendiente) throw new Error("No se pudo vincular el borrador al correo original.");
-  }
-
-  if (!borradorPendiente && pareceRespuesta) {
-    const borradorPreparado = await generarBorradorYOfrecer(
-      chatId,
+  // Desde aquí la instrucción YA produjo efectos (askClaude pudo crear borradores, recordatorios,
+  // capturas...). Cualquier fallo del cierre se reporta como ErrorTrasEjecucion: el servidor nunca
+  // vuelve a armar la orientación para repetirla (ver core/utils/errorTrasEjecucion.ts).
+  try {
+    // La memoria operativa solo acepta indicaciones explícitamente reutilizables
+    // ("siempre", "cada vez", "de ahora en adelante", etc.). Una orden puntual
+    // sigue siendo puntual. Este registro es auxiliar: si Sheets falla, nunca
+    // bloquea ni cambia el resultado de la operación que el usuario acaba de pedir.
+    const aprendizaje = await registrarInstruccionCorreoAprendida({
       de,
       asunto,
-      threadId,
-      messageIdHeader,
-      respuesta,
-      deColaCorreo ? identidad : undefined
-    );
-    if (!borradorPreparado) throw new Error("No se pudo preparar el borrador solicitado.");
-    return;
-  }
-  if (!borradorPendiente && deColaCorreo && identidad) {
-    const identidadEstable = `${identidad.threadId ?? ""}:${identidad.mensajeId ?? ""}`;
-    await avanzarColaCorreoSiActivo(
+      instruccion: instruccionUsuario,
+      mensajeIdOrigen: mensajeId,
+    }).catch((error) => {
+      console.error("[emailCallbackHandler] No se pudo guardar la instrucción reutilizable (no crítico):", error);
+      return { guardada: false, reemplazo: false };
+    });
+
+    await sendTelegramMessageSmart(chatId, respuesta, undefined, `✅ ${asunto} (${de})`);
+    if (aprendizaje.guardada) {
+      const detalle = aprendizaje.reemplazo
+        ? " La regla anterior para este mismo remitente y tipo de correo quedó desactivada."
+        : "";
+      await sendTelegramMessage(
+        chatId,
+        `🧠 Instrucción guardada para futuros correos del mismo alcance.${detalle}`
+      ).catch((error) =>
+        console.error("[emailCallbackHandler] No se pudo confirmar la memoria de instrucción (no crítico):", error)
+      );
+    }
+
+    const pareceRespuesta = /correo|responder|contestar|email|mail/i.test(instruccionUsuario);
+    let borradorPendiente = await obtenerBorradorCreadoDesde(
       chatId,
-      identidad,
-      `email-orientacion:${identidadEstable}:resolver`
+      antesDeAskClaude,
+      deColaCorreo || pareceRespuesta
+        ? {
+            threadId,
+            messageIdHeader,
+            to: extraerDireccionCorreo(de),
+            // La orientación la escribe Carlos: si pidió escribir a otros en este hilo, ESE es el borrador.
+            aceptarOtroDestinatarioDelHilo: true,
+          }
+        : undefined
     );
+    if (borradorPendiente && deColaCorreo && identidad) {
+      borradorPendiente = await vincularBorradorACola(borradorPendiente.id, identidad);
+      if (!borradorPendiente) throw new Error("No se pudo vincular el borrador al correo original.");
+    }
+
+    if (!borradorPendiente && pareceRespuesta) {
+      const borradorPreparado = await generarBorradorYOfrecer(
+        chatId,
+        de,
+        asunto,
+        threadId,
+        messageIdHeader,
+        respuesta,
+        deColaCorreo ? identidad : undefined
+      );
+      if (!borradorPreparado) throw new Error("No se pudo preparar el borrador solicitado.");
+      return;
+    }
+    if (!borradorPendiente && deColaCorreo && identidad) {
+      const identidadEstable = `${identidad.threadId ?? ""}:${identidad.mensajeId ?? ""}`;
+      await avanzarColaCorreoSiActivo(
+        chatId,
+        identidad,
+        `email-orientacion:${identidadEstable}:resolver`
+      );
+    }
+  } catch (error) {
+    throw new ErrorTrasEjecucion("La instrucción se ejecutó, pero no pude cerrar el correo en la cola", error);
   }
 }
 

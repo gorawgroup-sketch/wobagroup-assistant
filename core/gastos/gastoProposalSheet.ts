@@ -486,10 +486,11 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
   });
 }
 
-export async function actualizarMessageIdGasto(id: string, messageId: number): Promise<void> {
+/** Devuelve false si la propuesta ya no existe (consumida o purgada) — nada que re-apuntar. */
+export async function actualizarMessageIdGasto(id: string, messageId: number): Promise<boolean> {
   const todas = await leerTodas();
   const match = todas.find(({ propuesta }) => propuesta.id === id);
-  if (!match) return;
+  if (!match) return false;
 
   const sheetId = assertSheetId();
   const sheets = getClient();
@@ -500,6 +501,7 @@ export async function actualizarMessageIdGasto(id: string, messageId: number): P
     valueInputOption: "RAW",
     requestBody: { values: [[messageId]] },
   });
+  return true;
 }
 
 /** Busca una fila por id de propuesta — helper compartido, evita repetir leerTodas()+find() en cada actualización (hallazgo real de auditoría). */
