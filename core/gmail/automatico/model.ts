@@ -196,7 +196,13 @@ export function monedaRegistroPlanAuto(plan: PlanAuto): MonedaDocumentoAuto {
   // Operaciones persistidas por políticas antiguas pueden no contener aún
   // el bloque de evidencia. Se conservan en su moneda nativa al repararlas.
   const equivalente = plan.evidencia?.equivalenteBancario;
-  if (!equivalente) return monedaDocumentoAuto(plan.recibo);
+  if (!equivalente) {
+    if (plan.recibo.equivalente?.moneda === plan.recibo.moneda &&
+        plan.movimiento.moneda === plan.recibo.moneda && Number.isSafeInteger(plan.totalCentimos) && plan.totalCentimos > 0) {
+      return { moneda: plan.recibo.moneda, monto: plan.totalCentimos / 100 };
+    }
+    return monedaDocumentoAuto(plan.recibo);
+  }
   if (!/^[A-Z]{3}$/.test(equivalente.moneda) || !Number.isSafeInteger(equivalente.montoCentimos) ||
       equivalente.montoCentimos <= 0) throw new Error("equivalente_bancario_invalido");
   return { moneda: equivalente.moneda, monto: equivalente.montoCentimos / 100 };
@@ -212,7 +218,7 @@ function datosMonto(r: ReciboAuto, e?: EvidenciaAuto): { esperado: number; moned
   if (r.equivalente) {
     esperado = dinero(r.equivalente.monto);
     moneda = r.equivalente.moneda;
-    if (!/^[A-Z]{3}$/.test(moneda) || moneda === r.moneda) throw new Error("Equivalente inválido.");
+    if (!/^[A-Z]{3}$/.test(moneda)) throw new Error("Equivalente inválido.");
     convertido = true;
   } else if (e?.equivalenteBancario) {
     esperado = e.equivalenteBancario.montoCentimos;

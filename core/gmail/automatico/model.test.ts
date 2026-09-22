@@ -188,3 +188,17 @@ test("el cargo exacto del mismo día prevalece sobre cargos próximos ya concili
   e.movimientos.push({...e.movimientos[0],id:"otro-exacto"});
   assert.equal(evaluarAuto(c,analisisFixture(r),r,e,configFixture).apto,false);
 });
+
+test("importe bancario explícito en misma moneda exige movimiento único y registra su importe", async () => {
+  const { monedaRegistroPlanAuto } = await import('./model');
+  const r = {...reciboFixture(),monto:147.44,equivalente:{monto:142.48,moneda:'EUR'}};
+  const e=evidenciaFixture(); e.movimientos[0].centimos=-14248;
+  const d=evaluarAuto(correoFixture(),analisisFixture(r),r,e,configFixture);
+  assert.equal(d.apto,true);
+  if(d.apto) {
+    assert.deepEqual(monedaRegistroPlanAuto(d.plan),{moneda:'EUR',monto:142.48});
+    assert.equal(d.plan.recibo.monto,147.44);
+  }
+  e.movimientos.push({...e.movimientos[0],id:'otro'});
+  assert.equal(evaluarAuto(correoFixture(),analisisFixture(r),r,e,configFixture).apto,false);
+});
