@@ -480,6 +480,15 @@ test("la verificación aprendida exige cuenta y tags funcionales exactos", async
   e.compra.tags = ["nicolasgomez", "transporte", "avion"];
   assert.equal(await adapter.verificarCreacion(e.op), true);
   e.compra.tags = ["nicolasgomez"];
+  assert.equal(await adapter.verificarCreacion(e.op), true);
+  e.op.plan.evidencia.cuenta.tags = ["Simon Talloen"];
+  e.compra.tags = ["simontalloen"];
+  assert.equal(await adapter.verificarCreacion(e.op), true);
+  e.compra.tags = [];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
+  e.compra.tags = ["otrapersona"];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
+  e.compra.tags = ["simontalloen", "wobiautoop1"];
   assert.equal(await adapter.verificarCreacion(e.op), false);
   e.op.plan.evidencia.cuenta.tags = ["Núria Ortiz", "avion"];
   e.compra.tags = ["nuriaortiz", "wobiautoop1"];

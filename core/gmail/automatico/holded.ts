@@ -529,10 +529,12 @@ export class HoldedAuto {
       [...tagsEsperados].every(tag => tagsActuales.has(tag));
     const clasificacionNuevaParcial = this.flujoExistente &&
       !tieneCategoriaGastoAprendida([...tagsEsperados]);
-    const tagsCorrectos = clasificacionNuevaParcial
-      ? [...tagsEsperados].every(tag => tagsActuales.has(tag)) &&
-        tieneCategoriaGastoAprendida([...tagsActuales])
-      : coincidenciaExactaTags;
+    // Un plan válido puede contener solo la persona: no exigir una categoría
+    // que el propio creador no recibió. Las reparaciones conservan además
+    // categorías aprendidas cuando el plan parcial no las especifica.
+    const tagsCorrectos = coincidenciaExactaTags || Boolean(clasificacionNuevaParcial &&
+      [...tagsEsperados].every(tag => tagsActuales.has(tag)) &&
+      tieneCategoriaGastoAprendida([...tagsActuales]));
     const tasaActual = Number(c.currency_change ?? (documento.moneda === "EUR" ? 1 : NaN));
     const tasaCorrecta = documento.tasaCambio === undefined ||
       (Number.isFinite(tasaActual) && (Math.abs(tasaActual - documento.tasaCambio) < 0.000001 ||
