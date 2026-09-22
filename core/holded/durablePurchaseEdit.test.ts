@@ -13,7 +13,7 @@ import {
   type ResultadoEdicionCompra,
   type TransporteEdicionCompra,
 } from "./durablePurchaseEdit";
-import { configuracionEdicionesCompraDurables, huellaEstadoCompra } from "./write";
+import { configuracionEdicionesCompraDurables, huellaEstadoCompra, huellaEstadoCompraVersion, coincideEstadoCompraEsperado } from "./write";
 
 interface DocumentoPrueba { id: string; numero: string; }
 
@@ -295,7 +295,7 @@ test("la huella de una corrección contable verifica cada cuenta sin romper huel
   assert.equal(huellaEstadoCompra(base, true), huellaEstadoCompra(cuentaDistinta, true));
 
   const esperada = huellaEstadoCompra(base, true, true);
-  assert.match(esperada, /^cuentas-v2:[a-f0-9]{64}$/);
+  assert.match(esperada, /^cuentas-v3:[a-f0-9]{64}$/);
   assert.notEqual(esperada, huellaEstadoCompra(cuentaDistinta, true, true));
   assert.equal(esperada.includes("profesionales"), false);
 });
@@ -326,4 +326,22 @@ test("la huella distingue la reparación de USD a EUR y la tasa aplicada", () =>
   };
   const eur = { ...usd, currency: "EUR", currency_change: 1 };
   assert.notEqual(huellaEstadoCompra(usd, true), huellaEstadoCompra(eur, true));
+});
+
+
+test("descripción vacía devuelta por Holded confirma líneas nuevas sin ocultar cambios contables", () => {
+  const propuesta = { id: "tax-payment", document_number: "TAX-1", date: "2026-09-21",
+    currency: "EUR", total: "137,62", contact_id: "aeat",
+    lines: [{ name: "Sanción tributaria", type: "product", units: 1, price: 137.62, taxes: [], account: "excepcionales" }] };
+  const leida = { ...propuesta, lines: [{ ...propuesta.lines[0], description: "" }] };
+  assert.equal(huellaEstadoCompra(propuesta, true, true), huellaEstadoCompra(leida, true, true));
+  for (const version of [1, 2, 3] as const) {
+    const esperada = huellaEstadoCompraVersion(propuesta, true, version);
+    assert.equal(coincideEstadoCompraEsperado(leida, esperada, true), true);
+    for (const cambio of [{ account: "otros-servicios" }, { price: 138 }, { taxes: ["p_iva_invsuj"] }, { description: "Texto distinto" }]) {
+      assert.equal(coincideEstadoCompraEsperado({ ...leida, lines: [{ ...leida.lines[0], ...cambio }] }, esperada, true), false);
+    }
+    assert.equal(coincideEstadoCompraEsperado({ ...leida, contact_id: "otro" }, esperada, true), false);
+    assert.equal(coincideEstadoCompraEsperado({ ...leida, total: "138,00" }, esperada, true), false);
+  }
 });
