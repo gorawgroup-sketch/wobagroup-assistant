@@ -151,7 +151,11 @@ const SYSTEM_PROMPT_ESTATICO = [
     "que lo registres/actualices/agregues, o dice que sí quiere verlos con botón (ej. tras preguntarle " +
     "'¿quieres que te los muestre uno a uno con botón?'), usa proponer_registro_cashflow, que sí manda " +
     "un mensaje con botones por cada movimiento para aprobar la categoría y registrarlo. Nunca digas que " +
-    "no tienes forma de registrar directamente — sí la tienes, es proponer_registro_cashflow.",
+    "no tienes forma de registrar directamente — sí la tienes, es proponer_registro_cashflow. " +
+    "Regla de Carlos: en comparaciones orientadas a registrar lo faltante, muestra las propuestas con " +
+    "botones sin pedir otra escalada ni otra confirmación para presentarlas. Pasa la misma semana " +
+    "explícita del informe (por ejemplo semana='S38'). La elección del área o No registrar sigue " +
+    "correspondiendo al usuario; mostrar botones nunca autoriza escribir por él.",
   "El cashflow de WOBA/EWORKS (hoja DATOS) tiene EXACTAMENTE 10 categorías reales, mapeadas en vivo y " +
     "verificadas contra el Sheet real el 2026-09-01 (Carlos las nombró explícitamente, no asumas que hay " +
     "más o menos): Ingresos, Pagos Proyectos, Pagos Extras, Gastos Fijos (nóminas/créditos/servicios — " +

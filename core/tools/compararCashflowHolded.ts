@@ -72,7 +72,7 @@ export function resolverFilasSinEmpresaConCobertura(
   };
 }
 
-function rangoPedido(input: Record<string, unknown>):
+export function rangoPedido(input: Record<string, unknown>):
   | { semana: string; desde: string; hasta: string; etiqueta: string }
   | { error: string } {
   const referencia = new Date();
