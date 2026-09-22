@@ -469,3 +469,51 @@ test("persiste el siguiente estado antes de retirar botones y transfiere borrado
   assert.match(fuente, /vincularBorradorACola\(borradorNuevo\.id, identidadExacta!, unidadColaId\)/);
   assert.match(fuente, /borrador\.correoThreadId === identidad\.threadId[\s\S]*?borrador\.correoMensajeId === identidad\.mensajeId/);
 });
+
+test("Aprobar selección nunca deja un «Aplicando…» abierto ni el resultado fuera de vista", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+
+  // Caso real 2026-09-22 (AEAT 255.2 EUR): el resultado solo editaba la propuesta original, arriba.
+  const inicioVisible = fuente.indexOf("async function dispararDecisionFinalVisible(");
+  const visible = fuente.slice(inicioVisible, fuente.indexOf("\n}\n", inicioVisible));
+  const reapunte = visible.indexOf("actualizarMessageIdGasto(propuesta.id, idProgreso)");
+  const disparo = visible.indexOf("await dispararDecisionFinal(propuesta, decisionKey)");
+  assert.ok(reapunte > 0 && disparo > reapunte, "la propuesta debe re-apuntarse al progreso ANTES de decidir");
+  assert.match(visible.slice(disparo), /catch \(error\) \{[\s\S]*editTelegramMessage\([\s\S]*no terminó limpiamente[\s\S]*throw error;/);
+  assert.match(visible, /if \(progresoId !== undefined && !reapuntada\)/);
+  // Propuesta ya resuelta por otro camino: se cierra el progreso en vez de disparar a ciegas.
+  assert.match(visible, /if \(resultado === false\) \{[\s\S]*no se aplicó[\s\S]*return;/);
+  // Botones obsoletos del mensaje anterior se retiran al re-apuntar.
+  assert.match(visible, /editTelegramMessageReplyMarkup\(propuesta\.chatId, propuesta\.messageId, \[\]\)/);
+
+  // Toda decisión final pasa por la versión visible; la única llamada directa vive dentro de ella.
+  const directas = fuente.match(/await dispararDecisionFinal\(/g) ?? [];
+  assert.equal(directas.length, 1);
+
+  const inicioAprobar = fuente.indexOf("async function handleGastoAprobarCallback(");
+  const aprobar = fuente.slice(inicioAprobar, fuente.indexOf("\n}\n", inicioAprobar));
+  assert.match(aprobar, /const mensajeProgresoId = await sendTelegramMessageWithButtons\(propuesta\.chatId, "🔄 Aplicando tu selección\.\.\.", \[\]\)/);
+  assert.match(aprobar, /dispararDecisionFinalVisible\(propuesta, decisionFinal, mensajeProgresoId\)/);
+  assert.match(aprobar, /cerrarProgreso\("✅ Selección recibida/);
+  assert.match(aprobar, /cerrarProgreso\("✅ Selección aplicada\."\)/);
+  // Sin decisión final, el teclado vuelve AL FINAL del chat (aprendizaje del caso 2026-09-07), con un
+  // único mecanismo compartido.
+  assert.match(aprobar, /await reenviarTecladoGastoAlFinal\(/);
+  const inicioReenvio = fuente.indexOf("async function reenviarTecladoGastoAlFinal(");
+  const reenvio = fuente.slice(inicioReenvio, fuente.indexOf("\n}\n", inicioReenvio));
+  assert.match(reenvio, /sendTelegramMessageWithButtons\([\s\S]*actualizarMessageIdGasto\(propuesta\.id, messageId\)/);
+  assert.match(reenvio, /editTelegramMessageReplyMarkup\([\s\S]*No pude publicar los botones aquí abajo/);
+
+  const inicioSeleccion = fuente.indexOf("export async function continuarConSeleccionGasto(");
+  const seleccion = fuente.slice(inicioSeleccion, fuente.indexOf("\n}\n", inicioSeleccion));
+  assert.match(seleccion, /await dispararDecisionFinalVisible\(propuestaFresca, pendiente\.decisionFinal\)/);
+  // Ninguna salida deja la propuesta viva sin botones (hallazgos de auditoría 2026-09-22):
+  assert.match(seleccion, /const reponerBotones = [\s\S]*reenviarTecladoGastoAlFinal\([\s\S]*No apliqué/);
+  // 1) fallo posterior a efectos al aplicar el texto (TurnoConEfectosError, monto a medio escribir);
+  assert.match(seleccion, /if \(esErrorTrasEjecucion\(error\)\) await reponerBotones\(sinAplicar\(\[actual, \.\.\.resto\]\)\);\s*throw error;/);
+  // 2) acción de texto no completada;
+  assert.match(seleccion, /if \(!resultado\.ok\) \{[\s\S]*?await reponerBotones\(sinAplicar\(resto\)\);\s*return;/);
+  // 3) cualquier fallo tras aplicar el texto, salvo en la decisión final (que cierra su propio progreso).
+  assert.match(seleccion, /enDecisionFinal = true;\s*await dispararDecisionFinalVisible/);
+  assert.match(seleccion, /if \(!enDecisionFinal\) await reponerBotones\(sinAplicar\(resto\)\);\s*throw new ErrorTrasEjecucion/);
+});

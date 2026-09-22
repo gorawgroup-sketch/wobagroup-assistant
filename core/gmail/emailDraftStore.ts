@@ -26,6 +26,13 @@ export interface CorrelacionBorradorCorreo {
   threadId?: string;
   messageIdHeader?: string;
   to?: string;
+  /**
+   * true cuando un borrador del MISMO hilo para otro destinatario cumple el pedido (orientación
+   * explícita de Carlos: "escríbeles a Mónica y Josep"). false cuando lo que se exige es LA respuesta
+   * al remitente (email_proceder con requiereRespuesta): ahí un borrador a terceros del hilo es una
+   * acción lateral — no se vincula como respuesta y el llamador genera la respuesta obligatoria.
+   */
+  aceptarOtroDestinatarioDelHilo?: boolean;
 }
 
 const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
@@ -324,6 +331,11 @@ export async function huboBorradorCreadoDesde(chatId: number, desdeMs: number): 
   return todos.some(({ borrador }) => borrador.chatId === chatId && borrador.creadoEn >= desdeMs);
 }
 
+/** Direcciones de un campo To ("Nombre <a@x.com>, b@y.com"), en minúsculas. */
+function direccionesDeCorreo(campo: string): string[] {
+  return (campo.match(/[^\s<>,;"']+@[^\s<>,;"']+/g) ?? []).map((direccion) => direccion.toLowerCase());
+}
+
 export function seleccionarBorradorCorrelacionado(
   candidatos: readonly BorradorCorreo[],
   correlacion?: CorrelacionBorradorCorreo
@@ -340,10 +352,31 @@ export function seleccionarBorradorCorrelacionado(
       (!to || borrador.to.trim().toLowerCase() === to)
     );
     if (correlacionados.length === 1) return correlacionados[0];
-    if (correlacionados.length === 0) {
-      throw new Error("Se creó un borrador durante la ejecución, pero no corresponde al correo original.");
+    if (correlacionados.length > 1) {
+      throw new Error("Se crearon varios borradores que coinciden con el mismo correo; requieren revisión individual.");
     }
-    throw new Error("Se crearon varios borradores que coinciden con el mismo correo; requieren revisión individual.");
+    // Caso real (2026-09-22, "Fwd: notificación hacienda B.A.E."): Carlos pidió escribir a Mónica y
+    // Josep EN EL MISMO HILO del correo — el borrador tenía el threadId correcto pero otro
+    // destinatario, y exigir to === remitente lo rechazaba como "ajeno" aunque era exactamente lo
+    // pedido. Mismo criterio que ya usa "✏️ Otras acciones" de gastos (solo threadId, ver
+    // aplicarTextoOtrasAcciones): un borrador del MISMO hilo es la acción de este correo, sea cual
+    // sea su destinatario. Solo un borrador de OTRO hilo sigue siendo ajeno.
+    if (threadId) {
+      const delMismoHilo = candidatos.filter((borrador) => borrador.threadId === threadId);
+      // Modo estricto (hace falta LA respuesta al remitente): solo cuenta un borrador del hilo que lo
+      // incluya entre sus destinatarios, comparando dirección por dirección — "Cliente <c@x.com>" o
+      // "c@x.com, otro@y.com" también le responden (hallazgo real de auditoría: sin esto se generaba
+      // una SEGUNDA respuesta al mismo remitente). Uno del hilo solo a terceros es una acción lateral.
+      const relevantes = correlacion?.aceptarOtroDestinatarioDelHilo || !to
+        ? delMismoHilo
+        : delMismoHilo.filter((borrador) => direccionesDeCorreo(borrador.to).includes(to));
+      if (relevantes.length === 1) return relevantes[0];
+      if (relevantes.length > 1) {
+        throw new Error("Se crearon varios borradores en el hilo de este correo; requieren revisión individual.");
+      }
+      if (delMismoHilo.length > 0) return undefined;
+    }
+    throw new Error("Se creó un borrador durante la ejecución, pero no corresponde al correo original.");
   }
 
   if (candidatos.length > 1) {

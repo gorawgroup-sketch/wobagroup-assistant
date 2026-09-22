@@ -141,6 +141,7 @@ import {
 import { durableDeliveryStore } from "../core/telegram/durableDeliveryStore";
 import { iniciarActividadCallback } from "../core/telegram/callbackActivity";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
+import { esErrorTrasEjecucion, mensajeFalloTrasEjecucion } from "../core/utils/errorTrasEjecucion";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
 import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
 import {
@@ -1561,6 +1562,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
     try {
       await continuarConMontoPago(pendienteMontoPago, texto);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       console.error("Error procesando importe de pago recurrente:", message);
       // Se reinserta el pendiente (con creadoEn actualizado) para que el
@@ -1578,6 +1585,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
     try {
       await continuarConCorreccionGasto(pendienteCorreccionGasto, texto);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando corrección de clasificación de gasto:", error);
       await restaurarPendienteCorreccionGasto(pendienteCorreccionGasto).catch((errorRestaurando) => {
         console.error("Error restaurando corrección de clasificación de gasto:", errorRestaurando);
@@ -1592,6 +1605,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
     try {
       await continuarConAjusteMonto(pendienteAjusteMontoGasto, texto);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando ajuste de monto de gasto:", error);
       await restaurarPendienteAjusteMontoGasto(pendienteAjusteMontoGasto).catch((errorRestaurando) => {
         console.error("Error restaurando ajuste de monto de gasto:", errorRestaurando);
@@ -1606,6 +1625,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
     try {
       await continuarConAccionGasto(pendienteAccionGasto, texto);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando otras acciones sobre una propuesta de gasto:", error);
       await restaurarPendienteAccionGasto(pendienteAccionGasto).catch((errorRestaurando) => {
         console.error("Error restaurando otras acciones sobre una propuesta de gasto:", errorRestaurando);
@@ -1620,6 +1645,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
     try {
       await continuarConSeleccionGasto(pendienteSeleccionGasto, texto);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando la cola de selección de una propuesta de gasto:", error);
       await restaurarPendienteSeleccionGasto(pendienteSeleccionGasto).catch((errorRestaurando) => {
         console.error("Error restaurando la cola de selección de una propuesta de gasto:", errorRestaurando);
@@ -1634,6 +1665,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
     try {
       await continuarConEdicionBorrador(pendienteEdicionBorrador.chatId, pendienteEdicionBorrador.borradorId, texto);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando edición de borrador de correo:", error);
       await restaurarPendienteEdicionBorrador(pendienteEdicionBorrador).catch((errorRestaurando) => {
         console.error("Error restaurando edición de borrador de correo:", errorRestaurando);
@@ -1666,6 +1703,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
         pendienteOrientacion.mensajeId
       );
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando orientación específica de correo:", error);
       await restaurarPendienteOrientacionCorreo(pendienteOrientacion).catch((errorRestaurando) => {
         console.error("Error restaurando orientación específica de correo:", errorRestaurando);
@@ -1689,6 +1732,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
         texto
       );
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando orientación específica de anotación de cashflow:", error);
       await sendTelegramMessage(chatId, "Hubo un error procesando tu instrucción.");
     }
@@ -1709,6 +1758,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
         `✅ Aprendido — la próxima vez que un documento de ${pendienteRegla.empresa} coincida con "${texto.trim()}", lo archivo directo en "${pendienteRegla.carpetaDestino}" sin preguntar.`
       );
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error registrando regla de clasificación:", error);
       await sendTelegramMessage(chatId, "Hubo un error guardando la regla. Intenta de nuevo.");
     }
@@ -1727,6 +1782,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       const respuesta = await askClaude(instruccion, chatId, undefined, "resolver_alerta_documento");
       await sendTelegramMessageSmart(chatId, respuesta);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error programando alerta de documento:", error);
       // Ver hallazgo real de auditoría junto al catch de "capturar_correo_chat" en procesarUpdateTelegram.
       await sendTelegramMessage(
@@ -1771,6 +1832,12 @@ async function intentarResolverPendienteTextoLibre(chatId: number, texto: string
       const respuesta = await askClaude(instruccion, chatId, undefined, "resolver_desambiguacion_documento");
       await sendTelegramMessageSmart(chatId, respuesta);
     } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts);
+      // la entrega durable lo declara incierta y ofrece «Verificar resultado», solo lecturas.
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
       console.error("Error procesando respuesta de desambiguación:", error);
       // Ver hallazgo real de auditoría junto al catch de "capturar_correo_chat" en procesarUpdateTelegram.
       await sendTelegramMessage(

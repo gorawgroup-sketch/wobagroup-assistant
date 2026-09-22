@@ -139,6 +139,7 @@ import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "
 import { claveIdempotenciaGasto } from "./identidadGasto";
 import { conciliacionRequiereRevision } from "../holded/durableBankReconciliation";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
+import { ErrorTrasEjecucion, esErrorTrasEjecucion } from "../utils/errorTrasEjecucion";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
   // Identificador interno de dispararDecisionFinal: no es un callback de Telegram.
@@ -2316,6 +2317,125 @@ async function dispararDecisionFinal(propuesta: PropuestaGasto, decisionKey: str
 }
 
 /**
+ * Caso real (2026-09-07): reponer el teclado en el mensaje ORIGINAL de la propuesta (ya arriba en el
+ * chat, detrás de "🔄 Aplicando tu selección...", las preguntas y las respuestas) lo dejaba fuera de
+ * vista — Carlos no vio que los botones habían vuelto y terminó escribiendo "sí, créalo y concilia" en
+ * texto libre, que nunca dispara esa escritura (siempre requiere un botón real, ver
+ * conciliarMovimiento.ts). Los botones de una propuesta que sigue viva se reenvían en un mensaje NUEVO
+ * al final del chat y la propuesta se re-apunta a él (actualizarMessageIdGasto). Un solo lugar para
+ * todos los caminos que lo necesitan (hallazgo real de auditoría 2026-09-22: "Otras acciones" no
+ * completada dejaba la propuesta viva SIN botones y sin aplicar la decisión final marcada). Si el
+ * reenvío falla, los botones vuelven al mensaje original y se avisa en texto plano — nunca silencio.
+ */
+async function reenviarTecladoGastoAlFinal(
+  chatId: number,
+  propuestaId: string,
+  cabecera: (propuesta: PropuestaGasto) => string,
+  siYaNoExiste?: string
+): Promise<void> {
+  const propuesta = await obtenerPropuestaGasto(propuestaId);
+  if (!propuesta) {
+    if (siYaNoExiste) await sendTelegramMessage(chatId, siYaNoExiste).catch(() => {});
+    return;
+  }
+  const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));
+  const messageId = await sendTelegramMessageWithButtons(propuesta.chatId, cabecera(propuesta), teclado).catch((error) => {
+    console.error("[gastoCallbackHandler] Error reenviando el teclado al final del chat:", error);
+    return undefined;
+  });
+  if (messageId !== undefined) {
+    await actualizarMessageIdGasto(propuesta.id, messageId).catch((error) =>
+      console.error("[gastoCallbackHandler] Error actualizando el messageId tras reenviar el teclado (no crítico):", error)
+    );
+    return;
+  }
+  await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, teclado, resumenTextoPropuestaGasto(propuesta)).catch((error) =>
+    console.error("[gastoCallbackHandler] Error reponiendo el teclado en la propuesta original (no crítico):", error)
+  );
+  await sendTelegramMessage(
+    propuesta.chatId,
+    `${cabecera(propuesta)}\n\n(No pude publicar los botones aquí abajo — probablemente un fallo transitorio de Telegram. Los repuse en la propuesta original, más arriba.)`
+  ).catch(() => {});
+}
+
+/**
+ * Caso real de Carlos (2026-09-22, "Agencia Tributaria (AEAT) 255.2 EUR"): tras "▶️ Aprobar selección"
+ * el último mensaje visible del chat era "🔄 Aplicando tu selección..." y el resultado ("❌ Cancelado —
+ * ...") se escribía EDITANDO el mensaje original de la propuesta, arriba y fuera de vista. Sin nada
+ * después del "Aplicando", Carlos preguntó si el chat estaba bloqueado. Mismo aprendizaje que el caso
+ * del 2026-09-07 (ver continuarConSeleccionGasto): el resultado tiene que quedar AL FINAL del chat.
+ * Se reutiliza el mismo mecanismo de entonces —re-apuntar la propuesta con actualizarMessageIdGasto—
+ * pero hacia el mensaje de progreso visible: así cada rama de la decisión (cancelar, crear, conciliar,
+ * adjuntar, contacto por crear, fallos con reintento...) edita ESE mensaje con su resultado, sin
+ * tocar ninguna de esas ramas. Si algo falla, el mensaje de progreso igual se cierra: nunca queda un
+ * "🔄 Aplicando..." huérfano como último mensaje.
+ */
+async function dispararDecisionFinalVisible(
+  propuesta: PropuestaGasto,
+  decisionKey: string,
+  mensajeProgresoId?: number
+): Promise<void> {
+  const etiqueta = etiquetaAccion(decisionKey);
+  let progresoId = mensajeProgresoId;
+  if (progresoId === undefined) {
+    progresoId = await sendTelegramMessageWithButtons(propuesta.chatId, `🔄 Aplicando "${etiqueta}"...`, []).catch((error) => {
+      console.error("[gastoCallbackHandler] No se pudo publicar el mensaje de progreso de la decisión final (no crítico):", error);
+      return undefined;
+    });
+  }
+
+  let reapuntada = false;
+  if (progresoId !== undefined) {
+    const idProgreso = progresoId;
+    const resultado = await actualizarMessageIdGasto(propuesta.id, idProgreso).catch((error) => {
+      console.error("[gastoCallbackHandler] No se pudo re-apuntar la propuesta al mensaje de progreso (no crítico):", error);
+      return "error" as const;
+    });
+    if (resultado === false) {
+      // La propuesta ya no existe (resuelta por otro camino): las ramas de decisión solo responderían
+      // un toast invisible en este callback sintético y el progreso quedaría abierto.
+      await editTelegramMessage(
+        propuesta.chatId,
+        idProgreso,
+        `ℹ️ "${etiqueta}" no se aplicó: esta propuesta ya no estaba pendiente (puede que ya se resolviera por otro camino).`,
+        []
+      ).catch(() => {});
+      return;
+    }
+    reapuntada = resultado === true;
+    // Hallazgo real de auditoría: si el mensaje anterior aún tenía botones (p. ej. repuestos por una
+    // corrección de moneda durante la cola de texto), quedarían vivos junto al resultado nuevo.
+    if (reapuntada && propuesta.messageId && propuesta.messageId !== idProgreso) {
+      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, []).catch(() => {});
+    }
+  }
+
+  try {
+    await dispararDecisionFinal(propuesta, decisionKey);
+  } catch (error) {
+    const mensaje = error instanceof Error ? error.message : String(error);
+    if (progresoId !== undefined) {
+      await editTelegramMessage(
+        propuesta.chatId,
+        progresoId,
+        `⚠️ "${etiqueta}" no terminó limpiamente (${mensaje}). Comprueba el resultado antes de repetirlo.`,
+        []
+      ).catch(() => {});
+    }
+    throw error;
+  }
+
+  if (progresoId !== undefined && !reapuntada) {
+    await editTelegramMessage(
+      propuesta.chatId,
+      progresoId,
+      `✅ "${etiqueta}" aplicado — el detalle quedó en la propuesta original, más arriba.`,
+      []
+    ).catch(() => {});
+  }
+}
+
+/**
  * "▶️ Aprobar selección" — ejecuta TODO lo marcado en el teclado de
  * selección, junto. Pedido explícito de Carlos: "activar una o varias y
  * luego aprobar para que la inteligencia del sistema proceda". Orden fijo,
@@ -2376,9 +2496,22 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
   // avisar de que existe. El aviso de "procesando" va en un mensaje NUEVO
   // (no reemplaza el texto de la propuesta, que Carlos puede querer seguir
   // viendo con su desglose completo).
-  await sendTelegramMessage(propuesta.chatId, "🔄 Aplicando tu selección...").catch((error) =>
-    console.error("[gastoCallbackHandler] Error avisando que se está procesando (no crítico):", error)
-  );
+  // Se guarda su id: es el ancla visible donde termina el resultado (ver dispararDecisionFinalVisible).
+  const mensajeProgresoId = await sendTelegramMessageWithButtons(propuesta.chatId, "🔄 Aplicando tu selección...", []).catch((error) => {
+    console.error("[gastoCallbackHandler] Error avisando que se está procesando (no crítico):", error);
+    return undefined;
+  });
+  // Ningún "🔄 Aplicando tu selección..." puede quedar abierto: cada salida lo cierra con su estado.
+  const cerrarProgreso = async (texto: string): Promise<boolean> => {
+    if (mensajeProgresoId === undefined) return false;
+    return editTelegramMessage(propuesta.chatId, mensajeProgresoId, texto, []).then(
+      () => true,
+      (error) => {
+        console.error("[gastoCallbackHandler] No se pudo cerrar el mensaje de progreso (no crítico):", error);
+        return false;
+      }
+    );
+  };
 
   // Se limpia de inmediato — evita que una futura aprobación (ej. tras
   // decidir Crear más tarde, con el teclado ya repuesto) vuelva a disparar
@@ -2422,6 +2555,7 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
 
   if (colaTexto.length > 0) {
     const restantes = colaTexto.slice(1).map((k) => etiquetaAccion(k));
+    await cerrarProgreso("✅ Selección recibida — te pregunto abajo lo que falta.");
     await sendTelegramMessage(
       propuesta.chatId,
       [
@@ -2436,29 +2570,40 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
     return;
   }
 
-  if (resumen.length > 0) {
-    await sendTelegramMessage(propuesta.chatId, resumen.join("\n"));
-  }
-
   if (decisionFinal) {
-    // dispararDecisionFinal ya reemplaza el texto Y los botones del mensaje
-    // original con el resultado final (vía consumirPropuestaGasto/editTelegramMessage
-    // en gasto_nuevo/gasto_cancelar/etc.) — nunca hay que reponer el teclado acá.
-    await dispararDecisionFinal(propuesta, decisionFinal);
+    // dispararDecisionFinal reemplaza el texto Y los botones del mensaje de la
+    // propuesta con el resultado final (vía consumirPropuestaGasto/editTelegramMessage
+    // en gasto_nuevo/gasto_cancelar/etc.). Sin acciones laterales, ese mensaje es el
+    // propio "🔄 Aplicando..."; con ellas (que pueden haber publicado un borrador
+    // debajo), el progreso se cierra con su resumen y la decisión abre uno nuevo
+    // al final, para que el resultado siempre sea lo último visible.
+    if (resumen.length === 0) {
+      await dispararDecisionFinalVisible(propuesta, decisionFinal, mensajeProgresoId);
+      return;
+    }
+    if (!(await cerrarProgreso(resumen.join("\n")))) {
+      await sendTelegramMessage(propuesta.chatId, resumen.join("\n"));
+    }
+    await dispararDecisionFinalVisible(propuesta, decisionFinal);
     return;
   }
 
   // Nada quedó pendiente (ni cola de texto, ni decisión final) — la propuesta
   // sigue viva para que Carlos pueda marcar más acciones después (ej. decidir
-  // "Crear" más tarde), así que se repone el teclado interactivo, ya sin
-  // ningún check marcado.
-  const propuestaFresca = await obtenerPropuestaGasto(propuesta.id);
-  if (propuestaFresca) {
-    const teclado = construirTecladoGasto(propuestaFresca, opcionesTecladoDesdePropuesta(propuestaFresca));
-    await editTelegramMessageReplyMarkup(propuestaFresca.chatId, propuestaFresca.messageId, teclado, resumenTextoPropuestaGasto(propuestaFresca)).catch((error) =>
-      console.error("[gastoCallbackHandler] Error reponiendo el teclado tras aplicar (no crítico):", error)
-    );
-  }
+  // "Crear" más tarde). Mismo aprendizaje del caso 2026-09-07 (ver
+  // continuarConSeleccionGasto): el teclado vuelve AL FINAL del chat, en un
+  // mensaje nuevo y visible, y la propuesta se re-apunta a él — nunca solo
+  // en el mensaje original de arriba, detrás de "🔄 Aplicando tu selección...".
+  await cerrarProgreso("✅ Selección aplicada.");
+  await reenviarTecladoGastoAlFinal(
+    propuesta.chatId,
+    propuesta.id,
+    (fresca) => [
+      ...resumen,
+      `✅ Listo — apliqué lo que marcaste. "${fresca.proveedor}" (${fresca.monto.toFixed(2)} ${fresca.moneda}) sigue esperando tu decisión — toca una opción:`,
+    ].join("\n"),
+    [...resumen, "✅ Listo — apliqué lo que marcaste."].join("\n")
+  );
 }
 
 /**
@@ -2478,12 +2623,38 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
   const [actual, ...resto] = pendiente.colaAcciones;
   if (!actual) return;
 
-  const resultado =
-    actual === "corregir"
-      ? await aplicarTextoCorreccion(propuesta, textoUsuario)
-      : actual === "ajustarmonto"
-        ? await aplicarTextoAjusteMonto(propuesta, textoUsuario)
-        : await aplicarTextoOtrasAcciones(propuesta, textoUsuario);
+  // Lo que quedó sin aplicar si esta respuesta no puede completar la selección (resto de la cola +
+  // decisión final). Hallazgo real de auditoría (2026-09-22): tras "Aprobar selección" la propuesta
+  // ya no tiene teclado, así que cualquier salida que no re-arme la cola debe devolver sus botones al
+  // final del chat diciendo qué no se aplicó — si no, la propuesta queda viva, muda, y si viene de la
+  // cola de correo la bloquea. Nunca falla: se usa justo antes de relanzar un error.
+  const sinAplicar = (desde: string[]) =>
+    [...desde, ...(pendiente.decisionFinal ? [pendiente.decisionFinal] : [])].map((k) => `"${etiquetaAccion(k)}"`);
+  const reponerBotones = (pendientes: string[]) =>
+    reenviarTecladoGastoAlFinal(
+      pendiente.chatId,
+      pendiente.propuestaId,
+      (fresca) =>
+        (pendientes.length > 0 ? `⚠️ No apliqué ${pendientes.join(", ")}. ` : "") +
+        `"${fresca.proveedor}" (${fresca.monto.toFixed(2)} ${fresca.moneda}) sigue esperando tu decisión — toca una opción:`
+    ).catch((error) =>
+      console.error("[gastoCallbackHandler] No se pudieron reponer los botones de la propuesta (no crítico):", error)
+    );
+
+  let resultado: ResultadoAplicarTexto;
+  try {
+    resultado =
+      actual === "corregir"
+        ? await aplicarTextoCorreccion(propuesta, textoUsuario)
+        : actual === "ajustarmonto"
+          ? await aplicarTextoAjusteMonto(propuesta, textoUsuario)
+          : await aplicarTextoOtrasAcciones(propuesta, textoUsuario);
+  } catch (error) {
+    // Un fallo previo a cualquier efecto se relanza tal cual: el servidor re-arma esta misma pregunta.
+    // Uno posterior (TurnoConEfectosError, monto a medio escribir) no se re-arma: botones de vuelta.
+    if (esErrorTrasEjecucion(error)) await reponerBotones(sinAplicar([actual, ...resto]));
+    throw error;
+  }
 
   if (!resultado.ok && resultado.reintentable) {
     await guardarPendienteSeleccionGasto(pendiente.chatId, pendiente.propuestaId, pendiente.colaAcciones, pendiente.decisionFinal);
@@ -2491,72 +2662,54 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
     return;
   }
 
-  await sendTelegramMessage(pendiente.chatId, resultado.mensaje);
+  // Desde aquí el texto ya se aplicó (corrección/ajuste guardados, o la instrucción ejecutada): un
+  // fallo posterior nunca debe re-armar esta misma respuesta, porque el siguiente mensaje la aplicaría
+  // dos veces (ej. "a la mitad" → la mitad de la mitad). Ver core/utils/errorTrasEjecucion.ts.
+  // La fase de decisión final cierra su propio mensaje de progreso (dispararDecisionFinalVisible) y
+  // sus ramas reponen la propuesta con botones si fallan: ahí no se reenvía el teclado otra vez.
+  let enDecisionFinal = false;
+  try {
+    await sendTelegramMessage(pendiente.chatId, resultado.mensaje);
 
-  if (!resultado.ok) {
-    // No reintentable (ej. la propuesta ya no existe) — no tiene sentido
-    // seguir pidiendo el resto de la cola ni disparar la decisión final.
-    return;
-  }
-
-  if (resto.length > 0) {
-    await guardarPendienteSeleccionGasto(pendiente.chatId, pendiente.propuestaId, resto, pendiente.decisionFinal);
-    const propuestaFresca = (await obtenerPropuestaGasto(pendiente.propuestaId)) ?? propuesta;
-    await sendTelegramMessage(pendiente.chatId, preguntaParaAccion(resto[0], propuestaFresca));
-    return;
-  }
-
-  if (!pendiente.decisionFinal) {
-    // Nada de decisión final — la propuesta original sigue viva (su teclado
-    // quedó vacío desde "Aprobar selección", ver handleGastoAprobarCallback).
-    // Caso real (2026-09-07): reponer el teclado en el mensaje ORIGINAL (ya
-    // arriba en el chat, detrás de "🔄 Aplicando tu selección...", la
-    // pregunta del ajuste, y esta misma respuesta) lo dejaba fuera de vista
-    // — Carlos no vio que los botones habían vuelto y terminó escribiendo
-    // "sí, créalo y concilia" en texto libre, que el asistente conversacional
-    // no tenía forma de completar (esa escritura SIEMPRE requiere un botón
-    // real, nunca se dispara por interpretación de texto — ver
-    // conciliarMovimiento.ts). Ahora se manda un mensaje NUEVO, visible al
-    // final del chat, con los mismos botones reales — y se repunta la
-    // propuesta a ESE mensaje (actualizarMessageIdGasto) para que tocarlos
-    // edite el mensaje correcto.
-    const propuestaFinal = await obtenerPropuestaGasto(pendiente.propuestaId);
-    if (propuestaFinal) {
-      const teclado = construirTecladoGasto(propuestaFinal, opcionesTecladoDesdePropuesta(propuestaFinal));
-      const messageId = await sendTelegramMessageWithButtons(
-        propuestaFinal.chatId,
-        `✅ Listo — apliqué todo lo que marcaste. "${propuestaFinal.proveedor}" (${propuestaFinal.monto.toFixed(2)} ${propuestaFinal.moneda}) sigue esperando tu decisión — toca una opción:`,
-        teclado
-      ).catch((error) => {
-        console.error("[gastoCallbackHandler] Error reenviando el teclado tras la cola de selección:", error);
-        return undefined;
-      });
-      if (messageId !== undefined) {
-        await actualizarMessageIdGasto(propuestaFinal.id, messageId).catch((error) =>
-          console.error("[gastoCallbackHandler] Error actualizando el messageId tras reenviar el teclado (no crítico):", error)
-        );
-      } else {
-        // Hallazgo real de auditoría: si el reenvío con botones falla (ej. caída transitoria de
-        // Telegram), esto se quedaba en silencio total — exactamente el mismo síntoma ("no veo nada
-        // para aprobar") que este mismo cambio existe para eliminar, solo que disparado por otro
-        // punto de fallo. Un aviso en texto plano, aunque sin botones, es mejor que nada.
-        await sendTelegramMessage(
-          propuestaFinal.chatId,
-          `✅ Apliqué todo lo que marcaste, pero no pude reenviar los botones de "${propuestaFinal.proveedor}" (${propuestaFinal.monto.toFixed(2)} ${propuestaFinal.moneda}) — probablemente un fallo transitorio de Telegram. Dímelo en texto libre (ej. "créalo y concilia") y lo reintento.`
-        ).catch(() => {});
-      }
-    } else {
-      await sendTelegramMessage(pendiente.chatId, "✅ Listo — apliqué todo lo que marcaste.");
+    if (!resultado.ok) {
+      // No reintentable — no tiene sentido seguir pidiendo el resto de la cola ni disparar la decisión
+      // final. Si la propuesta sigue viva (ej. "Otras acciones" ya ejecutada pero sin cerrar), sus
+      // botones vuelven al final del chat diciendo QUÉ no se aplicó; nunca queda viva sin botones.
+      await reponerBotones(sinAplicar(resto));
+      return;
     }
-    return;
-  }
 
-  const propuestaFresca = await obtenerPropuestaGasto(pendiente.propuestaId);
-  if (!propuestaFresca) {
-    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible para la decisión final que habías marcado.");
-    return;
+    if (resto.length > 0) {
+      await guardarPendienteSeleccionGasto(pendiente.chatId, pendiente.propuestaId, resto, pendiente.decisionFinal);
+      const propuestaFresca = (await obtenerPropuestaGasto(pendiente.propuestaId)) ?? propuesta;
+      await sendTelegramMessage(pendiente.chatId, preguntaParaAccion(resto[0], propuestaFresca));
+      return;
+    }
+
+    if (!pendiente.decisionFinal) {
+      // Nada de decisión final — la propuesta original sigue viva (su teclado quedó vacío desde
+      // "Aprobar selección"): sus botones vuelven al final del chat (ver reenviarTecladoGastoAlFinal).
+      await reenviarTecladoGastoAlFinal(
+        pendiente.chatId,
+        pendiente.propuestaId,
+        (fresca) =>
+          `✅ Listo — apliqué todo lo que marcaste. "${fresca.proveedor}" (${fresca.monto.toFixed(2)} ${fresca.moneda}) sigue esperando tu decisión — toca una opción:`,
+        "✅ Listo — apliqué todo lo que marcaste."
+      );
+      return;
+    }
+
+    const propuestaFresca = await obtenerPropuestaGasto(pendiente.propuestaId);
+    if (!propuestaFresca) {
+      await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible para la decisión final que habías marcado.");
+      return;
+    }
+    enDecisionFinal = true;
+    await dispararDecisionFinalVisible(propuestaFresca, pendiente.decisionFinal);
+  } catch (error) {
+    if (!enDecisionFinal) await reponerBotones(sinAplicar(resto));
+    throw new ErrorTrasEjecucion("Tu respuesta ya se aplicó, pero no pude completar el resto de la selección", error);
   }
-  await dispararDecisionFinal(propuestaFresca, pendiente.decisionFinal);
 }
 
 interface ResultadoCrearGasto {
@@ -3702,7 +3855,19 @@ export function ajustarPropuestaAlMovimientoRecomendado(
 }
 
 async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {
-  const actualizado = await actualizarMontoPropuestaGasto(propuesta.id, nuevoMonto, reescalarLineas(propuesta, nuevoMonto));
+  let actualizado: boolean;
+  try {
+    actualizado = await actualizarMontoPropuestaGasto(propuesta.id, nuevoMonto, reescalarLineas(propuesta, nuevoMonto));
+  } catch (error) {
+    // Hallazgo real de auditoría (2026-09-22): son dos escrituras (monto y líneas). Si el monto ya
+    // quedó escrito, re-armar el pendiente haría que "la mitad" se aplique sobre la mitad. Se relee:
+    // solo si el monto sigue intacto el fallo es reintentable (ver core/utils/errorTrasEjecucion.ts).
+    const actual = await obtenerPropuestaGasto(propuesta.id).catch(() => undefined);
+    if (!actual || actual.monto !== propuesta.monto) {
+      throw new ErrorTrasEjecucion("El monto pudo quedar ajustado, pero la escritura no terminó", error);
+    }
+    throw error;
+  }
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
@@ -3900,13 +4065,18 @@ export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGas
     return;
   }
 
-  await sendTelegramMessage(
-    pendiente.chatId,
-    resultado.ok
-      ? `${resultado.mensaje} Los botones de la propuesta original arriba ya usan este monto — usa "✅ Crear gasto en Holded" ` +
-        `cuando quieras, o "💰 Ajustar monto" de nuevo si hace falta corregirlo otra vez.`
-      : resultado.mensaje
-  );
+  try {
+    await sendTelegramMessage(
+      pendiente.chatId,
+      resultado.ok
+        ? `${resultado.mensaje} Los botones de la propuesta original arriba ya usan este monto — usa "✅ Crear gasto en Holded" ` +
+          `cuando quieras, o "💰 Ajustar monto" de nuevo si hace falta corregirlo otra vez.`
+        : resultado.mensaje
+    );
+  } catch (error) {
+    // El monto ya está escrito: re-armar el pendiente lo aplicaría dos veces con el siguiente mensaje.
+    throw new ErrorTrasEjecucion("El monto quedó ajustado, pero no pude confirmártelo", error);
+  }
 }
 
 /**
@@ -3977,6 +4147,10 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
   }
 
   let respuesta = "";
+  // Tras askClaude la instrucción ya produjo efectos (borrador, recordatorio...) y un fallo posterior ya
+  // no es "reintentable"; si askClaude falla a mitad tras iniciar una herramienta con efectos, lanza
+  // TurnoConEfectosError, que esErrorTrasEjecucion también reconoce — ver core/utils/errorTrasEjecucion.ts.
+  let instruccionEjecutada = false;
   const huellaInstruccion = createHash("sha256").update(textoUsuario.trim().toLowerCase()).digest("hex").slice(0, 16);
   const unidadColaId = `${propuesta.id}:otras-acciones:${huellaInstruccion}`;
   try {
@@ -3999,6 +4173,7 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
           const antes = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
           const idsAnteriores = new Set(antes.map((borrador) => borrador.id));
           respuesta = await askClaude(instruccion, propuesta.chatId, undefined, "accion_gasto");
+          instruccionEjecutada = true;
           await guardarAprendizaje();
           const despues = await obtenerBorradoresCorreoPorChat(propuesta.chatId);
           const nuevos = despues.filter((borrador) => !idsAnteriores.has(borrador.id));
@@ -4026,6 +4201,21 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
   } catch (error) {
     const mensaje = error instanceof Error ? error.message : String(error);
     console.error("[gastoCallbackHandler] Error ejecutando otras acciones del gasto:", error);
+    if (instruccionEjecutada || esErrorTrasEjecucion(error)) {
+      // Caso real Hacienda B.A.E. (2026-09-22): reintentar aquí re-ejecutaría la instrucción completa
+      // con el siguiente mensaje de Carlos. Se muestra lo que sí se hizo y nunca se re-arma.
+      return {
+        ok: false,
+        reintentable: false,
+        mensaje: conConfirmacionAprendizaje(
+          [
+            respuesta,
+            `⚠️ La instrucción ya se ejecutó, pero no pude dejarla vinculada al correo (${mensaje}). ` +
+              "No la repitas: revisa arriba lo que quedó hecho (borradores, recordatorios). El correo sigue sin leer.",
+          ].filter(Boolean).join("\n\n")
+        ),
+      };
+    }
     return {
       ok: false,
       reintentable: true,
@@ -4064,7 +4254,16 @@ export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, t
   if (!resultado.ok && resultado.reintentable) {
     await guardarPendienteAccionGasto(pendiente.chatId, pendiente.propuestaId);
   }
-  await sendTelegramMessageSmart(pendiente.chatId, resultado.mensaje, undefined, `✅ ${propuesta.correoOrigen.asunto} (${propuesta.correoOrigen.de})`);
+  try {
+    await sendTelegramMessageSmart(pendiente.chatId, resultado.mensaje, undefined, `✅ ${propuesta.correoOrigen.asunto} (${propuesta.correoOrigen.de})`);
+  } catch (error) {
+    // Hallazgo real de auditoría: si solo falla este aviso, restaurar el pendiente re-ejecutaría la
+    // instrucción con el siguiente mensaje de Carlos (ver core/utils/errorTrasEjecucion.ts).
+    if (resultado.ok || !resultado.reintentable) {
+      throw new ErrorTrasEjecucion("La instrucción se procesó, pero no pude mostrarte el resultado", error);
+    }
+    throw error;
+  }
 }
 
 /**

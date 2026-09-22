@@ -52,6 +52,54 @@ test("la correlación elige el borrador del hilo esperado y rechaza candidatos a
     () => seleccionarBorradorCorrelacionado([ajeno], { threadId: "thread-correcto" }),
     /no corresponde al correo original/
   );
+
+  // Caso real Hacienda B.A.E.: mismo hilo, destinatarios distintos del remitente → es la acción de este correo.
+  const aTerceros: BorradorCorreo = { ...base, id: "terceros", to: "mgarrido@example.com, jrovira@example.com", messageIdHeader: undefined };
+  assert.equal(
+    seleccionarBorradorCorrelacionado([ajeno, aTerceros], {
+      to: "carlos@example.com",
+      threadId: "thread-correcto",
+      messageIdHeader: "<mensaje-correcto@example.com>",
+      aceptarOtroDestinatarioDelHilo: true,
+    })?.id,
+    "terceros"
+  );
+  assert.throws(
+    () => seleccionarBorradorCorrelacionado([aTerceros, { ...aTerceros, id: "terceros-2" }], {
+      to: "carlos@example.com",
+      threadId: "thread-correcto",
+      aceptarOtroDestinatarioDelHilo: true,
+    }),
+    /varios borradores en el hilo/
+  );
+  // Respuesta obligatoria: una respuesta al remitente con otro formato de To SÍ cuenta (nunca una segunda).
+  for (const formato of ["Carlos <carlos@example.com>", "carlos@example.com, otro@example.com", "CARLOS@example.com"]) {
+    assert.equal(
+      seleccionarBorradorCorrelacionado([{ ...aTerceros, id: "al-remitente", to: formato }], {
+        to: "carlos@example.com",
+        threadId: "thread-correcto",
+        messageIdHeader: "<mensaje-correcto@example.com>",
+      })?.id,
+      "al-remitente",
+      formato
+    );
+  }
+  assert.throws(
+    () => seleccionarBorradorCorrelacionado(
+      [{ ...aTerceros, id: "r1", to: "Carlos <carlos@example.com>" }, { ...aTerceros, id: "r2", to: "carlos@example.com, x@example.com" }],
+      { to: "carlos@example.com", threadId: "thread-correcto", messageIdHeader: "<mensaje-correcto@example.com>" }
+    ),
+    /varios borradores en el hilo/
+  );
+  // Respuesta obligatoria al remitente: un borrador a terceros del hilo NO la sustituye ni es un error.
+  assert.equal(
+    seleccionarBorradorCorrelacionado([aTerceros], { to: "carlos@example.com", threadId: "thread-correcto" }),
+    undefined
+  );
+  assert.throws(
+    () => seleccionarBorradorCorrelacionado([ajeno], { to: "carlos@example.com", threadId: "thread-correcto" }),
+    /no corresponde al correo original/
+  );
   assert.throws(
     () => seleccionarBorradorCorrelacionado([ajeno, base]),
     /varios borradores/
