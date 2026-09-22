@@ -21,7 +21,11 @@ export function objeto(raw: unknown): Registro {
 }
 function texto(raw: unknown): string { if (typeof raw !== "string" || !raw) throw new Error("Campo Holded ausente."); return raw; }
 const idUrl = (id: string) => encodeURIComponent(id);
-export const normalizarProveedorExacto = normalizarProveedorComparable;
+// Conservar el contenido entre paréntesis para la prioridad de nombre exacto.
+// La comparación equivalente aún tolera descripciones de local, pero no debe
+// desplazar un alias confirmado por una ficha específica de otro hotel.
+export const normalizarProveedorExacto = (valor: string): string =>
+  normalizarProveedorComparable(valor.replace(/[()]/g, " "));
 function centimos(raw: unknown, admiteFormatoES = false): number {
   if (typeof raw !== "number" && typeof raw !== "string") throw new Error("Importe ausente o inválido.");
   let valor = String(raw);
