@@ -216,9 +216,19 @@ test("crear un borrador sin cuenta inferida no agrega una cuenta inventada", asy
 });
 test("las variantes inequívocas de forma societaria conservan coincidencia exacta", () => {
   assert.equal(normalizarProveedorExacto("OUIGO ESPAÑA S.A.U."), normalizarProveedorExacto("OUIGO ESPAÑA SA."));
-  assert.equal(normalizarProveedorExacto("Nieuwe Veste (Restaurant, Breda)"), normalizarProveedorExacto("Nieuwe Veste"));
+  assert.notEqual(normalizarProveedorExacto("Nieuwe Veste (Restaurant, Breda)"), normalizarProveedorExacto("Nieuwe Veste"));
   assert.equal(normalizarProveedorExacto("Soluciones Alegra S.A.S"), normalizarProveedorExacto("SOLUCIONES ALEGRA S A S"));
   assert.notEqual(normalizarProveedorExacto("DHL"), normalizarProveedorExacto("DHL Express Spain SLU"));
+});
+test("una ficha de hotel con paréntesis no desplaza el alias Booking confirmado", async () => {
+  const e = escenario();
+  e.r.proveedor = "Booking.com";
+  e.contactos[0].name = "Booking.com (Antaris Galerias / Hong Kong Road International Travel Limited)";
+  e.contactos.push({ id: "booking-confirmado", name: "BOOKING HOLDINGS Inc." });
+  e.memoria.alias = async () => [{ contactId: "booking-confirmado", contactName: "BOOKING HOLDINGS Inc." }];
+  const evidencia = await e.adapter.evidencias(e.c, e.r);
+  assert.equal(evidencia.contacto?.id, "booking-confirmado");
+  assert.equal(evidencia.contacto?.metodo, "alias_confirmado");
 });
 test("acepta espaciado equivalente y el nombre exacto prevalece sobre un alias antiguo", async () => {
   const e = escenario();
@@ -480,6 +490,15 @@ test("la verificación aprendida exige cuenta y tags funcionales exactos", async
   e.compra.tags = ["nicolasgomez", "transporte", "avion"];
   assert.equal(await adapter.verificarCreacion(e.op), true);
   e.compra.tags = ["nicolasgomez"];
+  assert.equal(await adapter.verificarCreacion(e.op), true);
+  e.op.plan.evidencia.cuenta.tags = ["Simon Talloen"];
+  e.compra.tags = ["simontalloen"];
+  assert.equal(await adapter.verificarCreacion(e.op), true);
+  e.compra.tags = [];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
+  e.compra.tags = ["otrapersona"];
+  assert.equal(await adapter.verificarCreacion(e.op), false);
+  e.compra.tags = ["simontalloen", "wobiautoop1"];
   assert.equal(await adapter.verificarCreacion(e.op), false);
   e.op.plan.evidencia.cuenta.tags = ["Núria Ortiz", "avion"];
   e.compra.tags = ["nuriaortiz", "wobiautoop1"];
