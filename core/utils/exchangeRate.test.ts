@@ -35,3 +35,14 @@ test("un esperado cero solo es correcto cuando el monto registrado también es c
     globalThis.fetch = fetchOriginal;
   }
 });
+
+test("no repite un 404 histórico ni lo sustituye por una tasa actual", async () => {
+  const original = globalThis.fetch; let llamadas = 0;
+  globalThis.fetch = async () => { llamadas++; return new Response("", {status:404}); };
+  try {
+    const {obtenerTasaCambioHistorica} = await import('./exchangeRate');
+    assert.equal(await obtenerTasaCambioHistorica('2026-08-26','COP','EUR'), undefined);
+    assert.equal(await obtenerTasaCambioHistorica('2026-08-26','COP','EUR'), undefined);
+    assert.equal(llamadas,1);
+  } finally { globalThis.fetch = original; }
+});
