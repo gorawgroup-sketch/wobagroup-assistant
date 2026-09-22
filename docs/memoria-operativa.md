@@ -56,3 +56,6 @@ Solo se ofrecen áreas cuyo escritor está implementado; no anunciar registros q
 - Conservar diagnóstico de validación/HTTP sin cuerpos remotos ni secretos. No afirmar lectura completa cuando falló el analizador.
 - Un cargo bancario explícito diferente puede estar en la misma moneda del recibo. Conservarlo para buscar y verificar el movimiento, sin inventarlo desde cifras hipotéticas ni alterar el comprobante original.
 - Cachear brevemente respuestas históricas 404 por fecha y par de monedas. Ausencia de tasa no demuestra ausencia del cargo; nunca sustituirla silenciosamente por una tasa actual.
+
+### Avisos de continuación de correo
+Para una entrega interrumpida de `colacorreo_siguiente`, consultar automáticamente la cola actual mediante lectura y mostrar correo activo/decisiones pendientes/total. Ofrecer continuar solo si no hay activo y quedan correos. La verificación de ese aviso usa la misma lectura, sin IA ni reejecución. El texto del mensaje donde se pulsó un botón es contexto de origen, nunca prueba del resultado. No atribuir conciliaciones a una acción de navegación ni cerrar incertidumbres financieras por inferencia.
