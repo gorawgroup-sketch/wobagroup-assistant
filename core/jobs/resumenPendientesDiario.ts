@@ -24,7 +24,7 @@ import { obtenerPendienteMontoPagoPorChat, consumirPendienteMontoPago } from "..
 import { obtenerPendienteOrientacionAnotacionPorChat, consumirPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
 import { obtenerPendienteOrientacionCorreoPorChat, consumirPendienteOrientacionCorreo } from "../gmail/emailOrientationStore";
 import { obtenerPendienteReglaClasificacionPorChat, consumirPendienteReglaClasificacion } from "../documental/pendienteReglaClasificacionStore";
-import { obtenerPendientesHiloAutorespuestaPorChat } from "../gmail/hiloAutorespuestaStore";
+import { obtenerPendientesHiloAutorespuestaPorChat, resolverHiloAutorespuesta } from "../gmail/hiloAutorespuestaStore";
 import { obtenerPendientesAutorrepairPorChat } from "../github/autorrepairPendienteStore";
 
 /**
@@ -34,9 +34,15 @@ import { obtenerPendientesAutorrepairPorChat } from "../github/autorrepairPendie
  * que requiera continuar." `tipo` (+ `subId` cuando puede haber varios del mismo tipo a la vez, ej.
  * desambiguación) identifica a cuál store/consumir-function apunta el botón individual de cada línea
  * — ver TIPOS_DESCARTABLES y descartarUnPendiente más abajo. Los tipos SIN `tipo` (contacto/gasto con
- * datos reales, edición de Holded, hilo de autorespuesta, autorrepair) se quedan sin botón individual
- * a propósito — mismo criterio que ya excluye a esos de "Descartar todo": son dinero o decisiones
+ * datos reales, edición de Holded/cashflow, autorrepair) se quedan sin botón individual a propósito —
+ * mismo criterio que ya excluye a esos de "Limpiar pendientes": son dinero o cambios de código
  * demasiado consecuentes para un descarte casual, siempre se revisan de verdad.
+ *
+ * Caso real de Carlos (2026-09-22): el resumen traía 3 "🤖 Falta decidir si es automática la
+ * conversación…" y solo 1 botón ("Descartar #2", el correo) — sin forma de descartar esas 3 ni una a
+ * una ni de golpe. Descartar esa pregunta equivale a "❌ No, normal": el hilo queda en el flujo
+ * normal de correo, nunca se autoriza un envío automático, así que es la salida conservadora y sí
+ * cabe en ambos descartes (ver hilo_autorespuesta en descartarUnPendiente/descartarTodosLosPendientes).
  */
 interface ItemPendiente {
   descripcion: string;
@@ -60,7 +66,8 @@ type TipoPendienteDescartable =
   | "monto_pago"
   | "orientacion_anotacion"
   | "orientacion_correo"
-  | "regla_clasificacion";
+  | "regla_clasificacion"
+  | "hilo_autorespuesta";
 
 /**
  * Hallazgo CRÍTICO de auditoría: el callback_data de Telegram tiene un límite de 64 bytes. Con el
@@ -86,6 +93,7 @@ const CODIGO_POR_TIPO: Record<Exclude<TipoPendienteDescartable, "cola_correo_act
   orientacion_anotacion: "oa",
   orientacion_correo: "oc",
   regla_clasificacion: "rg",
+  hilo_autorespuesta: "ha",
 };
 
 const TIPO_POR_CODIGO: Record<string, Exclude<TipoPendienteDescartable, "cola_correo_activo">> = Object.fromEntries(
@@ -280,7 +288,8 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   try {
     const hilos = await obtenerPendientesHiloAutorespuestaPorChat(chatId);
     for (const h of hilos) {
-      items.push({ descripcion: `🤖 Falta decidir si es automática la conversación con ${h.de} ("${truncar(h.asunto, 60)}")`, creadoEn: h.creadoEn });
+      // subId = threadId de Gmail (16 caracteres hex) — cabe de sobra en los 64 bytes del callback_data.
+      items.push({ descripcion: `🤖 Falta decidir si es automática la conversación con ${h.de} ("${truncar(h.asunto, 60)}")`, creadoEn: h.creadoEn, tipo: "hilo_autorespuesta", subId: h.threadId });
     }
   } catch (error) {
     console.error("[resumenPendientesDiario] Error consultando hilos de conversación automática sin decidir (no crítico):", error);
@@ -406,9 +415,9 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
       // Caso real reportado por Carlos: antes SOLO había "Descartar todo" — sin forma de descartar
       // uno solo de los opcionales y seguir revisando el resto. Un botón por cada línea descartable
       // (numerado igual que la lista de arriba, para que se entienda a cuál corresponde cada uno),
-      // más "Descartar todo" para cuando de verdad no queda nada por revisar. Los tipos sin `tipo`
-      // (dinero real, ediciones de Holded, hilos de autorespuesta, autorrepair) no traen botón
-      // individual a propósito — mismo criterio que ya los excluye de "Descartar todo".
+      // más "Limpiar pendientes" para descartarlos todos de golpe. Los tipos sin `tipo` (dinero
+      // real, ediciones de Holded/cashflow, autorrepair) no traen botón individual a propósito —
+      // mismo criterio que ya los excluye de "Limpiar pendientes".
       const botonesIndividuales: InlineKeyboardButton[][] = items
         .map((it, i) => ({ it, indice: i + 1 }))
         .filter(({ it }) => it.tipo !== undefined)
@@ -538,6 +547,17 @@ async function descartarTodosLosPendientes(chatId: number): Promise<number> {
   }
 
   try {
+    // Descartar la pregunta = "❌ No, normal" (ver autorespuestaHiloCallbackHandler.ts): el hilo sigue
+    // en el flujo normal de correo, jamás se autoriza un envío automático desde acá.
+    const hilos = await obtenerPendientesHiloAutorespuestaPorChat(chatId);
+    for (const h of hilos) {
+      if (await resolverHiloAutorespuesta(h.threadId, "rechazado")) n += 1;
+    }
+  } catch (error) {
+    console.error("[resumenPendientesDiario] Error descartando conversaciones automáticas sin decidir (no crítico):", error);
+  }
+
+  try {
     const capturas = await obtenerPendientesCapturaEmpresaPorChat(chatId);
     for (const c of capturas) {
       await eliminarPendienteCapturaEmpresa(chatId, c.messageId);
@@ -612,6 +632,14 @@ async function descartarUnPendiente(chatId: number, tipo: TipoPendienteDescartab
       return Boolean(await consumirPendienteOrientacionCorreo(chatId));
     case "regla_clasificacion":
       return Boolean(await consumirPendienteReglaClasificacion(chatId));
+    case "hilo_autorespuesta": {
+      // resolverHiloAutorespuesta no filtra por chat — se verifica que el hilo sea de ESTE chat antes
+      // de resolverlo, para que un callback_data manipulado nunca toque la decisión de otro admin.
+      if (!subId) return false;
+      const hilos = await obtenerPendientesHiloAutorespuestaPorChat(chatId);
+      if (!hilos.some((h) => h.threadId === subId)) return false;
+      return Boolean(await resolverHiloAutorespuesta(subId, "rechazado"));
+    }
   }
 }
 
@@ -638,7 +666,11 @@ export async function handleDescartarItemPendienteCallback(callback: TelegramCal
     const borrado = await descartarUnPendiente(chatId, tipo, subId ?? "");
     await sendTelegramMessage(
       chatId,
-      borrado ? "🗑️ Descartado." : "Ya no estaba pendiente — puede que ya lo hayas resuelto por otro camino."
+      !borrado
+        ? "Ya no estaba pendiente — puede que ya lo hayas resuelto por otro camino."
+        : tipo === "hilo_autorespuesta"
+          ? "🗑️ Descartado — esa conversación queda en el flujo normal de correo (no automática)."
+          : "🗑️ Descartado."
     ).catch(() => {});
   } catch (error) {
     console.error("[resumenPendientesDiario] Error descartando un pendiente individual (no crítico):", error);
@@ -660,7 +692,7 @@ export async function handleDescartarTodoPendienteCallback(callback: TelegramCal
 
   await sendTelegramMessageWithButtons(
     chatId,
-    "⚠️ ¿Confirmas que quieres limpiar los pendientes descartables? Las propuestas financieras seguirán intactas y los correos de Gmail permanecerán SIN LEER para que WOBI vuelva a revisarlos.",
+    "⚠️ ¿Confirmas que quieres limpiar los pendientes descartables? Las conversaciones sin decidir quedarán como NO automáticas (flujo normal de correo), las propuestas financieras seguirán intactas y los correos de Gmail permanecerán SIN LEER para que WOBI vuelva a revisarlos.",
     [[
       { text: "✅ Sí, limpiar pendientes", callback_data: "resumen_descartar_todo:confirmar" },
       { text: "↩️ Cancelar", callback_data: "resumen_descartar_todo:cancelar" },

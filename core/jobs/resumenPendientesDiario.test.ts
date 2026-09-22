@@ -24,3 +24,20 @@ test("el botón masivo exige confirmación y declara que Gmail sigue sin leer", 
   assert.match(fuente, /resumen_descartar_todo:cancelar/);
   assert.match(fuente, /permanecerán SIN LEER/);
 });
+
+test("las conversaciones automáticas sin decidir se pueden descartar una a una y en bloque, siempre como NO automáticas", async () => {
+  const fuente = await readFile(RUTA_FUENTE, "utf8");
+  assert.match(fuente, /tipo: "hilo_autorespuesta", subId: h\.threadId/);
+  assert.match(fuente, /hilo_autorespuesta: "ha"/);
+
+  const inicioMasiva = fuente.indexOf("async function descartarTodosLosPendientes");
+  const finalMasiva = fuente.indexOf("async function descartarUnPendiente", inicioMasiva);
+  const limpiezaMasiva = fuente.slice(inicioMasiva, finalMasiva);
+  assert.match(limpiezaMasiva, /resolverHiloAutorespuesta\(h\.threadId, "rechazado"\)/);
+
+  const inicioIndividual = fuente.indexOf('case "hilo_autorespuesta"');
+  const individual = fuente.slice(inicioIndividual, fuente.indexOf("}", fuente.indexOf("resolverHiloAutorespuesta", inicioIndividual)));
+  assert.match(individual, /obtenerPendientesHiloAutorespuestaPorChat\(chatId\)/, "debe verificar que el hilo es de este chat");
+  assert.match(individual, /resolverHiloAutorespuesta\(subId, "rechazado"\)/);
+  assert.doesNotMatch(fuente, /resolverHiloAutorespuesta\([^)]*"aprobado"\)/, "el resumen jamás puede aprobar una conversación automática");
+});
