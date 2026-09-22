@@ -1,3 +1,4 @@
+import { leerSheetsConReintento } from "../google/sheetsReadRetry";
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
@@ -54,6 +55,7 @@ function assertSheetId(): string {
 
 let writeClient: sheets_v4.Sheets | null = null;
 let tabAsegurada = false;
+let tabGridId: number | undefined;
 
 function getClient(): sheets_v4.Sheets {
   if (writeClient) return writeClient;
@@ -75,9 +77,10 @@ async function ensureTab(): Promise<void> {
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
+  const meta = await leerSheetsConReintento(() => sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" }));
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
   if (existing) {
+    tabGridId = existing.properties?.sheetId ?? undefined;
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
       range: `${TAB_NAME}!A1:N1`,
@@ -88,7 +91,7 @@ async function ensureTab(): Promise<void> {
     return;
   }
 
-  await sheets.spreadsheets.batchUpdate({
+  const creada = await sheets.spreadsheets.batchUpdate({
     spreadsheetId: sheetId,
     requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }] },
   });
@@ -100,6 +103,7 @@ async function ensureTab(): Promise<void> {
     requestBody: { values: [HEADERS] },
   });
 
+  tabGridId = creada.data.replies?.[0]?.addSheet?.properties?.sheetId ?? undefined;
   tabAsegurada = true;
 }
 
@@ -150,11 +154,11 @@ async function leerTodas(): Promise<FilaConIndice[]> {
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const resp = await sheets.spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${TAB_NAME}!A2:N10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
 
   const rows = resp.data.values ?? [];
   const result: FilaConIndice[] = [];
@@ -187,9 +191,9 @@ async function eliminarFila(rowIndex1Based: number): Promise<void> {
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
-  const gridId = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME)?.properties?.sheetId;
-  if (gridId == null) return;
+  await ensureTab();
+  const gridId = tabGridId;
+  if (gridId == null) throw new Error("No se pudo identificar la pestaña de conciliaciones pendientes.");
 
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: sheetId,
@@ -226,11 +230,11 @@ async function purgarVencidas(): Promise<void> {
 async function siguienteFilaLibre(): Promise<number> {
   const sheetId = assertSheetId();
   const sheets = getClient();
-  const resp = await sheets.spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${TAB_NAME}!A:N`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
   const rows = resp.data.values ?? [];
   return rows.length + 1;
 }
@@ -284,11 +288,11 @@ export async function guardarConciliacionPendiente(
         requestBody: { values: [fila_valores] },
       });
 
-      const verificacion = await sheets.spreadsheets.values.get({
+      const verificacion = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
         range: `${TAB_NAME}!A${fila}`,
         valueRenderOption: "UNFORMATTED_VALUE",
-      });
+      }));
       if (verificacion.data.values?.[0]?.[0] === pendiente.id) return pendiente;
 
       console.error(

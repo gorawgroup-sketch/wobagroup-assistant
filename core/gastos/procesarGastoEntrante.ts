@@ -255,13 +255,6 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       montoEquivalenteResuelto = Math.abs(movimientoLiquidacionUsado.monto);
       monedaEquivalenteResuelta = politicaLiquidacion.moneda;
     } else {
-      await sendTelegramMessage(
-        chatId,
-        `📄 Detecté una factura de ${datos.proveedor || "Anthropic"} por ${datos.monto.toFixed(2)} ${monedaOriginal}. ` +
-          `${politicaLiquidacion.motivo} No encontré un único cargo bancario EUR del mismo proveedor y fecha que ` +
-          `permita fijar el importe exacto sin adivinar. Dime el cargo EXACTO en ${politicaLiquidacion.moneda}; ` +
-          `hasta entonces no registraré la cifra USD como si fueran euros.`
-      );
       await guardarGastoPendienteDatos({
         chatId,
         rutaLocal: entrada.rutaLocal,
@@ -272,8 +265,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         deColaCorreo: entrada.deColaCorreo,
         origenAdjuntoGmail: entrada.origenAdjuntoGmail,
         correoOrigen: entrada.correoOrigen,
-      }).catch((error) =>
-        console.error("[procesarGastoEntrante] Error guardando pendiente de moneda de liquidación:", error)
+      });
+      await sendTelegramMessage(
+        chatId,
+        `📄 ${empresa} · ${datos.proveedor || "Anthropic"} · ${datos.monto.toFixed(2)} ${monedaOriginal} · ${fechaBusqueda}.\n\n` +
+          `La liquidación se registra en ${politicaLiquidacion.moneda} usando el importe real del banco. ` +
+          `La búsqueda todavía no permite vincular un cargo disponible de forma inequívoca; esto no demuestra que no se haya cobrado. ` +
+          `El movimiento puede estar pendiente de sincronización, ya conciliado o tener varios candidatos.\n\n` +
+          `No necesitas calcular ni facilitar el cambio. El documento queda pendiente de comprobación bancaria; ` +
+          `al retomarlo se vuelve a buscar el cargo y se comprueba que no exista ya el gasto antes de crearlo.`
       );
       return "pendiente_datos";
     }

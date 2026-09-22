@@ -1,3 +1,4 @@
+import { leerSheetsConReintento } from "../google/sheetsReadRetry";
 import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
@@ -187,7 +188,7 @@ async function ensureTab(): Promise<number> {
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
+  const meta = await leerSheetsConReintento(() => sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" }));
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
 
   if (existing?.properties?.sheetId != null) {
@@ -345,11 +346,11 @@ async function leerTodas(): Promise<FilaConIndice[]> {
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const resp = await sheets.spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${TAB_NAME}!A2:Z10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
 
   const rows = resp.data.values ?? [];
   const result: FilaConIndice[] = [];
@@ -422,11 +423,11 @@ async function siguienteFilaLibre(): Promise<number> {
   // columna A vacía pero datos reales más a la derecha — hay que contarla igual para no escribir
   // encima de ella. values.get recorta las filas vacías al final, así que rows.length ya es "la
   // última fila con algo, en cualquier columna del rango".
-  const resp = await sheets.spreadsheets.values.get({
+  const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
     range: `${TAB_NAME}!A:Z`,
     valueRenderOption: "UNFORMATTED_VALUE",
-  });
+  }));
   const rows = resp.data.values ?? [];
   return rows.length + 1;
 }
@@ -469,11 +470,11 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
         requestBody: { values: [propuestaToRow(propuesta)] },
       });
 
-      const verificacion = await sheets.spreadsheets.values.get({
+      const verificacion = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
         range: `${TAB_NAME}!A${fila}`,
         valueRenderOption: "UNFORMATTED_VALUE",
-      });
+      }));
       if (verificacion.data.values?.[0]?.[0] === propuesta.id) return propuesta;
 
       console.error(
@@ -733,11 +734,11 @@ export async function restaurarPropuestaGasto(propuesta: PropuestaGasto): Promis
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(restaurada)] },
       });
-      const verificacion = await sheets.spreadsheets.values.get({
+      const verificacion = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
         range: `${TAB_NAME}!A${fila}`,
         valueRenderOption: "UNFORMATTED_VALUE",
-      });
+      }));
       if (verificacion.data.values?.[0]?.[0] === restaurada.id) return restaurada;
     }
     throw new Error(`No se pudo restaurar la propuesta ${propuesta.id} tras ${MAX_INTENTOS_ESCRITURA} intentos.`);

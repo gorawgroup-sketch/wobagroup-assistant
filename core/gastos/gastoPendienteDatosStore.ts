@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { google, sheets_v4 } from "googleapis";
-import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { agregarFila, leerFilas, eliminarFila as eliminarFilaKV } from "../google/sheetsKeyValueStore";
 import { conMutex } from "../utils/asyncMutex";
 import type { DatosFactura } from "../documental/extractInvoiceData";
 
@@ -65,7 +64,6 @@ export interface GastoPendienteDatos {
   origenAdjuntoGmail?: { mensajeIdGmail: string; attachmentIdGmail: string; partId?: string };
 }
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_gastos_pendientes_datos";
 // 24h — pedido explícito de Carlos (mismo criterio en todos los
 // "pendiente_*", ver pendienteCapturaEmpresaStore.ts), igual que contactoResolucionStore.ts.
@@ -92,65 +90,6 @@ const HEADERS = [
   "correoOrigenJSON",
   "origenAdjuntoGmailJSON",
 ];
-
-function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
-    throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
-  }
-  return CASHFLOW_SHEET_ID;
-}
-
-let writeClient: sheets_v4.Sheets | null = null;
-let tabGridId: number | null = null;
-
-function getClient(): sheets_v4.Sheets {
-  if (writeClient) return writeClient;
-
-  const credentials = loadServiceAccountCredentials();
-  const auth = new google.auth.JWT({
-    email: credentials.client_email,
-    key: credentials.private_key,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-
-  writeClient = google.sheets({ version: "v4", auth });
-  return writeClient;
-}
-
-async function ensureTab(): Promise<number> {
-  if (tabGridId !== null) return tabGridId;
-
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: sheetId, fields: "sheets.properties" });
-  const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
-
-  if (existing?.properties?.sheetId != null) {
-    tabGridId = existing.properties.sheetId;
-    return tabGridId;
-  }
-
-  const addResp = await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }] },
-  });
-
-  const newSheetId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId;
-  if (newSheetId == null) {
-    throw new Error("No se pudo crear la pestaña de gastos pendientes de datos.");
-  }
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:K1`,
-    valueInputOption: "RAW",
-    requestBody: { values: [HEADERS] },
-  });
-
-  tabGridId = newSheetId;
-  return tabGridId;
-}
 
 function rowToPendiente(row: unknown[]): GastoPendienteDatos | null {
   if (!row[0]) return null;
@@ -219,42 +158,15 @@ interface FilaConIndice {
 }
 
 async function leerTodas(): Promise<FilaConIndice[]> {
-  await ensureTab();
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-
-  const resp = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:K10000`,
-    valueRenderOption: "UNFORMATTED_VALUE",
+  const rows = await leerFilas(TAB_NAME, HEADERS.length, HEADERS);
+  return rows.flatMap(({ rowIndex, valores }) => {
+    const pendiente = rowToPendiente(valores);
+    return pendiente ? [{ rowIndex, pendiente }] : [];
   });
-
-  const rows = resp.data.values ?? [];
-  const result: FilaConIndice[] = [];
-  rows.forEach((row, i) => {
-    const pendiente = rowToPendiente(row);
-    if (pendiente) result.push({ rowIndex: i + 2, pendiente });
-  });
-  return result;
 }
 
-async function eliminarFila(rowIndex1Based: number): Promise<void> {
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-  const gridId = await ensureTab();
-
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: sheetId,
-    requestBody: {
-      requests: [
-        {
-          deleteDimension: {
-            range: { sheetId: gridId, dimension: "ROWS", startIndex: rowIndex1Based - 1, endIndex: rowIndex1Based },
-          },
-        },
-      ],
-    },
-  });
+async function eliminarFila(rowIndex: number): Promise<void> {
+  await eliminarFilaKV(TAB_NAME, rowIndex, HEADERS);
 }
 
 async function purgarVencidas(): Promise<void> {
@@ -279,19 +191,9 @@ export async function guardarGastoPendienteDatos(
   return conMutex(CLAVE_MUTEX, async () => {
     await purgarVencidas();
 
-    const sheetId = assertSheetId();
-    const sheets = getClient();
-    await ensureTab();
-
     const pendiente: GastoPendienteDatos = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A:K`,
-      valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: { values: [pendienteToRow(pendiente)] },
-    });
+    await agregarFila(TAB_NAME, HEADERS.length, HEADERS, pendienteToRow(pendiente));
 
     return pendiente;
   });
@@ -340,16 +242,7 @@ export async function restaurarGastoPendienteDatos(pendiente: GastoPendienteDato
     const todas = await leerTodas();
     if (todas.some(({ pendiente: actual }) => actual.id === pendiente.id)) return;
 
-    const sheetId = assertSheetId();
-    const sheets = getClient();
-    await ensureTab();
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A:K`,
-      valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: { values: [pendienteToRow(pendiente)] },
-    });
+    await agregarFila(TAB_NAME, HEADERS.length, HEADERS, pendienteToRow(pendiente));
   });
 }
 
