@@ -1,5 +1,5 @@
 import { detectarNoRegistrados, enviarPropuestaCandidato, type EmpresaCashflow } from "../jobs/revisarHoldedVsCashflow";
-import { previousWeekRange, currentWeekRangeToDate, weekLabel, formatDateISO } from "../utils/isoWeek";
+import { rangoPedido } from "./compararCashflowHolded";
 import type { ToolDefinition } from "./types";
 
 const EMPRESAS: EmpresaCashflow[] = ["WOBA", "EWORKS"];
@@ -22,7 +22,8 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
     "manda un mensaje CON BOTONES para elegir la categoría y aprobarlo — a diferencia de " +
     "verificar_cashflow_actualizado (que solo reporta texto), esta SÍ dispara el flujo de aprobación real. " +
     "Úsala cuando el usuario pida explícitamente registrar/actualizar/agregar lo que falta, o cuando " +
-    "confirme que sí quiere verlos con botón tras una verificación. No la uses solo para 'revisar' o " +
+    "confirme que sí quiere verlos con botón tras una verificación. En comparaciones orientadas a registrar, " +
+    "Carlos ya pidió recibir estas opciones: no solicites otra escalada para presentarlas. Conserva semana. No la uses solo para 'revisar' o " +
     "'consultar' si falta algo — para eso usa verificar_cashflow_actualizado primero.",
   input_schema: {
     type: "object",
@@ -37,6 +38,7 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
         enum: ["semana_actual", "semana_anterior"],
         description: "'semana_actual' (por defecto) revisa lo que va de la semana en curso. 'semana_anterior' revisa la semana pasada completa.",
       },
+      semana: { type: "string", description: "Semana exacta del informe, por ejemplo S38. Tiene prioridad sobre periodo." },
     },
   },
   handler: async (input, context) => {
@@ -51,12 +53,9 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
     }
     const empresas = empresaFiltro ? [empresaFiltro] : EMPRESAS;
 
-    const esSemanaAnterior = input.periodo === "semana_anterior";
-    const referencia = new Date();
-    const { start, end } = esSemanaAnterior ? previousWeekRange(referencia) : currentWeekRangeToDate(referencia);
-    const semanaLabel = weekLabel(start);
-    const desde = formatDateISO(start);
-    const hasta = formatDateISO(end);
+    const rango = rangoPedido(input);
+    if ("error" in rango) return `Error: ${rango.error}`;
+    const { semana: semanaLabel, desde, hasta } = rango;
 
     const partes: string[] = [];
     let totalPropuestas = 0;
@@ -90,7 +89,7 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
     return [
       ...partes,
       "",
-      "Revisa cada mensaje de arriba: elige la categoría con el botón correspondiente, o \"❌ Ignorar\" si no aplica.",
+      "Elige el área sugerida, «Elegir otra área» o «No registrar». No registrar descarta la propuesta sin borrar movimientos de Holded ni del banco.",
     ].join("\n");
   },
 };

@@ -1,5 +1,6 @@
 import { answerCallbackQuery, editTelegramMessage } from "./client";
-import { consumirPropuesta } from "../google/proposalSheet";
+import { consumirPropuesta, obtenerPropuesta } from "../google/proposalSheet";
+import { AREAS_PROPUESTA_CASHFLOW, botonesAreasCashflow } from "../google/cashflowProposalButtons";
 import { cashflowEscrituraTool } from "../tools/cashflowEscritura";
 import { registrarDuplicadoConfirmado } from "../cashflow/duplicadosConfirmadosSheet";
 import { buscarDuplicadoCashflowActual } from "../jobs/revisarHoldedVsCashflow";
@@ -26,7 +27,13 @@ async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): 
  * revisarHoldedVsCashflow. Nunca se invoca desde el flujo de conversación
  * normal (askClaude) ni desde el job de detección directamente.
  */
-export async function handleCallbackQuery(callback: TelegramCallbackQuery): Promise<void> {
+const dependenciasCallbackCashflow = { obtenerPropuesta, consumirPropuesta, editTelegramMessage, answerCallbackQuerySafe };
+
+export async function handleCallbackQuery(
+  callback: TelegramCallbackQuery,
+  dependencias = dependenciasCallbackCashflow
+): Promise<void> {
+  const { obtenerPropuesta, consumirPropuesta, editTelegramMessage, answerCallbackQuerySafe } = dependencias;
   const data = callback.data;
   if (!data) {
     await answerCallbackQuerySafe(callback.id);
@@ -35,11 +42,31 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
 
   const [accion, id, bloqueElegido] = data.split(":");
 
-  if (accion !== "cf_approve" && accion !== "cf_reject" && accion !== "cf_duplicado") {
+  if (accion !== "cf_approve" && accion !== "cf_reject" && accion !== "cf_duplicado" && accion !== "cf_area") {
     await answerCallbackQuerySafe(callback.id);
     return;
   }
 
+  const visible = await obtenerPropuesta(id);
+  if (visible && callback.message?.chat.id !== visible.chatId) {
+    await answerCallbackQuerySafe(callback.id, "Esta propuesta pertenece a otro chat.");
+    return;
+  }
+  if (accion === "cf_area") {
+    await answerCallbackQuerySafe(callback.id, visible ? "Elige el área." : "Propuesta no disponible.");
+    if (visible) await editTelegramMessage(visible.chatId, visible.messageId,
+      `${visible.empresa} · ${visible.semana} · ${visible.clienteOConcepto} · ${visible.valor.toFixed(2)} €\n\n` +
+      (visible.montoDuplicado !== undefined ? `Posible duplicado de ${visible.montoDuplicado.toFixed(2)} € ya registrado. Elige «Es duplicado» si es el mismo pago.\n\n` : "") +
+      "Elige dónde registrarlo. Las secciones de pendientes son saldos pendientes, no gastos pagados. " +
+      "«No registrar» descarta únicamente esta propuesta; no borra nada del banco ni de Holded.",
+      [...botonesAreasCashflow(visible.id), ...(visible.montoDuplicado !== undefined
+        ? [[{ text: "🔁 Es duplicado", callback_data: `cf_duplicado:${visible.id}` }]] : [])]);
+    return;
+  }
+  if (accion === "cf_approve" && bloqueElegido && !AREAS_PROPUESTA_CASHFLOW.some(a => a.bloque === bloqueElegido)) {
+    await answerCallbackQuerySafe(callback.id, "Área no disponible; elige otra opción.");
+    return;
+  }
   const propuesta = await consumirPropuesta(id);
 
   if (!propuesta) {
@@ -52,7 +79,7 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
-      `❌ Ignorado — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} €)`,
+      `No registrado en cash flow — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} €). El banco y Holded no se modificaron.`,
       []
     );
     return;
@@ -140,7 +167,7 @@ export async function handleCallbackQuery(callback: TelegramCallbackQuery): Prom
     await editTelegramMessage(
       propuesta.chatId,
       propuesta.messageId,
-      `✅ Agregado — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} €)\n\n${resultado}`,
+      `Resultado del registro — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} €)\n\n${resultado}`,
       []
     );
   } catch (error) {

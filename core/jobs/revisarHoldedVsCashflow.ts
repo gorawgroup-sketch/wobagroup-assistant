@@ -9,6 +9,7 @@ import { montosCercanos } from "../utils/montos";
 import { textosParecidos } from "../utils/textoParecido";
 import { obtenerTodosLosDuplicadosConfirmados, type FilaDuplicado } from "../cashflow/duplicadosConfirmadosSheet";
 import { generarCruceCashflowHolded, parsearImporteCashflow } from "../cashflow/cruceHoldedCashflow";
+import { esCambioDivisaCashflow } from "../google/cashflowProposalButtons";
 
 const TOLERANCIA_EUR = 0.01;
 // Deliberadamente acotado a WOBA/EWORKS (no el tipo Empresa completo de
@@ -246,6 +247,7 @@ export async function enviarPropuestaCandidato(
     ? [{ bloque: "ingresos" as BloqueEscritura, etiqueta: "Ingresos" }]
     : construirOpcionesBloque(candidato.categoriasSugeridas);
   const bloqueSugerido = opciones[0].bloque;
+  const cambioDivisa = esCambioDivisaCashflow(candidato.descripcion);
 
   const mejorSugerencia = candidato.categoriasSugeridas?.[0];
   const notaNoEscribible =
@@ -274,7 +276,10 @@ export async function enviarPropuestaCandidato(
     `Fecha: ${candidato.fecha ?? "(sin fecha)"}`,
     `Semana: ${semanaLabel}`,
     `Concepto: ${candidato.descripcion}`,
+    ...(candidato.cuenta ? [`Cuenta bancaria: ${candidato.cuenta}`] : []),
     `Valor: ${candidato.valorAbs.toFixed(2)} € (${candidato.esIngreso ? "abono" : "cargo"})`,
+    ...(candidato.moneda && candidato.moneda !== "EUR" ? [`Importe mostrado en EUR; moneda de la cuenta de origen: ${candidato.moneda}.`] : []),
+    ...(cambioDivisa ? ["Cambio entre divisas: no se propone como ingreso o gasto ordinario. Puedes no registrarlo o elegir expresamente el área."] : []),
     ``,
     `¿A qué categoría corresponde?`,
   ].join("\n") + notaPosibleDuplicado + notaNoEscribible;
@@ -297,11 +302,12 @@ export async function enviarPropuestaCandidato(
     propuestaId = propuesta.id;
 
     const botones = [
-      ...opciones.map((o) => [{ text: `✅ ${o.etiqueta}`, callback_data: `cf_approve:${propuesta.id}:${o.bloque}` }]),
+      ...(cambioDivisa ? [] : opciones.map((o, i) => [{ text: `✅ Registrar en ${o.etiqueta}${i === 0 ? " (sugerida)" : ""}`, callback_data: `cf_approve:${propuesta.id}:${o.bloque}` }])),
+      [{ text: "📂 Elegir otra área", callback_data: `cf_area:${propuesta.id}` }],
       ...(candidato.posibleDuplicadoDe
         ? [[{ text: "🔁 Es duplicado", callback_data: `cf_duplicado:${propuesta.id}` }]]
         : []),
-      [{ text: "❌ Ignorar", callback_data: `cf_reject:${propuesta.id}` }],
+      [{ text: "❌ No registrar", callback_data: `cf_reject:${propuesta.id}` }],
     ];
 
     const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);

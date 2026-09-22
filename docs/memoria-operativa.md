@@ -40,3 +40,13 @@ Las instrucciones de correo se aprenden por una vía separada. Solo se guardan c
 - Las instrucciones excesivamente largas no se convierten en reglas. Como máximo se cargan cinco reglas aplicables y se reutilizan durante dos minutos en memoria, sin abrir una llamada adicional de IA.
 
 El comando `reporte_aprendizaje` muestra cuántas evidencias acumula cada mecanismo y cuáles están más reforzadas. Esto permite comprobar que el sistema aprende de casos reales sin ocultar las reglas que está aplicando.
+
+## Comparaciones destinadas a registrar en cash flow
+
+Por instrucción de Carlos, cuando la comparación se orienta a registrar movimientos faltantes,
+usar `proponer_registro_cashflow` con la misma semana explícita del informe. Presentar las
+opciones sin pedir otra escalada: área sugerida, «Elegir otra área» y «No registrar».
+Abrir el selector conserva la propuesta y no escribe. Descartarla no borra nada de Holded ni
+del banco. Solo la selección de registro activa el escritor existente, con relectura de duplicados.
+Las conversiones bancarias entre divisas no reciben una sugerencia de gasto ordinario.
+Solo se ofrecen áreas cuyo escritor está implementado; no anunciar registros que no se verificaron.

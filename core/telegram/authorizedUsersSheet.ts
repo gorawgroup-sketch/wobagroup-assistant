@@ -240,6 +240,9 @@ export async function eliminarUsuario(userId: number): Promise<boolean> {
 // envío final.
 const ACCIONES_SENSIBLES = new Set([
   "cf_approve",
+  "cf_area",
+  "cf_reject",
+  "cf_duplicado",
   "recpago_confirmar",
   "draft_enviar",
   "doc_confirm",
