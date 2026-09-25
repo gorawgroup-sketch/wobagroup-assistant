@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage, editTelegramMessageExpandable, sendTelegramMessage, sendTelegramMessageSmart } from "../telegram/client";
 import { consumirPropuestaAccionAnotacion } from "./cashflowAnnotationActionStore";
 import { guardarPendienteOrientacionAnotacion } from "./cashflowAnnotationOrientationStore";
@@ -36,7 +37,7 @@ export async function handleCashflowAnnotationActionCallback(callback: TelegramC
   const propuesta = await consumirPropuestaAccionAnotacion(id);
 
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 

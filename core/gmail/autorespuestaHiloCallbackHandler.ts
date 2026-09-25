@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { resolverHiloAutorespuesta } from "./hiloAutorespuestaStore";
 import { procesarHiloAutorespuestaAprobado } from "../jobs/revisarConversacionesAutomaticas";
@@ -34,7 +35,7 @@ export async function handleAutorespuestaHiloCallback(callback: TelegramCallback
   if (accion === "autohilo_rechazar") {
     const actualizado = await resolverHiloAutorespuesta(threadId, "rechazado");
     if (!actualizado) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible.");
       return;
     }
 
@@ -51,7 +52,7 @@ export async function handleAutorespuestaHiloCallback(callback: TelegramCallback
   if (accion === "autohilo_aprobar") {
     const actualizado = await resolverHiloAutorespuesta(threadId, "aprobado");
     if (!actualizado) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible.");
       return;
     }
 

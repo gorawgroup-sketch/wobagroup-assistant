@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { consumirPendienteEdicionValorCashflow } from "./pendienteEdicionValorCashflowStore";
 import { editarValorEnFilaCashflow } from "./cashflowWrite";
@@ -30,7 +31,7 @@ export async function handleEdicionValorCashflowCallback(callback: TelegramCallb
   const [accion, id] = data.split(":");
   const pendiente = await consumirPendienteEdicionValorCashflow(id);
   if (!pendiente) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya se procesó).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya se procesó).");
     return;
   }
 

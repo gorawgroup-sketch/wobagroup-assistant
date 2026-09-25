@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { obtenerEntradaPorId, calcularProximaFecha } from "./calendario";
 import { formatDateLocal } from "../utils/dateFormat";
@@ -66,7 +67,9 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
 
     const entrada = obtenerEntradaPorId(id);
     if (!entrada || !entrada.empresaHolded) {
-      await answerCallbackQuerySafe(callback.id, "Esta entrada ya no está disponible.");
+      // Una entrada que existe pero no tiene empresa en Holded no es una pregunta caducada: no se retira su mensaje.
+      if (entrada) await answerCallbackQuerySafe(callback.id, "Esta entrada ya no está disponible.");
+      else await retirarPreguntaCaducada(callback, "Esta entrada ya no está disponible.");
       return;
     }
 
@@ -110,7 +113,7 @@ export async function handlePagoRecurrenteCallback(callback: TelegramCallbackQue
   if (accion === "recpago_confirmar") {
     const propuesta = await consumirPropuestaPagoRecurrente(id);
     if (!propuesta) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 

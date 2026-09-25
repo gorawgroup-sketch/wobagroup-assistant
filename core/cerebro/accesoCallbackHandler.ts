@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { sendTelegramMessageWithButtons, editTelegramMessage, answerCallbackQuery } from "../telegram/client";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
 import {
@@ -88,7 +89,7 @@ export async function handleAccesoCerebroCallback(callback: TelegramCallbackQuer
   const solicitud = await obtenerSolicitudAcceso(id);
 
   if (!solicitud || solicitud.estado !== "pendiente") {
-    await answerCallbackQuerySafe(callback.id, "Esta solicitud ya no está disponible (resuelta o vencida).");
+    await retirarPreguntaCaducada(callback, "Esta solicitud ya no está disponible (resuelta o vencida).");
     return;
   }
 

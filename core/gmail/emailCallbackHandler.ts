@@ -1,7 +1,8 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
-import { answerCallbackQuery, editTelegramMessage, editTelegramMessageSmart, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, editTelegramMessageSmart, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, sendTelegramTemporaryNotice } from "../telegram/client";
 import {
   consumirPropuestaAccionCorreo,
   restaurarPropuestaAccionCorreo,
@@ -398,7 +399,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
   if (accion === "email_responder_si" || accion === "email_responder_no") {
     const oferta = await consumirOfertaResponderCorreo(id);
     if (!oferta) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible.");
       return;
     }
 
@@ -463,7 +464,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
   const propuesta = await consumirPropuestaAccionCorreo(id);
 
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 
@@ -790,7 +791,7 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
   if (accion === "draft_verificar") {
     const borrador = await obtenerBorradorCorreo(id);
     if (!borrador) {
-      await answerCallbackQuerySafe(callback.id, "Este borrador ya no está pendiente.");
+      await retirarPreguntaCaducada(callback, "Este borrador ya no está pendiente.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Verificando en Gmail...");
@@ -862,7 +863,7 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
   if (accion === "draft_editar") {
     const borrador = await obtenerBorradorCorreo(id);
     if (!borrador) {
-      await answerCallbackQuerySafe(callback.id, "Este borrador ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Este borrador ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id);
@@ -882,7 +883,7 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
   // draft_enviar
   const borrador = await obtenerBorradorCorreo(id);
   if (!borrador) {
-    await answerCallbackQuerySafe(callback.id, "Este borrador ya no está disponible.");
+    await retirarPreguntaCaducada(callback, "Este borrador ya no está disponible.");
     return;
   }
 
@@ -1000,7 +1001,7 @@ async function aplicarEdicionBorrador(cuerpoActual: string, instruccion: string)
 export async function continuarConEdicionBorrador(chatId: number, borradorId: string, instruccion: string): Promise<void> {
   const borradorActual = await obtenerBorradorCorreo(borradorId);
   if (!borradorActual) {
-    await sendTelegramMessage(chatId, "Ese borrador ya no está disponible.");
+    await sendTelegramTemporaryNotice(chatId, "Ese borrador ya no está disponible.");
     return;
   }
 
@@ -1021,7 +1022,7 @@ export async function continuarConEdicionBorrador(chatId: number, borradorId: st
 
     const borrador = await actualizarCuerpoBorrador(borradorId, cuerpoActualizado);
     if (!borrador) {
-      await sendTelegramMessage(chatId, "Ese borrador ya no está disponible.");
+      await sendTelegramTemporaryNotice(chatId, "Ese borrador ya no está disponible.");
       return;
     }
 

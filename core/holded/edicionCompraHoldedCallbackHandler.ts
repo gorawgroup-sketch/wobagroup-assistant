@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import {
   consumirPendienteEdicionCompraHolded,
@@ -39,7 +40,7 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
       ? await consumirPendienteEdicionCompraHolded(id)
       : await obtenerPendienteEdicionCompraHolded(id);
   if (!pendiente) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya se procesó).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya se procesó).");
     return;
   }
 

@@ -494,11 +494,54 @@ const acusesCallback = new AcusesCallback(
 );
 
 export function prepararAcuseCallback(id: string, usuarioId: number): void {
-  acusesCallback.preparar(id, (texto) => sendTelegramMessage(usuarioId, texto));
+  // Un texto tardío (el acuse ya se envió) no debe quedar para siempre en el chat: se borra solo.
+  acusesCallback.preparar(id, (texto) => sendTelegramTemporaryNotice(usuarioId, texto));
 }
 
 export function answerCallbackQuery(id: string, text?: string): Promise<void> {
   return acusesCallback.contestar(id, text);
+}
+
+/** true si la respuesta de deleteMessage confirma que el mensaje ya no está en el chat. */
+export function mensajeYaNoEsta(status: number, cuerpo: string): boolean {
+  if (status >= 200 && status < 300) return true;
+  // "message to delete not found": ya no existe, que es justo lo que se quería.
+  return status === 400 && /message to delete not found/i.test(cuerpo);
+}
+
+/**
+ * Borra un mensaje del chat: una pregunta que ya no se puede procesar debe desaparecer y no quedar como ruido
+ * (pedido de Carlos: que en el chat solo estén las preguntas activas). Un solo intento con tope de tiempo — es
+ * limpieza, nunca debe frenar ni fallar un flujo. Devuelve true si el mensaje ya no está (borrado ahora o
+ * inexistente). Telegram solo permite borrar mensajes de menos de 48 h; en ese caso devuelve false y quien llama
+ * decide el respaldo (quitar los botones). Retira también el mensaje del espejo de botones del chat web.
+ */
+export async function deleteTelegramMessage(chatId: number, messageId: number): Promise<boolean> {
+  let borrado = false;
+  try {
+    const response = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/deleteMessage`, {
+      method: "POST",
+      signal: AbortSignal.timeout(8_000),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+    });
+    borrado = mensajeYaNoEsta(response.status, response.ok ? "" : await response.text());
+  } catch (error) {
+    console.error("[telegram/client] No se pudo borrar el mensaje (no crítico):", error instanceof Error ? error.message : error);
+  }
+  if (borrado) await actualizarBotonesActivos(chatId, messageId, []);
+  return borrado;
+}
+
+/**
+ * Aviso que se borra solo: para respuestas que solo importan en el momento (p. ej. «esa pregunta ya no está
+ * disponible» tras una pulsación) y que no deben acumularse en el chat. Devuelve el message_id.
+ */
+export async function sendTelegramTemporaryNotice(chatId: number, text: string, ttlMs = 15_000): Promise<number> {
+  const messageId = await sendTelegramMessagePlain(chatId, text);
+  const temporizador = setTimeout(() => { void deleteTelegramMessage(chatId, messageId); }, ttlMs);
+  temporizador.unref?.();
+  return messageId;
 }
 
 /**

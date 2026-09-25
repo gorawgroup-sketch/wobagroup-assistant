@@ -1,6 +1,7 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { solicitarRespuestaCarpeta } from "./respuestaCarpeta";
 import { unlink } from "node:fs/promises";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramTemporaryNotice } from "../telegram/client";
 import {
   consumirPropuestaClasificacion,
   obtenerPropuestaClasificacion,
@@ -192,7 +193,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   if (accion === "doc_regla" || accion === "doc_alerta") {
     const propuestaPeek = await obtenerPropuestaClasificacion(id);
     if (!propuestaPeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
       return;
     }
 
@@ -249,7 +250,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   if (accion === "doc_responder") {
     const propuestaPeek = await obtenerPropuestaClasificacion(id);
     if (!propuestaPeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
       return;
     }
     if (!propuestaPeek.correoOrigen) {
@@ -300,7 +301,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   if (accion === "doc_conocimiento") {
     const propuestaPeek = await obtenerPropuestaClasificacion(id);
     if (!propuestaPeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
       return;
     }
 
@@ -385,7 +386,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   if (accion === "doc_esgasto") {
     const propuestaPeek = await obtenerPropuestaClasificacion(id);
     if (!propuestaPeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
       return;
     }
 
@@ -518,7 +519,7 @@ export async function handleDocumentCallback(callback: TelegramCallbackQuery): P
   const propuesta = await obtenerPropuestaClasificacion(id);
 
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 
@@ -694,7 +695,8 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
 
   if (accion === "desamb_carpeta") {
     await answerCallbackQuerySafe(callback.id);
-    await solicitarRespuestaCarpeta(chatId, idBoton);
+    // Si la pregunta ya no se puede responder, su mensaje con botones desaparece del chat.
+    if (!await solicitarRespuestaCarpeta(chatId, idBoton)) await retirarPreguntaCaducada(callback);
     return;
   }
 
@@ -710,7 +712,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
     const pendientePeek = todas.find((item) => item.id === idBoton);
     if (!pendientePeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
       return;
     }
     const indice = Number(indiceCarpetaRaw);
@@ -798,7 +800,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
     const pendientePeek = todas.find((p) => p.id === idBoton);
     if (!pendientePeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
       return;
     }
 
@@ -822,7 +824,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     // resolvió, en vez de avanzar la cola una segunda vez con datos obsoletos.
     const pendiente = await consumirPendienteDesambiguacionPorId(pendientePeek.id, chatId).catch(() => undefined);
     if (!pendiente) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró, ya se respondió, o se resolvió con otro botón).");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible (expiró, ya se respondió, o se resolvió con otro botón).");
       return;
     }
 
@@ -918,7 +920,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     const todas = idBoton ? await obtenerPendienteDesambiguacionPorChat(chatId).catch(() => []) : [];
     const pendientePeek = todas.find((p) => p.id === idBoton);
     if (!pendientePeek) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
       return;
     }
 
@@ -974,7 +976,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     // nuevo estado no llega a persistirse, la pregunta original se restaura.
     const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;
     if (!pendiente) {
-      await sendTelegramMessage(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).").catch(() => {});
+      await sendTelegramTemporaryNotice(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).").catch(() => {});
       return;
     }
     try {
