@@ -903,6 +903,8 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
           // Despierta el front al terminar (con éxito o error). La respuesta
           // se recupera por requestId; no depende de mantener el POST vivo.
           publicarCambioCerebro("chat_web");
+          // Lo que el chat haya cambiado (costes, cashflow, correo...) llega al panel sin esperar al TTL.
+          programarActualizacionCerebroDesdeTelegram("chat_web");
         }
       },
       (solicitud) => notificarEstadoSolicitudChat(solicitud.estado)

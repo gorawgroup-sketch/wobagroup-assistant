@@ -23,7 +23,8 @@ test("una consulta colgada termina por timeout y permite reintentar", async () =
 test("entrada, regreso, cambios y botón piden otra lectura si algo cambia durante una en curso; la fecha de contacto no oculta antigüedad ni fallos", () => {
   for (const reason of ["entrada", "visibilidad", "online", "reconexion", "manual", "evento"]) assert.equal(necesitaLecturaNueva(reason), true);
   assert.equal(necesitaLecturaNueva("intervalo"), false);
-  assert.equal(estadoFrescura({cacheadoEn:new Date(0).toISOString(),generadoEn:new Date(100000).toISOString()},100000),"antiguo");
+  assert.equal(estadoFrescura({cacheadoEn:new Date(0).toISOString(),generadoEn:new Date(200000).toISOString()},200000),"antiguo");
+  assert.equal(estadoFrescura({cacheadoEn:new Date(0).toISOString()},140000),"reciente");
   assert.equal(estadoFrescura({cacheadoEn:new Date().toISOString(),actualizacionParcial:true}),"parcial");
   assert.equal(estadoFrescura({cacheadoEn:new Date().toISOString()}),"reciente");
 });
@@ -31,4 +32,13 @@ test("entrada, regreso, cambios y botón piden otra lectura si algo cambia duran
 test("solo el botón «actualizar» fuerza al servidor a recalcular: entrar, volver, reconectar y los avisos leen lo último al instante", () => {
   assert.equal(fuerzaLecturaNueva("manual"), true);
   for (const reason of ["entrada", "visibilidad", "online", "reconexion", "evento", "intervalo", "reintento", undefined]) assert.equal(fuerzaLecturaNueva(reason), false, String(reason));
+});
+
+test("una orden manual en cola no se degrada por un aviso posterior", async () => {
+  const first = deferred(); const calls = [];
+  const c = createRefreshCoordinator(async reason => { calls.push(reason); if (calls.length === 1) await first.promise; return true; });
+  const p = c.refresh("intervalo"); await Promise.resolve();
+  c.refresh("manual"); c.refresh("evento"); c.refresh("visibilidad");
+  first.resolve(); await p;
+  assert.deepEqual(calls, ["intervalo", "manual"]);
 });

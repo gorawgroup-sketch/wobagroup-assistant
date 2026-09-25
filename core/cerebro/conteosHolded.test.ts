@@ -91,3 +91,22 @@ test("necesitaRefresco respeta el TTL de 15 min", async () => {
   r.avanzar(2 * 60_000);
   assert.equal(c.necesitaRefresco(), true);
 });
+
+test("una métrica que falla de forma persistente no provoca recálculos en bucle: un solo intento por ventana de backoff", async () => {
+  const r = reloj();
+  let llamadas = 0;
+  const c = new ConteosHoldedPesados({
+    gastosSinComprobante: async (e) => { llamadas++; if (e === "Footprint") throw new Error("Holded 429"); return 1; },
+    movimientosSinConciliar: async () => { llamadas++; return 1; },
+  }, { ahora: r.ahora, backoffMs: 5 * 60_000 });
+  await c.refrescar();
+  assert.equal(llamadas, 6);
+  r.avanzar(16 * 60_000); // caducado, pero acabamos de intentar con fallos hace... más del backoff
+  await c.refrescar();
+  assert.equal(llamadas, 12, "pasado el backoff se reintenta una vez");
+  for (let i = 0; i < 18; i++) { r.avanzar(15_000); if (c.necesitaRefresco()) await c.refrescar(); await c.refrescar(2 * 60_000); }
+  assert.equal(llamadas, 12, "18 ticks de mantenimiento (4,5 min) y peticiones manuales dentro del backoff: ninguna lectura más");
+  assert.equal(c.necesitaRefresco(), false);
+  r.avanzar(6 * 60_000);
+  assert.equal(c.necesitaRefresco(), true);
+});

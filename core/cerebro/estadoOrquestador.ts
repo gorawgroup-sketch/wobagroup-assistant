@@ -45,9 +45,12 @@ export interface OpcionesOrquestador {
   /** Una orden «actualizar» dentro de este intervalo tras la anterior se atiende con lo ya calculado. */
   intervaloMinForzadoMs?: number;
   esperaCoalescerMs?: number;
+  timeoutCargaMs?: number;
   intervaloMantenimientoMs?: number;
   /** Sin nadie mirando, las secciones se refrescan igualmente cada tanto, para que el primer visitante encuentre datos recientes. */
   edadMaximaOciosaMs?: number;
+  /** Espera antes de publicar «estado_actualizado» (se reinicia con cada recálculo terminado). */
+  esperaAvisoMs?: number;
 }
 
 export interface EstadoSecciones {
@@ -55,6 +58,8 @@ export interface EstadoSecciones {
   fuentes: EstadoFuente[];
   /** Instante (ms) del dato más antiguo entre todas las secciones: la frescura real del panel. */
   obtenidoEn: number;
+  /** Instante (ms) del recálculo más reciente de cualquier sección: cambia cada vez que llega algo nuevo. */
+  actualizadoEn: number;
   /** true si alguna sección se está recalculando o le falta un recálculo. */
   refrescando: boolean;
   conteos: ConteosHolded;
@@ -63,8 +68,8 @@ export interface EstadoSecciones {
 export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
   const ahora = opciones.ahora ?? Date.now;
   const ventanaInteres = opciones.ventanaInteresMs ?? 10 * 60_000;
-  const intervaloMinForzado = opciones.intervaloMinForzadoMs ?? 5_000;
-  const edadMaximaOciosa = opciones.edadMaximaOciosaMs ?? 5 * 60_000;
+  const intervaloMinForzado = opciones.intervaloMinForzadoMs ?? 2_000;
+  const edadMaximaOciosa = opciones.edadMaximaOciosaMs ?? 20 * 60_000;
   let ultimaConsultaEn = 0;
   let ultimoForzadoEn = 0;
   let forzadoEnCurso: Promise<void> | null = null;
@@ -72,13 +77,17 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
 
   /** Un solo aviso «estado_actualizado» por ráfaga de recálculos provocados por invalidaciones. */
   const avisarEstadoActualizado = () => {
-    if (avisoPendiente) return;
+    // Cada sección que termina reinicia la espera: una ráfaga (varias secciones, varias vueltas) da UN solo aviso.
+    if (avisoPendiente) clearTimeout(avisoPendiente);
     avisoPendiente = setTimeout(() => {
       avisoPendiente = null;
       opciones.publicar("estado_actualizado");
-    }, 300);
+    }, opciones.esperaAvisoMs ?? 1_500);
     avisoPendiente.unref?.();
   };
+
+  /** Hay quien mire el panel: navegadores conectados por SSE o una consulta reciente. */
+  const hayInteres = () => opciones.hayNavegadoresConectados() || (ultimaConsultaEn > 0 && ahora() - ultimaConsultaEn < ventanaInteres);
 
   const secciones = new Map<string, SeccionSWR<ResultadoSeccion<unknown>>>();
   for (const definicion of opciones.secciones) {
@@ -89,6 +98,7 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
       alInvalidar: definicion.alInvalidar,
       alCompletarInvalidada: avisarEstadoActualizado,
       esperaCoalescerMs: opciones.esperaCoalescerMs,
+      timeoutCargaMs: opciones.timeoutCargaMs,
       ahora,
     }));
   }
@@ -117,6 +127,7 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
       fuentes,
       // Una sección que nunca se pudo leer cuenta como «sin verificar» (fecha 0): jamás se disfraza de reciente.
       obtenidoEn: Math.min(...lecturas.map((l) => l.obtenidoEn)),
+      actualizadoEn: Math.max(...lecturas.map((l) => l.obtenidoEn)),
       refrescando: lecturas.some((l) => l.refrescando) || conteos.refrescando,
       conteos,
     };
@@ -132,13 +143,20 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
     async obtener(forzar = false): Promise<EstadoSecciones> {
       ultimaConsultaEn = ahora();
       if (forzar) {
-        if (!forzadoEnCurso && ahora() - ultimoForzadoEn >= intervaloMinForzado) {
+        const enCurso = forzadoEnCurso;
+        if (!enCurso && ahora() - ultimoForzadoEn >= intervaloMinForzado) {
           forzadoEnCurso = Promise.allSettled([...secciones.values()].map((s) => s.recalcular()))
             .then(() => { ultimoForzadoEn = ahora(); })
             .finally(() => { forzadoEnCurso = null; });
           void opciones.conteos.refrescar(2 * 60_000);
+          await forzadoEnCurso;
+        } else {
+          // Una orden que llega con otra en curso (que empezó ANTES de este clic) o justo después de una: nunca se
+          // ignora en silencio. Se espera a la que está en curso y se agenda otro recálculo; la respuesta sale marcada
+          // `refrescando` y el aviso «estado_actualizado» (o el reintento del front) trae el dato nuevo.
+          if (enCurso) await enCurso;
+          for (const seccion of secciones.values()) seccion.invalidar(true);
         }
-        if (forzadoEnCurso) await forzadoEnCurso;
       }
       return leerTodas();
     },
@@ -150,7 +168,10 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
      */
     invalidar(nombres?: string[]): void {
       const objetivo = nombres?.length ? nombres : [...secciones.keys()];
-      for (const nombre of objetivo) secciones.get(nombre)?.invalidar();
+      // Sin nadie mirando el panel la invalidación es perezosa (solo marca): el siguiente visitante o el
+      // mantenimiento recalculan. Antes cada mensaje de Telegram y cada tarea programada releían 10 fuentes.
+      const recalcularYa = hayInteres();
+      for (const nombre of objetivo) secciones.get(nombre)?.invalidar(recalcularYa);
     },
 
     /** Primera lectura de todo, para que el primer visitante tras un arranque o despliegue no espere. */
@@ -161,17 +182,18 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
 
     /**
      * Un tick de mantenimiento. Con alguien mirando el panel (o que lo miró hace poco) recalcula en segundo
-     * plano lo vencido; sin nadie, solo lo que supera `edadMaximaOciosaMs` (5 min), para que el primer visitante
-     * encuentre siempre datos recientes al instante sin gastar cuota de Sheets/Holded de forma continua.
+     * plano lo vencido; sin nadie, solo lo que supera `edadMaximaOciosaMs` (20 min), para que el primer visitante
+     * no espere y sin gastar cuota de Sheets/Holded de forma continua.
      */
     mantener(): void {
-      const hayInteres = opciones.hayNavegadoresConectados() || (ultimaConsultaEn > 0 && ahora() - ultimaConsultaEn < ventanaInteres);
+      const interes = hayInteres();
       for (const seccion of secciones.values()) {
-        const debeRefrescar = hayInteres ? seccion.estaVencida : seccion.antiguedadMs >= edadMaximaOciosa;
+        const debeRefrescar = interes ? seccion.estaVencida : seccion.antiguedadMs >= edadMaximaOciosa;
         if (debeRefrescar) void seccion.refrescar().catch(() => undefined);
       }
-      // Los conteos pesados siguen su propio ritmo (15 min) con o sin espectadores.
-      if (opciones.conteos.necesitaRefresco()) void opciones.conteos.refrescar();
+      // Los conteos pesados (cientos de lecturas a Holded) solo se mantienen frescos si alguien mira el panel;
+      // sin nadie, el siguiente visitante los ve con su fecha y dispara el recálculo.
+      if (interes && opciones.conteos.necesitaRefresco()) void opciones.conteos.refrescar();
     },
 
     /** Arranca el mantenimiento periódico; devuelve la función que lo detiene. */

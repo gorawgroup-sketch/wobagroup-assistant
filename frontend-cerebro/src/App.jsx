@@ -438,6 +438,8 @@ function AtencionAhora({ data, onAbrir }) {
     },
   ].filter((item) => item.cantidad > 0);
   const totalPendientes = items.reduce((total, item) => total + item.cantidad, 0);
+  // Los conteos de Holded se calculan en segundo plano: mientras no haya un primer cálculo, no se afirma «todo bajo control».
+  const conteosHoldedPendientes = get(data, "holded.gastosSinComprobante", null) === null || get(data, "holded.movimientosSinConciliar", null) === null;
 
   return (
     <section
@@ -447,7 +449,7 @@ function AtencionAhora({ data, onAbrir }) {
       <div className="atencion-rail-cabecera">
         <div id="atencion-ahora-titulo" className="atencion-rail-titulo">
           <span className="atencion-rail-pulso" aria-hidden="true" />
-          <span>{data?.actualizacionParcial ? "Revisión pendiente: datos incompletos" : items.length > 0 ? "Prioridades de hoy" : "Todo bajo control"}</span>
+          <span>{data?.actualizacionParcial ? "Revisión pendiente: datos incompletos" : items.length > 0 ? "Prioridades de hoy" : conteosHoldedPendientes ? "Calculando los conteos de Holded…" : "Todo bajo control"}</span>
           {items.length > 0 && <strong>{totalPendientes}</strong>}
         </div>
         <div className="atencion-rail-fuente">
@@ -3294,6 +3296,20 @@ export default function CerebroWoba() {
   const [relojDatos, setRelojDatos] = useState(Date.now());
   useEffect(() => { const id = setInterval(() => setRelojDatos(Date.now()), 10_000); return () => clearInterval(id); }, []);
   const [verificandoSesion, setVerificandoSesion] = useState(true);
+  // Cerrar sesión con una lectura en vuelo no debe resucitar la sesión ni volver a guardar datos de negocio.
+  const generacionSesionRef = useRef(0);
+  // Una respuesta más vieja (p. ej. la lectura inicial tardía) nunca pisa a una más nueva.
+  const ultimaLecturaRef = useRef(0);
+  const aplicarLectura = useCallback((json, token) => {
+    const generadoEn = Date.parse(json?.generadoEn || "");
+    if (Number.isFinite(generadoEn)) {
+      if (generadoEn < ultimaLecturaRef.current) return false;
+      ultimaLecturaRef.current = generadoEn;
+    }
+    setLiveData(json);
+    guardarSnapshotLocal(almacenLocal(), token, json);
+    return true;
+  }, []);
   const [esAdmin, setEsAdmin] = useState(false);
   const [nombreUsuario, setNombreUsuario] = useState("");
   const [periodoCashflow, setPeriodoCashflow] = useState("semana");
@@ -3332,6 +3348,8 @@ export default function CerebroWoba() {
   // instante con lo último que tiene y avisa cuando hay algo más nuevo.
   useEffect(() => {
     let cancelado = false;
+    const generacion = generacionSesionRef.current;
+    const vigente = () => !cancelado && generacion === generacionSesionRef.current;
     (async () => {
       let sesionGuardada = null;
       try {
@@ -3358,13 +3376,12 @@ export default function CerebroWoba() {
       try {
         setRefreshing(true);
         const res = await fetch(CEREBRO_ENDPOINT, { cache: "no-store", headers: { "X-Cerebro-Key": sesionGuardada.token } });
-        if (cancelado) return;
+        if (!vigente()) return;
 
         if (res.ok) {
           const json = await res.json();
-          if (cancelado) return;
-          setLiveData(json);
-          guardarSnapshotLocal(almacenLocal(), sesionGuardada.token, json);
+          if (!vigente()) return;
+          aplicarLectura(json, sesionGuardada.token);
           setApiKey(sesionGuardada.token);
           setNombreUsuario(sesionGuardada.nombre || "");
           setUltimoContactoEn(new Date().toISOString());
@@ -3389,14 +3406,14 @@ export default function CerebroWoba() {
           throw new Error("No se pudo actualizar al entrar");
         }
       } catch {
-        if (!cancelado) {
+        if (vigente()) {
           setApiKey(sesionGuardada.token);
           setNombreUsuario(sesionGuardada.nombre || "");
           setEntered(true);
           setErrorSincronizacion("No se pudieron consultar los datos al entrar. WOBi reintentará automáticamente.");
         }
       } finally {
-        if (!cancelado) { setRefreshing(false); setVerificandoSesion(false); }
+        if (vigente()) { setRefreshing(false); setVerificandoSesion(false); }
       }
     })();
     return () => {
@@ -3453,6 +3470,8 @@ export default function CerebroWoba() {
       if (res.status === 403) {
         try { localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY); } catch { /* no crítico */ }
         borrarSnapshotLocal(almacenLocal());
+        generacionSesionRef.current += 1;
+        ultimaLecturaRef.current = 0;
         setApiKey(null); setLiveData(null); setEsAdmin(false);
         setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
         return false;
@@ -3460,8 +3479,7 @@ export default function CerebroWoba() {
       if (!res.ok) throw new Error(`estado_${res.status}`);
       const json = await res.json();
       signal.throwIfAborted();
-      setLiveData(json);
-      guardarSnapshotLocal(almacenLocal(), apiKey, json);
+      if (!aplicarLectura(json, apiKey)) return true; // llegó una lectura más nueva mientras tanto
       setUltimoContactoEn(new Date().toISOString());
       setErrorSincronizacion("");
       programarReintentoSiRefrescando(json);
@@ -3473,7 +3491,7 @@ export default function CerebroWoba() {
     } finally {
       if (signal.reason?.name !== "AbortError") setRefreshing(false);
     }
-  }), [apiKey]);
+  }), [apiKey, aplicarLectura]);
   useEffect(() => { actualizador.activate(); return () => actualizador.dispose(); }, [actualizador]);
   const refreshLiveData = useCallback((motivo = "manual") => actualizador.refresh(motivo), [actualizador]);
   refrescarRef.current = refreshLiveData;
@@ -3498,6 +3516,9 @@ export default function CerebroWoba() {
       // no crítico
     }
     borrarSnapshotLocal(almacenLocal());
+    generacionSesionRef.current += 1;
+    ultimaLecturaRef.current = 0;
+    setRefreshing(false);
     setApiKey(null);
     setLiveData(null);
     setEsAdmin(false);
@@ -3553,8 +3574,9 @@ export default function CerebroWoba() {
     desconectado: { texto: "Desconectado", color: C.dim },
   }[estadoTiempoReal] || { texto: "Sincronizando…", color: C.dim };
 
-  const estadoVisual = refreshing || liveData?.refrescando ? { texto: "Consultando las fuentes…", color: C.amberBright }
+  const estadoVisual = refreshing ? { texto: "Consultando las fuentes…", color: C.amberBright }
     : errorSincronizacion || frescura === "antiguo" ? { texto: "Datos pendientes de actualizar", color: C.dangerBright }
+    : liveData?.refrescando ? { texto: "Consultando las fuentes…", color: C.amberBright }
     : frescura === "parcial" || conexionesCaidas.length ? { texto: "Actualización con incidencias", color: C.amberBright }
     : estadoVisualBase;
 
@@ -4507,7 +4529,7 @@ export default function CerebroWoba() {
         <ControlDiarioPanel
           data={liveData}
           apiKey={apiKey}
-          actualizacionId={get(liveData, "cacheadoEn")}
+          actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")}
           onAbrir={abrirModuloDesdeResumen}
           onPreguntarWobi={preguntarWobi}
           puedeResolver={esAdmin}
@@ -4928,7 +4950,7 @@ export default function CerebroWoba() {
 
               {/* Las conexiones se verifican con el panel completo, incluso si este nodo está cerrado. */}
               {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
-              {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
+              {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
               {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.conexiones} onRefresh={refreshLiveData} />}
             </div>
               </div>
@@ -4981,8 +5003,8 @@ export default function CerebroWoba() {
         )}
       </div>
 
-      {esAdmin && <AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
-      {esAdmin && <UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
+      {esAdmin && <AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
+      {esAdmin && <UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
       </div>
     </div>
   );

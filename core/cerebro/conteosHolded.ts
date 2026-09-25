@@ -46,7 +46,7 @@ export class ConteosHoldedPesados {
 
   constructor(
     private readonly cargadores: CargadoresConteo,
-    private readonly opciones: { ttlMs?: number; timeoutMs?: number; ahora?: () => number } = {}
+    private readonly opciones: { ttlMs?: number; timeoutMs?: number; backoffMs?: number; ahora?: () => number } = {}
   ) {}
 
   private get ahora() { return this.opciones.ahora ?? Date.now; }
@@ -87,7 +87,15 @@ export class ConteosHoldedPesados {
     return completo && Number.isFinite(masAntigua) ? this.ahora() - masAntigua : Number.POSITIVE_INFINITY;
   }
 
-  necesitaRefresco(): boolean { return this.edadMs() >= this.ttl; }
+  /**
+   * Tras un intento con algún fallo no se reintenta hasta pasado el backoff (5 min): una métrica que falla de forma
+   * persistente (429/5xx de Holded, API key ausente) no puede provocar cientos de lecturas cada 15 s.
+   */
+  private enBackoff(): boolean {
+    return this.fallosRecientes.size > 0 && this.ultimoIntentoEn > 0 && this.ahora() - this.ultimoIntentoEn < (this.opciones.backoffMs ?? 5 * 60_000);
+  }
+
+  necesitaRefresco(): boolean { return !this.enBackoff() && this.edadMs() >= this.ttl; }
 
   /**
    * Recalcula las 6 métricas (3 empresas × 2) en paralelo. Comparte el vuelo en curso. `minEdadMs` evita
@@ -96,8 +104,7 @@ export class ConteosHoldedPesados {
   refrescar(minEdadMs = 0): Promise<void> {
     if (this.vuelo) return this.vuelo;
     if (minEdadMs > 0 && this.edadMs() < minEdadMs) return Promise.resolve();
-    // Tras un fallo total no se reintenta más de una vez cada minuto.
-    if (this.ultimoIntentoEn && this.ahora() - this.ultimoIntentoEn < 60_000 && this.fallosRecientes.size === 6) return Promise.resolve();
+    if (this.enBackoff()) return Promise.resolve();
     this.ultimoIntentoEn = this.ahora();
     const vuelo = this.calcular().finally(() => { if (this.vuelo === vuelo) this.vuelo = null; });
     this.vuelo = vuelo;

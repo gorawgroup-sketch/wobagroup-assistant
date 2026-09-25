@@ -434,6 +434,8 @@ export interface EstadoCerebro extends EstadoCerebroDatos {
    * generadoEn para saber cuánto se sirvió desde caché.
    */
   cacheadoEn: string;
+  /** Instante del recálculo más reciente de cualquier sección: cambia cada vez que llega algo nuevo (para refrescar paneles hijos). */
+  actualizadoEn: string;
   /**
    * true si hay secciones recalculándose ahora mismo: lo recibido puede estar desactualizado unos segundos y
    * llegará un aviso «estado_actualizado» (o el siguiente sondeo) con el dato nuevo.
@@ -539,6 +541,7 @@ export async function obtenerEstadoCerebro(forzar = false): Promise<EstadoCerebr
   return {
     generadoEn: new Date().toISOString(),
     cacheadoEn: new Date(estado.obtenidoEn).toISOString(),
+    actualizadoEn: new Date(estado.actualizadoEn).toISOString(),
     cashflow: d.cashflow as EstadoCerebroDatos["cashflow"],
     holded: combinarHolded(d.holded as Record<Empresa, number>, estado.conteos),
     crm: d.crm as EstadoCerebroDatos["crm"],

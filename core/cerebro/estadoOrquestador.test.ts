@@ -24,11 +24,11 @@ function seccion(nombre: string, ttlMs: number, contador: { n: number }, extra: 
     fallback: { datos: { nombre, v: 0, vacio: true }, fuentes: [] }, ...extra };
 }
 
-function crear(opciones: { secciones: DefinicionSeccion[]; conteos?: ReturnType<typeof conteosFalsos>; publicados?: string[]; hayNavegadores?: () => boolean; ahora?: () => number }) {
+function crear(opciones: { secciones: DefinicionSeccion[]; conteos?: ReturnType<typeof conteosFalsos>; publicados?: string[]; hayNavegadores?: () => boolean; ahora?: () => number; esperaAvisoMs?: number }) {
   const c = opciones.conteos ?? conteosFalsos();
   const publicados = opciones.publicados ?? [];
   const o = crearOrquestadorEstado({ secciones: opciones.secciones, conteos: c.fuente, publicar: (t) => publicados.push(t),
-    hayNavegadoresConectados: opciones.hayNavegadores ?? (() => false), esperaCoalescerMs: 0, ahora: opciones.ahora });
+    hayNavegadoresConectados: opciones.hayNavegadores ?? (() => true), esperaCoalescerMs: 0, esperaAvisoMs: opciones.esperaAvisoMs ?? 20, ahora: opciones.ahora });
   return { o, c, publicados };
 }
 
@@ -88,15 +88,18 @@ test("«actualizar» (forzar) recalcula todas las secciones ligeras, espera y pi
   assert.deepEqual(conteos.llamadas.refrescar, [2 * 60_000], "los conteos pesados: refresco en segundo plano con edad mínima de 2 min");
 });
 
-test("pestañas antiguas que fuerzan en cada aviso NO provocan una avalancha: forzar dentro de 5 s de otro se atiende con lo ya calculado", async () => {
+test("una orden «actualizar» nunca se ignora en silencio: si llega con otra en curso o justo después, espera a la actual, agenda otro recálculo y la respuesta sale marcada refrescando", async () => {
   const cuenta = { n: 0 };
   const { o } = crear({ secciones: [seccion("a", 60_000, cuenta)] });
   await o.obtener();
-  await Promise.all([o.obtener(true), o.obtener(true), o.obtener(true)]);
-  assert.equal(cuenta.n, 2, "una sola lectura forzada compartida por las tres órdenes simultáneas");
-  await o.obtener(true);
-  await o.obtener(true);
-  assert.equal(cuenta.n, 2, "y las siguientes, dentro de los 5 s, no recalculan");
+  const respuestas = await Promise.all([o.obtener(true), o.obtener(true), o.obtener(true)]);
+  assert.equal(cuenta.n >= 2, true, "la primera recalculó");
+  const trasForzar = cuenta.n;
+  const inmediata = await o.obtener(true); // dentro de la ventana mínima
+  assert.equal(inmediata.refrescando, true, "avisa de que hay un recálculo agendado en vez de fingir que ya está");
+  await esperar(30);
+  assert.ok(cuenta.n > trasForzar, "y el recálculo agendado ocurre");
+  assert.ok(respuestas.length === 3);
 });
 
 test("invalidar sin nombres marca todas las secciones ligeras pero NO los conteos pesados; con nombres, solo esas", async () => {
@@ -117,9 +120,58 @@ test("una ráfaga de invalidaciones publica UN solo aviso «estado_actualizado»
   const { o, publicados } = crear({ secciones: [seccion("a", 60_000, cuenta), seccion("b", 60_000, cuenta)] });
   await o.obtener();
   for (let i = 0; i < 40; i++) o.invalidar();
-  await esperar(500);
+  await esperar(200);
   assert.deepEqual(publicados, ["estado_actualizado"]);
   assert.ok(cuenta.n <= 6, `lecturas=${cuenta.n}`);
+});
+
+test("sin nadie mirando, invalidar es perezoso (solo marca): no relee ninguna fuente; el siguiente visitante recibe lo último y dispara el recálculo", async () => {
+  let mirando = true;
+  const cuenta = { n: 0 };
+  const { o, publicados } = crear({ secciones: [seccion("a", 60_000, cuenta), seccion("b", 60_000, cuenta)], hayNavegadores: () => mirando, ahora: () => 1_000 });
+  await o.obtener();
+  const base = cuenta.n;
+  mirando = false;
+  // la última consulta fue en t=1000 = ahora: para que cuente como «sin interés» se usa un reloj adelantado
+  const { o: o2 } = crear({ secciones: [seccion("a", 60_000, cuenta)], hayNavegadores: () => false, ahora: (() => { let t = 0; return () => (t += 20 * 60_000); })() });
+  await o2.obtener();
+  const n0 = cuenta.n;
+  for (let i = 0; i < 25; i++) o2.invalidar();
+  await esperar(30);
+  assert.equal(cuenta.n, n0, "ninguna lectura por las 25 invalidaciones");
+  assert.equal(publicados.length, 0);
+  assert.ok(base >= 2);
+  const e = await o2.obtener();
+  assert.equal(e.refrescando, true, "el visitante recibe lo último marcado como refrescando");
+  await esperar(30);
+  assert.equal(cuenta.n, n0 + 1, "y ese primer visitante dispara UN recálculo");
+});
+
+test("el mantenimiento sin espectadores no toca los conteos pesados; con espectadores sí", async () => {
+  let mirando = false;
+  const conteos = conteosFalsos();
+  conteos.llamadas.necesita = true;
+  let t = 0;
+  const { o } = crear({ secciones: [seccion("a", 60_000, { n: 0 })], conteos, hayNavegadores: () => mirando, ahora: () => t });
+  await o.obtener();
+  conteos.llamadas.refrescar.length = 0;
+  t = 60 * 60_000; // la consulta queda fuera de la ventana de interés
+  o.mantener();
+  assert.equal(conteos.llamadas.refrescar.length, 0);
+  mirando = true;
+  o.mantener();
+  assert.equal(conteos.llamadas.refrescar.length, 1);
+});
+
+test("expone actualizadoEn (recálculo más reciente) además de la antigüedad del dato más antiguo", async () => {
+  let t = 1_000;
+  const { o } = crear({ secciones: [seccion("a", 60_000, { n: 0 }), seccion("b", 60_000, { n: 0 })], ahora: () => t });
+  await o.obtener();
+  t = 9_000;
+  o.invalidar(["b"]); await esperar(20);
+  const e = await o.obtener();
+  assert.equal(e.obtenidoEn, 1_000);
+  assert.equal(e.actualizadoEn, 9_000);
 });
 
 test("el mantenimiento recalcula lo vencido solo si hay quien mire; sin nadie, solo lo que supera 5 min", async () => {

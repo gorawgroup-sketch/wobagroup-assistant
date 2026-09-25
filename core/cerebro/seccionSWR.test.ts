@@ -137,3 +137,42 @@ test("alInvalidar se ejecuta al instante y alCompletarInvalidada solo cuando ter
   await esperar(20);
   assert.deepEqual(eventos, ["vaciar-fuente", "listo:cashflow"]);
 });
+
+test("invalidar(false) es perezoso: solo marca; la siguiente lectura devuelve lo último como vencido y recalcula una vez", async () => {
+  let cargas = 0;
+  const s = new SeccionSWR({ nombre: "x", ttlMs: 60_000, esperaCoalescerMs: 0, cargar: async () => ++cargas });
+  await s.leer();
+  for (let i = 0; i < 30; i++) s.invalidar(false);
+  await esperar(20);
+  assert.equal(cargas, 1, "ninguna lectura por invalidar perezoso");
+  const l = await s.leer();
+  assert.equal(l.datos, 1);
+  assert.equal(l.vencida, true);
+  await esperar(20);
+  assert.equal(cargas, 2);
+});
+
+test("una lectura colgada termina por timeout propio: no deja el vuelo pegado y se conserva el dato anterior", async () => {
+  let cargas = 0;
+  const s = new SeccionSWR({ nombre: "x", ttlMs: 5, timeoutCargaMs: 30, esperaCoalescerMs: 0, esperaTrasFalloMs: 0, cargar: () => ++cargas === 1 ? Promise.resolve("ok") : new Promise<string>(() => {}) });
+  await s.leer();
+  await esperar(10);
+  const inicio = Date.now();
+  await s.recalcular(); // la lectura nunca termina: debe rendirse por timeout, no colgar
+  assert.ok(Date.now() - inicio < 1_000);
+  assert.equal((await s.leer()).datos, "ok");
+});
+
+test("tras un fallo durante recalcular la bandera urgente no queda pegada (la siguiente ráfaga sigue coalesciendo)", async () => {
+  let cargas = 0, fallar = true;
+  const s = new SeccionSWR({ nombre: "x", ttlMs: 60_000, esperaCoalescerMs: 40, esperaTrasFalloMs: 0, cargar: async () => { cargas++; if (cargas > 1 && fallar) throw new Error("x"); return cargas; } });
+  await s.leer();
+  await s.recalcular();
+  fallar = false;
+  const antes = cargas;
+  for (let i = 0; i < 20; i++) s.invalidar();
+  await esperar(20);
+  assert.equal(cargas, antes, "dentro de la espera de coalescencia aún no se ha leído nada");
+  await esperar(120);
+  assert.ok(cargas <= antes + 2);
+});

@@ -36,6 +36,8 @@ export interface OpcionesSeccionSWR<T> {
   esperaCoalescerMs?: number;
   /** Espera mínima entre intentos tras un fallo. */
   esperaTrasFalloMs?: number;
+  /** Una lectura que no termina en este tiempo se da por fallida (no deja el vuelo colgado ni bloquea «actualizar»). */
+  timeoutCargaMs?: number;
   /** Se ejecuta en el mismo instante de invalidar (p. ej. para vaciar cachés de fuentes más bajas). */
   alInvalidar?: () => void;
   /** Se llama cuando termina un recálculo provocado por una invalidación (no por caducidad normal). */
@@ -63,7 +65,7 @@ export class SeccionSWR<T> {
   }
 
   private get ttl() { return this.opciones.ttlMs; }
-  private get maxVencida() { return this.opciones.maxVencidaMs ?? 10 * 60_000; }
+  private get maxVencida() { return this.opciones.maxVencidaMs ?? 30 * 60_000; }
   private get sucia() { return this.entrada !== null && this.version !== this.versionCargada; }
 
   private edad(): number { return this.entrada ? this.ahora() - this.entrada.obtenidoEn : Number.POSITIVE_INFINITY; }
@@ -92,12 +94,16 @@ export class SeccionSWR<T> {
     return { datos: entrada.datos, obtenidoEn: entrada.obtenidoEn, refrescando: this.refrescando, vencida: this.vencida() };
   }
 
-  /** Marca los datos como desactualizados y agenda UN recálculo (coalescido). No bloquea a nadie. */
-  invalidar(): void {
+  /**
+   * Marca los datos como desactualizados. Con `recalcularYa` (por defecto) agenda UN recálculo coalescido; sin él
+   * es perezoso: solo marca, y el siguiente `leer()` (o el mantenimiento) recalcula. Sin nadie mirando el panel
+   * no hay motivo para gastar cuota de Sheets/Drive/Gmail/Holded en releer.
+   */
+  invalidar(recalcularYa = true): void {
     this.version++;
     try { this.opciones.alInvalidar?.(); } catch (error) { console.error(`[cerebro/${this.nombre}] Error en alInvalidar:`, error); }
     this.provocadaPorInvalidacion = true;
-    if (this.entrada !== null) this.iniciar(true);
+    if (recalcularYa && this.entrada !== null) this.iniciar(true);
   }
 
   /**
@@ -150,7 +156,7 @@ export class SeccionSWR<T> {
       const porInvalidacion = this.provocadaPorInvalidacion;
       this.provocadaPorInvalidacion = false;
       try {
-        const datos = await this.opciones.cargar();
+        const datos = await this.cargarConTimeout();
         this.entrada = { datos, obtenidoEn: this.ahora() };
         this.versionCargada = versionAlEmpezar;
         this.ultimoFalloEn = 0;
@@ -160,6 +166,7 @@ export class SeccionSWR<T> {
       } catch (error) {
         this.ultimoFalloEn = this.ahora();
         console.warn(`[cerebro/${this.nombre}] No se pudo actualizar; se conserva la última lectura:`, error instanceof Error ? error.message : error);
+        this.urgente = false;
         if (this.entrada === null) throw error;
         return;
       }
@@ -168,6 +175,16 @@ export class SeccionSWR<T> {
       await this.esperarCoalescencia();
     }
     this.urgente = false;
+  }
+
+  private cargarConTimeout(): Promise<T> {
+    const limite = this.opciones.timeoutCargaMs ?? 90_000;
+    let temporizador: ReturnType<typeof setTimeout> | undefined;
+    const tiempo = new Promise<never>((_, rechazar) => {
+      temporizador = setTimeout(() => rechazar(new Error(`Tiempo de lectura agotado (${limite} ms)`)), limite);
+      temporizador.unref?.();
+    });
+    return Promise.race([Promise.resolve().then(this.opciones.cargar), tiempo]).finally(() => { if (temporizador) clearTimeout(temporizador); });
   }
 
   /** Espera corta que agrupa ráfagas de invalidaciones; una orden explícita del usuario la interrumpe. */
