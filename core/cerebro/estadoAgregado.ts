@@ -1,4 +1,6 @@
-import { crearSnapshot } from "./snapshot";
+import { crearOrquestadorEstado, type DefinicionSeccion, type ResultadoSeccion } from "./estadoOrquestador";
+import { ConteosHoldedPesados, type ConteosHolded } from "./conteosHolded";
+import { contarSuscriptoresCerebro, publicarCambioCerebro } from "./realtime";
 import { LecturaFuentes, type EstadoFuente } from "./lecturaFuentes";
 import { obtenerEstadoConexiones, type ConexionEstado } from "./conexiones";
 import { fetchResumenSemanas, invalidarCachesCashflow, type ResumenSemana } from "../google/cashflowSheet";
@@ -6,7 +8,7 @@ import { listarPropuestasPendientes } from "../google/proposalSheet";
 import { parseValorFormateado } from "../jobs/revisarHoldedVsCashflow";
 import { loadCalendarioFiscal, calcularProximasAlertas, calcularProximaFecha } from "../fiscal/calendario";
 import { contarFacturasRecientes, listarProximosEventosHolded, buscarGastosSinComprobante, invalidarCacheEventosHolded } from "../holded/write";
-import { contarMovimientosSinConciliar, invalidarCacheCuentasTesoreria } from "../holded/client";
+import { contarMovimientosSinConciliar } from "../holded/client";
 import type { Empresa } from "../holded/client";
 import { contarNoLeidos } from "../gmail/client";
 import { obtenerUltimoCheck } from "../gmail/lastCheckStore";
@@ -171,29 +173,35 @@ async function construirCashflow() {
   };
 }
 
-async function construirHolded() {
+/**
+ * Parte LIGERA de Holded: facturas de los últimos 7 días (1 llamada por empresa, ~0,3 s). Los conteos de
+ * «gastos sin comprobante» y «movimientos sin conciliar» (90 días) NO están aquí: recorren cientos de
+ * documentos y tardaban ~23 s dentro de cada lectura del panel — ahora los calcula aparte, en segundo plano,
+ * ConteosHoldedPesados (ver conteosHolded.ts) y se combinan al componer la respuesta.
+ */
+async function construirHoldedLigero() {
   const DIAS_RECIENTES = 7;
-
-  const porEmpresaEntries = await Promise.all(
+  const entradas = await Promise.all(
     EMPRESAS_HOLDED.map(async (empresa) => {
-      const [facturas, sinComprobante, sinConciliar] = await Promise.all([
-        seguro(`holded.facturas.${empresa}`, () => contarFacturasRecientes(empresa, DIAS_RECIENTES), 0),
-        seguro(
-          `holded.sinComprobante.${empresa}`,
-          async () => (await buscarGastosSinComprobante(empresa, formatDateLocal(new Date(Date.now() - 90 * 86400000)), formatDateLocal(new Date()))).sinComprobante.length,
-          0
-        ),
-        seguro(`holded.sinConciliar.${empresa}`, () => contarMovimientosSinConciliar(empresa, 90), 0),
-      ]);
-
-      return [empresa, { facturasUltimos7dias: facturas, gastosSinComprobante: sinComprobante, movimientosSinConciliar: sinConciliar }] as const;
+      const facturas = await seguro(`holded.facturas.${empresa}`, () => contarFacturasRecientes(empresa, DIAS_RECIENTES), 0);
+      return [empresa, facturas] as const;
     })
   );
+  return Object.fromEntries(entradas) as Record<Empresa, number>;
+}
 
-  const porEmpresa = Object.fromEntries(porEmpresaEntries) as Record<
-    Empresa,
-    { facturasUltimos7dias: number; gastosSinComprobante: number; movimientosSinConciliar: number }
-  >;
+/** Combina la parte ligera con los últimos conteos pesados conocidos (null = todavía sin calcular). */
+function combinarHolded(facturas: Record<Empresa, number>, conteos: ConteosHolded) {
+  const porEmpresa = Object.fromEntries(
+    EMPRESAS_HOLDED.map((empresa) => [
+      empresa,
+      {
+        facturasUltimos7dias: facturas[empresa] ?? 0,
+        gastosSinComprobante: conteos.porEmpresa[empresa]?.gastosSinComprobante ?? null,
+        movimientosSinConciliar: conteos.porEmpresa[empresa]?.movimientosSinConciliar ?? null,
+      },
+    ])
+  ) as Record<Empresa, { facturasUltimos7dias: number; gastosSinComprobante: number | null; movimientosSinConciliar: number | null }>;
 
   return {
     // Suma de TODOS los documentos de compra creados en Holded en los
@@ -201,11 +209,15 @@ async function construirHolded() {
     // asistente o si se cargó a mano en Holded, porque no existe ninguna
     // etiqueta que los separe.
     facturasProcesadasUltimos7dias: Object.values(porEmpresa).reduce((acc, e) => acc + e.facturasUltimos7dias, 0),
-    // gastosSinComprobante / movimientosSinConciliar: ventana de 90 días,
-    // igual que el comportamiento por defecto de los tools existentes
-    // (consultar_gastos_sin_comprobante, consultar_movimientos_sin_conciliar).
-    gastosSinComprobante: Object.values(porEmpresa).reduce((acc, e) => acc + e.gastosSinComprobante, 0),
-    movimientosSinConciliar: Object.values(porEmpresa).reduce((acc, e) => acc + e.movimientosSinConciliar, 0),
+    // gastosSinComprobante / movimientosSinConciliar: ventana de 90 días, igual que los tools existentes
+    // (consultar_gastos_sin_comprobante, consultar_movimientos_sin_conciliar). null mientras no haya un
+    // primer cálculo completo: el panel debe mostrar «calculando», nunca un cero inventado.
+    gastosSinComprobante: conteos.gastosSinComprobante,
+    movimientosSinConciliar: conteos.movimientosSinConciliar,
+    /** Cuándo se calcularon realmente esos dos conteos (son de segundo plano y pueden tener minutos). */
+    conteosActualizadoEn: conteos.actualizadoEn,
+    conteosRefrescando: conteos.refrescando,
+    conteosConservados: conteos.conservado,
     porEmpresa,
   };
 }
@@ -400,13 +412,13 @@ function construirAccesos(
 
 export interface EstadoCerebroDatos {
   cashflow: Awaited<ReturnType<typeof construirCashflow>>;
-  holded: Awaited<ReturnType<typeof construirHolded>>;
+  holded: ReturnType<typeof combinarHolded>;
   crm: Awaited<ReturnType<typeof construirCrm>>;
   correo: Awaited<ReturnType<typeof construirCorreo>>;
   fiscal: Awaited<ReturnType<typeof construirFiscal>>;
   drive: Awaited<ReturnType<typeof construirDrive>>;
   conocimiento: Awaited<ReturnType<typeof construirConocimiento>>;
-  accesos: Awaited<ReturnType<typeof construirAccesos>>;
+  accesos: ReturnType<typeof construirAccesos>;
   controlDiario: ControlDiario | null;
   auditoriaProgramada: EstadoAuditoriaProgramadaFront;
 }
@@ -417,74 +429,132 @@ export interface EstadoCerebro extends EstadoCerebroDatos {
   actualizacionParcial: boolean;
   /** Instante de ESTA respuesta HTTP — cambia en cada request, cacheado o no. */
   generadoEn: string;
-  /** Instante en que se calcularon realmente los datos de abajo — cambia al completar una consulta nueva. Compara con generadoEn para saber si esta respuesta vino del caché. */
+  /**
+   * Instante en que se calculó realmente el dato MÁS ANTIGUO del panel (todas las secciones). Compara con
+   * generadoEn para saber cuánto se sirvió desde caché.
+   */
   cacheadoEn: string;
+  /** Instante del recálculo más reciente de cualquier sección: cambia cada vez que llega algo nuevo (para refrescar paneles hijos). */
+  actualizadoEn: string;
+  /**
+   * true si hay secciones recalculándose ahora mismo: lo recibido puede estar desactualizado unos segundos y
+   * llegará un aviso «estado_actualizado» (o el siguiente sondeo) con el dato nuevo.
+   */
+  refrescando: boolean;
+}
+
+const ESTADO_AUDITORIA_POR_DEFECTO = {
+  nombre: "Auditoría técnica diaria de WOBI",
+  descripcion:
+    "Revisa código, pruebas, rutas de IA, costes, permisos, conexiones y memoria desde una copia limpia.",
+  programacion: {
+    activa: true as const,
+    frecuencia: "Diaria",
+    horaLocal: "09:00",
+    zonaHoraria: "Europe/Lisbon",
+    modo: "Codex con suscripción de ChatGPT · sin API de IA de pago",
+  },
+  ultimaEjecucion: null,
+  historial: [],
+} satisfies EstadoAuditoriaProgramadaFront;
+
+/**
+ * Secciones del panel, cada una con su propia caché «servir lo último y refrescar detrás» (ver
+ * estadoOrquestador.ts / seccionSWR.ts). Cada una se calcula por separado y de forma tolerante a fallos (ver
+ * `seguro`): si una fuente falla, esa sección conserva su última lectura buena en vez de tumbar el panel.
+ * Reutiliza los mismos clientes/lógica que los tools y crons — no llama a ninguna función de escritura.
+ */
+const enSeccion = async <T>(fn: () => Promise<T>): Promise<ResultadoSeccion<T>> => lecturas.ejecutar(fn);
+const vacio = <T>(datos: T): ResultadoSeccion<T> => ({ datos, fuentes: [] });
+
+const SECCIONES: DefinicionSeccion[] = [
+  { nombre: "cashflow", ttlMs: 45_000, cargar: () => enSeccion(construirCashflow), alInvalidar: invalidarCachesCashflow,
+    fallback: vacio(null as unknown) },
+  { nombre: "holded", ttlMs: 60_000, cargar: () => enSeccion(construirHoldedLigero),
+    fallback: vacio(Object.fromEntries(EMPRESAS_HOLDED.map((e) => [e, 0]))) },
+  { nombre: "crm", ttlMs: 60_000, cargar: () => enSeccion(construirCrm), alInvalidar: invalidarCacheEventosHolded,
+    fallback: vacio({ actividadesProgramadas: [], accionesRecientes: null }) },
+  { nombre: "correo", ttlMs: 45_000, cargar: () => enSeccion(construirCorreo),
+    fallback: vacio({ correosNoLeidos: 0, ultimoProcesado: null, borradoresPendientesDeAprobacion: 0 }) },
+  { nombre: "drive", ttlMs: 60_000, cargar: () => enSeccion(construirDrive),
+    fallback: vacio({ archivosSubidosUltimos7dias: 0, ultimoArchivo: null, porEmpresa: {} }) },
+  { nombre: "conocimiento", ttlMs: 60_000, cargar: () => enSeccion(construirConocimiento),
+    fallback: vacio(null as unknown) },
+  { nombre: "usuarios", ttlMs: 60_000, cargar: () => enSeccion(() => seguro("accesos.usuarios", obtenerUsuariosAutorizados, [])),
+    fallback: vacio([] as unknown) },
+  { nombre: "controlDiario", ttlMs: 60_000, cargar: () => enSeccion(() => seguro("controlDiario", construirControlDiario, null)),
+    fallback: vacio(null as unknown) },
+  { nombre: "auditoria", ttlMs: 60_000,
+    cargar: () => enSeccion(() => seguro("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, ESTADO_AUDITORIA_POR_DEFECTO as EstadoAuditoriaProgramadaFront)),
+    fallback: vacio(ESTADO_AUDITORIA_POR_DEFECTO as unknown) },
+  // Verifica todas las conexiones (Telegram, Sheets, Drive, Gmail, Calendar, Holded ×3): ~8 llamadas por lectura,
+  // por eso solo se repite cada minuto en vez de en cada carga del panel.
+  { nombre: "conexiones", ttlMs: 60_000,
+    cargar: async () => ({ datos: await obtenerEstadoConexiones(true), fuentes: [] }),
+    fallback: vacio([] as unknown) },
+];
+
+const conteosHolded = new ConteosHoldedPesados({
+  gastosSinComprobante: async (empresa) =>
+    (await buscarGastosSinComprobante(empresa, formatDateLocal(new Date(Date.now() - 90 * 86400000)), formatDateLocal(new Date()))).sinComprobante.length,
+  movimientosSinConciliar: (empresa) => contarMovimientosSinConciliar(empresa, 90),
+});
+
+const orquestador = crearOrquestadorEstado({
+  secciones: SECCIONES,
+  conteos: conteosHolded,
+  publicar: (tipo) => { publicarCambioCerebro(tipo); },
+  hayNavegadoresConectados: () => contarSuscriptoresCerebro() > 0,
+});
+
+/**
+ * Nombres de secciones que se pueden invalidar por separado. `invalidarEstadoCerebro()` sin argumentos
+ * invalida todas (los conteos pesados de Holded siguen su propio ritmo).
+ */
+export type SeccionCerebro = "cashflow" | "holded" | "crm" | "correo" | "drive" | "conocimiento" | "usuarios" | "controlDiario" | "auditoria" | "conexiones";
+
+/**
+ * Marca secciones como desactualizadas y agenda su recálculo en segundo plano (coalescido: una ráfaga de
+ * avisos produce como mucho una lectura más). Nunca bloquea; al terminar se publica «estado_actualizado».
+ */
+export function invalidarEstadoCerebro(secciones?: SeccionCerebro[]): void { orquestador.invalidar(secciones); }
+
+/** Antigüedad de cada sección del panel y de los conteos pesados (para /health y para verificar en producción). */
+export function obtenerDiagnosticoPanelCerebro() { return orquestador.diagnostico(); }
+
+/** Arranque: deja el panel caliente antes de que llegue el primer visitante y lo mantiene fresco. */
+export function iniciarMantenimientoEstadoCerebro(): () => void {
+  void orquestador.precalentar().catch((error) => console.warn("[cerebro] Precalentamiento incompleto:", error instanceof Error ? error.message : error));
+  return orquestador.iniciar();
 }
 
 /**
- * Agrega el estado actual de todos los módulos del sistema, para el front
- * del "cerebro" (dashboard de solo lectura). Reutiliza los mismos
- * clientes/lógica que ya usan los tools y crons — no llama a ninguna
- * función de escritura, en ningún caso. Cada sección se calcula por
- * separado y de forma tolerante a fallos (ver `seguro`): si una fuente
- * falla, esa sección queda en su valor por defecto en vez de tumbar todo
- * el endpoint.
+ * Devuelve el estado del panel al instante (lo último calculado). `forzar` solo lo usa el botón «actualizar»:
+ * recalcula las secciones ligeras (~3 s). Los conteos pesados de Holded se muestran con su fecha real.
  */
-async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
-  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, usuarios, controlDiario, auditoriaProgramada] = await Promise.all([
-    construirCashflow(),
-    construirHolded(),
-    construirCrm(),
-    construirCorreo(),
-    construirFiscal(),
-    construirDrive(),
-    construirConocimiento(),
-    seguro("accesos.usuarios", obtenerUsuariosAutorizados, []),
-    seguro("controlDiario", construirControlDiario, null),
-    seguro("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, {
-      nombre: "Auditoría técnica diaria de WOBI",
-      descripcion:
-        "Revisa código, pruebas, rutas de IA, costes, permisos, conexiones y memoria desde una copia limpia.",
-      programacion: {
-        activa: true as const,
-        frecuencia: "Diaria",
-        horaLocal: "09:00",
-        zonaHoraria: "Europe/Lisbon",
-        modo: "Codex con suscripción de ChatGPT · sin API de IA de pago",
-      },
-      ultimaEjecucion: null,
-      historial: [],
-    } satisfies EstadoAuditoriaProgramadaFront),
-  ]);
-  const accesos = construirAccesos(usuarios, controlDiario);
-
-  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, controlDiario, auditoriaProgramada };
-}
-
-// Una lectura compartida por proceso; el botón manual invalida también los caches
-// cortos de las fuentes. CacheLectura descarta cálculos invalidados en pleno vuelo.
-const snapshot = crearSnapshot(async () => {
-  const [estado, conexiones] = await Promise.all([
-    lecturas.ejecutar(construirEstadoCerebro),
-    obtenerEstadoConexiones(true),
-  ]);
-  return { ...estado, conexiones };
-}, () => {
-  invalidarCachesCashflow();
-  invalidarCacheCuentasTesoreria();
-  invalidarCacheEventosHolded();
-});
-
-export function invalidarEstadoCerebro(): void { snapshot.invalidar(); }
-
 export async function obtenerEstadoCerebro(forzar = false): Promise<EstadoCerebro> {
-  const lectura = await snapshot.obtener(forzar);
+  const estado = await orquestador.obtener(forzar);
+  const d = estado.datos as Record<string, unknown>;
+  const usuarios = d.usuarios as Awaited<ReturnType<typeof obtenerUsuariosAutorizados>>;
+  const controlDiario = d.controlDiario as ControlDiario | null;
+  const conexiones = d.conexiones as ConexionEstado[];
   return {
     generadoEn: new Date().toISOString(),
-    cacheadoEn: new Date(lectura.meta.obtenidoEn).toISOString(),
-    ...lectura.datos.datos,
-    fuentes: lectura.datos.fuentes,
-    conexiones: lectura.datos.conexiones,
-    actualizacionParcial: lectura.datos.fuentes.some(f => !f.ok),
+    cacheadoEn: new Date(estado.obtenidoEn).toISOString(),
+    actualizadoEn: new Date(estado.actualizadoEn).toISOString(),
+    cashflow: d.cashflow as EstadoCerebroDatos["cashflow"],
+    holded: combinarHolded(d.holded as Record<Empresa, number>, estado.conteos),
+    crm: d.crm as EstadoCerebroDatos["crm"],
+    correo: d.correo as EstadoCerebroDatos["correo"],
+    fiscal: await construirFiscal(),
+    drive: d.drive as EstadoCerebroDatos["drive"],
+    conocimiento: d.conocimiento as EstadoCerebroDatos["conocimiento"],
+    accesos: construirAccesos(usuarios, controlDiario),
+    controlDiario,
+    auditoriaProgramada: d.auditoria as EstadoAuditoriaProgramadaFront,
+    fuentes: estado.fuentes,
+    conexiones,
+    actualizacionParcial: estado.fuentes.some((f) => !f.ok) || estado.conteos.conservado,
+    refrescando: estado.refrescando,
   };
 }
