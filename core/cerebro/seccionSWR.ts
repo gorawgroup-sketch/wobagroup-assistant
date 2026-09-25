@@ -45,7 +45,8 @@ export interface OpcionesSeccionSWR<T> {
   ahora?: () => number;
 }
 
-const dormir = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); });
+// Sin `unref`: alguien está esperando este temporizador; si fuera el único pendiente, el proceso terminaría con la promesa sin resolver.
+const dormir = (ms: number) => new Promise<void>((r) => { setTimeout(r, ms); });
 
 export class SeccionSWR<T> {
   readonly nombre: string;
@@ -182,7 +183,6 @@ export class SeccionSWR<T> {
     let temporizador: ReturnType<typeof setTimeout> | undefined;
     const tiempo = new Promise<never>((_, rechazar) => {
       temporizador = setTimeout(() => rechazar(new Error(`Tiempo de lectura agotado (${limite} ms)`)), limite);
-      temporizador.unref?.();
     });
     return Promise.race([Promise.resolve().then(this.opciones.cargar), tiempo]).finally(() => { if (temporizador) clearTimeout(temporizador); });
   }
