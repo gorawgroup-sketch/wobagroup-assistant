@@ -96,3 +96,16 @@ test("una tasa ausente no inventa candidatos ni llama al banco con una paridad f
   assert.deepEqual(resultados, []);
   assert.equal(busquedas, 0);
 });
+
+test("recibo COP busca EUR aunque también exista una cuenta COP y conserva el importe bancario", async () => {
+  const consultas:string[]=[];
+  const r=await buscarMovimientosPorTipoCambio('Footprint',
+    {monto:14000,moneda:'COP',fecha:'2026-09-22',proveedor:'Uber'},['COP','EUR','USD'],{
+      obtenerTasa:async(_fecha,origen,destino)=>{assert.equal(origen,'COP');consultas.push(destino);return destino==='EUR'?1/4000:1/3500;},
+      buscarCercanos:async(_empresa,c)=>c.moneda==='EUR'?[{...movimiento('uber-sept22',-3.50,'Uber Pending'),fecha:'2026-09-22'}]:[],
+      buscarPorNombre:async()=>[],
+    });
+  assert.deepEqual(consultas,['EUR','USD']);assert.equal(r.length,1);
+  assert.equal(r[0].monto,-3.50);assert.equal(r[0].coincideProveedor,true);
+  assert.ok(Math.abs(r[0].montoReferencia!-3.50)<.01);
+});

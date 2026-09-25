@@ -21,38 +21,57 @@ export interface VerificacionTasaCambio {
   diferenciaPct: number;
 }
 
-const sinTasaHistorica = new Map<string, number>();
+const cacheHistorica = new Map<string, { hasta: number; valor: Promise<number | undefined> }>();
+
+/** Cache compartida entre revisión automática y manual, sin gastar llamadas de IA. */
+export function obtenerTasaCambioHistorica(fecha: string, origen: string, destino: string): Promise<number | undefined> {
+  origen = origen.trim().toUpperCase(); destino = destino.trim().toUpperCase();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || !/^[A-Z]{3}$/.test(origen) || !/^[A-Z]{3}$/.test(destino)) return Promise.resolve(undefined);
+  if (origen === destino) return Promise.resolve(1);
+  const clave = `${fecha}:${origen}:${destino}`;
+  const anterior = cacheHistorica.get(clave);
+  if (anterior && anterior.hasta > Date.now()) return anterior.valor;
+  if (cacheHistorica.size >= 1000) cacheHistorica.clear();
+  const valor = consultarTasaHistorica(fecha, origen, destino);
+  cacheHistorica.set(clave, { hasta: Date.now() + 15 * 60_000, valor });
+  return valor;
+}
+
+async function tasaHistoricaAmpliada(fecha: string, origen: string, destino: string): Promise<number | undefined> {
+  // Cotizar COP por EUR/USD evita perder precisión al redondearse 1 COP a cinco decimales.
+  const inversa = origen === "COP";
+  const base = inversa ? destino : origen, quote = inversa ? origen : destino;
+  const response = await fetch(`https://api.frankfurter.dev/v2/rate/${base}/${quote}?date=${fecha}`, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) return undefined;
+  const d = await response.json() as { date?: string; base?: string; quote?: string; rate?: number };
+  const dias = (Date.parse(fecha) - Date.parse(d.date ?? "")) / 86_400_000;
+  if (d.base !== base || d.quote !== quote || !Number.isFinite(dias) || dias < 0 || dias > 7 ||
+      typeof d.rate !== "number" || !Number.isFinite(d.rate) || d.rate <= 0) return undefined;
+  return inversa ? 1 / d.rate : d.rate;
+}
 const FRANKFURTER_BASE = "https://api.frankfurter.dev/v1";
 
 /**
- * Tasa de cambio histórica publicada por el BCE para una fecha (YYYY-MM-DD). Devuelve undefined si la
+ * Tasa histórica: BCE v1 y cobertura ampliada v2 ante 404, para una fecha (YYYY-MM-DD). Devuelve undefined si la
  * API falla o si la fecha cae en fin de semana/festivo sin publicación — nunca inventa una tasa ni
  * usa un valor aproximado. Frankfurter ya resuelve fines de semana con la última tasa hábil anterior,
  * así que un undefined acá normalmente significa un problema real de red, no un día sin datos.
  */
-export async function obtenerTasaCambioHistorica(
+async function consultarTasaHistorica(
   fecha: string,
   monedaOrigen: string,
   monedaDestino: string
 ): Promise<number | undefined> {
   if (monedaOrigen === monedaDestino) return 1;
 
-  const clave = `${fecha}:${monedaOrigen}:${monedaDestino}`;
-  if ((sinTasaHistorica.get(clave) ?? 0) > Date.now()) return undefined;
   try {
     const url = `${FRANKFURTER_BASE}/${fecha}?base=${encodeURIComponent(monedaOrigen)}&symbols=${encodeURIComponent(monedaDestino)}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!response.ok) {
       if (response.status === 404) {
-        if (sinTasaHistorica.size >= 1000) sinTasaHistorica.clear();
-        sinTasaHistorica.set(clave, Date.now() + 15 * 60_000);
+        return await tasaHistoricaAmpliada(fecha, monedaOrigen, monedaDestino);
       }
-      // Hallazgo real de auditoría: sin este log, una moneda que Frankfurter simplemente no cubre
-      // (ej. COP — el BCE no la reporta, confirmado en vivo contra /v1/currencies) fallaba en
-      // silencio total, indistinguible de "no hacía falta convertir". Frankfurter solo cubre ~30
-      // monedas del BCE — Footprint SÍ tiene una cuenta de tesorería real en COP (ver
-      // core/holded/write.ts), así que este caso no es hipotético. Ver obtenerTasaCambioActual más
-      // abajo para el fallback real que cubre este caso.
+      // Los errores distintos de falta de cobertura se conservan como no disponibles.
       console.error(`[exchangeRate] Tasa histórica no disponible ${monedaOrigen}->${monedaDestino} del ${fecha} (HTTP ${response.status}); esto no demuestra que falte el cargo bancario.`);
       return undefined;
     }
