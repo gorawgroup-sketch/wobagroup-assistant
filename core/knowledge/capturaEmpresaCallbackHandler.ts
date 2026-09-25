@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { registrarCaptura } from "./capturaSheet";
 import {
@@ -123,7 +124,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
 
   const pendiente = await obtenerPendienteCapturaEmpresa(chatId, messageId);
   if (!pendiente) {
-    await answerCallbackQuerySafe(callback.id, "Esta selección ya no está disponible (expiró o ya fue procesada).");
+    await retirarPreguntaCaducada(callback, "Esta selección ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 
@@ -149,7 +150,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
 
     const claim = await reclamarPendienteCapturaParaConfirmar(chatId, messageId);
     if (claim.estado === "ausente") {
-      await answerCallbackQuerySafe(callback.id, "Esta selección ya fue procesada.");
+      await retirarPreguntaCaducada(callback, "Esta selección ya fue procesada.");
       return;
     }
     if (claim.estado === "en_proceso") {
@@ -251,7 +252,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
 
     const actualizada = await actualizarEmpresasPendienteCaptura(chatId, messageId, seleccionadas);
     if (!actualizada) {
-      await answerCallbackQuerySafe(callback.id, "Esta selección ya fue procesada.");
+      await retirarPreguntaCaducada(callback, "Esta selección ya fue procesada.");
       return;
     }
     await answerCallbackQuerySafe(callback.id);

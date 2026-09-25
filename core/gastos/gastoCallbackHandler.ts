@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
@@ -10,6 +11,7 @@ import {
   sendTelegramMessage,
   sendTelegramMessageSmart,
   sendTelegramMessageWithButtons,
+  sendTelegramTemporaryNotice,
 } from "../telegram/client";
 import type { InlineKeyboardButton } from "../telegram/types";
 import {
@@ -1211,7 +1213,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_cerrar_propuesta") {
     const propuesta = await consumirPropuestaGasto(propuestaId);
     if (!propuesta) {
-      await answerCallbackQuerySafe(callback.id, "Este cierre ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Este cierre ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Finalizando correo...");
@@ -1244,7 +1246,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_cerrar_conciliacion") {
     const pendiente = await consumirConciliacionPendiente(propuestaId);
     if (!pendiente) {
-      await answerCallbackQuerySafe(callback.id, "Este cierre ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Este cierre ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Finalizando correo...");
@@ -1274,7 +1276,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_cerrar_ambigua") {
     const pendiente = await consumirConciliacionAmbiguaPendiente(propuestaId);
     if (!pendiente) {
-      await answerCallbackQuerySafe(callback.id, "Este cierre ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Este cierre ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Finalizando correo...");
@@ -1304,7 +1306,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_espera") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta) {
-      await answerCallbackQuerySafe(callback.id, "Esta espera ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta espera ya no está disponible.");
       return;
     }
     const bloqueante = extra ? await obtenerPropuestaGasto(extra) : undefined;
@@ -1372,7 +1374,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_corregir") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 
@@ -1405,7 +1407,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_ajustarmonto") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 
@@ -1443,7 +1445,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_responder") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta || !propuesta.correoOrigen) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      // Con la propuesta viva (solo falta el correo de origen) el mensaje sigue siendo válido: no se retira.
+      if (propuesta) await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      else await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Redactando...");
@@ -1462,7 +1466,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_guardarconocimiento") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta || !propuesta.correoOrigen) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      // Con la propuesta viva (solo falta el correo de origen) el mensaje sigue siendo válido: no se retira.
+      if (propuesta) await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      else await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Leyendo el correo...");
@@ -1478,7 +1484,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_otrasacciones") {
     const propuesta = await obtenerPropuestaGasto(propuestaId);
     if (!propuesta || !propuesta.correoOrigen) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      // Con la propuesta viva (solo falta el correo de origen) el mensaje sigue siendo válido: no se retira.
+      if (propuesta) await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      else await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id);
@@ -1507,7 +1515,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_adjuntar" || accion === "gasto_nuevo" || accion === "gasto_nuevo_conciliar") {
     const propuesta = await consumirPropuestaGasto(propuestaId);
     if (!propuesta) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 
@@ -1817,7 +1825,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_conciliar_si" || accion === "gasto_conciliar_no") {
     const pendiente = await consumirConciliacionPendiente(propuestaId);
     if (!pendiente) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible.");
       return;
     }
 
@@ -1941,7 +1949,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_conciliar_elegir" || accion === "gasto_conciliar_elegir_no") {
     const pendiente = await consumirConciliacionAmbiguaPendiente(propuestaId);
     if (!pendiente) {
-      await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible.");
       return;
     }
 
@@ -2051,7 +2059,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_usarcontacto") {
     const resolucion = await consumirResolucionContacto(propuestaId);
     if (!resolucion) {
-      await answerCallbackQuerySafe(callback.id, "Esta selección ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta selección ya no está disponible.");
       return;
     }
     const alternativa = resolucion.alternativas[Number(extra)];
@@ -2084,7 +2092,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_crearsinproveedor") {
     const resolucion = await consumirResolucionContacto(propuestaId);
     if (!resolucion) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 
@@ -2116,7 +2124,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     // libre debe aplicarse exactamente a la del botón tocado.
     const resolucion = await priorizarResolucionContacto(propuestaId);
     if (!resolucion) {
-      await answerCallbackQuerySafe(callback.id, "Esta selección ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta selección ya no está disponible.");
       return;
     }
     await answerCallbackQuerySafe(callback.id, "Escribe tu instrucción en el chat.");
@@ -2132,7 +2140,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   if (accion === "gasto_crearcontactonuevo") {
     const resolucion = await consumirResolucionContacto(propuestaId);
     if (!resolucion) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 
@@ -2221,7 +2229,7 @@ async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propue
 
   const propuesta = await obtenerPropuestaGasto(propuestaId);
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
 
@@ -2452,7 +2460,7 @@ async function dispararDecisionFinalVisible(
 async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propuestaId: string): Promise<void> {
   const propuesta = await obtenerPropuestaGasto(propuestaId);
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
 
@@ -2616,7 +2624,7 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
 export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGasto, textoUsuario: string): Promise<void> {
   const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
   if (!propuesta) {
-    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    await sendTelegramTemporaryNotice(pendiente.chatId, "Esa propuesta ya no está disponible.");
     return;
   }
 
@@ -2701,7 +2709,7 @@ export async function continuarConSeleccionGasto(pendiente: PendienteSeleccionGa
 
     const propuestaFresca = await obtenerPropuestaGasto(pendiente.propuestaId);
     if (!propuestaFresca) {
-      await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible para la decisión final que habías marcado.");
+      await sendTelegramTemporaryNotice(pendiente.chatId, "Esa propuesta ya no está disponible para la decisión final que habías marcado.");
       return;
     }
     enDecisionFinal = true;
@@ -3610,7 +3618,7 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
 
   const propuesta = await consumirPropuestaGasto(pendiente.propuestaId);
   if (!propuesta) {
-    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    await sendTelegramTemporaryNotice(pendiente.chatId, "Esa propuesta ya no está disponible.");
     return;
   }
 
@@ -4052,7 +4060,7 @@ async function aplicarTextoAjusteMonto(propuesta: PropuestaGasto, textoUsuario: 
 export async function continuarConAjusteMonto(pendiente: PendienteAjusteMontoGasto, textoUsuario: string): Promise<void> {
   const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
   if (!propuesta) {
-    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    await sendTelegramTemporaryNotice(pendiente.chatId, "Esa propuesta ya no está disponible.");
     return;
   }
 
@@ -4242,7 +4250,7 @@ async function aplicarTextoOtrasAcciones(propuesta: PropuestaGasto, textoUsuario
 export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, textoUsuario: string): Promise<void> {
   const propuesta = await obtenerPropuestaGasto(pendiente.propuestaId);
   if (!propuesta || !propuesta.correoOrigen) {
-    await sendTelegramMessage(pendiente.chatId, "Esa propuesta ya no está disponible.");
+    await sendTelegramTemporaryNotice(pendiente.chatId, "Esa propuesta ya no está disponible.");
     return;
   }
 

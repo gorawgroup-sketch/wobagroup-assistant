@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { obtenerAccionPorId, marcarAccionCancelada } from "./accionesProgramadasStore";
 import type { TelegramCallbackQuery } from "../telegram/types";
@@ -26,7 +27,7 @@ export async function handleAccionProgramadaCallback(callback: TelegramCallbackQ
   const accion = await obtenerAccionPorId(id);
 
   if (!accion || accion.estado !== "pendiente") {
-    await answerCallbackQuerySafe(callback.id, "Esta programación ya no está disponible (ya se ejecutó, se canceló, o expiró).");
+    await retirarPreguntaCaducada(callback, "Esta programación ya no está disponible (ya se ejecutó, se canceló, o expiró).");
     return;
   }
 

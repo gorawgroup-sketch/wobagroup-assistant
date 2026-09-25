@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { obtenerEscalacionDesarrollo, consumirEscalacionDesarrollo } from "./escalacionDesarrolloStore";
 import { crearIssue } from "./client";
@@ -61,7 +62,7 @@ export async function handleEscalacionCallback(callback: TelegramCallbackQuery):
   // escaladev_confirmar
   const escalacion = await obtenerEscalacionDesarrollo(id);
   if (!escalacion) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
 

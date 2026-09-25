@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { consultarEnvioCorreoExistente, enviarCorreo } from "../gmail/client";
 import { EnvioCorreoInciertoError } from "../gmail/durableSend";
@@ -32,7 +33,7 @@ export async function handleReporteContableCallback(callback: TelegramCallbackQu
   const propuesta = await obtenerPropuestaReporteContable(id);
 
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 

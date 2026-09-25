@@ -24,6 +24,15 @@ todavía, escríbele igual una vez — un administrador recibe automáticamente
 una notificación con tu nombre y un botón para darte de alta, sin que tengas
 que hacer nada más.
 
+**El chat solo conserva las preguntas activas**: si pulsas el botón de una
+pregunta que ya no se puede procesar (expiró, ya se resolvió o la propuesta
+ya no existe), el asistente te avisa con un mensaje breve y **esa pregunta
+desaparece del chat**. Los avisos de este tipo se borran solos a los pocos
+segundos. Si otra pulsación sobre la misma pregunta se está procesando en ese
+momento, no se borra (para no perder su resultado). Telegram solo permite
+borrar mensajes de menos de 48 horas; en uno más antiguo la pregunta se queda,
+pero sin botones.
+
 ---
 
 ## 2. Qué operaciones puede hacer

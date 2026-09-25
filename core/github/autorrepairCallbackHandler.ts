@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { avanzarEstadoAutorrepair } from "./autorrepairPendienteStore";
 import { fusionarPullRequest, cerrarPullRequestYBorrarRama } from "./client";
@@ -48,7 +49,7 @@ export async function handleAutorrepairCallback(callback: TelegramCallbackQuery)
   if (accion === "autorrepair_descartar") {
     const reclamado = await avanzarEstadoAutorrepair(numeroPR, "pendiente", "descartando");
     if (!reclamado) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 
@@ -72,7 +73,7 @@ export async function handleAutorrepairCallback(callback: TelegramCallbackQuery)
   if (accion === "autorrepair_desplegar") {
     const reclamado = await avanzarEstadoAutorrepair(numeroPR, "pendiente", "desplegando");
     if (!reclamado) {
-      await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
       return;
     }
 

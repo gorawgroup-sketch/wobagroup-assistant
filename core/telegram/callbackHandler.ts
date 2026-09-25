@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "./preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "./client";
 import { consumirPropuesta, obtenerPropuesta } from "../google/proposalSheet";
 import { AREAS_PROPUESTA_CASHFLOW, botonesAreasCashflow } from "../google/cashflowProposalButtons";
@@ -70,7 +71,7 @@ export async function handleCallbackQuery(
   const propuesta = await consumirPropuesta(id);
 
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya fue procesada).");
     return;
   }
 

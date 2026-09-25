@@ -9,6 +9,7 @@ import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, editTelegramMessage, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
 import { mensajeFalloTurno } from "../core/claude/turnSafety";
 import { prepararAcuseCallback } from "../core/telegram/client";
+import { registrarPulsacionSobreMensaje } from "../core/telegram/preguntaCaducada";
 import {
   esUsuarioAutorizado,
   esAccionSensible,
@@ -1402,6 +1403,8 @@ app.options("/api/cerebro/eliminar-usuario", (_req: Request, res: Response) => {
  * canal.
  */
 async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<boolean> {
+  // Constancia de la pulsación: una pregunta caducada solo se retira del chat si nadie más la está procesando.
+  registrarPulsacionSobreMensaje(callback);
   const finalizarActividad = iniciarActividadCallback(callback.message?.chat.id ?? callback.from.id);
   try {
     return await despacharCallbackQuerySinSeguimiento(callback);

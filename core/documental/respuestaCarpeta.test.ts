@@ -13,6 +13,7 @@ function escenario() {
   const enviados: string[] = [];
   const avisos: string[] = [];
   const consumidos: string[] = [];
+  const borrados: number[] = [];
   const deps = {
     listar: async (chatId: number) => pendientes.filter((p) => p.chatId === chatId),
     enviar: async (_chatId: number, texto: string) => { enviados.push(texto); return 900 + enviados.length; },
@@ -29,8 +30,9 @@ function escenario() {
       return pendientes.splice(i, 1)[0];
     },
     avisar: async (_chatId: number, texto: string) => { avisos.push(texto); },
+    borrar: async (_chatId: number, messageId: number) => { borrados.push(messageId); return true; },
   };
-  return { pendientes, enviados, avisos, consumidos, deps };
+  return { pendientes, enviados, avisos, consumidos, borrados, deps };
 }
 
 test("pulsar indicar carpeta abre la respuesta sin consumir el adjunto", async () => {
@@ -65,6 +67,22 @@ test("un prompt ya resuelto no consume el otro adjunto", async () => {
   assert.equal(await resolverRespuestaCarpeta(77, 901, e.enviados[0], async () => assert.fail(), e.deps), true);
   assert.equal(e.avisos.length, 1);
   assert.deepEqual(e.pendientes.map((p) => p.id), ["adjunto-1"]);
+  assert.deepEqual(e.borrados, [901], "la pregunta caducada a la que se respondió desaparece del chat");
+});
+
+test("abrir el editor de una pregunta que ya no existe avisa y devuelve false", async () => {
+  const e = escenario();
+  assert.equal(await solicitarRespuestaCarpeta(77, "adjunto-9", e.deps), false);
+  assert.equal(e.avisos.length, 1);
+  assert.equal(e.enviados.length, 0);
+});
+
+test("si el adjunto se resolvió mientras se abría el editor, ese editor recién enviado se retira", async () => {
+  const e = escenario();
+  const abierto = await solicitarRespuestaCarpeta(77, "adjunto-2", { ...e.deps, registrar: async () => false });
+  assert.equal(abierto, false);
+  assert.deepEqual(e.borrados, [901]);
+  assert.equal(e.avisos.length, 1);
 });
 
 test("un chat distinto no puede seleccionar ni consumir el documento", async () => {

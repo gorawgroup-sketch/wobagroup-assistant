@@ -1,3 +1,4 @@
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { consumirPropuestaEvento } from "./eventoProposalSheet";
 import { crearEventoHolded, buscarUsuarioHoldedPorNombre } from "../holded/write";
@@ -37,7 +38,7 @@ export async function handleEventoCallback(callback: TelegramCallbackQuery): Pro
   const propuesta = await consumirPropuestaEvento(propuestaId);
 
   if (!propuesta) {
-    await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
+    await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
 
