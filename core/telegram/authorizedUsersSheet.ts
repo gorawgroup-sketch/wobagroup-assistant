@@ -311,6 +311,7 @@ const ACCIONES_SENSIBLES = new Set([
   // superadmin igual que las demás, no solo la que escribe en Drive.
   "doc_descartar",
   "desamb_descartar",
+  "desamb_carpeta",
   // Mismo criterio que el resto de decisiones sobre la cola de revisión de
   // correo (email_proceder/descartar) — avanzar a mostrar el siguiente
   // correo, o descartar el que está bloqueando, son parte de esa misma

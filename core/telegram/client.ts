@@ -64,6 +64,8 @@ export function parseIncomingUpdate(update: TelegramUpdate): IncomingMessage | n
   return {
     chatId: message.chat.id,
     text: message.text,
+    replyToMessageId: message.reply_to_message?.message_id,
+    replyToText: message.reply_to_message?.text,
     fromUsername: message.from?.username,
     fromNombre: nombre || undefined,
   };
@@ -166,6 +168,26 @@ export async function sendTelegramMessage(chatId: number, text: string): Promise
   registrarMensajeSaliente(chatId, text).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
+}
+
+/** Abre la respuesta nativa de Telegram y devuelve el id para vincularla al documento. */
+export async function sendTelegramForceReply(chatId: number, text: string): Promise<number> {
+  const response = await fetchConReintento(`${TELEGRAM_API_BASE}/bot${getBotToken()}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: formatearParaTelegram(text),
+      parse_mode: "HTML",
+      reply_markup: { force_reply: true, input_field_placeholder: "Escribe la empresa y carpeta" },
+    }),
+  });
+  if (!response.ok) throw new Error(`No se pudo abrir la respuesta en Telegram (${response.status}).`);
+  const data = await response.json() as { result: { message_id: number } };
+  registrarMensajeSaliente(chatId, text).catch((error) =>
+    console.error("[telegram/client] Error registrando pregunta de carpeta:", error)
+  );
+  return data.result.message_id;
 }
 
 const MENSAJE_TRABAJANDO = "⏳ Trabajando en tu consulta...";

@@ -25,6 +25,8 @@ export interface PendienteDesambiguacion {
   chatId: number;
   /** Telegram message id que demuestra que la pregunta llego a ser visible. Cero = outbox provisional. */
   messageId: number;
+  /** Prompts de respuesta enviados al pulsar Indicar carpeta; sobreviven reinicios. */
+  respuestaMessageIds?: number[];
   rutaLocal: string;
   nombreArchivoOriginal: string;
   mimeType?: string;
@@ -74,6 +76,7 @@ const HEADERS = [
   "carpetasCandidatasJSON",
   // Aditiva al final: conserva alineadas las filas historicas.
   "messageId",
+  "respuestaMessageIdsJSON",
 ];
 
 function assertSheetId(): string {
@@ -113,7 +116,7 @@ async function ensureTab(): Promise<number> {
     tabGridId = existing.properties.sheetId;
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A1:M1`,
+      range: `${TAB_NAME}!A1:N1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADERS] },
     });
@@ -132,7 +135,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:M1`,
+    range: `${TAB_NAME}!A1:N1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -158,7 +161,14 @@ function rowToPendiente(row: unknown[]): PendienteDesambiguacion | null {
     carpetasCandidatas = undefined;
   }
 
+  let respuestaMessageIds: number[] = [];
+  try {
+    const ids: unknown = row[13] ? JSON.parse(String(row[13])) : [];
+    if (Array.isArray(ids)) respuestaMessageIds = ids.filter((id) => Number.isSafeInteger(id) && id > 0);
+  } catch { /* Las filas históricas no tienen prompts de respuesta. */ }
+
   return {
+    respuestaMessageIds,
     // Filas de antes de agregar esta columna no tienen id — se cae al
     // chatId+creadoEn como identificador estable de todas formas único para
     // esa fila, en vez de dejarlo vacío.
@@ -193,6 +203,7 @@ function pendienteToRow(p: PendienteDesambiguacion): (string | number)[] {
     p.empresa ?? "",
     p.carpetasCandidatas && p.carpetasCandidatas.length > 0 ? JSON.stringify(p.carpetasCandidatas) : "",
     p.messageId,
+    JSON.stringify(p.respuestaMessageIds ?? []),
   ];
 }
 
@@ -208,7 +219,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:M10000`,
+    range: `${TAB_NAME}!A2:N10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -279,7 +290,7 @@ export async function guardarPendienteDesambiguacion(
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A:M`,
+      range: `${TAB_NAME}!A:N`,
       valueInputOption: "RAW",
       insertDataOption: "INSERT_ROWS",
       requestBody: { values: [pendienteToRow(pendiente)] },
@@ -302,7 +313,7 @@ export async function actualizarMessageIdDesambiguacion(
     const actualizada = { ...fila.pendiente, messageId };
     await getClient().spreadsheets.values.update({
       spreadsheetId: assertSheetId(),
-      range: `${TAB_NAME}!A${fila.rowIndex}:M${fila.rowIndex}`,
+      range: `${TAB_NAME}!A${fila.rowIndex}:N${fila.rowIndex}`,
       valueInputOption: "RAW",
       requestBody: { values: [pendienteToRow(actualizada)] },
     });
@@ -322,7 +333,7 @@ export async function restaurarPendienteDesambiguacion(
     await ensureTab();
     await getClient().spreadsheets.values.append({
       spreadsheetId: assertSheetId(),
-      range: `${TAB_NAME}!A:M`,
+      range: `${TAB_NAME}!A:N`,
       valueInputOption: "RAW",
       insertDataOption: "INSERT_ROWS",
       requestBody: { values: [pendienteToRow(restaurado)] },
@@ -385,5 +396,23 @@ export async function obtenerPendienteDesambiguacionPorChat(chatId: number): Pro
     return porAntiguedad(vigentes, chatId)
       .map(({ pendiente }) => pendiente)
       .filter((pendiente) => pendiente.messageId > 0);
+  });
+}
+
+/** Añade el prompt sin consumir ni resolver el documento. */
+export async function registrarRespuestaMessageIdDesambiguacion(id: string, chatId: number, messageId: number): Promise<boolean> {
+  if (!Number.isSafeInteger(messageId) || messageId <= 0) return false;
+  return conMutex(CLAVE_MUTEX, async () => {
+    const fila = (await leerTodas()).find(({ pendiente }) =>
+      pendiente.id === id && pendiente.chatId === chatId && !pendienteVencido(pendiente));
+    if (!fila) return false;
+    const ids = [...new Set([...(fila.pendiente.respuestaMessageIds ?? []), messageId])];
+    await getClient().spreadsheets.values.update({
+      spreadsheetId: assertSheetId(),
+      range: `${TAB_NAME}!N${fila.rowIndex}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[JSON.stringify(ids)]] },
+    });
+    return true;
   });
 }
