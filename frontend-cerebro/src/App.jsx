@@ -1,4 +1,5 @@
-import { createRefreshCoordinator, necesitaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
+import { createRefreshCoordinator, fuerzaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
+import { borrarSnapshotLocal, guardarSnapshotLocal, leerSnapshotLocal } from "./snapshotLocal.js";
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import WobiAvatar, { WOBI_IMAGE } from "./WobiAvatar.jsx";
 import WobiVoice from "./WobiVoice.jsx";
@@ -97,6 +98,22 @@ function timeAgo(iso) {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `hace ${hrs} h`;
   return `hace ${Math.round(hrs / 24)} d`;
+}
+
+/**
+ * Los conteos de «sin comprobante» y «sin conciliar» se calculan aparte, en segundo plano, y pueden tener
+ * unos minutos: se muestra siempre su antigüedad real. null = todavía sin primer cálculo (nunca un cero inventado).
+ */
+function textoConteoHolded(d, ruta) {
+  const valor = get(d, ruta, null);
+  if (valor === null) return get(d, "holded.conteosRefrescando", false) ? "calculando…" : "sin dato aún";
+  const cuando = timeAgo(get(d, "holded.conteosActualizadoEn", null));
+  return cuando ? `${valor} · ${cuando}` : String(valor);
+}
+
+/** localStorage puede lanzar al solo acceder (modo privado, bloqueado): nunca debe romper el panel. */
+function almacenLocal() {
+  try { return window.localStorage; } catch { return null; }
 }
 
 function fmtDateTime(iso) {
@@ -307,15 +324,15 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
       if (empresas.length === 0) {
         return [
           ["Facturas procesadas (7 días)", String(get(d, "holded.facturasProcesadasUltimos7dias", "—"))],
-          ["Gastos sin comprobante", String(get(d, "holded.gastosSinComprobante", "—"))],
-          ["Movimientos sin conciliar", String(get(d, "holded.movimientosSinConciliar", "—"))],
+          ["Gastos sin comprobante", textoConteoHolded(d, "holded.gastosSinComprobante")],
+          ["Movimientos sin conciliar", textoConteoHolded(d, "holded.movimientosSinConciliar")],
         ];
       }
       return empresas.map((empresa) => {
         const e = porEmpresa[empresa];
         return [
           empresa,
-          `${e.facturasUltimos7dias ?? "—"} facturas · ${e.gastosSinComprobante ?? "—"} sin comprobante · ${e.movimientosSinConciliar ?? "—"} sin conciliar`,
+          `${e.facturasUltimos7dias ?? "—"} facturas · ${e.gastosSinComprobante ?? "calculando…"} sin comprobante · ${e.movimientosSinConciliar ?? "calculando…"} sin conciliar`,
         ];
       });
     }
@@ -1315,7 +1332,7 @@ function KeyGate({ onUnlocked }) {
           return;
         }
 
-        const resEstado = await fetch(`${CEREBRO_ENDPOINT}?actualizar=1`, { cache: "no-store", headers: { "X-Cerebro-Key": json.token } });
+        const resEstado = await fetch(CEREBRO_ENDPOINT, { cache: "no-store", headers: { "X-Cerebro-Key": json.token } });
         if (!resEstado.ok) {
           setFase("error");
           setErrMsg("Tu acceso fue aprobado pero hubo un error conectando. Recarga la página.");
@@ -3292,6 +3309,7 @@ export default function CerebroWoba() {
 
   const handleUnlocked = useCallback((json, key, nombre) => {
     setLiveData(json);
+    guardarSnapshotLocal(almacenLocal(), key, json);
     setApiKey(key);
     setNombreUsuario(nombre || "");
     setUltimoContactoEn(new Date().toISOString());
@@ -3307,6 +3325,11 @@ export default function CerebroWoba() {
   // nunca vuelve a pedir acceso ni a preguntar quién eres mientras el token
   // siga siendo válido en el servidor (key maestra indefinida, temporal
   // hasta que expire o un admin lo revoque).
+  //
+  // Medido el 2026-09-25: recargar esperaba ~38 s a que el servidor recalculara todo (se forzaba la lectura
+  // al entrar) antes de mostrar nada. Ahora se pinta AL INSTANTE la última lectura guardada en este
+  // navegador (marcada con su antigüedad real) y se pide la actual sin forzar; el servidor responde al
+  // instante con lo último que tiene y avisa cuando hay algo más nuevo.
   useEffect(() => {
     let cancelado = false;
     (async () => {
@@ -3323,25 +3346,44 @@ export default function CerebroWoba() {
         return;
       }
 
+      const local = leerSnapshotLocal(almacenLocal(), sesionGuardada.token);
+      if (local) {
+        setLiveData(local);
+        setApiKey(sesionGuardada.token);
+        setNombreUsuario(sesionGuardada.nombre || "");
+        setEntered(true);
+        setVerificandoSesion(false);
+      }
+
       try {
-        const res = await fetch(`${CEREBRO_ENDPOINT}?actualizar=1`, { cache: "no-store", headers: { "X-Cerebro-Key": sesionGuardada.token } });
+        setRefreshing(true);
+        const res = await fetch(CEREBRO_ENDPOINT, { cache: "no-store", headers: { "X-Cerebro-Key": sesionGuardada.token } });
         if (cancelado) return;
 
         if (res.ok) {
           const json = await res.json();
+          if (cancelado) return;
           setLiveData(json);
+          guardarSnapshotLocal(almacenLocal(), sesionGuardada.token, json);
           setApiKey(sesionGuardada.token);
           setNombreUsuario(sesionGuardada.nombre || "");
           setUltimoContactoEn(new Date().toISOString());
+          setErrorSincronizacion("");
           // Una sesión válida no vuelve a obligar a pasar por la animación de
           // bienvenida en cada visita.
           setEntered(true);
+          programarReintentoSiRefrescando(json);
         } else if (res.status === 403) {
           // Solo un rechazo de acceso invalida la sesión; una caída temporal no.
           try {
             localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY);
           } catch {
             // no crítico
+          }
+          borrarSnapshotLocal(almacenLocal());
+          if (local) {
+            setApiKey(null); setLiveData(null); setEsAdmin(false); setEntered(false);
+            setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
           }
         } else {
           throw new Error("No se pudo actualizar al entrar");
@@ -3354,12 +3396,13 @@ export default function CerebroWoba() {
           setErrorSincronizacion("No se pudieron consultar los datos al entrar. WOBi reintentará automáticamente.");
         }
       } finally {
-        if (!cancelado) setVerificandoSesion(false);
+        if (!cancelado) { setRefreshing(false); setVerificandoSesion(false); }
       }
     })();
     return () => {
       cancelado = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Si el token vigente es la key maestra, este endpoint responde 200 (solo
@@ -3383,15 +3426,33 @@ export default function CerebroWoba() {
     };
   }, [apiKey]);
 
+  // Si el servidor responde con `refrescando: true`, lo recibido puede tener unos segundos: se vuelve a leer poco
+  // después (el aviso «estado_actualizado» del stream normalmente lo hace antes; esto cubre un stream caído).
+  const reintentoRefrescandoRef = useRef({ timer: null, intentos: 0 });
+  const refrescarRef = useRef(null);
+  function programarReintentoSiRefrescando(json) {
+    const r = reintentoRefrescandoRef.current;
+    if (r.timer) { clearTimeout(r.timer); r.timer = null; }
+    if (json?.refrescando && r.intentos < 6) {
+      r.intentos += 1;
+      r.timer = setTimeout(() => { r.timer = null; refrescarRef.current?.("reintento"); }, Math.min(2500 * r.intentos, 10_000));
+    } else if (!json?.refrescando) {
+      r.intentos = 0;
+    }
+  }
+  useEffect(() => () => { const r = reintentoRefrescandoRef.current; if (r.timer) clearTimeout(r.timer); }, []);
+
   const actualizador = useMemo(() => createRefreshCoordinator(async (motivo, signal) => {
     if (!apiKey) return false;
     setRefreshing(true);
     try {
-      const url = necesitaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1` : CEREBRO_ENDPOINT;
+      // Solo el botón «actualizar» fuerza al servidor; el resto lee lo último que tiene, al instante.
+      const url = fuerzaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1` : CEREBRO_ENDPOINT;
       const res = await fetch(url, { headers: { "X-Cerebro-Key": apiKey }, cache: "no-store", signal });
       signal.throwIfAborted();
       if (res.status === 403) {
         try { localStorage.removeItem(LOCALSTORAGE_TOKEN_KEY); } catch { /* no crítico */ }
+        borrarSnapshotLocal(almacenLocal());
         setApiKey(null); setLiveData(null); setEsAdmin(false);
         setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
         return false;
@@ -3400,8 +3461,10 @@ export default function CerebroWoba() {
       const json = await res.json();
       signal.throwIfAborted();
       setLiveData(json);
+      guardarSnapshotLocal(almacenLocal(), apiKey, json);
       setUltimoContactoEn(new Date().toISOString());
       setErrorSincronizacion("");
+      programarReintentoSiRefrescando(json);
       return true;
     } catch (error) {
       if (error?.name === "AbortError") return false;
@@ -3413,6 +3476,7 @@ export default function CerebroWoba() {
   }), [apiKey]);
   useEffect(() => { actualizador.activate(); return () => actualizador.dispose(); }, [actualizador]);
   const refreshLiveData = useCallback((motivo = "manual") => actualizador.refresh(motivo), [actualizador]);
+  refrescarRef.current = refreshLiveData;
 
   const manejarEventoTiempoReal = useCallback((evento) => {
     if (evento?.tipo?.startsWith("chat_solicitud:")) {
@@ -3433,6 +3497,7 @@ export default function CerebroWoba() {
     } catch {
       // no crítico
     }
+    borrarSnapshotLocal(almacenLocal());
     setApiKey(null);
     setLiveData(null);
     setEsAdmin(false);
@@ -3488,7 +3553,7 @@ export default function CerebroWoba() {
     desconectado: { texto: "Desconectado", color: C.dim },
   }[estadoTiempoReal] || { texto: "Sincronizando…", color: C.dim };
 
-  const estadoVisual = refreshing ? { texto: "Consultando las fuentes…", color: C.amberBright }
+  const estadoVisual = refreshing || liveData?.refrescando ? { texto: "Consultando las fuentes…", color: C.amberBright }
     : errorSincronizacion || frescura === "antiguo" ? { texto: "Datos pendientes de actualizar", color: C.dangerBright }
     : frescura === "parcial" || conexionesCaidas.length ? { texto: "Actualización con incidencias", color: C.amberBright }
     : estadoVisualBase;

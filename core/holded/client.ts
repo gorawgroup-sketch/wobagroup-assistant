@@ -1,6 +1,7 @@
 import { formatDateLocal } from "../utils/dateFormat";
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
+import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -200,13 +201,13 @@ export async function contarMovimientosSinConciliar(empresa: Empresa, dias: numb
 
   const cuentas = (await listTreasuryAccounts(empresa)).filter((c) => !c.archived).slice(0, MAX_CUENTAS_A_REVISAR);
 
-  let total = 0;
-  for (const cuenta of cuentas) {
+  // Cuentas en paralelo (acotado): en serie eran ~5 s por empresa dentro de cada lectura del panel /cerebro.
+  const porCuenta = await mapearConConcurrencia(cuentas, 3, async (cuenta) => {
     const movimientos = await listBankMovements(empresa, cuenta.id, desdeStr, hastaStr);
-    total += movimientos.filter((m) => !estaConciliado(m.status)).length;
-  }
+    return movimientos.filter((m) => !estaConciliado(m.status)).length;
+  });
 
-  return total;
+  return porCuenta.reduce((total, n) => total + n, 0);
 }
 
 /**

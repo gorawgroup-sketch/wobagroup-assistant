@@ -10,6 +10,7 @@ import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
 import { montosCercanos } from "../utils/montos";
+import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
@@ -2781,6 +2782,8 @@ export interface GastoSinComprobante {
 }
 
 const MAX_GASTOS_A_REVISAR = 150;
+/** Lecturas de adjuntos en paralelo por empresa. Acotado para no acercarse a los límites de tasa de la API de Holded. */
+const CONCURRENCIA_ADJUNTOS_SIN_COMPROBANTE = 6;
 
 /**
  * Busca gastos en un rango de fechas que NO tienen ningún comprobante
@@ -2822,13 +2825,19 @@ export async function buscarGastosSinComprobante(
     cursor = data.cursor;
   }
 
-  const sinComprobante: GastoSinComprobante[] = [];
-
-  for (const item of revisados) {
+  // Un GET de adjuntos por compra: hasta 150 llamadas. En serie tardaban 17–25 s por empresa (medido en producción
+  // el 2026-09-25, era la mayor parte de la lentitud del panel /cerebro); con concurrencia acotada bajan a segundos.
+  // Solo lecturas, el orden de los resultados se conserva y el primer error sigue abortando la revisión completa.
+  const conAdjuntos = await mapearConConcurrencia(revisados, CONCURRENCIA_ADJUNTOS_SIN_COMPROBANTE, async (item) => {
     const attachments = (await holdedWriteCall(empresa, "GET", `/purchases/${item.id}/attachments`)) as {
       items?: unknown[];
     };
-    if ((attachments.items ?? []).length === 0) {
+    return (attachments.items ?? []).length;
+  });
+
+  const sinComprobante: GastoSinComprobante[] = [];
+  revisados.forEach((item, indice) => {
+    if (conAdjuntos[indice] === 0) {
       sinComprobante.push({
         id: item.id,
         contactName: item.contact_name ?? "(sin proveedor)",
@@ -2838,7 +2847,7 @@ export async function buscarGastosSinComprobante(
         tags: item.tags ?? [],
       });
     }
-  }
+  });
 
   return { sinComprobante, totalRevisados: revisados.length, limiteAlcanzado };
 }

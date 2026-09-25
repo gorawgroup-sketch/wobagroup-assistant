@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRefreshCoordinator, estadoFrescura, necesitaLecturaNueva } from "./refreshCoordinator.js";
+import { createRefreshCoordinator, estadoFrescura, fuerzaLecturaNueva, necesitaLecturaNueva } from "./refreshCoordinator.js";
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { resolve, promise }; };
 test("manual y evento durante un sondeo provocan otra lectura, los sondeos no se acumulan", async () => {
   const first = deferred(); const calls = [];
@@ -20,10 +20,15 @@ test("una consulta colgada termina por timeout y permite reintentar", async () =
   const c = createRefreshCoordinator((_r, signal) => new Promise(resolve => signal.addEventListener("abort", () => resolve(signal.reason.name))), 10);
   assert.equal(await c.refresh(), "TimeoutError"); assert.equal(await c.refresh(), "TimeoutError");
 });
-test("entrada, regreso, cambios y botón fuerzan datos; la fecha de contacto no oculta antigüedad ni fallos", () => {
+test("entrada, regreso, cambios y botón piden otra lectura si algo cambia durante una en curso; la fecha de contacto no oculta antigüedad ni fallos", () => {
   for (const reason of ["entrada", "visibilidad", "online", "reconexion", "manual", "evento"]) assert.equal(necesitaLecturaNueva(reason), true);
   assert.equal(necesitaLecturaNueva("intervalo"), false);
   assert.equal(estadoFrescura({cacheadoEn:new Date(0).toISOString(),generadoEn:new Date(100000).toISOString()},100000),"antiguo");
   assert.equal(estadoFrescura({cacheadoEn:new Date().toISOString(),actualizacionParcial:true}),"parcial");
   assert.equal(estadoFrescura({cacheadoEn:new Date().toISOString()}),"reciente");
+});
+
+test("solo el botón «actualizar» fuerza al servidor a recalcular: entrar, volver, reconectar y los avisos leen lo último al instante", () => {
+  assert.equal(fuerzaLecturaNueva("manual"), true);
+  for (const reason of ["entrada", "visibilidad", "online", "reconexion", "evento", "intervalo", "reintento", undefined]) assert.equal(fuerzaLecturaNueva(reason), false, String(reason));
 });

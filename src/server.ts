@@ -97,7 +97,7 @@ import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraH
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
-import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { invalidarEstadoCerebro, iniciarMantenimientoEstadoCerebro, obtenerDiagnosticoPanelCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
 import { detalleEdicionesInciertas, ejecutarSolicitudResolver } from "../core/cerebro/resolverIncidencias";
 import {
@@ -376,6 +376,7 @@ app.get("/health", (_req: Request, res: Response) => {
     status: "ok",
     trabajo: { herramientasActivas: herramientas.activas, herramientasPendientes: herramientas.pendientes },
     cacheLecturas: resumirMetricasCachesLectura(),
+    panelCerebro: obtenerDiagnosticoPanelCerebro(),
     metadataSheets: obtenerDiagnosticoMetadataPestanas(),
     entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
     enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
@@ -632,7 +633,7 @@ app.post("/api/cerebro/control-diario/resolver", async (req: Request, res: Respo
   const { status, cuerpo } = await trabajo;
   if (status === 200) {
     // Sin esto el panel seguiría mostrando el diagnóstico en caché con la incidencia ya resuelta.
-    invalidarEstadoCerebro();
+    invalidarEstadoCerebro(["controlDiario"]);
     publicarCambioCerebro(`control_diario:${String(req.body?.id)}`);
   }
   res.status(status).json(cuerpo);
@@ -740,7 +741,7 @@ app.post("/api/cerebro/buscar", async (req: Request, res: Response) => {
 
   try {
     const resultado = await buscarEnInternet(query);
-    invalidarEstadoCerebro();
+    invalidarEstadoCerebro(["controlDiario", "conexiones"]);
     publicarCambioCerebro("busqueda_web");
     res.json(resultado);
   } catch (error) {
@@ -1329,7 +1330,7 @@ app.post("/api/cerebro/cambiar-rol-usuario", async (req: Request, res: Response)
       return;
     }
     await autorizarUsuario(userId, rol, existente.nombre);
-    invalidarEstadoCerebro();
+    invalidarEstadoCerebro(["usuarios"]);
     publicarCambioCerebro("usuario_rol_actualizado");
     res.json({ ok: true });
   } catch (error) {
@@ -1358,7 +1359,7 @@ app.post("/api/cerebro/eliminar-usuario", async (req: Request, res: Response) =>
   try {
     const existia = await eliminarUsuario(userId);
     if (existia) {
-      invalidarEstadoCerebro();
+      invalidarEstadoCerebro(["usuarios"]);
       publicarCambioCerebro("usuario_eliminado");
     }
     res.json({ ok: existia });
@@ -2427,7 +2428,7 @@ app.post("/webhook/auditoria-programada", async (req: Request, res: Response) =>
       ...(typeof rama === "string" ? { rama } : {}),
       ...(typeof commit === "string" ? { commit } : {}),
     });
-    invalidarEstadoCerebro();
+    invalidarEstadoCerebro(["auditoria"]);
     publicarCambioCerebro(`auditoria_programada:${registro.estado}`);
     res.json({ ok: true, registro });
   } catch (error) {
@@ -2684,6 +2685,8 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
 servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
+  // Panel /cerebro: lo deja caliente antes de que llegue el primer visitante y lo mantiene fresco en segundo plano.
+  iniciarMantenimientoEstadoCerebro();
   if (configuracionTelegramDurable.habilitado) {
     trackearEnSegundoPlano(
       coordinadorEntregasTelegram.recuperar().catch((error) => {

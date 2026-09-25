@@ -1,4 +1,15 @@
+/**
+ * Motivos que exigen otra lectura si llegan mientras hay una en curso (algo pudo cambiar después de que empezara).
+ * NO implica forzar al servidor: ver fuerzaLecturaNueva.
+ */
 export const necesitaLecturaNueva = motivo => ["manual", "entrada", "visibilidad", "online", "reconexion", "evento"].includes(motivo);
+
+/**
+ * Solo el botón «actualizar» del usuario obliga al servidor a recalcular (~3 s). Entrar, volver a la pestaña,
+ * reconectar y los avisos en tiempo real leen lo último que tiene el servidor (respuesta al instante): antes cada
+ * uno forzaba un recálculo completo de ~38 s en cada pestaña abierta, y esa avalancha era la causa de la lentitud.
+ */
+export const fuerzaLecturaNueva = motivo => motivo === "manual";
 
 /** No pierde una orden manual ni un cambio recibido durante otra lectura. */
 export function createRefreshCoordinator(run, timeoutMs = 90_000) {
