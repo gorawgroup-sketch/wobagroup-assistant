@@ -214,9 +214,9 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
 
     const notaVariasPendientes =
       otrasPendientes.length > 0
-        ? `\n\n(Ojo: si respondes por texto en vez de tocar un botón, tu respuesta se aplica a la pregunta MÁS ANTIGUA sin responder de las ${otrasPendientes.length + 1} que tienes pendientes — para descartar esta en particular, usa el botón de abajo.)`
+        ? `\n\n(Ojo: si escribes sin responder a un mensaje concreto, tu respuesta se aplica a la pregunta MÁS ANTIGUA sin responder de las ${otrasPendientes.length + 1} que tienes pendientes — usa «Responder / indicar carpeta» para elegir este adjunto.)`
         : "";
-    const textoPregunta = (archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${pregunta}` : pregunta) + notaVariasPendientes;
+    const textoPregunta = (archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${pregunta}` : pregunta) + "\n\nPulsa «✏️ Responder / indicar carpeta» para contestar sobre este adjunto." + notaVariasPendientes;
 
     // Pedido explícito de Carlos: siempre debe haber forma de decir "no
     // hagas nada con esto" en vez de verse forzado a responder o quedar
@@ -233,6 +233,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
     // confianza alta/media) — responder por texto la empresa/carpeta, o "❌ Descartar", siguen
     // disponibles después.
     const filasBotonesDesambiguacion = [
+      [{ text: "✏️ Responder / indicar carpeta", callback_data: `desamb_carpeta:${pendiente.id}` }],
       [
         { text: "🧠 Guardar como conocimiento", callback_data: `desamb_conocimiento:${pendiente.id}` },
         { text: "⏰ Crear alerta", callback_data: `desamb_alerta:${pendiente.id}` },
@@ -246,7 +247,7 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
       [{ text: "❌ Descartar, no hacer nada", callback_data: `desamb_descartar:${pendiente.id}` }],
     ];
     if (archivo.correoOrigen) {
-      filasBotonesDesambiguacion.splice(2, 0, [
+      filasBotonesDesambiguacion.splice(3, 0, [
         { text: "✍️ Generar respuesta al correo", callback_data: `desamb_responder:${pendiente.id}` },
       ]);
     }

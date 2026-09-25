@@ -1,3 +1,4 @@
+import { solicitarRespuestaCarpeta } from "./respuestaCarpeta";
 import { unlink } from "node:fs/promises";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
 import {
@@ -691,6 +692,13 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
 
   const [accion, idBoton, indiceCarpetaRaw] = (callback.data ?? "").split(":");
 
+  if (accion === "desamb_carpeta") {
+    await answerCallbackQuerySafe(callback.id);
+    await solicitarRespuestaCarpeta(chatId, idBoton);
+    return;
+  }
+
+
   // "📁 <carpeta>" — botón directo por cada carpeta candidata que el clasificador ya identificó como
   // real (ver ClasificacionDocumento.carpetasCandidatas / processClassification.ts). A diferencia de
   // los 3 de arriba, este SÍ consume la pregunta — archiva de una vez, igual que "✅ Sí, archivar
@@ -993,6 +1001,11 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
           "La pregunta original sigue disponible; no reenvíes el documento."
       ).catch(() => {});
     }
+    return;
+  }
+
+  if (accion !== "desamb_descartar") {
+    await answerCallbackQuerySafe(callback.id, "Acción de documento no reconocida.");
     return;
   }
 

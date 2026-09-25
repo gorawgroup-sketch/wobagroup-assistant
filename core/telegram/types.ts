@@ -37,6 +37,7 @@ export interface TelegramMessage {
   date: number;
   text?: string;
   caption?: string;
+  reply_to_message?: TelegramMessage;
   document?: TelegramDocument;
   /** Telegram manda varias resoluciones; la última es la más grande. */
   photo?: TelegramPhotoSize[];
@@ -58,6 +59,8 @@ export interface TelegramUpdate {
 export interface IncomingMessage {
   chatId: number;
   text: string;
+  replyToMessageId?: number;
+  replyToText?: string;
   fromUsername?: string;
   fromNombre?: string;
 }
