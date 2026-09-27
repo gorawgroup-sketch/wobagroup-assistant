@@ -1,7 +1,7 @@
 // Debe ser el PRIMER import del archivo, sin excepción. Causa raíz real
 // (encontrada en vivo 2026-09-27): 37 stores de Sheets en todo el proyecto
-// leen su `process.env.CASHFLOW_SHEET_ID` (y variables equivalentes) al
-// cargarse el módulo, no cuando de verdad se usan. Si CUALQUIER import de
+// leían su `process.env.CASHFLOW_SHEET_ID` (y variables equivalentes) al
+// cargarse el módulo, no cuando de verdad se usaban. Si CUALQUIER import de
 // este archivo situado antes de "dotenv/config" arrastra, aunque sea
 // transitivamente, alguno de esos stores, ese store queda con el valor
 // cacheado en `undefined` para siempre — dotenv corre demasiado tarde para
@@ -16,13 +16,16 @@
 // protección a nivel de proceso, por si este archivo cambia de entrypoint.
 import "dotenv/config";
 
-const REQUIRED_ENV_VARS = ["CASHFLOW_SHEET_ID", "TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY"] as const;
+// ANTHROPIC_API_KEY es deliberadamente opcional: la política de costes puede desactivar la API o
+// delegar procesos a Claude Max/Codex sin que el servicio entero deje de arrancar. Cada operación que
+// realmente necesite la API ya falla de forma localizada y explícita si no existe la clave.
+const REQUIRED_ENV_VARS = ["CASHFLOW_SHEET_ID", "TELEGRAM_BOT_TOKEN"] as const;
 const faltantes = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
 if (faltantes.length > 0) {
   console.error(
     `[server] Arranque abortado: faltan variables de entorno obligatorias: ${faltantes.join(", ")}. ` +
     `Sin ellas el sistema arranca "vivo" pero roto (el chat responde, pero cada store de Sheets, ` +
-    `la autorización de Telegram o Claude fallan en silencio). Revisa .env (local) o las variables ` +
+    `la autorización de Telegram fallan en silencio). Revisa .env (local) o las variables ` +
     `del servicio en Railway (producción).`
   );
   process.exit(1);
