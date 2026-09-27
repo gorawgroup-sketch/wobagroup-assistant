@@ -260,3 +260,11 @@ test("un empate de la entidad exacta queda inconcluso y no usa empresas parecida
   assert.equal(seleccion.identidadExacta, true);
   assert.equal(construirSugerenciaDesdeCoincidencias(seleccion.coincidencias, "proveedor"), undefined);
 });
+
+test('a meal reference cannot be a taxi for the same person and city',()=>{
+ const s=construirSugerenciaDesdeCoincidencias([
+ {...linea('taxi','gastos-viaje','Traslado Uber Bogotá — Persona Ejemplo'),contactName:'Uber',descripcion:'Taxi Bogotá',tags:['taxi']},
+ {...linea('meal','gastos-viaje','Comida restaurante Bogotá — Persona Ejemplo'),contactName:'Restaurante Example',descripcion:'Comida Bogotá',tags:['alimentacion']},
+ ],'viaje',2,{proveedor:'Restaurante Nuevo',concepto:'Comida en Bogotá',personaAsociada:'Persona Ejemplo',exigirContexto:true});
+ assert.equal(s?.ejemplo,'Comida restaurante Bogotá — Persona Ejemplo');
+});
