@@ -1,3 +1,4 @@
+import { movimientoCompatibleConGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
@@ -808,7 +809,7 @@ async function intentarConciliar(
 ): Promise<ResultadoIntentarConciliar> {
   try {
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
-    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda });
+    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto });
 
     let candidato: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let esAproximado = false;
@@ -2983,6 +2984,10 @@ async function crearGastoYReportar(
       throw new PosibleDuplicadoGastoError(candidatosNuevos);
     }
 
+    const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
+    if (!objetivos.length || objetivos.some(m => !movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion))) {
+      throw new Error("No hay un cargo de categoría compatible. Se revisaron duplicados; no se creará otro gasto sin resolver la coincidencia bancaria.");
+    }
     return crearGastoHolded(
       empresaFinal,
       {
@@ -3951,7 +3956,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
     let movimientosAmbiguosNuevos: MovimientoBancarioCandidato[] = [];
     let movimientoRecomendadoNuevo: MovimientoBancarioCandidato | undefined;
     try {
-      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta });
+      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta, proveedor: propuesta.proveedor, concepto: propuesta.concepto });
       if (candidatosMov.length === 1) {
         movimientoEncontrado = true;
         movimientoRecomendadoNuevo = { ...candidatosMov[0], origenCoincidencia: "exacta" };

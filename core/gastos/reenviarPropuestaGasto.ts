@@ -1,3 +1,4 @@
+import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
   actualizarFlagMovimientoBancarioGasto,
@@ -6,7 +7,7 @@ import {
 } from "./gastoProposalSheet";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
-import { buscarMovimientoSimilar, buscarMovimientoAproximado, obtenerMonedasCuentasReales } from "../holded/write";
+import { buscarMovimientoSimilar, buscarMovimientoAproximado, obtenerMonedasCuentasReales, verificarDuplicadoGastoEstricto } from "../holded/write";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 
 /**
@@ -42,7 +43,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
 
   // Se recalcula SIEMPRE al renovar: un movimiento puede haber llegado después de crear la propuesta
   // y una fila antigua puede guardar false aunque el algoritmo actual ya sepa buscar por conversión.
-  if (propuesta.candidatos.length === 0) {
+  if (propuesta.candidatos.length === 0 && esFechaDocumentoValida(propuesta.fecha)) {
     let movimientoEncontrado = false;
     // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
     // matches" — cuando hay VARIOS matches exactos igual de parecidos (ninguno único), ninguna de
@@ -53,6 +54,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     let movimientoRecomendado: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     try {
       const exactos = await buscarMovimientoSimilar(propuesta.empresa, {
+        proveedor: propuesta.proveedor,
+        concepto: propuesta.concepto,
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
@@ -100,6 +103,13 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos: movimientosPersistidos };
   }
 
+  // Renovar botones no omite la búsqueda de duplicados cuando no hay cargo válido.
+  if (!propuesta.hayMovimientoBancario && !propuesta.movimientosAmbiguos?.length && esFechaDocumentoValida(propuesta.fecha)) {
+    const revision = await verificarDuplicadoGastoEstricto(propuesta.empresa, propuesta);
+    // No generar botones con índices que no estén persistidos en la propuesta.
+    if (revision.compras.length) console.info("[reenviarPropuestaGasto] Hay compras que revisar antes de crear", { cantidad: revision.compras.length });
+  }
+
   const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));
 
   const desgloseIva = propuesta.lineas
@@ -122,7 +132,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         propuesta.candidatos
           .map((c, i) => `  ${i + 1}. ${c.contactName} — ${c.total.toFixed(2)} € (${c.fecha}) — ${c.descripcion}`)
           .join("\n") +
-        `\nRevisa los botones para adjuntar el comprobante a uno de estos, o crear uno nuevo.`
+        `\nAntes de crear otro, hay que confirmar si alguno es el mismo comprobante.`
       : "";
 
   const notaMovimiento =
@@ -137,7 +147,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
               propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
             : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
-          : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con este monto/fecha — revísalo a mano en Holded si ya salió del banco.`;
+          : `\n\n💳 No hay un cargo compatible confirmado. No se ofrece crear: hay que comprobar primero los gastos existentes y sus comprobantes; la ausencia de cargo no demuestra un duplicado.`;
 
   const texto =
     `${encabezado}\n\n` +

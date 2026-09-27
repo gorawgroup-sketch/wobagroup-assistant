@@ -136,7 +136,7 @@ test("una coincidencia aproximada exige que el banco confirme el proveedor", () 
   const e = evidenciaFixture(); e.movimientos[0].descripcion = "Comercio distinto";
   const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
   assert.equal(d.apto, false);
-  if (!d.apto) assert.ok(d.motivos.includes("coincidencia_aproximada_sin_proveedor_bancario"));
+  if (!d.apto) assert.ok(d.motivos.includes("sin_movimiento_exacto"));
 });
 test("la tolerancia porcentual nunca supera cinco unidades monetarias", () => {
   const r = reciboFixture(); r.monto = 10_000;
@@ -158,6 +158,9 @@ test("un nombre aproximado fuerte y único se verifica con importe y fecha banca
   const e = evidenciaFixture();
   e.contacto = { id: "p1", nombre: "Louis Delhaize Brugge", exacto: false, metodo: "aproximado_unico", similitud: 0.52 };
   e.movimientos[0].descripcion = "COMERCIO 38192";
+  assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);
+  r.concepto = "Comida";
+  e.movimientos[0].descripcion = "Supermercado 38192";
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, true);
   e.movimientos[0].fecha = "2026-09-17";
   assert.equal(evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture).apto, false);

@@ -1,3 +1,4 @@
+import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
 import {
@@ -184,8 +185,31 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return "pendiente_datos";
   }
 
+  const empresa: Empresa = datos.empresaProbable;
+  const huellaContenido = await calcularHuellaContenido(entrada.rutaLocal).catch((error) => {
+    console.error("[procesarGastoEntrante] No se pudo calcular la huella del comprobante (continúa con otras defensas):", error);
+    return undefined;
+  });
+
   // No presentar una búsqueda alrededor de hoy como verificación de un recibo sin fecha.
   if (!esFechaDocumentoValida(datos.fecha)) {
+    const previo = huellaContenido ? await buscarGastoProcesadoPorIdentidad(empresa, { huellaContenido }) : undefined;
+    if (previo?.motivo === "mismo_archivo" && previo.registro.completado === true) {
+      await sendTelegramMessage(chatId, `✅ Comprobante duplicado verificado: ya corresponde al gasto ${previo.registro.gastoId}. No se crea ni concilia otro gasto.`);
+      return "propuesta_duplicada";
+    }
+    let busquedaIncompleta = false;
+    const cargos = await buscarCargoSinFecha(empresa, { proveedor: datos.proveedor, concepto: datos.concepto, monto: datos.monto, moneda: datos.moneda }).catch(error => {
+      busquedaIncompleta = true;
+      console.error("[procesarGastoEntrante] Búsqueda sin fecha incompleta", error);
+      return [];
+    });
+    const fechaBancaria = seleccionarFechaBancaria(cargos);
+    if (fechaBancaria) {
+      // Se usa como referencia bancaria, sin inventar una fecha impresa en el recibo.
+      return procesarGastoEntrante({ ...entrada, datos: { ...datos, fecha: fechaBancaria,
+        concepto: `${datos.concepto} [Fecha de referencia bancaria: ${fechaBancaria}; recibo sin fecha]` } });
+    }
     await guardarGastoPendienteDatos({
       chatId, rutaLocal: entrada.rutaLocal, nombreArchivoOriginal: entrada.nombreArchivoOriginal,
       mimeType: entrada.mimeType, datos, motivo: "fecha", deColaCorreo: entrada.deColaCorreo,
@@ -193,17 +217,14 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     });
     await sendTelegramMessage(chatId,
       `🔎 ${datos.proveedor || "Gasto"} · ${datos.monto} ${datos.moneda}: el comprobante no tiene una fecha verificable. ` +
-      `La comprobación de duplicados y banco está pendiente; no se ofrece crear otro gasto. ` +
+      (busquedaIncompleta ? `La consulta bancaria quedó incompleta; se conserva el caso para reintento. ` : `Se buscaron cargos por importe y categoría compatible en los últimos 90 días, incluidos conciliados, sin una coincidencia única. `) +
+      `No se ofrece crear otro gasto. ` +
       `Hay que contrastar el correo original, los comprobantes anteriores y los movimientos, incluidos los ya conciliados. ` +
       `No se ha usado la fecha de hoy ni se ha concluido que falte el cargo. La revisión puede retomarse con la fecha documentada sin releer el adjunto.`);
     return "pendiente_datos";
   }
 
-  const empresa: Empresa = datos.empresaProbable;
-  const huellaContenido = await calcularHuellaContenido(entrada.rutaLocal).catch((error) => {
-    console.error("[procesarGastoEntrante] No se pudo calcular la huella del comprobante (continúa con otras defensas):", error);
-    return undefined;
-  });
+
 
   // Pedido explícito de Carlos, tras dos errores reales: (1) un gasto de
   // Uber en Colombia se registró con 148.346 — el monto en COP — tratado
@@ -884,7 +905,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded },
+        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto },
         toleranciaMov
       );
       if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };

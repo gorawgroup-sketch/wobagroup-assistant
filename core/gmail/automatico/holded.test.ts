@@ -523,6 +523,7 @@ test("busca cargo multimoneda aunque el contacto siga ambiguo, sin autorizar cre
 });
 test("alias confirmado desambigua fichas del mismo proveedor sin bloquear por SA o acentos", async () => {
   const e=escenario(); e.r.proveedor="Inter Rapidísimo";
+  e.movimiento.description="INTER RAPIDISIMO S.A";
   e.contactos[0].name="INTER RAPIDISIMO S.A";
   e.contactos.push({id:"p2",name:"INTER RAPIDISIMO S.A"});
   e.memoria.alias=async()=>[{contactId:"p2",contactName:"INTER RAPIDISIMO S.A"}];
