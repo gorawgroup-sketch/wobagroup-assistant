@@ -3,7 +3,6 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { CacheLectura } from "../utils/readCache";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_cerebro_vinculos_chat";
 const TTL_CODIGO_MS = 10 * 60 * 1000;
 const HEADERS = [
@@ -43,8 +42,9 @@ interface FilaConIndice {
 }
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
-  return CASHFLOW_SHEET_ID;
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

@@ -22,7 +22,6 @@ export interface OfertaResponderCorreo {
   creadoEn: number;
 }
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_ofertas_responder_correo";
 const TTL_MS = 48 * 60 * 60 * 1000; // 48 horas, mismo criterio que el resto de propuestas de documentos/correo
 
@@ -43,10 +42,11 @@ const HEADERS = [
 ];
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

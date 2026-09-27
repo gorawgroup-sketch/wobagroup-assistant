@@ -1,7 +1,36 @@
+// Debe ser el PRIMER import del archivo, sin excepción. Causa raíz real
+// (encontrada en vivo 2026-09-27): 37 stores de Sheets en todo el proyecto
+// leen su `process.env.CASHFLOW_SHEET_ID` (y variables equivalentes) al
+// cargarse el módulo, no cuando de verdad se usan. Si CUALQUIER import de
+// este archivo situado antes de "dotenv/config" arrastra, aunque sea
+// transitivamente, alguno de esos stores, ese store queda con el valor
+// cacheado en `undefined` para siempre — dotenv corre demasiado tarde para
+// arreglarlo. Ya pasó: `resolverRespuestaCarpeta`/`colaRevisionStore`
+// estaban antes de esta línea y rompían en silencio TODOS los stores de
+// Sheets (no solo el de seguros) al levantar el server compilado. Se
+// corrigió de raíz en cada store (ahora leen `process.env` recién en el
+// momento de uso, igual que loadServiceAccountCredentials en
+// serviceAccount.ts) y ADEMÁS aquí, para que ningún import futuro pueda
+// volver a colarse por delante sin que se note en este comentario. Ver
+// también el flag `-r dotenv/config` en railway.json/package.json — misma
+// protección a nivel de proceso, por si este archivo cambia de entrypoint.
+import "dotenv/config";
+
+const REQUIRED_ENV_VARS = ["CASHFLOW_SHEET_ID", "TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY"] as const;
+const faltantes = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
+if (faltantes.length > 0) {
+  console.error(
+    `[server] Arranque abortado: faltan variables de entorno obligatorias: ${faltantes.join(", ")}. ` +
+    `Sin ellas el sistema arranca "vivo" pero roto (el chat responde, pero cada store de Sheets, ` +
+    `la autorización de Telegram o Claude fallan en silencio). Revisa .env (local) o las variables ` +
+    `del servicio en Railway (producción).`
+  );
+  process.exit(1);
+}
+
 import { resolverRespuestaCarpeta } from "../core/documental/respuestaCarpeta";
 import { obtenerResumenColaPorChat } from "../core/gmail/colaRevisionStore";
 import { avisoEstadoCola, esContinuacionCorreo, avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
-import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";

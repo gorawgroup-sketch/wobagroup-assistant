@@ -2,7 +2,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_cerebro_tokens_temporales";
 const HORAS_VALIDEZ_DEFECTO = 24;
 
@@ -16,10 +15,11 @@ const HORAS_VALIDEZ_DEFECTO = 24;
  * acceso mientras el token siga siendo válido aquí.
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

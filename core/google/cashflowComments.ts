@@ -2,8 +2,6 @@ import { google, drive_v3 } from "googleapis";
 import { loadServiceAccountCredentials } from "./serviceAccount";
 import { fetchDetalleRegistros, type DetalleRegistro } from "./cashflowSheet";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
-
 /**
  * Los comentarios de Google Sheets (clic derecho > Comentar, o Ctrl+Alt+M —
  * distintos de las "notas" clásicas, clic derecho > Insertar nota) NO se
@@ -15,10 +13,11 @@ const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
  * condición, a quién avisar) — esto lee esos comentarios reales.
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let driveReadClient: drive_v3.Drive | null = null;
