@@ -38,15 +38,15 @@ const TTL_HISTORIAL_MS = 6 * 60 * 60 * 1000; // 6 horas — cubre una pausa norm
 // desconocer una indicación que está en el chat solo unos minutos o segundos antes").
 const LIMITE_CARACTERES_CELDA = 45_000;
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_historial_conversaciones";
 const HEADERS = ["chatId", "mensajesJSON", "actualizadoEn"];
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

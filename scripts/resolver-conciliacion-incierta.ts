@@ -1,3 +1,7 @@
+// Script standalone: a diferencia de src/server.ts y scripts/start.ts, nadie
+// más carga dotenv por él. Sin esto, CASHFLOW_SHEET_ID y el resto de
+// variables solo existen si ya están en el entorno del shell que lo invoca.
+import "dotenv/config";
 import { durableBankReconciliationStore } from "../core/holded/durableBankReconciliationStore";
 
 interface Argumentos {

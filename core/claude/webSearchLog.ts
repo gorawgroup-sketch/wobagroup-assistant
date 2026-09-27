@@ -13,15 +13,15 @@ import { PRECIO_POR_BUSQUEDA_WEB } from "./costTracking";
  * (tokens + búsquedas mezclados); esta pestaña es solo el desglose de las
  * búsquedas en sí, para el panel de búsqueda web del front.
  */
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_busquedas_web";
 const HEADERS = ["fecha", "chatId", "origen", "query", "numResultados", "costoUSD"];
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
