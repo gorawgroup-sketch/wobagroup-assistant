@@ -379,7 +379,7 @@ async function buildSystemPromptDinamico(
           : gastoPendiente.motivo === "proveedor"
             ? "el nombre real y exacto del proveedor que aparece en el comprobante"
           : gastoPendiente.motivo === "verificacion_duplicado"
-            ? "reintentar la verificación estricta de duplicados en Holded; no hace falta aportar otro dato"
+            ? "reintentar la verificación estricta de duplicados en Holded; el transporte ya hace reintentos automáticos acotados y no hace falta aportar otro dato. Si Holded sigue fallando, conserva este correo sin leer y permite aplazar solo este pendiente para continuar con los demás; nunca confirmes un duplicado sin evidencia"
           : "el monto y moneda EXACTOS que salieron de la cuenta (la factura está en moneda extranjera sin equivalente explícito)";
       partes.push(
         `Hay una pregunta SIN RESPONDER en este chat sobre una factura/gasto: se detectó "${gastoPendiente.datos.proveedor}" ` +

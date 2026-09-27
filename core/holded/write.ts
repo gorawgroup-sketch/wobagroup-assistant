@@ -20,6 +20,7 @@ import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/ex
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
 import { conMutex } from "../utils/asyncMutex";
+import { conReintentoLecturaHolded } from "./readRetry";
 import { evaluarMovimientoConciliadoComoDuplicado, esCargoLibreExactoParaDuplicado, priorizarCargoLibreExacto } from "./duplicateSignals";
 import {
   consultarCreacionCompraDurable,
@@ -146,12 +147,17 @@ function getReadApiKey(empresa: Empresa): string {
 }
 
 async function holdedReadJson(empresa: Empresa, path: string): Promise<unknown> {
-  const response = await fetch(`${HOLDED_API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
-    signal: AbortSignal.timeout(30_000),
+  return conReintentoLecturaHolded(async () => {
+    const response = await fetch(`${HOLDED_API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
+    return response.json();
+  }, {
+    alReintentar: ({ intento, status, demoraMs }) =>
+      console.warn(`[holded/read-retry] ${empresa} GET ${path}: intento ${intento} falló (${status ?? "red"}); reintento en ${demoraMs} ms.`),
   });
-  if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
-  return response.json();
 }
 
 /**
@@ -194,24 +200,34 @@ async function holdedWriteCallSinGuardia(
   body?: unknown
 ): Promise<unknown> {
   const apiKey = getWriteApiKey(empresa);
+  const ejecutar = async () => {
+    const response = await fetch(`${HOLDED_API_BASE}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30_000),
+    });
 
-  const response = await fetch(`${HOLDED_API_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
-  });
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new HoldedApiError(response.status, empresa, errBody);
+    }
 
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new HoldedApiError(response.status, empresa, errBody);
-  }
+    return response.json();
+  };
 
-  return response.json();
+  // Una lectura GET es idempotente y puede autorrecuperarse. Una escritura
+  // jamás se repite aquí: POST/PUT mantienen sus fronteras durables propias.
+  return method === "GET"
+    ? conReintentoLecturaHolded(ejecutar, {
+        alReintentar: ({ intento, status, demoraMs }) =>
+          console.warn(`[holded/read-retry] ${empresa} GET ${path}: intento ${intento} falló (${status ?? "red"}); reintento en ${demoraMs} ms.`),
+      })
+    : ejecutar();
 }
 
 const metricasCreacionesCompraDurables = {

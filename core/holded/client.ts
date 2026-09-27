@@ -2,6 +2,7 @@ import { formatDateLocal } from "../utils/dateFormat";
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
+import { conReintentoLecturaHolded } from "./readRetry";
 
 const HOLDED_API_BASE = "https://api.holded.com/api/v2";
 
@@ -41,19 +42,28 @@ export async function holdedGet<T = unknown>(
     if (value) url.searchParams.set(key, value);
   }
 
-  const response = await fetch(url.toString(), {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-    },
+  return conReintentoLecturaHolded(async () => {
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw Object.assign(
+        new Error(`Error de la API de Holded (${response.status}) para ${empresa}: ${body}`),
+        { status: response.status }
+      );
+    }
+
+    return response.json() as Promise<T>;
+  }, {
+    alReintentar: ({ intento, status, demoraMs }) =>
+      console.warn(`[holded/read-retry] ${empresa} GET ${url.pathname}: intento ${intento} falló (${status ?? "red"}); reintento en ${demoraMs} ms.`),
   });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Error de la API de Holded (${response.status}) para ${empresa}: ${body}`);
-  }
-
-  return response.json() as Promise<T>;
 }
 
 /**
