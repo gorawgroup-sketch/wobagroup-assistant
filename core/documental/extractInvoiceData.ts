@@ -454,19 +454,6 @@ export async function extraerDatosFactura(
   contextoCorreo?: string,
   nombreArchivo?: string
 ): Promise<DatosFactura> {
-  const fallback: DatosFactura = {
-    esFacturaOGasto: false,
-    proveedor: "",
-    monto: 0,
-    moneda: "",
-    fecha: "",
-    concepto: "",
-    reciboSimplificado: true,
-    lineas: [],
-    empresaProbable: "desconocida",
-    confianza: "baja",
-    razon: "No fue posible leer el documento.",
-  };
 
   let documentBlock: DocumentOrImageBlock | TextBlock;
   try {
@@ -474,7 +461,7 @@ export async function extraerDatosFactura(
     documentBlock = await mimeADocumentBlock(rutaLocal, mimeType, data);
   } catch (error) {
     console.error("[extractInvoiceData] Error leyendo/preparando el archivo:", error);
-    return fallback;
+    throw error;
   }
 
   const anthropic = getClient();
