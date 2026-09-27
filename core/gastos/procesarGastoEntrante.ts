@@ -16,13 +16,12 @@ import {
   crearPropuestaGasto,
   actualizarMessageIdGasto,
   buscarPropuestaGastoPendiente,
-  actualizarFlagMovimientoBancarioGasto,
-  actualizarMovimientosAmbiguosPropuestaGasto,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import { botonesVerificacionDuplicadoPendiente } from "./gastoPendienteDatosActions";
-import { construirTecladoGasto } from "./gastoTeclado";
+import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
+import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import {
@@ -1043,14 +1042,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // ligado a la propuesta. Un fallo parcial aborta antes de publicar los
     // botones; nunca se ofrece una acción que después tenga que buscar de
     // nuevo y pueda perder el candidato mostrado.
-    const movimientosGuardados = await actualizarMovimientosAmbiguosPropuestaGasto(
-      propuesta.id,
-      movimientosParaPersistir
+    const propuestaConBanco = await guardarVinculoBancarioPropuesta(
+      propuesta, movimientosParaPersistir, Boolean(movimientoBancario)
     );
-    const flagGuardado = await actualizarFlagMovimientoBancarioGasto(propuesta.id, Boolean(movimientoBancario));
-    if (!movimientosGuardados || !flagGuardado) {
-      throw new Error("No se pudo guardar durablemente el movimiento bancario recomendado.");
-    }
 
     const notaPersonaTxt = datos.personaAsociada
       ? `${datos.personaAsociada} (identificado en este documento/correo)`
@@ -1084,16 +1078,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
     ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento;
 
-    // Pedido explícito de Carlos: cuando hay un movimiento bancario
-    // confirmado, mostrar SIEMPRE las dos opciones juntas ("Crear" y
-    // "Crear y conciliar") y dejar que él elija según su propia confianza
-    // en el match — antes el código decidía solo por él (o una u otra,
-    // nunca las dos). Sin movimiento confirmado, solo tiene sentido
-    // "Crear" (no hay nada que conciliar todavía).
-    botones = construirTecladoGasto(propuesta, {
-      hayMovimientoBancario: Boolean(movimientoBancario),
-      numMovimientosAmbiguos: movimientosParaElegir.length > 0 ? movimientosParaElegir.length : undefined,
-    });
+    // Publicar desde el mismo estado que acaba de quedar guardado. La propuesta
+    // inicial aún no tenía banco y los controles ocultaban las acciones válidas.
+    botones = construirTecladoGasto(propuestaConBanco, opcionesTecladoDesdePropuesta(propuestaConBanco));
   }
 
   const messageId = await sendTelegramMessageWithButtons(chatId, texto, botones);
