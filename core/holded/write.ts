@@ -1,4 +1,4 @@
-import { gastoRecurrenteIndependiente } from "./gastoRecurrente";
+import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
@@ -1504,16 +1504,27 @@ export async function verificarDuplicadoGastoEstricto(
   ]);
   // Solo investigar esta excepción cuando hay documentos diferentes en otros días.
   const revisables = compras.filter(c => c.fecha !== criterios.fecha && c.documentNumber && criterios.numeroDocumento && c.documentNumber !== criterios.numeroDocumento);
-  if (revisables.length && !movimientosConciliados.length) {
+  if (revisables.length) {
     const libres = (await buscarMovimientoSimilar(empresa, { ...criterios, fechaExacta: true }, 0.001)).filter(m =>
       m.monto < 0 && m.fecha === criterios.fecha && proveedorPareceEnDescripcion(criterios.proveedor, m.descripcion));
     if (libres.length === 1) {
       const separados = new Set<string>();
+      const cargosDeOtrosDocumentos = new Set<string>();
       for (const c of revisables) {
-        const detalle = await holdedGet(empresa, `/purchases/${encodeURIComponent(c.id)}`) as Parameters<typeof gastoRecurrenteIndependiente>[1];
-        if (gastoRecurrenteIndependiente(criterios, detalle)) separados.add(c.id);
+        const detalle = await holdedGet(empresa, `/purchases/${encodeURIComponent(c.id)}`) as Parameters<typeof cargoConciliadoDeGastoIndependiente>[1];
+        if (gastoRecurrenteIndependiente(criterios, detalle)) {
+          separados.add(c.id);
+          for (const m of movimientosConciliados) {
+            if (cargoConciliadoDeGastoIndependiente(criterios, detalle, m)) {
+              cargosDeOtrosDocumentos.add(`${m.accountId}/${m.movementId}`);
+            }
+          }
+        }
       }
-      return { compras: compras.filter(c => !separados.has(c.id)), movimientosConciliados };
+      return {
+        compras: compras.filter(c => !separados.has(c.id)),
+        movimientosConciliados: movimientosConciliados.filter(m => !cargosDeOtrosDocumentos.has(`${m.accountId}/${m.movementId}`)),
+      };
     }
   }
   return { compras, movimientosConciliados };
