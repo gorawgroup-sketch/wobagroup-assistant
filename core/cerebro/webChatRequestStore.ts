@@ -7,7 +7,6 @@ import type {
   EstadoSolicitudChat,
 } from "./webChatCoordinator";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_cerebro_chat_solicitudes";
 const HEADERS = ["requestId", "chatId", "textoHash", "estado", "respuesta", "creadoEn", "actualizadoEn"];
 const TTL_SOLICITUD_MS = 48 * 60 * 60 * 1000;
@@ -19,8 +18,9 @@ function claveSolicitud(chatId: number, requestId: string): string {
 }
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
-  return CASHFLOW_SHEET_ID;
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

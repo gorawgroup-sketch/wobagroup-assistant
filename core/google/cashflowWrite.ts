@@ -7,8 +7,6 @@ import { montosCercanos } from "../utils/montos";
 import { fechaHoyEspana } from "../utils/diaHabil";
 import { conMutex } from "../utils/asyncMutex";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
-
 let writeClient: sheets_v4.Sheets | null = null;
 
 /**
@@ -32,10 +30,11 @@ function getSheetsWriteClient(): sheets_v4.Sheets {
 }
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let gridIdDatosCache: number | null = null;

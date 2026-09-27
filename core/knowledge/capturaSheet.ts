@@ -2,7 +2,6 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { conMutex } from "../utils/asyncMutex";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_capturas";
 // `idempotencyKey` va al final para que las capturas históricas A:D sigan
 // leyéndose sin migración destructiva.
@@ -21,10 +20,11 @@ const HEADERS = ["fecha", "autor", "texto", "empresas", "idempotencyKey"];
  * que la próxima captura se perdiera.
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
