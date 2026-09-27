@@ -2178,6 +2178,10 @@ export interface CuentaSugerida {
   tags: string[];
   ejemplo: string;
   aprendidoDe: "proveedor" | "concepto" | "categoria" | "viaje" | "ia" | "correccion_confirmada";
+  /** Número de documentos independientes que sostienen la cuenta elegida. */
+  evidencias?: number;
+  /** Por qué el ejemplo sí es comparable con este gasto; vacío si no hay uno contextual. */
+  contextoEjemplo?: Array<"persona" | "ubicacion">;
 }
 
 export interface LineaConCuenta {
@@ -2312,7 +2316,8 @@ async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuen
 export function construirSugerenciaDesdeCoincidencias(
   matches: LineaConCuenta[],
   origen: CuentaSugerida["aprendidoDe"],
-  minEvidencia = 1
+  minEvidencia = 1,
+  contexto?: { proveedor: string; concepto: string; personaAsociada?: string; exigirContexto?: boolean }
 ): CuentaSugerida | undefined {
   if (matches.length === 0) return undefined;
 
@@ -2342,9 +2347,70 @@ export function construirSugerenciaDesdeCoincidencias(
     .slice(0, 3)
     .map(([t]) => t);
 
-  const ejemplo = delGrupo.find((m) => m.lineName || m.descripcion);
+  const ejemploContextual = contexto ? seleccionarEjemploContextual(delGrupo, contexto) : undefined;
+  const ejemplo = ejemploContextual?.linea ?? (contexto?.exigirContexto ? undefined : delGrupo.find((m) => m.lineName || m.descripcion));
 
-  return { accountId: cuentaGanadora, tags, ejemplo: ejemplo ? ejemplo.lineName || ejemplo.descripcion : "", aprendidoDe: origen };
+  return {
+    accountId: cuentaGanadora,
+    tags,
+    ejemplo: ejemplo ? ejemplo.lineName || ejemplo.descripcion : "",
+    aprendidoDe: origen,
+    evidencias: votos,
+    contextoEjemplo: ejemploContextual?.contexto,
+  };
+}
+
+// Persona y ubicación sirven para escoger una referencia explicativa cercana, nunca para decidir
+// por sí solas la cuenta. Así un taxi de Barcelona no se presenta como si dependiera de un Uber de
+// Bogotá únicamente porque ambos acabaron en la cuenta general de viajes.
+const PALABRAS_NO_UBICACION = new Set([
+  "traslado", "transporte", "transport", "taxi", "uber", "bolt", "viaje", "trip", "hotel",
+  "hospedaje", "alojamiento", "vuelo", "flight", "tren", "train", "aeropuerto", "airport",
+  "trabajo", "reunion", "reuniones", "meeting", "meetings", "priority", "gasto", "expense",
+  "calle", "carrer", "carrera", "avenida", "street", "road", "desde", "hasta", "hacia",
+]);
+
+function tokensUbicacionContextual(texto: string, proveedor: string, persona?: string): Set<string> {
+  const excluidas = new Set([
+    ...palabrasSignificativas(proveedor),
+    ...palabrasSignificativas(persona ?? ""),
+    ...PALABRAS_NO_UBICACION,
+  ]);
+  return new Set(
+    palabrasSignificativas(texto).filter((palabra) => !excluidas.has(palabra) && !/^\d+$/.test(palabra))
+  );
+}
+
+function seleccionarEjemploContextual(
+  lineas: LineaConCuenta[],
+  contexto: { proveedor: string; concepto: string; personaAsociada?: string; exigirContexto?: boolean }
+): { linea: LineaConCuenta; contexto: Array<"persona" | "ubicacion"> } | undefined {
+  const persona = normalizar(contexto.personaAsociada ?? "");
+  const ubicacionActual = tokensUbicacionContextual(contexto.concepto, contexto.proveedor, contexto.personaAsociada);
+  const puntuadas = lineas.map((linea, indice) => {
+    const texto = normalizar(`${linea.contactName} ${linea.descripcion} ${linea.lineName} ${linea.tags.join(" ")}`);
+    const coincidePersona = Boolean(persona) && texto.includes(persona);
+    const ubicacionPrecedente = tokensUbicacionContextual(
+      `${linea.descripcion} ${linea.lineName} ${linea.tags.join(" ")}`,
+      linea.contactName,
+      contexto.personaAsociada
+    );
+    const ubicacionesComunes = [...ubicacionActual].filter((token) => ubicacionPrecedente.has(token));
+    const coincideUbicacion = ubicacionesComunes.length > 0;
+    const contextoCoincidente: Array<"persona" | "ubicacion"> = [];
+    if (coincidePersona) contextoCoincidente.push("persona");
+    if (coincideUbicacion) contextoCoincidente.push("ubicacion");
+    return {
+      linea,
+      contexto: contextoCoincidente,
+      puntuacion: (coincidePersona ? 100 : 0) + ubicacionesComunes.length * 10,
+      indice,
+    };
+  });
+  const mejores = puntuadas
+    .filter((item) => item.puntuacion > 0)
+    .sort((a, b) => b.puntuacion - a.puntuacion || a.indice - b.indice);
+  return mejores[0] ? { linea: mejores[0].linea, contexto: mejores[0].contexto } : undefined;
 }
 
 /**
@@ -2541,6 +2607,25 @@ export function seleccionarCoincidenciasProveedor(
 // decidiendo el tag de ESTE gasto por su propia naturaleza, no por el contexto de viaje.
 const TAGS_VIAJE_REFERENCIA = ["transporte", "taxi", "tren", "avion", "alquilercoche", "peaje", "barco", "hospedaje"];
 
+/**
+ * Conserva únicamente precedentes de la misma naturaleza cuando el gasto permite distinguirla.
+ * "transporte" es una familia amplia; si además sabemos que es taxi, avión, tren, etc., esa señal
+ * específica manda. Alimentación durante un viaje no tiene un precedente inequívoco en
+ * TAGS_VIAJE_REFERENCIA y por eso mantiene el fallback agregado de viaje existente.
+ */
+export function filtrarPrecedentesViajePorNaturaleza(
+  lineas: LineaConCuenta[],
+  tagsCategoria: string[]
+): LineaConCuenta[] {
+  const tagsViaje = tagsCategoria.filter((tag) => TAGS_VIAJE_REFERENCIA.includes(normalizarEtiquetaHolded(tag)));
+  if (tagsViaje.length === 0) return lineas;
+  const especificos = tagsViaje.filter((tag) => normalizarEtiquetaHolded(tag) !== "transporte");
+  const referencia = especificos.length > 0 ? especificos : tagsViaje;
+  return lineas.filter((linea) =>
+    referencia.some((tag) => tagsConSinonimosSeSolapan([tag], linea.tags))
+  );
+}
+
 export async function inferirCuentaGasto(
   empresa: Empresa,
   criterios: {
@@ -2618,6 +2703,10 @@ export async function inferirCuentaGasto(
     );
   }
 
+  // Se calcula antes del tier de viaje para que un taxi solo aprenda de taxi/transporte compatible y
+  // no de cualquier compra que casualmente terminó en la cuenta general de viajes.
+  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
+
   // Tier "viaje" — pedido explícito de Carlos, casos reales (Simon Talloen en desplazamiento, tickets
   // de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien de viaje debe
   // contabilizarse como gasto de viaje/desplazamiento — "profesionales independientes" y la cuenta
@@ -2643,9 +2732,23 @@ export async function inferirCuentaGasto(
   // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
   // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
   const senalDeViaje = criterios.contextoDeViaje || (Boolean(criterios.personaAsociada) && criterios.reciboSimplificado === true);
+  const contextoEjemploViaje = senalDeViaje
+    ? {
+        proveedor: criterios.proveedor,
+        concepto: criterios.concepto,
+        personaAsociada: criterios.personaAsociada,
+        exigirContexto: true,
+      }
+    : undefined;
   if (senalDeViaje) {
     const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
-    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(porViaje, "viaje", MIN_EVIDENCIA_VIAJE);
+    const porMismaNaturaleza = filtrarPrecedentesViajePorNaturaleza(porViaje, tagsCategoria);
+    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(
+      porMismaNaturaleza,
+      "viaje",
+      MIN_EVIDENCIA_VIAJE,
+      contextoEjemploViaje
+    );
     if (sugeridoPorViaje) return sugeridoPorViaje;
   }
 
@@ -2657,8 +2760,6 @@ export async function inferirCuentaGasto(
   // menos confiable. Mismo criterio ya usado en el resto del sistema para
   // razón social vs. nombre comercial.
   // Se calcula ANTES de cualquier tier (no solo como fallback del tier 3) — ver más abajo.
-  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
-
   // Hallazgo real de auditoría (caso Greengrass/GRUPO PRACAR DE RL DE CV, Kelly Correales, Footprint,
   // 2026-09-08): un veto que solo compara TAGS (¿el grupo ganador tiene esta etiqueta?) no detecta el
   // caso real donde una compra ya quedó mal archivada en "Otros servicios" (la cuenta genérica de
@@ -2680,7 +2781,12 @@ export async function inferirCuentaGasto(
   // "Uber", cuyas líneas reales están etiquetadas "uber" y no "taxi", nunca alcanza el mínimo de
   // evidencia del tier 3 con tagsCategoria estricto — sigue resolviendo por proveedor, sin cambios).
   const porCategoria = tagsCategoria.length > 0 ? lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags))) : [];
-  const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
+  const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(
+    porCategoria,
+    "categoria",
+    MIN_EVIDENCIA_CONCEPTO,
+    contextoEjemploViaje
+  );
 
   const contradiceCategoria = (accountId: string): boolean =>
     sugeridoPorCategoria !== undefined && sugeridoPorCategoria.accountId !== accountId;
@@ -2705,7 +2811,12 @@ export async function inferirCuentaGasto(
   const seleccionProveedor = seleccionarCoincidenciasProveedor(criterios.proveedor, lineas);
   const porNombre = seleccionProveedor.coincidencias;
 
-  const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
+  const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(
+    porNombre,
+    "proveedor",
+    1,
+    contextoEjemploViaje
+  );
   if (sugeridoPorNombre) {
     if (!contradiceCategoria(sugeridoPorNombre.accountId)) return sugeridoPorNombre;
   }
@@ -2785,7 +2896,12 @@ export async function inferirCuentaGasto(
       // voto está genuinamente empatado"). Se cae directo al tier 3 (categoría) en vez de al voto por
       // mayoría de acá.
     } else {
-      const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
+      const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(
+        porConcepto,
+        "concepto",
+        MIN_EVIDENCIA_CONCEPTO,
+        contextoEjemploViaje
+      );
       if (sugeridoPorConcepto && !contradiceCategoria(sugeridoPorConcepto.accountId)) return sugeridoPorConcepto;
     }
   }

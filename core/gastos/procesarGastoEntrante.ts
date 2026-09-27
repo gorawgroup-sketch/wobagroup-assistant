@@ -122,6 +122,31 @@ const ETIQUETA_APRENDIDO_DE: Record<CuentaSugerida["aprendidoDe"], string> = {
   ia: "elegida por IA",
 };
 
+export function describirCuentaSugerida(
+  cuenta: CuentaSugerida,
+  tagsCategoria: string[]
+): string {
+  const respaldo = cuenta.evidencias
+    ? `${cuenta.evidencias} documento${cuenta.evidencias === 1 ? "" : "s"} independiente${cuenta.evidencias === 1 ? "" : "s"}`
+    : "el historial verificado";
+  const esNaturalezaDeViaje = cuenta.aprendidoDe === "viaje" || tagsCategoria.some((tag) =>
+    ["transporte", "taxi", "tren", "avion", "hospedaje", "alquilercoche", "peaje", "barco"].includes(tag)
+  );
+  if (esNaturalezaDeViaje) {
+    const naturaleza = tagsCategoria.length > 0 ? ` de ${tagsCategoria.join("/")}` : "";
+    const contextoVisible = cuenta.contextoEjemplo?.map((valor) => valor === "ubicacion" ? "ubicación" : valor);
+    const contextoEjemplo = contextoVisible?.length
+      ? ` Referencia comparable por la misma ${contextoVisible.join(" y ")}: "${cuenta.ejemplo}".`
+      : " No se usa ni se muestra otro viaje como referencia si no comparte persona o ubicación.";
+    return `seleccionada para este gasto de viaje${naturaleza}, respaldada por ${respaldo}; ` +
+      `no está vinculada a un gasto individual. Persona y ubicación no se heredan de otro gasto; ` +
+      `solo se muestran cuando este correo/recibo las identifica.` +
+      contextoEjemplo;
+  }
+  const ejemplo = cuenta.ejemplo ? ` Ejemplo de soporte: "${cuenta.ejemplo}".` : "";
+  return `identificada ${ETIQUETA_APRENDIDO_DE[cuenta.aprendidoDe]} con ${respaldo}; no está vinculada a otro gasto.` + ejemplo;
+}
+
 function esNumeroDocumentoUtilizable(normalizado: string): boolean {
   return normalizado !== "" && normalizado !== PLACEHOLDER_SIN_NUMERO;
 }
@@ -1070,9 +1095,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const notaTags = `, tags: ${[notaPersonaTxt, notaCategoriaTxt].filter(Boolean).join(" + ")}`;
 
     const notaCuenta = cuentaSugerida
-      ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
-        ` (${ETIQUETA_APRENDIDO_DE[cuentaSugerida.aprendidoDe]})` +
-        notaTags
+      ? `\nCuenta contable: ${describirCuentaSugerida(cuentaSugerida, tagsCategoria)}` + notaTags
       : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.` +
         notaTags;
 

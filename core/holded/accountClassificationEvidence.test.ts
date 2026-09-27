@@ -4,6 +4,7 @@ import {
   combinarTagsGastoAprendidos,
   construirSugerenciaDesdeCoincidencias,
   esImporteUtilComoPrecedenteContable,
+  filtrarPrecedentesViajePorNaturaleza,
   inferirTagsCategoria,
   normalizarEtiquetaHolded,
   seleccionarCoincidenciasProveedor,
@@ -51,6 +52,77 @@ test("un empate contable se declara inconcluso en vez de depender de la paginaci
   );
 
   assert.equal(sugerencia, undefined);
+});
+
+test("un taxi no toma hoteles u otros viajes como precedente contable", () => {
+  const bogotaTaxi: LineaConCuenta = {
+    ...linea("taxi-bogota", "gastos-viaje", "Uber Bogotá — Alejandro Florez"),
+    contactName: "Uber Colombia",
+    descripcion: "Traslado Chapinero, Bogotá",
+    tags: ["taxi", "transporte", "alejandroflorez"],
+  };
+  const hotelMadrid: LineaConCuenta = {
+    ...linea("hotel-madrid", "gastos-viaje", "Hotel Madrid — Nuria Ortiz"),
+    contactName: "Hotel Madrid",
+    descripcion: "Alojamiento Madrid",
+    tags: ["hospedaje", "nuriaortiz"],
+  };
+  const taxiBarcelona: LineaConCuenta = {
+    ...linea("taxi-barcelona", "gastos-viaje", "Bolt Barcelona — Nuria Ortiz"),
+    contactName: "Bolt",
+    descripcion: "Traslado Barcelona",
+    tags: ["taxi", "transporte", "nuriaortiz"],
+  };
+
+  assert.deepEqual(
+    filtrarPrecedentesViajePorNaturaleza([bogotaTaxi, hotelMadrid, taxiBarcelona], ["transporte", "taxi"])
+      .map((precedente) => precedente.documentId),
+    ["taxi-bogota", "taxi-barcelona"]
+  );
+});
+
+test("la referencia visible de viaje prefiere misma persona o ubicación y nunca inventa una", () => {
+  const sugerencia = construirSugerenciaDesdeCoincidencias(
+    [
+      {
+        ...linea("bogota", "gastos-viaje", "Uber Bogotá — Alejandro Florez"),
+        contactName: "Uber Colombia",
+        descripcion: "Traslado Chapinero, Bogotá",
+        tags: ["taxi", "transporte", "alejandroflorez"],
+      },
+      {
+        ...linea("barcelona", "gastos-viaje", "Bolt Barcelona — Nuria Ortiz"),
+        contactName: "Bolt",
+        descripcion: "Traslado Barcelona",
+        tags: ["taxi", "transporte", "nuriaortiz"],
+      },
+    ],
+    "viaje",
+    2,
+    {
+      proveedor: "Bolt",
+      concepto: "Taxi en Barcelona para reuniones",
+      personaAsociada: "Nuria Ortiz",
+      exigirContexto: true,
+    }
+  );
+
+  assert.equal(sugerencia?.accountId, "gastos-viaje");
+  assert.equal(sugerencia?.ejemplo, "Bolt Barcelona — Nuria Ortiz");
+  assert.deepEqual(sugerencia?.contextoEjemplo, ["persona", "ubicacion"]);
+  assert.equal(sugerencia?.evidencias, 2);
+
+  const sinContexto = construirSugerenciaDesdeCoincidencias(
+    [
+      { ...linea("bogota-1", "gastos-viaje", "Uber Bogotá — Alejandro Florez"), descripcion: "Chapinero Bogotá" },
+      { ...linea("bogota-2", "gastos-viaje", "Uber Bogotá — Alejandro Florez"), descripcion: "Chapinero Bogotá" },
+    ],
+    "viaje",
+    2,
+    { proveedor: "Bolt", concepto: "Taxi Barcelona", personaAsociada: "Nuria Ortiz", exigirContexto: true }
+  );
+  assert.equal(sinContexto?.ejemplo, "");
+  assert.deepEqual(sinContexto?.contextoEjemplo, undefined);
 });
 
 test("reconoce una compra de créditos de Anthropic como suscripción", () => {
