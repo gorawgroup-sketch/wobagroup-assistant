@@ -5,8 +5,6 @@ import { analizarMatrizCashflow, type ProblemaEstructuraDatos } from "./cashflow
 
 export type { ProblemaEstructuraDatos } from "./cashflowLayout";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
-
 // Hoja CASHFLOW: fila 5 = semanas (headers), 6 = balance inicial, 7 = income,
 // 8 = project expenses, 9 = general expenses, 10 = diferencias (no usada), 11 = balance final.
 const RESUMEN_RANGE = "CASHFLOW!C5:ZZ11";
@@ -21,10 +19,11 @@ export interface ResumenSemana {
 }
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 /**
