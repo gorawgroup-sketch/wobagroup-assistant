@@ -68,3 +68,7 @@ Antes de afirmar que no hay cargo para un recibo COP u otra divisa, buscar tambi
 - No deducir la tasa de ingresos, importes ausentes, céntimos no enteros o una moneda contable distinta. La búsqueda y autorización de la coincidencia siguen siendo obligatorias.
 - «Pagado» en la compra no demuestra conciliación completa: comprobar también importe y estado del movimiento. Una compra existente pendiente se debe recuperar, nunca duplicar ni declarar completada por existir.
 - Las correcciones en Holded conservan el borrador, el soporte y la identidad del pago. No añadir pagos ordinarios para ocultar diferencias de conversión.
+
+### Cargos repetidos con un cargo libre exacto
+
+Un movimiento conciliado antiguo con importe igual o con un céntimo de diferencia no prueba que un nuevo recibo sea duplicado. Antes de bloquear, consultar también movimientos pendientes. Cuando hay exactamente un débito bancario libre que coincide en proveedor, moneda, importe y fecha del recibo, ese cargo puede prevalecer sobre coincidencias bancarias meramente probables separadas por más de tres días. Conservar los bloqueos por compra/documento existente, coincidencia bancaria exacta, fechas desconocidas o cercanas y múltiples cargos libres. No desvincular conciliaciones anteriores por parecido ni reutilizar su pago. La selección final debe verificarse en compra y banco.

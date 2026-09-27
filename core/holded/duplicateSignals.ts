@@ -207,11 +207,16 @@ export function esCargoLibreExactoParaDuplicado(
     fechaCalendario(m.booking_date) === c.fecha.slice(0,10) &&
     !esProveedorNoIdentificado(c.proveedor) && proveedorPareceEnDescripcion(c.proveedor, m.description ?? "");
 }
-export function priorizarCargoLibreExacto<T extends { nivel: "exacta" | "probable"; monto: number; moneda: string }>(
-  conciliados: T[], libresExactos: Set<string>, monto: number, moneda = "EUR"
+export function priorizarCargoLibreExacto<T extends { nivel: "exacta" | "probable"; monto: number; moneda: string; fecha?: string }>(
+  conciliados: T[], libresExactos: Set<string>, monto: number, moneda = "EUR", fecha?: string
 ): T[] {
   if (libresExactos.size !== 1) return conciliados;
-  // Exact occupied matches and all registered-purchase checks still block.
+  // A unique unused debit matching date, currency, provider and amount can
+  // distinguish a repeated expense from an older, merely probable match.
+  // Missing dates and nearby occupied charges remain ambiguous. Registered
+  // purchase/document checks are independent and must still run.
   return conciliados.filter(m => m.nivel === "exacta" || m.moneda.toUpperCase() !== moneda.toUpperCase() ||
-    Math.abs(Math.abs(m.monto) - monto) <= 0.011);
+    (Math.abs(Math.abs(m.monto) - monto) <= 0.011 &&
+      !(fecha && m.fecha && Number.isFinite(diferenciaDiasCalendario(m.fecha, fecha)) &&
+        diferenciaDiasCalendario(m.fecha, fecha) > 3)));
 }
