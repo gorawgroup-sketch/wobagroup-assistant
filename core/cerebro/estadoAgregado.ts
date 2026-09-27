@@ -27,6 +27,7 @@ import {
   obtenerEstadoAuditoriaProgramada,
   type EstadoAuditoriaProgramadaFront,
 } from "./auditoriaProgramadaStore";
+import { listarPolizas } from "../seguros/polizaRegistroSheet";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
@@ -391,6 +392,98 @@ async function construirConocimiento() {
   };
 }
 
+const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"];
+const DIAS_ALERTA_VENCIMIENTO_POLIZA = 30;
+
+/**
+ * Registro de pólizas de seguro (ver docs/wobi-seguros.md §5, §17-19) —
+ * poblado a mano a partir de documentos originales y Holded mientras no
+ * existe todavía el extractor documental (§6.1) ni el sub-agente
+ * especialista (§6.5). Nodo de solo lectura, mismo principio que el resto
+ * de "cerebro": cualquier acción sigue pasando por Telegram, el chat de
+ * Cerebro, o el único botón de escritura expuesto (marcar-pago).
+ */
+async function construirSeguros() {
+  const polizas = await seguro("seguros.polizas", listarPolizas, [] as Awaited<ReturnType<typeof listarPolizas>>);
+  const hoy = new Date();
+
+  const conDiasRestantes = polizas
+    .filter((p) => p.estado !== "no_contratada" && p.fechaVencimiento)
+    .map((p) => ({
+      ...p,
+      diasRestantes: Math.round((new Date(p.fechaVencimiento).getTime() - hoy.getTime()) / 86400000),
+    }));
+
+  const proximasARenovar = conDiasRestantes
+    .filter((p) => p.diasRestantes <= DIAS_ALERTA_VENCIMIENTO_POLIZA)
+    .sort((a, b) => a.diasRestantes - b.diasRestantes)
+    .map((p) => ({
+      id: p.id,
+      empresa: p.empresa,
+      tipoCobertura: p.tipoCobertura,
+      aseguradora: p.aseguradora,
+      numeroPoliza: p.numeroPoliza,
+      fechaVencimiento: p.fechaVencimiento,
+      diasRestantes: p.diasRestantes,
+    }));
+
+  const pagosSinConfirmar = polizas
+    .filter((p) => p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar")
+    .map((p) => ({
+      id: p.id,
+      empresa: p.empresa,
+      tipoCobertura: p.tipoCobertura,
+      aseguradora: p.aseguradora,
+      prima: p.prima,
+      moneda: p.moneda,
+      estadoPago: p.estadoPago,
+      notas: p.notas,
+    }));
+
+  const porEmpresa = Object.fromEntries(
+    EMPRESAS_SEGUROS.map((empresa) => {
+      const deEstaEmpresa = polizas.filter((p) => p.empresa === empresa);
+      return [
+        empresa,
+        {
+          total: deEstaEmpresa.length,
+          vigentes: deEstaEmpresa.filter((p) => p.estado === "vigente").length,
+          pendientesConfirmar: deEstaEmpresa.filter((p) => p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar").length,
+        },
+      ];
+    })
+  ) as Record<string, { total: number; vigentes: number; pendientesConfirmar: number }>;
+
+  return {
+    polizas: polizas.map((p) => ({
+      id: p.id,
+      empresa: p.empresa,
+      aseguradora: p.aseguradora,
+      correduria: p.correduria,
+      numeroPoliza: p.numeroPoliza,
+      tipoCobertura: p.tipoCobertura,
+      activoAsociado: p.activoAsociado,
+      capitalAsegurado: p.capitalAsegurado,
+      franquicia: p.franquicia,
+      prima: p.prima,
+      moneda: p.moneda,
+      periodicidad: p.periodicidad,
+      fechaInicioVigencia: p.fechaInicioVigencia,
+      fechaVencimiento: p.fechaVencimiento,
+      estado: p.estado,
+      estadoPago: p.estadoPago,
+      notas: p.notas,
+      rutaDocumento: p.rutaDocumento,
+      ultimaVerificacion: p.ultimaVerificacion,
+    })),
+    proximasARenovar,
+    pagosSinConfirmar,
+    porEmpresa,
+    totalPolizasActivas: polizas.filter((p) => p.estado !== "no_contratada").length,
+    linkRegistro: `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`,
+  };
+}
+
 function construirAccesos(
   usuarios: Awaited<ReturnType<typeof obtenerUsuariosAutorizados>>,
   controlDiario: ControlDiario | null
@@ -421,6 +514,7 @@ export interface EstadoCerebroDatos {
   accesos: ReturnType<typeof construirAccesos>;
   controlDiario: ControlDiario | null;
   auditoriaProgramada: EstadoAuditoriaProgramadaFront;
+  seguros: Awaited<ReturnType<typeof construirSeguros>>;
 }
 
 export interface EstadoCerebro extends EstadoCerebroDatos {
@@ -487,6 +581,8 @@ const SECCIONES: DefinicionSeccion[] = [
   { nombre: "auditoria", ttlMs: 60_000,
     cargar: () => enSeccion(() => seguro("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, ESTADO_AUDITORIA_POR_DEFECTO as EstadoAuditoriaProgramadaFront)),
     fallback: vacio(ESTADO_AUDITORIA_POR_DEFECTO as unknown) },
+  { nombre: "seguros", ttlMs: 60_000, cargar: () => enSeccion(construirSeguros),
+    fallback: vacio({ polizas: [], proximasARenovar: [], pagosSinConfirmar: [], porEmpresa: {}, totalPolizasActivas: 0, linkRegistro: "" }) },
   // Verifica todas las conexiones (Telegram, Sheets, Drive, Gmail, Calendar, Holded ×3): ~8 llamadas por lectura,
   // por eso solo se repite cada minuto en vez de en cada carga del panel.
   { nombre: "conexiones", ttlMs: 60_000,
@@ -511,7 +607,7 @@ const orquestador = crearOrquestadorEstado({
  * Nombres de secciones que se pueden invalidar por separado. `invalidarEstadoCerebro()` sin argumentos
  * invalida todas (los conteos pesados de Holded siguen su propio ritmo).
  */
-export type SeccionCerebro = "cashflow" | "holded" | "crm" | "correo" | "drive" | "conocimiento" | "usuarios" | "controlDiario" | "auditoria" | "conexiones";
+export type SeccionCerebro = "cashflow" | "holded" | "crm" | "correo" | "drive" | "conocimiento" | "usuarios" | "controlDiario" | "auditoria" | "conexiones" | "seguros";
 
 /**
  * Marca secciones como desactualizadas y agenda su recálculo en segundo plano (coalescido: una ráfaga de
@@ -552,6 +648,7 @@ export async function obtenerEstadoCerebro(forzar = false): Promise<EstadoCerebr
     accesos: construirAccesos(usuarios, controlDiario),
     controlDiario,
     auditoriaProgramada: d.auditoria as EstadoAuditoriaProgramadaFront,
+    seguros: d.seguros as EstadoCerebroDatos["seguros"],
     fuentes: estado.fuentes,
     conexiones,
     actualizacionParcial: estado.fuentes.some((f) => !f.ok) || estado.conteos.conservado,
