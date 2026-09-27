@@ -603,7 +603,7 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
   // solo la sesión maestra puede hacerlo.
   if (!exigeKeyMaestra(req, res)) return;
 
-  const id = typeof req.body?.id === "string" ? req.body.id : "";
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
   if (!id) {
     res.status(400).json({ error: "Falta 'id'." });
     return;
@@ -665,7 +665,7 @@ app.post("/api/cerebro/seguros/marcar-pago", async (req: Request, res: Response)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[api/cerebro/seguros/marcar-pago] Error:", message);
-    res.status(500).json({ error: message });
+    res.status(500).json({ error: "No se pudo actualizar el estado de pago de la póliza." });
   }
 });
 

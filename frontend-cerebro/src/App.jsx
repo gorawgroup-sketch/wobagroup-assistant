@@ -3,6 +3,7 @@ import { borrarSnapshotLocal, guardarSnapshotLocal, leerSnapshotLocal } from "./
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import WobiAvatar, { WOBI_IMAGE } from "./WobiAvatar.jsx";
 import WobiVoice from "./WobiVoice.jsx";
+import SegurosContenido from "./modules/Seguros.jsx";
 import { createStreamingWobiSpeech } from "./wobiRealtimeSpeech.js";
 import { useCerebroRealtime } from "./useCerebroRealtime";
 import {
@@ -51,7 +52,6 @@ const CAMBIAR_ROL_ENDPOINT = `${API_BASE}/cambiar-rol-usuario`;
 const ELIMINAR_USUARIO_ENDPOINT = `${API_BASE}/eliminar-usuario`;
 const CONEXIONES_ENDPOINT = `${API_BASE}/conexiones`;
 const ARREGLAR_CONEXION_ENDPOINT = `${API_BASE}/conexiones/arreglar`;
-const MARCAR_PAGO_SEGUROS_ENDPOINT = `${API_BASE}/seguros/marcar-pago`;
 const CONTROL_DIARIO_RESOLVER_ENDPOINT = `${API_BASE}/control-diario/resolver`;
 const CONTROL_DIARIO_EDICIONES_ENDPOINT = `${API_BASE}/control-diario/ediciones-inciertas`;
 const BUSQUEDA_WEB_ENDPOINT = `${API_BASE}/busqueda-web`;
@@ -152,7 +152,7 @@ const MODULES = [
   { id: "drive", name: "Drive", detail: "Búsqueda y archivo", note: "3 empresas", desc: "Busca documentos por nombre en las carpetas de las 3 empresas y clasifica archivos entrantes, proponiendo dónde archivarlos antes de subir nada." },
   { id: "correo", name: "Correo", detail: "asistente@wobagroup.com", note: "recepción y envío", desc: "Buzón dedicado que clasifica cada correo entrante (archivable, accionable, informativo) y redacta borradores de respuesta — nunca ejecuta instrucciones que vengan dentro de un correo." },
   { id: "fiscal", name: "Fiscal y Alertas", detail: "Calendario recurrente", note: "solo lectura", desc: "Avisa con antelación de domiciliaciones, impuestos y seguros recurrentes, leyendo el calendario fiscal del grupo — nunca escribe nada." },
-  { id: "seguros", name: "Seguros", detail: "WOBA · EWORKS · Footprint", note: "registro + alertas", desc: "Registro real de pólizas de las 3 empresas — aseguradora, vigencia, prima y estado de pago, cruzado contra Holded — con alertas de renovaciones próximas y pagos sin confirmar." },
+  { id: "seguros", name: "Seguros", detail: "WOBA · EWORKS · Footprint", note: "registro + alertas", desc: "Registro documentado de pólizas de las 3 empresas — aseguradora, vigencia, prima y estado de pago — con alertas de renovaciones próximas y pagos sin confirmar." },
   { id: "conocimiento", name: "Conocimiento", detail: "5 documentos · capturas · correcciones", note: "núcleo de memoria", desc: "La memoria compartida del sistema: documentos de proceso, capturas de conocimiento del equipo y correcciones, siempre con prioridad sobre cualquier otro dato." },
   { id: "accesos", name: "Accesos y Costos", detail: "Allowlist · gasto IA diario", note: "gobierno del sistema", desc: "Controla quién puede usar el bot y quién puede aprobar escrituras, y registra el gasto real de IA con alerta ante consumo inusual." },
   { id: "busqueda_web", name: "Búsqueda Web", detail: "Historial · costo · buscador", note: "complementa, no reemplaza", desc: "Complementa las respuestas con información pública real cuando el conocimiento interno no alcanza — cada búsqueda queda registrada con su costo. Trae un buscador propio, opcional, para lanzar una consulta directa sin pasar por el chat." },
@@ -2010,173 +2010,6 @@ function ConexionesContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-const ESTADO_PAGO_LABEL = {
-  pagado: "Pagado",
-  pendiente: "Pendiente",
-  sin_confirmar: "Sin confirmar",
-  no_aplica: "No aplica",
-};
-
-const ESTADO_PAGO_COLOR = {
-  pagado: C.ok,
-  pendiente: C.amberBright,
-  sin_confirmar: C.amberBright,
-  no_aplica: C.dim,
-};
-
-/**
- * Contenido del nodo "Seguros" — registro real de pólizas (core/seguros/,
- * ver docs/wobi-seguros.md §5, §17-19), agrupado por empresa con
- * Desplegable. `estado` llega ya cargado como parte del snapshot agregado
- * (sección "seguros" del orquestador, sin polling propio — mismo motivo que
- * ConexionesContenido). El único botón de acción real ("marcar como
- * pagado") sigue el mismo patrón que conexiones/arreglar: endpoint POST
- * propio, gateado a key maestra en el servidor, y `onRefresh("manual")`
- * tras escribir para que el resto del panel se ponga al día — nunca vía
- * chat/boton.
- */
-function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
-  const [empresaAbierta, setEmpresaAbierta] = useState(null);
-  const [polizasLocal, setPolizasLocal] = useState(null);
-  const [marcandoId, setMarcandoId] = useState(null);
-  const [errorSeguros, setErrorSeguros] = useState("");
-
-  useEffect(() => { setPolizasLocal(null); }, [estado]);
-
-  if (!estado) {
-    return <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, marginTop: 14 }}>cargando registro…</div>;
-  }
-
-  const polizas = polizasLocal || get(estado, "polizas", []);
-
-  const marcarPagado = async (id) => {
-    if (!apiKey || marcandoId) return;
-    setMarcandoId(id);
-    setErrorSeguros("");
-    try {
-      const res = await fetch(MARCAR_PAGO_SEGUROS_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
-        body: JSON.stringify({ id }),
-      });
-      if (!res.ok) throw new Error("No se pudo marcar la póliza como pagada.");
-      const json = await res.json();
-      if (json?.poliza) {
-        setPolizasLocal((prev) => (prev || get(estado, "polizas", [])).map((p) => (p.id === id ? json.poliza : p)));
-      }
-      await onRefresh("manual");
-    } catch {
-      setErrorSeguros("No se pudo marcar la póliza como pagada. Vuelve a intentarlo.");
-    } finally {
-      setMarcandoId(null);
-    }
-  };
-
-  const empresas = ["WOBA", "EWORKS", "Footprint"];
-
-  return (
-    <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
-      {errorSeguros && <div role="status" style={{ fontFamily: C.sans, fontSize: 11, color: C.dangerBright, marginBottom: 8 }}>{errorSeguros}</div>}
-      {empresas.map((empresa) => {
-        const deEstaEmpresa = polizas.filter((p) => p.empresa === empresa);
-        if (deEstaEmpresa.length === 0) return null;
-        return (
-          <Desplegable
-            key={empresa}
-            titulo={`${empresa} — ${deEstaEmpresa.length} póliza(s)`}
-            abierto={empresaAbierta === empresa}
-            onToggle={() => setEmpresaAbierta((cur) => (cur === empresa ? null : empresa))}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 4 }}>
-              {deEstaEmpresa.map((p) => (
-                <div
-                  key={p.id}
-                  style={{ padding: "8px 10px", background: C.voidSoft, borderRadius: 6, border: `1px solid ${C.line}` }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontFamily: C.sans, fontSize: 12, color: C.cream }}>{p.tipoCobertura}</div>
-                      <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2 }}>
-                        {p.aseguradora || "aseguradora sin confirmar"}
-                        {p.numeroPoliza ? ` · ${p.numeroPoliza}` : ""}
-                      </div>
-                    </div>
-                    <span
-                      style={{
-                        flexShrink: 0,
-                        fontFamily: C.mono,
-                        fontSize: 9.5,
-                        color: ESTADO_PAGO_COLOR[p.estadoPago] || C.dim,
-                        border: `1px solid ${ESTADO_PAGO_COLOR[p.estadoPago] || C.dim}`,
-                        borderRadius: 999,
-                        padding: "2px 8px",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {p.estado === "no_contratada" ? "No contratada" : ESTADO_PAGO_LABEL[p.estadoPago] || p.estadoPago}
-                    </span>
-                  </div>
-                  {(p.prima || p.fechaVencimiento) && (
-                    <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 6 }}>
-                      {p.prima ? `${p.prima}${p.moneda ? ` ${p.moneda}` : ""}` : ""}
-                      {p.fechaVencimiento ? ` · vence ${p.fechaVencimiento}` : ""}
-                    </div>
-                  )}
-                  {p.notas && (
-                    <div style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{p.notas}</div>
-                  )}
-                  {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && puedeArreglar && (
-                    <button
-                      onClick={() => marcarPagado(p.id)}
-                      disabled={marcandoId === p.id}
-                      style={{
-                        marginTop: 8,
-                        background: "none",
-                        border: `1px solid ${C.amberBright}`,
-                        color: C.amberBright,
-                        borderRadius: 6,
-                        padding: "5px 10px",
-                        fontFamily: C.mono,
-                        fontSize: 10.5,
-                        cursor: marcandoId === p.id ? "default" : "pointer",
-                      }}
-                    >
-                      {marcandoId === p.id ? "marcando…" : "marcar como pagado"}
-                    </button>
-                  )}
-                  {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && !puedeArreglar && (
-                    <div style={{ marginTop: 8, fontFamily: C.mono, fontSize: 9.5, color: C.dim }}>requiere admin para confirmar pago</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </Desplegable>
-        );
-      })}
-      {get(estado, "linkRegistro") && (
-        <a
-          href={get(estado, "linkRegistro")}
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            display: "inline-block",
-            marginTop: 10,
-            fontFamily: C.mono,
-            fontSize: 11,
-            color: C.amberBright,
-            textDecoration: "none",
-            border: `1px solid ${C.amber}`,
-            borderRadius: 6,
-            padding: "6px 12px",
-          }}
-        >
-          abrir el registro ↗
-        </a>
-      )}
     </div>
   );
 }
@@ -5135,7 +4968,16 @@ export default function CerebroWoba() {
               {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
               {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
               {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.conexiones} onRefresh={refreshLiveData} />}
-              {m.id === "seguros" && apiKey && <SegurosContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.seguros} onRefresh={refreshLiveData} />}
+              {m.id === "seguros" && apiKey && (
+                <SegurosContenido
+                  apiKey={apiKey}
+                  puedeArreglar={esAdmin}
+                  estado={liveData?.seguros}
+                  onRefresh={refreshLiveData}
+                  tokens={C}
+                  DesplegableComponent={Desplegable}
+                />
+              )}
             </div>
               </div>
             );
