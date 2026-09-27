@@ -19,7 +19,10 @@ import {
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
-import { botonesVerificacionDuplicadoPendiente } from "./gastoPendienteDatosActions";
+import {
+  botonesFalloTemporalVerificacionPendiente,
+  botonesVerificacionDuplicadoPendiente,
+} from "./gastoPendienteDatosActions";
 import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
@@ -531,22 +534,33 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   } catch (error) {
     console.error("[procesarGastoEntrante] Error buscando gasto similar en Holded:", error);
     const detalle = error instanceof Error ? error.message : String(error);
-    await sendTelegramMessage(
-      chatId,
-      `⚠️ No pude completar la verificación estricta de duplicados en Holded (${detalle}). Por seguridad NO propuse ni creé el gasto. ` +
-        `El correo/documento queda pendiente y se puede reintentar cuando Holded responda correctamente.`
-    ).catch(() => {});
-    await guardarGastoPendienteDatos({
-      chatId,
-      rutaLocal: entrada.rutaLocal,
-      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-      mimeType: entrada.mimeType,
-      datos,
-      motivo: "verificacion_duplicado",
-      deColaCorreo: entrada.deColaCorreo,
-      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-      correoOrigen: entrada.correoOrigen,
-    }).catch((errorStore) => console.error("[procesarGastoEntrante] Error guardando reintento de duplicados:", errorStore));
+    try {
+      const pendiente = await guardarGastoPendienteDatos({
+        chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos,
+        motivo: "verificacion_duplicado",
+        deColaCorreo: entrada.deColaCorreo,
+        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+        correoOrigen: entrada.correoOrigen,
+      });
+      await sendTelegramMessageWithButtons(
+        chatId,
+        `⚠️ Holded siguió sin completar la verificación estricta de duplicados después de los reintentos seguros (${detalle}). ` +
+          `Por seguridad NO propuse ni creé el gasto. Conservé este correo/documento sin leer: puedes reintentar ` +
+          `la misma verificación o dejar solo este pendiente y continuar con los demás correos.`,
+        botonesFalloTemporalVerificacionPendiente(pendiente.id)
+      );
+    } catch (errorStore) {
+      console.error("[procesarGastoEntrante] Error guardando/publicando reintento de duplicados:", errorStore);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ No pude completar la verificación estricta de duplicados en Holded (${detalle}). Por seguridad NO propuse ni creé el gasto. ` +
+          `El correo sigue sin leer; no pude publicar sus controles de recuperación y requiere un nuevo intento desde el chat.`
+      ).catch(() => {});
+    }
     return "pendiente_datos";
   }
 
