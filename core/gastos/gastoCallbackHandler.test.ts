@@ -346,6 +346,53 @@ test("los callbacks consumen de forma atómica y usan claves estables antes del 
   assert.match(bloqueAmbigua, /`gasto:conciliacion-ambigua:\$\{pendiente\.id\}:cierre`/);
 });
 
+// Caso real reportado por Carlos con captura de pantalla (2026-09-27): tras pulsar "Sí, conciliar" o
+// "🔗 Conciliar con #N", la pregunta original quedaba con sus botones vivos para siempre, aunque la
+// decisión ya se había resuelto en un mensaje aparte (éxito, cierre, o la lista de candidatos
+// ambiguos) — un segundo toque solo lograba el aviso genérico "Esta acción ya fue procesada." sin que
+// la pregunta desapareciera nunca. Estructural (no behavioral) por el mismo motivo que el test
+// anterior: handleGastoCallback no admite inyección de dependencias.
+test("cada desenlace terminal de conciliar retira la pregunta original en vez de dejarla viva", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+
+  const inicioNormal = fuente.indexOf('if (accion === "gasto_conciliar_si" || accion === "gasto_conciliar_no")');
+  const finNormal = fuente.indexOf('if (accion === "gasto_conciliar_elegir"', inicioNormal);
+  const bloqueNormal = fuente.slice(inicioNormal, finNormal);
+
+  // "No, dejar así": tanto el cierre de correo como el camino sin cola retiran la pregunta.
+  assert.match(bloqueNormal, /reponerSoloCierreConciliacion\([\s\S]*?\),\s*\/\/[^\n]*\n\s*\(\) => Promise\.all\(\[\s*retirarPreguntaCaducada\(callback\),\s*sendTelegramMessage\(pendiente\.chatId, `Ok/);
+  assert.match(bloqueNormal, /await Promise\.all\(\[\s*retirarPreguntaCaducada\(callback\),\s*sendTelegramMessage\(pendiente\.chatId, `Ok — "\$\{pendiente\.descripcionGasto\}" queda sin conciliar\.`\),\s*\]\)\.catch/);
+
+  // La ambigüedad (esperando_eleccion) retira la pregunta original: la decisión pasó al mensaje nuevo.
+  const idxEsperando = bloqueNormal.indexOf('resultadoConciliacion.estado === "esperando_eleccion"');
+  const idxRetiroEsperando = bloqueNormal.indexOf("await retirarPreguntaCaducada(callback);", idxEsperando);
+  assert.ok(idxEsperando > 0 && idxRetiroEsperando > idxEsperando && idxRetiroEsperando < idxEsperando + 400);
+
+  // El cierre de correo con éxito y el éxito fuera de la cola retiran la pregunta.
+  assert.match(bloqueNormal, /reponerSoloCierreConciliacion\([\s\S]*?no vuelve a conciliar\."\s*\),\s*\(\) => Promise\.all\(\[\s*retirarPreguntaCaducada\(callback\),\s*sendTelegramMessage\(pendiente\.chatId, `"\$\{pendiente\.descripcionGasto\}"/);
+  const idxFinal = bloqueNormal.lastIndexOf("await Promise.all([");
+  const bloqueFinal = bloqueNormal.slice(idxFinal, idxFinal + 400);
+  assert.match(bloqueFinal, /retirarPreguntaCaducada\(callback\)/);
+
+  // La reposición (sigue sin confirmarse, botones reales de nuevo) devuelve sin mandar un segundo
+  // mensaje aparte — nunca debe competir con el mensaje ya editado.
+  const idxReponer = bloqueNormal.indexOf("`⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +");
+  const trasReponer = bloqueNormal.slice(idxReponer, idxReponer + 300);
+  assert.match(trasReponer, /\);\s*return;/);
+
+  const inicioAmbigua = fuente.indexOf('if (accion === "gasto_conciliar_elegir" || accion === "gasto_conciliar_elegir_no")');
+  const finAmbigua = fuente.indexOf('if (accion === "gasto_usarcontacto")', inicioAmbigua);
+  const bloqueAmbigua = fuente.slice(inicioAmbigua, finAmbigua);
+
+  assert.match(bloqueAmbigua, /await Promise\.all\(\[\s*retirarPreguntaCaducada\(callback\),\s*sendTelegramMessage\(pendiente\.chatId, `Ok — "\$\{pendiente\.descripcionGasto\}" queda sin conciliar\.`\),\s*\]\)\.catch/);
+  const idxFinalAmbigua = bloqueAmbigua.lastIndexOf("await Promise.all([");
+  const bloqueFinalAmbigua = bloqueAmbigua.slice(idxFinalAmbigua, idxFinalAmbigua + 400);
+  assert.match(bloqueFinalAmbigua, /retirarPreguntaCaducada\(callback\)/);
+  const idxReponerAmbigua = bloqueAmbigua.indexOf("`⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +");
+  const trasReponerAmbigua = bloqueAmbigua.slice(idxReponerAmbigua, idxReponerAmbigua + 300);
+  assert.match(trasReponerAmbigua, /\);\s*return;/);
+});
+
 test("el soporte y los reintentos conservan la empresa y el concepto corregidos", async () => {
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
 
