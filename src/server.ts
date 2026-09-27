@@ -1,9 +1,12 @@
+import { handleConciliacionMultipleCallback } from "../core/holded/conciliacionMultiple/callback";
 import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
+import { prepararEntradaVoz } from "../core/telegram/voiceInput";
+import { ErrorNotaVoz } from "../core/ai/transcribeAudio";
 import { mensajeFalloTurno } from "../core/claude/turnSafety";
 import { prepararAcuseCallback } from "../core/telegram/client";
 import {
@@ -71,6 +74,8 @@ import { handleRegistroManualCashflowCallback } from "../core/google/registroMan
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
+import { listarPolizas, actualizarPoliza } from "../core/seguros/polizaRegistroSheet";
+import { formatDateLocal } from "../core/utils/dateFormat";
 import { obtenerRevisionCerebro, publicarCambioCerebro, suscribirCambiosCerebro } from "../core/cerebro/realtime";
 import { crearSolicitudAcceso, obtenerSolicitudAcceso } from "../core/cerebro/accesoSolicitudSheet";
 import { notificarSolicitudAccesoCerebro, handleAccesoCerebroCallback } from "../core/cerebro/accesoCallbackHandler";
@@ -524,6 +529,54 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
 });
 
 app.options("/api/cerebro/conexiones/arreglar", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Marca una póliza del registro de seguros (core/seguros/polizaRegistroSheet.ts,
+ * ver docs/wobi-seguros.md §17) como pagada — la única escritura que este
+ * módulo expone al front por ahora. Igual que conexiones/arreglar: solo la
+ * key maestra, nunca un token temporal, porque es una escritura real. No
+ * pasa por despacharCallbackQuery/chat-boton (ese pipeline es solo para
+ * botones dentro del chat) — mismo patrón que ConexionesContenido en el
+ * front: endpoint propio, fetch directo.
+ */
+app.post("/api/cerebro/seguros/marcar-pago", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+
+  if (!exigeKeyMaestra(req, res)) return;
+
+  const id = typeof req.body?.id === "string" ? req.body.id : "";
+  if (!id) {
+    res.status(400).json({ error: "Falta 'id'." });
+    return;
+  }
+
+  try {
+    const polizas = await listarPolizas();
+    const poliza = polizas.find((p) => p.id === id);
+    if (!poliza) {
+      res.status(404).json({ error: `No existe ninguna póliza con id "${id}".` });
+      return;
+    }
+
+    const actualizada = { ...poliza, estadoPago: "pagado" as const, ultimaVerificacion: formatDateLocal(new Date()) };
+    await actualizarPoliza(poliza.rowIndex, actualizada);
+    invalidarEstadoCerebro();
+    res.json({ poliza: actualizada });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/seguros/marcar-pago] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/seguros/marcar-pago", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
@@ -1289,6 +1342,8 @@ async function despacharCallbackQuery(callback: TelegramCallbackQuery): Promise<
       await handlePagoRecurrenteCallback(callback);
     } else if (data.startsWith("gasto_")) {
       await handleGastoCallback(callback);
+    } else if (data.startsWith("concilmulti_")) {
+      await handleConciliacionMultipleCallback(callback);
     } else if (data.startsWith("edicioncompra_")) {
       await handleEdicionCompraHoldedCallback(callback);
     } else if (data.startsWith("edicioncashflow_")) {
@@ -1373,6 +1428,25 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   if (update.callback_query) {
     await despacharCallbackQuery(update.callback_query);
     return;
+  }
+
+  if (update.message?.voice) {
+    const chatId = update.message.chat.id;
+    const detenerIndicador = iniciarIndicadorEscribiendo(chatId);
+    try {
+      update = await prepararEntradaVoz(update);
+      // Texto visible para que el usuario pueda corregir nombres o importes.
+      // No se simula otro webhook: conserva update_id, remitente y entrega durable.
+      const texto = update.message!.text!;
+      for (let offset = 0; offset < texto.length; offset += 3500) {
+        await sendTelegramMessage(chatId, `${offset === 0 ? "🎙️ Entendí:" : "🎙️ Continuación:"}\n${texto.slice(offset, offset + 3500)}`);
+      }
+    } catch (error) {
+      await sendTelegramMessage(chatId, error instanceof ErrorNotaVoz
+        ? error.message
+        : "No pude completar la lectura de tu nota de voz. No ejecuté ninguna instrucción de esta nota.").catch(() => {});
+      return;
+    } finally { detenerIndicador(); }
   }
 
   if (update.message?.document || update.message?.photo) {

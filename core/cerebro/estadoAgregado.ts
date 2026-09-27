@@ -19,6 +19,7 @@ import { UMBRAL_ANOMALIA } from "../jobs/revisarCostosIA";
 import { obtenerUltimoRunHoldedCashflow } from "../jobs/holdedCashflowLastRunStore";
 import { mondayOf, lunesDeEtiquetaSemana, weekLabel } from "../utils/isoWeek";
 import { formatDateLocal } from "../utils/dateFormat";
+import { listarPolizas } from "../seguros/polizaRegistroSheet";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
@@ -284,6 +285,98 @@ async function construirFiscal() {
   };
 }
 
+const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"];
+const DIAS_ALERTA_VENCIMIENTO_POLIZA = 30;
+
+/**
+ * Registro de pólizas de seguro (ver docs/wobi-seguros.md §5, §16-18) —
+ * poblado a mano a partir de documentos originales y Holded mientras no
+ * existe todavía el extractor documental (§6.1) ni el sub-agente
+ * especialista (§6.5). Este nodo es deliberadamente de solo lectura, mismo
+ * principio que el resto de "cerebro": cualquier acción sigue pasando por
+ * Telegram o el chat de Cerebro con botón de confirmación.
+ */
+async function construirSeguros() {
+  const polizas = await seguro("seguros.polizas", listarPolizas, [] as Awaited<ReturnType<typeof listarPolizas>>);
+  const hoy = new Date();
+
+  const conDiasRestantes = polizas
+    .filter((p) => p.estado !== "no_contratada" && p.fechaVencimiento)
+    .map((p) => ({
+      ...p,
+      diasRestantes: Math.round((new Date(p.fechaVencimiento).getTime() - hoy.getTime()) / 86400000),
+    }));
+
+  const proximasARenovar = conDiasRestantes
+    .filter((p) => p.diasRestantes <= DIAS_ALERTA_VENCIMIENTO_POLIZA)
+    .sort((a, b) => a.diasRestantes - b.diasRestantes)
+    .map((p) => ({
+      id: p.id,
+      empresa: p.empresa,
+      tipoCobertura: p.tipoCobertura,
+      aseguradora: p.aseguradora,
+      numeroPoliza: p.numeroPoliza,
+      fechaVencimiento: p.fechaVencimiento,
+      diasRestantes: p.diasRestantes,
+    }));
+
+  const pagosSinConfirmar = polizas
+    .filter((p) => p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar")
+    .map((p) => ({
+      id: p.id,
+      empresa: p.empresa,
+      tipoCobertura: p.tipoCobertura,
+      aseguradora: p.aseguradora,
+      prima: p.prima,
+      moneda: p.moneda,
+      estadoPago: p.estadoPago,
+      notas: p.notas,
+    }));
+
+  const porEmpresa = Object.fromEntries(
+    EMPRESAS_SEGUROS.map((empresa) => {
+      const deEstaEmpresa = polizas.filter((p) => p.empresa === empresa);
+      return [
+        empresa,
+        {
+          total: deEstaEmpresa.length,
+          vigentes: deEstaEmpresa.filter((p) => p.estado === "vigente").length,
+          pendientesConfirmar: deEstaEmpresa.filter((p) => p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar").length,
+        },
+      ];
+    })
+  ) as Record<string, { total: number; vigentes: number; pendientesConfirmar: number }>;
+
+  return {
+    polizas: polizas.map((p) => ({
+      id: p.id,
+      empresa: p.empresa,
+      aseguradora: p.aseguradora,
+      correduria: p.correduria,
+      numeroPoliza: p.numeroPoliza,
+      tipoCobertura: p.tipoCobertura,
+      activoAsociado: p.activoAsociado,
+      capitalAsegurado: p.capitalAsegurado,
+      franquicia: p.franquicia,
+      prima: p.prima,
+      moneda: p.moneda,
+      periodicidad: p.periodicidad,
+      fechaInicioVigencia: p.fechaInicioVigencia,
+      fechaVencimiento: p.fechaVencimiento,
+      estado: p.estado,
+      estadoPago: p.estadoPago,
+      notas: p.notas,
+      rutaDocumento: p.rutaDocumento,
+      ultimaVerificacion: p.ultimaVerificacion,
+    })),
+    proximasARenovar,
+    pagosSinConfirmar,
+    porEmpresa,
+    totalPolizasActivas: polizas.filter((p) => p.estado !== "no_contratada").length,
+    linkRegistro: `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`,
+  };
+}
+
 function seguroSync<T>(fn: () => T, fallback: T): T {
   try {
     return fn();
@@ -421,6 +514,7 @@ export interface EstadoCerebroDatos {
   drive: Awaited<ReturnType<typeof construirDrive>>;
   conocimiento: Awaited<ReturnType<typeof construirConocimiento>>;
   accesos: Awaited<ReturnType<typeof construirAccesos>>;
+  seguros: Awaited<ReturnType<typeof construirSeguros>>;
 }
 
 export interface EstadoCerebro extends EstadoCerebroDatos {
@@ -440,7 +534,7 @@ export interface EstadoCerebro extends EstadoCerebroDatos {
  * el endpoint.
  */
 async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
-  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos] = await Promise.all([
+  const [cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, seguros] = await Promise.all([
     construirCashflow(),
     construirHolded(),
     construirCrm(),
@@ -449,15 +543,27 @@ async function construirEstadoCerebro(): Promise<EstadoCerebroDatos> {
     construirDrive(),
     construirConocimiento(),
     construirAccesos(),
+    construirSeguros(),
   ]);
 
-  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos };
+  return { cashflow, holded, crm, correo, fiscal, drive, conocimiento, accesos, seguros };
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 let cache: { datos: EstadoCerebroDatos; cacheadoEnMs: number } | null = null;
 let recalculoEnCurso: Promise<{ datos: EstadoCerebroDatos; cacheadoEnMs: number }> | null = null;
+
+/**
+ * Fuerza que la próxima llamada a obtenerEstadoCerebro() recalcule en vez de
+ * servir el caché de 5 minutos — para cuando una escritura (arreglar una
+ * conexión, marcar un pago de seguros) debe reflejarse de inmediato en el
+ * front en vez de esperar a que expire CACHE_TTL_MS. src/server.ts ya la
+ * importa en varios puntos de escritura.
+ */
+export function invalidarEstadoCerebro(): void {
+  cache = null;
+}
 
 /**
  * Caché de proceso de 5 minutos: agregar todo (Sheets, Holded ×3 empresas,

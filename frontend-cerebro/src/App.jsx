@@ -42,6 +42,7 @@ const CAMBIAR_ROL_ENDPOINT = `${API_BASE}/cambiar-rol-usuario`;
 const ELIMINAR_USUARIO_ENDPOINT = `${API_BASE}/eliminar-usuario`;
 const CONEXIONES_ENDPOINT = `${API_BASE}/conexiones`;
 const ARREGLAR_CONEXION_ENDPOINT = `${API_BASE}/conexiones/arreglar`;
+const MARCAR_PAGO_SEGUROS_ENDPOINT = `${API_BASE}/seguros/marcar-pago`;
 const BUSQUEDA_WEB_ENDPOINT = `${API_BASE}/busqueda-web`;
 const BUSCAR_ENDPOINT = `${API_BASE}/buscar`;
 const ACCIONES_PROGRAMADAS_ENDPOINT = `${API_BASE}/acciones-programadas`;
@@ -101,6 +102,7 @@ const MODULES = [
   { id: "drive", name: "Drive", detail: "Búsqueda y archivo", note: "3 empresas", desc: "Busca documentos por nombre en las carpetas de las 3 empresas y clasifica archivos entrantes, proponiendo dónde archivarlos antes de subir nada." },
   { id: "correo", name: "Correo", detail: "asistente@wobagroup.com", note: "recepción y envío", desc: "Buzón dedicado que clasifica cada correo entrante (archivable, accionable, informativo) y redacta borradores de respuesta — nunca ejecuta instrucciones que vengan dentro de un correo." },
   { id: "fiscal", name: "Fiscal y Alertas", detail: "Calendario recurrente", note: "solo lectura", desc: "Avisa con antelación de domiciliaciones, impuestos y seguros recurrentes, leyendo el calendario fiscal del grupo — nunca escribe nada." },
+  { id: "seguros", name: "Seguros", detail: "WOBA · EWORKS · Footprint", note: "registro + alertas", desc: "Registro real de pólizas de las 3 empresas — aseguradora, vigencia, prima y estado de pago, cruzado contra Holded — con alertas de renovaciones próximas y pagos sin confirmar." },
   { id: "conocimiento", name: "Conocimiento", detail: "5 documentos · capturas · correcciones", note: "núcleo de memoria", desc: "La memoria compartida del sistema: documentos de proceso, capturas de conocimiento del equipo y correcciones, siempre con prioridad sobre cualquier otro dato." },
   { id: "accesos", name: "Accesos y Costos", detail: "Allowlist · gasto IA diario", note: "gobierno del sistema", desc: "Controla quién puede usar el bot y quién puede aprobar escrituras, y registra el gasto real de IA con alerta ante consumo inusual." },
   { id: "busqueda_web", name: "Búsqueda Web", detail: "Historial · costo · buscador", note: "complementa, no reemplaza", desc: "Complementa las respuestas con información pública real cuando el conocimiento interno no alcanza — cada búsqueda queda registrada con su costo. Trae un buscador propio, opcional, para lanzar una consulta directa sin pasar por el chat." },
@@ -129,7 +131,7 @@ const MODULES = [
 // tenía su propia chispa ambar.
 const GROUPS = [
   { id: "administracion", name: "Administración", note: "gobierno del sistema", children: ["conexiones", "accesos", "conocimiento", "calendario"], accent: "#FFC98A" },
-  { id: "finanzas", name: "Finanzas", note: "dinero real", children: ["holded", "cashflow", "fiscal"], accent: "#7EE2C0" },
+  { id: "finanzas", name: "Finanzas", note: "dinero real", children: ["holded", "cashflow", "fiscal", "seguros"], accent: "#7EE2C0" },
   { id: "operacion", name: "Operación", note: "trabajo diario", children: ["drive", "correo", "busqueda_web"], accent: "#B7A6FF" },
 ];
 
@@ -350,6 +352,18 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
         ["Costo real de API esta semana", fmtUSD(get(d, "accesos.costoIaEstaSemana"))],
       ];
     }
+    case "seguros": {
+      const proximas = get(d, "seguros.proximasARenovar", []);
+      const pendientes = get(d, "seguros.pagosSinConfirmar", []);
+      const rows = [];
+      rows.push(["Pólizas activas", String(get(d, "seguros.totalPolizasActivas", 0))]);
+      rows.push(["Próximas a renovar (30 días)", proximas.length ? String(proximas.length) : "ninguna"]);
+      proximas.slice(0, 4).forEach((p) =>
+        rows.push([`  ⏰ ${p.tipoCobertura} · ${p.empresa}`, p.diasRestantes <= 0 ? "vencida" : `en ${p.diasRestantes} día(s)`])
+      );
+      rows.push(["Pagos sin confirmar", pendientes.length ? String(pendientes.length) : "ninguno"]);
+      return rows;
+    }
     default:
       return [];
   }
@@ -367,6 +381,8 @@ function AtencionAhora({ data, onAbrir }) {
     { id: "holded", texto: "Gastos sin comprobante", cantidad: Number(get(data, "holded.gastosSinComprobante", 0)) || 0 },
     { id: "holded", texto: "Movimientos sin conciliar", cantidad: Number(get(data, "holded.movimientosSinConciliar", 0)) || 0 },
     { id: "fiscal", texto: "Alertas fiscales próximas", cantidad: get(data, "fiscal.proximasAlertas", []).length },
+    { id: "seguros", texto: "Pólizas por renovar pronto", cantidad: get(data, "seguros.proximasARenovar", []).length },
+    { id: "seguros", texto: "Pagos de seguros sin confirmar", cantidad: get(data, "seguros.pagosSinConfirmar", []).length },
     {
       id: "accesos",
       texto: "Costo de API sobre el umbral",
@@ -1416,6 +1432,167 @@ function ConexionesContenido({ apiKey, puedeArreglar }) {
   );
 }
 
+const ESTADO_PAGO_LABEL = {
+  pagado: "Pagado",
+  pendiente: "Pendiente",
+  sin_confirmar: "Sin confirmar",
+  no_aplica: "No aplica",
+};
+
+const ESTADO_PAGO_COLOR = {
+  pagado: C.ok,
+  pendiente: C.amberBright,
+  sin_confirmar: C.amberBright,
+  no_aplica: C.dim,
+};
+
+/**
+ * Contenido del nodo "Seguros" — registro real de pólizas (core/seguros/,
+ * ver docs/wobi-seguros.md §5, §17, §18), agrupado por empresa con
+ * Desplegable. `seguros` llega ya cargado como parte del estado agregado
+ * (no tiene su propio polling, a diferencia de ConexionesContenido/
+ * BusquedaWebContenido, porque construirSeguros() ya vive en
+ * estadoAgregado.ts). El único botón de acción real ("marcar como pagado")
+ * sigue el mismo patrón que ConexionesContenido: endpoint POST propio,
+ * gateado a key maestra en el servidor, nunca vía chat/boton.
+ */
+function SegurosContenido({ apiKey, puedeArreglar, seguros }) {
+  const [empresaAbierta, setEmpresaAbierta] = useState(null);
+  const [marcandoId, setMarcandoId] = useState(null);
+  const [polizasLocal, setPolizasLocal] = useState(null);
+
+  if (!seguros) {
+    return <div style={{ fontFamily: C.mono, fontSize: 10.5, color: C.dim, marginTop: 14 }}>cargando registro…</div>;
+  }
+
+  const polizas = polizasLocal || get(seguros, "polizas", []);
+
+  const marcarPagado = async (id) => {
+    if (!apiKey || marcandoId) return;
+    setMarcandoId(id);
+    try {
+      const res = await fetch(MARCAR_PAGO_SEGUROS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Cerebro-Key": apiKey },
+        body: JSON.stringify({ id }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.poliza) {
+          setPolizasLocal((prev) => (prev || get(seguros, "polizas", [])).map((p) => (p.id === id ? json.poliza : p)));
+        }
+      }
+    } catch {
+      // silencioso: el botón vuelve a estar disponible, el usuario puede reintentar
+    } finally {
+      setMarcandoId(null);
+    }
+  };
+
+  const empresas = ["WOBA", "EWORKS", "Footprint"];
+
+  return (
+    <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
+      {empresas.map((empresa) => {
+        const deEstaEmpresa = polizas.filter((p) => p.empresa === empresa);
+        if (deEstaEmpresa.length === 0) return null;
+        return (
+          <Desplegable
+            key={empresa}
+            titulo={`${empresa} — ${deEstaEmpresa.length} póliza(s)`}
+            abierto={empresaAbierta === empresa}
+            onToggle={() => setEmpresaAbierta((cur) => (cur === empresa ? null : empresa))}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 4 }}>
+              {deEstaEmpresa.map((p) => (
+                <div
+                  key={p.id}
+                  style={{ padding: "8px 10px", background: C.voidSoft, borderRadius: 6, border: `1px solid ${C.line}` }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontFamily: C.sans, fontSize: 12, color: C.cream }}>{p.tipoCobertura}</div>
+                      <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 2 }}>
+                        {p.aseguradora || "aseguradora sin confirmar"}
+                        {p.numeroPoliza ? ` · ${p.numeroPoliza}` : ""}
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        fontFamily: C.mono,
+                        fontSize: 9.5,
+                        color: ESTADO_PAGO_COLOR[p.estadoPago] || C.dim,
+                        border: `1px solid ${ESTADO_PAGO_COLOR[p.estadoPago] || C.dim}`,
+                        borderRadius: 999,
+                        padding: "2px 8px",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {p.estado === "no_contratada" ? "No contratada" : ESTADO_PAGO_LABEL[p.estadoPago] || p.estadoPago}
+                    </span>
+                  </div>
+                  {(p.prima || p.fechaVencimiento) && (
+                    <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim, marginTop: 6 }}>
+                      {p.prima ? `${p.prima}${p.moneda ? ` ${p.moneda}` : ""}` : ""}
+                      {p.fechaVencimiento ? ` · vence ${p.fechaVencimiento}` : ""}
+                    </div>
+                  )}
+                  {p.notas && (
+                    <div style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{p.notas}</div>
+                  )}
+                  {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && puedeArreglar && (
+                    <button
+                      onClick={() => marcarPagado(p.id)}
+                      disabled={marcandoId === p.id}
+                      style={{
+                        marginTop: 8,
+                        background: "none",
+                        border: `1px solid ${C.amberBright}`,
+                        color: C.amberBright,
+                        borderRadius: 6,
+                        padding: "5px 10px",
+                        fontFamily: C.mono,
+                        fontSize: 10.5,
+                        cursor: marcandoId === p.id ? "default" : "pointer",
+                      }}
+                    >
+                      {marcandoId === p.id ? "marcando…" : "marcar como pagado"}
+                    </button>
+                  )}
+                  {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && !puedeArreglar && (
+                    <div style={{ marginTop: 8, fontFamily: C.mono, fontSize: 9.5, color: C.dim }}>requiere admin para confirmar pago</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Desplegable>
+        );
+      })}
+      {get(seguros, "linkRegistro") && (
+        <a
+          href={get(seguros, "linkRegistro")}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            display: "inline-block",
+            marginTop: 10,
+            fontFamily: C.mono,
+            fontSize: 11,
+            color: C.amberBright,
+            textDecoration: "none",
+            border: `1px solid ${C.amber}`,
+            borderRadius: 6,
+            padding: "6px 12px",
+          }}
+        >
+          abrir el registro ↗
+        </a>
+      )}
+    </div>
+  );
+}
+
 /** Contenido del nodo "Búsqueda Web" — mismo motivo que ConexionesContenido: deja de ser una barra propia, ahora vive dentro del panel de detalle de su nodo. */
 function BusquedaWebContenido({ apiKey }) {
   const [resumen, setResumen] = useState(null);
@@ -1887,6 +2064,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   const [error, setError] = useState("");
   const [codigoVinculo, setCodigoVinculo] = useState(null);
   const [escuchando, setEscuchando] = useState(false);
+  const [errorDictado, setErrorDictado] = useState("");
   const [leerRespuestas, setLeerRespuestas] = useState(() => localStorage.getItem(LOCALSTORAGE_VOZ_KEY) === "1");
   const [vozPendiente, setVozPendiente] = useState(false);
   const [estadoVoz, setEstadoVoz] = useState("idle");
@@ -1898,6 +2076,12 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   vozActivaRef.current = leerRespuestas && abierto;
   const mensajesRef = useRef(null);
   const recognitionRef = useRef(null);
+  const dictadoActivoRef = useRef(false);
+  const dictadoReinicioRef = useRef(null);
+  const dictadoTextoBaseRef = useRef("");
+  const dictadoAcumuladoRef = useRef("");
+  const dictadoSesionRef = useRef("");
+  const iniciarSesionDictadoRef = useRef(null);
   const enviandoRef = useRef(false);
   const consultandoSolicitudesRef = useRef(false);
   const SpeechRecognition = typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
@@ -1970,9 +2154,22 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
   }, [mensajes, solicitudes]);
 
   useEffect(() => () => {
+    dictadoActivoRef.current = false;
+    if (dictadoReinicioRef.current) clearTimeout(dictadoReinicioRef.current);
+    dictadoReinicioRef.current = null;
     recognitionRef.current?.stop?.();
+    recognitionRef.current = null;
     lectorVoz.dispose();
   }, [lectorVoz]);
+
+  useEffect(() => {
+    const reanudarDictadoVisible = () => {
+      if (document.hidden || !dictadoActivoRef.current || recognitionRef.current) return;
+      iniciarSesionDictadoRef.current?.();
+    };
+    document.addEventListener("visibilitychange", reanudarDictadoVisible);
+    return () => document.removeEventListener("visibilitychange", reanudarDictadoVisible);
+  }, []);
 
   useEffect(() => {
     if (leerRespuestas && abierto) return;
@@ -2108,6 +2305,15 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     if (!contenido || enviandoRef.current || limiteSolicitudesAlcanzado) return;
     lectorVoz.stop();
     if (vozActivaRef.current) lectorVoz.activate().catch(() => setVozPendiente(true));
+    // Si el micrófono sigue encendido, el texto enviado ya no debe reaparecer
+    // en el siguiente resultado acumulado. Cerramos solo la sesión interna;
+    // `onend` la abrirá de nuevo porque la intención del usuario sigue activa.
+    if (dictadoActivoRef.current) {
+      dictadoTextoBaseRef.current = "";
+      dictadoAcumuladoRef.current = "";
+      dictadoSesionRef.current = "";
+      recognitionRef.current?.abort?.();
+    }
     enviandoRef.current = true;
     setRegistrando(true);
     setError("");
@@ -2159,7 +2365,15 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     const requestId = window.crypto?.randomUUID?.().replaceAll("-", "") || `btn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
     const esperarResultado = async () => {
-      for (let intento = 0; intento < 40; intento++) {
+      // Hallazgo real de auditoría (caso real Carlos: "Aprobar selección" con varias acciones
+      // marcadas juntas — crear y conciliar + guardar como conocimiento — se dio por "tardó
+      // demasiado" aunque el servidor seguía trabajando de verdad). 40 intentos × 3s = 120s alcanza
+      // para una sola acción, pero una selección compuesta encadena varias llamadas reales a
+      // Holded/Sheets/Claude, y una sola de ellas ya puede tardar 60-80s+ cuando Sheets aplica su
+      // propio backoff de cuota (ver core/utils/readCache.ts y los reintentos ya documentados en
+      // otras partes del proyecto) — sin ser un error real, solo lento. 100 intentos × 3s = 300s da
+      // margen real a una selección compuesta sin dejar de detectar un fallo genuino.
+      for (let intento = 0; intento < 100; intento++) {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVALO_MS));
         try {
           const res = await fetch(CHAT_SOLICITUD_ENDPOINT(requestId), { headers, cache: "no-store" });
@@ -2171,7 +2385,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
           // problema transitorio de red — reintenta en la siguiente vuelta del sondeo
         }
       }
-      return { ok: false, error: "Tardó demasiado en confirmarse — revisa el resultado en Telegram." };
+      return { ok: false, error: "Tardó demasiado en confirmarse — revisa el último resultado en Holded antes de volver a intentarlo." };
     };
 
     try {
@@ -2187,9 +2401,18 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
         return;
       }
 
-      // Coincide con Telegram: todo el teclado de la propuesta se retira apenas se resuelve
-      // cualquiera de sus opciones, no solo la que se tocó.
-      setBotonesActivos((actuales) => actuales.filter((b) => b.messageId !== messageId));
+      // Hallazgo real de auditoría (caso real Carlos): "gasto_toggle:" (marcar/desmarcar un check del
+      // teclado de selección de gasto) NO es una decisión final en Telegram — el mensaje conserva su
+      // teclado, solo se repinta con el check nuevo, y recién "▶️ Aprobar selección" (gasto_aprobar)
+      // ejecuta y retira los botones. Quitar la tarjeta acá para CUALQUIER botón (incluidos los
+      // checks) hacía que cada marca de casilla la hiciera desaparecer y luego reaparecer al
+      // refrescar — un parpadeo que Telegram nunca tiene, porque ahí el mensaje nunca deja de
+      // mostrarse. Para el resto de los ~24 tipos de botones (decisiones de un solo toque, sin
+      // checkboxes) si coincide con Telegram: se retiran apenas se resuelve cualquiera de sus
+      // opciones — ahí si corresponde quitar la tarjeta optimistamente.
+      if (!callbackData.startsWith("gasto_toggle:")) {
+        setBotonesActivos((actuales) => actuales.filter((b) => b.messageId !== messageId));
+      }
 
       const resultado = json.estado === "completado" ? { ok: true } : await esperarResultado();
       if (!resultado.ok) setError(resultado.error || "No se pudo confirmar la acción.");
@@ -2205,28 +2428,97 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
     }
   }, [botonesEnProceso, headers, cargarChat]);
 
-  const iniciarDictado = () => {
-    if (!SpeechRecognition) return;
-    if (escuchando) {
-      recognitionRef.current?.stop?.();
-      return;
-    }
+  const iniciarSesionDictado = useCallback(() => {
+    if (!SpeechRecognition || !dictadoActivoRef.current || document.hidden || recognitionRef.current) return;
     const reconocimiento = new SpeechRecognition();
     recognitionRef.current = reconocimiento;
     reconocimiento.lang = "es-ES";
     reconocimiento.interimResults = true;
-    reconocimiento.continuous = false;
-    reconocimiento.onstart = () => setEscuchando(true);
-    reconocimiento.onend = () => setEscuchando(false);
-    reconocimiento.onerror = () => {
-      setEscuchando(false);
-      setError("El navegador no pudo iniciar el dictado. Puedes seguir escribiendo.");
+    reconocimiento.continuous = true;
+    reconocimiento.onstart = () => {
+      setEscuchando(true);
+      setErrorDictado("");
+    };
+    reconocimiento.onend = () => {
+      if (recognitionRef.current === reconocimiento) recognitionRef.current = null;
+
+      const fragmento = dictadoSesionRef.current.trim();
+      if (fragmento) {
+        dictadoAcumuladoRef.current = [dictadoAcumuladoRef.current, fragmento].filter(Boolean).join(" ");
+        setTexto([dictadoTextoBaseRef.current, dictadoAcumuladoRef.current].filter(Boolean).join(" "));
+      }
+      dictadoSesionRef.current = "";
+
+      if (!dictadoActivoRef.current) {
+        setEscuchando(false);
+        return;
+      }
+
+      // Los navegadores terminan SpeechRecognition después de silencios o por
+      // límites internos, aun con `continuous=true`. Mientras el usuario no
+      // apague el micrófono, abrimos una sesión nueva sin perder el texto.
+      if (!document.hidden) {
+        dictadoReinicioRef.current = window.setTimeout(() => {
+          dictadoReinicioRef.current = null;
+          iniciarSesionDictadoRef.current?.();
+        }, 250);
+      }
+    };
+    reconocimiento.onerror = (evento) => {
+      const codigo = evento?.error || "desconocido";
+      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(codigo)) {
+        dictadoActivoRef.current = false;
+        setEscuchando(false);
+        setErrorDictado(codigo === "audio-capture"
+          ? "No encuentro un micrófono disponible. Revisa el dispositivo y vuelve a activarlo."
+          : "El navegador bloqueó el micrófono. Autoriza el acceso y vuelve a activarlo.");
+        return;
+      }
+      if (codigo !== "no-speech" && codigo !== "aborted") {
+        setErrorDictado("El dictado perdió la conexión; Wobi intentará reactivarlo automáticamente.");
+      }
     };
     reconocimiento.onresult = (evento) => {
-      const transcripcion = Array.from(evento.results).map((resultado) => resultado[0]?.transcript || "").join(" ");
-      setTexto(transcripcion.trim());
+      const transcripcion = Array.from(evento.results)
+        .map((resultado) => resultado[0]?.transcript || "")
+        .join(" ")
+        .trim();
+      dictadoSesionRef.current = transcripcion;
+      setTexto([dictadoTextoBaseRef.current, dictadoAcumuladoRef.current, transcripcion].filter(Boolean).join(" "));
     };
-    reconocimiento.start();
+    try {
+      reconocimiento.start();
+    } catch {
+      recognitionRef.current = null;
+      if (dictadoActivoRef.current) {
+        dictadoReinicioRef.current = window.setTimeout(() => {
+          dictadoReinicioRef.current = null;
+          iniciarSesionDictadoRef.current?.();
+        }, 500);
+      }
+    }
+  }, [SpeechRecognition]);
+  iniciarSesionDictadoRef.current = iniciarSesionDictado;
+
+  const iniciarDictado = () => {
+    if (!SpeechRecognition) return;
+    if (dictadoActivoRef.current) {
+      dictadoActivoRef.current = false;
+      if (dictadoReinicioRef.current) clearTimeout(dictadoReinicioRef.current);
+      dictadoReinicioRef.current = null;
+      recognitionRef.current?.stop?.();
+      setEscuchando(false);
+      setErrorDictado("");
+      return;
+    }
+
+    dictadoActivoRef.current = true;
+    dictadoTextoBaseRef.current = texto.trim();
+    dictadoAcumuladoRef.current = "";
+    dictadoSesionRef.current = "";
+    setEscuchando(true);
+    setErrorDictado("");
+    iniciarSesionDictado();
   };
 
   const vincular = async () => {
@@ -2437,15 +2729,17 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, modoComple
           )}
 
           {error && <div role="alert" className="wobi-chat-error">{error}</div>}
+          {errorDictado && <div role="alert" className="wobi-chat-error">{errorDictado}</div>}
           <div className="wobi-compositor">
             <textarea value={texto} onChange={(e) => setTexto(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } }} rows={2} maxLength={4000} placeholder={limiteSolicitudesAlcanzado ? "Espera a que termine una solicitud…" : "Escribe o dicta una pregunta…"} />
-            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado" : "Dictar con el micrófono") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
+            <button type="button" onClick={iniciarDictado} disabled={!SpeechRecognition} aria-pressed={escuchando} aria-label={SpeechRecognition ? (escuchando ? "Detener dictado continuo" : "Activar dictado continuo") : "El dictado no está disponible en este navegador"} title={SpeechRecognition ? (escuchando ? "Detener dictado continuo" : "Activar dictado continuo") : "El dictado no está disponible en este navegador"} className={`wobi-boton-micro${escuchando ? " wobi-boton-micro--activo" : ""}`}>
               <span aria-hidden="true">🎙</span>
             </button>
             <button type="button" onClick={enviar} disabled={!texto.trim() || registrando || limiteSolicitudesAlcanzado} className="wobi-boton-enviar">
               {registrando ? "Guardando…" : "Enviar"} <span aria-hidden="true">↑</span>
             </button>
           </div>
+          {escuchando && <div className="wobi-dictado-activo" role="status"><span aria-hidden="true" /> Micrófono activo · toca el micrófono para detenerlo</div>}
           <div className="wobi-chat-seguridad">
             <span aria-hidden="true">↻</span> {procesando ? `${solicitudesActivas.length} solicitud(es) en curso · puedes seguir escribiendo` : "Reintentos protegidos · sin llamadas duplicadas"}
           </div>
@@ -3406,6 +3700,29 @@ export default function CerebroWoba() {
         }
         .wobi-boton-enviar span { font-size: 16px; }
         .wobi-boton-enviar:disabled { cursor: default; opacity: .38; filter: saturate(.3); }
+        .wobi-dictado-activo {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 7px;
+          padding: 0 12px 7px;
+          color: ${C.amberBright};
+          background: rgba(5,11,20,.72);
+          font-family: ${C.mono};
+          font-size: 10px;
+        }
+        .wobi-dictado-activo span {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: ${C.dangerBright};
+          box-shadow: 0 0 0 4px rgba(240,113,120,.12);
+          animation: wobi-micro-pulso 1.5s ease-in-out infinite;
+        }
+        @keyframes wobi-micro-pulso {
+          0%, 100% { opacity: .62; transform: scale(.88); }
+          50% { opacity: 1; transform: scale(1); }
+        }
         .wobi-chat-seguridad {
           display: flex;
           justify-content: center;
@@ -4054,6 +4371,9 @@ export default function CerebroWoba() {
               {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
               {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "cacheadoEn")} />}
               {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} />}
+              {m.id === "seguros" && apiKey && (
+                <SegurosContenido apiKey={apiKey} puedeArreglar={esAdmin} seguros={get(liveData, "seguros")} />
+              )}
             </div>
               </div>
             );
