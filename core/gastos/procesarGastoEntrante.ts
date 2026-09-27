@@ -305,6 +305,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         moneda: monedaOriginal,
         fecha: fechaBusqueda,
         proveedor: datos.proveedor,
+        concepto: datos.concepto,
       },
       [politicaLiquidacion.moneda]
     );
@@ -371,7 +372,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const fechaBusquedaFx = datos.fecha;
     const candidatosFx = await buscarMovimientosPorTipoCambio(
       empresa,
-      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor },
+      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto },
       monedasReales
     ).catch((error) => {
       console.error("[procesarGastoEntrante] Error buscando movimientos bancarios por tipo de cambio (se sigue con la pregunta manual):", error);
@@ -993,6 +994,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             moneda: monedaParaHolded,
             fecha: datos.fecha,
             proveedor: datos.proveedor,
+            concepto: datos.concepto,
           },
           otrasMonedas
         );

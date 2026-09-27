@@ -1923,6 +1923,7 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 // "cafeteria", nunca "cafe"/"coffee" sueltos) reconocía una cafetería/panadería como alimentación.
 const PALABRAS_ALIMENTACION = [
   "osteria",
+  "gourmet",
   "restaurante",
   "almuerzo",
   "desayuno",
@@ -1977,7 +1978,7 @@ const PALABRAS_ALQUILER_COCHE = ["rent a car", "rentacar", "car rental", "alquil
 // Deliberadamente SIN el tag "transporte" — a diferencia de taxi/tren/avión/alquilercoche/peaje/
 // barco, en los gastos reales de gasolina revisados en vivo (12 de 12 casos) casi ninguno traía
 // "transporte" además de "gasolina" — se sigue ese mismo patrón real en vez de uno inventado.
-const PALABRAS_GASOLINA = ["gasolina", "combustible", "repsol", "cepsa", "estacion de servicio", "gas station", "avia station"];
+const PALABRAS_GASOLINA = ["chevron", "gasolina", "combustible", "repsol", "cepsa", "estacion de servicio", "gas station", "avia station"];
 const PALABRAS_PEAJE = ["peaje", "pagatelia", "toll road", "telepeaje"];
 const PALABRAS_BARCO = ["ferry", "barco", "naviera", "balearia", "cruise"];
 // Igual que gasolina — el único caso real de "parking" revisado en vivo no traía "transporte".
@@ -2398,7 +2399,12 @@ function seleccionarEjemploContextual(
 ): { linea: LineaConCuenta; contexto: Array<"persona" | "ubicacion"> } | undefined {
   const persona = normalizar(contexto.personaAsociada ?? "");
   const ubicacionActual = tokensUbicacionContextual(contexto.concepto, contexto.proveedor, contexto.personaAsociada);
-  const puntuadas = lineas.map((linea, indice) => {
+  const categorias = inferirTagsCategoria(contexto.concepto, contexto.proveedor);
+  const compatibles = lineas.filter(linea => {
+    const previas = inferirTagsCategoria(`${linea.lineName} ${linea.descripcion}`, linea.contactName);
+    return categorias.length > 0 && previas.some(c => categorias.includes(c));
+  });
+  const puntuadas = compatibles.map((linea, indice) => {
     const texto = normalizar(`${linea.contactName} ${linea.descripcion} ${linea.lineName} ${linea.tags.join(" ")}`);
     const coincidePersona = Boolean(persona) && texto.includes(persona);
     const ubicacionPrecedente = tokensUbicacionContextual(
