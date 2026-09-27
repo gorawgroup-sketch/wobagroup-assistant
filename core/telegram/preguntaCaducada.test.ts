@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registrarPulsacionSobreMensaje, retirarPreguntaCaducada, type DependenciasPreguntaCaducada } from "./preguntaCaducada";
+import { registrarPulsacionSobreMensaje, retirarPreguntaCaducada, retirarPreguntaTrasEnviar, type DependenciasPreguntaCaducada } from "./preguntaCaducada";
 import type { TelegramCallbackQuery } from "./types";
 import { mensajeYaNoEsta } from "./client";
 
@@ -77,4 +77,26 @@ test("deleteMessage: éxito y «no encontrado» cuentan como desaparecido; otros
   assert.equal(mensajeYaNoEsta(400, '{"ok":false,"description":"Bad Request: message to delete not found"}'), true);
   assert.equal(mensajeYaNoEsta(400, '{"ok":false,"description":"Bad Request: message can\'t be deleted for everyone"}'), false);
   assert.equal(mensajeYaNoEsta(403, '{"ok":false,"description":"Forbidden: bot was blocked by the user"}'), false);
+});
+
+// Hallazgo real de auditoría (revisión de PR #199, 2026-09-27): mandar el mensaje de resultado y
+// retirar la pregunta en paralelo (Promise.all) podía dejar la pregunta ya borrada mientras el envío
+// del resultado fallaba — el chat se quedaba sin ningún rastro de la decisión.
+test("retirarPreguntaTrasEnviar: manda primero; si el envío falla, no retira nada y propaga el error", async () => {
+  const e = escenario();
+  const callback = cb("h", 507);
+  await assert.rejects(
+    retirarPreguntaTrasEnviar(callback, async () => { throw new Error("Telegram caído"); }, e.deps),
+    /Telegram caído/
+  );
+  assert.deepEqual(e.eventos, [], "no debe tocar la pregunta original si el envío falló");
+});
+
+test("retirarPreguntaTrasEnviar: si el envío tiene éxito, retira después (sin texto: nunca compite con el envío)", async () => {
+  const e = escenario();
+  const callback = cb("i", 508);
+  const orden: string[] = [];
+  await retirarPreguntaTrasEnviar(callback, async () => { orden.push("enviado"); }, e.deps);
+  assert.deepEqual(orden, ["enviado"]);
+  assert.deepEqual(e.eventos, ["toast:i:", "borrar:7:508"]);
 });

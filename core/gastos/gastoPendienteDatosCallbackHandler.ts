@@ -6,6 +6,7 @@ import {
   editTelegramMessageReplyMarkup,
   sendTelegramMessage,
 } from "../telegram/client";
+import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
 import {
@@ -56,10 +57,8 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
 
   const pendiente = await consumirGastoPendienteDatosPorId(chatId, pendienteId);
   if (!pendiente) {
-    await responderCallback(callback.id, "Esta pendiente ya fue procesada o reemplazada.");
-    if (messageId !== undefined) {
-      await editTelegramMessageReplyMarkup(chatId, messageId, []).catch(() => {});
-    }
+    // Igual que el resto de preguntas caducadas: desaparece del chat en vez de quedar clickeable sin efecto.
+    await retirarPreguntaCaducada(callback, "Esta pendiente ya fue procesada o reemplazada.");
     return;
   }
 

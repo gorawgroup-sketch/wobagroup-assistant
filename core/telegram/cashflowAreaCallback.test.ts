@@ -15,3 +15,22 @@ test('abrir áreas conserva la propuesta y no consume ni registra el movimiento'
  await handleCallbackQuery({id:'cb2',data:'cf_area:p1',message:{message_id:9,chat:{id:13}}} as TelegramCallbackQuery,deps);
  assert.equal(edits.length,1);assert.equal(consumed,0);
 });
+
+// Caso real encontrado en un barrido de "preguntas que ya no se pueden gestionar deben desaparecer
+// del chat" (2026-09-27): consumirPropuesta ya retira la propuesta de forma irreversible ANTES de
+// que "cf_duplicado" compruebe si tiene un duplicado asociado — si no lo tiene, el mensaje original
+// se quedaba con sus botones vivos para siempre, a diferencia de cf_reject/cf_approve/cf_duplicado
+// (con duplicado), que sí editan el mensaje original en cada desenlace.
+test('"Es duplicado" sin duplicado asociado retira el mensaje original en vez de dejarlo vivo', async () => {
+  const edits: unknown[][] = [];
+  const deps = {
+    obtenerPropuesta: async () => ({ id: 'p1', empresa: 'WOBA', bloqueSugerido: 'gastos_fijos', clienteOConcepto: 'Proveedor', semana: 'S38', valor: 10, chatId: 12, messageId: 9, creadoEn: Date.now() } as const),
+    consumirPropuesta: async () => ({ id: 'p1', empresa: 'WOBA', bloqueSugerido: 'gastos_fijos', clienteOConcepto: 'Proveedor', semana: 'S38', valor: 10, chatId: 12, messageId: 9, creadoEn: Date.now() } as const),
+    answerCallbackQuerySafe: async () => {},
+    editTelegramMessage: async (...args: unknown[]) => { edits.push(args); },
+  };
+  await handleCallbackQuery({ id: 'cb', data: 'cf_duplicado:p1', message: { message_id: 9, chat: { id: 12 } } } as TelegramCallbackQuery, deps);
+  assert.equal(edits.length, 1);
+  assert.deepEqual(edits[0].slice(0, 2), [12, 9]);
+  assert.deepEqual(edits[0][3], []);
+});

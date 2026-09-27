@@ -1,7 +1,7 @@
-import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
+import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { solicitarRespuestaCarpeta } from "./respuestaCarpeta";
 import { unlink } from "node:fs/promises";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramTemporaryNotice } from "../telegram/client";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../telegram/client";
 import {
   consumirPropuestaClasificacion,
   obtenerPropuestaClasificacion,
@@ -759,7 +759,9 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
           chatId,
           pendiente.correoOrigen,
           `documento-desambiguacion:${pendiente.id}:resolver`,
-          () => sendTelegramMessage(chatId, `✅ Archivado — ${pendiente.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`)
+          // Ya se archivó: la pregunta con las carpetas candidatas y los botones de acción desaparece
+          // en vez de quedar clickeable sin efecto.
+          () => retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(chatId, `✅ Archivado — ${pendiente.nombreArchivoOriginal}\n${resultado.mensaje}\n\n🔗 ${resultado.webViewLink}`))
         );
         return;
       }
@@ -913,6 +915,11 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
         `documento-desambiguacion:${pendiente.id}:resolver`
       );
     }
+    if (resultadoGasto) {
+      // Se redirigió con éxito al flujo de gastos (que ya mandó su propia propuesta/pregunta): esta
+      // pregunta de desambiguación quedó superada y no debe seguir clickeable sin ningún efecto.
+      await retirarPreguntaCaducada(callback);
+    }
     return;
   }
 
@@ -976,7 +983,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     // nuevo estado no llega a persistirse, la pregunta original se restaura.
     const pendiente = idBoton ? await consumirPendienteDesambiguacionPorId(idBoton, chatId) : undefined;
     if (!pendiente) {
-      await sendTelegramTemporaryNotice(chatId, "Esta pregunta ya no está disponible (expiró o ya se respondió).").catch(() => {});
+      await retirarPreguntaCaducada(callback, "Esta pregunta ya no está disponible (expiró o ya se respondió).");
       return;
     }
     try {
@@ -994,6 +1001,9 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
             ? { threadId: reclamada.correoOrigen.threadId, mensajeId: reclamada.correoOrigen.mensajeIdGmail }
             : undefined);
       });
+      // La decisión pasó al mensaje nuevo de selección de empresa: esta pregunta ya no representa
+      // ninguna acción pendiente y no debe seguir clickeable sin efecto.
+      await retirarPreguntaCaducada(callback);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[documentCallbackHandler] Error leyendo documento ambiguo para guardar como conocimiento:", message);
@@ -1023,7 +1033,10 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
       otras.length > 0
         ? `Esta pregunta ya no está disponible (expiró o ya se respondió) — todavía tienes ${otras.length === 1 ? "una pregunta pendiente" : `${otras.length} preguntas pendientes`} sin responder, arriba en el chat.`
         : "Esta pregunta ya no está disponible (expiró o ya se respondió).";
-    await sendTelegramMessage(chatId, aviso);
+    // El callback ya se respondió sin texto unas líneas arriba: pasarle texto a
+    // retirarPreguntaCaducada acá lo degradaría a un aviso efímero (ver AcusesCallback). Se manda
+    // como mensaje real primero — Carlos pidió que el aviso de "qué hacer ahora" nunca quede en duda.
+    await retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(chatId, aviso));
     return;
   }
 
@@ -1033,6 +1046,7 @@ export async function handleDesambiguacionCallback(callback: TelegramCallbackQue
     chatId,
     pendiente.correoOrigen,
     `documento-desambiguacion:${pendiente.id}:resolver`,
-    () => sendTelegramMessage(chatId, `❌ Descartado — "${pendiente.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`)
+    // Ya se descartó: la pregunta original desaparece en vez de quedar clickeable sin efecto.
+    () => retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(chatId, `❌ Descartado — "${pendiente.nombreArchivoOriginal}" (no se archivó ni se guardó nada).`))
   );
 }

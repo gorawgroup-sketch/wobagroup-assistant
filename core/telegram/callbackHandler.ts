@@ -96,7 +96,16 @@ export async function handleCallbackQuery(
   // preguntar en el futuro, solo reduce la duda con la que pregunta.
   if (accion === "cf_duplicado") {
     if (propuesta.montoDuplicado === undefined) {
+      // consumirPropuesta ya la retiró de forma irreversible unas líneas arriba: el mensaje original
+      // no puede quedar con botones vivos como si nada hubiera pasado, igual que el resto de
+      // desenlaces de esta función.
       await answerCallbackQuerySafe(callback.id, "Esta propuesta no tiene un duplicado asociado.");
+      await editTelegramMessage(
+        propuesta.chatId,
+        propuesta.messageId,
+        `⚠️ No pude anotar el duplicado — ${propuesta.clienteOConcepto} (${propuesta.semana}, ${propuesta.valor.toFixed(2)} €): la propuesta ya no tenía un duplicado asociado. No se creó nada nuevo; genera una revisión nueva si hace falta.`,
+        []
+      );
       return;
     }
 

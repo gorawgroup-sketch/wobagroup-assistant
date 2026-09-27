@@ -79,3 +79,20 @@ export async function retirarPreguntaCaducada(
     console.error("[preguntaCaducada] No se pudo retirar la pregunta caducada (no crítico):", error instanceof Error ? error.message : error);
   }
 }
+
+/**
+ * Manda primero el mensaje que explica el desenlace y SOLO si se confirma que salió, retira la
+ * pregunta original. Hallazgo real de auditoría: mandar ambas cosas en paralelo (Promise.all) podía
+ * dejar la pregunta ya borrada mientras el mensaje de resultado fallaba (red caída, texto con un
+ * carácter que Telegram rechaza) — el chat se quedaba sin ningún rastro visible de qué pasó con la
+ * decisión, peor que el estado (pregunta muerta pero visible) que este mecanismo vino a arreglar. Si
+ * `enviar` falla, se propaga (quien llama decide cómo loguearlo) y la pregunta original se conserva.
+ */
+export async function retirarPreguntaTrasEnviar(
+  callback: TelegramCallbackQuery,
+  enviar: () => Promise<unknown>,
+  deps: DependenciasPreguntaCaducada = dependencias
+): Promise<void> {
+  await enviar();
+  await retirarPreguntaCaducada(callback, undefined, deps);
+}

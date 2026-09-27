@@ -161,3 +161,52 @@ test("desamb_elegir valida antes de consumir y restaura la pregunta si Drive no 
   assert.match(rama, /if \(resultado\.ok\)[\s\S]*await restaurarPendienteDesambiguacion\(pendiente\)/);
   assert.match(rama, /catch \(error\)[\s\S]*restaurarPendienteDesambiguacion\(pendiente\)/);
 });
+
+// Caso real reportado por Carlos con captura de pantalla (2026-09-27): una pregunta de
+// desambiguación cuya decisión ya se resolvió (archivada, redirigida a gasto, transferida a
+// conocimiento, o descartada) se quedaba con sus botones vivos para siempre, aunque el resultado ya
+// se hubiera publicado en un mensaje aparte. Estructural por el mismo motivo que los tests
+// anteriores de este archivo: handleDesambiguacionCallback no admite inyección de dependencias.
+test("cada desenlace terminal de la desambiguación retira la pregunta original, y solo el fallo la conserva", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/documental/documentCallbackHandler.ts"), "utf8");
+  assert.match(fuente, /import \{ retirarPreguntaCaducada, retirarPreguntaTrasEnviar \} from "\.\.\/telegram\/preguntaCaducada";/);
+
+  // desamb_elegir: éxito retira, el reintento (Drive no confirmó / excepción) conserva los botones.
+  // Usa retirarPreguntaTrasEnviar (manda primero, retira después) para no perder el rastro de la
+  // decisión si el envío del resultado falla.
+  const inicioElegir = fuente.indexOf('if (accion === "desamb_elegir")');
+  const finElegir = fuente.indexOf('if (accion === "desamb_esgasto")', inicioElegir);
+  const ramaElegir = fuente.slice(inicioElegir, finElegir);
+  assert.match(ramaElegir, /if \(resultado\.ok\) \{[\s\S]*?retirarPreguntaTrasEnviar\(callback, \(\) => sendTelegramMessage[\s\S]*?return;\s*\}/);
+  const idxRestaurarOk = ramaElegir.search(/\/\/ Drive no confirmó el archivado/);
+  assert.ok(idxRestaurarOk > 0 && !ramaElegir.slice(idxRestaurarOk).includes("retirarPreguntaCaducada"),
+    "el reintento tras un fallo de Drive no debe retirar la pregunta: sus botones siguen siendo válidos");
+
+  // desamb_esgasto: solo retira si hubo un resultadoGasto real (nunca en el catch, que restaura).
+  const inicioEsgasto = fuente.indexOf('if (accion === "desamb_esgasto")');
+  const finEsgasto = fuente.indexOf('if (accion === "desamb_conocimiento"', inicioEsgasto);
+  const ramaEsgasto = fuente.slice(inicioEsgasto, finEsgasto);
+  assert.match(ramaEsgasto, /if \(resultadoGasto\) \{[\s\S]*?await retirarPreguntaCaducada\(callback\);\s*\}\s*return;/);
+  const idxCatchEsgasto = ramaEsgasto.indexOf("} catch (error) {");
+  const idxIfResultado = ramaEsgasto.indexOf("if (resultadoGasto) {");
+  assert.ok(idxCatchEsgasto > 0 && idxIfResultado > idxCatchEsgasto, "el retiro debe quedar fuera/después del catch, nunca dentro de él");
+
+  // desamb_conocimiento: la pregunta ya no disponible usa el mecanismo compartido (antes usaba un
+  // aviso aparte que nunca tocaba los botones); el éxito retira, el catch (falla la lectura) conserva.
+  const inicioConoc = fuente.indexOf('if (accion === "desamb_conocimiento" || accion === "desamb_alerta" || accion === "desamb_responder")');
+  const finConoc = fuente.indexOf('if (accion !== "desamb_descartar")', inicioConoc);
+  const ramaConoc = fuente.slice(inicioConoc, finConoc);
+  assert.match(ramaConoc, /if \(!pendiente\) \{\s*await retirarPreguntaCaducada\(callback, "Esta pregunta ya no está disponible \(expiró o ya se respondió\)\."\);/);
+  assert.match(ramaConoc, /await transferirDesambiguacionACaptura\(pendiente, async \(reclamada\) => \{[\s\S]*?\}\);[\s\S]*?await retirarPreguntaCaducada\(callback\);\s*\} catch/);
+
+  // desamb_descartar: "ya no disponible" manda el aviso compuesto (según cuántas otras preguntas
+  // queden) como mensaje real ANTES de retirar — el callback ya se respondió sin texto un poco antes
+  // en esta misma rama (answerCallbackQuerySafe(callback.id)), así que pasarle el aviso a
+  // retirarPreguntaCaducada lo degradaría a un toast efímero en vez del aviso permanente que Carlos
+  // pidió explícitamente. El descarte terminal también retira la pregunta tras confirmar el envío.
+  const inicioDescartar = fuente.indexOf('if (accion !== "desamb_descartar")');
+  const ramaDescartar = fuente.slice(inicioDescartar);
+  assert.match(ramaDescartar, /await retirarPreguntaTrasEnviar\(callback, \(\) => sendTelegramMessage\(chatId, aviso\)\);/);
+  assert.match(ramaDescartar, /finalizarDocumentoTerminalAntesDeRender\(\s*chatId,\s*pendiente\.correoOrigen,[\s\S]*?\(\) => retirarPreguntaTrasEnviar\(callback, \(\) => sendTelegramMessage/);
+  assert.doesNotMatch(fuente, /Promise\.all\(\[\s*retirarPreguntaCaducada/);
+});
