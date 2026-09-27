@@ -1,8 +1,9 @@
+import { movimientoCompatibleConGasto } from "../../holded/write";
 import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v23";
+export const VERSION_POLITICA = "correo-gastos-v24";
 /**
  * La lectura del mensaje es independiente de la política que decide si se
  * crea/adjunta/concilia. Antes ambas compartían VERSION_POLITICA y cada
@@ -274,6 +275,7 @@ export function candidatosMovimientoAuto(r: ReciboAuto, e: EvidenciaAuto): Movim
   let datos: ReturnType<typeof datosMonto>;
   try { datos = datosMonto(r, e); } catch { return []; }
   const porMontoYFecha = e.movimientos.filter(m => {
+    if (!movimientoCompatibleConGasto(r.proveedor, r.concepto, m.descripcion)) return false;
     if (e.equivalenteBancario &&
         (m.id !== e.equivalenteBancario.movimientoId || m.cuentaId !== e.equivalenteBancario.cuentaId)) return false;
     const comparable = centimosComparablesMovimientoAuto(m, datos.moneda);

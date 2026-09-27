@@ -1880,6 +1880,7 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 // Xocolata) quedó SIN ningún tag de categoría — ninguna palabra de este diccionario (antes solo
 // "cafeteria", nunca "cafe"/"coffee" sueltos) reconocía una cafetería/panadería como alimentación.
 const PALABRAS_ALIMENTACION = [
+  "osteria",
   "restaurante",
   "almuerzo",
   "desayuno",
@@ -2028,6 +2029,8 @@ function tagsConSinonimosSeSolapan(a: string[], b: string[]): boolean {
  */
 export function inferirTagsCategoria(concepto: string, proveedor: string): string[] {
   const texto = `${concepto} ${proveedor}`;
+  // Un consumo independiente en un hotel no es una estancia con comida incluida.
+  if (/^(desayuno|almuerzo|cena|comida)\b/i.test(normalizar(concepto).trim())) return ["alimentacion"];
 
   if (contienePalabraClave(texto, PALABRAS_SUSCRIPCION)) return ["suscripcion"];
   if (contienePalabraClave(texto, PALABRAS_UBER_EATS)) return ["alimentacion"];
@@ -2110,7 +2113,7 @@ export function combinarTagsGastoAprendidos(
   // de otro gasto del mismo viaje.
   const candidatosPersona = (personaAsociada
     ? [personaAsociada]
-    : [...tagsAprendidos, ...personasDemostradasEnConcepto])
+    : personasDemostradasEnConcepto.length ? personasDemostradasEnConcepto : tagsAprendidos)
     .map(tag => tag.trim())
     .filter(Boolean)
     .filter(tag => personaAsociada || etiquetasPersonaAprendidas.has(normalizarEtiquetaHolded(tag)));
@@ -4515,9 +4518,20 @@ export async function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set
  * de ser la MISMA transacción — con la tolerancia fija, un match real se
  * perdía en silencio.
  */
+/** El importe no demuestra proveedor ni naturaleza del gasto. */
+export function movimientoCompatibleConGasto(proveedor: string, concepto: string, descripcion: string): boolean {
+  const a = inferirTagsCategoria(concepto, proveedor);
+  const b = inferirTagsCategoria(descripcion, "");
+  // Categoría compatible permite nombres distintos; no demuestra por sí sola identidad.
+  if (a.length && b.length) return a.some(t => b.includes(t));
+  const marca = (texto: string) => normalizar(texto).match(/\b(uber|bolt)\b/)?.[1];
+  const mismaMarca = marca(proveedor) && marca(proveedor) === marca(descripcion);
+  return Boolean(mismaMarca || proveedorPareceEnDescripcion(proveedor, descripcion));
+}
+
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string; moneda?: string },
+  criterios: { monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string },
   toleranciaEur: number = TOLERANCIA_MONTO
 ): Promise<MovimientoBancarioCandidato[]> {
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
@@ -4554,6 +4568,7 @@ export async function buscarMovimientoSimilar(
 
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status)) continue;
+      if (criterios.proveedor && !movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "")) continue;
 
       let monto: number;
       if (monedaObjetivo === "EUR") {
@@ -4669,7 +4684,7 @@ export async function buscarMovimientoAproximado(
 
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status)) continue;
-      if (!mov.description || !proveedorPareceEnDescripcion(criterios.proveedor, mov.description)) continue;
+      if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description)) continue;
 
       let monto: number;
       if (monedaObjetivo === "EUR") {

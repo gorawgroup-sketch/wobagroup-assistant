@@ -54,7 +54,7 @@ test("varios movimientos siguen exigiendo elegir uno explícitamente", () => {
     movimientosAmbiguos: [1, 2].map((n) => ({
       accountId: "cuenta",
       movementId: `movimiento-${n}`,
-      descripcion: `Movimiento ${n}`,
+      descripcion: `Esso combustible ${n}`,
       monto: -87.9,
       moneda: "EUR",
       fecha: "2026-08-30",
@@ -65,4 +65,13 @@ test("varios movimientos siguen exigiendo elegir uno explícitamente", () => {
   const textos = construirTecladoGasto(propuesta, opciones).flat().map((b) => b.text);
   assert.ok(textos.some((t) => t.includes("Conciliar con #1")));
   assert.ok(textos.some((t) => t.includes("Conciliar con #2")));
+});
+
+test('no ofrece crear sin cargo compatible ni con restaurante para un taxi',()=>{
+ for(const descripcion of ['', 'Osteria Del Lovo']){
+  const p={...propuestaBase(),proveedor:'Bolt',concepto:'Taxi',hayMovimientoBancario:true,
+   movimientosAmbiguos:descripcion?[{accountId:'a',movementId:'m',descripcion,monto:-15,moneda:'EUR',fecha:'2026-09-10'}]:[]};
+  const botones=construirTecladoGasto(p,opcionesTecladoDesdePropuesta(p)).flat();
+  assert.equal(botones.some(b=>/gasto_toggle:propuesta:(crear|nuevo)/.test(b.callback_data??'')),false);
+ }
 });
