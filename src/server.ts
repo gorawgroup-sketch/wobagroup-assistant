@@ -132,6 +132,8 @@ import { handleRegistroManualCashflowCallback } from "../core/google/registroMan
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, iniciarMantenimientoEstadoCerebro, obtenerDiagnosticoPanelCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
+import { listarPolizas, actualizarPoliza } from "../core/seguros/polizaRegistroSheet";
+import { formatDateLocal } from "../core/utils/dateFormat";
 import { detalleEdicionesInciertas, ejecutarSolicitudResolver } from "../core/cerebro/resolverIncidencias";
 import {
   registrarEjecucionAuditoriaProgramada,
@@ -619,6 +621,55 @@ app.post("/api/cerebro/conexiones/arreglar", async (req: Request, res: Response)
 });
 
 app.options("/api/cerebro/conexiones/arreglar", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
+ * Marca una póliza del registro de seguros (core/seguros/polizaRegistroSheet.ts,
+ * ver docs/wobi-seguros.md §19) como pagada — la única escritura que este
+ * módulo expone al front por ahora. Igual que conexiones/arreglar: solo la
+ * key maestra, nunca un token temporal, porque es una escritura real. No
+ * pasa por despacharCallbackQuery/chat-boton (ese pipeline es solo para
+ * botones dentro del chat) — mismo patrón que ConexionesContenido en el
+ * front: endpoint propio, fetch directo.
+ */
+app.post("/api/cerebro/seguros/marcar-pago", async (req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
+  res.set("Access-Control-Allow-Methods", "POST");
+
+  if (!exigeKeyMaestra(req, res)) return;
+
+  const id = typeof req.body?.id === "string" ? req.body.id : "";
+  if (!id) {
+    res.status(400).json({ error: "Falta 'id'." });
+    return;
+  }
+
+  try {
+    const polizas = await listarPolizas();
+    const poliza = polizas.find((p) => p.id === id);
+    if (!poliza) {
+      res.status(404).json({ error: `No existe ninguna póliza con id "${id}".` });
+      return;
+    }
+
+    const actualizada = { ...poliza, estadoPago: "pagado" as const, ultimaVerificacion: formatDateLocal(new Date()) };
+    await actualizarPoliza(poliza.rowIndex, actualizada);
+    invalidarEstadoCerebro(["seguros"]);
+    publicarCambioCerebro(`seguros:${id}`);
+    res.json({ poliza: actualizada });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[api/cerebro/seguros/marcar-pago] Error:", message);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.options("/api/cerebro/seguros/marcar-pago", (_req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, Content-Type");
   res.set("Access-Control-Allow-Methods", "POST");
