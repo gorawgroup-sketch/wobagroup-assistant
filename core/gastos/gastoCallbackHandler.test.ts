@@ -594,3 +594,12 @@ test("Aprobar selección nunca deja un «Aplicando…» abierto ni el resultado 
   assert.ok(final.cuentaTags?.includes("Elena Ejemplo"));
   assert.ok(final.cuentaTags?.includes("taxi"));
 });
+
+test("una propuesta antigua sin fecha no permite aprobar ni reinferir", async () => {
+ const p = { id: "sin-fecha", empresa: "Footprint", proveedor: "Taxi", monto: 12,
+ moneda: "EUR", fecha: "", concepto: "Taxi", rutaLocal: "/tmp/test.pdf", nombreArchivoOriginal: "test.pdf",
+ candidatos: [], lineas: [], chatId: 1, messageId: 2, creadoEn: 3, cuentaId: "viajes" } satisfies PropuestaGasto;
+ await assert.rejects(prepararPropuestaFinalGasto(p,{empresa:"Footprint",concepto:p.concepto},{
+ inferirCuenta: async()=>{throw new Error("No debe consultar ni mutar");}, combinarTags: combinarTagsGastoAprendidos,
+ }),/Falta fecha documental verificable/);
+});

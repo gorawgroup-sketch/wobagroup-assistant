@@ -1,3 +1,4 @@
+import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
@@ -333,6 +334,9 @@ export async function prepararPropuestaFinalGasto(
     combinarTags: combinarTagsGastoAprendidos,
   }
 ): Promise<PropuestaGasto> {
+  if (!esFechaDocumentoValida(propuesta.fecha)) {
+    throw new Error("Falta fecha documental verificable: no se puede crear un gasto con la comprobación de duplicados incompleta.");
+  }
   const concepto = cambios.concepto.trim() || propuesta.concepto;
   const proveedorAprendizaje = cambios.proveedor?.trim() || propuesta.proveedor;
   const cambioSemantico =

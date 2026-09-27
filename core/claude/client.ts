@@ -372,7 +372,9 @@ async function buildSystemPromptDinamico(
 
     if (gastoPendiente) {
       const queFalta =
-        gastoPendiente.motivo === "empresa"
+        gastoPendiente.motivo === "fecha"
+          ? "verificar fecha y duplicados mediante correo original, recibos previos y banco (incluidos conciliados); busca esa evidencia antes de pedir datos. No uses hoy ni la fecha del reenvío como fecha del gasto; si ya existe, no crees otro"
+          : gastoPendiente.motivo === "empresa"
           ? "a qué empresa (WOBA, EWORKS o Footprint) pertenece"
           : gastoPendiente.motivo === "proveedor"
             ? "el nombre real y exacto del proveedor que aparece en el comprobante"
