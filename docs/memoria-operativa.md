@@ -72,3 +72,7 @@ Antes de afirmar que no hay cargo para un recibo COP u otra divisa, buscar tambi
 ### Cargos repetidos con un cargo libre exacto
 
 Un movimiento conciliado antiguo con importe igual o con un céntimo de diferencia no prueba que un nuevo recibo sea duplicado. Antes de bloquear, consultar también movimientos pendientes. Cuando hay exactamente un débito bancario libre que coincide en proveedor, moneda, importe y fecha del recibo, ese cargo puede prevalecer sobre coincidencias bancarias meramente probables separadas por más de tres días. Conservar los bloqueos por compra/documento existente, coincidencia bancaria exacta, fechas desconocidas o cercanas y múltiples cargos libres. No desvincular conciliaciones anteriores por parecido ni reutilizar su pago. La selección final debe verificarse en compra y banco.
+
+### Equivalentes explícitos en asuntos con pesos colombianos
+
+Al reutilizar un análisis guardado, recuperar también el importe EUR/USD explícito en el asunto. Los puntos de miles en el importe COP solo se normalizan si el total coincide exactamente con el comprobante ya leído. No inferir tasas ni reinterpretar separadores de la moneda equivalente. Una decisión sin movimiento puede omitir deliberadamente la clasificación contable para ahorrar consultas; su ausencia no prueba un fallo independiente de clasificación. Conservar esa distinción al explicar causas y mantener el mensaje sin leer hasta verificar su resolución.
