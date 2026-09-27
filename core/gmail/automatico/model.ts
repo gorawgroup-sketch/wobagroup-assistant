@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
-export const VERSION_POLITICA = "correo-gastos-v24";
+export const VERSION_POLITICA = "correo-gastos-v25";
 /**
  * La lectura del mensaje es independiente de la política que decide si se
  * crea/adjunta/concilia. Antes ambas compartían VERSION_POLITICA y cada
