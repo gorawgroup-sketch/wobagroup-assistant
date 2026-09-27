@@ -1,4 +1,4 @@
-import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
+import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
@@ -1868,10 +1868,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
               "El correo sigue sin leer. Este botón solo reintenta el cierre."
           ),
           // La decisión ya quedó tomada: la pregunta original desaparece, no queda clickeable sin efecto.
-          () => Promise.all([
-            retirarPreguntaCaducada(callback),
-            sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`),
-          ])
+          () => retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`))
         );
         return;
       } else if (!pendiente.comprobanteConfirmado) {
@@ -1883,10 +1880,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         );
         return;
       }
-      await Promise.all([
-        retirarPreguntaCaducada(callback),
-        sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`),
-      ]).catch(
+      await retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`)).catch(
         (error) => console.error("[gastoCallbackHandler] No se pudo reflejar la decisión de no conciliar (no crítico):", error)
       );
       return;
@@ -1928,10 +1922,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           "⚠️ La conciliación ya quedó confirmada, pero no pude cerrar su registro técnico. " +
             "El correo sigue sin leer. Este botón solo reintenta el cierre; no vuelve a conciliar."
         ),
-        () => Promise.all([
-          retirarPreguntaCaducada(callback),
-          sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`),
-        ])
+        () => retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`))
       );
       return;
     }
@@ -1949,15 +1940,12 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
     // Conciliación exitosa fuera de la cola de correo: la pregunta ya no representa ninguna acción
     // pendiente, desaparece en vez de quedar clickeable sin efecto.
-    await Promise.all([
-      retirarPreguntaCaducada(callback),
-      sendTelegramMessage(
+    await retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(
         pendiente.chatId,
         resultadoConciliacion.nota
           ? `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`
           : `No encontré ningún movimiento bancario sin conciliar que coincida con "${pendiente.descripcionGasto}" — revísalo a mano en Holded si crees que ya debería estar.`
-      ),
-    ]).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la conciliación en Telegram (no crítico):", error));
+      )).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la conciliación en Telegram (no crítico):", error));
     return;
   }
 
@@ -2010,10 +1998,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
               "El correo sigue sin leer. Este botón solo reintenta el cierre."
           ),
           // La decisión ya quedó tomada: la lista de candidatos desaparece, no queda clickeable sin efecto.
-          () => Promise.all([
-            retirarPreguntaCaducada(callback),
-            sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`),
-          ])
+          () => retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`))
         );
         return;
       } else if (!pendiente.comprobanteConfirmado) {
@@ -2025,10 +2010,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         );
         return;
       }
-      await Promise.all([
-        retirarPreguntaCaducada(callback),
-        sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`),
-      ]).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la decisión ambigua (no crítico):", error));
+      await retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `Ok — "${pendiente.descripcionGasto}" queda sin conciliar.`)).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la decisión ambigua (no crítico):", error));
       return;
     }
 
@@ -2061,10 +2043,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           "⚠️ La conciliación ya quedó confirmada, pero no pude cerrar su registro técnico. " +
             "El correo sigue sin leer. Este botón solo reintenta el cierre; no vuelve a conciliar."
         ),
-        () => Promise.all([
-          retirarPreguntaCaducada(callback),
-          sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`),
-        ])
+        () => retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`))
       );
       return;
     }
@@ -2081,10 +2060,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
     // Conciliación exitosa fuera de la cola de correo: la lista de candidatos ya no representa
     // ninguna acción pendiente, desaparece en vez de quedar clickeable sin efecto.
-    await Promise.all([
-      retirarPreguntaCaducada(callback),
-      sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`),
-    ]).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la conciliación ambigua (no crítico):", error));
+    await retirarPreguntaTrasEnviar(callback, () => sendTelegramMessage(pendiente.chatId, `"${pendiente.descripcionGasto}"${resultadoConciliacion.nota}`)).catch((error) => console.error("[gastoCallbackHandler] No se pudo reflejar la conciliación ambigua (no crítico):", error));
     return;
   }
 
