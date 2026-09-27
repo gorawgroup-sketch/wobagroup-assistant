@@ -1,3 +1,4 @@
+import { esFechaDocumentoValida } from "./fechaDocumento";
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
 import {
   verificarDuplicadoGastoEstricto,
@@ -183,6 +184,21 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return "pendiente_datos";
   }
 
+  // No presentar una búsqueda alrededor de hoy como verificación de un recibo sin fecha.
+  if (!esFechaDocumentoValida(datos.fecha)) {
+    await guardarGastoPendienteDatos({
+      chatId, rutaLocal: entrada.rutaLocal, nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+      mimeType: entrada.mimeType, datos, motivo: "fecha", deColaCorreo: entrada.deColaCorreo,
+      origenAdjuntoGmail: entrada.origenAdjuntoGmail, correoOrigen: entrada.correoOrigen,
+    });
+    await sendTelegramMessage(chatId,
+      `🔎 ${datos.proveedor || "Gasto"} · ${datos.monto} ${datos.moneda}: el comprobante no tiene una fecha verificable. ` +
+      `La comprobación de duplicados y banco está pendiente; no se ofrece crear otro gasto. ` +
+      `Hay que contrastar el correo original, los comprobantes anteriores y los movimientos, incluidos los ya conciliados. ` +
+      `No se ha usado la fecha de hoy ni se ha concluido que falte el cargo. La revisión puede retomarse con la fecha documentada sin releer el adjunto.`);
+    return "pendiente_datos";
+  }
+
   const empresa: Empresa = datos.empresaProbable;
   const huellaContenido = await calcularHuellaContenido(entrada.rutaLocal).catch((error) => {
     console.error("[procesarGastoEntrante] No se pudo calcular la huella del comprobante (continúa con otras defensas):", error);
@@ -233,7 +249,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // búsqueda y el importe usado es el del banco. Ante ausencia o ambigüedad,
   // se pregunta y no se crea nada.
   if (politicaLiquidacion && monedaEquivalenteResuelta !== politicaLiquidacion.moneda) {
-    const fechaBusqueda = datos.fecha || new Date().toISOString().slice(0, 10);
+    const fechaBusqueda = datos.fecha;
     const candidatosLiquidacion = await buscarMovimientosPorTipoCambio(
       empresa,
       {
@@ -304,7 +320,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // SOLO para encontrar candidatos, nunca para inventar el importe — ver el comentario de
     // obtenerTasaCambioHistorica en utils/exchangeRate.ts, "esto NUNCA debe usarse para decidir un
     // monto correcto"). Si hay un único cargo real que coincide, ESE es el monto — no un cálculo.
-    const fechaBusquedaFx = datos.fecha || new Date().toISOString().slice(0, 10);
+    const fechaBusquedaFx = datos.fecha;
     const candidatosFx = await buscarMovimientosPorTipoCambio(
       empresa,
       { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor },
@@ -482,7 +498,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       const verificacion = await verificarDuplicadoGastoEstricto(empresa, {
         proveedor: datos.proveedor,
         monto: montoParaHolded,
-        fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+        fecha: datos.fecha,
         moneda: monedaParaHolded,
         numeroDocumento: datos.numeroDocumento,
       });
@@ -868,7 +884,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10), moneda: monedaParaHolded },
+        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded },
         toleranciaMov
       );
       if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };
@@ -888,7 +904,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         // ese no es el correcto.
         const candidatosAprox = await buscarMovimientoAproximado(empresa, {
           monto: montoParaHolded,
-          fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+          fecha: datos.fecha,
           moneda: monedaParaHolded,
           proveedor: datos.proveedor,
         });
@@ -916,7 +932,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           {
             monto: montoParaHolded,
             moneda: monedaParaHolded,
-            fecha: datos.fecha || new Date().toISOString().slice(0, 10),
+            fecha: datos.fecha,
             proveedor: datos.proveedor,
           },
           otrasMonedas
@@ -937,7 +953,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         try {
           movimientoMonedaAlternativa = await buscarMovimientoEnMonedaAlternativa(
             empresa,
-            { monto: montoParaHolded, fecha: datos.fecha || new Date().toISOString().slice(0, 10), proveedor: datos.proveedor },
+            { monto: montoParaHolded, fecha: datos.fecha, proveedor: datos.proveedor },
             otrasMonedas
           );
         } catch (error) {

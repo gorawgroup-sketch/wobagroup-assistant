@@ -23,7 +23,7 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
   name: "reintentar_gasto_pendiente",
   description:
     "Retoma el procesamiento de una factura/gasto que quedó pendiente porque faltaba un dato (la empresa o " +
-    "el proveedor real, el monto/moneda equivalente) o porque falló la verificación estricta de duplicados en Holded. Úsala cuando el usuario responda " +
+    "el proveedor real, la fecha documentada, el monto/moneda equivalente) o porque falló la verificación estricta de duplicados en Holded. Úsala cuando el usuario responda " +
     "en texto libre a esa pregunta pendiente (ej. 'el proveedor es Parking Moraleja', 'son 17.95 USD', 'es de Footprint'). Nunca " +
     "vuelvas a pedir que reenvíen el documento — ya se leyó, solo falta el dato puntual que el usuario acaba " +
     "de dar. Si el dato que falta era la empresa, pásala en 'empresa'. Si era el monto/moneda equivalente, " +
@@ -31,6 +31,7 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
   input_schema: {
     type: "object",
     properties: {
+      fecha: { type: "string", description: "Fecha YYYY-MM-DD verificada en el documento, correo original o vínculo contable; nunca asumir hoy ni tomar un cargo solo por importe." },
       empresa: { type: "string", enum: [...EMPRESAS], description: "La empresa que el usuario acaba de confirmar, si eso era lo que faltaba." },
       proveedor: {
         type: "string",
@@ -58,6 +59,7 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
     }
 
     const datos = { ...pendiente.datos };
+    if (pendiente.motivo === "fecha" && typeof input.fecha === "string") datos.fecha = input.fecha;
     const empresa = typeof input.empresa === "string" ? input.empresa : undefined;
     const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : undefined;
     const montoEquivalente = typeof input.monto_equivalente === "number" ? input.monto_equivalente : undefined;

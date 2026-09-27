@@ -203,7 +203,9 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
     const g = await obtenerGastoPendienteDatosPorChat(chatId);
     if (g) {
       const queFalta =
-        g.motivo === "empresa"
+        g.motivo === "fecha"
+          ? "fecha documentada y comprobación de duplicados"
+          : g.motivo === "empresa"
           ? "empresa"
           : g.motivo === "proveedor"
             ? "proveedor real"
