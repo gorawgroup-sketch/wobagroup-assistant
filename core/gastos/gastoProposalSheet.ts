@@ -661,6 +661,22 @@ export async function actualizarMovimientosAmbiguosPropuestaGasto(id: string, mo
   return true;
 }
 
+export async function actualizarCandidatosPropuestaGasto(id: string, candidatos: PropuestaGasto["candidatos"]): Promise<boolean> {
+  const match = await buscarFilaPropuesta(id);
+  if (!match) return false;
+
+  const sheetId = assertSheetId();
+  const sheets = getClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: sheetId,
+    range: `${TAB_NAME}!K${match.rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[JSON.stringify(candidatos)]] },
+  });
+  return true;
+}
+
 /**
  * Pedido explícito de Carlos: "Corregir clasificación" pasa a ser un
  * ajuste de campos NO consumidor — antes creaba el gasto de inmediato con

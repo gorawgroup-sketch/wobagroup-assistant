@@ -1,3 +1,4 @@
+import { gastoRecurrenteIndependiente } from "../../holded/gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../../gastos/proveedorUber";
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
 import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, tieneCategoriaGastoAprendida,
@@ -399,6 +400,16 @@ export class HoldedAuto {
     }
     const candidatasLibres = candidatosMovimientoAuto(r, e).filter(m => m.estado === "pending" && m.conciliadoCentimos === 0 &&
       Boolean(m.origen) && m.origen !== "manual");
+    const cargoNuevo = candidatasLibres.length === 1 ? candidatasLibres[0] : undefined;
+    if (cargoNuevo && cargoNuevo.fecha === r.fecha && cargoNuevo.moneda === moneda && cargoNuevo.centimos === -importe &&
+        proveedorPareceEnDescripcion(r.proveedor, cargoNuevo.descripcion)) {
+      for (const p of compras.filter(p => e.duplicados.includes(texto(p.id)))) {
+        if (!r.numero || !p.document_number || p.document_number === r.numero || String(p.date).slice(0,10) === r.fecha) continue;
+        const detalle = await this.get(empresa, `/purchases/${idUrl(texto(p.id))}`);
+        if (gastoRecurrenteIndependiente({numeroDocumento:r.numero,fecha:r.fecha}, detalle as Parameters<typeof gastoRecurrenteIndependiente>[1]))
+          e.duplicados = e.duplicados.filter(id => id !== texto(p.id));
+      }
+    }
     // La cuenta contable es opcional. No descargar el catálogo ni hasta 50 compras completas cuando
     // ya sabemos que el correo no puede automatizarse por proveedor, duplicado o movimiento bancario.
     if (!e.contacto?.id || e.duplicados.length || candidatasLibres.length !== 1) {

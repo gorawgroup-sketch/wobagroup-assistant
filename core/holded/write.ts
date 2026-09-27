@@ -1,10 +1,11 @@
+import { gastoRecurrenteIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import { estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
+import { holdedGet, estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
 import { obtenerPlanContable } from "./accounting";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
@@ -1485,6 +1486,20 @@ export async function verificarDuplicadoGastoEstricto(
     buscarGastoSimilar(empresa, criterios),
     buscarMovimientosYaConciliadosComoDuplicado(empresa, criterios),
   ]);
+  // Solo investigar esta excepción cuando hay documentos diferentes en otros días.
+  const revisables = compras.filter(c => c.fecha !== criterios.fecha && c.documentNumber && criterios.numeroDocumento && c.documentNumber !== criterios.numeroDocumento);
+  if (revisables.length && !movimientosConciliados.length) {
+    const libres = (await buscarMovimientoSimilar(empresa, { ...criterios, fechaExacta: true }, 0.001)).filter(m =>
+      m.monto < 0 && m.fecha === criterios.fecha && proveedorPareceEnDescripcion(criterios.proveedor, m.descripcion));
+    if (libres.length === 1) {
+      const separados = new Set<string>();
+      for (const c of revisables) {
+        const detalle = await holdedGet(empresa, `/purchases/${encodeURIComponent(c.id)}`) as Parameters<typeof gastoRecurrenteIndependiente>[1];
+        if (gastoRecurrenteIndependiente(criterios, detalle)) separados.add(c.id);
+      }
+      return { compras: compras.filter(c => !separados.has(c.id)), movimientosConciliados };
+    }
+  }
   return { compras, movimientosConciliados };
 }
 
@@ -4523,6 +4538,7 @@ export function movimientoCompatibleConGasto(proveedor: string, concepto: string
   const a = inferirTagsCategoria(concepto, proveedor);
   const b = inferirTagsCategoria(descripcion, "");
   // Categoría compatible permite nombres distintos; no demuestra por sí sola identidad.
+  if (a.includes("alimentacion") && b.includes("hospedaje") && inferirTagsCategoria("", proveedor).includes("hospedaje") && proveedorPareceEnDescripcion(proveedor, descripcion)) return true;
   if (a.length && b.length) return a.some(t => b.includes(t));
   const marca = (texto: string) => normalizar(texto).match(/\b(uber|bolt)\b/)?.[1];
   const mismaMarca = marca(proveedor) && marca(proveedor) === marca(descripcion);
@@ -4531,7 +4547,7 @@ export function movimientoCompatibleConGasto(proveedor: string, concepto: string
 
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string },
+  criterios: { monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string; fechaExacta?: boolean },
   toleranciaEur: number = TOLERANCIA_MONTO
 ): Promise<MovimientoBancarioCandidato[]> {
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
@@ -4546,8 +4562,8 @@ export async function buscarMovimientoSimilar(
 
   for (const cuenta of cuentas) {
     const params = new URLSearchParams({
-      start_date: formatDateLocal(desde),
-      end_date: formatDateLocal(hasta),
+      start_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde),
+      end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
       limit: "100",
     });
     const data = (await holdedWriteCall(
@@ -4555,6 +4571,7 @@ export async function buscarMovimientoSimilar(
       "GET",
       `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
     )) as {
+      has_more?: boolean;
       items?: Array<{
         id: string;
         description?: string;
@@ -4563,10 +4580,13 @@ export async function buscarMovimientoSimilar(
         accounting_amount?: string | number | null;
         booking_date?: string;
         status?: string;
+        reconciled_amount?: string | number;
       }>;
     };
 
+    if (criterios.fechaExacta && data.has_more) throw new Error("Consulta bancaria incompleta; no se descartan duplicados.");
     for (const mov of data.items ?? []) {
+      if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
       if (estaConciliado(mov.status)) continue;
       if (criterios.proveedor && !movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "")) continue;
 
@@ -4625,6 +4645,10 @@ export function proveedorPareceEnDescripcion(proveedor: string, descripcion: str
   const d = normalizar(descripcion).trim();
   if (p.length < 3 || d.length < 3) return false;
   if (d.includes(p) || p.includes(d)) return true;
+  // El adquirente puede truncar el comercio después del asterisco. Exigir
+  // varios términos y un prefijo largo evita aceptar una palabra genérica sola.
+  const comercio = d.includes("*") ? d.split("*").at(-1)!.trim() : "";
+  if (comercio.length >= 8 && comercio.split(/\s+/).length >= 2 && p.startsWith(comercio)) return true;
   return textosParecidos(proveedor, descripcion);
 }
 

@@ -1,6 +1,7 @@
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
+  actualizarCandidatosPropuestaGasto,
   actualizarFlagMovimientoBancarioGasto,
   actualizarMovimientosAmbiguosPropuestaGasto,
   type PropuestaGasto,
@@ -106,8 +107,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
   // Renovar botones no omite la búsqueda de duplicados cuando no hay cargo válido.
   if (!propuesta.hayMovimientoBancario && !propuesta.movimientosAmbiguos?.length && esFechaDocumentoValida(propuesta.fecha)) {
     const revision = await verificarDuplicadoGastoEstricto(propuesta.empresa, propuesta);
-    // No generar botones con índices que no estén persistidos en la propuesta.
-    if (revision.compras.length) console.info("[reenviarPropuestaGasto] Hay compras que revisar antes de crear", { cantidad: revision.compras.length });
+    if (!await actualizarCandidatosPropuestaGasto(propuesta.id, revision.compras)) throw new Error("No se pudo guardar la revisión de duplicados.");
+    propuesta = { ...propuesta, candidatos: revision.compras };
   }
 
   const teclado = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta));

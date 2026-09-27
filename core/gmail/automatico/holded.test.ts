@@ -552,3 +552,19 @@ test("Uber Eats reuses an authorized existing duplicate without POST contact", a
   const ev = await e.adapter.evidencias(e.c,e.r);
   assert.equal(ev.contacto?.id,"a"); assert.equal(ev.contacto?.exacto,true); assert.equal(e.posts.length,0);
 });
+
+test('recurring receipt with its own exact free charge does not inherit the prior paid purchase duplicate', async()=>{
+ const e=escenario();e.r.numero='NEW123';
+ const old={...e.compra,id:'previa',document_number:'OLD456',date:'2026-09-17',payments_pending:'0,00',payments_detail:[{date:'2026-09-17'}]};
+ const request:typeof fetch=async(input,init)=>{
+  const path=new URL(String(input)).pathname;
+  if(path.endsWith('/purchases'))return new Response(JSON.stringify({items:[old],has_more:false}),{status:200});
+  if(path.endsWith('/purchases/previa'))return new Response(JSON.stringify(old),{status:200});
+  return e.request(input,init);
+ };
+ const adapter=new HoldedAuto(e.memoria,request);
+ let ev=await adapter.evidencias(e.c,e.r);assert.deepEqual(ev.duplicados,[]);
+ old.document_number='NEW123';ev=await adapter.evidencias(e.c,e.r);assert.ok(ev.duplicados.includes('previa'));
+ old.document_number='OLD456';old.payments_pending='20,00';ev=await adapter.evidencias(e.c,e.r);assert.ok(ev.duplicados.includes('previa'));
+ assert.equal(e.posts.length,0);
+});
