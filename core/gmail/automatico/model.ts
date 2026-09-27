@@ -201,7 +201,20 @@ export function monedaRegistroPlanAuto(plan: PlanAuto): MonedaDocumentoAuto {
         plan.movimiento.moneda === plan.recibo.moneda && Number.isSafeInteger(plan.totalCentimos) && plan.totalCentimos > 0) {
       return { moneda: plan.recibo.moneda, monto: plan.totalCentimos / 100 };
     }
-    return monedaDocumentoAuto(plan.recibo);
+    const documento = monedaDocumentoAuto(plan.recibo);
+    const movimiento = plan.movimiento;
+    // El equivalente contable del cargo seleccionado prevalece sobre una
+    // cotización de mercado: conserva el precio nativo y evita saldos por FX.
+    // Solo para un débito que coincide exactamente con el documento nativo.
+    if (documento.moneda !== "EUR" && movimiento.moneda === documento.moneda &&
+        Number.isSafeInteger(movimiento.centimos) && movimiento.centimos < 0 &&
+        Math.round(documento.monto * 100) === -movimiento.centimos &&
+        movimiento.monedaContable === "EUR" &&
+        Number.isSafeInteger(movimiento.contabilidadCentimos) && movimiento.contabilidadCentimos! < 0) {
+      const tasaCambio = Number((movimiento.centimos / movimiento.contabilidadCentimos!).toFixed(6));
+      if (Number.isFinite(tasaCambio) && tasaCambio > 0) return { ...documento, tasaCambio };
+    }
+    return documento;
   }
   if (!/^[A-Z]{3}$/.test(equivalente.moneda) || !Number.isSafeInteger(equivalente.montoCentimos) ||
       equivalente.montoCentimos <= 0) throw new Error("equivalente_bancario_invalido");

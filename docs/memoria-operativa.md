@@ -62,3 +62,9 @@ Para una entrega interrumpida de `colacorreo_siguiente`, consultar automáticame
 
 ### Regla permanente de búsqueda multimoneda (25 septiembre 2026)
 Antes de afirmar que no hay cargo para un recibo COP u otra divisa, buscar también las monedas de las cuentas reales de la misma empresa, aunque exista una cuenta en la moneda original. Comparar proveedor, fecha/ventana permitida e importe usando una referencia histórica, sin convertir COP a EUR por paridad ni pedir al usuario calcular el cambio. Si la fuente histórica v1 no cubre la moneda (404), consultar Frankfurter v2 por fecha; para COP usar la cotización inversa precisa. No reemplazar una fecha histórica por una tasa actual. Reutilizar la cotización por fecha/par y limitar las consultas. El importe contable final procede del movimiento bancario real, que debe estar libre y ser inequívoco. Conservar comprobante original, prevención de duplicados y borrador para conversión manual a ticket. Las coincidencias ambiguas no se fuerzan.
+
+### Equivalente contable del cargo nativo (27 septiembre)
+- Si el documento y el débito bancario coinciden exactamente en moneda e importe nativos, usar el equivalente contable EUR del mismo movimiento para fijar el cambio del documento. Conservar el precio original y el soporte; no usar una cotización de mercado cuando ya existe esta evidencia bancaria.
+- No deducir la tasa de ingresos, importes ausentes, céntimos no enteros o una moneda contable distinta. La búsqueda y autorización de la coincidencia siguen siendo obligatorias.
+- «Pagado» en la compra no demuestra conciliación completa: comprobar también importe y estado del movimiento. Una compra existente pendiente se debe recuperar, nunca duplicar ni declarar completada por existir.
+- Las correcciones en Holded conservan el borrador, el soporte y la identidad del pago. No añadir pagos ordinarios para ocultar diferencias de conversión.
