@@ -2091,7 +2091,7 @@ export function combinarTagsGastoAprendidos(
   // como etiquetas personales en el flujo uno a uno. Una persona leída del comprobante
   // sigue teniendo prioridad y no depende de esta lista.
   const etiquetasPersonaAprendidas = new Set([
-    "yanessy", "simontalloen", "simon", "alejandra", "nuria", "nicolasgomez",
+    "yanessy", "simontalloen", "simon", "alejandroflorez", "alejandra", "nuria", "nicolasgomez",
     "yesseniadosprazeres", "carlosg", "jorge", "jorgejcome", "kelly", "kellycorreales", "davids",
   ]);
   // El contexto del correo puede demostrar quién realizó el gasto, pero no

@@ -46,6 +46,7 @@ const HEADERS = [
   "hayMovimientoBancario",
   "movimientosAmbiguosJSON",
   "huellaContenido",
+  "personaAsociada",
 ];
 
 export interface PropuestaGasto {
@@ -156,6 +157,7 @@ export interface PropuestaGasto {
   movimientosAmbiguos?: MovimientoBancarioCandidato[];
   /** SHA-256 de los bytes del comprobante, para deduplicar reenvíos del mismo archivo. */
   huellaContenido?: string;
+  personaAsociada?: string;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -192,13 +194,22 @@ async function ensureTab(): Promise<number> {
   const existing = meta.data.sheets?.find((s) => s.properties?.title === TAB_NAME);
 
   if (existing?.properties?.sheetId != null) {
-    tabGridId = existing.properties.sheetId;
+    const existingId = existing.properties.sheetId;
+    if ((existing.properties.gridProperties?.columnCount ?? 0) < HEADERS.length) {
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId: sheetId, requestBody: {
+        requests: [{ updateSheetProperties: { properties: { sheetId: existingId,
+          gridProperties: { columnCount: HEADERS.length } }, fields: "gridProperties.columnCount" } }],
+      } });
+    }
+    await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AA1`,
+      valueInputOption: "RAW", requestBody: { values: [["personaAsociada"]] } });
+    tabGridId = existingId;
     return tabGridId;
   }
 
   const addResp = await sheets.spreadsheets.batchUpdate({
     spreadsheetId: sheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true } } }] },
+    requestBody: { requests: [{ addSheet: { properties: { title: TAB_NAME, hidden: true, gridProperties: { columnCount: HEADERS.length } } } }] },
   });
 
   const newSheetId = addResp.data.replies?.[0]?.addSheet?.properties?.sheetId;
@@ -208,7 +219,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:Z1`,
+    range: `${TAB_NAME}!A1:AA1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -302,6 +313,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     hayMovimientoBancario: row[23] === "" || row[23] == null ? undefined : row[23] === true || row[23] === "true",
     movimientosAmbiguos,
     huellaContenido: row[25] ? String(row[25]) : undefined,
+    personaAsociada: row[26] ? String(row[26]) : undefined,
   };
 }
 
@@ -333,6 +345,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.hayMovimientoBancario === undefined ? "" : p.hayMovimientoBancario ? "true" : "false",
     p.movimientosAmbiguos && p.movimientosAmbiguos.length > 0 ? JSON.stringify(p.movimientosAmbiguos) : "",
     p.huellaContenido ?? "",
+    p.personaAsociada ?? "",
   ];
 }
 
@@ -348,7 +361,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:Z10000`,
+    range: `${TAB_NAME}!A2:AA10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
 
@@ -425,7 +438,7 @@ async function siguienteFilaLibre(): Promise<number> {
   // última fila con algo, en cualquier columna del rango".
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:Z`,
+    range: `${TAB_NAME}!A:AA`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
   const rows = resp.data.values ?? [];
@@ -465,7 +478,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:Z${fila}`,
+        range: `${TAB_NAME}!A${fila}:AA${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(propuesta)] },
       });
@@ -732,7 +745,7 @@ export async function restaurarPropuestaGasto(propuesta: PropuestaGasto): Promis
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:Z${fila}`,
+        range: `${TAB_NAME}!A${fila}:AA${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(restaurada)] },
       });

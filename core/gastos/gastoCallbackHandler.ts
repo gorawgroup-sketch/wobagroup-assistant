@@ -354,7 +354,7 @@ export async function prepararPropuestaFinalGasto(
     const sugerencia = await dependencias.inferirCuenta(cambios.empresa, {
       proveedor: proveedorAprendizaje,
       concepto,
-      personaAsociada: cambios.personaAsociada,
+      personaAsociada: cambios.personaAsociada ?? propuesta.personaAsociada,
       contextoDeViaje: cambios.contextoDeViaje,
       reciboSimplificado: cambios.reciboSimplificado,
     });
@@ -369,7 +369,7 @@ export async function prepararPropuestaFinalGasto(
   const cuentaTags = dependencias.combinarTags(
     concepto,
     proveedorAprendizaje,
-    cambios.personaAsociada,
+    cambios.personaAsociada ?? propuesta.personaAsociada,
     tagsAprendidos
   );
   return {
@@ -378,6 +378,7 @@ export async function prepararPropuestaFinalGasto(
     concepto,
     cuentaId,
     cuentaTags,
+    personaAsociada: cambios.personaAsociada ?? propuesta.personaAsociada,
   };
 }
 

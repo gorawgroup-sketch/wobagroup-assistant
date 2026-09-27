@@ -72,3 +72,10 @@ Antes de afirmar que no hay cargo para un recibo COP u otra divisa, buscar tambi
 ### Cargos repetidos con un cargo libre exacto
 
 Un movimiento conciliado antiguo con importe igual o con un céntimo de diferencia no prueba que un nuevo recibo sea duplicado. Antes de bloquear, consultar también movimientos pendientes. Cuando hay exactamente un débito bancario libre que coincide en proveedor, moneda, importe y fecha del recibo, ese cargo puede prevalecer sobre coincidencias bancarias meramente probables separadas por más de tres días. Conservar los bloqueos por compra/documento existente, coincidencia bancaria exacta, fechas desconocidas o cercanas y múltiples cargos libres. No desvincular conciliaciones anteriores por parecido ni reutilizar su pago. La selección final debe verificarse en compra y banco.
+
+### Equivalentes explícitos en asuntos con pesos colombianos
+
+Al reutilizar un análisis guardado, recuperar también el importe EUR/USD explícito en el asunto. Los puntos de miles en el importe COP solo se normalizan si el total coincide exactamente con el comprobante ya leído. No inferir tasas ni reinterpretar separadores de la moneda equivalente. Una decisión sin movimiento puede omitir deliberadamente la clasificación contable para ahorrar consultas; su ausencia no prueba un fallo independiente de clasificación. Conservar esa distinción al explicar causas y mantener el mensaje sin leer hasta verificar su resolución.
+
+### Responsable del gasto: persistencia hasta Holded
+La persona demostrada por el recibo o remitente original (también dentro de reenvíos) debe persistirse explícitamente en la propuesta, sobrevivir a su almacenamiento y a la aprobación, y acompañar las etiquetas de categoría. No atribuir el gasto al reenviador ni heredar personas de precedentes sin evidencia. La memoria por sí sola no corrige un filtro: el callback debe conservar `personaAsociada`; personas nuevas tampoco dependen del catálogo histórico. Tras reparar gastos existentes, verificar sus etiquetas sin repetir pagos ni conciliaciones. Si falta evidencia, no inventar un responsable.

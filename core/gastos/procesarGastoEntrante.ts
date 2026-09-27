@@ -721,6 +721,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     messageId: 0,
     cuentaId: cuentaSugerida?.accountId,
     cuentaTags: tagsFinal,
+    personaAsociada: datos.personaAsociada,
     deColaCorreo: entrada.deColaCorreo,
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,
