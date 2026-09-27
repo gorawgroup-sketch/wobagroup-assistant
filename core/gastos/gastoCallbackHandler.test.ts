@@ -578,3 +578,19 @@ test("Aprobar selección nunca deja un «Aplicando…» abierto ni el resultado 
   assert.match(seleccion, /enDecisionFinal = true;\s*await dispararDecisionFinalVisible/);
   assert.match(seleccion, /if \(!enDecisionFinal\) await reponerBotones\(sinAplicar\(resto\)\);\s*throw new ErrorTrasEjecucion/);
 });
+
+ test("aprobar conserva la persona del correo aunque no figure en el catálogo histórico", async () => {
+  const propuesta = {
+    id: "persona-persistida", empresa: "Footprint", proveedor: "Uber", monto: 8,
+    moneda: "EUR", fecha: "2026-09-20", concepto: "Traslado taxi", rutaLocal: "/tmp/test.pdf",
+    nombreArchivoOriginal: "test.pdf", candidatos: [], lineas: [], chatId: 1, messageId: 2,
+    creadoEn: 3, cuentaId: "viajes", cuentaTags: ["taxi", "transporte"], personaAsociada: "Elena Ejemplo",
+  } satisfies PropuestaGasto;
+  const final = await prepararPropuestaFinalGasto(propuesta, { empresa: "Footprint", concepto: propuesta.concepto }, {
+    inferirCuenta: async () => { throw new Error("No requiere reinferencia"); },
+    combinarTags: combinarTagsGastoAprendidos,
+  });
+  assert.equal(final.personaAsociada, "Elena Ejemplo");
+  assert.ok(final.cuentaTags?.includes("Elena Ejemplo"));
+  assert.ok(final.cuentaTags?.includes("taxi"));
+});
