@@ -202,3 +202,24 @@ test("importe bancario explícito en misma moneda exige movimiento único y regi
   e.movimientos.push({...e.movimientos[0],id:'otro'});
   assert.equal(evaluarAuto(correoFixture(),analisisFixture(r),r,e,configFixture).apto,false);
 });
+
+test("el documento nativo usa el equivalente contable del cargo exacto, no la tasa de mercado", async () => {
+  const { monedaRegistroPlanAuto } = await import('./model');
+  const r = {...reciboFixture(), moneda:'USD', monto:120};
+  const e = evidenciaFixture();
+  e.movimientos[0] = {...e.movimientos[0], moneda:'USD', centimos:-12000,
+    monedaContable:'EUR', contabilidadCentimos:-10345};
+  const d = evaluarAuto(correoFixture(), analisisFixture(r), r, e, configFixture);
+  assert.equal(d.apto, true);
+  if (!d.apto) return;
+  const doc = monedaRegistroPlanAuto(d.plan);
+  assert.deepEqual(doc, {moneda:'USD', monto:120, tasaCambio:1.159981});
+  assert.equal(Math.round(doc.monto / doc.tasaCambio! * 100), 10345);
+  for (const cambio of [
+    {contabilidadCentimos:0}, {contabilidadCentimos:10345},
+    {contabilidadCentimos:NaN}, {contabilidadCentimos:-10345.5},
+    {monedaContable:'GBP'}, {centimos:-11900}, {moneda:'EUR'},
+  ]) {
+    assert.equal(monedaRegistroPlanAuto({...d.plan, movimiento:{...d.plan.movimiento,...cambio}}).tasaCambio, undefined);
+  }
+});
