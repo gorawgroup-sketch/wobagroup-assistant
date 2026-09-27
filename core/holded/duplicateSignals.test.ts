@@ -233,3 +233,22 @@ test("Uber 9.89 libre exacto prevalece sobre 9.83 conciliado probable, no sobre 
   const mismoImporte={...probable,monto:9.89};
   assert.deepEqual(priorizarCargoLibreExacto([mismoImporte],new Set(["a/1"]),9.89),[mismoImporte]);
 });
+
+test("un cargo libre único del recibo distingue otro cargo antiguo por el mismo importe", () => {
+  const criterios = { proveedor: "Uber", monto: 4.25, moneda: "EUR", fecha: "2026-06-23" };
+  const libre = { id: "nuevo", origin: "bankin", description: "Uber Pending", amount: "-4.25", currency: "EUR", booking_date: criterios.fecha, status: "pending", reconciled_amount: "0" };
+  assert.equal(esCargoLibreExactoParaDuplicado(libre, criterios), true);
+  for (const monto of [4.24, 4.25]) {
+    const antiguo = { nivel: "probable" as const, monto, moneda: "EUR", fecha: "2026-06-08" };
+    const aplicar = (items: typeof antiguo[], ids = new Set(["cuenta/nuevo"])) => priorizarCargoLibreExacto(items, ids, criterios.monto, criterios.moneda, criterios.fecha);
+    assert.deepEqual(aplicar([antiguo]), []);
+    assert.deepEqual(aplicar([antiguo], new Set()), [antiguo]);
+    assert.deepEqual(aplicar([antiguo], new Set(["a", "b"])), [antiguo]);
+    for (const fecha of [criterios.fecha, "2026-06-22", "2026-06-20", "invalida"]) {
+      const ambiguo = { ...antiguo, fecha };
+      assert.deepEqual(aplicar([ambiguo]), [ambiguo]);
+    }
+    const exacto = { ...antiguo, nivel: "exacta" as const };
+    assert.deepEqual(priorizarCargoLibreExacto([exacto], new Set(["a"]), 4.25, "EUR", criterios.fecha), [exacto]);
+  }
+});

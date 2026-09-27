@@ -1474,7 +1474,7 @@ export async function buscarMovimientosYaConciliadosComoDuplicado(
     return encontrados;
   });
 
-  return priorizarCargoLibreExacto(porCuenta.flat(), libresExactos, criterios.monto, criterios.moneda).sort((a, b) => (a.nivel === b.nivel ? a.fecha.localeCompare(b.fecha) : a.nivel === "exacta" ? -1 : 1));
+  return priorizarCargoLibreExacto(porCuenta.flat(), libresExactos, criterios.monto, criterios.moneda, criterios.fecha).sort((a, b) => (a.nivel === b.nivel ? a.fecha.localeCompare(b.fecha) : a.nivel === "exacta" ? -1 : 1));
 }
 
 export async function verificarDuplicadoGastoEstricto(
