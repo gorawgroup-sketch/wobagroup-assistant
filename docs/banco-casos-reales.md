@@ -18,3 +18,7 @@ Un caso con `riesgoConocido` documenta un comportamiento actual que no es el des
 
 ## Decisiones del propietario registradas
 - **2026-09-28 — «Crear (sin conciliar)» restaurado.** Desde #204 (27/09) una propuesta de ticket no ofrecía crear sin un cargo compatible; antes sí (6 de 15 compras creadas por Wobi en septiembre no tenían pago). Ahora «Crear (sin conciliar)» solo exige fecha documental válida y la comprobación de duplicados al aprobar; «Crear y conciliar» sigue exigiendo un cargo utilizable y las categorías contradictorias siguen impidiendo conciliar. Caso: `sin-cargo-se-puede-crear-sin-conciliar`.
+
+## Guardarraíles automáticos (`core/guardarrailes/`)
+- **`tragarErrores.test.ts` (ratchet):** falla si aparece un NUEVO «error tragado con valor por defecto» (`.catch(() => [])`, `catch { return undefined }`…) en los módulos que deciden con lecturas de Holded. La línea base (`lineaBase.json`, 41 sitios heredados) solo puede bajar. Caso real: con Holded en 502/503 se asumió «solo EUR».
+- **`tecladoSinCallejones.test.ts`:** recorre todas las combinaciones de estado de una propuesta (sin cargo, cargo compatible, por confirmar, aprendido, contradictorio; con y sin gastos de Holded, correo y fecha) y exige (1) al menos una salida accionable y (2) que si hay un cargo utilizable y fecha válida exista «Crear» o «Crear y conciliar» (tras restaurar «Crear (sin conciliar)», con fecha válida siempre hay una vía de crear). Caso real: «encontré el cargo» sin ningún botón de crear.
