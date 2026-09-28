@@ -71,9 +71,15 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
   name: "reenviar_botones_propuesta_gasto",
   description:
     "Vuelve a mostrar, en un mensaje NUEVO al final del chat, los botones reales (✅ Crear / ✅ Crear y " +
-    "conciliar / ❌ Cancelar / etc.) de una propuesta de gasto que sigue pendiente — úsala cuando el usuario " +
+    "conciliar / ❌ Cancelar / etc.) de una propuesta de gasto que sigue pendiente. En este sistema «propuesta» " +
+    "SIEMPRE es una propuesta de gasto (un ticket/factura detectado que espera decisión), nunca un presupuesto de " +
+    "venta: si el usuario dice «renueva / reenvía / vuelve a mandar / muestra de nuevo los botones de la propuesta " +
+    "de X» o «no me salen los botones de X», llama a esta herramienta de inmediato pasando X en 'cual' (proveedor, " +
+    "parte del nombre, número de la lista o monto) — no pidas más contexto ni preguntes si es una propuesta de venta. " +
+    "También úsala cuando el usuario " +
     "responda en TEXTO LIBRE para aprobar/crear/cancelar esa propuesta (ej. 'créalo', 'sí, créalo y concilia', " +
-    "'cancela ese gasto') en vez de tocar los botones del mensaje original. NUNCA crea/cancela/concilia nada " +
+    "'cancela ese gasto') en vez de tocar los botones del mensaje original. Al renovar, el cargo bancario se vuelve a " +
+    "buscar en Holded en vivo. NUNCA crea/cancela/concilia nada " +
     "por sí sola — esas escrituras en Holded siempre requieren que el usuario toque el botón real (mismo " +
     "criterio que el resto del sistema), así que después de llamar a esta tool dile al usuario que toque el " +
     "botón que corresponde a lo que pidió, ya renovado al final del chat. Nunca digas que no hay forma de " +
@@ -87,7 +93,7 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
       cual: {
         type: "string",
         description:
-          "Solo si hay VARIAS propuestas pendientes: cuál quiere el usuario, tal como lo haya dicho — el número " +
+          "Cuál propuesta, cuando el usuario la nombra (ej. «JUST B CUZ») o si hay VARIAS pendientes: tal como lo haya dicho — el número " +
           "de la lista que se le mostró (ej. '2'), el nombre del proveedor o parte de él (ej. 'Chen Jin', " +
           "'AEAT'), o el monto (ej. '8,50'). Omite este campo si solo hay una propuesta pendiente, o si el " +
           "usuario todavía no dijo cuál.",
