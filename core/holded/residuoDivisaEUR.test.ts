@@ -1,0 +1,11 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import{detectarResiduoDivisaEUR}from'./residuoDivisaEUR';
+const compra={currency:'COP',currency_change:'4000',total:'20000,00',payments_total:'19920,00',payments_pending:'80,00',payments_detail:[{amount:'4,98',bank_id:'main-test',date:'2026-01-10'}]};
+const banco={status:'reconciled',currency:'EUR',amount:'-4.98',reconciled_amount:'-4.98'};
+const detectar=(p=compra,b=banco)=>detectarResiduoDivisaEUR(p,b,'main-test','2026-01-10');
+test('detecta residuo COP/EUR en euros sin exigir accounting_amount',()=>assert.equal(detectar(),0.02));
+test('saldo cero no propone otro ajuste',()=>assert.equal(detectar({...compra,payments_pending:'0,00'}),undefined));
+test('no confunde cargo parcial, libre o positivo con cambio',()=>{for(const b of [{...banco,status:'partial'},{...banco,status:'pending'},{...banco,reconciled_amount:'-0.02'},{...banco,amount:'4.98',reconciled_amount:'4.98'}])assert.equal(detectar(compra,b),undefined)});
+test('requiere único pago propio por cuenta fecha e importe',()=>{for(const p of [{...compra,payments_detail:[]},{...compra,payments_detail:[...compra.payments_detail,...compra.payments_detail]},{...compra,payments_detail:[{...compra.payments_detail[0],bank_id:'other'}]},{...compra,payments_detail:[{...compra.payments_detail[0],date:'2026-01-11'}]},{...compra,payments_detail:[{...compra.payments_detail[0],amount:'4,90'}]}])assert.equal(detectar(p),undefined)});
+test('rechaza saldo grande, suma inconsistente y tipo de cambio ausente',()=>{for(const p of [{...compra,payments_pending:'800,00',payments_total:'19200,00'},{...compra,payments_pending:'60,00'},{...compra,currency_change:''},{...compra,currency_change:'2000'},{...compra,currency:'EUR'}])assert.equal(detectar(p),undefined)});
+test('redondea el límite contable al céntimo y nunca a unidades COP',()=>assert.equal(detectar({...compra,total:'24000,00',payments_total:'23880,00',payments_pending:'120,00',payments_detail:[{...compra.payments_detail[0],amount:'5,97'}]},{...banco,amount:'-5.97',reconciled_amount:'-5.97'}),0.03));

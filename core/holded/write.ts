@@ -1,3 +1,4 @@
+import { detectarResiduoDivisaEUR } from "./residuoDivisaEUR";
 import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConciliacionCompra";
 import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
@@ -5518,6 +5519,15 @@ async function inspeccionarConciliacionRegistrada(
           registro.accountId,
           registro.fechaAproximada
         );
+        const residuoEUR = detectarResiduoDivisaEUR(compra, movimiento, registro.accountId, registro.fechaAproximada);
+        if (!elegible && residuoEUR !== undefined) {
+          ajusteCambioDivisa = {
+            estado: "requiere_revision", monto: residuoEUR,
+            motivo: "El cargo bancario está conciliado y el pago de esta compra está confirmado. " +
+              "Falta únicamente aplicar en el gasto Añadir pago → Ajustar cambio de divisa. " +
+              "La API pública no expone ese ajuste específico; no se sustituye por otro cargo ni por un pago normal.",
+          };
+        }
         if (elegible) {
           ajusteCambioDivisa = opciones.permitirAjusteCambioAutomatico === false
             ? {
@@ -5555,7 +5565,11 @@ async function inspeccionarConciliacionRegistrada(
     movimientoParcial: movimientoParcial || undefined,
     pendienteEnMovimiento,
   };
-  if (ok) return { estado: "verificada", resultado };
+  // Un cargo propio confirmado con residuo demostrado no es un POST incierto.
+  // Se conserva ok=false y el saldo para impedir cerrar el correo antes del ajuste.
+  if (ok || (pagoDelDocumentoConfirmado && !movimientoParcial && ajusteCambioDivisa?.estado === "requiere_revision")) {
+    return { estado: "verificada", resultado };
+  }
   if (estaConciliado(movimiento?.status)) return { estado: "ocupada", resultado };
   return { estado: "libre", resultado };
 }

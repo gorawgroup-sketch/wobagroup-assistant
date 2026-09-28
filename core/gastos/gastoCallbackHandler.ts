@@ -797,6 +797,7 @@ async function ofrecerEleccionMovimientosAmbiguos(
 async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: string): Promise<ResultadoIntentarConciliar | undefined> {
   const estado = await recuperarConciliacionExistenteCompra(empresa, gastoId);
   if (estado === "nueva") return undefined;
+  if (estado === "cambio_pendiente") return { estado: "incierta", nota: "✅ El cargo bancario y su pago están confirmados. Falta únicamente el ajuste de cambio de divisa en el gasto: Añadir pago → Ajustar cambio de divisa. No se buscarán otros cargos ni se creará un pago normal. Después, Verificar resultado anterior comprobará el saldo cero y cerrará este correo." };
   if (estado === "conciliada") return { estado: "conciliada", nota: "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se creó otro pago." };
   return { estado: "incierta", nota: estado === "revision"
     ? "⚠️ La compra ya tiene pagos. Su conciliación requiere revisión; no se ofrecerán otros cargos ni se añadirán pagos. Verificar solo relee el resultado anterior."
@@ -947,6 +948,9 @@ async function conciliarContraMovimientoEspecifico(
       { permitirMonedaDistinta: movimiento.origenCoincidencia === "tipo_cambio" }
     );
 
+    if (resultado.ajusteCambioDivisa?.estado === "requiere_revision") {
+      return { estado: "incierta", nota: `✅ Cargo bancario conciliado y pago confirmado. Falta ajustar ${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR por cambio de divisa. ${resultado.ajusteCambioDivisa.motivo ?? "Usa Añadir pago → Ajustar cambio de divisa en el gasto."} Después, Verificar resultado anterior comprobará el cierre; no volverá a conciliar.` };
+    }
     if (resultado.ok) {
       if (proveedorParaAprender && movimiento.descripcion) {
         await Promise.all([
@@ -984,11 +988,7 @@ async function conciliarContraMovimientoEspecifico(
             `traté de regularizarlo automáticamente, pero Holded no confirmó el resultado. ` +
             `${resultado.ajusteCambioDivisa.motivo ?? ""} No repito el intento solo — revísalo en Holded ` +
             `(sección Pagos del documento) antes de que lo vuelva a intentar.`
-          : resultado.ajusteCambioDivisa?.estado === "requiere_revision"
-            ? `\n\n🟠 Detecté y demostré un residuo de cambio de divisa de ` +
-              `${resultado.ajusteCambioDivisa.monto.toFixed(2)} EUR; no es una deuda real ni una conciliación parcial. ` +
-              `${resultado.ajusteCambioDivisa.motivo ?? ""} Corrígelo a mano en Holded (sección Pagos del documento).`
-            : resultado.pendienteEnCompra !== undefined
+          : resultado.pendienteEnCompra !== undefined
               ? `\n\n⚠️ OJO: el movimiento quedó conciliado por completo, pero la compra en Holded sigue mostrando ` +
                 `${resultado.pendienteEnCompra.toFixed(2)} pendiente de pago. No cumple todas las pruebas para considerarlo ` +
                 `un residuo automático de cambio; no se regularizó ni se modificó ninguna otra operación. Revísalo a mano ` +

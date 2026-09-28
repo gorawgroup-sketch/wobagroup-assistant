@@ -9,7 +9,7 @@ export function compraTienePagos(compra: CompraHoldedCruda): boolean {
   // Un dato ausente no acredita que sea seguro escribir.
   return Boolean(compra.payments_detail?.length) || !total || !Number.isFinite(numero) || numero !== 0;
 }
-export type RecuperacionCompra = 'nueva' | 'conciliada' | 'revision' | 'incierta';
+export type RecuperacionCompra = 'nueva' | 'conciliada' | 'revision' | 'cambio_pendiente' | 'incierta';
 /** Recupera SOLO operaciones registradas para esta compra. Nunca busca otro cargo ni escribe pagos. */
 export async function recuperarConciliacionCompra(
   empresa: Empresa, documentId: string,
@@ -23,10 +23,12 @@ export async function recuperarConciliacionCompra(
     .filter(r => r.empresa === empresa && r.documentId === documentId && r.estado !== 'cancelada' && r.estado !== 'preparada');
   if (!registros.length) return compraTienePagos(await deps.leerCompra(empresa, documentId)) ? 'revision' : 'nueva';
   let revision = false;
+  let cambio = false;
   for (const r of registros) {
     const inspeccion = await deps.inspeccionar(r);
     if (inspeccion.estado !== 'verificada') return 'incierta';
-    revision ||= conciliacionRequiereRevision(inspeccion.resultado);
+    cambio ||= inspeccion.resultado.ajusteCambioDivisa?.estado === "requiere_revision";
+    revision ||= conciliacionRequiereRevision(inspeccion.resultado) && (inspeccion.resultado.ajusteCambioDivisa?.estado !== "requiere_revision" || inspeccion.resultado.movimientoParcial === true);
   }
-  return revision ? 'revision' : 'conciliada';
+  return revision ? 'revision' : cambio ? 'cambio_pendiente' : 'conciliada';
 }
