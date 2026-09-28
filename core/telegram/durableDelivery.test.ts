@@ -255,23 +255,44 @@ test("«Aprobar selección» repetido tras un primer toque completado sin efecto
   assert.equal(coordinador.estado.reabiertas, 1);
 });
 
-test("solo «Aprobar selección» se reabre: las demás acciones sensibles conservan la deduplicación total", async () => {
+test("un reenvío de transporte del MISMO update_id nunca reabre, aunque llegue mucho después", async () => {
   const repo = new RepoMemoria();
   const procesadas: number[] = [];
   let ahora = 1_000_000;
   const coordinador = new CoordinadorEntregasTelegram(repo, async (u) => { procesadas.push(u.update_id); }, async () => {}, { ahora: () => ahora });
-  const crear = (id: number): TelegramUpdate => ({
+  const original = aprobar(1, 1);
+  const primera = await coordinador.reservar(original, true);
+  await coordinador.atender(primera.entrega, primera.nueva);
+  assert.deepEqual(procesadas, [1]);
+
+  ahora += 5 * 60_000;
+  // Mismo update_id que el original: es Telegram reentregando el webhook, no un toque nuevo del operador.
+  const reenvio = await coordinador.reservar(original, true);
+  assert.equal(reenvio.nueva, false);
+  await coordinador.atender(reenvio.entrega, reenvio.nueva);
+  assert.deepEqual(procesadas, [1]);
+});
+
+test("solo «Aprobar selección» se reabre: las demás acciones sensibles, incluidas colacorreo_*, conservan la deduplicación total", async () => {
+  const repo = new RepoMemoria();
+  const procesadas: string[] = [];
+  let ahora = 1_000_000;
+  const coordinador = new CoordinadorEntregasTelegram(repo, async (u) => { procesadas.push(u.callback_query?.data ?? ""); }, async () => {}, { ahora: () => ahora });
+  const crear = (id: number, data: string): TelegramUpdate => ({
     update_id: id,
-    callback_query: { id: `cb-${id}`, from: { id: 7, is_bot: false }, data: "gasto_nuevo_conciliar:propuesta-1",
+    callback_query: { id: `cb-${id}`, from: { id: 7, is_bot: false }, data,
       message: { message_id: 4627, date: 1, chat: { id: 7, type: "private" } } },
   });
-  const a = await coordinador.reservar(crear(1), true);
-  await coordinador.atender(a.entrega, a.nueva);
-  ahora += 10 * 60_000;
-  const b = await coordinador.reservar(crear(2), true);
-  await coordinador.atender(b.entrega, b.nueva);
-  assert.equal(b.nueva, false);
-  assert.deepEqual(procesadas, [1]);
+  for (const data of ["gasto_nuevo_conciliar:propuesta-1", "colacorreo_reprocesaractivo", "colacorreo_descartaractivo"]) {
+    procesadas.length = 0;
+    const a = await coordinador.reservar(crear(1, data), true);
+    await coordinador.atender(a.entrega, a.nueva);
+    ahora += 10 * 60_000;
+    const b = await coordinador.reservar(crear(2, data), true);
+    await coordinador.atender(b.entrega, b.nueva);
+    assert.equal(b.nueva, false, data);
+    assert.deepEqual(procesadas, [data], data);
+  }
 });
 
 test("una entrega incierta de «Aprobar selección» nunca se reabre por el margen", async () => {

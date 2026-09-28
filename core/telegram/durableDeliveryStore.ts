@@ -129,6 +129,15 @@ class StoreEntregasTelegram implements RepositorioEntregasTelegram {
     });
   }
 
+  /**
+   * Sheets no ofrece escritura condicional entre procesos: el mutex de abajo solo protege este proceso, así que
+   * dos instancias (dos contenedores de Railway solapados en un despliegue) podrían leer «completada» casi al
+   * mismo tiempo y las dos intentar reabrir. Tras escribir se relee de inmediato: en Sheets la última escritura
+   * gana de forma determinista, así que solo la instancia cuyo `intentoId` sobrevive esa relectura procede a
+   * ejecutar; la otra se retira sin repetir nada (hallazgo real de auditoría — no es una garantía perfecta de
+   * exclusión mutua distribuida, pero cierra la ventana a una relectura casi inmediata en vez de dejarla abierta
+   * entre el primer «leer completada» y el «escribir reservada»).
+   */
   async reabrirCompletada(clave: string, entrega: EntregaTelegramDurable) {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
@@ -137,6 +146,13 @@ class StoreEntregasTelegram implements RepositorioEntregasTelegram {
       const { reabrirCompletadaTrasMs: _transitorio, ...persistible } = entrega;
       const reabierta: EntregaConFila = { ...persistible, estado: "reservada", rowIndex: actual.rowIndex };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(reabierta));
+      const releida = await leerFila(TAB_NAME, actual.rowIndex, NUM_COLS, HEADERS);
+      const vista = releida ? desdeFila(releida.rowIndex, releida.valores) : undefined;
+      if (vista?.clave !== clave || vista.intentoId !== reabierta.intentoId) {
+        console.error("[durableDeliveryStore] Reapertura perdida frente a otra instancia (probable despliegue solapado); no se ejecuta.", { clave });
+        if (vista) this.registros.set(clave, vista);
+        return undefined;
+      }
       this.registros.set(clave, reabierta);
       return this.publica(reabierta);
     });

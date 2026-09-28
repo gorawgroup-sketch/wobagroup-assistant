@@ -12,6 +12,7 @@ import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram
 import { cierreSolicitado } from "../utils/cierreServicio";
 import { obtenerActivoActual } from "../gmail/colaRevisionStore";
 import { huboSenalDeEntrega } from "../gmail/senalDeEntrega";
+import { hayActividadCallbackReciente } from "../telegram/callbackActivity";
 
 /**
  * La revisión manual de correo (/revisarcorreo) como unidad reanudable.
@@ -50,6 +51,13 @@ const dependencias = {
   activoSinPreguntaViva: async (chatId: number): Promise<boolean> => {
     const activo = await obtenerActivoActual(chatId);
     if (!activo) return false;
+    // pendientesRestantes===0 es un caso distinto (ya resuelto, solo falló confirmar leído en Gmail — la propia
+    // revisarCorreoNuevo ya lo reintenta arriba, en reintentarActivoPendienteDeMarcarLeido): NUNCA es "reprocesable",
+    // ofrecerlo repetiría trabajo financiero ya terminado (mismo criterio que el vigilante, hallazgo real de auditoría).
+    if (activo.pendientesRestantes <= 0) return false;
+    // Un botón de gasto puede haber consumido su propuesta y seguir escribiendo en Holded sin tomar el candado del
+    // buzón (mismo hueco que protege el vigilante): no ofrecer reprocesar mientras esa ventana sigue abierta.
+    if (hayActividadCallbackReciente(chatId)) return false;
     return (await huboSenalDeEntrega(chatId, activo.mensajeId, activo.id)) === false;
   },
 };

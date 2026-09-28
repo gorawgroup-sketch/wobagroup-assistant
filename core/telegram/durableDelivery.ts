@@ -31,10 +31,12 @@ export interface EntregaTelegramDurable {
  * ya fue procesada» (Uber BRL, 2026-09-28). Las demás acciones sensibles conservan la deduplicación total.
  */
 export const ACCIONES_REABRIBLES_TRAS_COMPLETAR: ReadonlySet<string> = new Set([
+  // Solo esta: ejecuta EXACTAMENTE lo marcado (atómico, sin depender de qué correo esté activo ahora) y su
+  // propio handler ya es correcto para repetirse. "colacorreo_reprocesaractivo" y "colacorreo_descartaractivo"
+  // se descartaron a propósito (hallazgo real de auditoría, 28/09): su callback_data no lleva la identidad del
+  // correo — actúan sobre "el activo actual" del chat — así que un toque tardío reabierto podría cerrar/reprocesar
+  // un correo DISTINTO del que el aviso original mostraba, si mientras tanto la cola avanzó.
   "gasto_aprobar",
-  // Ambas comprueban el estado real de la cola antes de actuar y son seguras de repetir.
-  "colacorreo_reprocesaractivo",
-  "colacorreo_descartaractivo",
 ]);
 /** Un doble toque o un reenvío de Telegram ocurren en segundos; pasado este margen es una decisión nueva. */
 export const VENTANA_DUPLICADO_CALLBACK_MS = 45_000;
@@ -151,7 +153,11 @@ export class CoordinadorEntregasTelegram {
     try {
       const entrega = crearEntregaTelegram(update, callbackSensible, this.ahora());
       const resultado = await this.repositorio.reservar(entrega);
+      // update.update_id distinto exige un toque humano nuevo: un reenvío de transporte de Telegram (503 del
+      // webhook, reintento real) repite el MISMO update_id que la entrega ya completada y nunca debe reabrirla,
+      // aunque llegue mucho después (hallazgo real de auditoría).
       if (!resultado.nueva && resultado.entrega.estado === "completada" && entrega.reabrirCompletadaTrasMs !== undefined &&
+        entrega.updateId !== resultado.entrega.updateId &&
         entrega.creadoEn - resultado.entrega.actualizadoEn >= entrega.reabrirCompletadaTrasMs) {
         const reabierta = await this.repositorio.reabrirCompletada(entrega.clave, entrega);
         if (reabierta) { this.reabiertas++; return { entrega: reabierta, nueva: true }; }

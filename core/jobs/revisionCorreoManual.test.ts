@@ -18,6 +18,7 @@ function escenario(parciales: {
   reclamar?: () => Promise<ReanudacionRevisionCorreo[]>;
   cierre?: () => boolean;
   sinPregunta?: boolean;
+  activoSinPreguntaViva?: () => Promise<boolean>;
 } = {}) {
   const enviados: Array<{ chatId: number; texto: string; botones?: unknown }> = [];
   const registros: ReanudacionRevisionCorreo[] = [];
@@ -39,7 +40,7 @@ function escenario(parciales: {
     enviar: async (chatId, texto) => { enviados.push({ chatId, texto }); },
     enviarConBotones: async (chatId, texto, botones) => { enviados.push({ chatId, texto, botones }); return 1; },
     cierreSolicitado: parciales.cierre ?? (() => false),
-    activoSinPreguntaViva: async () => parciales.sinPregunta ?? false,
+    activoSinPreguntaViva: parciales.activoSinPreguntaViva ?? (async () => parciales.sinPregunta ?? false),
   });
   return { enviados, registros, cancelados, lanzamientos, restaurar, liberar: () => liberar?.() };
 }
@@ -169,6 +170,19 @@ test("un correo activo SIN pregunta viva se dice tal cual y ofrece reprocesarlo 
   const datos = JSON.stringify(e.enviados[0].botones);
   assert.match(datos, /colacorreo_reprocesaractivo/);
   assert.match(datos, /colacorreo_descartaractivo/);
+  e.restaurar();
+});
+
+test("no se ofrece reprocesar un correo con pendientesRestantes=0: ya está resuelto, solo falta confirmar leído en Gmail", async () => {
+  // activoSinPreguntaViva ya descarta este caso por su cuenta (documentado y probado aparte); aquí se comprueba
+  // que revisionCorreoManual respeta lo que esa dependencia decide sin duplicar el criterio.
+  const e = escenario({
+    activoSinPreguntaViva: async () => false,
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura ya resuelta", de: "Proveedor" } }),
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta: "Factura ya resuelta"/);
+  assert.doesNotMatch(e.enviados[0].texto, /no tiene ninguna pregunta viva/);
   e.restaurar();
 });
 

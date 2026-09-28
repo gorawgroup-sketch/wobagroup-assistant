@@ -80,10 +80,22 @@ test("«Reprocesar este correo» está cableado: ruta, protección de superadmin
   ]);
   assert.match(servidor, /data === "colacorreo_reprocesaractivo"[\s\S]{0,80}handleReprocesarActivoCallback\(callback\)/);
   assert.match(usuarios, /"colacorreo_reprocesaractivo"/);
-  assert.match(entregas, /ACCIONES_REABRIBLES_TRAS_COMPLETAR[\s\S]{0,400}"gasto_aprobar"[\s\S]{0,300}"colacorreo_reprocesaractivo"/);
+  // Deliberado (hallazgo real de auditoría, 28/09): "colacorreo_reprocesaractivo"/"descartaractivo" actúan sobre
+  // "el activo actual" sin verificar identidad, así que NO están en el set reabrible — solo gasto_aprobar, que es
+  // atómico y no depende de qué correo esté activo. La cobertura de comportamiento (solo esta acción se reabre)
+  // vive en durableDelivery.test.ts; aquí solo se confirma el cableado textual del set.
+  const bloqueSet = entregas.slice(entregas.indexOf("ACCIONES_REABRIBLES_TRAS_COMPLETAR"), entregas.indexOf("]);", entregas.indexOf("ACCIONES_REABRIBLES_TRAS_COMPLETAR")) + 3);
+  const entradas = bloqueSet.split("\n").filter(linea => !linea.trim().startsWith("//")).join("\n");
+  assert.match(entradas, /"gasto_aprobar"/);
+  assert.doesNotMatch(entradas, /"colacorreo_/);
   // Antes de reprocesar se vuelve a comprobar que NO hay pregunta viva, para no duplicar una propuesta recién llegada.
   const manejador = job.slice(job.indexOf("export async function handleReprocesarActivoCallback"),
     job.indexOf("export async function handleDescartarActivoCallback"));
   assert.ok(manejador.indexOf("huboSenalDeEntrega(") >= 0 && manejador.indexOf("huboSenalDeEntrega(") < manejador.indexOf("reencolarActivoParaReintento("));
   assert.match(manejador, /conCoordinadorCorreo\(/);
+  // Nunca reprocesar un correo ya resuelto (pendientesRestantes<=0) ni mientras otro callback sigue en vuelo —
+  // ambas comprobaciones antes de reencolarActivoParaReintento (hallazgo real de auditoría).
+  const pendientesIdx = manejador.indexOf("activo.pendientesRestantes <= 0");
+  assert.ok(pendientesIdx >= 0 && pendientesIdx < manejador.indexOf("reencolarActivoParaReintento("));
+  assert.match(manejador, /hayActividadCallbackReciente\(chatId\)/);
 });

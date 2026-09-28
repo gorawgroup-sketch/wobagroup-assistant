@@ -3,6 +3,7 @@ import { buscarAnalisisAutomaticoReciente, conCoordinadorCorreo } from "../gmail
 import { revisarGastosAutomaticos, comprobarCorreoDisponible } from "../gmail/automatico/runtime";
 import { mensajeYaRegistrado, type ResultadoOperacionAnterior } from "../gmail/automatico/operacionAnterior";
 import { huboSenalDeEntrega } from "../gmail/senalDeEntrega";
+import { hayActividadCallbackReciente } from "../telegram/callbackActivity";
 import { resumenAutomatico } from "../gmail/automatico/service";
 import { reutilizarGastoDeAnalisisAutomatico } from "../gmail/automatico/reutilizarAnalisis";
 import type { ModoAuto, ResultadoAuto } from "../gmail/automatico/model";
@@ -1221,15 +1222,21 @@ async function procesarSiguienteCorreoActivoInterno(chatId: number): Promise<voi
   const activo = await iniciarSiguienteActivo(chatId);
   if (!activo) return; // cola vacía — nada más que revisar.
 
+  const identidadActiva = { threadId: activo.id, mensajeId: activo.mensajeId };
+  // Provisional, antes de cualquier llamada externa que pueda fallar: activar deja pendientes=0, y para el
+  // vigilante 0 significa «ya resuelto, solo falta confirmar leído en Gmail» — si Gmail fallara AQUÍ (503,
+  // identidad distinta) antes de conocer el número real de adjuntos, la fila se quedaba en 0 varios minutos y
+  // podía cerrarse sola sin haber mostrado nada al operador (hallazgo real de auditoría, 28/09). Se corrige de
+  // nuevo más abajo con el número real en cuanto se conoce; establecerPendientesActivo es idempotente por identidad.
+  await establecerPendientesActivo(chatId, identidadActiva, 1).catch((error) =>
+    console.error("[revisarCorreoNuevo] No se pudo fijar el pendiente provisional (no crítico):", error)
+  );
+
   try {
     const correo = await obtenerResumenCorreo(activo.mensajeId);
     if (correo.id !== activo.mensajeId || correo.threadId !== activo.id) {
       throw new Error("Gmail devolvió una identidad distinta a la fila activa; se conserva sin leer");
     }
-    // Las decisiones pendientes se fijan ANTES de comprobar la operación anterior: una fila activa con 0 pendientes
-    // es, para el vigilante, «resuelta, solo falló Gmail→local», y la marcaba leída ~3 min después de un error que
-    // el operador aún no había podido resolver.
-    const identidadActiva = { threadId: activo.id, mensajeId: activo.mensajeId };
     const inicializado = await establecerPendientesActivo(
       chatId,
       identidadActiva,
@@ -1785,6 +1792,14 @@ export async function handleReprocesarActivoCallback(callback: TelegramCallbackQ
     const activo = await obtenerActivoActual(chatId);
     if (!activo) {
       await sendTelegramMessage(chatId, "Ya no hay ningún correo activo esperando — nada que reprocesar.").catch(() => {});
+      return;
+    }
+    // Mismo criterio que el vigilante (hallazgo real de auditoría): pendientes=0 es «ya resuelto, solo falta
+    // confirmar leído en Gmail», nunca «reprocesable» — repetiría trabajo financiero ya terminado. Y mientras un
+    // callback de gasto sigue en vuelo (consumió su propuesta y aún escribe en Holded, fuera de este candado) no
+    // hay ninguna de las 13 señales que ver todavía, así que tampoco se reprocesa en esa ventana.
+    if (activo.pendientesRestantes <= 0 || hayActividadCallbackReciente(chatId)) {
+      await sendTelegramMessage(chatId, "Este correo ya no está en un estado que se pueda reprocesar; no hice nada.").catch(() => {});
       return;
     }
     const senal = await huboSenalDeEntrega(chatId, activo.mensajeId, activo.id);
