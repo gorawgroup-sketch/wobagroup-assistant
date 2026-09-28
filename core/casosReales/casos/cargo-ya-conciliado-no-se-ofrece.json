@@ -1,0 +1,54 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "la-ultima-cena",
+  "fuente": "Incidente 2026-09-28: el cargo «La Ultima Cena» −15,86 USD ya estaba conciliado con otro documento.",
+  "descripcion": "Un cargo ya conciliado no se ofrece (evita contar dos veces); la decisión sobre el enlace equivocado es del operador.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "LA ULTIMA CENA",
+    "concepto": "Cena restaurante — Luquillo, Puerto Rico",
+    "monto": 15.86,
+    "moneda": "USD",
+    "fecha": "2026-09-26"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "La Ultima Cena",
+        "amount": "-15.86",
+        "currency": "USD",
+        "booking_date": "2026-09-27",
+        "status": "reconciled",
+        "reconciled_amount": "-15.86"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": []
+  }
+}

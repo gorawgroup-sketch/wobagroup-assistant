@@ -1,0 +1,62 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "por-confirmar",
+  "fuente": "Revisión adversarial del PR #224 (2026-09-28): un cargo sin nombre reconocible y categoría desconocida solo se ofrece, nunca se concilia solo.",
+  "descripcion": "El descriptor no se parece al proveedor, pero coinciden importe, moneda y día: se ofrece POR CONFIRMAR al armar la propuesta y la conciliación automática no lo ve.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Mi Cafetería",
+    "concepto": "Café",
+    "monto": 3.91,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "SQ *XYZ 88",
+        "amount": "-3.91",
+        "currency": "USD",
+        "booking_date": "2026-09-25",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m1",
+        "compatibilidad": "por_confirmar"
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesIncluyen": [
+      "Crear y conciliar"
+    ]
+  }
+}

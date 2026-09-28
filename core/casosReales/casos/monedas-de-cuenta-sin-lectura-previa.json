@@ -1,0 +1,19 @@
+{
+  "tipo": "monedas_cuentas",
+  "id": "holded-caido-sin-previa",
+  "fuente": "Incidente 2026-09-28.",
+  "descripcion": "Sin lectura buena previa y con Holded caído no se inventa «solo EUR»: se lanza el error.",
+  "empresa": "WOBA",
+  "cuentas": [
+    {
+      "id": "a",
+      "currency": "EUR"
+    }
+  ],
+  "lecturas": [
+    {
+      "holded": "error",
+      "esperado": "lanza"
+    }
+  ]
+}
