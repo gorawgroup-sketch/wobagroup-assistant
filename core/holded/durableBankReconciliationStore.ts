@@ -229,6 +229,44 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
     });
   }
 
+  /**
+   * Vuelve una conciliación «incierta» a «preparada» para permitir UN reintento protegido por este mismo registro.
+   * Solo lo usa el mantenimiento auditado (scripts/resolver-conciliacion-incierta.ts --revertir), y únicamente
+   * después de demostrar por lectura que el POST anterior no tuvo ningún efecto (verificarAusenciaDeEfectoPorLectura).
+   * Conserva el historial de resoluciones; a diferencia de cancelar, el mismo par documento/movimiento puede reintentarse.
+   */
+  async revertirIncierta(clave: string, motivo: string): Promise<void> {
+    const resolucion = motivo.trim();
+    if (!resolucion) throw new Error("Revertir una conciliación incierta requiere un motivo auditado.");
+    if (resolucion.length > 1000) throw new Error("El motivo no puede superar 1000 caracteres.");
+    await conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const actual = this.registros.get(clave);
+      if (!actual) throw new Error("No existe una conciliación con esa clave.");
+      if (actual.estado !== "incierta") {
+        throw new Error(`Solo se puede revertir una conciliación incierta; estado actual: ${actual.estado}.`);
+      }
+      const ahora = Date.now();
+      const entradaHistorial =
+        `${new Date(ahora).toISOString()} | documento ${actual.documentId} | revertida a preparada: ${resolucion.replace(/\s+/g, " ")}`;
+      const historialResoluciones = [actual.historialResoluciones, entradaHistorial]
+        .filter(Boolean)
+        .join("\n")
+        .slice(-10_000);
+      const siguiente: RegistroConFila = {
+        ...actual,
+        estado: "preparada",
+        actualizadoEn: ahora,
+        verificadoEn: undefined,
+        resueltoEn: undefined,
+        resolucion: undefined,
+        historialResoluciones,
+      };
+      await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
+      this.registros.set(clave, siguiente);
+    });
+  }
+
   async listarPendientes(): Promise<RegistroConciliacionMovimiento[]> {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
