@@ -26,6 +26,11 @@ export interface PuertoAutomatico {
   marcarResuelto(correo: CorreoAuto): Promise<void>;
   permitidoAhora(op: OperacionAuto): boolean;
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
+  /**
+   * Última salida de una operación que la verificación estricta no pudo dar por terminada: la cierra solo si Holded
+   * demuestra (por lectura) que todo lo que debía escribir ya está. Nunca escribe en Holded. Opcional.
+   */
+  cerrarConEvidencia?(op: OperacionAuto): Promise<boolean>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
 export function diagnosticoAnalisis(error: unknown): string {
@@ -298,6 +303,27 @@ export class ServicioCorreoAutomatico {
       }
     });
   }
+  /**
+   * `ejecutar` con una última salida: la verificación estricta compara campo por campo (cuenta, impuestos, tasa,
+   * etiquetas) y deja «sin verificar» para siempre un gasto que alguien corrigió o cuyo cargo quedó con unos
+   * céntimos de saldo (JetBlue y «Desayuno y Almuerzo», 2026-09-28). Si Holded demuestra que todo está hecho, se cierra.
+   */
+  private async ejecutarOCerrar(op: OperacionAuto, c: CorreoAuto, analisis: AnalisisAuto, config: ConfigAuto): Promise<boolean> {
+    // Una reparación de política anterior pendiente NO se da por buena: cerrarla fijaría la versión vigente y la
+    // cuenta o las etiquetas defectuosas que se estaba corrigiendo quedarían para siempre. Solo el operador presente
+    // (resolverOperacionAnterior) puede cerrar esos casos.
+    const eraReparacion = op.plan.version !== VERSION_POLITICA && (op.estado === "completada" || op.pasoIncierto === "completada");
+    if (await this.ejecutar(op, c, analisis, config)) return true;
+    if (!this.puerto.cerrarConEvidencia || !op.compraId || op.estado === "rechazada" || op.estado === "reservada" ||
+      op.estado === "completada" || eraReparacion) return false;
+    // Igual que ejecutar(): con la automatización apagada no se escribe nada, ni siquiera el estado de la operación.
+    if (!this.puerto.permitidoAhora(op)) return false;
+    try { return await this.puerto.cerrarConEvidencia(op); }
+    catch (error) {
+      console.warn("[correo-auto] No se pudo intentar el cierre con evidencia:", { operacion: op.id, error: mensajeError(error) });
+      return false;
+    }
+  }
   private mismoPlan(a: PlanAuto, b: PlanAuto): void {
     if (a.empresa !== b.empresa || a.contactoId !== b.contactoId || a.cuentaId !== b.cuentaId ||
         a.totalCentimos !== b.totalCentimos || a.fuenteHash !== b.fuenteHash ||
@@ -356,7 +382,15 @@ export class ServicioCorreoAutomatico {
           const correoNoLeido = correos.find(c => c.id === op.plan.correo.id);
           const reparacionLegada = op.plan.version !== VERSION_POLITICA &&
             (op.estado === "completada" || op.pasoIncierto === "completada");
-          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido;
+          // Un correo reservado por la revisión manual no pasa por el bucle de abajo (se aparta sin analizarlo), y la
+          // revisión manual a su vez rechaza un correo con una operación sin cerrar: sin esta lectura ninguno de los
+          // dos podía terminarla (bloqueo mutuo, JetBlue 2026-09-28). Aquí solo se CONTINÚA la operación existente,
+          // siempre por lectura y sin repetir POST; nunca se crea nada nuevo para ese correo.
+          // Solo operaciones que YA crearon su compra: una `reservada` o sin compra registrada pasaría por `crear`, y
+          // eso nunca debe ocurrir para un correo que tiene el operador abierto.
+          const reservadoManual = Boolean(correoNoLeido) && op.estado !== "reservada" && Boolean(op.compraId) &&
+            await this.puerto.reservadoManualmente(op.plan.correo.threadId);
+          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido || reservadoManual;
           if (!debeRecuperarseAhora) continue;
           const correo = correoNoLeido ?? await this.puerto.obtener(op.plan.correo.id, op.plan.correo.threadId);
           if (!correo) {
@@ -399,7 +433,7 @@ export class ServicioCorreoAutomatico {
               continue;
             }
           }
-          if (await this.ejecutar(op, correo, analisisRecuperado, config)) {
+          if (await this.ejecutarOCerrar(op, correo, analisisRecuperado, config)) {
             const gasto = { empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
               moneda: op.plan.movimiento.moneda, proveedor: op.plan.recibo.proveedor };
             if (eraCompletadaAnterior) resultado.reparados!.push(gasto);
@@ -493,7 +527,7 @@ export class ServicioCorreoAutomatico {
             }
             if (config.modo === "simulate") { motivos.push("operacion_pendiente_sin_escritura_en_simulacion"); continue; }
             const yaCompletada = op.estado === "completada";
-            if (await this.ejecutar(op, correo, analisis, config)) {
+            if (await this.ejecutarOCerrar(op, correo, analisis, config)) {
               if (!yaCompletada) {
                 resultado.completados++;
                 resultado.gastos.push({ empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,

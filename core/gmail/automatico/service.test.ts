@@ -280,6 +280,95 @@ test("correo activo manual no se toca; los demás siguen ordenados", async () =>
   const e = escenario(); e.puerto.reservadoManualmente = async () => true;
   const r = await e.service.revisar(configFixture); assert.equal(r.revisados, 0); assert.equal(e.llamadas.crear, 0);
 });
+test("una operación sin cerrar de un correo reservado por la revisión manual se continúa por lectura, sin repetir POST ni marcar el correo", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  // La cola manual toma el correo: antes ni el proceso automático ni la revisión manual podían cerrar la operación.
+  e.puerto.reservadoManualmente = async () => true;
+  e.puerto.verificarConciliacion = async () => true;
+  const r = await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "completada");
+  assert.equal(e.llamadas.crear, 1); assert.equal(e.llamadas.conciliar, 1);
+  assert.equal(e.llamadas.marcar, 0, "el correo es de la revisión manual: no se marca leído desde aquí");
+  assert.equal(r.completados, 1);
+});
+test("un correo reservado por la revisión manual nunca crea: una operación solo «reservada» o sin compra no se toca", async () => {
+  for (const preparar of [
+    (op: OperacionAuto) => { op.estado = "reservada"; },
+    (op: OperacionAuto) => { op.estado = "incierta"; op.pasoIncierto = "creando"; op.compraId = undefined; },
+  ]) {
+    const e = escenario();
+    e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+    e.puerto.verificarConciliacion = async () => false;
+    await e.service.revisar(configFixture);
+    const op = [...e.ops.values()][0]; preparar(op); e.ops.set(op.id, op);
+    const antes = { ...e.llamadas };
+    e.puerto.reservadoManualmente = async () => true;
+    await e.service.revisar(configFixture);
+    assert.equal(e.llamadas.crear, antes.crear, "no debe volver a crear");
+    assert.equal(e.llamadas.adjuntar, antes.adjuntar);
+    assert.equal(e.llamadas.conciliar, antes.conciliar);
+  }
+});
+test("cuando la verificación estricta no puede dar por terminada la operación pero Holded la demuestra completa, se cierra y el correo se resuelve", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  let cierres = 0;
+  e.puerto.cerrarConEvidencia = async op => {
+    cierres++;
+    op.estado = "completada"; await e.store.guardar(op);
+    return true;
+  };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(cierres, 1);
+  assert.equal([...e.ops.values()][0].estado, "completada");
+  assert.equal(e.llamadas.conciliar, 1, "el cierre es por lectura: no repite el POST");
+  assert.equal(e.llamadas.marcar, 1, "sin reserva manual, el correo se marca resuelto");
+  assert.equal(r.completados, 1);
+});
+test("el cierre automático respeta el interruptor y no da por buena una reparación de política anterior pendiente", async () => {
+  // 1) automatización apagada: ni siquiera se intenta cerrar
+  const e1 = escenario();
+  e1.puerto.conciliar = async () => { throw new Error("timeout"); };
+  e1.puerto.verificarConciliacion = async () => false;
+  await e1.service.revisar(configFixture);
+  let intentos1 = 0;
+  e1.puerto.cerrarConEvidencia = async () => { intentos1++; return true; };
+  e1.puerto.permitidoAhora = () => false;
+  await e1.service.revisar(configFixture);
+  assert.equal(intentos1, 0, "con la automatización apagada no se cierra nada");
+  // 2) reparación de política anterior pendiente que falla: solo el operador presente puede cerrarla
+  const e2 = escenario();
+  await e2.service.revisar(configFixture);
+  const op = [...e2.ops.values()][0];
+  op.plan.version = "correo-gastos-v6"; op.estado = "completada"; e2.ops.set(op.id, op);
+  e2.puerto.recuperarCreacion = async () => { throw new Error("Holded 503 transitorio"); };
+  let intentos2 = 0;
+  e2.puerto.cerrarConEvidencia = async () => { intentos2++; return true; };
+  await e2.service.revisar(configFixture);
+  assert.equal(intentos2, 0, "una reparación pendiente no se cierra desde el proceso desatendido");
+});
+test("si el cierre con evidencia falla o dice que no, la operación sigue abierta como antes", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  e.puerto.cerrarConEvidencia = async () => { throw new Error("Holded caído"); };
+  const r = await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  assert.equal(r.pendientes.length, 1);
+});
+test("un correo reservado sin operación anterior sigue sin crear nada", async () => {
+  const e = escenario(); e.puerto.reservadoManualmente = async () => true;
+  await e.service.revisar(configFixture);
+  assert.equal(e.llamadas.crear, 0); assert.equal(e.ops.size, 0);
+});
 test("dos mensajes con el mismo comprobante nunca generan dos gastos", async () => {
   const e = escenario(); e.correos.push({ ...correoFixture("m2"), huella: hash("reenviado") });
   const r = await e.service.revisar(configFixture);

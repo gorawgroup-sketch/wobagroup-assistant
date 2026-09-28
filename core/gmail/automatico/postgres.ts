@@ -333,6 +333,12 @@ export class PostgresAutoStore implements StoreAuto {
     const r = await this.db.query("SELECT data FROM wobi_mail_operations WHERE mailbox=$1 AND state NOT IN ('completada','rechazada') ORDER BY updated_at", [buzon]);
     return r.rows.map(x => x.data as OperacionAuto);
   }
+  /** Todas las operaciones del hilo que no fueron rechazadas, con su última actividad (en ms). */
+  async operacionesDeHilo(buzon: string, threadId: string): Promise<Array<{ op: OperacionAuto; actualizadaEn: number }>> {
+    const r = await this.db.query(`SELECT data, updated_at FROM wobi_mail_operations
+      WHERE mailbox=$1 AND data->'plan'->'correo'->>'threadId'=$2 AND state <> 'rechazada' ORDER BY updated_at`, [buzon, threadId]);
+    return r.rows.map(x => ({ op: x.data as OperacionAuto, actualizadaEn: new Date(x.updated_at).getTime() }));
+  }
   async recuperables(buzon: string, version: string): Promise<OperacionAuto[]> {
     const r = await this.db.query(`SELECT data FROM wobi_mail_operations WHERE mailbox=$1 AND (
       state NOT IN ('completada','rechazada') OR
