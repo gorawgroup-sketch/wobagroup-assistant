@@ -14,6 +14,7 @@ import {
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { cierreSolicitado } from "../utils/cierreServicio";
 import { obtenerActivoActual } from "../gmail/colaRevisionStore";
+import { reenviarPreguntaPendienteDelCorreo, type PreguntaReenviada } from "../gastos/reenviarPreguntaPendiente";
 import { huboSenalDeEntrega } from "../gmail/senalDeEntrega";
 import { hayActividadCallbackReciente } from "../telegram/callbackActivity";
 
@@ -54,6 +55,17 @@ const dependencias = {
    * true = el correo activo NO tiene ninguna pregunta viva en el chat (sus botones se perdieron o nunca llegaron).
    * false = sí la tiene, o no se pudo comprobar (nunca se afirma que falta algo sin haberlo comprobado).
    */
+  /**
+   * Caso real (Carlos, 2026-09-28 20:23): la revisión terminaba con «resuélvelo (los botones de esa pregunta
+   * siguen arriba en el chat)» y la pregunta viva era «¿conciliar Airalo?», ya fuera de vista; Carlos no podía
+   * avanzar. Regla de PR #194: lo pendiente va siempre AL FINAL del chat con sus botones reales. Devuelve qué se
+   * reenvió, o undefined si el correo activo no tiene ninguna decisión pendiente (entonces procede «Reprocesar»).
+   */
+  reenviarPreguntaDelActivo: async (chatId: number, encabezado: string): Promise<PreguntaReenviada | undefined> => {
+    const activo = await obtenerActivoActual(chatId);
+    if (!activo) return undefined;
+    return reenviarPreguntaPendienteDelCorreo(chatId, activo.mensajeId, activo.id, encabezado);
+  },
   activoSinPreguntaViva: async (chatId: number): Promise<boolean> => {
     const activo = await obtenerActivoActual(chatId);
     if (!activo) return false;
@@ -133,6 +145,16 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
         // cuenta (fuera del chat), y antes la única salida era esperar
         // 48h o encontrar el mensaje original. El botón lo libera ya
         // mismo (ver handleDescartarActivoCallback).
+        // Primero, lo útil: volver a poner al final del chat la pregunta real que espera respuesta.
+        const reenviada = await dependencias.reenviarPreguntaDelActivo(
+          chatId,
+          `⏸️ La cola de correo espera tu respuesta al correo "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}). ` +
+            "Aquí tienes de nuevo sus botones:"
+        ).catch((error) => {
+          console.error("[revisarcorreo] No se pudo reenviar la pregunta pendiente del correo activo:", error);
+          return undefined;
+        });
+        if (reenviada) return;
         const sinPregunta = await dependencias.activoSinPreguntaViva(chatId).catch(() => false);
         if (sinPregunta) {
           // El aviso de siempre decía «resuélvelo (los botones siguen arriba)» aunque ya no hubiera ningún botón
@@ -151,7 +173,9 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
         } else {
           await dependencias.enviarConBotones(
             chatId,
-            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`,
+            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}). ` +
+              `No pude volver a mostrar su pregunta ahora mismo (fallo temporal al leerla); sus botones siguen en el mensaje original, más arriba, ` +
+              `o pide «reenvía los botones de ${resultado.activoBloqueando.asunto}».`,
             [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
           ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
         }
