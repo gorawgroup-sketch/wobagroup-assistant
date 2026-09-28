@@ -9,8 +9,12 @@ import { VERSION_POLITICA, type AnalisisAuto, type OperacionAuto } from "./model
  * JetBlue 2026-09-28). Aquí se sale del bloqueo con pruebas leídas de Holded, sin repetir escrituras.
  */
 
-/** Margen para no cerrar una operación que otro proceso está ejecutando en este momento. */
-export const REPOSO_MINIMO_MS = 5 * 60_000;
+/**
+ * Margen para no cerrar una operación que otro proceso está ejecutando en este momento. La revisión automática y la
+ * manual ya se excluyen con el mismo candado del buzón, así que basta un minuto: con cinco, el operador que revisaba
+ * un correo justo después de una pasada automática (que toca las operaciones anteriores) veía «sigue en curso».
+ */
+export const REPOSO_MINIMO_MS = 60_000;
 
 export interface OperacionConEdad { op: OperacionAuto; actualizadaEn: number }
 
@@ -74,7 +78,7 @@ export async function intentarCerrarOperacion(
   const bloqueo = (motivo: "en_curso" | "sin_pruebas" | "lectura_fallida", faltan: string[]): IntentoCierre =>
     ({ cerrada: false, motivo, bloqueo: { ...base, faltan } });
   if (deps.ahora() - actualizadaEn < reposoMs) {
-    return bloqueo("en_curso", ["sigue en curso (última actividad hace menos de 5 minutos)"]);
+    return bloqueo("en_curso", ["sigue en curso (última actividad hace menos de 1 minuto)"]);
   }
   let hechos: HechosCierre;
   try { hechos = await deps.leerHechos(op); }
