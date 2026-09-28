@@ -4,6 +4,7 @@ import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccio
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { EscrituraHoldedNoIniciadaError, protegerEscrituraHolded } from "../gmail/automatico/postgres";
 import { MonedasCuentasReales } from "./monedasCuentas";
+import type { TrazaBusqueda } from "./trazaBusqueda";
 import { descriptorConfirmadoParaProveedor, obtenerTodasLasConciliacionesAprendidas, type ConciliacionVerificadaAprendida } from "./conciliacionAprendidaSheet";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -4789,6 +4790,8 @@ export async function buscarMovimientoSimilar(
      * compatible por nombre o categoría.
      */
     incluirPorConfirmar?: boolean;
+    /** Si se da, la búsqueda anota qué cuentas revisó y qué cargos del mismo importe descartó (no cambia el resultado). */
+    traza?: TrazaBusqueda;
   },
   toleranciaEur: number = TOLERANCIA_MONTO,
   deps: { aprendidas: () => Promise<ConciliacionVerificadaAprendida[]> } = { aprendidas: cargarConciliacionesAprendidas }
@@ -4797,9 +4800,15 @@ export async function buscarMovimientoSimilar(
   const { desde, hasta } = ventanaBusquedaMovimiento(criterios.fecha);
 
   const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
-    items?: Array<{ id: string; archived?: boolean }>;
+    items?: Array<{ id: string; archived?: boolean; name?: string; currency?: string }>;
   };
   const cuentas = (cuentasData.items ?? []).filter((c) => !c.archived);
+  const traza = criterios.traza;
+  if (traza) {
+    traza.cuentasRevisadas = cuentas.map((c) => ({ id: c.id, nombre: c.name, moneda: c.currency }));
+    traza.desde = criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde);
+    traza.hasta = criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta);
+  }
 
   const candidatos: MovimientoBancarioCandidato[] = [];
   // Solo se lee la memoria de conciliaciones confirmadas si de verdad hace falta (un cargo exacto que el nombre no respalda).
@@ -4832,7 +4841,23 @@ export async function buscarMovimientoSimilar(
     if (criterios.fechaExacta && data.has_more) throw new Error("Consulta bancaria incompleta; no se descartan duplicados.");
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
-      if (estaConciliado(mov.status)) continue;
+      /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
+      const anotar = (monto: number, resultado: "ofrecido" | "descartado", motivo: string) => {
+        if (!traza || !Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) return;
+        traza.mismoImporte.push({
+          movementId: mov.id, cuenta: cuenta.id, descripcion: mov.description ?? "", monto, moneda: monedaObjetivo,
+          fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "", resultado, motivo,
+        });
+      };
+      if (estaConciliado(mov.status)) {
+        if (traza) {
+          const montoConciliado = monedaObjetivo === "EUR"
+            ? montoEnEuros(mov)
+            : (mov.currency ?? "EUR").toUpperCase() === monedaObjetivo ? parsearMontoMovimiento(mov.amount) : NaN;
+          anotar(montoConciliado, "descartado", "ya estaba conciliado con otro documento");
+        }
+        continue;
+      }
 
       let monto: number;
       if (monedaObjetivo === "EUR") {
@@ -4856,17 +4881,22 @@ export async function buscarMovimientoSimilar(
         if (nivel !== "compatible") {
           // Cargos que NO respaldan el nombre ni la categoría: solo se ofrecen al armar una propuesta, solo si son un
           // débito (un crédito o una devolución del mismo importe no es este gasto) y nunca con categoría contradictoria.
-          if (!criterios.incluirPorConfirmar || !(Number(mov.amount) < 0)) continue;
-          if (categoriasContradictorias(criterios.concepto ?? "", criterios.proveedor, mov.description ?? "")) continue;
+          if (!criterios.incluirPorConfirmar) { anotar(monto, "descartado", "el nombre no se reconoce como el del proveedor (solo se ofrece al armar una propuesta)"); continue; }
+          if (!(Number(mov.amount) < 0)) { anotar(monto, "descartado", "no es un cargo (es un ingreso o una devolución)"); continue; }
+          if (categoriasContradictorias(criterios.concepto ?? "", criterios.proveedor, mov.description ?? "")) {
+            anotar(monto, "descartado", `categorías contradictorias (gasto: ${inferirTagsCategoria(criterios.concepto ?? "", criterios.proveedor).join("/")}; cargo: ${inferirTagsCategoria(mov.description ?? "", "").join("/")})`);
+            continue;
+          }
           // Lo que un humano ya confirmó una vez (proveedor ↔ descriptor bancario) se reconoce sin el aviso de nombre distinto.
           aprendidos ??= deps.aprendidas();
           const yaConfirmado = descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "");
           if (yaConfirmado) compatibilidad = "aprendido";
           else if (nivel === "por_confirmar") compatibilidad = "por_confirmar";
-          else continue;
+          else { anotar(monto, "descartado", "el nombre no se reconoce y no coinciden la fecha (±1 día) o la categoría del cargo ya es conocida y distinta"); continue; }
         }
       }
 
+      anotar(monto, "ofrecido", compatibilidad === "por_confirmar" ? "ofrecido por confirmar (nombre distinto)" : compatibilidad === "aprendido" ? "ofrecido (confirmado antes)" : "ofrecido (compatible)");
       candidatos.push({
         accountId: cuenta.id,
         movementId: mov.id,

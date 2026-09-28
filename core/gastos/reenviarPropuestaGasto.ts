@@ -1,3 +1,4 @@
+import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
@@ -44,6 +45,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
 
   // Se recalcula SIEMPRE al renovar: un movimiento puede haber llegado después de crear la propuesta
   // y una fila antigua puede guardar false aunque el algoritmo actual ya sepa buscar por conversión.
+  const trazaBusqueda = crearTrazaBusqueda();
   if (propuesta.candidatos.length === 0 && esFechaDocumentoValida(propuesta.fecha)) {
     let movimientoEncontrado = false;
     // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
@@ -61,6 +63,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
         incluirPorConfirmar: true,
+        traza: trazaBusqueda,
       });
       if (exactos.length === 1) {
         movimientoEncontrado = true;
@@ -154,7 +157,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
               propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
             : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
-          : `\n\n💳 No hay un cargo compatible confirmado. Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado antes de escribir) y conciliarlo cuando aparezca el cargo; la ausencia de cargo no demuestra un duplicado.`;
+          : `\n\n💳 No hay un cargo compatible confirmado. Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado antes de escribir) y conciliarlo cuando aparezca el cargo; la ausencia de cargo no demuestra un duplicado.` +
+            (describirTrazaBusqueda(trazaBusqueda) ? `\n${describirTrazaBusqueda(trazaBusqueda)}` : "");
 
   const texto =
     `${encabezado}\n\n` +

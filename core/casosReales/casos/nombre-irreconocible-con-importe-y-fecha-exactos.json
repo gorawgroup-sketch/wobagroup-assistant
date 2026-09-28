@@ -57,6 +57,9 @@
     "vistoPorConciliacionAutomatica": [],
     "botonesIncluyen": [
       "Crear y conciliar"
+    ],
+    "trazaContiene": [
+      "ofrecido por confirmar"
     ]
   }
 }

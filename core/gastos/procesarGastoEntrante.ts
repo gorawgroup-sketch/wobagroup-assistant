@@ -1,3 +1,4 @@
+import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
@@ -948,6 +949,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // impreciso en montos chicos.
     const toleranciaMov = usarEquivalente ? Math.max(0.05, montoParaHolded * 0.02) : undefined;
 
+    const trazaBusqueda = crearTrazaBusqueda();
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoAproximado: Awaited<ReturnType<typeof buscarMovimientoAproximado>>[number] | undefined;
@@ -955,7 +957,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true },
+        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true, traza: trazaBusqueda },
         toleranciaMov
       );
       // Un cargo que solo «por confirmar» (nombre distinto) es la última opción: si hay uno aproximado que sí coincide
@@ -1093,7 +1095,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
                 ? " — ni exacto ni aproximado por nombre y monto cercano"
                 : " (búsqueda exacta — no hay un nombre real de proveedor para buscar por similitud)") +
               ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded. ` +
-              `Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado) y conciliarlo cuando aparezca el cargo.`;
+              `Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado) y conciliarlo cuando aparezca el cargo.` +
+              (describirTrazaBusqueda(trazaBusqueda) ? `\n${describirTrazaBusqueda(trazaBusqueda)}` : "");
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
     // igual que uno exacto. El movimiento recomendado se guarda completo

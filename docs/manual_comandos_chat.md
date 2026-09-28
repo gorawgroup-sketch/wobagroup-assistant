@@ -303,3 +303,10 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - Este archivo vive en `docs/`, así que el propio asistente también lo puede
   consultar (vía `consultar_base_conocimiento`) si le preguntan "qué comandos
   tienes" desde el chat.
+
+
+## Frases útiles para diagnosticar y renovar propuestas de gasto
+- **«¿Por qué no encuentras el cargo de JUST B CUZ?»** / **«el cargo existe pero no lo ves»** → herramienta de solo lectura `explicar_busqueda_cargo`: repite la búsqueda en Holded en vivo y explica qué cuentas revisó, qué cargos con el mismo importe encontró y cuáles descartó y por qué (ya conciliado, categorías contradictorias, nombre no reconocido, no es un cargo…). Necesita empresa, proveedor, importe, moneda y fecha; si falta algo, lo pregunta. No crea ni concilia nada.
+- **«Renueva los botones de la propuesta de X»** / **«no me salen los botones de X»** → `reenviar_botones_propuesta_gasto`: manda un mensaje nuevo con los botones reales de la propuesta pendiente y vuelve a buscar el cargo en vivo.
+- Cuando el mensaje de una propuesta dice «no encontré ningún movimiento», ahora añade qué se revisó y qué cargos del mismo importe se descartaron y por qué.
+- **«Crear (sin conciliar)»** está siempre disponible con fecha documental válida (restaurado el 28/09); **«Crear y conciliar»** exige un cargo utilizable.
