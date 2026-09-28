@@ -574,6 +574,7 @@ test("leerHechosCierre: solo lee la compra, sus pagos, el comprobante y el movim
   e.op.compraId = "creada";
   Object.assign(e.compra, { payments_total: "20,00", payments_pending: "0,00", draft: false, notes: "[wobi:abc] nota",
     payments_detail: [{ id: "pay1", bank_id: "a1", amount: "20,00", date: e.r.fecha }] });
+  (e.movimiento as Record<string, unknown>).accounting_amount = "-19.00";
   e.movimiento.status = "reconciled";
   // La compra tiene comprobante: se simula con un POST previo del adaptador de prueba.
   const request: typeof fetch = async (input, init) => {
@@ -588,10 +589,10 @@ test("leerHechosCierre: solo lee la compra, sus pagos, el comprobante y el movim
   assert.equal(hechos.compra?.id, "creada");
   assert.equal(hechos.compra?.totalCentimos, 2000);
   assert.equal(hechos.compra?.pendienteCentimos, 0);
-  assert.deepEqual(hechos.compra?.pagos, [{ bancoId: "a1", centimos: 2000 }]);
+  assert.deepEqual(hechos.compra?.pagos, [{ bancoId: "a1", centimos: 2000, fecha: e.r.fecha }]);
   assert.equal(hechos.compra?.notas, "[wobi:abc] nota");
   assert.equal(hechos.adjuntos, 1);
-  assert.equal(hechos.movimiento?.estado, "reconciled");
+  assert.deepEqual(hechos.movimiento, { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: 1900 });
 });
 
 test("leerHechosCierre: una operación sin id de compra no inventa una: devuelve vacío sin consultar", async () => {

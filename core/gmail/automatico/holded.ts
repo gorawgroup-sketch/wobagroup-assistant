@@ -763,13 +763,16 @@ export class HoldedAuto {
         totalCentimos: importe(c.total),
         pagadoCentimos: importe(c.payments_total),
         pendienteCentimos: importe(c.payments_pending),
-        pagos: detalle.map(x => ({ bancoId: typeof x.bank_id === "string" ? x.bank_id : "", centimos: importe(x.amount) })),
+        pagos: detalle.map(x => ({ bancoId: typeof x.bank_id === "string" ? x.bank_id : "", centimos: importe(x.amount),
+          fecha: typeof x.date === "string" ? x.date : "" })),
       },
       adjuntos: adjuntos.length,
       movimiento: movimiento ? {
         estado: String(movimiento.status),
         importeCentimos: Math.abs(centimos(movimiento.amount)),
         conciliadoCentimos: Math.abs(centimos(movimiento.reconciled_amount ?? 0)),
+        contableCentimos: movimiento.accounting_amount == null || movimiento.accounting_amount === ""
+          ? null : Math.abs(centimos(movimiento.accounting_amount)),
       } : null,
     };
   }

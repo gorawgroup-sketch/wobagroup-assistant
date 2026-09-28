@@ -22,9 +22,9 @@ function hechosCompletos(op: OperacionAuto): HechosCierre {
   return {
     compra: { id: op.compraId!, notas: `${marcasDeOperacion(op)[1]} nota del operador`, contactoId: op.plan.contactoId,
       moneda: "EUR", totalCentimos: 2000, pagadoCentimos: 2000, pendienteCentimos: 0,
-      pagos: [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000 }] },
+      pagos: [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000, fecha: op.plan.movimiento.fecha }] },
     adjuntos: 1,
-    movimiento: { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 2000 },
+    movimiento: { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 2000, contableCentimos: null },
   };
 }
 
@@ -89,8 +89,8 @@ test("evaluarEvidenciaCierre: falta pago, comprobante, cuenta o conciliación �
   const casos: Array<[string, (h: HechosCierre) => void]> = [
     ["pagoCompleto", h => { h.compra!.pagadoCentimos = 0; h.compra!.pendienteCentimos = 2000; h.compra!.pagos = []; }],
     ["comprobante", h => { h.adjuntos = 0; }],
-    ["pagoEnLaCuentaPrevista", h => { h.compra!.pagos = [{ bancoId: "otra-cuenta", centimos: 2000 }]; }],
-    ["movimientoConciliado", h => { h.movimiento = { estado: "pending", importeCentimos: 2000, conciliadoCentimos: 0 }; }],
+    ["pagoEnLaCuentaPrevista", h => { h.compra!.pagos = [{ bancoId: "otra-cuenta", centimos: 2000, fecha: op.plan.movimiento.fecha }]; }],
+    ["movimientoConciliado", h => { h.movimiento = { estado: "pending", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: null }; }],
     ["movimientoConciliado", h => { h.movimiento = null; }],
   ];
   for (const [esperado, cambio] of casos) {
@@ -212,23 +212,54 @@ test("un cargo parcial con saldo residual dentro de la tolerancia del plan cuent
   const op = operacion();
   op.plan.toleranciaCentimos = 5;
   const h = hechosCompletos(op);
-  h.movimiento = { estado: "partial", importeCentimos: 2001, conciliadoCentimos: 2000 };
+  h.movimiento = { estado: "partial", importeCentimos: 2001, conciliadoCentimos: 2000, contableCentimos: null };
   const r = evaluarEvidenciaCierre(op, h);
   assert.equal(r.veredicto, "completa");
   assert.equal(r.saldoResidualCentimos, 1);
 });
 
-test("un cargo parcial con más saldo que la tolerancia, o entre monedas distintas, no se da por conciliado", () => {
+test("caso real Desayuno y Almuerzo: compra en COP pagada con 45,65 EUR contra un cargo de 45,66 EUR en estado partial", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 91;
+  op.plan.recibo.moneda = "COP"; op.plan.recibo.monto = 170117;
+  op.plan.evidencia = { ...op.plan.evidencia, equivalenteBancario: undefined };
+  const h = hechosCompletos(op);
+  h.compra!.moneda = "COP"; h.compra!.totalCentimos = 17011700; h.compra!.pagadoCentimos = 17011700;
+  h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 4565, fecha: op.plan.movimiento.fecha }];
+  h.movimiento = { estado: "partial", importeCentimos: 4566, conciliadoCentimos: 4565, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.deepEqual(r.faltan.filter(k => k !== "total" && k !== "moneda"), [], "el pago y el cargo casan aunque la compra esté en otra moneda");
+});
+
+test("un cargo parcial con más saldo que la tolerancia no se da por conciliado", () => {
   const op = operacion();
   op.plan.toleranciaCentimos = 5;
-  const grande = hechosCompletos(op);
-  grande.movimiento = { estado: "partial", importeCentimos: 2100, conciliadoCentimos: 2000 };
-  assert.equal(evaluarEvidenciaCierre(op, grande).veredicto, "parcial");
-  const otraMoneda = structuredClone(op);
-  otraMoneda.plan.movimiento.moneda = "USD";
-  const h = hechosCompletos(otraMoneda);
-  h.movimiento = { estado: "partial", importeCentimos: 2001, conciliadoCentimos: 2000 };
-  assert.notEqual(evaluarEvidenciaCierre(otraMoneda, h).saldoResidualCentimos, 1);
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "partial", importeCentimos: 2100, conciliadoCentimos: 2000, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("movimientoConciliado"));
+});
+
+test("caso real JetBlue: cargo en USD conciliado y pago de 412,61 EUR = equivalente contable del cargo → el pago es del cargo", () => {
+  const op = operacion();
+  const h = hechosCompletos(op);
+  h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 41261, fecha: op.plan.movimiento.fecha }];
+  h.movimiento = { estado: "reconciled", importeCentimos: 47393, conciliadoCentimos: 47393, contableCentimos: 41261 };
+  assert.ok(!evaluarEvidenciaCierre(op, h).faltan.includes("pagoDelCargo"));
+});
+
+test("el pago de la compra debe ser el de ESE cargo: otra fecha o un importe que no es lo conciliado no cuentan", () => {
+  const op = operacion();
+  for (const cambio of [
+    (h: HechosCierre) => { h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000, fecha: "2020-01-01" }]; },
+    (h: HechosCierre) => { h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 1999, fecha: op.plan.movimiento.fecha }]; },
+  ]) {
+    const h = hechosCompletos(op); cambio(h);
+    const r = evaluarEvidenciaCierre(op, h);
+    assert.equal(r.veredicto, "parcial");
+    assert.ok(r.faltan.includes("pagoDelCargo"));
+  }
 });
 
 test("resolver: un 404 de Holded es un hecho («ya no existe»), no un fallo transitorio", async () => {
