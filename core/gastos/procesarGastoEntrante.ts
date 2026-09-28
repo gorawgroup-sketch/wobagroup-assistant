@@ -1092,7 +1092,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               (!esProveedorNoIdentificado(datos.proveedor)
                 ? " — ni exacto ni aproximado por nombre y monto cercano"
                 : " (búsqueda exacta — no hay un nombre real de proveedor para buscar por similitud)") +
-              ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
+              ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded. ` +
+              `Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado) y conciliarlo cuando aparezca el cargo.`;
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
     // igual que uno exacto. El movimiento recomendado se guarda completo

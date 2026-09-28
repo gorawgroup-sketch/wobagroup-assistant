@@ -154,7 +154,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
               propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
             : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
-          : `\n\n💳 No hay un cargo compatible confirmado. No se ofrece crear: hay que comprobar primero los gastos existentes y sus comprobantes; la ausencia de cargo no demuestra un duplicado.`;
+          : `\n\n💳 No hay un cargo compatible confirmado. Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado antes de escribir) y conciliarlo cuando aparezca el cargo; la ausencia de cargo no demuestra un duplicado.`;
 
   const texto =
     `${encabezado}\n\n` +

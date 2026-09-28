@@ -16,5 +16,5 @@ Tipos: `busqueda_cargo` (búsqueda de cargo + teclado) y `monedas_cuentas` (lect
 ## Riesgos conocidos
 Un caso con `riesgoConocido` documenta un comportamiento actual que no es el deseado (p. ej. `sixt-go-riesgo-conocido`: la compatibilidad solo por categoría puede enlazar dos comercios distintos con el mismo importe y día). Si el comportamiento cambia, el caso falla y hay que decidirlo a propósito.
 
-## Pendiente de decisión del propietario
-Política de gastos sin cargo bancario (hoy, desde #204, una propuesta de ticket no ofrece crear sin un cargo compatible; antes sí). El caso correspondiente se añade cuando se decida.
+## Decisiones del propietario registradas
+- **2026-09-28 — «Crear (sin conciliar)» restaurado.** Desde #204 (27/09) una propuesta de ticket no ofrecía crear sin un cargo compatible; antes sí (6 de 15 compras creadas por Wobi en septiembre no tenían pago). Ahora «Crear (sin conciliar)» solo exige fecha documental válida y la comprobación de duplicados al aprobar; «Crear y conciliar» sigue exigiendo un cargo utilizable y las categorías contradictorias siguen impidiendo conciliar. Caso: `sin-cargo-se-puede-crear-sin-conciliar`.
