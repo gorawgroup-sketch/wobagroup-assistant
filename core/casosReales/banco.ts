@@ -1,6 +1,7 @@
 import { buscarMovimientoSimilar, type MovimientoBancarioCandidato } from "../holded/write";
 import type { ConciliacionVerificadaAprendida } from "../holded/conciliacionAprendidaSheet";
 import { MonedasCuentasReales } from "../holded/monedasCuentas";
+import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "../gastos/gastoTeclado";
 import type { PropuestaGasto } from "../gastos/gastoProposalSheet";
 
@@ -36,6 +37,8 @@ export interface CasoBusquedaCargo {
     vistoPorConciliacionAutomatica: string[];
     botonesIncluyen?: string[];
     botonesExcluyen?: string[];
+    /** Fragmentos que debe contener la explicación «qué revisé y qué descarté» que ve el operador. */
+    trazaContiene?: string[];
   };
 }
 
@@ -77,6 +80,7 @@ export interface ResultadoBusquedaCargo {
   candidatos: Array<{ movementId: string; compatibilidad: "por_confirmar" | "aprendido" | null }>;
   vistoPorConciliacionAutomatica: string[];
   botones: string[];
+  traza: string;
 }
 
 export async function ejecutarCasoBusquedaCargo(caso: CasoBusquedaCargo): Promise<ResultadoBusquedaCargo> {
@@ -88,7 +92,8 @@ export async function ejecutarCasoBusquedaCargo(caso: CasoBusquedaCargo): Promis
   const deps = { aprendidas: async () => aprendidas };
   return conHoldedSimulado(caso, async () => {
     const base = { monto: caso.ticket.monto, fecha: caso.ticket.fecha, moneda: caso.ticket.moneda, proveedor: caso.ticket.proveedor, concepto: caso.ticket.concepto };
-    const armado: MovimientoBancarioCandidato[] = await buscarMovimientoSimilar(caso.empresa, { ...base, incluirPorConfirmar: true }, undefined, deps);
+    const traza = crearTrazaBusqueda();
+    const armado: MovimientoBancarioCandidato[] = await buscarMovimientoSimilar(caso.empresa, { ...base, incluirPorConfirmar: true, traza }, undefined, deps);
     const automatico = await buscarMovimientoSimilar(caso.empresa, base, undefined, deps);
     const propuesta = {
       id: "caso", empresa: caso.empresa, proveedor: caso.ticket.proveedor, concepto: caso.ticket.concepto, monto: caso.ticket.monto,
@@ -99,6 +104,7 @@ export async function ejecutarCasoBusquedaCargo(caso: CasoBusquedaCargo): Promis
       candidatos: armado.map((c) => ({ movementId: c.movementId, compatibilidad: c.compatibilidad ?? null })),
       vistoPorConciliacionAutomatica: automatico.map((c) => c.movementId),
       botones: construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta)).flat().map((b) => b.text),
+      traza: describirTrazaBusqueda(traza),
     };
   });
 }

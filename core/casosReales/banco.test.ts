@@ -27,6 +27,9 @@ for (const { fichero, caso } of casos) {
       for (const boton of caso.esperado.botonesIncluyen ?? []) {
         assert.ok(r.botones.some((t) => t.includes(boton)), `${fichero}: falta el botón «${boton}»; hay ${JSON.stringify(r.botones)}`);
       }
+      for (const fragmento of caso.esperado.trazaContiene ?? []) {
+        assert.ok(r.traza.includes(fragmento), `${fichero}: la explicación debe contener «${fragmento}»; dice: ${r.traza}`);
+      }
       for (const boton of caso.esperado.botonesExcluyen ?? []) {
         assert.ok(!r.botones.some((t) => t.includes(boton)), `${fichero}: no debe haber el botón «${boton}»; hay ${JSON.stringify(r.botones)}`);
       }

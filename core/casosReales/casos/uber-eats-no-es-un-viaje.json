@@ -59,6 +59,9 @@
     "vistoPorConciliacionAutomatica": [],
     "botonesExcluyen": [
       "Crear"
+    ],
+    "trazaContiene": [
+      "categorías contradictorias"
     ]
   }
 }
