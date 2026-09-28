@@ -52,61 +52,86 @@ function recibosCubiertos(analisis: AnalisisAuto | undefined, completadas: Opera
   return analisis.recibos.every(recibo => completadas.some(op => op.plan.recibo.fuente === recibo.fuente));
 }
 
+export type IntentoCierre =
+  | { cerrada: true }
+  | { cerrada: false; motivo: "en_curso" | "sin_pruebas" | "lectura_fallida"; bloqueo: BloqueoOperacion };
+
+/** Holded ya no encuentra el recurso (compra borrada, cuenta archivada): es un hecho, no un fallo transitorio. */
+const esRecursoInexistente = (error: unknown): boolean =>
+  /Consulta Holded falló \((?:404|410)\)/.test(error instanceof Error ? error.message : String(error));
+
+/**
+ * Comprueba en Holded una operación sin estado terminal y, solo si TODO lo que debía escribir ya está, la cierra
+ * como completada. Nunca escribe en Holded. `reposoMs` = 0 cuando el llamador ya tiene el buzón bajo su coordinador.
+ */
+export async function intentarCerrarOperacion(
+  op: OperacionAuto,
+  actualizadaEn: number,
+  deps: DepsOperacionAnterior,
+  reposoMs = REPOSO_MINIMO_MS
+): Promise<IntentoCierre> {
+  const base: BloqueoOperacion = { id: op.id, estado: op.estado, compraId: op.compraId, faltan: [], detalle: op.detalle };
+  const bloqueo = (motivo: "en_curso" | "sin_pruebas" | "lectura_fallida", faltan: string[]): IntentoCierre =>
+    ({ cerrada: false, motivo, bloqueo: { ...base, faltan } });
+  if (deps.ahora() - actualizadaEn < reposoMs) {
+    return bloqueo("en_curso", ["sigue en curso (última actividad hace menos de 5 minutos)"]);
+  }
+  let hechos: HechosCierre;
+  try { hechos = await deps.leerHechos(op); }
+  catch (error) {
+    if (esRecursoInexistente(error)) {
+      return bloqueo("sin_pruebas", ["Holded ya no encuentra la compra o la cuenta bancaria de esta operación"]);
+    }
+    // Distinguir «no pude leer Holded» de «Holded dice que falta algo»: lo primero se reintenta sin más.
+    console.error("[correo-auto] No se pudo leer Holded para verificar la operación anterior:", {
+      operacion: op.id, error: error instanceof Error ? error.message : String(error) });
+    return bloqueo("lectura_fallida", ["no pude consultar Holded para comprobarlo"]);
+  }
+  const evaluacion = evaluarEvidenciaCierre(op, hechos);
+  if (evaluacion.veredicto !== "completa") {
+    return bloqueo("sin_pruebas", evaluacion.faltan.map((k: ComprobacionCierre) => describirFaltanteCierre(k)));
+  }
+  const estadoPrevio = { estado: op.estado, paso: op.pasoIncierto, detalle: op.detalle, version: op.plan.version };
+  try {
+    // Primero el registro del gasto del correo (Sheets, idempotente): si falla, la operación sigue abierta y se
+    // reintenta; cerrada primero, el cambio de versión impediría volver a intentarlo.
+    await deps.registrarFinalizada(op);
+    op.estado = "completada";
+    op.pasoIncierto = undefined;
+    op.detalle = "Cerrada con prueba leída de Holded: compra propia, pagada, con comprobante y movimiento conciliado" +
+      (evaluacion.saldoResidualCentimos ? ` (saldo residual de ${evaluacion.saldoResidualCentimos} céntimo(s) dentro de la tolerancia del plan).` : ".");
+    // La versión vigente evita que la próxima pasada la trate como «reparación de política anterior» y edite
+    // una compra que ya está bien o que alguien corrigió a mano.
+    op.plan.version = VERSION_POLITICA;
+    await deps.guardar(op);
+  } catch (error) {
+    // Otra ejecución modificó la operación entre la lectura y el guardado, o el registro falló: no se fuerza nada.
+    console.error("[correo-auto] No se pudo cerrar la operación con evidencia:", {
+      operacion: op.id, error: error instanceof Error ? error.message : String(error) });
+    return bloqueo("lectura_fallida", ["no pude dejar constancia del cierre; se reintentará"]);
+  }
+  await deps.auditar({ mensajeId: op.plan.correo.id, tipo: "cierre_por_evidencia", datos: {
+    operacion: op.id, compraId: op.compraId, previo: estadoPrevio, comprobaciones: evaluacion.comprobaciones,
+    saldoResidualCentimos: evaluacion.saldoResidualCentimos, origen: "revision_de_correo" } })
+    .catch(error => console.error("[correo-auto] Operación cerrada; no se pudo auditar el cierre:", error));
+  return { cerrada: true };
+}
+
 export async function resolverOperacionAnterior(
   threadId: string,
   mensajeId: string | undefined,
   deps: DepsOperacionAnterior
 ): Promise<ResultadoOperacionAnterior> {
   let operaciones = await deps.operacionesDeHilo(threadId);
-  const pendientes = operaciones.filter(x => !esTerminal(x.op));
   const bloqueos: BloqueoOperacion[] = [];
   let motivo: Extract<ResultadoOperacionAnterior, { tipo: "bloqueada" }>["motivo"] = "sin_pruebas";
   let cerradas = 0;
 
-  for (const { op, actualizadaEn } of pendientes) {
-    const base: BloqueoOperacion = { id: op.id, estado: op.estado, compraId: op.compraId, faltan: [], detalle: op.detalle };
-    if (deps.ahora() - actualizadaEn < REPOSO_MINIMO_MS) {
-      motivo = "en_curso";
-      bloqueos.push({ ...base, faltan: ["sigue en curso (última actividad hace menos de 5 minutos)"] });
-      continue;
-    }
-    let hechos: HechosCierre;
-    try { hechos = await deps.leerHechos(op); }
-    catch (error) {
-      // Distinguir «no pude leer Holded» de «Holded dice que falta algo»: lo primero se reintenta sin más.
-      console.error("[correo-auto] No se pudo leer Holded para verificar la operación anterior:", {
-        operacion: op.id, error: error instanceof Error ? error.message : String(error) });
-      if (motivo !== "en_curso") motivo = "lectura_fallida";
-      bloqueos.push({ ...base, faltan: ["no pude consultar Holded para comprobarlo"] });
-      continue;
-    }
-    const evaluacion = evaluarEvidenciaCierre(op, hechos);
-    if (evaluacion.veredicto !== "completa") {
-      bloqueos.push({ ...base, faltan: evaluacion.faltan.map((k: ComprobacionCierre) => describirFaltanteCierre(k)) });
-      continue;
-    }
-    try {
-      const estadoPrevio = { estado: op.estado, paso: op.pasoIncierto, detalle: op.detalle, version: op.plan.version };
-      op.estado = "completada";
-      op.pasoIncierto = undefined;
-      op.detalle = "Cerrada con prueba leída de Holded: compra propia, pagada, con comprobante y movimiento conciliado.";
-      // La versión vigente evita que la próxima pasada la trate como «reparación de política anterior» y edite
-      // una compra que ya está bien o que alguien corrigió a mano.
-      op.plan.version = VERSION_POLITICA;
-      await deps.guardar(op);
-      await deps.auditar({ mensajeId: op.plan.correo.id, tipo: "cierre_por_evidencia", datos: {
-        operacion: op.id, compraId: op.compraId, previo: estadoPrevio, comprobaciones: evaluacion.comprobaciones,
-        origen: "revision_manual_del_correo" } });
-      await deps.registrarFinalizada(op).catch(error =>
-        console.error("[correo-auto] Operación cerrada, pero no se pudo registrar el gasto del correo:", error));
-      cerradas++;
-    } catch (error) {
-      // Otra ejecución modificó la operación entre la lectura y el guardado: no se fuerza nada.
-      console.error("[correo-auto] No se pudo cerrar la operación con evidencia:", {
-        operacion: op.id, error: error instanceof Error ? error.message : String(error) });
-      if (motivo !== "en_curso") motivo = "lectura_fallida";
-      bloqueos.push({ ...base, faltan: ["otra ejecución la modificó mientras la comprobaba"] });
-    }
+  for (const { op, actualizadaEn } of operaciones.filter(x => !esTerminal(x.op))) {
+    const intento = await intentarCerrarOperacion(op, actualizadaEn, deps);
+    if (intento.cerrada) { cerradas++; continue; }
+    if (motivo !== "en_curso" && (intento.motivo === "en_curso" || motivo === "sin_pruebas")) motivo = intento.motivo;
+    bloqueos.push(intento.bloqueo);
   }
   if (bloqueos.length) return { tipo: "bloqueada", motivo, operaciones: bloqueos };
 

@@ -4,7 +4,7 @@ import { evaluarEvidenciaCierre, marcasDeOperacion, type HechosCierre } from "./
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 import { evaluarAuto, VERSION_POLITICA, type AnalisisAuto, type OperacionAuto } from "./model";
 import {
-  mensajeOperacionBloqueada, mensajeYaRegistrado, REPOSO_MINIMO_MS, resolverOperacionAnterior,
+  intentarCerrarOperacion, mensajeOperacionBloqueada, mensajeYaRegistrado, REPOSO_MINIMO_MS, resolverOperacionAnterior,
   type DepsOperacionAnterior, type OperacionConEdad,
 } from "./operacionAnterior";
 
@@ -24,7 +24,7 @@ function hechosCompletos(op: OperacionAuto): HechosCierre {
       moneda: "EUR", totalCentimos: 2000, pagadoCentimos: 2000, pendienteCentimos: 0,
       pagos: [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000 }] },
     adjuntos: 1,
-    movimiento: { estado: "reconciled" },
+    movimiento: { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 2000 },
   };
 }
 
@@ -90,7 +90,7 @@ test("evaluarEvidenciaCierre: falta pago, comprobante, cuenta o conciliación �
     ["pagoCompleto", h => { h.compra!.pagadoCentimos = 0; h.compra!.pendienteCentimos = 2000; h.compra!.pagos = []; }],
     ["comprobante", h => { h.adjuntos = 0; }],
     ["pagoEnLaCuentaPrevista", h => { h.compra!.pagos = [{ bancoId: "otra-cuenta", centimos: 2000 }]; }],
-    ["movimientoConciliado", h => { h.movimiento = { estado: "pending" }; }],
+    ["movimientoConciliado", h => { h.movimiento = { estado: "pending", importeCentimos: 2000, conciliadoCentimos: 0 }; }],
     ["movimientoConciliado", h => { h.movimiento = null; }],
   ];
   for (const [esperado, cambio] of casos) {
@@ -186,7 +186,9 @@ test("resolver: si otra ejecución modificó la operación, no se fuerza el cier
   const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
   assert.equal(r.tipo, "bloqueada");
   assert.equal(e.registro.auditorias.length, 0);
-  assert.equal(e.registro.finalizadas, 0);
+  assert.equal(e.registro.guardados.length, 0);
+  // El registro del gasto del correo va antes del cierre y es idempotente: repetirlo en el siguiente intento no daña.
+  assert.equal(e.registro.finalizadas, 1);
 });
 
 test("resolver: sin operaciones anteriores el correo queda libre; con una completada que cubre todo, ya registrado", async () => {
@@ -204,4 +206,60 @@ test("resolver: una operación completada de otro mensaje del hilo no da por reg
   const completada = operacion("completada");
   const e = escenario([completada], { analisis: analisisFixture() });
   assert.equal((await resolverOperacionAnterior(completada.plan.correo.threadId, "otro-mensaje", e.deps)).tipo, "libre");
+});
+
+test("un cargo parcial con saldo residual dentro de la tolerancia del plan cuenta como conciliado (caso 45,65 frente a 45,66)", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 5;
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "partial", importeCentimos: 2001, conciliadoCentimos: 2000 };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "completa");
+  assert.equal(r.saldoResidualCentimos, 1);
+});
+
+test("un cargo parcial con más saldo que la tolerancia, o entre monedas distintas, no se da por conciliado", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 5;
+  const grande = hechosCompletos(op);
+  grande.movimiento = { estado: "partial", importeCentimos: 2100, conciliadoCentimos: 2000 };
+  assert.equal(evaluarEvidenciaCierre(op, grande).veredicto, "parcial");
+  const otraMoneda = structuredClone(op);
+  otraMoneda.plan.movimiento.moneda = "USD";
+  const h = hechosCompletos(otraMoneda);
+  h.movimiento = { estado: "partial", importeCentimos: 2001, conciliadoCentimos: 2000 };
+  assert.notEqual(evaluarEvidenciaCierre(otraMoneda, h).saldoResidualCentimos, 1);
+});
+
+test("resolver: un 404 de Holded es un hecho («ya no existe»), no un fallo transitorio", async () => {
+  const op = operacion();
+  const e = escenario([op], { hechos: () => { throw new Error("Consulta Holded falló (404); no se autoriza crear."); } });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo === "bloqueada" && r.motivo, "sin_pruebas");
+  if (r.tipo === "bloqueada") assert.match(mensajeOperacionBloqueada(r), /ya no encuentra la compra/);
+});
+
+test("resolver: si no se puede registrar el gasto del correo, la operación NO se cierra (así se reintenta)", async () => {
+  const op = operacion();
+  const e = escenario([op]);
+  e.deps.registrarFinalizada = async () => { throw new Error("Sheets caído"); };
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "bloqueada");
+  assert.equal(e.registro.guardados.length, 0);
+});
+
+test("resolver: si falla solo la auditoría, la operación ya cerrada sigue cerrada y no se informa como bloqueo", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: analisisFixture() });
+  e.deps.auditar = async () => { throw new Error("Postgres lento"); };
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "ya_registrado");
+  assert.equal(e.registro.guardados.length, 1);
+});
+
+test("intentarCerrarOperacion con reposo 0 (el llamador ya tiene el buzón) cierra aunque la actividad sea reciente", async () => {
+  const op = operacion("conciliando");
+  const e = escenario([op], { edadMs: 0 });
+  const intento = await intentarCerrarOperacion(op, 1_000_000_000_000, e.deps, 0);
+  assert.equal(intento.cerrada, true);
 });

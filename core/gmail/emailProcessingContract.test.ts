@@ -46,3 +46,25 @@ test("la revisión nunca continúa ni cierra un correo si falló su lectura comp
   assert.match(flujo, /cuerpoCompleto = await obtenerCuerpoCompletoCorreo\(correo\.id\)[\s\S]{0,500}throw error/);
   assert.match(flujo, /gastoDetectado = await extraerGastoDeCorreo[\s\S]{0,700}No se pudo determinar si[\s\S]{0,300}throw error/);
 });
+
+test("la cola fija las decisiones pendientes antes de comprobar la operación anterior y no calla un cierre fallido", async () => {
+  const fuente = await readFile(rutaJob, "utf8");
+  // Con 0 pendientes el vigilante da el correo por resuelto y lo marca leído: el error previo no debe dejar ese estado.
+  const cola = fuente.slice(fuente.indexOf("async function procesarSiguienteCorreoActivoInterno"),
+    fuente.indexOf("export async function handleReintentarActivoCallback"));
+  assert.ok(cola.indexOf("establecerPendientesActivo(") >= 0 && cola.indexOf("establecerPendientesActivo(") < cola.indexOf("comprobarCorreoDisponible("),
+    "en la cola, establecerPendientesActivo debe ir antes de comprobarCorreoDisponible");
+  const reintento = fuente.slice(fuente.indexOf("export async function handleReintentarActivoCallback"),
+    fuente.indexOf("export async function procesarCorreoPuntual"));
+  assert.ok(reintento.indexOf("establecerPendientesActivo(") >= 0 && reintento.indexOf("establecerPendientesActivo(") < reintento.indexOf("comprobarCorreoDisponible("),
+    "en el reintento, establecerPendientesActivo debe ir antes de comprobarCorreoDisponible");
+  // El cierre de un correo «ya registrado» nunca descarta el texto de fallo: avisa con botones de reintento.
+  const cierre = fuente.slice(fuente.indexOf("async function cerrarActivoYaRegistrado"),
+    fuente.indexOf("export async function handleDescartarActivoCallback"));
+  assert.match(cierre, /if \(cierre\.ok\) return;/);
+  assert.match(cierre, /publicarReintentoTecnico\(/);
+  // La búsqueda puntual informa pero no le quita al operador la revisión que pidió.
+  const puntual = fuente.slice(fuente.indexOf("async function procesarCorreoPuntualInterno"), fuente.indexOf("Señal genérica de"));
+  assert.match(puntual, /yaRegistrado/);
+  assert.ok(puntual.indexOf("mensajeYaRegistrado") < puntual.indexOf("procesarCorreoLocalizado(chatId, correo, false)"));
+});

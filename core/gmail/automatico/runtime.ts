@@ -18,11 +18,12 @@ import { obtenerClasificacionesAprendidas } from "../../gastos/clasificacionApre
 import { HoldedAuto } from "./holded";
 import { crearFlujoGastoExistente } from "./flujoExistente";
 import { configuracionAuto, normalizar, VERSION_ANALISIS, type OperacionAuto, type ResultadoAuto } from "./model";
-import { mensajeOperacionBloqueada, resolverOperacionAnterior, type ResultadoOperacionAnterior } from "./operacionAnterior";
+import { intentarCerrarOperacion, mensajeOperacionBloqueada, resolverOperacionAnterior, type DepsOperacionAnterior,
+  type ResultadoOperacionAnterior } from "./operacionAnterior";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
-import { enteroAcotado } from "../../utils/asyncTimeout";
+import { conTiempoMaximo, enteroAcotado } from "../../utils/asyncTimeout";
 
 export interface LimitesRevisionAutomatica {
   maxDuracionMs: number;
@@ -155,7 +156,8 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     for (const p of await obtenerPropuestasAccionCorreoPorChat(chat)) manuales.add(p.threadId);
   }
   const estadosAutorespuesta = new Map((await listarHilosAutorespuesta()).map(estado => [estado.threadId, estado.estado]));
-  const service = new ServicioCorreoAutomatico(new PostgresAutoStore(), {
+  const storeAuto = new PostgresAutoStore();
+  const service = new ServicioCorreoAutomatico(storeAuto, {
     listar: () => gmail.listar(), obtener: (mensajeId, threadId) => gmail.obtener(mensajeId, threadId),
     analizar: async correo => analizarAutomatico(correo, {
       memoria: await (memoriaClasificaciones ??= obtenerClasificacionesAprendidas()),
@@ -179,6 +181,8 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
       return actual.modo === "execute" && actual.empresas.includes(op.plan.empresa);
     },
     ejecutarProtegido: (op, tarea) => conOperacionAuto(op.id, () => protegerEscrituraHolded(op.plan.empresa, tarea)),
+    cerrarConEvidencia: async op =>
+      (await intentarCerrarOperacion(op, 0, depsOperacionAnterior(storeAuto, config.buzon, holded), 0)).cerrada,
   }, {
     concurrenciaAnalisis: limites.concurrenciaAnalisis,
     fechaLimite,
@@ -198,6 +202,20 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   return resultado;
 }
 
+/** Dependencias de solo lectura + cierre auditado; las lecturas a Holded tienen un tiempo máximo global. */
+function depsOperacionAnterior(store: PostgresAutoStore, buzon: string, holded: HoldedAuto): DepsOperacionAnterior {
+  return {
+    operacionesDeHilo: id => store.operacionesDeHilo(buzon, id),
+    analisisDeMensaje: id => store.buscarAnalisis(buzon, id, "", VERSION_ANALISIS),
+    // GET compra + comprobantes + listado paginado de movimientos: acotado para no retener el buzón indefinidamente.
+    leerHechos: op => conTiempoMaximo(() => holded.leerHechosCierre(op), 45_000, "verificación de la operación anterior en Holded"),
+    guardar: op => store.guardar(op),
+    auditar: evento => store.auditar({ buzon, ...evento }),
+    registrarFinalizada: op => registrarOperacionFinalizada(op, { aprenderCuenta: false }),
+    ahora: () => Date.now(),
+  };
+}
+
 /**
  * Una propuesta antigua no puede reabrir un correo con una escritura incompleta. Si la operación
  * anterior ya quedó completa en Holded se cierra con esa prueba (sin escribir nada más) y, cuando
@@ -210,15 +228,7 @@ export async function comprobarCorreoDisponible(threadId: string, mensajeId?: st
   const store = new PostgresAutoStore();
   // Solo lecturas: la memoria de alias y duplicados no interviene al verificar una compra ya creada.
   const holded = new HoldedAuto({ alias: async () => [], duplicadoInterno: async () => false }, fetch, configuracionAuto().empresas);
-  const resultado = await resolverOperacionAnterior(threadId, mensajeId, {
-    operacionesDeHilo: id => store.operacionesDeHilo(buzon, id),
-    analisisDeMensaje: id => store.buscarAnalisis(buzon, id, "", VERSION_ANALISIS),
-    leerHechos: op => holded.leerHechosCierre(op),
-    guardar: op => store.guardar(op),
-    auditar: evento => store.auditar({ buzon, ...evento }),
-    registrarFinalizada: op => registrarOperacionFinalizada(op, { aprenderCuenta: false }),
-    ahora: () => Date.now(),
-  });
+  const resultado = await resolverOperacionAnterior(threadId, mensajeId, depsOperacionAnterior(store, buzon, holded));
   if (resultado.tipo === "bloqueada") throw new Error(mensajeOperacionBloqueada(resultado));
   return resultado;
 }

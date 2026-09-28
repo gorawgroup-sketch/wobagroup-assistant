@@ -295,6 +295,53 @@ test("una operación sin cerrar de un correo reservado por la revisión manual s
   assert.equal(e.llamadas.marcar, 0, "el correo es de la revisión manual: no se marca leído desde aquí");
   assert.equal(r.completados, 1);
 });
+test("un correo reservado por la revisión manual nunca crea: una operación solo «reservada» o sin compra no se toca", async () => {
+  for (const preparar of [
+    (op: OperacionAuto) => { op.estado = "reservada"; },
+    (op: OperacionAuto) => { op.estado = "incierta"; op.pasoIncierto = "creando"; op.compraId = undefined; },
+  ]) {
+    const e = escenario();
+    e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+    e.puerto.verificarConciliacion = async () => false;
+    await e.service.revisar(configFixture);
+    const op = [...e.ops.values()][0]; preparar(op); e.ops.set(op.id, op);
+    const antes = { ...e.llamadas };
+    e.puerto.reservadoManualmente = async () => true;
+    await e.service.revisar(configFixture);
+    assert.equal(e.llamadas.crear, antes.crear, "no debe volver a crear");
+    assert.equal(e.llamadas.adjuntar, antes.adjuntar);
+    assert.equal(e.llamadas.conciliar, antes.conciliar);
+  }
+});
+test("cuando la verificación estricta no puede dar por terminada la operación pero Holded la demuestra completa, se cierra y el correo se resuelve", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  let cierres = 0;
+  e.puerto.cerrarConEvidencia = async op => {
+    cierres++;
+    op.estado = "completada"; await e.store.guardar(op);
+    return true;
+  };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(cierres, 1);
+  assert.equal([...e.ops.values()][0].estado, "completada");
+  assert.equal(e.llamadas.conciliar, 1, "el cierre es por lectura: no repite el POST");
+  assert.equal(e.llamadas.marcar, 1, "sin reserva manual, el correo se marca resuelto");
+  assert.equal(r.completados, 1);
+});
+test("si el cierre con evidencia falla o dice que no, la operación sigue abierta como antes", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  e.puerto.cerrarConEvidencia = async () => { throw new Error("Holded caído"); };
+  const r = await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  assert.equal(r.pendientes.length, 1);
+});
 test("un correo reservado sin operación anterior sigue sin crear nada", async () => {
   const e = escenario(); e.puerto.reservadoManualmente = async () => true;
   await e.service.revisar(configFixture);

@@ -766,7 +766,11 @@ export class HoldedAuto {
         pagos: detalle.map(x => ({ bancoId: typeof x.bank_id === "string" ? x.bank_id : "", centimos: importe(x.amount) })),
       },
       adjuntos: adjuntos.length,
-      movimiento: movimiento ? { estado: String(movimiento.status) } : null,
+      movimiento: movimiento ? {
+        estado: String(movimiento.status),
+        importeCentimos: Math.abs(centimos(movimiento.amount)),
+        conciliadoCentimos: Math.abs(centimos(movimiento.reconciled_amount ?? 0)),
+      } : null,
     };
   }
   async verificarConciliacion(op: OperacionAuto): Promise<boolean> {

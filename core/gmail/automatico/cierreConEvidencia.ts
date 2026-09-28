@@ -26,8 +26,11 @@ export interface HechosCierre {
     pagos: Array<{ bancoId: string; centimos: number }>;
   } | null;
   adjuntos: number;
-  /** null = el movimiento no se encontró en la ventana consultada. */
-  movimiento: { estado: string } | null;
+  /**
+   * null = el movimiento no se encontró en la ventana consultada. Los importes son valores absolutos en la
+   * moneda de la cuenta; `conciliadoCentimos` es lo ya asignado a documentos.
+   */
+  movimiento: { estado: string; importeCentimos: number; conciliadoCentimos: number } | null;
 }
 
 export type ComprobacionCierre =
@@ -35,6 +38,8 @@ export type ComprobacionCierre =
   | "pagoCompleto" | "pagoEnLaCuentaPrevista" | "comprobante" | "movimientoConciliado";
 
 export interface EvaluacionCierre {
+  /** Céntimos del cargo que Holded deja sin asignar (0 si quedó conciliado entero). */
+  saldoResidualCentimos: number;
   /**
    * completa: todo lo que debía escribir la operación ya está en Holded → se puede cerrar.
    * parcial: la compra es de esta operación pero falta el pago, el comprobante o la conciliación.
@@ -60,6 +65,20 @@ export const describirFaltanteCierre = (c: ComprobacionCierre): string => ETIQUE
 
 const ESTADOS_CONCILIADO = new Set(["reconciled", "forced_reconciled"]);
 
+/**
+ * Holded deja un cargo en `partial` cuando el gasto es unos céntimos menor que el cargo (45,65 frente a 45,66:
+ * caso «Desayuno y Almuerzo», 2026-09-28). El plan automático ya aceptó esa diferencia al emparejarlos (dentro de
+ * `toleranciaCentimos`), así que un saldo residual dentro de esa misma tolerancia no es un fallo. Solo cuando el
+ * documento y el cargo están en la misma moneda: con cambio de divisa el residual no se puede comparar con la
+ * tolerancia del plan. No se crea ningún pago para liberarlo.
+ */
+function conciliadoConSaldoTolerado(op: OperacionAuto, m: NonNullable<HechosCierre["movimiento"]>, monedaDocumento: string): number | null {
+  const p = op.plan;
+  if (m.estado !== "partial" || monedaDocumento.toUpperCase().trim() !== p.movimiento.moneda.toUpperCase().trim()) return null;
+  const residual = m.importeCentimos - m.conciliadoCentimos;
+  return residual > 0 && residual <= Math.max(0, p.toleranciaCentimos) ? residual : null;
+}
+
 /** Marcas con las que el flujo automático deja identificada su compra en Holded. */
 export function marcasDeOperacion(op: OperacionAuto): string[] {
   const marcas = [`WOBI_AUTO:${op.id}`];
@@ -75,6 +94,7 @@ export function evaluarEvidenciaCierre(op: OperacionAuto, hechos: HechosCierre):
   const p = op.plan;
   const documento = monedaRegistroPlanAuto(p);
   const c = hechos.compra;
+  const saldoTolerado = hechos.movimiento ? conciliadoConSaldoTolerado(op, hechos.movimiento, documento.moneda) : null;
   const comprobaciones: Record<ComprobacionCierre, boolean> = {
     identidad: Boolean(c && op.compraId && c.id === op.compraId &&
       marcasDeOperacion(op).some(marca => c.notas.includes(marca))),
@@ -84,13 +104,15 @@ export function evaluarEvidenciaCierre(op: OperacionAuto, hechos: HechosCierre):
     pagoCompleto: Boolean(c && c.totalCentimos > 0 && c.pendienteCentimos === 0 && c.pagadoCentimos === c.totalCentimos),
     pagoEnLaCuentaPrevista: Boolean(c && c.pagos.length > 0 && c.pagos.every(x => x.bancoId === p.movimiento.cuentaId)),
     comprobante: hechos.adjuntos > 0,
-    movimientoConciliado: Boolean(hechos.movimiento && ESTADOS_CONCILIADO.has(hechos.movimiento.estado)),
+    movimientoConciliado: Boolean(hechos.movimiento &&
+      (ESTADOS_CONCILIADO.has(hechos.movimiento.estado) || saldoTolerado !== null)),
   };
   const faltan = (Object.keys(comprobaciones) as ComprobacionCierre[]).filter(k => !comprobaciones[k]);
   // Sin identidad, contacto, moneda e importe no se puede afirmar nada sobre esta compra.
   const esDeEstaOperacion = comprobaciones.identidad && comprobaciones.contacto &&
     comprobaciones.moneda && comprobaciones.total;
   return {
+    saldoResidualCentimos: saldoTolerado ?? 0,
     veredicto: !esDeEstaOperacion ? "no_concluyente" : faltan.length ? "parcial" : "completa",
     comprobaciones,
     faltan,
