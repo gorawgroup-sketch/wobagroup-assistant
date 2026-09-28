@@ -58,7 +58,10 @@
     "candidatos": [],
     "vistoPorConciliacionAutomatica": [],
     "botonesExcluyen": [
-      "Crear"
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
     ],
     "trazaContiene": [
       "categorías contradictorias"

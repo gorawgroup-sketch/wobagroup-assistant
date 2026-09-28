@@ -51,7 +51,10 @@
     "candidatos": [],
     "vistoPorConciliacionAutomatica": [],
     "botonesExcluyen": [
-      "Crear"
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
     ],
     "trazaContiene": [
       "no es un cargo"
