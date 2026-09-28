@@ -100,6 +100,15 @@ test("crea una identidad opaca y solo acepta un residuo dentro del margen de la 
     fecha: "2026-09-16", monto: 0.26, totalNativoCompra: 255.68,
   });
   assert.equal(grande.montoCentimos, 26);
+  const multimoneda = identidadAjusteCambio({
+    empresa: "Footprint", purchaseId: "p2", movementId: "m2", sourceAccountId: "a", targetTreasuryId: "b",
+    fecha: "2026-09-27", monto: 1.41, totalNativoCompra: 56596, permitirMultimoneda: true,
+  });
+  assert.equal(multimoneda.montoCentimos, 141);
+  assert.throws(() => identidadAjusteCambio({
+    empresa: "Footprint", purchaseId: "p3", movementId: "m3", sourceAccountId: "a", targetTreasuryId: "b",
+    fecha: "2026-09-27", monto: 2.01, totalNativoCompra: 56596, permitirMultimoneda: true,
+  }), /margen/);
 });
 
 test("aplica una vez y verifica el saldo cero", async () => {

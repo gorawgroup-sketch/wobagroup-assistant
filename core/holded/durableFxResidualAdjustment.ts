@@ -87,6 +87,8 @@ export function identidadAjusteCambio(
     fecha: string;
     monto: number;
     totalNativoCompra: number;
+    /** Solo true después de que el usuario eligió un candidato tipo_cambio. */
+    permitirMultimoneda?: boolean;
   },
   proceso = "ajuste_cambio_divisa_post_conciliacion",
   ahora = Date.now()
@@ -104,7 +106,9 @@ export function identidadAjusteCambio(
     throw new Error("El ajuste de cambio no puede registrarse en la misma cuenta extranjera conciliada.");
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new Error("La fecha del ajuste debe usar YYYY-MM-DD.");
-  const margenCentimos = Math.round(margenResiduoConversion(entrada.totalNativoCompra) * 100);
+  const margenCentimos = entrada.permitirMultimoneda
+    ? 200
+    : Math.round(margenResiduoConversion(entrada.totalNativoCompra) * 100);
   if (montoCentimos <= 0 || montoCentimos > margenCentimos) {
     throw new Error(
       `La regularización automática solo admite un residuo entre 0,01 y el margen de esta compra (${(margenCentimos / 100).toFixed(2)}).`

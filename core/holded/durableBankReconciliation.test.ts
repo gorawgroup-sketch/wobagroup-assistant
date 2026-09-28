@@ -593,6 +593,92 @@ test("caso real Airbnb MEX (Footprint, 2026-09-16): un residuo de varios céntim
   });
 });
 
+test("caso real COP pagado desde USD: cierra 1,41 EUR solo tras la elección multimoneda explícita", () => {
+  const compra = {
+    currency: "COP",
+    currency_change: "3692.93",
+    total: "56596,00",
+    payments_total: "51405,59",
+    payments_pending: "5207,03",
+    payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-27", amount: "13,92" }],
+  };
+  const movimiento = {
+    status: "reconciled",
+    currency: "USD",
+    amount: "-15.86",
+    reconciled_amount: "-15.86",
+    accounting_amount: "-13.92",
+  };
+
+  assert.equal(
+    evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-09-27"),
+    undefined,
+    "sin la selección humana multimoneda no debe crear un pago"
+  );
+  assert.deepEqual(
+    evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-09-27", true),
+    {
+      monto: 1.41,
+      monedaDocumento: "COP",
+      montoNativo: 56596,
+      montoContableMovimiento: 13.92,
+      montoContableDocumento: 15.33,
+      tasaCambio: 3692.93,
+      multimonedaAutorizada: true,
+    }
+  );
+});
+
+test("multimoneda no ajusta si el pago EUR no recompone exactamente el total pagado nativo", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "COP",
+      currency_change: "3692.93",
+      total: "56596,00",
+      payments_total: "51000,00",
+      payments_pending: "5596,00",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-27", amount: "13,92" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-15.86",
+      reconciled_amount: "-15.86",
+      accounting_amount: "-13.92",
+    },
+    "ftg-usd",
+    "2026-09-27",
+    true
+  );
+
+  assert.equal(resultado, undefined);
+});
+
+test("multimoneda rechaza incluso una diferencia demostrada si supera el 10% o 2 EUR", () => {
+  const resultado = evaluarAjusteCambioResidual(
+    {
+      currency: "COP",
+      currency_change: "3692.93",
+      total: "56596,00",
+      payments_total: "45518,01",
+      payments_pending: "11077,99",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-27", amount: "12,33" }],
+    },
+    {
+      status: "reconciled",
+      currency: "USD",
+      amount: "-14.05",
+      reconciled_amount: "-14.05",
+      accounting_amount: "-12.33",
+    },
+    "ftg-usd",
+    "2026-09-27",
+    true
+  );
+
+  assert.equal(resultado, undefined);
+});
+
 test("caso real Airbnb Medellín: convierte 0,54 USD pendientes en un ajuste de 0,47 EUR", () => {
   const resultado = evaluarAjusteCambioResidual(
     {

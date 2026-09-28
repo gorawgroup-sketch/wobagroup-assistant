@@ -5221,6 +5221,7 @@ export interface AjusteCambioResidualElegible {
   montoContableMovimiento: number;
   montoContableDocumento: number;
   tasaCambio: number;
+  multimonedaAutorizada?: true;
 }
 
 /**
@@ -5228,16 +5229,22 @@ export interface AjusteCambioResidualElegible {
  * conversión y no una deuda real. Todas las comparaciones financieras se
  * hacen en céntimos enteros:
  *
- * - documento y movimiento coinciden exactamente en la moneda nativa;
+ * - en la ruta normal, documento y movimiento coinciden exactamente en la
+ *   moneda nativa;
+ * - si son monedas distintas, el usuario tuvo que elegir expresamente el
+ *   candidato multimoneda y el pago contable debe recomponer al céntimo los
+ *   totales nativos del documento;
  * - el movimiento quedó conciliado por el 100% de ese importe;
  * - el pago que creó Holded pertenece a esa cuenta y fecha;
  * - ese pago coincide con accounting_amount;
- * - payments_total + payments_pending recompone exactamente el total nativo;
+ * - payments_total + payments_pending recompone el total nativo (con un
+ *   máximo de medio céntimo EUR de redondeo en la ruta multimoneda);
  * - el residuo convertido a EUR queda dentro del margen compartido de
  *   margenResiduoConversion (antes exigía exactamente 0,01 —
  *   pedido explícito de Carlos, 2026-09-16, tras confirmar en vivo casos
  *   reales hasta 0,26: el mismo residuo de redondeo de Holded, solo que más
- *   grande cuando el total de la compra también lo es).
+ *   grande cuando el total de la compra también lo es). En multimoneda el
+ *   techo adicional es el menor entre 10% del total contable y 2 EUR.
  *
  * Si falta una sola señal, devuelve undefined y no se crea ningún pago.
  */
@@ -5245,12 +5252,14 @@ export function evaluarAjusteCambioResidual(
   compra: Pick<CompraHoldedCruda, "currency" | "currency_change" | "total" | "payments_total" | "payments_pending" | "payments_detail">,
   movimiento: MovimientoParaAjusteCambio,
   sourceAccountId: string,
-  fechaMovimiento: string
+  fechaMovimiento: string,
+  permitirMultimoneda = false
 ): AjusteCambioResidualElegible | undefined {
   const centimos = (valor: number) => Math.round(Math.abs(valor) * 100);
   const monedaDocumento = (compra.currency || "EUR").toUpperCase().trim();
   const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
-  if (monedaDocumento === "EUR" || monedaDocumento !== monedaMovimiento) return undefined;
+  const esMultimoneda = monedaDocumento !== monedaMovimiento;
+  if (monedaDocumento === "EUR" || (esMultimoneda && !permitirMultimoneda)) return undefined;
   if (!estaConciliado(movimiento.status)) return undefined;
 
   const totalNativo = Math.abs(numeroDesdeHolded(compra.total));
@@ -5263,13 +5272,13 @@ export function evaluarAjusteCambioResidual(
 
   const pendiente = parsearMontoHolded(compra.payments_pending);
   const margenCentimos = Math.round(margenResiduoConversion(totalNativo) * 100);
-  if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) <= 0 || Math.round(pendiente * 100) > margenCentimos) {
+  if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) <= 0 ||
+      (!esMultimoneda && Math.round(pendiente * 100) > margenCentimos)) {
     return undefined;
   }
 
-  if (centimos(totalNativo) !== centimos(montoMovimiento) || centimos(montoMovimiento) !== centimos(montoConciliado)) {
-    return undefined;
-  }
+  if (centimos(montoMovimiento) !== centimos(montoConciliado)) return undefined;
+  if (!esMultimoneda && centimos(totalNativo) !== centimos(montoMovimiento)) return undefined;
 
   const pagos = compra.payments_detail ?? [];
   if (pagos.length === 0) return undefined;
@@ -5294,12 +5303,37 @@ export function evaluarAjusteCambioResidual(
   // quedar incluso al otro lado del cero aunque Holded muestre 0,54 USD
   // pendientes. Se exige que no haya otros pagos y que total pagado + pendiente
   // recomponga exactamente el total nativo.
-  if (!Number.isFinite(totalPagadoNativo) ||
+  if (!Number.isFinite(totalPagadoNativo)) return undefined;
+  if (!esMultimoneda &&
       centimos(totalPagadoNativo) + pendienteCentimos !== centimos(totalNativo)) return undefined;
+  if (esMultimoneda) {
+    // Holded redondea el pago en EUR a dos decimales y vuelve a expresar el
+    // pendiente en la moneda nativa. Ese viaje de ida y vuelta puede mover
+    // menos de medio céntimo EUR (16,62 COP en el caso real), aunque las
+    // cifras sean correctas. Solo se admite exactamente ese error de redondeo.
+    const desfaseRecompuestoEur = Math.abs(totalPagadoNativo + pendiente - totalNativo) / tasaCambio;
+    if (desfaseRecompuestoEur > 0.005) return undefined;
+  }
 
   const montoAjusteCentimos = Math.round((pendiente / tasaCambio) * 100);
-  if (montoAjusteCentimos <= 0 || montoAjusteCentimos > margenCentimos) return undefined;
   const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
+  if (montoAjusteCentimos <= 0) return undefined;
+
+  if (esMultimoneda) {
+    // Solo se llega aquí tras la elección humana explícita de un candidato
+    // `tipo_cambio`. Caso real Footprint: 56.596 COP pagados desde USD. Holded
+    // registró 13,92 EUR contables y dejó 5.207,03 COP = 1,41 EUR. Además de
+    // esa autorización se exige que el pago EUR recomponga exactamente lo que
+    // Holded declara pagado y que la diferencia contable sea el mismo saldo.
+    if (centimos(totalPagosOrigen * tasaCambio) !== centimos(totalPagadoNativo)) return undefined;
+    if (totalContableDocumentoCentimos - centimos(montoContable) !== montoAjusteCentimos) return undefined;
+    const limiteMultimonedaCentimos = Math.round(
+      Math.min(2, Math.max(0.02, (totalContableDocumentoCentimos / 100) * 0.1)) * 100
+    );
+    if (montoAjusteCentimos > limiteMultimonedaCentimos) return undefined;
+  } else if (montoAjusteCentimos > margenCentimos) {
+    return undefined;
+  }
 
   return {
     monto: montoAjusteCentimos / 100,
@@ -5308,6 +5342,7 @@ export function evaluarAjusteCambioResidual(
     montoContableMovimiento: montoContable,
     montoContableDocumento: totalContableDocumentoCentimos / 100,
     tasaCambio,
+    ...(esMultimoneda ? { multimonedaAutorizada: true as const } : {}),
   };
 }
 
@@ -5426,6 +5461,7 @@ async function aplicarOReportarAjusteCambio(
       fecha: registro.fechaAproximada,
       monto: elegible.monto,
       totalNativoCompra: elegible.montoNativo,
+      permitirMultimoneda: elegible.multimonedaAutorizada === true,
     });
     const { resultado } = await ejecutarAjusteCambioDurable(solicitud, durableFxResidualAdjustmentStore, transporteAjusteCambioHolded);
     if (contactId) {
@@ -5469,7 +5505,10 @@ async function aplicarOReportarAjusteCambio(
  */
 async function inspeccionarConciliacionRegistrada(
   registro: RegistroConciliacionMovimiento,
-  opciones: { permitirAjusteCambioAutomatico?: boolean } = { permitirAjusteCambioAutomatico: true }
+  opciones: { permitirAjusteCambioAutomatico?: boolean; permitirAjusteMultimoneda?: boolean } = {
+    permitirAjusteCambioAutomatico: true,
+    permitirAjusteMultimoneda: false,
+  }
 ): Promise<InspeccionConciliacionMovimiento> {
   const movimiento = await leerEstadoMovimiento(
     registro.empresa,
@@ -5511,7 +5550,8 @@ async function inspeccionarConciliacionRegistrada(
           compra,
           movimiento,
           registro.accountId,
-          registro.fechaAproximada
+          registro.fechaAproximada,
+          opciones.permitirAjusteMultimoneda === true
         );
         if (elegible) {
           ajusteCambioDivisa = opciones.permitirAjusteCambioAutomatico === false
@@ -5600,7 +5640,10 @@ export async function reconciliarMovimiento(
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
     await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
-    const inspeccion = await inspeccionarConciliacionRegistrada(registro);
+    const inspeccion = await inspeccionarConciliacionRegistrada(registro, {
+      permitirAjusteCambioAutomatico: true,
+      permitirAjusteMultimoneda: opciones.permitirMonedaDistinta === true,
+    });
     return inspeccion.estado === "no_encontrada"
       ? { ok: false, statusFinal: "(no encontrado al releer)", montoEnlazado: 0 }
       : inspeccion.resultado;
@@ -5617,7 +5660,10 @@ export async function reconciliarMovimiento(
         registro,
         durableBankReconciliationStore,
         {
-          inspeccionar: inspeccionarConciliacionRegistrada,
+          inspeccionar: (pendiente) => inspeccionarConciliacionRegistrada(pendiente, {
+            permitirAjusteCambioAutomatico: true,
+            permitirAjusteMultimoneda: opciones.permitirMonedaDistinta === true,
+          }),
           conciliar: (pendiente) =>
             aplicarConciliacionRegistrada(pendiente, opciones.permitirMonedaDistinta === true),
         }

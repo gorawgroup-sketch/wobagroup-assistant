@@ -69,6 +69,12 @@ Antes de afirmar que no hay cargo para un recibo COP u otra divisa, buscar tambi
 - «Pagado» en la compra no demuestra conciliación completa: comprobar también importe y estado del movimiento. Una compra existente pendiente se debe recuperar, nunca duplicar ni declarar completada por existir.
 - Las correcciones en Holded conservan el borrador, el soporte y la identidad del pago. No añadir pagos ordinarios para ocultar diferencias de conversión.
 
+### Cierre de residuos tras una conciliación multimoneda (28 septiembre)
+- Cuando el operador ya eligió expresamente un candidato `tipo_cambio`, releer documento, movimiento y pago después de conciliar. Si el documento y la cuenta usan monedas distintas, comparar mediante el importe contable EUR real que devuelve el movimiento; nunca comparar directamente las unidades nativas entre sí.
+- El equivalente automático de «Añadir pago → Ajustar cambio de divisa» solo se permite si el movimiento quedó conciliado al 100%, el pago pertenece a la misma cuenta y fecha, `payments_total` se recompone desde ese pago y la tasa del documento, y el saldo convertido coincide exactamente con la diferencia contable. Se tolera como máximo medio céntimo EUR por el viaje de redondeo nativo→EUR→nativo.
+- Aunque todas las igualdades cuadren, el ajuste queda limitado al menor entre 10% del total contable y 2 EUR. Sin selección humana multimoneda previa o si falla una sola igualdad, no se crea ningún pago y el saldo queda para revisión.
+- El ajuste se registra contra «Main» EUR mediante la escritura durable existente, se relee y solo se declara terminado cuando `payments_pending` queda en cero. Un timeout bloquea toda repetición automática.
+
 ### Cargos repetidos con un cargo libre exacto
 
 Un movimiento conciliado antiguo con importe igual o con un céntimo de diferencia no prueba que un nuevo recibo sea duplicado. Antes de bloquear, consultar también movimientos pendientes. Cuando hay exactamente un débito bancario libre que coincide en proveedor, moneda, importe y fecha del recibo, ese cargo puede prevalecer sobre coincidencias bancarias meramente probables separadas por más de tres días. Conservar los bloqueos por compra/documento existente, coincidencia bancaria exacta, fechas desconocidas o cercanas y múltiples cargos libres. No desvincular conciliaciones anteriores por parecido ni reutilizar su pago. La selección final debe verificarse en compra y banco.
