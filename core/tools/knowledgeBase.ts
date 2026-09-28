@@ -13,6 +13,8 @@ export type AmbitoConocimiento = "general" | "correo" | "documental" | "contabil
 export interface OpcionesConsultaConocimiento {
   ambito?: AmbitoConocimiento;
   maxCaracteres?: number;
+  /** Omite la red de seguridad de entradas recientes sin coincidencia. */
+  soloCoincidencias?: boolean;
 }
 
 interface RegistroRelevante {
@@ -41,14 +43,20 @@ function acotarLimite(valor: number): number {
   return Math.max(8_000, Math.min(40_000, Math.floor(valor)));
 }
 
-function tomarDentroDePresupuesto(registros: RegistroRelevante[], maxCaracteres: number): string {
+function tomarDentroDePresupuesto(
+  registros: RegistroRelevante[],
+  maxCaracteres: number,
+  incluirRecientesSinCoincidencia = true
+): string {
   const ordenados = [...registros].sort(
     (a, b) => b.puntaje - a.puntaje || b.fecha.localeCompare(a.fecha)
   );
   const positivos = ordenados.filter((registro) => registro.puntaje > 0);
   // Si la búsqueda no coincide literalmente, se conservan las dos entradas más recientes como red de
   // seguridad. La memoria completa permanece en Sheets y puede consultarse de nuevo con otra pregunta.
-  const candidatos = positivos.length > 0 ? positivos : ordenados.slice(0, 2);
+  const candidatos = positivos.length > 0
+    ? positivos
+    : incluirRecientesSinCoincidencia ? ordenados.slice(0, 2) : [];
   const seleccionados: string[] = [];
   let usados = 0;
 
@@ -64,7 +72,11 @@ function tomarDentroDePresupuesto(registros: RegistroRelevante[], maxCaracteres:
   return seleccionados.join("\n\n---\n\n");
 }
 
-async function cargarCorreccionesRelevantes(consulta: string, maxCaracteres: number): Promise<string> {
+async function cargarCorreccionesRelevantes(
+  consulta: string,
+  maxCaracteres: number,
+  soloCoincidencias: boolean
+): Promise<string> {
   try {
     const filas = await obtenerCorreccionesCrudas();
     return tomarDentroDePresupuesto(
@@ -78,7 +90,8 @@ async function cargarCorreccionesRelevantes(consulta: string, maxCaracteres: num
           puntaje: puntuarTextoConocimiento(`${fila.correccion} ${fila.contextoPrevio}`, consulta),
         };
       }),
-      maxCaracteres
+      maxCaracteres,
+      !soloCoincidencias
     );
   } catch (error) {
     console.error("[knowledgeBase] Error leyendo correcciones:", error);
@@ -86,7 +99,11 @@ async function cargarCorreccionesRelevantes(consulta: string, maxCaracteres: num
   }
 }
 
-async function cargarCapturasRelevantes(consulta: string, maxCaracteres: number): Promise<string> {
+async function cargarCapturasRelevantes(
+  consulta: string,
+  maxCaracteres: number,
+  soloCoincidencias: boolean
+): Promise<string> {
   try {
     const filas = await obtenerCapturasCrudas();
     return tomarDentroDePresupuesto(
@@ -101,7 +118,8 @@ async function cargarCapturasRelevantes(consulta: string, maxCaracteres: number)
           puntaje: puntuarTextoConocimiento(`${fila.empresas} ${fila.autor} ${fila.texto}`, consulta),
         };
       }),
-      maxCaracteres
+      maxCaracteres,
+      !soloCoincidencias
     );
   } catch (error) {
     console.error("[knowledgeBase] Error leyendo capturas:", error);
@@ -133,8 +151,8 @@ export async function consultarBaseConocimiento(
   const maxDocumentos = maxTotal - maxCorrecciones - maxCapturas - 500;
 
   const [correcciones, capturas] = await Promise.all([
-    cargarCorreccionesRelevantes(consulta, maxCorrecciones),
-    cargarCapturasRelevantes(consulta, maxCapturas),
+    cargarCorreccionesRelevantes(consulta, maxCorrecciones, opciones.soloCoincidencias ?? false),
+    cargarCapturasRelevantes(consulta, maxCapturas, opciones.soloCoincidencias ?? false),
   ]);
   const fragmentos = buscarFragmentosRelevantes(consulta, {
     incluirPGC: incluirPGC(consulta, ambito),
