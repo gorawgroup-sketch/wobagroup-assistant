@@ -74,11 +74,16 @@ import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import {
   revisarCorreoNuevo,
-  RevisionCorreoOcupadaError,
   handleColaCorreoSiguienteCallback,
   handleDescartarActivoCallback,
   handleReintentarActivoCallback,
 } from "../core/jobs/revisarCorreoNuevo";
+import {
+  avisarYRegistrarRevisionesInterrumpidas,
+  ejecutarRevisionCorreoManual,
+  reanudarRevisionesCorreoInterrumpidas,
+} from "../core/jobs/revisionCorreoManual";
+import { solicitarCierre } from "../core/utils/cierreServicio";
 import {
   handleCancelarDescartarTodoPendienteCallback,
   handleConfirmarDescartarTodoPendienteCallback,
@@ -288,6 +293,18 @@ const configuracionTelegramDurable = configuracionEntregasDurables();
 process.on("SIGTERM", () => {
   if (cerrandoPorSigterm) return; // Railway no debería mandar SIGTERM dos veces, pero por si acaso.
   cerrandoPorSigterm = true;
+  // Caso real 2026-09-28 16:12: /revisarcorreo (hasta 30 min) no cabe en ninguna ventana de
+  // drenado razonable, y salir «de todas formas» lo dejaba en «39/50» sin aviso ni reanudación.
+  // Ahora: (1) la señal de cierre hace que los trabajos largos paren en su siguiente punto de
+  // control sin abrir escrituras nuevas; (2) cada revisión manual en curso deja de inmediato su
+  // registro durable de reanudación y avisa al chat — antes de esperar nada, por si el SIGKILL
+  // llega primero; el proceso nuevo la retoma al arrancar (core/jobs/revisionCorreoManual.ts).
+  solicitarCierre();
+  trackearEnSegundoPlano(
+    avisarYRegistrarRevisionesInterrumpidas().catch((error) =>
+      console.error("[server] No se pudo registrar/avisar las revisiones de correo interrumpidas:", error)
+    )
+  );
   coordinadorEntregasTelegram.cerrar();
   servidorHttp?.close();
 
@@ -304,7 +321,10 @@ process.on("SIGTERM", () => {
   console.log(
     `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${coordinadorEntregasTelegram.estado.activas} entrega(s) durable(s), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s) y ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s) activas — esperando a que terminen antes de salir.`
   );
-  const esperaMaximaDrenajeMs = 55_000;
+  // Unos segundos por debajo del drenado real de Railway (railway.json `drainingSeconds` /
+  // variable RAILWAY_DEPLOYMENT_DRAINING_SECONDS), leído del entorno para que no haya que
+  // mantener dos números a mano: si se cambia allí, esto lo sigue.
+  const esperaMaximaDrenajeMs = Math.max(5_000, Number(process.env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS || 60) * 1000 - 5_000);
   const inicio = Date.now();
   const intervalo = setInterval(() => {
     if (nadaEnCurso()) {
@@ -2018,42 +2038,9 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
 
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
-    trackearEnSegundoPlano(
-      revisarCorreoNuevo({ origen: "manual", chatId: incoming.chatId })
-      .then((resultado) => {
-        // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
-        // con varios correos reales sin leer en Gmail, y el sistema
-        // respondió "0 correos revisados" sin más — la causa real era un
-        // correo "activo" con una pregunta sin responder desde horas antes
-        // (bloqueando el resto de la cola), pero el aviso no lo decía. Ahora,
-        // si ese es el caso, se avisa explícitamente qué es lo que falta
-        // resolver en vez de dar a entender que no había nada pendiente.
-        if (resultado.activoBloqueando) {
-          // Pedido explícito de Carlos, tras un caso real: "esto ya lo
-          // gestioné" — a veces el correo activo ya está resuelto por su
-          // cuenta (fuera del chat), y antes la única salida era esperar
-          // 48h o encontrar el mensaje original. El botón lo libera ya
-          // mismo (ver handleDescartarActivoCallback).
-          sendTelegramMessageWithButtons(
-            incoming.chatId,
-            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`,
-            [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
-          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
-        } else {
-          sendTelegramMessage(
-            incoming.chatId,
-            `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`
-          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
-        }
-      })
-      .catch((error) => {
-        console.error("Error en revisión extraordinaria de correo:", error);
-        const mensaje = error instanceof RevisionCorreoOcupadaError
-          ? "⏳ Ya hay otra revisión de correo trabajando. El proceso sigue protegido; vuelve a intentarlo en unos minutos."
-          : "⚠️ Hubo un error revisando el correo.";
-        sendTelegramMessage(incoming.chatId, mensaje).catch(() => {});
-      })
-    );
+    // La revisión vive en core/jobs/revisionCorreoManual.ts para que la reanudación tras un
+    // despliegue (SIGTERM) ejecute exactamente el mismo camino que esta orden escrita a mano.
+    trackearEnSegundoPlano(ejecutarRevisionCorreoManual(incoming.chatId));
     return;
   }
 
@@ -2732,6 +2719,16 @@ servidorHttp = app.listen(PORT, () => {
       })
     );
   }
+  // Revisiones manuales de correo que un despliegue anterior interrumpió (ver SIGTERM arriba).
+  trackearEnSegundoPlano(
+    reanudarRevisionesCorreoInterrumpidas({ seguir: trackearEnSegundoPlano })
+      .then((relanzadas) => {
+        if (relanzadas > 0) console.log(`[revisarcorreo] Reanudadas ${relanzadas} revisión(es) interrumpida(s) por el despliegue anterior.`);
+      })
+      .catch((error) => {
+        console.error("[revisarcorreo] No se pudo revisar si había revisiones interrumpidas al arrancar:", error);
+      })
+  );
   trackearEnSegundoPlano(
     reconciliarEnviosCorreoAlArrancar()
       .then((r) => {

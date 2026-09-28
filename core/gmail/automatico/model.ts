@@ -389,6 +389,12 @@ export interface ResultadoAuto {
   fallosAnalisis?: number;
   /** Mensajes que ya estaban bajo una decisión manual o autorrespuesta activa. */
   reservados?: number;
+  /**
+   * La revisión paró en un punto de control porque el proceso recibió la orden de cerrarse (un
+   * despliegue nuevo). Lo hecho queda durable; el resultado es parcial y no debe informarse como
+   * si fuera una pasada terminada — ver core/gmail/automatico/reanudacion.ts.
+   */
+  interrumpida?: boolean;
   pendientes: Array<{ mensajeId: string; asunto: string; motivos: string[]; detalles?: Array<{
     proveedor: string; empresa: EmpresaAuto | "desconocida"; monto: number; moneda: string;
     contacto?: string; metodoContacto?: string; motivoProveedor?: string; motivos: string[];
