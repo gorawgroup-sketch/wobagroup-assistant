@@ -35,10 +35,13 @@ antes de agregar una capacidad nueva.
 - Un cambio a un módulo compartido (`sheetsKeyValueStore.ts`, el orquestador de
   `estadoAgregado.ts`, `serviceAccount.ts`...) exige verificación extra: reproducir el
   fallo original, no solo confirmar el caso feliz.
-- Toda publicación, fusión o despliegue requiere autorización explícita de Carlos. La
-  autorización dada en el chat es suficiente; no exigirle interacción manual en GitHub
-  salvo que una protección técnica real de la rama lo haga necesario. Nunca omitir los
-  checks obligatorios ni forzar una rama protegida.
+- Carlos autoriza de forma continuada las correcciones rutinarias solicitadas y su
+  publicación, fusión y despliegue tras verificarlas (instrucción del 28-09-2026).
+  No pedir una nueva aprobación por cada PR dentro de ese alcance. Guardar primero
+  el trabajo en el disco externo, publicar en GitHub y verificar que Railway despliega
+  ese mismo commit y funciona correctamente. Respetar pausas expresas (como PR #221),
+  los checks obligatorios y las protecciones de rama; no extender esta autorización a
+  operaciones financieras ni a acciones destructivas o cambios de acceso.
 
 ## Comandos
 

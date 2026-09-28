@@ -339,6 +339,7 @@ const ACCIONES_SENSIBLES = new Set([
   // no), no solo la que escribe, para centralizar la decisión completa.
   "gasto_conciliar_si",
   "gasto_conciliar_no",
+  "gasto_conciliar_posponer",
   // Mismo criterio y mismo día: cuando "¿Quieres conciliar?" encuentra varios movimientos
   // parecidos, ahora se pregunta CUÁL con botones (ver ofrecerEleccionMovimientosAmbiguos en
   // gastoCallbackHandler.ts) en vez del texto muerto de antes — esa elección concilia de verdad en

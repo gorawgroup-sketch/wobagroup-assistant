@@ -113,3 +113,6 @@ Antes de trasladar al usuario un parecido por importe/proveedor, comprobar si ha
 
 ### «Crear (sin conciliar)» restaurado (28 septiembre)
 Decisión del propietario: crear un gasto no depende de que exista un cargo bancario. La regla de #204 («sin cargo compatible no se ofrece crear») bloqueaba el efectivo, los cargos que llegan tarde y los que la búsqueda aún no ve. Ahora, con fecha documental válida, siempre se ofrece «Crear (sin conciliar)» y al aprobar solo se repite la comprobación de duplicados; **conciliar** sigue exigiendo un cargo utilizable (categorías contradictorias impiden la asociación incluso con importe exacto). Los recibos sin fecha siguen sin poder crearse hasta verificar la fecha.
+
+### Continuar correos con una conciliación que requiere revisión
+Una compra pagada puede coexistir con un movimiento bancario parcialmente asignado. No ofrecer repetir la conciliación del gasto para resolver ese saldo. Mostrar verificación por lectura y «Dejar saldo pendiente y seguir», conservando la decisión y el correo sin leer. La salida usa la identidad exacta de correo y chat bajo el coordinador existente; un botón antiguo no puede avanzar otro correo. No presentar el aplazamiento como cierre contable ni crear pagos para liberar la cola.
