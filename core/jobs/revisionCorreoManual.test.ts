@@ -265,3 +265,24 @@ test("una fila huérfana (latido apagado, muerte sin aviso) se retoma explicando
   assert.equal(e.iniciados[0]?.reanudaciones, 1);
   e.restaurar();
 });
+
+test("el SIGTERM espera a que el INSERT `en_curso` aterrice antes de pasar la fila a `pendiente`", async () => {
+  const orden: string[] = [];
+  let terminarInicio: (() => void) | undefined;
+  const e = escenario();
+  const restaurarInicio = configurarRevisionCorreoManualParaPruebas({
+    iniciarRevisionEnCurso: async () => { await new Promise<void>(resolve => { terminarInicio = resolve; }); orden.push("en_curso"); },
+    registrarReanudacionPendiente: async () => { orden.push("pendiente"); },
+  });
+  const revision = ejecutarRevisionCorreoManual(CHAT);
+  const sigterm = avisarYRegistrarRevisionesInterrumpidas();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(orden, []); // el registro `pendiente` no se adelanta al INSERT en vuelo
+  terminarInicio!();
+  await sigterm;
+  assert.deepEqual(orden, ["en_curso", "pendiente"]);
+  e.liberar();
+  await revision;
+  restaurarInicio();
+  e.restaurar();
+});

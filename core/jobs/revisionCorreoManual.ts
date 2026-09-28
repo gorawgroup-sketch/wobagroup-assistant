@@ -58,7 +58,7 @@ export function configurarRevisionCorreoManualParaPruebas(parciales: Partial<typ
   return () => { Object.assign(dependencias, originales); revisionesManualesEnCurso.clear(); registrosEnVuelo.clear(); };
 }
 
-const revisionesManualesEnCurso = new Map<number, { reanudaciones: number }>();
+const revisionesManualesEnCurso = new Map<number, { reanudaciones: number; inicio: Promise<void> }>();
 /**
  * Registro de reanudación que el SIGTERM dejó en vuelo, por chat. Si la revisión termina por sí
  * sola en esa misma ventana, su cierre debe esperar a que el INSERT aterrice: si no, el DELETE
@@ -71,13 +71,16 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
   // Si otra orden del mismo chat ya está en curso, revisarCorreoNuevo se une a ella; conservamos
   // el contador más alto para que la cadena de reanudaciones no se reinicie por una orden repetida.
   const previa = revisionesManualesEnCurso.get(chatId);
-  const estado = { reanudaciones: Math.max(reanudaciones, previa?.reanudaciones ?? 0) };
-  revisionesManualesEnCurso.set(chatId, estado);
+  const cuenta = Math.max(reanudaciones, previa?.reanudaciones ?? 0);
 
   // Fila `en_curso` + latido: si este proceso muere sin aviso, el siguiente lo nota por el silencio.
   // Ninguno de los dos es crítico para la revisión en sí: si Postgres falla, se registra y sigue.
-  const inicio = dependencias.iniciarRevisionEnCurso({ chatId, interrumpidaEn: Date.now(), reanudaciones: estado.reanudaciones })
+  const inicio = dependencias.iniciarRevisionEnCurso({ chatId, interrumpidaEn: Date.now(), reanudaciones: cuenta })
     .catch((error) => console.error("[revisarcorreo] No se pudo registrar la revisión en curso (seguirá sin latido):", error));
+  // `inicio` se guarda para que el SIGTERM espere a que el INSERT `en_curso` aterrice antes de
+  // pasarla a `pendiente`: si llegara al revés, el INSERT tardío la devolvería a `en_curso` y el
+  // siguiente proceso tardaría un minuto más (latido apagado) en retomarla, con el aviso equivocado.
+  revisionesManualesEnCurso.set(chatId, { reanudaciones: cuenta, inicio });
   const latido = setInterval(() => {
     void inicio.then(() => dependencias.latirRevisionEnCurso(chatId, dependencias.progresoRevisionAutomatica(chatId)))
       .catch((error) => console.error("[revisarcorreo] No se pudo emitir el latido de la revisión:", error));
@@ -152,7 +155,7 @@ export async function avisarYRegistrarRevisionesInterrumpidas(ahora = Date.now()
     const avance = progreso ? ` Último avance: ${progreso.replace(/^⏳\s*/, "")}` : "";
     const registro: ReanudacionRevisionCorreo = { chatId, interrumpidaEn: ahora, reanudaciones: estado.reanudaciones, progreso };
     let programada = true;
-    const escritura = dependencias.registrarReanudacionPendiente(registro);
+    const escritura = estado.inicio.then(() => dependencias.registrarReanudacionPendiente(registro));
     registrosEnVuelo.set(chatId, escritura);
     try {
       await escritura;
