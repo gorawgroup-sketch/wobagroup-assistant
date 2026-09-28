@@ -1,0 +1,75 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "2026-09-28-just-b-cuz",
+  "fuente": "Incidente 2026-09-28, PR #224/#225: el ticket decía «JUST B CUZ PLM» y el banco «Par*just B Cuz Luxury»; no había botones de crear.",
+  "descripcion": "El cargo exacto (importe, moneda y día) existe en la cuenta USD y el nombre comparte el núcleo de marca: debe ofrecerse como compatible y habilitar Crear y conciliar.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "JUST B CUZ PLM",
+    "concepto": "Café — JUST B CUZ PLM, San Juan, Puerto Rico — Simon Talloen — pagado con Revolut",
+    "monto": 3.91,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m-jbc",
+        "description": "Par*just B Cuz Luxury",
+        "amount": "-3.91",
+        "currency": "USD",
+        "booking_date": "2026-09-25",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ],
+    "cuenta-eur": [
+      {
+        "id": "m-otro",
+        "description": "Payu*uber",
+        "amount": "-3.91",
+        "currency": "EUR",
+        "booking_date": "2026-09-25",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m-jbc",
+        "compatibilidad": null
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [
+      "m-jbc"
+    ],
+    "botonesIncluyen": [
+      "Crear y conciliar"
+    ]
+  }
+}

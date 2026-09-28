@@ -1,0 +1,48 @@
+{
+  "tipo": "monedas_cuentas",
+  "id": "holded-caido",
+  "fuente": "Incidente 2026-09-28 13:26 UTC: Holded devolvió 502/503 y el flujo asumió «solo EUR» para Footprint (que tiene EUR, USD y COP).",
+  "descripcion": "Con Holded caído tras una lectura buena se usa la última lectura buena; sin ninguna lectura previa el error se relanza.",
+  "empresa": "Footprint",
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "lecturas": [
+    {
+      "holded": "ok",
+      "esperado": [
+        "COP",
+        "EUR",
+        "USD"
+      ]
+    },
+    {
+      "holded": "error",
+      "esperado": [
+        "COP",
+        "EUR",
+        "USD"
+      ]
+    }
+  ]
+}
