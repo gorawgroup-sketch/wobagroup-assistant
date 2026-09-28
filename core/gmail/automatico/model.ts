@@ -393,6 +393,7 @@ export interface ResultadoAuto {
     proveedor: string; empresa: EmpresaAuto | "desconocida"; monto: number; moneda: string;
     contacto?: string; metodoContacto?: string; motivoProveedor?: string; motivos: string[];
   }> }>;
-  gastos: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string }>;
-  reparados?: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string }>;
+  /** `proveedor` es opcional: los resultados guardados antes de este campo (informes consolidados) no lo traen. */
+  gastos: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string; proveedor?: string }>;
+  reparados?: Array<{ empresa: EmpresaAuto; id: string; centimos: number; moneda: string; proveedor?: string }>;
 }

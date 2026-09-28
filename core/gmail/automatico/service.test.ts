@@ -425,3 +425,26 @@ test("pendientes no se presentan como hilos sin leer y no se ocultan motivos", (
   const texto=resumenAutomatico({modo:'execute',revisados:0,completados:0,simulados:0,gastos:[],pendientes:[]});
   assert.match(texto,/incluye operaciones anteriores; no equivale a hilos sin leer/);
 });
+
+// Caso real 2026-09-28: el informe de una revisión de 49 correos superó los 4096 caracteres de Telegram porque listaba
+// una línea por cada compra creada y por cada borrador corregido, sin límite.
+test("el informe acota el detalle de compras y sigue cabiendo en un mensaje de Telegram con mucho volumen", () => {
+  const compra = (i: number, proveedor?: string) => ({ empresa: "Footprint" as const, id: `6aba27f01b0791ea0a08${String(i).padStart(4, "0")}`,
+    centimos: 700 + i, moneda: "EUR", proveedor });
+  const texto = resumenAutomatico({ modo: "execute", encontrados: 49, revisados: 46, completados: 60, simulados: 0,
+    gastos: Array.from({ length: 60 }, (_, i) => compra(i, i % 2 ? "Uber" : "Restaurante con un nombre comercial larguísimo S.L.")),
+    reparados: Array.from({ length: 40 }, (_, i) => compra(100 + i)),
+    pendientes: [] });
+  assert.ok(texto.length < 4096, `informe de ${texto.length} caracteres`);
+  assert.match(texto, /Uber · 7\.\d\d EUR · compra 6aba27f0/);
+  assert.match(texto, /… y 50 más, en Holded\./, "60 compras: se detallan 10 y se resume el resto");
+  assert.match(texto, /… y 30 más, en Holded\./, "40 borradores corregidos: se detallan 10 y se resume el resto");
+  assert.match(texto, /Gastos creados, soportados y conciliados: 60\./, "el total real nunca se recorta");
+  assert.doesNotMatch(texto, /Restaurante con un nombre comercial larguísimo S\.L\./, "el proveedor se abrevia a 32 caracteres");
+});
+
+test("sin proveedor (resultados guardados antes de existir el campo) el informe conserva el formato anterior", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 1, simulados: 0,
+    gastos: [{ empresa: "WOBA", id: "abc123", centimos: 1500, moneda: "EUR" }], pendientes: [] });
+  assert.match(texto, /• WOBA · 15\.00 EUR · compra abc123\./);
+});
