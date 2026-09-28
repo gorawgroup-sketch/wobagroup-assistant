@@ -1,0 +1,62 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "sixt-go-riesgo-conocido",
+  "fuente": "Medición sobre 87 proveedores × 600 descriptores reales (2026-09-28): «SIXT RENT A CAR SL» se daba por igual a «Go Rent A Car».",
+  "descripcion": "RIESGO CONOCIDO: dos competidores (Sixt y Go Rent A Car) con el mismo importe y día se emparejan solo por categoría (transporte); el nombre de rubro compartido no lo causa (no basta para el nombre), pero la categoría sola sí lo permite. Fase 1: exigir además nombre o evidencia de identidad.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "SIXT RENT A CAR SL",
+    "concepto": "Alquiler de coche",
+    "monto": 210.0,
+    "moneda": "EUR",
+    "fecha": "2026-09-12"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-eur": [
+      {
+        "id": "m1",
+        "description": "Go Rent A Car",
+        "amount": "-210.00",
+        "currency": "EUR",
+        "booking_date": "2026-09-12",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m1",
+        "compatibilidad": null
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [
+      "m1"
+    ]
+  },
+  "riesgoConocido": "La compatibilidad solo por categoría puede enlazar comercios distintos; ver docs/banco-casos-reales.md."
+}
