@@ -4,6 +4,7 @@ import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccio
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { EscrituraHoldedNoIniciadaError, protegerEscrituraHolded } from "../gmail/automatico/postgres";
 import { MonedasCuentasReales } from "./monedasCuentas";
+import { descriptorConfirmadoParaProveedor, obtenerTodasLasConciliacionesAprendidas, type ConciliacionVerificadaAprendida } from "./conciliacionAprendidaSheet";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -4597,6 +4598,12 @@ export interface MovimientoBancarioCandidato {
   diferenciaMonto?: number;
   /** Refuerzo por texto: el proveedor parece estar presente en la descripción bancaria. */
   coincideProveedor?: boolean;
+  /**
+   * «por_confirmar»: coinciden importe, moneda y fecha (±1 día) pero el nombre del cargo no se reconoce como el del
+   * proveedor y su categoría es desconocida (nunca contradictoria). Se ofrece al operador con un aviso; no es
+   * evidencia de identidad por sí sola.
+   */
+  compatibilidad?: "por_confirmar";
 }
 
 // Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
@@ -4711,6 +4718,54 @@ export function movimientoCompatibleConGasto(proveedor: string, concepto: string
   return Boolean(mismaMarca || proveedorPareceEnDescripcion(proveedor, descripcion));
 }
 
+function diasEntreFechas(a: string, b: string): number {
+  const ma = Date.parse(a.slice(0, 10)), mb = Date.parse(b.slice(0, 10));
+  return Number.isFinite(ma) && Number.isFinite(mb) ? Math.abs(ma - mb) / 86_400_000 : Number.POSITIVE_INFINITY;
+}
+
+async function cargarConciliacionesAprendidas(): Promise<ConciliacionVerificadaAprendida[]> {
+  try {
+    return await obtenerTodasLasConciliacionesAprendidas();
+  } catch (error) {
+    console.error("[write] No se pudo leer la memoria de conciliaciones confirmadas (se sigue sin ella):", error instanceof Error ? error.message : error);
+    return [];
+  }
+}
+
+export type NivelCompatibilidadMovimiento = "compatible" | "por_confirmar" | "incompatible";
+
+/**
+ * Única fuente de verdad de «¿este cargo bancario puede ser este gasto?». Tres niveles en vez de un booleano:
+ * - compatible: el nombre o la categoría lo respaldan (ver movimientoCompatibleConGasto).
+ * - por_confirmar: el nombre no se reconoce, pero la categoría del cargo es DESCONOCIDA (no contradictoria) y coinciden
+ *   importe, moneda y fecha. El operador decide con un aviso; antes se descartaba en silencio y el sistema decía «no
+ *   encontré ningún movimiento» aunque existiera (caso real 2026-09-28: «JUST B CUZ PLM» 3,91 USD frente a
+ *   «Par*just B Cuz Luxury» −3,91 USD del mismo día).
+ * - incompatible: categorías contradictorias (taxi frente a restaurante) o sin evidencia suficiente.
+ */
+export function nivelCompatibilidadMovimiento(
+  proveedor: string,
+  concepto: string,
+  descripcion: string,
+  evidencia: { importeYFechaExactos: boolean } = { importeYFechaExactos: false }
+): NivelCompatibilidadMovimiento {
+  if (movimientoCompatibleConGasto(proveedor, concepto, descripcion)) return "compatible";
+  const gasto = inferirTagsCategoria(concepto, proveedor);
+  const cargo = inferirTagsCategoria(descripcion, "");
+  const contradictorio = gasto.length > 0 && cargo.length > 0 && !gasto.some((t) => cargo.includes(t));
+  if (!contradictorio && normalizar(descripcion).length >= 3 && evidencia.importeYFechaExactos) return "por_confirmar";
+  return "incompatible";
+}
+
+/** Un candidato ya buscado es utilizable si el propio buscador lo marcó por_confirmar o si es compatible por nombre/categoría. */
+export function candidatoUtilizableParaGasto(
+  proveedor: string,
+  concepto: string,
+  candidato: Pick<MovimientoBancarioCandidato, "descripcion" | "compatibilidad">
+): boolean {
+  return candidato.compatibilidad === "por_confirmar" || movimientoCompatibleConGasto(proveedor, concepto, candidato.descripcion);
+}
+
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
   criterios: { monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string; fechaExacta?: boolean },
@@ -4725,6 +4780,8 @@ export async function buscarMovimientoSimilar(
   const cuentas = (cuentasData.items ?? []).filter((c) => !c.archived);
 
   const candidatos: MovimientoBancarioCandidato[] = [];
+  // Solo se lee la memoria de conciliaciones confirmadas si de verdad hace falta (un cargo exacto que el nombre no respalda).
+  let aprendidos: Promise<ConciliacionVerificadaAprendida[]> | undefined;
 
   for (const cuenta of cuentas) {
     const params = new URLSearchParams({
@@ -4754,7 +4811,6 @@ export async function buscarMovimientoSimilar(
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
       if (estaConciliado(mov.status)) continue;
-      if (criterios.proveedor && !movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "")) continue;
 
       let monto: number;
       if (monedaObjetivo === "EUR") {
@@ -4768,13 +4824,30 @@ export async function buscarMovimientoSimilar(
       }
       if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) continue;
 
+      const fechaMovimiento = mov.booking_date ? mov.booking_date.slice(0, 10) : "";
+      let compatibilidad: "por_confirmar" | undefined;
+      if (criterios.proveedor) {
+        const importeYFechaExactos =
+          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
+          diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
+        const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
+        if (nivel === "incompatible") {
+          // Lo que un humano ya confirmó una vez (proveedor ↔ descriptor bancario) se reconoce sin volver a preguntar.
+          aprendidos ??= cargarConciliacionesAprendidas();
+          if (!descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "")) continue;
+        } else if (nivel === "por_confirmar") {
+          compatibilidad = "por_confirmar";
+        }
+      }
+
       candidatos.push({
         accountId: cuenta.id,
         movementId: mov.id,
         descripcion: mov.description ?? "",
         monto,
         moneda: monedaObjetivo,
-        fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
+        fecha: fechaMovimiento,
+        ...(compatibilidad ? { compatibilidad } : {}),
       });
     }
   }
@@ -4806,6 +4879,25 @@ export function margenImporteAproximado(monto: number): number {
  * filtró por monto cercano antes, así que hace falta que AMBAS señales
  * coincidan, nunca el nombre solo.
  */
+const PALABRAS_VACIAS_MARCA = new Set(["de", "del", "la", "el", "los", "las", "the", "and", "y", "sa", "sl", "sas", "srl", "llc", "inc", "ltd", "co", "corp", "gmbh", "bv"]);
+
+function terminosDeMarca(texto: string): string[] {
+  return texto.replace(/[^a-z0-9]+/g, " ").split(" ").filter((t) => t && !PALABRAS_VACIAS_MARCA.has(t));
+}
+
+/**
+ * El adquirente antepone un prefijo corto (PAR*, DL*, SQ*) y trunca o cambia el final del nombre: «JUST B CUZ PLM» frente
+ * a «Par*just B Cuz Luxury». Se reconoce un núcleo de marca compartido: al menos dos términos iguales que sumen 6 letras
+ * y cubran el 60 % del nombre más corto. Solo es una señal de nombre; el importe y la fecha se siguen exigiendo aparte.
+ */
+function comparteNucleoDeMarca(proveedorNormalizado: string, comercioNormalizado: string): boolean {
+  const a = terminosDeMarca(proveedorNormalizado), b = terminosDeMarca(comercioNormalizado);
+  if (a.length < 2 || b.length < 2) return false;
+  const compartidos = a.filter((t) => b.includes(t));
+  const letras = compartidos.reduce((suma, t) => suma + t.length, 0);
+  return compartidos.length >= 2 && letras >= 6 && compartidos.length / Math.min(a.length, b.length) >= 0.6;
+}
+
 export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
   const p = normalizar(proveedor).trim();
   const d = normalizar(descripcion).trim();
@@ -4815,6 +4907,7 @@ export function proveedorPareceEnDescripcion(proveedor: string, descripcion: str
   // varios términos y un prefijo largo evita aceptar una palabra genérica sola.
   const comercio = d.includes("*") ? d.split("*").at(-1)!.trim() : "";
   if (comercio.length >= 8 && comercio.split(/\s+/).length >= 2 && p.startsWith(comercio)) return true;
+  if (comparteNucleoDeMarca(p, comercio || d)) return true;
   return textosParecidos(proveedor, descripcion);
 }
 

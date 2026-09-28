@@ -1,5 +1,5 @@
 import { recuperarConciliacionExistenteCompra } from "../holded/write";
-import { movimientoCompatibleConGasto } from "../holded/write";
+import { candidatoUtilizableParaGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
@@ -3064,7 +3064,7 @@ async function crearGastoYReportar(
     }
 
     const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
-    if (!objetivos.length || objetivos.some(m => !movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion))) {
+    if (!objetivos.length || objetivos.some(m => !candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m))) {
       throw new Error("No hay un cargo de categoría compatible. Se revisaron duplicados; no se creará otro gasto sin resolver la coincidencia bancaria.");
     }
     return crearGastoHolded(
