@@ -31,6 +31,7 @@ import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
+import { cierreSolicitado } from "../utils/cierreServicio";
 import { debeEjecutarAnalisisAutomatico, debePublicarInformeCorreo,
   revisionCorreoExhaustiva,
   type SolicitudRevisionCorreo } from "./politicaRevisionCorreo";
@@ -168,6 +169,12 @@ function sanitizarNombre(nombre: string): string {
 export interface ResultadoRevisarCorreo {
   correosRevisados: number;
   automatico?: ResultadoAuto;
+  /**
+   * La revisión paró porque el proceso está cerrándose (SIGTERM por un despliegue). No se publicó
+   * informe ni se tocó la cola: el proceso nuevo la retoma (ver core/gmail/automatico/reanudacion.ts)
+   * y el llamador NO debe anunciar «revisión completa» ni «error».
+   */
+  interrumpida?: boolean;
   /** Indica si esta misma ejecución ya publicó su resumen en Telegram. */
   informePublicado?: boolean;
   /**
@@ -270,7 +277,9 @@ export async function revisarCorreoNuevo(
     }
     // Cierra la carrera en la que una orden manual llega justo después de
     // que un cron silencioso decidió no publicar, pero antes de terminar.
-    if (forzarAviso && !resultado.informePublicado && resultado.automatico) {
+    // Una revisión interrumpida por el cierre del servicio no tiene informe que publicar: el
+    // proceso nuevo la retoma entera (ver core/jobs/revisionCorreoManual.ts).
+    if (forzarAviso && !resultado.informePublicado && !resultado.interrumpida && resultado.automatico) {
       const resumen = resumenAutomatico(resultado.automatico);
       if (resumen) {
         // Reservar antes del await evita que dos órdenes manuales que se
@@ -306,6 +315,13 @@ export async function revisarCorreoNuevo(
       automatico = { modo: modoAutomaticoSeguro(), revisados: 0, completados: 0, simulados: 0, gastos: [],
         pendientes: [{ mensajeId: "sistema", asunto: "Fase automática incompleta",
           motivos: [`error_automatico:${detalle}`] }] };
+    }
+    if (automatico.interrumpida && cierreSolicitado()) {
+      // Resultado parcial por cierre del proceso: ni informe, ni cola, ni registro para el
+      // consolidado del cron. Lo hecho ya es durable; la pasada que retome lo verá completo.
+      console.log("[revisarCorreoNuevo] Revisión interrumpida por el cierre del servicio; " +
+        `${automatico.revisados} analizado(s), ${automatico.completados} completado(s). Se retomará en el proceso nuevo.`);
+      return { correosRevisados: 0, automatico, interrumpida: true };
     }
     let resultadoParaInforme = automatico;
     let revisionesConsolidadas: number | undefined;
