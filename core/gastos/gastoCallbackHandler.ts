@@ -755,7 +755,7 @@ async function ofrecerEleccionMovimientosAmbiguos(
     const detalleCandidatos = candidatos
       .map((m, i) => hayTipoCambio
         ? describirMovimientoMultimoneda(m, i)
-        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
       .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
@@ -4042,7 +4042,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
     let movimientosAmbiguosNuevos: MovimientoBancarioCandidato[] = [];
     let movimientoRecomendadoNuevo: MovimientoBancarioCandidato | undefined;
     try {
-      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta, proveedor: propuesta.proveedor, concepto: propuesta.concepto });
+      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta, proveedor: propuesta.proveedor, concepto: propuesta.concepto, incluirPorConfirmar: true });
       if (candidatosMov.length === 1) {
         movimientoEncontrado = true;
         movimientoRecomendadoNuevo = { ...candidatosMov[0], origenCoincidencia: "exacta" };

@@ -4600,10 +4600,11 @@ export interface MovimientoBancarioCandidato {
   coincideProveedor?: boolean;
   /**
    * «por_confirmar»: coinciden importe, moneda y fecha (±1 día) pero el nombre del cargo no se reconoce como el del
-   * proveedor y su categoría es desconocida (nunca contradictoria). Se ofrece al operador con un aviso; no es
-   * evidencia de identidad por sí sola.
+   * proveedor y su categoría es desconocida. «aprendido»: un humano ya confirmó ese descriptor para este proveedor.
+   * Ambos solo los devuelve la búsqueda que arma propuestas (incluirPorConfirmar) y solo se ofrecen al operador con un
+   * aviso: NUNCA se autoseleccionan ni se concilian sin que el operador elija ese cargo.
    */
-  compatibilidad?: "por_confirmar";
+  compatibilidad?: "por_confirmar" | "aprendido";
 }
 
 // Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
@@ -4743,6 +4744,13 @@ export type NivelCompatibilidadMovimiento = "compatible" | "por_confirmar" | "in
  *   «Par*just B Cuz Luxury» −3,91 USD del mismo día).
  * - incompatible: categorías contradictorias (taxi frente a restaurante) o sin evidencia suficiente.
  */
+/** Categorías de gasto y de cargo ambas conocidas y sin nada en común (taxi frente a restaurante). */
+export function categoriasContradictorias(concepto: string, proveedor: string, descripcion: string): boolean {
+  const gasto = inferirTagsCategoria(concepto, proveedor);
+  const cargo = inferirTagsCategoria(descripcion, "");
+  return gasto.length > 0 && cargo.length > 0 && !gasto.some((t) => cargo.includes(t));
+}
+
 export function nivelCompatibilidadMovimiento(
   proveedor: string,
   concepto: string,
@@ -4750,26 +4758,40 @@ export function nivelCompatibilidadMovimiento(
   evidencia: { importeYFechaExactos: boolean } = { importeYFechaExactos: false }
 ): NivelCompatibilidadMovimiento {
   if (movimientoCompatibleConGasto(proveedor, concepto, descripcion)) return "compatible";
-  const gasto = inferirTagsCategoria(concepto, proveedor);
-  const cargo = inferirTagsCategoria(descripcion, "");
-  const contradictorio = gasto.length > 0 && cargo.length > 0 && !gasto.some((t) => cargo.includes(t));
-  if (!contradictorio && normalizar(descripcion).length >= 3 && evidencia.importeYFechaExactos) return "por_confirmar";
+  // Solo si la categoría del CARGO es desconocida: un cargo de categoría conocida distinta o con un gasto sin categoría
+  // no se ofrece por importe (cualquier restaurante «encajaría» con un gasto sin clasificar).
+  const cargoDesconocido = inferirTagsCategoria(descripcion, "").length === 0;
+  if (cargoDesconocido && normalizar(descripcion).length >= 3 && evidencia.importeYFechaExactos) return "por_confirmar";
   return "incompatible";
 }
 
-/** Un candidato ya buscado es utilizable si el propio buscador lo marcó por_confirmar o si es compatible por nombre/categoría. */
+/**
+ * Un candidato ya buscado es utilizable si es compatible por nombre/categoría o si el buscador lo marcó
+ * (por_confirmar / aprendido) y su categoría NO es contradictoria con el gasto actual: la marca es una evidencia que
+ * caduca si luego se corrige el concepto.
+ */
 export function candidatoUtilizableParaGasto(
   proveedor: string,
   concepto: string,
   candidato: Pick<MovimientoBancarioCandidato, "descripcion" | "compatibilidad">
 ): boolean {
-  return candidato.compatibilidad === "por_confirmar" || movimientoCompatibleConGasto(proveedor, concepto, candidato.descripcion);
+  if (candidato.compatibilidad) return !categoriasContradictorias(concepto, proveedor, candidato.descripcion);
+  return movimientoCompatibleConGasto(proveedor, concepto, candidato.descripcion);
 }
 
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string; fechaExacta?: boolean },
-  toleranciaEur: number = TOLERANCIA_MONTO
+  criterios: {
+    monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string; fechaExacta?: boolean;
+    /**
+     * Solo las búsquedas que ARMAN una propuesta para el operador la activan: devuelve además cargos «por_confirmar» y
+     * «aprendido». Las búsquedas que pueden conciliar sin preguntar (intentarConciliar) no la usan: ahí solo cuenta lo
+     * compatible por nombre o categoría.
+     */
+    incluirPorConfirmar?: boolean;
+  },
+  toleranciaEur: number = TOLERANCIA_MONTO,
+  deps: { aprendidas: () => Promise<ConciliacionVerificadaAprendida[]> } = { aprendidas: cargarConciliacionesAprendidas }
 ): Promise<MovimientoBancarioCandidato[]> {
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
   const { desde, hasta } = ventanaBusquedaMovimiento(criterios.fecha);
@@ -4825,18 +4847,23 @@ export async function buscarMovimientoSimilar(
       if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) continue;
 
       const fechaMovimiento = mov.booking_date ? mov.booking_date.slice(0, 10) : "";
-      let compatibilidad: "por_confirmar" | undefined;
+      let compatibilidad: "por_confirmar" | "aprendido" | undefined;
       if (criterios.proveedor) {
         const importeYFechaExactos =
           Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
           diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
-        if (nivel === "incompatible") {
-          // Lo que un humano ya confirmó una vez (proveedor ↔ descriptor bancario) se reconoce sin volver a preguntar.
-          aprendidos ??= cargarConciliacionesAprendidas();
-          if (!descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "")) continue;
-        } else if (nivel === "por_confirmar") {
-          compatibilidad = "por_confirmar";
+        if (nivel !== "compatible") {
+          // Cargos que NO respaldan el nombre ni la categoría: solo se ofrecen al armar una propuesta, solo si son un
+          // débito (un crédito o una devolución del mismo importe no es este gasto) y nunca con categoría contradictoria.
+          if (!criterios.incluirPorConfirmar || !(Number(mov.amount) < 0)) continue;
+          if (categoriasContradictorias(criterios.concepto ?? "", criterios.proveedor, mov.description ?? "")) continue;
+          // Lo que un humano ya confirmó una vez (proveedor ↔ descriptor bancario) se reconoce sin el aviso de nombre distinto.
+          aprendidos ??= deps.aprendidas();
+          const yaConfirmado = descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "");
+          if (yaConfirmado) compatibilidad = "aprendido";
+          else if (nivel === "por_confirmar") compatibilidad = "por_confirmar";
+          else continue;
         }
       }
 
@@ -4852,7 +4879,11 @@ export async function buscarMovimientoSimilar(
     }
   }
 
-  return candidatos;
+  // Un cargo compatible por nombre o categoría siempre gana a uno solo «por confirmar»/«aprendido» del mismo importe.
+  const firmes = candidatos.filter((c) => !c.compatibilidad);
+  if (firmes.length > 0) return firmes;
+  const aprendidosOk = candidatos.filter((c) => c.compatibilidad === "aprendido");
+  return aprendidosOk.length > 0 ? aprendidosOk : candidatos;
 }
 
 export interface MovimientoBancarioAproximado extends MovimientoBancarioCandidato {
