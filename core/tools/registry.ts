@@ -55,12 +55,14 @@ import { escalarDesarrolloTool } from "./escalarDesarrollo";
 import { vacacionesHoldedTool } from "./vacacionesHolded";
 import { descartarRecomendacionControlDiarioTool } from "./descartarRecomendacionControlDiario";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
+import { busquedaConocimientoGlobalTool } from "./busquedaConocimientoGlobal";
 
 /**
  * Registro central de herramientas disponibles para Claude.
  * Cada nueva herramienta (gmail...) se agrega aquí.
  */
 const tools: ToolDefinition[] = [
+  busquedaConocimientoGlobalTool,
   knowledgeBaseTool,
   cashflowResumenTool,
   cashflowDetalleTool,
