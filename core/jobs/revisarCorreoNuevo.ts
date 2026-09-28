@@ -348,12 +348,15 @@ export async function revisarCorreoNuevo(
       publicar,
       enviar: texto => sendTelegramMessageSmart(chatId, texto),
       sincronizar: pendiente => sincronizarColaCorreo(forzarAviso, chatId, pendiente, publicar),
-      recuperar: async error => {
+      recuperar: async (error, informeEntregado) => {
         console.error("[revisarCorreoNuevo] Fase automática terminada; cola manual pendiente:",
           error instanceof Error ? error.message : String(error));
+        // Si el informe tampoco salió hay que decirlo: «el resultado anterior se conserva» sería falso.
+        const inicio = informeEntregado
+          ? "⚠️ La revisión automática terminó; el resultado anterior se conserva. "
+          : "⚠️ La revisión automática terminó y sus gastos ya quedaron registrados, pero no pude enviarte su informe. ";
         if (publicar()) await sendTelegramMessageSmart(chatId,
-          "⚠️ La revisión automática terminó; el resultado anterior se conserva. " +
-          "No pude preparar la cola manual por un fallo temporal. Usa ‘Recuperar cola manual’ para retomar; " +
+          `${inicio}No pude preparar la cola manual por un fallo temporal. Usa ‘Recuperar cola manual’ para retomar; ` +
           "no necesitas repetir /revisarcorreo.",
           [[{ text: "▶️ Recuperar cola manual", callback_data: "colacorreo_recuperarcola" }]]);
         return { correosRevisados: 0, informePublicado: false };

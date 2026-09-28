@@ -377,7 +377,7 @@ export class ServicioCorreoAutomatico {
           }
           if (await this.ejecutar(op, correo, analisisRecuperado, config)) {
             const gasto = { empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
-              moneda: op.plan.movimiento.moneda };
+              moneda: op.plan.movimiento.moneda, proveedor: op.plan.recibo.proveedor };
             if (eraCompletadaAnterior) resultado.reparados!.push(gasto);
             else { resultado.completados++; resultado.gastos.push(gasto); }
             await this.puerto.registrarFinalizada(op);
@@ -463,7 +463,8 @@ export class ServicioCorreoAutomatico {
             if (await this.ejecutar(op, correo, analisis, config)) {
               if (!yaCompletada) {
                 resultado.completados++;
-                resultado.gastos.push({ empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos, moneda: op.plan.movimiento.moneda });
+                resultado.gastos.push({ empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
+                  moneda: op.plan.movimiento.moneda, proveedor: op.plan.recibo.proveedor });
               }
               await this.puerto.registrarFinalizada(op);
             } else {
@@ -548,6 +549,25 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";
 }
 
+/** Máximo de compras que el informe detalla una a una; el resto se resume en «y N más». */
+export const MAX_GASTOS_DETALLADOS_EN_INFORME = 10;
+
+/**
+ * Una línea por compra, con el proveedor cuando se conoce (solo el id de compra no le dice nada a quien lee el informe).
+ * El detalle está acotado: antes crecía sin límite con el volumen y un informe de 49 correos superó los 4096 caracteres de
+ * Telegram, con lo que el envío falló aunque el trabajo ya estuviera hecho (2026-09-28).
+ */
+function lineasGastosAcotadas(gastos: ResultadoAuto["gastos"]): string[] {
+  const lineas = gastos.slice(0, MAX_GASTOS_DETALLADOS_EN_INFORME).map(g => {
+    const proveedor = g.proveedor?.trim() ? ` · ${g.proveedor.trim().slice(0, 32)}` : "";
+    return `• ${g.empresa}${proveedor} · ${(g.centimos / 100).toFixed(2)} ${g.moneda} · compra ${g.id}.`;
+  });
+  if (gastos.length > MAX_GASTOS_DETALLADOS_EN_INFORME) {
+    lineas.push(`• … y ${gastos.length - MAX_GASTOS_DETALLADOS_EN_INFORME} más, en Holded.`);
+  }
+  return lineas;
+}
+
 export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsolidadas?: number } = {}): string {
   if (r.modo === "off") return "";
   const consolidado = opciones.revisionesConsolidadas;
@@ -569,12 +589,10 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);
     lineas.push("", "✅ Automatizados por empresa");
     for (const [empresa, cantidad] of porEmpresa) lineas.push(`• ${empresa}: ${cantidad}.`);
-    lineas.push("Compras verificadas para convertir manualmente a ticket:");
-    for (const g of r.gastos) lineas.push(`• ${g.empresa} · ${(g.centimos / 100).toFixed(2)} ${g.moneda} · compra ${g.id}.`);
+    lineas.push("Compras verificadas para convertir manualmente a ticket:", ...lineasGastosAcotadas(r.gastos));
   }
   if (r.reparados?.length) {
-    lineas.push("", `🛠️ Borradores anteriores corregidos y verificados: ${r.reparados.length}.`);
-    for (const g of r.reparados) lineas.push(`• ${g.empresa} · ${(g.centimos / 100).toFixed(2)} ${g.moneda} · compra ${g.id}.`);
+    lineas.push("", `🛠️ Borradores anteriores corregidos y verificados: ${r.reparados.length}.`, ...lineasGastosAcotadas(r.reparados));
   }
   if (r.pendientes.length) {
     const motivosPrincipales = new Map<string, number>();
