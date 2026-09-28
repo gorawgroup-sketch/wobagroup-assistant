@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { movimientoCompatibleConGasto } from "./write";
+import { movimientoCompatibleConGasto, type OpcionesCompatibilidad } from "./write";
+
+/** Las rutas manuales (el operador confirma) reconocen el núcleo de marca; la automatización de correo usa el criterio estricto. */
+const MANUAL: OpcionesCompatibilidad = { nucleoDeMarca: true };
 
 /**
  * Corpus de CASOS REALES de «¿este descriptor bancario puede ser este proveedor?». Cada vez que un caso real falle en
@@ -27,8 +30,16 @@ const incompatibles: Array<[string, string, string, string]> = [
 ];
 
 for (const [nombre, proveedor, concepto, descriptor] of compatibles) {
-  test(`compatible — ${nombre}`, () => assert.equal(movimientoCompatibleConGasto(proveedor, concepto, descriptor), true));
+  test(`compatible (ruta manual) — ${nombre}`, () => assert.equal(movimientoCompatibleConGasto(proveedor, concepto, descriptor, MANUAL), true));
 }
 for (const [nombre, proveedor, concepto, descriptor] of incompatibles) {
-  test(`incompatible — ${nombre}`, () => assert.equal(movimientoCompatibleConGasto(proveedor, concepto, descriptor), false));
+  test(`incompatible (ruta manual) — ${nombre}`, () => assert.equal(movimientoCompatibleConGasto(proveedor, concepto, descriptor, MANUAL), false));
 }
+
+test("la automatización de correo NO hereda el núcleo de marca (criterio estricto anterior)", () => {
+  const concepto = "Café — JUST B CUZ PLM, San Juan, Puerto Rico — Simon Talloen";
+  assert.equal(movimientoCompatibleConGasto("JUST B CUZ PLM", concepto, "Par*just B Cuz Luxury"), false);
+  assert.equal(movimientoCompatibleConGasto("JUST B CUZ PLM", concepto, "Par*just B Cuz Luxury", MANUAL), true);
+  // Dos términos cortos compartidos entre comercios distintos no autorizan nada en la automatización.
+  assert.equal(movimientoCompatibleConGasto("Farmacia San Juan", "Compra", "Ferretería San Juan"), false);
+});

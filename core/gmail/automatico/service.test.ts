@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
-import { evaluarAuto, hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
+import { evaluarAuto, hash, VERSION_ANALISIS, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 import { UsoApiNoAutorizadoError } from "../../ai/policy";
 
@@ -514,4 +514,49 @@ test("sin proveedor (resultados guardados antes de existir el campo) el informe 
   const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 1, simulados: 0,
     gastos: [{ empresa: "WOBA", id: "abc123", centimos: 1500, moneda: "EUR" }], pendientes: [] });
   assert.match(texto, /• WOBA · 15\.00 EUR · compra abc123\./);
+});
+
+// Caso real 2026-09-28 16:12: un despliegue mandó SIGTERM con /revisarcorreo en «39/50» y el
+// proceso murió sin punto de control. Con `detener`, la revisión para en el siguiente y deja todo durable.
+test("con el cierre pedido a mitad del análisis, no analiza ni escribe más y marca el resultado como interrumpido", async () => {
+  const e = escenario();
+  e.correos.push(correoFixture("m2"), correoFixture("m3"));
+  let cerrando = false;
+  let analisis = 0;
+  e.puerto.analizar = async () => { analisis++; cerrando = true; return e.a; };
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { concurrenciaAnalisis: 1, detener: () => cerrando });
+  const r = await service.revisar(configFixture);
+  assert.equal(r.interrumpida, true);
+  assert.equal(analisis, 1);
+  assert.equal(r.aplazados, 2);
+  assert.equal(e.llamadas.crear + e.llamadas.adjuntar + e.llamadas.conciliar + e.llamadas.marcar, 0);
+  const pospuestos = r.pendientes.filter(p => p.motivos.includes("revision_pospuesta_por_reinicio"));
+  assert.equal(pospuestos.length, 3);
+  assert.match(resumenAutomatico(r), /interrumpida por un reinicio del servicio/);
+  // El análisis ya pagado queda guardado: la pasada que retome no lo repite.
+  assert.ok(await e.store.buscarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS));
+});
+
+test("sin cierre pedido, el resultado no queda marcado como interrumpido", async () => {
+  const e = escenario();
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { detener: () => false });
+  const r = await service.revisar(configFixture);
+  assert.equal(r.interrumpida, undefined);
+  assert.equal(r.completados, 1);
+});
+
+test("con el cierre pedido, una operación ya reservada se deja reservada (sin POST) y una en vuelo se cierra por lectura", async () => {
+  const e = escenario();
+  // Primera pasada: la creación falla y deja la operación incierta (en vuelo).
+  e.puerto.crear = async () => { e.llamadas.crear++; throw new Error("timeout"); };
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  // Segunda pasada con el cierre pedido desde el principio: la recuperación por lectura no abre
+  // escrituras nuevas, y el análisis cacheado no se repite.
+  e.puerto.recuperarCreacion = async () => "compra1";
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { detener: () => true });
+  const r = await service.revisar(configFixture);
+  assert.equal(e.llamadas.crear, 1);
+  assert.equal(r.interrumpida, true);
+  assert.ok(r.pendientes.every(p => p.motivos.some(m => m.startsWith("operacion_") || m === "revision_pospuesta_por_reinicio")));
 });

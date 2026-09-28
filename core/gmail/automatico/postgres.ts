@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS wobi_mail_report_slots (
   PRIMARY KEY (mailbox, slot),
   CHECK (state IN ('claimed','sent'))
 );
+CREATE TABLE IF NOT EXISTS wobi_mail_resume (
+  chat_id bigint PRIMARY KEY, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS wobi_mail_operations_pending ON wobi_mail_operations(mailbox, state);
 CREATE INDEX IF NOT EXISTS wobi_mail_events_message ON wobi_mail_events(mailbox, message_id);
 `;

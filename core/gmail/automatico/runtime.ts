@@ -24,6 +24,17 @@ import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordi
 import { ServicioCorreoAutomatico } from "./service";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
 import { conTiempoMaximo, enteroAcotado } from "../../utils/asyncTimeout";
+import { cierreSolicitado } from "../../utils/cierreServicio";
+
+/**
+ * Último texto de progreso por chat, para que el aviso de interrupción por despliegue (ver
+ * src/server.ts, SIGTERM) diga hasta dónde había llegado («Mensajes analizados: 39/50») en vez de
+ * un genérico. Se limpia al terminar cada revisión.
+ */
+const ultimoProgreso = new Map<number, string>();
+export function progresoRevisionAutomatica(chatId: number): string | undefined {
+  return ultimoProgreso.get(chatId);
+}
 
 export interface LimitesRevisionAutomatica {
   maxDuracionMs: number;
@@ -101,6 +112,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   let colaNotificacion = Promise.resolve();
   const notificar = (texto: string): Promise<void> => {
     console.log(`[correo-auto] ${texto}`);
+    ultimoProgreso.set(chatId, texto);
     const informar = typeof opciones.informarProgreso === "function" ? opciones.informarProgreso() : opciones.informarProgreso;
     if (!informar) return Promise.resolve();
     colaNotificacion = colaNotificacion.then(async () => {
@@ -186,6 +198,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   }, {
     concurrenciaAnalisis: limites.concurrenciaAnalisis,
     fechaLimite,
+    detener: cierreSolicitado,
     maxAnalisisNuevos: limites.maxAnalisisNuevos,
     progreso: async ({ fase, completados, total }) => {
       if (!esHito(completados, total)) return;
@@ -197,9 +210,13 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
           : (completados === 0 ? `⏳ Verificando candidatos en Gmail y Holded…` : `⏳ Candidatos verificados: ${completados}/${total}.`));
     },
   });
-  const resultado = await service.revisar(config);
-  await colaNotificacion;
-  return resultado;
+  try {
+    const resultado = await service.revisar(config);
+    await colaNotificacion;
+    return resultado;
+  } finally {
+    ultimoProgreso.delete(chatId);
+  }
 }
 
 /** Dependencias de solo lectura + cierre auditado; las lecturas a Holded tienen un tiempo máximo global. */

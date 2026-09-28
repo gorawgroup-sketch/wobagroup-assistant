@@ -95,3 +95,11 @@ test('un cargo por_confirmar (importe y fecha exactos, nombre distinto) sí habi
   assert.equal(textosSinMarca.some((t) => t.includes('Crear y conciliar')), false, 'un nombre irreconocible sin evidencia no habilita conciliar');
   assert.ok(textosSinMarca.some((t) => t.includes('Crear')), 'pero crear sin conciliar sigue disponible');
 });
+
+test('con gastos parecidos ya registrados hay salida para descartar: «Crear gasto nuevo» y «Cancelar»', () => {
+  const p = { ...propuestaBase(), candidatos: [{ id: "c1", contactName: "X", fecha: "2026-08-30", total: 87.9, descripcion: "d", documentNumber: "1", moneda: "EUR" }], movimientosAmbiguos: [] } as unknown as PropuestaGasto;
+  const claves = construirTecladoGasto(p, opcionesTecladoDesdePropuesta(p)).flat().map((b) => b.callback_data?.split(":")[2]);
+  assert.ok(claves.includes("adjuntar_0"));
+  assert.ok(claves.includes("nuevo"), "«Crear gasto nuevo» (ya no depende de que exista un cargo)");
+  assert.ok(claves.includes("cancelar"), "«Cancelar» faltaba con candidatos de Holded");
+});

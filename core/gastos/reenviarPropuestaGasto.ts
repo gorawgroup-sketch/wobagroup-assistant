@@ -1,4 +1,5 @@
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
+import { buscarCargoParaPropuesta } from "./buscarCargoParaPropuesta";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
@@ -45,7 +46,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
 
   // Se recalcula SIEMPRE al renovar: un movimiento puede haber llegado después de crear la propuesta
   // y una fila antigua puede guardar false aunque el algoritmo actual ya sepa buscar por conversión.
-  const trazaBusqueda = crearTrazaBusqueda();
+  let trazaBusqueda = crearTrazaBusqueda();
   if (propuesta.candidatos.length === 0 && esFechaDocumentoValida(propuesta.fecha)) {
     let movimientoEncontrado = false;
     // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
@@ -56,32 +57,18 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     let movimientosAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoRecomendado: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     try {
-      const exactos = await buscarMovimientoSimilar(propuesta.empresa, {
+      const r = await buscarCargoParaPropuesta({
+        empresa: propuesta.empresa,
         proveedor: propuesta.proveedor,
         concepto: propuesta.concepto,
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
-        incluirPorConfirmar: true,
-        traza: trazaBusqueda,
       });
-      if (exactos.length === 1) {
-        movimientoEncontrado = true;
-        movimientoRecomendado = { ...exactos[0], origenCoincidencia: "exacta" };
-      } else if (exactos.length > 1) {
-        movimientosAmbiguos = exactos;
-      } else if (propuesta.proveedor) {
-        const aproximados = await buscarMovimientoAproximado(propuesta.empresa, {
-          monto: propuesta.monto,
-          fecha: propuesta.fecha,
-          moneda: propuesta.moneda,
-          proveedor: propuesta.proveedor,
-        });
-        movimientoEncontrado = aproximados.length > 0;
-        if (aproximados.length > 0) {
-          movimientoRecomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
-        }
-      }
+      trazaBusqueda = r.traza;
+      movimientoEncontrado = r.movimientoEncontrado;
+      movimientoRecomendado = r.movimientoRecomendado;
+      movimientosAmbiguos = r.movimientosAmbiguos;
 
       if (!movimientoEncontrado && movimientosAmbiguos.length === 0) {
         const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);

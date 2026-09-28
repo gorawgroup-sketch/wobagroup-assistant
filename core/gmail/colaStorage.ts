@@ -38,6 +38,13 @@ export async function importarColaPostgres(
 let espacioPreparado: string | undefined;
 export async function prepararColaPostgres(): Promise<void> {
   if (!hayCoordinacionDurable() || espacioPreparado === namespace()) return;
+  // Camino rápido sin lock: la migración es de una sola vez, y una vez hecha basta con leerlo.
+  // Caso real 2026-09-28: el contenedor nuevo de un despliegue moría al arrancar («canceling
+  // statement due to lock timeout») porque esta preparación tomaba el mismo lock del buzón que la
+  // revisión de correo todavía en curso en el contenedor viejo. Arrancar no puede depender de
+  // que el proceso anterior termine su trabajo.
+  const migrada = await poolAuto().query("SELECT 1 FROM wobi_mail_queue_migrations WHERE namespace=$1", [namespace()]);
+  if (migrada.rowCount) { espacioPreparado = namespace(); return; }
   // Mismo orden de locks que los lectores/escritores; sin promesa compartida que pueda
   // esperar a un coordinador retenido por quien intenta leer la cola.
   await conCoordinadorCorreo(async () => {
