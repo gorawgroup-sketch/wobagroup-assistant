@@ -28,6 +28,9 @@ test('caso real 2026-09-28: «JUST B CUZ PLM» y «Par*just B Cuz Luxury» compa
   // Un solo término compartido, o palabras genéricas, no bastan.
   assert.equal(proveedorPareceEnDescripcion('Cafe Central', 'Cafe Mayor'), false);
   assert.equal(proveedorPareceEnDescripcion('Just Eat', 'Sq *Just Paid'), false);
+  // Medido sobre datos reales de Holded (87 proveedores × 600 descriptores): el único par nuevo era este falso positivo.
+  assert.equal(proveedorPareceEnDescripcion('SIXT RENT A CAR SL', 'Go Rent A Car'), false);
+  assert.equal(proveedorPareceEnDescripcion('Hotel Central Madrid', 'Hotel Central Lima'), true, 'dos términos distintivos; lo decide además el importe y la fecha');
 });
 
 test('nivel «por_confirmar»: categoría desconocida + importe, moneda y fecha exactos; nunca con categorías contradictorias', () => {

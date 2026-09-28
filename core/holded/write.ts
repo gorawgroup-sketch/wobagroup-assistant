@@ -4881,6 +4881,14 @@ export function margenImporteAproximado(monto: number): number {
  */
 const PALABRAS_VACIAS_MARCA = new Set(["de", "del", "la", "el", "los", "las", "the", "and", "y", "sa", "sl", "sas", "srl", "llc", "inc", "ltd", "co", "corp", "gmbh", "bv"]);
 
+/** Palabras de rubro: compartirlas no demuestra que sea la misma marca («Sixt Rent A Car» frente a «Go Rent A Car»). */
+const PALABRAS_GENERICAS_MARCA = new Set([
+  "rent", "car", "cars", "hotel", "hotels", "hostel", "cafe", "coffee", "restaurant", "restaurante", "bar", "shop", "store",
+  "market", "supermercado", "airport", "aeropuerto", "taxi", "pizza", "bakery", "express", "service", "services", "group",
+  "international", "travel", "tour", "tours", "gas", "station", "parking", "pharmacy", "farmacia", "food", "fast", "center",
+  "centre", "plaza", "mall",
+]);
+
 function terminosDeMarca(texto: string): string[] {
   return texto.replace(/[^a-z0-9]+/g, " ").split(" ").filter((t) => t && !PALABRAS_VACIAS_MARCA.has(t));
 }
@@ -4888,14 +4896,17 @@ function terminosDeMarca(texto: string): string[] {
 /**
  * El adquirente antepone un prefijo corto (PAR*, DL*, SQ*) y trunca o cambia el final del nombre: «JUST B CUZ PLM» frente
  * a «Par*just B Cuz Luxury». Se reconoce un núcleo de marca compartido: al menos dos términos iguales que sumen 6 letras
- * y cubran el 60 % del nombre más corto. Solo es una señal de nombre; el importe y la fecha se siguen exigiendo aparte.
+ * y cubran el 60 % del nombre más corto, y al menos uno debe ser distintivo (no una palabra de rubro como «rent», «car»,
+ * «hotel»). Solo es una señal de nombre; el importe y la fecha se siguen exigiendo aparte.
  */
 function comparteNucleoDeMarca(proveedorNormalizado: string, comercioNormalizado: string): boolean {
   const a = terminosDeMarca(proveedorNormalizado), b = terminosDeMarca(comercioNormalizado);
   if (a.length < 2 || b.length < 2) return false;
   const compartidos = a.filter((t) => b.includes(t));
   const letras = compartidos.reduce((suma, t) => suma + t.length, 0);
-  return compartidos.length >= 2 && letras >= 6 && compartidos.length / Math.min(a.length, b.length) >= 0.6;
+  // Al menos un término distintivo (no de rubro ni una letra suelta): «rent a car» compartido no identifica la marca.
+  const hayDistintivo = compartidos.some((t) => t.length >= 2 && !PALABRAS_GENERICAS_MARCA.has(t));
+  return hayDistintivo && compartidos.length >= 2 && letras >= 6 && compartidos.length / Math.min(a.length, b.length) >= 0.6;
 }
 
 export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
