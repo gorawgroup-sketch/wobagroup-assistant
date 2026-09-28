@@ -8,6 +8,7 @@ import {
   conOperacionAuto,
   protegerEscrituraHolded,
   cerrarPoolAuto,
+  EscrituraHoldedNoIniciadaError,
   operacionPendienteConflictaConObjetivo,
 } from "./postgres";
 import { evaluarAuto } from "./model";
@@ -53,6 +54,29 @@ test("una operación automática pendiente solo bloquea el mismo recurso manual"
   }), true);
 });
 
+test("sin coordinación durable: el rechazo de la guardia es «no iniciada» y un fallo de la tarea se propaga tal cual", async () => {
+  const antesUrl = process.env.WOBI_MAIL_DATABASE_URL, antesModo = process.env.WOBI_MAIL_AUTO_MODE;
+  delete process.env.WOBI_MAIL_DATABASE_URL;
+  try {
+    process.env.WOBI_MAIL_AUTO_MODE = "execute";
+    let ejecutada = false;
+    await assert.rejects(
+      () => protegerEscrituraHolded("WOBA", async () => { ejecutada = true; }),
+      (error) => error instanceof EscrituraHoldedNoIniciadaError && /Coordinación durable no disponible/.test(error.message)
+    );
+    assert.equal(ejecutada, false, "la escritura nunca se ejecutó");
+    delete process.env.WOBI_MAIL_AUTO_MODE;
+    const falloPost = new Error("HTTP 502 al enviar");
+    await assert.rejects(
+      () => protegerEscrituraHolded("WOBA", async () => { throw falloPost; }),
+      (error) => error === falloPost && !(error instanceof EscrituraHoldedNoIniciadaError)
+    );
+  } finally {
+    if (antesUrl === undefined) delete process.env.WOBI_MAIL_DATABASE_URL; else process.env.WOBI_MAIL_DATABASE_URL = antesUrl;
+    if (antesModo === undefined) delete process.env.WOBI_MAIL_AUTO_MODE; else process.env.WOBI_MAIL_AUTO_MODE = antesModo;
+  }
+});
+
 test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas manuales", { skip: !url }, async () => {
   process.env.WOBI_MAIL_DATABASE_URL = url;
   const db = new Pool({ connectionString: url });
@@ -72,7 +96,7 @@ test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas
     assert.equal(await protegerEscrituraHolded("WOBA", async () => "POST"), "POST");
     await assert.rejects(() => protegerEscrituraHolded("WOBA", async () => "POST", {
       path: `/treasury/accounts/a1/bank-movements/${op.plan.movimiento.id}/reconcile`,
-    }), /reservado/);
+    }), (error) => error instanceof EscrituraHoldedNoIniciadaError && /reservado/.test(error.message));
     assert.equal(await conOperacionAuto(op.id, () => protegerEscrituraHolded("WOBA", async () => "propia")), "propia");
     op.estado = "creando"; await a.guardar(op);
     assert.equal((await new PostgresAutoStore(db).pendientes(configFixture.buzon))[0].estado, "creando");

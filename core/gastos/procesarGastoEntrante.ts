@@ -1053,7 +1053,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               `en otra moneda/cuenta de ${empresa}, calculando primero el equivalente con la tasa histórica de referencia:\n` +
               movimientosTipoCambio.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "🔗 Conciliar con #N" abajo si reconoces el cargo, o "Crear (sin conciliar)" si ninguno corresponde. ` +
-              `Wobi no elegirá ni conciliará por su cuenta una coincidencia cambiaria.`
+              `Wobi no elegirá ni conciliará por su cuenta una coincidencia cambiaria; si marcas una, ajustaré la tasa de cambio del gasto a ese cargo para que la conciliación quede sin diferencia.`
           : movimientoMonedaAlternativa
             ? `\n\n💱 OJO — posible error de moneda: no encontré ningún movimiento de ${importeTexto}, pero SÍ hay uno de ` +
               `EXACTAMENTE ${movimientoMonedaAlternativa.monto.toFixed(2)} ${movimientoMonedaAlternativa.moneda} el ` +

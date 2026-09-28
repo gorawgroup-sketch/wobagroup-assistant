@@ -3,6 +3,7 @@
 // variables solo existen si ya están en el entorno del shell que lo invoca.
 import "dotenv/config";
 import { durableBankReconciliationStore } from "../core/holded/durableBankReconciliationStore";
+import { verificarAusenciaDeEfectoPorLectura } from "../core/holded/revertirConciliacionIncierta";
 
 interface Argumentos {
   clave: string;
@@ -10,13 +11,15 @@ interface Argumentos {
   documentId: string;
   motivo: string;
   aplicar: boolean;
+  /** true: en vez de cancelar, vuelve a «preparada» tras demostrar por lectura que el POST anterior no tuvo efecto. */
+  revertir: boolean;
 }
 
 function leerArgumentos(argv: string[]): Argumentos {
   const valores = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 1) {
     const nombre = argv[i];
-    if (nombre === "--apply") {
+    if (nombre === "--apply" || nombre === "--revertir") {
       valores.set(nombre, "true");
       continue;
     }
@@ -33,10 +36,13 @@ function leerArgumentos(argv: string[]): Argumentos {
   const motivo = valores.get("--motivo") ?? "";
   if (!/^[a-f0-9]{64}$/.test(clave) || !movementId || !documentId || !motivo.trim()) {
     throw new Error(
-      "Uso: --clave <sha256> --movement <id> --document <id> --motivo <texto> [--apply]"
+      "Uso: --clave <sha256> --movement <id> --document <id> --motivo <texto> [--revertir] [--apply]"
     );
   }
-  return { clave, movementId, documentId, motivo: motivo.trim(), aplicar: valores.has("--apply") };
+  return {
+    clave, movementId, documentId, motivo: motivo.trim(),
+    aplicar: valores.has("--apply"), revertir: valores.has("--revertir"),
+  };
 }
 
 async function main(): Promise<void> {
@@ -49,6 +55,7 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     modo: args.aplicar ? "apply" : "dry-run",
+    accion: args.revertir ? "revertir_a_preparada" : "cancelar",
     clave: registro.clave,
     empresa: registro.empresa,
     estado: registro.estado,
@@ -56,6 +63,19 @@ async function main(): Promise<void> {
     documentId: registro.documentId,
     actualizadoEn: new Date(registro.actualizadoEn).toISOString(),
   }, null, 2));
+
+  if (args.revertir) {
+    // Solo lectura: demuestra que el POST anterior no tuvo efecto antes de permitir un único reintento protegido.
+    const verificacion = await verificarAusenciaDeEfectoPorLectura(registro);
+    console.log(JSON.stringify({ verificacion }, null, 2));
+    if (!verificacion.ok) throw new Error("No se demostró la ausencia de efecto; no se modificó nada.");
+    if (!args.aplicar) return;
+    await durableBankReconciliationStore.revertirIncierta(args.clave, `${args.motivo} — ${verificacion.motivo}`);
+    const revertido = await durableBankReconciliationStore.obtener(args.clave);
+    if (revertido?.estado !== "preparada") throw new Error("No se pudo confirmar la reversión auditada en el ledger.");
+    console.log(JSON.stringify({ resultado: "revertida_a_preparada", clave: revertido.clave, documentId: revertido.documentId }, null, 2));
+    return;
+  }
 
   if (!args.aplicar) return;
   if (registro.estado !== "incierta") {
