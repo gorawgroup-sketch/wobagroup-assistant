@@ -566,14 +566,20 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
     return "Los aprendizajes actuales no permiten elegir una cuenta contable con seguridad.";
   }
   if (tiene("confianza_insuficiente")) return "La lectura del comprobante no alcanzó la confianza necesaria para automatizar.";
+  // Los aplazamientos también pueden llegar como `error:<motivo>` (lanzados desde la consulta de
+  // evidencias); van antes del comodín `error:` para no disfrazarlos de «no se pudo leer».
+  if (tiene("revision_pospuesta_por_reinicio") || tiene("error:revision_pospuesta_por_reinicio")) {
+    return "La revisión se interrumpió por un reinicio del servicio; se retoma en la siguiente pasada.";
+  }
+  if (tiene("revision_pospuesta_por_limite_de_tiempo") || tiene("error:revision_pospuesta_por_limite_de_tiempo")) {
+    return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
+  }
   if (tiene("lectura_incompleta") || motivos.some(motivo => motivo.startsWith("error:"))) {
     return "No se pudo leer o verificar todo el contenido del correo.";
   }
   if (tiene("otras_acciones_pendientes")) return "El correo contiene además otra solicitud que debe revisar el operador.";
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";
   if (tiene("revision_manual_o_autorespuesta_activa")) return "Este correo ya está reservado para otro flujo de revisión.";
-  if (tiene("revision_pospuesta_por_limite_de_tiempo")) return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
-  if (tiene("revision_pospuesta_por_reinicio")) return "La revisión se interrumpió por un reinicio del servicio; se retoma en la siguiente pasada.";
   if (tiene("revision_pospuesta_por_limite_de_coste")) return "La revisión se aplazó al alcanzar el máximo seguro de análisis nuevos de esta pasada.";
   if (tiene("revision_pospuesta_por_limite_de_ia")) return "El análisis no se ejecutó porque se alcanzó el presupuesto diario de IA configurado.";
   if (tiene("analisis_ia_no_disponible")) return "La política de IA no autorizó este análisis.";

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   avisarYRegistrarRevisionesInterrumpidas,
-  chatsConRevisionManualEnCurso,
   configurarRevisionCorreoManualParaPruebas,
   ejecutarRevisionCorreoManual,
   reanudarRevisionesCorreoInterrumpidas,
+  vigilarReanudacionesPendientes,
 } from "./revisionCorreoManual";
 import type { ResultadoRevisarCorreo } from "./revisarCorreoNuevo";
 import type { ReanudacionRevisionCorreo } from "../gmail/automatico/reanudacion";
@@ -45,7 +45,6 @@ function escenario(parciales: {
 test("al recibir SIGTERM con una revisión manual en curso: registro durable + aviso inmediato con el último avance", async () => {
   const e = escenario();
   const revision = ejecutarRevisionCorreoManual(CHAT);
-  assert.deepEqual(chatsConRevisionManualEnCurso(), [CHAT]);
   await avisarYRegistrarRevisionesInterrumpidas(123_456);
   assert.equal(e.registros.length, 1);
   assert.deepEqual(e.registros[0], { chatId: CHAT, interrumpidaEn: 123_456, reanudaciones: 0, progreso: "⏳ Mensajes analizados: 39/50." });
@@ -55,7 +54,9 @@ test("al recibir SIGTERM con una revisión manual en curso: registro durable + a
   assert.match(e.enviados[0].texto, /la retomo automáticamente/);
   e.liberar();
   await revision;
-  assert.deepEqual(chatsConRevisionManualEnCurso(), []);
+  // Terminada la revisión, un SIGTERM posterior ya no tiene nada que registrar.
+  await avisarYRegistrarRevisionesInterrumpidas(123_457);
+  assert.equal(e.registros.length, 1);
   e.restaurar();
 });
 
@@ -153,4 +154,55 @@ test("un correo activo bloqueando y un fallo siguen avisando como antes del camb
   await ejecutarRevisionCorreoManual(CHAT);
   assert.match(f.enviados[0].texto, /Hubo un error revisando el correo/);
   f.restaurar();
+});
+
+test("si la revisión termina mientras el registro del SIGTERM sigue en vuelo, la cancelación espera al INSERT", async () => {
+  const orden: string[] = [];
+  let terminarRegistro: (() => void) | undefined;
+  let cierre = false;
+  const e = escenario({
+    registrar: async () => { await new Promise<void>(resolve => { terminarRegistro = resolve; }); orden.push("insert"); },
+    cierre: () => cierre,
+  });
+  const revision = ejecutarRevisionCorreoManual(CHAT);
+  cierre = true;
+  const sigterm = avisarYRegistrarRevisionesInterrumpidas();
+  await new Promise(resolve => setImmediate(resolve));
+  e.liberar(); // la revisión termina con el INSERT todavía en vuelo
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(e.cancelados, []); // aún no: espera al registro
+  terminarRegistro!();
+  await Promise.all([sigterm, revision]);
+  assert.deepEqual(orden, ["insert"]);
+  assert.deepEqual(e.cancelados, [CHAT]);
+  e.restaurar();
+});
+
+test("la vigilancia recoge una reanudación escrita DESPUÉS de arrancar (orden real de Railway) y para al pedirse el cierre", async () => {
+  const filas: ReanudacionRevisionCorreo[] = [];
+  let cierre = false;
+  const e = escenario({
+    resultado: async () => ({ correosRevisados: 1 }),
+    reclamar: async () => filas.splice(0),
+    cierre: () => cierre,
+  });
+  const seguidas: Array<Promise<void>> = [];
+  const relanzadas: number[] = [];
+  const parar = vigilarReanudacionesPendientes({ seguir: (p) => { seguidas.push(p); }, intervaloInicialMs: 5, ventanaInicialMs: 60_000,
+    alRelanzar: (n) => { relanzadas.push(n); } });
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.deepEqual(e.lanzamientos, []); // al arrancar no había nada: no se inventa nada
+  filas.push({ chatId: CHAT, interrumpidaEn: Date.now(), reanudaciones: 0 }); // el contenedor viejo escribe tras el SIGTERM
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(e.lanzamientos, [CHAT]);
+  assert.deepEqual(relanzadas, [1]);
+  await Promise.all(seguidas);
+  // Con el cierre pedido, este proceso ya no reclama (la fila es para el siguiente).
+  cierre = true;
+  filas.push({ chatId: CHAT, interrumpidaEn: Date.now(), reanudaciones: 0 });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(filas.length, 1);
+  assert.deepEqual(e.lanzamientos, [CHAT]);
+  parar();
+  e.restaurar();
 });

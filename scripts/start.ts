@@ -29,7 +29,23 @@ async function conReintentoPorLock<T>(nombre: string, tarea: () => Promise<T>): 
 async function start(): Promise<void> {
   const config = configuracionAuto();
   if (process.env.WOBI_MAIL_DATABASE_URL) {
-    await conReintentoPorLock("esquema durable", () => poolAuto().query(SCHEMA_AUTO));
+    // El esquema (ALTER TABLE / CREATE INDEX) pide locks exclusivos: con lock_timeout se
+    // convierte en un 55P03 reintentable en vez de una espera sin fin que además encolaría las
+    // escrituras del contenedor viejo detrás del ALTER.
+    await conReintentoPorLock("esquema durable", async () => {
+      const client = await poolAuto().connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL lock_timeout = '30s'");
+        await client.query(SCHEMA_AUTO);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
     await conReintentoPorLock("cola de correo", () => prepararColaPostgres());
     console.log("[startup] Registro durable y cola de correo preparados.");
   } else if (config.modo !== "off") {

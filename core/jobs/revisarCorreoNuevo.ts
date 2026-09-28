@@ -277,7 +277,9 @@ export async function revisarCorreoNuevo(
     }
     // Cierra la carrera en la que una orden manual llega justo después de
     // que un cron silencioso decidió no publicar, pero antes de terminar.
-    if (forzarAviso && !resultado.informePublicado && resultado.automatico) {
+    // Una revisión interrumpida por el cierre del servicio no tiene informe que publicar: el
+    // proceso nuevo la retoma entera (ver core/jobs/revisionCorreoManual.ts).
+    if (forzarAviso && !resultado.informePublicado && !resultado.interrumpida && resultado.automatico) {
       const resumen = resumenAutomatico(resultado.automatico);
       if (resumen) {
         // Reservar antes del await evita que dos órdenes manuales que se

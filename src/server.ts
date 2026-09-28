@@ -81,7 +81,7 @@ import {
 import {
   avisarYRegistrarRevisionesInterrumpidas,
   ejecutarRevisionCorreoManual,
-  reanudarRevisionesCorreoInterrumpidas,
+  vigilarReanudacionesPendientes,
 } from "../core/jobs/revisionCorreoManual";
 import { solicitarCierre } from "../core/utils/cierreServicio";
 import {
@@ -324,7 +324,8 @@ process.on("SIGTERM", () => {
   // Unos segundos por debajo del drenado real de Railway (railway.json `drainingSeconds` /
   // variable RAILWAY_DEPLOYMENT_DRAINING_SECONDS), leído del entorno para que no haya que
   // mantener dos números a mano: si se cambia allí, esto lo sigue.
-  const esperaMaximaDrenajeMs = Math.max(5_000, Number(process.env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS || 60) * 1000 - 5_000);
+  const drenadoSegundos = Number(process.env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS);
+  const esperaMaximaDrenajeMs = Math.max(5_000, (Number.isFinite(drenadoSegundos) && drenadoSegundos > 0 ? drenadoSegundos : 60) * 1000 - 5_000);
   const inicio = Date.now();
   const intervalo = setInterval(() => {
     if (nadaEnCurso()) {
@@ -2318,10 +2319,15 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
 
   res.json({ ok: true, mensaje: "Revisión automática y cola manual iniciadas en segundo plano." });
 
+  // Mismo camino que /revisarcorreo (aviso, registro y reanudación si un despliegue la corta);
+  // sin chat de alertas configurado no hay a quién avisar y se conserva la ruta directa.
+  const chatAlertas = Number(process.env.CASHFLOW_ALERTS_CHAT_ID);
   trackearEnSegundoPlano(
-    revisarCorreoNuevo({ origen: "manual" }).catch((error) => {
-      console.error("[admin/run-gmail-check] Error:", error);
-    })
+    Number.isFinite(chatAlertas) && chatAlertas
+      ? ejecutarRevisionCorreoManual(chatAlertas)
+      : revisarCorreoNuevo({ origen: "manual" }).catch((error) => {
+        console.error("[admin/run-gmail-check] Error:", error);
+      })
   );
 });
 
@@ -2719,16 +2725,13 @@ servidorHttp = app.listen(PORT, () => {
       })
     );
   }
-  // Revisiones manuales de correo que un despliegue anterior interrumpió (ver SIGTERM arriba).
-  trackearEnSegundoPlano(
-    reanudarRevisionesCorreoInterrumpidas({ seguir: trackearEnSegundoPlano })
-      .then((relanzadas) => {
-        if (relanzadas > 0) console.log(`[revisarcorreo] Reanudadas ${relanzadas} revisión(es) interrumpida(s) por el despliegue anterior.`);
-      })
-      .catch((error) => {
-        console.error("[revisarcorreo] No se pudo revisar si había revisiones interrumpidas al arrancar:", error);
-      })
-  );
+  // Revisiones manuales de correo que un despliegue interrumpió (ver SIGTERM arriba). Vigilancia
+  // periódica, no una sola consulta: el contenedor viejo escribe su registro al recibir SIGTERM,
+  // que Railway manda DESPUÉS de que este proceso ya arrancó.
+  vigilarReanudacionesPendientes({
+    seguir: trackearEnSegundoPlano,
+    alRelanzar: (relanzadas) => console.log(`[revisarcorreo] Reanudadas ${relanzadas} revisión(es) interrumpida(s) por el despliegue anterior.`),
+  });
   trackearEnSegundoPlano(
     reconciliarEnviosCorreoAlArrancar()
       .then((r) => {

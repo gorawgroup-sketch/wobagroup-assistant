@@ -26,8 +26,11 @@ import { cierreSolicitado } from "../utils/cierreServicio";
  *  - `avisarYRegistrarRevisionesInterrumpidas`: al recibir SIGTERM, para cada una de esas
  *    revisiones deja una fila durable en Postgres y avisa al chat de inmediato — antes de esperar
  *    a ningún punto de control, para que quede aunque el SIGKILL llegue primero.
- *  - `reanudarRevisionesCorreoInterrumpidas`: al arrancar, reclama esas filas y relanza la misma
- *    revisión. Repetirla es seguro: análisis cacheados por huella y escrituras durables en Holded.
+ *  - `vigilarReanudacionesPendientes`: el proceso nuevo reclama esas filas y relanza la misma
+ *    revisión. No basta con mirar una vez al arrancar: en Railway el contenedor nuevo arranca
+ *    ANTES de que el viejo reciba el SIGTERM (y escriba la fila), así que se vigila de forma
+ *    periódica. Repetir la revisión es seguro: análisis cacheados por huella y escrituras
+ *    durables en Holded.
  */
 const dependencias = {
   revisarCorreoNuevo: (chatId: number): Promise<ResultadoRevisarCorreo> => revisarCorreoNuevo({ origen: "manual", chatId }),
@@ -45,14 +48,17 @@ export function configurarRevisionCorreoManualParaPruebas(parciales: Partial<typ
   const originales = { ...dependencias };
   Object.assign(dependencias, parciales);
   revisionesManualesEnCurso.clear();
-  return () => { Object.assign(dependencias, originales); revisionesManualesEnCurso.clear(); };
+  registrosEnVuelo.clear();
+  return () => { Object.assign(dependencias, originales); revisionesManualesEnCurso.clear(); registrosEnVuelo.clear(); };
 }
 
 const revisionesManualesEnCurso = new Map<number, { reanudaciones: number }>();
-
-export function chatsConRevisionManualEnCurso(): number[] {
-  return [...revisionesManualesEnCurso.keys()];
-}
+/**
+ * Registro de reanudación que el SIGTERM dejó en vuelo, por chat. Si la revisión termina por sí
+ * sola en esa misma ventana, su cancelación debe esperar a que el INSERT aterrice: si no, el
+ * DELETE llegaría antes y quedaría una fila huérfana que el proceso nuevo relanzaría sin motivo.
+ */
+const registrosEnVuelo = new Map<number, Promise<void>>();
 
 export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanudaciones?: number } = {}): Promise<void> {
   const reanudaciones = opciones.reanudaciones ?? 0;
@@ -69,6 +75,7 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
       }
       if (dependencias.cierreSolicitado()) {
         // Terminó por sí misma después del SIGTERM: que el proceso nuevo no la repita entera.
+        await registrosEnVuelo.get(chatId)?.catch(() => undefined);
         await dependencias.cancelarReanudacionPendiente(chatId).catch((error) =>
           console.error("[revisarcorreo] No se pudo cancelar la reanudación ya innecesaria:", error)
         );
@@ -122,8 +129,10 @@ export async function avisarYRegistrarRevisionesInterrumpidas(ahora = Date.now()
     const avance = progreso ? ` Último avance: ${progreso.replace(/^⏳\s*/, "")}` : "";
     const registro: ReanudacionRevisionCorreo = { chatId, interrumpidaEn: ahora, reanudaciones: estado.reanudaciones, progreso };
     let programada = true;
+    const escritura = dependencias.registrarReanudacionPendiente(registro);
+    registrosEnVuelo.set(chatId, escritura);
     try {
-      await dependencias.registrarReanudacionPendiente(registro);
+      await escritura;
     } catch (error) {
       programada = false;
       console.error("[revisarcorreo] No se pudo registrar la reanudación tras SIGTERM:", error);
@@ -138,13 +147,15 @@ export async function avisarYRegistrarRevisionesInterrumpidas(ahora = Date.now()
 }
 
 /**
- * Llamado al arrancar. Devuelve cuántas revisiones se relanzaron (para el log). `seguir` recibe
+ * Reclama y relanza las reanudaciones pendientes. Devuelve cuántas se relanzaron. `seguir` recibe
  * cada revisión relanzada para que el servidor la cuente como trabajo en curso (y un SIGTERM
- * posterior la espere y la vuelva a registrar, igual que a una orden escrita a mano).
+ * posterior la espere y la vuelva a registrar, igual que a una orden escrita a mano). Un proceso
+ * que ya está cerrándose nunca reclama: la fila que acaba de escribir es para el siguiente.
  */
 export async function reanudarRevisionesCorreoInterrumpidas(
   opciones: { ahora?: number; seguir?: (revision: Promise<void>) => void } = {}
 ): Promise<number> {
+  if (dependencias.cierreSolicitado()) return 0;
   const ahora = opciones.ahora ?? Date.now();
   const registros = await dependencias.reclamarReanudacionesPendientes();
   let relanzadas = 0;
@@ -171,4 +182,41 @@ export async function reanudarRevisionesCorreoInterrumpidas(
     if (opciones.seguir) opciones.seguir(revision); else void revision;
   }
   return relanzadas;
+}
+
+/**
+ * Vigilancia periódica desde el arranque. Orden real de Railway en un despliegue: arranca el
+ * contenedor nuevo → pasa el healthcheck → SOLO ENTONCES el viejo recibe SIGTERM y escribe su
+ * fila de reanudación. Una sola consulta al arrancar llegaría siempre antes que la fila. Por eso
+ * se consulta cada `intervaloInicialMs` durante la ventana de solapamiento + drenado y después,
+ * más despacio, para siempre (una consulta a una tabla casi siempre vacía; cubre reinicios en
+ * cadena). Los temporizadores no mantienen vivo el proceso y paran al pedirse el cierre.
+ */
+export function vigilarReanudacionesPendientes(opciones: {
+  seguir?: (revision: Promise<void>) => void;
+  intervaloInicialMs?: number;
+  ventanaInicialMs?: number;
+  intervaloPosteriorMs?: number;
+  alRelanzar?: (relanzadas: number) => void;
+} = {}): () => void {
+  const intervaloInicial = opciones.intervaloInicialMs ?? 15_000;
+  const ventanaInicial = opciones.ventanaInicialMs ?? 15 * 60_000;
+  const intervaloPosterior = opciones.intervaloPosteriorMs ?? 2 * 60_000;
+  const inicio = Date.now();
+  let temporizador: ReturnType<typeof setTimeout> | undefined;
+  let detenida = false;
+  const consultar = async (): Promise<void> => {
+    if (detenida || dependencias.cierreSolicitado()) return;
+    try {
+      const relanzadas = await reanudarRevisionesCorreoInterrumpidas({ seguir: opciones.seguir });
+      if (relanzadas > 0) opciones.alRelanzar?.(relanzadas);
+    } catch (error) {
+      console.error("[revisarcorreo] No se pudo revisar si había revisiones interrumpidas:", error);
+    }
+    if (detenida || dependencias.cierreSolicitado()) return;
+    temporizador = setTimeout(() => { void consultar(); }, Date.now() - inicio < ventanaInicial ? intervaloInicial : intervaloPosterior);
+    temporizador.unref();
+  };
+  void consultar();
+  return () => { detenida = true; if (temporizador) clearTimeout(temporizador); };
 }
