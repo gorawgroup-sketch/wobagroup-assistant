@@ -48,8 +48,13 @@ export async function buscarCargoParaPropuesta(
   let ambiguos: MovimientoBancarioCandidato[] = [];
 
   if ((exactos.length === 0 || soloPorConfirmar) && c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
-    const aproximados = await deps.aproximado(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor });
-    if (aproximados.length > 0) recomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
+    try {
+      const aproximados = await deps.aproximado(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor });
+      if (aproximados.length > 0) recomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
+    } catch (error) {
+      // Un fallo del segundo barrido de Holded no debe hacer perder los cargos exactos ya encontrados.
+      console.error("[buscarCargoParaPropuesta] Error buscando cargo aproximado (se sigue con los exactos):", error instanceof Error ? error.message : error);
+    }
   }
   if (!recomendado) {
     if (exactos.length === 1) recomendado = { ...exactos[0], origenCoincidencia: "exacta" };

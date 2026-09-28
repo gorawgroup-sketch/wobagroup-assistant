@@ -55,3 +55,12 @@ test("con proveedor sin identificar no se busca por nombre aproximado", async ()
   assert.equal(r.movimientoEncontrado, false);
   assert.deepEqual(r.movimientosPersistidos, []);
 });
+
+test("si falla la pasada del aproximado, los exactos ya encontrados no se pierden", async () => {
+  const porConfirmar = cargo("m-otro", "SQ *XYZ 88", { compatibilidad: "por_confirmar" });
+  const r = await buscarCargoParaPropuesta(c, {
+    similar: (async () => [porConfirmar]) as never,
+    aproximado: (async () => { throw new Error("Error de la API de Holded (503)"); }) as never,
+  });
+  assert.equal(r.movimientoRecomendado?.movementId, "m-otro");
+});

@@ -5079,6 +5079,12 @@ export async function buscarMovimientoAproximado(
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status)) continue;
       if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, { nucleoDeMarca: true })) continue;
+      // Su contrato exige «nombre parecido Y monto cercano»: la categoría sola solo vale con la fecha cercana (antes no tenía
+      // tope y un restaurante lejano del mismo rubro se conciliaba tras «Sí, conciliar» y reescribía el importe de la compra).
+      if (
+        compatibleSoloPorCategoria(criterios.proveedor, "", mov.description, { nucleoDeMarca: true }) &&
+        !(diasEntreFechas(mov.booking_date ? mov.booking_date.slice(0, 10) : "", criterios.fecha) <= DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA)
+      ) continue;
 
       let monto: number;
       if (monedaObjetivo === "EUR") {

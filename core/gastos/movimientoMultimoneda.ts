@@ -4,8 +4,6 @@ import {
   buscarMovimientoSimilar,
   proveedorPareceEnDescripcion,
   movimientoCompatibleConGasto,
-  compatibleSoloPorCategoria,
-  DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA,
   type MovimientoBancarioCandidato,
 } from "../holded/write";
 import { obtenerTasaCambioHistorica } from "../utils/exchangeRate";
@@ -95,12 +93,6 @@ export async function buscarMovimientosPorTipoCambio(
       const enriquecido: MovimientoBancarioCandidato = {
         ...candidato,
         origenCoincidencia: "tipo_cambio",
-        // Solo coincide la categoría y la fecha está lejos (caso real: un café de Bogotá en COP frente al cargo de un
-        // restaurante de Puerto Rico): se ofrece igualmente, pero con el aviso de «nombre distinto».
-        ...(compatibleSoloPorCategoria(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion, { nucleoDeMarca: true }) &&
-        diasDeDiferencia(candidato.fecha, criterios.fecha) > DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA
-          ? { compatibilidad: "por_confirmar" as const }
-          : {}),
         montoReferencia,
         monedaOrigenReferencia: monedaOrigen,
         tasaReferencia: tasa,

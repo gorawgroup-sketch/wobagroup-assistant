@@ -847,6 +847,18 @@ async function intentarConciliar(
       }
     }
 
+    if (!candidato && proveedor) {
+      // «Crear (sin conciliar)» existe para los cargos que llegan tarde o con otro nombre: si la búsqueda estricta no
+      // encuentra nada, se repite admitiendo los «por confirmar»/«aprendidos» (nombre distinto o solo la categoría con la fecha
+      // lejana) y se pide ELEGIR con aviso. Nunca se concilia solo, pero tampoco queda un «No encontré» para siempre.
+      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto, incluirPorConfirmar: true }))
+        .filter((m) => m.compatibilidad);
+      if (paraElegir.length > 0) {
+        return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, paraElegir,
+          deColaCorreo, false, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail);
+      }
+    }
+
     if (!candidato) {
       // El gasto puede estar en USD y el cargo bancario en EUR (u otra moneda real de la misma
       // empresa). Después de que el usuario pide conciliar, se repite también la búsqueda por tipo
@@ -3965,11 +3977,11 @@ export function ajustarPropuestaAlMovimientoRecomendado(
 }
 
 /**
- * Tras cambiar el monto, la moneda o la clasificación de una propuesta, el cargo bancario se busca DE NUEVO con los datos
- * corregidos (misma jerarquía que la renovación de botones: buscarCargoParaPropuesta), se guarda en la propuesta y se
- * repinta el teclado. Antes solo la corrección de moneda lo hacía: tras «Ajustar monto» o «Corregir clasificación» el teclado
- * conservaba el resultado de la búsqueda anterior y podía quedar sin ninguna vía de conciliar. Devuelve una nota para el
- * mensaje de confirmación; nunca lanza (es un refresco: la corrección ya se aplicó).
+ * Tras corregir la MONEDA de una propuesta, el cargo bancario se busca DE NUEVO con la moneda corregida (misma jerarquía
+ * que la renovación de botones: buscarCargoParaPropuesta), se guarda en la propuesta y se repinta el teclado. Solo la
+ * moneda lo hace: cambia qué cargos son posibles. Con el monto o la clasificación NO se refresca aquí (la revisión del #232
+ * mostró que una lista nueva bajo una decisión ya marcada por índice concilia contra otro cargo); se renueva a petición.
+ * Devuelve una nota para el mensaje de confirmación; nunca lanza (la corrección ya se aplicó).
  */
 async function refrescarCargoDePropuesta(propuestaActualizada: PropuestaGasto): Promise<string> {
   if (propuestaActualizada.candidatos.length > 0 || !esFechaDocumentoValida(propuestaActualizada.fecha)) return "";
@@ -3987,12 +3999,15 @@ async function refrescarCargoDePropuesta(propuestaActualizada: PropuestaGasto): 
     console.error("[gastoCallbackHandler] Error buscando el cargo tras corregir la propuesta (no crítico):", error);
     return ` No pude repetir la búsqueda del cargo porque Holded no respondió; dile al asistente «renueva los botones de la propuesta de ${propuestaActualizada.proveedor}» en un momento.`;
   }
-  await actualizarFlagMovimientoBancarioGasto(propuestaActualizada.id, resultado.movimientoEncontrado).catch((error) =>
-    console.error("[gastoCallbackHandler] Error actualizando el flag de movimiento bancario (no crítico):", error)
-  );
-  await actualizarMovimientosAmbiguosPropuestaGasto(propuestaActualizada.id, resultado.movimientosPersistidos).catch((error) =>
-    console.error("[gastoCallbackHandler] Error actualizando los movimientos ambiguos (no crítico):", error)
-  );
+  // Si el cargo no queda guardado, no se repinta ni se afirma nada: el teclado mostraría un cargo que después no existe.
+  try {
+    const flagGuardado = await actualizarFlagMovimientoBancarioGasto(propuestaActualizada.id, resultado.movimientoEncontrado);
+    const movimientosGuardados = await actualizarMovimientosAmbiguosPropuestaGasto(propuestaActualizada.id, resultado.movimientosPersistidos);
+    if (!flagGuardado || !movimientosGuardados) throw new Error("La propuesta ya no está disponible o no se pudo guardar.");
+  } catch (error) {
+    console.error("[gastoCallbackHandler] No se pudo guardar el cargo tras corregir la propuesta:", error);
+    return ` No pude guardar el cargo encontrado; dime «renueva los botones de la propuesta de ${propuestaActualizada.proveedor}» en un momento.`;
+  }
   try {
     const conCargo: PropuestaGasto = {
       ...propuestaActualizada,
@@ -4034,10 +4049,13 @@ async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number):
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
 
-  const notaCargo = await refrescarCargoDePropuesta({ ...propuesta, monto: nuevoMonto, lineas: reescalarLineas(propuesta, nuevoMonto) });
+  // Aquí NO se repite la búsqueda del cargo ni se toca la lista persistida: en «Aprobar selección» la decisión final ya
+  // marcada («Conciliar con #N») se resuelve por índice DESPUÉS de este paso y una lista nueva la apuntaría a otro cargo.
+  // Si el nuevo importe cambia el cargo esperado, se renueva con «renueva los botones» (búsqueda en vivo y explicada).
   return {
     ok: true,
-    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.${notaCargo}`,
+    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.` +
+      (propuesta.candidatos.length === 0 ? ` Si el cargo del banco tiene ahora otro importe, dime «renueva los botones de la propuesta de ${propuesta.proveedor}» para volver a buscarlo.` : ""),
   };
 }
 
@@ -4410,12 +4428,13 @@ async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: s
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
-  const notaCargo = await refrescarCargoDePropuesta({ ...propuesta, empresa: propuestaFinal.empresa, concepto: propuestaFinal.concepto });
+  // Igual que con el monto: no se cambia la lista de cargos bajo una decisión ya marcada; se renueva a petición.
   return {
     ok: true,
     mensaje:
       `✏️ Clasificación corregida — empresa: ${propuestaFinal.empresa}, concepto: ${propuestaFinal.concepto}. ` +
-      `Cuenta y tags se recalcularon con el aprendizaje existente.${notaCargo}`,
+      `Cuenta y tags se recalcularon con el aprendizaje existente.` +
+      (propuesta.candidatos.length === 0 ? ` Si la corrección cambia qué cargo corresponde, dime «renueva los botones de la propuesta de ${propuesta.proveedor}» para volver a buscarlo.` : ""),
   };
 }
 
