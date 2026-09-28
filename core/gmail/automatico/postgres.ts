@@ -187,12 +187,40 @@ export async function conCoordinadorCorreo<T>(
   return conBloqueoAuto(clave, tarea, opciones);
 }
 
+/**
+ * La guardia rechazó (o no pudo evaluar) la escritura ANTES de ejecutarla: el POST/PUT nunca salió hacia Holded.
+ * Se distingue de cualquier fallo posterior (que sí deja el resultado incierto) para que quien reintenta —p. ej. el
+ * registro durable de conciliaciones— no bloquee para siempre un recurso que nunca se tocó.
+ */
+export class EscrituraHoldedNoIniciadaError extends Error {
+  constructor(readonly causa: unknown) {
+    super(causa instanceof Error ? causa.message : String(causa));
+    this.name = "EscrituraHoldedNoIniciadaError";
+  }
+}
+
 /** Las rutas manuales y múltiples respetan las operaciones automáticas incompletas. */
 export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: () => Promise<T>, objetivo?: ObjetivoEscrituraHolded): Promise<T> {
   if (!hayCoordinacionDurable()) {
-    if (process.env.WOBI_MAIL_AUTO_MODE === "execute") throw new Error("Coordinación durable no disponible.");
+    if (process.env.WOBI_MAIL_AUTO_MODE === "execute") throw new EscrituraHoldedNoIniciadaError(new Error("Coordinación durable no disponible."));
     return tarea();
   }
+  let iniciada = false;
+  try {
+    return await protegerEscrituraHoldedConGuardia(empresa, tarea, objetivo, () => { iniciada = true; });
+  } catch (error) {
+    // Todo lo ocurrido antes de que `tarea` arranque (conexión, lock, claims, operaciones pendientes) es «no iniciada».
+    if (!iniciada && !(error instanceof EscrituraHoldedNoIniciadaError)) throw new EscrituraHoldedNoIniciadaError(error);
+    throw error;
+  }
+}
+
+async function protegerEscrituraHoldedConGuardia<T>(
+  empresa: EmpresaAuto,
+  tarea: () => Promise<T>,
+  objetivo: ObjetivoEscrituraHolded | undefined,
+  alIniciar: () => void
+): Promise<T> {
   return conBloqueoAuto(`holded:${empresa}`, async () => {
     const propias = contexto.getStore()?.operacion ?? "";
     if (propias) {
@@ -231,6 +259,7 @@ export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: ()
         [empresa, propias, movimiento ? decodeURIComponent(movimiento) : null, numero, typeof body.contact_id === "string" ? body.contact_id : null]);
       if (anteriores.rowCount) throw new Error(`Esta operación ya fue completada por la revisión automática (${anteriores.rows[0].id}); el botón antiguo no la repetirá.`);
     }
+    alIniciar();
     return tarea();
   });
 }

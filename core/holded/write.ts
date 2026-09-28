@@ -2,7 +2,7 @@ import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConcil
 import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
-import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
+import { EscrituraHoldedNoIniciadaError, protegerEscrituraHolded } from "../gmail/automatico/postgres";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -5586,6 +5586,11 @@ async function aplicarConciliacionRegistrada(
       `/treasury/accounts/${encodeURIComponent(registro.accountId)}/bank-movements/${encodeURIComponent(registro.movementId)}/reconcile`,
       { documents: [{ document_id: registro.documentId, document_type: "purchase" }] }
     );
+  } catch (error) {
+    // La guardia de coordinación (operación automática que reclama el movimiento, lock, conexión) rechazó la escritura
+    // antes de enviarla: no hubo POST, así que tampoco hay nada incierto que verificar.
+    if (error instanceof EscrituraHoldedNoIniciadaError) throw new ConciliacionNoIntentadaError(error);
+    throw error;
   } finally {
     // Holded puede haber aceptado el efecto aunque la respuesta se pierda.
     invalidarCacheCuentasTesoreria(registro.empresa);
@@ -5618,7 +5623,12 @@ export async function reconciliarMovimiento(
   );
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
-    await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
+    try {
+      await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
+    } catch (error) {
+      // Sin registro durable no hay estado que proteger: se propaga el error original, no su envoltorio.
+      throw error instanceof ConciliacionNoIntentadaError ? error.causa : error;
+    }
     const inspeccion = await inspeccionarConciliacionRegistrada(registro);
     return inspeccion.estado === "no_encontrada"
       ? { ok: false, statusFinal: "(no encontrado al releer)", montoEnlazado: 0 }

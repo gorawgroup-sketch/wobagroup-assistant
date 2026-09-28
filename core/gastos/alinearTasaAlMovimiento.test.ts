@@ -5,6 +5,7 @@ import { alinearTasaCambioAlMovimientoElegido } from "./alinearTasaAlMovimiento"
 /** Caso real (Footprint, 2026-09-28): recibo de Uber de 16.992 COP, cargo elegido "Uber Pending" de -4,57 EUR. */
 function escenario(opciones: { total?: string; moneda?: string; tasa?: string; importe?: string; monedaCuenta?: string } = {}) {
   const llamadas: unknown[][] = [];
+  const validaciones: unknown[][] = [];
   const compra: Record<string, unknown> = {
     total: opciones.total ?? "16992,00",
     currency: opciones.moneda ?? "COP",
@@ -25,6 +26,7 @@ function escenario(opciones: { total?: string; moneda?: string; tasa?: string; i
   const deps = {
     leerCompra: async () => compra,
     leerMovimiento: async () => movimiento,
+    validar: async (...args: unknown[]) => { validaciones.push(args); return { monedaCompra: "COP", monedaMovimiento: "EUR" }; },
     editar: async (...args: unknown[]) => {
       llamadas.push(args);
       const cambios = args[2] as { tasaCambioNueva: number };
@@ -32,7 +34,7 @@ function escenario(opciones: { total?: string; moneda?: string; tasa?: string; i
       return { ...compra, currency_change: cambios.tasaCambioNueva.toFixed(2) };
     },
   };
-  return { compra, movimiento, elegido, llamadas, deps: deps as any };
+  return { compra, movimiento, elegido, llamadas, validaciones, deps: deps as any };
 }
 
 test("ajusta la tasa del gasto en COP para que valga exactamente el cargo elegido en EUR", async () => {
@@ -46,7 +48,7 @@ test("ajusta la tasa del gasto en COP para que valga exactamente el cargo elegid
   assert.equal(r.montoEur, 4.57);
   assert.equal(e.llamadas.length, 1);
   assert.deepEqual(e.llamadas[0][2], { tasaCambioNueva: esperada });
-  assert.match(String((e.llamadas[0][3] as { idempotencyKey: string }).idempotencyKey), /^ajuste-tasa-movimiento:g:m:\d+$/);
+  assert.match(String((e.llamadas[0][3] as { idempotencyKey: string }).idempotencyKey), /^ajuste-tasa-movimiento:g:m:\d+:[0-9a-f]{12}$/);
   assert.equal((e.llamadas[0][3] as { proceso: string }).proceso, "ajuste_tasa_cambio_movimiento_elegido");
   // El equivalente en EUR del gasto con la tasa nueva coincide con el cargo al céntimo.
   assert.equal(Math.round((16992 / r.tasaNueva) * 100), 457);
@@ -111,4 +113,34 @@ test("si la relectura no confirma la tasa esperada, lanza en vez de dar el ajust
     return { ...f.compra, currency_change: "3718.16", total: "16000,00" }; // el total nativo cambió
   };
   await assert.rejects(alinearTasaCambioAlMovimientoElegido("Footprint", "g", f.elegido, f.deps), /relectura/);
+});
+
+test("valida por lectura antes de editar: si la conciliación se rechazará, no se toca la tasa", async () => {
+  const e = escenario();
+  e.deps.validar = async () => { throw new Error("La compra ya tiene pagos o un estado de pagos no verificable."); };
+  await assert.rejects(alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps), /ya tiene pagos/);
+  assert.equal(e.llamadas.length, 0);
+  const ok = escenario();
+  await alinearTasaCambioAlMovimientoElegido("Footprint", "g", ok.elegido, ok.deps);
+  assert.equal(ok.validaciones.length, 1);
+});
+
+test("si la tasa a 6 decimales no reproduce el cargo al céntimo (USD grande) no ajusta y lo dice", async () => {
+  const e = escenario({ total: "14.051,57", moneda: "USD", tasa: "1.16", importe: "-12095.67" });
+  const r = await alinearTasaCambioAlMovimientoElegido("Footprint", "g", e.elegido, e.deps);
+  assert.equal(r.estado, "no_aplica");
+  if (r.estado === "no_aplica") assert.match(r.motivo, /céntimo/);
+  assert.equal(e.llamadas.length, 0);
+  assert.equal(e.validaciones.length, 0);
+});
+
+test("la clave idempotente cambia si el estado previo del gasto cambió (fecha o número)", async () => {
+  const a = escenario();
+  await alinearTasaCambioAlMovimientoElegido("Footprint", "g", a.elegido, a.deps);
+  const b = escenario();
+  b.compra.date = "2026-09-24";
+  await alinearTasaCambioAlMovimientoElegido("Footprint", "g", b.elegido, b.deps);
+  const claveA = (a.llamadas[0][3] as { idempotencyKey: string }).idempotencyKey;
+  const claveB = (b.llamadas[0][3] as { idempotencyKey: string }).idempotencyKey;
+  assert.notEqual(claveA, claveB);
 });

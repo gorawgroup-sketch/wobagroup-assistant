@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import type { Empresa } from "../holded/client";
 import {
   editarCompraHolded,
   leerEstadoMovimiento,
   movimientoLibreParaConciliar,
   obtenerCompraHoldedPorId,
+  validarCompraContraMovimiento,
 } from "../holded/write";
 import type { MovimientoBancarioCandidato } from "../holded/write";
 import { compraTienePagos } from "../holded/recuperarConciliacionCompra";
@@ -30,6 +32,9 @@ const depsDefault = {
   leerCompra: obtenerCompraHoldedPorId,
   leerMovimiento: leerEstadoMovimiento,
   editar: editarCompraHolded,
+  /** Misma comprobación de solo lectura que hará la conciliación: si va a rechazarla, no se toca la tasa. */
+  validar: (empresa: Empresa, gastoId: string, elegido: MovimientoBancarioCandidato) =>
+    validarCompraContraMovimiento(empresa, gastoId, elegido.accountId, elegido.movementId, elegido.fecha, true),
 };
 
 /**
@@ -93,8 +98,23 @@ export async function alinearTasaCambioAlMovimientoElegido(
     return { estado: "ya_alineada", montoEur: cargo, tasa: tasaActual };
   }
 
+  // Con 6 decimales de tasa el equivalente en EUR debe reproducir el cargo al céntimo (no ocurre con importes muy
+  // grandes en monedas de tasa cercana a 1). Si no, ajustar dejaría un residuo: se concilia como antes y se avisa.
+  if (centimos(total / tasaNueva) !== centimos(cargo)) {
+    return { estado: "no_aplica", motivo: "con la precisión de tasa que admite Holded este importe no queda exacto al céntimo" };
+  }
+
+  // Si la conciliación va a rechazarse de forma determinista (pagos, moneda de la cuenta…), no se modifica la tasa.
+  await deps.validar(empresa, gastoId, elegido);
+
+  // La clave incluye el estado previo del gasto: un reintento tras editar la fecha o el número no choca con la huella
+  // guardada de un ajuste anterior.
+  const estadoPrevio = createHash("sha256")
+    .update(`${compra.currency_change ?? ""}|${compra.date ?? ""}|${compra.document_number ?? ""}`)
+    .digest("hex")
+    .slice(0, 12);
   const editada = await deps.editar(empresa, gastoId, { tasaCambioNueva: tasaNueva }, {
-    idempotencyKey: `ajuste-tasa-movimiento:${gastoId}:${elegido.movementId}:${Math.round(tasaNueva * 1e6)}`,
+    idempotencyKey: `ajuste-tasa-movimiento:${gastoId}:${elegido.movementId}:${Math.round(tasaNueva * 1e6)}:${estadoPrevio}`,
     proceso: "ajuste_tasa_cambio_movimiento_elegido",
   });
 
