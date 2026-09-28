@@ -188,6 +188,7 @@ import {
   reconciliarEdicionesCompraAlArrancar,
   reconciliarAdjuntosCompraAlArrancar,
   reconciliarMovimientosAlArrancar,
+  precalentarMonedasCuentasReales,
   reconciliarContactosAlArrancar,
 } from "../core/holded/write";
 
@@ -2792,6 +2793,7 @@ servidorHttp = app.listen(PORT, () => {
         );
       })
   );
+  trackearEnSegundoPlano(precalentarMonedasCuentasReales());
   trackearEnSegundoPlano(
     reconciliarMovimientosAlArrancar()
       .then((r) => {

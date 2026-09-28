@@ -3,6 +3,7 @@ import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } fro
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { EscrituraHoldedNoIniciadaError, protegerEscrituraHolded } from "../gmail/automatico/postgres";
+import { MonedasCuentasReales } from "./monedasCuentas";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -4642,14 +4643,28 @@ function ventanaBusquedaMovimiento(fecha: string): { desde: Date; hasta: Date } 
  * solo se pide un equivalente cuando la moneda del documento NO coincide
  * con ninguna cuenta real de la empresa.
  */
-export async function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set<string>> {
-  const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+const monedasCuentasReales = new MonedasCuentasReales(async (empresa) => {
+  const cuentasData = (await holdedWriteCall(empresa as Empresa, "GET", "/treasury/accounts")) as {
     items?: Array<{ currency?: string; archived?: boolean }>;
   };
-  const monedas = (cuentasData.items ?? [])
-    .filter((c) => !c.archived && c.currency)
-    .map((c) => (c.currency as string).toUpperCase().trim());
-  return new Set(monedas.length > 0 ? monedas : ["EUR"]);
+  return cuentasData.items ?? [];
+});
+
+/**
+ * Nunca devuelve un valor inventado: si Holded falla se usa la última lectura buena de esa empresa y, si no hay
+ * ninguna, se relanza el error (ver MonedasCuentasReales). Antes asumía «solo EUR» ante una lista vacía o un fallo.
+ */
+export function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set<string>> {
+  return monedasCuentasReales.obtener(empresa);
+}
+
+/** Al arrancar, deja lista la última lectura buena de cada empresa para que una caída de Holded no obligue a adivinar. */
+export async function precalentarMonedasCuentasReales(): Promise<void> {
+  await Promise.all((["WOBA", "EWORKS", "Footprint"] as const).map((empresa) =>
+    obtenerMonedasCuentasReales(empresa).catch((error) =>
+      console.error(`[monedasCuentas] No se pudo precalentar ${empresa}:`, error instanceof Error ? error.message : error)
+    )
+  ));
 }
 
 /**

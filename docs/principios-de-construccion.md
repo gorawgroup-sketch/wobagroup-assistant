@@ -30,6 +30,12 @@ No son riesgos hipotéticos — ya pasaron, más de una vez:
   nuevo de Cerebro — todos los módulos existentes (`ConexionesContenido`, `AdminPanel`,
   `UsuariosPanel`, `MiniCalendario`, `BusquedaWebContenido`, el propio `SegurosContenido` que
   se agregó para Seguros...) viven en el mismo archivo, sin límites entre ellos.
+- **Un fallo de lectura de Holded se convirtió en un «hecho»** (2026-09-28): con Holded en 502/503 el flujo de
+  gastos asumió «solo EUR» como monedas de cuenta de Footprint (que tiene cuentas en EUR, USD y COP) y le dijo a
+  Carlos que USD «no es ninguna moneda de cuenta real». **Regla:** un fallo de lectura no demuestra ausencia ni fija
+  valores por defecto. Se usa la última lectura buena (`MonedasCuentasReales`) o se avisa y se deja para reintentar;
+  y el mensaje distingue «no encontré» de «la consulta falló». Antes de escribir un `.catch(() => valorPorDefecto)`
+  sobre una lectura de Holded, comprobar que ese valor no cambia una decisión ni un texto que el operador tomará como cierto.
 
 El patrón común: cuando no hay un único camino obligatorio para construir algo, el mismo
 error se reinventa en cada lugar nuevo, y un archivo compartido crece sin límite hasta que

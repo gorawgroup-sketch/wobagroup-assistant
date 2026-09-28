@@ -276,9 +276,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // solo se pide un equivalente cuando la moneda del documento NO coincide
   // con NINGUNA cuenta real de la empresa — nunca por asumir que EUR es la
   // única moneda "propia".
+  // Un fallo de Holded no demuestra ninguna moneda: nunca se asume «solo EUR» (caso real 2026-09-28: con Holded en 502/503
+  // se le dijo a Carlos que USD no era moneda de cuenta de Footprint, que sí las tiene). Si tampoco hay una última lectura
+  // buena, se avisa y se deja para reintentar en lugar de continuar con una conclusión inventada.
   const monedasReales = await obtenerMonedasCuentasReales(empresa).catch((error) => {
-    console.error("[procesarGastoEntrante] Error consultando monedas de cuentas reales (asume solo EUR):", error);
-    return new Set(["EUR"]);
+    const detalle = error instanceof Error ? error.message : String(error);
+    console.error("[procesarGastoEntrante] No se pudieron consultar las monedas de las cuentas reales:", error);
+    throw new Error(
+      `No pude consultar las cuentas de ${empresa} en Holded (${detalle}). No asumo ninguna moneda; el documento queda para reintentar en unos minutos.`
+    );
   });
   const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
   const politicaLiquidacion = obtenerPoliticaMonedaLiquidacion(empresa, datos.proveedor, monedaOriginal);
@@ -370,11 +376,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // obtenerTasaCambioHistorica en utils/exchangeRate.ts, "esto NUNCA debe usarse para decidir un
     // monto correcto"). Si hay un único cargo real que coincide, ESE es el monto — no un cálculo.
     const fechaBusquedaFx = datos.fecha;
+    let busquedaFxIncompleta = false;
     const candidatosFx = await buscarMovimientosPorTipoCambio(
       empresa,
       { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto },
       monedasReales
     ).catch((error) => {
+      busquedaFxIncompleta = true;
       console.error("[procesarGastoEntrante] Error buscando movimientos bancarios por tipo de cambio (se sigue con la pregunta manual):", error);
       return [] as Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>;
     });
@@ -415,8 +423,11 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
           `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
           `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
-          `trae el monto equivalente en alguna de esas monedas, y no encontré un único cargo bancario real que lo ` +
-          `confirme sin ambigüedad.${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
+          `trae el monto equivalente en alguna de esas monedas, y ` +
+          (busquedaFxIncompleta
+            ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
+            : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
+          `${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
           `a calcular un tipo de cambio yo mismo) antes de registrar nada. Respóndeme aquí mismo en texto libre con el ` +
           `monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`
       );

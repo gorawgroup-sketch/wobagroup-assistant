@@ -4005,12 +4005,19 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
   // Hallazgo real de auditoría: a diferencia de la detección original (procesarGastoEntrante.ts,
   // que valida contra monedasReales antes de aceptar una moneda), esta corrección por IA no tenía
   // ninguna validación — un código de moneda mal inferido por el modelo se escribía directo. Mismo
-  // criterio de respaldo que procesarGastoEntrante.ts: si la consulta falla, asume solo EUR en vez
-  // de saltarse la validación.
-  const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa).catch((error) => {
-    console.error("[gastoCallbackHandler] Error consultando monedas reales de la empresa (asume solo EUR):", error);
-    return new Set(["EUR"]);
-  });
+  // criterio que procesarGastoEntrante.ts: si la consulta falla no se salta la validación ni se asume ninguna moneda.
+  let monedasReales: Set<string>;
+  try {
+    monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);
+  } catch (error) {
+    // Un fallo de Holded no demuestra qué monedas tiene la empresa: no se valida a ciegas ni se asume «solo EUR».
+    console.error("[gastoCallbackHandler] No se pudieron consultar las monedas reales de la empresa:", error);
+    return {
+      ok: false,
+      reintentable: true,
+      mensaje: `No pude consultar las cuentas de ${propuesta.empresa} en Holded ahora, así que no valido la moneda ${monedaCorrecta} a ciegas. Repite la corrección en un momento.`,
+    };
+  }
   if (!monedasReales.has(monedaCorrecta)) {
     const monedasTxt = Array.from(monedasReales).sort().join(", ");
     return {
