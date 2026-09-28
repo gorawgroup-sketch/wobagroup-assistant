@@ -24,6 +24,7 @@ function hechosCompletos(op: OperacionAuto): HechosCierre {
       moneda: "EUR", totalCentimos: 2000, pagadoCentimos: 2000, pendienteCentimos: 0,
       pagos: [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000, fecha: op.plan.movimiento.fecha }] },
     adjuntos: 1,
+    comprobanteCoincide: null,
     movimiento: { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 2000, contableCentimos: null },
   };
 }
@@ -103,7 +104,7 @@ test("evaluarEvidenciaCierre: falta pago, comprobante, cuenta o conciliación �
 
 test("evaluarEvidenciaCierre: una compra que no existe no se da por buena", () => {
   const op = operacion();
-  assert.equal(evaluarEvidenciaCierre(op, { compra: null, adjuntos: 0, movimiento: null }).veredicto, "no_concluyente");
+  assert.equal(evaluarEvidenciaCierre(op, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null }).veredicto, "no_concluyente");
 });
 
 test("resolver: operación incierta con Holded completo se cierra sin escribir en Holded y el correo queda como ya registrado", async () => {
@@ -157,7 +158,7 @@ test("resolver: si Holded no muestra el resultado completo, bloquea con el detal
     assert.equal(r.motivo, "sin_pruebas");
     const texto = mensajeOperacionBloqueada(r);
     assert.match(texto, /509b5441…/);
-    assert.match(texto, /no tiene comprobante adjunto/);
+    assert.match(texto, /no tiene el comprobante previsto adjunto/);
     assert.match(texto, /No se repetirán escrituras/);
   }
 });
@@ -314,4 +315,37 @@ test("el mensaje distingue lo comprobado ahora de lo que ya daba por hecho el pr
   const gasto = { empresa: "Footprint", proveedor: "JetBlue", monto: 473.93, moneda: "USD", compraId: "c1" };
   assert.match(mensajeYaRegistrado({ tipo: "ya_registrado", cerradas: 1, gastos: [gasto] }, "JetBlue"), /lo comprobé ahora/);
   assert.match(mensajeYaRegistrado({ tipo: "ya_registrado", cerradas: 0, gastos: [gasto] }, "JetBlue"), /lo registró y concilió el proceso automático/);
+});
+
+test("un adjunto que no es el comprobante que Wobi preparó no prueba nada; uno humano (sin soporteHash) sí cuenta", () => {
+  const op = operacion();
+  const propio = hechosCompletos(op); propio.comprobanteCoincide = false;
+  const r = evaluarEvidenciaCierre(op, propio);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("comprobante"));
+  const humano = hechosCompletos(op); humano.comprobanteCoincide = null;
+  assert.equal(evaluarEvidenciaCierre(op, humano).veredicto, "completa");
+});
+
+test("el saldo residual también debe caber en el margen de redondeo del repo: una propina de 2 € no es redondeo", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 490;
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "partial", importeCentimos: 24700, conciliadoCentimos: 24500, contableCentimos: null };
+  h.compra!.totalCentimos = 24500; h.compra!.pagadoCentimos = 24500;
+  h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 24500, fecha: op.plan.movimiento.fecha }];
+  op.plan.recibo.monto = 245;
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("movimientoConciliado"));
+});
+
+test("si no se puede dejar constancia del cierre, la operación en memoria vuelve a su estado real", async () => {
+  const op = operacion();
+  const e = escenario([op], { guardarFalla: true });
+  const intento = await intentarCerrarOperacion(op, 0, e.deps);
+  assert.equal(intento.cerrada, false);
+  assert.equal(op.estado, "incierta");
+  assert.equal(op.pasoIncierto, "conciliando");
+  assert.equal(op.plan.version, "correo-gastos-v-antigua");
 });

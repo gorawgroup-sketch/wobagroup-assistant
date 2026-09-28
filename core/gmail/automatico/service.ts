@@ -309,9 +309,15 @@ export class ServicioCorreoAutomatico {
    * céntimos de saldo (JetBlue y «Desayuno y Almuerzo», 2026-09-28). Si Holded demuestra que todo está hecho, se cierra.
    */
   private async ejecutarOCerrar(op: OperacionAuto, c: CorreoAuto, analisis: AnalisisAuto, config: ConfigAuto): Promise<boolean> {
+    // Una reparación de política anterior pendiente NO se da por buena: cerrarla fijaría la versión vigente y la
+    // cuenta o las etiquetas defectuosas que se estaba corrigiendo quedarían para siempre. Solo el operador presente
+    // (resolverOperacionAnterior) puede cerrar esos casos.
+    const eraReparacion = op.plan.version !== VERSION_POLITICA && (op.estado === "completada" || op.pasoIncierto === "completada");
     if (await this.ejecutar(op, c, analisis, config)) return true;
     if (!this.puerto.cerrarConEvidencia || !op.compraId || op.estado === "rechazada" || op.estado === "reservada" ||
-      op.estado === "completada") return false;
+      op.estado === "completada" || eraReparacion) return false;
+    // Igual que ejecutar(): con la automatización apagada no se escribe nada, ni siquiera el estado de la operación.
+    if (!this.puerto.permitidoAhora(op)) return false;
     try { return await this.puerto.cerrarConEvidencia(op); }
     catch (error) {
       console.warn("[correo-auto] No se pudo intentar el cierre con evidencia:", { operacion: op.id, error: mensajeError(error) });

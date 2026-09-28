@@ -1,4 +1,5 @@
 import { identidadCreacionCompra } from "../../holded/durablePurchase";
+import { margenResiduoConversion } from "../../holded/write";
 import { monedaRegistroPlanAuto, type OperacionAuto } from "./model";
 
 /**
@@ -26,6 +27,11 @@ export interface HechosCierre {
     pagos: Array<{ bancoId: string; centimos: number; fecha: string }>;
   } | null;
   adjuntos: number;
+  /**
+   * true/false = se comparó el contenido del comprobante con el que Wobi preparó (`soporteHash`); null = Wobi no
+   * llegó a adjuntar nada propio (el comprobante lo puso una persona) y no hay con qué comparar.
+   */
+  comprobanteCoincide: boolean | null;
   /**
    * null = el movimiento no se encontró en la ventana consultada. Los importes son valores absolutos en la
    * moneda de la cuenta; `conciliadoCentimos` es lo ya asignado a documentos y `contableCentimos` el equivalente
@@ -59,7 +65,7 @@ const ETIQUETAS: Record<ComprobacionCierre, string> = {
   pagoCompleto: "el gasto no está pagado por completo",
   pagoEnLaCuentaPrevista: "el pago no salió de la cuenta bancaria prevista",
   pagoDelCargo: "el pago de la compra no coincide en fecha e importe con el cargo bancario previsto",
-  comprobante: "no tiene comprobante adjunto",
+  comprobante: "no tiene el comprobante previsto adjunto",
   movimientoConciliado: "el movimiento bancario no figura como conciliado",
 };
 
@@ -70,15 +76,16 @@ const ESTADOS_CONCILIADO = new Set(["reconciled", "forced_reconciled"]);
 /**
  * Holded deja un cargo en `partial` cuando el gasto es unos céntimos menor que el cargo (45,65 frente a 45,66:
  * caso «Desayuno y Almuerzo», 2026-09-28, una compra en COP pagada con 45,65 € contra un cargo de 45,66 €). El plan
- * automático ya aceptó esa diferencia al emparejarlos (dentro de `toleranciaCentimos`, expresada en la moneda con
- * la que se comparó, que es la del cargo), así que un saldo residual dentro de esa misma tolerancia no es un fallo.
- * Si la cuenta fuese de otra moneda que la comparada, la tolerancia rechazaría más de lo debido, nunca menos.
- * No se crea ningún pago para liberar el saldo.
+ * automático ya aceptó esa diferencia al emparejarlos. Aquí se admite un saldo residual solo si cabe TAMBIÉN en el
+ * margen de residuo de conversión del repo (`margenResiduoConversion`: 0,5 %, mínimo 2 céntimos, máximo 1 unidad),
+ * que es la única fuente de verdad de «esto es redondeo y no una propina o un cargo distinto»: la tolerancia del plan
+ * puede llegar a 5 €. No se crea ningún pago para liberar el saldo.
  */
 function saldoResidualTolerado(op: OperacionAuto, m: NonNullable<HechosCierre["movimiento"]>): number | null {
   if (m.estado !== "partial") return null;
   const residual = m.importeCentimos - m.conciliadoCentimos;
-  return residual > 0 && residual <= Math.max(0, op.plan.toleranciaCentimos) ? residual : null;
+  const margen = Math.round(margenResiduoConversion(m.importeCentimos / 100) * 100);
+  return residual > 0 && residual <= Math.min(Math.max(0, op.plan.toleranciaCentimos), margen) ? residual : null;
 }
 
 /** Marcas con las que el flujo automático deja identificada su compra en Holded. */
@@ -112,7 +119,8 @@ export function evaluarEvidenciaCierre(op: OperacionAuto, hechos: HechosCierre):
       x.bancoId === p.movimiento.cuentaId && x.fecha.slice(0, 10) === p.movimiento.fecha &&
       (x.centimos === hechos.movimiento!.conciliadoCentimos ||
         (hechos.movimiento!.contableCentimos !== null && x.centimos === hechos.movimiento!.contableCentimos)))),
-    comprobante: hechos.adjuntos > 0,
+    // Con un comprobante propio (soporteHash) tiene que ser el previsto: cualquier otro adjunto no prueba nada.
+    comprobante: hechos.adjuntos > 0 && hechos.comprobanteCoincide !== false,
     // `forced_reconciled` con 0 asignado significa «no enlazado a ningún documento»: hay que ver importe enlazado.
     movimientoConciliado: Boolean(hechos.movimiento && hechos.movimiento.conciliadoCentimos > 0 &&
       (ESTADOS_CONCILIADO.has(hechos.movimiento.estado) || saldoTolerado !== null)),

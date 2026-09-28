@@ -332,6 +332,28 @@ test("cuando la verificación estricta no puede dar por terminada la operación 
   assert.equal(e.llamadas.marcar, 1, "sin reserva manual, el correo se marca resuelto");
   assert.equal(r.completados, 1);
 });
+test("el cierre automático respeta el interruptor y no da por buena una reparación de política anterior pendiente", async () => {
+  // 1) automatización apagada: ni siquiera se intenta cerrar
+  const e1 = escenario();
+  e1.puerto.conciliar = async () => { throw new Error("timeout"); };
+  e1.puerto.verificarConciliacion = async () => false;
+  await e1.service.revisar(configFixture);
+  let intentos1 = 0;
+  e1.puerto.cerrarConEvidencia = async () => { intentos1++; return true; };
+  e1.puerto.permitidoAhora = () => false;
+  await e1.service.revisar(configFixture);
+  assert.equal(intentos1, 0, "con la automatización apagada no se cierra nada");
+  // 2) reparación de política anterior pendiente que falla: solo el operador presente puede cerrarla
+  const e2 = escenario();
+  await e2.service.revisar(configFixture);
+  const op = [...e2.ops.values()][0];
+  op.plan.version = "correo-gastos-v6"; op.estado = "completada"; e2.ops.set(op.id, op);
+  e2.puerto.recuperarCreacion = async () => { throw new Error("Holded 503 transitorio"); };
+  let intentos2 = 0;
+  e2.puerto.cerrarConEvidencia = async () => { intentos2++; return true; };
+  await e2.service.revisar(configFixture);
+  assert.equal(intentos2, 0, "una reparación pendiente no se cierra desde el proceso desatendido");
+});
 test("si el cierre con evidencia falla o dice que no, la operación sigue abierta como antes", async () => {
   const e = escenario();
   e.puerto.conciliar = async () => { throw new Error("timeout"); };

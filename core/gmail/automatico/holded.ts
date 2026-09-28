@@ -745,7 +745,7 @@ export class HoldedAuto {
    */
   async leerHechosCierre(op: OperacionAuto): Promise<HechosCierre> {
     const p = op.plan;
-    if (!op.compraId) return { compra: null, adjuntos: 0, movimiento: null };
+    if (!op.compraId) return { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null };
     const c = await this.compra(op);
     const importe = (valor: unknown): number => centimos(valor ?? 0, true);
     const detalle = Array.isArray(c.payments_detail) ? c.payments_detail.map(objeto) : [];
@@ -758,7 +758,14 @@ export class HoldedAuto {
       this.listar(p.empresa, `/treasury/accounts/${idUrl(p.movimiento.cuentaId)}/bank-movements`, {
         start_date: dia(-3), end_date: dia(3), status: "pending,reconciled,partial,forced_reconciled" }),
     ]);
-    const movimiento = movimientos.find(m => m.id === p.movimiento.id);
+    // Sigue siendo el cargo que se planificó (importe, fecha y origen), como exige la ruta estricta en movimientoActual.
+    const movimiento = movimientos.find(m => m.id === p.movimiento.id &&
+      m.banking_account_id === p.movimiento.cuentaId &&
+      Math.abs(centimos(m.amount)) === Math.abs(p.movimiento.centimos) &&
+      String(m.booking_date).slice(0, 10) === p.movimiento.fecha && Boolean(m.origin) && m.origin !== "manual");
+    // Solo se puede afirmar que el comprobante coincide si Wobi adjuntó uno propio (plan.soporteHash); la descarga
+    // puede fallar y entonces la lectura entera se reintenta en la siguiente pasada.
+    const comprobanteCoincide = p.soporteHash && adjuntos.length ? await this.verificarAdjunto(op) : null;
     return {
       compra: {
         id: texto(c.id),
@@ -772,6 +779,7 @@ export class HoldedAuto {
           fecha: typeof x.date === "string" ? x.date : "" })),
       },
       adjuntos: adjuntos.length,
+      comprobanteCoincide,
       movimiento: movimiento ? {
         estado: String(movimiento.status),
         importeCentimos: Math.abs(centimos(movimiento.amount)),

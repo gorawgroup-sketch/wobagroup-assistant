@@ -604,6 +604,6 @@ test("leerHechosCierre: solo lee la compra, sus pagos, el comprobante y el movim
 test("leerHechosCierre: una operación sin id de compra no inventa una: devuelve vacío sin consultar", async () => {
   const e = escenario();
   const hechos = await e.adapter.leerHechosCierre(e.op);
-  assert.deepEqual(hechos, { compra: null, adjuntos: 0, movimiento: null });
+  assert.deepEqual(hechos, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null });
   assert.deepEqual(e.consultasGet, []);
 });

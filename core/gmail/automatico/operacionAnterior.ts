@@ -92,6 +92,10 @@ export async function intentarCerrarOperacion(
     return bloqueo("sin_pruebas", evaluacion.faltan.map((k: ComprobacionCierre) => describirFaltanteCierre(k)));
   }
   const estadoPrevio = { estado: op.estado, paso: op.pasoIncierto, detalle: op.detalle, version: op.plan.version };
+  const restaurar = () => {
+    op.estado = estadoPrevio.estado; op.pasoIncierto = estadoPrevio.paso; op.detalle = estadoPrevio.detalle;
+    op.plan.version = estadoPrevio.version;
+  };
   try {
     // Primero el registro del gasto del correo (Sheets, idempotente): si falla, la operación sigue abierta y se
     // reintenta; cerrada primero, el cambio de versión impediría volver a intentarlo.
@@ -105,7 +109,9 @@ export async function intentarCerrarOperacion(
     op.plan.version = VERSION_POLITICA;
     await deps.guardar(op);
   } catch (error) {
-    // Otra ejecución modificó la operación entre la lectura y el guardado, o el registro falló: no se fuerza nada.
+    // Otra ejecución modificó la operación entre la lectura y el guardado, o el registro falló: no se fuerza nada,
+    // y el objeto en memoria vuelve a su estado real para que el llamador no informe un cierre que no ocurrió.
+    restaurar();
     console.error("[correo-auto] No se pudo cerrar la operación con evidencia:", {
       operacion: op.id, error: error instanceof Error ? error.message : String(error) });
     return bloqueo("lectura_fallida", ["no pude dejar constancia del cierre; se reintentará"]);
