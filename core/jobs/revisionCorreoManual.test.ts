@@ -8,19 +8,23 @@ import {
   vigilarReanudacionesPendientes,
 } from "./revisionCorreoManual";
 import type { ResultadoRevisarCorreo } from "./revisarCorreoNuevo";
-import type { ReanudacionRevisionCorreo } from "../gmail/automatico/reanudacion";
+import type { ReanudacionReclamada, ReanudacionRevisionCorreo } from "../gmail/automatico/reanudacion";
 
 const CHAT = 8731933107;
 
 function escenario(parciales: {
   resultado?: () => Promise<ResultadoRevisarCorreo>;
   registrar?: (r: ReanudacionRevisionCorreo) => Promise<void>;
-  reclamar?: () => Promise<ReanudacionRevisionCorreo[]>;
+  reclamar?: () => Promise<Array<ReanudacionRevisionCorreo | ReanudacionReclamada>>;
   cierre?: () => boolean;
+  sinPregunta?: boolean;
+  activoSinPreguntaViva?: () => Promise<boolean>;
 } = {}) {
-  const enviados: Array<{ chatId: number; texto: string }> = [];
+  const enviados: Array<{ chatId: number; texto: string; botones?: unknown }> = [];
   const registros: ReanudacionRevisionCorreo[] = [];
-  const cancelados: number[] = [];
+  const iniciados: ReanudacionRevisionCorreo[] = [];
+  const latidos: Array<string | undefined> = [];
+  const cerrados: number[] = [];
   const lanzamientos: number[] = [];
   let liberar: (() => void) | undefined;
   const restaurar = configurarRevisionCorreoManualParaPruebas({
@@ -33,13 +37,18 @@ function escenario(parciales: {
     },
     progresoRevisionAutomatica: () => "⏳ Mensajes analizados: 39/50.",
     registrarReanudacionPendiente: parciales.registrar ?? (async (r) => { registros.push(r); }),
-    cancelarReanudacionPendiente: async (chatId) => { cancelados.push(chatId); },
-    reclamarReanudacionesPendientes: parciales.reclamar ?? (async () => []),
+    iniciarRevisionEnCurso: async (r) => { iniciados.push(r); },
+    latirRevisionEnCurso: async (_chatId, progreso) => { latidos.push(progreso); },
+    cerrarRegistroRevision: async (chatId) => { cerrados.push(chatId); },
+    reclamarReanudacionesPendientes: async () => (await (parciales.reclamar ?? (async () => []))())
+      .map(x => "registro" in x ? x : { registro: x, huerfana: false }),
+    intervaloLatidoMs: 5,
     enviar: async (chatId, texto) => { enviados.push({ chatId, texto }); },
-    enviarConBotones: async (chatId, texto) => { enviados.push({ chatId, texto }); return 1; },
+    enviarConBotones: async (chatId, texto, botones) => { enviados.push({ chatId, texto, botones }); return 1; },
     cierreSolicitado: parciales.cierre ?? (() => false),
+    activoSinPreguntaViva: parciales.activoSinPreguntaViva ?? (async () => parciales.sinPregunta ?? false),
   });
-  return { enviados, registros, cancelados, lanzamientos, restaurar, liberar: () => liberar?.() };
+  return { enviados, registros, iniciados, latidos, cerrados, lanzamientos, restaurar, liberar: () => liberar?.() };
 }
 
 test("al recibir SIGTERM con una revisión manual en curso: registro durable + aviso inmediato con el último avance", async () => {
@@ -84,14 +93,14 @@ test("una revisión interrumpida por el cierre no anuncia «completa» ni «erro
   const e = escenario({ resultado: async () => ({ correosRevisados: 0, interrumpida: true }), cierre: () => true });
   await ejecutarRevisionCorreoManual(CHAT);
   assert.equal(e.enviados.length, 0);
-  assert.equal(e.cancelados.length, 0);
+  assert.equal(e.cerrados.length, 0);
   e.restaurar();
 });
 
-test("si la revisión termina por sí sola después del SIGTERM, cancela la reanudación y anuncia el cierre normal", async () => {
+test("si la revisión termina por sí sola después del SIGTERM, cierra el registro y anuncia el cierre normal", async () => {
   const e = escenario({ resultado: async () => ({ correosRevisados: 2 }), cierre: () => true });
   await ejecutarRevisionCorreoManual(CHAT);
-  assert.deepEqual(e.cancelados, [CHAT]);
+  assert.deepEqual(e.cerrados, [CHAT]);
   assert.equal(e.enviados.length, 1);
   assert.match(e.enviados[0].texto, /Revisión extraordinaria completa — 2 correo/);
   e.restaurar();
@@ -141,7 +150,7 @@ test("tras tres reanudaciones encadenadas se avisa y no se relanza; una caducada
   assert.deepEqual(e.lanzamientos, []);
   assert.equal(e.enviados.length, 1);
   assert.equal(e.enviados[0].chatId, CHAT);
-  assert.match(e.enviados[0].texto, /3 veces seguidas por despliegues/);
+  assert.match(e.enviados[0].texto, /3 veces seguidas por reinicios del servicio/);
   e.restaurar();
 });
 
@@ -156,7 +165,44 @@ test("un correo activo bloqueando y un fallo siguen avisando como antes del camb
   f.restaurar();
 });
 
-test("si la revisión termina mientras el registro del SIGTERM sigue en vuelo, la cancelación espera al INSERT", async () => {
+test("un correo activo SIN pregunta viva se dice tal cual y ofrece reprocesarlo o descartarlo (caso Televic)", async () => {
+  const e = escenario({
+    sinPregunta: true,
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Fwd: €67.73 - Televic", de: "Carlos" } }),
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.match(e.enviados[0].texto, /no tiene ninguna pregunta viva en el chat/);
+  assert.doesNotMatch(e.enviados[0].texto, /los botones de esa pregunta siguen arriba/);
+  const datos = JSON.stringify(e.enviados[0].botones);
+  assert.match(datos, /colacorreo_reprocesaractivo/);
+  assert.match(datos, /colacorreo_descartaractivo/);
+  e.restaurar();
+});
+
+test("no se ofrece reprocesar un correo con pendientesRestantes=0: ya está resuelto, solo falta confirmar leído en Gmail", async () => {
+  // activoSinPreguntaViva ya descarta este caso por su cuenta (documentado y probado aparte); aquí se comprueba
+  // que revisionCorreoManual respeta lo que esa dependencia decide sin duplicar el criterio.
+  const e = escenario({
+    activoSinPreguntaViva: async () => false,
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura ya resuelta", de: "Proveedor" } }),
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta: "Factura ya resuelta"/);
+  assert.doesNotMatch(e.enviados[0].texto, /no tiene ninguna pregunta viva/);
+  e.restaurar();
+});
+
+test("si no se pudo comprobar la pregunta viva, el aviso es el de siempre (nunca se afirma que falta algo sin comprobarlo)", async () => {
+  const e = escenario({
+    sinPregunta: false,
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura X", de: "Proveedor" } }),
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta/);
+  e.restaurar();
+});
+
+test("si la revisión termina mientras el registro del SIGTERM sigue en vuelo, el cierre espera al INSERT", async () => {
   const orden: string[] = [];
   let terminarRegistro: (() => void) | undefined;
   let cierre = false;
@@ -170,11 +216,11 @@ test("si la revisión termina mientras el registro del SIGTERM sigue en vuelo, l
   await new Promise(resolve => setImmediate(resolve));
   e.liberar(); // la revisión termina con el INSERT todavía en vuelo
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(e.cancelados, []); // aún no: espera al registro
+  assert.deepEqual(e.cerrados, []); // aún no: espera al registro
   terminarRegistro!();
   await Promise.all([sigterm, revision]);
   assert.deepEqual(orden, ["insert"]);
-  assert.deepEqual(e.cancelados, [CHAT]);
+  assert.deepEqual(e.cerrados, [CHAT]);
   e.restaurar();
 });
 
@@ -204,5 +250,79 @@ test("la vigilancia recoge una reanudación escrita DESPUÉS de arrancar (orden 
   assert.equal(filas.length, 1);
   assert.deepEqual(e.lanzamientos, [CHAT]);
   parar();
+  e.restaurar();
+});
+
+// Segunda versión (2026-09-28 tarde): un contenedor arrancado con `npm start` nunca recibe el
+// SIGTERM (npm es PID 1) y muere por SIGKILL sin escribir nada. La fila `en_curso` con latido
+// existe desde el principio para que el siguiente proceso lo note por el silencio.
+test("una revisión en curso deja su fila con latido periódico y la borra al terminar", async () => {
+  const e = escenario();
+  const revision = ejecutarRevisionCorreoManual(CHAT, { reanudaciones: 2 });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(e.iniciados.length, 1);
+  assert.equal(e.iniciados[0].chatId, CHAT);
+  assert.equal(e.iniciados[0].reanudaciones, 2);
+  assert.ok(e.latidos.length >= 2, `latidos: ${e.latidos.length}`);
+  assert.equal(e.latidos[0], "⏳ Mensajes analizados: 39/50.");
+  assert.deepEqual(e.cerrados, []);
+  e.liberar();
+  await revision;
+  assert.deepEqual(e.cerrados, [CHAT]);
+  const latidosAlTerminar = e.latidos.length;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(e.latidos.length, latidosAlTerminar); // el latido se apaga con la revisión
+  e.restaurar();
+});
+
+test("una revisión que falla cierra su registro: no se retoma sola un fallo que se repetiría", async () => {
+  const e = escenario({ resultado: async () => { throw new Error("Gmail caído"); } });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.deepEqual(e.cerrados, [CHAT]);
+  e.restaurar();
+});
+
+test("una revisión interrumpida por SIGTERM NO borra la fila: ya es `pendiente` para el siguiente proceso", async () => {
+  const e = escenario({ resultado: async () => ({ correosRevisados: 0, interrumpida: true }), cierre: () => true });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.deepEqual(e.cerrados, []);
+  e.restaurar();
+});
+
+test("una fila huérfana (latido apagado, muerte sin aviso) se retoma explicando que el servicio se cortó de golpe", async () => {
+  const ahora = 5_000_000;
+  const e = escenario({
+    resultado: async () => ({ correosRevisados: 1 }),
+    reclamar: async () => [{ registro: { chatId: CHAT, interrumpidaEn: ahora - 90_000, reanudaciones: 0, progreso: "⏳ Candidatos verificados: 8/30." }, huerfana: true }],
+  });
+  const seguidas: Array<Promise<void>> = [];
+  const relanzadas = await reanudarRevisionesCorreoInterrumpidas({ ahora, seguir: (p) => { seguidas.push(p); } });
+  assert.equal(relanzadas, 1);
+  await Promise.all(seguidas);
+  assert.match(e.enviados[0].texto, /se cortó de golpe/);
+  assert.match(e.enviados[0].texto, /Último avance: Candidatos verificados: 8\/30\./);
+  assert.match(e.enviados[1].texto, /Revisión extraordinaria completa/);
+  assert.equal(e.iniciados[0]?.reanudaciones, 1);
+  e.restaurar();
+});
+
+test("el SIGTERM espera a que el INSERT `en_curso` aterrice antes de pasar la fila a `pendiente`", async () => {
+  const orden: string[] = [];
+  let terminarInicio: (() => void) | undefined;
+  const e = escenario();
+  const restaurarInicio = configurarRevisionCorreoManualParaPruebas({
+    iniciarRevisionEnCurso: async () => { await new Promise<void>(resolve => { terminarInicio = resolve; }); orden.push("en_curso"); },
+    registrarReanudacionPendiente: async () => { orden.push("pendiente"); },
+  });
+  const revision = ejecutarRevisionCorreoManual(CHAT);
+  const sigterm = avisarYRegistrarRevisionesInterrumpidas();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(orden, []); // el registro `pendiente` no se adelanta al INSERT en vuelo
+  terminarInicio!();
+  await sigterm;
+  assert.deepEqual(orden, ["en_curso", "pendiente"]);
+  e.liberar();
+  await revision;
+  restaurarInicio();
   e.restaurar();
 });

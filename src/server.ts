@@ -76,6 +76,7 @@ import {
   revisarCorreoNuevo,
   handleColaCorreoSiguienteCallback,
   handleDescartarActivoCallback,
+  handleReprocesarActivoCallback,
   handleReintentarActivoCallback,
 } from "../core/jobs/revisarCorreoNuevo";
 import {
@@ -1522,6 +1523,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
     } else if (data.startsWith("colacorreo_")) {
       if (data === "colacorreo_descartaractivo") {
         await handleDescartarActivoCallback(callback);
+      } else if (data === "colacorreo_reprocesaractivo") {
+        await handleReprocesarActivoCallback(callback);
       } else if (data.startsWith("colacorreo_reintentar:")) {
         await handleReintentarActivoCallback(callback);
       } else {
