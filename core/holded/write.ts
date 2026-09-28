@@ -5375,6 +5375,19 @@ export function margenResiduoConversion(total: number): number {
 }
 
 /**
+ * Un movimiento `partial` con un hueco dentro del margen de redondeo (margenResiduoConversion, la
+ * misma fuente de verdad de arriba) no es una conciliación a medias: Holded lo deja así por su propia
+ * matemática de cambio de divisa aunque la compra ya esté pagada del todo (caso real, Footprint,
+ * Uber 10,95 USD -> Holded solo enlaza 10,93 -> hueco de 0,02: "La compra ya tiene pagos... requiere
+ * revisión" para siempre, aunque en Holded ya estaba efectiva, 2026-09-28). Devuelve el residuo solo
+ * cuando de verdad excede ese margen; en ese caso SÍ hay que revisarlo a mano.
+ */
+export function residuoMovimientoFueraDeMargen(montoMovimiento: number, montoEnlazado: number): number | undefined {
+  const residuo = montoMovimiento - montoEnlazado;
+  return residuo > margenResiduoConversion(montoMovimiento) ? residuo : undefined;
+}
+
+/**
  * Confirma que el importe conciliado del movimiento terminó como pago del
  * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
  * confundir un movimiento conciliado contra otro documento con el efecto
@@ -5769,8 +5782,11 @@ async function inspeccionarConciliacionRegistrada(
 
   const ok = tieneEnlace && pagoDelDocumentoConfirmado && pendienteEnCompra === undefined &&
     ajusteCambioDivisa?.estado !== "requiere_revision" && ajusteCambioDivisa?.estado !== "incierto";
-  const pendienteEnMovimiento = movimientoParcial && montoMovimiento > montoEnlazado + TOLERANCIA_MONTO
-    ? montoMovimiento - montoEnlazado
+  // movimientoParcial y pendienteEnMovimiento nacen de la MISMA decisión: si el residuo es de
+  // redondeo, ninguno de los dos debe forzar revisión (antes movimientoParcial=true por sí solo ya
+  // la forzaba, sin mirar el tamaño del hueco).
+  const pendienteEnMovimiento = movimientoParcial
+    ? residuoMovimientoFueraDeMargen(montoMovimiento, montoEnlazado)
     : undefined;
   const resultado = {
     ok,
@@ -5778,7 +5794,7 @@ async function inspeccionarConciliacionRegistrada(
     montoEnlazado,
     pendienteEnCompra,
     ajusteCambioDivisa,
-    movimientoParcial: movimientoParcial || undefined,
+    movimientoParcial: pendienteEnMovimiento !== undefined || undefined,
     pendienteEnMovimiento,
   };
   if (ok) return { estado: "verificada", resultado };

@@ -21,7 +21,9 @@ import {
 import {
   configuracionConciliacionesMovimientoDurables,
   evaluarAjusteCambioResidual,
+  margenResiduoConversion,
   movimientoLibreParaConciliar,
+  residuoMovimientoFueraDeMargen,
   verificarPagoCompraEnMovimiento,
 } from "./write";
 
@@ -748,4 +750,36 @@ test("un enlace fantasma (importe cero) nunca se acepta, ni siquiera con la comp
     70.76
   );
   assert.equal(resultado, undefined);
+});
+
+test("un movimiento parcial con un hueco dentro del margen de redondeo NO cuenta como pendiente (caso real Uber 10,95 USD -> 10,93 enlazados)", () => {
+  assert.equal(residuoMovimientoFueraDeMargen(10.95, 10.93), undefined);
+  const resultado: ResultadoConciliacionMovimiento = {
+    ok: true, statusFinal: "partial", montoEnlazado: 10.93,
+    movimientoParcial: undefined, pendienteEnMovimiento: undefined,
+  };
+  assert.equal(conciliacionRequiereRevision(resultado), false);
+});
+
+test("un movimiento parcial con un hueco mayor al margen sí exige revisión", () => {
+  const total = 100;
+  const enlazado = total - margenResiduoConversion(total) - 1; // 1 más allá del margen
+  const residuo = residuoMovimientoFueraDeMargen(total, enlazado);
+  assert.ok(residuo !== undefined && residuo > 0);
+  const resultado: ResultadoConciliacionMovimiento = {
+    ok: false, statusFinal: "partial", montoEnlazado: enlazado,
+    movimientoParcial: true, pendienteEnMovimiento: residuo,
+  };
+  assert.equal(conciliacionRequiereRevision(resultado), true);
+});
+
+test("el margen tiene piso de 2 céntimos (factura chica) y techo de 1 unidad (factura grande)", () => {
+  // Factura chica: 0,5% de 1 sería 0,005, pero el piso es 0,02 — un hueco de 0,01 sigue tolerado.
+  assert.equal(residuoMovimientoFueraDeMargen(1, 0.99), undefined);
+  // Factura chica: un hueco de 0,03 ya supera el piso de 0,02.
+  const residuoChico = residuoMovimientoFueraDeMargen(1, 0.97);
+  assert.ok(residuoChico !== undefined && Math.abs(residuoChico - 0.03) < 1e-9);
+  // Factura grande: el 0,5% (5.000) es mucho más que el techo de 1 unidad — un hueco de 2 no se tolera.
+  const residuoGrande = residuoMovimientoFueraDeMargen(1_000_000, 999_998);
+  assert.ok(residuoGrande !== undefined && Math.abs(residuoGrande - 2) < 1e-9);
 });
