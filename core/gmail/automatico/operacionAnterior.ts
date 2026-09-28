@@ -48,7 +48,7 @@ const esTerminal = (op: OperacionAuto) => op.estado === "completada" || op.estad
 
 /** El análisis del correo demuestra que TODO lo que había que registrar ya tiene su operación completada. */
 function recibosCubiertos(analisis: AnalisisAuto | undefined, completadas: OperacionAuto[]): boolean {
-  if (!analisis || !analisis.completo || analisis.otrasAcciones || !analisis.recibos.length) return false;
+  if (!analisis || !analisis.completo || analisis.otrasAcciones || analisis.motivoManual || !analisis.recibos.length) return false;
   return analisis.recibos.every(recibo => completadas.some(op => op.plan.recibo.fuente === recibo.fuente));
 }
 
@@ -167,7 +167,9 @@ export function mensajeOperacionBloqueada(r: Extract<ResultadoOperacionAnterior,
 export function mensajeYaRegistrado(r: Extract<ResultadoOperacionAnterior, { tipo: "ya_registrado" }>, asunto: string): string {
   const gastos = r.gastos.map(g => `• ${g.empresa} · ${g.proveedor} · ${g.monto} ${g.moneda} · compra ${g.compraId}`);
   return [
-    `✅ «${asunto}» ya estaba registrado y conciliado en Holded${r.cerradas ? "; cerré la operación anterior que había quedado sin verificar" : ""}.`,
+    r.cerradas
+      ? `✅ «${asunto}» ya estaba registrado y conciliado en Holded (lo comprobé ahora); cerré la operación anterior que había quedado sin verificar.`
+      : `✅ «${asunto}» ya lo registró y concilió el proceso automático.`,
     ...gastos,
     "No creé ni concilié nada nuevo.",
   ].join("\n");

@@ -113,7 +113,8 @@ export function evaluarEvidenciaCierre(op: OperacionAuto, hechos: HechosCierre):
       (x.centimos === hechos.movimiento!.conciliadoCentimos ||
         (hechos.movimiento!.contableCentimos !== null && x.centimos === hechos.movimiento!.contableCentimos)))),
     comprobante: hechos.adjuntos > 0,
-    movimientoConciliado: Boolean(hechos.movimiento &&
+    // `forced_reconciled` con 0 asignado significa «no enlazado a ningún documento»: hay que ver importe enlazado.
+    movimientoConciliado: Boolean(hechos.movimiento && hechos.movimiento.conciliadoCentimos > 0 &&
       (ESTADOS_CONCILIADO.has(hechos.movimiento.estado) || saldoTolerado !== null)),
   };
   const faltan = (Object.keys(comprobaciones) as ComprobacionCierre[]).filter(k => !comprobaciones[k]);

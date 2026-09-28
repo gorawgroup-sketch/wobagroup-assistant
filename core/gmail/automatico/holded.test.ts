@@ -584,7 +584,13 @@ test("leerHechosCierre: solo lee la compra, sus pagos, el comprobante y el movim
     }
     return e.request(input, init);
   };
-  const hechos = await new HoldedAuto(e.memoria, request).leerHechosCierre(e.op);
+  const urls: string[] = [];
+  const conRegistro: typeof fetch = async (input, init) => { urls.push(String(input)); return request(input, init); };
+  const hechos = await new HoldedAuto(e.memoria, conRegistro).leerHechosCierre(e.op);
+  const listadoMovimientos = urls.find(u => u.includes("/bank-movements"));
+  assert.ok(listadoMovimientos, "debe consultar los movimientos de la cuenta");
+  assert.match(decodeURIComponent(listadoMovimientos!), /status=pending,reconciled,partial,forced_reconciled/,
+    "sin el filtro de estado Holded devuelve en la práctica solo los pendientes");
   assert.equal(e.posts.length, 0);
   assert.equal(hechos.compra?.id, "creada");
   assert.equal(hechos.compra?.totalCentimos, 2000);

@@ -59,6 +59,8 @@ test("la cola fija las decisiones pendientes antes de comprobar la operación an
   assert.ok(reintento.indexOf("establecerPendientesActivo(") >= 0 && reintento.indexOf("establecerPendientesActivo(") < reintento.indexOf("comprobarCorreoDisponible("),
     "en el reintento, establecerPendientesActivo debe ir antes de comprobarCorreoDisponible");
   // El cierre de un correo «ya registrado» nunca descarta el texto de fallo: avisa con botones de reintento.
+  assert.match(reintento, /previa\.tipo === "ya_registrado" && alcance === "correo"/,
+    "un reintento de un adjunto o del cuerpo no puede dar el correo entero por cerrado");
   const cierre = fuente.slice(fuente.indexOf("async function cerrarActivoYaRegistrado"),
     fuente.indexOf("export async function handleDescartarActivoCallback"));
   assert.match(cierre, /if \(cierre\.ok\) return;/);

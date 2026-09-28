@@ -1312,7 +1312,8 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
         if (!inicializado) throw new Error("el correo dejó de ser el activo antes de reiniciar");
       }
       const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
-      if (previa.tipo === "ya_registrado") {
+      // «Ya registrado» habla del correo entero; un reintento de un adjunto o del cuerpo no puede darlo por cerrado.
+      if (previa.tipo === "ya_registrado" && alcance === "correo") {
         await cerrarActivoYaRegistrado(chatId, correo, previa);
         return;
       }

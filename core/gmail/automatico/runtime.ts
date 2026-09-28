@@ -227,7 +227,8 @@ export async function comprobarCorreoDisponible(threadId: string, mensajeId?: st
   const buzon = process.env.GMAIL_IMPERSONATE_EMAIL ?? "";
   const store = new PostgresAutoStore();
   // Solo lecturas: la memoria de alias y duplicados no interviene al verificar una compra ya creada.
-  const holded = new HoldedAuto({ alias: async () => [], duplicadoInterno: async () => false }, fetch, configuracionAuto().empresas);
+  // Sin `configuracionAuto()`: una variable de configuración inválida no debe romper la revisión manual.
+  const holded = new HoldedAuto({ alias: async () => [], duplicadoInterno: async () => false });
   const resultado = await resolverOperacionAnterior(threadId, mensajeId, depsOperacionAnterior(store, buzon, holded));
   if (resultado.tipo === "bloqueada") throw new Error(mensajeOperacionBloqueada(resultado));
   return resultado;

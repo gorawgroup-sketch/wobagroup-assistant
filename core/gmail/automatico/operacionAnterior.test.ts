@@ -294,3 +294,24 @@ test("intentarCerrarOperacion con reposo 0 (el llamador ya tiene el buzón) cier
   const intento = await intentarCerrarOperacion(op, 1_000_000_000_000, e.deps, 0);
   assert.equal(intento.cerrada, true);
 });
+
+test("un cargo forced_reconciled sin importe enlazado a ningún documento no cuenta como conciliado", () => {
+  const op = operacion();
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "forced_reconciled", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("movimientoConciliado"));
+});
+
+test("si el análisis pide revisión manual, el correo no se da por registrado aunque sus recibos estén completados", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: { ...analisisFixture(), motivoManual: "el proveedor pide confirmar la reserva" } });
+  assert.equal((await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps)).tipo, "libre");
+});
+
+test("el mensaje distingue lo comprobado ahora de lo que ya daba por hecho el proceso automático", () => {
+  const gasto = { empresa: "Footprint", proveedor: "JetBlue", monto: 473.93, moneda: "USD", compraId: "c1" };
+  assert.match(mensajeYaRegistrado({ tipo: "ya_registrado", cerradas: 1, gastos: [gasto] }, "JetBlue"), /lo comprobé ahora/);
+  assert.match(mensajeYaRegistrado({ tipo: "ya_registrado", cerradas: 0, gastos: [gasto] }, "JetBlue"), /lo registró y concilió el proceso automático/);
+});

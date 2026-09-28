@@ -749,9 +749,14 @@ export class HoldedAuto {
     const c = await this.compra(op);
     const importe = (valor: unknown): number => centimos(valor ?? 0, true);
     const detalle = Array.isArray(c.payments_detail) ? c.payments_detail.map(objeto) : [];
+    // Sin `status` Holded devuelve en la práctica solo los movimientos pendientes (un cargo desaparecía justo después
+    // de conciliarlo), y aquí interesa precisamente el ya conciliado o parcial. Ventana estrecha alrededor de su fecha.
+    const dia = (d: number) => new Date(new Date(`${p.movimiento.fecha.slice(0, 10)}T00:00:00Z`).getTime() + d * 86_400_000)
+      .toISOString().slice(0, 10);
     const [adjuntos, movimientos] = await Promise.all([
       this.listarAdjuntos(p.empresa, op.compraId),
-      this.movimientosCuenta(p.empresa, p.movimiento.cuentaId, p.movimiento.fecha),
+      this.listar(p.empresa, `/treasury/accounts/${idUrl(p.movimiento.cuentaId)}/bank-movements`, {
+        start_date: dia(-3), end_date: dia(3), status: "pending,reconciled,partial,forced_reconciled" }),
     ]);
     const movimiento = movimientos.find(m => m.id === p.movimiento.id);
     return {
