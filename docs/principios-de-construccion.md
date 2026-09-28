@@ -79,8 +79,13 @@ cualquier cambio ahí se vuelve riesgoso para todo lo demás.
   `estadoAgregado.ts`, `serviceAccount.ts`...) es de mayor riesgo que uno aditivo —
   verificación extra: reproducir el fallo original explícitamente, no solo confirmar que
   el caso feliz sigue funcionando.
-- Todo PR requiere revisión humana antes de mergear. Ya lo aplica el propio Claude Code
-  (bloquea el merge sin revisión, sin excepción por confirmación en el chat).
+- Carlos autoriza de forma continuada las correcciones rutinarias solicitadas y su
+  publicación, fusión y despliegue tras verificarlas (instrucción del 28-09-2026).
+  No pedir una nueva aprobación por cada PR dentro de ese alcance. Guardar primero
+  el trabajo en el disco externo, publicar en GitHub y verificar que Railway despliega
+  ese mismo commit y funciona correctamente. Respetar pausas expresas (como PR #221),
+  los checks obligatorios y las protecciones de rama; no extender esta autorización a
+  operaciones financieras ni a acciones destructivas o cambios de acceso.
 
 ## Cuándo un archivo compartido es una señal de alerta
 

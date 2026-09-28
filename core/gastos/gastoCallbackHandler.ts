@@ -1,3 +1,7 @@
+import { botonContinuarConciliacion, continuarCorreoConciliacion } from "./continuarCorreoConciliacion";
+import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
+import { obtenerConciliacionesPendientesPorChat } from "./conciliacionPendienteStore";
+import { obtenerConciliacionesAmbiguasPendientesPorChat } from "./conciliacionAmbiguaPendienteStore";
 import { recuperarConciliacionExistenteCompra } from "../holded/write";
 import { candidatoUtilizableParaGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
@@ -676,6 +680,7 @@ export type EstadoIntentoConciliacion =
   | "incierta";
 
 interface ResultadoIntentarConciliar {
+  soloLectura?: boolean;
   nota: string;
   /** Solo `conciliada` permite cerrar el correo automáticamente. Cualquier otro estado conserva
    * el mensaje UNREAD hasta que exista una decisión humana o una verificación terminal real. */
@@ -749,6 +754,7 @@ async function ofrecerEleccionMovimientosAmbiguos(
       },
     ]);
     filas.push([{ text: "❌ Ninguno, dejar así", callback_data: `gasto_conciliar_elegir_no:${pendiente.id}` }]);
+    filas.push(...botonContinuarConciliacion(pendiente, true));
     const notaSugerido = indiceSugerido !== undefined
       ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores verificadas de este proveedor.`
       : "";
@@ -1045,7 +1051,7 @@ async function conciliarContraMovimientoEspecifico(
       return { nota:
         `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${movimiento.descripcion || "sin descripción"}, ` +
         `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaTasa}${notaPendiente}${notaMovimientoParcial}`
-      , estado: requiereRevision
+      , soloLectura: requiereRevision, estado: requiereRevision
           ? resultado.ajusteCambioDivisa?.estado === "incierto" ? "incierta" : "fallida"
           : "conciliada" };
     }
@@ -1120,6 +1126,7 @@ async function preguntarSiConciliar(
       { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
       { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
     ]];
+    botones.push(...botonContinuarConciliacion(pendiente));
     try {
       await sendTelegramMessageWithButtons(chatId, texto, botones);
     } catch (errorEnvio) {
@@ -1145,6 +1152,7 @@ async function reponerPreguntaConciliacion(
     { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${restaurada.id}` },
     { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${restaurada.id}` },
   ]];
+  botones.push(...botonContinuarConciliacion(restaurada));
   if (mensajeId != null) {
     try {
       await editTelegramMessage(restaurada.chatId, mensajeId, aviso, botones);
@@ -1170,6 +1178,7 @@ async function reponerPreguntaConciliacionAmbigua(
     }]),
     [{ text: "❌ Ninguno / no conciliar", callback_data: `gasto_conciliar_elegir_no:${restaurada.id}` }],
   ];
+  botones.push(...botonContinuarConciliacion(restaurada, true));
   if (mensajeId != null) {
     try {
       await editTelegramMessage(restaurada.chatId, mensajeId, aviso, botones);
@@ -1274,6 +1283,19 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   }
 
   const [accion, propuestaId, extra] = data.split(":");
+  if (accion === "gasto_conciliar_posponer") {
+    const chat = callback.message?.chat.id;
+    if (chat === undefined || !propuestaId || !["simple", "ambigua"].includes(extra)) {
+      await answerCallbackQuerySafe(callback.id, "Esta acción no es válida."); return;
+    }
+    const pendientes = extra === "ambigua" ? await obtenerConciliacionesAmbiguasPendientesPorChat(chat)
+      : await obtenerConciliacionesPendientesPorChat(chat);
+    await answerCallbackQuerySafe(callback.id, "Conservando el pendiente y continuando...");
+    const resultado = await continuarCorreoConciliacion(chat, propuestaId, pendientes, posponerCorreoActivoYContinuar);
+    if (!resultado.startsWith("Correo aplazado")) await sendTelegramMessage(chat, resultado);
+    return;
+  }
+
 
   if (accion === "gasto_cerrar_propuesta") {
     const propuesta = await consumirPropuestaGasto(propuestaId);
@@ -2016,7 +2038,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         callback.message?.message_id,
         resultadoConciliacion.nota || `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +
         `Puedes reintentar de forma idempotente o decidir dejarla sin conciliar.`,
-        resultadoConciliacion.estado === "incierta"
+        resultadoConciliacion.estado === "incierta" || resultadoConciliacion.soloLectura === true
       );
       return;
     }
@@ -2152,7 +2174,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         callback.message?.message_id,
         resultadoConciliacion.nota || `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +
         `puedes verificar/reintentar una opción o dejarla sin conciliar.`,
-        resultadoConciliacion.estado === "incierta"
+        resultadoConciliacion.estado === "incierta" || resultadoConciliacion.soloLectura === true
       );
       return;
     }
