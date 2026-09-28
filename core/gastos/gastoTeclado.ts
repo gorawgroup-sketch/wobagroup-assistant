@@ -1,5 +1,5 @@
 import { esFechaDocumentoValida } from "./fechaDocumento";
-import { movimientoCompatibleConGasto } from "../holded/write";
+import { candidatoUtilizableParaGasto } from "../holded/write";
 import { createHash } from "node:crypto";
 import type { InlineKeyboardButton } from "../telegram/types";
 import type { PropuestaGasto } from "./gastoProposalSheet";
@@ -233,13 +233,13 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
   filas.push([{ text: "▶️ Aprobar selección", callback_data: `gasto_aprobar:${propuesta.id}:${huellaSeleccion}` }]);
 
   const cargoCompatible = esFechaDocumentoValida(propuesta.fecha) && (propuesta.movimientosAmbiguos ?? []).some(
-    m => movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion));
+    m => candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m));
   return filas.map(fila => fila.filter(b => {
     const key = b.callback_data?.split(":")[2];
     if (key === "crear" || key === "nuevo" || key === "crearconciliar") return cargoCompatible;
     if (key?.startsWith("crearconciliar_")) {
       const m = propuesta.movimientosAmbiguos?.[Number(key.slice("crearconciliar_".length))];
-      return cargoCompatible && Boolean(m && movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion));
+      return cargoCompatible && Boolean(m && candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m));
     }
     return true;
   })).filter(fila => fila.length > 0);

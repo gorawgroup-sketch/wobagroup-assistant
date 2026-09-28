@@ -75,3 +75,14 @@ test('no ofrece crear sin cargo compatible ni con restaurante para un taxi',()=>
   assert.equal(botones.some(b=>/gasto_toggle:propuesta:(crear|nuevo)/.test(b.callback_data??'')),false);
  }
 });
+
+test('un cargo por_confirmar (importe y fecha exactos, nombre distinto) sí habilita Crear y conciliar; sin él no hay botón de crear', () => {
+  const base = { ...propuestaBase(), proveedor: 'Mi Cafetería', concepto: 'Café', hayMovimientoBancario: true };
+  const cargo = { accountId: 'a', movementId: 'm', descripcion: 'SQ *XYZ 88', monto: -3.91, moneda: 'USD', fecha: '2026-08-30', origenCoincidencia: 'exacta' as const };
+  const conMarca = { ...base, movimientosAmbiguos: [{ ...cargo, compatibilidad: 'por_confirmar' as const }] };
+  const textosConMarca = construirTecladoGasto(conMarca, opcionesTecladoDesdePropuesta(conMarca)).flat().map((b) => b.text);
+  assert.ok(textosConMarca.some((t) => t.includes('Crear y conciliar')), 'el cargo por confirmar habilita crear y conciliar');
+  const sinMarca = { ...base, movimientosAmbiguos: [cargo] };
+  const textosSinMarca = construirTecladoGasto(sinMarca, opcionesTecladoDesdePropuesta(sinMarca)).flat().map((b) => b.text);
+  assert.equal(textosSinMarca.some((t) => t.includes('Crear')), false, 'un nombre irreconocible sin evidencia sigue sin habilitar crear');
+});

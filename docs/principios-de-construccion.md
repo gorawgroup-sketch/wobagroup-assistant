@@ -36,6 +36,11 @@ No son riesgos hipotéticos — ya pasaron, más de una vez:
   valores por defecto. Se usa la última lectura buena (`MonedasCuentasReales`) o se avisa y se deja para reintentar;
   y el mensaje distingue «no encontré» de «la consulta falló». Antes de escribir un `.catch(() => valorPorDefecto)`
   sobre una lectura de Holded, comprobar que ese valor no cambia una decisión ni un texto que el operador tomará como cierto.
+- **La misma pregunta respondida en seis sitios** (2026-09-28): «¿este cargo puede ser este gasto?» se decidía con
+  criterios distintos en la búsqueda, el teclado, la aprobación, la búsqueda sin fecha, el cambio de moneda y el correo
+  automático. Al endurecer uno se creaban callejones en otro: un ticket con su cargo exacto en Holded se quedó sin
+  botones para crearlo. **Regla:** una decisión de negocio = una función con niveles explícitos y un corpus de casos
+  reales en las pruebas; todo teclado debe tener siempre una salida accionable.
 
 El patrón común: cuando no hay un único camino obligatorio para construir algo, el mismo
 error se reinventa en cada lugar nuevo, y un archivo compartido crece sin límite hasta que

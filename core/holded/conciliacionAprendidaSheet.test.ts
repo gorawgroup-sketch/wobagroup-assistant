@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  descriptorConfirmadoParaProveedor,
   sugerirCandidatoDesdeRegistros,
   type ConciliacionVerificadaAprendida,
   type MovimientoParaAprendizajeConciliacion,
@@ -74,4 +75,16 @@ test("ante empate conserva la ambigüedad y no destaca una opción", () => {
     [registro()]
   );
   assert.equal(sugerencia, undefined);
+});
+
+test("un descriptor ya confirmado por un humano para ese proveedor se reconoce aunque el nombre no coincida", () => {
+  const confirmados = [registro({ proveedor: "Mi Cafetería", moneda: "USD", descripcionMovimiento: "Par*just B Cuz Luxury" })];
+  assert.equal(descriptorConfirmadoParaProveedor(confirmados, "WOBA", "mi cafeteria", "USD", "PAR*JUST B CUZ LUXURY"), true);
+  assert.equal(descriptorConfirmadoParaProveedor(confirmados, "WOBA", "Mi Cafetería", "usd", "Par*just B Cuz Luxury 2"), true);
+  // Otra empresa, otra moneda, otro proveedor o un descriptor distinto no cuentan.
+  assert.equal(descriptorConfirmadoParaProveedor(confirmados, "EWORKS", "Mi Cafetería", "USD", "Par*just B Cuz Luxury"), false);
+  assert.equal(descriptorConfirmadoParaProveedor(confirmados, "WOBA", "Mi Cafetería", "EUR", "Par*just B Cuz Luxury"), false);
+  assert.equal(descriptorConfirmadoParaProveedor(confirmados, "WOBA", "Otro Sitio", "USD", "Par*just B Cuz Luxury"), false);
+  assert.equal(descriptorConfirmadoParaProveedor(confirmados, "WOBA", "Mi Cafetería", "USD", "PAYU*OTRA COSA"), false);
+  assert.equal(descriptorConfirmadoParaProveedor([], "WOBA", "Mi Cafetería", "USD", "Par*just B Cuz Luxury"), false);
 });
