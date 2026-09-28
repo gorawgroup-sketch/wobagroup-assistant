@@ -1,0 +1,44 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "sin-cargo-se-puede-crear-sin-conciliar",
+  "fuente": "Decisión del propietario 2026-09-28: restaurar «Crear (sin conciliar)»; la política de #204 lo bloqueaba (efectivo, cargos tardíos).",
+  "descripcion": "Sin ningún cargo en las cuentas se ofrece «Crear (sin conciliar)» y nunca «Crear y conciliar».",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Mi Cafetería",
+    "concepto": "Café",
+    "monto": 3.91,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": []
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ]
+  }
+}

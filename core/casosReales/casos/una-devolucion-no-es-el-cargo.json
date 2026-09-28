@@ -1,0 +1,60 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "credito",
+  "fuente": "Revisión adversarial del PR #224: créditos y devoluciones del mismo importe entraban como por confirmar.",
+  "descripcion": "Un ingreso (devolución) de 3,91 USD no es el cargo de un gasto de 3,91 USD.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Mi Cafetería",
+    "concepto": "Café",
+    "monto": 3.91,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "Refund From SQ *XYZ 88",
+        "amount": "3.91",
+        "currency": "USD",
+        "booking_date": "2026-09-25",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ]
+  }
+}

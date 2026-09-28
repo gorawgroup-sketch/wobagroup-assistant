@@ -1,0 +1,67 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "uber-eats",
+  "fuente": "Política #204 y hallazgo de la revisión del #224.",
+  "descripcion": "Un viaje de Uber no se empareja con un cargo de Uber Eats aunque el importe coincida, ni aunque exista un descriptor aprendido.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Uber",
+    "concepto": "Traslado taxi",
+    "monto": 9.5,
+    "moneda": "EUR",
+    "fecha": "2026-09-10"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-eur": [
+      {
+        "id": "m1",
+        "description": "Uber Eats",
+        "amount": "-9.50",
+        "currency": "EUR",
+        "booking_date": "2026-09-10",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "aprendidas": [
+    {
+      "proveedor": "Uber",
+      "moneda": "EUR",
+      "descripcionMovimiento": "Uber Eats"
+    }
+  ],
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ]
+  }
+}

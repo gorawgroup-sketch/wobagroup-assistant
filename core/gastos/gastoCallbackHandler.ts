@@ -3063,9 +3063,13 @@ async function crearGastoYReportar(
       throw new PosibleDuplicadoGastoError(candidatosNuevos);
     }
 
-    const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
-    if (!objetivos.length || objetivos.some(m => !candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m))) {
-      throw new Error("No hay un cargo de categoría compatible. Se revisaron duplicados; no se creará otro gasto sin resolver la coincidencia bancaria.");
+    // Solo se exige un cargo utilizable cuando se va a CONCILIAR contra él («Crear y conciliar»). «Crear (sin conciliar)» no
+    // depende de que exista uno (decisión del propietario, 2026-09-28); los duplicados ya se comprobaron arriba.
+    if (conciliarInline || movimientoObjetivo) {
+      const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
+      if (!objetivos.length || objetivos.some(m => !candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m))) {
+        throw new Error("No hay un cargo de categoría compatible para conciliar. Puedes crear el gasto sin conciliar; no se concilia contra un cargo que no encaja.");
+      }
     }
     return crearGastoHolded(
       empresaFinal,

@@ -1,0 +1,60 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "taxi-restaurante",
+  "fuente": "Política #204 (2026-09-27): categorías contradictorias impiden la asociación incluso con importe exacto.",
+  "descripcion": "Un taxi de Bolt y un cargo de un restaurante con el mismo importe y día NO se emparejan.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Bolt",
+    "concepto": "Taxi aeropuerto",
+    "monto": 15.0,
+    "moneda": "EUR",
+    "fecha": "2026-09-10"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-eur": [
+      {
+        "id": "m1",
+        "description": "Osteria Del Lovo",
+        "amount": "-15.00",
+        "currency": "EUR",
+        "booking_date": "2026-09-10",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ]
+  }
+}
