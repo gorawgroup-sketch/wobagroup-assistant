@@ -35,8 +35,10 @@ antes de agregar una capacidad nueva.
 - Un cambio a un módulo compartido (`sheetsKeyValueStore.ts`, el orquestador de
   `estadoAgregado.ts`, `serviceAccount.ts`...) exige verificación extra: reproducir el
   fallo original, no solo confirmar el caso feliz.
-- Todo PR requiere revisión humana antes de mergear — Claude Code lo bloquea incluso con
-  confirmación en el chat; no intentes rodearlo.
+- Toda publicación, fusión o despliegue requiere autorización explícita de Carlos. La
+  autorización dada en el chat es suficiente; no exigirle interacción manual en GitHub
+  salvo que una protección técnica real de la rama lo haga necesario. Nunca omitir los
+  checks obligatorios ni forzar una rama protegida.
 
 ## Comandos
 
