@@ -280,6 +280,26 @@ test("correo activo manual no se toca; los demás siguen ordenados", async () =>
   const e = escenario(); e.puerto.reservadoManualmente = async () => true;
   const r = await e.service.revisar(configFixture); assert.equal(r.revisados, 0); assert.equal(e.llamadas.crear, 0);
 });
+test("una operación sin cerrar de un correo reservado por la revisión manual se continúa por lectura, sin repetir POST ni marcar el correo", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  // La cola manual toma el correo: antes ni el proceso automático ni la revisión manual podían cerrar la operación.
+  e.puerto.reservadoManualmente = async () => true;
+  e.puerto.verificarConciliacion = async () => true;
+  const r = await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "completada");
+  assert.equal(e.llamadas.crear, 1); assert.equal(e.llamadas.conciliar, 1);
+  assert.equal(e.llamadas.marcar, 0, "el correo es de la revisión manual: no se marca leído desde aquí");
+  assert.equal(r.completados, 1);
+});
+test("un correo reservado sin operación anterior sigue sin crear nada", async () => {
+  const e = escenario(); e.puerto.reservadoManualmente = async () => true;
+  await e.service.revisar(configFixture);
+  assert.equal(e.llamadas.crear, 0); assert.equal(e.ops.size, 0);
+});
 test("dos mensajes con el mismo comprobante nunca generan dos gastos", async () => {
   const e = escenario(); e.correos.push({ ...correoFixture("m2"), huella: hash("reenviado") });
   const r = await e.service.revisar(configFixture);

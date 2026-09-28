@@ -8,6 +8,7 @@ import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValid
   VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE, VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
+import type { HechosCierre } from "./cierreConEvidencia";
 import { generarComprobantePDF } from "../generarComprobantePDF";
 import type { DatosFactura } from "../../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, type DependenciasBusquedaMultimoneda } from "../../gastos/movimientoMultimoneda";
@@ -736,6 +737,37 @@ export class HoldedAuto {
         documents: [{ document_id: op.compraId, document_type: "purchase" }],
       });
     } finally { this.invalidarMovimientosCuenta(p.empresa, p.movimiento.cuentaId); }
+  }
+  /**
+   * Lecturas (nunca escrituras) con las que se decide si una operación que no llegó a un estado terminal
+   * ya quedó completa en Holded. Ver `cierreConEvidencia.ts`: no exige que cuenta, impuestos o etiquetas
+   * coincidan con el plan, porque un gasto corregido a mano sigue siendo el mismo gasto.
+   */
+  async leerHechosCierre(op: OperacionAuto): Promise<HechosCierre> {
+    const p = op.plan;
+    if (!op.compraId) return { compra: null, adjuntos: 0, movimiento: null };
+    const c = await this.compra(op);
+    const importe = (valor: unknown): number => centimos(valor ?? 0, true);
+    const detalle = Array.isArray(c.payments_detail) ? c.payments_detail.map(objeto) : [];
+    const [adjuntos, movimientos] = await Promise.all([
+      this.listarAdjuntos(p.empresa, op.compraId),
+      this.movimientosCuenta(p.empresa, p.movimiento.cuentaId, p.movimiento.fecha),
+    ]);
+    const movimiento = movimientos.find(m => m.id === p.movimiento.id);
+    return {
+      compra: {
+        id: texto(c.id),
+        notas: typeof c.notes === "string" ? c.notes : "",
+        contactoId: typeof c.contact_id === "string" ? c.contact_id : "",
+        moneda: String(c.currency || "EUR"),
+        totalCentimos: importe(c.total),
+        pagadoCentimos: importe(c.payments_total),
+        pendienteCentimos: importe(c.payments_pending),
+        pagos: detalle.map(x => ({ bancoId: typeof x.bank_id === "string" ? x.bank_id : "", centimos: importe(x.amount) })),
+      },
+      adjuntos: adjuntos.length,
+      movimiento: movimiento ? { estado: String(movimiento.status) } : null,
+    };
   }
   async verificarConciliacion(op: OperacionAuto): Promise<boolean> {
     if (this.flujoExistente) return this.flujoExistente.verificarConciliacion(op);

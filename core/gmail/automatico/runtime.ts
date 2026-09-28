@@ -17,7 +17,8 @@ import { analizarAutomatico } from "./analyze";
 import { obtenerClasificacionesAprendidas } from "../../gastos/clasificacionAprendidaSheet";
 import { HoldedAuto } from "./holded";
 import { crearFlujoGastoExistente } from "./flujoExistente";
-import { configuracionAuto, normalizar, type ResultadoAuto } from "./model";
+import { configuracionAuto, normalizar, VERSION_ANALISIS, type OperacionAuto, type ResultadoAuto } from "./model";
+import { mensajeOperacionBloqueada, resolverOperacionAnterior, type ResultadoOperacionAnterior } from "./operacionAnterior";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
@@ -59,6 +60,32 @@ export function limitesRevisionAutomatica(
     concurrenciaAnalisis: 2,
     sinLimiteAntiguedad: false,
   };
+}
+
+/** Deja constancia del gasto creado desde un correo para que ningún otro flujo lo proponga otra vez. */
+export async function registrarOperacionFinalizada(op: OperacionAuto, opciones: { aprenderCuenta?: boolean } = {}): Promise<void> {
+  const attachmentId = op.plan.recibo.fuente === "cuerpo" ? undefined : op.plan.recibo.fuente;
+  const existente = await buscarGastoDesdeCorreo(op.plan.correo.id, attachmentId);
+  if (!existente) {
+    // Una operación cerrada con evidencia no demuestra que la cuenta del plan sea la que quedó en Holded
+    // (alguien pudo corregirla): no se enseña esa cuenta al sistema.
+    if (op.plan.cuentaId && opciones.aprenderCuenta !== false) {
+      await registrarAsignacionCuenta({ gastoId: op.compraId!, empresa: op.plan.empresa,
+        proveedor: op.plan.recibo.proveedor, cuentaIdAsignada: op.plan.cuentaId });
+    }
+    await registrarGastoDesdeCorreo({ mensajeIdGmail: op.plan.correo.id, attachmentId,
+      gastoId: op.compraId!, empresa: op.plan.empresa, completado: true });
+  } else if (existente.gastoId === op.compraId && existente.empresa === op.plan.empresa) {
+    // Una caída pudo dejar la fila intermedia/legacy antes de que la
+    // operación durable terminara. La creación, el soporte y la
+    // conciliación ya fueron verificados arriba; cerrar esa misma fila
+    // evita que la próxima lectura la trate como incompleta.
+    await marcarGastoDesdeCorreoCompletado({
+      mensajeIdGmail: op.plan.correo.id,
+      gastoId: op.compraId!,
+      attachmentId,
+    });
+  }
 }
 
 export async function revisarGastosAutomaticos(chatId: number, opciones: {
@@ -141,28 +168,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     },
     evidencias: (c, r) => holded.evidencias(c, r),
     recuperarCreacion: op => holded.recuperarCreacion(op),
-    registrarFinalizada: async op => {
-      const attachmentId = op.plan.recibo.fuente === "cuerpo" ? undefined : op.plan.recibo.fuente;
-      const existente = await buscarGastoDesdeCorreo(op.plan.correo.id, attachmentId);
-      if (!existente) {
-        if (op.plan.cuentaId) {
-          await registrarAsignacionCuenta({ gastoId: op.compraId!, empresa: op.plan.empresa,
-            proveedor: op.plan.recibo.proveedor, cuentaIdAsignada: op.plan.cuentaId });
-        }
-        await registrarGastoDesdeCorreo({ mensajeIdGmail: op.plan.correo.id, attachmentId,
-          gastoId: op.compraId!, empresa: op.plan.empresa, completado: true });
-      } else if (existente.gastoId === op.compraId && existente.empresa === op.plan.empresa) {
-        // Una caída pudo dejar la fila intermedia/legacy antes de que la
-        // operación durable terminara. La creación, el soporte y la
-        // conciliación ya fueron verificados arriba; cerrar esa misma fila
-        // evita que la próxima lectura la trate como incompleta.
-        await marcarGastoDesdeCorreoCompletado({
-          mensajeIdGmail: op.plan.correo.id,
-          gastoId: op.compraId!,
-          attachmentId,
-        });
-      }
-    },
+    registrarFinalizada: op => registrarOperacionFinalizada(op),
     crear: op => holded.crear(op), verificarCreacion: op => holded.verificarCreacion(op),
     prepararAdjunto: (op, c) => holded.prepararAdjunto(op, c),
     adjuntar: (op, c) => holded.adjuntar(op, c), verificarAdjunto: op => holded.verificarAdjunto(op),
@@ -192,10 +198,27 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   return resultado;
 }
 
-/** Una propuesta antigua no puede reabrir un correo con una escritura incompleta. */
-export async function comprobarCorreoDisponible(threadId: string): Promise<void> {
-  if (!hayCoordinacionDurable()) return;
-  const r = await poolAuto().query("SELECT id FROM wobi_mail_operations WHERE mailbox=$1 AND data->'plan'->'correo'->>'threadId'=$2 AND state NOT IN ('completada','rechazada') LIMIT 1",
-    [process.env.GMAIL_IMPERSONATE_EMAIL ?? "", threadId]);
-  if (r.rowCount) throw new Error(`Este correo tiene la operación ${r.rows[0].id} pendiente de verificar. No se repetirán escrituras.`);
+/**
+ * Una propuesta antigua no puede reabrir un correo con una escritura incompleta. Si la operación
+ * anterior ya quedó completa en Holded se cierra con esa prueba (sin escribir nada más) y, cuando
+ * cubre todo lo que había en el correo, se devuelve `ya_registrado` para no proponerlo otra vez.
+ * Si no se puede demostrar, lanza con el detalle exacto de lo que falta.
+ */
+export async function comprobarCorreoDisponible(threadId: string, mensajeId?: string): Promise<ResultadoOperacionAnterior> {
+  if (!hayCoordinacionDurable()) return { tipo: "libre" };
+  const buzon = process.env.GMAIL_IMPERSONATE_EMAIL ?? "";
+  const store = new PostgresAutoStore();
+  // Solo lecturas: la memoria de alias y duplicados no interviene al verificar una compra ya creada.
+  const holded = new HoldedAuto({ alias: async () => [], duplicadoInterno: async () => false }, fetch, configuracionAuto().empresas);
+  const resultado = await resolverOperacionAnterior(threadId, mensajeId, {
+    operacionesDeHilo: id => store.operacionesDeHilo(buzon, id),
+    analisisDeMensaje: id => store.buscarAnalisis(buzon, id, "", VERSION_ANALISIS),
+    leerHechos: op => holded.leerHechosCierre(op),
+    guardar: op => store.guardar(op),
+    auditar: evento => store.auditar({ buzon, ...evento }),
+    registrarFinalizada: op => registrarOperacionFinalizada(op, { aprenderCuenta: false }),
+    ahora: () => Date.now(),
+  });
+  if (resultado.tipo === "bloqueada") throw new Error(mensajeOperacionBloqueada(resultado));
+  return resultado;
 }

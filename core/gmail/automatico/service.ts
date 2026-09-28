@@ -332,7 +332,12 @@ export class ServicioCorreoAutomatico {
           const correoNoLeido = correos.find(c => c.id === op.plan.correo.id);
           const reparacionLegada = op.plan.version !== VERSION_POLITICA &&
             (op.estado === "completada" || op.pasoIncierto === "completada");
-          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido;
+          // Un correo reservado por la revisión manual no pasa por el bucle de abajo (se aparta sin analizarlo), y la
+          // revisión manual a su vez rechaza un correo con una operación sin cerrar: sin esta lectura ninguno de los
+          // dos podía terminarla (bloqueo mutuo, JetBlue 2026-09-28). Aquí solo se CONTINÚA la operación existente,
+          // siempre por lectura y sin repetir POST; nunca se crea nada nuevo para ese correo.
+          const reservadoManual = Boolean(correoNoLeido) && await this.puerto.reservadoManualmente(op.plan.correo.threadId);
+          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido || reservadoManual;
           if (!debeRecuperarseAhora) continue;
           const correo = correoNoLeido ?? await this.puerto.obtener(op.plan.correo.id, op.plan.correo.threadId);
           if (!correo) {

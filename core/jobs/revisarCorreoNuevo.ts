@@ -1,6 +1,7 @@
 import { entregarRevisionCorreo } from "./entregarRevisionCorreo";
 import { buscarAnalisisAutomaticoReciente, conCoordinadorCorreo } from "../gmail/automatico/postgres";
 import { revisarGastosAutomaticos, comprobarCorreoDisponible } from "../gmail/automatico/runtime";
+import { mensajeYaRegistrado, type ResultadoOperacionAnterior } from "../gmail/automatico/operacionAnterior";
 import { resumenAutomatico } from "../gmail/automatico/service";
 import { reutilizarGastoDeAnalisisAutomatico } from "../gmail/automatico/reutilizarAnalisis";
 import type { ModoAuto, ResultadoAuto } from "../gmail/automatico/model";
@@ -1207,7 +1208,11 @@ async function procesarSiguienteCorreoActivoInterno(chatId: number): Promise<voi
     if (correo.id !== activo.mensajeId || correo.threadId !== activo.id) {
       throw new Error("Gmail devolvió una identidad distinta a la fila activa; se conserva sin leer");
     }
-    await comprobarCorreoDisponible(correo.threadId);
+    const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
+    if (previa.tipo === "ya_registrado") {
+      await cerrarActivoYaRegistrado(chatId, correo.asunto, previa);
+      return;
+    }
     const identidadActiva = { threadId: activo.id, mensajeId: activo.mensajeId };
     const inicializado = await establecerPendientesActivo(
       chatId,
@@ -1294,7 +1299,11 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
       if (correo.id !== propuesta.mensajeId || correo.threadId !== propuesta.threadId) {
         throw new Error("Gmail devolvió una identidad distinta; no se ejecutó el reintento");
       }
-      await comprobarCorreoDisponible(correo.threadId);
+      const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
+      if (previa.tipo === "ya_registrado") {
+        await cerrarActivoYaRegistrado(chatId, correo.asunto, previa);
+        return;
+      }
 
       if (alcance === "correo") {
         if (activo.pendientesRestantes < 1) {
@@ -1388,7 +1397,12 @@ async function procesarCorreoPuntualInterno(
     return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
   }
 
-  await comprobarCorreoDisponible(correo.threadId);
+  const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
+  if (previa.tipo === "ya_registrado") {
+    // Búsqueda puntual: no toca la cola ni el estado leído; solo evita proponer de nuevo lo ya registrado.
+    await sendTelegramMessage(chatId, mensajeYaRegistrado(previa, correo.asunto)).catch(() => {});
+    return { encontrado: true, de: correo.de, asunto: correo.asunto };
+  }
   await procesarCorreoLocalizado(chatId, correo, false);
   return { encontrado: true, de: correo.de, asunto: correo.asunto };
 }
@@ -1646,7 +1660,7 @@ export async function handleColaCorreoSiguienteCallback(callback: TelegramCallba
 export async function saltarCorreoActivo(chatId: number): Promise<string> {
   return conCoordinadorCorreo(() => saltarCorreoActivoInterno(chatId));
 }
-async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
+async function saltarCorreoActivoInterno(chatId: number, opciones: { nota?: string } = {}): Promise<string> {
   const activo = await obtenerActivoActual(chatId);
   if (!activo) {
     return "Ya no hay ningún correo activo esperando — nada que saltar.";
@@ -1685,10 +1699,12 @@ async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
   if (siguiente) await encolarCorreos(chatId, [{ id: activo.id, mensajeId: siguiente.messageId,
     de: siguiente.de, asunto: siguiente.asunto, fechaOrden: siguiente.recibidoEn }], { reconciliarAusentes: false });
 
-  const notaDescartado = `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). ` +
+  const notaDescartado = opciones.nota ?? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). ` +
     "Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.";
 
   const quedan = await contarPendientesTotal(chatId);
+  // Con nota propia el aviso sale antes de preguntar por el siguiente; el llamador no vuelve a enviarla.
+  if (opciones.nota) await sendTelegramMessage(chatId, notaDescartado).catch(() => {});
   if (quedan > 0) {
     await pedirConfirmacionSiguienteCorreo(
       chatId,
@@ -1697,6 +1713,19 @@ async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
   }
 
   return notaDescartado;
+}
+
+/**
+ * El correo activo ya estaba registrado y conciliado en Holded (operación automática anterior): se cierra
+ * como resuelto en vez de proponer un segundo gasto. Reutiliza el cierre explícito de la cola, que marca el
+ * mensaje exacto como leído y confirma la fila local antes de avanzar.
+ */
+async function cerrarActivoYaRegistrado(
+  chatId: number,
+  asunto: string,
+  previa: Extract<ResultadoOperacionAnterior, { tipo: "ya_registrado" }>
+): Promise<void> {
+  await saltarCorreoActivoInterno(chatId, { nota: mensajeYaRegistrado(previa, asunto) });
 }
 
 export async function handleDescartarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {
