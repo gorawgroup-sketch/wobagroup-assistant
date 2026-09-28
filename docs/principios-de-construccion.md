@@ -79,8 +79,10 @@ cualquier cambio ahí se vuelve riesgoso para todo lo demás.
   `estadoAgregado.ts`, `serviceAccount.ts`...) es de mayor riesgo que uno aditivo —
   verificación extra: reproducir el fallo original explícitamente, no solo confirmar que
   el caso feliz sigue funcionando.
-- Todo PR requiere revisión humana antes de mergear. Ya lo aplica el propio Claude Code
-  (bloquea el merge sin revisión, sin excepción por confirmación en el chat).
+- Toda publicación, fusión o despliegue requiere autorización explícita de Carlos. La
+  autorización dada en el chat es suficiente; no se exige intervención manual en GitHub
+  salvo que una protección técnica real de la rama la haga necesaria. Los checks
+  obligatorios siguen siendo condición de fusión y nunca se fuerza una rama protegida.
 
 ## Cuándo un archivo compartido es una señal de alerta
 
