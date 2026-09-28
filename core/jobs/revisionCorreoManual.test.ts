@@ -19,6 +19,7 @@ function escenario(parciales: {
   cierre?: () => boolean;
   sinPregunta?: boolean;
   activoSinPreguntaViva?: () => Promise<boolean>;
+  reenviarPreguntaDelActivo?: (chatId: number, encabezado: string) => Promise<{ tipo: "propuesta" | "conciliacion" | "conciliacion_ambigua"; descripcion: string } | undefined>;
 } = {}) {
   const enviados: Array<{ chatId: number; texto: string; botones?: unknown }> = [];
   const registros: ReanudacionRevisionCorreo[] = [];
@@ -47,6 +48,7 @@ function escenario(parciales: {
     enviarConBotones: async (chatId, texto, botones) => { enviados.push({ chatId, texto, botones }); return 1; },
     cierreSolicitado: parciales.cierre ?? (() => false),
     activoSinPreguntaViva: parciales.activoSinPreguntaViva ?? (async () => parciales.sinPregunta ?? false),
+    reenviarPreguntaDelActivo: parciales.reenviarPreguntaDelActivo ?? (async () => undefined),
   });
   return { enviados, registros, iniciados, latidos, cerrados, lanzamientos, restaurar, liberar: () => liberar?.() };
 }
@@ -324,5 +326,32 @@ test("el SIGTERM espera a que el INSERT `en_curso` aterrice antes de pasar la fi
   e.liberar();
   await revision;
   restaurarInicio();
+  e.restaurar();
+});
+
+// Caso real (Carlos, 2026-09-28 20:23): la revisión terminaba con «los botones siguen arriba» y la pregunta viva
+// («¿conciliar Airalo?») estaba fuera de vista. Ahora se reenvía la pregunta real al final del chat.
+test("con un correo activo que sí tiene decisión pendiente, se reenvía esa pregunta con botones y no el aviso genérico", async () => {
+  const reenvios: string[] = [];
+  const e = escenario({
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "$ 12,50 - Airalo - Revolut", de: "Juan" } }),
+    reenviarPreguntaDelActivo: async (_chat, encabezado) => { reenvios.push(encabezado); return { tipo: "conciliacion", descripcion: "Airalo — 12.5 USD" }; },
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.equal(reenvios.length, 1);
+  assert.match(reenvios[0], /espera tu respuesta al correo "\$ 12,50 - Airalo - Revolut"/);
+  assert.equal(e.enviados.length, 0); // ni «siguen arriba» ni «Reprocesar»: la pregunta ya está abajo con sus botones
+  e.restaurar();
+});
+
+test("si el correo activo no tiene ninguna decisión pendiente, sigue ofreciéndose «Reprocesar este correo»", async () => {
+  const e = escenario({
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Televic", de: "X" } }),
+    reenviarPreguntaDelActivo: async () => undefined,
+    sinPregunta: true,
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.equal(e.enviados.length, 1);
+  assert.match(e.enviados[0].texto, /no tiene ninguna pregunta viva/);
   e.restaurar();
 });
