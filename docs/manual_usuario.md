@@ -351,20 +351,15 @@ pero sin botones.
 
 ### 📁 Google Drive
 - Buscar documentos o carpetas por nombre, en cualquiera de las 3 empresas.
-- **Leer el contenido real de un documento ya archivado** (no solo saber
-  dónde está): si preguntas algo que podría estar en un documento archivado
-  en Drive (ej. "¿cómo son las claves de entrada a la oficina?", "control
-  de accesos") y la base de conocimiento no tiene nada capturado sobre eso,
-  el asistente busca en Drive por palabras clave del tema (probando
-  sinónimos si hace falta) y, si encuentra un único documento claro, lo
-  abre y lee su contenido real (PDF/imagen, con Claude vision) para
-  responder con la información real — no solo con un link para que lo
-  abras tú. Archivar un documento y capturarlo como conocimiento son cosas
-  distintas: un documento archivado normalmente NO vive en la base de
-  conocimiento salvo que alguien lo haya capturado explícitamente, así que
-  esta es la forma de consultarlo de todas formas. Si encuentra varios
-  documentos posibles, nunca elige solo — te los lista para que confirmes
-  cuál.
+- **Buscar y leer conocimiento interno de forma federada**: ante una pregunta
+  operativa, el asistente revisa por sí mismo la memoria/correcciones, la
+  documentación del proyecto y el contenido indexado de Drive de las tres
+  empresas. No hace falta pedirle después "busca en Drive" ni conocer el
+  nombre exacto del archivo. Lee Google Docs, Sheets y Slides nativos; texto,
+  HTML, JSON, Word, Excel, PowerPoint y OpenDocument sin gastar tokens de IA.
+  Solo usa visión/OCR para PDF e imágenes cuando las fuentes baratas no bastan.
+  Devuelve el dato con su fuente y, si una vía falla, continúa con las demás.
+  Abre solo uno o dos candidatos bien puntuados para evitar demoras y costes.
 - Recibir un archivo por Telegram, clasificarlo, y proponer en qué carpeta
   archivarlo — solo lo sube si confirmas con el botón. (Si el documento
   resulta ser una factura/gasto, sigue en cambio el flujo de Holded de

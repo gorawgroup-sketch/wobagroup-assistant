@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { searchDriveFiles, descargarArchivoDrive, palabrasSignificativas, type DriveSearchResult } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
+import { esFormatoVisual, extraerTextoDeterminista } from "../documental/extractReadableText";
 import type { ToolDefinition } from "./types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -62,22 +63,25 @@ function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string)
   return undefined;
 }
 
-async function leerContenido(
+export async function leerContenidoDrive(
   resultado: DriveSearchResult,
-  empresa: EmpresaConCarpeta,
+  empresa: string,
   consulta: string
 ): Promise<string> {
-  const mimesLegibles = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
-  if (!resultado.mimeType || !mimesLegibles.includes(resultado.mimeType)) {
-    return (
-      `Encontré "${resultado.name}" (${resultado.folderPath}) pero es de un tipo que no puedo leer ` +
-      `todavía (${resultado.mimeType ?? "desconocido"} — solo PDF/imagen por ahora). Link: ${resultado.webViewLink}`
-    );
-  }
-
   let rutaLocal: string | undefined;
   try {
     const archivo = await descargarArchivoDrive(resultado.id);
+    const textoDeterminista = await extraerTextoDeterminista(archivo.bytes, archivo.mimeType, archivo.name);
+    if (textoDeterminista) {
+      return `📄 Contenido de "${resultado.name}" (${empresa}, ${resultado.folderPath}, ${resultado.webViewLink}):\n\n${textoDeterminista}`;
+    }
+
+    if (!esFormatoVisual(archivo.mimeType)) {
+      throw new Error(
+        `El binario ${archivo.mimeType || "de tipo desconocido"} no expuso texto verificable con los lectores disponibles.`
+      );
+    }
+
     await mkdir(UPLOADS_DIR, { recursive: true });
     rutaLocal = join(UPLOADS_DIR, `${Date.now()}_${sanitizarNombre(archivo.name)}`);
     await writeFile(rutaLocal, archivo.bytes);
@@ -91,7 +95,9 @@ async function leerContenido(
     return `📄 Contenido de "${resultado.name}" (${resultado.folderPath}, ${resultado.webViewLink}):\n\n${texto}`;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return `Encontré "${resultado.name}" pero hubo un error leyendo su contenido: ${message}. Link para abrirlo a mano: ${resultado.webViewLink}`;
+    throw new Error(
+      `No se pudo leer "${resultado.name}" (${resultado.webViewLink}) con esta ruta: ${message}`
+    );
   } finally {
     if (rutaLocal) await unlink(rutaLocal).catch(() => {});
   }
@@ -113,8 +119,9 @@ async function leerContenido(
  * Si de verdad hay ambigüedad real (varios candidatos igual de plausibles),
  * nunca elige sola — los lista para que el usuario confirme cuál, mismo
  * principio que el resto del proyecto (nunca asumir sin evidencia clara).
- * Solo lee PDF/imagen (lo que Claude vision soporta) — un Google Doc/Sheet
- * nativo no está soportado todavía.
+ * Primero usa lectores deterministas sin IA: exporta Google Docs/Sheets/Slides
+ * y extrae texto de texto/HTML/CSV/JSON, Word, Excel, PowerPoint y
+ * OpenDocument. Solo recurre a visión para PDF/imágenes.
  */
 export const leerDocumentoDriveTool: ToolDefinition = {
   name: "leer_documento_drive",
@@ -130,8 +137,8 @@ export const leerDocumentoDriveTool: ToolDefinition = {
     "si ya usaste buscar_documento_drive/listar_carpetas_drive y solo tienes el NOMBRE de un archivo " +
     "(no su contenido), eso NO es suficiente para responder una pregunta de contenido — sigue con esta " +
     "tool pasando ese mismo nombre como consulta, en vez de responder con el link o pedir escalar. " +
-    "Solo lee PDF o " +
-    "imágenes (no Google Docs/Sheets nativos todavía). Si la búsqueda devuelve varios resultados pero " +
+    "Lee Google Docs/Sheets/Slides nativos y los formatos documentales habituales; prioriza extracción " +
+    "determinista sin coste de IA y usa visión solo para PDF/imágenes. Si la búsqueda devuelve varios resultados pero " +
     "uno de ellos se distingue claramente del resto (no hace falta que coincida con el 100% de tu " +
     "consulta, solo que gane por lejos), esta tool lo elige y lee sola automáticamente — no hace falta " +
     "que la vuelvas a llamar. Solo te pide confirmar cuando de " +
@@ -172,12 +179,12 @@ export const leerDocumentoDriveTool: ToolDefinition = {
     }
 
     if (resultados.length === 1) {
-      return leerContenido(resultados[0], empresa, consulta);
+      return leerContenidoDrive(resultados[0], empresa, consulta);
     }
 
     const mejorCandidato = elegirMejorCandidato(resultados, consulta);
     if (mejorCandidato) {
-      return leerContenido(mejorCandidato, empresa, consulta);
+      return leerContenidoDrive(mejorCandidato, empresa, consulta);
     }
 
     const lista = resultados.map((r) => `- ${r.name} — ${r.folderPath}`).join("\n");
