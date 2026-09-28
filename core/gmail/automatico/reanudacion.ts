@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { hayCoordinacionDurable, poolAuto } from "./postgres";
 
 /**
@@ -53,9 +54,14 @@ export function decidirReanudacion(registro: ReanudacionRevisionCorreo, ahora = 
   return { accion: "reanudar", registro };
 }
 
-/** Identidad de este proceso, para no reclamar nunca una revisión propia. */
+/**
+ * Identidad de ESTE proceso, para no reclamar nunca una revisión propia. Lleva un sufijo aleatorio
+ * generado al arrancar: un contenedor reiniciado tras un crash comparte despliegue (y a menudo
+ * PID) con el muerto, y sin el sufijo tomaría su fila huérfana por propia y no la retomaría.
+ */
+const SUFIJO_PROCESO = randomUUID();
 export function instanciaActual(env: NodeJS.ProcessEnv = process.env): string {
-  return env.RAILWAY_REPLICA_ID || env.RAILWAY_DEPLOYMENT_ID || `${env.HOSTNAME ?? "local"}:${process.pid}`;
+  return `${env.RAILWAY_REPLICA_ID || env.RAILWAY_DEPLOYMENT_ID || env.HOSTNAME || "local"}:${SUFIJO_PROCESO}`;
 }
 
 const sinPostgres = () => new Error("Sin PostgreSQL no se puede registrar la revisión para reanudarla.");

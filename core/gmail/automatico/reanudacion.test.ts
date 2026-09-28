@@ -27,10 +27,14 @@ test("tras el máximo de reanudaciones encadenadas se avisa y no se relanza", ()
   assert.equal(decidirReanudacion(registro({ reanudaciones: MAX_REANUDACIONES_ENCADENADAS }), 1_000_000 + 1).accion, "demasiadas");
 });
 
-test("la identidad del proceso prefiere la réplica de Railway y nunca queda vacía", () => {
-  assert.equal(instanciaActual({ RAILWAY_REPLICA_ID: "rep-1", RAILWAY_DEPLOYMENT_ID: "dep-1" } as NodeJS.ProcessEnv), "rep-1");
-  assert.equal(instanciaActual({ RAILWAY_DEPLOYMENT_ID: "dep-1" } as NodeJS.ProcessEnv), "dep-1");
-  assert.match(instanciaActual({} as NodeJS.ProcessEnv), /:\d+$/);
+test("la identidad del proceso prefiere la réplica de Railway y lleva un sufijo único por proceso", () => {
+  const conReplica = instanciaActual({ RAILWAY_REPLICA_ID: "rep-1", RAILWAY_DEPLOYMENT_ID: "dep-1" } as NodeJS.ProcessEnv);
+  const sinReplica = instanciaActual({ RAILWAY_DEPLOYMENT_ID: "dep-1" } as NodeJS.ProcessEnv);
+  assert.match(conReplica, /^rep-1:[0-9a-f-]{36}$/);
+  assert.match(sinReplica, /^dep-1:[0-9a-f-]{36}$/);
+  assert.match(instanciaActual({} as NodeJS.ProcessEnv), /^local:[0-9a-f-]{36}$/);
+  // Mismo sufijo dentro del proceso (estable entre llamadas), distinto del que tendría otro proceso reiniciado.
+  assert.equal(conReplica.split(":")[1], sinReplica.split(":")[1]);
 });
 
 // Base de pruebas desechable; jamás toma WOBI_MAIL_DATABASE_URL de producción.
