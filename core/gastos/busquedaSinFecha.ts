@@ -19,7 +19,7 @@ export async function buscarCargoSinFecha(empresa:Empresa, datos:{proveedor:stri
    for(const m of r.items??[]){
     const amount=Number(String(m.amount).replace(',','.'));
     if(!(amount<0)||Math.abs(Math.abs(amount)-datos.monto)>0.005||(m.currency??'EUR').toUpperCase()!==datos.moneda.toUpperCase())continue;
-    if(!movimientoCompatibleConGasto(datos.proveedor,datos.concepto,m.description??''))continue;
+    if(!movimientoCompatibleConGasto(datos.proveedor,datos.concepto,m.description??'',{nucleoDeMarca:true}))continue;
     candidatos.push({accountId:cuenta.id,movementId:m.id,descripcion:m.description,monto:amount,moneda:m.currency??'EUR',fecha:(m.booking_date??'').slice(0,10),status:m.status});
    }
    if(r.has_more&&(!r.cursor||vistos.has(r.cursor)))throw Error('Búsqueda bancaria incompleta; no se descartan duplicados.');

@@ -7,6 +7,7 @@ import { candidatoUtilizableParaGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
+import { buscarCargoParaPropuesta, type ResultadoCargoPropuesta } from "./buscarCargoParaPropuesta";
 import { alinearTasaCambioAlMovimientoElegido } from "./alinearTasaAlMovimiento";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
@@ -849,6 +850,18 @@ async function intentarConciliar(
       } else if (aproximados.length > 1) {
         return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, aproximados,
           deColaCorreo, true, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail);
+      }
+    }
+
+    if (!candidato && proveedor) {
+      // «Crear (sin conciliar)» existe para los cargos que llegan tarde o con otro nombre: si la búsqueda estricta no
+      // encuentra nada, se repite admitiendo los «por confirmar»/«aprendidos» (nombre distinto o solo la categoría con la fecha
+      // lejana) y se pide ELEGIR con aviso. Nunca se concilia solo, pero tampoco queda un «No encontré» para siempre.
+      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto, incluirPorConfirmar: true }))
+        .filter((m) => m.compatibilidad);
+      if (paraElegir.length > 0) {
+        return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, paraElegir,
+          deColaCorreo, false, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail);
       }
     }
 
@@ -3985,6 +3998,61 @@ export function ajustarPropuestaAlMovimientoRecomendado(
   return { ...propuesta, monto: nuevoMonto, lineas: reescalarLineas(propuesta, nuevoMonto) };
 }
 
+/**
+ * Tras corregir la MONEDA de una propuesta, el cargo bancario se busca DE NUEVO con la moneda corregida (misma jerarquía
+ * que la renovación de botones: buscarCargoParaPropuesta), se guarda en la propuesta y se repinta el teclado. Solo la
+ * moneda lo hace: cambia qué cargos son posibles. Con el monto o la clasificación NO se refresca aquí (la revisión del #232
+ * mostró que una lista nueva bajo una decisión ya marcada por índice concilia contra otro cargo); se renueva a petición.
+ * Devuelve una nota para el mensaje de confirmación; nunca lanza (la corrección ya se aplicó).
+ */
+async function refrescarCargoDePropuesta(propuestaActualizada: PropuestaGasto): Promise<string> {
+  if (propuestaActualizada.candidatos.length > 0 || !esFechaDocumentoValida(propuestaActualizada.fecha)) return "";
+  let resultado: ResultadoCargoPropuesta;
+  try {
+    resultado = await buscarCargoParaPropuesta({
+      empresa: propuestaActualizada.empresa,
+      proveedor: propuestaActualizada.proveedor,
+      concepto: propuestaActualizada.concepto,
+      monto: propuestaActualizada.monto,
+      fecha: propuestaActualizada.fecha,
+      moneda: propuestaActualizada.moneda,
+    });
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error buscando el cargo tras corregir la propuesta (no crítico):", error);
+    return ` No pude repetir la búsqueda del cargo porque Holded no respondió; dile al asistente «renueva los botones de la propuesta de ${propuestaActualizada.proveedor}» en un momento.`;
+  }
+  // Si el cargo no queda guardado, no se repinta ni se afirma nada: el teclado mostraría un cargo que después no existe.
+  try {
+    const flagGuardado = await actualizarFlagMovimientoBancarioGasto(propuestaActualizada.id, resultado.movimientoEncontrado);
+    const movimientosGuardados = await actualizarMovimientosAmbiguosPropuestaGasto(propuestaActualizada.id, resultado.movimientosPersistidos);
+    if (!flagGuardado || !movimientosGuardados) throw new Error("La propuesta ya no está disponible o no se pudo guardar.");
+  } catch (error) {
+    console.error("[gastoCallbackHandler] No se pudo guardar el cargo tras corregir la propuesta:", error);
+    return ` No pude guardar el cargo encontrado; dime «renueva los botones de la propuesta de ${propuestaActualizada.proveedor}» en un momento.`;
+  }
+  try {
+    const conCargo: PropuestaGasto = {
+      ...propuestaActualizada,
+      hayMovimientoBancario: resultado.movimientoEncontrado,
+      movimientosAmbiguos: resultado.movimientosPersistidos,
+    };
+    const botones = construirTecladoGasto(conCargo, opcionesTecladoDesdePropuesta(conCargo));
+    await editTelegramMessageReplyMarkup(conCargo.chatId, conCargo.messageId, botones, resumenTextoPropuestaGasto(conCargo));
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir la propuesta (no crítico):", error);
+  }
+  const avisoNombre = resultado.movimientosPersistidos.some((m) => m.compatibilidad === "por_confirmar")
+    ? " (ojo: el nombre del cargo no coincide con el proveedor; confírmalo antes de aprobar)"
+    : "";
+  if (resultado.movimientoEncontrado) {
+    return ` Con la corrección SÍ encontré un movimiento bancario real sin conciliar que coincide${avisoNombre} — usa "✅ Crear y conciliar" en el mensaje original (ya actualizado).`;
+  }
+  if (resultado.movimientosAmbiguos.length > 0) {
+    return ` Encontré ${resultado.movimientosAmbiguos.length} movimientos bancarios parecidos — marca "🔗 Conciliar con #N" en el mensaje original (ya actualizado) y aprueba tu selección.`;
+  }
+  return ` Sigo sin encontrar un movimiento bancario que coincida: puedes usar "Crear (sin conciliar)" o revisarlo a mano en Holded.`;
+}
+
 async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {
   let actualizado: boolean;
   try {
@@ -4003,9 +4071,13 @@ async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number):
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
 
+  // Aquí NO se repite la búsqueda del cargo ni se toca la lista persistida: en «Aprobar selección» la decisión final ya
+  // marcada («Conciliar con #N») se resuelve por índice DESPUÉS de este paso y una lista nueva la apuntaría a otro cargo.
+  // Si el nuevo importe cambia el cargo esperado, se renueva con «renueva los botones» (búsqueda en vivo y explicada).
   return {
     ok: true,
-    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.`,
+    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.` +
+      (propuesta.candidatos.length === 0 ? ` Si el cargo del banco tiene ahora otro importe, dime «renueva los botones de la propuesta de ${propuesta.proveedor}» para volver a buscarlo.` : ""),
   };
 }
 
@@ -4064,62 +4136,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
 
   let notaMovimiento = "";
   if (propuesta.candidatos.length === 0) {
-    let movimientoEncontrado = false;
-    let movimientosAmbiguosNuevos: MovimientoBancarioCandidato[] = [];
-    let movimientoRecomendadoNuevo: MovimientoBancarioCandidato | undefined;
-    try {
-      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta, proveedor: propuesta.proveedor, concepto: propuesta.concepto, incluirPorConfirmar: true });
-      if (candidatosMov.length === 1) {
-        movimientoEncontrado = true;
-        movimientoRecomendadoNuevo = { ...candidatosMov[0], origenCoincidencia: "exacta" };
-      } else if (candidatosMov.length > 1) {
-        movimientosAmbiguosNuevos = candidatosMov;
-      } else if (propuesta.proveedor) {
-        const aproximados = await buscarMovimientoAproximado(propuesta.empresa, {
-          monto: montoFinal,
-          fecha: propuesta.fecha,
-          moneda: monedaCorrecta,
-          proveedor: propuesta.proveedor,
-        });
-        if (aproximados.length > 0) {
-          movimientoEncontrado = true;
-          movimientoRecomendadoNuevo = { ...aproximados[0], origenCoincidencia: "aproximada" };
-        }
-      }
-    } catch (error) {
-      console.error("[gastoCallbackHandler] Error buscando movimiento tras corregir moneda (no crítico):", error);
-    }
-
-    // Se actualizan ambos campos juntos: un match único se conserva como
-    // objetivo recomendado; varios siguen mostrándose para elegir #N.
-    const movimientosPersistidosNuevos = movimientoRecomendadoNuevo
-      ? [movimientoRecomendadoNuevo]
-      : movimientosAmbiguosNuevos;
-    await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
-      console.error("[gastoCallbackHandler] Error actualizando el flag de movimiento bancario (no crítico):", error)
-    );
-    await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosPersistidosNuevos).catch((error) =>
-      console.error("[gastoCallbackHandler] Error actualizando los movimientos ambiguos (no crítico):", error)
-    );
-    try {
-      const propuestaActualizada: PropuestaGasto = {
-        ...propuesta,
-        moneda: monedaCorrecta,
-        monto: montoFinal,
-        hayMovimientoBancario: movimientoEncontrado,
-        movimientosAmbiguos: movimientosPersistidosNuevos,
-      };
-      const botones = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuestaActualizada));
-      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones, resumenTextoPropuestaGasto(propuestaActualizada));
-    } catch (error) {
-      console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir moneda (no crítico):", error);
-    }
-
-    notaMovimiento = movimientoEncontrado
-      ? ` Ahora que la moneda es correcta, SÍ encontré un movimiento bancario real sin conciliar que coincide — usa "✅ Crear y conciliar" en el mensaje original.`
-      : movimientosAmbiguosNuevos.length > 0
-        ? ` Encontré ${movimientosAmbiguosNuevos.length} movimientos bancarios parecidos en ${monedaCorrecta} — marca "🔗 Conciliar con #N" en el mensaje original (ya actualizado) y aprueba tu selección.`
-        : ` Seguí sin encontrar un movimiento bancario en ${monedaCorrecta} que coincida — revísalo a mano en Holded si ya salió del banco.`;
+    notaMovimiento = await refrescarCargoDePropuesta({ ...propuesta, moneda: monedaCorrecta, monto: montoFinal });
   } else if (cambioMonto) {
     notaMovimiento = ` Ojo: esta propuesta ya tenía candidatos de Holded encontrados con el monto anterior — revísalos de nuevo arriba, podrían ya no ser los correctos con el monto corregido.`;
   }
@@ -4433,11 +4450,13 @@ async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: s
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
+  // Igual que con el monto: no se cambia la lista de cargos bajo una decisión ya marcada; se renueva a petición.
   return {
     ok: true,
     mensaje:
       `✏️ Clasificación corregida — empresa: ${propuestaFinal.empresa}, concepto: ${propuestaFinal.concepto}. ` +
-      `Cuenta y tags se recalcularon con el aprendizaje existente.`,
+      `Cuenta y tags se recalcularon con el aprendizaje existente.` +
+      (propuesta.candidatos.length === 0 ? ` Si la corrección cambia qué cargo corresponde, dime «renueva los botones de la propuesta de ${propuesta.proveedor}» para volver a buscarlo.` : ""),
   };
 }
 

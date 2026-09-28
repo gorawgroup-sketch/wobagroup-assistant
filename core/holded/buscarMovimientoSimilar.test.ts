@@ -4,7 +4,7 @@ import test from "node:test";
 process.env.HOLDED_API_KEY_WRITE_FOOTPRINT = "clave-de-prueba";
 process.env.HOLDED_API_KEY_FOOTPRINT = "clave-de-prueba";
 
-import { buscarMovimientoSimilar, candidatoUtilizableParaGasto } from "./write";
+import { buscarMovimientoAproximado, buscarMovimientoSimilar, candidatoUtilizableParaGasto } from "./write";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "../gastos/gastoTeclado";
 import type { ConciliacionVerificadaAprendida } from "./conciliacionAprendidaSheet";
 import type { PropuestaGasto } from "../gastos/gastoProposalSheet";
@@ -99,4 +99,22 @@ test("la marca caduca: si luego se corrige el concepto y la categoría pasa a co
   const marcado = { descripcion: "Osteria Del Lovo", compatibilidad: "por_confirmar" as const };
   assert.equal(candidatoUtilizableParaGasto("Mi Cafetería", "Café", marcado), true);
   assert.equal(candidatoUtilizableParaGasto("Bolt", "Taxi aeropuerto", marcado), false);
+});
+
+test("el aproximado exige nombre reconocido; la categoría sola solo vale con la fecha cercana (caso café de Bogotá ↔ restaurante de Puerto Rico)", async () => {
+  const base = { monto: 15.86, moneda: "USD", proveedor: "Restaurante Zoe Select" };
+  // Importe distinto (dentro de la banda del 15 %), otro restaurante: solo comparte el rubro.
+  const otroRestaurante = (fecha: string) => mov({ description: "Osteria Del Lovo", amount: "-14.50", booking_date: fecha });
+  await conHolded([otroRestaurante("2026-09-29")], async () => {
+    assert.deepEqual(await buscarMovimientoAproximado("Footprint", { ...base, fecha: "2026-09-25" }), [], "categoría sola a 4 días: no");
+  });
+  await conHolded([otroRestaurante("2026-09-26")], async () => {
+    const r = await buscarMovimientoAproximado("Footprint", { ...base, fecha: "2026-09-25" });
+    assert.equal(r.length, 1, "categoría sola a 1 día: sí (fecha cercana)");
+  });
+  // Nombre reconocido: vale aunque la fecha esté lejos (servicios con fecha de documento distinta de la del cargo).
+  await conHolded([mov({ description: "Restaurante Zoe Select Bogota", amount: "-14.50", booking_date: "2026-09-29" })], async () => {
+    const r = await buscarMovimientoAproximado("Footprint", { ...base, fecha: "2026-09-25" });
+    assert.equal(r.length, 1);
+  });
 });
