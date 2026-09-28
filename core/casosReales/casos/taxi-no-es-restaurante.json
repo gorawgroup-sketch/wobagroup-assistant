@@ -55,6 +55,9 @@
     ],
     "botonesIncluyen": [
       "Crear (sin conciliar)"
+    ],
+    "trazaContiene": [
+      "categorías contradictorias"
     ]
   }
 }

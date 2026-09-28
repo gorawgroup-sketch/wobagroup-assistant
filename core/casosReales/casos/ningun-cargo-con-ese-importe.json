@@ -1,8 +1,8 @@
 {
   "tipo": "busqueda_cargo",
-  "id": "credito",
-  "fuente": "Revisión adversarial del PR #224: créditos y devoluciones del mismo importe entraban como por confirmar.",
-  "descripcion": "Un ingreso (devolución) de 3,91 USD no es el cargo de un gasto de 3,91 USD.",
+  "id": "ningun-cargo-con-ese-importe",
+  "fuente": "Diseño de la traza (2026-09-28).",
+  "descripcion": "Cuando de verdad no hay ningún cargo con ese importe, la explicación lo dice y enumera lo revisado.",
   "empresa": "Footprint",
   "ticket": {
     "proveedor": "Mi Cafetería",
@@ -26,20 +26,14 @@
       "id": "cuenta-cop",
       "name": "Colombia",
       "currency": "COP"
-    },
-    {
-      "id": "cuenta-vieja",
-      "name": "Pocket USD",
-      "currency": "USD",
-      "archived": true
     }
   ],
   "movimientos": {
     "cuenta-usd": [
       {
         "id": "m1",
-        "description": "Refund From SQ *XYZ 88",
-        "amount": "3.91",
+        "description": "SQ *XYZ 88",
+        "amount": "-9.99",
         "currency": "USD",
         "booking_date": "2026-09-25",
         "status": "pending",
@@ -53,11 +47,11 @@
     "botonesExcluyen": [
       "Crear y conciliar"
     ],
+    "trazaContiene": [
+      "No había ningún cargo con ese importe exacto"
+    ],
     "botonesIncluyen": [
       "Crear (sin conciliar)"
-    ],
-    "trazaContiene": [
-      "no es un cargo"
     ]
   }
 }
