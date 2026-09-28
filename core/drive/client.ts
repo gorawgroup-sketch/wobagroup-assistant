@@ -118,7 +118,13 @@ const MAX_ANCESTRY_HOPS = 30;
 // consulta cada una POR SEPARADO, uniendo los resultados (sin duplicar por
 // id) — así una consulta de varias palabras encuentra el archivo aunque
 // solo una de esas palabras aparezca literalmente en el nombre real.
-const PALABRAS_VACIAS = new Set(["de", "la", "el", "los", "las", "un", "una", "y", "en", "para", "del", "al", "con"]);
+const PALABRAS_VACIAS = new Set([
+  "de", "la", "el", "los", "las", "un", "una", "y", "en", "para", "del", "al", "con",
+  "como", "cuando", "donde", "quien", "cual", "que", "esto", "esta", "este", "hay", "puede",
+  "quiero", "necesito", "busca", "buscar", "dime", "sobre",
+  "averigua", "revisa", "archivo", "archivos", "carpeta", "proyecto", "sistema", "conocimiento",
+  "dejado", "enviamos", "segun",
+]);
 
 export function palabrasSignificativas(query: string): string[] {
   const palabras = query
@@ -235,46 +241,259 @@ export async function searchDriveFiles(rootFolderId: string, query: string): Pro
   return results;
 }
 
+export interface DriveSearchResultGlobal extends DriveSearchResult {
+  empresa: string;
+}
+
+/**
+ * Búsqueda federada y acotada en todas las raíces conocidas. A diferencia de
+ * searchDriveFiles, consulta también el índice de CONTENIDO de Drive
+ * (`fullText`) para encontrar, por ejemplo, "Elsamex" dentro de un Google Doc
+ * llamado "RESUMEN RESPONSABILIDADES". Las consultas globales se ejecutan una
+ * sola vez y luego se asignan por ascendencia a su empresa: no se repite la
+ * misma búsqueda para WOBA, EWORKS y Footprint.
+ */
+export async function searchDriveFilesAllRoots(
+  roots: Record<string, string>,
+  query: string,
+  maxTerms = 4,
+  maxCandidates = 80
+): Promise<DriveSearchResultGlobal[]> {
+  const drive = getDriveClient();
+  const terminos = palabrasSignificativas(query).slice(0, Math.max(1, maxTerms));
+  const maxPorTermino = Math.max(5, Math.floor(maxCandidates / Math.max(1, terminos.length)));
+  const candidatosPorId = new Map<string, drive_v3.Schema$File>();
+
+  // Reserva una consulta para archivos nativos: con términos frecuentes como
+  // "facturas", los primeros resultados globales suelen ser cientos de PDF
+  // históricos y pueden ocultar un Doc operativo como "RESPONSABILIDADES".
+  // Esta consulta no fuerza que el nombre coincida; usa el contenido indexado.
+  if (terminos.length > 0) {
+    const condicionTexto = terminos
+      .map((termino) => `fullText contains '${escaparParaConsultaDrive(termino)}'`)
+      .join(" or ");
+    const condicionTipo = [
+      "application/vnd.google-apps.document",
+      "application/vnd.google-apps.spreadsheet",
+      "application/vnd.google-apps.presentation",
+    ].map((mime) => `mimeType = '${mime}'`).join(" or ");
+    try {
+      const res = await drive.files.list({
+        q: `(${condicionTexto}) and (${condicionTipo}) and trashed = false`,
+        fields: "files(id, name, mimeType, webViewLink, parents, modifiedTime)",
+        pageSize: Math.min(30, maxCandidates),
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      });
+      for (const archivo of res.data.files ?? []) if (archivo.id) candidatosPorId.set(archivo.id, archivo);
+    } catch (error) {
+      console.warn("[drive/search] índice nativo no disponible; continúa con búsqueda general", {
+        tipo: error instanceof Error ? error.name : "Error",
+      });
+    }
+  }
+
+  for (const termino of terminos) {
+    const escapado = escaparParaConsultaDrive(termino);
+    const base = `trashed = false and mimeType != 'application/vnd.google-apps.folder'`;
+    const consultaContenido = `(name contains '${escapado}' or fullText contains '${escapado}') and ${base}`;
+    try {
+      const res = await drive.files.list({
+        q: consultaContenido,
+        fields: "files(id, name, mimeType, webViewLink, parents, modifiedTime)",
+        pageSize: Math.min(100, maxPorTermino),
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      });
+      for (const archivo of res.data.files ?? []) {
+        if (archivo.id) candidatosPorId.set(archivo.id, archivo);
+      }
+    } catch (error) {
+      // Algunos backends de Drive no indexan fullText para todos los tipos.
+      // Se autorrecupera degradando a nombre, sin abortar toda la búsqueda.
+      console.warn("[drive/search] fullText no disponible; fallback por nombre", {
+        tipo: error instanceof Error ? error.name : "Error",
+      });
+      const res = await drive.files.list({
+        q: `name contains '${escapado}' and ${base}`,
+        fields: "files(id, name, mimeType, webViewLink, parents, modifiedTime)",
+        pageSize: Math.min(100, maxPorTermino),
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      });
+      for (const archivo of res.data.files ?? []) {
+        if (archivo.id) candidatosPorId.set(archivo.id, archivo);
+      }
+    }
+  }
+
+  const rootPorId = new Map(Object.entries(roots).map(([empresa, id]) => [id, empresa]));
+  const folderCache = new Map<string, Promise<FolderInfo | null>>();
+  async function getFolderInfo(folderId: string): Promise<FolderInfo | null> {
+    const existente = folderCache.get(folderId);
+    if (existente) return existente;
+    const lectura = (async (): Promise<FolderInfo | null> => {
+      try {
+        const res = await drive.files.get({ fileId: folderId, fields: "name, parents", supportsAllDrives: true });
+        return { name: res.data.name ?? "(sin nombre)", parentId: res.data.parents?.[0] };
+      } catch {
+        return null;
+      }
+    })();
+    folderCache.set(folderId, lectura);
+    return lectura;
+  }
+
+  async function resolveRoot(startFolderId: string | undefined): Promise<{ empresa: string; path: string[] } | null> {
+    const path: string[] = [];
+    let current = startFolderId;
+    let hops = 0;
+    while (current && hops < MAX_ANCESTRY_HOPS) {
+      const empresa = rootPorId.get(current);
+      if (empresa) return { empresa, path: path.reverse() };
+      hops += 1;
+      const info = await getFolderInfo(current);
+      if (!info) return null;
+      path.push(info.name);
+      current = info.parentId;
+    }
+    return null;
+  }
+
+  const resultados: DriveSearchResultGlobal[] = [];
+  const consultaNormalizada = query.toLowerCase();
+  const candidatos = Array.from(candidatosPorId.values())
+    .map((archivo) => {
+      const nombre = (archivo.name ?? "").toLowerCase();
+      let puntaje = terminos.reduce(
+        (total, termino) => total + (nombre.includes(termino) ? 8 + Math.min(termino.length, 12) : 0),
+        0
+      );
+      if (/\b(responsab|quien|factur|destinat|direccion|contact)\w*/i.test(consultaNormalizada) && /responsab/i.test(nombre)) {
+        puntaje += 30;
+      }
+      if ([
+        "application/vnd.google-apps.document",
+        "application/vnd.google-apps.spreadsheet",
+        "application/vnd.google-apps.presentation",
+      ].includes(archivo.mimeType ?? "")) puntaje += 3;
+      return { archivo, puntaje };
+    })
+    .sort((a, b) => b.puntaje - a.puntaje || (a.archivo.name ?? "").localeCompare(b.archivo.name ?? ""))
+    .slice(0, maxCandidates)
+    .map(({ archivo }) => archivo);
+  // La ascendencia es I/O independiente. Lotes pequeños reducen latencia sin
+  // disparar una ráfaga que pueda agotar la cuota de Drive.
+  for (let inicio = 0; inicio < candidatos.length; inicio += 8) {
+    const lote = candidatos.slice(inicio, inicio + 8);
+    const resueltos = await Promise.all(lote.map(async (archivo) => ({
+      archivo,
+      raiz: await resolveRoot(archivo.parents?.[0]),
+    })));
+    for (const { archivo, raiz } of resueltos) {
+      if (!raiz || !archivo.id) continue;
+      resultados.push({
+        id: archivo.id,
+        name: archivo.name ?? "(sin nombre)",
+        folderPath: raiz.path.length > 0 ? raiz.path.join(" / ") : "(raíz)",
+        friendlyType: (archivo.mimeType && FRIENDLY_TYPES[archivo.mimeType]) || archivo.mimeType || "Desconocido",
+        webViewLink: archivo.webViewLink ?? "",
+        mimeType: archivo.mimeType ?? undefined,
+        empresa: raiz.empresa,
+      });
+    }
+  }
+  return resultados;
+}
+
 export interface ArchivoDriveDescargado {
   bytes: Buffer;
   mimeType: string;
   name: string;
 }
 
-const MIMES_LEGIBLES_DRIVE = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_ARCHIVO_LECTURA_BYTES = 25 * 1024 * 1024;
+
+const EXPORTACIONES_NATIVAS: Record<string, string[]> = {
+  "application/vnd.google-apps.document": ["text/plain", "application/pdf"],
+  "application/vnd.google-apps.spreadsheet": ["text/csv", "application/pdf"],
+  "application/vnd.google-apps.presentation": ["text/plain", "application/pdf"],
+  "application/vnd.google-apps.drawing": ["application/pdf", "image/png"],
+};
 
 /**
- * Descarga el contenido real (bytes) de un archivo de Drive por su id —
- * scope drive.readonly ya alcanza para esto (no hace falta escritura).
- * Pedido explícito de Carlos tras un caso real: un documento ya archivado
- * en Drive ("guía rápida de control de accesos") no se podía CONSULTAR
- * directamente — solo se sabía que existía (buscar_documento_drive), sin
- * poder leer su contenido para responder con la información real. Solo
- * soporta los mismos tipos que Claude vision puede leer (PDF/imagen, ver
- * MIMES_LEGIBLES_DRIVE) — un Google Doc/Sheet nativo necesitaría exportarse
- * primero, no soportado todavía (nunca se ha dado un caso real).
+ * Descarga o exporta el contenido real de un archivo de Drive. Los formatos
+ * nativos se convierten primero a texto/CSV (sin IA y sin coste por tokens) y
+ * degradan a PDF si esa exportación no existe. También resuelve accesos
+ * directos. Los binarios se descargan para que la capa superior seleccione el
+ * lector adecuado (Office, OpenDocument, PDF/visión, etc.).
  */
 export async function descargarArchivoDrive(fileId: string): Promise<ArchivoDriveDescargado> {
   const drive = getDriveClient();
 
-  const meta = await drive.files.get({
-    fileId,
-    fields: "name, mimeType",
-    supportsAllDrives: true,
-  });
-  const mimeType = meta.data.mimeType ?? "";
-  const name = meta.data.name ?? "(sin nombre)";
+  async function descargar(id: string, saltos: number): Promise<ArchivoDriveDescargado> {
+    if (saltos > 3) throw new Error("El acceso directo de Drive contiene demasiados saltos.");
+    const meta = await drive.files.get({
+      fileId: id,
+      fields: "name, mimeType, size, shortcutDetails(targetId,targetMimeType)",
+      supportsAllDrives: true,
+    });
+    const mimeType = meta.data.mimeType ?? "";
+    const name = meta.data.name ?? "(sin nombre)";
+    if (mimeType === "application/vnd.google-apps.folder") {
+      throw new Error(`"${name}" es una carpeta, no un documento legible.`);
+    }
+    if (mimeType === "application/vnd.google-apps.shortcut") {
+      const targetId = meta.data.shortcutDetails?.targetId;
+      if (!targetId) throw new Error(`El acceso directo "${name}" no tiene un destino disponible.`);
+      return descargar(targetId, saltos + 1);
+    }
 
-  if (!MIMES_LEGIBLES_DRIVE.includes(mimeType)) {
-    throw new Error(
-      `El archivo "${name}" es de tipo ${mimeType || "desconocido"} — solo se puede leer el contenido de PDF o imágenes por ahora.`
+    const size = Number(meta.data.size ?? 0);
+    if (size > MAX_ARCHIVO_LECTURA_BYTES) {
+      throw new Error(`"${name}" supera el límite seguro de lectura de 25 MB.`);
+    }
+
+    const exportaciones = EXPORTACIONES_NATIVAS[mimeType];
+    if (exportaciones) {
+      let ultimoError: unknown;
+      for (const mimeExportado of exportaciones) {
+        try {
+          const res = await drive.files.export(
+            { fileId: id, mimeType: mimeExportado },
+            { responseType: "arraybuffer" }
+          );
+          const bytes = Buffer.from(res.data as ArrayBuffer);
+          if (bytes.length > MAX_ARCHIVO_LECTURA_BYTES) {
+            throw new Error(`La exportación de "${name}" supera el límite seguro de 25 MB.`);
+          }
+          return { bytes, mimeType: mimeExportado, name };
+        } catch (error) {
+          ultimoError = error;
+        }
+      }
+      const detalle = ultimoError instanceof Error ? ultimoError.message : String(ultimoError);
+      throw new Error(`No se pudo exportar el archivo nativo "${name}" (${detalle}).`);
+    }
+
+    if (mimeType.startsWith("application/vnd.google-apps.")) {
+      throw new Error(`El tipo nativo ${mimeType} de "${name}" no ofrece una exportación legible.`);
+    }
+    const res = await drive.files.get(
+      { fileId: id, alt: "media", supportsAllDrives: true },
+      { responseType: "arraybuffer" }
     );
+    const bytes = Buffer.from(res.data as ArrayBuffer);
+    if (bytes.length > MAX_ARCHIVO_LECTURA_BYTES) {
+      throw new Error(`"${name}" supera el límite seguro de lectura de 25 MB.`);
+    }
+    return { bytes, mimeType, name };
   }
 
-  const res = await drive.files.get({ fileId, alt: "media", supportsAllDrives: true }, { responseType: "arraybuffer" });
-  const bytes = Buffer.from(res.data as ArrayBuffer);
-
-  return { bytes, mimeType, name };
+  return descargar(fileId, 0);
 }
 
 const MAX_ANCESTRY_HOPS_UPLOAD = 30;
