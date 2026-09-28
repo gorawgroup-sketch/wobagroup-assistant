@@ -955,10 +955,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto },
+        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true },
         toleranciaMov
       );
-      if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };
+      // Un cargo que solo «por confirmar» (nombre distinto) es la última opción: si hay uno aproximado que sí coincide
+      // por nombre, gana este último.
+      const soloPorConfirmar = candidatosMov.length > 0 && candidatosMov.every((c) => c.compatibilidad === "por_confirmar");
+      const aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
+        ? await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor })
+        : [];
+      if (aproximadosPrevios.length > 0) {
+        movimientoAproximado = { ...aproximadosPrevios[0], origenCoincidencia: "aproximada" };
+        otrosAproximados = aproximadosPrevios.length - 1;
+      } else if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
       else if (!esProveedorNoIdentificado(datos.proveedor)) {
         // Pedido explícito de Carlos tras un caso real: el match exacto (1
@@ -1060,7 +1069,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : candidatosMovAmbiguos.length > 0
           ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
             candidatosMovAmbiguos
-              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : ""}`)
+              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
               .join("\n") +
             `\nMarca "🔗 Conciliar con #N" abajo (o "Crear (sin conciliar)" si ninguno es) y aprueba tu selección.`
           : movimientosTipoCambio.length > 0

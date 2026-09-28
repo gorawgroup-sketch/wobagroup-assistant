@@ -60,6 +60,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
+        incluirPorConfirmar: true,
       });
       if (exactos.length === 1) {
         movimientoEncontrado = true;
@@ -140,7 +141,12 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     propuesta.candidatos.length > 0
       ? ""
       : propuesta.hayMovimientoBancario
-        ? `\n\n💳 Sí hay un movimiento bancario real sin conciliar que coincide en monto y fecha — puedes usar "Crear y conciliar".`
+        ? `\n\n💳 Sí hay un movimiento bancario real sin conciliar que coincide en monto y fecha — puedes usar "Crear y conciliar".` +
+          (propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "por_confirmar"
+            ? `\n⚠️ El nombre del cargo ("${propuesta.movimientosAmbiguos[0].descripcion}") no coincide con el proveedor ("${propuesta.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. Confírmalo antes de aprobar.`
+            : propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "aprendido"
+              ? `\n✔ Este cargo ("${propuesta.movimientosAmbiguos[0].descripcion}") ya lo confirmaste antes para este proveedor.`
+              : "")
         : propuesta.movimientosAmbiguos && propuesta.movimientosAmbiguos.length > 0
           ? propuesta.movimientosAmbiguos.some((m) => m.origenCoincidencia === "tipo_cambio")
             ? `\n\n💱 Encontré ${propuesta.movimientosAmbiguos.length === 1 ? "una alternativa" : `${propuesta.movimientosAmbiguos.length} alternativas`} ` +
