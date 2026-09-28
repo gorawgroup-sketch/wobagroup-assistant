@@ -119,6 +119,7 @@ import {
 } from "../holded/conciliacionAprendidaSheet";
 import { obtenerRolUsuario } from "../telegram/authorizedUsersSheet";
 import { avanzarColaCorreoSiActivo } from "../jobs/revisarCorreoNuevo";
+import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
 import { reDescargarAdjuntoSiFalta, regenerarComprobanteDesdeCuerpoSiFalta } from "../gmail/reDescargarAdjunto";
 import { generarBorradorYOfrecer } from "../gmail/emailCallbackHandler";
 import {
@@ -1202,7 +1203,7 @@ async function reponerSoloCierreConciliacionAmbigua(
 
 /**
  * Maneja los botones de propuestas de gasto (gasto_adjuntar / gasto_nuevo /
- * gasto_nuevo_conciliar / gasto_corregir / gasto_cancelar / gasto_conciliar_si
+ * gasto_nuevo_conciliar / gasto_corregir / gasto_cancelar / gasto_posponer / gasto_conciliar_si
  * / gasto_conciliar_no). Los únicos caminos que escriben algo real en
  * Holded son gasto_adjuntar, gasto_nuevo y gasto_nuevo_conciliar (y la
  * confirmación tras gasto_corregir) — nunca ocurre automáticamente.
@@ -1338,6 +1339,32 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       `✅ La propuesta anterior ya se resolvió. Revisa esta operación antes de aprobarla:\n\n${resumenTextoPropuestaGasto(propuesta)}`,
       construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta))
     );
+    return;
+  }
+
+  if (accion === "gasto_posponer") {
+    const propuesta = await obtenerPropuestaGasto(propuestaId);
+    if (!propuesta) {
+      await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
+      return;
+    }
+
+    const identidad = identidadCorreoDePropuestaGasto(propuesta);
+    if (!propuesta.deColaCorreo || !identidad) {
+      await answerCallbackQuerySafe(callback.id, "Este gasto no pertenece a la cola activa.");
+      await sendTelegramMessage(
+        propuesta.chatId,
+        "No moví nada: esta propuesta no conserva la identidad completa del correo activo. " +
+          "El gasto y el correo siguen pendientes."
+      );
+      return;
+    }
+
+    await answerCallbackQuerySafe(callback.id, "Dejándolo pendiente y continuando...");
+    const resultado = await posponerCorreoActivoYContinuar(propuesta.chatId, identidad);
+    if (!resultado.startsWith("Correo aplazado")) {
+      await sendTelegramMessage(propuesta.chatId, resultado);
+    }
     return;
   }
 

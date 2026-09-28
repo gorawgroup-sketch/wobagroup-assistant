@@ -75,3 +75,53 @@ test('no ofrece crear sin cargo compatible ni con restaurante para un taxi',()=>
   assert.equal(botones.some(b=>/gasto_toggle:propuesta:(crear|nuevo)/.test(b.callback_data??'')),false);
  }
 });
+
+test("permite saltar un gasto de la cola sin convertirlo en una decisión financiera", () => {
+  const propuesta: PropuestaGasto = {
+    ...propuestaBase(),
+    deColaCorreo: true,
+    correoOrigen: {
+      threadId: "thread-mera",
+      mensajeIdGmail: "message-mera",
+      messageIdHeader: "<message-mera@example.com>",
+      asunto: "MERA EL DORADO",
+      de: "facturas@example.com",
+    },
+  };
+
+  const botones = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta)).flat();
+  const posponer = botones.find((boton) => boton.callback_data === "gasto_posponer:propuesta");
+
+  assert.equal(posponer?.text, "⏭️ Saltar por ahora y seguir con los correos");
+  assert.equal(posponer?.callback_data?.startsWith("gasto_toggle:"), false);
+});
+
+test("no permite saltar propuestas ajenas a la cola ni correos sin identidad exacta", () => {
+  const casos: PropuestaGasto[] = [
+    {
+      ...propuestaBase(),
+      correoOrigen: {
+        threadId: "thread",
+        mensajeIdGmail: "message",
+        messageIdHeader: "<message@example.com>",
+        asunto: "Correo fuera de la cola",
+        de: "proveedor@example.com",
+      },
+    },
+    {
+      ...propuestaBase(),
+      deColaCorreo: true,
+      correoOrigen: {
+        threadId: "thread",
+        messageIdHeader: "<message@example.com>",
+        asunto: "Correo incompleto",
+        de: "proveedor@example.com",
+      },
+    },
+  ];
+
+  for (const propuesta of casos) {
+    const botones = construirTecladoGasto(propuesta, opcionesTecladoDesdePropuesta(propuesta)).flat();
+    assert.equal(botones.some((boton) => boton.callback_data === "gasto_posponer:propuesta"), false);
+  }
+});

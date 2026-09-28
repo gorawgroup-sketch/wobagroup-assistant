@@ -216,6 +216,24 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
     filas.push([boton("otrasacciones", "Otras acciones (recordatorio, instrucciones...)")]);
   }
 
+  // Salida operativa segura para que una propuesta difícil no bloquee toda la
+  // cola. Solo aparece cuando la propuesta pertenece al correo ACTIVO y
+  // conserva su identidad completa: el callback valida de nuevo esa identidad,
+  // deja Gmail sin leer y no toca Holded ni consume la propuesta. Es una acción
+  // inmediata (no un check) porque no ejecuta ninguna decisión financiera y su
+  // objetivo es precisamente poder continuar con el siguiente correo.
+  const puedePosponerse = Boolean(
+    propuesta.deColaCorreo &&
+    propuesta.correoOrigen?.threadId?.trim() &&
+    propuesta.correoOrigen?.mensajeIdGmail?.trim()
+  );
+  if (puedePosponerse) {
+    filas.push([{
+      text: "⏭️ Saltar por ahora y seguir con los correos",
+      callback_data: `gasto_posponer:${propuesta.id}`,
+    }]);
+  }
+
   // Hallazgo real de auditoría (caso real Carlos, 2026-09-10): "gasto_aprobar" es una acción sensible
   // (ver ACCIONES_SENSIBLES) — la entrega durable de Telegram (core/telegram/durableDelivery.ts)
   // identifica un callback sensible por usuario+chat+mensaje+callback_data EXACTOS, así que dos
