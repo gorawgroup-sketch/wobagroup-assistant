@@ -1,3 +1,4 @@
+import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConciliacionCompra";
 import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
@@ -5093,6 +5094,10 @@ export async function validarCompraContraMovimiento(
     >,
   ]);
   if (!movimiento) throw new Error("No se encontró el movimiento elegido al preparar la conciliación.");
+  if (compraTienePagos(compra)) {
+    throw new Error("La compra ya tiene pagos o un estado de pagos no verificable. Solo se permite verificar la conciliación anterior; no asignar otro cargo.");
+  }
+
 
   const monedaCompra = (compra.currency || "EUR").toUpperCase().trim();
   const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
@@ -5581,6 +5586,14 @@ async function aplicarConciliacionRegistrada(
   }
 }
 
+export async function recuperarConciliacionExistenteCompra(empresa: Empresa, documentId: string) {
+  return recuperarConciliacionCompra(empresa, documentId, {
+    leerCompra: obtenerCompraHoldedPorId,
+    listar: (e, id) => durableBankReconciliationStore.listarPorDocumento(e, id),
+    inspeccionar: registro => inspeccionarConciliacionRegistrada(registro, { permitirAjusteCambioAutomatico: false }),
+  });
+}
+
 export async function reconciliarMovimiento(
   empresa: Empresa,
   accountId: string,
@@ -5607,6 +5620,15 @@ export async function reconciliarMovimiento(
   }
 
   return conMutex(`holded-bank-reconciliation:${empresa}:${accountId}:${movementId}`, async () => {
+    const existente = await durableBankReconciliationStore.obtener(registro.clave);
+    if (existente && existente.estado !== "preparada") {
+      // Repetir la verificación no puede disparar un ajuste ni un POST nuevo.
+      const ejecucion = await ejecutarConciliacionMovimientoDurable(registro, durableBankReconciliationStore, {
+        inspeccionar: r => inspeccionarConciliacionRegistrada(r, { permitirAjusteCambioAutomatico: false }),
+        conciliar: async () => { throw new Error("La recuperación solo permite lectura."); },
+      });
+      return ejecucion.resultado;
+    }
     // Un rechazo local no es un POST incierto. Validar antes de reservar la escritura;
     // aplicarConciliacionRegistrada vuelve a validar justo antes del POST.
     await validarCompraContraMovimiento(empresa, documentoId, accountId, movementId, fechaAproximada,

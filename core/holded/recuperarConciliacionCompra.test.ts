@@ -1,0 +1,14 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {recuperarConciliacionCompra,compraTienePagos} from './recuperarConciliacionCompra';
+import type{RegistroConciliacionMovimiento}from'./durableBankReconciliation';
+const registro={empresa:'Footprint',documentId:'purchase-test',estado:'incierta'} as RegistroConciliacionMovimiento;
+const verificada={estado:'verificada' as const,resultado:{ok:true,statusFinal:'reconciled',montoEnlazado:9}};
+const deps=(registros:RegistroConciliacionMovimiento[]=[],payments_total='0,00')=>({leerCompra:async()=>({id:'purchase-test',payments_total}),listar:async()=>registros,inspeccionar:async()=>verificada});
+test('compra nueva y sin pagos permite buscar',async()=>assert.equal(await recuperarConciliacionCompra('Footprint','purchase-test',deps()),'nueva'));
+test('resultado incierto que ya se verificó recupera sin buscar cargos',async()=>assert.equal(await recuperarConciliacionCompra('Footprint','purchase-test',deps([registro])),'conciliada'));
+test('saldo cero con movimiento parcial requiere revisión y no otro pago',async()=>assert.equal(await recuperarConciliacionCompra('Footprint','purchase-test',{...deps([registro]),inspeccionar:async()=>({...verificada,resultado:{...verificada.resultado,movimientoParcial:true,pendienteEnMovimiento:6}})}),'revision'));
+test('pago previo sin ledger no autoriza nueva conciliación',async()=>assert.equal(await recuperarConciliacionCompra('Footprint','purchase-test',deps([],'4,00')),'revision'));
+test('dos intentos, uno todavía incierto: no cierra por el primero',async()=>{let i=0;assert.equal(await recuperarConciliacionCompra('Footprint','purchase-test',{...deps([registro,registro]),inspeccionar:async()=>++i===1?verificada:{estado:'no_encontrada'}}),'incierta')});
+test('fallo de lectura se propaga sin autorizar escritura',async()=>assert.rejects(recuperarConciliacionCompra('Footprint','purchase-test',{...deps([registro]),inspeccionar:async()=>{throw Error('lectura');}}),/lectura/));
+test('datos de pagos ausentes o inconsistentes bloquean escrituras',()=>{for(const p of [{},{payments_total:'?'},{payments_total:'0',payments_detail:[{amount:'0,01'}]}])assert.equal(compraTienePagos({id:'p',...p} as any),true)});
+test('no reutiliza ledger de otra empresa o compra',async()=>assert.equal(await recuperarConciliacionCompra('Footprint','purchase-test',deps([{...registro,empresa:'WOBA'},{...registro,documentId:'other'}])),'nueva'));
