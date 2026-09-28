@@ -87,7 +87,7 @@ export async function buscarMovimientosPorTipoCambio(
 
     for (const candidato of [...cercanos, ...porNombre]) {
       // Apply the same semantic guard before showing text, persisting or rendering buttons.
-      if (!movimientoCompatibleConGasto(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion)) continue;
+      if (!movimientoCompatibleConGasto(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion, { nucleoDeMarca: true })) continue;
       const clave = `${candidato.accountId}:${candidato.movementId}`;
       const diferenciaMonto = Math.abs(Math.abs(candidato.monto) - montoReferencia);
       const enriquecido: MovimientoBancarioCandidato = {
@@ -129,7 +129,9 @@ export function describirMovimientoMultimoneda(
       ? `; referencia ${movimiento.montoReferencia.toFixed(2)} ${movimiento.moneda} ` +
         `a tasa ${movimiento.tasaReferencia.toFixed(4)} desde ${movimiento.monedaOrigenReferencia}`
       : "";
-  const nombre = movimiento.coincideProveedor ? "; además coincide el proveedor" : "";
+  const nombre = movimiento.coincideProveedor
+    ? "; además coincide el proveedor"
+    : movimiento.compatibilidad === "por_confirmar" ? "; ⚠️ nombre distinto: confírmalo" : "";
   return (
     `${prefijo}"${movimiento.descripcion || "(sin descripción)"}" — ${movimiento.monto.toFixed(2)} ` +
     `${movimiento.moneda} (${movimiento.fecha}${referencia}${nombre})`
