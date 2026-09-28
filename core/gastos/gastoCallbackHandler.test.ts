@@ -531,6 +531,20 @@ test("persiste el siguiente estado antes de retirar botones y transfiere borrado
   assert.match(fuente, /borrador\.correoThreadId === identidad\.threadId[\s\S]*?borrador\.correoMensajeId === identidad\.mensajeId/);
 });
 
+test("posponer un gasto conserva la propuesta y exige la identidad exacta del correo activo", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+  const inicio = fuente.indexOf('if (accion === "gasto_posponer")');
+  const fin = fuente.indexOf('if (accion === "gasto_cancelar")', inicio);
+  const posponer = fuente.slice(inicio, fin);
+
+  assert.ok(inicio > 0 && fin > inicio);
+  assert.match(posponer, /obtenerPropuestaGasto\(propuestaId\)/);
+  assert.doesNotMatch(posponer, /consumirPropuestaGasto/);
+  assert.match(posponer, /identidadCorreoDePropuestaGasto\(propuesta\)/);
+  assert.match(posponer, /propuesta\.deColaCorreo/);
+  assert.match(posponer, /posponerCorreoActivoYContinuar\(propuesta\.chatId, identidad\)/);
+});
+
 test("Aprobar selección nunca deja un «Aplicando…» abierto ni el resultado fuera de vista", async () => {
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
 
