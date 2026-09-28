@@ -63,6 +63,7 @@ import {
 import { durablePurchaseAttachmentStore } from "./durablePurchaseAttachmentStore";
 import {
   ConciliacionMovimientoInciertaError,
+  ConciliacionNoIntentadaError,
   ejecutarConciliacionMovimientoDurable,
   identidadConciliacionMovimiento,
   reconciliarConciliacionesMovimientoPendientes,
@@ -5564,14 +5565,19 @@ async function aplicarConciliacionRegistrada(
   registro: RegistroConciliacionMovimiento,
   permitirMonedaDistinta = false
 ): Promise<void> {
-  await validarCompraContraMovimiento(
-    registro.empresa,
-    registro.documentId,
-    registro.accountId,
-    registro.movementId,
-    registro.fechaAproximada,
-    permitirMonedaDistinta
-  );
+  try {
+    await validarCompraContraMovimiento(
+      registro.empresa,
+      registro.documentId,
+      registro.accountId,
+      registro.movementId,
+      registro.fechaAproximada,
+      permitirMonedaDistinta
+    );
+  } catch (error) {
+    // Aún no se envió ningún POST: ver ConciliacionNoIntentadaError.
+    throw new ConciliacionNoIntentadaError(error);
+  }
   invalidarCacheCuentasTesoreria(registro.empresa);
   try {
     await holdedWriteCall(

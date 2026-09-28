@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ConciliacionMovimientoInciertaError,
   ConciliacionMovimientoCanceladaError,
+  ConciliacionNoIntentadaError,
   ConflictoConciliacionMovimientoError,
   MovimientoYaConciliadoError,
   ejecutarConciliacionMovimientoDurable,
@@ -231,6 +232,19 @@ test("422 sin confirmación queda incierto en vez de volver a preparada", async 
   const holded = transporte({ errorConciliacion: error422 });
   await assert.rejects(ejecutarConciliacionMovimientoDurable(identidad(), repo, holded), ConciliacionMovimientoInciertaError);
   assert.equal(repo.filas.values().next().value?.estado, "incierta");
+});
+
+test("un fallo de la comprobación previa (antes del POST) no deja el movimiento incierto y relanza el error real", async () => {
+  const repo = new RepoMemoria();
+  const cuotaAgotada = Object.assign(new Error("429 Too Many Requests"), { status: 429 });
+  const holded = transporte({ errorConciliacion: new ConciliacionNoIntentadaError(cuotaAgotada) });
+  await assert.rejects(ejecutarConciliacionMovimientoDurable(identidad(), repo, holded), (error) => error === cuotaAgotada);
+  assert.equal(repo.filas.values().next().value?.estado, "preparada");
+  assert.equal(holded.inspecciones.length, 1, "solo la inspección inicial: no se relee para decidir una incertidumbre inexistente");
+  // Con el fallo pasajero resuelto, el mismo par se puede conciliar con normalidad.
+  const recuperado = transporte();
+  await ejecutarConciliacionMovimientoDurable(identidad(), repo, recuperado);
+  assert.equal(recuperado.conciliaciones.length, 1);
 });
 
 test("un 403 inequívoco vuelve a preparada y permite reintento explícito", async () => {
