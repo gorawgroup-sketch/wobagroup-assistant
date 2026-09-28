@@ -121,6 +121,15 @@ class StoreConciliacionesMovimiento implements RepositorioConciliacionesMovimien
     });
   }
 
+  async listarPorDocumento(empresa: RegistroConciliacionMovimiento["empresa"], documentId: string) {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      if (Date.now() - this.ultimaPurgaEn >= REFRESCO_PENDIENTES_MS) await this.recargarYPurgar();
+      return [...this.registros.values()].filter(r => r.empresa === empresa && r.documentId === documentId)
+        .map(r => this.publico(r));
+    });
+  }
+
   async obtener(clave: string) {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();

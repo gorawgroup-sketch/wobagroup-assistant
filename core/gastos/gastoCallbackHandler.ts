@@ -1,3 +1,4 @@
+import { recuperarConciliacionExistenteCompra } from "../holded/write";
 import { movimientoCompatibleConGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
@@ -793,6 +794,15 @@ async function ofrecerEleccionMovimientosAmbiguos(
  * un fallo aquí no debe tumbar el flujo principal de creación/adjunto, que
  * ya tuvo éxito.
  */
+async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: string): Promise<ResultadoIntentarConciliar | undefined> {
+  const estado = await recuperarConciliacionExistenteCompra(empresa, gastoId);
+  if (estado === "nueva") return undefined;
+  if (estado === "conciliada") return { estado: "conciliada", nota: "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se creó otro pago." };
+  return { estado: "incierta", nota: estado === "revision"
+    ? "⚠️ La compra ya tiene pagos. Su conciliación requiere revisión; no se ofrecerán otros cargos ni se añadirán pagos. Verificar solo relee el resultado anterior."
+    : "⏳ La operación anterior todavía requiere verificación. No se buscarán ni asignarán otros cargos; verificar solo relee compra y banco." };
+}
+
 async function intentarConciliar(
   empresa: Empresa,
   monto: number,
@@ -808,6 +818,8 @@ async function intentarConciliar(
   threadIdGmail?: string
 ): Promise<ResultadoIntentarConciliar> {
   try {
+    const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
+    if (recuperada) return recuperada;
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
     const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto });
 
@@ -913,6 +925,8 @@ async function conciliarContraMovimientoEspecifico(
       ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded"
       : "";
   try {
+    const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
+    if (recuperada) return recuperada;
     const yaConciliado = await estaMovimientoYaConciliado(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha);
     if (yaConciliado) {
       return { nota:
@@ -1080,10 +1094,11 @@ async function preguntarSiConciliar(
 async function reponerPreguntaConciliacion(
   pendiente: ConciliacionPendiente,
   mensajeId: number | undefined,
-  aviso: string
+  aviso: string,
+  soloLectura = false
 ): Promise<void> {
   const restaurada = await restaurarConciliacionPendiente(pendiente);
-  const botones = [[
+  const botones = soloLectura ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${restaurada.id}:lectura` }]] : [[
     { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${restaurada.id}` },
     { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${restaurada.id}` },
   ]];
@@ -1101,10 +1116,11 @@ async function reponerPreguntaConciliacion(
 async function reponerPreguntaConciliacionAmbigua(
   pendiente: ConciliacionAmbiguaPendiente,
   mensajeId: number | undefined,
-  aviso: string
+  aviso: string,
+  soloLectura = false
 ): Promise<void> {
   const restaurada = await restaurarConciliacionAmbiguaPendiente(pendiente);
-  const botones = [
+  const botones = soloLectura ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_elegir:${restaurada.id}:0:lectura` }]] : [
     ...restaurada.candidatos.map((c, i) => [{
       text: `${i + 1}. ${c.descripcion || "sin descripción"} — ${c.monto.toFixed(2)} ${c.moneda} (${c.fecha})`,
       callback_data: `gasto_conciliar_elegir:${restaurada.id}:${i}`,
@@ -1893,7 +1909,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const resultadoConciliacion = await intentarConciliar(
+    const resultadoConciliacion = callback.data?.endsWith(":lectura")
+      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId) ?? { estado: "incierta" as const, nota: "No hay una conciliación anterior verificable. No se ha ejecutado ninguna escritura." }
+      : await intentarConciliar(
       pendiente.empresa,
       pendiente.monto,
       pendiente.fecha,
@@ -1939,8 +1957,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       await reponerPreguntaConciliacion(
         pendiente,
         callback.message?.message_id,
-        `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +
-        `Puedes reintentar de forma idempotente o decidir dejarla sin conciliar.`
+        resultadoConciliacion.nota || `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +
+        `Puedes reintentar de forma idempotente o decidir dejarla sin conciliar.`,
+        resultadoConciliacion.estado === "incierta"
       );
       return;
     }
@@ -2033,7 +2052,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const resultadoConciliacion = await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento,
+    const resultadoConciliacion = callback.data?.endsWith(":lectura")
+      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId) ?? { estado: "incierta" as const, nota: "No hay una conciliación anterior verificable. No se ha ejecutado ninguna escritura." }
+      : await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento,
       pendiente.gastoId, pendiente.esAproximado, pendiente.proveedor, true);
     if (pendiente.deColaCorreo && gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
       await finalizarGastoCorreoAntesDeRender(
@@ -2059,8 +2080,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       await reponerPreguntaConciliacionAmbigua(
         pendiente,
         callback.message?.message_id,
-        `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +
-        `puedes verificar/reintentar una opción o dejarla sin conciliar.`
+        resultadoConciliacion.nota || `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +
+        `puedes verificar/reintentar una opción o dejarla sin conciliar.`,
+        resultadoConciliacion.estado === "incierta"
       );
       return;
     }
