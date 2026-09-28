@@ -45,12 +45,15 @@
     "candidatos": [],
     "vistoPorConciliacionAutomatica": [],
     "botonesExcluyen": [
-      "Crear"
+      "Crear y conciliar"
     ],
     "trazaContiene": [
       "Revisé 3 cuenta(s)",
       "descarté",
       "el nombre no se reconoce y no coinciden la fecha"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
     ]
   }
 }

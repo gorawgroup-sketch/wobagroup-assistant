@@ -45,10 +45,13 @@
     "candidatos": [],
     "vistoPorConciliacionAutomatica": [],
     "botonesExcluyen": [
-      "Crear"
+      "Crear y conciliar"
     ],
     "trazaContiene": [
       "No había ningún cargo con ese importe exacto"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
     ]
   }
 }
