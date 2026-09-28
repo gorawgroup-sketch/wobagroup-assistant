@@ -193,6 +193,8 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
     if (!esRecuperacion) {
       filas.push([boton("nuevo")]);
       filas.push([boton("ajustarmonto")]);
+      // Con gastos parecidos ya registrados, el operador también debe poder descartar la propuesta (antes no había «Cancelar»).
+      filas.push([boton("cancelar")]);
     }
   } else {
     const hayMovimientosAmbiguos = opciones.numMovimientosAmbiguos !== undefined && opciones.numMovimientosAmbiguos > 0;

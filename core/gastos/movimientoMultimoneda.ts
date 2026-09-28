@@ -4,6 +4,8 @@ import {
   buscarMovimientoSimilar,
   proveedorPareceEnDescripcion,
   movimientoCompatibleConGasto,
+  compatibleSoloPorCategoria,
+  DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA,
   type MovimientoBancarioCandidato,
 } from "../holded/write";
 import { obtenerTasaCambioHistorica } from "../utils/exchangeRate";
@@ -87,12 +89,18 @@ export async function buscarMovimientosPorTipoCambio(
 
     for (const candidato of [...cercanos, ...porNombre]) {
       // Apply the same semantic guard before showing text, persisting or rendering buttons.
-      if (!movimientoCompatibleConGasto(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion)) continue;
+      if (!movimientoCompatibleConGasto(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion, { nucleoDeMarca: true })) continue;
       const clave = `${candidato.accountId}:${candidato.movementId}`;
       const diferenciaMonto = Math.abs(Math.abs(candidato.monto) - montoReferencia);
       const enriquecido: MovimientoBancarioCandidato = {
         ...candidato,
         origenCoincidencia: "tipo_cambio",
+        // Solo coincide la categoría y la fecha está lejos (caso real: un café de Bogotá en COP frente al cargo de un
+        // restaurante de Puerto Rico): se ofrece igualmente, pero con el aviso de «nombre distinto».
+        ...(compatibleSoloPorCategoria(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion, { nucleoDeMarca: true }) &&
+        diasDeDiferencia(candidato.fecha, criterios.fecha) > DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA
+          ? { compatibilidad: "por_confirmar" as const }
+          : {}),
         montoReferencia,
         monedaOrigenReferencia: monedaOrigen,
         tasaReferencia: tasa,
@@ -129,7 +137,9 @@ export function describirMovimientoMultimoneda(
       ? `; referencia ${movimiento.montoReferencia.toFixed(2)} ${movimiento.moneda} ` +
         `a tasa ${movimiento.tasaReferencia.toFixed(4)} desde ${movimiento.monedaOrigenReferencia}`
       : "";
-  const nombre = movimiento.coincideProveedor ? "; además coincide el proveedor" : "";
+  const nombre = movimiento.coincideProveedor
+    ? "; además coincide el proveedor"
+    : movimiento.compatibilidad === "por_confirmar" ? "; ⚠️ nombre distinto: confírmalo" : "";
   return (
     `${prefijo}"${movimiento.descripcion || "(sin descripción)"}" — ${movimiento.monto.toFixed(2)} ` +
     `${movimiento.moneda} (${movimiento.fecha}${referencia}${nombre})`

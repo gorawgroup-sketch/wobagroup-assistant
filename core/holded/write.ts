@@ -4709,16 +4709,41 @@ export async function precalentarMonedasCuentasReales(): Promise<void> {
  * perdía en silencio.
  */
 /** El importe no demuestra proveedor ni naturaleza del gasto. */
-export function movimientoCompatibleConGasto(proveedor: string, concepto: string, descripcion: string): boolean {
+export interface OpcionesCompatibilidad {
+  /**
+   * Reconoce «JUST B CUZ PLM» frente a «Par*just B Cuz Luxury» por núcleo de marca compartido. Solo lo activan las rutas
+   * MANUALES (donde el operador confirma); la automatización de correo conserva el criterio anterior, más estricto.
+   */
+  nucleoDeMarca?: boolean;
+}
+
+/** El nombre del proveedor se reconoce en la descripción bancaria (misma marca conocida o nombre parecido). */
+export function nombreReconocidoEnDescripcion(proveedor: string, descripcion: string, opciones: OpcionesCompatibilidad = {}): boolean {
+  const marca = (texto: string) => normalizar(texto).match(/\b(uber|bolt)\b/)?.[1];
+  const mismaMarca = marca(proveedor) && marca(proveedor) === marca(descripcion);
+  return Boolean(mismaMarca || proveedorPareceEnDescripcion(proveedor, descripcion, opciones));
+}
+
+export function movimientoCompatibleConGasto(proveedor: string, concepto: string, descripcion: string, opciones: OpcionesCompatibilidad = {}): boolean {
   const a = inferirTagsCategoria(concepto, proveedor);
   const b = inferirTagsCategoria(descripcion, "");
   // Categoría compatible permite nombres distintos; no demuestra por sí sola identidad.
-  if (a.includes("alimentacion") && b.includes("hospedaje") && inferirTagsCategoria("", proveedor).includes("hospedaje") && proveedorPareceEnDescripcion(proveedor, descripcion)) return true;
+  if (a.includes("alimentacion") && b.includes("hospedaje") && inferirTagsCategoria("", proveedor).includes("hospedaje") && proveedorPareceEnDescripcion(proveedor, descripcion, opciones)) return true;
   if (a.length && b.length) return a.some(t => b.includes(t));
-  const marca = (texto: string) => normalizar(texto).match(/\b(uber|bolt)\b/)?.[1];
-  const mismaMarca = marca(proveedor) && marca(proveedor) === marca(descripcion);
-  return Boolean(mismaMarca || proveedorPareceEnDescripcion(proveedor, descripcion));
+  return nombreReconocidoEnDescripcion(proveedor, descripcion, opciones);
 }
+
+/**
+ * Compatible SOLO porque las categorías conocidas coinciden: el nombre del proveedor no se reconoce en el cargo. Es la vía
+ * por la que dos comercios distintos del mismo rubro pueden emparejarse (caso real: un café de Bogotá en COP enlazado con
+ * el cargo de un restaurante de Puerto Rico). Con la fecha lejana se degrada a «por confirmar».
+ */
+export function compatibleSoloPorCategoria(proveedor: string, concepto: string, descripcion: string, opciones: OpcionesCompatibilidad = {}): boolean {
+  return movimientoCompatibleConGasto(proveedor, concepto, descripcion, opciones) && !nombreReconocidoEnDescripcion(proveedor, descripcion, opciones);
+}
+
+/** Días de diferencia por encima de los cuales una coincidencia solo por categoría deja de ser fiable sin confirmar. */
+export const DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA = 2;
 
 function diasEntreFechas(a: string, b: string): number {
   const ma = Date.parse(a.slice(0, 10)), mb = Date.parse(b.slice(0, 10));
@@ -4758,7 +4783,7 @@ export function nivelCompatibilidadMovimiento(
   descripcion: string,
   evidencia: { importeYFechaExactos: boolean } = { importeYFechaExactos: false }
 ): NivelCompatibilidadMovimiento {
-  if (movimientoCompatibleConGasto(proveedor, concepto, descripcion)) return "compatible";
+  if (movimientoCompatibleConGasto(proveedor, concepto, descripcion, { nucleoDeMarca: true })) return "compatible";
   // Solo si la categoría del CARGO es desconocida: un cargo de categoría conocida distinta o con un gasto sin categoría
   // no se ofrece por importe (cualquier restaurante «encajaría» con un gasto sin clasificar).
   const cargoDesconocido = inferirTagsCategoria(descripcion, "").length === 0;
@@ -4777,7 +4802,7 @@ export function candidatoUtilizableParaGasto(
   candidato: Pick<MovimientoBancarioCandidato, "descripcion" | "compatibilidad">
 ): boolean {
   if (candidato.compatibilidad) return !categoriasContradictorias(concepto, proveedor, candidato.descripcion);
-  return movimientoCompatibleConGasto(proveedor, concepto, candidato.descripcion);
+  return movimientoCompatibleConGasto(proveedor, concepto, candidato.descripcion, { nucleoDeMarca: true });
 }
 
 export async function buscarMovimientoSimilar(
@@ -4878,7 +4903,20 @@ export async function buscarMovimientoSimilar(
           Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
           diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
-        if (nivel !== "compatible") {
+        const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);
+        if (
+          nivel === "compatible" &&
+          Number.isFinite(diasDeDiferencia) && diasDeDiferencia > DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA &&
+          compatibleSoloPorCategoria(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { nucleoDeMarca: true })
+        ) {
+          // Solo coincide la categoría y la fecha está lejos: se ofrece al armar una propuesta, con aviso; la conciliación automática no lo ve.
+          if (!criterios.incluirPorConfirmar) {
+            anotar(monto, "descartado", `solo coincide la categoría y la fecha difiere ${Math.round(diasDeDiferencia)} días`);
+            continue;
+          }
+          aprendidos ??= deps.aprendidas();
+          compatibilidad = descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "") ? "aprendido" : "por_confirmar";
+        } else if (nivel !== "compatible") {
           // Cargos que NO respaldan el nombre ni la categoría: solo se ofrecen al armar una propuesta, solo si son un
           // débito (un crédito o una devolución del mismo importe no es este gasto) y nunca con categoría contradictoria.
           if (!criterios.incluirPorConfirmar) { anotar(monto, "descartado", "el nombre no se reconoce como el del proveedor (solo se ofrece al armar una propuesta)"); continue; }
@@ -4970,7 +5008,7 @@ function comparteNucleoDeMarca(proveedorNormalizado: string, comercioNormalizado
   return hayDistintivo && compartidos.length >= 2 && letras >= 6 && compartidos.length / Math.min(a.length, b.length) >= 0.6;
 }
 
-export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
+export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string, opciones: { nucleoDeMarca?: boolean } = {}): boolean {
   const p = normalizar(proveedor).trim();
   const d = normalizar(descripcion).trim();
   if (p.length < 3 || d.length < 3) return false;
@@ -4979,7 +5017,8 @@ export function proveedorPareceEnDescripcion(proveedor: string, descripcion: str
   // varios términos y un prefijo largo evita aceptar una palabra genérica sola.
   const comercio = d.includes("*") ? d.split("*").at(-1)!.trim() : "";
   if (comercio.length >= 8 && comercio.split(/\s+/).length >= 2 && p.startsWith(comercio)) return true;
-  if (comparteNucleoDeMarca(p, comercio || d)) return true;
+  // Solo en las rutas manuales (donde el operador confirma): la automatización sigue con el criterio anterior, más estricto.
+  if (opciones.nucleoDeMarca && comparteNucleoDeMarca(p, comercio || d)) return true;
   return textosParecidos(proveedor, descripcion);
 }
 
@@ -5039,7 +5078,7 @@ export async function buscarMovimientoAproximado(
 
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status)) continue;
-      if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description)) continue;
+      if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, { nucleoDeMarca: true })) continue;
 
       let monto: number;
       if (monedaObjetivo === "EUR") {
