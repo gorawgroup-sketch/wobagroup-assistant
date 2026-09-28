@@ -19,6 +19,14 @@ class RepoMemoria implements RepositorioEntregasTelegram {
     this.filas.set(entrega.clave, { ...entrega });
     return { entrega: { ...entrega }, nueva: true };
   }
+  async reabrirCompletada(clave: string, entrega: EntregaTelegramDurable) {
+    const actual = this.filas.get(clave);
+    if (!actual || actual.estado !== "completada") return undefined;
+    const { reabrirCompletadaTrasMs: _t, ...persistible } = entrega;
+    const reabierta = { ...persistible, estado: "reservada" as const };
+    this.filas.set(clave, reabierta);
+    return { ...reabierta };
+  }
   async obtener(clave: string) { const e = this.filas.get(clave); return e ? { ...e } : undefined; }
   async marcarIniciada(clave: string) {
     const anterior = this.filas.get(clave);
@@ -206,4 +214,74 @@ test("una ejecución local larga no se declara incierta mientras continúa activ
   await ejecucion;
   coordinador.cerrar();
   assert.equal(repo.filas.get(reserva.entrega.clave)?.estado, "completada");
+});
+
+function aprobar(updateId: number, ahoraSeg: number): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `cb-${updateId}`,
+      from: { id: 7, is_bot: false },
+      data: "gasto_aprobar:propuesta-1:abcd1234",
+      message: { message_id: 4627, date: ahoraSeg, chat: { id: 7, type: "private" } },
+    },
+  };
+}
+
+test("«Aprobar selección» repetido tras un primer toque completado sin efecto vuelve a ejecutarse pasado el margen", async () => {
+  const repo = new RepoMemoria();
+  const procesadas: number[] = [];
+  let ahora = 1_000_000;
+  const coordinador = new CoordinadorEntregasTelegram(repo, async (u) => { procesadas.push(u.update_id); }, async () => {}, { ahora: () => ahora });
+  const primera = await coordinador.reservar(aprobar(1, 1), true);
+  await coordinador.atender(primera.entrega, primera.nueva);
+  assert.deepEqual(procesadas, [1]);
+  assert.equal(repo.filas.get(primera.entrega.clave)?.estado, "completada");
+  repo.filas.get(primera.entrega.clave)!.actualizadoEn = ahora;
+
+  // Un doble toque a los pocos segundos sigue siendo un duplicado.
+  ahora += 5_000;
+  const rebote = await coordinador.reservar(aprobar(2, 2), true);
+  assert.equal(rebote.nueva, false);
+  await coordinador.atender(rebote.entrega, rebote.nueva);
+  assert.deepEqual(procesadas, [1]);
+
+  // Pasado el margen es una decisión nueva del operador y se ejecuta.
+  ahora += 60_000;
+  const reintento = await coordinador.reservar(aprobar(3, 3), true);
+  assert.equal(reintento.nueva, true);
+  await coordinador.atender(reintento.entrega, reintento.nueva);
+  assert.deepEqual(procesadas, [1, 3]);
+  assert.equal(coordinador.estado.reabiertas, 1);
+});
+
+test("solo «Aprobar selección» se reabre: las demás acciones sensibles conservan la deduplicación total", async () => {
+  const repo = new RepoMemoria();
+  const procesadas: number[] = [];
+  let ahora = 1_000_000;
+  const coordinador = new CoordinadorEntregasTelegram(repo, async (u) => { procesadas.push(u.update_id); }, async () => {}, { ahora: () => ahora });
+  const crear = (id: number): TelegramUpdate => ({
+    update_id: id,
+    callback_query: { id: `cb-${id}`, from: { id: 7, is_bot: false }, data: "gasto_nuevo_conciliar:propuesta-1",
+      message: { message_id: 4627, date: 1, chat: { id: 7, type: "private" } } },
+  });
+  const a = await coordinador.reservar(crear(1), true);
+  await coordinador.atender(a.entrega, a.nueva);
+  ahora += 10 * 60_000;
+  const b = await coordinador.reservar(crear(2), true);
+  await coordinador.atender(b.entrega, b.nueva);
+  assert.equal(b.nueva, false);
+  assert.deepEqual(procesadas, [1]);
+});
+
+test("una entrega incierta de «Aprobar selección» nunca se reabre por el margen", async () => {
+  const repo = new RepoMemoria();
+  let ahora = 1_000_000;
+  const coordinador = new CoordinadorEntregasTelegram(repo, async () => { throw new Error("cayó a mitad"); }, async () => {}, { ahora: () => ahora });
+  const a = await coordinador.reservar(aprobar(1, 1), true);
+  await coordinador.atender(a.entrega, a.nueva).catch(() => undefined);
+  assert.equal(repo.filas.get(a.entrega.clave)?.estado, "incierta");
+  ahora += 10 * 60_000;
+  const b = await coordinador.reservar(aprobar(2, 2), true);
+  assert.equal(b.nueva, false);
 });

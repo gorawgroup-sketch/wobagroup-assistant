@@ -64,7 +64,10 @@ test("una decisión de email solo protege el activo con ownership y ambos ids ex
 });
 
 test("el watchdog consulta todas las decisiones intermedias que pueden mantener UNREAD el correo", async () => {
-  const fuente = await readFile(join(process.cwd(), "core/jobs/vigilarProcesamientoAtascado.ts"), "utf8");
+  // La comprobación vive ahora en su propio módulo (la comparten el vigilante y la revisión manual).
+  const fuente = await readFile(join(process.cwd(), "core/gmail/senalDeEntrega.ts"), "utf8");
+  const vigilante = await readFile(join(process.cwd(), "core/jobs/vigilarProcesamientoAtascado.ts"), "utf8");
+  assert.match(vigilante, /import \{ huboSenalDeEntrega[^}]*\} from "\.\.\/gmail\/senalDeEntrega"/);
   for (const lectura of [
     "obtenerConciliacionesAmbiguasPendientesPorChat(chatId)",
     "obtenerPendientesOrientacionCorreoPorChat(chatId)",

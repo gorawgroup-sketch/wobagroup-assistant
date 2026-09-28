@@ -129,6 +129,19 @@ class StoreEntregasTelegram implements RepositorioEntregasTelegram {
     });
   }
 
+  async reabrirCompletada(clave: string, entrega: EntregaTelegramDurable) {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const actual = await this.refrescar(clave);
+      if (!actual || actual.estado !== "completada") return undefined;
+      const { reabrirCompletadaTrasMs: _transitorio, ...persistible } = entrega;
+      const reabierta: EntregaConFila = { ...persistible, estado: "reservada", rowIndex: actual.rowIndex };
+      await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(reabierta));
+      this.registros.set(clave, reabierta);
+      return this.publica(reabierta);
+    });
+  }
+
   async obtener(clave: string) {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();

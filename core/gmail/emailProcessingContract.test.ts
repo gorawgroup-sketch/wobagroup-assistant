@@ -70,3 +70,20 @@ test("la cola fija las decisiones pendientes antes de comprobar la operación an
   assert.match(puntual, /yaRegistrado/);
   assert.ok(puntual.indexOf("mensajeYaRegistrado") < puntual.indexOf("procesarCorreoLocalizado(chatId, correo, false)"));
 });
+
+test("«Reprocesar este correo» está cableado: ruta, protección de superadmin y reapertura del propio botón", async () => {
+  const [servidor, usuarios, entregas, job] = await Promise.all([
+    readFile(join(process.cwd(), "src/server.ts"), "utf8"),
+    readFile(join(process.cwd(), "core/telegram/authorizedUsersSheet.ts"), "utf8"),
+    readFile(join(process.cwd(), "core/telegram/durableDelivery.ts"), "utf8"),
+    readFile(rutaJob, "utf8"),
+  ]);
+  assert.match(servidor, /data === "colacorreo_reprocesaractivo"[\s\S]{0,80}handleReprocesarActivoCallback\(callback\)/);
+  assert.match(usuarios, /"colacorreo_reprocesaractivo"/);
+  assert.match(entregas, /ACCIONES_REABRIBLES_TRAS_COMPLETAR[\s\S]{0,400}"gasto_aprobar"[\s\S]{0,300}"colacorreo_reprocesaractivo"/);
+  // Antes de reprocesar se vuelve a comprobar que NO hay pregunta viva, para no duplicar una propuesta recién llegada.
+  const manejador = job.slice(job.indexOf("export async function handleReprocesarActivoCallback"),
+    job.indexOf("export async function handleDescartarActivoCallback"));
+  assert.ok(manejador.indexOf("huboSenalDeEntrega(") >= 0 && manejador.indexOf("huboSenalDeEntrega(") < manejador.indexOf("reencolarActivoParaReintento("));
+  assert.match(manejador, /conCoordinadorCorreo\(/);
+});

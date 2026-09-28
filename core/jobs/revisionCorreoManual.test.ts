@@ -17,8 +17,9 @@ function escenario(parciales: {
   registrar?: (r: ReanudacionRevisionCorreo) => Promise<void>;
   reclamar?: () => Promise<ReanudacionRevisionCorreo[]>;
   cierre?: () => boolean;
+  sinPregunta?: boolean;
 } = {}) {
-  const enviados: Array<{ chatId: number; texto: string }> = [];
+  const enviados: Array<{ chatId: number; texto: string; botones?: unknown }> = [];
   const registros: ReanudacionRevisionCorreo[] = [];
   const cancelados: number[] = [];
   const lanzamientos: number[] = [];
@@ -36,8 +37,9 @@ function escenario(parciales: {
     cancelarReanudacionPendiente: async (chatId) => { cancelados.push(chatId); },
     reclamarReanudacionesPendientes: parciales.reclamar ?? (async () => []),
     enviar: async (chatId, texto) => { enviados.push({ chatId, texto }); },
-    enviarConBotones: async (chatId, texto) => { enviados.push({ chatId, texto }); return 1; },
+    enviarConBotones: async (chatId, texto, botones) => { enviados.push({ chatId, texto, botones }); return 1; },
     cierreSolicitado: parciales.cierre ?? (() => false),
+    activoSinPreguntaViva: async () => parciales.sinPregunta ?? false,
   });
   return { enviados, registros, cancelados, lanzamientos, restaurar, liberar: () => liberar?.() };
 }
@@ -154,6 +156,30 @@ test("un correo activo bloqueando y un fallo siguen avisando como antes del camb
   await ejecutarRevisionCorreoManual(CHAT);
   assert.match(f.enviados[0].texto, /Hubo un error revisando el correo/);
   f.restaurar();
+});
+
+test("un correo activo SIN pregunta viva se dice tal cual y ofrece reprocesarlo o descartarlo (caso Televic)", async () => {
+  const e = escenario({
+    sinPregunta: true,
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Fwd: €67.73 - Televic", de: "Carlos" } }),
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.match(e.enviados[0].texto, /no tiene ninguna pregunta viva en el chat/);
+  assert.doesNotMatch(e.enviados[0].texto, /los botones de esa pregunta siguen arriba/);
+  const datos = JSON.stringify(e.enviados[0].botones);
+  assert.match(datos, /colacorreo_reprocesaractivo/);
+  assert.match(datos, /colacorreo_descartaractivo/);
+  e.restaurar();
+});
+
+test("si no se pudo comprobar la pregunta viva, el aviso es el de siempre (nunca se afirma que falta algo sin comprobarlo)", async () => {
+  const e = escenario({
+    sinPregunta: false,
+    resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura X", de: "Proveedor" } }),
+  });
+  await ejecutarRevisionCorreoManual(CHAT);
+  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta/);
+  e.restaurar();
 });
 
 test("si la revisión termina mientras el registro del SIGTERM sigue en vuelo, la cancelación espera al INSERT", async () => {

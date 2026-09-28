@@ -10,6 +10,8 @@ import {
 } from "../gmail/automatico/reanudacion";
 import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { cierreSolicitado } from "../utils/cierreServicio";
+import { obtenerActivoActual } from "../gmail/colaRevisionStore";
+import { huboSenalDeEntrega } from "../gmail/senalDeEntrega";
 
 /**
  * La revisión manual de correo (/revisarcorreo) como unidad reanudable.
@@ -41,6 +43,15 @@ const dependencias = {
   enviar: sendTelegramMessage,
   enviarConBotones: sendTelegramMessageWithButtons,
   cierreSolicitado,
+  /**
+   * true = el correo activo NO tiene ninguna pregunta viva en el chat (sus botones se perdieron o nunca llegaron).
+   * false = sí la tiene, o no se pudo comprobar (nunca se afirma que falta algo sin haberlo comprobado).
+   */
+  activoSinPreguntaViva: async (chatId: number): Promise<boolean> => {
+    const activo = await obtenerActivoActual(chatId);
+    if (!activo) return false;
+    return (await huboSenalDeEntrega(chatId, activo.mensajeId, activo.id)) === false;
+  },
 };
 
 /** Solo para pruebas: sustituye colaboradores reales (Telegram, Postgres, Gmail) y devuelve cómo restaurarlos. */
@@ -93,11 +104,28 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
         // cuenta (fuera del chat), y antes la única salida era esperar
         // 48h o encontrar el mensaje original. El botón lo libera ya
         // mismo (ver handleDescartarActivoCallback).
-        await dependencias.enviarConBotones(
-          chatId,
-          `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`,
-          [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
-        ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+        const sinPregunta = await dependencias.activoSinPreguntaViva(chatId).catch(() => false);
+        if (sinPregunta) {
+          // El aviso de siempre decía «resuélvelo (los botones siguen arriba)» aunque ya no hubiera ningún botón
+          // vivo (Televic, 2026-09-28): un callejón sin salida salvo descartar. Ahora se dice la verdad y se
+          // ofrece reprocesarlo, que es lo mismo que hace el vigilante y no pierde ni duplica nada.
+          await dependencias.enviarConBotones(
+            chatId,
+            `⏸️ El correo activo "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) no tiene ninguna ` +
+              `pregunta viva en el chat: sus botones se perdieron o nunca llegaron. Puedes volver a procesarlo (no se pierde ni se duplica ` +
+              `nada) o descartarlo para que el resto de la cola pueda avanzar.`,
+            [
+              [{ text: "🔄 Reprocesar este correo", callback_data: "colacorreo_reprocesaractivo" }],
+              [{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }],
+            ]
+          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+        } else {
+          await dependencias.enviarConBotones(
+            chatId,
+            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`,
+            [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
+          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
+        }
       } else {
         await dependencias.enviar(
           chatId,
