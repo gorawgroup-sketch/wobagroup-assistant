@@ -319,6 +319,8 @@ const ACCIONES_SENSIBLES = new Set([
   "colacorreo_siguiente",
   "colacorreo_recuperarcola",
   "colacorreo_descartaractivo",
+  // Reprocesar el correo activo sin pregunta viva: mismo criterio de protección que descartarlo (superadmin).
+  "colacorreo_reprocesaractivo",
   // Decisiones sobre una verificacion de duplicado que mantiene un correo
   // activo. Reintentar solo relee, pero confirmar cierra ese correo y puede
   // avanzar la cola; ambas quedan centralizadas en el superadministrador.
