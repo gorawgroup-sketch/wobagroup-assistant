@@ -310,3 +310,6 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - **«Renueva los botones de la propuesta de X»** / **«no me salen los botones de X»** → `reenviar_botones_propuesta_gasto`: manda un mensaje nuevo con los botones reales de la propuesta pendiente y vuelve a buscar el cargo en vivo.
 - Cuando el mensaje de una propuesta dice «no encontré ningún movimiento», ahora añade qué se revisó y qué cargos del mismo importe se descartaron y por qué.
 - **«Crear (sin conciliar)»** está siempre disponible con fecha documental válida (restaurado el 28/09); **«Crear y conciliar»** exige un cargo utilizable.
+
+### Continuar tras una conciliación pendiente
+En las preguntas de conciliación vinculadas a un correo exacto, «Dejar saldo pendiente y seguir» conserva la decisión, el correo sin leer y cualquier saldo bancario pendiente, y pasa al siguiente correo. No crea pagos, no vuelve a conciliar y no declara resuelto el saldo. Un botón de un correo anterior no puede aplazar el correo activo distinto. Cuando el pago está confirmado pero requiere revisión, se ofrece verificar por lectura en lugar de repetir la conciliación.
