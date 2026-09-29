@@ -382,7 +382,9 @@ export async function prepararPropuestaFinalGasto(
     concepto,
     proveedorAprendizaje,
     cambios.personaAsociada ?? propuesta.personaAsociada,
-    tagsAprendidos
+    tagsAprendidos,
+    undefined,
+    cambios.contextoDeViaje
   );
   return {
     ...propuesta,
