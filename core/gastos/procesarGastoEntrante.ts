@@ -787,7 +787,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     datos.concepto,
     datos.proveedor,
     datos.personaAsociada,
-    cuentaSugerida?.tags
+    cuentaSugerida?.tags,
+    undefined,
+    datos.contextoDeViaje
   );
 
   const conceptoConMonedaOriginal = usarEquivalente

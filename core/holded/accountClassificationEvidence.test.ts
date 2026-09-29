@@ -191,6 +191,31 @@ test("el flujo compartido conserva los aprendizajes de tags del proceso uno a un
     combinarTagsGastoAprendidos("Material de oficina", "Proveedor", undefined, ["oficina", "latam", "alejandra"]),
     ["alejandra"]
   );
+  // Caso real (Footprint, 28 sep): horno microondas comprado por alguien montando la oficina de Medellín
+  // — un gasto puntual sin ninguna categoría de viaje clásica (no es transporte/alimentación/hospedaje),
+  // pero ocurrido durante un desplazamiento real. Antes quedaba sin NINGÚN tag de categoría; "viaje" es
+  // el último recurso, solo cuando de verdad hay contexto de viaje y ninguna categoría más específica aplica.
+  assert.deepEqual(
+    combinarTagsGastoAprendidos(
+      "Compra horno microondas para oficina de Medellín",
+      "ALMACENES EXITO S.A.",
+      "yanessy",
+      [],
+      undefined,
+      true
+    ),
+    ["yanessy", "viaje"]
+  );
+  // Sin contexto de viaje, el mismo caso sigue sin categoría — no se inventa "viaje" a ciegas.
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Compra horno microondas para oficina", "ALMACENES EXITO S.A.", "yanessy", []),
+    ["yanessy"]
+  );
+  // Una categoría específica (alimentación) sigue ganando sobre el "viaje" genérico aunque haya contexto de viaje.
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Consumo supermercado", "ALDI", "yanessy", [], undefined, true),
+    ["yanessy", "alimentacion"]
+  );
   assert.deepEqual(
     combinarTagsGastoAprendidos(
       "Café/postre — Nieuwe Veste, Breda — Simon Talloen — pagado con Visa",
