@@ -9,6 +9,7 @@ import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { buscarCargoParaPropuesta, type ResultadoCargoPropuesta } from "./buscarCargoParaPropuesta";
 import { alinearTasaCambioAlMovimientoElegido } from "./alinearTasaAlMovimiento";
+import { alinearDocumentoAlCargoEnOtraMoneda } from "./alinearDocumentoAlCargo";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -982,6 +983,26 @@ async function conciliarContraMovimientoEspecifico(
           `ajustar la tasa de cambio del gasto a ese cargo y por eso no concilié nada (evito dejar una diferencia). ${motivo}`
         , estado: "fallida" };
       }
+    }
+
+    // Comprobante en EUR pagado desde una cuenta en otra moneda (caso real Gomerco, 2026-09-29): el cargo se encontró
+    // por su equivalente contable en EUR, pero documento y movimiento están en monedas distintas y la conciliación se
+    // rechazaría. El documento pasa a la moneda e importe reales del cargo; ver alinearDocumentoAlCargo.ts.
+    try {
+      const alineado = await alinearDocumentoAlCargoEnOtraMoneda(empresa, gastoId, movimiento);
+      if (alineado.estado === "alineado") {
+        notaTasa += `\n\n🔧 El cargo salió de una cuenta en ${alineado.moneda}: son ${alineado.importe.toFixed(2)} ${alineado.moneda} ` +
+          `(equivalente contable ${alineado.equivalenteContableEur.toFixed(2)} EUR). Registré el gasto en ${alineado.moneda} por ese importe ` +
+          `(tasa ${alineado.tasa.toFixed(4)}) para que la conciliación quede sin diferencia. El comprobante era de ` +
+          `${alineado.importeComprobanteEur.toFixed(2)} EUR.`;
+      }
+    } catch (errorAlineacion) {
+      console.error("[gastoCallbackHandler] No se pudo alinear el gasto con el cargo en otra moneda:", errorAlineacion);
+      const motivo = errorAlineacion instanceof Error ? errorAlineacion.message : String(errorAlineacion);
+      return { nota:
+        `\n\n⚠️ El cargo "${movimiento.descripcion || "sin descripción"}" está en una cuenta de otra moneda y no pude dejar el gasto ` +
+        `en esa moneda, así que no concilié nada (evito dejar una diferencia). ${motivo}`
+      , estado: "fallida" };
     }
 
     if (esAproximado || movimiento.origenCoincidencia === "aproximada") {
