@@ -2754,6 +2754,11 @@ export function filtrarPrecedentesViajePorNaturaleza(
   );
 }
 
+/** Categorías que son desplazamiento por su propia naturaleza (ver calcularSenalDeViaje). */
+const TAGS_NATURALEZA_DESPLAZAMIENTO = new Set([
+  "gasolina", "peaje", "parking", "taxi", "tren", "avion", "alquilercoche", "barco", "hospedaje", "transporte",
+]);
+
 /**
  * Tier "viaje" de inferirCuentaGasto — pedido explícito de Carlos, casos reales (Simon Talloen en
  * desplazamiento, tickets de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien
@@ -2776,6 +2781,13 @@ export function filtrarPrecedentesViajePorNaturaleza(
  * clave (tagsCategoria, ya calculada por el llamador) identifica esto de forma confiable sin depender de
  * ninguna de las dos señales overloaded — si ya dice "suscripcion", el atajo heurístico nunca debe poder
  * anular esa evidencia más fuerte.
+ *
+ * Caso real (Carlos, 2026-09-29, Station Gomerco, Footprint): un ticket de combustible con persona
+ * identificada quedó en «Otros servicios» porque el extractor no lo marcó como recibo simplificado
+ * (desglosaba el IVA) ni como contexto de viaje. La NATURALEZA del gasto ya lo dice: combustible, peaje,
+ * parking, taxi, tren, avión, coche de alquiler, barco u hospedaje son desplazamiento por sí mismos, sin
+ * depender de la forma del comprobante — nunca puede coincidir con "suscripcion" (inferirTagsCategoria
+ * devuelve una sola categoría por gasto), así que no compite con el guard de arriba.
  */
 export function calcularSenalDeViaje(
   criterios: {
@@ -2786,8 +2798,10 @@ export function calcularSenalDeViaje(
   },
   tagsCategoria: string[]
 ): boolean {
+  const naturalezaDeDesplazamiento = tagsCategoria.some((t) => TAGS_NATURALEZA_DESPLAZAMIENTO.has(t));
   return Boolean(
     criterios.contextoDeViaje ||
+      naturalezaDeDesplazamiento ||
       (!tagsCategoria.includes("suscripcion") &&
         (Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) &&
         criterios.reciboSimplificado === true)
@@ -4740,6 +4754,13 @@ export interface MovimientoBancarioCandidato {
   monto: number;
   /** Moneda de `monto` — igual a `criterios.moneda` de la búsqueda ("EUR" si no se especificó). */
   moneda: string;
+  /**
+   * Solo cuando el cargo vive en una cuenta de OTRA moneda y `monto` es su equivalente contable: importe y moneda
+   * REALES del cargo. Caso real (Gomerco, 2026-09-29): −55,32 USD se mostraba como «−48,58 EUR» y nadie sabía que
+   * la cuenta era en dólares hasta que la conciliación lo rechazaba.
+   */
+  montoNativo?: number;
+  monedaNativa?: string;
   fecha: string;
   /** Cómo se identificó este candidato. Los registros antiguos no incluyen el campo. */
   origenCoincidencia?: "exacta" | "aproximada" | "tipo_cambio" | "moneda_alternativa";
@@ -5095,6 +5116,7 @@ export async function buscarMovimientoSimilar(
         descripcion: mov.description ?? "",
         monto,
         moneda: monedaObjetivo,
+        ...nativoSiOtraMoneda(mov, monedaObjetivo),
         fecha: fechaMovimiento,
         ...(compatibilidad ? { compatibilidad } : {}),
       });
@@ -5118,6 +5140,17 @@ const TOLERANCIA_APROXIMADA_PORCENTAJE = 0.15;
 // porcentaje solo sería demasiado angosto para cubrir redondeos reales de
 // conversión de moneda.
 const TOLERANCIA_APROXIMADA_PISO = 1;
+/** Importe y moneda reales de un cargo cuya cuenta no está en la moneda buscada (ver MovimientoBancarioCandidato). */
+function nativoSiOtraMoneda(
+  mov: { amount?: string | number; currency?: string },
+  monedaObjetivo: string
+): { montoNativo?: number; monedaNativa?: string } {
+  const monedaNativa = (mov.currency ?? "EUR").toUpperCase().trim();
+  if (monedaNativa === monedaObjetivo) return {};
+  const montoNativo = parsearMontoMovimiento(mov.amount ?? "");
+  return Number.isFinite(montoNativo) ? { montoNativo, monedaNativa } : {};
+}
+
 export function margenImporteAproximado(monto: number): number {
   return Math.max(TOLERANCIA_APROXIMADA_PISO, Math.abs(monto) * TOLERANCIA_APROXIMADA_PORCENTAJE);
 }
@@ -5260,6 +5293,7 @@ export async function buscarMovimientoAproximado(
         descripcion: mov.description ?? "",
         monto,
         moneda: monedaObjetivo,
+        ...nativoSiOtraMoneda(mov, monedaObjetivo),
         fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
         diferenciaMonto: diferencia,
       });

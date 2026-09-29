@@ -1056,10 +1056,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : ` (monto aproximado — puede diferir unos céntimos del valor exacto registrado por el banco)`
       : "";
 
+    // Si el cargo vive en una cuenta de otra moneda, se dice: el importe mostrado es su equivalente contable y al
+    // conciliar el gasto se registrará en la moneda real del cargo (caso real Gomerco, 2026-09-29).
+    const notaOtraMoneda = (m: { montoNativo?: number; monedaNativa?: string; monto: number; moneda: string } | undefined): string =>
+      m?.monedaNativa && m.montoNativo !== undefined
+        ? `\n💱 Ese cargo salió de una cuenta en ${m.monedaNativa}: son ${m.montoNativo.toFixed(2)} ${m.monedaNativa} ` +
+          `(${m.monto.toFixed(2)} ${m.moneda} es su equivalente contable). Al aprobar "Crear y conciliar", el gasto se registrará en ` +
+          `${m.monedaNativa} por ese importe para que la conciliación quede sin diferencia.`
+        : "";
     const notaMovimiento = movimientoBancario
       ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
         `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} ${movimientoBancario.moneda}${notaAproximacion} ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.` +
+        notaOtraMoneda(movimientoBancario) +
         (movimientoBancario.compatibilidad === "por_confirmar"
           ? `\n⚠️ El nombre del cargo no coincide con el proveedor ("${datos.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. ` +
             `Confírmalo antes de aprobar "Crear y conciliar"; si lo confirmas, Wobi recordará este nombre para la próxima vez.`
@@ -1069,6 +1078,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           `${movimientoAproximado.diferenciaMonto.toFixed(2)} ${movimientoAproximado.moneda}, probablemente por cómo se calculó el ` +
           `equivalente): "${movimientoAproximado.descripcion || "(sin descripción)"}" — ${movimientoAproximado.monto.toFixed(2)} ` +
           `${movimientoAproximado.moneda} (${movimientoAproximado.fecha}). Si es el mismo cargo, aprueba "Crear y conciliar" — revísalo antes si no estás seguro.` +
+          notaOtraMoneda(movimientoAproximado) +
           (otrosAproximados > 0
             ? ` (hay ${otrosAproximados} movimiento(s) parecido(s) más de estos días — si este no es el correcto, dímelo y busco entre esos.)`
             : "")
