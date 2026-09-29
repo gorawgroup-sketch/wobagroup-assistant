@@ -163,6 +163,19 @@ test("un rechazo 422 vuelve a preparada y permite una propuesta corregida", asyn
   assert.equal(repo.filas.values().next().value?.estado, "verificada");
 });
 
+test("una escritura que la guardia no dejó salir vuelve a preparada y el reintento edita", async () => {
+  const repo = new RepoMemoria();
+  const noIniciada = Object.assign(new Error("Coordinación durable no disponible."), { name: "EscrituraHoldedNoIniciadaError" });
+  await assert.rejects(ejecutar(repo, transporte({ errorEdicion: noIniciada }), CAMBIOS, 1), noIniciada);
+  assert.equal(repo.filas.values().next().value?.estado, "preparada");
+
+  const holded = transporte();
+  const resultado = await ejecutar(repo, holded, CAMBIOS, 2);
+  assert.equal(resultado.reutilizado, false);
+  assert.equal(holded.ediciones.length, 1);
+  assert.equal(repo.filas.values().next().value?.estado, "verificada");
+});
+
 test("datos distintos se bloquean si la primera edición quedó incierta", async () => {
   const repo = new RepoMemoria();
   await assert.rejects(ejecutar(repo, transporte({ errorEdicion: new Error("timeout") })), EdicionCompraInciertaError);
