@@ -2759,6 +2759,26 @@ const TAGS_NATURALEZA_DESPLAZAMIENTO = new Set([
   "gasolina", "peaje", "parking", "taxi", "tren", "avion", "alquilercoche", "barco", "hospedaje", "transporte",
 ]);
 
+/** Nivel «viaje»: primero precedentes de la misma naturaleza; sin evidencia suficiente, el conjunto de viaje. */
+export function sugerirCuentaPorViaje(
+  lineas: LineaConCuenta[],
+  tagsCategoria: string[],
+  contexto?: { proveedor: string; concepto: string; personaAsociada?: string; exigirContexto?: boolean }
+): CuentaSugerida | undefined {
+  const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
+  const porMismaNaturaleza = filtrarPrecedentesViajePorNaturaleza(porViaje, tagsCategoria);
+  const especifica = construirSugerenciaDesdeCoincidencias(porMismaNaturaleza, "viaje", MIN_EVIDENCIA_VIAJE, contexto);
+  if (especifica) return especifica;
+  // Caso real (Carlos, 2026-09-29, Uber de Yessenia y de Baldan Nicola, Footprint): el gasto era un taxi, pero casi
+  // ningún precedente lleva la etiqueta «taxi» (los 18 Uber históricos están como «transporte, uber»), así que el
+  // filtro por naturaleza específica se quedaba sin evidencia y decidía el nivel de proveedor con UN solo
+  // documento mal clasificado («Servicios de profesionales independientes»). Si la naturaleza específica no reúne
+  // evidencia, un desplazamiento sigue siendo un desplazamiento: decide el conjunto de precedentes de viaje.
+  return porMismaNaturaleza.length < porViaje.length
+    ? construirSugerenciaDesdeCoincidencias(porViaje, "viaje", MIN_EVIDENCIA_VIAJE, contexto)
+    : undefined;
+}
+
 /**
  * Tier "viaje" de inferirCuentaGasto — pedido explícito de Carlos, casos reales (Simon Talloen en
  * desplazamiento, tickets de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien
@@ -2929,14 +2949,7 @@ export async function inferirCuentaGasto(
       }
     : undefined;
   if (senalDeViaje) {
-    const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
-    const porMismaNaturaleza = filtrarPrecedentesViajePorNaturaleza(porViaje, tagsCategoria);
-    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(
-      porMismaNaturaleza,
-      "viaje",
-      MIN_EVIDENCIA_VIAJE,
-      contextoEjemploViaje
-    );
+    const sugeridoPorViaje = sugerirCuentaPorViaje(lineas, tagsCategoria, contextoEjemploViaje);
     if (sugeridoPorViaje) return sugeridoPorViaje;
   }
 
