@@ -567,6 +567,13 @@ export function esHuellaInlineDecorativaConocida(part: gmail_v1.Schema$MessagePa
 function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
   if (!disposicion.toLowerCase().startsWith("inline")) return false;
+  // Caso real (Carlos, 2026-09-29, Yessenia, «17,96€ - transporte italiano»): el comprobante era un PDF de 19.842
+  // bytes que el cliente de correo adjuntó con `Content-Disposition: inline` y sin Content-ID. Por tamaño se trató
+  // como un logo, el correo quedó «sin adjuntos», no se reconoció como gasto y el borrador de respuesta pedía un
+  // comprobante que ya estaba. Solo una IMAGEN incrustada en el HTML (con Content-ID) puede ser decoración: un
+  // PDF u otro documento nunca lo es, y una imagen sin Content-ID no está incrustada en ningún sitio.
+  if (!(part.mimeType ?? "").toLowerCase().startsWith("image/")) return false;
+  if (!part.headers?.some((h) => h.name?.toLowerCase() === "content-id")) return false;
   // Hallazgo real de auditoría xhigh de este mismo cambio: si Gmail alguna vez no informa `body.size`
   // para una parte inline (no visto en los 5 casos reales verificados, pero la API no lo garantiza para
   // toda variante de estructura MIME), un `?? 0` acá clasificaría ese tamaño desconocido como
@@ -579,7 +586,8 @@ function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   return part.body.size <= TAMANIO_MAXIMO_INLINE_DECORATIVO || esHuellaInlineDecorativaConocida(part);
 }
 
-function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
+/** Exportada para pruebas: adjuntos reales de un mensaje, sin la decoración incrustada. */
+export function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined): AdjuntoCorreo[] {
   const adjuntos: AdjuntoCorreo[] = [];
 
   function recorrer(part: gmail_v1.Schema$MessagePart | undefined): void {
