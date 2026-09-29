@@ -76,7 +76,9 @@ export async function parsearEml(bytes: Buffer): Promise<ContenidoEml> {
     const adjuntos: AdjuntoDeEml[] = (parsed.attachments ?? [])
       .filter(
         (adjunto) =>
-          !adjunto.related || typeof adjunto.size !== "number" || adjunto.size > TAMANIO_MAXIMO_INLINE_DECORATIVO_EML
+          !adjunto.related || typeof adjunto.size !== "number" || adjunto.size > TAMANIO_MAXIMO_INLINE_DECORATIVO_EML ||
+          // Solo una imagen puede ser decoración: un PDF u otro documento es siempre un adjunto real.
+          !(adjunto.contentType ?? "").toLowerCase().startsWith("image/")
       )
       .map((adjunto) => ({
         filename: adjunto.filename?.trim() || "adjunto",
