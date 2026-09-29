@@ -5049,7 +5049,7 @@ export async function buscarMovimientoSimilar(
           fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "", resultado, motivo,
         });
       };
-      if (estaConciliado(mov.status)) {
+      if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) {
         if (traza) {
           const montoConciliado = monedaObjetivo === "EUR"
             ? montoEnEuros(mov)
@@ -5264,7 +5264,7 @@ export async function buscarMovimientoAproximado(
     };
 
     for (const mov of data.items ?? []) {
-      if (estaConciliado(mov.status)) continue;
+      if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
       if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, { nucleoDeMarca: true })) continue;
       // Su contrato exige «nombre parecido Y monto cercano»: la categoría sola solo vale con la fecha cercana (antes no tenía
       // tope y un restaurante lejano del mismo rubro se conciliaba tras «Sí, conciliar» y reescribía el importe de la compra).
@@ -5570,6 +5570,21 @@ export function margenResiduoConversion(total: number): number {
  * revisión" para siempre, aunque en Holded ya estaba efectiva, 2026-09-28). Devuelve el residuo solo
  * cuando de verdad excede ese margen; en ese caso SÍ hay que revisarlo a mano.
  */
+/**
+ * Un cargo «parcial» al que solo le quedan céntimos de redondeo ya está usado. Caso real (Footprint, 2026-09-29):
+ * seis cargos en USD conciliados con su compra quedaban «partial» por 0,01–0,03 USD (Holded guarda la tasa con dos
+ * decimales) y el buscador los seguía ofreciendo como coincidencia exacta para otro gasto del mismo importe.
+ * Un parcial con resto real sigue disponible: un mismo cargo puede cubrir varios documentos.
+ */
+export function movimientoAgotadoSalvoRedondeo(
+  movimiento: { amount?: string | number; reconciled_amount?: string | number | null }
+): boolean {
+  const total = Math.abs(parsearMontoMovimiento(movimiento.amount as never) || 0);
+  const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount as never) || 0);
+  if (total <= 0 || enlazado <= 0) return false;
+  return residuoMovimientoFueraDeMargen(total, enlazado) === undefined;
+}
+
 export function residuoMovimientoFueraDeMargen(montoMovimiento: number, montoEnlazado: number): number | undefined {
   const residuo = montoMovimiento - montoEnlazado;
   return residuo > margenResiduoConversion(montoMovimiento) ? residuo : undefined;
