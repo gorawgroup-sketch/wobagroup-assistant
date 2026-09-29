@@ -637,7 +637,7 @@ async function registrarCierreGastoDePropuesta(
   });
 }
 
-async function registrarCierreGastoPendiente(
+export async function registrarCierreGastoPendiente(
   pendiente: {
     mensajeIdGmail?: string;
     gastoId: string;

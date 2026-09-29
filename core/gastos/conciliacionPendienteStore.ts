@@ -310,6 +310,11 @@ export async function obtenerConciliacionesPendientesPorChat(chatId: number): Pr
   return todas.filter(({ pendiente }) => pendiente.chatId === chatId).map(({ pendiente }) => pendiente);
 }
 
+/** Todas las conciliaciones pendientes, de cualquier chat — usado por la limpieza de preguntas huérfanas. */
+export async function obtenerTodasLasConciliacionesPendientes(): Promise<ConciliacionPendiente[]> {
+  return (await leerTodas()).map(({ pendiente }) => pendiente);
+}
+
 /** Devuelve la pendiente y ELIMINA su fila (respondida, ya no debe quedar registro). */
 /** Bajo el mismo conMutex que guardarConciliacionPendiente (ver su comentario). */
 export async function consumirConciliacionPendiente(id: string): Promise<ConciliacionPendiente | undefined> {
