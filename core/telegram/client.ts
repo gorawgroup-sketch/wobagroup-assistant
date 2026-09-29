@@ -261,7 +261,7 @@ export async function entregarRespuestaTrasTrabajar(
       // el siguiente turno solo recuerda al usuario pero no lo que Wobi
       // realmente contestó. Este fue uno de los factores que hizo que el
       // chat perdiera el contexto del DHL recién procesado.
-      registrarMensajeSaliente(chatId, texto).catch((error) =>
+      registrarMensajeSaliente(chatId, texto, "respuesta").catch((error) =>
         console.error("[telegram/client] Error registrando respuesta final editada en el historial:", error)
       );
       return;
