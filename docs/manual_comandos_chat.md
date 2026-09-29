@@ -238,7 +238,8 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - Pedido explícito de Carlos, tras un caso real (pidió agregar por chat una sanción AEAT y una providencia de apremio al bloque "Pagos Extras" de EWORKS, y el sistema respondió que no tenía forma de crear una fila nueva desde el chat, aunque el comparativo automático Holded-vs-cashflow sí puede): pídelo en texto libre (ej. "incluye una sanción de la AEAT de 137,62€ en pagos extras de EWORKS, semana S37" o "agrega la providencia de apremio de Alberto Comolli, 747,31€, en pagos extras") — identifica empresa + bloque + concepto + valor (+ semana, salvo en pagos pendientes de Alberto/deudas pendientes) y propone el registro con botones.
 - Cubre los mismos bloques que ya tienen escritor automático — **ingresos**, **pagos proyectos**, **pagos extras**, **gastos fijos**, **pagos pendientes de Alberto**, **deudas pendientes**. Impuestos por pagar y aplazamiento de impuestos todavía no tienen escritor (ni por chat ni automático) — regístralos a mano en el Sheet.
 - "Pagos Extras" y "Gastos Fijos" no tienen columna propia de empresa en el Sheet — la propuesta deja constancia de la empresa al inicio del concepto (ej. "EWORKS — Sanción AEAT") y lo avisa explícitamente antes de pedir confirmación.
-- ✅ Confirmar registro — escribe la fila nueva y relee para verificar que quedó guardada.
+- ✅ Confirmar en <área propuesta> — escribe la fila nueva y relee para verificar que quedó guardada.
+- ↪️ Mejor en <otra área> — un botón por cada área del cashflow (Ingresos, Pagos Proyectos, Pagos Extras, Gastos Fijos, Pagos pendientes Alberto, Deudas pendientes): registra el mismo movimiento en esa área sin pedir una propuesta nueva. Sin semana solo se ofrecen las áreas que no la exigen.
 - ❌ Cancelar — no escribe nada.
 - Solo el superadministrador puede aprobar (las dos opciones) — mismo criterio que el resto de escrituras reales del sistema.
 

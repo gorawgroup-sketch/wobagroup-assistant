@@ -1,7 +1,8 @@
 import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
 import { answerCallbackQuery, editTelegramMessage } from "../telegram/client";
 import { consumirPendienteRegistroManualCashflow } from "./pendienteRegistroManualCashflowStore";
-import { registrarMovimientoEnSheet, registrarPendienteEnSheet, BLOQUES_SECCION_COMPARTIDA } from "./cashflowWrite";
+import { registrarMovimientoEnSheet, registrarPendienteEnSheet, BLOQUES_SECCION_COMPARTIDA, type BloqueEscritura } from "./cashflowWrite";
+import { aplicarDestinoRegistroManual, esAreaValidaRegistroManual } from "./registroManualCashflowDestino";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -26,12 +27,21 @@ export async function handleRegistroManualCashflowCallback(callback: TelegramCal
     return;
   }
 
-  const [accion, id] = data.split(":");
-  const pendiente = await consumirPendienteRegistroManualCashflow(id);
-  if (!pendiente) {
+  const [accion, id, areaElegida] = data.split(":");
+  const original = await consumirPendienteRegistroManualCashflow(id);
+  if (!original) {
     await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible (expiró o ya se procesó).");
     return;
   }
+  // Botón «↪️ Mejor en <área>»: mismo registro, otra área de destino.
+  const cambiaArea = accion === "regmanualcf_confirmar" && areaElegida !== undefined;
+  if (cambiaArea && !esAreaValidaRegistroManual(areaElegida, Boolean(original.semana))) {
+    await answerCallbackQuerySafe(callback.id, "Esa área no admite este registro.");
+    await editTelegramMessage(original.chatId, original.messageId,
+      `⚠️ No registré nada: el área "${areaElegida}" no admite este registro — ${original.resumen}. Pídemelo de nuevo indicando el área.`, []);
+    return;
+  }
+  const pendiente = cambiaArea ? aplicarDestinoRegistroManual(original, areaElegida as BloqueEscritura) : original;
 
   if (accion === "regmanualcf_cancelar") {
     await answerCallbackQuerySafe(callback.id, "Cancelado.");
