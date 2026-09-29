@@ -28,6 +28,7 @@ import {
   type EstadoAuditoriaProgramadaFront,
 } from "./auditoriaProgramadaStore";
 import { listarPolizas } from "../seguros/polizaRegistroSheet";
+import { calcularAlertasSeguros } from "../seguros/alertas";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
@@ -393,7 +394,6 @@ async function construirConocimiento() {
 }
 
 const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"];
-const DIAS_ALERTA_VENCIMIENTO_POLIZA = 30;
 
 /**
  * Registro de pólizas de seguro (ver docs/wobi-seguros.md §5, §17-19) —
@@ -402,43 +402,16 @@ const DIAS_ALERTA_VENCIMIENTO_POLIZA = 30;
  * especialista (§6.5). Nodo de solo lectura, mismo principio que el resto
  * de "cerebro": cualquier acción sigue pasando por Telegram, el chat de
  * Cerebro, o el único botón de escritura expuesto (marcar-pago).
+ *
+ * El cálculo de "próximas a renovar"/"pagos sin confirmar" vive en
+ * core/seguros/alertas.ts (calcularAlertasSeguros) — compartido con la
+ * tool de consulta por chat (core/tools/consultarPolizasSeguro.ts) para
+ * que Cerebro y el chat avisen exactamente lo mismo, nunca dos lógicas
+ * que se puedan desalinear.
  */
 async function construirSeguros() {
   const polizas = await seguro("seguros.polizas", listarPolizas, [] as Awaited<ReturnType<typeof listarPolizas>>);
-  const hoy = new Date();
-
-  const conDiasRestantes = polizas
-    .filter((p) => p.estado !== "no_contratada" && p.fechaVencimiento)
-    .map((p) => ({
-      ...p,
-      diasRestantes: Math.round((new Date(p.fechaVencimiento).getTime() - hoy.getTime()) / 86400000),
-    }));
-
-  const proximasARenovar = conDiasRestantes
-    .filter((p) => p.diasRestantes <= DIAS_ALERTA_VENCIMIENTO_POLIZA)
-    .sort((a, b) => a.diasRestantes - b.diasRestantes)
-    .map((p) => ({
-      id: p.id,
-      empresa: p.empresa,
-      tipoCobertura: p.tipoCobertura,
-      aseguradora: p.aseguradora,
-      numeroPoliza: p.numeroPoliza,
-      fechaVencimiento: p.fechaVencimiento,
-      diasRestantes: p.diasRestantes,
-    }));
-
-  const pagosSinConfirmar = polizas
-    .filter((p) => p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar")
-    .map((p) => ({
-      id: p.id,
-      empresa: p.empresa,
-      tipoCobertura: p.tipoCobertura,
-      aseguradora: p.aseguradora,
-      prima: p.prima,
-      moneda: p.moneda,
-      estadoPago: p.estadoPago,
-      notas: p.notas,
-    }));
+  const { proximasARenovar, pagosSinConfirmar } = calcularAlertasSeguros(polizas);
 
   const porEmpresa = Object.fromEntries(
     EMPRESAS_SEGUROS.map((empresa) => {

@@ -54,6 +54,7 @@ import { escalarDesarrolloTool } from "./escalarDesarrollo";
 import { vacacionesHoldedTool } from "./vacacionesHolded";
 import { descartarRecomendacionControlDiarioTool } from "./descartarRecomendacionControlDiario";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
+import { consultarPolizasSeguroTool } from "./consultarPolizasSeguro";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -114,6 +115,7 @@ const tools: ToolDefinition[] = [
   vacacionesHoldedTool,
   descartarRecomendacionControlDiarioTool,
   compararCashflowHoldedTool,
+  consultarPolizasSeguroTool,
 ];
 
 /**
