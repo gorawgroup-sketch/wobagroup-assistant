@@ -6,6 +6,7 @@ import {
   obtenerPendienteEdicionCompraHolded,
 } from "./pendienteEdicionCompraHoldedStore";
 import { editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError } from "./write";
+import { conciliarCargoConReembolso } from "./conciliarCargoConReembolso";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -73,11 +74,24 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
     // misma confusión ("parece euros, es dólares") que el fix de fondo
     // elimina de Holded.
     const monedaDespues = (resultado.currency ?? "EUR").toUpperCase().trim();
+    // Propuesta «cargo + reembolso»: con la edición ya verificada, se enlazan los dos movimientos.
+    let notaConciliacion = "";
+    if (pendiente.cambios.despuesConciliar) {
+      try {
+        const enlace = await conciliarCargoConReembolso(pendiente.empresa, pendiente.purchaseId, pendiente.cambios.despuesConciliar);
+        notaConciliacion = `\n\n${enlace.completo ? "🔗" : "⚠️"} ${enlace.nota}`;
+      } catch (errorEnlace) {
+        console.error("[edicionCompraHoldedCallbackHandler] Error enlazando cargo y reembolso:", errorEnlace);
+        notaConciliacion = `\n\n⚠️ La edición quedó aplicada, pero no pude enlazar cargo y reembolso: ` +
+          `${errorEnlace instanceof Error ? errorEnlace.message : String(errorEnlace)}`;
+      }
+    }
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
       `✅ Editado en Holded — antes: ${pendiente.resumenAntes}\n` +
-        `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).`,
+        `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).` +
+        notaConciliacion,
       []
     );
   } catch (error) {

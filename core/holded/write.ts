@@ -4268,6 +4268,14 @@ export interface CambiosCompraHolded {
   /** Si se da, REEMPLAZA todas las líneas (mismo criterio de monto/IVA que crearGastoHolded). Si no se da, se reenvían las líneas actuales tal cual (Holded exige el array completo en cada PUT, nunca un delta). */
   lineas?: LineaGastoHolded[];
   /**
+   * Tras verificar la edición, enlaza a la compra un cargo y su reembolso (ver conciliarCargoConReembolso.ts).
+   * No participa en la edición: prepararEdicionCompraHolded lo ignora.
+   */
+  despuesConciliar?: {
+    cargo: { accountId: string; movementId: string; fecha: string };
+    reembolso: { accountId: string; movementId: string; fecha: string };
+  };
+  /**
    * Escala el precio de cada línea EXISTENTE proporcionalmente al nuevo
    * total, preservando sus taxes/cuenta/etc. tal cual venían de Holded (sin
    * necesitar volver a mapear el % de IVA a un tax_key) — pensado para
@@ -6051,6 +6059,26 @@ async function aplicarConciliacionRegistrada(
   } finally {
     // Holded puede haber aceptado el efecto aunque la respuesta se pierda.
     invalidarCacheCuentasTesoreria(registro.empresa);
+  }
+}
+
+/**
+ * Envío crudo de una conciliación, sin registro durable propio: SOLO para flujos que verifican por lectura antes y
+ * después de cada envío (ver conciliarCargoConReembolso.ts). Pasa por la misma guardia de escrituras que el resto.
+ */
+export async function enviarConciliacionMovimientoHolded(
+  empresa: Empresa, accountId: string, movementId: string, documentId: string
+): Promise<void> {
+  invalidarCacheCuentasTesoreria(empresa);
+  try {
+    await holdedWriteCall(
+      empresa,
+      "POST",
+      `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements/${encodeURIComponent(movementId)}/reconcile`,
+      { documents: [{ document_id: documentId, document_type: "purchase" }] }
+    );
+  } finally {
+    invalidarCacheCuentasTesoreria(empresa);
   }
 }
 

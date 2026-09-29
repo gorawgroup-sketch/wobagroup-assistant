@@ -319,3 +319,10 @@ registrar en cashflow) sin que presiones uno de estos botones.
 
 ### Continuar tras una conciliación pendiente
 En las preguntas de conciliación vinculadas a un correo exacto, «Dejar saldo pendiente y seguir» conserva la decisión, el correo sin leer y cualquier saldo bancario pendiente, y pasa al siguiente correo. No crea pagos, no vuelve a conciliar y no declara resuelto el saldo. Un botón de un correo anterior no puede aplazar el correo activo distinto. Cuando el pago está confirmado pero requiere revisión, se ofrece verificar por lectura en lugar de repetir la conciliación.
+
+### Propuesta «cargo + reembolso» (edición de compra en Holded)
+
+Cuando un comercio cobra de más y devuelve después la diferencia, la propuesta de edición puede incluir el enlace de
+ambos movimientos. Al pulsar **✅ Confirmar edición**: ajusta el valor de la compra al neto que salió del banco,
+enlaza el reembolso y después el resto del cargo, leyendo Holded tras cada paso. Se detiene en el primer resultado
+que no puede confirmar y lo dice en el mismo mensaje.
