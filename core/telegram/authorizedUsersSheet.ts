@@ -2,7 +2,6 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { registrarPersonaDesdeTelegram } from "../directorio/directorioPersonasSheet";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_usuarios_autorizados";
 const HEADERS = ["userId", "rol", "nombre", "autorizadoEn"];
 
@@ -31,10 +30,11 @@ export interface UsuarioAutorizado {
  * a mano cada vez.
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -319,6 +319,8 @@ const ACCIONES_SENSIBLES = new Set([
   "colacorreo_siguiente",
   "colacorreo_recuperarcola",
   "colacorreo_descartaractivo",
+  // Reprocesar el correo activo sin pregunta viva: mismo criterio de protección que descartarlo (superadmin).
+  "colacorreo_reprocesaractivo",
   // Decisiones sobre una verificacion de duplicado que mantiene un correo
   // activo. Reintentar solo relee, pero confirmar cierra ese correo y puede
   // avanzar la cola; ambas quedan centralizadas en el superadministrador.
@@ -339,6 +341,7 @@ const ACCIONES_SENSIBLES = new Set([
   // no), no solo la que escribe, para centralizar la decisión completa.
   "gasto_conciliar_si",
   "gasto_conciliar_no",
+  "gasto_conciliar_posponer",
   // Mismo criterio y mismo día: cuando "¿Quieres conciliar?" encuentra varios movimientos
   // parecidos, ahora se pregunta CUÁL con botones (ver ofrecerEleccionMovimientosAmbiguos en
   // gastoCallbackHandler.ts) en vez del texto muerto de antes — esa elección concilia de verdad en

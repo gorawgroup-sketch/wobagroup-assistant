@@ -1,6 +1,9 @@
 import { entregarRevisionCorreo } from "./entregarRevisionCorreo";
 import { buscarAnalisisAutomaticoReciente, conCoordinadorCorreo } from "../gmail/automatico/postgres";
 import { revisarGastosAutomaticos, comprobarCorreoDisponible } from "../gmail/automatico/runtime";
+import { mensajeYaRegistrado, type ResultadoOperacionAnterior } from "../gmail/automatico/operacionAnterior";
+import { huboSenalDeEntrega } from "../gmail/senalDeEntrega";
+import { hayActividadCallbackReciente } from "../telegram/callbackActivity";
 import { resumenAutomatico } from "../gmail/automatico/service";
 import { reutilizarGastoDeAnalisisAutomatico } from "../gmail/automatico/reutilizarAnalisis";
 import type { ModoAuto, ResultadoAuto } from "../gmail/automatico/model";
@@ -20,6 +23,7 @@ import {
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
+import { verificarFacturasEnlazadasEnCuerpo } from "../gmail/facturasEnlazadasEnCuerpo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { listarContactosAutorespuesta } from "../gmail/autorespuestaContactoStore";
@@ -31,6 +35,7 @@ import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
+import { cierreSolicitado } from "../utils/cierreServicio";
 import { debeEjecutarAnalisisAutomatico, debePublicarInformeCorreo,
   revisionCorreoExhaustiva,
   type SolicitudRevisionCorreo } from "./politicaRevisionCorreo";
@@ -63,6 +68,7 @@ import {
   confirmarActivoResueltoTrasMarcarLeido,
   prepararCierreExplicitoActivo,
   reintentarActivoPendienteDeMarcarLeido,
+  reencolarActivoParaReintento,
   type IdentidadCorreoCola,
 } from "../gmail/colaRevisionStore";
 
@@ -168,6 +174,12 @@ function sanitizarNombre(nombre: string): string {
 export interface ResultadoRevisarCorreo {
   correosRevisados: number;
   automatico?: ResultadoAuto;
+  /**
+   * La revisión paró porque el proceso está cerrándose (SIGTERM por un despliegue). No se publicó
+   * informe ni se tocó la cola: el proceso nuevo la retoma (ver core/gmail/automatico/reanudacion.ts)
+   * y el llamador NO debe anunciar «revisión completa» ni «error».
+   */
+  interrumpida?: boolean;
   /** Indica si esta misma ejecución ya publicó su resumen en Telegram. */
   informePublicado?: boolean;
   /**
@@ -270,7 +282,9 @@ export async function revisarCorreoNuevo(
     }
     // Cierra la carrera en la que una orden manual llega justo después de
     // que un cron silencioso decidió no publicar, pero antes de terminar.
-    if (forzarAviso && !resultado.informePublicado && resultado.automatico) {
+    // Una revisión interrumpida por el cierre del servicio no tiene informe que publicar: el
+    // proceso nuevo la retoma entera (ver core/jobs/revisionCorreoManual.ts).
+    if (forzarAviso && !resultado.informePublicado && !resultado.interrumpida && resultado.automatico) {
       const resumen = resumenAutomatico(resultado.automatico);
       if (resumen) {
         // Reservar antes del await evita que dos órdenes manuales que se
@@ -306,6 +320,13 @@ export async function revisarCorreoNuevo(
       automatico = { modo: modoAutomaticoSeguro(), revisados: 0, completados: 0, simulados: 0, gastos: [],
         pendientes: [{ mensajeId: "sistema", asunto: "Fase automática incompleta",
           motivos: [`error_automatico:${detalle}`] }] };
+    }
+    if (automatico.interrumpida && cierreSolicitado()) {
+      // Resultado parcial por cierre del proceso: ni informe, ni cola, ni registro para el
+      // consolidado del cron. Lo hecho ya es durable; la pasada que retome lo verá completo.
+      console.log("[revisarCorreoNuevo] Revisión interrumpida por el cierre del servicio; " +
+        `${automatico.revisados} analizado(s), ${automatico.completados} completado(s). Se retomará en el proceso nuevo.`);
+      return { correosRevisados: 0, automatico, interrumpida: true };
     }
     let resultadoParaInforme = automatico;
     let revisionesConsolidadas: number | undefined;
@@ -348,12 +369,15 @@ export async function revisarCorreoNuevo(
       publicar,
       enviar: texto => sendTelegramMessageSmart(chatId, texto),
       sincronizar: pendiente => sincronizarColaCorreo(forzarAviso, chatId, pendiente, publicar),
-      recuperar: async error => {
+      recuperar: async (error, informeEntregado) => {
         console.error("[revisarCorreoNuevo] Fase automática terminada; cola manual pendiente:",
           error instanceof Error ? error.message : String(error));
+        // Si el informe tampoco salió hay que decirlo: «el resultado anterior se conserva» sería falso.
+        const inicio = informeEntregado
+          ? "⚠️ La revisión automática terminó; el resultado anterior se conserva. "
+          : "⚠️ La revisión automática terminó y sus gastos ya quedaron registrados, pero no pude enviarte su informe. ";
         if (publicar()) await sendTelegramMessageSmart(chatId,
-          "⚠️ La revisión automática terminó; el resultado anterior se conserva. " +
-          "No pude preparar la cola manual por un fallo temporal. Usa ‘Recuperar cola manual’ para retomar; " +
+          `${inicio}No pude preparar la cola manual por un fallo temporal. Usa ‘Recuperar cola manual’ para retomar; ` +
           "no necesitas repetir /revisarcorreo.",
           [[{ text: "▶️ Recuperar cola manual", callback_data: "colacorreo_recuperarcola" }]]);
         return { correosRevisados: 0, informePublicado: false };
@@ -1083,6 +1107,24 @@ async function procesarCorreoLocalizado(
       // No ocultar errores de Gmail: si el correo sí tenía diseño y no se
       // logra recuperarlo, un PDF de texto no es un comprobante fiel.
       const htmlOriginal = await obtenerHtmlVisualCorreo(correo.id);
+
+      // Caso real (Footprint, Queen Home Apartments — Venecia, 29 sep 2026): un correo reenviado sin
+      // adjuntos reales traía 3 facturas como enlaces .pdf en el cuerpo, pidiendo explícitamente
+      // sumarlas contra el total ya mencionado. Solo se reemplaza gastoDetectado cuando la suma de
+      // ≥2 facturas leídas de verdad cuadra exacta con el importe ya detectado del texto — si algo no
+      // cuadra o un enlace falla, sigue exactamente como antes (un único gasto simplificado).
+      const verificacionEnlazadas = await verificarFacturasEnlazadasEnCuerpo(
+        htmlOriginal, gastoDetectado, `De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpoCompleto}`
+      ).catch((error): { verificado: false; leidas: []; motivo?: string } => {
+        console.error(`[revisarCorreoNuevo] Error verificando facturas enlazadas en ${correo.id} (no crítico, sigue con el gasto simple):`, error);
+        return { verificado: false, leidas: [], motivo: undefined };
+      });
+      if (verificacionEnlazadas.verificado) {
+        gastoDetectado = verificacionEnlazadas.datosCombinados;
+      } else if (verificacionEnlazadas.motivo) {
+        console.log(`[revisarCorreoNuevo] Facturas enlazadas en ${correo.id} no verificadas: ${verificacionEnlazadas.motivo}`);
+      }
+
       const bytes = await generarComprobantePDF(
         { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto, htmlOriginal },
         gastoDetectado
@@ -1199,13 +1241,21 @@ async function procesarSiguienteCorreoActivoInterno(chatId: number): Promise<voi
   const activo = await iniciarSiguienteActivo(chatId);
   if (!activo) return; // cola vacía — nada más que revisar.
 
+  const identidadActiva = { threadId: activo.id, mensajeId: activo.mensajeId };
+  // Provisional, antes de cualquier llamada externa que pueda fallar: activar deja pendientes=0, y para el
+  // vigilante 0 significa «ya resuelto, solo falta confirmar leído en Gmail» — si Gmail fallara AQUÍ (503,
+  // identidad distinta) antes de conocer el número real de adjuntos, la fila se quedaba en 0 varios minutos y
+  // podía cerrarse sola sin haber mostrado nada al operador (hallazgo real de auditoría, 28/09). Se corrige de
+  // nuevo más abajo con el número real en cuanto se conoce; establecerPendientesActivo es idempotente por identidad.
+  await establecerPendientesActivo(chatId, identidadActiva, 1).catch((error) =>
+    console.error("[revisarCorreoNuevo] No se pudo fijar el pendiente provisional (no crítico):", error)
+  );
+
   try {
     const correo = await obtenerResumenCorreo(activo.mensajeId);
     if (correo.id !== activo.mensajeId || correo.threadId !== activo.id) {
       throw new Error("Gmail devolvió una identidad distinta a la fila activa; se conserva sin leer");
     }
-    await comprobarCorreoDisponible(correo.threadId);
-    const identidadActiva = { threadId: activo.id, mensajeId: activo.mensajeId };
     const inicializado = await establecerPendientesActivo(
       chatId,
       identidadActiva,
@@ -1213,6 +1263,11 @@ async function procesarSiguienteCorreoActivoInterno(chatId: number): Promise<voi
     );
     if (!inicializado) {
       throw new Error("el correo cambió antes de inicializar sus decisiones pendientes");
+    }
+    const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
+    if (previa.tipo === "ya_registrado") {
+      await cerrarActivoYaRegistrado(chatId, correo, previa);
+      return;
     }
     await procesarCorreoLocalizado(chatId, correo, true);
   } catch (error) {
@@ -1291,17 +1346,23 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
       if (correo.id !== propuesta.mensajeId || correo.threadId !== propuesta.threadId) {
         throw new Error("Gmail devolvió una identidad distinta; no se ejecutó el reintento");
       }
-      await comprobarCorreoDisponible(correo.threadId);
+      // Igual que en la cola: con 0 pendientes el vigilante daría el correo por resuelto si esta comprobación falla.
+      if (alcance === "correo" && activo.pendientesRestantes < 1) {
+        const inicializado = await establecerPendientesActivo(
+          chatId,
+          { threadId: activo.id, mensajeId: activo.mensajeId },
+          correo.adjuntos.length > 0 ? correo.adjuntos.length : 1
+        );
+        if (!inicializado) throw new Error("el correo dejó de ser el activo antes de reiniciar");
+      }
+      const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
+      // «Ya registrado» habla del correo entero; un reintento de un adjunto o del cuerpo no puede darlo por cerrado.
+      if (previa.tipo === "ya_registrado" && alcance === "correo") {
+        await cerrarActivoYaRegistrado(chatId, correo, previa);
+        return;
+      }
 
       if (alcance === "correo") {
-        if (activo.pendientesRestantes < 1) {
-          const inicializado = await establecerPendientesActivo(
-            chatId,
-            { threadId: activo.id, mensajeId: activo.mensajeId },
-            correo.adjuntos.length > 0 ? correo.adjuntos.length : 1
-          );
-          if (!inicializado) throw new Error("el correo dejó de ser el activo antes de reiniciar");
-        }
         await procesarCorreoLocalizado(chatId, correo, true);
         return;
       }
@@ -1357,13 +1418,13 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
 export async function procesarCorreoPuntual(
   chatId: number,
   busqueda: string
-): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean }> {
+): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean; yaRegistrado?: boolean }> {
   return conCoordinadorCorreo(() => procesarCorreoPuntualInterno(chatId, busqueda));
 }
 async function procesarCorreoPuntualInterno(
   chatId: number,
   busqueda: string
-): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean }> {
+): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean; yaRegistrado?: boolean }> {
   const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
   const ids = await buscarMensajes(query, 1);
   if (ids.length === 0) return { encontrado: false };
@@ -1385,9 +1446,16 @@ async function procesarCorreoPuntualInterno(
     return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
   }
 
-  await comprobarCorreoDisponible(correo.threadId);
+  const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
+  // Una búsqueda puntual la pide el operador de forma explícita (releer, extraer información, guardar conocimiento,
+  // responder…): no se le quita esa posibilidad, solo se le avisa de que el gasto ya existe para que no lo repita.
+  const yaRegistrado = previa.tipo === "ya_registrado";
+  if (previa.tipo === "ya_registrado") {
+    await sendTelegramMessage(chatId, `${mensajeYaRegistrado(previa, correo.asunto)}\nSigo con la revisión que pediste; no crees ese gasto otra vez.`)
+      .catch(() => {});
+  }
   await procesarCorreoLocalizado(chatId, correo, false);
-  return { encontrado: true, de: correo.de, asunto: correo.asunto };
+  return { encontrado: true, de: correo.de, asunto: correo.asunto, ...(yaRegistrado ? { yaRegistrado: true } : {}) };
 }
 
 /**
@@ -1643,10 +1711,17 @@ export async function handleColaCorreoSiguienteCallback(callback: TelegramCallba
 export async function saltarCorreoActivo(chatId: number): Promise<string> {
   return conCoordinadorCorreo(() => saltarCorreoActivoInterno(chatId));
 }
-async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
+async function saltarCorreoActivoInterno(chatId: number, opciones: { nota?: string } = {}): Promise<string> {
+  return (await cerrarActivoExplicitoInterno(chatId, opciones)).texto;
+}
+/** `ok` distingue un cierre real de un aviso de fallo: quien cierra por otra razón debe poder avisar del fallo. */
+async function cerrarActivoExplicitoInterno(
+  chatId: number,
+  opciones: { nota?: string } = {}
+): Promise<{ ok: boolean; texto: string }> {
   const activo = await obtenerActivoActual(chatId);
   if (!activo) {
-    return "Ya no hay ningún correo activo esperando — nada que saltar.";
+    return { ok: false, texto: "Ya no hay ningún correo activo esperando — nada que saltar." };
   }
 
   const identidadExacta = { threadId: activo.id, mensajeId: activo.mensajeId };
@@ -1656,15 +1731,15 @@ async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
     `saltar:${activo.id}:${activo.mensajeId}`
   );
   if (!cierre.terminado || !cierre.identidadResuelta) {
-    return "No pude verificar la identidad exacta de este correo. Lo dejé activo y sin leer para no afectar otro mensaje.";
+    return { ok: false, texto: "No pude verificar la identidad exacta de este correo. Lo dejé activo y sin leer para no afectar otro mensaje." };
   }
 
   const marcado = await marcarMensajeComoLeido(activo.mensajeId);
-  if (!marcado) return "No pude marcar el correo como leído. Sigue activo para reintentar sin perderlo de la cola.";
+  if (!marcado) return { ok: false, texto: "No pude marcar el correo como leído. Sigue activo para reintentar sin perderlo de la cola." };
   const borrado = await confirmarActivoResueltoTrasMarcarLeido(chatId, cierre.identidadResuelta);
   if (!borrado) {
-    return "Marqué el mensaje exacto como leído, pero no pude confirmar todavía el cierre local. " +
-      "Lo mantengo bloqueado e idempotente para que el próximo autodiagnóstico termine el cierre sin repetir el trabajo.";
+    return { ok: false, texto: "Marqué el mensaje exacto como leído, pero no pude confirmar todavía el cierre local. " +
+      "Lo mantengo bloqueado e idempotente para que el próximo autodiagnóstico termine el cierre sin repetir el trabajo." };
   }
 
   // Bug real encontrado en vivo (2026-09-03): esto NO marcaba el hilo como
@@ -1682,18 +1757,91 @@ async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
   if (siguiente) await encolarCorreos(chatId, [{ id: activo.id, mensajeId: siguiente.messageId,
     de: siguiente.de, asunto: siguiente.asunto, fechaOrden: siguiente.recibidoEn }], { reconciliarAusentes: false });
 
-  const notaDescartado = `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). ` +
+  const notaDescartado = opciones.nota ?? `🗑️ Descartado — "${activo.asunto}" (de ${activo.de}). ` +
     "Marcado como leído en Gmail — si en realidad todavía hace falta algo, revísalo a mano.";
 
   const quedan = await contarPendientesTotal(chatId);
+  // Con nota propia el aviso sale antes de preguntar por el siguiente; el llamador no vuelve a enviarla.
+  if (opciones.nota) await sendTelegramMessage(chatId, notaDescartado).catch(() => {});
   if (quedan > 0) {
+    // El correo ya está cerrado: fallar al ofrecer el siguiente no debe presentarse como un error de este correo.
     await pedirConfirmacionSiguienteCorreo(
       chatId,
       `Quedan ${quedan} correo${quedan === 1 ? "" : "s"} más en la cola — ¿seguimos con el siguiente?`
-    );
+    ).catch((error) => console.error("[revisarCorreoNuevo] Correo cerrado, pero no se pudo ofrecer el siguiente:", error));
   }
 
-  return notaDescartado;
+  return { ok: true, texto: notaDescartado };
+}
+
+/**
+ * El correo activo ya estaba registrado y conciliado en Holded (operación automática anterior): se cierra
+ * como resuelto en vez de proponer un segundo gasto. Reutiliza el cierre explícito de la cola, que marca el
+ * mensaje exacto como leído y confirma la fila local antes de avanzar.
+ */
+async function cerrarActivoYaRegistrado(
+  chatId: number,
+  correo: Pick<CorreoResumen, "de" | "asunto" | "threadId" | "messageIdHeader" | "id">,
+  previa: Extract<ResultadoOperacionAnterior, { tipo: "ya_registrado" }>
+): Promise<void> {
+  const cierre = await cerrarActivoExplicitoInterno(chatId, { nota: mensajeYaRegistrado(previa, correo.asunto) });
+  if (cierre.ok) return;
+  // No dejar el fallo mudo ni sin botones: el correo sigue activo y el operador debe poder reintentar o descartarlo.
+  const detalle = `⚠️ "${correo.asunto}" ya estaba registrado y conciliado en Holded, pero no pude cerrarlo: ${cierre.texto}`;
+  await publicarReintentoTecnico(chatId, correo, "correo", detalle).catch(async (error) => {
+    console.error("[revisarCorreoNuevo] No se pudo publicar el reintento tras un cierre fallido:", error);
+    await sendTelegramMessage(chatId, detalle).catch(() => {});
+  });
+}
+
+/**
+ * «🔄 Reprocesar este correo»: el correo activo no tiene ninguna pregunta viva (sus botones se perdieron), y esta
+ * acción hace lo mismo que el vigilante tras 3 minutos, pero a petición del operador: lo devuelve a la cola de
+ * un solo paso y lo procesa de nuevo. Se vuelve a comprobar que sigue SIN pregunta viva justo antes, para no
+ * generar una segunda propuesta duplicada si mientras tanto llegó la primera.
+ */
+export async function handleReprocesarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {
+  const chatId = callback.message?.chat.id;
+  await answerCallbackQuery(callback.id, "Reprocesando...").catch((error) =>
+    console.error("[revisarCorreoNuevo] No se pudo responder el callback de reprocesar (no crítico):", error)
+  );
+  if (chatId === undefined) return;
+
+  await conCoordinadorCorreo(async () => {
+    const activo = await obtenerActivoActual(chatId);
+    if (!activo) {
+      await sendTelegramMessage(chatId, "Ya no hay ningún correo activo esperando — nada que reprocesar.").catch(() => {});
+      return;
+    }
+    // Mismo criterio que el vigilante (hallazgo real de auditoría): pendientes=0 es «ya resuelto, solo falta
+    // confirmar leído en Gmail», nunca «reprocesable» — repetiría trabajo financiero ya terminado. Y mientras un
+    // callback de gasto sigue en vuelo (consumió su propuesta y aún escribe en Holded, fuera de este candado) no
+    // hay ninguna de las 13 señales que ver todavía, así que tampoco se reprocesa en esa ventana.
+    if (activo.pendientesRestantes <= 0 || hayActividadCallbackReciente(chatId)) {
+      await sendTelegramMessage(chatId, "Este correo ya no está en un estado que se pueda reprocesar; no hice nada.").catch(() => {});
+      return;
+    }
+    const senal = await huboSenalDeEntrega(chatId, activo.mensajeId, activo.id);
+    if (senal !== false) {
+      await sendTelegramMessage(
+        chatId,
+        senal === true
+          ? `"${activo.asunto}" ya tiene una pregunta viva en el chat: resuélvela desde ahí, no la reprocesé para no duplicarla.`
+          : "No pude comprobar ahora mismo si ese correo tiene una pregunta viva; no hice nada. Inténtalo de nuevo en un momento."
+      ).catch(() => {});
+      return;
+    }
+    const reencolado = await reencolarActivoParaReintento(
+      chatId,
+      { threadId: activo.id, mensajeId: activo.mensajeId },
+      { de: activo.de, asunto: activo.asunto }
+    );
+    if (!reencolado) {
+      await sendTelegramMessage(chatId, "El correo cambió mientras lo comprobaba; no hice nada.").catch(() => {});
+      return;
+    }
+    await procesarSiguienteCorreoActivoInterno(chatId);
+  });
 }
 
 export async function handleDescartarActivoCallback(callback: TelegramCallbackQuery): Promise<void> {

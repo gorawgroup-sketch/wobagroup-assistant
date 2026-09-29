@@ -29,9 +29,12 @@ export function esServicioDigital(proveedor: string, concepto: string): boolean 
 export function esServicioNoViaje(proveedor: string, concepto: string): boolean {
   return esServicioDigital(proveedor, concepto) || /\b(suscripcion|subscription|consultoria|asesoria|honorarios|contabilidad|seguros?|abogad[oa]|catering)\b/.test(norm(`${proveedor} ${concepto}`));
 }
-const cuentaViaje = (s: string) => /\b(viajes?|desplazamientos?|dietas?|alojamiento|hospedaje|transporte)\b/.test(norm(s));
-const cuentaAjuste = (s: string) => /\b(diferencias? .*cambio|comision|comisiones|intereses|ajustes?|redondeo)\b/.test(norm(s));
-const conceptoAjuste = (s: string) => /\b(diferencias? .*cambio|exchange difference|comision bancaria|bank fee|redondeo)\b/.test(norm(s));
+// El catálogo de Footprint está en inglés («Travel Expenses», «Commission»): con solo los nombres en español,
+// su cuenta de viajes no se reconocía como de viaje ni su cuenta de comisiones como de ajuste (caso real
+// 2026-09-28, D1 SAS archivado en «Commission»).
+const cuentaViaje = (s: string) => /\b(viajes?|desplazamientos?|dietas?|alojamiento|hospedaje|transporte|travel|trips?|lodging|accommodation|transportation)\b/.test(norm(s));
+const cuentaAjuste = (s: string) => /\b(diferencias? .*cambio|comision|comisiones|intereses|ajustes?|redondeo|commissions?|bank fees?|interests?|exchange differences?|rounding)\b/.test(norm(s));
+const conceptoAjuste = (s: string) => /\b(diferencias? .*cambio|exchange difference|comision bancaria|comisiones? de venta|sales commissions?|commissions?|bank fee|redondeo)\b/.test(norm(s));
 const cuentaDigitalCompatible = (s: string) => /\b(software|informatica|informaticos|herramientas?|tecnologia|licencias?|suscripciones?|otros servicios|servicios digitales)\b/.test(norm(s));
 const ignoradas = new Set("compra factura recibo purchase creditos credit tarjeta mastercard revolut cuenta personal usada gastos comprobante visual generado desde cuerpo correo adjunto original euros servicio servicios empresa woba footprint eworks business group limited ireland proveedor fecha moneda importe pago pagos cargo nombre".split(" "));
 function palabrasConcepto(c: CriteriosCuenta): Set<string> {

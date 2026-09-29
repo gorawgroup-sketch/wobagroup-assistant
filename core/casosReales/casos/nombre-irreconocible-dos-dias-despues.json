@@ -1,0 +1,59 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "nombre-irreconocible-dos-dias-despues",
+  "fuente": "Diseño de la traza (2026-09-28): el operador debe ver por qué se descartó un cargo con su mismo importe.",
+  "descripcion": "Sin nombre reconocible y con el cargo a 2 días de la fecha, no se ofrece; la explicación dice qué se descartó y por qué en lugar de «no encontré nada».",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Mi Cafetería",
+    "concepto": "Café",
+    "monto": 3.91,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "SQ *XYZ 88",
+        "amount": "-3.91",
+        "currency": "USD",
+        "booking_date": "2026-09-27",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ],
+    "trazaContiene": [
+      "Revisé 3 cuenta(s)",
+      "descarté",
+      "el nombre no se reconoce y no coinciden la fecha"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ]
+  }
+}

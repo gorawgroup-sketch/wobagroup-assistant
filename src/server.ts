@@ -1,7 +1,39 @@
+// Debe ser el PRIMER import del archivo, sin excepción. Causa raíz real
+// (encontrada en vivo 2026-09-27): 37 stores de Sheets en todo el proyecto
+// leían su `process.env.CASHFLOW_SHEET_ID` (y variables equivalentes) al
+// cargarse el módulo, no cuando de verdad se usaban. Si CUALQUIER import de
+// este archivo situado antes de "dotenv/config" arrastra, aunque sea
+// transitivamente, alguno de esos stores, ese store queda con el valor
+// cacheado en `undefined` para siempre — dotenv corre demasiado tarde para
+// arreglarlo. Ya pasó: `resolverRespuestaCarpeta`/`colaRevisionStore`
+// estaban antes de esta línea y rompían en silencio TODOS los stores de
+// Sheets (no solo el de seguros) al levantar el server compilado. Se
+// corrigió de raíz en cada store (ahora leen `process.env` recién en el
+// momento de uso, igual que loadServiceAccountCredentials en
+// serviceAccount.ts) y ADEMÁS aquí, para que ningún import futuro pueda
+// volver a colarse por delante sin que se note en este comentario. Ver
+// también el flag `-r dotenv/config` en railway.json/package.json — misma
+// protección a nivel de proceso, por si este archivo cambia de entrypoint.
+import "dotenv/config";
+
+// ANTHROPIC_API_KEY es deliberadamente opcional: la política de costes puede desactivar la API o
+// delegar procesos a Claude Max/Codex sin que el servicio entero deje de arrancar. Cada operación que
+// realmente necesite la API ya falla de forma localizada y explícita si no existe la clave.
+const REQUIRED_ENV_VARS = ["CASHFLOW_SHEET_ID", "TELEGRAM_BOT_TOKEN"] as const;
+const faltantes = REQUIRED_ENV_VARS.filter((v) => !process.env[v]);
+if (faltantes.length > 0) {
+  console.error(
+    `[server] Arranque abortado: faltan variables de entorno obligatorias: ${faltantes.join(", ")}. ` +
+    `Sin ellas el sistema arranca "vivo" pero roto (el chat responde, pero cada store de Sheets, ` +
+    `la autorización de Telegram fallan en silencio). Revisa .env (local) o las variables ` +
+    `del servicio en Railway (producción).`
+  );
+  process.exit(1);
+}
+
 import { resolverRespuestaCarpeta } from "../core/documental/respuestaCarpeta";
 import { obtenerResumenColaPorChat } from "../core/gmail/colaRevisionStore";
 import { avisoEstadoCola, esContinuacionCorreo, avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
-import "dotenv/config";
 import "../core/google/globalOptions";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
@@ -42,11 +74,20 @@ import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import {
   revisarCorreoNuevo,
-  RevisionCorreoOcupadaError,
   handleColaCorreoSiguienteCallback,
   handleDescartarActivoCallback,
+  handleReprocesarActivoCallback,
   handleReintentarActivoCallback,
 } from "../core/jobs/revisarCorreoNuevo";
+import {
+  avisarYRegistrarRevisionesInterrumpidas,
+  ejecutarRevisionCorreoManual,
+  vigilarReanudacionesPendientes,
+} from "../core/jobs/revisionCorreoManual";
+import { solicitarCierre } from "../core/utils/cierreServicio";
+import { entregarRespuestaChat } from "../core/telegram/entregarRespuestaChat";
+import { conContextoInteractivo } from "../core/telegram/contextoInteractivo";
+import { BuzonOcupadoError } from "../core/gmail/automatico/postgres";
 import {
   handleCancelarDescartarTodoPendienteCallback,
   handleConfirmarDescartarTodoPendienteCallback,
@@ -158,6 +199,7 @@ import {
   reconciliarEdicionesCompraAlArrancar,
   reconciliarAdjuntosCompraAlArrancar,
   reconciliarMovimientosAlArrancar,
+  precalentarMonedasCuentasReales,
   reconciliarContactosAlArrancar,
 } from "../core/holded/write";
 
@@ -247,9 +289,28 @@ async function avisarEntregaTelegramIncierta(entrega: EntregaTelegramDurable): P
   await sendTelegramMessageWithButtons(entrega.chatId, aviso.texto, aviso.botones);
 }
 
+/**
+ * Todo update de Telegram es una acción del operador: si al ejecutarla el buzón de correo está ocupado por una
+ * revisión, se le avisa una vez de que queda en espera en lugar de fallar a los 30 s (ver contextoInteractivo.ts).
+ */
+function procesarUpdateTelegramInteractivo(update: TelegramUpdate): Promise<void> {
+  const chatId = update.callback_query?.message?.chat.id ?? update.message?.chat.id;
+  return conContextoInteractivo(
+    async () => {
+      if (chatId === undefined) return;
+      await sendTelegramMessage(
+        chatId,
+        "⏳ El buzón de correo está ocupado por una revisión en curso. Tu acción queda en espera y se aplicará sola en cuanto termine " +
+          "(puede tardar un par de minutos). No hace falta que vuelvas a pulsar."
+      );
+    },
+    () => procesarUpdateTelegram(update)
+  );
+}
+
 const coordinadorEntregasTelegram = new CoordinadorEntregasTelegram(
   durableDeliveryStore,
-  procesarUpdateTelegram,
+  procesarUpdateTelegramInteractivo,
   avisarEntregaTelegramIncierta
 );
 const configuracionTelegramDurable = configuracionEntregasDurables();
@@ -257,6 +318,18 @@ const configuracionTelegramDurable = configuracionEntregasDurables();
 process.on("SIGTERM", () => {
   if (cerrandoPorSigterm) return; // Railway no debería mandar SIGTERM dos veces, pero por si acaso.
   cerrandoPorSigterm = true;
+  // Caso real 2026-09-28 16:12: /revisarcorreo (hasta 30 min) no cabe en ninguna ventana de
+  // drenado razonable, y salir «de todas formas» lo dejaba en «39/50» sin aviso ni reanudación.
+  // Ahora: (1) la señal de cierre hace que los trabajos largos paren en su siguiente punto de
+  // control sin abrir escrituras nuevas; (2) cada revisión manual en curso deja de inmediato su
+  // registro durable de reanudación y avisa al chat — antes de esperar nada, por si el SIGKILL
+  // llega primero; el proceso nuevo la retoma al arrancar (core/jobs/revisionCorreoManual.ts).
+  solicitarCierre();
+  trackearEnSegundoPlano(
+    avisarYRegistrarRevisionesInterrumpidas().catch((error) =>
+      console.error("[server] No se pudo registrar/avisar las revisiones de correo interrumpidas:", error)
+    )
+  );
   coordinadorEntregasTelegram.cerrar();
   servidorHttp?.close();
 
@@ -273,7 +346,11 @@ process.on("SIGTERM", () => {
   console.log(
     `[server] SIGTERM recibido con ${actualizacionesEnCurso} actualización(es) de Telegram, ${coordinadorEntregasTelegram.estado.activas} entrega(s) durable(s), ${solicitudesChatEnCurso()} chat(s) web, ${obtenerCantidadJobsEnCurso()} job(s) y ${obtenerEstadoPlanificadorHerramientas().activas} herramienta(s) activas — esperando a que terminen antes de salir.`
   );
-  const esperaMaximaDrenajeMs = 55_000;
+  // Unos segundos por debajo del drenado real de Railway (railway.json `drainingSeconds` /
+  // variable RAILWAY_DEPLOYMENT_DRAINING_SECONDS), leído del entorno para que no haya que
+  // mantener dos números a mano: si se cambia allí, esto lo sigue.
+  const drenadoSegundos = Number(process.env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS);
+  const esperaMaximaDrenajeMs = Math.max(5_000, (Number.isFinite(drenadoSegundos) && drenadoSegundos > 0 ? drenadoSegundos : 60) * 1000 - 5_000);
   const inicio = Date.now();
   const intervalo = setInterval(() => {
     if (nadaEnCurso()) {
@@ -1519,6 +1596,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
     } else if (data.startsWith("colacorreo_")) {
       if (data === "colacorreo_descartaractivo") {
         await handleDescartarActivoCallback(callback);
+      } else if (data === "colacorreo_reprocesaractivo") {
+        await handleReprocesarActivoCallback(callback);
       } else if (data.startsWith("colacorreo_reintentar:")) {
         await handleReintentarActivoCallback(callback);
       } else {
@@ -1581,6 +1660,17 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
     // no crea un segundo mensaje tardío. El aviso persistente se manda una sola vez justo debajo.
     await answerCallbackQuery(callback.id).catch(() => {});
     const chatId = callback.message?.chat.id;
+    if (chatId !== undefined && error instanceof BuzonOcupadoError) {
+      // Se sabe la causa exacta (el buzón no se liberó), pero no en qué paso de la acción se pidió el candado:
+      // si fue al cerrar el correo de un gasto ya creado, ese gasto existe. El aviso dice ambas cosas.
+      await sendTelegramMessage(
+        chatId,
+        "⏳ El buzón de correo siguió ocupado más de 5 minutos por otra revisión y no pude terminar tu acción. " +
+          "Si era crear o conciliar un gasto, comprueba en Holded si quedó hecho antes de repetirla; si solo era avanzar " +
+          "la cola, vuelve a pulsar cuando termine la revisión."
+      ).catch(() => {});
+      return false;
+    }
     if (chatId !== undefined) {
       // Hallazgo real de auditoría: este mensaje se manda vía sendTelegramMessage — por el historial
       // compartido, llega a Telegram Y al chat web (despacharCallbackQuery se reutiliza tal cual para
@@ -2036,42 +2126,9 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
 
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
-    trackearEnSegundoPlano(
-      revisarCorreoNuevo({ origen: "manual", chatId: incoming.chatId })
-      .then((resultado) => {
-        // Pedido explícito de Carlos, tras un caso real: pidió /revisarcorreo
-        // con varios correos reales sin leer en Gmail, y el sistema
-        // respondió "0 correos revisados" sin más — la causa real era un
-        // correo "activo" con una pregunta sin responder desde horas antes
-        // (bloqueando el resto de la cola), pero el aviso no lo decía. Ahora,
-        // si ese es el caso, se avisa explícitamente qué es lo que falta
-        // resolver en vez de dar a entender que no había nada pendiente.
-        if (resultado.activoBloqueando) {
-          // Pedido explícito de Carlos, tras un caso real: "esto ya lo
-          // gestioné" — a veces el correo activo ya está resuelto por su
-          // cuenta (fuera del chat), y antes la única salida era esperar
-          // 48h o encontrar el mensaje original. El botón lo libera ya
-          // mismo (ver handleDescartarActivoCallback).
-          sendTelegramMessageWithButtons(
-            incoming.chatId,
-            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}) — resuélvelo (los botones de esa pregunta siguen arriba en el chat) para que el resto de la cola pueda avanzar.`,
-            [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
-          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
-        } else {
-          sendTelegramMessage(
-            incoming.chatId,
-            `✅ Revisión extraordinaria completa — ${resultado.correosRevisados} correo(s) revisado(s).`
-          ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
-        }
-      })
-      .catch((error) => {
-        console.error("Error en revisión extraordinaria de correo:", error);
-        const mensaje = error instanceof RevisionCorreoOcupadaError
-          ? "⏳ Ya hay otra revisión de correo trabajando. El proceso sigue protegido; vuelve a intentarlo en unos minutos."
-          : "⚠️ Hubo un error revisando el correo.";
-        sendTelegramMessage(incoming.chatId, mensaje).catch(() => {});
-      })
-    );
+    // La revisión vive en core/jobs/revisionCorreoManual.ts para que la reanudación tras un
+    // despliegue (SIGTERM) ejecute exactamente el mismo camino que esta orden escrita a mano.
+    trackearEnSegundoPlano(ejecutarRevisionCorreoManual(incoming.chatId));
     return;
   }
 
@@ -2121,7 +2178,8 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   const mensajeTrabajandoId = await avisarTrabajando(incoming.chatId);
   try {
     const reply = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
-    await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, reply);
+    // Nunca se entrega una respuesta que imite una propuesta o un aviso automático (ver entregarRespuestaChat.ts).
+    await entregarRespuestaChat(incoming.chatId, mensajeTrabajandoId, reply);
   } catch (error) {
     console.error("Error procesando el mensaje de Telegram:", error);
     // Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): con el saldo de Anthropic agotado,
@@ -2165,7 +2223,7 @@ app.post("/webhook/telegram", (req: Request, res: Response) => {
     res.sendStatus(200);
     if (!esUpdateTelegramNuevoLocal(update.update_id)) return;
     actualizacionesEnCurso++;
-    procesarUpdateTelegram(update)
+    procesarUpdateTelegramInteractivo(update)
       .catch((error) => console.error("Error no capturado procesando el webhook de Telegram:", error))
       .finally(() => { actualizacionesEnCurso--; });
     return;
@@ -2349,10 +2407,15 @@ app.post("/admin/run-gmail-check", (req: Request, res: Response) => {
 
   res.json({ ok: true, mensaje: "Revisión automática y cola manual iniciadas en segundo plano." });
 
+  // Mismo camino que /revisarcorreo (aviso, registro y reanudación si un despliegue la corta);
+  // sin chat de alertas configurado no hay a quién avisar y se conserva la ruta directa.
+  const chatAlertas = Number(process.env.CASHFLOW_ALERTS_CHAT_ID);
   trackearEnSegundoPlano(
-    revisarCorreoNuevo({ origen: "manual" }).catch((error) => {
-      console.error("[admin/run-gmail-check] Error:", error);
-    })
+    Number.isFinite(chatAlertas) && chatAlertas
+      ? ejecutarRevisionCorreoManual(chatAlertas)
+      : revisarCorreoNuevo({ origen: "manual" }).catch((error) => {
+        console.error("[admin/run-gmail-check] Error:", error);
+      })
   );
 });
 
@@ -2750,6 +2813,13 @@ servidorHttp = app.listen(PORT, () => {
       })
     );
   }
+  // Revisiones manuales de correo que un despliegue interrumpió (ver SIGTERM arriba). Vigilancia
+  // periódica, no una sola consulta: el contenedor viejo escribe su registro al recibir SIGTERM,
+  // que Railway manda DESPUÉS de que este proceso ya arrancó.
+  vigilarReanudacionesPendientes({
+    seguir: trackearEnSegundoPlano,
+    alRelanzar: (relanzadas) => console.log(`[revisarcorreo] Reanudadas ${relanzadas} revisión(es) interrumpida(s) por el despliegue anterior.`),
+  });
   trackearEnSegundoPlano(
     reconciliarEnviosCorreoAlArrancar()
       .then((r) => {
@@ -2811,6 +2881,7 @@ servidorHttp = app.listen(PORT, () => {
         );
       })
   );
+  trackearEnSegundoPlano(precalentarMonedasCuentasReales());
   trackearEnSegundoPlano(
     reconciliarMovimientosAlArrancar()
       .then((r) => {

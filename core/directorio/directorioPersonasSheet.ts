@@ -1,7 +1,6 @@
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_directorio_personas";
 const HEADERS = ["nombre", "email", "origen", "primeraVez", "ultimaVez", "vecesVisto"];
 
@@ -17,10 +16,11 @@ const HEADERS = ["nombre", "email", "origen", "primeraVez", "ultimaVez", "vecesV
  * el resto de los stores de este proyecto (nunca en disco local).
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

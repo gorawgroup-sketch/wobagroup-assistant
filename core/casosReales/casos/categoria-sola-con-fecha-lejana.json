@@ -1,0 +1,59 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "categoria-sola-fecha-lejana",
+  "fuente": "Incidente 2026-09-28: un café de Bogotá (ticket sin proveedor identificado, 23/09) quedó enlazado con el cargo «La Ultima Cena» (27/09, restaurante de Puerto Rico) porque ambos son «alimentación».",
+  "descripcion": "Compatible SOLO por categoría (el nombre no se reconoce) y con la fecha a 4 días: se ofrece al armar la propuesta pero como POR CONFIRMAR (con aviso), y la conciliación automática no lo ve.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Sin identificar (ticket sin nombre de establecimiento visible)",
+    "concepto": "Consumo cafetería (Croissant de Chocolate + Chemex 2T Microlotes) — Mesa 8",
+    "monto": 15.86,
+    "moneda": "USD",
+    "fecha": "2026-09-23"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "La Ultima Cena",
+        "amount": "-15.86",
+        "currency": "USD",
+        "booking_date": "2026-09-27",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m1",
+        "compatibilidad": "por_confirmar"
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesIncluyen": [
+      "Crear y conciliar"
+    ],
+    "trazaContiene": [
+      "ofrecido por confirmar"
+    ]
+  }
+}

@@ -1,7 +1,15 @@
-import { movimientoCompatibleConGasto } from "../holded/write";
+import { botonContinuarConciliacion, continuarCorreoConciliacion } from "./continuarCorreoConciliacion";
+import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
+import { obtenerConciliacionesPendientesPorChat } from "./conciliacionPendienteStore";
+import { obtenerConciliacionesAmbiguasPendientesPorChat } from "./conciliacionAmbiguaPendienteStore";
+import { recuperarConciliacionExistenteCompra } from "../holded/write";
+import { candidatoUtilizableParaGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
+import { buscarCargoParaPropuesta, type ResultadoCargoPropuesta } from "./buscarCargoParaPropuesta";
+import { alinearTasaCambioAlMovimientoElegido } from "./alinearTasaAlMovimiento";
+import { alinearDocumentoAlCargoEnOtraMoneda } from "./alinearDocumentoAlCargo";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
 import { unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -375,7 +383,9 @@ export async function prepararPropuestaFinalGasto(
     concepto,
     proveedorAprendizaje,
     cambios.personaAsociada ?? propuesta.personaAsociada,
-    tagsAprendidos
+    tagsAprendidos,
+    undefined,
+    cambios.contextoDeViaje
   );
   return {
     ...propuesta,
@@ -627,7 +637,7 @@ async function registrarCierreGastoDePropuesta(
   });
 }
 
-async function registrarCierreGastoPendiente(
+export async function registrarCierreGastoPendiente(
   pendiente: {
     mensajeIdGmail?: string;
     gastoId: string;
@@ -673,6 +683,7 @@ export type EstadoIntentoConciliacion =
   | "incierta";
 
 interface ResultadoIntentarConciliar {
+  soloLectura?: boolean;
   nota: string;
   /** Solo `conciliada` permite cerrar el correo automáticamente. Cualquier otro estado conserva
    * el mensaje UNREAD hasta que exista una decisión humana o una verificación terminal real. */
@@ -746,6 +757,7 @@ async function ofrecerEleccionMovimientosAmbiguos(
       },
     ]);
     filas.push([{ text: "❌ Ninguno, dejar así", callback_data: `gasto_conciliar_elegir_no:${pendiente.id}` }]);
+    filas.push(...botonContinuarConciliacion(pendiente, true));
     const notaSugerido = indiceSugerido !== undefined
       ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores verificadas de este proveedor.`
       : "";
@@ -753,14 +765,14 @@ async function ofrecerEleccionMovimientosAmbiguos(
     const detalleCandidatos = candidatos
       .map((m, i) => hayTipoCambio
         ? describirMovimientoMultimoneda(m, i)
-        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+        : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
       .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
       `💳 Encontré ${candidatos.length} movimientos bancarios${hayTipoCambio ? " en otra moneda usando una tasa histórica de referencia" : esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
         detalleCandidatos +
         notaSugerido +
-        `\n\n¿Con cuál concilio?${hayTipoCambio ? " No elegiré ninguno automáticamente porque la tasa real del banco puede incluir margen." : ""}`,
+        `\n\n¿Con cuál concilio?${hayTipoCambio ? " No elegiré ninguno automáticamente porque la tasa real del banco puede incluir margen; al elegir uno, ajustaré la tasa de cambio del gasto a ese cargo para que la conciliación quede sin diferencia." : ""}`,
       filas
     );
     return {
@@ -793,6 +805,15 @@ async function ofrecerEleccionMovimientosAmbiguos(
  * un fallo aquí no debe tumbar el flujo principal de creación/adjunto, que
  * ya tuvo éxito.
  */
+async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: string): Promise<ResultadoIntentarConciliar | undefined> {
+  const estado = await recuperarConciliacionExistenteCompra(empresa, gastoId);
+  if (estado === "nueva") return undefined;
+  if (estado === "conciliada") return { estado: "conciliada", nota: "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se creó otro pago." };
+  return { estado: "incierta", nota: estado === "revision"
+    ? "⚠️ La compra ya tiene pagos. Su conciliación requiere revisión; no se ofrecerán otros cargos ni se añadirán pagos. Verificar solo relee el resultado anterior."
+    : "⏳ La operación anterior todavía requiere verificación. No se buscarán ni asignarán otros cargos; verificar solo relee compra y banco." };
+}
+
 async function intentarConciliar(
   empresa: Empresa,
   monto: number,
@@ -808,6 +829,8 @@ async function intentarConciliar(
   threadIdGmail?: string
 ): Promise<ResultadoIntentarConciliar> {
   try {
+    const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
+    if (recuperada) return recuperada;
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
     const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto });
 
@@ -833,6 +856,18 @@ async function intentarConciliar(
       }
     }
 
+    if (!candidato && proveedor) {
+      // «Crear (sin conciliar)» existe para los cargos que llegan tarde o con otro nombre: si la búsqueda estricta no
+      // encuentra nada, se repite admitiendo los «por confirmar»/«aprendidos» (nombre distinto o solo la categoría con la fecha
+      // lejana) y se pide ELEGIR con aviso. Nunca se concilia solo, pero tampoco queda un «No encontré» para siempre.
+      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto, incluirPorConfirmar: true }))
+        .filter((m) => m.compatibilidad);
+      if (paraElegir.length > 0) {
+        return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, paraElegir,
+          deColaCorreo, false, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail);
+      }
+    }
+
     if (!candidato) {
       // El gasto puede estar en USD y el cargo bancario en EUR (u otra moneda real de la misma
       // empresa). Después de que el usuario pide conciliar, se repite también la búsqueda por tipo
@@ -841,7 +876,7 @@ async function intentarConciliar(
       const monedasReales = await obtenerMonedasCuentasReales(empresa);
       const porTipoCambio = await buscarMovimientosPorTipoCambio(
         empresa,
-        { monto, moneda, fecha: fechaBusqueda, proveedor },
+        { monto, moneda, fecha: fechaBusqueda, proveedor, concepto: descripcionGasto },
         monedasReales
       );
       if (porTipoCambio.length > 0) {
@@ -912,12 +947,61 @@ async function conciliarContraMovimientoEspecifico(
     : esAproximado
       ? " — coincidencia APROXIMADA (nombre y monto parecidos, no exactos), confírmalo en Holded"
       : "";
+  let notaTasa = "";
   try {
+    const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
+    if (recuperada) return recuperada;
     const yaConciliado = await estaMovimientoYaConciliado(empresa, movimiento.accountId, movimiento.movementId, movimiento.fecha);
     if (yaConciliado) {
       return { nota:
         `\n\n⚠️ Elegiste conciliar contra "${movimiento.descripcion || "sin descripción"}" (${movimiento.monto.toFixed(2)} ${movimiento.moneda}) ` +
         `pero ese movimiento ya quedó conciliado por otra vía mientras esperaba tu aprobación — revísalo a mano en Holded.`
+      , estado: "fallida" };
+    }
+
+    // Cargo en otra moneda elegido a mano: antes de conciliar se fija la tasa de cambio del gasto a la tasa real de ese
+    // cargo, para que la conciliación quede sin diferencia (ni pago extra por cambio ni saldo residual). Si no se puede
+    // ajustar con certeza, no se concilia: hacerlo dejaría exactamente la diferencia que se quiere evitar.
+    if (movimiento.origenCoincidencia === "tipo_cambio") {
+      try {
+        const alineacion = await alinearTasaCambioAlMovimientoElegido(empresa, gastoId, movimiento);
+        if (alineacion.estado === "ajustada") {
+          notaTasa = `\n\n🔧 Ajusté la tasa de cambio del gasto (${alineacion.tasaAnterior} → ${alineacion.tasaNueva.toFixed(4)} ` +
+            `${alineacion.monedaDocumento}/EUR) para que valga exactamente ${alineacion.montoEur.toFixed(2)} EUR, igual que el cargo elegido. ` +
+            `El importe original del comprobante no cambió y la conciliación queda sin diferencia.`;
+        } else if (alineacion.estado === "ya_alineada") {
+          notaTasa = `\n\n🔧 La tasa de cambio del gasto (${alineacion.tasa}) ya lo dejaba en ${alineacion.montoEur.toFixed(2)} EUR, ` +
+            `igual que el cargo elegido (ajustada en un intento anterior).`;
+        } else {
+          notaTasa = `\n\nℹ️ No ajusté la tasa de cambio del gasto: ${alineacion.motivo}. La conciliación puede dejar una pequeña diferencia.`;
+        }
+      } catch (errorTasa) {
+        console.error("[gastoCallbackHandler] No se pudo ajustar la tasa de cambio del gasto al cargo elegido:", errorTasa);
+        const motivo = errorTasa instanceof Error ? errorTasa.message : String(errorTasa);
+        return { nota:
+          `\n\n⚠️ Elegiste "${movimiento.descripcion || "sin descripción"}" (${movimiento.monto.toFixed(2)} ${movimiento.moneda}), pero no pude ` +
+          `ajustar la tasa de cambio del gasto a ese cargo y por eso no concilié nada (evito dejar una diferencia). ${motivo}`
+        , estado: "fallida" };
+      }
+    }
+
+    // Comprobante en EUR pagado desde una cuenta en otra moneda (caso real Gomerco, 2026-09-29): el cargo se encontró
+    // por su equivalente contable en EUR, pero documento y movimiento están en monedas distintas y la conciliación se
+    // rechazaría. El documento pasa a la moneda e importe reales del cargo; ver alinearDocumentoAlCargo.ts.
+    try {
+      const alineado = await alinearDocumentoAlCargoEnOtraMoneda(empresa, gastoId, movimiento);
+      if (alineado.estado === "alineado") {
+        notaTasa += `\n\n🔧 El cargo salió de una cuenta en ${alineado.moneda}: son ${alineado.importe.toFixed(2)} ${alineado.moneda} ` +
+          `(equivalente contable ${alineado.equivalenteContableEur.toFixed(2)} EUR). Registré el gasto en ${alineado.moneda} por ese importe ` +
+          `(tasa ${alineado.tasa.toFixed(4)}) para que la conciliación quede sin diferencia. El comprobante era de ` +
+          `${alineado.importeComprobanteEur.toFixed(2)} EUR.`;
+      }
+    } catch (errorAlineacion) {
+      console.error("[gastoCallbackHandler] No se pudo alinear el gasto con el cargo en otra moneda:", errorAlineacion);
+      const motivo = errorAlineacion instanceof Error ? errorAlineacion.message : String(errorAlineacion);
+      return { nota:
+        `\n\n⚠️ El cargo "${movimiento.descripcion || "sin descripción"}" está en una cuenta de otra moneda y no pude dejar el gasto ` +
+        `en esa moneda, así que no concilié nada (evito dejar una diferencia). ${motivo}`
       , estado: "fallida" };
     }
 
@@ -989,13 +1073,13 @@ async function conciliarContraMovimientoEspecifico(
       const requiereRevision = conciliacionRequiereRevision(resultado);
       return { nota:
         `\n\n💳 Movimiento bancario conciliado y enlazado al gasto (${movimiento.descripcion || "sin descripción"}, ` +
-        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaPendiente}${notaMovimientoParcial}`
-      , estado: requiereRevision
+        `${movimiento.monto.toFixed(2)} ${movimiento.moneda}, enlazado por ${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda})${notaAprox}.${notaTasa}${notaPendiente}${notaMovimientoParcial}`
+      , soloLectura: requiereRevision, estado: requiereRevision
           ? resultado.ajusteCambioDivisa?.estado === "incierto" ? "incierta" : "fallida"
           : "conciliada" };
     }
     return { nota:
-      `\n\n⚠️ Elegiste conciliar contra "${movimiento.descripcion || "sin descripción"}" (${movimiento.monto.toFixed(2)} ${movimiento.moneda}) ` +
+      `${notaTasa}\n\n⚠️ Elegiste conciliar contra "${movimiento.descripcion || "sin descripción"}" (${movimiento.monto.toFixed(2)} ${movimiento.moneda}) ` +
       `pero no pude confirmar que quedó conciliado Y enlazado al gasto (estado: ${resultado.statusFinal}, monto enlazado: ` +
       `${resultado.montoEnlazado.toFixed(2)} ${movimiento.moneda}) — revísalo a mano en Holded.`
     , estado: "fallida" };
@@ -1003,12 +1087,14 @@ async function conciliarContraMovimientoEspecifico(
     console.error("[gastoCallbackHandler] Error conciliando contra el movimiento elegido:", error);
     if (error instanceof ConciliacionMovimientoInciertaError) {
       return { nota:
-        `\n\n⏳ Holded no confirmó si concilió el movimiento "${movimiento.descripcion || "sin descripción"}". ` +
+        `${notaTasa}\n\n⏳ Holded no confirmó si concilió el movimiento "${movimiento.descripcion || "sin descripción"}". ` +
         "Wobi bloqueó toda repetición y lo verificará solo por lectura. No vuelvas a conciliarlo manualmente hasta comprobar su estado en Holded."
       , estado: "incierta" };
     }
-    return { nota: `\n\n⚠️ El gasto se creó, pero hubo un error al conciliar contra "${movimiento.descripcion || "sin descripción"}" — ` +
-      `el correo seguirá sin leer para reintentarlo.`, estado: "fallida" };
+    // El motivo real (p. ej. «Recurso reservado por la operación automática…») debe llegar al operador: antes solo veía un aviso genérico.
+    const motivoReal = error instanceof Error && error.message ? ` Motivo: ${error.message.slice(0, 300)}` : "";
+    return { nota: `${notaTasa}\n\n⚠️ El gasto se creó, pero hubo un error al conciliar contra "${movimiento.descripcion || "sin descripción"}" — ` +
+      `el correo seguirá sin leer para reintentarlo.${motivoReal}`, estado: "fallida" };
   }
 }
 
@@ -1063,6 +1149,7 @@ async function preguntarSiConciliar(
       { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
       { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
     ]];
+    botones.push(...botonContinuarConciliacion(pendiente));
     try {
       await sendTelegramMessageWithButtons(chatId, texto, botones);
     } catch (errorEnvio) {
@@ -1080,13 +1167,15 @@ async function preguntarSiConciliar(
 async function reponerPreguntaConciliacion(
   pendiente: ConciliacionPendiente,
   mensajeId: number | undefined,
-  aviso: string
+  aviso: string,
+  soloLectura = false
 ): Promise<void> {
   const restaurada = await restaurarConciliacionPendiente(pendiente);
-  const botones = [[
+  const botones = soloLectura ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${restaurada.id}:lectura` }]] : [[
     { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${restaurada.id}` },
     { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${restaurada.id}` },
   ]];
+  botones.push(...botonContinuarConciliacion(restaurada));
   if (mensajeId != null) {
     try {
       await editTelegramMessage(restaurada.chatId, mensajeId, aviso, botones);
@@ -1101,16 +1190,18 @@ async function reponerPreguntaConciliacion(
 async function reponerPreguntaConciliacionAmbigua(
   pendiente: ConciliacionAmbiguaPendiente,
   mensajeId: number | undefined,
-  aviso: string
+  aviso: string,
+  soloLectura = false
 ): Promise<void> {
   const restaurada = await restaurarConciliacionAmbiguaPendiente(pendiente);
-  const botones = [
+  const botones = soloLectura ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_elegir:${restaurada.id}:0:lectura` }]] : [
     ...restaurada.candidatos.map((c, i) => [{
       text: `${i + 1}. ${c.descripcion || "sin descripción"} — ${c.monto.toFixed(2)} ${c.moneda} (${c.fecha})`,
       callback_data: `gasto_conciliar_elegir:${restaurada.id}:${i}`,
     }]),
     [{ text: "❌ Ninguno / no conciliar", callback_data: `gasto_conciliar_elegir_no:${restaurada.id}` }],
   ];
+  botones.push(...botonContinuarConciliacion(restaurada, true));
   if (mensajeId != null) {
     try {
       await editTelegramMessage(restaurada.chatId, mensajeId, aviso, botones);
@@ -1215,6 +1306,19 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   }
 
   const [accion, propuestaId, extra] = data.split(":");
+  if (accion === "gasto_conciliar_posponer") {
+    const chat = callback.message?.chat.id;
+    if (chat === undefined || !propuestaId || !["simple", "ambigua"].includes(extra)) {
+      await answerCallbackQuerySafe(callback.id, "Esta acción no es válida."); return;
+    }
+    const pendientes = extra === "ambigua" ? await obtenerConciliacionesAmbiguasPendientesPorChat(chat)
+      : await obtenerConciliacionesPendientesPorChat(chat);
+    await answerCallbackQuerySafe(callback.id, "Conservando el pendiente y continuando...");
+    const resultado = await continuarCorreoConciliacion(chat, propuestaId, pendientes, posponerCorreoActivoYContinuar);
+    if (!resultado.startsWith("Correo aplazado")) await sendTelegramMessage(chat, resultado);
+    return;
+  }
+
 
   if (accion === "gasto_cerrar_propuesta") {
     const propuesta = await consumirPropuestaGasto(propuestaId);
@@ -1893,7 +1997,23 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const resultadoConciliacion = await intentarConciliar(
+    const previaLectura = callback.data?.endsWith(":lectura")
+      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId)
+      : undefined;
+    if (callback.data?.endsWith(":lectura") && !previaLectura) {
+      // Ninguna conciliación anterior quedó registrada (p. ej. tras una reversión auditada de un intento sin efecto):
+      // verificar ya no tiene nada que releer, así que se vuelven a ofrecer los botones normales en vez de un callejón sin salida.
+      await reponerPreguntaConciliacion(
+        pendiente,
+        callback.message?.message_id,
+        "ℹ️ No hay ninguna conciliación anterior registrada para este gasto: el intento anterior no tuvo efecto. Puedes conciliar de nuevo.",
+        false
+      );
+      return;
+    }
+    const resultadoConciliacion = previaLectura
+      ? previaLectura
+      : await intentarConciliar(
       pendiente.empresa,
       pendiente.monto,
       pendiente.fecha,
@@ -1939,8 +2059,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       await reponerPreguntaConciliacion(
         pendiente,
         callback.message?.message_id,
-        `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +
-        `Puedes reintentar de forma idempotente o decidir dejarla sin conciliar.`
+        resultadoConciliacion.nota || `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer. ` +
+        `Puedes reintentar de forma idempotente o decidir dejarla sin conciliar.`,
+        resultadoConciliacion.estado === "incierta" || resultadoConciliacion.soloLectura === true
       );
       return;
     }
@@ -2033,7 +2154,22 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const resultadoConciliacion = await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento,
+    const previaLecturaAmbigua = callback.data?.endsWith(":lectura")
+      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId)
+      : undefined;
+    if (callback.data?.endsWith(":lectura") && !previaLecturaAmbigua) {
+      // Mismo caso que arriba: sin conciliación anterior registrada se ofrecen otra vez los botones normales.
+      await reponerPreguntaConciliacionAmbigua(
+        pendiente,
+        callback.message?.message_id,
+        "ℹ️ No hay ninguna conciliación anterior registrada para este gasto: el intento anterior no tuvo efecto. Elige de nuevo con qué cargo conciliar.",
+        false
+      );
+      return;
+    }
+    const resultadoConciliacion = previaLecturaAmbigua
+      ? previaLecturaAmbigua
+      : await conciliarContraMovimientoEspecifico(pendiente.empresa, movimiento,
       pendiente.gastoId, pendiente.esAproximado, pendiente.proveedor, true);
     if (pendiente.deColaCorreo && gastoPermiteCerrarCorreo(pendiente.comprobanteConfirmado, resultadoConciliacion)) {
       await finalizarGastoCorreoAntesDeRender(
@@ -2059,8 +2195,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       await reponerPreguntaConciliacionAmbigua(
         pendiente,
         callback.message?.message_id,
-        `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +
-        `puedes verificar/reintentar una opción o dejarla sin conciliar.`
+        resultadoConciliacion.nota || `⚠️ La conciliación todavía no quedó confirmada. El correo seguirá sin leer; ` +
+        `puedes verificar/reintentar una opción o dejarla sin conciliar.`,
+        resultadoConciliacion.estado === "incierta" || resultadoConciliacion.soloLectura === true
       );
       return;
     }
@@ -2984,9 +3121,13 @@ async function crearGastoYReportar(
       throw new PosibleDuplicadoGastoError(candidatosNuevos);
     }
 
-    const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
-    if (!objetivos.length || objetivos.some(m => !movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion))) {
-      throw new Error("No hay un cargo de categoría compatible. Se revisaron duplicados; no se creará otro gasto sin resolver la coincidencia bancaria.");
+    // Solo se exige un cargo utilizable cuando se va a CONCILIAR contra él («Crear y conciliar»). «Crear (sin conciliar)» no
+    // depende de que exista uno (decisión del propietario, 2026-09-28); los duplicados ya se comprobaron arriba.
+    if (conciliarInline || movimientoObjetivo) {
+      const objetivos = movimientoObjetivo ? [movimientoObjetivo] : (propuesta.movimientosAmbiguos ?? []);
+      if (!objetivos.length || objetivos.some(m => !candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m))) {
+        throw new Error("No hay un cargo de categoría compatible para conciliar. Puedes crear el gasto sin conciliar; no se concilia contra un cargo que no encaja.");
+      }
     }
     return crearGastoHolded(
       empresaFinal,
@@ -3880,6 +4021,61 @@ export function ajustarPropuestaAlMovimientoRecomendado(
   return { ...propuesta, monto: nuevoMonto, lineas: reescalarLineas(propuesta, nuevoMonto) };
 }
 
+/**
+ * Tras corregir la MONEDA de una propuesta, el cargo bancario se busca DE NUEVO con la moneda corregida (misma jerarquía
+ * que la renovación de botones: buscarCargoParaPropuesta), se guarda en la propuesta y se repinta el teclado. Solo la
+ * moneda lo hace: cambia qué cargos son posibles. Con el monto o la clasificación NO se refresca aquí (la revisión del #232
+ * mostró que una lista nueva bajo una decisión ya marcada por índice concilia contra otro cargo); se renueva a petición.
+ * Devuelve una nota para el mensaje de confirmación; nunca lanza (la corrección ya se aplicó).
+ */
+async function refrescarCargoDePropuesta(propuestaActualizada: PropuestaGasto): Promise<string> {
+  if (propuestaActualizada.candidatos.length > 0 || !esFechaDocumentoValida(propuestaActualizada.fecha)) return "";
+  let resultado: ResultadoCargoPropuesta;
+  try {
+    resultado = await buscarCargoParaPropuesta({
+      empresa: propuestaActualizada.empresa,
+      proveedor: propuestaActualizada.proveedor,
+      concepto: propuestaActualizada.concepto,
+      monto: propuestaActualizada.monto,
+      fecha: propuestaActualizada.fecha,
+      moneda: propuestaActualizada.moneda,
+    });
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error buscando el cargo tras corregir la propuesta (no crítico):", error);
+    return ` No pude repetir la búsqueda del cargo porque Holded no respondió; dile al asistente «renueva los botones de la propuesta de ${propuestaActualizada.proveedor}» en un momento.`;
+  }
+  // Si el cargo no queda guardado, no se repinta ni se afirma nada: el teclado mostraría un cargo que después no existe.
+  try {
+    const flagGuardado = await actualizarFlagMovimientoBancarioGasto(propuestaActualizada.id, resultado.movimientoEncontrado);
+    const movimientosGuardados = await actualizarMovimientosAmbiguosPropuestaGasto(propuestaActualizada.id, resultado.movimientosPersistidos);
+    if (!flagGuardado || !movimientosGuardados) throw new Error("La propuesta ya no está disponible o no se pudo guardar.");
+  } catch (error) {
+    console.error("[gastoCallbackHandler] No se pudo guardar el cargo tras corregir la propuesta:", error);
+    return ` No pude guardar el cargo encontrado; dime «renueva los botones de la propuesta de ${propuestaActualizada.proveedor}» en un momento.`;
+  }
+  try {
+    const conCargo: PropuestaGasto = {
+      ...propuestaActualizada,
+      hayMovimientoBancario: resultado.movimientoEncontrado,
+      movimientosAmbiguos: resultado.movimientosPersistidos,
+    };
+    const botones = construirTecladoGasto(conCargo, opcionesTecladoDesdePropuesta(conCargo));
+    await editTelegramMessageReplyMarkup(conCargo.chatId, conCargo.messageId, botones, resumenTextoPropuestaGasto(conCargo));
+  } catch (error) {
+    console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir la propuesta (no crítico):", error);
+  }
+  const avisoNombre = resultado.movimientosPersistidos.some((m) => m.compatibilidad === "por_confirmar")
+    ? " (ojo: el nombre del cargo no coincide con el proveedor; confírmalo antes de aprobar)"
+    : "";
+  if (resultado.movimientoEncontrado) {
+    return ` Con la corrección SÍ encontré un movimiento bancario real sin conciliar que coincide${avisoNombre} — usa "✅ Crear y conciliar" en el mensaje original (ya actualizado).`;
+  }
+  if (resultado.movimientosAmbiguos.length > 0) {
+    return ` Encontré ${resultado.movimientosAmbiguos.length} movimientos bancarios parecidos — marca "🔗 Conciliar con #N" en el mensaje original (ya actualizado) y aprueba tu selección.`;
+  }
+  return ` Sigo sin encontrar un movimiento bancario que coincida: puedes usar "Crear (sin conciliar)" o revisarlo a mano en Holded.`;
+}
+
 async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number): Promise<ResultadoAplicarTexto> {
   let actualizado: boolean;
   try {
@@ -3898,9 +4094,13 @@ async function aplicarNuevoMonto(propuesta: PropuestaGasto, nuevoMonto: number):
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
 
+  // Aquí NO se repite la búsqueda del cargo ni se toca la lista persistida: en «Aprobar selección» la decisión final ya
+  // marcada («Conciliar con #N») se resuelve por índice DESPUÉS de este paso y una lista nueva la apuntaría a otro cargo.
+  // Si el nuevo importe cambia el cargo esperado, se renueva con «renueva los botones» (búsqueda en vivo y explicada).
   return {
     ok: true,
-    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.`,
+    mensaje: `💰 Monto ajustado — ${propuesta.proveedor}: ${propuesta.monto.toFixed(2)} ${propuesta.moneda} → ${nuevoMonto.toFixed(2)} ${propuesta.moneda}.` +
+      (propuesta.candidatos.length === 0 ? ` Si el cargo del banco tiene ahora otro importe, dime «renueva los botones de la propuesta de ${propuesta.proveedor}» para volver a buscarlo.` : ""),
   };
 }
 
@@ -3926,12 +4126,19 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
   // Hallazgo real de auditoría: a diferencia de la detección original (procesarGastoEntrante.ts,
   // que valida contra monedasReales antes de aceptar una moneda), esta corrección por IA no tenía
   // ninguna validación — un código de moneda mal inferido por el modelo se escribía directo. Mismo
-  // criterio de respaldo que procesarGastoEntrante.ts: si la consulta falla, asume solo EUR en vez
-  // de saltarse la validación.
-  const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa).catch((error) => {
-    console.error("[gastoCallbackHandler] Error consultando monedas reales de la empresa (asume solo EUR):", error);
-    return new Set(["EUR"]);
-  });
+  // criterio que procesarGastoEntrante.ts: si la consulta falla no se salta la validación ni se asume ninguna moneda.
+  let monedasReales: Set<string>;
+  try {
+    monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);
+  } catch (error) {
+    // Un fallo de Holded no demuestra qué monedas tiene la empresa: no se valida a ciegas ni se asume «solo EUR».
+    console.error("[gastoCallbackHandler] No se pudieron consultar las monedas reales de la empresa:", error);
+    return {
+      ok: false,
+      reintentable: true,
+      mensaje: `No pude consultar las cuentas de ${propuesta.empresa} en Holded ahora, así que no valido la moneda ${monedaCorrecta} a ciegas. Repite la corrección en un momento.`,
+    };
+  }
   if (!monedasReales.has(monedaCorrecta)) {
     const monedasTxt = Array.from(monedasReales).sort().join(", ");
     return {
@@ -3952,62 +4159,7 @@ async function aplicarCorreccionMoneda(propuesta: PropuestaGasto, monedaCorrecta
 
   let notaMovimiento = "";
   if (propuesta.candidatos.length === 0) {
-    let movimientoEncontrado = false;
-    let movimientosAmbiguosNuevos: MovimientoBancarioCandidato[] = [];
-    let movimientoRecomendadoNuevo: MovimientoBancarioCandidato | undefined;
-    try {
-      const candidatosMov = await buscarMovimientoSimilar(propuesta.empresa, { monto: montoFinal, fecha: propuesta.fecha, moneda: monedaCorrecta, proveedor: propuesta.proveedor, concepto: propuesta.concepto });
-      if (candidatosMov.length === 1) {
-        movimientoEncontrado = true;
-        movimientoRecomendadoNuevo = { ...candidatosMov[0], origenCoincidencia: "exacta" };
-      } else if (candidatosMov.length > 1) {
-        movimientosAmbiguosNuevos = candidatosMov;
-      } else if (propuesta.proveedor) {
-        const aproximados = await buscarMovimientoAproximado(propuesta.empresa, {
-          monto: montoFinal,
-          fecha: propuesta.fecha,
-          moneda: monedaCorrecta,
-          proveedor: propuesta.proveedor,
-        });
-        if (aproximados.length > 0) {
-          movimientoEncontrado = true;
-          movimientoRecomendadoNuevo = { ...aproximados[0], origenCoincidencia: "aproximada" };
-        }
-      }
-    } catch (error) {
-      console.error("[gastoCallbackHandler] Error buscando movimiento tras corregir moneda (no crítico):", error);
-    }
-
-    // Se actualizan ambos campos juntos: un match único se conserva como
-    // objetivo recomendado; varios siguen mostrándose para elegir #N.
-    const movimientosPersistidosNuevos = movimientoRecomendadoNuevo
-      ? [movimientoRecomendadoNuevo]
-      : movimientosAmbiguosNuevos;
-    await actualizarFlagMovimientoBancarioGasto(propuesta.id, movimientoEncontrado).catch((error) =>
-      console.error("[gastoCallbackHandler] Error actualizando el flag de movimiento bancario (no crítico):", error)
-    );
-    await actualizarMovimientosAmbiguosPropuestaGasto(propuesta.id, movimientosPersistidosNuevos).catch((error) =>
-      console.error("[gastoCallbackHandler] Error actualizando los movimientos ambiguos (no crítico):", error)
-    );
-    try {
-      const propuestaActualizada: PropuestaGasto = {
-        ...propuesta,
-        moneda: monedaCorrecta,
-        monto: montoFinal,
-        hayMovimientoBancario: movimientoEncontrado,
-        movimientosAmbiguos: movimientosPersistidosNuevos,
-      };
-      const botones = construirTecladoGasto(propuestaActualizada, opcionesTecladoDesdePropuesta(propuestaActualizada));
-      await editTelegramMessageReplyMarkup(propuesta.chatId, propuesta.messageId, botones, resumenTextoPropuestaGasto(propuestaActualizada));
-    } catch (error) {
-      console.error("[gastoCallbackHandler] Error actualizando los botones tras corregir moneda (no crítico):", error);
-    }
-
-    notaMovimiento = movimientoEncontrado
-      ? ` Ahora que la moneda es correcta, SÍ encontré un movimiento bancario real sin conciliar que coincide — usa "✅ Crear y conciliar" en el mensaje original.`
-      : movimientosAmbiguosNuevos.length > 0
-        ? ` Encontré ${movimientosAmbiguosNuevos.length} movimientos bancarios parecidos en ${monedaCorrecta} — marca "🔗 Conciliar con #N" en el mensaje original (ya actualizado) y aprueba tu selección.`
-        : ` Seguí sin encontrar un movimiento bancario en ${monedaCorrecta} que coincida — revísalo a mano en Holded si ya salió del banco.`;
+    notaMovimiento = await refrescarCargoDePropuesta({ ...propuesta, moneda: monedaCorrecta, monto: montoFinal });
   } else if (cambioMonto) {
     notaMovimiento = ` Ojo: esta propuesta ya tenía candidatos de Holded encontrados con el monto anterior — revísalos de nuevo arriba, podrían ya no ser los correctos con el monto corregido.`;
   }
@@ -4321,11 +4473,13 @@ async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: s
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };
   }
+  // Igual que con el monto: no se cambia la lista de cargos bajo una decisión ya marcada; se renueva a petición.
   return {
     ok: true,
     mensaje:
       `✏️ Clasificación corregida — empresa: ${propuestaFinal.empresa}, concepto: ${propuestaFinal.concepto}. ` +
-      `Cuenta y tags se recalcularon con el aprendizaje existente.`,
+      `Cuenta y tags se recalcularon con el aprendizaje existente.` +
+      (propuesta.candidatos.length === 0 ? ` Si la corrección cambia qué cargo corresponde, dime «renueva los botones de la propuesta de ${propuesta.proveedor}» para volver a buscarlo.` : ""),
   };
 }
 

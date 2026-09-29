@@ -13,3 +13,14 @@ test('hotel merchant descriptor can pay a standalone meal, but not an unrelated 
  assert.equal(movimientoCompatibleConGasto('Bolt','Taxi aeropuerto','Acquirer*hotel ex'),false);
  assert.equal(proveedorPareceEnDescripcion('HOTEL EXAMPLE','Acquirer*hotel'),false);
 });
+
+import {cargoConciliadoDeGastoIndependiente} from './gastoRecurrente';
+test('nearby same-amount paid bank charge does not shadow a different receipt with its own free charge',()=>{
+ const old={...anterior,currency:'EUR',payments_detail:[{date:'2026-08-24',bank_id:'bank',amount:'3,00'}]};
+ const charge={nivel:'probable',status:'reconciled',fecha:'2026-08-24',moneda:'EUR',monto:-3,accountId:'bank'};
+ assert.equal(cargoConciliadoDeGastoIndependiente(actual,old,charge),true);
+ for(const patch of [{nivel:'exacta'},{status:'partial'},{fecha:actual.fecha},{moneda:'USD'},{monto:-4},{accountId:'other'}])
+  assert.equal(cargoConciliadoDeGastoIndependiente(actual,old,{...charge,...patch}),false);
+ for(const patch of [{document_number:actual.numeroDocumento},{payments_pending:'3,00'},{payments_detail:[]},{payments_detail:[...old.payments_detail,...old.payments_detail]}])
+  assert.equal(cargoConciliadoDeGastoIndependiente(actual,{...old,...patch},charge),false);
+});

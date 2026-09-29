@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ConciliacionMovimientoInciertaError,
   ConciliacionMovimientoCanceladaError,
+  ConciliacionNoIntentadaError,
   ConflictoConciliacionMovimientoError,
   MovimientoYaConciliadoError,
   ejecutarConciliacionMovimientoDurable,
@@ -20,7 +21,9 @@ import {
 import {
   configuracionConciliacionesMovimientoDurables,
   evaluarAjusteCambioResidual,
+  margenResiduoConversion,
   movimientoLibreParaConciliar,
+  residuoMovimientoFueraDeMargen,
   verificarPagoCompraEnMovimiento,
 } from "./write";
 
@@ -231,6 +234,19 @@ test("422 sin confirmación queda incierto en vez de volver a preparada", async 
   const holded = transporte({ errorConciliacion: error422 });
   await assert.rejects(ejecutarConciliacionMovimientoDurable(identidad(), repo, holded), ConciliacionMovimientoInciertaError);
   assert.equal(repo.filas.values().next().value?.estado, "incierta");
+});
+
+test("un fallo de la comprobación previa (antes del POST) no deja el movimiento incierto y relanza el error real", async () => {
+  const repo = new RepoMemoria();
+  const cuotaAgotada = Object.assign(new Error("429 Too Many Requests"), { status: 429 });
+  const holded = transporte({ errorConciliacion: new ConciliacionNoIntentadaError(cuotaAgotada) });
+  await assert.rejects(ejecutarConciliacionMovimientoDurable(identidad(), repo, holded), (error) => error === cuotaAgotada);
+  assert.equal(repo.filas.values().next().value?.estado, "preparada");
+  assert.equal(holded.inspecciones.length, 1, "solo la inspección inicial: no se relee para decidir una incertidumbre inexistente");
+  // Con el fallo pasajero resuelto, el mismo par se puede conciliar con normalidad.
+  const recuperado = transporte();
+  await ejecutarConciliacionMovimientoDurable(identidad(), repo, recuperado);
+  assert.equal(recuperado.conciliaciones.length, 1);
 });
 
 test("un 403 inequívoco vuelve a preparada y permite reintento explícito", async () => {
@@ -734,4 +750,36 @@ test("un enlace fantasma (importe cero) nunca se acepta, ni siquiera con la comp
     70.76
   );
   assert.equal(resultado, undefined);
+});
+
+test("un movimiento parcial con un hueco dentro del margen de redondeo NO cuenta como pendiente (caso real Uber 10,95 USD -> 10,93 enlazados)", () => {
+  assert.equal(residuoMovimientoFueraDeMargen(10.95, 10.93), undefined);
+  const resultado: ResultadoConciliacionMovimiento = {
+    ok: true, statusFinal: "partial", montoEnlazado: 10.93,
+    movimientoParcial: undefined, pendienteEnMovimiento: undefined,
+  };
+  assert.equal(conciliacionRequiereRevision(resultado), false);
+});
+
+test("un movimiento parcial con un hueco mayor al margen sí exige revisión", () => {
+  const total = 100;
+  const enlazado = total - margenResiduoConversion(total) - 1; // 1 más allá del margen
+  const residuo = residuoMovimientoFueraDeMargen(total, enlazado);
+  assert.ok(residuo !== undefined && residuo > 0);
+  const resultado: ResultadoConciliacionMovimiento = {
+    ok: false, statusFinal: "partial", montoEnlazado: enlazado,
+    movimientoParcial: true, pendienteEnMovimiento: residuo,
+  };
+  assert.equal(conciliacionRequiereRevision(resultado), true);
+});
+
+test("el margen tiene piso de 2 céntimos (factura chica) y techo de 1 unidad (factura grande)", () => {
+  // Factura chica: 0,5% de 1 sería 0,005, pero el piso es 0,02 — un hueco de 0,01 sigue tolerado.
+  assert.equal(residuoMovimientoFueraDeMargen(1, 0.99), undefined);
+  // Factura chica: un hueco de 0,03 ya supera el piso de 0,02.
+  const residuoChico = residuoMovimientoFueraDeMargen(1, 0.97);
+  assert.ok(residuoChico !== undefined && Math.abs(residuoChico - 0.03) < 1e-9);
+  // Factura grande: el 0,5% (5.000) es mucho más que el techo de 1 unidad — un hueco de 2 no se tolera.
+  const residuoGrande = residuoMovimientoFueraDeMargen(1_000_000, 999_998);
+  assert.ok(residuoGrande !== undefined && Math.abs(residuoGrande - 2) < 1e-9);
 });

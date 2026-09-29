@@ -67,11 +67,39 @@ test("varios movimientos siguen exigiendo elegir uno explícitamente", () => {
   assert.ok(textos.some((t) => t.includes("Conciliar con #2")));
 });
 
-test('no ofrece crear sin cargo compatible ni con restaurante para un taxi',()=>{
+test('sin cargo compatible NO se ofrece conciliar, pero SÍ crear sin conciliar (restaurado 2026-09-28)',()=>{
  for(const descripcion of ['', 'Osteria Del Lovo']){
   const p={...propuestaBase(),proveedor:'Bolt',concepto:'Taxi',hayMovimientoBancario:true,
    movimientosAmbiguos:descripcion?[{accountId:'a',movementId:'m',descripcion,monto:-15,moneda:'EUR',fecha:'2026-09-10'}]:[]};
   const botones=construirTecladoGasto(p,opcionesTecladoDesdePropuesta(p)).flat();
-  assert.equal(botones.some(b=>/gasto_toggle:propuesta:(crear|nuevo)/.test(b.callback_data??'')),false);
+  const claves=botones.map(b=>b.callback_data?.split(':')[2]);
+  assert.equal(claves.some(k=>k==='crearconciliar'||k?.startsWith('crearconciliar_')),false,'nunca conciliar contra un cargo que no encaja');
+  assert.equal(claves.includes('crear'),true,'crear sin conciliar sigue disponible');
  }
+});
+
+test('sin fecha documental válida no se ofrece crear (recibos sin fecha siguen bloqueados)',()=>{
+ const p={...propuestaBase(),fecha:'',movimientosAmbiguos:[]};
+ const claves=construirTecladoGasto(p,opcionesTecladoDesdePropuesta(p)).flat().map(b=>b.callback_data?.split(':')[2]);
+ assert.equal(claves.some(k=>k==='crear'||k==='nuevo'||k?.startsWith('crearconciliar')),false);
+});
+
+test('un cargo por_confirmar (importe y fecha exactos, nombre distinto) sí habilita Crear y conciliar; sin él solo queda crear sin conciliar', () => {
+  const base = { ...propuestaBase(), proveedor: 'Mi Cafetería', concepto: 'Café', hayMovimientoBancario: true };
+  const cargo = { accountId: 'a', movementId: 'm', descripcion: 'SQ *XYZ 88', monto: -3.91, moneda: 'USD', fecha: '2026-08-30', origenCoincidencia: 'exacta' as const };
+  const conMarca = { ...base, movimientosAmbiguos: [{ ...cargo, compatibilidad: 'por_confirmar' as const }] };
+  const textosConMarca = construirTecladoGasto(conMarca, opcionesTecladoDesdePropuesta(conMarca)).flat().map((b) => b.text);
+  assert.ok(textosConMarca.some((t) => t.includes('Crear y conciliar')), 'el cargo por confirmar habilita crear y conciliar');
+  const sinMarca = { ...base, movimientosAmbiguos: [cargo] };
+  const textosSinMarca = construirTecladoGasto(sinMarca, opcionesTecladoDesdePropuesta(sinMarca)).flat().map((b) => b.text);
+  assert.equal(textosSinMarca.some((t) => t.includes('Crear y conciliar')), false, 'un nombre irreconocible sin evidencia no habilita conciliar');
+  assert.ok(textosSinMarca.some((t) => t.includes('Crear')), 'pero crear sin conciliar sigue disponible');
+});
+
+test('con gastos parecidos ya registrados hay salida para descartar: «Crear gasto nuevo» y «Cancelar»', () => {
+  const p = { ...propuestaBase(), candidatos: [{ id: "c1", contactName: "X", fecha: "2026-08-30", total: 87.9, descripcion: "d", documentNumber: "1", moneda: "EUR" }], movimientosAmbiguos: [] } as unknown as PropuestaGasto;
+  const claves = construirTecladoGasto(p, opcionesTecladoDesdePropuesta(p)).flat().map((b) => b.callback_data?.split(":")[2]);
+  assert.ok(claves.includes("adjuntar_0"));
+  assert.ok(claves.includes("nuevo"), "«Crear gasto nuevo» (ya no depende de que exista un cargo)");
+  assert.ok(claves.includes("cancelar"), "«Cancelar» faltaba con candidatos de Holded");
 });

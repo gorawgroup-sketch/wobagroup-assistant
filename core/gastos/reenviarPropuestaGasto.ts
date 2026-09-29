@@ -1,3 +1,5 @@
+import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
+import { buscarCargoParaPropuesta } from "./buscarCargoParaPropuesta";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
@@ -44,6 +46,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
 
   // Se recalcula SIEMPRE al renovar: un movimiento puede haber llegado después de crear la propuesta
   // y una fila antigua puede guardar false aunque el algoritmo actual ya sepa buscar por conversión.
+  let trazaBusqueda = crearTrazaBusqueda();
   if (propuesta.candidatos.length === 0 && esFechaDocumentoValida(propuesta.fecha)) {
     let movimientoEncontrado = false;
     // Hallazgo real de auditoría: la primera versión solo distinguía "1 match exacto" de "0
@@ -54,30 +57,18 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     let movimientosAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoRecomendado: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     try {
-      const exactos = await buscarMovimientoSimilar(propuesta.empresa, {
+      const r = await buscarCargoParaPropuesta({
+        empresa: propuesta.empresa,
         proveedor: propuesta.proveedor,
         concepto: propuesta.concepto,
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
       });
-      if (exactos.length === 1) {
-        movimientoEncontrado = true;
-        movimientoRecomendado = { ...exactos[0], origenCoincidencia: "exacta" };
-      } else if (exactos.length > 1) {
-        movimientosAmbiguos = exactos;
-      } else if (propuesta.proveedor) {
-        const aproximados = await buscarMovimientoAproximado(propuesta.empresa, {
-          monto: propuesta.monto,
-          fecha: propuesta.fecha,
-          moneda: propuesta.moneda,
-          proveedor: propuesta.proveedor,
-        });
-        movimientoEncontrado = aproximados.length > 0;
-        if (aproximados.length > 0) {
-          movimientoRecomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
-        }
-      }
+      trazaBusqueda = r.traza;
+      movimientoEncontrado = r.movimientoEncontrado;
+      movimientoRecomendado = r.movimientoRecomendado;
+      movimientosAmbiguos = r.movimientosAmbiguos;
 
       if (!movimientoEncontrado && movimientosAmbiguos.length === 0) {
         const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);
@@ -140,7 +131,12 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     propuesta.candidatos.length > 0
       ? ""
       : propuesta.hayMovimientoBancario
-        ? `\n\n💳 Sí hay un movimiento bancario real sin conciliar que coincide en monto y fecha — puedes usar "Crear y conciliar".`
+        ? `\n\n💳 Sí hay un movimiento bancario real sin conciliar que coincide en monto y fecha — puedes usar "Crear y conciliar".` +
+          (propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "por_confirmar"
+            ? `\n⚠️ El nombre del cargo ("${propuesta.movimientosAmbiguos[0].descripcion}") no coincide con el proveedor ("${propuesta.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. Confírmalo antes de aprobar.`
+            : propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "aprendido"
+              ? `\n✔ Este cargo ("${propuesta.movimientosAmbiguos[0].descripcion}") ya lo confirmaste antes para este proveedor.`
+              : "")
         : propuesta.movimientosAmbiguos && propuesta.movimientosAmbiguos.length > 0
           ? propuesta.movimientosAmbiguos.some((m) => m.origenCoincidencia === "tipo_cambio")
             ? `\n\n💱 Encontré ${propuesta.movimientosAmbiguos.length === 1 ? "una alternativa" : `${propuesta.movimientosAmbiguos.length} alternativas`} ` +
@@ -148,7 +144,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
               propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
             : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
-          : `\n\n💳 No hay un cargo compatible confirmado. No se ofrece crear: hay que comprobar primero los gastos existentes y sus comprobantes; la ausencia de cargo no demuestra un duplicado.`;
+          : `\n\n💳 No hay un cargo compatible confirmado. Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado antes de escribir) y conciliarlo cuando aparezca el cargo; la ausencia de cargo no demuestra un duplicado.` +
+            (describirTrazaBusqueda(trazaBusqueda) ? `\n${describirTrazaBusqueda(trazaBusqueda)}` : "");
 
   const texto =
     `${encabezado}\n\n` +

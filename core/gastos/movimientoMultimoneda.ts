@@ -3,6 +3,7 @@ import {
   buscarMovimientoAproximado,
   buscarMovimientoSimilar,
   proveedorPareceEnDescripcion,
+  movimientoCompatibleConGasto,
   type MovimientoBancarioCandidato,
 } from "../holded/write";
 import { obtenerTasaCambioHistorica } from "../utils/exchangeRate";
@@ -28,13 +29,13 @@ function diasDeDiferencia(a: string, b: string): number {
 /**
  * Último nivel de búsqueda cuando no hubo coincidencia en la moneda declarada. Convierte el importe
  * de la factura a cada moneda de cuenta REAL de la misma empresa usando la tasa histórica del BCE y
- * vuelve a buscar en todas sus cuentas. La tasa es solo una referencia: admite hasta 3% sin nombre,
+ * vuelve a buscar en todas sus cuentas. La tasa es solo una referencia: admite hasta 3% con categoría compatible,
  * o la banda aproximada existente cuando además coincide el proveedor. Devuelve candidatos para que
  * el usuario elija; nunca concilia ni cambia la moneda del gasto automáticamente.
  */
 export async function buscarMovimientosPorTipoCambio(
   empresa: Empresa,
-  criterios: { monto: number; moneda: string; fecha: string; proveedor?: string },
+  criterios: { monto: number; moneda: string; fecha: string; proveedor?: string; concepto?: string },
   monedasCuentas: Iterable<string>,
   dependencias: DependenciasBusquedaMultimoneda = DEPENDENCIAS_REALES
 ): Promise<MovimientoBancarioCandidato[]> {
@@ -64,7 +65,7 @@ export async function buscarMovimientosPorTipoCambio(
     try {
       cercanos = await dependencias.buscarCercanos(
         empresa,
-        { monto: montoReferencia, moneda: monedaDestino, fecha: criterios.fecha },
+        { monto: montoReferencia, moneda: monedaDestino, fecha: criterios.fecha, proveedor: criterios.proveedor, concepto: criterios.concepto },
         toleranciaSinNombre
       );
     } catch (error) {
@@ -85,6 +86,8 @@ export async function buscarMovimientosPorTipoCambio(
     }
 
     for (const candidato of [...cercanos, ...porNombre]) {
+      // Apply the same semantic guard before showing text, persisting or rendering buttons.
+      if (!movimientoCompatibleConGasto(criterios.proveedor ?? "", criterios.concepto ?? "", candidato.descripcion, { nucleoDeMarca: true })) continue;
       const clave = `${candidato.accountId}:${candidato.movementId}`;
       const diferenciaMonto = Math.abs(Math.abs(candidato.monto) - montoReferencia);
       const enriquecido: MovimientoBancarioCandidato = {
@@ -126,7 +129,9 @@ export function describirMovimientoMultimoneda(
       ? `; referencia ${movimiento.montoReferencia.toFixed(2)} ${movimiento.moneda} ` +
         `a tasa ${movimiento.tasaReferencia.toFixed(4)} desde ${movimiento.monedaOrigenReferencia}`
       : "";
-  const nombre = movimiento.coincideProveedor ? "; además coincide el proveedor" : "";
+  const nombre = movimiento.coincideProveedor
+    ? "; además coincide el proveedor"
+    : movimiento.compatibilidad === "por_confirmar" ? "; ⚠️ nombre distinto: confírmalo" : "";
   return (
     `${prefijo}"${movimiento.descripcion || "(sin descripción)"}" — ${movimiento.monto.toFixed(2)} ` +
     `${movimiento.moneda} (${movimiento.fecha}${referencia}${nombre})`

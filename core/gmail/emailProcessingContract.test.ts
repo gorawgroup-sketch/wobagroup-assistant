@@ -46,3 +46,77 @@ test("la revisión nunca continúa ni cierra un correo si falló su lectura comp
   assert.match(flujo, /cuerpoCompleto = await obtenerCuerpoCompletoCorreo\(correo\.id\)[\s\S]{0,500}throw error/);
   assert.match(flujo, /gastoDetectado = await extraerGastoDeCorreo[\s\S]{0,700}No se pudo determinar si[\s\S]{0,300}throw error/);
 });
+
+test("la cola fija las decisiones pendientes antes de comprobar la operación anterior y no calla un cierre fallido", async () => {
+  const fuente = await readFile(rutaJob, "utf8");
+  // Con 0 pendientes el vigilante da el correo por resuelto y lo marca leído: el error previo no debe dejar ese estado.
+  const cola = fuente.slice(fuente.indexOf("async function procesarSiguienteCorreoActivoInterno"),
+    fuente.indexOf("export async function handleReintentarActivoCallback"));
+  assert.ok(cola.indexOf("establecerPendientesActivo(") >= 0 && cola.indexOf("establecerPendientesActivo(") < cola.indexOf("comprobarCorreoDisponible("),
+    "en la cola, establecerPendientesActivo debe ir antes de comprobarCorreoDisponible");
+  const reintento = fuente.slice(fuente.indexOf("export async function handleReintentarActivoCallback"),
+    fuente.indexOf("export async function procesarCorreoPuntual"));
+  assert.ok(reintento.indexOf("establecerPendientesActivo(") >= 0 && reintento.indexOf("establecerPendientesActivo(") < reintento.indexOf("comprobarCorreoDisponible("),
+    "en el reintento, establecerPendientesActivo debe ir antes de comprobarCorreoDisponible");
+  // El cierre de un correo «ya registrado» nunca descarta el texto de fallo: avisa con botones de reintento.
+  assert.match(reintento, /previa\.tipo === "ya_registrado" && alcance === "correo"/,
+    "un reintento de un adjunto o del cuerpo no puede dar el correo entero por cerrado");
+  const cierre = fuente.slice(fuente.indexOf("async function cerrarActivoYaRegistrado"),
+    fuente.indexOf("export async function handleDescartarActivoCallback"));
+  assert.match(cierre, /if \(cierre\.ok\) return;/);
+  assert.match(cierre, /publicarReintentoTecnico\(/);
+  // La búsqueda puntual informa pero no le quita al operador la revisión que pidió.
+  const puntual = fuente.slice(fuente.indexOf("async function procesarCorreoPuntualInterno"), fuente.indexOf("Señal genérica de"));
+  assert.match(puntual, /yaRegistrado/);
+  assert.ok(puntual.indexOf("mensajeYaRegistrado") < puntual.indexOf("procesarCorreoLocalizado(chatId, correo, false)"));
+});
+
+test("«Reprocesar este correo» está cableado: ruta, protección de superadmin y reapertura del propio botón", async () => {
+  const [servidor, usuarios, entregas, job] = await Promise.all([
+    readFile(join(process.cwd(), "src/server.ts"), "utf8"),
+    readFile(join(process.cwd(), "core/telegram/authorizedUsersSheet.ts"), "utf8"),
+    readFile(join(process.cwd(), "core/telegram/durableDelivery.ts"), "utf8"),
+    readFile(rutaJob, "utf8"),
+  ]);
+  assert.match(servidor, /data === "colacorreo_reprocesaractivo"[\s\S]{0,80}handleReprocesarActivoCallback\(callback\)/);
+  assert.match(usuarios, /"colacorreo_reprocesaractivo"/);
+  // Deliberado (hallazgo real de auditoría, 28/09): "colacorreo_reprocesaractivo"/"descartaractivo" actúan sobre
+  // "el activo actual" sin verificar identidad, así que NO están en el set reabrible — solo gasto_aprobar, que es
+  // atómico y no depende de qué correo esté activo. La cobertura de comportamiento (solo esta acción se reabre)
+  // vive en durableDelivery.test.ts; aquí solo se confirma el cableado textual del set.
+  const bloqueSet = entregas.slice(entregas.indexOf("ACCIONES_REABRIBLES_TRAS_COMPLETAR"), entregas.indexOf("]);", entregas.indexOf("ACCIONES_REABRIBLES_TRAS_COMPLETAR")) + 3);
+  const entradas = bloqueSet.split("\n").filter(linea => !linea.trim().startsWith("//")).join("\n");
+  assert.match(entradas, /"gasto_aprobar"/);
+  assert.doesNotMatch(entradas, /"colacorreo_/);
+  // Antes de reprocesar se vuelve a comprobar que NO hay pregunta viva, para no duplicar una propuesta recién llegada.
+  const manejador = job.slice(job.indexOf("export async function handleReprocesarActivoCallback"),
+    job.indexOf("export async function handleDescartarActivoCallback"));
+  assert.ok(manejador.indexOf("huboSenalDeEntrega(") >= 0 && manejador.indexOf("huboSenalDeEntrega(") < manejador.indexOf("reencolarActivoParaReintento("));
+  assert.match(manejador, /conCoordinadorCorreo\(/);
+  // Nunca reprocesar un correo ya resuelto (pendientesRestantes<=0) ni mientras otro callback sigue en vuelo —
+  // ambas comprobaciones antes de reencolarActivoParaReintento (hallazgo real de auditoría).
+  const pendientesIdx = manejador.indexOf("activo.pendientesRestantes <= 0");
+  assert.ok(pendientesIdx >= 0 && pendientesIdx < manejador.indexOf("reencolarActivoParaReintento("));
+  assert.match(manejador, /hayActividadCallbackReciente\(chatId\)/);
+});
+
+test("las facturas enlazadas en el cuerpo solo se verifican en la rama SIN adjuntos reales, nunca bloquean el correo, y solo reemplazan el gasto cuando se verificó", async () => {
+  const fuente = await readFile(rutaJob, "utf8");
+  assert.match(fuente, /import \{ verificarFacturasEnlazadasEnCuerpo \} from "\.\.\/gmail\/facturasEnlazadasEnCuerpo";/);
+  const inicioSinAdjuntos = fuente.indexOf("if (gastoDetectado?.esFacturaOGasto) {");
+  const inicioConAdjuntos = fuente.indexOf("if (correo.adjuntos.length > 0) {");
+  assert.ok(inicioSinAdjuntos > 0 && inicioConAdjuntos > 0 && inicioSinAdjuntos > inicioConAdjuntos,
+    "la verificación debe vivir en la rama posterior (sin adjuntos), nunca en la rama con adjuntos reales");
+  const bloque = fuente.slice(inicioSinAdjuntos, fuente.indexOf("const bytes = await generarComprobantePDF"));
+  assert.ok(bloque.indexOf("verificarFacturasEnlazadasEnCuerpo(") >= 0);
+  // Un fallo de la verificación (enlace caído, IA no disponible…) nunca debe tumbar el procesamiento del correo:
+  // tiene su propio .catch() que cae a "no verificado", nunca deja que el error se propague sin capturar.
+  const llamada = bloque.slice(bloque.indexOf("verificarFacturasEnlazadasEnCuerpo("));
+  const hastaElCatch = llamada.slice(0, llamada.indexOf(".catch("));
+  assert.doesNotMatch(hastaElCatch, /;\s*$/m, "la llamada y su .catch() deben ser una sola expresión encadenada");
+  assert.match(llamada.slice(0, 400), /\.catch\(\(error\)/);
+  // gastoDetectado solo se reemplaza dentro de la rama verificado:true — nunca incondicionalmente.
+  const asignacion = bloque.indexOf("gastoDetectado = verificacionEnlazadas.datosCombinados");
+  const guardaVerificado = bloque.lastIndexOf("if (verificacionEnlazadas.verificado)", asignacion);
+  assert.ok(asignacion > 0 && guardaVerificado > 0 && asignacion - guardaVerificado < 120);
+});

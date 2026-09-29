@@ -5,9 +5,12 @@ import {
   PostgresAutoStore,
   SCHEMA_AUTO,
   conBloqueoAuto,
+  conCoordinadorCorreo,
+  BuzonOcupadoError,
   conOperacionAuto,
   protegerEscrituraHolded,
   cerrarPoolAuto,
+  EscrituraHoldedNoIniciadaError,
   operacionPendienteConflictaConObjetivo,
 } from "./postgres";
 import { evaluarAuto } from "./model";
@@ -53,6 +56,29 @@ test("una operación automática pendiente solo bloquea el mismo recurso manual"
   }), true);
 });
 
+test("sin coordinación durable: el rechazo de la guardia es «no iniciada» y un fallo de la tarea se propaga tal cual", async () => {
+  const antesUrl = process.env.WOBI_MAIL_DATABASE_URL, antesModo = process.env.WOBI_MAIL_AUTO_MODE;
+  delete process.env.WOBI_MAIL_DATABASE_URL;
+  try {
+    process.env.WOBI_MAIL_AUTO_MODE = "execute";
+    let ejecutada = false;
+    await assert.rejects(
+      () => protegerEscrituraHolded("WOBA", async () => { ejecutada = true; }),
+      (error) => error instanceof EscrituraHoldedNoIniciadaError && /Coordinación durable no disponible/.test(error.message)
+    );
+    assert.equal(ejecutada, false, "la escritura nunca se ejecutó");
+    delete process.env.WOBI_MAIL_AUTO_MODE;
+    const falloPost = new Error("HTTP 502 al enviar");
+    await assert.rejects(
+      () => protegerEscrituraHolded("WOBA", async () => { throw falloPost; }),
+      (error) => error === falloPost && !(error instanceof EscrituraHoldedNoIniciadaError)
+    );
+  } finally {
+    if (antesUrl === undefined) delete process.env.WOBI_MAIL_DATABASE_URL; else process.env.WOBI_MAIL_DATABASE_URL = antesUrl;
+    if (antesModo === undefined) delete process.env.WOBI_MAIL_AUTO_MODE; else process.env.WOBI_MAIL_AUTO_MODE = antesModo;
+  }
+});
+
 test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas manuales", { skip: !url }, async () => {
   process.env.WOBI_MAIL_DATABASE_URL = url;
   const db = new Pool({ connectionString: url });
@@ -72,7 +98,7 @@ test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas
     assert.equal(await protegerEscrituraHolded("WOBA", async () => "POST"), "POST");
     await assert.rejects(() => protegerEscrituraHolded("WOBA", async () => "POST", {
       path: `/treasury/accounts/a1/bank-movements/${op.plan.movimiento.id}/reconcile`,
-    }), /reservado/);
+    }), (error) => error instanceof EscrituraHoldedNoIniciadaError && /reservado/.test(error.message));
     assert.equal(await conOperacionAuto(op.id, () => protegerEscrituraHolded("WOBA", async () => "propia")), "propia");
     op.estado = "creando"; await a.guardar(op);
     assert.equal((await new PostgresAutoStore(db).pendientes(configFixture.buzon))[0].estado, "creando");
@@ -92,4 +118,46 @@ test("PostgreSQL: reservas concurrentes, reinicio, auditoría y bloqueo de rutas
     await assert.rejects(() => b.reservar(otro), /duplicado/);
     assert.ok((await db.query("SELECT count(*)::int AS n FROM wobi_mail_events")).rows[0].n >= 3);
   } finally { await db.end(); await cerrarPoolAuto(); delete process.env.WOBI_MAIL_DATABASE_URL; }
+});
+
+// Caso real (Carlos, 2026-09-28 19:53 y 20:07): un botón pulsado durante una revisión de correo fallaba a los
+// 30 s con «lock timeout». Una acción del operador espera, avisa una vez y se aplica sola.
+test("PostgreSQL: una acción del operador espera al buzón ocupado, avisa una sola vez y se ejecuta al liberarse", { skip: !url }, async () => {
+  const { conContextoInteractivo } = await import("../../telegram/contextoInteractivo");
+  const previo = { db: process.env.WOBI_MAIL_DATABASE_URL, buzon: process.env.GMAIL_IMPERSONATE_EMAIL };
+  process.env.WOBI_MAIL_DATABASE_URL = url;
+  process.env.GMAIL_IMPERSONATE_EMAIL = `prueba-espera-${Date.now()}@test`;
+  try {
+    const orden: string[] = [];
+    let avisos = 0;
+    let ocupado!: () => void;
+    const yaOcupado = new Promise<void>((r) => { ocupado = r; });
+    // «Revisión» que retiene el buzón 400 ms (con espera explícita, como la revisión manual real).
+    const revision = conCoordinadorCorreo(async () => { ocupado(); orden.push("revisión empieza"); await new Promise((r) => setTimeout(r, 400)); orden.push("revisión termina"); }, { lockTimeoutMs: 5_000 });
+    await yaOcupado;
+    const boton = conContextoInteractivo(async () => { avisos++; orden.push("aviso de espera"); },
+      () => conCoordinadorCorreo(async () => { orden.push("botón se aplica"); return "hecho"; }));
+    assert.equal(await boton, "hecho");
+    await revision;
+    assert.deepEqual(orden, ["revisión empieza", "aviso de espera", "revisión termina", "botón se aplica"]);
+    assert.equal(avisos, 1);
+
+    // Con el buzón libre no se avisa de nada.
+    avisos = 0;
+    await conContextoInteractivo(async () => { avisos++; }, () => conCoordinadorCorreo(async () => undefined));
+    assert.equal(avisos, 0);
+
+    // Sin contexto de operador (cron, vigilante) se conserva el comportamiento anterior: fallo por timeout normal.
+    let ocupado2!: () => void; const yaOcupado2 = new Promise<void>((r) => { ocupado2 = r; });
+    const larga = conCoordinadorCorreo(async () => { ocupado2(); await new Promise((r) => setTimeout(r, 3_000)); }, { lockTimeoutMs: 5_000 });
+    await yaOcupado2;
+    await assert.rejects(conCoordinadorCorreo(async () => undefined, { lockTimeoutMs: 1_000 }), (e: { code?: string }) => e.code === "55P03" && !(e instanceof BuzonOcupadoError));
+    // Y una espera interactiva agotada se distingue con su propio error.
+    await assert.rejects(conBloqueoAuto(`correo:${process.env.GMAIL_IMPERSONATE_EMAIL}`, async () => undefined, { lockTimeoutMs: 1_000, alEsperar: async () => undefined }), BuzonOcupadoError);
+    await larga;
+  } finally {
+    await cerrarPoolAuto();
+    if (previo.db === undefined) delete process.env.WOBI_MAIL_DATABASE_URL; else process.env.WOBI_MAIL_DATABASE_URL = previo.db;
+    if (previo.buzon === undefined) delete process.env.GMAIL_IMPERSONATE_EMAIL; else process.env.GMAIL_IMPERSONATE_EMAIL = previo.buzon;
+  }
 });

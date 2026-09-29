@@ -35,6 +35,7 @@ import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool, descartarGastoPendienteDatosTool } from "./reintentarGastoPendiente";
 import { reenviarBotonesPropuestaGastoTool } from "./reenviarBotonesPropuestaGasto";
+import { explicarBusquedaCargoTool } from "./explicarBusquedaCargo";
 import { reclasificarDocumentoPendienteTool, descartarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
 import { saltarCorreoActivoTool } from "./saltarCorreoActivo";
 import { conciliarMovimientoTool } from "./conciliarMovimiento";
@@ -55,12 +56,14 @@ import { vacacionesHoldedTool } from "./vacacionesHolded";
 import { descartarRecomendacionControlDiarioTool } from "./descartarRecomendacionControlDiario";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
 import { consultarPolizasSeguroTool } from "./consultarPolizasSeguro";
+import { busquedaConocimientoGlobalTool } from "./busquedaConocimientoGlobal";
 
 /**
  * Registro central de herramientas disponibles para Claude.
  * Cada nueva herramienta (gmail...) se agrega aquí.
  */
 const tools: ToolDefinition[] = [
+  busquedaConocimientoGlobalTool,
   knowledgeBaseTool,
   cashflowResumenTool,
   cashflowDetalleTool,
@@ -95,6 +98,7 @@ const tools: ToolDefinition[] = [
   reintentarGastoPendienteTool,
   descartarGastoPendienteDatosTool,
   reenviarBotonesPropuestaGastoTool,
+  explicarBusquedaCargoTool,
   reclasificarDocumentoPendienteTool,
   descartarDocumentoPendienteTool,
   saltarCorreoActivoTool,

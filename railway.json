@@ -1,10 +1,10 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "drainingSeconds": 60,
+    "drainingSeconds": 120,
     "healthcheckPath": "/healthz",
     "healthcheckTimeout": 60,
-    "preDeployCommand": "node dist/scripts/mail-auto-db.js setup",
-    "startCommand": "node dist/scripts/start.js"
+    "preDeployCommand": "node -r dotenv/config dist/scripts/mail-auto-db.js setup",
+    "startCommand": "node -r dotenv/config dist/scripts/start.js"
   }
 }

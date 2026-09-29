@@ -4,6 +4,7 @@ import {
   combinarTagsGastoAprendidos,
   construirSugerenciaDesdeCoincidencias,
   esImporteUtilComoPrecedenteContable,
+  filtrarPrecedentesViajePorNaturaleza,
   inferirTagsCategoria,
   normalizarEtiquetaHolded,
   seleccionarCoincidenciasProveedor,
@@ -51,6 +52,77 @@ test("un empate contable se declara inconcluso en vez de depender de la paginaci
   );
 
   assert.equal(sugerencia, undefined);
+});
+
+test("un taxi no toma hoteles u otros viajes como precedente contable", () => {
+  const bogotaTaxi: LineaConCuenta = {
+    ...linea("taxi-bogota", "gastos-viaje", "Uber Bogotá — Alejandro Florez"),
+    contactName: "Uber Colombia",
+    descripcion: "Traslado Chapinero, Bogotá",
+    tags: ["taxi", "transporte", "alejandroflorez"],
+  };
+  const hotelMadrid: LineaConCuenta = {
+    ...linea("hotel-madrid", "gastos-viaje", "Hotel Madrid — Nuria Ortiz"),
+    contactName: "Hotel Madrid",
+    descripcion: "Alojamiento Madrid",
+    tags: ["hospedaje", "nuriaortiz"],
+  };
+  const taxiBarcelona: LineaConCuenta = {
+    ...linea("taxi-barcelona", "gastos-viaje", "Bolt Barcelona — Nuria Ortiz"),
+    contactName: "Bolt",
+    descripcion: "Traslado Barcelona",
+    tags: ["taxi", "transporte", "nuriaortiz"],
+  };
+
+  assert.deepEqual(
+    filtrarPrecedentesViajePorNaturaleza([bogotaTaxi, hotelMadrid, taxiBarcelona], ["transporte", "taxi"])
+      .map((precedente) => precedente.documentId),
+    ["taxi-bogota", "taxi-barcelona"]
+  );
+});
+
+test("la referencia visible de viaje prefiere misma persona o ubicación y nunca inventa una", () => {
+  const sugerencia = construirSugerenciaDesdeCoincidencias(
+    [
+      {
+        ...linea("bogota", "gastos-viaje", "Uber Bogotá — Alejandro Florez"),
+        contactName: "Uber Colombia",
+        descripcion: "Traslado Chapinero, Bogotá",
+        tags: ["taxi", "transporte", "alejandroflorez"],
+      },
+      {
+        ...linea("barcelona", "gastos-viaje", "Bolt Barcelona — Nuria Ortiz"),
+        contactName: "Bolt",
+        descripcion: "Traslado Barcelona",
+        tags: ["taxi", "transporte", "nuriaortiz"],
+      },
+    ],
+    "viaje",
+    2,
+    {
+      proveedor: "Bolt",
+      concepto: "Taxi en Barcelona para reuniones",
+      personaAsociada: "Nuria Ortiz",
+      exigirContexto: true,
+    }
+  );
+
+  assert.equal(sugerencia?.accountId, "gastos-viaje");
+  assert.equal(sugerencia?.ejemplo, "Bolt Barcelona — Nuria Ortiz");
+  assert.deepEqual(sugerencia?.contextoEjemplo, ["persona", "ubicacion"]);
+  assert.equal(sugerencia?.evidencias, 2);
+
+  const sinContexto = construirSugerenciaDesdeCoincidencias(
+    [
+      { ...linea("bogota-1", "gastos-viaje", "Uber Bogotá — Alejandro Florez"), descripcion: "Chapinero Bogotá" },
+      { ...linea("bogota-2", "gastos-viaje", "Uber Bogotá — Alejandro Florez"), descripcion: "Chapinero Bogotá" },
+    ],
+    "viaje",
+    2,
+    { proveedor: "Bolt", concepto: "Taxi Barcelona", personaAsociada: "Nuria Ortiz", exigirContexto: true }
+  );
+  assert.equal(sinContexto?.ejemplo, "");
+  assert.deepEqual(sinContexto?.contextoEjemplo, undefined);
 });
 
 test("reconoce una compra de créditos de Anthropic como suscripción", () => {
@@ -118,6 +190,31 @@ test("el flujo compartido conserva los aprendizajes de tags del proceso uno a un
   assert.deepEqual(
     combinarTagsGastoAprendidos("Material de oficina", "Proveedor", undefined, ["oficina", "latam", "alejandra"]),
     ["alejandra"]
+  );
+  // Caso real (Footprint, 28 sep): horno microondas comprado por alguien montando la oficina de Medellín
+  // — un gasto puntual sin ninguna categoría de viaje clásica (no es transporte/alimentación/hospedaje),
+  // pero ocurrido durante un desplazamiento real. Antes quedaba sin NINGÚN tag de categoría; "viaje" es
+  // el último recurso, solo cuando de verdad hay contexto de viaje y ninguna categoría más específica aplica.
+  assert.deepEqual(
+    combinarTagsGastoAprendidos(
+      "Compra horno microondas para oficina de Medellín",
+      "ALMACENES EXITO S.A.",
+      "yanessy",
+      [],
+      undefined,
+      true
+    ),
+    ["yanessy", "viaje"]
+  );
+  // Sin contexto de viaje, el mismo caso sigue sin categoría — no se inventa "viaje" a ciegas.
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Compra horno microondas para oficina", "ALMACENES EXITO S.A.", "yanessy", []),
+    ["yanessy"]
+  );
+  // Una categoría específica (alimentación) sigue ganando sobre el "viaje" genérico aunque haya contexto de viaje.
+  assert.deepEqual(
+    combinarTagsGastoAprendidos("Consumo supermercado", "ALDI", "yanessy", [], undefined, true),
+    ["yanessy", "alimentacion"]
   );
   assert.deepEqual(
     combinarTagsGastoAprendidos(
@@ -187,4 +284,12 @@ test("un empate de la entidad exacta queda inconcluso y no usa empresas parecida
   const seleccion = seleccionarCoincidenciasProveedor("BUSINESS ATELIER LLC", lineas);
   assert.equal(seleccion.identidadExacta, true);
   assert.equal(construirSugerenciaDesdeCoincidencias(seleccion.coincidencias, "proveedor"), undefined);
+});
+
+test('a meal reference cannot be a taxi for the same person and city',()=>{
+ const s=construirSugerenciaDesdeCoincidencias([
+ {...linea('taxi','gastos-viaje','Traslado Uber Bogotá — Persona Ejemplo'),contactName:'Uber',descripcion:'Taxi Bogotá',tags:['taxi']},
+ {...linea('meal','gastos-viaje','Comida restaurante Bogotá — Persona Ejemplo'),contactName:'Restaurante Example',descripcion:'Comida Bogotá',tags:['alimentacion']},
+ ],'viaje',2,{proveedor:'Restaurante Nuevo',concepto:'Comida en Bogotá',personaAsociada:'Persona Ejemplo',exigirContexto:true});
+ assert.equal(s?.ejemplo,'Comida restaurante Bogotá — Persona Ejemplo');
 });

@@ -1,0 +1,351 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { evaluarEvidenciaCierre, marcasDeOperacion, type HechosCierre } from "./cierreConEvidencia";
+import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
+import { evaluarAuto, VERSION_POLITICA, type AnalisisAuto, type OperacionAuto } from "./model";
+import {
+  intentarCerrarOperacion, mensajeOperacionBloqueada, mensajeYaRegistrado, REPOSO_MINIMO_MS, resolverOperacionAnterior,
+  type DepsOperacionAnterior, type OperacionConEdad,
+} from "./operacionAnterior";
+
+function operacion(estado: OperacionAuto["estado"] = "incierta", extra: Partial<OperacionAuto> = {}): OperacionAuto {
+  const correo = correoFixture();
+  const decision = evaluarAuto(correo, analisisFixture(), reciboFixture(), evidenciaFixture(), configFixture);
+  assert.ok(decision.apto, "el plan de prueba debe ser apto");
+  const plan = structuredClone(decision.plan);
+  plan.version = "correo-gastos-v-antigua";
+  return { id: "509b5441-6534-454c-9d81-42bba3ff298f", revision: 3, plan, estado, compraId: "compra-1",
+    pasoIncierto: estado === "incierta" ? "conciliando" : undefined, detalle: "Conciliación no verificada", ...extra };
+}
+
+function hechosCompletos(op: OperacionAuto): HechosCierre {
+  return {
+    compra: { id: op.compraId!, notas: `${marcasDeOperacion(op)[1]} nota del operador`, contactoId: op.plan.contactoId,
+      moneda: "EUR", totalCentimos: 2000, pagadoCentimos: 2000, pendienteCentimos: 0,
+      pagos: [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000, fecha: op.plan.movimiento.fecha }] },
+    adjuntos: 1,
+    comprobanteCoincide: null,
+    movimiento: { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 2000, contableCentimos: null },
+  };
+}
+
+function escenario(ops: OperacionAuto[], opciones: { hechos?: (op: OperacionAuto) => HechosCierre | Promise<HechosCierre>;
+  analisis?: AnalisisAuto; edadMs?: number; guardarFalla?: boolean } = {}) {
+  const ahora = 1_000_000_000_000;
+  const almacen = new Map(ops.map(o => [o.id, structuredClone(o)]));
+  const registro = { lecturas: 0, guardados: [] as OperacionAuto[], auditorias: [] as Array<{ tipo: string; datos: unknown }>, finalizadas: 0 };
+  const deps: DepsOperacionAnterior = {
+    operacionesDeHilo: async () => [...almacen.values()].map((op): OperacionConEdad =>
+      ({ op: structuredClone(op), actualizadaEn: ahora - (opciones.edadMs ?? 60 * 60_000) })),
+    analisisDeMensaje: async () => opciones.analisis,
+    leerHechos: async op => { registro.lecturas++; return (opciones.hechos ?? hechosCompletos)(op); },
+    guardar: async op => {
+      if (opciones.guardarFalla) throw new Error("Operación modificada por otra ejecución");
+      registro.guardados.push(structuredClone(op)); almacen.set(op.id, structuredClone(op));
+    },
+    auditar: async e => { registro.auditorias.push(e); },
+    registrarFinalizada: async () => { registro.finalizadas++; },
+    ahora: () => ahora,
+  };
+  return { deps, registro, almacen };
+}
+
+test("evaluarEvidenciaCierre: compra propia, pagada, con comprobante y conciliada → completa", () => {
+  const op = operacion();
+  const r = evaluarEvidenciaCierre(op, hechosCompletos(op));
+  assert.equal(r.veredicto, "completa");
+  assert.deepEqual(r.faltan, []);
+});
+
+test("evaluarEvidenciaCierre: la marca antigua WOBI_AUTO también demuestra la identidad", () => {
+  const op = operacion();
+  const h = hechosCompletos(op);
+  h.compra!.notas = `WOBI_AUTO:${op.id}`;
+  assert.equal(evaluarEvidenciaCierre(op, h).veredicto, "completa");
+});
+
+test("evaluarEvidenciaCierre: sin la marca de la operación nunca se cierra, aunque importe y proveedor coincidan", () => {
+  const op = operacion();
+  const h = hechosCompletos(op);
+  h.compra!.notas = "otra nota cualquiera";
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "no_concluyente");
+  assert.ok(r.faltan.includes("identidad"));
+});
+
+test("evaluarEvidenciaCierre: otro proveedor, moneda o importe → no concluyente", () => {
+  const op = operacion();
+  for (const cambio of [
+    (h: HechosCierre) => { h.compra!.contactoId = "otro"; },
+    (h: HechosCierre) => { h.compra!.moneda = "USD"; },
+    (h: HechosCierre) => { h.compra!.totalCentimos = 2001; h.compra!.pagadoCentimos = 2001; },
+  ]) {
+    const h = hechosCompletos(op); cambio(h);
+    assert.equal(evaluarEvidenciaCierre(op, h).veredicto, "no_concluyente");
+  }
+});
+
+test("evaluarEvidenciaCierre: falta pago, comprobante, cuenta o conciliación → parcial, con lo que falta", () => {
+  const op = operacion();
+  const casos: Array<[string, (h: HechosCierre) => void]> = [
+    ["pagoCompleto", h => { h.compra!.pagadoCentimos = 0; h.compra!.pendienteCentimos = 2000; h.compra!.pagos = []; }],
+    ["comprobante", h => { h.adjuntos = 0; }],
+    ["pagoEnLaCuentaPrevista", h => { h.compra!.pagos = [{ bancoId: "otra-cuenta", centimos: 2000, fecha: op.plan.movimiento.fecha }]; }],
+    ["movimientoConciliado", h => { h.movimiento = { estado: "pending", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: null }; }],
+    ["movimientoConciliado", h => { h.movimiento = null; }],
+  ];
+  for (const [esperado, cambio] of casos) {
+    const h = hechosCompletos(op); cambio(h);
+    const r = evaluarEvidenciaCierre(op, h);
+    assert.equal(r.veredicto, "parcial", esperado);
+    assert.ok(r.faltan.includes(esperado as never), esperado);
+  }
+});
+
+test("evaluarEvidenciaCierre: una compra que no existe no se da por buena", () => {
+  const op = operacion();
+  assert.equal(evaluarEvidenciaCierre(op, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null }).veredicto, "no_concluyente");
+});
+
+test("resolver: operación incierta con Holded completo se cierra sin escribir en Holded y el correo queda como ya registrado", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: analisisFixture() });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "ya_registrado");
+  assert.equal(e.registro.guardados.length, 1);
+  const cerrada = e.registro.guardados[0];
+  assert.equal(cerrada.estado, "completada");
+  assert.equal(cerrada.pasoIncierto, undefined);
+  assert.equal(cerrada.plan.version, VERSION_POLITICA, "la versión vigente evita que la próxima pasada la «repare» editando la compra");
+  assert.equal(e.registro.auditorias.map(a => a.tipo).join(), "cierre_por_evidencia");
+  assert.equal(e.registro.finalizadas, 1);
+  if (r.tipo === "ya_registrado") {
+    assert.equal(r.cerradas, 1);
+    assert.equal(r.gastos[0].compraId, "compra-1");
+    assert.match(mensajeYaRegistrado(r, "Fwd: JetBlue"), /ya estaba registrado y conciliado/);
+    assert.match(mensajeYaRegistrado(r, "Fwd: JetBlue"), /No creé ni concilié nada nuevo/);
+  }
+});
+
+test("resolver: sin análisis que pruebe la cobertura, cierra la operación pero deja seguir la revisión normal", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: undefined });
+  assert.equal((await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps)).tipo, "libre");
+  assert.equal(e.registro.guardados.length, 1);
+});
+
+test("resolver: un correo con más recibos que operaciones completadas no se da por registrado", async () => {
+  const op = operacion();
+  const dos: AnalisisAuto = { ...analisisFixture(), recibos: [reciboFixture(), { ...reciboFixture(), fuente: "adjunto-2" }] };
+  const e = escenario([op], { analisis: dos });
+  assert.equal((await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps)).tipo, "libre");
+});
+
+test("resolver: si el análisis detecta otras acciones pendientes no se da por registrado", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: { ...analisisFixture(), otrasAcciones: true } });
+  assert.equal((await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps)).tipo, "libre");
+});
+
+test("resolver: si Holded no muestra el resultado completo, bloquea con el detalle y no toca nada", async () => {
+  const op = operacion();
+  const e = escenario([op], { hechos: o => { const h = hechosCompletos(o); h.adjuntos = 0; return h; } });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "bloqueada");
+  assert.equal(e.registro.guardados.length, 0);
+  assert.equal(e.registro.auditorias.length, 0);
+  if (r.tipo === "bloqueada") {
+    assert.equal(r.motivo, "sin_pruebas");
+    const texto = mensajeOperacionBloqueada(r);
+    assert.match(texto, /509b5441…/);
+    assert.match(texto, /no tiene el comprobante previsto adjunto/);
+    assert.match(texto, /No se repetirán escrituras/);
+  }
+});
+
+test("resolver: una operación con actividad reciente no se cierra ni se lee (puede estar ejecutándose)", async () => {
+  const op = operacion("conciliando");
+  const e = escenario([op], { edadMs: REPOSO_MINIMO_MS - 1 });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo === "bloqueada" && r.motivo, "en_curso");
+  assert.equal(e.registro.lecturas, 0);
+  assert.equal(e.registro.guardados.length, 0);
+});
+
+test("resolver: un fallo al leer Holded se distingue de «falta algo» y no cierra nada", async () => {
+  const op = operacion();
+  const e = escenario([op], { hechos: () => { throw new Error("Consulta Holded falló (503)"); } });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo === "bloqueada" && r.motivo, "lectura_fallida");
+  assert.equal(e.registro.guardados.length, 0);
+  if (r.tipo === "bloqueada") assert.match(mensajeOperacionBloqueada(r), /no pude comprobar Holded/);
+});
+
+test("resolver: si otra ejecución modificó la operación, no se fuerza el cierre", async () => {
+  const op = operacion();
+  const e = escenario([op], { guardarFalla: true });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "bloqueada");
+  assert.equal(e.registro.auditorias.length, 0);
+  assert.equal(e.registro.guardados.length, 0);
+  // El registro del gasto del correo va antes del cierre y es idempotente: repetirlo en el siguiente intento no daña.
+  assert.equal(e.registro.finalizadas, 1);
+});
+
+test("resolver: sin operaciones anteriores el correo queda libre; con una completada que cubre todo, ya registrado", async () => {
+  const vacio = escenario([]);
+  assert.equal((await resolverOperacionAnterior("t-m1", "m1", vacio.deps)).tipo, "libre");
+  const completada = operacion("completada");
+  const e = escenario([completada], { analisis: analisisFixture() });
+  const r = await resolverOperacionAnterior(completada.plan.correo.threadId, completada.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "ya_registrado");
+  assert.equal(e.registro.lecturas, 0, "una operación ya completada no se vuelve a consultar en Holded");
+  assert.equal(r.tipo === "ya_registrado" && r.cerradas, 0);
+});
+
+test("resolver: una operación completada de otro mensaje del hilo no da por registrado este mensaje", async () => {
+  const completada = operacion("completada");
+  const e = escenario([completada], { analisis: analisisFixture() });
+  assert.equal((await resolverOperacionAnterior(completada.plan.correo.threadId, "otro-mensaje", e.deps)).tipo, "libre");
+});
+
+test("un cargo parcial con saldo residual dentro de la tolerancia del plan cuenta como conciliado (caso 45,65 frente a 45,66)", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 5;
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "partial", importeCentimos: 2001, conciliadoCentimos: 2000, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "completa");
+  assert.equal(r.saldoResidualCentimos, 1);
+});
+
+test("caso real Desayuno y Almuerzo: compra en COP pagada con 45,65 EUR contra un cargo de 45,66 EUR en estado partial", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 91;
+  op.plan.recibo.moneda = "COP"; op.plan.recibo.monto = 170117;
+  op.plan.evidencia = { ...op.plan.evidencia, equivalenteBancario: undefined };
+  const h = hechosCompletos(op);
+  h.compra!.moneda = "COP"; h.compra!.totalCentimos = 17011700; h.compra!.pagadoCentimos = 17011700;
+  h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 4565, fecha: op.plan.movimiento.fecha }];
+  h.movimiento = { estado: "partial", importeCentimos: 4566, conciliadoCentimos: 4565, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.deepEqual(r.faltan.filter(k => k !== "total" && k !== "moneda"), [], "el pago y el cargo casan aunque la compra esté en otra moneda");
+});
+
+test("un cargo parcial con más saldo que la tolerancia no se da por conciliado", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 5;
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "partial", importeCentimos: 2100, conciliadoCentimos: 2000, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("movimientoConciliado"));
+});
+
+test("caso real JetBlue: cargo en USD conciliado y pago de 412,61 EUR = equivalente contable del cargo → el pago es del cargo", () => {
+  const op = operacion();
+  const h = hechosCompletos(op);
+  h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 41261, fecha: op.plan.movimiento.fecha }];
+  h.movimiento = { estado: "reconciled", importeCentimos: 47393, conciliadoCentimos: 47393, contableCentimos: 41261 };
+  assert.ok(!evaluarEvidenciaCierre(op, h).faltan.includes("pagoDelCargo"));
+});
+
+test("el pago de la compra debe ser el de ESE cargo: otra fecha o un importe que no es lo conciliado no cuentan", () => {
+  const op = operacion();
+  for (const cambio of [
+    (h: HechosCierre) => { h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 2000, fecha: "2020-01-01" }]; },
+    (h: HechosCierre) => { h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 1999, fecha: op.plan.movimiento.fecha }]; },
+  ]) {
+    const h = hechosCompletos(op); cambio(h);
+    const r = evaluarEvidenciaCierre(op, h);
+    assert.equal(r.veredicto, "parcial");
+    assert.ok(r.faltan.includes("pagoDelCargo"));
+  }
+});
+
+test("resolver: un 404 de Holded es un hecho («ya no existe»), no un fallo transitorio", async () => {
+  const op = operacion();
+  const e = escenario([op], { hechos: () => { throw new Error("Consulta Holded falló (404); no se autoriza crear."); } });
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo === "bloqueada" && r.motivo, "sin_pruebas");
+  if (r.tipo === "bloqueada") assert.match(mensajeOperacionBloqueada(r), /ya no encuentra la compra/);
+});
+
+test("resolver: si no se puede registrar el gasto del correo, la operación NO se cierra (así se reintenta)", async () => {
+  const op = operacion();
+  const e = escenario([op]);
+  e.deps.registrarFinalizada = async () => { throw new Error("Sheets caído"); };
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "bloqueada");
+  assert.equal(e.registro.guardados.length, 0);
+});
+
+test("resolver: si falla solo la auditoría, la operación ya cerrada sigue cerrada y no se informa como bloqueo", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: analisisFixture() });
+  e.deps.auditar = async () => { throw new Error("Postgres lento"); };
+  const r = await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps);
+  assert.equal(r.tipo, "ya_registrado");
+  assert.equal(e.registro.guardados.length, 1);
+});
+
+test("intentarCerrarOperacion con reposo 0 (el llamador ya tiene el buzón) cierra aunque la actividad sea reciente", async () => {
+  const op = operacion("conciliando");
+  const e = escenario([op], { edadMs: 0 });
+  const intento = await intentarCerrarOperacion(op, 1_000_000_000_000, e.deps, 0);
+  assert.equal(intento.cerrada, true);
+});
+
+test("un cargo forced_reconciled sin importe enlazado a ningún documento no cuenta como conciliado", () => {
+  const op = operacion();
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "forced_reconciled", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: null };
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("movimientoConciliado"));
+});
+
+test("si el análisis pide revisión manual, el correo no se da por registrado aunque sus recibos estén completados", async () => {
+  const op = operacion();
+  const e = escenario([op], { analisis: { ...analisisFixture(), motivoManual: "el proveedor pide confirmar la reserva" } });
+  assert.equal((await resolverOperacionAnterior(op.plan.correo.threadId, op.plan.correo.id, e.deps)).tipo, "libre");
+});
+
+test("el mensaje distingue lo comprobado ahora de lo que ya daba por hecho el proceso automático", () => {
+  const gasto = { empresa: "Footprint", proveedor: "JetBlue", monto: 473.93, moneda: "USD", compraId: "c1" };
+  assert.match(mensajeYaRegistrado({ tipo: "ya_registrado", cerradas: 1, gastos: [gasto] }, "JetBlue"), /lo comprobé ahora/);
+  assert.match(mensajeYaRegistrado({ tipo: "ya_registrado", cerradas: 0, gastos: [gasto] }, "JetBlue"), /lo registró y concilió el proceso automático/);
+});
+
+test("un adjunto que no es el comprobante que Wobi preparó no prueba nada; uno humano (sin soporteHash) sí cuenta", () => {
+  const op = operacion();
+  const propio = hechosCompletos(op); propio.comprobanteCoincide = false;
+  const r = evaluarEvidenciaCierre(op, propio);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("comprobante"));
+  const humano = hechosCompletos(op); humano.comprobanteCoincide = null;
+  assert.equal(evaluarEvidenciaCierre(op, humano).veredicto, "completa");
+});
+
+test("el saldo residual también debe caber en el margen de redondeo del repo: una propina de 2 € no es redondeo", () => {
+  const op = operacion();
+  op.plan.toleranciaCentimos = 490;
+  const h = hechosCompletos(op);
+  h.movimiento = { estado: "partial", importeCentimos: 24700, conciliadoCentimos: 24500, contableCentimos: null };
+  h.compra!.totalCentimos = 24500; h.compra!.pagadoCentimos = 24500;
+  h.compra!.pagos = [{ bancoId: op.plan.movimiento.cuentaId, centimos: 24500, fecha: op.plan.movimiento.fecha }];
+  op.plan.recibo.monto = 245;
+  const r = evaluarEvidenciaCierre(op, h);
+  assert.equal(r.veredicto, "parcial");
+  assert.ok(r.faltan.includes("movimientoConciliado"));
+});
+
+test("si no se puede dejar constancia del cierre, la operación en memoria vuelve a su estado real", async () => {
+  const op = operacion();
+  const e = escenario([op], { guardarFalla: true });
+  const intento = await intentarCerrarOperacion(op, 0, e.deps);
+  assert.equal(intento.cerrada, false);
+  assert.equal(op.estado, "incierta");
+  assert.equal(op.pasoIncierto, "conciliando");
+  assert.equal(op.plan.version, "correo-gastos-v-antigua");
+});

@@ -1,0 +1,58 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "categoria-sola-mismo-dia",
+  "fuente": "Decisión de diseño 2026-09-28: con la fecha cercana (≤2 días) la categoría sola sigue siendo evidencia suficiente (52 % de los pares reales conciliados se reconocen por nombre y otro 30 % por marca o categoría).",
+  "descripcion": "Ticket de restaurante y cargo de otro restaurante con importe y día exactos: se ofrece como compatible (no se degrada). Riesgo asumido y documentado en sixt-go-riesgo-conocido.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Restaurante Zoe Select",
+    "concepto": "Almuerzo restaurante",
+    "monto": 15.86,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "Petit Gourmet",
+        "amount": "-15.86",
+        "currency": "USD",
+        "booking_date": "2026-09-26",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m1",
+        "compatibilidad": null
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [
+      "m1"
+    ],
+    "botonesIncluyen": [
+      "Crear y conciliar"
+    ]
+  }
+}

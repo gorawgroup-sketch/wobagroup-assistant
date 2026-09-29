@@ -33,14 +33,15 @@ test('fallo de cualquiera de las escrituras impide publicar acciones', async () 
   }
 });
 
-test('guardar datos no salta la incompatibilidad entre taxi y alimentación', async () => {
+test('guardar datos no salta la incompatibilidad entre taxi y alimentación: no se concilia, pero crear sin conciliar sigue disponible', async () => {
   const p = await guardarVinculoBancarioPropuesta(propuesta, [{ ...movimiento, descripcion: 'Restaurante Osteria' }], true, {
     movimientos: async () => true, flag: async () => true,
   });
-  assert.equal(acciones(p).some(a => a?.startsWith('gasto_toggle:synthetic:crear')), false);
+  assert.equal(acciones(p).some(a => a?.startsWith('gasto_toggle:synthetic:crearconciliar')), false);
+  assert.equal(acciones(p).includes('gasto_toggle:synthetic:crear'), true);
 });
 
-test('varios cargos conservan la elección y ningún cargo no permite crear', async () => {
+test('varios cargos conservan la elección y ningún cargo no permite conciliar', async () => {
   for (const movimientos of [[], [movimiento, { ...movimiento, movementId: 'other' }]]) {
     const p = await guardarVinculoBancarioPropuesta(propuesta, movimientos, false, {
       movimientos: async () => true, flag: async () => true,

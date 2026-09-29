@@ -26,6 +26,11 @@ export interface PuertoAutomatico {
   marcarResuelto(correo: CorreoAuto): Promise<void>;
   permitidoAhora(op: OperacionAuto): boolean;
   ejecutarProtegido<T>(op: OperacionAuto, tarea: () => Promise<T>): Promise<T>;
+  /**
+   * Última salida de una operación que la verificación estricta no pudo dar por terminada: la cierra solo si Holded
+   * demuestra (por lectura) que todo lo que debía escribir ya está. Nunca escribe en Holded. Opcional.
+   */
+  cerrarConEvidencia?(op: OperacionAuto): Promise<boolean>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
 export function diagnosticoAnalisis(error: unknown): string {
@@ -76,7 +81,28 @@ export class ServicioCorreoAutomatico {
   constructor(private readonly store: StoreAuto, private readonly puerto: PuertoAutomatico,
     private readonly opciones: { concurrenciaAnalisis?: number; fechaLimite?: number;
       maxAnalisisNuevos?: number;
+      /**
+       * Cancelación cooperativa: cuando devuelve true (el proceso recibió SIGTERM por un
+       * despliegue), la revisión no inicia análisis, consultas ni escrituras nuevas y termina en el
+       * siguiente punto de control — los mismos donde ya se respeta `fechaLimite`. Las operaciones
+       * durables que ya estaban en vuelo (creando/adjuntando/conciliando) sí se cierran por
+       * lectura, porque eso no repite ningún POST. Caso real 2026-09-28: sin esto, un redeploy
+       * mataba /revisarcorreo en «39/50» sin aviso ni reanudación.
+       */
+      detener?: () => boolean;
       progreso?: (p: ProgresoRevision) => void | Promise<void> } = {}) {}
+
+  private interrumpida = false;
+
+  /** Motivo por el que NO debe empezar trabajo nuevo ahora, o undefined si puede seguir. */
+  private motivoPospuesto(): "revision_pospuesta_por_reinicio" | "revision_pospuesta_por_limite_de_tiempo" | undefined {
+    if (this.opciones.detener?.()) {
+      this.interrumpida = true;
+      return "revision_pospuesta_por_reinicio";
+    }
+    if (this.opciones.fechaLimite && Date.now() >= this.opciones.fechaLimite) return "revision_pospuesta_por_limite_de_tiempo";
+    return undefined;
+  }
 
   private async prepararCorreo(
     config: ConfigAuto,
@@ -89,9 +115,8 @@ export class ServicioCorreoAutomatico {
       }
       let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
       if (!analisis) {
-        if (this.opciones.fechaLimite && Date.now() >= this.opciones.fechaLimite) {
-          return { correo, motivos: ["revision_pospuesta_por_limite_de_tiempo"] };
-        }
+        const pospuesto = this.motivoPospuesto();
+        if (pospuesto) return { correo, motivos: [pospuesto] };
         if (presupuesto.disponibles <= 0) {
           return { correo, motivos: ["revision_pospuesta_por_limite_de_coste"] };
         }
@@ -154,8 +179,9 @@ export class ServicioCorreoAutomatico {
   }
 
   private evidenciasConLimite(correo: CorreoAuto, recibo: ReciboAuto): Promise<EvidenciaAuto> {
+    const pospuesto = this.motivoPospuesto();
+    if (pospuesto) throw new Error(pospuesto);
     const restante = this.opciones.fechaLimite ? this.opciones.fechaLimite - Date.now() : 60_000;
-    if (restante <= 0) throw new Error("revision_pospuesta_por_limite_de_tiempo");
     return conTiempoMaximo(() => this.puerto.evidencias(correo, recibo), Math.min(60_000, restante),
       "verificación automática en Holded");
   }
@@ -277,6 +303,27 @@ export class ServicioCorreoAutomatico {
       }
     });
   }
+  /**
+   * `ejecutar` con una última salida: la verificación estricta compara campo por campo (cuenta, impuestos, tasa,
+   * etiquetas) y deja «sin verificar» para siempre un gasto que alguien corrigió o cuyo cargo quedó con unos
+   * céntimos de saldo (JetBlue y «Desayuno y Almuerzo», 2026-09-28). Si Holded demuestra que todo está hecho, se cierra.
+   */
+  private async ejecutarOCerrar(op: OperacionAuto, c: CorreoAuto, analisis: AnalisisAuto, config: ConfigAuto): Promise<boolean> {
+    // Una reparación de política anterior pendiente NO se da por buena: cerrarla fijaría la versión vigente y la
+    // cuenta o las etiquetas defectuosas que se estaba corrigiendo quedarían para siempre. Solo el operador presente
+    // (resolverOperacionAnterior) puede cerrar esos casos.
+    const eraReparacion = op.plan.version !== VERSION_POLITICA && (op.estado === "completada" || op.pasoIncierto === "completada");
+    if (await this.ejecutar(op, c, analisis, config)) return true;
+    if (!this.puerto.cerrarConEvidencia || !op.compraId || op.estado === "rechazada" || op.estado === "reservada" ||
+      op.estado === "completada" || eraReparacion) return false;
+    // Igual que ejecutar(): con la automatización apagada no se escribe nada, ni siquiera el estado de la operación.
+    if (!this.puerto.permitidoAhora(op)) return false;
+    try { return await this.puerto.cerrarConEvidencia(op); }
+    catch (error) {
+      console.warn("[correo-auto] No se pudo intentar el cierre con evidencia:", { operacion: op.id, error: mensajeError(error) });
+      return false;
+    }
+  }
   private mismoPlan(a: PlanAuto, b: PlanAuto): void {
     if (a.empresa !== b.empresa || a.contactoId !== b.contactoId || a.cuentaId !== b.cuentaId ||
         a.totalCentimos !== b.totalCentimos || a.fuenteHash !== b.fuenteHash ||
@@ -308,7 +355,7 @@ export class ServicioCorreoAutomatico {
     });
     resultado.aplazados = preparados.filter(preparado => preparado.motivos.some(motivo =>
       motivo === "revision_pospuesta_por_limite_de_coste" || motivo === "revision_pospuesta_por_limite_de_tiempo" ||
-      motivo === "revision_pospuesta_por_limite_de_ia"
+      motivo === "revision_pospuesta_por_limite_de_ia" || motivo === "revision_pospuesta_por_reinicio"
     )).length;
     resultado.bloqueadosPorPresupuestoIA = preparados.filter(preparado =>
       preparado.motivos.includes("revision_pospuesta_por_limite_de_ia")
@@ -328,11 +375,22 @@ export class ServicioCorreoAutomatico {
         await this.opciones.progreso?.({ fase: "recuperacion", completados: 0, total: recuperables.length });
       }
       for (const op of recuperables) {
+        // Con el cierre pedido no se abre ninguna reparación nueva: las operaciones siguen
+        // recuperables tal cual para la pasada que retome la revisión.
+        if (this.opciones.detener?.()) { this.interrumpida = true; break; }
         try {
           const correoNoLeido = correos.find(c => c.id === op.plan.correo.id);
           const reparacionLegada = op.plan.version !== VERSION_POLITICA &&
             (op.estado === "completada" || op.pasoIncierto === "completada");
-          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido;
+          // Un correo reservado por la revisión manual no pasa por el bucle de abajo (se aparta sin analizarlo), y la
+          // revisión manual a su vez rechaza un correo con una operación sin cerrar: sin esta lectura ninguno de los
+          // dos podía terminarla (bloqueo mutuo, JetBlue 2026-09-28). Aquí solo se CONTINÚA la operación existente,
+          // siempre por lectura y sin repetir POST; nunca se crea nada nuevo para ese correo.
+          // Solo operaciones que YA crearon su compra: una `reservada` o sin compra registrada pasaría por `crear`, y
+          // eso nunca debe ocurrir para un correo que tiene el operador abierto.
+          const reservadoManual = Boolean(correoNoLeido) && op.estado !== "reservada" && Boolean(op.compraId) &&
+            await this.puerto.reservadoManualmente(op.plan.correo.threadId);
+          const debeRecuperarseAhora = reparacionLegada || op.estado === "completada" || !correoNoLeido || reservadoManual;
           if (!debeRecuperarseAhora) continue;
           const correo = correoNoLeido ?? await this.puerto.obtener(op.plan.correo.id, op.plan.correo.threadId);
           if (!correo) {
@@ -375,9 +433,9 @@ export class ServicioCorreoAutomatico {
               continue;
             }
           }
-          if (await this.ejecutar(op, correo, analisisRecuperado, config)) {
+          if (await this.ejecutarOCerrar(op, correo, analisisRecuperado, config)) {
             const gasto = { empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
-              moneda: op.plan.movimiento.moneda };
+              moneda: op.plan.movimiento.moneda, proveedor: op.plan.recibo.proveedor };
             if (eraCompletadaAnterior) resultado.reparados!.push(gasto);
             else { resultado.completados++; resultado.gastos.push(gasto); }
             await this.puerto.registrarFinalizada(op);
@@ -424,12 +482,21 @@ export class ServicioCorreoAutomatico {
               detalles.push(this.detalleOperacion(op, motivo));
               continue;
             }
+            if (op && op.estado === "reservada" && this.opciones.detener?.()) {
+              // Una reserva todavía no escribió nada en Holded: con el cierre pedido se deja
+              // reservada (la próxima pasada la ejecuta) antes que arrancar tres POST que el
+              // SIGKILL podría cortar a medias.
+              this.interrumpida = true;
+              motivos.push("revision_pospuesta_por_reinicio");
+              continue;
+            }
             if (!op) {
-              // Al agotar el presupuesto temporal no se inicia una consulta nueva de Holded ni una
-              // escritura. Las operaciones ya reservadas sí continúan para llevarlas a un estado
-              // durable y verificable antes de responder.
-              if (this.opciones.fechaLimite && Date.now() >= this.opciones.fechaLimite) {
-                motivos.push("revision_pospuesta_por_limite_de_tiempo");
+              // Al agotar el presupuesto temporal (o con el cierre pedido) no se inicia una consulta
+              // nueva de Holded ni una escritura. Las operaciones ya reservadas sí continúan para
+              // llevarlas a un estado durable y verificable antes de responder.
+              const pospuesto = this.motivoPospuesto();
+              if (pospuesto) {
+                motivos.push(pospuesto);
                 continue;
               }
               const evidencia = await this.evidenciasConLimite(correo, recibo);
@@ -460,10 +527,11 @@ export class ServicioCorreoAutomatico {
             }
             if (config.modo === "simulate") { motivos.push("operacion_pendiente_sin_escritura_en_simulacion"); continue; }
             const yaCompletada = op.estado === "completada";
-            if (await this.ejecutar(op, correo, analisis, config)) {
+            if (await this.ejecutarOCerrar(op, correo, analisis, config)) {
               if (!yaCompletada) {
                 resultado.completados++;
-                resultado.gastos.push({ empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos, moneda: op.plan.movimiento.moneda });
+                resultado.gastos.push({ empresa: op.plan.empresa, id: op.compraId!, centimos: op.plan.totalCentimos,
+                  moneda: op.plan.movimiento.moneda, proveedor: op.plan.recibo.proveedor });
               }
               await this.puerto.registrarFinalizada(op);
             } else {
@@ -487,6 +555,7 @@ export class ServicioCorreoAutomatico {
       verificados++;
       await this.opciones.progreso?.({ fase: "verificacion", completados: verificados, total: preparados.length });
     }
+    if (this.interrumpida) resultado.interrumpida = true;
     await this.store.auditar({ buzon: config.buzon, tipo: "revision_terminada", datos: resultado });
     return resultado;
   }
@@ -531,13 +600,20 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
     return "Los aprendizajes actuales no permiten elegir una cuenta contable con seguridad.";
   }
   if (tiene("confianza_insuficiente")) return "La lectura del comprobante no alcanzó la confianza necesaria para automatizar.";
+  // Los aplazamientos también pueden llegar como `error:<motivo>` (lanzados desde la consulta de
+  // evidencias); van antes del comodín `error:` para no disfrazarlos de «no se pudo leer».
+  if (tiene("revision_pospuesta_por_reinicio") || tiene("error:revision_pospuesta_por_reinicio")) {
+    return "La revisión se interrumpió por un reinicio del servicio; se retoma en la siguiente pasada.";
+  }
+  if (tiene("revision_pospuesta_por_limite_de_tiempo") || tiene("error:revision_pospuesta_por_limite_de_tiempo")) {
+    return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
+  }
   if (tiene("lectura_incompleta") || motivos.some(motivo => motivo.startsWith("error:"))) {
     return "No se pudo leer o verificar todo el contenido del correo.";
   }
   if (tiene("otras_acciones_pendientes")) return "El correo contiene además otra solicitud que debe revisar el operador.";
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";
   if (tiene("revision_manual_o_autorespuesta_activa")) return "Este correo ya está reservado para otro flujo de revisión.";
-  if (tiene("revision_pospuesta_por_limite_de_tiempo")) return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
   if (tiene("revision_pospuesta_por_limite_de_coste")) return "La revisión se aplazó al alcanzar el máximo seguro de análisis nuevos de esta pasada.";
   if (tiene("revision_pospuesta_por_limite_de_ia")) return "El análisis no se ejecutó porque se alcanzó el presupuesto diario de IA configurado.";
   if (tiene("analisis_ia_no_disponible")) return "La política de IA no autorizó este análisis.";
@@ -546,6 +622,25 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   if (tiene("correo_original_no_disponible")) return "La operación existe, pero Gmail ya no permite recuperar el comprobante original.";
   if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) return "La fase automática no terminó y el correo se conserva para revisión manual.";
   return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";
+}
+
+/** Máximo de compras que el informe detalla una a una; el resto se resume en «y N más». */
+export const MAX_GASTOS_DETALLADOS_EN_INFORME = 10;
+
+/**
+ * Una línea por compra, con el proveedor cuando se conoce (solo el id de compra no le dice nada a quien lee el informe).
+ * El detalle está acotado: antes crecía sin límite con el volumen y un informe de 49 correos superó los 4096 caracteres de
+ * Telegram, con lo que el envío falló aunque el trabajo ya estuviera hecho (2026-09-28).
+ */
+function lineasGastosAcotadas(gastos: ResultadoAuto["gastos"]): string[] {
+  const lineas = gastos.slice(0, MAX_GASTOS_DETALLADOS_EN_INFORME).map(g => {
+    const proveedor = g.proveedor?.trim() ? ` · ${g.proveedor.trim().slice(0, 32)}` : "";
+    return `• ${g.empresa}${proveedor} · ${(g.centimos / 100).toFixed(2)} ${g.moneda} · compra ${g.id}.`;
+  });
+  if (gastos.length > MAX_GASTOS_DETALLADOS_EN_INFORME) {
+    lineas.push(`• … y ${gastos.length - MAX_GASTOS_DETALLADOS_EN_INFORME} más, en Holded.`);
+  }
+  return lineas;
 }
 
 export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsolidadas?: number } = {}): string {
@@ -557,6 +652,7 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     ...(r.encontrados !== undefined ? [`Correos encontrados para el pase automático: ${r.encontrados}.`] : []),
     `${consolidado ? "Correos analizados en la revisión más reciente" : "Correos analizados automáticamente"}: ${r.revisados}.`,
     ...(r.reservados ? [`Ya estaban bajo revisión manual o autorrespuesta: ${r.reservados}.`] : []),
+    ...(r.interrumpida ? ["⏸️ Pasada interrumpida por un reinicio del servicio: resultado parcial."] : []),
     ...(r.aplazados ? [`Correos aplazados sin analizar en esta pasada: ${r.aplazados}.`] : []),
     ...(r.bloqueadosPorPresupuestoIA ?
       [`Análisis detenidos por el presupuesto diario de IA: ${r.bloqueadosPorPresupuestoIA}. No se clasificaron como correos ilegibles.`] : []),
@@ -569,12 +665,10 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);
     lineas.push("", "✅ Automatizados por empresa");
     for (const [empresa, cantidad] of porEmpresa) lineas.push(`• ${empresa}: ${cantidad}.`);
-    lineas.push("Compras verificadas para convertir manualmente a ticket:");
-    for (const g of r.gastos) lineas.push(`• ${g.empresa} · ${(g.centimos / 100).toFixed(2)} ${g.moneda} · compra ${g.id}.`);
+    lineas.push("Compras verificadas para convertir manualmente a ticket:", ...lineasGastosAcotadas(r.gastos));
   }
   if (r.reparados?.length) {
-    lineas.push("", `🛠️ Borradores anteriores corregidos y verificados: ${r.reparados.length}.`);
-    for (const g of r.reparados) lineas.push(`• ${g.empresa} · ${(g.centimos / 100).toFixed(2)} ${g.moneda} · compra ${g.id}.`);
+    lineas.push("", `🛠️ Borradores anteriores corregidos y verificados: ${r.reparados.length}.`, ...lineasGastosAcotadas(r.reparados));
   }
   if (r.pendientes.length) {
     const motivosPrincipales = new Map<string, number>();

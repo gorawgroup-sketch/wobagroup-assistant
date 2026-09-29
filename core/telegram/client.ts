@@ -1,6 +1,7 @@
 import type { IncomingMessage, InlineKeyboardButton, TelegramUpdate } from "./types";
 import { registrarMensajeSaliente } from "../claude/conversationStore";
 import { AcusesCallback } from "./callbackAcknowledgements";
+import { dividirParaTelegram, tituloDeTrozo } from "./dividirMensaje";
 import {
   actualizarBotonesActivos,
   actualizarTextoBotonesActivos,
@@ -138,25 +139,38 @@ export async function sendTelegramDocument(
 }
 
 /**
+ * POST sendMessage y devuelve el message_id. Centraliza el manejo de error de los envíos por trozos (ver
+ * dividirParaTelegram): Telegram rechaza los mensajes de más de 4096 caracteres.
+ */
+async function enviarMensajeTelegram(body: Record<string, unknown>, descripcionError: string): Promise<number> {
+  const response = await fetchConReintento(`${TELEGRAM_API_BASE}/bot${getBotToken()}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const respBody = await response.text();
+    throw new Error(`${descripcionError} (${response.status}): ${respBody}`);
+  }
+  const data = (await response.json().catch(() => undefined)) as { result?: { message_id?: number } } | undefined;
+  return data?.result?.message_id ?? 0;
+}
+
+/** Cuerpo HTML de un mensaje colapsable (título en negrita + bloque expandible). */
+function textoExpandable(titulo: string, cuerpo: string): string {
+  return `<b>${limpiarTitulo(titulo)}</b>\n<blockquote expandable>${formatearParaTelegram(cuerpo)}</blockquote>`;
+}
+
+/**
  * Envía un mensaje de texto a un chat de Telegram usando la Bot API (sendMessage).
  */
 export async function sendTelegramMessage(chatId: number, text: string): Promise<void> {
-  const token = getBotToken();
-  const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
-
-  const response = await fetchConReintento(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: formatearParaTelegram(text),
-      parse_mode: "HTML",
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Error enviando mensaje a Telegram (${response.status}): ${body}`);
+  // Un texto largo se manda en varios mensajes en vez de fallar entero (ver dividirParaTelegram).
+  for (const trozo of dividirParaTelegram(text)) {
+    await enviarMensajeTelegram(
+      { chat_id: chatId, text: formatearParaTelegram(trozo), parse_mode: "HTML" },
+      "Error enviando mensaje a Telegram"
+    );
   }
 
   // "Fire and forget" — no bloquea el envío real por la latencia de Sheets.
@@ -247,7 +261,7 @@ export async function entregarRespuestaTrasTrabajar(
       // el siguiente turno solo recuerda al usuario pero no lo que Wobi
       // realmente contestó. Este fue uno de los factores que hizo que el
       // chat perdiera el contexto del DHL recién procesado.
-      registrarMensajeSaliente(chatId, texto).catch((error) =>
+      registrarMensajeSaliente(chatId, texto, "respuesta").catch((error) =>
         console.error("[telegram/client] Error registrando respuesta final editada en el historial:", error)
       );
       return;
@@ -362,30 +376,19 @@ export async function sendTelegramMessageExpandable(
   cuerpo: string,
   buttons?: InlineKeyboardButton[][]
 ): Promise<number> {
-  const token = getBotToken();
-  const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
-
-  const text = `<b>${limpiarTitulo(titulo)}</b>\n<blockquote expandable>${formatearParaTelegram(cuerpo)}</blockquote>`;
-
-  const body: Record<string, unknown> = {
-    chat_id: chatId,
-    text,
-    parse_mode: "HTML",
-  };
-  if (buttons) body.reply_markup = { inline_keyboard: buttons };
-
-  const response = await fetchConReintento(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const respBody = await response.text();
-    throw new Error(`Error enviando mensaje expandible a Telegram (${response.status}): ${respBody}`);
+  // Un cuerpo largo se parte en varios mensajes colapsables («Título (1/3)»…); los botones van solo en el último,
+  // que es el que se devuelve para que los llamadores registren/actualicen ese mensaje.
+  const trozos = dividirParaTelegram(cuerpo);
+  let ultimoId = 0;
+  for (let i = 0; i < trozos.length; i++) {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text: textoExpandable(tituloDeTrozo(titulo, i, trozos.length), trozos[i]),
+      parse_mode: "HTML",
+    };
+    if (buttons && i === trozos.length - 1) body.reply_markup = { inline_keyboard: buttons };
+    ultimoId = await enviarMensajeTelegram(body, "Error enviando mensaje expandible a Telegram");
   }
-
-  const data = (await response.json()) as { result: { message_id: number } };
 
   // Se guarda en el historial en texto plano (sin las tags HTML) — es lo
   // mismo que vería la persona si expandiera el bloque, y evita que el
@@ -393,9 +396,9 @@ export async function sendTelegramMessageExpandable(
   registrarMensajeSaliente(chatId, `${titulo}\n\n${cuerpo}`).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
-  if (buttons) await registrarBotonesActivos(chatId, data.result.message_id, `${titulo}\n\n${cuerpo}`, buttons);
+  if (buttons) await registrarBotonesActivos(chatId, ultimoId, `${titulo}\n\n${cuerpo}`, buttons);
 
-  return data.result.message_id;
+  return ultimoId;
 }
 
 // Pedido explícito de Carlos: "asegúrate que todo se pueda colapsar
@@ -444,23 +447,17 @@ export async function sendTelegramMessageSmart(
 
 /** sendTelegramMessage pero devolviendo el message_id (necesario para sendTelegramMessageSmart sin botones). */
 async function sendTelegramMessagePlain(chatId: number, text: string): Promise<number> {
-  const token = getBotToken();
-  const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
-
-  const response = await fetchConReintento(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: formatearParaTelegram(text), parse_mode: "HTML" }),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Error enviando mensaje a Telegram (${response.status}): ${body}`);
+  let ultimoId = 0;
+  for (const trozo of dividirParaTelegram(text)) {
+    ultimoId = await enviarMensajeTelegram(
+      { chat_id: chatId, text: formatearParaTelegram(trozo), parse_mode: "HTML" },
+      "Error enviando mensaje a Telegram"
+    );
   }
-  const data = (await response.json()) as { result: { message_id: number } };
   registrarMensajeSaliente(chatId, text).catch((error) =>
     console.error("[telegram/client] Error registrando mensaje saliente en el historial:", error)
   );
-  return data.result.message_id;
+  return ultimoId;
 }
 
 /**
@@ -545,6 +542,28 @@ export async function sendTelegramTemporaryNotice(chatId: number, text: string, 
 }
 
 /**
+ * Un mensaje editado no puede pasar de 4096 caracteres: el mensaje original conserva el primer trozo (y sus botones) y
+ * el resto sale como mensajes nuevos a continuación. Es mejor esfuerzo: la edición ya se aplicó, así que un fallo aquí
+ * se registra pero no se propaga (repetirla duplicaría el primer trozo).
+ */
+async function enviarContinuacionDeEdicion(chatId: number, resto: string[], tituloExpandable?: string): Promise<void> {
+  for (let i = 0; i < resto.length; i++) {
+    try {
+      await enviarMensajeTelegram({
+        chat_id: chatId,
+        text: tituloExpandable === undefined
+          ? formatearParaTelegram(resto[i])
+          : textoExpandable(tituloDeTrozo(tituloExpandable, i + 1, resto.length + 1), resto[i]),
+        parse_mode: "HTML",
+      }, "Error enviando la continuación de un mensaje editado a Telegram");
+    } catch (error) {
+      console.error("[telegram/client] No se pudo enviar la continuación de un mensaje editado:", error instanceof Error ? error.message : error);
+      return;
+    }
+  }
+}
+
+/**
  * Edita el texto de un mensaje ya enviado y opcionalmente reemplaza sus botones
  * (pasar un array vacío quita los botones; omitir `buttons` los deja igual).
  */
@@ -557,10 +576,11 @@ export async function editTelegramMessage(
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageText`;
 
+  const [primerTrozo, ...resto] = dividirParaTelegram(text);
   const body: Record<string, unknown> = {
     chat_id: chatId,
     message_id: messageId,
-    text: formatearParaTelegram(text),
+    text: formatearParaTelegram(primerTrozo),
     parse_mode: "HTML",
   };
 
@@ -590,6 +610,7 @@ export async function editTelegramMessage(
   }
 
   registrarEdicionTerminalEnHistorial(chatId, text, buttons);
+  await enviarContinuacionDeEdicion(chatId, resto);
 }
 
 /**
@@ -676,7 +697,8 @@ export async function editTelegramMessageExpandable(
   const token = getBotToken();
   const url = `${TELEGRAM_API_BASE}/bot${token}/editMessageText`;
 
-  const text = `<b>${limpiarTitulo(titulo)}</b>\n<blockquote expandable>${formatearParaTelegram(cuerpo)}</blockquote>`;
+  const [primerTrozo, ...resto] = dividirParaTelegram(cuerpo);
+  const text = textoExpandable(tituloDeTrozo(titulo, 0, resto.length + 1), primerTrozo);
 
   const body: Record<string, unknown> = {
     chat_id: chatId,
@@ -709,6 +731,7 @@ export async function editTelegramMessageExpandable(
     await actualizarBotonesActivos(chatId, messageId, []);
   }
   registrarEdicionTerminalEnHistorial(chatId, textoPlano, buttons);
+  await enviarContinuacionDeEdicion(chatId, resto, titulo);
 }
 
 /** Igual que sendTelegramMessageSmart pero editando un mensaje existente (ver entregarRespuestaTrasTrabajar). */

@@ -237,6 +237,29 @@ export async function sugerirCandidatoPorConciliacionesVerificadas(
   return sugerirCandidatoDesdeRegistros(proveedor, empresa, candidatos, await leerRegistros());
 }
 
+/**
+ * true si un humano ya confirmó (conciliación verificada en Holded) este proveedor con un descriptor bancario igual o
+ * muy parecido, en la misma empresa y moneda. Cierra el círculo del aprendizaje: lo confirmado una vez se reconoce
+ * como compatible aunque el nombre no coincida, sin volver a preguntar.
+ */
+export function descriptorConfirmadoParaProveedor(
+  registros: ConciliacionVerificadaAprendida[],
+  empresa: Empresa,
+  proveedor: string,
+  moneda: string,
+  descripcion: string
+): boolean {
+  const proveedorNormalizado = normalizar(proveedor);
+  if (!proveedorNormalizado || !normalizar(descripcion)) return false;
+  const monedaNormalizada = (moneda || "EUR").trim().toUpperCase();
+  return registros.some((registro) =>
+    registro.empresa === empresa &&
+    registro.moneda === monedaNormalizada &&
+    normalizar(registro.proveedor) === proveedorNormalizado &&
+    puntuarTexto(descripcion, registro.descripcionMovimiento) >= 8
+  );
+}
+
 /** Registros visibles en el reporte de aprendizaje. */
 export async function obtenerTodasLasConciliacionesAprendidas(): Promise<ConciliacionVerificadaAprendida[]> {
   return leerRegistros();

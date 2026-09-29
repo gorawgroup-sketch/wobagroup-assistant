@@ -83,6 +83,18 @@ export class ConflictoConciliacionMovimientoError extends ConciliacionMovimiento
   }
 }
 
+/**
+ * La comprobación previa a escribir (releer compra, movimiento y cuenta) falló ANTES de enviar el POST. Como no hubo
+ * escritura, no es una conciliación incierta: el registro vuelve a "preparada" y se relanza el error original, para
+ * que un fallo de lectura pasajero (límite de cuota, 5xx) no bloquee para siempre un movimiento que nunca se tocó.
+ */
+export class ConciliacionNoIntentadaError extends Error {
+  constructor(readonly causa: unknown) {
+    super(causa instanceof Error ? causa.message : String(causa));
+    this.name = "ConciliacionNoIntentadaError";
+  }
+}
+
 export class MovimientoYaConciliadoError extends Error {
   constructor() {
     super("El movimiento ya estaba conciliado antes de esta operación; Wobi no envió otro POST.");
@@ -226,10 +238,20 @@ export async function ejecutarConciliacionMovimientoDurable(
   try {
     await transporte.conciliar(conciliando);
   } catch (error) {
+    if (error instanceof ConciliacionNoIntentadaError) {
+      await repositorio.marcarPreparada(conciliando.clave);
+      throw error.causa;
+    }
     if (esRechazoDefinitivoConciliacion(error)) {
       await repositorio.marcarPreparada(conciliando.clave);
       throw error;
     }
+    // Sin este registro la causa real (código y mensaje de Holded) se perdía: solo quedaba "Holded no confirmó".
+    console.error(
+      `[durableBankReconciliation] La escritura de conciliación falló (${codigoHttp(error) ?? "sin código HTTP"}); ` +
+      "se verifica por lectura antes de tratarla como incierta:",
+      (error instanceof Error ? error.message : String(error)).slice(0, 400)
+    );
     try {
       const resultado = await confirmar(conciliando, repositorio, transporte);
       if (resultado) return { resultado, reutilizada: true };

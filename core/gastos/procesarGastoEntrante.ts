@@ -1,6 +1,8 @@
+import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
+import { esRemitenteDelGrupo } from "./remitenteDelGrupo";
 import {
   verificarDuplicadoGastoEstricto,
   buscarMovimientoSimilar,
@@ -19,7 +21,10 @@ import {
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
-import { botonesVerificacionDuplicadoPendiente } from "./gastoPendienteDatosActions";
+import {
+  botonesFalloTemporalVerificacionPendiente,
+  botonesVerificacionDuplicadoPendiente,
+} from "./gastoPendienteDatosActions";
 import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
@@ -118,6 +123,31 @@ const ETIQUETA_APRENDIDO_DE: Record<CuentaSugerida["aprendidoDe"], string> = {
   correccion_confirmada: "corrección ya confirmada por ti",
   ia: "elegida por IA",
 };
+
+export function describirCuentaSugerida(
+  cuenta: CuentaSugerida,
+  tagsCategoria: string[]
+): string {
+  const respaldo = cuenta.evidencias
+    ? `${cuenta.evidencias} documento${cuenta.evidencias === 1 ? "" : "s"} independiente${cuenta.evidencias === 1 ? "" : "s"}`
+    : "el historial verificado";
+  const esNaturalezaDeViaje = cuenta.aprendidoDe === "viaje" || tagsCategoria.some((tag) =>
+    ["transporte", "taxi", "tren", "avion", "hospedaje", "alquilercoche", "peaje", "barco"].includes(tag)
+  );
+  if (esNaturalezaDeViaje) {
+    const naturaleza = tagsCategoria.length > 0 ? ` de ${tagsCategoria.join("/")}` : "";
+    const contextoVisible = cuenta.contextoEjemplo?.map((valor) => valor === "ubicacion" ? "ubicación" : valor);
+    const contextoEjemplo = contextoVisible?.length
+      ? ` Referencia comparable por la misma ${contextoVisible.join(" y ")}: "${cuenta.ejemplo}".`
+      : " No se usa ni se muestra otro viaje como referencia si no comparte persona o ubicación.";
+    return `seleccionada para este gasto de viaje${naturaleza}, respaldada por ${respaldo}; ` +
+      `no está vinculada a un gasto individual. Persona y ubicación no se heredan de otro gasto; ` +
+      `solo se muestran cuando este correo/recibo las identifica.` +
+      contextoEjemplo;
+  }
+  const ejemplo = cuenta.ejemplo ? ` Ejemplo de soporte: "${cuenta.ejemplo}".` : "";
+  return `identificada ${ETIQUETA_APRENDIDO_DE[cuenta.aprendidoDe]} con ${respaldo}; no está vinculada a otro gasto.` + ejemplo;
+}
 
 function esNumeroDocumentoUtilizable(normalizado: string): boolean {
   return normalizado !== "" && normalizado !== PLACEHOLDER_SIN_NUMERO;
@@ -248,9 +278,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // solo se pide un equivalente cuando la moneda del documento NO coincide
   // con NINGUNA cuenta real de la empresa — nunca por asumir que EUR es la
   // única moneda "propia".
+  // Un fallo de Holded no demuestra ninguna moneda: nunca se asume «solo EUR» (caso real 2026-09-28: con Holded en 502/503
+  // se le dijo a Carlos que USD no era moneda de cuenta de Footprint, que sí las tiene). Si tampoco hay una última lectura
+  // buena, se avisa y se deja para reintentar en lugar de continuar con una conclusión inventada.
   const monedasReales = await obtenerMonedasCuentasReales(empresa).catch((error) => {
-    console.error("[procesarGastoEntrante] Error consultando monedas de cuentas reales (asume solo EUR):", error);
-    return new Set(["EUR"]);
+    const detalle = error instanceof Error ? error.message : String(error);
+    console.error("[procesarGastoEntrante] No se pudieron consultar las monedas de las cuentas reales:", error);
+    throw new Error(
+      `No pude consultar las cuentas de ${empresa} en Holded (${detalle}). No asumo ninguna moneda; el documento queda para reintentar en unos minutos.`
+    );
   });
   const monedaOriginal = (datos.moneda || "EUR").toUpperCase().trim();
   const politicaLiquidacion = obtenerPoliticaMonedaLiquidacion(empresa, datos.proveedor, monedaOriginal);
@@ -277,6 +313,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         moneda: monedaOriginal,
         fecha: fechaBusqueda,
         proveedor: datos.proveedor,
+        concepto: datos.concepto,
       },
       [politicaLiquidacion.moneda]
     );
@@ -341,11 +378,13 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // obtenerTasaCambioHistorica en utils/exchangeRate.ts, "esto NUNCA debe usarse para decidir un
     // monto correcto"). Si hay un único cargo real que coincide, ESE es el monto — no un cálculo.
     const fechaBusquedaFx = datos.fecha;
+    let busquedaFxIncompleta = false;
     const candidatosFx = await buscarMovimientosPorTipoCambio(
       empresa,
-      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor },
+      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto },
       monedasReales
     ).catch((error) => {
+      busquedaFxIncompleta = true;
       console.error("[procesarGastoEntrante] Error buscando movimientos bancarios por tipo de cambio (se sigue con la pregunta manual):", error);
       return [] as Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>;
     });
@@ -386,8 +425,11 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
           `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
           `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
-          `trae el monto equivalente en alguna de esas monedas, y no encontré un único cargo bancario real que lo ` +
-          `confirme sin ambigüedad.${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
+          `trae el monto equivalente en alguna de esas monedas, y ` +
+          (busquedaFxIncompleta
+            ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
+            : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
+          `${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
           `a calcular un tipo de cambio yo mismo) antes de registrar nada. Respóndeme aquí mismo en texto libre con el ` +
           `monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`
       );
@@ -531,22 +573,33 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   } catch (error) {
     console.error("[procesarGastoEntrante] Error buscando gasto similar en Holded:", error);
     const detalle = error instanceof Error ? error.message : String(error);
-    await sendTelegramMessage(
-      chatId,
-      `⚠️ No pude completar la verificación estricta de duplicados en Holded (${detalle}). Por seguridad NO propuse ni creé el gasto. ` +
-        `El correo/documento queda pendiente y se puede reintentar cuando Holded responda correctamente.`
-    ).catch(() => {});
-    await guardarGastoPendienteDatos({
-      chatId,
-      rutaLocal: entrada.rutaLocal,
-      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-      mimeType: entrada.mimeType,
-      datos,
-      motivo: "verificacion_duplicado",
-      deColaCorreo: entrada.deColaCorreo,
-      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-      correoOrigen: entrada.correoOrigen,
-    }).catch((errorStore) => console.error("[procesarGastoEntrante] Error guardando reintento de duplicados:", errorStore));
+    try {
+      const pendiente = await guardarGastoPendienteDatos({
+        chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos,
+        motivo: "verificacion_duplicado",
+        deColaCorreo: entrada.deColaCorreo,
+        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+        correoOrigen: entrada.correoOrigen,
+      });
+      await sendTelegramMessageWithButtons(
+        chatId,
+        `⚠️ Holded siguió sin completar la verificación estricta de duplicados después de los reintentos seguros (${detalle}). ` +
+          `Por seguridad NO propuse ni creé el gasto. Conservé este correo/documento sin leer: puedes reintentar ` +
+          `la misma verificación o dejar solo este pendiente y continuar con los demás correos.`,
+        botonesFalloTemporalVerificacionPendiente(pendiente.id)
+      );
+    } catch (errorStore) {
+      console.error("[procesarGastoEntrante] Error guardando/publicando reintento de duplicados:", errorStore);
+      await sendTelegramMessage(
+        chatId,
+        `⚠️ No pude completar la verificación estricta de duplicados en Holded (${detalle}). Por seguridad NO propuse ni creé el gasto. ` +
+          `El correo sigue sin leer; no pude publicar sus controles de recuperación y requiere un nuevo intento desde el chat.`
+      ).catch(() => {});
+    }
     return "pendiente_datos";
   }
 
@@ -706,6 +759,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           personaAsociada: datos.personaAsociada,
           contextoDeViaje: datos.contextoDeViaje,
           reciboSimplificado: datos.reciboSimplificado,
+          ticketDeEquipo: entrada.deColaCorreo === true && esRemitenteDelGrupo(entrada.correoOrigen?.de),
         }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;
@@ -733,7 +787,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     datos.concepto,
     datos.proveedor,
     datos.personaAsociada,
-    cuentaSugerida?.tags
+    cuentaSugerida?.tags,
+    undefined,
+    datos.contextoDeViaje
   );
 
   const conceptoConMonedaOriginal = usarEquivalente
@@ -897,6 +953,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // impreciso en montos chicos.
     const toleranciaMov = usarEquivalente ? Math.max(0.05, montoParaHolded * 0.02) : undefined;
 
+    const trazaBusqueda = crearTrazaBusqueda();
     let movimientoBancario: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoAproximado: Awaited<ReturnType<typeof buscarMovimientoAproximado>>[number] | undefined;
@@ -904,10 +961,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto },
+        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true, traza: trazaBusqueda },
         toleranciaMov
       );
-      if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };
+      // Un cargo que solo «por confirmar» (nombre distinto) es la última opción: si hay uno aproximado que sí coincide
+      // por nombre, gana este último.
+      const soloPorConfirmar = candidatosMov.length > 0 && candidatosMov.every((c) => c.compatibilidad === "por_confirmar");
+      const aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
+        ? await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor })
+        : [];
+      if (aproximadosPrevios.length > 0) {
+        movimientoAproximado = { ...aproximadosPrevios[0], origenCoincidencia: "aproximada" };
+        otrosAproximados = aproximadosPrevios.length - 1;
+      } else if (candidatosMov.length === 1) movimientoBancario = { ...candidatosMov[0], origenCoincidencia: "exacta" };
       else if (candidatosMov.length > 1) candidatosMovAmbiguos = candidatosMov;
       else if (!esProveedorNoIdentificado(datos.proveedor)) {
         // Pedido explícito de Carlos tras un caso real: el match exacto (1
@@ -954,6 +1020,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             moneda: monedaParaHolded,
             fecha: datos.fecha,
             proveedor: datos.proveedor,
+            concepto: datos.concepto,
           },
           otrasMonedas
         );
@@ -989,22 +1056,36 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : ` (monto aproximado — puede diferir unos céntimos del valor exacto registrado por el banco)`
       : "";
 
+    // Si el cargo vive en una cuenta de otra moneda, se dice: el importe mostrado es su equivalente contable y al
+    // conciliar el gasto se registrará en la moneda real del cargo (caso real Gomerco, 2026-09-29).
+    const notaOtraMoneda = (m: { montoNativo?: number; monedaNativa?: string; monto: number; moneda: string } | undefined): string =>
+      m?.monedaNativa && m.montoNativo !== undefined
+        ? `\n💱 Ese cargo salió de una cuenta en ${m.monedaNativa}: son ${m.montoNativo.toFixed(2)} ${m.monedaNativa} ` +
+          `(${m.monto.toFixed(2)} ${m.moneda} es su equivalente contable). Al aprobar "Crear y conciliar", el gasto se registrará en ` +
+          `${m.monedaNativa} por ese importe para que la conciliación quede sin diferencia.`
+        : "";
     const notaMovimiento = movimientoBancario
       ? `\n\n💳 Encontré un movimiento bancario real sin conciliar que coincide en monto y fecha: ` +
         `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} ${movimientoBancario.moneda}${notaAproximacion} ` +
-        `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.`
+        `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.` +
+        notaOtraMoneda(movimientoBancario) +
+        (movimientoBancario.compatibilidad === "por_confirmar"
+          ? `\n⚠️ El nombre del cargo no coincide con el proveedor ("${datos.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. ` +
+            `Confírmalo antes de aprobar "Crear y conciliar"; si lo confirmas, Wobi recordará este nombre para la próxima vez.`
+          : "")
       : movimientoAproximado
         ? `\n\n💳 No encontré un movimiento EXACTO, pero sí uno parecido — nombre reconocible y monto cercano (diferencia de ` +
           `${movimientoAproximado.diferenciaMonto.toFixed(2)} ${movimientoAproximado.moneda}, probablemente por cómo se calculó el ` +
           `equivalente): "${movimientoAproximado.descripcion || "(sin descripción)"}" — ${movimientoAproximado.monto.toFixed(2)} ` +
           `${movimientoAproximado.moneda} (${movimientoAproximado.fecha}). Si es el mismo cargo, aprueba "Crear y conciliar" — revísalo antes si no estás seguro.` +
+          notaOtraMoneda(movimientoAproximado) +
           (otrosAproximados > 0
             ? ` (hay ${otrosAproximados} movimiento(s) parecido(s) más de estos días — si este no es el correcto, dímelo y busco entre esos.)`
             : "")
         : candidatosMovAmbiguos.length > 0
           ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
             candidatosMovAmbiguos
-              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})`)
+              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
               .join("\n") +
             `\nMarca "🔗 Conciliar con #N" abajo (o "Crear (sin conciliar)" si ninguno es) y aprueba tu selección.`
           : movimientosTipoCambio.length > 0
@@ -1012,7 +1093,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               `en otra moneda/cuenta de ${empresa}, calculando primero el equivalente con la tasa histórica de referencia:\n` +
               movimientosTipoCambio.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "🔗 Conciliar con #N" abajo si reconoces el cargo, o "Crear (sin conciliar)" si ninguno corresponde. ` +
-              `Wobi no elegirá ni conciliará por su cuenta una coincidencia cambiaria.`
+              `Wobi no elegirá ni conciliará por su cuenta una coincidencia cambiaria; si marcas una, ajustaré la tasa de cambio del gasto a ese cargo para que la conciliación quede sin diferencia.`
           : movimientoMonedaAlternativa
             ? `\n\n💱 OJO — posible error de moneda: no encontré ningún movimiento de ${importeTexto}, pero SÍ hay uno de ` +
               `EXACTAMENTE ${movimientoMonedaAlternativa.monto.toFixed(2)} ${movimientoMonedaAlternativa.moneda} el ` +
@@ -1027,7 +1108,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
               (!esProveedorNoIdentificado(datos.proveedor)
                 ? " — ni exacto ni aproximado por nombre y monto cercano"
                 : " (búsqueda exacta — no hay un nombre real de proveedor para buscar por similitud)") +
-              ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded.`;
+              ` cerca del ${datos.fecha}. Si ya salió del banco, dime la fecha exacta del cargo o revísalo en Holded. ` +
+              `Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado) y conciliarlo cuando aparezca el cargo.` +
+              (describirTrazaBusqueda(trazaBusqueda) ? `\n${describirTrazaBusqueda(trazaBusqueda)}` : "");
 
     // A efectos de qué botones ofrecer (abajo), un match aproximado cuenta
     // igual que uno exacto. El movimiento recomendado se guarda completo
@@ -1056,9 +1139,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const notaTags = `, tags: ${[notaPersonaTxt, notaCategoriaTxt].filter(Boolean).join(" + ")}`;
 
     const notaCuenta = cuentaSugerida
-      ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
-        ` (${ETIQUETA_APRENDIDO_DE[cuentaSugerida.aprendidoDe]})` +
-        notaTags
+      ? `\nCuenta contable: ${describirCuentaSugerida(cuentaSugerida, tagsCategoria)}` + notaTags
       : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.` +
         notaTags;
 

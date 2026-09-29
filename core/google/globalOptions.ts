@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { adaptadorSheetsConCuota } from "./limitadorSheets";
 
 /**
  * Causa raíz real, encontrada en vivo (2026-09-02): "Enviando solicitud..."
@@ -30,4 +31,9 @@ import { google } from "googleapis";
  * protege igual contra ese caso, con más margen para subidas grandes
  * genuinas.
  */
-google.options({ timeout: 45_000 });
+/**
+ * Mismo mecanismo global para la cuota de Sheets (ver limitadorSheets.ts): una sola instalación
+ * cubre los 38 módulos que hablan con Sheets, presentes y futuros. Solo interviene en peticiones a
+ * sheets.googleapis.com.
+ */
+google.options({ timeout: 45_000, adapter: adaptadorSheetsConCuota as never });

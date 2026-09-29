@@ -28,3 +28,9 @@ El ledger guarda únicamente hashes, empresa, ids técnicos, fecha de búsqueda,
 - Mientras Sheets sea el ledger se mantiene una sola réplica de Railway.
 
 Las pruebas usan repositorio y transporte en memoria; no concilian movimientos reales ni escriben en Sheets.
+
+## Resolver una conciliación «incierta» (mantenimiento auditado)
+`scripts/resolver-conciliacion-incierta.ts` es la única vía para desbloquear un par en estado «incierta». Por defecto es un dry-run.
+
+- **Cancelar** (`--clave --movement --document --motivo --apply`): el efecto sí ocurrió por otra vía o el documento se descarta. Un par cancelado con el mismo documento no se reintenta.
+- **Revertir** (`--revertir`): primero demuestra por LECTURA que el POST anterior no tuvo ningún efecto (compra sin pagos ni estado de pagos dudoso, cargo pendiente sin importe conciliado, al menos 5 minutos desde que quedó incierta; un fallo de lectura cuenta como «no demostrado»). Solo entonces vuelve el registro a «preparada» con una entrada en el historial, para permitir un único reintento con toda la protección del ledger (`reservar → conciliando → POST → releer`).

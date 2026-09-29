@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_cerebro_solicitudes_acceso";
 
 // Ventanas distintas: una solicitud nunca resuelta se purga a los 10
@@ -40,10 +39,11 @@ export interface SolicitudAcceso {
  * aprueba/rechaza como hacen gastoProposalSheet.ts etc.
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;

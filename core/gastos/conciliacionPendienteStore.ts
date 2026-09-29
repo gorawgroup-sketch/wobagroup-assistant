@@ -5,7 +5,6 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { conMutex } from "../utils/asyncMutex";
 import type { Empresa } from "../holded/client";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_conciliaciones_pendientes";
 // Bug real encontrado en la auditoría: esto era 3 días, más largo que el
 // umbral de 48h con el que revisarCorreoNuevo.ts da por "atascado" y salta
@@ -47,10 +46,11 @@ const HEADERS = [
  * conversación) y esta espera puede durar más que un par de minutos.
  */
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -308,6 +308,11 @@ export async function guardarConciliacionPendiente(
 export async function obtenerConciliacionesPendientesPorChat(chatId: number): Promise<ConciliacionPendiente[]> {
   const todas = await leerTodas();
   return todas.filter(({ pendiente }) => pendiente.chatId === chatId).map(({ pendiente }) => pendiente);
+}
+
+/** Todas las conciliaciones pendientes, de cualquier chat — usado por la limpieza de preguntas huérfanas. */
+export async function obtenerTodasLasConciliacionesPendientes(): Promise<ConciliacionPendiente[]> {
+  return (await leerTodas()).map(({ pendiente }) => pendiente);
 }
 
 /** Devuelve la pendiente y ELIMINA su fila (respondida, ya no debe quedar registro). */

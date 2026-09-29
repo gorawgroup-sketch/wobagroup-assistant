@@ -6,7 +6,7 @@
   "main": "dist/src/server.js",
   "scripts": {
     "build": "tsc && node scripts/verify-email-pdf-runtime.cjs && npm --prefix frontend-cerebro ci && npm --prefix frontend-cerebro run build",
-    "start": "node dist/scripts/start.js",
+    "start": "node -r dotenv/config dist/scripts/start.js",
     "dev": "tsx watch src/server.ts",
     "auditoria:publicar": "node scripts/publicar-auditoria-programada.mjs",
     "mail:auto:setup": "tsx scripts/mail-auto-db.ts setup",
@@ -25,6 +25,7 @@
     "express": "^4.22.3",
     "googleapis": "^176.0.0",
     "heic-convert": "^2.1.0",
+    "jszip": "^3.10.1",
     "mailparser": "^3.9.28",
     "mpg123-decoder": "1.0.3",
     "msedge-tts": "2.0.7",

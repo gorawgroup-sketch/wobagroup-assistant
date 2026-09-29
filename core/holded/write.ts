@@ -1,7 +1,11 @@
-import { gastoRecurrenteIndependiente } from "./gastoRecurrente";
+import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConciliacionCompra";
+import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
-import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
+import { EscrituraHoldedNoIniciadaError, protegerEscrituraHolded } from "../gmail/automatico/postgres";
+import { MonedasCuentasReales } from "./monedasCuentas";
+import type { TrazaBusqueda } from "./trazaBusqueda";
+import { descriptorConfirmadoParaProveedor, obtenerTodasLasConciliacionesAprendidas, type ConciliacionVerificadaAprendida } from "./conciliacionAprendidaSheet";
 import { extname, join } from "node:path";
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -10,6 +14,7 @@ import { obtenerPlanContable } from "./accounting";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
+import { comparteNaturaleza, palabrasNaturalezaGasto } from "./naturalezaConcepto";
 import { montosCercanos } from "../utils/montos";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
@@ -20,6 +25,7 @@ import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/ex
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
 import { conMutex } from "../utils/asyncMutex";
+import { conReintentoLecturaHolded } from "./readRetry";
 import { evaluarMovimientoConciliadoComoDuplicado, esCargoLibreExactoParaDuplicado, priorizarCargoLibreExacto } from "./duplicateSignals";
 import {
   consultarCreacionCompraDurable,
@@ -61,6 +67,7 @@ import {
 import { durablePurchaseAttachmentStore } from "./durablePurchaseAttachmentStore";
 import {
   ConciliacionMovimientoInciertaError,
+  ConciliacionNoIntentadaError,
   ejecutarConciliacionMovimientoDurable,
   identidadConciliacionMovimiento,
   reconciliarConciliacionesMovimientoPendientes,
@@ -146,12 +153,17 @@ function getReadApiKey(empresa: Empresa): string {
 }
 
 async function holdedReadJson(empresa: Empresa, path: string): Promise<unknown> {
-  const response = await fetch(`${HOLDED_API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
-    signal: AbortSignal.timeout(30_000),
+  return conReintentoLecturaHolded(async () => {
+    const response = await fetch(`${HOLDED_API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${getReadApiKey(empresa)}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
+    return response.json();
+  }, {
+    alReintentar: ({ intento, status, demoraMs }) =>
+      console.warn(`[holded/read-retry] ${empresa} GET ${path}: intento ${intento} falló (${status ?? "red"}); reintento en ${demoraMs} ms.`),
   });
-  if (!response.ok) throw new HoldedApiError(response.status, empresa, await response.text());
-  return response.json();
 }
 
 /**
@@ -194,24 +206,34 @@ async function holdedWriteCallSinGuardia(
   body?: unknown
 ): Promise<unknown> {
   const apiKey = getWriteApiKey(empresa);
+  const ejecutar = async () => {
+    const response = await fetch(`${HOLDED_API_BASE}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30_000),
+    });
 
-  const response = await fetch(`${HOLDED_API_BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
-  });
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new HoldedApiError(response.status, empresa, errBody);
+    }
 
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new HoldedApiError(response.status, empresa, errBody);
-  }
+    return response.json();
+  };
 
-  return response.json();
+  // Una lectura GET es idempotente y puede autorrecuperarse. Una escritura
+  // jamás se repite aquí: POST/PUT mantienen sus fronteras durables propias.
+  return method === "GET"
+    ? conReintentoLecturaHolded(ejecutar, {
+        alReintentar: ({ intento, status, demoraMs }) =>
+          console.warn(`[holded/read-retry] ${empresa} GET ${path}: intento ${intento} falló (${status ?? "red"}); reintento en ${demoraMs} ms.`),
+      })
+    : ejecutar();
 }
 
 const metricasCreacionesCompraDurables = {
@@ -690,6 +712,63 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
 const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
 
 /**
+ * true si `a` y `b` difieren en, como mucho, una inserción/borrado/sustitución de un solo carácter, en
+ * CUALQUIER posición — a diferencia de un prefijo compartido (que solo tolera un SUFIJO distinto, ej.
+ * plural/singular), esto también cubre un typo insertado en medio de la palabra. Recorrido único (no una
+ * matriz de Levenshtein completa: con `maxDist` siempre 1, basta con caminar ambas cadenas en paralelo y
+ * abortar en el segundo desacuerdo) — sin asignaciones, O(largo) en vez de O(largo²).
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoTo Technologies Ireland Unilimited Company vs.
+ * Linkedln Ireland Unlimited Company, Footprint, 2026-09-29): un typo REAL ya existente en Holded
+ * ("Unilimited" en vez de "Unlimited" — una "i" de más insertada cerca del inicio) hacía que
+ * "unlimited" (el proveedor real extraído de la factura) y "unilimited" (el contacto correcto, ya
+ * existente en Holded) NUNCA coincidieran por prefijo compartido — ni el laxo (5 caracteres: "unlim"
+ * vs "unili") ni el estricto (8: "unlimite" vs "unilimit") — porque una letra insertada cerca del
+ * inicio desalinea TODO lo que viene después, aunque el resto de la palabra sea idéntico letra por
+ * letra. El contacto correcto terminaba con score 0 (su única palabra realmente distintiva quedaba
+ * invisible para el matcher, ver puntuarDistintividad) mientras un contacto real SIN ninguna relación
+ * ("Linkedln Ireland Unlimited Company") ganaba 9 a 0 solo por tener la ortografía correcta de una
+ * palabra que en el dataset real de Footprint resultó compartida por muy pocos contactos.
+ */
+function difierePorUnSoloTypo(a: string, b: string): boolean {
+  if (a === b) return true;
+  const diff = a.length - b.length;
+  if (diff < -1 || diff > 1) return false;
+  const larga = diff >= 0 ? a : b;
+  const corta = diff >= 0 ? b : a;
+  const mismoLargo = larga.length === corta.length;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < larga.length && j < corta.length) {
+    if (larga[i] === corta[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return false;
+    if (mismoLargo) {
+      i++;
+      j++;
+    } else {
+      i++; // salta un carácter de la cadena larga (la inserción/el borrado)
+    }
+  }
+  edits += larga.length - i; // cola sin recorrer de la cadena larga, si quedó alguna
+  return edits <= 1;
+}
+
+/** El matcher de prefijo compartido, sin tolerancia a typos — ver palabrasParecidasEstricto. */
+function coincidenPorPrefijoEstricto(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 6) return false;
+  const prefijo = Math.min(8, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
+/**
  * true si `objetivo` y `candidatoNombre` comparten alguna palabra (5+
  * caracteres) que sea DISTINTIVA dentro de la lista real de contactos —
  * nunca alcanza con una palabra genérica del rubro que muchos contactos no
@@ -749,11 +828,11 @@ const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
  * de largo similar.
  */
 function palabrasParecidasEstricto(a: string, b: string): boolean {
-  if (a === b) return true;
-  const minLen = Math.min(a.length, b.length);
-  if (minLen < 6) return false;
-  const prefijo = Math.min(8, minLen);
-  return a.slice(0, prefijo) === b.slice(0, prefijo);
+  if (coincidenPorPrefijoEstricto(a, b)) return true;
+  // Mismo typo-en-medio-de-palabra que palabrasParecidas (ver su comentario, caso real GoTo/Unilimited)
+  // — acá también hace falta, porque puntuarDistintividad exige que el match laxo que calificó a un
+  // candidato TAMBIÉN pase este chequeo estricto antes de contarlo como distintivo.
+  return difierePorUnSoloTypo(a, b);
 }
 
 /**
@@ -772,7 +851,7 @@ function palabrasParecidasEstricto(a: string, b: string): boolean {
  * sigue sirviendo para encontrar candidatos con typos reales cortos — pero antes de puntuar un match
  * como distintivo, se exige que ESE match puntual (no otro) también resista el estándar estricto.
  */
-function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
+export function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
   const palabrasObjetivo = normalizar(objetivo)
     .split(" ")
     .filter((p) => p.length >= 5);
@@ -780,9 +859,31 @@ function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLo
     .split(" ")
     .filter((p) => p.length >= 3);
 
+  // Hallazgo real de la revisión adversarial del fix de GoTo/Unilimited (Footprint, 2026-09-29): sin
+  // esta exigencia, la tolerancia a un typo (difierePorUnSoloTypo) puede hacer ganar CON CONFIANZA a un
+  // candidato sin ninguna relación real, cuando antes habría fallado a "sin match" — peor que el
+  // comportamiento previo, no solo insuficiente. Caso construido y verificado en la revisión:
+  // "Factura Marbella Distribuciones SL" contra el contacto real, sin relación, "Import Marsella Trading
+  // SL" — "Marbella"~"Marsella" (un typo) es la ÚNICA palabra que coincide entre ambos nombres; nada más
+  // del candidato se parece al objetivo. Antes de este fix, ese candidato puntuaba 8 y ganaba solo si no
+  // había competidor — exactamente el error de bookkeeping que este archivo existe para evitar. En el
+  // caso real que motivó la tolerancia a typos (GoTo/Unilimited), en cambio, "Technologies"/"Ireland"/
+  // "Company" YA coinciden por prefijo normal entre objetivo y candidato — la tolerancia a un typo solo
+  // hacía falta para UNA palabra de varias, nunca para la única evidencia de que el candidato está
+  // relacionado. La regla: un match que depende SOLO de la tolerancia a un typo (nunca de un prefijo
+  // compartido normal) solo cuenta si este candidato tiene, además, AL MENOS otra palabra que sí
+  // coincide con el objetivo por el mecanismo original (sin tolerancia a typos) — así un typo real en
+  // una palabra de un nombre por lo demás genuinamente relacionado se sigue reconociendo, pero un choque
+  // casual entre dos palabras reales sin relación (como "Marbella"/"Marsella") nunca gana solo.
+  const hayCorroboracionPorPrefijo = palabrasObjetivo.some((po) =>
+    palabrasCandidato.some((pc) => coincidenPorPrefijo(po, pc))
+  );
+
   let score = 0;
   for (const po of palabrasObjetivo) {
-    const pcCoincidente = palabrasCandidato.find((pc) => palabrasParecidas(po, pc));
+    const pcPorPrefijo = palabrasCandidato.find((pc) => coincidenPorPrefijo(po, pc));
+    const pcCoincidente =
+      pcPorPrefijo ?? (hayCorroboracionPorPrefijo ? palabrasCandidato.find((pc) => palabrasParecidas(po, pc)) : undefined);
     if (!pcCoincidente) continue;
     // El match que calificó a este candidato debe resistir el mismo estándar estricto con el que se
     // mide "distintivo" más abajo — si no, la tolerancia laxa de arriba (pensada para typos cortos)
@@ -1040,12 +1141,28 @@ export async function crearContactoHolded(
   });
 }
 
+/** El matcher de prefijo compartido, sin tolerancia a typos — ver palabrasParecidas. */
+function coincidenPorPrefijo(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  const maxLen = Math.max(a.length, b.length);
+  if (minLen < 4 || maxLen > minLen * 2) return false;
+  const prefijo = Math.min(5, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
 /**
  * Dos palabras se consideran "la misma" para efectos de nombre parecido si
  * son iguales, o si comparten un prefijo largo — cubre plural/singular
  * ("facilities"/"facility") y variantes cortas ("oceana"/"ocean") sin
  * exigir coincidencia exacta, que es justo lo que falla cuando el nombre
- * viene de una extracción de factura con OCR/lectura imprecisa.
+ * viene de una extracción de factura con OCR/lectura imprecisa. También
+ * acepta un solo typo insertado/borrado/sustituido en cualquier posición
+ * (difierePorUnSoloTypo, ver su comentario, caso real GoTo/Unilimited) —
+ * quien puntúa un match como distintivo (puntuarDistintividad) exige además
+ * que este candidato tenga OTRA palabra corroborando por prefijo normal,
+ * para que un choque casual entre dos palabras reales sin relación (ver el
+ * caso "Marbella"/"Marsella" de la revisión adversarial) nunca gane solo.
  *
  * Hallazgo real de auditoría (caso real HEMA/"Van de Valk Hotel Venio", Footprint, 2026-09-16): el
  * proveedor extraído "HEMA (Breda - Valkeniersplein)" (Valkeniersplein es el nombre de la CALLE, no
@@ -1062,12 +1179,11 @@ export async function crearContactoHolded(
  * este patrón sin afectar ningún caso real ya cubierto por esta función.
  */
 function palabrasParecidas(a: string, b: string): boolean {
-  if (a === b) return true;
+  if (coincidenPorPrefijo(a, b)) return true;
+  // Palabras razonablemente largas (>=6, para no engancharse con colisiones cortas ya cubiertas por
+  // el resto de esta función) con un solo typo en cualquier posición — no solo al final.
   const minLen = Math.min(a.length, b.length);
-  const maxLen = Math.max(a.length, b.length);
-  if (minLen < 4 || maxLen > minLen * 2) return false;
-  const prefijo = Math.min(5, minLen);
-  return a.slice(0, prefijo) === b.slice(0, prefijo);
+  return minLen >= 6 && difierePorUnSoloTypo(a, b);
 }
 
 /**
@@ -1488,16 +1604,27 @@ export async function verificarDuplicadoGastoEstricto(
   ]);
   // Solo investigar esta excepción cuando hay documentos diferentes en otros días.
   const revisables = compras.filter(c => c.fecha !== criterios.fecha && c.documentNumber && criterios.numeroDocumento && c.documentNumber !== criterios.numeroDocumento);
-  if (revisables.length && !movimientosConciliados.length) {
+  if (revisables.length) {
     const libres = (await buscarMovimientoSimilar(empresa, { ...criterios, fechaExacta: true }, 0.001)).filter(m =>
       m.monto < 0 && m.fecha === criterios.fecha && proveedorPareceEnDescripcion(criterios.proveedor, m.descripcion));
     if (libres.length === 1) {
       const separados = new Set<string>();
+      const cargosDeOtrosDocumentos = new Set<string>();
       for (const c of revisables) {
-        const detalle = await holdedGet(empresa, `/purchases/${encodeURIComponent(c.id)}`) as Parameters<typeof gastoRecurrenteIndependiente>[1];
-        if (gastoRecurrenteIndependiente(criterios, detalle)) separados.add(c.id);
+        const detalle = await holdedGet(empresa, `/purchases/${encodeURIComponent(c.id)}`) as Parameters<typeof cargoConciliadoDeGastoIndependiente>[1];
+        if (gastoRecurrenteIndependiente(criterios, detalle)) {
+          separados.add(c.id);
+          for (const m of movimientosConciliados) {
+            if (cargoConciliadoDeGastoIndependiente(criterios, detalle, m)) {
+              cargosDeOtrosDocumentos.add(`${m.accountId}/${m.movementId}`);
+            }
+          }
+        }
       }
-      return { compras: compras.filter(c => !separados.has(c.id)), movimientosConciliados };
+      return {
+        compras: compras.filter(c => !separados.has(c.id)),
+        movimientosConciliados: movimientosConciliados.filter(m => !cargosDeOtrosDocumentos.has(`${m.accountId}/${m.movementId}`)),
+      };
     }
   }
   return { compras, movimientosConciliados };
@@ -1896,6 +2023,7 @@ async function verificarComprobantes(empresa: Empresa, resultados: DocumentoHold
 // "cafeteria", nunca "cafe"/"coffee" sueltos) reconocía una cafetería/panadería como alimentación.
 const PALABRAS_ALIMENTACION = [
   "osteria",
+  "gourmet",
   "restaurante",
   "almuerzo",
   "desayuno",
@@ -1950,7 +2078,7 @@ const PALABRAS_ALQUILER_COCHE = ["rent a car", "rentacar", "car rental", "alquil
 // Deliberadamente SIN el tag "transporte" — a diferencia de taxi/tren/avión/alquilercoche/peaje/
 // barco, en los gastos reales de gasolina revisados en vivo (12 de 12 casos) casi ninguno traía
 // "transporte" además de "gasolina" — se sigue ese mismo patrón real en vez de uno inventado.
-const PALABRAS_GASOLINA = ["gasolina", "combustible", "repsol", "cepsa", "estacion de servicio", "gas station", "avia station"];
+const PALABRAS_GASOLINA = ["chevron", "gasolina", "combustible", "repsol", "cepsa", "estacion de servicio", "gas station", "avia station"];
 const PALABRAS_PEAJE = ["peaje", "pagatelia", "toll road", "telepeaje"];
 const PALABRAS_BARCO = ["ferry", "barco", "naviera", "balearia", "cruise"];
 // Igual que gasolina — el único caso real de "parking" revisado en vivo no traía "transporte".
@@ -2075,7 +2203,8 @@ export function combinarTagsGastoAprendidos(
   proveedor: string,
   personaAsociada: string | undefined,
   tagsAprendidos: string[] = [],
-  contextoPersona = ""
+  contextoPersona = "",
+  contextoDeViaje = false
 ): string[] {
   const tagsCategoriaActual = inferirTagsCategoria(concepto, proveedor);
   const categoriasConocidas = CATEGORIAS_GASTO_CONOCIDAS;
@@ -2091,7 +2220,7 @@ export function combinarTagsGastoAprendidos(
   const patronesCategoriaValidos = [
     ["suscripcion"], ["alimentacion"], ["transporte"], ["transporte", "taxi"],
     ["transporte", "tren"], ["transporte", "avion"], ["transporte", "alquilercoche"],
-    ["gasolina"], ["transporte", "peaje"], ["transporte", "barco"], ["parking"], ["hospedaje"],
+    ["gasolina"], ["transporte", "peaje"], ["transporte", "barco"], ["parking"], ["hospedaje"], ["viaje"],
   ];
   const firmaCategoria = (tags: string[]) => [...tags].sort().join("|");
   const firmaAprendida = firmaCategoria(categoriasAprendidas);
@@ -2101,7 +2230,17 @@ export function combinarTagsGastoAprendidos(
   // Si el comprobante actual no contiene una palabra categórica, se conserva
   // una categoría histórica solo cuando forma una combinación ya conocida e
   // inequívoca. Una mezcla contaminada (p. ej. alimentación + hospedaje) no se copia.
-  const tagsCategoria = tagsCategoriaActual.length ? tagsCategoriaActual : categoriaAprendidaInequivoca;
+  // Hallazgo real (Footprint, 28 sep: horno microondas comprado por alguien montando la oficina de
+  // Medellín — cuenta correctamente inferida como gasto de viaje/desplazamiento por el tier "viaje" de
+  // inferirCuentaGasto, pero SIN NINGÚN tag: "no sabemos de qué se trata, ni de quién es el gasto").
+  // inferirTagsCategoria solo reconoce los tipos de gasto de viaje clásicos (transporte/alimentación/
+  // hospedaje/parking/gasolina/suscripción) — un gasto puntual de otra naturaleza ocurrido DURANTE un
+  // desplazamiento (montar una oficina, comprar equipamiento) nunca encaja ahí. "viaje" ya es un
+  // concepto propio de este sistema (ver CuentaSugerida.aprendidoDe): se usa como categoría general de
+  // último recurso, nunca inventando una palabra clave de producto nueva por cada caso.
+  const tagsCategoria = tagsCategoriaActual.length ? tagsCategoriaActual
+    : categoriaAprendidaInequivoca.length ? categoriaAprendidaInequivoca
+    : contextoDeViaje ? ["viaje"] : [];
 
   // Los precedentes reales contienen también etiquetas de región, proyecto y otras
   // clasificaciones (p. ej. "latam"). Que una etiqueta no sea una categoría de gasto
@@ -2148,7 +2287,7 @@ export function combinarTagsGastoAprendidos(
 
 const CATEGORIAS_GASTO_CONOCIDAS = new Set([
   "suscripcion", "alimentacion", "transporte", "taxi", "tren", "avion", "alquilercoche",
-  "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche",
+  "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche", "viaje",
 ]);
 
 /** Indica si una clasificación conserva al menos una categoría funcional
@@ -2162,6 +2301,10 @@ export interface CuentaSugerida {
   tags: string[];
   ejemplo: string;
   aprendidoDe: "proveedor" | "concepto" | "categoria" | "viaje" | "ia" | "correccion_confirmada";
+  /** Número de documentos independientes que sostienen la cuenta elegida. */
+  evidencias?: number;
+  /** Por qué el ejemplo sí es comparable con este gasto; vacío si no hay uno contextual. */
+  contextoEjemplo?: Array<"persona" | "ubicacion">;
 }
 
 export interface LineaConCuenta {
@@ -2296,7 +2439,8 @@ async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuen
 export function construirSugerenciaDesdeCoincidencias(
   matches: LineaConCuenta[],
   origen: CuentaSugerida["aprendidoDe"],
-  minEvidencia = 1
+  minEvidencia = 1,
+  contexto?: { proveedor: string; concepto: string; personaAsociada?: string; exigirContexto?: boolean }
 ): CuentaSugerida | undefined {
   if (matches.length === 0) return undefined;
 
@@ -2326,9 +2470,75 @@ export function construirSugerenciaDesdeCoincidencias(
     .slice(0, 3)
     .map(([t]) => t);
 
-  const ejemplo = delGrupo.find((m) => m.lineName || m.descripcion);
+  const ejemploContextual = contexto ? seleccionarEjemploContextual(delGrupo, contexto) : undefined;
+  const ejemplo = ejemploContextual?.linea ?? (contexto?.exigirContexto ? undefined : delGrupo.find((m) => m.lineName || m.descripcion));
 
-  return { accountId: cuentaGanadora, tags, ejemplo: ejemplo ? ejemplo.lineName || ejemplo.descripcion : "", aprendidoDe: origen };
+  return {
+    accountId: cuentaGanadora,
+    tags,
+    ejemplo: ejemplo ? ejemplo.lineName || ejemplo.descripcion : "",
+    aprendidoDe: origen,
+    evidencias: votos,
+    contextoEjemplo: ejemploContextual?.contexto,
+  };
+}
+
+// Persona y ubicación sirven para escoger una referencia explicativa cercana, nunca para decidir
+// por sí solas la cuenta. Así un taxi de Barcelona no se presenta como si dependiera de un Uber de
+// Bogotá únicamente porque ambos acabaron en la cuenta general de viajes.
+const PALABRAS_NO_UBICACION = new Set([
+  "traslado", "transporte", "transport", "taxi", "uber", "bolt", "viaje", "trip", "hotel",
+  "hospedaje", "alojamiento", "vuelo", "flight", "tren", "train", "aeropuerto", "airport",
+  "trabajo", "reunion", "reuniones", "meeting", "meetings", "priority", "gasto", "expense",
+  "calle", "carrer", "carrera", "avenida", "street", "road", "desde", "hasta", "hacia",
+]);
+
+function tokensUbicacionContextual(texto: string, proveedor: string, persona?: string): Set<string> {
+  const excluidas = new Set([
+    ...palabrasSignificativas(proveedor),
+    ...palabrasSignificativas(persona ?? ""),
+    ...PALABRAS_NO_UBICACION,
+  ]);
+  return new Set(
+    palabrasSignificativas(texto).filter((palabra) => !excluidas.has(palabra) && !/^\d+$/.test(palabra))
+  );
+}
+
+function seleccionarEjemploContextual(
+  lineas: LineaConCuenta[],
+  contexto: { proveedor: string; concepto: string; personaAsociada?: string; exigirContexto?: boolean }
+): { linea: LineaConCuenta; contexto: Array<"persona" | "ubicacion"> } | undefined {
+  const persona = normalizar(contexto.personaAsociada ?? "");
+  const ubicacionActual = tokensUbicacionContextual(contexto.concepto, contexto.proveedor, contexto.personaAsociada);
+  const categorias = inferirTagsCategoria(contexto.concepto, contexto.proveedor);
+  const compatibles = lineas.filter(linea => {
+    const previas = inferirTagsCategoria(`${linea.lineName} ${linea.descripcion}`, linea.contactName);
+    return categorias.length > 0 && previas.some(c => categorias.includes(c));
+  });
+  const puntuadas = compatibles.map((linea, indice) => {
+    const texto = normalizar(`${linea.contactName} ${linea.descripcion} ${linea.lineName} ${linea.tags.join(" ")}`);
+    const coincidePersona = Boolean(persona) && texto.includes(persona);
+    const ubicacionPrecedente = tokensUbicacionContextual(
+      `${linea.descripcion} ${linea.lineName} ${linea.tags.join(" ")}`,
+      linea.contactName,
+      contexto.personaAsociada
+    );
+    const ubicacionesComunes = [...ubicacionActual].filter((token) => ubicacionPrecedente.has(token));
+    const coincideUbicacion = ubicacionesComunes.length > 0;
+    const contextoCoincidente: Array<"persona" | "ubicacion"> = [];
+    if (coincidePersona) contextoCoincidente.push("persona");
+    if (coincideUbicacion) contextoCoincidente.push("ubicacion");
+    return {
+      linea,
+      contexto: contextoCoincidente,
+      puntuacion: (coincidePersona ? 100 : 0) + ubicacionesComunes.length * 10,
+      indice,
+    };
+  });
+  const mejores = puntuadas
+    .filter((item) => item.puntuacion > 0)
+    .sort((a, b) => b.puntuacion - a.puntuacion || a.indice - b.indice);
+  return mejores[0] ? { linea: mejores[0].linea, contexto: mejores[0].contexto } : undefined;
 }
 
 /**
@@ -2525,6 +2735,79 @@ export function seleccionarCoincidenciasProveedor(
 // decidiendo el tag de ESTE gasto por su propia naturaleza, no por el contexto de viaje.
 const TAGS_VIAJE_REFERENCIA = ["transporte", "taxi", "tren", "avion", "alquilercoche", "peaje", "barco", "hospedaje"];
 
+/**
+ * Conserva únicamente precedentes de la misma naturaleza cuando el gasto permite distinguirla.
+ * "transporte" es una familia amplia; si además sabemos que es taxi, avión, tren, etc., esa señal
+ * específica manda. Alimentación durante un viaje no tiene un precedente inequívoco en
+ * TAGS_VIAJE_REFERENCIA y por eso mantiene el fallback agregado de viaje existente.
+ */
+export function filtrarPrecedentesViajePorNaturaleza(
+  lineas: LineaConCuenta[],
+  tagsCategoria: string[]
+): LineaConCuenta[] {
+  const tagsViaje = tagsCategoria.filter((tag) => TAGS_VIAJE_REFERENCIA.includes(normalizarEtiquetaHolded(tag)));
+  if (tagsViaje.length === 0) return lineas;
+  const especificos = tagsViaje.filter((tag) => normalizarEtiquetaHolded(tag) !== "transporte");
+  const referencia = especificos.length > 0 ? especificos : tagsViaje;
+  return lineas.filter((linea) =>
+    referencia.some((tag) => tagsConSinonimosSeSolapan([tag], linea.tags))
+  );
+}
+
+/** Categorías que son desplazamiento por su propia naturaleza (ver calcularSenalDeViaje). */
+const TAGS_NATURALEZA_DESPLAZAMIENTO = new Set([
+  "gasolina", "peaje", "parking", "taxi", "tren", "avion", "alquilercoche", "barco", "hospedaje", "transporte",
+]);
+
+/**
+ * Tier "viaje" de inferirCuentaGasto — pedido explícito de Carlos, casos reales (Simon Talloen en
+ * desplazamiento, tickets de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien
+ * de viaje debe contabilizarse como gasto de viaje/desplazamiento, sin importar qué proveedor/concepto
+ * tenga el ticket puntual. contextoDeViaje (detectado por la IA en el propio documento) ya excluye
+ * suscripciones/contratos a nombre de la empresa en su propio prompt, así que se confía sin más
+ * condición. El atajo heurístico de abajo existe para cuando la IA no pudo detectarlo en el texto (ver
+ * caso real Kruidvat/Simon Talloen, ticket en holandés) — un recibo simplificado ligado a una persona (o
+ * a un ticket de equipo, caso real D1 SAS) es, por su sola FORMA, la misma señal.
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoToWebinar/GoTo Technologies Ireland Unlimited Company,
+ * Footprint, 2026-09-29): una suscripción mensual de software (factura FORMAL a nombre de la empresa,
+ * proveedor extranjero) terminó en "Gastos de viaje" solo porque `reciboSimplificado` — pensado
+ * originalmente para "recibo/tique sin datos fiscales completos del comprador" — se extendió (ver su
+ * docstring en extractInvoiceData.ts) para valer también true en CUALQUIER factura FORMAL de un
+ * proveedor fuera de España (necesario ahí para el tratamiento de IVA por inversión del sujeto pasivo,
+ * nada que ver con si el documento es un ticket informal). `ticketDeEquipo` tampoco lo distingue: es true
+ * para prácticamente cualquier correo automático que llega a la cola desde una dirección del propio
+ * grupo, incluida una factura de suscripción dirigida a un buzón corporativo. La categoría por palabra
+ * clave (tagsCategoria, ya calculada por el llamador) identifica esto de forma confiable sin depender de
+ * ninguna de las dos señales overloaded — si ya dice "suscripcion", el atajo heurístico nunca debe poder
+ * anular esa evidencia más fuerte.
+ *
+ * Caso real (Carlos, 2026-09-29, Station Gomerco, Footprint): un ticket de combustible con persona
+ * identificada quedó en «Otros servicios» porque el extractor no lo marcó como recibo simplificado
+ * (desglosaba el IVA) ni como contexto de viaje. La NATURALEZA del gasto ya lo dice: combustible, peaje,
+ * parking, taxi, tren, avión, coche de alquiler, barco u hospedaje son desplazamiento por sí mismos, sin
+ * depender de la forma del comprobante — nunca puede coincidir con "suscripcion" (inferirTagsCategoria
+ * devuelve una sola categoría por gasto), así que no compite con el guard de arriba.
+ */
+export function calcularSenalDeViaje(
+  criterios: {
+    contextoDeViaje?: boolean;
+    personaAsociada?: string;
+    ticketDeEquipo?: boolean;
+    reciboSimplificado?: boolean;
+  },
+  tagsCategoria: string[]
+): boolean {
+  const naturalezaDeDesplazamiento = tagsCategoria.some((t) => TAGS_NATURALEZA_DESPLAZAMIENTO.has(t));
+  return Boolean(
+    criterios.contextoDeViaje ||
+      naturalezaDeDesplazamiento ||
+      (!tagsCategoria.includes("suscripcion") &&
+        (Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) &&
+        criterios.reciboSimplificado === true)
+  );
+}
+
 export async function inferirCuentaGasto(
   empresa: Empresa,
   criterios: {
@@ -2533,6 +2816,12 @@ export async function inferirCuentaGasto(
     personaAsociada?: string;
     contextoDeViaje?: boolean;
     reciboSimplificado?: boolean;
+    /**
+     * El ticket llegó por la cola de correo desde el buzón corporativo de alguien del grupo (hecho comprobable,
+     * sin IA). Junto a `reciboSimplificado` equivale a la señal «persona + ticket» aunque el extractor no haya
+     * identificado a la persona (caso real 2026-09-28, D1 SAS).
+     */
+    ticketDeEquipo?: boolean;
     /** Omite la compra que se está reparando para que un dato erróneo no se use como aprendizaje propio. */
     excluirCompraId?: string;
   }
@@ -2602,6 +2891,10 @@ export async function inferirCuentaGasto(
     );
   }
 
+  // Se calcula antes del tier de viaje para que un taxi solo aprenda de taxi/transporte compatible y
+  // no de cualquier compra que casualmente terminó en la cuenta general de viajes.
+  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
+
   // Tier "viaje" — pedido explícito de Carlos, casos reales (Simon Talloen en desplazamiento, tickets
   // de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien de viaje debe
   // contabilizarse como gasto de viaje/desplazamiento — "profesionales independientes" y la cuenta
@@ -2626,10 +2919,24 @@ export async function inferirCuentaGasto(
   // concreta es, por su sola FORMA, la misma señal que contextoDeViaje — sin depender del idioma ni de
   // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
   // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
-  const senalDeViaje = criterios.contextoDeViaje || (Boolean(criterios.personaAsociada) && criterios.reciboSimplificado === true);
+  const senalDeViaje = calcularSenalDeViaje(criterios, tagsCategoria);
+  const contextoEjemploViaje = senalDeViaje
+    ? {
+        proveedor: criterios.proveedor,
+        concepto: criterios.concepto,
+        personaAsociada: criterios.personaAsociada,
+        exigirContexto: true,
+      }
+    : undefined;
   if (senalDeViaje) {
     const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
-    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(porViaje, "viaje", MIN_EVIDENCIA_VIAJE);
+    const porMismaNaturaleza = filtrarPrecedentesViajePorNaturaleza(porViaje, tagsCategoria);
+    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(
+      porMismaNaturaleza,
+      "viaje",
+      MIN_EVIDENCIA_VIAJE,
+      contextoEjemploViaje
+    );
     if (sugeridoPorViaje) return sugeridoPorViaje;
   }
 
@@ -2641,8 +2948,6 @@ export async function inferirCuentaGasto(
   // menos confiable. Mismo criterio ya usado en el resto del sistema para
   // razón social vs. nombre comercial.
   // Se calcula ANTES de cualquier tier (no solo como fallback del tier 3) — ver más abajo.
-  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
-
   // Hallazgo real de auditoría (caso Greengrass/GRUPO PRACAR DE RL DE CV, Kelly Correales, Footprint,
   // 2026-09-08): un veto que solo compara TAGS (¿el grupo ganador tiene esta etiqueta?) no detecta el
   // caso real donde una compra ya quedó mal archivada en "Otros servicios" (la cuenta genérica de
@@ -2664,7 +2969,12 @@ export async function inferirCuentaGasto(
   // "Uber", cuyas líneas reales están etiquetadas "uber" y no "taxi", nunca alcanza el mínimo de
   // evidencia del tier 3 con tagsCategoria estricto — sigue resolviendo por proveedor, sin cambios).
   const porCategoria = tagsCategoria.length > 0 ? lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags))) : [];
-  const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
+  const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(
+    porCategoria,
+    "categoria",
+    MIN_EVIDENCIA_CONCEPTO,
+    contextoEjemploViaje
+  );
 
   const contradiceCategoria = (accountId: string): boolean =>
     sugeridoPorCategoria !== undefined && sugeridoPorCategoria.accountId !== accountId;
@@ -2689,7 +2999,12 @@ export async function inferirCuentaGasto(
   const seleccionProveedor = seleccionarCoincidenciasProveedor(criterios.proveedor, lineas);
   const porNombre = seleccionProveedor.coincidencias;
 
-  const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
+  const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(
+    porNombre,
+    "proveedor",
+    1,
+    contextoEjemploViaje
+  );
   if (sugeridoPorNombre) {
     if (!contradiceCategoria(sugeridoPorNombre.accountId)) return sugeridoPorNombre;
   }
@@ -2713,14 +3028,16 @@ export async function inferirCuentaGasto(
   // porque compartían su nombre, no la naturaleza del gasto. El nombre es señal fuerte para el TAG de
   // persona (ver inferirTagsCategoria/tagsPersona en procesarGastoEntrante.ts) pero nunca debe decidir
   // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
-  const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
-  const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
+  // Caso real (2026-09-28, D1 SAS → «Commission»): una sola palabra genérica («america», del nombre de la
+  // propia empresa añadido al concepto) bastaba para declarar comparable una línea de comisiones de venta.
+  // Ver core/holded/naturalezaConcepto.ts: solo cuentan las palabras que describen el gasto y hacen falta dos.
+  const palabrasConcepto = palabrasNaturalezaGasto(criterios.concepto, {
+    proveedor: criterios.proveedor,
+    personaAsociada: criterios.personaAsociada,
+  });
 
   if (palabrasConcepto.length > 0) {
-    const porConcepto = lineas.filter((l) => {
-      const texto = normalizar(`${l.descripcion} ${l.lineName}`);
-      return palabrasConcepto.some((p) => texto.includes(p));
-    });
+    const porConcepto = lineas.filter((l) => comparteNaturaleza(`${l.descripcion} ${l.lineName}`, palabrasConcepto));
 
     // Hallazgo real de auditoría (caso Uber Braga/Portugal, WOBA, 2026-09-08): "viaje" es una palabra
     // ≥5 caracteres genuinamente relacionada con el gasto, no un relleno como "comprobante"/"correo"
@@ -2769,7 +3086,12 @@ export async function inferirCuentaGasto(
       // voto está genuinamente empatado"). Se cae directo al tier 3 (categoría) en vez de al voto por
       // mayoría de acá.
     } else {
-      const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
+      const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(
+        porConcepto,
+        "concepto",
+        MIN_EVIDENCIA_CONCEPTO,
+        contextoEjemploViaje
+      );
       if (sugeridoPorConcepto && !contradiceCategoria(sugeridoPorConcepto.accountId)) return sugeridoPorConcepto;
     }
   }
@@ -4432,6 +4754,13 @@ export interface MovimientoBancarioCandidato {
   monto: number;
   /** Moneda de `monto` — igual a `criterios.moneda` de la búsqueda ("EUR" si no se especificó). */
   moneda: string;
+  /**
+   * Solo cuando el cargo vive en una cuenta de OTRA moneda y `monto` es su equivalente contable: importe y moneda
+   * REALES del cargo. Caso real (Gomerco, 2026-09-29): −55,32 USD se mostraba como «−48,58 EUR» y nadie sabía que
+   * la cuenta era en dólares hasta que la conciliación lo rechazaba.
+   */
+  montoNativo?: number;
+  monedaNativa?: string;
   fecha: string;
   /** Cómo se identificó este candidato. Los registros antiguos no incluyen el campo. */
   origenCoincidencia?: "exacta" | "aproximada" | "tipo_cambio" | "moneda_alternativa";
@@ -4445,6 +4774,13 @@ export interface MovimientoBancarioCandidato {
   diferenciaMonto?: number;
   /** Refuerzo por texto: el proveedor parece estar presente en la descripción bancaria. */
   coincideProveedor?: boolean;
+  /**
+   * «por_confirmar»: coinciden importe, moneda y fecha (±1 día) pero el nombre del cargo no se reconoce como el del
+   * proveedor y su categoría es desconocida. «aprendido»: un humano ya confirmó ese descriptor para este proveedor.
+   * Ambos solo los devuelve la búsqueda que arma propuestas (incluirPorConfirmar) y solo se ofrecen al operador con un
+   * aviso: NUNCA se autoseleccionan ni se concilian sin que el operador elija ese cargo.
+   */
+  compatibilidad?: "por_confirmar" | "aprendido";
 }
 
 // Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
@@ -4491,14 +4827,28 @@ function ventanaBusquedaMovimiento(fecha: string): { desde: Date; hasta: Date } 
  * solo se pide un equivalente cuando la moneda del documento NO coincide
  * con ninguna cuenta real de la empresa.
  */
-export async function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set<string>> {
-  const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+const monedasCuentasReales = new MonedasCuentasReales(async (empresa) => {
+  const cuentasData = (await holdedWriteCall(empresa as Empresa, "GET", "/treasury/accounts")) as {
     items?: Array<{ currency?: string; archived?: boolean }>;
   };
-  const monedas = (cuentasData.items ?? [])
-    .filter((c) => !c.archived && c.currency)
-    .map((c) => (c.currency as string).toUpperCase().trim());
-  return new Set(monedas.length > 0 ? monedas : ["EUR"]);
+  return cuentasData.items ?? [];
+});
+
+/**
+ * Nunca devuelve un valor inventado: si Holded falla se usa la última lectura buena de esa empresa y, si no hay
+ * ninguna, se relanza el error (ver MonedasCuentasReales). Antes asumía «solo EUR» ante una lista vacía o un fallo.
+ */
+export function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set<string>> {
+  return monedasCuentasReales.obtener(empresa);
+}
+
+/** Al arrancar, deja lista la última lectura buena de cada empresa para que una caída de Holded no obligue a adivinar. */
+export async function precalentarMonedasCuentasReales(): Promise<void> {
+  await Promise.all((["WOBA", "EWORKS", "Footprint"] as const).map((empresa) =>
+    obtenerMonedasCuentasReales(empresa).catch((error) =>
+      console.error(`[monedasCuentas] No se pudo precalentar ${empresa}:`, error instanceof Error ? error.message : error)
+    )
+  ));
 }
 
 /**
@@ -4534,31 +4884,135 @@ export async function obtenerMonedasCuentasReales(empresa: Empresa): Promise<Set
  * perdía en silencio.
  */
 /** El importe no demuestra proveedor ni naturaleza del gasto. */
-export function movimientoCompatibleConGasto(proveedor: string, concepto: string, descripcion: string): boolean {
+export interface OpcionesCompatibilidad {
+  /**
+   * Reconoce «JUST B CUZ PLM» frente a «Par*just B Cuz Luxury» por núcleo de marca compartido. Solo lo activan las rutas
+   * MANUALES (donde el operador confirma); la automatización de correo conserva el criterio anterior, más estricto.
+   */
+  nucleoDeMarca?: boolean;
+}
+
+/** El nombre del proveedor se reconoce en la descripción bancaria (misma marca conocida o nombre parecido). */
+export function nombreReconocidoEnDescripcion(proveedor: string, descripcion: string, opciones: OpcionesCompatibilidad = {}): boolean {
+  const marca = (texto: string) => normalizar(texto).match(/\b(uber|bolt)\b/)?.[1];
+  const mismaMarca = marca(proveedor) && marca(proveedor) === marca(descripcion);
+  return Boolean(mismaMarca || proveedorPareceEnDescripcion(proveedor, descripcion, opciones));
+}
+
+export function movimientoCompatibleConGasto(proveedor: string, concepto: string, descripcion: string, opciones: OpcionesCompatibilidad = {}): boolean {
   const a = inferirTagsCategoria(concepto, proveedor);
   const b = inferirTagsCategoria(descripcion, "");
   // Categoría compatible permite nombres distintos; no demuestra por sí sola identidad.
-  if (a.includes("alimentacion") && b.includes("hospedaje") && inferirTagsCategoria("", proveedor).includes("hospedaje") && proveedorPareceEnDescripcion(proveedor, descripcion)) return true;
+  if (a.includes("alimentacion") && b.includes("hospedaje") && inferirTagsCategoria("", proveedor).includes("hospedaje") && proveedorPareceEnDescripcion(proveedor, descripcion, opciones)) return true;
   if (a.length && b.length) return a.some(t => b.includes(t));
-  const marca = (texto: string) => normalizar(texto).match(/\b(uber|bolt)\b/)?.[1];
-  const mismaMarca = marca(proveedor) && marca(proveedor) === marca(descripcion);
-  return Boolean(mismaMarca || proveedorPareceEnDescripcion(proveedor, descripcion));
+  return nombreReconocidoEnDescripcion(proveedor, descripcion, opciones);
+}
+
+/**
+ * Compatible SOLO porque las categorías conocidas coinciden: el nombre del proveedor no se reconoce en el cargo. Es la vía
+ * por la que dos comercios distintos del mismo rubro pueden emparejarse (caso real: un café de Bogotá en COP enlazado con
+ * el cargo de un restaurante de Puerto Rico). Con la fecha lejana se degrada a «por confirmar».
+ */
+export function compatibleSoloPorCategoria(proveedor: string, concepto: string, descripcion: string, opciones: OpcionesCompatibilidad = {}): boolean {
+  return movimientoCompatibleConGasto(proveedor, concepto, descripcion, opciones) && !nombreReconocidoEnDescripcion(proveedor, descripcion, opciones);
+}
+
+/** Días de diferencia por encima de los cuales una coincidencia solo por categoría deja de ser fiable sin confirmar. */
+export const DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA = 2;
+
+function diasEntreFechas(a: string, b: string): number {
+  const ma = Date.parse(a.slice(0, 10)), mb = Date.parse(b.slice(0, 10));
+  return Number.isFinite(ma) && Number.isFinite(mb) ? Math.abs(ma - mb) / 86_400_000 : Number.POSITIVE_INFINITY;
+}
+
+async function cargarConciliacionesAprendidas(): Promise<ConciliacionVerificadaAprendida[]> {
+  try {
+    return await obtenerTodasLasConciliacionesAprendidas();
+  } catch (error) {
+    console.error("[write] No se pudo leer la memoria de conciliaciones confirmadas (se sigue sin ella):", error instanceof Error ? error.message : error);
+    return [];
+  }
+}
+
+export type NivelCompatibilidadMovimiento = "compatible" | "por_confirmar" | "incompatible";
+
+/**
+ * Única fuente de verdad de «¿este cargo bancario puede ser este gasto?». Tres niveles en vez de un booleano:
+ * - compatible: el nombre o la categoría lo respaldan (ver movimientoCompatibleConGasto).
+ * - por_confirmar: el nombre no se reconoce, pero la categoría del cargo es DESCONOCIDA (no contradictoria) y coinciden
+ *   importe, moneda y fecha. El operador decide con un aviso; antes se descartaba en silencio y el sistema decía «no
+ *   encontré ningún movimiento» aunque existiera (caso real 2026-09-28: «JUST B CUZ PLM» 3,91 USD frente a
+ *   «Par*just B Cuz Luxury» −3,91 USD del mismo día).
+ * - incompatible: categorías contradictorias (taxi frente a restaurante) o sin evidencia suficiente.
+ */
+/** Categorías de gasto y de cargo ambas conocidas y sin nada en común (taxi frente a restaurante). */
+export function categoriasContradictorias(concepto: string, proveedor: string, descripcion: string): boolean {
+  const gasto = inferirTagsCategoria(concepto, proveedor);
+  const cargo = inferirTagsCategoria(descripcion, "");
+  return gasto.length > 0 && cargo.length > 0 && !gasto.some((t) => cargo.includes(t));
+}
+
+export function nivelCompatibilidadMovimiento(
+  proveedor: string,
+  concepto: string,
+  descripcion: string,
+  evidencia: { importeYFechaExactos: boolean } = { importeYFechaExactos: false }
+): NivelCompatibilidadMovimiento {
+  if (movimientoCompatibleConGasto(proveedor, concepto, descripcion, { nucleoDeMarca: true })) return "compatible";
+  // Solo si la categoría del CARGO es desconocida: un cargo de categoría conocida distinta o con un gasto sin categoría
+  // no se ofrece por importe (cualquier restaurante «encajaría» con un gasto sin clasificar).
+  const cargoDesconocido = inferirTagsCategoria(descripcion, "").length === 0;
+  if (cargoDesconocido && normalizar(descripcion).length >= 3 && evidencia.importeYFechaExactos) return "por_confirmar";
+  return "incompatible";
+}
+
+/**
+ * Un candidato ya buscado es utilizable si es compatible por nombre/categoría o si el buscador lo marcó
+ * (por_confirmar / aprendido) y su categoría NO es contradictoria con el gasto actual: la marca es una evidencia que
+ * caduca si luego se corrige el concepto.
+ */
+export function candidatoUtilizableParaGasto(
+  proveedor: string,
+  concepto: string,
+  candidato: Pick<MovimientoBancarioCandidato, "descripcion" | "compatibilidad">
+): boolean {
+  if (candidato.compatibilidad) return !categoriasContradictorias(concepto, proveedor, candidato.descripcion);
+  return movimientoCompatibleConGasto(proveedor, concepto, candidato.descripcion, { nucleoDeMarca: true });
 }
 
 export async function buscarMovimientoSimilar(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string; fechaExacta?: boolean },
-  toleranciaEur: number = TOLERANCIA_MONTO
+  criterios: {
+    monto: number; fecha: string; moneda?: string; proveedor?: string; concepto?: string; fechaExacta?: boolean;
+    /**
+     * Solo las búsquedas que ARMAN una propuesta para el operador la activan: devuelve además cargos «por_confirmar» y
+     * «aprendido». Las búsquedas que pueden conciliar sin preguntar (intentarConciliar) no la usan: ahí solo cuenta lo
+     * compatible por nombre o categoría.
+     */
+    incluirPorConfirmar?: boolean;
+    /** Si se da, la búsqueda anota qué cuentas revisó y qué cargos del mismo importe descartó (no cambia el resultado). */
+    traza?: TrazaBusqueda;
+  },
+  toleranciaEur: number = TOLERANCIA_MONTO,
+  deps: { aprendidas: () => Promise<ConciliacionVerificadaAprendida[]> } = { aprendidas: cargarConciliacionesAprendidas }
 ): Promise<MovimientoBancarioCandidato[]> {
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
   const { desde, hasta } = ventanaBusquedaMovimiento(criterios.fecha);
 
   const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
-    items?: Array<{ id: string; archived?: boolean }>;
+    items?: Array<{ id: string; archived?: boolean; name?: string; currency?: string }>;
   };
   const cuentas = (cuentasData.items ?? []).filter((c) => !c.archived);
+  const traza = criterios.traza;
+  if (traza) {
+    traza.cuentasRevisadas = cuentas.map((c) => ({ id: c.id, nombre: c.name, moneda: c.currency }));
+    traza.desde = criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde);
+    traza.hasta = criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta);
+  }
 
   const candidatos: MovimientoBancarioCandidato[] = [];
+  // Solo se lee la memoria de conciliaciones confirmadas si de verdad hace falta (un cargo exacto que el nombre no respalda).
+  let aprendidos: Promise<ConciliacionVerificadaAprendida[]> | undefined;
 
   for (const cuenta of cuentas) {
     const params = new URLSearchParams({
@@ -4587,8 +5041,23 @@ export async function buscarMovimientoSimilar(
     if (criterios.fechaExacta && data.has_more) throw new Error("Consulta bancaria incompleta; no se descartan duplicados.");
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
-      if (estaConciliado(mov.status)) continue;
-      if (criterios.proveedor && !movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "")) continue;
+      /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
+      const anotar = (monto: number, resultado: "ofrecido" | "descartado", motivo: string) => {
+        if (!traza || !Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) return;
+        traza.mismoImporte.push({
+          movementId: mov.id, cuenta: cuenta.id, descripcion: mov.description ?? "", monto, moneda: monedaObjetivo,
+          fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "", resultado, motivo,
+        });
+      };
+      if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) {
+        if (traza) {
+          const montoConciliado = monedaObjetivo === "EUR"
+            ? montoEnEuros(mov)
+            : (mov.currency ?? "EUR").toUpperCase() === monedaObjetivo ? parsearMontoMovimiento(mov.amount) : NaN;
+          anotar(montoConciliado, "descartado", "ya estaba conciliado con otro documento");
+        }
+        continue;
+      }
 
       let monto: number;
       if (monedaObjetivo === "EUR") {
@@ -4602,18 +5071,63 @@ export async function buscarMovimientoSimilar(
       }
       if (!Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) continue;
 
+      const fechaMovimiento = mov.booking_date ? mov.booking_date.slice(0, 10) : "";
+      let compatibilidad: "por_confirmar" | "aprendido" | undefined;
+      if (criterios.proveedor) {
+        const importeYFechaExactos =
+          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
+          diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
+        const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
+        const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);
+        if (
+          nivel === "compatible" &&
+          Number.isFinite(diasDeDiferencia) && diasDeDiferencia > DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA &&
+          compatibleSoloPorCategoria(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { nucleoDeMarca: true })
+        ) {
+          // Solo coincide la categoría y la fecha está lejos: se ofrece al armar una propuesta, con aviso; la conciliación automática no lo ve.
+          if (!criterios.incluirPorConfirmar) {
+            anotar(monto, "descartado", `solo coincide la categoría y la fecha difiere ${Math.round(diasDeDiferencia)} días`);
+            continue;
+          }
+          aprendidos ??= deps.aprendidas();
+          compatibilidad = descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "") ? "aprendido" : "por_confirmar";
+        } else if (nivel !== "compatible") {
+          // Cargos que NO respaldan el nombre ni la categoría: solo se ofrecen al armar una propuesta, solo si son un
+          // débito (un crédito o una devolución del mismo importe no es este gasto) y nunca con categoría contradictoria.
+          if (!criterios.incluirPorConfirmar) { anotar(monto, "descartado", "el nombre no se reconoce como el del proveedor (solo se ofrece al armar una propuesta)"); continue; }
+          if (!(Number(mov.amount) < 0)) { anotar(monto, "descartado", "no es un cargo (es un ingreso o una devolución)"); continue; }
+          if (categoriasContradictorias(criterios.concepto ?? "", criterios.proveedor, mov.description ?? "")) {
+            anotar(monto, "descartado", `categorías contradictorias (gasto: ${inferirTagsCategoria(criterios.concepto ?? "", criterios.proveedor).join("/")}; cargo: ${inferirTagsCategoria(mov.description ?? "", "").join("/")})`);
+            continue;
+          }
+          // Lo que un humano ya confirmó una vez (proveedor ↔ descriptor bancario) se reconoce sin el aviso de nombre distinto.
+          aprendidos ??= deps.aprendidas();
+          const yaConfirmado = descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "");
+          if (yaConfirmado) compatibilidad = "aprendido";
+          else if (nivel === "por_confirmar") compatibilidad = "por_confirmar";
+          else { anotar(monto, "descartado", "el nombre no se reconoce y no coinciden la fecha (±1 día) o la categoría del cargo ya es conocida y distinta"); continue; }
+        }
+      }
+
+      anotar(monto, "ofrecido", compatibilidad === "por_confirmar" ? "ofrecido por confirmar (nombre distinto)" : compatibilidad === "aprendido" ? "ofrecido (confirmado antes)" : "ofrecido (compatible)");
       candidatos.push({
         accountId: cuenta.id,
         movementId: mov.id,
         descripcion: mov.description ?? "",
         monto,
         moneda: monedaObjetivo,
-        fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
+        ...nativoSiOtraMoneda(mov, monedaObjetivo),
+        fecha: fechaMovimiento,
+        ...(compatibilidad ? { compatibilidad } : {}),
       });
     }
   }
 
-  return candidatos;
+  // Un cargo compatible por nombre o categoría siempre gana a uno solo «por confirmar»/«aprendido» del mismo importe.
+  const firmes = candidatos.filter((c) => !c.compatibilidad);
+  if (firmes.length > 0) return firmes;
+  const aprendidosOk = candidatos.filter((c) => c.compatibilidad === "aprendido");
+  return aprendidosOk.length > 0 ? aprendidosOk : candidatos;
 }
 
 export interface MovimientoBancarioAproximado extends MovimientoBancarioCandidato {
@@ -4626,6 +5140,17 @@ const TOLERANCIA_APROXIMADA_PORCENTAJE = 0.15;
 // porcentaje solo sería demasiado angosto para cubrir redondeos reales de
 // conversión de moneda.
 const TOLERANCIA_APROXIMADA_PISO = 1;
+/** Importe y moneda reales de un cargo cuya cuenta no está en la moneda buscada (ver MovimientoBancarioCandidato). */
+function nativoSiOtraMoneda(
+  mov: { amount?: string | number; currency?: string },
+  monedaObjetivo: string
+): { montoNativo?: number; monedaNativa?: string } {
+  const monedaNativa = (mov.currency ?? "EUR").toUpperCase().trim();
+  if (monedaNativa === monedaObjetivo) return {};
+  const montoNativo = parsearMontoMovimiento(mov.amount ?? "");
+  return Number.isFinite(montoNativo) ? { montoNativo, monedaNativa } : {};
+}
+
 export function margenImporteAproximado(monto: number): number {
   return Math.max(TOLERANCIA_APROXIMADA_PISO, Math.abs(monto) * TOLERANCIA_APROXIMADA_PORCENTAJE);
 }
@@ -4640,7 +5165,37 @@ export function margenImporteAproximado(monto: number): number {
  * filtró por monto cercano antes, así que hace falta que AMBAS señales
  * coincidan, nunca el nombre solo.
  */
-export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string): boolean {
+const PALABRAS_VACIAS_MARCA = new Set(["de", "del", "la", "el", "los", "las", "the", "and", "y", "sa", "sl", "sas", "srl", "llc", "inc", "ltd", "co", "corp", "gmbh", "bv"]);
+
+/** Palabras de rubro: compartirlas no demuestra que sea la misma marca («Sixt Rent A Car» frente a «Go Rent A Car»). */
+const PALABRAS_GENERICAS_MARCA = new Set([
+  "rent", "car", "cars", "hotel", "hotels", "hostel", "cafe", "coffee", "restaurant", "restaurante", "bar", "shop", "store",
+  "market", "supermercado", "airport", "aeropuerto", "taxi", "pizza", "bakery", "express", "service", "services", "group",
+  "international", "travel", "tour", "tours", "gas", "station", "parking", "pharmacy", "farmacia", "food", "fast", "center",
+  "centre", "plaza", "mall",
+]);
+
+function terminosDeMarca(texto: string): string[] {
+  return texto.replace(/[^a-z0-9]+/g, " ").split(" ").filter((t) => t && !PALABRAS_VACIAS_MARCA.has(t));
+}
+
+/**
+ * El adquirente antepone un prefijo corto (PAR*, DL*, SQ*) y trunca o cambia el final del nombre: «JUST B CUZ PLM» frente
+ * a «Par*just B Cuz Luxury». Se reconoce un núcleo de marca compartido: al menos dos términos iguales que sumen 6 letras
+ * y cubran el 60 % del nombre más corto, y al menos uno debe ser distintivo (no una palabra de rubro como «rent», «car»,
+ * «hotel»). Solo es una señal de nombre; el importe y la fecha se siguen exigiendo aparte.
+ */
+function comparteNucleoDeMarca(proveedorNormalizado: string, comercioNormalizado: string): boolean {
+  const a = terminosDeMarca(proveedorNormalizado), b = terminosDeMarca(comercioNormalizado);
+  if (a.length < 2 || b.length < 2) return false;
+  const compartidos = a.filter((t) => b.includes(t));
+  const letras = compartidos.reduce((suma, t) => suma + t.length, 0);
+  // Al menos un término distintivo (no de rubro ni una letra suelta): «rent a car» compartido no identifica la marca.
+  const hayDistintivo = compartidos.some((t) => t.length >= 2 && !PALABRAS_GENERICAS_MARCA.has(t));
+  return hayDistintivo && compartidos.length >= 2 && letras >= 6 && compartidos.length / Math.min(a.length, b.length) >= 0.6;
+}
+
+export function proveedorPareceEnDescripcion(proveedor: string, descripcion: string, opciones: { nucleoDeMarca?: boolean } = {}): boolean {
   const p = normalizar(proveedor).trim();
   const d = normalizar(descripcion).trim();
   if (p.length < 3 || d.length < 3) return false;
@@ -4649,6 +5204,8 @@ export function proveedorPareceEnDescripcion(proveedor: string, descripcion: str
   // varios términos y un prefijo largo evita aceptar una palabra genérica sola.
   const comercio = d.includes("*") ? d.split("*").at(-1)!.trim() : "";
   if (comercio.length >= 8 && comercio.split(/\s+/).length >= 2 && p.startsWith(comercio)) return true;
+  // Solo en las rutas manuales (donde el operador confirma): la automatización sigue con el criterio anterior, más estricto.
+  if (opciones.nucleoDeMarca && comparteNucleoDeMarca(p, comercio || d)) return true;
   return textosParecidos(proveedor, descripcion);
 }
 
@@ -4707,8 +5264,14 @@ export async function buscarMovimientoAproximado(
     };
 
     for (const mov of data.items ?? []) {
-      if (estaConciliado(mov.status)) continue;
-      if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description)) continue;
+      if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
+      if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, { nucleoDeMarca: true })) continue;
+      // Su contrato exige «nombre parecido Y monto cercano»: la categoría sola solo vale con la fecha cercana (antes no tenía
+      // tope y un restaurante lejano del mismo rubro se conciliaba tras «Sí, conciliar» y reescribía el importe de la compra).
+      if (
+        compatibleSoloPorCategoria(criterios.proveedor, "", mov.description, { nucleoDeMarca: true }) &&
+        !(diasEntreFechas(mov.booking_date ? mov.booking_date.slice(0, 10) : "", criterios.fecha) <= DIAS_MAXIMOS_COINCIDENCIA_SOLO_CATEGORIA)
+      ) continue;
 
       let monto: number;
       if (monedaObjetivo === "EUR") {
@@ -4730,6 +5293,7 @@ export async function buscarMovimientoAproximado(
         descripcion: mov.description ?? "",
         monto,
         moneda: monedaObjetivo,
+        ...nativoSiOtraMoneda(mov, monedaObjetivo),
         fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
         diferenciaMonto: diferencia,
       });
@@ -4944,6 +5508,10 @@ export async function validarCompraContraMovimiento(
     >,
   ]);
   if (!movimiento) throw new Error("No se encontró el movimiento elegido al preparar la conciliación.");
+  if (compraTienePagos(compra)) {
+    throw new Error("La compra ya tiene pagos o un estado de pagos no verificable. Solo se permite verificar la conciliación anterior; no asignar otro cargo.");
+  }
+
 
   const monedaCompra = (compra.currency || "EUR").toUpperCase().trim();
   const monedaMovimiento = (movimiento.currency || "EUR").toUpperCase().trim();
@@ -4992,6 +5560,34 @@ export async function validarCompraContraMovimiento(
  */
 export function margenResiduoConversion(total: number): number {
   return Math.min(1, Math.max(0.02, Math.abs(total) * 0.005));
+}
+
+/**
+ * Un movimiento `partial` con un hueco dentro del margen de redondeo (margenResiduoConversion, la
+ * misma fuente de verdad de arriba) no es una conciliación a medias: Holded lo deja así por su propia
+ * matemática de cambio de divisa aunque la compra ya esté pagada del todo (caso real, Footprint,
+ * Uber 10,95 USD -> Holded solo enlaza 10,93 -> hueco de 0,02: "La compra ya tiene pagos... requiere
+ * revisión" para siempre, aunque en Holded ya estaba efectiva, 2026-09-28). Devuelve el residuo solo
+ * cuando de verdad excede ese margen; en ese caso SÍ hay que revisarlo a mano.
+ */
+/**
+ * Un cargo «parcial» al que solo le quedan céntimos de redondeo ya está usado. Caso real (Footprint, 2026-09-29):
+ * seis cargos en USD conciliados con su compra quedaban «partial» por 0,01–0,03 USD (Holded guarda la tasa con dos
+ * decimales) y el buscador los seguía ofreciendo como coincidencia exacta para otro gasto del mismo importe.
+ * Un parcial con resto real sigue disponible: un mismo cargo puede cubrir varios documentos.
+ */
+export function movimientoAgotadoSalvoRedondeo(
+  movimiento: { amount?: string | number; reconciled_amount?: string | number | null }
+): boolean {
+  const total = Math.abs(parsearMontoMovimiento(movimiento.amount as never) || 0);
+  const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount as never) || 0);
+  if (total <= 0 || enlazado <= 0) return false;
+  return residuoMovimientoFueraDeMargen(total, enlazado) === undefined;
+}
+
+export function residuoMovimientoFueraDeMargen(montoMovimiento: number, montoEnlazado: number): number | undefined {
+  const residuo = montoMovimiento - montoEnlazado;
+  return residuo > margenResiduoConversion(montoMovimiento) ? residuo : undefined;
 }
 
 /**
@@ -5389,8 +5985,11 @@ async function inspeccionarConciliacionRegistrada(
 
   const ok = tieneEnlace && pagoDelDocumentoConfirmado && pendienteEnCompra === undefined &&
     ajusteCambioDivisa?.estado !== "requiere_revision" && ajusteCambioDivisa?.estado !== "incierto";
-  const pendienteEnMovimiento = movimientoParcial && montoMovimiento > montoEnlazado + TOLERANCIA_MONTO
-    ? montoMovimiento - montoEnlazado
+  // movimientoParcial y pendienteEnMovimiento nacen de la MISMA decisión: si el residuo es de
+  // redondeo, ninguno de los dos debe forzar revisión (antes movimientoParcial=true por sí solo ya
+  // la forzaba, sin mirar el tamaño del hueco).
+  const pendienteEnMovimiento = movimientoParcial
+    ? residuoMovimientoFueraDeMargen(montoMovimiento, montoEnlazado)
     : undefined;
   const resultado = {
     ok,
@@ -5398,7 +5997,7 @@ async function inspeccionarConciliacionRegistrada(
     montoEnlazado,
     pendienteEnCompra,
     ajusteCambioDivisa,
-    movimientoParcial: movimientoParcial || undefined,
+    movimientoParcial: pendienteEnMovimiento !== undefined || undefined,
     pendienteEnMovimiento,
   };
   if (ok) return { estado: "verificada", resultado };
@@ -5410,14 +6009,19 @@ async function aplicarConciliacionRegistrada(
   registro: RegistroConciliacionMovimiento,
   permitirMonedaDistinta = false
 ): Promise<void> {
-  await validarCompraContraMovimiento(
-    registro.empresa,
-    registro.documentId,
-    registro.accountId,
-    registro.movementId,
-    registro.fechaAproximada,
-    permitirMonedaDistinta
-  );
+  try {
+    await validarCompraContraMovimiento(
+      registro.empresa,
+      registro.documentId,
+      registro.accountId,
+      registro.movementId,
+      registro.fechaAproximada,
+      permitirMonedaDistinta
+    );
+  } catch (error) {
+    // Aún no se envió ningún POST: ver ConciliacionNoIntentadaError.
+    throw new ConciliacionNoIntentadaError(error);
+  }
   invalidarCacheCuentasTesoreria(registro.empresa);
   try {
     await holdedWriteCall(
@@ -5426,10 +6030,23 @@ async function aplicarConciliacionRegistrada(
       `/treasury/accounts/${encodeURIComponent(registro.accountId)}/bank-movements/${encodeURIComponent(registro.movementId)}/reconcile`,
       { documents: [{ document_id: registro.documentId, document_type: "purchase" }] }
     );
+  } catch (error) {
+    // La guardia de coordinación (operación automática que reclama el movimiento, lock, conexión) rechazó la escritura
+    // antes de enviarla: no hubo POST, así que tampoco hay nada incierto que verificar.
+    if (error instanceof EscrituraHoldedNoIniciadaError) throw new ConciliacionNoIntentadaError(error);
+    throw error;
   } finally {
     // Holded puede haber aceptado el efecto aunque la respuesta se pierda.
     invalidarCacheCuentasTesoreria(registro.empresa);
   }
+}
+
+export async function recuperarConciliacionExistenteCompra(empresa: Empresa, documentId: string) {
+  return recuperarConciliacionCompra(empresa, documentId, {
+    leerCompra: obtenerCompraHoldedPorId,
+    listar: (e, id) => durableBankReconciliationStore.listarPorDocumento(e, id),
+    inspeccionar: registro => inspeccionarConciliacionRegistrada(registro, { permitirAjusteCambioAutomatico: false }),
+  });
 }
 
 export async function reconciliarMovimiento(
@@ -5450,7 +6067,12 @@ export async function reconciliarMovimiento(
   );
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
-    await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
+    try {
+      await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
+    } catch (error) {
+      // Sin registro durable no hay estado que proteger: se propaga el error original, no su envoltorio.
+      throw error instanceof ConciliacionNoIntentadaError ? error.causa : error;
+    }
     const inspeccion = await inspeccionarConciliacionRegistrada(registro);
     return inspeccion.estado === "no_encontrada"
       ? { ok: false, statusFinal: "(no encontrado al releer)", montoEnlazado: 0 }
@@ -5458,6 +6080,15 @@ export async function reconciliarMovimiento(
   }
 
   return conMutex(`holded-bank-reconciliation:${empresa}:${accountId}:${movementId}`, async () => {
+    const existente = await durableBankReconciliationStore.obtener(registro.clave);
+    if (existente && existente.estado !== "preparada") {
+      // Repetir la verificación no puede disparar un ajuste ni un POST nuevo.
+      const ejecucion = await ejecutarConciliacionMovimientoDurable(registro, durableBankReconciliationStore, {
+        inspeccionar: r => inspeccionarConciliacionRegistrada(r, { permitirAjusteCambioAutomatico: false }),
+        conciliar: async () => { throw new Error("La recuperación solo permite lectura."); },
+      });
+      return ejecucion.resultado;
+    }
     // Un rechazo local no es un POST incierto. Validar antes de reservar la escritura;
     // aplicarConciliacionRegistrada vuelve a validar justo antes del POST.
     await validarCompraContraMovimiento(empresa, documentoId, accountId, movementId, fechaAproximada,

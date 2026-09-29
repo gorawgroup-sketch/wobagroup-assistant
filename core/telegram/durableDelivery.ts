@@ -16,10 +16,35 @@ export interface EntregaTelegramDurable {
   creadoEn: number;
   actualizadoEn: number;
   notificadoEn?: number;
+  /**
+   * Solo en memoria (no se persiste): pasado este tiempo desde que la misma acción quedó `completada`, un
+   * toque idéntico se trata como una acción nueva y no como un duplicado.
+   */
+  reabrirCompletadaTrasMs?: number;
 }
+
+/**
+ * Acciones que el operador puede repetir de forma legítima sobre el MISMO mensaje: «Aprobar selección» solo
+ * ejecuta lo que hay marcado y su propia lógica es atómica (retira el teclado y consume la propuesta), así que
+ * un segundo toque tras un primero que no hizo nada (rebote de validación, fallo silencioso, reinicio a mitad)
+ * no puede duplicar nada. Sin esto, ese primer toque dejaba el botón bloqueado para siempre con «Esta acción
+ * ya fue procesada» (Uber BRL, 2026-09-28). Las demás acciones sensibles conservan la deduplicación total.
+ */
+export const ACCIONES_REABRIBLES_TRAS_COMPLETAR: ReadonlySet<string> = new Set([
+  // Solo esta: ejecuta EXACTAMENTE lo marcado (atómico, sin depender de qué correo esté activo ahora) y su
+  // propio handler ya es correcto para repetirse. "colacorreo_reprocesaractivo" y "colacorreo_descartaractivo"
+  // se descartaron a propósito (hallazgo real de auditoría, 28/09): su callback_data no lleva la identidad del
+  // correo — actúan sobre "el activo actual" del chat — así que un toque tardío reabierto podría cerrar/reprocesar
+  // un correo DISTINTO del que el aviso original mostraba, si mientras tanto la cola avanzó.
+  "gasto_aprobar",
+]);
+/** Un doble toque o un reenvío de Telegram ocurren en segundos; pasado este margen es una decisión nueva. */
+export const VENTANA_DUPLICADO_CALLBACK_MS = 45_000;
 
 export interface RepositorioEntregasTelegram {
   reservar(entrega: EntregaTelegramDurable): Promise<{ entrega: EntregaTelegramDurable; nueva: boolean }>;
+  /** Vuelve a dejar `reservada` una entrega que estaba `completada`; undefined si ya no lo está. */
+  reabrirCompletada(clave: string, entrega: EntregaTelegramDurable): Promise<EntregaTelegramDurable | undefined>;
   obtener(clave: string): Promise<EntregaTelegramDurable | undefined>;
   marcarIniciada(clave: string): Promise<EntregaTelegramDurable | undefined>;
   marcarCompletada(clave: string): Promise<void>;
@@ -52,7 +77,11 @@ export function crearEntregaTelegram(
     ? (callbackSensible ? "callback_sensible" : "callback")
     : update.message ? "mensaje" : "otro";
 
+  const accion = (callback?.data ?? "").split(":")[0];
+  const reabrible = Boolean(callback && callbackSensible && ACCIONES_REABRIBLES_TRAS_COMPLETAR.has(accion));
+
   return {
+    ...(reabrible ? { reabrirCompletadaTrasMs: VENTANA_DUPLICADO_CALLBACK_MS } : {}),
     clave: hashClave(identidad),
     updateId: update.update_id,
     intentoId: randomUUID(),
@@ -90,6 +119,7 @@ export class CoordinadorEntregasTelegram {
   private recuperadas = 0;
   private inciertas = 0;
   private duplicadas = 0;
+  private reabiertas = 0;
   private errores = 0;
   private readonly ahora: () => number;
   private readonly demoraReservaMs: number;
@@ -114,13 +144,24 @@ export class CoordinadorEntregasTelegram {
       recuperadas: this.recuperadas,
       inciertas: this.inciertas,
       duplicadas: this.duplicadas,
+      reabiertas: this.reabiertas,
       errores: this.errores,
     };
   }
 
   async reservar(update: TelegramUpdate, callbackSensible: boolean) {
     try {
-      const resultado = await this.repositorio.reservar(crearEntregaTelegram(update, callbackSensible, this.ahora()));
+      const entrega = crearEntregaTelegram(update, callbackSensible, this.ahora());
+      const resultado = await this.repositorio.reservar(entrega);
+      // update.update_id distinto exige un toque humano nuevo: un reenvío de transporte de Telegram (503 del
+      // webhook, reintento real) repite el MISMO update_id que la entrega ya completada y nunca debe reabrirla,
+      // aunque llegue mucho después (hallazgo real de auditoría).
+      if (!resultado.nueva && resultado.entrega.estado === "completada" && entrega.reabrirCompletadaTrasMs !== undefined &&
+        entrega.updateId !== resultado.entrega.updateId &&
+        entrega.creadoEn - resultado.entrega.actualizadoEn >= entrega.reabrirCompletadaTrasMs) {
+        const reabierta = await this.repositorio.reabrirCompletada(entrega.clave, entrega);
+        if (reabierta) { this.reabiertas++; return { entrega: reabierta, nueva: true }; }
+      }
       if (!resultado.nueva) this.duplicadas++;
       return resultado;
     } catch (error) {

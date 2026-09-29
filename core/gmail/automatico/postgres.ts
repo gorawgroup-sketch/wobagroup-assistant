@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { avisarEsperaInteractiva, hayContextoInteractivo } from "../../telegram/contextoInteractivo";
 import { VERSION_ANALISIS, VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto, type OperacionAuto, type PlanAuto, type StoreAuto } from "./model";
 
 // El esquema se aplica explícitamente con el script de preparación; nunca durante una escritura.
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS wobi_mail_report_slots (
   PRIMARY KEY (mailbox, slot),
   CHECK (state IN ('claimed','sent'))
 );
+CREATE TABLE IF NOT EXISTS wobi_mail_resume (
+  chat_id bigint PRIMARY KEY, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE wobi_mail_resume ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'pendiente';
+ALTER TABLE wobi_mail_resume ADD COLUMN IF NOT EXISTS instance text NOT NULL DEFAULT '';
+ALTER TABLE wobi_mail_resume ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS wobi_mail_operations_pending ON wobi_mail_operations(mailbox, state);
 CREATE INDEX IF NOT EXISTS wobi_mail_events_message ON wobi_mail_events(mailbox, message_id);
 `;
@@ -62,10 +69,24 @@ const contexto = new AsyncLocalStorage<{ locks: Set<string>; operacion?: string 
 
 /** Bloqueo de sesión distribuido. El intento externo se persiste antes del POST, de modo que
  * perder la conexión del lock no autoriza repetir una escritura cuyo resultado es incierto. */
+/**
+ * El candado estuvo ocupado más de lo que una acción del operador puede esperar. La tarea protegida por ESTE
+ * candado no llegó a empezar; la acción completa pudo haber hecho pasos anteriores.
+ */
+export class BuzonOcupadoError extends Error {
+  readonly code = "55P03";
+  constructor() {
+    super("El buzón de correo siguió ocupado por otra revisión y no se pudo tomar el candado.");
+    this.name = "BuzonOcupadoError";
+  }
+}
+/** Cuánto espera una acción del operador a que el buzón quede libre (una revisión completa dura minutos). */
+export const ESPERA_INTERACTIVA_BUZON_MS = 5 * 60_000;
+
 export async function conBloqueoAuto<T>(
   clave: string,
   tarea: () => Promise<T>,
-  opciones: { lockTimeoutMs?: number } = {}
+  opciones: { lockTimeoutMs?: number; alEsperar?: () => Promise<void> } = {}
 ): Promise<T> {
   const actual = contexto.getStore();
   if (actual?.locks.has(clave)) return tarea();
@@ -75,8 +96,23 @@ export async function conBloqueoAuto<T>(
   client.on("error", onError);
   try {
     const lockTimeoutMs = Math.max(1_000, Math.min(10 * 60_000, opciones.lockTimeoutMs ?? 30_000));
-    await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`]);
-    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
+    // Con `alEsperar` se intenta primero sin bloquear: si el candado está libre no hay nada que avisar; si
+    // está ocupado, el operador se entera ANTES de quedarse esperando, no tras un error.
+    let tomado = false;
+    if (opciones.alEsperar) {
+      const intento = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok", [clave]);
+      tomado = intento.rows[0]?.ok === true;
+      if (!tomado) await opciones.alEsperar();
+    }
+    if (!tomado) {
+      await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`]);
+      try {
+        await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
+      } catch (error) {
+        if (opciones.alEsperar && (error as { code?: unknown })?.code === "55P03") throw new BuzonOcupadoError();
+        throw error;
+      }
+    }
     const resultado = await contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea);
     if (roto) throw new Error("Se perdió el bloqueo distribuido; comprobar el registro antes de continuar.");
     return resultado;
@@ -184,15 +220,49 @@ export async function conCoordinadorCorreo<T>(
     const { conMutex } = await import("../../utils/asyncMutex");
     return conMutex(clave, () => contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea));
   }
+  // Una acción del operador (botón o mensaje) que no pidió una espera concreta no falla a los 30 s porque
+  // haya una revisión en marcha: avisa de que queda en espera y se aplica sola cuando el buzón se libera.
+  // Los llamadores con espera explícita (revisión manual, vigilante de 1 s, cron) conservan la suya.
+  if (opciones.lockTimeoutMs === undefined && hayContextoInteractivo()) {
+    return conBloqueoAuto(clave, tarea, { lockTimeoutMs: ESPERA_INTERACTIVA_BUZON_MS, alEsperar: avisarEsperaInteractiva });
+  }
   return conBloqueoAuto(clave, tarea, opciones);
+}
+
+/**
+ * La guardia rechazó (o no pudo evaluar) la escritura ANTES de ejecutarla: el POST/PUT nunca salió hacia Holded.
+ * Se distingue de cualquier fallo posterior (que sí deja el resultado incierto) para que quien reintenta —p. ej. el
+ * registro durable de conciliaciones— no bloquee para siempre un recurso que nunca se tocó.
+ */
+export class EscrituraHoldedNoIniciadaError extends Error {
+  constructor(readonly causa: unknown) {
+    super(causa instanceof Error ? causa.message : String(causa));
+    this.name = "EscrituraHoldedNoIniciadaError";
+  }
 }
 
 /** Las rutas manuales y múltiples respetan las operaciones automáticas incompletas. */
 export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: () => Promise<T>, objetivo?: ObjetivoEscrituraHolded): Promise<T> {
   if (!hayCoordinacionDurable()) {
-    if (process.env.WOBI_MAIL_AUTO_MODE === "execute") throw new Error("Coordinación durable no disponible.");
+    if (process.env.WOBI_MAIL_AUTO_MODE === "execute") throw new EscrituraHoldedNoIniciadaError(new Error("Coordinación durable no disponible."));
     return tarea();
   }
+  let iniciada = false;
+  try {
+    return await protegerEscrituraHoldedConGuardia(empresa, tarea, objetivo, () => { iniciada = true; });
+  } catch (error) {
+    // Todo lo ocurrido antes de que `tarea` arranque (conexión, lock, claims, operaciones pendientes) es «no iniciada».
+    if (!iniciada && !(error instanceof EscrituraHoldedNoIniciadaError)) throw new EscrituraHoldedNoIniciadaError(error);
+    throw error;
+  }
+}
+
+async function protegerEscrituraHoldedConGuardia<T>(
+  empresa: EmpresaAuto,
+  tarea: () => Promise<T>,
+  objetivo: ObjetivoEscrituraHolded | undefined,
+  alIniciar: () => void
+): Promise<T> {
   return conBloqueoAuto(`holded:${empresa}`, async () => {
     const propias = contexto.getStore()?.operacion ?? "";
     if (propias) {
@@ -231,6 +301,7 @@ export async function protegerEscrituraHolded<T>(empresa: EmpresaAuto, tarea: ()
         [empresa, propias, movimiento ? decodeURIComponent(movimiento) : null, numero, typeof body.contact_id === "string" ? body.contact_id : null]);
       if (anteriores.rowCount) throw new Error(`Esta operación ya fue completada por la revisión automática (${anteriores.rows[0].id}); el botón antiguo no la repetirá.`);
     }
+    alIniciar();
     return tarea();
   });
 }
@@ -300,6 +371,12 @@ export class PostgresAutoStore implements StoreAuto {
   async pendientes(buzon: string): Promise<OperacionAuto[]> {
     const r = await this.db.query("SELECT data FROM wobi_mail_operations WHERE mailbox=$1 AND state NOT IN ('completada','rechazada') ORDER BY updated_at", [buzon]);
     return r.rows.map(x => x.data as OperacionAuto);
+  }
+  /** Todas las operaciones del hilo que no fueron rechazadas, con su última actividad (en ms). */
+  async operacionesDeHilo(buzon: string, threadId: string): Promise<Array<{ op: OperacionAuto; actualizadaEn: number }>> {
+    const r = await this.db.query(`SELECT data, updated_at FROM wobi_mail_operations
+      WHERE mailbox=$1 AND data->'plan'->'correo'->>'threadId'=$2 AND state <> 'rechazada' ORDER BY updated_at`, [buzon, threadId]);
+    return r.rows.map(x => ({ op: x.data as OperacionAuto, actualizadaEn: new Date(x.updated_at).getTime() }));
   }
   async recuperables(buzon: string, version: string): Promise<OperacionAuto[]> {
     const r = await this.db.query(`SELECT data FROM wobi_mail_operations WHERE mailbox=$1 AND (

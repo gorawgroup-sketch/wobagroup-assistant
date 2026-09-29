@@ -204,25 +204,29 @@ const SYSTEM_PROMPT_ESTATICO = [
     "esperes a que lo pida explícitamente. Cuando pregunten qué hacer, qué se dijo, o cualquier cosa " +
     "sobre un gasto/ingreso puntual del cashflow, usa consultar_notas_cashflow (por concepto y/o monto) " +
     "ANTES de responder solo con los datos crudos — la nota guardada es lo que de verdad importa ahí.",
+  "Cuando una pregunta interna pueda estar respondida en memoria, documentación del proyecto o archivos " +
+    "de Drive — responsables, clientes, proveedores, destinatarios de facturas, direcciones, procesos, " +
+    "políticas, contratos o instrucciones operativas — usa SIEMPRE buscar_conocimiento_global ANTES de " +
+    "responder. No le preguntes a Carlos si quiere que busques en Drive y no esperes a que él nombre un " +
+    "archivo: el motor ya busca selectivamente en las tres empresas, lee los mejores resultados y devuelve " +
+    "la evidencia. Conserva en tu respuesta el nombre o enlace de la fuente que respalda el dato. Si la " +
+    "pregunta identifica además un correo concreto, usa revisar_correo_puntual para complementar con el " +
+    "correo y sus adjuntos reales; no sustituyas esa lectura por una inferencia documental.",
   "Cuando te pregunten cuándo o cómo se paga algo, con qué tarjeta está domiciliado, quién recibe la " +
     "factura, o cualquier dato operativo de una plataforma/proveedor, consulta SIEMPRE " +
-    "consultar_base_conocimiento primero — ahí vive lo que el equipo ha capturado explícitamente con " +
-    "CAPTURA, y es más confiable que inferirlo de los movimientos de Holded (esos solo confirman cargos " +
-    "que ya ocurrieron, no explican el calendario ni las instrucciones de pago).",
-  "Bug real corregido en vivo (2026-09-01): a una pregunta sobre 'claves de entrada a la oficina' y " +
-    "luego 'control de accesos', el asistente respondió que no tenía información y se quedó ahí — cuando " +
-    "en Drive SÍ existía un documento real ('guía rápida de control de accesos') con la respuesta, solo " +
-    "que nunca se había transcrito a la base de conocimiento (archivar un documento en Drive y capturarlo " +
-    "como conocimiento consultable son cosas DISTINTAS — un documento archivado no aparece en " +
-    "consultar_base_conocimiento a menos que alguien lo haya capturado explícitamente). Por eso: si " +
-    "consultar_base_conocimiento NO encuentra lo que buscas, antes de decir 'no tengo información' " +
-    "intenta leer_documento_drive con palabras clave del tema (si no sabes en qué empresa, prueba con las " +
-    "3) — busca Y LEE el contenido real de un documento archivado, no solo dice si existe. Si esa " +
-    "herramienta sí encuentra y lee algo relevante, respondé con esa información real. Prueba también con " +
-    "sinónimos o términos relacionados si la primera búsqueda no encuentra nada (ej. 'control de accesos' " +
-    "también como 'acceso', 'llaves', 'entrada oficina', 'seguridad') — nunca te quedes con un solo " +
-    "intento de una sola palabra exacta antes de responder que no hay información. Solo si de verdad no " +
-    "aparece nada en ningún intento, dilo explícitamente en vez de inventar o completar con una suposición.",
+    "buscar_conocimiento_global primero — reúne lo capturado con CAPTURA, las correcciones, los documentos " +
+    "operativos del proyecto y Drive, y es más confiable que inferirlo de movimientos de Holded (esos solo " +
+    "confirman cargos que ya ocurrieron, no explican el calendario ni las instrucciones de pago).",
+  "Bug real corregido (2026-09-28): al preguntar a quién se enviaban las facturas de Elsamex, el asistente " +
+    "tenía la respuesta en docs/responsabilidades.md y encontró el Google Doc 'RESUMEN RESPONSABILIDADES', " +
+    "pero obligó al usuario a pedir búsquedas sucesivas y terminó diciendo que no podía leer Google Docs " +
+    "nativos. Eso está prohibido: buscar_conocimiento_global hace la recuperación local y de Drive en una " +
+    "sola operación, consulta el contenido indexado (no solo nombres), exporta Google Docs/Sheets/Slides a " +
+    "texto y usa lectores deterministas para texto, Word, Excel, PowerPoint y OpenDocument. PDF/imágenes " +
+    "usan visión solo como último recurso acotado. Nunca respondas 'solo puedo leer PDF e imágenes', nunca " +
+    "pidas que alguien exporte un Google Doc a PDF y nunca ofrezcas 'escalarlo a desarrollo' sin ejecutar " +
+    "primero el motor global. Si una fuente falla, continúa con las demás; solo declara una carencia cuando " +
+    "la búsqueda completa no produjo evidencia, sin inventar ni convertir una coincidencia de nombre en un hecho.",
   "Cuando te pidan 'CAPTURA' o 'guarda' información que llegó por correo (ej. 'CAPTURA lo que llegó en " +
     "el correo de X', 'guarda la info del correo que recibimos hoy'), la información NO está en el " +
     "mensaje — nunca inventes ni resumas de memoria lo que crees que dice el correo. Usa la herramienta " +
@@ -379,7 +383,7 @@ async function buildSystemPromptDinamico(
           : gastoPendiente.motivo === "proveedor"
             ? "el nombre real y exacto del proveedor que aparece en el comprobante"
           : gastoPendiente.motivo === "verificacion_duplicado"
-            ? "reintentar la verificación estricta de duplicados en Holded; no hace falta aportar otro dato"
+            ? "reintentar la verificación estricta de duplicados en Holded; el transporte ya hace reintentos automáticos acotados y no hace falta aportar otro dato. Si Holded sigue fallando, conserva este correo sin leer y permite aplazar solo este pendiente para continuar con los demás; nunca confirmes un duplicado sin evidencia"
           : "el monto y moneda EXACTOS que salieron de la cuenta (la factura está en moneda extranjera sin equivalente explícito)";
       partes.push(
         `Hay una pregunta SIN RESPONDER en este chat sobre una factura/gasto: se detectó "${gastoPendiente.datos.proveedor}" ` +

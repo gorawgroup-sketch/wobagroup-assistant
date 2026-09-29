@@ -1,6 +1,6 @@
 # Responsabilidades
 
-Documento de responsabilidades del grupo (WOBA/BAE, Footprint, eWorks). Este archivo se carga automáticamente como contexto del sistema para Claude en cada conversación. Última actualización: 2026-08-26, a partir de "RESUMEN RESPONSABILIDADES.docx".
+Documento de responsabilidades del grupo (WOBA/BAE, Footprint, eWorks). Este archivo está indexado por la búsqueda selectiva de conocimiento y se recupera automáticamente cuando la pregunta es pertinente, sin enviarlo completo en cada conversación. Última actualización: 2026-08-26, a partir de "RESUMEN RESPONSABILIDADES.docx".
 
 ## BUSINESS ATELIER EUROPA
 

@@ -1,0 +1,69 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "aprendido",
+  "fuente": "Revisión adversarial del PR #224: el aprendizaje devolvía el cargo sin marca y el teclado lo rechazaba.",
+  "descripcion": "Un descriptor ya confirmado por un humano para ese proveedor se ofrece como aprendido aunque el cargo llegue 2 días después, y habilita crear.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Mi Cafetería",
+    "concepto": "Café",
+    "monto": 3.91,
+    "moneda": "USD",
+    "fecha": "2026-09-25"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-eur",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    },
+    {
+      "id": "cuenta-cop",
+      "name": "Colombia",
+      "currency": "COP"
+    },
+    {
+      "id": "cuenta-vieja",
+      "name": "Pocket USD",
+      "currency": "USD",
+      "archived": true
+    }
+  ],
+  "movimientos": {
+    "cuenta-usd": [
+      {
+        "id": "m1",
+        "description": "SQ *XYZ 88 SAN JUAN",
+        "amount": "-3.91",
+        "currency": "USD",
+        "booking_date": "2026-09-27",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "aprendidas": [
+    {
+      "proveedor": "Mi Cafetería",
+      "moneda": "USD",
+      "descripcionMovimiento": "SQ *XYZ 88 SAN JUAN"
+    }
+  ],
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m1",
+        "compatibilidad": "aprendido"
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesIncluyen": [
+      "Crear y conciliar"
+    ]
+  }
+}

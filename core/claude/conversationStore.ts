@@ -3,6 +3,7 @@ import { google, sheets_v4 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { ensureTab as ensureKeyValueTab } from "../google/sheetsKeyValueStore";
 import { CacheLectura } from "../utils/readCache";
+import { MARCA_MENSAJE_SISTEMA, quitarMarcaSistema } from "./respuestaImitaSistema";
 
 // Historial por chat de Telegram, para que preguntas de seguimiento ("envíale
 // ese link a Carlos") tengan contexto de lo que se habló antes.
@@ -38,15 +39,15 @@ const TTL_HISTORIAL_MS = 6 * 60 * 60 * 1000; // 6 horas — cubre una pausa norm
 // desconocer una indicación que está en el chat solo unos minutos o segundos antes").
 const LIMITE_CARACTERES_CELDA = 45_000;
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_historial_conversaciones";
 const HEADERS = ["chatId", "mensajesJSON", "actualizadoEn"];
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -322,7 +323,8 @@ export async function obtenerHistorialVisible(chatId: number): Promise<MensajeCo
             .map((bloque) => bloque.text)
             .join("\n\n")
             .trim();
-    if (texto) visibles.push({ rol: "wobi", texto });
+    const limpio = quitarMarcaSistema(texto);
+    if (limpio) visibles.push({ rol: "wobi", texto: limpio });
   }
 
   return visibles.slice(-MAX_MESSAGES);
@@ -359,9 +361,18 @@ export async function limpiarHistorial(chatId: number): Promise<void> {
  * falta fusionar con el turno anterior para mantener una alternancia
  * estricta que en realidad no exige.
  */
-export async function registrarMensajeSaliente(chatId: number, texto: string): Promise<void> {
+export async function registrarMensajeSaliente(
+  chatId: number,
+  texto: string,
+  origen: "sistema" | "respuesta" = "sistema"
+): Promise<void> {
   try {
-    await guardarHistorial(chatId, [{ role: "assistant", content: texto }]);
+    // Un aviso automático (propuesta, progreso, pregunta con botones) entra en el historial como turno del
+    // asistente para que el chat sepa qué se preguntó; sin distinguirlo, el modelo lo toma por algo que dijo
+    // él y puede repetirlo literalmente como respuesta (caso real 2026-09-28: una propuesta de gasto
+    // reproducida sin botones). La marca le dice qué es; nunca se muestra al usuario (ver quitarMarcaSistema).
+    const contenido = origen === "sistema" ? `${MARCA_MENSAJE_SISTEMA}\n${texto}` : texto;
+    await guardarHistorial(chatId, [{ role: "assistant", content: contenido }]);
   } catch (error) {
     console.error("[conversationStore] Error registrando mensaje saliente (no crítico):", error);
   }

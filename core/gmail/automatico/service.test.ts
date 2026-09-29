@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
-import { evaluarAuto, hash, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
+import { evaluarAuto, hash, VERSION_ANALISIS, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 import { UsoApiNoAutorizadoError } from "../../ai/policy";
 
@@ -280,6 +280,95 @@ test("correo activo manual no se toca; los demás siguen ordenados", async () =>
   const e = escenario(); e.puerto.reservadoManualmente = async () => true;
   const r = await e.service.revisar(configFixture); assert.equal(r.revisados, 0); assert.equal(e.llamadas.crear, 0);
 });
+test("una operación sin cerrar de un correo reservado por la revisión manual se continúa por lectura, sin repetir POST ni marcar el correo", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  // La cola manual toma el correo: antes ni el proceso automático ni la revisión manual podían cerrar la operación.
+  e.puerto.reservadoManualmente = async () => true;
+  e.puerto.verificarConciliacion = async () => true;
+  const r = await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "completada");
+  assert.equal(e.llamadas.crear, 1); assert.equal(e.llamadas.conciliar, 1);
+  assert.equal(e.llamadas.marcar, 0, "el correo es de la revisión manual: no se marca leído desde aquí");
+  assert.equal(r.completados, 1);
+});
+test("un correo reservado por la revisión manual nunca crea: una operación solo «reservada» o sin compra no se toca", async () => {
+  for (const preparar of [
+    (op: OperacionAuto) => { op.estado = "reservada"; },
+    (op: OperacionAuto) => { op.estado = "incierta"; op.pasoIncierto = "creando"; op.compraId = undefined; },
+  ]) {
+    const e = escenario();
+    e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+    e.puerto.verificarConciliacion = async () => false;
+    await e.service.revisar(configFixture);
+    const op = [...e.ops.values()][0]; preparar(op); e.ops.set(op.id, op);
+    const antes = { ...e.llamadas };
+    e.puerto.reservadoManualmente = async () => true;
+    await e.service.revisar(configFixture);
+    assert.equal(e.llamadas.crear, antes.crear, "no debe volver a crear");
+    assert.equal(e.llamadas.adjuntar, antes.adjuntar);
+    assert.equal(e.llamadas.conciliar, antes.conciliar);
+  }
+});
+test("cuando la verificación estricta no puede dar por terminada la operación pero Holded la demuestra completa, se cierra y el correo se resuelve", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { e.llamadas.conciliar++; throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  let cierres = 0;
+  e.puerto.cerrarConEvidencia = async op => {
+    cierres++;
+    op.estado = "completada"; await e.store.guardar(op);
+    return true;
+  };
+  const r = await e.service.revisar(configFixture);
+  assert.equal(cierres, 1);
+  assert.equal([...e.ops.values()][0].estado, "completada");
+  assert.equal(e.llamadas.conciliar, 1, "el cierre es por lectura: no repite el POST");
+  assert.equal(e.llamadas.marcar, 1, "sin reserva manual, el correo se marca resuelto");
+  assert.equal(r.completados, 1);
+});
+test("el cierre automático respeta el interruptor y no da por buena una reparación de política anterior pendiente", async () => {
+  // 1) automatización apagada: ni siquiera se intenta cerrar
+  const e1 = escenario();
+  e1.puerto.conciliar = async () => { throw new Error("timeout"); };
+  e1.puerto.verificarConciliacion = async () => false;
+  await e1.service.revisar(configFixture);
+  let intentos1 = 0;
+  e1.puerto.cerrarConEvidencia = async () => { intentos1++; return true; };
+  e1.puerto.permitidoAhora = () => false;
+  await e1.service.revisar(configFixture);
+  assert.equal(intentos1, 0, "con la automatización apagada no se cierra nada");
+  // 2) reparación de política anterior pendiente que falla: solo el operador presente puede cerrarla
+  const e2 = escenario();
+  await e2.service.revisar(configFixture);
+  const op = [...e2.ops.values()][0];
+  op.plan.version = "correo-gastos-v6"; op.estado = "completada"; e2.ops.set(op.id, op);
+  e2.puerto.recuperarCreacion = async () => { throw new Error("Holded 503 transitorio"); };
+  let intentos2 = 0;
+  e2.puerto.cerrarConEvidencia = async () => { intentos2++; return true; };
+  await e2.service.revisar(configFixture);
+  assert.equal(intentos2, 0, "una reparación pendiente no se cierra desde el proceso desatendido");
+});
+test("si el cierre con evidencia falla o dice que no, la operación sigue abierta como antes", async () => {
+  const e = escenario();
+  e.puerto.conciliar = async () => { throw new Error("timeout"); };
+  e.puerto.verificarConciliacion = async () => false;
+  await e.service.revisar(configFixture);
+  e.puerto.cerrarConEvidencia = async () => { throw new Error("Holded caído"); };
+  const r = await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  assert.equal(r.pendientes.length, 1);
+});
+test("un correo reservado sin operación anterior sigue sin crear nada", async () => {
+  const e = escenario(); e.puerto.reservadoManualmente = async () => true;
+  await e.service.revisar(configFixture);
+  assert.equal(e.llamadas.crear, 0); assert.equal(e.ops.size, 0);
+});
 test("dos mensajes con el mismo comprobante nunca generan dos gastos", async () => {
   const e = escenario(); e.correos.push({ ...correoFixture("m2"), huella: hash("reenviado") });
   const r = await e.service.revisar(configFixture);
@@ -424,4 +513,72 @@ test("diagnóstico conserva validación y HTTP sin exponer respuestas remotas", 
 test("pendientes no se presentan como hilos sin leer y no se ocultan motivos", () => {
   const texto=resumenAutomatico({modo:'execute',revisados:0,completados:0,simulados:0,gastos:[],pendientes:[]});
   assert.match(texto,/incluye operaciones anteriores; no equivale a hilos sin leer/);
+});
+
+// Caso real 2026-09-28: el informe de una revisión de 49 correos superó los 4096 caracteres de Telegram porque listaba
+// una línea por cada compra creada y por cada borrador corregido, sin límite.
+test("el informe acota el detalle de compras y sigue cabiendo en un mensaje de Telegram con mucho volumen", () => {
+  const compra = (i: number, proveedor?: string) => ({ empresa: "Footprint" as const, id: `6aba27f01b0791ea0a08${String(i).padStart(4, "0")}`,
+    centimos: 700 + i, moneda: "EUR", proveedor });
+  const texto = resumenAutomatico({ modo: "execute", encontrados: 49, revisados: 46, completados: 60, simulados: 0,
+    gastos: Array.from({ length: 60 }, (_, i) => compra(i, i % 2 ? "Uber" : "Restaurante con un nombre comercial larguísimo S.L.")),
+    reparados: Array.from({ length: 40 }, (_, i) => compra(100 + i)),
+    pendientes: [] });
+  assert.ok(texto.length < 4096, `informe de ${texto.length} caracteres`);
+  assert.match(texto, /Uber · 7\.\d\d EUR · compra 6aba27f0/);
+  assert.match(texto, /… y 50 más, en Holded\./, "60 compras: se detallan 10 y se resume el resto");
+  assert.match(texto, /… y 30 más, en Holded\./, "40 borradores corregidos: se detallan 10 y se resume el resto");
+  assert.match(texto, /Gastos creados, soportados y conciliados: 60\./, "el total real nunca se recorta");
+  assert.doesNotMatch(texto, /Restaurante con un nombre comercial larguísimo S\.L\./, "el proveedor se abrevia a 32 caracteres");
+});
+
+test("sin proveedor (resultados guardados antes de existir el campo) el informe conserva el formato anterior", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 1, simulados: 0,
+    gastos: [{ empresa: "WOBA", id: "abc123", centimos: 1500, moneda: "EUR" }], pendientes: [] });
+  assert.match(texto, /• WOBA · 15\.00 EUR · compra abc123\./);
+});
+
+// Caso real 2026-09-28 16:12: un despliegue mandó SIGTERM con /revisarcorreo en «39/50» y el
+// proceso murió sin punto de control. Con `detener`, la revisión para en el siguiente y deja todo durable.
+test("con el cierre pedido a mitad del análisis, no analiza ni escribe más y marca el resultado como interrumpido", async () => {
+  const e = escenario();
+  e.correos.push(correoFixture("m2"), correoFixture("m3"));
+  let cerrando = false;
+  let analisis = 0;
+  e.puerto.analizar = async () => { analisis++; cerrando = true; return e.a; };
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { concurrenciaAnalisis: 1, detener: () => cerrando });
+  const r = await service.revisar(configFixture);
+  assert.equal(r.interrumpida, true);
+  assert.equal(analisis, 1);
+  assert.equal(r.aplazados, 2);
+  assert.equal(e.llamadas.crear + e.llamadas.adjuntar + e.llamadas.conciliar + e.llamadas.marcar, 0);
+  const pospuestos = r.pendientes.filter(p => p.motivos.includes("revision_pospuesta_por_reinicio"));
+  assert.equal(pospuestos.length, 3);
+  assert.match(resumenAutomatico(r), /interrumpida por un reinicio del servicio/);
+  // El análisis ya pagado queda guardado: la pasada que retome no lo repite.
+  assert.ok(await e.store.buscarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS));
+});
+
+test("sin cierre pedido, el resultado no queda marcado como interrumpido", async () => {
+  const e = escenario();
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { detener: () => false });
+  const r = await service.revisar(configFixture);
+  assert.equal(r.interrumpida, undefined);
+  assert.equal(r.completados, 1);
+});
+
+test("con el cierre pedido, una operación ya reservada se deja reservada (sin POST) y una en vuelo se cierra por lectura", async () => {
+  const e = escenario();
+  // Primera pasada: la creación falla y deja la operación incierta (en vuelo).
+  e.puerto.crear = async () => { e.llamadas.crear++; throw new Error("timeout"); };
+  await e.service.revisar(configFixture);
+  assert.equal([...e.ops.values()][0].estado, "incierta");
+  // Segunda pasada con el cierre pedido desde el principio: la recuperación por lectura no abre
+  // escrituras nuevas, y el análisis cacheado no se repite.
+  e.puerto.recuperarCreacion = async () => "compra1";
+  const service = new ServicioCorreoAutomatico(e.store, e.puerto, { detener: () => true });
+  const r = await service.revisar(configFixture);
+  assert.equal(e.llamadas.crear, 1);
+  assert.equal(r.interrumpida, true);
+  assert.ok(r.pendientes.every(p => p.motivos.some(m => m.startsWith("operacion_") || m === "revision_pospuesta_por_reinicio")));
 });

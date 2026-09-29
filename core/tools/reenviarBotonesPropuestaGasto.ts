@@ -1,5 +1,12 @@
 import { obtenerPropuestasGastoPorChat, type PropuestaGasto } from "../gastos/gastoProposalSheet";
 import { reenviarPropuestaGasto } from "../gastos/reenviarPropuestaGasto";
+import { obtenerConciliacionesPendientesPorChat } from "../gastos/conciliacionPendienteStore";
+import { obtenerConciliacionesAmbiguasPendientesPorChat } from "../gastos/conciliacionAmbiguaPendienteStore";
+import {
+  filtrarConciliacionesPorTexto,
+  reenviarPreguntaConciliacion,
+  reenviarPreguntaConciliacionAmbigua,
+} from "../gastos/reenviarPreguntaPendiente";
 import { montosCercanos } from "../utils/montos";
 import type { ToolDefinition } from "./types";
 
@@ -71,9 +78,15 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
   name: "reenviar_botones_propuesta_gasto",
   description:
     "Vuelve a mostrar, en un mensaje NUEVO al final del chat, los botones reales (✅ Crear / ✅ Crear y " +
-    "conciliar / ❌ Cancelar / etc.) de una propuesta de gasto que sigue pendiente — úsala cuando el usuario " +
+    "conciliar / ❌ Cancelar / etc.) de una propuesta de gasto que sigue pendiente. En este sistema «propuesta» " +
+    "SIEMPRE es una propuesta de gasto (un ticket/factura detectado que espera decisión), nunca un presupuesto de " +
+    "venta: si el usuario dice «renueva / reenvía / vuelve a mandar / muestra de nuevo los botones de la propuesta " +
+    "de X» o «no me salen los botones de X», llama a esta herramienta de inmediato pasando X en 'cual' (proveedor, " +
+    "parte del nombre, número de la lista o monto) — no pidas más contexto ni preguntes si es una propuesta de venta. " +
+    "También úsala cuando el usuario " +
     "responda en TEXTO LIBRE para aprobar/crear/cancelar esa propuesta (ej. 'créalo', 'sí, créalo y concilia', " +
-    "'cancela ese gasto') en vez de tocar los botones del mensaje original. NUNCA crea/cancela/concilia nada " +
+    "'cancela ese gasto') en vez de tocar los botones del mensaje original. Al renovar, el cargo bancario se vuelve a " +
+    "buscar en Holded en vivo. NUNCA crea/cancela/concilia nada " +
     "por sí sola — esas escrituras en Holded siempre requieren que el usuario toque el botón real (mismo " +
     "criterio que el resto del sistema), así que después de llamar a esta tool dile al usuario que toque el " +
     "botón que corresponde a lo que pidió, ya renovado al final del chat. Nunca digas que no hay forma de " +
@@ -87,7 +100,7 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
       cual: {
         type: "string",
         description:
-          "Solo si hay VARIAS propuestas pendientes: cuál quiere el usuario, tal como lo haya dicho — el número " +
+          "Cuál propuesta, cuando el usuario la nombra (ej. «JUST B CUZ») o si hay VARIAS pendientes: tal como lo haya dicho — el número " +
           "de la lista que se le mostró (ej. '2'), el nombre del proveedor o parte de él (ej. 'Chen Jin', " +
           "'AEAT'), o el monto (ej. '8,50'). Omite este campo si solo hay una propuesta pendiente, o si el " +
           "usuario todavía no dijo cuál.",
@@ -103,15 +116,49 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
     const cual = typeof input.cual === "string" ? input.cual : "";
 
     const pendientes = await obtenerPropuestasGastoPorChat(chatId);
-    if (pendientes.length === 0) {
-      return (
-        "No hay ninguna propuesta de gasto pendiente en este chat — puede que ya se haya resuelto o cancelado. " +
-        "No le pidas al usuario que reenvíe el documento sin más: dile que revise si ya se resolvió, o pídele " +
-        "el proveedor/monto para investigar antes de asumir que hay que reenviar nada."
-      );
+    // Caso real (Carlos, 2026-09-28 20:14): «no me diste la transacción con botones» y la decisión pendiente era
+    // una pregunta de CONCILIACIÓN («¿conciliar Airalo 12,50 USD?»), no una propuesta: esta tool solo miraba
+    // gastoProposalSheet y contestó que no había nada. Una pregunta de conciliación (simple o ambigua) es una
+    // decisión pendiente igual de real; se reenvía con sus mismos botones. Se buscan cuando no hay propuestas o
+    // cuando lo que nombró el usuario no coincide con ninguna propuesta pero sí con una conciliación.
+    // resolverPropuestaPorTexto devuelve el MISMO array cuando nada coincide: esa identidad distingue «no
+    // identificada» de «una sola pendiente» (con una única propuesta y un nombre que no es el suyo, antes se
+    // reenviaba esa propuesta equivocada en vez de buscar la conciliación que el usuario nombró).
+    const porTexto = cual ? resolverPropuestaPorTexto(pendientes, cual) : undefined;
+    const propuestaNombrada = porTexto !== undefined && porTexto !== pendientes;
+    const candidatasPropuesta = cual ? (propuestaNombrada ? porTexto! : []) : pendientes;
+    if (pendientes.length === 0 || (cual && !propuestaNombrada)) {
+      const simples = filtrarConciliacionesPorTexto(await obtenerConciliacionesPendientesPorChat(chatId), cual);
+      const ambiguas = filtrarConciliacionesPorTexto(await obtenerConciliacionesAmbiguasPendientesPorChat(chatId), cual);
+      const total = simples.length + ambiguas.length;
+      if (total === 1) {
+        const encabezado = "🔁 Pregunta pendiente renovada — toca la decisión que quieras aplicar.";
+        const descripcion = simples[0]
+          ? (await reenviarPreguntaConciliacion(simples[0], encabezado), simples[0].descripcionGasto)
+          : (await reenviarPreguntaConciliacionAmbigua(ambiguas[0], encabezado), ambiguas[0].descripcionGasto);
+        return (
+          `Listo — el gasto "${descripcion}" ya estaba creado en Holded y lo que esperaba era la pregunta de conciliación: ` +
+          "reenvié esa pregunta con sus botones reales al final del chat. Dile al usuario que toque el botón que corresponde " +
+          "(esta tool no concilió ni cerró nada)."
+        );
+      }
+      if (total > 1) {
+        const lista = [...simples, ...ambiguas].map((c, i) => `${i + 1}. ${c.descripcionGasto}`).join("\n");
+        return (
+          `No hay propuestas de gasto que coincidan, pero sí ${total} preguntas de conciliación pendientes (gastos ya creados que ` +
+          `esperan «¿conciliar?»). Pregúntale al usuario cuál quiere y vuelve a llamar con su respuesta en 'cual':\n${lista}`
+        );
+      }
+      if (pendientes.length === 0) {
+        return (
+          "No hay ninguna propuesta de gasto ni pregunta de conciliación pendiente en este chat — puede que ya se haya resuelto o cancelado. " +
+          "No le pidas al usuario que reenvíe el documento sin más: dile que revise si ya se resolvió, o pídele " +
+          "el proveedor/monto para investigar antes de asumir que hay que reenviar nada."
+        );
+      }
     }
 
-    const resueltas = pendientes.length > 1 && cual ? resolverPropuestaPorTexto(pendientes, cual) : pendientes;
+    const resueltas = candidatasPropuesta.length > 0 ? candidatasPropuesta : pendientes;
 
     if (resueltas.length !== 1) {
       const lista = pendientes

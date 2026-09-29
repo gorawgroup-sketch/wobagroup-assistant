@@ -48,7 +48,7 @@ test("encuentra en EUR una factura USD usando la tasa histórica y conserva evid
 
 test("prioriza nombre coincidente, elimina duplicados y limita las sugerencias", async () => {
   const candidatos = Array.from({ length: 7 }, (_, i) =>
-    movimiento(`mov-${i}`, -(85 + i / 10), i === 6 ? "ANTHROPIC CREDIT PURCHASE" : `OTRO CARGO ${i}`)
+    movimiento(`mov-${i}`, -(85 + i / 10), i === 6 ? "ANTHROPIC CREDIT PURCHASE" : `ANTHROPIC PURCHASE ${i}`)
   );
   const resultados = await buscarMovimientosPorTipoCambio(
     "WOBA",
@@ -68,7 +68,7 @@ test("prioriza nombre coincidente, elimina duplicados y limita las sugerencias",
   );
 
   assert.equal(resultados.length, 5);
-  assert.equal(resultados[0].movementId, "mov-6");
+  assert.equal(resultados[0].movementId, "mov-0");
   assert.equal(new Set(resultados.map((r) => r.movementId)).size, resultados.length);
 });
 
@@ -108,4 +108,13 @@ test("recibo COP busca EUR aunque también exista una cuenta COP y conserva el i
   assert.deepEqual(consultas,['EUR','USD']);assert.equal(r.length,1);
   assert.equal(r[0].monto,-3.50);assert.equal(r[0].coincideProveedor,true);
   assert.ok(Math.abs(r[0].montoReferencia!-3.50)<.01);
+});
+
+test('foreign currency search rejects taxi/fuel for food before text or buttons, accepts different food merchant',async()=>{
+ const r=await buscarMovimientosPorTipoCambio('Footprint',{monto:10,moneda:'USD',fecha:'2026-09-10',proveedor:'Comedor Example',concepto:'Comida restaurante'},['EUR'],{
+ obtenerTasa:async()=>1,
+ buscarCercanos:async(_e,c)=>{assert.equal(c.proveedor,'Comedor Example');assert.equal(c.concepto,'Comida restaurante');return [movimiento('taxi',-10,'Uber Pending'),movimiento('fuel',-10,'Chevron'),movimiento('food',-10,'Petit Gourmet')];},
+ buscarPorNombre:async()=>[{...movimiento('bad-fallback',-10,'Chevron'),diferenciaMonto:0}],
+ });
+ assert.deepEqual(r.map(m=>m.movementId),['food']);
 });

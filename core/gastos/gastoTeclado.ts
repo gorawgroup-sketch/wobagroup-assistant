@@ -1,5 +1,5 @@
 import { esFechaDocumentoValida } from "./fechaDocumento";
-import { movimientoCompatibleConGasto } from "../holded/write";
+import { candidatoUtilizableParaGasto } from "../holded/write";
 import { createHash } from "node:crypto";
 import type { InlineKeyboardButton } from "../telegram/types";
 import type { PropuestaGasto } from "./gastoProposalSheet";
@@ -193,6 +193,8 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
     if (!esRecuperacion) {
       filas.push([boton("nuevo")]);
       filas.push([boton("ajustarmonto")]);
+      // Con gastos parecidos ya registrados, el operador también debe poder descartar la propuesta (antes no había «Cancelar»).
+      filas.push([boton("cancelar")]);
     }
   } else {
     const hayMovimientosAmbiguos = opciones.numMovimientosAmbiguos !== undefined && opciones.numMovimientosAmbiguos > 0;
@@ -205,7 +207,7 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
       filas.push([boton("crear", "Crear (sin conciliar)")]);
       for (let i = 0; i < (opciones.numMovimientosAmbiguos as number); i++) filas.push([boton(`crearconciliar_${i}`)]);
     } else {
-      filas.push(opciones.hayMovimientoBancario ? [boton("crear", "Crear"), boton("crearconciliar")] : [boton("crear")]);
+      filas.push(opciones.hayMovimientoBancario ? [boton("crear", "Crear"), boton("crearconciliar")] : [boton("crear", "Crear (sin conciliar)")]);
     }
     filas.push([boton("corregir"), boton("ajustarmonto")]);
     filas.push([boton("cancelar")]);
@@ -232,14 +234,20 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
   const huellaSeleccion = createHash("sha256").update(Array.from(seleccion).sort().join(",")).digest("hex").slice(0, 8);
   filas.push([{ text: "▶️ Aprobar selección", callback_data: `gasto_aprobar:${propuesta.id}:${huellaSeleccion}` }]);
 
-  const cargoCompatible = esFechaDocumentoValida(propuesta.fecha) && (propuesta.movimientosAmbiguos ?? []).some(
-    m => movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion));
+  // Crear SIN conciliar no depende de que exista un cargo bancario (decisión del propietario, 2026-09-28: hay gastos en
+  // efectivo, cargos que llegan tarde y cargos que la búsqueda aún no ve; la política de #204 los bloqueaba). Solo exige
+  // una fecha documental válida; la comprobación de duplicados se repite al aprobar. En cambio, CONCILIAR sí exige un
+  // cargo utilizable: categorías contradictorias siguen impidiendo la asociación incluso con importe exacto.
+  const fechaValida = esFechaDocumentoValida(propuesta.fecha);
+  const cargoCompatible = fechaValida && (propuesta.movimientosAmbiguos ?? []).some(
+    m => candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m));
   return filas.map(fila => fila.filter(b => {
     const key = b.callback_data?.split(":")[2];
-    if (key === "crear" || key === "nuevo" || key === "crearconciliar") return cargoCompatible;
+    if (key === "crear" || key === "nuevo") return fechaValida;
+    if (key === "crearconciliar") return cargoCompatible;
     if (key?.startsWith("crearconciliar_")) {
       const m = propuesta.movimientosAmbiguos?.[Number(key.slice("crearconciliar_".length))];
-      return cargoCompatible && Boolean(m && movimientoCompatibleConGasto(propuesta.proveedor, propuesta.concepto, m.descripcion));
+      return cargoCompatible && Boolean(m && candidatoUtilizableParaGasto(propuesta.proveedor, propuesta.concepto, m));
     }
     return true;
   })).filter(fila => fila.length > 0);

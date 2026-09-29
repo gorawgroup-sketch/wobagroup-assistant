@@ -8,6 +8,7 @@ import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValid
   VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE, VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
+import type { HechosCierre } from "./cierreConEvidencia";
 import { generarComprobantePDF } from "../generarComprobantePDF";
 import type { DatosFactura } from "../../documental/extractInvoiceData";
 import { buscarMovimientosPorTipoCambio, type DependenciasBusquedaMultimoneda } from "../../gastos/movimientoMultimoneda";
@@ -736,6 +737,57 @@ export class HoldedAuto {
         documents: [{ document_id: op.compraId, document_type: "purchase" }],
       });
     } finally { this.invalidarMovimientosCuenta(p.empresa, p.movimiento.cuentaId); }
+  }
+  /**
+   * Lecturas (nunca escrituras) con las que se decide si una operación que no llegó a un estado terminal
+   * ya quedó completa en Holded. Ver `cierreConEvidencia.ts`: no exige que cuenta, impuestos o etiquetas
+   * coincidan con el plan, porque un gasto corregido a mano sigue siendo el mismo gasto.
+   */
+  async leerHechosCierre(op: OperacionAuto): Promise<HechosCierre> {
+    const p = op.plan;
+    if (!op.compraId) return { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null };
+    const c = await this.compra(op);
+    const importe = (valor: unknown): number => centimos(valor ?? 0, true);
+    const detalle = Array.isArray(c.payments_detail) ? c.payments_detail.map(objeto) : [];
+    // Sin `status` Holded devuelve en la práctica solo los movimientos pendientes (un cargo desaparecía justo después
+    // de conciliarlo), y aquí interesa precisamente el ya conciliado o parcial. Ventana estrecha alrededor de su fecha.
+    const dia = (d: number) => new Date(new Date(`${p.movimiento.fecha.slice(0, 10)}T00:00:00Z`).getTime() + d * 86_400_000)
+      .toISOString().slice(0, 10);
+    const [adjuntos, movimientos] = await Promise.all([
+      this.listarAdjuntos(p.empresa, op.compraId),
+      this.listar(p.empresa, `/treasury/accounts/${idUrl(p.movimiento.cuentaId)}/bank-movements`, {
+        start_date: dia(-3), end_date: dia(3), status: "pending,reconciled,partial,forced_reconciled" }),
+    ]);
+    // Sigue siendo el cargo que se planificó (importe, fecha y origen), como exige la ruta estricta en movimientoActual.
+    const movimiento = movimientos.find(m => m.id === p.movimiento.id &&
+      m.banking_account_id === p.movimiento.cuentaId &&
+      Math.abs(centimos(m.amount)) === Math.abs(p.movimiento.centimos) &&
+      String(m.booking_date).slice(0, 10) === p.movimiento.fecha && Boolean(m.origin) && m.origin !== "manual");
+    // Solo se puede afirmar que el comprobante coincide si Wobi adjuntó uno propio (plan.soporteHash); la descarga
+    // puede fallar y entonces la lectura entera se reintenta en la siguiente pasada.
+    const comprobanteCoincide = p.soporteHash && adjuntos.length ? await this.verificarAdjunto(op) : null;
+    return {
+      compra: {
+        id: texto(c.id),
+        notas: typeof c.notes === "string" ? c.notes : "",
+        contactoId: typeof c.contact_id === "string" ? c.contact_id : "",
+        moneda: String(c.currency || "EUR"),
+        totalCentimos: importe(c.total),
+        pagadoCentimos: importe(c.payments_total),
+        pendienteCentimos: importe(c.payments_pending),
+        pagos: detalle.map(x => ({ bancoId: typeof x.bank_id === "string" ? x.bank_id : "", centimos: importe(x.amount),
+          fecha: typeof x.date === "string" ? x.date : "" })),
+      },
+      adjuntos: adjuntos.length,
+      comprobanteCoincide,
+      movimiento: movimiento ? {
+        estado: String(movimiento.status),
+        importeCentimos: Math.abs(centimos(movimiento.amount)),
+        conciliadoCentimos: Math.abs(centimos(movimiento.reconciled_amount ?? 0)),
+        contableCentimos: movimiento.accounting_amount == null || movimiento.accounting_amount === ""
+          ? null : Math.abs(centimos(movimiento.accounting_amount)),
+      } : null,
+    };
   }
   async verificarConciliacion(op: OperacionAuto): Promise<boolean> {
     if (this.flujoExistente) return this.flujoExistente.verificarConciliacion(op);

@@ -568,3 +568,42 @@ test('recurring receipt with its own exact free charge does not inherit the prio
  old.document_number='OLD456';old.payments_pending='20,00';ev=await adapter.evidencias(e.c,e.r);assert.ok(ev.duplicados.includes('previa'));
  assert.equal(e.posts.length,0);
 });
+
+test("leerHechosCierre: solo lee la compra, sus pagos, el comprobante y el movimiento; nunca escribe", async () => {
+  const e = escenario();
+  e.op.compraId = "creada";
+  Object.assign(e.compra, { payments_total: "20,00", payments_pending: "0,00", draft: false, notes: "[wobi:abc] nota",
+    payments_detail: [{ id: "pay1", bank_id: "a1", amount: "20,00", date: e.r.fecha }] });
+  (e.movimiento as Record<string, unknown>).accounting_amount = "-19.00";
+  e.movimiento.status = "reconciled";
+  // La compra tiene comprobante: se simula con un POST previo del adaptador de prueba.
+  const request: typeof fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname.replace("/api/v2", "");
+    if (!init?.method && path === "/purchases/creada/attachments") {
+      return new Response(JSON.stringify({ items: [{ id: "adj1" }], has_more: false, cursor: null }));
+    }
+    return e.request(input, init);
+  };
+  const urls: string[] = [];
+  const conRegistro: typeof fetch = async (input, init) => { urls.push(String(input)); return request(input, init); };
+  const hechos = await new HoldedAuto(e.memoria, conRegistro).leerHechosCierre(e.op);
+  const listadoMovimientos = urls.find(u => u.includes("/bank-movements"));
+  assert.ok(listadoMovimientos, "debe consultar los movimientos de la cuenta");
+  assert.match(decodeURIComponent(listadoMovimientos!), /status=pending,reconciled,partial,forced_reconciled/,
+    "sin el filtro de estado Holded devuelve en la práctica solo los pendientes");
+  assert.equal(e.posts.length, 0);
+  assert.equal(hechos.compra?.id, "creada");
+  assert.equal(hechos.compra?.totalCentimos, 2000);
+  assert.equal(hechos.compra?.pendienteCentimos, 0);
+  assert.deepEqual(hechos.compra?.pagos, [{ bancoId: "a1", centimos: 2000, fecha: e.r.fecha }]);
+  assert.equal(hechos.compra?.notas, "[wobi:abc] nota");
+  assert.equal(hechos.adjuntos, 1);
+  assert.deepEqual(hechos.movimiento, { estado: "reconciled", importeCentimos: 2000, conciliadoCentimos: 0, contableCentimos: 1900 });
+});
+
+test("leerHechosCierre: una operación sin id de compra no inventa una: devuelve vacío sin consultar", async () => {
+  const e = escenario();
+  const hechos = await e.adapter.leerHechosCierre(e.op);
+  assert.deepEqual(hechos, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null });
+  assert.deepEqual(e.consultasGet, []);
+});

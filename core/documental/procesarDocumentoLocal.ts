@@ -1,3 +1,4 @@
+import { leerFacturaSinArchivarErrores } from "./leerFacturaSinArchivarErrores";
 import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extraerDatosFactura, type DatosFactura } from "./extractInvoiceData";
@@ -154,25 +155,9 @@ export async function procesarDocumentoLocal(
   }
 
   if (await pareceLegibleComoFactura(entrada.rutaLocal, entrada.mimeType, entrada.nombreArchivoOriginal)) {
-    // Hallazgo real de auditoría (correo con 8 adjuntos de banca móvil, 6 clasificados mal como
-    // "no es un gasto"): antes, CUALQUIER excepción real de extraerDatosFactura (un fallo transitorio
-    // de la API de Anthropic, o agotar MAX_ITERATIONS sin decisión — ver el throw explícito agregado
-    // en extractInvoiceData.ts) se tragaba en silencio y el documento caía al mismo camino
-    // ("documento genérico") que una decisión DELIBERADA del modelo de que no es un gasto —
-    // indistinguible para Carlos, sin ningún aviso de que en realidad hubo un error, no una lectura
-    // real. Un reintento cubre el caso transitorio más común; si sigue fallando, se avisa
-    // explícitamente ANTES de archivar como genérico, para que quede claro que es incertidumbre, no
-    // una clasificación real.
-    let datosFactura: Awaited<ReturnType<typeof extraerDatosFactura>> | undefined;
-    let errorLectura: unknown;
-    for (let intento = 1; intento <= 2 && !datosFactura; intento++) {
-      try {
-        datosFactura = await extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo, entrada.nombreArchivoOriginal);
-      } catch (error) {
-        errorLectura = error;
-        console.error(`[procesarDocumentoLocal] Error leyendo el documento como factura (intento ${intento}/2):`, error);
-      }
-    }
+    const datosFactura = await leerFacturaSinArchivarErrores(() =>
+      extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo, entrada.nombreArchivoOriginal)
+    );
 
     if (datosFactura?.esFacturaOGasto) {
       const resultado = await procesarGastoEntrante({
@@ -205,13 +190,7 @@ export async function procesarDocumentoLocal(
       return "gasto_pendiente_datos";
     }
 
-    if (!datosFactura && errorLectura) {
-      const mensaje = errorLectura instanceof Error ? errorLectura.message : String(errorLectura);
-      await sendTelegramMessage(
-        entrada.chatId,
-        `⚠️ No pude leer "${entrada.nombreArchivoOriginal}" para saber si es un gasto (error real leyendo el documento, tras 2 intentos: ${mensaje}) — lo archivo como documento genérico por ahora, pero esto es incertidumbre, no una clasificación real. Revísalo a mano; si es un gasto, reenvíalo.`
-      ).catch(() => {});
-    }
+
   }
 
   await manejarClasificacion({

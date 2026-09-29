@@ -4,7 +4,6 @@ import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { conMutex } from "../utils/asyncMutex";
 import type { TipoRecurrencia } from "./calendario";
 
-const CASHFLOW_SHEET_ID = process.env.CASHFLOW_SHEET_ID;
 const TAB_NAME = "_pagos_recurrentes_pendientes";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las propuestas de cashflow
 
@@ -38,10 +37,11 @@ let writeClient: sheets_v4.Sheets | null = null;
 let tabGridId: number | null = null;
 
 function assertSheetId(): string {
-  if (!CASHFLOW_SHEET_ID) {
+  const id = process.env.CASHFLOW_SHEET_ID;
+  if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
   }
-  return CASHFLOW_SHEET_ID;
+  return id;
 }
 
 function getClient(): sheets_v4.Sheets {
