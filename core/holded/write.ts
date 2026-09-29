@@ -2660,6 +2660,11 @@ export function filtrarPrecedentesViajePorNaturaleza(
   );
 }
 
+/** Categorías que son desplazamiento por su propia naturaleza (ver senalDeViaje en inferirCuentaGasto). */
+const TAGS_NATURALEZA_DESPLAZAMIENTO = new Set([
+  "gasolina", "peaje", "parking", "taxi", "tren", "avion", "alquilercoche", "barco", "hospedaje", "transporte",
+]);
+
 export async function inferirCuentaGasto(
   empresa: Empresa,
   criterios: {
@@ -2771,7 +2776,13 @@ export async function inferirCuentaGasto(
   // concreta es, por su sola FORMA, la misma señal que contextoDeViaje — sin depender del idioma ni de
   // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
   // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
-  const senalDeViaje = criterios.contextoDeViaje ||
+  //
+  // Caso real (Carlos, 2026-09-29, Station Gomerco, Footprint): un ticket de combustible con persona identificada
+  // quedó en «Otros servicios» porque el extractor no lo marcó como recibo simplificado (desglosaba el IVA) ni como
+  // contexto de viaje. La NATURALEZA del gasto ya lo dice: combustible, peaje, parking, taxi, tren, avión, coche de
+  // alquiler, barco u hospedaje son desplazamiento por sí mismos, sin depender de la forma del comprobante.
+  const naturalezaDeDesplazamiento = tagsCategoria.some((t) => TAGS_NATURALEZA_DESPLAZAMIENTO.has(t));
+  const senalDeViaje = criterios.contextoDeViaje || naturalezaDeDesplazamiento ||
     ((Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) && criterios.reciboSimplificado === true);
   const contextoEjemploViaje = senalDeViaje
     ? {
