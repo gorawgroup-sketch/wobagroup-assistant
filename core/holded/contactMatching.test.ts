@@ -78,11 +78,13 @@ test("caso real GoTo/LinkedIn: el typo real de Holded ('Unilimited') ya no deja 
   const correcto = puntuarDistintividad(objetivo, "GoTo Technologies Ireland Unilimited Company", CONTACTOS_GOTO_LINKEDIN);
   const equivocado = puntuarDistintividad(objetivo, "Linkedln Ireland Unlimited Company", CONTACTOS_GOTO_LINKEDIN);
   // Antes del fix: correcto=0, equivocado=9 (ganaba con confianza, error real de bookkeeping).
-  // Después del fix: la tolerancia a un typo hace que "Unlimited"~"Unilimited" cuente para ambos —
-  // quedan en empate, así que buscarContactoHolded no elige ninguno y pregunta (comportamiento pedido
-  // explícitamente por Carlos: "si no tienes seguridad, lo dejas sin contacto o preguntas").
-  assert.ok(correcto > 0, `el contacto correcto ya no debe puntuar 0 (obtuvo ${correcto})`);
-  assert.equal(correcto, equivocado, `deben empatar en vez de que gane el contacto sin relación (correcto=${correcto}, equivocado=${equivocado})`);
+  // Después del fix: la tolerancia a un typo hace que "Unlimited"~"Unilimited" cuente para ambos (9
+  // puntos, el largo de "unlimited") — quedan en empate exacto, así que buscarContactoHolded no elige
+  // ninguno y pregunta (comportamiento pedido explícitamente por Carlos: "si no tienes seguridad, lo
+  // dejas sin contacto o preguntas"). Valor exacto (no solo positividad/igualdad) para que una
+  // regresión que mueva ambos a otro número igual no pase la prueba en silencio.
+  assert.equal(correcto, 9, `el contacto correcto debería puntuar exactamente 9 (obtuvo ${correcto})`);
+  assert.equal(equivocado, 9, `el contacto sin relación debería puntuar exactamente 9, no más (obtuvo ${equivocado})`);
 });
 
 test("tolerancia a un typo: sin un competidor que se aproveche del typo, el contacto correcto gana con claridad", () => {
@@ -94,5 +96,27 @@ test("tolerancia a un typo: sin un competidor que se aproveche del typo, el cont
     "OpenAI Ireland Limited",
   ];
   const score = puntuarDistintividad(objetivo, "GoTo Technologies Ireland Unilimited Company", soloContactoReal);
+  // No se fija un valor exacto acá (a diferencia del caso de empate arriba): con esta lista de señuelos
+  // más chica, "Technologies"/"Company" también son distintivas por sí solas (no solo "Unlimited"), así
+  // que el número exacto depende de la composición del señuelo, no de una invariante real a proteger.
   assert.ok(score > 0, `un typo de una sola letra insertada no debe anular la única palabra distintiva (obtuvo ${score})`);
+});
+
+// Hallazgo real de la revisión adversarial del fix de GoTo/Unilimited: sin exigir corroboración por
+// prefijo, la tolerancia a un typo puede hacer ganar CON CONFIANZA a un candidato sin relación real —
+// peor que el comportamiento previo (que fallaba a "sin match"). "Marbella"/"Marsella" son dos palabras
+// reales, distintas, que por pura casualidad están a un typo de distancia; ningún otro dato de estos dos
+// nombres se parece entre sí.
+test("caso adversarial Marbella/Marsella: un choque casual de una sola palabra (sin ninguna otra relación) nunca gana solo", () => {
+  const objetivo = "Factura Marbella Distribuciones SL";
+  const candidatoSinRelacion = "Import Marsella Trading SL";
+  const score = puntuarDistintividad(objetivo, candidatoSinRelacion, [objetivo, candidatoSinRelacion]);
+  assert.equal(score, 0, `un candidato sin ninguna palabra en común salvo un typo casual no debe puntuar (obtuvo ${score})`);
+});
+
+test("caso adversarial Marbella/Marsella, con corroboración real: el mismo typo SÍ cuenta si el resto del nombre coincide", () => {
+  const objetivo = "Distribuciones Marbella Hostelería SL";
+  const candidatoConTypoRealYCorroboracion = "Distribuciones Marsella Hosteleria SL";
+  const score = puntuarDistintividad(objetivo, candidatoConTypoRealYCorroboracion, [objetivo, candidatoConTypoRealYCorroboracion]);
+  assert.ok(score > 0, `con otra palabra real corroborando (Distribuciones/Hostelería), el typo sí debe contar (obtuvo ${score})`);
 });

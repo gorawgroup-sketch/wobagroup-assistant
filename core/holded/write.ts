@@ -712,6 +712,63 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
 const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
 
 /**
+ * true si `a` y `b` difieren en, como mucho, una inserción/borrado/sustitución de un solo carácter, en
+ * CUALQUIER posición — a diferencia de un prefijo compartido (que solo tolera un SUFIJO distinto, ej.
+ * plural/singular), esto también cubre un typo insertado en medio de la palabra. Recorrido único (no una
+ * matriz de Levenshtein completa: con `maxDist` siempre 1, basta con caminar ambas cadenas en paralelo y
+ * abortar en el segundo desacuerdo) — sin asignaciones, O(largo) en vez de O(largo²).
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoTo Technologies Ireland Unilimited Company vs.
+ * Linkedln Ireland Unlimited Company, Footprint, 2026-09-29): un typo REAL ya existente en Holded
+ * ("Unilimited" en vez de "Unlimited" — una "i" de más insertada cerca del inicio) hacía que
+ * "unlimited" (el proveedor real extraído de la factura) y "unilimited" (el contacto correcto, ya
+ * existente en Holded) NUNCA coincidieran por prefijo compartido — ni el laxo (5 caracteres: "unlim"
+ * vs "unili") ni el estricto (8: "unlimite" vs "unilimit") — porque una letra insertada cerca del
+ * inicio desalinea TODO lo que viene después, aunque el resto de la palabra sea idéntico letra por
+ * letra. El contacto correcto terminaba con score 0 (su única palabra realmente distintiva quedaba
+ * invisible para el matcher, ver puntuarDistintividad) mientras un contacto real SIN ninguna relación
+ * ("Linkedln Ireland Unlimited Company") ganaba 9 a 0 solo por tener la ortografía correcta de una
+ * palabra que en el dataset real de Footprint resultó compartida por muy pocos contactos.
+ */
+function difierePorUnSoloTypo(a: string, b: string): boolean {
+  if (a === b) return true;
+  const diff = a.length - b.length;
+  if (diff < -1 || diff > 1) return false;
+  const larga = diff >= 0 ? a : b;
+  const corta = diff >= 0 ? b : a;
+  const mismoLargo = larga.length === corta.length;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < larga.length && j < corta.length) {
+    if (larga[i] === corta[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return false;
+    if (mismoLargo) {
+      i++;
+      j++;
+    } else {
+      i++; // salta un carácter de la cadena larga (la inserción/el borrado)
+    }
+  }
+  edits += larga.length - i; // cola sin recorrer de la cadena larga, si quedó alguna
+  return edits <= 1;
+}
+
+/** El matcher de prefijo compartido, sin tolerancia a typos — ver palabrasParecidasEstricto. */
+function coincidenPorPrefijoEstricto(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 6) return false;
+  const prefijo = Math.min(8, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
+/**
  * true si `objetivo` y `candidatoNombre` comparten alguna palabra (5+
  * caracteres) que sea DISTINTIVA dentro de la lista real de contactos —
  * nunca alcanza con una palabra genérica del rubro que muchos contactos no
@@ -771,15 +828,11 @@ const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
  * de largo similar.
  */
 function palabrasParecidasEstricto(a: string, b: string): boolean {
-  if (a === b) return true;
-  const minLen = Math.min(a.length, b.length);
-  if (minLen < 6) return false;
-  const prefijo = Math.min(8, minLen);
-  if (a.slice(0, prefijo) === b.slice(0, prefijo)) return true;
+  if (coincidenPorPrefijoEstricto(a, b)) return true;
   // Mismo typo-en-medio-de-palabra que palabrasParecidas (ver su comentario, caso real GoTo/Unilimited)
   // — acá también hace falta, porque puntuarDistintividad exige que el match laxo que calificó a un
-  // candidato TAMBIÉN pase este chequeo estricto antes de contarlo como distintivo (línea ~812).
-  return distanciaEdicionAcotada(a, b, 1);
+  // candidato TAMBIÉN pase este chequeo estricto antes de contarlo como distintivo.
+  return difierePorUnSoloTypo(a, b);
 }
 
 /**
@@ -806,9 +859,31 @@ export function puntuarDistintividad(objetivo: string, candidatoNombre: string, 
     .split(" ")
     .filter((p) => p.length >= 3);
 
+  // Hallazgo real de la revisión adversarial del fix de GoTo/Unilimited (Footprint, 2026-09-29): sin
+  // esta exigencia, la tolerancia a un typo (difierePorUnSoloTypo) puede hacer ganar CON CONFIANZA a un
+  // candidato sin ninguna relación real, cuando antes habría fallado a "sin match" — peor que el
+  // comportamiento previo, no solo insuficiente. Caso construido y verificado en la revisión:
+  // "Factura Marbella Distribuciones SL" contra el contacto real, sin relación, "Import Marsella Trading
+  // SL" — "Marbella"~"Marsella" (un typo) es la ÚNICA palabra que coincide entre ambos nombres; nada más
+  // del candidato se parece al objetivo. Antes de este fix, ese candidato puntuaba 8 y ganaba solo si no
+  // había competidor — exactamente el error de bookkeeping que este archivo existe para evitar. En el
+  // caso real que motivó la tolerancia a typos (GoTo/Unilimited), en cambio, "Technologies"/"Ireland"/
+  // "Company" YA coinciden por prefijo normal entre objetivo y candidato — la tolerancia a un typo solo
+  // hacía falta para UNA palabra de varias, nunca para la única evidencia de que el candidato está
+  // relacionado. La regla: un match que depende SOLO de la tolerancia a un typo (nunca de un prefijo
+  // compartido normal) solo cuenta si este candidato tiene, además, AL MENOS otra palabra que sí
+  // coincide con el objetivo por el mecanismo original (sin tolerancia a typos) — así un typo real en
+  // una palabra de un nombre por lo demás genuinamente relacionado se sigue reconociendo, pero un choque
+  // casual entre dos palabras reales sin relación (como "Marbella"/"Marsella") nunca gana solo.
+  const hayCorroboracionPorPrefijo = palabrasObjetivo.some((po) =>
+    palabrasCandidato.some((pc) => coincidenPorPrefijo(po, pc))
+  );
+
   let score = 0;
   for (const po of palabrasObjetivo) {
-    const pcCoincidente = palabrasCandidato.find((pc) => palabrasParecidas(po, pc));
+    const pcPorPrefijo = palabrasCandidato.find((pc) => coincidenPorPrefijo(po, pc));
+    const pcCoincidente =
+      pcPorPrefijo ?? (hayCorroboracionPorPrefijo ? palabrasCandidato.find((pc) => palabrasParecidas(po, pc)) : undefined);
     if (!pcCoincidente) continue;
     // El match que calificó a este candidato debe resistir el mismo estándar estricto con el que se
     // mide "distintivo" más abajo — si no, la tolerancia laxa de arriba (pensada para typos cortos)
@@ -1066,12 +1141,28 @@ export async function crearContactoHolded(
   });
 }
 
+/** El matcher de prefijo compartido, sin tolerancia a typos — ver palabrasParecidas. */
+function coincidenPorPrefijo(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  const maxLen = Math.max(a.length, b.length);
+  if (minLen < 4 || maxLen > minLen * 2) return false;
+  const prefijo = Math.min(5, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
 /**
  * Dos palabras se consideran "la misma" para efectos de nombre parecido si
  * son iguales, o si comparten un prefijo largo — cubre plural/singular
  * ("facilities"/"facility") y variantes cortas ("oceana"/"ocean") sin
  * exigir coincidencia exacta, que es justo lo que falla cuando el nombre
- * viene de una extracción de factura con OCR/lectura imprecisa.
+ * viene de una extracción de factura con OCR/lectura imprecisa. También
+ * acepta un solo typo insertado/borrado/sustituido en cualquier posición
+ * (difierePorUnSoloTypo, ver su comentario, caso real GoTo/Unilimited) —
+ * quien puntúa un match como distintivo (puntuarDistintividad) exige además
+ * que este candidato tenga OTRA palabra corroborando por prefijo normal,
+ * para que un choque casual entre dos palabras reales sin relación (ver el
+ * caso "Marbella"/"Marsella" de la revisión adversarial) nunca gane solo.
  *
  * Hallazgo real de auditoría (caso real HEMA/"Van de Valk Hotel Venio", Footprint, 2026-09-16): el
  * proveedor extraído "HEMA (Breda - Valkeniersplein)" (Valkeniersplein es el nombre de la CALLE, no
@@ -1087,51 +1178,12 @@ export async function crearContactoHolded(
  * "valk" (ratio 3,75) no. Rechazar cuando una palabra es más del doble de larga que la otra cierra
  * este patrón sin afectar ningún caso real ya cubierto por esta función.
  */
-/**
- * Distancia de edición (Levenshtein) acotada — true si `a` y `b` difieren en `maxDist`
- * inserciones/borrados/sustituciones o menos. A diferencia del prefijo compartido (que solo tolera un
- * SUFIJO distinto, ej. plural/singular), esto también cubre un typo insertado en medio de la palabra.
- *
- * Hallazgo real de auditoría (Carlos, caso real GoTo Technologies Ireland Unilimited Company vs.
- * Linkedln Ireland Unlimited Company, Footprint, 2026-09-29): un typo REAL ya existente en Holded
- * ("Unilimited" en vez de "Unlimited" — una "i" de más insertada cerca del inicio) hacía que
- * "unlimited" (el proveedor real extraído de la factura) y "unilimited" (el contacto correcto, ya
- * existente en Holded) NUNCA coincidieran por prefijo compartido — ni el laxo (5 caracteres: "unlim"
- * vs "unili") ni el estricto (8: "unlimite" vs "unilimit") — porque una letra insertada cerca del
- * inicio desalinea TODO lo que viene después, aunque el resto de la palabra sea idéntico letra por
- * letra. El contacto correcto terminaba con score 0 (su única palabra realmente distintiva quedaba
- * invisible para el matcher, ver puntuarDistintividad) mientras un contacto real SIN ninguna relación
- * ("Linkedln Ireland Unlimited Company") ganaba 9 a 0 solo por tener la ortografía correcta de una
- * palabra que en el dataset real de Footprint resultó compartida por muy pocos contactos. Verificado en
- * vivo contra los contactos reales de Footprint, antes (score 0 vs 9, match equivocado con confianza) y
- * después (score 9 vs 9, empate → buscarContactoHolded devuelve undefined y el llamador pregunta en vez
- * de adivinar, tal como pide Carlos: "si no tienes seguridad, lo dejas sin contacto o preguntas").
- */
-function distanciaEdicionAcotada(a: string, b: string, maxDist: number): boolean {
-  if (Math.abs(a.length - b.length) > maxDist) return false;
-  let anterior = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const actual = [i];
-    for (let j = 1; j <= b.length; j++) {
-      actual[j] = a[i - 1] === b[j - 1]
-        ? anterior[j - 1]
-        : 1 + Math.min(anterior[j - 1], anterior[j], actual[j - 1]);
-    }
-    anterior = actual;
-  }
-  return anterior[b.length] <= maxDist;
-}
-
 function palabrasParecidas(a: string, b: string): boolean {
-  if (a === b) return true;
-  const minLen = Math.min(a.length, b.length);
-  const maxLen = Math.max(a.length, b.length);
-  if (minLen < 4 || maxLen > minLen * 2) return false;
-  const prefijo = Math.min(5, minLen);
-  if (a.slice(0, prefijo) === b.slice(0, prefijo)) return true;
+  if (coincidenPorPrefijo(a, b)) return true;
   // Palabras razonablemente largas (>=6, para no engancharse con colisiones cortas ya cubiertas por
   // el resto de esta función) con un solo typo en cualquier posición — no solo al final.
-  return minLen >= 6 && distanciaEdicionAcotada(a, b, 1);
+  const minLen = Math.min(a.length, b.length);
+  return minLen >= 6 && difierePorUnSoloTypo(a, b);
 }
 
 /**
