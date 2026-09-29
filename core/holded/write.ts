@@ -712,6 +712,63 @@ async function obtenerTodosLosContactos(empresa: Empresa): Promise<HoldedContact
 const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
 
 /**
+ * true si `a` y `b` difieren en, como mucho, una inserción/borrado/sustitución de un solo carácter, en
+ * CUALQUIER posición — a diferencia de un prefijo compartido (que solo tolera un SUFIJO distinto, ej.
+ * plural/singular), esto también cubre un typo insertado en medio de la palabra. Recorrido único (no una
+ * matriz de Levenshtein completa: con `maxDist` siempre 1, basta con caminar ambas cadenas en paralelo y
+ * abortar en el segundo desacuerdo) — sin asignaciones, O(largo) en vez de O(largo²).
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoTo Technologies Ireland Unilimited Company vs.
+ * Linkedln Ireland Unlimited Company, Footprint, 2026-09-29): un typo REAL ya existente en Holded
+ * ("Unilimited" en vez de "Unlimited" — una "i" de más insertada cerca del inicio) hacía que
+ * "unlimited" (el proveedor real extraído de la factura) y "unilimited" (el contacto correcto, ya
+ * existente en Holded) NUNCA coincidieran por prefijo compartido — ni el laxo (5 caracteres: "unlim"
+ * vs "unili") ni el estricto (8: "unlimite" vs "unilimit") — porque una letra insertada cerca del
+ * inicio desalinea TODO lo que viene después, aunque el resto de la palabra sea idéntico letra por
+ * letra. El contacto correcto terminaba con score 0 (su única palabra realmente distintiva quedaba
+ * invisible para el matcher, ver puntuarDistintividad) mientras un contacto real SIN ninguna relación
+ * ("Linkedln Ireland Unlimited Company") ganaba 9 a 0 solo por tener la ortografía correcta de una
+ * palabra que en el dataset real de Footprint resultó compartida por muy pocos contactos.
+ */
+function difierePorUnSoloTypo(a: string, b: string): boolean {
+  if (a === b) return true;
+  const diff = a.length - b.length;
+  if (diff < -1 || diff > 1) return false;
+  const larga = diff >= 0 ? a : b;
+  const corta = diff >= 0 ? b : a;
+  const mismoLargo = larga.length === corta.length;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < larga.length && j < corta.length) {
+    if (larga[i] === corta[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    edits++;
+    if (edits > 1) return false;
+    if (mismoLargo) {
+      i++;
+      j++;
+    } else {
+      i++; // salta un carácter de la cadena larga (la inserción/el borrado)
+    }
+  }
+  edits += larga.length - i; // cola sin recorrer de la cadena larga, si quedó alguna
+  return edits <= 1;
+}
+
+/** El matcher de prefijo compartido, sin tolerancia a typos — ver palabrasParecidasEstricto. */
+function coincidenPorPrefijoEstricto(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  if (minLen < 6) return false;
+  const prefijo = Math.min(8, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
+/**
  * true si `objetivo` y `candidatoNombre` comparten alguna palabra (5+
  * caracteres) que sea DISTINTIVA dentro de la lista real de contactos —
  * nunca alcanza con una palabra genérica del rubro que muchos contactos no
@@ -771,11 +828,11 @@ const MAX_CONTACTOS_COMPARTIENDO_PALABRA = 2;
  * de largo similar.
  */
 function palabrasParecidasEstricto(a: string, b: string): boolean {
-  if (a === b) return true;
-  const minLen = Math.min(a.length, b.length);
-  if (minLen < 6) return false;
-  const prefijo = Math.min(8, minLen);
-  return a.slice(0, prefijo) === b.slice(0, prefijo);
+  if (coincidenPorPrefijoEstricto(a, b)) return true;
+  // Mismo typo-en-medio-de-palabra que palabrasParecidas (ver su comentario, caso real GoTo/Unilimited)
+  // — acá también hace falta, porque puntuarDistintividad exige que el match laxo que calificó a un
+  // candidato TAMBIÉN pase este chequeo estricto antes de contarlo como distintivo.
+  return difierePorUnSoloTypo(a, b);
 }
 
 /**
@@ -794,7 +851,7 @@ function palabrasParecidasEstricto(a: string, b: string): boolean {
  * sigue sirviendo para encontrar candidatos con typos reales cortos — pero antes de puntuar un match
  * como distintivo, se exige que ESE match puntual (no otro) también resista el estándar estricto.
  */
-function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
+export function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
   const palabrasObjetivo = normalizar(objetivo)
     .split(" ")
     .filter((p) => p.length >= 5);
@@ -802,9 +859,31 @@ function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLo
     .split(" ")
     .filter((p) => p.length >= 3);
 
+  // Hallazgo real de la revisión adversarial del fix de GoTo/Unilimited (Footprint, 2026-09-29): sin
+  // esta exigencia, la tolerancia a un typo (difierePorUnSoloTypo) puede hacer ganar CON CONFIANZA a un
+  // candidato sin ninguna relación real, cuando antes habría fallado a "sin match" — peor que el
+  // comportamiento previo, no solo insuficiente. Caso construido y verificado en la revisión:
+  // "Factura Marbella Distribuciones SL" contra el contacto real, sin relación, "Import Marsella Trading
+  // SL" — "Marbella"~"Marsella" (un typo) es la ÚNICA palabra que coincide entre ambos nombres; nada más
+  // del candidato se parece al objetivo. Antes de este fix, ese candidato puntuaba 8 y ganaba solo si no
+  // había competidor — exactamente el error de bookkeeping que este archivo existe para evitar. En el
+  // caso real que motivó la tolerancia a typos (GoTo/Unilimited), en cambio, "Technologies"/"Ireland"/
+  // "Company" YA coinciden por prefijo normal entre objetivo y candidato — la tolerancia a un typo solo
+  // hacía falta para UNA palabra de varias, nunca para la única evidencia de que el candidato está
+  // relacionado. La regla: un match que depende SOLO de la tolerancia a un typo (nunca de un prefijo
+  // compartido normal) solo cuenta si este candidato tiene, además, AL MENOS otra palabra que sí
+  // coincide con el objetivo por el mecanismo original (sin tolerancia a typos) — así un typo real en
+  // una palabra de un nombre por lo demás genuinamente relacionado se sigue reconociendo, pero un choque
+  // casual entre dos palabras reales sin relación (como "Marbella"/"Marsella") nunca gana solo.
+  const hayCorroboracionPorPrefijo = palabrasObjetivo.some((po) =>
+    palabrasCandidato.some((pc) => coincidenPorPrefijo(po, pc))
+  );
+
   let score = 0;
   for (const po of palabrasObjetivo) {
-    const pcCoincidente = palabrasCandidato.find((pc) => palabrasParecidas(po, pc));
+    const pcPorPrefijo = palabrasCandidato.find((pc) => coincidenPorPrefijo(po, pc));
+    const pcCoincidente =
+      pcPorPrefijo ?? (hayCorroboracionPorPrefijo ? palabrasCandidato.find((pc) => palabrasParecidas(po, pc)) : undefined);
     if (!pcCoincidente) continue;
     // El match que calificó a este candidato debe resistir el mismo estándar estricto con el que se
     // mide "distintivo" más abajo — si no, la tolerancia laxa de arriba (pensada para typos cortos)
@@ -1062,12 +1141,28 @@ export async function crearContactoHolded(
   });
 }
 
+/** El matcher de prefijo compartido, sin tolerancia a typos — ver palabrasParecidas. */
+function coincidenPorPrefijo(a: string, b: string): boolean {
+  if (a === b) return true;
+  const minLen = Math.min(a.length, b.length);
+  const maxLen = Math.max(a.length, b.length);
+  if (minLen < 4 || maxLen > minLen * 2) return false;
+  const prefijo = Math.min(5, minLen);
+  return a.slice(0, prefijo) === b.slice(0, prefijo);
+}
+
 /**
  * Dos palabras se consideran "la misma" para efectos de nombre parecido si
  * son iguales, o si comparten un prefijo largo — cubre plural/singular
  * ("facilities"/"facility") y variantes cortas ("oceana"/"ocean") sin
  * exigir coincidencia exacta, que es justo lo que falla cuando el nombre
- * viene de una extracción de factura con OCR/lectura imprecisa.
+ * viene de una extracción de factura con OCR/lectura imprecisa. También
+ * acepta un solo typo insertado/borrado/sustituido en cualquier posición
+ * (difierePorUnSoloTypo, ver su comentario, caso real GoTo/Unilimited) —
+ * quien puntúa un match como distintivo (puntuarDistintividad) exige además
+ * que este candidato tenga OTRA palabra corroborando por prefijo normal,
+ * para que un choque casual entre dos palabras reales sin relación (ver el
+ * caso "Marbella"/"Marsella" de la revisión adversarial) nunca gane solo.
  *
  * Hallazgo real de auditoría (caso real HEMA/"Van de Valk Hotel Venio", Footprint, 2026-09-16): el
  * proveedor extraído "HEMA (Breda - Valkeniersplein)" (Valkeniersplein es el nombre de la CALLE, no
@@ -1084,12 +1179,11 @@ export async function crearContactoHolded(
  * este patrón sin afectar ningún caso real ya cubierto por esta función.
  */
 function palabrasParecidas(a: string, b: string): boolean {
-  if (a === b) return true;
+  if (coincidenPorPrefijo(a, b)) return true;
+  // Palabras razonablemente largas (>=6, para no engancharse con colisiones cortas ya cubiertas por
+  // el resto de esta función) con un solo typo en cualquier posición — no solo al final.
   const minLen = Math.min(a.length, b.length);
-  const maxLen = Math.max(a.length, b.length);
-  if (minLen < 4 || maxLen > minLen * 2) return false;
-  const prefijo = Math.min(5, minLen);
-  return a.slice(0, prefijo) === b.slice(0, prefijo);
+  return minLen >= 6 && difierePorUnSoloTypo(a, b);
 }
 
 /**
@@ -2660,10 +2754,59 @@ export function filtrarPrecedentesViajePorNaturaleza(
   );
 }
 
-/** Categorías que son desplazamiento por su propia naturaleza (ver senalDeViaje en inferirCuentaGasto). */
+/** Categorías que son desplazamiento por su propia naturaleza (ver calcularSenalDeViaje). */
 const TAGS_NATURALEZA_DESPLAZAMIENTO = new Set([
   "gasolina", "peaje", "parking", "taxi", "tren", "avion", "alquilercoche", "barco", "hospedaje", "transporte",
 ]);
+
+/**
+ * Tier "viaje" de inferirCuentaGasto — pedido explícito de Carlos, casos reales (Simon Talloen en
+ * desplazamiento, tickets de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien
+ * de viaje debe contabilizarse como gasto de viaje/desplazamiento, sin importar qué proveedor/concepto
+ * tenga el ticket puntual. contextoDeViaje (detectado por la IA en el propio documento) ya excluye
+ * suscripciones/contratos a nombre de la empresa en su propio prompt, así que se confía sin más
+ * condición. El atajo heurístico de abajo existe para cuando la IA no pudo detectarlo en el texto (ver
+ * caso real Kruidvat/Simon Talloen, ticket en holandés) — un recibo simplificado ligado a una persona (o
+ * a un ticket de equipo, caso real D1 SAS) es, por su sola FORMA, la misma señal.
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoToWebinar/GoTo Technologies Ireland Unlimited Company,
+ * Footprint, 2026-09-29): una suscripción mensual de software (factura FORMAL a nombre de la empresa,
+ * proveedor extranjero) terminó en "Gastos de viaje" solo porque `reciboSimplificado` — pensado
+ * originalmente para "recibo/tique sin datos fiscales completos del comprador" — se extendió (ver su
+ * docstring en extractInvoiceData.ts) para valer también true en CUALQUIER factura FORMAL de un
+ * proveedor fuera de España (necesario ahí para el tratamiento de IVA por inversión del sujeto pasivo,
+ * nada que ver con si el documento es un ticket informal). `ticketDeEquipo` tampoco lo distingue: es true
+ * para prácticamente cualquier correo automático que llega a la cola desde una dirección del propio
+ * grupo, incluida una factura de suscripción dirigida a un buzón corporativo. La categoría por palabra
+ * clave (tagsCategoria, ya calculada por el llamador) identifica esto de forma confiable sin depender de
+ * ninguna de las dos señales overloaded — si ya dice "suscripcion", el atajo heurístico nunca debe poder
+ * anular esa evidencia más fuerte.
+ *
+ * Caso real (Carlos, 2026-09-29, Station Gomerco, Footprint): un ticket de combustible con persona
+ * identificada quedó en «Otros servicios» porque el extractor no lo marcó como recibo simplificado
+ * (desglosaba el IVA) ni como contexto de viaje. La NATURALEZA del gasto ya lo dice: combustible, peaje,
+ * parking, taxi, tren, avión, coche de alquiler, barco u hospedaje son desplazamiento por sí mismos, sin
+ * depender de la forma del comprobante — nunca puede coincidir con "suscripcion" (inferirTagsCategoria
+ * devuelve una sola categoría por gasto), así que no compite con el guard de arriba.
+ */
+export function calcularSenalDeViaje(
+  criterios: {
+    contextoDeViaje?: boolean;
+    personaAsociada?: string;
+    ticketDeEquipo?: boolean;
+    reciboSimplificado?: boolean;
+  },
+  tagsCategoria: string[]
+): boolean {
+  const naturalezaDeDesplazamiento = tagsCategoria.some((t) => TAGS_NATURALEZA_DESPLAZAMIENTO.has(t));
+  return Boolean(
+    criterios.contextoDeViaje ||
+      naturalezaDeDesplazamiento ||
+      (!tagsCategoria.includes("suscripcion") &&
+        (Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) &&
+        criterios.reciboSimplificado === true)
+  );
+}
 
 export async function inferirCuentaGasto(
   empresa: Empresa,
@@ -2776,14 +2919,7 @@ export async function inferirCuentaGasto(
   // concreta es, por su sola FORMA, la misma señal que contextoDeViaje — sin depender del idioma ni de
   // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
   // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
-  //
-  // Caso real (Carlos, 2026-09-29, Station Gomerco, Footprint): un ticket de combustible con persona identificada
-  // quedó en «Otros servicios» porque el extractor no lo marcó como recibo simplificado (desglosaba el IVA) ni como
-  // contexto de viaje. La NATURALEZA del gasto ya lo dice: combustible, peaje, parking, taxi, tren, avión, coche de
-  // alquiler, barco u hospedaje son desplazamiento por sí mismos, sin depender de la forma del comprobante.
-  const naturalezaDeDesplazamiento = tagsCategoria.some((t) => TAGS_NATURALEZA_DESPLAZAMIENTO.has(t));
-  const senalDeViaje = criterios.contextoDeViaje || naturalezaDeDesplazamiento ||
-    ((Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) && criterios.reciboSimplificado === true);
+  const senalDeViaje = calcularSenalDeViaje(criterios, tagsCategoria);
   const contextoEjemploViaje = senalDeViaje
     ? {
         proveedor: criterios.proveedor,
