@@ -131,6 +131,7 @@ function codigoHttp(error: unknown): number | undefined {
 
 /** Holded documenta 422 como validación. Timeouts, 408/409/425/429 y 5xx siguen siendo ambiguos. */
 export function esRechazoDefinitivoSinContacto(error: unknown): boolean {
+  if (error instanceof Error && error.name === "EscrituraHoldedNoIniciadaError") return true;
   const codigo = codigoHttp(error);
   return codigo !== undefined && codigo >= 400 && codigo < 500 && ![408, 409, 425, 429].includes(codigo);
 }

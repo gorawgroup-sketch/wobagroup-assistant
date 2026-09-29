@@ -122,8 +122,22 @@ function codigoHttp(error: unknown): number | undefined {
   return Number.isFinite(numero) ? numero : undefined;
 }
 
-/** Solo rechazos 4xx inequívocos permiten repetir. Timeouts, 408/409/425/429 y 5xx son ambiguos. */
+/**
+ * La guardia de escrituras (protegerEscrituraHolded) garantiza con este error que la petición NUNCA salió hacia
+ * Holded: falló la coordinación, el candado o una reclamación previa. Caso real (Gomerco, 2026-09-29): esa
+ * negativa se anotaba como operación «incierta» y la misma aprobación quedaba bloqueada para siempre aunque el
+ * documento estuviera intacto. Se compara por nombre para no acoplar este módulo a la capa de coordinación.
+ */
+export function esEscrituraNoIniciada(error: unknown): boolean {
+  return error instanceof Error && error.name === "EscrituraHoldedNoIniciadaError";
+}
+
+/**
+ * Solo rechazos 4xx inequívocos, o una escritura que la guardia no dejó salir, permiten repetir.
+ * Timeouts, 408/409/425/429 y 5xx son ambiguos.
+ */
 export function esRechazoDefinitivoSinCompra(error: unknown): boolean {
+  if (esEscrituraNoIniciada(error)) return true;
   const codigo = codigoHttp(error);
   return codigo !== undefined && codigo >= 400 && codigo < 500 && ![408, 409, 425, 429].includes(codigo);
 }
