@@ -775,7 +775,11 @@ function palabrasParecidasEstricto(a: string, b: string): boolean {
   const minLen = Math.min(a.length, b.length);
   if (minLen < 6) return false;
   const prefijo = Math.min(8, minLen);
-  return a.slice(0, prefijo) === b.slice(0, prefijo);
+  if (a.slice(0, prefijo) === b.slice(0, prefijo)) return true;
+  // Mismo typo-en-medio-de-palabra que palabrasParecidas (ver su comentario, caso real GoTo/Unilimited)
+  // — acá también hace falta, porque puntuarDistintividad exige que el match laxo que calificó a un
+  // candidato TAMBIÉN pase este chequeo estricto antes de contarlo como distintivo (línea ~812).
+  return distanciaEdicionAcotada(a, b, 1);
 }
 
 /**
@@ -794,7 +798,7 @@ function palabrasParecidasEstricto(a: string, b: string): boolean {
  * sigue sirviendo para encontrar candidatos con typos reales cortos — pero antes de puntuar un match
  * como distintivo, se exige que ESE match puntual (no otro) también resista el estándar estricto.
  */
-function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
+export function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
   const palabrasObjetivo = normalizar(objetivo)
     .split(" ")
     .filter((p) => p.length >= 5);
@@ -1083,13 +1087,51 @@ export async function crearContactoHolded(
  * "valk" (ratio 3,75) no. Rechazar cuando una palabra es más del doble de larga que la otra cierra
  * este patrón sin afectar ningún caso real ya cubierto por esta función.
  */
+/**
+ * Distancia de edición (Levenshtein) acotada — true si `a` y `b` difieren en `maxDist`
+ * inserciones/borrados/sustituciones o menos. A diferencia del prefijo compartido (que solo tolera un
+ * SUFIJO distinto, ej. plural/singular), esto también cubre un typo insertado en medio de la palabra.
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoTo Technologies Ireland Unilimited Company vs.
+ * Linkedln Ireland Unlimited Company, Footprint, 2026-09-29): un typo REAL ya existente en Holded
+ * ("Unilimited" en vez de "Unlimited" — una "i" de más insertada cerca del inicio) hacía que
+ * "unlimited" (el proveedor real extraído de la factura) y "unilimited" (el contacto correcto, ya
+ * existente en Holded) NUNCA coincidieran por prefijo compartido — ni el laxo (5 caracteres: "unlim"
+ * vs "unili") ni el estricto (8: "unlimite" vs "unilimit") — porque una letra insertada cerca del
+ * inicio desalinea TODO lo que viene después, aunque el resto de la palabra sea idéntico letra por
+ * letra. El contacto correcto terminaba con score 0 (su única palabra realmente distintiva quedaba
+ * invisible para el matcher, ver puntuarDistintividad) mientras un contacto real SIN ninguna relación
+ * ("Linkedln Ireland Unlimited Company") ganaba 9 a 0 solo por tener la ortografía correcta de una
+ * palabra que en el dataset real de Footprint resultó compartida por muy pocos contactos. Verificado en
+ * vivo contra los contactos reales de Footprint, antes (score 0 vs 9, match equivocado con confianza) y
+ * después (score 9 vs 9, empate → buscarContactoHolded devuelve undefined y el llamador pregunta en vez
+ * de adivinar, tal como pide Carlos: "si no tienes seguridad, lo dejas sin contacto o preguntas").
+ */
+function distanciaEdicionAcotada(a: string, b: string, maxDist: number): boolean {
+  if (Math.abs(a.length - b.length) > maxDist) return false;
+  let anterior = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const actual = [i];
+    for (let j = 1; j <= b.length; j++) {
+      actual[j] = a[i - 1] === b[j - 1]
+        ? anterior[j - 1]
+        : 1 + Math.min(anterior[j - 1], anterior[j], actual[j - 1]);
+    }
+    anterior = actual;
+  }
+  return anterior[b.length] <= maxDist;
+}
+
 function palabrasParecidas(a: string, b: string): boolean {
   if (a === b) return true;
   const minLen = Math.min(a.length, b.length);
   const maxLen = Math.max(a.length, b.length);
   if (minLen < 4 || maxLen > minLen * 2) return false;
   const prefijo = Math.min(5, minLen);
-  return a.slice(0, prefijo) === b.slice(0, prefijo);
+  if (a.slice(0, prefijo) === b.slice(0, prefijo)) return true;
+  // Palabras razonablemente largas (>=6, para no engancharse con colisiones cortas ya cubiertas por
+  // el resto de esta función) con un solo typo en cualquier posición — no solo al final.
+  return minLen >= 6 && distanciaEdicionAcotada(a, b, 1);
 }
 
 /**
@@ -2660,6 +2702,46 @@ export function filtrarPrecedentesViajePorNaturaleza(
   );
 }
 
+/**
+ * Tier "viaje" de inferirCuentaGasto — pedido explícito de Carlos, casos reales (Simon Talloen en
+ * desplazamiento, tickets de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien
+ * de viaje debe contabilizarse como gasto de viaje/desplazamiento, sin importar qué proveedor/concepto
+ * tenga el ticket puntual. contextoDeViaje (detectado por la IA en el propio documento) ya excluye
+ * suscripciones/contratos a nombre de la empresa en su propio prompt, así que se confía sin más
+ * condición. El atajo heurístico de abajo existe para cuando la IA no pudo detectarlo en el texto (ver
+ * caso real Kruidvat/Simon Talloen, ticket en holandés) — un recibo simplificado ligado a una persona (o
+ * a un ticket de equipo, caso real D1 SAS) es, por su sola FORMA, la misma señal.
+ *
+ * Hallazgo real de auditoría (Carlos, caso real GoToWebinar/GoTo Technologies Ireland Unlimited Company,
+ * Footprint, 2026-09-29): una suscripción mensual de software (factura FORMAL a nombre de la empresa,
+ * proveedor extranjero) terminó en "Gastos de viaje" solo porque `reciboSimplificado` — pensado
+ * originalmente para "recibo/tique sin datos fiscales completos del comprador" — se extendió (ver su
+ * docstring en extractInvoiceData.ts) para valer también true en CUALQUIER factura FORMAL de un
+ * proveedor fuera de España (necesario ahí para el tratamiento de IVA por inversión del sujeto pasivo,
+ * nada que ver con si el documento es un ticket informal). `ticketDeEquipo` tampoco lo distingue: es true
+ * para prácticamente cualquier correo automático que llega a la cola desde una dirección del propio
+ * grupo, incluida una factura de suscripción dirigida a un buzón corporativo. La categoría por palabra
+ * clave (tagsCategoria, ya calculada por el llamador) identifica esto de forma confiable sin depender de
+ * ninguna de las dos señales overloaded — si ya dice "suscripcion", el atajo heurístico nunca debe poder
+ * anular esa evidencia más fuerte.
+ */
+export function calcularSenalDeViaje(
+  criterios: {
+    contextoDeViaje?: boolean;
+    personaAsociada?: string;
+    ticketDeEquipo?: boolean;
+    reciboSimplificado?: boolean;
+  },
+  tagsCategoria: string[]
+): boolean {
+  return Boolean(
+    criterios.contextoDeViaje ||
+      (!tagsCategoria.includes("suscripcion") &&
+        (Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) &&
+        criterios.reciboSimplificado === true)
+  );
+}
+
 export async function inferirCuentaGasto(
   empresa: Empresa,
   criterios: {
@@ -2771,8 +2853,7 @@ export async function inferirCuentaGasto(
   // concreta es, por su sola FORMA, la misma señal que contextoDeViaje — sin depender del idioma ni de
   // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
   // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
-  const senalDeViaje = criterios.contextoDeViaje ||
-    ((Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) && criterios.reciboSimplificado === true);
+  const senalDeViaje = calcularSenalDeViaje(criterios, tagsCategoria);
   const contextoEjemploViaje = senalDeViaje
     ? {
         proveedor: criterios.proveedor,
