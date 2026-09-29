@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { avisarEsperaInteractiva, hayContextoInteractivo } from "../../telegram/contextoInteractivo";
 import { VERSION_ANALISIS, VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto, type OperacionAuto, type PlanAuto, type StoreAuto } from "./model";
 
 // El esquema se aplica explícitamente con el script de preparación; nunca durante una escritura.
@@ -68,10 +69,24 @@ const contexto = new AsyncLocalStorage<{ locks: Set<string>; operacion?: string 
 
 /** Bloqueo de sesión distribuido. El intento externo se persiste antes del POST, de modo que
  * perder la conexión del lock no autoriza repetir una escritura cuyo resultado es incierto. */
+/**
+ * El candado estuvo ocupado más de lo que una acción del operador puede esperar. La tarea protegida por ESTE
+ * candado no llegó a empezar; la acción completa pudo haber hecho pasos anteriores.
+ */
+export class BuzonOcupadoError extends Error {
+  readonly code = "55P03";
+  constructor() {
+    super("El buzón de correo siguió ocupado por otra revisión y no se pudo tomar el candado.");
+    this.name = "BuzonOcupadoError";
+  }
+}
+/** Cuánto espera una acción del operador a que el buzón quede libre (una revisión completa dura minutos). */
+export const ESPERA_INTERACTIVA_BUZON_MS = 5 * 60_000;
+
 export async function conBloqueoAuto<T>(
   clave: string,
   tarea: () => Promise<T>,
-  opciones: { lockTimeoutMs?: number } = {}
+  opciones: { lockTimeoutMs?: number; alEsperar?: () => Promise<void> } = {}
 ): Promise<T> {
   const actual = contexto.getStore();
   if (actual?.locks.has(clave)) return tarea();
@@ -81,8 +96,23 @@ export async function conBloqueoAuto<T>(
   client.on("error", onError);
   try {
     const lockTimeoutMs = Math.max(1_000, Math.min(10 * 60_000, opciones.lockTimeoutMs ?? 30_000));
-    await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`]);
-    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
+    // Con `alEsperar` se intenta primero sin bloquear: si el candado está libre no hay nada que avisar; si
+    // está ocupado, el operador se entera ANTES de quedarse esperando, no tras un error.
+    let tomado = false;
+    if (opciones.alEsperar) {
+      const intento = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok", [clave]);
+      tomado = intento.rows[0]?.ok === true;
+      if (!tomado) await opciones.alEsperar();
+    }
+    if (!tomado) {
+      await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`]);
+      try {
+        await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
+      } catch (error) {
+        if (opciones.alEsperar && (error as { code?: unknown })?.code === "55P03") throw new BuzonOcupadoError();
+        throw error;
+      }
+    }
     const resultado = await contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea);
     if (roto) throw new Error("Se perdió el bloqueo distribuido; comprobar el registro antes de continuar.");
     return resultado;
@@ -189,6 +219,12 @@ export async function conCoordinadorCorreo<T>(
     if (process.env.WOBI_MAIL_AUTO_MODE && process.env.WOBI_MAIL_AUTO_MODE !== "off") throw new Error("Configura PostgreSQL antes de activar la revisión automática.");
     const { conMutex } = await import("../../utils/asyncMutex");
     return conMutex(clave, () => contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea));
+  }
+  // Una acción del operador (botón o mensaje) que no pidió una espera concreta no falla a los 30 s porque
+  // haya una revisión en marcha: avisa de que queda en espera y se aplica sola cuando el buzón se libera.
+  // Los llamadores con espera explícita (revisión manual, vigilante de 1 s, cron) conservan la suya.
+  if (opciones.lockTimeoutMs === undefined && hayContextoInteractivo()) {
+    return conBloqueoAuto(clave, tarea, { lockTimeoutMs: ESPERA_INTERACTIVA_BUZON_MS, alEsperar: avisarEsperaInteractiva });
   }
   return conBloqueoAuto(clave, tarea, opciones);
 }
