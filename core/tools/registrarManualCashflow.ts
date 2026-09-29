@@ -3,6 +3,7 @@ import {
   crearPendienteRegistroManualCashflow,
   actualizarMessageIdRegistroManualCashflow,
 } from "../google/pendienteRegistroManualCashflowStore";
+import { botonesRegistroManualCashflow } from "../google/registroManualCashflowDestino";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import type { ToolDefinition } from "./types";
 
@@ -115,7 +116,7 @@ export const registrarManualCashflowTool: ToolDefinition = {
 
     const texto =
       `🆕 **Propuesta de registro nuevo en cashflow** — ${resumen}${notaEmpresa}\n\n` +
-      `Esto crea una fila NUEVA — no toca ninguna fila existente.`;
+      `Esto crea una fila NUEVA — no toca ninguna fila existente. Si va en otra área, elígela con su botón.`;
 
     const pendiente = await crearPendienteRegistroManualCashflow({
       chatId,
@@ -130,12 +131,11 @@ export const registrarManualCashflowTool: ToolDefinition = {
       resumen,
     });
 
-    const messageId = await sendTelegramMessageWithButtons(chatId, texto, [
-      [
-        { text: "✅ Confirmar registro", callback_data: `regmanualcf_confirmar:${pendiente.id}` },
-        { text: "❌ Cancelar", callback_data: `regmanualcf_cancelar:${pendiente.id}` },
-      ],
-    ]);
+    const messageId = await sendTelegramMessageWithButtons(
+      chatId,
+      texto,
+      botonesRegistroManualCashflow(pendiente.id, bloque, Boolean(semana))
+    );
     await actualizarMessageIdRegistroManualCashflow(pendiente.id, messageId);
 
     return "Propuesta de registro mostrada por Telegram con botones — no se escribió nada todavía, falta la aprobación.";
