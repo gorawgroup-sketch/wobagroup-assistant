@@ -299,4 +299,19 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] vigilarProcesamientoAtascado programado: cada 2 minutos (${TIMEZONE})`);
+
+  // Caso real (Carlos, 2026-09-29): siete preguntas «¿conciliar?» seguían abiertas con el gasto ya conciliado.
+  // Importación diferida: el manejador de gastos arrastra medio sistema y no debe cargarse al programar.
+  cron.schedule(
+    "7,37 * * * *",
+    () => {
+      ejecutarSinSolapamiento("cerrarPreguntasConciliacionResueltas", async () => {
+        const { cerrarPreguntasConciliacionResueltas } = await import("../gastos/cerrarPreguntasConciliacionResueltas");
+        const resumen = await cerrarPreguntasConciliacionResueltas();
+        console.log(`[preguntas-huerfanas] ${JSON.stringify({ ...resumen, cerradas: resumen.cerradas.length })}`);
+      });
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] cerrarPreguntasConciliacionResueltas programado: cada 30 minutos (${TIMEZONE})`);
 }
