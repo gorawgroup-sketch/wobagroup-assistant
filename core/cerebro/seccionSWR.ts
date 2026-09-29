@@ -1,3 +1,4 @@
+import { conPrioridadSheets } from "../google/limitadorSheets";
 /**
  * Caché "servir lo último y refrescar detrás" (stale-while-revalidate) para las secciones del panel /cerebro.
  *
@@ -157,7 +158,8 @@ export class SeccionSWR<T> {
       const porInvalidacion = this.provocadaPorInvalidacion;
       this.provocadaPorInvalidacion = false;
       try {
-        const datos = await this.cargarConTimeout();
+        // Los refrescos de Cerebro son trabajo de fondo: ceden cuota de Sheets al chat y a la revisión de correo.
+        const datos = await conPrioridadSheets("fondo", () => this.cargarConTimeout());
         this.entrada = { datos, obtenidoEn: this.ahora() };
         this.versionCargada = versionAlEmpezar;
         this.ultimoFalloEn = 0;
