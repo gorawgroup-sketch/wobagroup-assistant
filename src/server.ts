@@ -85,6 +85,7 @@ import {
   vigilarReanudacionesPendientes,
 } from "../core/jobs/revisionCorreoManual";
 import { solicitarCierre } from "../core/utils/cierreServicio";
+import { entregarRespuestaChat } from "../core/telegram/entregarRespuestaChat";
 import {
   handleCancelarDescartarTodoPendienteCallback,
   handleConfirmarDescartarTodoPendienteCallback,
@@ -2094,7 +2095,8 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   const mensajeTrabajandoId = await avisarTrabajando(incoming.chatId);
   try {
     const reply = await askClaude(incoming.text, incoming.chatId, incoming.fromNombre);
-    await entregarRespuestaTrasTrabajar(incoming.chatId, mensajeTrabajandoId, reply);
+    // Nunca se entrega una respuesta que imite una propuesta o un aviso automático (ver entregarRespuestaChat.ts).
+    await entregarRespuestaChat(incoming.chatId, mensajeTrabajandoId, reply);
   } catch (error) {
     console.error("Error procesando el mensaje de Telegram:", error);
     // Hallazgo real de auditoría (caso real, Carlos, 2026-09-09): con el saldo de Anthropic agotado,
