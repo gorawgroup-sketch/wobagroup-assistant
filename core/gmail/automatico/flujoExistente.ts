@@ -21,7 +21,8 @@ async function clasificar(recibo: ReciboAuto, excluirCompraId?: string) {
     recibo.proveedor,
     recibo.persona,
     sugerencia.tags,
-    recibo.contextoClasificacion
+    recibo.contextoClasificacion,
+    recibo.viaje
   );
   return { cuentaId: sugerencia.accountId, nombreCuenta: sugerencia.accountId, tags,
     evidencia: `${sugerencia.aprendidoDe}: ${sugerencia.ejemplo}` };

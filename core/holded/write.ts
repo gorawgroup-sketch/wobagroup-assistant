@@ -2109,7 +2109,8 @@ export function combinarTagsGastoAprendidos(
   proveedor: string,
   personaAsociada: string | undefined,
   tagsAprendidos: string[] = [],
-  contextoPersona = ""
+  contextoPersona = "",
+  contextoDeViaje = false
 ): string[] {
   const tagsCategoriaActual = inferirTagsCategoria(concepto, proveedor);
   const categoriasConocidas = CATEGORIAS_GASTO_CONOCIDAS;
@@ -2125,7 +2126,7 @@ export function combinarTagsGastoAprendidos(
   const patronesCategoriaValidos = [
     ["suscripcion"], ["alimentacion"], ["transporte"], ["transporte", "taxi"],
     ["transporte", "tren"], ["transporte", "avion"], ["transporte", "alquilercoche"],
-    ["gasolina"], ["transporte", "peaje"], ["transporte", "barco"], ["parking"], ["hospedaje"],
+    ["gasolina"], ["transporte", "peaje"], ["transporte", "barco"], ["parking"], ["hospedaje"], ["viaje"],
   ];
   const firmaCategoria = (tags: string[]) => [...tags].sort().join("|");
   const firmaAprendida = firmaCategoria(categoriasAprendidas);
@@ -2135,7 +2136,17 @@ export function combinarTagsGastoAprendidos(
   // Si el comprobante actual no contiene una palabra categórica, se conserva
   // una categoría histórica solo cuando forma una combinación ya conocida e
   // inequívoca. Una mezcla contaminada (p. ej. alimentación + hospedaje) no se copia.
-  const tagsCategoria = tagsCategoriaActual.length ? tagsCategoriaActual : categoriaAprendidaInequivoca;
+  // Hallazgo real (Footprint, 28 sep: horno microondas comprado por alguien montando la oficina de
+  // Medellín — cuenta correctamente inferida como gasto de viaje/desplazamiento por el tier "viaje" de
+  // inferirCuentaGasto, pero SIN NINGÚN tag: "no sabemos de qué se trata, ni de quién es el gasto").
+  // inferirTagsCategoria solo reconoce los tipos de gasto de viaje clásicos (transporte/alimentación/
+  // hospedaje/parking/gasolina/suscripción) — un gasto puntual de otra naturaleza ocurrido DURANTE un
+  // desplazamiento (montar una oficina, comprar equipamiento) nunca encaja ahí. "viaje" ya es un
+  // concepto propio de este sistema (ver CuentaSugerida.aprendidoDe): se usa como categoría general de
+  // último recurso, nunca inventando una palabra clave de producto nueva por cada caso.
+  const tagsCategoria = tagsCategoriaActual.length ? tagsCategoriaActual
+    : categoriaAprendidaInequivoca.length ? categoriaAprendidaInequivoca
+    : contextoDeViaje ? ["viaje"] : [];
 
   // Los precedentes reales contienen también etiquetas de región, proyecto y otras
   // clasificaciones (p. ej. "latam"). Que una etiqueta no sea una categoría de gasto
@@ -2182,7 +2193,7 @@ export function combinarTagsGastoAprendidos(
 
 const CATEGORIAS_GASTO_CONOCIDAS = new Set([
   "suscripcion", "alimentacion", "transporte", "taxi", "tren", "avion", "alquilercoche",
-  "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche",
+  "gasolina", "peaje", "barco", "parking", "hospedaje", "alojamiento", "coche", "viaje",
 ]);
 
 /** Indica si una clasificación conserva al menos una categoría funcional
