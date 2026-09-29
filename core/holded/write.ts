@@ -14,6 +14,7 @@ import { obtenerPlanContable } from "./accounting";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
+import { comparteNaturaleza, palabrasNaturalezaGasto } from "./naturalezaConcepto";
 import { montosCercanos } from "../utils/montos";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
@@ -2656,6 +2657,12 @@ export async function inferirCuentaGasto(
     personaAsociada?: string;
     contextoDeViaje?: boolean;
     reciboSimplificado?: boolean;
+    /**
+     * El ticket llegó por la cola de correo desde el buzón corporativo de alguien del grupo (hecho comprobable,
+     * sin IA). Junto a `reciboSimplificado` equivale a la señal «persona + ticket» aunque el extractor no haya
+     * identificado a la persona (caso real 2026-09-28, D1 SAS).
+     */
+    ticketDeEquipo?: boolean;
     /** Omite la compra que se está reparando para que un dato erróneo no se use como aprendizaje propio. */
     excluirCompraId?: string;
   }
@@ -2753,7 +2760,8 @@ export async function inferirCuentaGasto(
   // concreta es, por su sola FORMA, la misma señal que contextoDeViaje — sin depender del idioma ni de
   // que el extractor "entienda" el texto. Nunca inventa una cuenta nueva: sigue exigiendo la MISMA
   // evidencia agregada real (TAGS_VIAJE_REFERENCIA, MIN_EVIDENCIA_VIAJE) que el resto de este tier.
-  const senalDeViaje = criterios.contextoDeViaje || (Boolean(criterios.personaAsociada) && criterios.reciboSimplificado === true);
+  const senalDeViaje = criterios.contextoDeViaje ||
+    ((Boolean(criterios.personaAsociada) || criterios.ticketDeEquipo === true) && criterios.reciboSimplificado === true);
   const contextoEjemploViaje = senalDeViaje
     ? {
         proveedor: criterios.proveedor,
@@ -2862,14 +2870,16 @@ export async function inferirCuentaGasto(
   // porque compartían su nombre, no la naturaleza del gasto. El nombre es señal fuerte para el TAG de
   // persona (ver inferirTagsCategoria/tagsPersona en procesarGastoEntrante.ts) pero nunca debe decidir
   // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
-  const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
-  const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
+  // Caso real (2026-09-28, D1 SAS → «Commission»): una sola palabra genérica («america», del nombre de la
+  // propia empresa añadido al concepto) bastaba para declarar comparable una línea de comisiones de venta.
+  // Ver core/holded/naturalezaConcepto.ts: solo cuentan las palabras que describen el gasto y hacen falta dos.
+  const palabrasConcepto = palabrasNaturalezaGasto(criterios.concepto, {
+    proveedor: criterios.proveedor,
+    personaAsociada: criterios.personaAsociada,
+  });
 
   if (palabrasConcepto.length > 0) {
-    const porConcepto = lineas.filter((l) => {
-      const texto = normalizar(`${l.descripcion} ${l.lineName}`);
-      return palabrasConcepto.some((p) => texto.includes(p));
-    });
+    const porConcepto = lineas.filter((l) => comparteNaturaleza(`${l.descripcion} ${l.lineName}`, palabrasConcepto));
 
     // Hallazgo real de auditoría (caso Uber Braga/Portugal, WOBA, 2026-09-08): "viaje" es una palabra
     // ≥5 caracteres genuinamente relacionada con el gasto, no un relleno como "comprobante"/"correo"

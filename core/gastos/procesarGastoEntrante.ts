@@ -2,6 +2,7 @@ import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqu
 import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { sendTelegramMessageWithButtons, sendTelegramMessage } from "../telegram/client";
+import { esRemitenteDelGrupo } from "./remitenteDelGrupo";
 import {
   verificarDuplicadoGastoEstricto,
   buscarMovimientoSimilar,
@@ -758,6 +759,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           personaAsociada: datos.personaAsociada,
           contextoDeViaje: datos.contextoDeViaje,
           reciboSimplificado: datos.reciboSimplificado,
+          ticketDeEquipo: entrada.deColaCorreo === true && esRemitenteDelGrupo(entrada.correoOrigen?.de),
         }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;
