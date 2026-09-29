@@ -58,3 +58,57 @@ test("un fallo de red se reporta como DescargaFacturaEnlazadaError, no como una 
     DescargaFacturaEnlazadaError
   );
 });
+
+// Hallazgo real de la revisión adversarial del PR #247: un 302 desde un dominio público hacia un host
+// interno pasaba el chequeo del enlace original ("https" + termina en ".pdf") y llegaba igual.
+test("nunca sigue una redirección — la pide como 'manual' y rechaza cualquier 3xx", async () => {
+  let redirectPedido: string | undefined;
+  await assert.rejects(
+    conFetch(
+      async (_url, init) => {
+        redirectPedido = (init as RequestInit)?.redirect;
+        return new Response(null, { status: 302, headers: { location: "https://interno.ejemplo/secreto.pdf" } });
+      },
+      () => descargarFacturaEnlazada("https://publico.ejemplo/factura.pdf")
+    ),
+    /redirige/
+  );
+  assert.equal(redirectPedido, "manual");
+});
+
+test("rechaza un 'opaqueredirect' (fetch real con redirect:manual lo reporta así) sin seguirlo", async () => {
+  // El fetch real de Node/undici, con redirect:"manual", devuelve un objeto Response cuyo `type` es
+  // "opaqueredirect" y `status` es 0 — un Response real no admite status:0 en su constructor, así que
+  // se simula solo la forma que el código realmente lee (`type`/`status`/`ok`), no una Response real.
+  const respuestaOpaca = { type: "opaqueredirect", status: 0, ok: false } as unknown as Response;
+  await assert.rejects(
+    conFetch(
+      async () => respuestaOpaca,
+      () => descargarFacturaEnlazada("https://publico.ejemplo/factura.pdf")
+    ),
+    /redirige/
+  );
+});
+
+test("rechaza un host interno o una IP literal ANTES de intentar cualquier descarga", async () => {
+  let seLlamoAFetch = false;
+  const fetchQueNuncaDeberiaLlamarse: typeof fetch = async () => { seLlamoAFetch = true; return new Response(pdfReal); };
+  for (const url of [
+    "https://169.254.169.254/latest/meta-data/factura.pdf",
+    "https://localhost/factura.pdf",
+    "https://servicio.internal/factura.pdf",
+    "https://backend.local/factura.pdf",
+    "https://[::1]/factura.pdf",
+  ]) {
+    await assert.rejects(conFetch(fetchQueNuncaDeberiaLlamarse, () => descargarFacturaEnlazada(url)), DescargaFacturaEnlazadaError, url);
+  }
+  assert.equal(seLlamoAFetch, false, "ningún host interno debe llegar a disparar la petición real");
+});
+
+test("un dominio público normal sí se descarga sin problema", async () => {
+  const bytes = await conFetch(
+    async () => new Response(pdfReal, { status: 200 }),
+    () => descargarFacturaEnlazada("https://queenhomeapartmentssrls.italianway.house/orders/x/invoice/1.pdf")
+  );
+  assert.equal(bytes.length, pdfReal.length);
+});

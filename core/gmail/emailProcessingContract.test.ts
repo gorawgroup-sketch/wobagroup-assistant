@@ -99,3 +99,24 @@ test("«Reprocesar este correo» está cableado: ruta, protección de superadmin
   assert.ok(pendientesIdx >= 0 && pendientesIdx < manejador.indexOf("reencolarActivoParaReintento("));
   assert.match(manejador, /hayActividadCallbackReciente\(chatId\)/);
 });
+
+test("las facturas enlazadas en el cuerpo solo se verifican en la rama SIN adjuntos reales, nunca bloquean el correo, y solo reemplazan el gasto cuando se verificó", async () => {
+  const fuente = await readFile(rutaJob, "utf8");
+  assert.match(fuente, /import \{ verificarFacturasEnlazadasEnCuerpo \} from "\.\.\/gmail\/facturasEnlazadasEnCuerpo";/);
+  const inicioSinAdjuntos = fuente.indexOf("if (gastoDetectado?.esFacturaOGasto) {");
+  const inicioConAdjuntos = fuente.indexOf("if (correo.adjuntos.length > 0) {");
+  assert.ok(inicioSinAdjuntos > 0 && inicioConAdjuntos > 0 && inicioSinAdjuntos > inicioConAdjuntos,
+    "la verificación debe vivir en la rama posterior (sin adjuntos), nunca en la rama con adjuntos reales");
+  const bloque = fuente.slice(inicioSinAdjuntos, fuente.indexOf("const bytes = await generarComprobantePDF"));
+  assert.ok(bloque.indexOf("verificarFacturasEnlazadasEnCuerpo(") >= 0);
+  // Un fallo de la verificación (enlace caído, IA no disponible…) nunca debe tumbar el procesamiento del correo:
+  // tiene su propio .catch() que cae a "no verificado", nunca deja que el error se propague sin capturar.
+  const llamada = bloque.slice(bloque.indexOf("verificarFacturasEnlazadasEnCuerpo("));
+  const hastaElCatch = llamada.slice(0, llamada.indexOf(".catch("));
+  assert.doesNotMatch(hastaElCatch, /;\s*$/m, "la llamada y su .catch() deben ser una sola expresión encadenada");
+  assert.match(llamada.slice(0, 400), /\.catch\(\(error\)/);
+  // gastoDetectado solo se reemplaza dentro de la rama verificado:true — nunca incondicionalmente.
+  const asignacion = bloque.indexOf("gastoDetectado = verificacionEnlazadas.datosCombinados");
+  const guardaVerificado = bloque.lastIndexOf("if (verificacionEnlazadas.verificado)", asignacion);
+  assert.ok(asignacion > 0 && guardaVerificado > 0 && asignacion - guardaVerificado < 120);
+});
