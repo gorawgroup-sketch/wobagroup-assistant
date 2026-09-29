@@ -23,6 +23,7 @@ import {
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
+import { verificarFacturasEnlazadasEnCuerpo } from "../gmail/facturasEnlazadasEnCuerpo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
 import { listarContactosAutorespuesta } from "../gmail/autorespuestaContactoStore";
@@ -1106,6 +1107,24 @@ async function procesarCorreoLocalizado(
       // No ocultar errores de Gmail: si el correo sí tenía diseño y no se
       // logra recuperarlo, un PDF de texto no es un comprobante fiel.
       const htmlOriginal = await obtenerHtmlVisualCorreo(correo.id);
+
+      // Caso real (Footprint, Queen Home Apartments — Venecia, 29 sep 2026): un correo reenviado sin
+      // adjuntos reales traía 3 facturas como enlaces .pdf en el cuerpo, pidiendo explícitamente
+      // sumarlas contra el total ya mencionado. Solo se reemplaza gastoDetectado cuando la suma de
+      // ≥2 facturas leídas de verdad cuadra exacta con el importe ya detectado del texto — si algo no
+      // cuadra o un enlace falla, sigue exactamente como antes (un único gasto simplificado).
+      const verificacionEnlazadas = await verificarFacturasEnlazadasEnCuerpo(
+        htmlOriginal, gastoDetectado, `De: ${correo.de}. Asunto: ${correo.asunto}. ${cuerpoCompleto}`
+      ).catch((error): { verificado: false; leidas: []; motivo?: string } => {
+        console.error(`[revisarCorreoNuevo] Error verificando facturas enlazadas en ${correo.id} (no crítico, sigue con el gasto simple):`, error);
+        return { verificado: false, leidas: [], motivo: undefined };
+      });
+      if (verificacionEnlazadas.verificado) {
+        gastoDetectado = verificacionEnlazadas.datosCombinados;
+      } else if (verificacionEnlazadas.motivo) {
+        console.log(`[revisarCorreoNuevo] Facturas enlazadas en ${correo.id} no verificadas: ${verificacionEnlazadas.motivo}`);
+      }
+
       const bytes = await generarComprobantePDF(
         { de: correo.de, asunto: correo.asunto, fecha: correo.fecha, cuerpoCompleto, htmlOriginal },
         gastoDetectado
