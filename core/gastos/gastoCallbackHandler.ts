@@ -61,7 +61,7 @@ import {
 } from "./pendienteAccionGastoStore";
 import { guardarPendienteSeleccionGasto, type PendienteSeleccionGasto } from "./pendienteSeleccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
-import { registrarAliasProveedor } from "./proveedorAliasSheet";
+import { debeRecordarProveedorAprobado, registrarAliasProveedor } from "./proveedorAliasSheet";
 import { registrarAsignacionCuenta } from "../holded/asignacionCuentaLogSheet";
 import { marcarGastoDesdeCorreoCompletado, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
 import {
@@ -3211,6 +3211,7 @@ async function crearGastoYReportar(
   // corre en paralelo (nunca puede rechazar, cada promesa ya se atrapa a sí
   // misma) — el tiempo total pasa de la SUMA de las 3 escrituras a Sheets al
   // MÁXIMO de las 3.
+  const recordarProveedorAprobado = !contactoForzado && debeRecordarProveedorAprobado(propuesta.proveedor, contacto.name);
   await Promise.all([
     registrarClasificacionAprendida(propuesta.proveedor, empresaFinal, conceptoFinal || propuesta.concepto).catch(
       (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
@@ -3250,7 +3251,12 @@ async function crearGastoYReportar(
           contactoForzado.name,
           propuesta.moneda
         ).catch((error) => console.error("[gastoCallbackHandler] No se pudo guardar el alias de proveedor (no crítico):", error))
-      : Promise.resolve(),
+      : recordarProveedorAprobado
+        // El operador aprobó con botón un gasto cuyo contacto no se llama igual que el proveedor leído: esa aprobación
+        // es la confirmación que la revisión automática pedía una y otra vez (ver debeRecordarProveedorAprobado).
+        ? registrarAliasProveedor(empresaFinal, propuesta.proveedor, contacto.id, contacto.name ?? "", propuesta.moneda)
+            .catch((error) => console.error("[gastoCallbackHandler] No se pudo recordar el proveedor aprobado (no crítico):", error))
+        : Promise.resolve(),
     cuentaIdFinal
       ? registrarAsignacionCuenta({ gastoId: gasto.id, empresa: empresaFinal, proveedor: propuesta.proveedor, cuentaIdAsignada: cuentaIdFinal }).catch(
           (error) => console.error("[gastoCallbackHandler] No se pudo registrar la asignación de cuenta (no crítico):", error)
@@ -3276,6 +3282,10 @@ async function crearGastoYReportar(
         `futuros), no solo en este. En su lugar, crea un contacto NUEVO y separado con el nombre real del ` +
         `proveedor en Holded, y avísame por chat para reasignar SOLO este gasto a ese contacto nuevo.`
       : "";
+  const notaProveedorRecordado = recordarProveedorAprobado
+    ? `\n\n📇 Recordaré que «${propuesta.proveedor}» es el contacto «${nombreContacto}» para no volver a preguntarlo en la ` +
+      `revisión automática. Si no es el correcto, dímelo («el proveedor ${propuesta.proveedor} es …») y lo cambio.`
+    : "";
   const baseMensaje =
     `✅ Gasto creado en Holded (id ${gasto.id}, contacto ${nombreContacto}, como borrador)` +
     (notaComprobante ? "." : " y comprobante adjuntado.") +
@@ -3285,6 +3295,7 @@ async function crearGastoYReportar(
       : "") +
     notaComprobante +
     notaPlaceholder +
+    notaProveedorRecordado +
     notaNumeroDocumento;
 
   if (!comprobanteConfirmado) {
