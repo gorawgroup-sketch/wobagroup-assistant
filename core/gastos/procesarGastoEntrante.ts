@@ -728,12 +728,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         propuestaYaPendiente.correoOrigen?.mensajeIdGmail === entrada.correoOrigen.mensajeIdGmail)
     );
     if (mismaIdentidadDeCola) {
-      await sendTelegramMessage(
-        chatId,
-        `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta visible y pendiente para este mismo correo ` +
-          `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +
-          `No envié otra; resuelve la propuesta existente.${notaNumeroDocumento}`
-      );
+      // Caso real (Carlos, 2026-09-30): «resuelve la propuesta existente» dejaba el chat sin botones, porque esa
+      // propuesta estaba muchos mensajes más arriba (correo de 5 adjuntos). La decisión pendiente va siempre al
+      // final del chat, con sus botones; el aviso explica por qué no se propone otra.
+      const encabezado =
+        `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta pendiente para este mismo correo ` +
+        `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +
+        `No creé otra: te la reenvío aquí para que la resuelvas.${notaNumeroDocumento}`;
+      try {
+        await reenviarPropuestaGasto(propuestaYaPendiente, encabezado);
+      } catch (error) {
+        console.error("[procesarGastoEntrante] No se pudo reenviar la propuesta pendiente existente:", error);
+        await sendTelegramMessage(chatId, `${encabezado}\n\n⚠️ No pude reenviarla con botones; escríbeme «reenvía los botones de ${propuestaYaPendiente.proveedor}».`);
+      }
       return "propuesta_pendiente_existente";
     }
 
