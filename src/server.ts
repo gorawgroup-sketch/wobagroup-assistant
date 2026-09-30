@@ -166,6 +166,8 @@ import {
 } from "../core/cerebro/webChatCoordinator";
 import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { crearRouterVoz } from "../core/cerebro/voiceRouter";
+import { prepararEntradaVoz } from "../core/telegram/voiceInput";
+import { ErrorNotaVoz } from "../core/ai/transcribeAudio";
 import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
 import { listarAccesosMaestroOtorgados } from "../core/cerebro/accesoMaestroAuditSheet";
 import {
@@ -2080,6 +2082,27 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   if (update.callback_query) {
     await despacharCallbackQuery(update.callback_query);
     return;
+  }
+
+  // Pedido de Carlos (2026-09-30): poder dar órdenes hablando. La nota se transcribe y sigue por el MISMO flujo que
+  // un mensaje escrito (mismo remitente ya autorizado, mismas aprobaciones con botón). Si algo falla, no se ejecuta nada.
+  if (update.message?.voice) {
+    const chatId = update.message.chat.id;
+    const detenerIndicador = iniciarIndicadorEscribiendo(chatId);
+    try {
+      update = await prepararEntradaVoz(update);
+      // Texto visible para que el usuario vea qué se entendió (nombres e importes pueden transcribirse mal).
+      const texto = update.message!.text!;
+      for (let offset = 0; offset < texto.length; offset += 3500) {
+        await sendTelegramMessage(chatId, `${offset === 0 ? "🎙️ Entendí:" : "🎙️ Continuación:"}\n${texto.slice(offset, offset + 3500)}`);
+      }
+    } catch (error) {
+      if (!(error instanceof ErrorNotaVoz)) console.error("[voz] Error procesando nota de voz:", error instanceof Error ? error.name : "Error");
+      await sendTelegramMessage(chatId, error instanceof ErrorNotaVoz
+        ? error.message
+        : "No pude completar la lectura de tu nota de voz. No ejecuté ninguna instrucción de esta nota.").catch(() => {});
+      return;
+    } finally { detenerIndicador(); }
   }
 
   if (update.message?.document || update.message?.photo) {
