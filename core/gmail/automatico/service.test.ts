@@ -97,10 +97,35 @@ test("el informe organiza pendientes en lenguaje accionable sin códigos interno
         contacto: "Louis Delhaize Brugge", metodoContacto: "aproximado_unico",
         motivos: ["proveedor_no_verificado"] }] }],
   });
-  assert.match(texto, /🟡 Por qué quedaron correos para revisión manual/);
+  assert.match(texto, /🟡 Por qué quedaron gastos para revisión manual/);
   assert.match(texto, /• Footprint · Delhaize · 64\.71 EUR/);
   assert.match(texto, /Se encontró «Louis Delhaize Brugge», pero falta confirmar/);
   assert.doesNotMatch(texto, /proveedor_no_verificado|aproximado_unico|mensajeId/);
+});
+test("el informe dice el motivo real y separa los correos que no son gastos", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 6, completados: 0, simulados: 0, gastos: [],
+    pendientes: [
+      // Hilo largo con la gestoría y una consulta: no son gastos.
+      { mensajeId: "m1", asunto: "RE: LEGALIZACIÓN LIBROS", motivos: ["lectura_incompleta", "otras_acciones_pendientes", "lectura_excede_limite", "correo_sin_gastos_automatizables"] },
+      { mensajeId: "m2", asunto: "Consulta", motivos: ["otras_acciones_pendientes", "correo_sin_gastos_automatizables"] },
+      // Operación de un día anterior sin cerrar.
+      { mensajeId: "m3", asunto: "Parking", motivos: ["lectura_incompleta"],
+        detalles: [{ proveedor: "Parking Moraleja", empresa: "Footprint", monto: 0.1, moneda: "EUR",
+          motivos: ["lectura_incompleta", "detalle:Conciliación no confirmada al 100 %: partial. op 6abb8a3954801f67c302f356"] }] },
+      // Fallo técnico de una consulta.
+      { mensajeId: "m4", asunto: "Ticket", motivos: ["error:Consulta Holded falló (429)"] },
+      // Sin cargo en el banco: ese es el motivo, no el proveedor.
+      { mensajeId: "m5", asunto: "Ticket", motivos: ["proveedor_no_verificado", "sin_movimiento_exacto"],
+        detalles: [{ proveedor: "McDonald's Breda Centrum", empresa: "Footprint", monto: 13.45, moneda: "EUR",
+          contacto: "MCDONALD'S RESTAURANT", metodoContacto: "aproximado_unico", motivos: ["proveedor_no_verificado", "sin_movimiento_exacto"] }] },
+    ] });
+  assert.match(texto, /📨 Correos que no son gastos y esperan tu revisión: 2 \(1 es un hilo demasiado largo/);
+  assert.match(texto, /Operación de una revisión anterior que sigue sin cerrar: Conciliación no confirmada al 100 %: partial\. op …/);
+  assert.match(texto, /Una comprobación técnica falló y se reintentará en la siguiente pasada: Consulta Holded falló \(429\)/);
+  assert.match(texto, /Todavía no hay en el banco un cargo que coincida; además falta confirmar que «MCDONALD'S RESTAURANT»/);
+  assert.doesNotMatch(texto, /No se pudo leer o verificar todo el contenido|6abb8a3954801f67c302f356|lectura_excede_limite/);
+  // Los que no son gastos no engordan la lista de gastos sin automatizar.
+  assert.doesNotMatch(texto, /• 2: /);
 });
 test("el informe oculta ids de operaciones y muestra una sola causa principal por caso", () => {
   const texto = resumenAutomatico({ modo: "execute", revisados: 1, completados: 0, simulados: 0, gastos: [],

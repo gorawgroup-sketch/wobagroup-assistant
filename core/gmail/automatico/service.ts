@@ -584,6 +584,10 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
       return "Hay varios contactos posibles en Holded; el operador debe elegir el proveedor correcto.";
     }
     if (detalle?.contacto) {
+      // Sin cargo en el banco tampoco hay con qué confirmar al proveedor: el motivo real es el cargo que falta.
+      if (tiene("sin_movimiento_exacto")) {
+        return `Todavía no hay en el banco un cargo que coincida; además falta confirmar que «${detalle.contacto}» sea el proveedor.`;
+      }
       return `Se encontró «${detalle.contacto}», pero falta confirmar que sea el proveedor correcto.`;
     }
     return "No se encontró un contacto único y verificable para el proveedor en Holded.";
@@ -609,8 +613,25 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   if (tiene("revision_pospuesta_por_limite_de_tiempo") || tiene("error:revision_pospuesta_por_limite_de_tiempo")) {
     return "La revisión se aplazó para no superar el tiempo máximo de ejecución.";
   }
-  if (tiene("lectura_incompleta") || motivos.some(motivo => motivo.startsWith("error:"))) {
-    return "No se pudo leer o verificar todo el contenido del correo.";
+  // Caso real (Carlos, 2026-09-30): «9: No se pudo leer o verificar todo el contenido del correo» agrupaba hilos largos
+  // con la gestoría, operaciones de días anteriores sin cerrar y fallos técnicos de una consulta. Ninguno era un
+  // comprobante ilegible. Cada causa dice ahora lo que es.
+  // Sin identificadores internos: el informe es para el operador, no un registro técnico.
+  const acotar = (texto: string) => {
+    const limpio = texto.replace(/[0-9a-f]{8}-[0-9a-f-]{20,}|[0-9a-f]{16,}/gi, "…").replace(/\s+/g, " ").trim();
+    return limpio.length > 140 ? `${limpio.slice(0, 137)}…` : limpio;
+  };
+  const errorTecnico = motivos.find(motivo => motivo.startsWith("error:"))?.slice("error:".length).trim();
+  const detalleOperacion = motivos.find(motivo => motivo.startsWith("detalle:"))?.slice("detalle:".length).trim();
+  if (tiene("lectura_excede_limite")) {
+    return "El hilo es demasiado largo para leerlo entero de forma automática; revísalo a mano (no es un comprobante ilegible).";
+  }
+  if ((tiene("lectura_incompleta") || errorTecnico) && detalleOperacion) {
+    return `Operación de una revisión anterior que sigue sin cerrar: ${acotar(detalleOperacion)}`;
+  }
+  if (errorTecnico) return `Una comprobación técnica falló y se reintentará en la siguiente pasada: ${acotar(errorTecnico)}`;
+  if (tiene("lectura_incompleta")) {
+    return "El analizador no dio por completa la lectura de este correo (algún adjunto, enlace o parte del hilo no se pudo leer).";
   }
   if (tiene("otras_acciones_pendientes")) return "El correo contiene además otra solicitud que debe revisar el operador.";
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";
@@ -671,17 +692,29 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
   if (r.reparados?.length) {
     lineas.push("", `🛠️ Borradores anteriores corregidos y verificados: ${r.reparados.length}.`, ...lineasGastosAcotadas(r.reparados));
   }
-  if (r.pendientes.length) {
+  // Un correo sin ningún comprobante (consultas, propuestas, avisos, hilos con la gestoría) no es un gasto que la
+  // automatización haya dejado de hacer: va aparte y no engorda la lista de «por qué no se automatizó».
+  const esNoGasto = (p: ResultadoAuto["pendientes"][number]) => !p.detalles?.length &&
+    (p.motivos.includes("correo_sin_gastos_automatizables") || p.motivos.includes("lectura_excede_limite")) &&
+    !p.motivos.some(m => m.startsWith("error:") || m.startsWith("operacion_"));
+  const noGastos = r.pendientes.filter(esNoGasto);
+  const pendientesDeGasto = r.pendientes.filter(p => !esNoGasto(p));
+  if (noGastos.length) {
+    const largos = noGastos.filter(p => p.motivos.includes("lectura_excede_limite")).length;
+    lineas.push("", `📨 Correos que no son gastos y esperan tu revisión: ${noGastos.length}` +
+      (largos ? ` (${largos} ${largos === 1 ? "es un hilo demasiado largo" : "son hilos demasiado largos"} para leerlo entero).` : "."));
+  }
+  if (pendientesDeGasto.length) {
     const motivosPrincipales = new Map<string, number>();
-    for (const pendiente of r.pendientes) {
+    for (const pendiente of pendientesDeGasto) {
       const detalle = pendiente.detalles?.[0];
       const explicacion = explicarPendiente([...pendiente.motivos, ...(detalle?.motivos ?? [])], detalle);
       motivosPrincipales.set(explicacion, (motivosPrincipales.get(explicacion) ?? 0) + 1);
     }
-    lineas.push("", "🟡 Por qué quedaron correos para revisión manual");
+    lineas.push("", "🟡 Por qué quedaron gastos para revisión manual");
     for (const [motivo, cantidad] of [...motivosPrincipales]) lineas.push(`• ${cantidad}: ${motivo}`);
 
-    const detalles = r.pendientes.flatMap(p => (p.detalles ?? []).map(d => ({ ...d })));
+    const detalles = pendientesDeGasto.flatMap(p => (p.detalles ?? []).map(d => ({ ...d })));
     if (detalles.length) {
       lineas.push("", "Casos que el operador debe revisar primero:");
       for (const detalle of detalles.slice(0, 6)) {
