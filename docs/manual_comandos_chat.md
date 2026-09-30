@@ -338,3 +338,9 @@ pidiendo. Si la nota no se puede leer, lo dice y no ejecuta nada. Detalle en `do
 Queda registrado que el operador decidió NO registrar ese comprobante (por correo y adjunto). En las siguientes
 revisiones ese adjunto se salta con «ya lo descartaste tú antes» y no se vuelve a proponer. Si más adelante sí hay que
 registrarlo, se pide por chat.
+
+### Lote de impuestos en el cashflow (secciones «Impuestos por pagar» y «Aplazamiento impuestos»)
+
+Wobi propone en un solo mensaje las altas y correcciones de esas dos secciones (fila, semana, valor, año) y las aplica
+con **✅ Aplicar todo**, una a una y verificando cada escritura por relectura; **❌ Cancelar** no toca nada. Una cuota
+con su fila ya preparada a mano (concepto puesto, sin valor) se rellena en esa misma fila.
