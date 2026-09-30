@@ -94,13 +94,24 @@ async function obtenerOCrearTab(tabName: string, headers: string[]): Promise<Tab
   if (enCurso) return enCurso;
 
   const preparacion = (async () => {
-    const existente = await metadataPestanas.obtener(tabName);
+    // La fotografía puede ser anterior a una pestaña creada por otro proceso: antes de crear, se relee una vez.
+    const existente = (await metadataPestanas.obtener(tabName)) ?? (await metadataPestanas.obtenerRefrescando(tabName));
     if (existente) return existente;
 
-    const addResp = await getClient().spreadsheets.batchUpdate({
-      spreadsheetId: assertSheetId(),
-      requestBody: { requests: [{ addSheet: { properties: { title: tabName, hidden: true } } }] },
-    });
+    let addResp;
+    try {
+      addResp = await getClient().spreadsheets.batchUpdate({
+        spreadsheetId: assertSheetId(),
+        requestBody: { requests: [{ addSheet: { properties: { title: tabName, hidden: true } } }] },
+      });
+    } catch (error) {
+      // Carrera con otro proceso que la creó entre la relectura y el addSheet: es la misma pestaña, se usa.
+      if (/already exists/i.test(error instanceof Error ? error.message : String(error))) {
+        const creadaFuera = await metadataPestanas.obtenerRefrescando(tabName);
+        if (creadaFuera) return creadaFuera;
+      }
+      throw error;
+    }
     await getClient().spreadsheets.values.update({
       spreadsheetId: assertSheetId(),
       range: `${tabName}!A1:${colLetter(headers.length)}1`,
