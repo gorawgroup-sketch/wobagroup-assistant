@@ -5,7 +5,7 @@ import {
   eliminarPendienteEdicionCompraHolded,
   obtenerPendienteEdicionCompraHolded,
 } from "./pendienteEdicionCompraHoldedStore";
-import { editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError } from "./write";
+import { editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError, obtenerCompraHoldedPorId } from "./write";
 import { conciliarCargoConReembolso } from "./conciliarCargoConReembolso";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
@@ -55,10 +55,15 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
   await editTelegramMessage(pendiente.chatId, pendiente.messageId, `🔄 Editando en Holded — ${pendiente.resumenAntes}...`, []);
 
   try {
-    const resultado = await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, pendiente.cambios, {
-      idempotencyKey: `propuesta-edicion:${pendiente.id}`,
-      proceso: "edicion_compra_aprobada",
-    });
+    // Propuesta que solo enlaza cargo y reembolso (la edición ya se aplicó antes): no se reenvía el documento.
+    const soloConciliar = pendiente.cambios.despuesConciliar !== undefined &&
+      Object.entries(pendiente.cambios).every(([campo, valor]) => campo === "despuesConciliar" || valor === undefined);
+    const resultado = soloConciliar
+      ? await obtenerCompraHoldedPorId(pendiente.empresa, pendiente.purchaseId)
+      : await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, pendiente.cambios, {
+          idempotencyKey: `propuesta-edicion:${pendiente.id}`,
+          proceso: "edicion_compra_aprobada",
+        });
     await eliminarPendienteEdicionCompraHolded(pendiente.id).catch((error) =>
       console.error(
         "[edicionCompraHoldedCallbackHandler] La edición quedó verificada, pero no se pudo cerrar la propuesta:",
@@ -89,7 +94,7 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
-      `✅ Editado en Holded — antes: ${pendiente.resumenAntes}\n` +
+      `${soloConciliar ? "🔗 Conciliación" : "✅ Editado en Holded"} — antes: ${pendiente.resumenAntes}\n` +
         `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).` +
         notaConciliacion,
       []
