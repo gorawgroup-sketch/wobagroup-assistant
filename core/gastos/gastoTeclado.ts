@@ -193,9 +193,17 @@ export function construirTecladoGasto(propuesta: PropuestaGasto, opciones: Opcio
     if (!esRecuperacion) {
       filas.push([boton("nuevo")]);
       filas.push([boton("ajustarmonto")]);
-      // Con gastos parecidos ya registrados, el operador también debe poder descartar la propuesta (antes no había «Cancelar»).
-      filas.push([boton("cancelar")]);
     }
+    // Hallazgo real de Carlos (2026-09-30): "Cancelar" (PR #232, agregado para poder descartar la
+    // propuesta cuando hay gastos parecidos) había quedado atrapado dentro del `if (!esRecuperacion)`
+    // de arriba por error — cancelar no crea otro gasto ni cambia el monto, así que no tiene relación
+    // con esa condición. El resultado real: una propuesta en recuperación (soporte o conciliación
+    // pendiente) que nunca va a poder resolverse (ej. no existe ningún movimiento bancario libre que
+    // coincida) se quedaba sin ninguna forma de decir "basta, seguí" — exactamente el mismo problema ya
+    // resuelto antes para correos (doc_descartar), documentos y el resumen diario, pero que en este
+    // camino puntual de gastos no se había corregido. `gasto_cancelar` es seguro en cualquier caso: no
+    // toca Holded (el gasto ya creado queda intacto), solo deja de insistir y avanza la cola de correo.
+    filas.push([boton("cancelar")]);
   } else {
     const hayMovimientosAmbiguos = opciones.numMovimientosAmbiguos !== undefined && opciones.numMovimientosAmbiguos > 0;
     if (hayMovimientosAmbiguos) {
