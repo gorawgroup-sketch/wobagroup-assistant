@@ -35,6 +35,17 @@ export class CacheMetadataPestanas {
     return (await this.obtenerFotografia()).get(nombre);
   }
 
+  /**
+   * Vuelve a leer la hoja y devuelve la pestaña si ahora existe. Caso real (2026-09-30): una pestaña creada por OTRO
+   * proceso (un script de mantenimiento) después de la primera carga no estaba en la fotografía; el servidor intentaba
+   * crearla y Google respondía «already exists» en cada intento hasta el siguiente reinicio.
+   */
+  async obtenerRefrescando(nombre: string): Promise<MetadataPestana | undefined> {
+    this.metricas.solicitudes++;
+    this.fotografia = null;
+    return (await this.obtenerFotografia()).get(nombre);
+  }
+
   registrar(nombre: string, metadata: MetadataPestana): void {
     if (!this.fotografia) this.fotografia = new Map();
     this.fotografia.set(nombre, metadata);
