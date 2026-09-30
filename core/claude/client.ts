@@ -1,3 +1,4 @@
+import { notaContinuidadConversacion, textoDeMensajeHistorial, type ContextoConversacion } from "./temaConversacion";
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, executeToolBatch, getToolDefinitions } from "../tools/registry";
 import { formatDateLocal } from "../utils/dateFormat";
@@ -300,7 +301,8 @@ async function buildSystemPromptDinamico(
   chatId: number | undefined,
   nombreRemitente?: string,
   pendientesPrefetch?: PendientesSensibles,
-  presentacion: "telegram" | "web" = "telegram"
+  presentacion: "telegram" | "web" = "telegram",
+  conversacion?: ContextoConversacion
 ): Promise<string> {
   const hoy = formatDateLocal(new Date());
 
@@ -370,7 +372,8 @@ async function buildSystemPromptDinamico(
           "usuario; no significa que siga procesando el buzón ni que esté leyendo todos los correos en segundo " +
           "plano. Si el usuario pregunta por demora, bloqueo o estado, explica ese estado individual exacto y " +
           "NUNCA afirmes que se están procesando todos los correos sin leer salvo que una herramienta de revisión " +
-          "lo haya confirmado en este mismo turno."
+          "lo haya confirmado en este mismo turno." +
+          notaContinuidadConversacion({ proveedor: resolucionContacto.propuesta.proveedor }, conversacion)
       );
     }
 
@@ -397,7 +400,11 @@ async function buildSystemPromptDinamico(
           "descartar_gasto_pendiente_datos para cerrarlo sin crear ningún gasto. Si su " +
           "mensaje pide algo distinto (programar un recordatorio, guardar algo en la memoria del sistema, o " +
           "cualquier otra instrucción), atiende esa petición con la herramienta que corresponda — no repitas " +
-          "esta pregunta ni inventes una aclaración propia sobre el pendiente."
+          "esta pregunta ni inventes una aclaración propia sobre el pendiente." +
+          notaContinuidadConversacion(
+            { proveedor: gastoPendiente.datos.proveedor, monto: Number(gastoPendiente.datos.monto) },
+            conversacion
+          )
       );
     }
 
@@ -711,12 +718,17 @@ async function ejecutarConversacion(
   if (systemExtra) {
     system.push({ type: "text", text: systemExtra, cache_control: { type: "ephemeral" } });
   }
+  // El historial se lee antes de armar el prompt: los pendientes se recuerdan en cada turno y hay que saber de qué
+  // se viene hablando para que un pendiente antiguo no secuestre la conversación (ver temaConversacion.ts).
+  const historial = usarHistorial && chatId !== undefined ? await obtenerHistorial(chatId) : [];
   system.push({
     type: "text",
-    text: await buildSystemPromptDinamico(chatId, nombreRemitente, pendientesPrefetch, presentacion),
+    text: await buildSystemPromptDinamico(chatId, nombreRemitente, pendientesPrefetch, presentacion, {
+      mensajeActual: userText,
+      turnosRecientes: historial.map((m) => textoDeMensajeHistorial(m.content)).filter(Boolean).slice(-6),
+    }),
   });
 
-  const historial = usarHistorial && chatId !== undefined ? await obtenerHistorial(chatId) : [];
   const messages: Anthropic.MessageParam[] = [...historial, { role: "user", content: userText }];
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
