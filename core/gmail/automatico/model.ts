@@ -77,6 +77,20 @@ export function nombresProveedorCompatibles(a: string, b: string): boolean {
   const [cortos, largos] = ta.length <= tb.length ? [ta, new Set(tb)] : [tb, new Set(ta)];
   return cortos.every(token => largos.has(token));
 }
+const TOKENS_GENERICOS_PROVEEDOR = new Set(["hotel", "hostal", "restaurant", "restaurante", "cafe", "cafeteria", "parking",
+  "supermercado", "supermercados", "farmacia", "taxi", "grupo", "group", "comercial", "cadena", "servicios", "services",
+  "internacional", "international", "company", "tienda", "market", "mercado"]);
+/**
+ * Relación mínima entre el nombre leído y el contacto de un alias: comparten al menos una palabra propia (4+ letras,
+ * no genérica). «McDonald's Breda Centrum» y «MCDONALD'S RESTAURANT» están emparentados; «Parking Moraleja» y
+ * «CADENA COMERCIAL OXXO SA» no. Solo respalda un alias que una persona ya confirmó; nunca elige un contacto.
+ */
+export function nombresProveedorEmparentados(a: string, b: string): boolean {
+  const propios = (valor: string) => new Set(tokensProveedor(valor).filter(t => t.length >= 4 && !TOKENS_GENERICOS_PROVEEDOR.has(t)));
+  const ta = propios(a), tb = propios(b);
+  for (const token of ta) if (tb.has(token)) return true;
+  return false;
+}
 /** El descriptor bancario confirma el proveedor por frase o por tokens completos; nunca por fragmentos parciales. */
 export function proveedorEnDescripcion(proveedor: string, descripcion: string): boolean {
   const p = normalizarProveedorComparable(proveedor), d = normalizar(descripcion);
@@ -161,7 +175,9 @@ export interface MovimientoAuto {
 export interface EvidenciaAuto {
   empresaDetectada?: EmpresaAuto;
   contacto?: { id: string; nombre: string; exacto: boolean;
-    metodo?: "nombre_exacto" | "nombre_equivalente" | "alias_confirmado" | "aproximado_unico"; similitud?: number };
+    metodo?: "nombre_exacto" | "nombre_equivalente" | "alias_confirmado" | "aproximado_unico"; similitud?: number;
+    /** El alias tiene respaldo propio: nombres emparentados o confirmado por el operador al menos dos veces. */
+    aliasRespaldado?: boolean };
   motivoProveedor?: "sin_coincidencias" | "coincidencia_ambigua" | "alias_contradictorio";
   candidatosProveedor?: Array<{ id: string; nombre: string; similitud: number }>;
   cuenta?: { id: string; evidencia: string; tags?: string[]; nombre?: string };
@@ -327,7 +343,13 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const descripcionConfirmaProveedor = candidatos.length === 1 && (proveedorEnDescripcion(r.proveedor, candidatos[0].descripcion) ||
     Boolean(e.contacto?.nombre && proveedorEnDescripcion(e.contacto.nombre, candidatos[0].descripcion)));
   const nombreAproximadoFuerte = e.contacto?.metodo === "aproximado_unico" && (e.contacto.similitud ?? 0) >= 0.5;
+  // Decisión de Carlos (2026-09-30): un proveedor que ya confirmó no se vuelve a preguntar, aunque el contacto de
+  // Holded no se llame igual que el nombre del ticket («McDonald's Breda Centrum» → «MCDONALD'S RESTAURANT»). Un alias
+  // lo escribe siempre una persona (al forzar un contacto, fijarlo por chat o aprobar con botón un gasto), pero un
+  // alias suelto sin relación entre nombres sigue sin autorizar nada (caso real «Parking Moraleja» → «CADENA
+  // COMERCIAL OXXO»): hace falta respaldo, ver aliasRespaldado en holded.ts.
   const contactoVerificado = e.contacto?.exacto === true ||
+    (e.contacto?.metodo === "alias_confirmado" && e.contacto.aliasRespaldado === true) ||
     (e.contacto?.metodo === "aproximado_unico" && (descripcionConfirmaProveedor ||
       (coincidenciaMontoFechaExacta && nombreAproximadoFuerte)));
   if (e.contacto?.id && !contactoVerificado) motivos.push("proveedor_no_verificado");
