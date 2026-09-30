@@ -1,3 +1,4 @@
+import { esRemitenteDelGrupo } from "../../gastos/remitenteDelGrupo";
 import { completarEquivalenteExplicito } from "./equivalenteExplicito";
 import { candidatosMovimientoAuto, evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
   nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
@@ -127,7 +128,7 @@ export class ServicioCorreoAutomatico {
           datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
             otrasAcciones: analisis.otrasAcciones, origen: "observacion_automatica_no_confirmada" } });
       }
-      return { correo, analisis: completarEquivalenteExplicito(analisis, correo.asunto), motivos: [] };
+      return { correo, analisis: completarEquivalenteExplicito(analisis, correo.asunto, esRemitenteDelGrupo(correo.de)), motivos: [] };
     } catch (error) {
       const motivo = motivoFalloAnalisis(error);
       console.warn("[correo-auto] No se completó el análisis del mensaje:", {
