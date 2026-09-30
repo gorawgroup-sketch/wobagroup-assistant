@@ -86,7 +86,8 @@ import {
 } from "../core/jobs/revisionCorreoManual";
 import { solicitarCierre } from "../core/utils/cierreServicio";
 import { entregarRespuestaChat } from "../core/telegram/entregarRespuestaChat";
-import { conContextoInteractivo } from "../core/telegram/contextoInteractivo";
+import { accionEsperoBuzon, conContextoInteractivo, esperaAgotada } from "../core/telegram/contextoInteractivo";
+import { EsperaBuzonPorChat, textoFinEsperaBuzon } from "../core/telegram/esperaBuzonPorChat";
 import { BuzonOcupadoError } from "../core/gmail/automatico/postgres";
 import {
   handleCancelarDescartarTodoPendienteCallback,
@@ -295,18 +296,35 @@ async function avisarEntregaTelegramIncierta(entrega: EntregaTelegramDurable): P
  * Todo update de Telegram es una acción del operador: si al ejecutarla el buzón de correo está ocupado por una
  * revisión, se le avisa una vez de que queda en espera en lugar de fallar a los 30 s (ver contextoInteractivo.ts).
  */
+const esperaBuzonPorChat = new EsperaBuzonPorChat();
+
 function procesarUpdateTelegramInteractivo(update: TelegramUpdate): Promise<void> {
   const chatId = update.callback_query?.message?.chat.id ?? update.message?.chat.id;
   return conContextoInteractivo(
     async () => {
       if (chatId === undefined) return;
+      // Un solo aviso por chat mientras haya acciones esperando: antes salía uno por cada botón pulsado.
+      if (!esperaBuzonPorChat.empezar(chatId)) return;
       await sendTelegramMessage(
         chatId,
-        "⏳ El buzón de correo está ocupado por una revisión en curso. Tu acción queda en espera y se aplicará sola en cuanto termine " +
-          "(puede tardar un par de minutos). No hace falta que vuelvas a pulsar."
+        "⏳ El buzón de correo está ocupado: sigo leyendo este correo (o hay otra revisión en curso). Lo que pulses ahora " +
+          "queda en espera y se aplicará solo en cuanto termine; con varios adjuntos puede tardar varios minutos. " +
+          "No hace falta que vuelvas a pulsar: te aviso cuando quede aplicado."
       );
     },
-    () => procesarUpdateTelegram(update)
+    async () => {
+      let aplicada = false;
+      try {
+        await procesarUpdateTelegram(update);
+        aplicada = true;
+      } finally {
+        if (chatId !== undefined && accionEsperoBuzon()) {
+          const resumen = esperaBuzonPorChat.terminar(chatId, aplicada && !esperaAgotada());
+          const texto = resumen ? textoFinEsperaBuzon(resumen) : undefined;
+          if (texto) await sendTelegramMessage(chatId, texto).catch(() => {});
+        }
+      }
+    }
   );
 }
 
@@ -1673,7 +1691,7 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       // si fue al cerrar el correo de un gasto ya creado, ese gasto existe. El aviso dice ambas cosas.
       await sendTelegramMessage(
         chatId,
-        "⏳ El buzón de correo siguió ocupado más de 5 minutos por otra revisión y no pude terminar tu acción. " +
+        "⏳ El buzón de correo siguió ocupado más de 15 minutos por otra revisión y no pude terminar tu acción. " +
           "Si era crear o conciliar un gasto, comprueba en Holded si quedó hecho antes de repetirla; si solo era avanzar " +
           "la cola, vuelve a pulsar cuando termine la revisión."
       ).catch(() => {});
