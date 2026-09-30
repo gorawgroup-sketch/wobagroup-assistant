@@ -53,6 +53,7 @@ import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasShe
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
+import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import {
   encolarCorreos,
   hayActivo,
@@ -879,6 +880,21 @@ async function procesarCorreoLocalizado(
       // revisar_correo_puntual — ambos pasan por este mismo loop) lo volvía a descargar y clasificar
       // desde cero. Mismo criterio granular que el chequeo de arriba: por adjunto, no por correo
       // entero, para no saltarse por error un adjunto real y distinto que sí siga pendiente.
+      const descartado = await gastoDescartadoPorOperador(correo.id, adjunto.partId).catch((error) => {
+        console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" fue descartado por el operador (no crítico, sigue igual):`, error);
+        return undefined;
+      });
+      if (descartado) {
+        await sendTelegramMessage(
+          chatId,
+          `📄 "${adjunto.filename}" (${correo.asunto}) — ya lo descartaste tú antes (${descartado.proveedor} — ` +
+            `${descartado.monto.toFixed(2)} ${descartado.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, dímelo por chat.`
+        ).catch(() => {});
+        if (deColaCorreo) {
+          await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:adjunto:${adjunto.partId}:resolver`);
+        }
+        continue;
+      }
       const yaArchivado = await yaSeArchivoDesdeCorreo(correo.id, adjunto.partId).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya se archivó (no crítico, sigue igual):`, error);
         return false;
@@ -1060,6 +1076,19 @@ async function procesarCorreoLocalizado(
       console.error(`[revisarCorreoNuevo] Error consultando si el correo ${correo.id} ya generó un gasto (no crítico, sigue igual):`, error);
       return undefined;
     });
+    const descartadoEnCuerpo = await gastoDescartadoPorOperador(correo.id, undefined).catch((error) => {
+      console.error(`[revisarCorreoNuevo] Error consultando si el gasto del cuerpo del correo ${correo.id} fue descartado por el operador (no crítico, sigue igual):`, error);
+      return undefined;
+    });
+    if (descartadoEnCuerpo) {
+      await sendTelegramMessage(
+        chatId,
+        `📄 "${correo.asunto}" — ya lo descartaste tú antes (${descartadoEnCuerpo.proveedor} — ` +
+          `${descartadoEnCuerpo.monto.toFixed(2)} ${descartadoEnCuerpo.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, dímelo por chat.`
+      ).catch(() => {});
+      if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
+      return;
+    }
     if (gastoYaCreadoEnCuerpo) {
       const estadoRegistro = await revalidarRegistroRecienteDeCorreo(gastoYaCreadoEnCuerpo).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error revalidando gasto ${gastoYaCreadoEnCuerpo.gastoId}:`, error);

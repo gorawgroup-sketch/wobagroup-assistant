@@ -332,3 +332,9 @@ que no puede confirmar y lo dice en el mismo mensaje.
 Graba una nota con el micrófono de Telegram (hasta tres minutos). Wobi responde «🎙️ Entendí: …» con el texto
 transcrito y sigue por el mismo flujo que un mensaje escrito; todo lo que pide confirmación con botón la sigue
 pidiendo. Si la nota no se puede leer, lo dice y no ejecuta nada. Detalle en `docs/notas-voz-telegram.md`.
+
+### «❌ Cancelar» en una propuesta de gasto que viene de un correo
+
+Queda registrado que el operador decidió NO registrar ese comprobante (por correo y adjunto). En las siguientes
+revisiones ese adjunto se salta con «ya lo descartaste tú antes» y no se vuelve a proponer. Si más adelante sí hay que
+registrarlo, se pide por chat.
