@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { avisarEsperaInteractiva, hayContextoInteractivo } from "../../telegram/contextoInteractivo";
+import { avisarEsperaInteractiva, hayContextoInteractivo, marcarEsperaAgotada } from "../../telegram/contextoInteractivo";
 import { VERSION_ANALISIS, VERSION_POLITICA, type AnalisisAuto, type EmpresaAuto, type OperacionAuto, type PlanAuto, type StoreAuto } from "./model";
 
 // El esquema se aplica explícitamente con el script de preparación; nunca durante una escritura.
@@ -81,7 +81,9 @@ export class BuzonOcupadoError extends Error {
   }
 }
 /** Cuánto espera una acción del operador a que el buzón quede libre (una revisión completa dura minutos). */
-export const ESPERA_INTERACTIVA_BUZON_MS = 5 * 60_000;
+export const ESPERA_INTERACTIVA_BUZON_MS = 15 * 60_000;
+/** Cada cuánto reintenta una acción en espera. Entre intentos NO retiene ninguna conexión del pool. */
+const SONDEO_ESPERA_INTERACTIVA_MS = 1_500;
 
 export async function conBloqueoAuto<T>(
   clave: string,
@@ -90,37 +92,56 @@ export async function conBloqueoAuto<T>(
 ): Promise<T> {
   const actual = contexto.getStore();
   if (actual?.locks.has(clave)) return tarea();
-  const client = await poolAuto().connect();
+  let client = await poolAuto().connect();
   let roto = false;
   const onError = () => { roto = true; };
   client.on("error", onError);
+  let clienteLiberado = false;
   try {
-    const lockTimeoutMs = Math.max(1_000, Math.min(10 * 60_000, opciones.lockTimeoutMs ?? 30_000));
+    const lockTimeoutMs = Math.max(1_000, Math.min(15 * 60_000, opciones.lockTimeoutMs ?? 30_000));
+    const intentar = async () =>
+      (await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok", [clave])).rows[0]?.ok === true;
     // Con `alEsperar` se intenta primero sin bloquear: si el candado está libre no hay nada que avisar; si
     // está ocupado, el operador se entera ANTES de quedarse esperando, no tras un error.
     let tomado = false;
     if (opciones.alEsperar) {
-      const intento = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS ok", [clave]);
-      tomado = intento.rows[0]?.ok === true;
-      if (!tomado) await opciones.alEsperar();
+      tomado = await intentar();
+      if (!tomado) {
+        await opciones.alEsperar();
+        // Espera por sondeo, soltando la conexión entre intentos. Caso real (2026-09-30): un correo con cinco
+        // adjuntos retuvo el buzón varios minutos; cada botón pulsado mientras tanto se quedaba bloqueado DENTRO de
+        // PostgreSQL ocupando una de las 8 conexiones del pool, las mismas que necesita la revisión para avanzar.
+        const limite = Date.now() + lockTimeoutMs;
+        while (!tomado && Date.now() < limite) {
+          client.off("error", onError);
+          client.release(roto);
+          clienteLiberado = true;
+          await new Promise((resolve) => setTimeout(resolve, SONDEO_ESPERA_INTERACTIVA_MS));
+          roto = false;
+          client = await poolAuto().connect();
+          clienteLiberado = false;
+          client.on("error", onError);
+          tomado = await intentar();
+        }
+        if (!tomado) { marcarEsperaAgotada(); throw new BuzonOcupadoError(); }
+      }
     }
     if (!tomado) {
       await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`]);
-      try {
-        await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
-      } catch (error) {
-        if (opciones.alEsperar && (error as { code?: unknown })?.code === "55P03") throw new BuzonOcupadoError();
-        throw error;
-      }
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [clave]);
+      tomado = true;
     }
     const resultado = await contexto.run({ ...actual, locks: new Set([...(actual?.locks ?? []), clave]) }, tarea);
     if (roto) throw new Error("Se perdió el bloqueo distribuido; comprobar el registro antes de continuar.");
     return resultado;
   } finally {
-    try { if (!roto) await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [clave]); }
-    catch { roto = true; }
-    client.off("error", onError);
-    client.release(roto);
+    if (!clienteLiberado) {
+      // pg_advisory_unlock sobre un candado no tomado solo devuelve false: es inocuo tras un intento fallido.
+      try { if (!roto) await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [clave]); }
+      catch { roto = true; }
+      client.off("error", onError);
+      client.release(roto);
+    }
   }
 }
 export const conOperacionAuto = <T>(id: string, tarea: () => Promise<T>): Promise<T> =>

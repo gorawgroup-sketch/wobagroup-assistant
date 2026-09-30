@@ -13,7 +13,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * sin pasar parámetros por las decenas de funciones intermedias. `avisarEspera` lo aporta quien
  * conoce el chat; aquí solo se garantiza que suene una vez por acción.
  */
-interface Contexto { avisar: () => Promise<void>; avisado: boolean }
+interface Contexto { avisar: () => Promise<void>; avisado: boolean; agotada?: boolean }
 const almacen = new AsyncLocalStorage<Contexto>();
 
 export function conContextoInteractivo<T>(avisarEspera: () => Promise<void>, tarea: () => Promise<T>): Promise<T> {
@@ -22,6 +22,21 @@ export function conContextoInteractivo<T>(avisarEspera: () => Promise<void>, tar
 
 export function hayContextoInteractivo(): boolean {
   return almacen.getStore() !== undefined;
+}
+
+/** La espera se agotó sin conseguir el buzón: la acción NO se aplicó (o no entera) y ya tiene su propio aviso. */
+export function marcarEsperaAgotada(): void {
+  const contexto = almacen.getStore();
+  if (contexto) contexto.agotada = true;
+}
+
+export function esperaAgotada(): boolean {
+  return almacen.getStore()?.agotada === true;
+}
+
+/** true si esta acción llegó a quedarse esperando el buzón (para confirmar al operador cuando se aplique). */
+export function accionEsperoBuzon(): boolean {
+  return almacen.getStore()?.avisado === true;
 }
 
 /** Avisa al operador de que su acción está en espera. Una sola vez por acción; nunca lanza. */
