@@ -19,6 +19,21 @@ import { analisisFixture, configFixture, correoFixture, evidenciaFixture, recibo
 // Base de pruebas desechable; jamás toma WOBI_MAIL_DATABASE_URL ni DATABASE_URL de producción.
 const url = process.env.WOBI_MAIL_TEST_DATABASE_URL;
 
+test("una operación incierta no bloquea conciliar su propio cargo contra su propia compra", () => {
+  const decision = evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), evidenciaFixture(), configFixture);
+  assert.ok(decision.apto);
+  const path = `/treasury/accounts/cuenta/bank-movements/${decision.plan.movimiento.id}/reconcile`;
+  const cuerpo = (id: string) => ({ documents: [{ document_id: id, document_type: "purchase" }] });
+  const incierta = { id: "op-1", estado: "incierta" as const, plan: decision.plan, compraId: "compra-propia" };
+
+  assert.equal(operacionPendienteConflictaConObjetivo(incierta, { path, body: cuerpo("compra-propia") }), false);
+  // Otro documento contra el mismo cargo, una operación sin compra o una operación en curso siguen bloqueando.
+  assert.equal(operacionPendienteConflictaConObjetivo(incierta, { path, body: cuerpo("otra-compra") }), true);
+  assert.equal(operacionPendienteConflictaConObjetivo({ ...incierta, compraId: undefined }, { path, body: cuerpo("compra-propia") }), true);
+  assert.equal(operacionPendienteConflictaConObjetivo({ ...incierta, estado: "conciliando" as const }, { path, body: cuerpo("compra-propia") }), true);
+  assert.equal(operacionPendienteConflictaConObjetivo(incierta, { path }), true);
+});
+
 test("una operación automática pendiente solo bloquea el mismo recurso manual", () => {
   const decision = evaluarAuto(correoFixture(), analisisFixture(), reciboFixture(), evidenciaFixture(), configFixture);
   assert.ok(decision.apto);
