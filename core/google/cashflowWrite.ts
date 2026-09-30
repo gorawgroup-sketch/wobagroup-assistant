@@ -14,7 +14,8 @@ let writeClient: sheets_v4.Sheets | null = null;
  * cliente de solo lectura usado por los tools de consulta). Se usa
  * exclusivamente desde el flujo de escritura aprobado por Telegram.
  */
-function getSheetsWriteClient(): sheets_v4.Sheets {
+/** Cliente de escritura compartido con el escritor de impuestos (cashflowImpuestos.ts). */
+export function getSheetsWriteClient(): sheets_v4.Sheets {
   if (writeClient) return writeClient;
 
   const credentials = loadServiceAccountCredentials();
@@ -29,7 +30,7 @@ function getSheetsWriteClient(): sheets_v4.Sheets {
   return writeClient;
 }
 
-function assertSheetId(): string {
+export function assertSheetId(): string {
   const id = process.env.CASHFLOW_SHEET_ID;
   if (!id) {
     throw new Error("Falta la variable de entorno CASHFLOW_SHEET_ID.");
@@ -40,7 +41,7 @@ function assertSheetId(): string {
 let gridIdDatosCache: number | null = null;
 
 /** gridId (id numérico interno) de la pestaña DATOS — necesario para un batchUpdate de formato, no de valores. Cacheado en memoria. */
-async function obtenerGridIdDatos(): Promise<number> {
+export async function obtenerGridIdDatos(): Promise<number> {
   if (gridIdDatosCache !== null) return gridIdDatosCache;
   const sheetId = assertSheetId();
   const sheets = getSheetsWriteClient();

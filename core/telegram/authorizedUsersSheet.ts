@@ -387,6 +387,10 @@ const ACCIONES_SENSIBLES = new Set([
   // también se centraliza en superadmin.
   "regmanualcf_confirmar",
   "regmanualcf_cancelar",
+  // Lote de altas y correcciones en las secciones de impuestos del cashflow (ver loteImpuestosCallbackHandler.ts):
+  // mismo criterio que regmanualcf_confirmar/cancelar.
+  "loteimpuestos_confirmar",
+  "loteimpuestos_cancelar",
   // Pedido explícito de Carlos: aprobar un hilo para conversación automática
   // (ver hiloAutorespuestaStore.ts / revisarConversacionesAutomaticas.ts) es
   // la decisión MÁS sensible de todo el flujo de correo — a diferencia de
