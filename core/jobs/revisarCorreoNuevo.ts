@@ -880,7 +880,10 @@ async function procesarCorreoLocalizado(
       // revisar_correo_puntual — ambos pasan por este mismo loop) lo volvía a descargar y clasificar
       // desde cero. Mismo criterio granular que el chequeo de arriba: por adjunto, no por correo
       // entero, para no saltarse por error un adjunto real y distinto que sí siga pendiente.
-      const descartado = await gastoDescartadoPorOperador(correo.id, adjunto.partId).catch(() => undefined);
+      const descartado = await gastoDescartadoPorOperador(correo.id, adjunto.partId).catch((error) => {
+        console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" fue descartado por el operador (no crítico, sigue igual):`, error);
+        return undefined;
+      });
       if (descartado) {
         await sendTelegramMessage(
           chatId,
@@ -1073,7 +1076,10 @@ async function procesarCorreoLocalizado(
       console.error(`[revisarCorreoNuevo] Error consultando si el correo ${correo.id} ya generó un gasto (no crítico, sigue igual):`, error);
       return undefined;
     });
-    const descartadoEnCuerpo = await gastoDescartadoPorOperador(correo.id, undefined).catch(() => undefined);
+    const descartadoEnCuerpo = await gastoDescartadoPorOperador(correo.id, undefined).catch((error) => {
+      console.error(`[revisarCorreoNuevo] Error consultando si el gasto del cuerpo del correo ${correo.id} fue descartado por el operador (no crítico, sigue igual):`, error);
+      return undefined;
+    });
     if (descartadoEnCuerpo) {
       await sendTelegramMessage(
         chatId,
