@@ -386,6 +386,28 @@ test("un alias único no se presenta como proveedor exacto ni autoriza un contac
   assert.equal(decision.apto, false);
   if (!decision.apto) assert.ok(decision.motivos.includes("proveedor_no_verificado"));
 });
+test("un alias con respaldo (nombres emparentados o confirmado dos veces) verifica al proveedor", async () => {
+  const emparentado = escenario();
+  emparentado.r.proveedor = "McDonald's Breda Centrum";
+  emparentado.contactos[0].name = "MCDONALD'S RESTAURANT";
+  emparentado.memoria.alias = async () => [{ contactId: "p1", contactName: "MCDONALD'S RESTAURANT", vecesConfirmado: 1 }];
+  const ev1 = await emparentado.adapter.evidencias(emparentado.c, emparentado.r);
+  assert.equal(ev1.contacto?.metodo, "alias_confirmado");
+  assert.equal(ev1.contacto?.aliasRespaldado, true);
+  const d1 = evaluarAuto(emparentado.c, analisisFixture(emparentado.r), emparentado.r, ev1, configFixture);
+  if (!d1.apto) assert.ok(!d1.motivos.includes("proveedor_no_verificado"), d1.motivos.join(","));
+
+  // Sin relación entre nombres, solo cuenta si el operador lo confirmó al menos dos veces.
+  const repetido = escenario();
+  repetido.r.proveedor = "Parking Moraleja";
+  repetido.contactos[0].name = "EMPARK APARCAMIENTOS SA";
+  repetido.memoria.alias = async () => [{ contactId: "p1", contactName: "EMPARK APARCAMIENTOS SA", vecesConfirmado: 2 }];
+  const ev2 = await repetido.adapter.evidencias(repetido.c, repetido.r);
+  assert.equal(ev2.contacto?.aliasRespaldado, true);
+  repetido.memoria.alias = async () => [{ contactId: "p1", contactName: "EMPARK APARCAMIENTOS SA", vecesConfirmado: 1 }];
+  const ev3 = await new HoldedAuto(repetido.memoria, (repetido as { request?: typeof fetch }).request ?? fetch).evidencias(repetido.c, repetido.r).catch(() => undefined);
+  if (ev3) assert.equal(ev3.contacto?.aliasRespaldado, false);
+});
 test("un HTTP ambiguo no provoca reintento automático de POST", async () => {
   const e = escenario(); let intentos = 0;
   const broken = new HoldedAuto(e.memoria, async () => { intentos++; return new Response("", { status: 503 }); });

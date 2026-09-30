@@ -3,7 +3,7 @@ import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccio
 import { evaluarCuentaContable, type CompraPrecedente, type CuentaContableReal } from "../../holded/cuentaContableContexto";
 import { mapearInversionSujetoPasivoATaxKey, normalizarEtiquetaHolded, tieneCategoriaGastoAprendida,
   type TaxCatalogEntry } from "../../holded/write";
-import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValida, hash, monedaRegistroPlanAuto, movimientoEnVentanaAuto, nombresProveedorCompatibles, nombresProveedorEquivalentes,
+import { candidatosMovimientoAuto, centimosComparablesMovimientoAuto, fechaValida, hash, monedaRegistroPlanAuto, movimientoEnVentanaAuto, nombresProveedorCompatibles, nombresProveedorEmparentados, nombresProveedorEquivalentes,
   normalizar, normalizarProveedorComparable, proveedorEnDescripcion, similitudProveedor, toleranciaMontoAuto,
   VENTANA_DIAS_MOVIMIENTO_AUTO_ADELANTE, VENTANA_DIAS_MOVIMIENTO_AUTO_ATRAS,
   VERSION_POLITICA, type CorreoAuto, type EmpresaAuto, type EvidenciaAuto, type MovimientoAuto, type OperacionAuto, type ReciboAuto } from "./model";
@@ -44,7 +44,7 @@ function centimos(raw: unknown, admiteFormatoES = false): number {
 }
 const KEYS: Record<EmpresaAuto, string> = { WOBA: "HOLDED_API_KEY_WOBA", EWORKS: "HOLDED_API_KEY_EWORKS", Footprint: "HOLDED_API_KEY_FOOTPRINT" };
 export interface MemoriaHoldedAuto {
-  alias(empresa: EmpresaAuto, proveedor: string, moneda?: string): Promise<Array<{ contactId: string; contactName: string }>>;
+  alias(empresa: EmpresaAuto, proveedor: string, moneda?: string): Promise<Array<{ contactId: string; contactName: string; vecesConfirmado?: number }>>;
   duplicadoInterno(c: CorreoAuto, r: ReciboAuto): Promise<boolean>;
   cuentaConfirmada?(empresa: EmpresaAuto, proveedor: string): Promise<{ cuentaId: string; confirmadoEn: string } | undefined>;
 }
@@ -346,7 +346,12 @@ export class HoldedAuto {
         // No autoriza alias sin relación ni variantes geográficas de una marca.
         exacto: metodo === "nombre_exacto" || metodo === "nombre_equivalente" ||
           (metodo === "alias_confirmado" && normalizarProveedorExacto(seleccionados[0].name) === normalizarProveedorExacto(r.proveedor)), metodo,
-        similitud: similitudProveedor(seleccionados[0].name, r.proveedor) };
+        similitud: similitudProveedor(seleccionados[0].name, r.proveedor),
+        // Respaldo del alias: el contacto y el nombre leído están emparentados, o el operador confirmó ese mismo
+        // alias al menos dos veces. Un alias único entre nombres sin relación no basta.
+        ...(metodo === "alias_confirmado" ? { aliasRespaldado:
+          nombresProveedorEmparentados(seleccionados[0].name, r.proveedor) ||
+          alias.some(a => a.contactId === seleccionados[0].id && (a.vecesConfirmado ?? 0) >= 2) } : {}) };
     }
     if (!e.contacto && !e.motivoProveedor) e.motivoProveedor = "sin_coincidencias";
     if (await this.memoria.duplicadoInterno(c, r)) e.duplicados.push("historial_o_propuesta_pendiente");
