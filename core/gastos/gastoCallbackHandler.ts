@@ -62,6 +62,7 @@ import {
 import { guardarPendienteSeleccionGasto, type PendienteSeleccionGasto } from "./pendienteSeleccionGastoStore";
 import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { debeRecordarProveedorAprobado, registrarAliasProveedor } from "./proveedorAliasSheet";
+import { registrarGastoDescartadoPorOperador } from "./gastoDescartadoPorOperadorStore";
 import { registrarAsignacionCuenta } from "../holded/asignacionCuentaLogSheet";
 import { marcarGastoDesdeCorreoCompletado, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
 import {
@@ -1452,7 +1453,15 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       await limpiarArchivoLocal(propuesta.rutaLocal);
       if (propuesta.deColaCorreo) {
         await finalizarGastoCorreoAntesDeRender(
-          async () => undefined,
+          // La decisión de NO registrar este gasto queda guardada: sin esto, cada revisión volvía a leer el mismo
+          // adjunto y a proponer el mismo gasto (caso real Telefónica 208,60 €, cancelado varias veces).
+          () => propuesta.correoOrigen?.mensajeIdGmail
+            ? registrarGastoDescartadoPorOperador({
+                mensajeIdGmail: propuesta.correoOrigen.mensajeIdGmail,
+                attachmentId: propuesta.origenAdjuntoGmail?.partId,
+                proveedor: propuesta.proveedor, monto: propuesta.monto, moneda: propuesta.moneda,
+              })
+            : Promise.resolve(),
           () => avanzarColaCorreoSiActivo(
             propuesta.chatId,
             { threadId: propuesta.correoOrigen?.threadId, mensajeId: propuesta.correoOrigen?.mensajeIdGmail },
