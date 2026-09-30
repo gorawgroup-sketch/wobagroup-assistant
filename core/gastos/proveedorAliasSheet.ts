@@ -135,6 +135,23 @@ export function monedaDeAliasCoincide(monedaFila: string, monedaEsperada: string
   return monedaFila.trim().toUpperCase() === monedaEsperada.trim().toUpperCase();
 }
 
+/**
+ * ¿Hace falta recordar que el nombre leído del comprobante corresponde a ese contacto de Holded?
+ *
+ * Caso real (Carlos, 2026-09-30): la revisión automática paraba con «Se encontró «MCDONALD'S RESTAURANT», pero falta
+ * confirmar que sea el proveedor correcto» para proveedores que el operador ya había aprobado varias veces en la
+ * revisión uno a uno. La aprobación con botón de un gasto cuyo contacto no se llama igual que el proveedor leído ES
+ * esa confirmación, pero solo se guardaba el alias cuando el operador forzaba otro contacto.
+ *
+ * No se aprende si los nombres ya coinciden (no hay nada que recordar) ni con el contacto genérico compartido.
+ */
+export function debeRecordarProveedorAprobado(nombreDetectado: string, nombreContacto: string | undefined): boolean {
+  const detectado = normalizar(nombreDetectado ?? "");
+  const contacto = normalizar(nombreContacto ?? "");
+  if (!detectado || !contacto || detectado === contacto) return false;
+  return !/proveedor sin identificar/.test(contacto);
+}
+
 /** Busca un alias ya confirmado para este proveedor+empresa (match exacto tras normalizar) — ver monedaDeAliasCoincide. */
 export async function buscarAliasProveedor(
   empresa: Empresa,
