@@ -326,3 +326,9 @@ Cuando un comercio cobra de más y devuelve después la diferencia, la propuesta
 ambos movimientos. Al pulsar **✅ Confirmar edición**: ajusta el valor de la compra al neto que salió del banco,
 enlaza el reembolso y después el resto del cargo, leyendo Holded tras cada paso. Se detiene en el primer resultado
 que no puede confirmar y lo dice en el mismo mensaje.
+
+### Notas de voz
+
+Graba una nota con el micrófono de Telegram (hasta tres minutos). Wobi responde «🎙️ Entendí: …» con el texto
+transcrito y sigue por el mismo flujo que un mensaje escrito; todo lo que pide confirmación con botón la sigue
+pidiendo. Si la nota no se puede leer, lo dice y no ejecuta nada. Detalle en `docs/notas-voz-telegram.md`.

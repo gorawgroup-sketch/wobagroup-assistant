@@ -38,6 +38,14 @@ export interface TelegramMessage {
   text?: string;
   caption?: string;
   reply_to_message?: TelegramMessage;
+  /** Nota de voz grabada con el micrófono de Telegram (ver core/telegram/voiceInput.ts). */
+  voice?: {
+    file_id: string;
+    file_unique_id: string;
+    duration: number;
+    mime_type?: string;
+    file_size?: number;
+  };
   document?: TelegramDocument;
   /** Telegram manda varias resoluciones; la última es la más grande. */
   photo?: TelegramPhotoSize[];

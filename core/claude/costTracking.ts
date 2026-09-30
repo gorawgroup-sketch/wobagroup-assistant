@@ -168,13 +168,15 @@ async function ensureTab(): Promise<void> {
  * factura por separado). La pasarela espera este registro antes de permitir
  * que avance una ráfaga: la telemetría es también la barrera del presupuesto.
  */
-export type AutenticacionIA = "anthropic_api_key" | "claude_subscription" | "chatgpt_subscription";
+export type AutenticacionIA = "anthropic_api_key" | "claude_subscription" | "chatgpt_subscription" | "openai_api_key";
 
 export interface MetadatosUsoIA {
   proceso: string;
   autenticacion?: AutenticacionIA;
   ejecucionId?: string;
   llamadaNumero?: number;
+  /** Coste ya calculado por el llamador (p. ej. transcripción de voz con OpenAI, que no sigue la tarifa de Anthropic). */
+  costoUSD?: number;
 }
 
 export async function registrarUsoIA(
@@ -187,10 +189,12 @@ export async function registrarUsoIA(
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const costoUSD = calcularCostoUSD(usage, modelo);
+  const costoUSD = metadata.costoUSD ?? calcularCostoUSD(usage, modelo);
   const autenticacion = metadata.autenticacion ?? "anthropic_api_key";
-  const gastoRealApiUSD = autenticacion === "anthropic_api_key" ? costoUSD : 0;
-  const costoEquivalenteSuscripcionUSD = autenticacion === "anthropic_api_key" ? 0 : costoUSD;
+  // Una clave de API (Anthropic u OpenAI) es gasto real; una suscripción solo tiene coste equivalente.
+  const esClaveApi = autenticacion === "anthropic_api_key" || autenticacion === "openai_api_key";
+  const gastoRealApiUSD = esClaveApi ? costoUSD : 0;
+  const costoEquivalenteSuscripcionUSD = esClaveApi ? 0 : costoUSD;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
