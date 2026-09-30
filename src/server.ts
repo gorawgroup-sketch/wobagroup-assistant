@@ -710,7 +710,13 @@ app.post("/api/cerebro/seguros/marcar-pago", async (req: Request, res: Response)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[api/cerebro/seguros/marcar-pago] Error:", message);
-    res.status(500).json({ error: message });
+    // Hallazgo real (PR #216, nunca fusionado, redescubierto el 2026-09-30 al revisar por qué
+    // seguía abierto): este catch devolvía el mensaje de error crudo (`error: message`) directo
+    // al cliente — puede traer detalles internos (rutas, errores de la API de Google, etc.) que
+    // no deberían salir de este endpoint. Igual que el resto de rutas administrativas del
+    // sistema, el detalle real queda en el log del servidor; el cliente solo recibe un mensaje
+    // genérico.
+    res.status(500).json({ error: "No se pudo actualizar el estado de pago de la póliza." });
   }
 });
 

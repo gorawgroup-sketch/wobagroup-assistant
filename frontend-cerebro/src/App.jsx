@@ -2042,6 +2042,7 @@ const ESTADO_PAGO_COLOR = {
 function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
   const [empresaAbierta, setEmpresaAbierta] = useState(null);
   const [polizasLocal, setPolizasLocal] = useState(null);
+  const [confirmandoId, setConfirmandoId] = useState(null);
   const [marcandoId, setMarcandoId] = useState(null);
   const [errorSeguros, setErrorSeguros] = useState("");
 
@@ -2053,8 +2054,16 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
 
   const polizas = polizasLocal || get(estado, "polizas", []);
 
+  // Confirmación en dos pasos (hallazgo real del PR #216, nunca fusionado, redescubierto el
+  // 2026-09-30): el primer clic solo arma el botón ("confirmar pago"), el segundo clic ejecuta
+  // de verdad — marcar como pagada una póliza real (ej. la del showroom que Allianz puso en
+  // suspenso) con un solo clic accidental podía esconder un impago real sin que nadie lo notara.
   const marcarPagado = async (id) => {
     if (!apiKey || marcandoId) return;
+    if (confirmandoId !== id) {
+      setConfirmandoId(id);
+      return;
+    }
     setMarcandoId(id);
     setErrorSeguros("");
     try {
@@ -2068,9 +2077,10 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
       if (json?.poliza) {
         setPolizasLocal((prev) => (prev || get(estado, "polizas", [])).map((p) => (p.id === id ? json.poliza : p)));
       }
+      setConfirmandoId(null);
       await onRefresh("manual");
     } catch {
-      setErrorSeguros("No se pudo marcar la póliza como pagada. Vuelve a intentarlo.");
+      setErrorSeguros("No se pudo marcar la póliza como pagada. No se cambió el registro; vuelve a intentarlo.");
     } finally {
       setMarcandoId(null);
     }
@@ -2130,23 +2140,32 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
                     <div style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{p.notas}</div>
                   )}
                   {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && puedeArreglar && (
-                    <button
-                      onClick={() => marcarPagado(p.id)}
-                      disabled={marcandoId === p.id}
-                      style={{
-                        marginTop: 8,
-                        background: "none",
-                        border: `1px solid ${C.amberBright}`,
-                        color: C.amberBright,
-                        borderRadius: 6,
-                        padding: "5px 10px",
-                        fontFamily: C.mono,
-                        fontSize: 10.5,
-                        cursor: marcandoId === p.id ? "default" : "pointer",
-                      }}
-                    >
-                      {marcandoId === p.id ? "marcando…" : "marcar como pagado"}
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                      <button
+                        onClick={() => marcarPagado(p.id)}
+                        disabled={marcandoId === p.id}
+                        style={{
+                          background: "none",
+                          border: `1px solid ${C.amberBright}`,
+                          color: C.amberBright,
+                          borderRadius: 6,
+                          padding: "5px 10px",
+                          fontFamily: C.mono,
+                          fontSize: 10.5,
+                          cursor: marcandoId === p.id ? "default" : "pointer",
+                        }}
+                      >
+                        {marcandoId === p.id ? "marcando…" : confirmandoId === p.id ? "confirmar pago" : "marcar como pagado"}
+                      </button>
+                      {confirmandoId === p.id && marcandoId !== p.id && (
+                        <button
+                          onClick={() => setConfirmandoId(null)}
+                          style={{ background: "none", border: "none", color: C.dim, padding: "5px 2px", fontFamily: C.mono, fontSize: 10, cursor: "pointer" }}
+                        >
+                          cancelar
+                        </button>
+                      )}
+                    </div>
                   )}
                   {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && !puedeArreglar && (
                     <div style={{ marginTop: 8, fontFamily: C.mono, fontSize: 9.5, color: C.dim }}>requiere admin para confirmar pago</div>
