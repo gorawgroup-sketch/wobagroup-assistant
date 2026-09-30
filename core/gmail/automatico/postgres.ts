@@ -171,7 +171,17 @@ export function operacionPendienteConflictaConObjetivo(
   if (!objetivo) return false;
 
   const movimiento = objetivo.path.match(/\/bank-movements\/([^/]+)\/reconcile$/)?.[1];
-  if (movimiento) return operacion.plan.movimiento.id === decodeURIComponent(movimiento);
+  if (movimiento) {
+    if (operacion.plan.movimiento.id !== decodeURIComponent(movimiento)) return false;
+    // Caso real (Rappi, Footprint, 2026-09-30): una operación «incierta» reservaba su cargo y, a la vez, solo podía
+    // cerrarse cuando ese cargo figurase conciliado con su compra. El operador aprobó terminar exactamente ese
+    // enlace y la reserva lo rechazó: bloqueo sin salida. Conciliar el cargo de la operación contra la compra de la
+    // propia operación no choca con ella, es su trabajo pendiente. Cualquier otro documento sigue bloqueado.
+    const documentos = Array.isArray(cuerpoObjetivo(objetivo).documents) ? cuerpoObjetivo(objetivo).documents as unknown[] : [];
+    const soloSuCompra = documentos.length > 0 && documentos.every((d) =>
+      Boolean(operacion.compraId) && (d as { document_id?: unknown })?.document_id === operacion.compraId);
+    return !(operacion.estado === "incierta" && soloSuCompra);
+  }
 
   const compraEnRuta = objetivo.path.match(/^\/purchases\/([^/]+)\/(?:attachments|payments)$/)?.[1];
   if (compraEnRuta) return operacion.compraId === decodeURIComponent(compraEnRuta);
