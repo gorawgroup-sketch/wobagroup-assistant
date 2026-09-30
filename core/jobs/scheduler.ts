@@ -18,6 +18,7 @@ import { invalidarEstadoCerebro } from "../cerebro/estadoAgregado";
 import { publicarCambioCerebro } from "../cerebro/realtime";
 import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaContable";
 import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos";
+import { revisarAlertasSeguros } from "./revisarAlertasSeguros";
 import { esperarPrioridadInteractiva } from "./jobPriority";
 import {
   CRON_CORREO_HABIL_SILENCIOSO,
@@ -241,6 +242,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarAjustesCambioRevertidos programado: diario 8:45 (${TIMEZONE})`);
+
+  cron.schedule(
+    "50 8 * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarAlertasSeguros", () => revisarAlertasSeguros());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarAlertasSeguros programado: diario 8:50 (${TIMEZONE})`);
 
   cron.schedule(
     "5 * * * *",
