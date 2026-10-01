@@ -95,8 +95,9 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
       return (
         `Encontré "${resultado.asunto}" (de ${resultado.de}) y mandé a archivar sus ${resultado.adjuntos ?? ""} adjunto(s) como ` +
         "documentos: cada uno que no estuviera ya archivado tiene arriba en el chat su propuesta de carpeta con el botón " +
-        "«✅ Sí, archivar aquí» (o «✏️ Elegir otra carpeta»). No se propuso ningún gasto. Los que van a la carpeta de " +
-        "seguros los leerá Wobi Seguros al archivarse." + notaRemitenteOriginal
+        "«✅ Sí, archivar aquí» (o «✏️ Elegir otra carpeta»). Los que van a la carpeta de seguros los leerá Wobi Seguros " +
+        "al archivarse. Si alguno de esos adjuntos tiene todavía abierta una propuesta de GASTO más arriba, dile al " +
+        "usuario que la cancele: archivar no la cierra." + notaRemitenteOriginal
       );
     }
 

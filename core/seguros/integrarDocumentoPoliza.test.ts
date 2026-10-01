@@ -29,6 +29,8 @@ test("sin suplemento (o con uno que el registro no tiene) se enlaza con la póli
   assert.equal(buscarPolizaDelDocumento(registro, "023S00453RCG", "")?.id, "woba_rc_markel");
   assert.equal(buscarPolizaDelDocumento(registro, "054239034", "")?.id, "woba_showroom_2026_2027");
   assert.equal(buscarPolizaDelDocumento(registro, "054239034", "7")?.id, "woba_showroom_2026_2027");
+  // El suplemento «3» no es el «3.3».
+  assert.equal(buscarPolizaDelDocumento(registro, "023S00453RCG", "3")?.id, "woba_rc_markel");
 });
 
 test("un número que no está en el registro, o demasiado corto, no se enlaza con nada", () => {
@@ -110,6 +112,8 @@ test("Wobi Seguros lee lo que va a la carpeta de seguros o lo que el lector marc
   assert.equal(esDocumentoParaWobiSeguros(clasificacion("EUROPA"), "SEGURO / POLIZA"), true);
   assert.equal(esDocumentoParaWobiSeguros(clasificacion("Contratos", true)), true);
   assert.equal(esDocumentoParaWobiSeguros(clasificacion("Facturas 2026")), false);
+  assert.equal(esDocumentoParaWobiSeguros(clasificacion("RECURSOS HUMANOS / Seguridad Social")), false);
+  assert.equal(esDocumentoParaWobiSeguros(clasificacion("Seguros Sociales 2026")), false);
 });
 
 test("el clasificador puede pedir el contenido de una carpeta profunda por su ruta", async () => {

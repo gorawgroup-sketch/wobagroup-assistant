@@ -54,6 +54,7 @@ import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasShe
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
+import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
 import {
@@ -922,6 +923,16 @@ async function procesarCorreoLocalizado(
         continue;
       }
 
+      // «Solo archivar»: si este adjunto ya tiene una propuesta de archivo esperando (p. ej. la que publicó la cola),
+      // no se crea otra; dos propuestas del mismo adjunto acaban en dos copias en Drive.
+      if (opciones.soloArchivar) {
+        const pendientes = await obtenerPropuestasClasificacionPorChat(chatId);
+        if (pendientes.some((p) => p.correoOrigen?.mensajeIdGmail === correo.id && p.correoOrigen?.partId === adjunto.partId)) {
+          await sendTelegramMessage(chatId, `📄 "${adjunto.filename}" ya tiene arriba su propuesta de archivo pendiente: usa su botón «✅ Sí, archivar aquí».`).catch(() => {});
+          continue;
+        }
+      }
+
       try {
         const bytes = await descargarAdjunto(correo.id, adjunto.attachmentId);
         await mkdir(UPLOADS_DIR, { recursive: true });
@@ -1011,6 +1022,12 @@ async function procesarCorreoLocalizado(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
+        // «Solo archivar» es una petición puntual fuera de la cola: un reintento técnico (acción de cola) descuadraría
+        // los pendientes del correo activo. Se avisa y basta con volver a pedirlo.
+        if (opciones.soloArchivar) {
+          await sendTelegramMessage(chatId, `⚠️ No pude preparar el archivado de "${adjunto.filename}" (${message}). Pídemelo de nuevo en un momento.`).catch(() => {});
+          continue;
+        }
         // No marcar como leído ni avanzar: el adjunto NO se procesó. La
         // acción persistida evita que el activo quede bloqueado sin botones.
         await publicarReintentoTecnico(

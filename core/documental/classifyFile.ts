@@ -223,9 +223,11 @@ const SYSTEM_PROMPT = [
   "Los documentos de seguros (pólizas, condiciones particulares, suplementos, certificados) van en la carpeta de " +
     "seguros de la empresa del tomador. No te quedes en la carpeta general: lista su contenido y el de sus " +
     "subcarpetas (dos niveles) antes de decidir. Si existe una subcarpeta del AÑO o ciclo en curso (su nombre lleva " +
-    "el año, ej. 'SEGURO WOBA 2026'), esa es la carpeta de todos los documentos de pólizas de ese ciclo, por encima " +
-    "de carpetas temáticas más antiguas: propón la ruta completa ('SEGUROS📜 / EUROPA / SEGURO WOBA 2026') con " +
-    "confianza alta. Solo si no hay carpeta del año, usa la carpeta específica de esa póliza. Si el texto dice " +
+    "el año Y dice que es de seguros, ej. 'SEGURO WOBA 2026'), esa es la carpeta de todos los documentos de pólizas de " +
+    "ese ciclo, por encima de carpetas temáticas más antiguas: propón la ruta completa ('SEGUROS📜 / EUROPA / SEGURO " +
+    "WOBA 2026') con confianza alta. Si la subcarpeta del año tiene un nombre genérico que puede repetirse en otras " +
+    "partes del Drive (solo '2026', 'Facturas'…), NO la propongas: propón la carpeta de seguros que la contiene. Solo " +
+    "si no hay carpeta del año, usa la carpeta específica de esa póliza. Si el texto dice " +
     "'Leído del contenido: …', eso viene de quien sí leyó el documento: dale prioridad sobre el nombre del archivo.",
   "Marca es_documento_de_referencia=true cuando el documento sea material corporativo de consulta (normativa, " +
     "compliance, políticas, manuales, contratos marco…): así se le recuerda al usuario que puede guardarlo como conocimiento.",
@@ -354,7 +356,13 @@ export async function clasificarDocumento(
           // Causa real de que nunca se propusiera una carpeta de tercer nivel (caso «SEGUROS📜 / EUROPA / SEGURO WOBA
           // 2026», 2026-10-01): carpeta_padre se buscaba SOLO entre las de primer nivel, así que pedir el contenido
           // de «EUROPA» devolvía vacío y el clasificador se quedaba en la carpeta general. Ahora admite una ruta.
-          const nombres = await listarCarpetasEnRuta(rootId, rutaDeCarpetaPadre(input.carpeta_padre));
+          // Primero el nombre tal cual (hay carpetas reales con «/» en el nombre, como «SEGURO / POLIZA» de eWorks);
+          // si no existe una así, se interpreta como ruta.
+          const entero = (input.carpeta_padre ?? "").trim();
+          let nombres = await listarCarpetasEnRuta(rootId, entero ? [entero] : []);
+          if (nombres.length === 0 && entero.includes("/")) {
+            nombres = await listarCarpetasEnRuta(rootId, rutaDeCarpetaPadre(entero));
+          }
           resultado = nombres.length > 0
             ? nombres.join("\n")
             : "(sin subcarpetas ahí; si la carpeta no es de primer nivel, pasa en carpeta_padre su ruta completa desde la raíz, ej. 'SEGUROS📜 / EUROPA')";

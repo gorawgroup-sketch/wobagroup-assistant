@@ -76,7 +76,9 @@ export const consultarPolizasSeguroTool: ToolDefinition = {
     }
     const describirDocumento = (d: DocumentoPoliza) =>
       `      · ${d.tipoDocumento || "documento"}${d.fechaDocumento ? ` (${d.fechaDocumento})` : ""} — archivo "${d.nombreArchivo}"` +
-      `${d.enlaceDrive ? ` ${d.enlaceDrive}` : ""}${d.prima ? ` — prima ${d.prima}` : ""}\n        ${d.resumen}`;
+      `${d.enlaceDrive ? ` ${d.enlaceDrive}` : ""}${d.prima ? ` — prima ${d.prima}` : ""}\n        ` +
+      // En el listado va lo esencial; el texto completo está en el documento (leer_documento_drive).
+      (d.resumen.length > 900 ? `${d.resumen.slice(0, 900)}… (resumen recortado: lee el documento para el detalle)` : d.resumen);
 
     const todas = await listarPolizas();
     const polizas = empresa ? todas.filter((p) => p.empresa === empresa) : todas;

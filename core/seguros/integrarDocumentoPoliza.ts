@@ -39,7 +39,8 @@ export function buscarPolizaDelDocumento<T extends Pick<Poliza, "id" | "numeroPo
   if (sup) {
     // Números que la fila menciona tras el de la póliza: «(Suplemento nº 2 / 54239034.2)» → 2 y 54239034.2.
     const mencionaSuplemento = (p: T) =>
-      (p.numeroPoliza.replace(/^[A-Za-z0-9]+/, "").match(/\d+(?:\.\d+)*/g) ?? []).some((n) => n === sup || n.endsWith(`.${sup}`));
+      (p.numeroPoliza.replace(/^[A-Za-z0-9]+/, "").match(/\d+(?:\.\d+)*/g) ?? [])        // «54239034.2» es «póliza.suplemento»; «3.3» es otro suplemento, no el «3».
+        .some((n) => n === sup || (n.endsWith(`.${sup}`) && n.slice(0, -sup.length - 1).length >= 5));
     const delSuplemento = candidatas.find((p) => esFilaDeSuplemento(p) && mencionaSuplemento(p));
     if (delSuplemento) return delSuplemento;
   }

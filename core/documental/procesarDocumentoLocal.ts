@@ -155,7 +155,7 @@ export interface DocumentoLocalEntrante {
 export async function procesarDocumentoLocal(
   entrada: DocumentoLocalEntrante
 ): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "gasto_duplicado" | "archivo"> {
-  if (esArchivoEml(entrada.mimeType, entrada.nombreArchivoOriginal)) {
+  if (!entrada.soloArchivar && esArchivoEml(entrada.mimeType, entrada.nombreArchivoOriginal)) {
     return procesarAdjuntoEml(entrada);
   }
 

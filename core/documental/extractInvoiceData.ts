@@ -361,8 +361,8 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
     "La documentación de una PÓLIZA DE SEGURO (condiciones particulares o generales, suplemento, certificado, nota de " +
       "cobertura, carta de garantía, cotización o propuesta de seguro) NO es una factura ni un gasto, aunque indique la " +
       "prima o un recibo previsto: describe el contrato, no un pago. Reporta es_factura_o_gasto=false y " +
-      "es_documento_poliza=true. Solo el RECIBO de prima ya cobrado, la carta de pago o la factura de la correduría " +
-      "son un gasto. En general, un documento corporativo de referencia (normativa, compliance, políticas, contratos, " +
+      "es_documento_poliza=true. El RECIBO de prima, el aviso de cobro, la carta de pago o la factura de la correduría " +
+      "sí son un gasto (es_factura_o_gasto=true), también si vienen en el mismo PDF que la póliza. En general, un documento corporativo de referencia (normativa, compliance, políticas, contratos, " +
       "certificados, escrituras) tampoco es un gasto por el hecho de mencionar importes.",
     "Un DUA o documento de despacho aduanero (declaración de importación/exportación, liquidación de la aduana, " +
       "«documento único administrativo») NO es una factura: el IVA de importación, aranceles y tasas que muestra " +
@@ -641,10 +641,11 @@ export async function extraerDatosFactura(
         tratamientoFiscal: "inversion_sujeto_pasivo",
       };
 
-      const esDocumentoPoliza = input.es_documento_poliza === true || input.es_documento_poliza === "true";
+      // Si el lector dice que ES un gasto (p. ej. un recibo de prima dentro del mismo PDF), manda eso: la marca de
+      // póliza solo cuenta cuando el documento no es un gasto.
+      const esDocumentoPoliza = !esFacturaOGasto && (input.es_documento_poliza === true || input.es_documento_poliza === "true");
       return {
-        // Una póliza nunca entra al canal de gastos, aunque el lector marque ambas cosas a la vez.
-        esFacturaOGasto: esFacturaOGasto && !esDocumentoPoliza,
+        esFacturaOGasto,
         ...(esDocumentoPoliza ? { esDocumentoPoliza: true } : {}),
         ...(!esFacturaOGasto && typeof input.razon === "string" && input.razon.trim() ? { razonNoGasto: input.razon.trim().slice(0, 400) } : {}),
         proveedor,
