@@ -334,7 +334,7 @@ async function buildSystemPromptDinamico(
 
   if (chatId !== undefined) {
     // Reutiliza la lectura ya hecha en orquestarTurno (obtenerPendientesSensibles) cuando
-    // viene provista — evita repetir las mismas 5 lecturas de Sheets dos veces por turno.
+    // viene provista — evita repetir las mismas 6 lecturas de Sheets dos veces por turno.
     // Solo se vuelve a consultar acá si por algún motivo no llegó prefetch (defensivo).
     const pendientes = pendientesPrefetch ?? (await obtenerPendientesSensibles(chatId));
     const { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto, gastoPropuesta } = pendientes;

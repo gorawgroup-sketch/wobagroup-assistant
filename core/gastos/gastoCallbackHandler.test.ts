@@ -429,31 +429,36 @@ test("el soporte y los reintentos conservan la empresa y el concepto corregidos"
 // reponerPropuestaParaReintento/reponerVerificacionCreacionIncierta/reponerSoloCierrePropuesta/
 // reponerSoloCierreCancelacion son funciones privadas (no exportadas) que llaman a
 // restaurarPropuestaGasto directo — se verifica por texto fuente, mismo patrón que el test de arriba.
-test("toda reposición/creación de una propuesta atascada fija motivoReintento", async () => {
+// Solo reponerPropuestaParaReintento y manejarFechaBloqueada fijan motivoReintento — hallazgo real de
+// la revisión adversarial de este mismo cambio: reponerVerificacionCreacionIncierta/
+// reponerSoloCierrePropuesta/reponerSoloCierreCancelacion construyen un teclado de UN SOLO botón a
+// mano (fuera de construirTecladoGasto), precisamente para impedir repetir una escritura incierta en
+// Holded. Si se avisaran como "atascadas" (PendientesSensibles.gastoPropuesta), el modelo podría usar
+// reenviar_botones_propuesta_gasto para reponerlas — esa tool reconstruye el teclado GENÉRICO completo
+// (✅ Crear/❌ Cancelar incluidos), reabriendo el riesgo de doble escritura que esas pantallas existen
+// para evitar. Ver el comentario de PropuestaGasto.motivoReintento (gastoProposalSheet.ts).
+test("solo reponerPropuestaParaReintento y manejarFechaBloqueada fijan motivoReintento — nunca las reposiciones de teclado restringido", async () => {
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
 
   assert.match(
     fuente,
     /async function reponerPropuestaParaReintento[\s\S]{0,700}?motivoReintento: mensaje,/,
-    "reponerPropuestaParaReintento — se llama en TODOS los catch de creación/corrección de gasto"
-  );
-  assert.match(
-    fuente,
-    /async function reponerVerificacionCreacionIncierta\(propuesta: PropuestaGasto, mensaje: string\): Promise<void> \{\s*const restaurada = await restaurarPropuestaGasto\(\{ \.\.\.propuesta, seleccionAcciones: \[\], motivoReintento: mensaje \}\);/
-  );
-  assert.match(
-    fuente,
-    /async function reponerSoloCierrePropuesta\(\s*propuesta: PropuestaGasto,\s*mensaje: string\s*\): Promise<void> \{\s*const restaurada = await restaurarPropuestaGasto\(\{ \.\.\.propuesta, seleccionAcciones: \[\], motivoReintento: mensaje \}\);/
-  );
-  assert.match(
-    fuente,
-    /async function reponerSoloCierreCancelacion\(\s*propuesta: PropuestaGasto,\s*mensaje: string\s*\): Promise<void> \{\s*const restaurada = await restaurarPropuestaGasto\(\{ \.\.\.propuesta, seleccionAcciones: \[\], motivoReintento: mensaje \}\);/
+    "reponerPropuestaParaReintento — se llama en TODOS los catch de creación/corrección de gasto, siempre con el teclado genérico (o la variante soportePendiente/conciliacionPendiente que construirTecladoGasto ya sabe reconstruir)"
   );
   assert.match(
     fuente,
     /motivoReintento: texto,\s*\}\);/,
-    "manejarFechaBloqueada crea una propuesta NUEVA (no una reposición) pero igual de atascada — debe fijarlo explícito, no heredarlo del spread"
+    "manejarFechaBloqueada crea una propuesta NUEVA (no una reposición) pero igual de atascada — debe fijarlo explícito, no heredarlo del spread — y su teclado genérico (gasto_nuevo/gasto_cancelar) es equivalente al restringido que reemplaza"
   );
+
+  const cuerpoVerificacionIncierta = fuente.match(/async function reponerVerificacionCreacionIncierta[\s\S]{0,700}?\n\}/)?.[0] ?? "";
+  assert.doesNotMatch(cuerpoVerificacionIncierta, /motivoReintento/, "teclado de un solo botón (verificar sin repetir) — no debe avisarse como atascada");
+
+  const cuerpoCierrePropuesta = fuente.match(/async function reponerSoloCierrePropuesta[\s\S]{0,700}?\n\}/)?.[0] ?? "";
+  assert.doesNotMatch(cuerpoCierrePropuesta, /motivoReintento/, "teclado de un solo botón (finalizar correo) — no debe avisarse como atascada");
+
+  const cuerpoCierreCancelacion = fuente.match(/async function reponerSoloCierreCancelacion[\s\S]{0,700}?\n\}/)?.[0] ?? "";
+  assert.doesNotMatch(cuerpoCierreCancelacion, /motivoReintento/, "teclado de un solo botón (finalizar descarte) — no debe avisarse como atascada");
 });
 
 // Ver extraerContextoLibreDeCorreccion — ambos caminos de "Corregir clasificación" (el botón
@@ -669,6 +674,48 @@ test("prepararPropuestaFinalGasto persiste el contextoDeViaje/reciboSimplificado
   assert.equal(final.reciboSimplificado, true);
 });
 
+// Hallazgo real de la revisión adversarial de este mismo cambio: personaAsociada ya contaba como
+// cambio semántico (dispara reinferencia aunque ya exista cuentaId), pero contextoDeViaje/
+// reciboSimplificado no — una corrección que SOLO trajera esos campos (sin forzarReinferencia ni
+// cambiar empresa/concepto/proveedor) se habría saltado inferirCuenta, dejando la cuenta/tags viejos
+// desacoplados del contexto de viaje recién corregido.
+test("un contextoDeViaje/reciboSimplificado corregido dispara reinferencia aunque ya exista cuentaId, sin forzarReinferencia", async () => {
+  const propuesta = {
+    id: "p-viaje-4",
+    empresa: "Footprint",
+    proveedor: "Proveedor",
+    monto: 10,
+    moneda: "EUR",
+    fecha: "2026-09-20",
+    concepto: "Gasto",
+    rutaLocal: "/tmp/recibo.pdf",
+    nombreArchivoOriginal: "recibo.pdf",
+    candidatos: [],
+    lineas: [],
+    chatId: 1,
+    messageId: 2,
+    creadoEn: 3,
+    cuentaId: "cuenta-vieja-sin-viaje",
+    cuentaTags: ["categoria-vieja"],
+  } satisfies PropuestaGasto;
+
+  let inferirCuentaLlamado = false;
+  const final = await prepararPropuestaFinalGasto(
+    propuesta,
+    { empresa: "Footprint", concepto: propuesta.concepto, contextoDeViaje: true },
+    {
+      inferirCuenta: async () => {
+        inferirCuentaLlamado = true;
+        return { accountId: "cuenta-viaje-nueva", tags: ["viaje"], ejemplo: "precedente", aprendidoDe: "viaje" };
+      },
+      combinarTags: combinarTagsGastoAprendidos,
+    }
+  );
+
+  assert.equal(inferirCuentaLlamado, true, "contextoDeViaje por sí solo debe disparar inferirCuenta, aunque ya haya un cuentaId y no se pida forzarReinferencia");
+  assert.equal(final.cuentaId, "cuenta-viaje-nueva");
+});
+
 // Caso real de auditoría (Carlos, Droguería Pura / Simon Talloen, Footprint, 2026-10-01): "es un
 // gasto de viaje de Simon Talloen" debe fijar contextoDeViaje y personaAsociada desde texto libre.
 // Deliberadamente conservadora (ver su comentario en gastoCallbackHandler.ts): personaAsociada SOLO
@@ -697,6 +744,45 @@ test("extraerContextoLibreDeCorreccion reconoce viaje/persona de forma conservad
     extraerContextoLibreDeCorreccion("Footprint, parking aeropuerto"),
     { contextoDeViaje: undefined, personaAsociada: undefined },
     "una corrección normal sin ninguna mención de viaje no fija nada — se conserva lo que ya tenía la propuesta"
+  );
+});
+
+// Hallazgo real de la revisión adversarial de este mismo cambio: la primera versión solo miraba si
+// "viaje" aparecía en cualquier parte del texto, sin mirar si estaba siendo negado — una corrección
+// que quería decir "esto NO es de viaje" terminaba fijando contextoDeViaje=true, justo lo contrario.
+test("extraerContextoLibreDeCorreccion nunca fija contextoDeViaje=true ante una negación", () => {
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("no es un gasto de viaje"),
+    { contextoDeViaje: undefined, personaAsociada: undefined }
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("ya no es un viaje, es normal"),
+    { contextoDeViaje: undefined, personaAsociada: undefined }
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("nunca fue un gasto de viaje de Simon Talloen"),
+    { contextoDeViaje: undefined, personaAsociada: undefined },
+    "la negación también suprime personaAsociada — no tiene sentido extraer la persona de una cláusula que niega el viaje"
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("es un gasto de viaje de Simon Talloen, no es reembolsable"),
+    { contextoDeViaje: true, personaAsociada: "Simon Talloen" },
+    "una negación LEJOS de 'viaje' (sobre otra cosa) no debe suprimir una mención real de viaje"
+  );
+});
+
+// Hallazgo real de la revisión adversarial: exigir SIEMPRE mayúscula inicial perdía en silencio una
+// corrección tecleada rápido y sin mayúsculas — contextoDeViaje se fijaba bien, pero personaAsociada
+// se perdía sin ningún aviso.
+test("extraerContextoLibreDeCorreccion reconoce una persona tecleada en minúsculas si el resto del texto tampoco usa mayúsculas", () => {
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("es un gasto de viaje de simon talloen"),
+    { contextoDeViaje: true, personaAsociada: "simon talloen" }
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("viaje de Simon Talloen, pero el resto en minúsculas"),
+    { contextoDeViaje: true, personaAsociada: "Simon Talloen" },
+    "si el texto SÍ usa mayúsculas en algún lado tras 'viaje de', se mantiene la exigencia estricta (evita capturar una palabra genérica como 'trabajo')"
   );
 });
 

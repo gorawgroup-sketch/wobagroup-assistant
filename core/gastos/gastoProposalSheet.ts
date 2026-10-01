@@ -184,12 +184,21 @@ export interface PropuestaGasto {
   reciboSimplificado?: boolean;
   ticketDeEquipo?: boolean;
   /**
-   * Último aviso con el que se repuso esta propuesta (ver reponerPropuestaParaReintento y las demás
-   * reponerSoloCierre.../reponerVerificacionCreacionIncierta en gastoCallbackHandler.ts, todas las
-   * funciones que llaman a restaurarPropuestaGasto) — nunca se fija al crear una propuesta nueva por
+   * Último aviso con el que se repuso esta propuesta — ver reponerPropuestaParaReintento y
+   * manejarFechaBloqueada en gastoCallbackHandler.ts. Nunca se fija al crear una propuesta nueva por
    * el camino normal (procesarGastoEntrante.ts → crearPropuestaGasto), SOLO cuando algo interrumpió
-   * el camino feliz (duplicado, soporte incierto, conciliación sin terminar, cuenta contable no
-   * inferida, etc.) y la propuesta quedó repuesta esperando otra decisión.
+   * el camino feliz (duplicado, conciliación sin terminar, cuenta contable no inferida, fecha
+   * bloqueada, etc.) y la propuesta quedó repuesta esperando otra decisión CON EL MISMO TECLADO
+   * genérico que construirTecladoGasto ya sabe reconstruir correctamente (incluida la variante
+   * restringida por candidatos[].soportePendiente/conciliacionPendiente).
+   *
+   * A propósito NUNCA se fija en reponerVerificacionCreacionIncierta/reponerSoloCierrePropuesta/
+   * reponerSoloCierreCancelacion (gastoCallbackHandler.ts) — hallazgo real de la revisión adversarial
+   * de este mismo cambio: esas tres pantallas construyen un teclado de UN SOLO botón a mano, fuera de
+   * construirTecladoGasto, precisamente para impedir repetir una escritura incierta en Holded. Si se
+   * avisaran acá como "atascadas", el modelo podría usar reenviar_botones_propuesta_gasto para
+   * reponerlas — esa tool reconstruye el teclado GENÉRICO completo (✅ Crear/❌ Cancelar incluidos),
+   * reabriendo exactamente el riesgo de doble escritura que esas pantallas restringidas evitan.
    *
    * Mismo patrón que PendientesSensibles.correoPropuesto (core/claude/client.ts, PR #280) — pero a
    * diferencia de un borrador de correo (evento poco frecuente), una propuesta de gasto pendiente es

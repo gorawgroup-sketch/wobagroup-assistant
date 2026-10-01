@@ -357,7 +357,16 @@ export async function prepararPropuestaFinalGasto(
     cambios.empresa !== propuesta.empresa ||
     concepto.toLowerCase() !== propuesta.concepto.trim().toLowerCase() ||
     proveedorAprendizaje.toLowerCase() !== propuesta.proveedor.trim().toLowerCase() ||
-    Boolean(cambios.personaAsociada);
+    Boolean(cambios.personaAsociada) ||
+    // Hallazgo real de la revisión adversarial de este mismo cambio: personaAsociada ya contaba como
+    // cambio semántico, pero contextoDeViaje/reciboSimplificado (agregados al objeto que esta función
+    // devuelve más abajo) no — un llamador futuro que solo corrigiera contextoDeViaje, sin
+    // forzarReinferencia ni cambiar empresa/concepto/proveedor, se saltaría inferirCuenta por tener ya
+    // un cuentaId, dejando la cuenta/tags viejos desacoplados del contexto de viaje recién corregido.
+    // !== undefined (no Boolean(...)) porque false explícito también es una corrección real — ver el
+    // test "un contextoDeViaje explícito en cambios... gana sobre el de la propuesta original".
+    cambios.contextoDeViaje !== undefined ||
+    cambios.reciboSimplificado !== undefined;
 
   let cuentaId = propuesta.cuentaId;
   let tagsAprendidos = propuesta.cuentaTags ?? [];
@@ -446,7 +455,16 @@ async function reponerPropuestaParaReintento(
 }
 
 async function reponerVerificacionCreacionIncierta(propuesta: PropuestaGasto, mensaje: string): Promise<void> {
-  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [], motivoReintento: mensaje });
+  // A propósito NO se fija motivoReintento acá — hallazgo real de la revisión adversarial de este
+  // mismo cambio: el teclado de abajo es un único botón de solo-verificación, construido a mano fuera
+  // de construirTecladoGasto/opcionesTecladoDesdePropuesta (gastoTeclado.ts) porque "nunca repite un
+  // POST incierto" es la garantía completa de esta pantalla. Si esta propuesta se avisara como
+  // "atascada" (PendientesSensibles.gastoPropuesta, client.ts) y el modelo usara
+  // reenviar_botones_propuesta_gasto para reponerla, esa tool reconstruye el teclado GENÉRICO
+  // (reenviarPropuestaGasto.ts → construirTecladoGasto), que no sabe nada de este estado restringido
+  // — mostraría de nuevo "✅ Crear"/"❌ Cancelar" normales, exactamente el riesgo de doble escritura
+  // en Holded que esta pantalla restringida existe para evitar.
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
   const teclado = [[{
     text: "🔎 Verificar estado sin repetir la creación",
     callback_data: `gasto_nuevo:${restaurada.id}`,
@@ -1272,7 +1290,10 @@ async function reponerSoloCierrePropuesta(
   propuesta: PropuestaGasto,
   mensaje: string
 ): Promise<void> {
-  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [], motivoReintento: mensaje });
+  // Sin motivoReintento — mismo motivo que reponerVerificacionCreacionIncierta: el único botón real
+  // ("Finalizar correo ya resuelto") está construido a mano, no vía construirTecladoGasto, y
+  // reenviar_botones_propuesta_gasto lo reemplazaría por el teclado genérico completo.
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
   const botones = [[{
     text: "✅ Finalizar correo ya resuelto",
     callback_data: `gasto_cerrar_propuesta:${restaurada.id}`,
@@ -1290,7 +1311,8 @@ async function reponerSoloCierreCancelacion(
   propuesta: PropuestaGasto,
   mensaje: string
 ): Promise<void> {
-  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [], motivoReintento: mensaje });
+  // Sin motivoReintento — mismo motivo que reponerVerificacionCreacionIncierta.
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
   const botones = [[{
     text: "✅ Finalizar descarte del correo",
     callback_data: `gasto_cancelar:${restaurada.id}`,
@@ -3859,25 +3881,41 @@ function parsearCorreccionClasificacion(
  * explícitamente en vez de depender solo de lo que detectó el documento original.
  *
  * Deliberadamente conservadora para no inventar clasificaciones que el operador no dijo con claridad:
- * - contextoDeViaje se activa con que el texto mencione la palabra "viaje" en cualquier parte — nunca
- *   false explícito (nada en este flujo pide "confirmar que NO es de viaje"), así que el resultado es
- *   siempre true o undefined (deja el valor existente de la propuesta sin tocar).
+ * - Una negación cerca de "viaje" ("no es un gasto de viaje", "nunca fue un viaje") no fija NADA —
+ *   hallazgo real de la revisión adversarial de este mismo cambio: la primera versión solo miraba si
+ *   "viaje" aparecía en cualquier parte del texto, así que una corrección que quería decir
+ *   explícitamente "esto NO es de viaje" terminaba fijando contextoDeViaje=true, justo lo contrario.
+ * - Sin negación, contextoDeViaje se activa con que el texto mencione la palabra "viaje" en cualquier
+ *   parte — nunca false explícito (nada en este flujo pide "confirmar que NO es de viaje" más allá de
+ *   la negación de arriba), así que el resultado es siempre true o undefined (deja el valor existente
+ *   de la propuesta sin tocar).
  * - personaAsociada SOLO se extrae cuando el nombre sigue directo a "viaje de" (ej. "viaje de Simon
  *   Talloen", "de viaje de Nuria Ortiz") — nunca cualquier "de <Nombre propio>" suelto en el texto,
  *   que capturaría mal nombres de proveedor/lugar en correcciones normales (ej. "factura de
- *   Mediterránea" no debe convertir "Mediterránea" en una persona). Por el mismo motivo que
- *   personaAsociada en el resto del sistema no valida contra ningún catálogo (ver el test "aprobar
- *   conserva la persona del correo aunque no figure en el catálogo histórico"), esto puede capturar
- *   un lugar si el texto literalmente dice "viaje de <Lugar>" — el operador puede corregirlo igual
- *   que corregiría cualquier otro campo mal inferido, no es peor que aceptar cualquier texto suelto.
+ *   Mediterránea" no debe convertir "Mediterránea" en una persona). Exige mayúscula inicial (señal de
+ *   nombre propio) SALVO que el resto del texto tras "viaje de" no use ninguna mayúscula — hallazgo
+ *   real de la revisión: exigirla siempre perdía en silencio una corrección tecleada rápido y sin
+ *   mayúsculas (ej. "es un gasto de viaje de simon talloen"). Por el mismo motivo que personaAsociada
+ *   en el resto del sistema no valida contra ningún catálogo (ver el test "aprobar conserva la persona
+ *   del correo aunque no figure en el catálogo histórico"), esto puede capturar un lugar o una palabra
+ *   genérica si el texto literalmente dice "viaje de <Lugar/Palabra>" — el operador puede corregirlo
+ *   igual que corregiría cualquier otro campo mal inferido, no es peor que aceptar cualquier texto
+ *   suelto.
  * - reciboSimplificado/ticketDeEquipo NUNCA se infieren de texto libre — sin un disparador tan claro
  *   como "viaje", inventarlos arriesgaría una clasificación contable equivocada.
  */
 export function extraerContextoLibreDeCorreccion(texto: string): { contextoDeViaje?: boolean; personaAsociada?: string } {
+  const negado = /\b(no|nunca)\b[^.,;]{0,25}\bviaje\b/i.test(texto);
+  if (negado) return { contextoDeViaje: undefined, personaAsociada: undefined };
+
   const contextoDeViaje = /\bviaje\b/i.test(texto) || undefined;
   const trasViajeDe = /\bviaje\s+de\s+/i.exec(texto);
   const resto = trasViajeDe ? texto.slice(trasViajeDe.index + trasViajeDe[0].length) : "";
-  const matchPersona = resto.match(/^([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ'-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ'-]*){0,2})/);
+  const restoTieneMayuscula = /[A-ZÁÉÍÓÚÑ]/.test(resto);
+  const patronNombre = restoTieneMayuscula
+    ? /^([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ'-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ'-]*){0,2})/
+    : /^([a-záéíóúñ][\wáéíóúñ'-]*(?:\s+[a-záéíóúñ][\wáéíóúñ'-]*){0,2})/;
+  const matchPersona = resto.match(patronNombre);
   return { contextoDeViaje, personaAsociada: matchPersona?.[1]?.trim() };
 }
 
