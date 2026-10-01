@@ -485,7 +485,92 @@ test("una corrección reinfiere cuenta y categoría sin arrastrar las anteriores
     personaAsociada: "Nuria Ortiz",
     contextoDeViaje: undefined,
     reciboSimplificado: undefined,
+    ticketDeEquipo: undefined,
   });
+});
+
+// Caso real de auditoría (Carlos, Droguería Pura / Simon Talloen, Footprint, 2026-10-01): la
+// propuesta ORIGINAL calculaba contextoDeViaje=true (ticket individual de alguien de viaje) y por eso
+// acertó la cuenta contable la primera vez — pero una reinferencia posterior (ej. al "Aprobar
+// selección" tras una conciliación) perdía esa señal porque `cambios` nunca la trae (un botón no
+// "corrige" el contexto de viaje) y antes no había ningún respaldo en la propuesta. Para un proveedor
+// nuevo sin precedente propio, eso hacía fallar la reinferencia con CuentaContableNoInferidaError,
+// contradiciendo la propuesta que el operador ya había visto funcionar.
+test("una reinferencia recupera contextoDeViaje/reciboSimplificado/ticketDeEquipo de la propuesta original, no los pierde", async () => {
+  const propuesta = {
+    id: "p-viaje",
+    empresa: "Footprint",
+    proveedor: "Droguería Pura",
+    monto: 14800,
+    moneda: "COP",
+    fecha: "2026-09-24",
+    concepto: "Compra farmacia",
+    rutaLocal: "/tmp/recibo.pdf",
+    nombreArchivoOriginal: "recibo.pdf",
+    candidatos: [],
+    lineas: [],
+    chatId: 1,
+    messageId: 2,
+    creadoEn: 3,
+    personaAsociada: "Simon Talloen",
+    contextoDeViaje: true,
+    reciboSimplificado: true,
+    ticketDeEquipo: true,
+  } satisfies PropuestaGasto;
+
+  let criteriosRecibidos: Record<string, unknown> | undefined;
+  const final = await prepararPropuestaFinalGasto(
+    propuesta,
+    { empresa: "Footprint", concepto: propuesta.concepto, forzarReinferencia: true },
+    {
+      inferirCuenta: async (_empresa, criterios) => {
+        criteriosRecibidos = criterios;
+        return { accountId: "cuenta-viaje", tags: [], ejemplo: "precedente", aprendidoDe: "viaje" };
+      },
+      combinarTags: combinarTagsGastoAprendidos,
+    }
+  );
+
+  assert.equal(final.cuentaId, "cuenta-viaje");
+  assert.equal(criteriosRecibidos?.contextoDeViaje, true);
+  assert.equal(criteriosRecibidos?.reciboSimplificado, true);
+  assert.equal(criteriosRecibidos?.ticketDeEquipo, true);
+  assert.equal(final.cuentaTags?.includes("viaje"), true, "combinarTags también debe recuperar contextoDeViaje de la propuesta original, no solo inferirCuenta");
+});
+
+test("un contextoDeViaje explícito en cambios (ej. corrección manual) gana sobre el de la propuesta original", async () => {
+  const propuesta = {
+    id: "p-viaje-2",
+    empresa: "Footprint",
+    proveedor: "Proveedor",
+    monto: 10,
+    moneda: "EUR",
+    fecha: "2026-09-20",
+    concepto: "Gasto",
+    rutaLocal: "/tmp/recibo.pdf",
+    nombreArchivoOriginal: "recibo.pdf",
+    candidatos: [],
+    lineas: [],
+    chatId: 1,
+    messageId: 2,
+    creadoEn: 3,
+    contextoDeViaje: true,
+  } satisfies PropuestaGasto;
+
+  let criteriosRecibidos: Record<string, unknown> | undefined;
+  await prepararPropuestaFinalGasto(
+    propuesta,
+    { empresa: "Footprint", concepto: propuesta.concepto, contextoDeViaje: false, forzarReinferencia: true },
+    {
+      inferirCuenta: async (_empresa, criterios) => {
+        criteriosRecibidos = criterios;
+        return { accountId: "cuenta-x", tags: [], ejemplo: "precedente", aprendidoDe: "categoria" };
+      },
+      combinarTags: combinarTagsGastoAprendidos,
+    }
+  );
+
+  assert.equal(criteriosRecibidos?.contextoDeViaje, false);
 });
 
 test("sin cuenta aprendida la reinferencia falla cerrado y nunca usa default", async () => {
