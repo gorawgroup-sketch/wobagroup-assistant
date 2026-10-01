@@ -1,3 +1,4 @@
+import { paginarMovimientosBancarios } from "./paginarMovimientos";
 import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConciliacionCompra";
 import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
@@ -5036,30 +5037,25 @@ export async function buscarMovimientoSimilar(
   let aprendidos: Promise<ConciliacionVerificadaAprendida[]> | undefined;
 
   for (const cuenta of cuentas) {
-    const params = new URLSearchParams({
-      start_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde),
-      end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
-      limit: "100",
-    });
-    const data = (await holdedWriteCall(
-      empresa,
-      "GET",
-      `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
-    )) as {
-      has_more?: boolean;
-      items?: Array<{
-        id: string;
-        description?: string;
-        amount?: string | number;
-        currency?: string;
-        accounting_amount?: string | number | null;
-        booking_date?: string;
-        status?: string;
-        reconciled_amount?: string | number;
-      }>;
-    };
-
-    if (criterios.fechaExacta && data.has_more) throw new Error("Consulta bancaria incompleta; no se descartan duplicados.");
+    // TODAS las páginas del rango: leer solo la primera dejaba invisible cualquier cargo más antiguo que los
+    // movimientos más recientes de la cuenta (ver paginarMovimientos.ts, caso citizenM/Booking 124,91 €).
+    const data = { items: await paginarMovimientosBancarios<{
+      id: string;
+      description?: string;
+      amount?: string | number;
+      currency?: string;
+      accounting_amount?: string | number | null;
+      booking_date?: string;
+      status?: string;
+      reconciled_amount?: string | number;
+    }>(
+      (parametros) => holdedWriteCall(empresa, "GET",
+        `/treasury/accounts/${cuenta.id}/bank-movements?${new URLSearchParams(parametros).toString()}`),
+      {
+        start_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde),
+        end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
+      }
+    ) };
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
       /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
@@ -5263,26 +5259,20 @@ export async function buscarMovimientoAproximado(
   const candidatos: MovimientoBancarioAproximado[] = [];
 
   for (const cuenta of cuentas) {
-    const params = new URLSearchParams({
-      start_date: formatDateLocal(desde),
-      end_date: formatDateLocal(hasta),
-      limit: "100",
-    });
-    const data = (await holdedWriteCall(
-      empresa,
-      "GET",
-      `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
-    )) as {
-      items?: Array<{
-        id: string;
-        description?: string;
-        amount?: string | number;
-        currency?: string;
-        accounting_amount?: string | number | null;
-        booking_date?: string;
-        status?: string;
-      }>;
-    };
+    const data = { items: await paginarMovimientosBancarios<{
+      id: string;
+      description?: string;
+      amount?: string | number;
+      currency?: string;
+      accounting_amount?: string | number | null;
+      booking_date?: string;
+      status?: string;
+      reconciled_amount?: string | number;
+    }>(
+      (parametros) => holdedWriteCall(empresa, "GET",
+        `/treasury/accounts/${cuenta.id}/bank-movements?${new URLSearchParams(parametros).toString()}`),
+      { start_date: formatDateLocal(desde), end_date: formatDateLocal(hasta) }
+    ) };
 
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
