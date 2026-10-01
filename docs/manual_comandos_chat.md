@@ -346,3 +346,16 @@ registrarlo, se pide por chat.
 Wobi propone en un solo mensaje las altas y correcciones de esas dos secciones (fila, semana, valor, año) y las aplica
 con **✅ Aplicar todo**, una a una y verificando cada escritura por relectura; **❌ Cancelar** no toca nada. Una cuota
 con su fila ya preparada a mano (concepto puesto, sin valor) se rellena en esa misma fila.
+
+## Canal de documentos corporativos (aparte del de gastos) — pólizas, normativa, compliance
+
+Pedido explícito de Carlos (01-10-2026), tras un caso real: un correo de la correduría con las condiciones de la RC y el suplemento del showroom; el suplemento mencionaba su prima y se propuso como gasto, no se podía archivar y nada llegaba a Wobi Seguros.
+
+- **Una póliza no es un gasto.** Condiciones particulares/generales, suplementos, certificados y cotizaciones de seguro se reconocen por su contenido y van al archivado, aunque indiquen la prima. Solo el recibo cobrado, la carta de pago o la factura de la correduría son gasto.
+- **Carpeta.** Se propone la carpeta de seguros de la empresa y, si existe, la subcarpeta del año en curso (ej. `SEGUROS📜 / EUROPA / SEGURO WOBA 2026`). El clasificador ya puede listar subcarpetas de cualquier nivel.
+- **Wobi Seguros lo lee solo.** Al pulsar "✅ Sí, archivar aquí" en un documento de póliza (o en cualquier documento que vaya a una carpeta de seguros), Wobi Seguros lo lee, lo enlaza con su póliza del registro por el número y lo guarda en su conocimiento (pestaña `_documentos_polizas`). El mensaje de archivado lo confirma. No cambia el registro de pólizas: solo añade conocimiento.
+- **"Guarda en Drive los adjuntos del correo de X" / "eso no es un gasto, archívalo".** Wobi reprocesa ese correo en modo solo archivar (`revisar_correo_puntual` con `solo_archivar`): cada adjunto aún no archivado recibe su propuesta de carpeta, aunque antes se hubiera propuesto como gasto y cancelado, y aunque sea el correo activo de la cola.
+- **"Dile a Wobi Seguros que lea X"** para un documento que ya está en Drive: `integrar_documento_seguro` lo busca, lo lee y lo integra.
+- **Preguntar después.** "¿Qué cubre la RC de WOBA?", "¿qué cambió con el suplemento del showroom?": `consultar_polizas_seguro` devuelve cada póliza con los documentos leídos (resumen y enlace de Drive); para una cláusula concreta, Wobi abre el documento completo.
+- **Otros documentos de referencia** (normativa, compliance, políticas, contratos marco): la propuesta de archivado recuerda que con "🧠 Guardar como conocimiento" su contenido queda consultable.
+

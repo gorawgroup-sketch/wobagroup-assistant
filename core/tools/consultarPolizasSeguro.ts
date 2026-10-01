@@ -1,5 +1,6 @@
 import { listarPolizas } from "../seguros/polizaRegistroSheet";
 import { calcularAlertasSeguros } from "../seguros/alertas";
+import { listarDocumentosPoliza, type DocumentoPoliza } from "../seguros/documentosPolizaStore";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -35,7 +36,10 @@ export const consultarPolizasSeguroTool: ToolDefinition = {
     "tener el detalle completo (de dónde salió el dato, qué decisión está esperando el usuario, etc.) — " +
     "inclúyelo o resúmelo si la pregunta lo amerita, no te quedes solo con los campos estructurados. Si " +
     "hay algo urgente (ej. una póliza en suspenso por impago con plazo corriendo) dilo primero y con " +
-    "claridad, no lo mezcles al final de una lista larga.",
+    "claridad, no lo mezcles al final de una lista larga. Cada póliza trae además los DOCUMENTOS que Wobi Seguros ya " +
+    "leyó (condiciones, suplementos…) con su resumen y su enlace de Drive: responde con ese resumen y, si hace falta " +
+    "un detalle que no está en él (una cláusula, una exclusión concreta), lee el documento completo con " +
+    "leer_documento_drive usando su nombre de archivo.",
   input_schema: {
     type: "object",
     properties: {
@@ -60,6 +64,19 @@ export const consultarPolizasSeguroTool: ToolDefinition = {
         ? input.empresa
         : undefined;
     const soloPendientes = input.soloPendientes === true;
+
+    // El conocimiento documental es un complemento: si su lectura falla, la consulta del registro sigue respondiendo.
+    let documentos: DocumentoPoliza[] = [];
+    let avisoDocumentos = "";
+    try {
+      documentos = await listarDocumentosPoliza();
+    } catch (error) {
+      console.error("[consultarPolizasSeguro] No se pudieron leer los documentos de pólizas:", error instanceof Error ? error.message : error);
+      avisoDocumentos = "\n\n(No pude leer ahora los documentos de pólizas integrados; el registro de arriba sí está completo.)";
+    }
+    const describirDocumento = (d: DocumentoPoliza) =>
+      `      · ${d.tipoDocumento || "documento"}${d.fechaDocumento ? ` (${d.fechaDocumento})` : ""} — archivo "${d.nombreArchivo}"` +
+      `${d.enlaceDrive ? ` ${d.enlaceDrive}` : ""}${d.prima ? ` — prima ${d.prima}` : ""}\n        ${d.resumen}`;
 
     const todas = await listarPolizas();
     const polizas = empresa ? todas.filter((p) => p.empresa === empresa) : todas;
@@ -112,10 +129,19 @@ export const consultarPolizasSeguroTool: ToolDefinition = {
           p.fechaVencimiento ? `vence: ${p.fechaVencimiento}` : null,
         ].filter(Boolean);
         const notas = p.notas ? `\n    Notas: ${p.notas}` : "";
-        return `- ${partes.join(" — ")}${notas}`;
+        const suyos = documentos.filter((d) => d.polizaId === p.id);
+        const docs = suyos.length > 0 ? `\n    Documentos leídos por Wobi Seguros:\n${suyos.map(describirDocumento).join("\n")}` : "";
+        return `- ${partes.join(" — ")}${notas}${docs}`;
       })
       .join("\n");
 
-    return `${polizas.length} póliza(s)${empresa ? ` de ${empresa}` : ""}:\n\n${detalle}\n\n---\n${alertasTexto}`;
+    const idsRegistro = new Set(todas.map((p) => p.id));
+    const sueltos = documentos.filter((d) => !idsRegistro.has(d.polizaId) && (!empresa || !d.empresa || d.empresa === empresa));
+    const bloqueSueltos = sueltos.length > 0
+      ? `\n\nDocumentos de seguros leídos que no corresponden a ninguna póliza del registro:\n` +
+        sueltos.map((d) => `  - [${d.empresa || "empresa sin identificar"}] ${d.numeroPoliza || "sin número"} ${d.aseguradora}\n${describirDocumento(d)}`).join("\n")
+      : "";
+
+    return `${polizas.length} póliza(s)${empresa ? ` de ${empresa}` : ""}:\n\n${detalle}${bloqueSueltos}${avisoDocumentos}\n\n---\n${alertasTexto}`;
   },
 };

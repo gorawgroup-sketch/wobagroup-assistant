@@ -37,7 +37,7 @@ function sanitizarNombre(nombre: string): string {
  * el archivo correcto suma 14 (control+accesos) contra 7 (solo "control")
  * de cualquier otro candidato — gana claro, sin necesitar "oficina".
  */
-function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string): DriveSearchResult | undefined {
+export function elegirMejorCandidato(resultados: DriveSearchResult[], consulta: string): DriveSearchResult | undefined {
   const palabrasConsulta = palabrasSignificativas(consulta);
   if (palabrasConsulta.length === 0) return undefined;
 

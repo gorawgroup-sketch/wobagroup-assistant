@@ -4,6 +4,7 @@ import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import type { PropuestaClasificacion } from "./classificationStore";
 import { esArchivoLocalInexistente } from "../drive/durableUpload";
+import { integrarDocumentoPoliza } from "../seguros/integrarDocumentoPoliza";
 
 export interface ResultadoArchivado {
   ok: boolean;
@@ -22,6 +23,32 @@ function extraerRutaCarpeta(carpetaSugerida: string): string[] {
 /** La misma ruta pero invertida — se prueba primero el segmento más específico (el último), para la búsqueda de resolverCarpetaDestino (nunca crea, solo busca en todo el árbol). */
 function extraerCandidatosCarpeta(carpetaSugerida: string): string[] {
   return extraerRutaCarpeta(carpetaSugerida).reverse();
+}
+
+/** El documento va a la carpeta de seguros o quien leyó su contenido lo marcó como póliza. */
+export function esDocumentoParaWobiSeguros(propuesta: Pick<PropuestaClasificacion, "clasificacion">, rutaDestino?: string): boolean {
+  return propuesta.clasificacion.esDocumentoPoliza === true ||
+    /segur|p[oó]liza/i.test(`${rutaDestino ?? ""} ${propuesta.clasificacion.carpetaSugerida}`);
+}
+
+async function avisarAWobiSeguros(propuesta: PropuestaClasificacion, rutaDestino: string | undefined, enlaceDrive?: string): Promise<string> {
+  if (!esDocumentoParaWobiSeguros(propuesta, rutaDestino)) return "";
+  try {
+    const resultado = await integrarDocumentoPoliza({
+      rutaLocal: propuesta.rutaLocal,
+      mimeType: propuesta.mimeType,
+      nombreArchivo: propuesta.nombreArchivoOriginal,
+      enlaceDrive: enlaceDrive ?? "",
+      origen: propuesta.correoOrigen
+        ? `Correo de ${propuesta.correoOrigen.de}, asunto "${propuesta.correoOrigen.asunto}".`
+        : "Documento enviado por chat.",
+    });
+    return resultado.mensaje ? `\n${resultado.mensaje}` : "";
+  } catch (error) {
+    console.error("[archiveFile] Wobi Seguros no pudo leer el documento archivado:", error instanceof Error ? error.message : error);
+    return `\n⚠️ El documento quedó archivado, pero Wobi Seguros no pudo leerlo ahora. Dime «que Wobi Seguros lea ` +
+      `${propuesta.nombreArchivoOriginal}» y lo reintento desde Drive.`;
+  }
 }
 
 /**
@@ -98,6 +125,11 @@ export async function archivarDocumentoEnDrive(
       );
     }
 
+    // Canal de documentos corporativos: un documento de póliza recién archivado se le pasa a Wobi Seguros para que
+    // lo lea e integre (antes de borrar la copia local, que es lo que lee). Nunca convierte un archivado correcto
+    // en un fallo: si la lectura falla, se dice y el documento sigue en Drive.
+    const notaSeguros = await avisarAWobiSeguros(propuesta, destino.rutaEncontrada, subida.webViewLink);
+
     // La subida puede haberse recuperado desde el ledger después de un
     // redeploy, cuando la copia temporal ya no existe. Una limpieza local
     // fallida nunca convierte un archivo verificado en un falso fallo.
@@ -117,7 +149,7 @@ export async function archivarDocumentoEnDrive(
 
     return {
       ok: true,
-      mensaje: `Subido a ${notaCarpeta}.`,
+      mensaje: `Subido a ${notaCarpeta}.${notaSeguros}`,
       webViewLink: subida.webViewLink,
     };
   } catch (error) {

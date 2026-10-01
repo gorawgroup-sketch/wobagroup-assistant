@@ -135,6 +135,11 @@ export interface DocumentoLocalEntrante {
    * final para que quede explícito ("Adjunto 2 de 2 de este correo").
    */
   notaAdjunto?: string;
+  /**
+   * El operador pidió expresamente guardar este documento (no es un gasto): va directo al archivado, sin leerlo
+   * como factura. Es el canal de documentos corporativos, aparte del de gastos.
+   */
+  soloArchivar?: boolean;
 }
 
 /**
@@ -154,7 +159,9 @@ export async function procesarDocumentoLocal(
     return procesarAdjuntoEml(entrada);
   }
 
-  if (await pareceLegibleComoFactura(entrada.rutaLocal, entrada.mimeType, entrada.nombreArchivoOriginal)) {
+  let esDocumentoPoliza = false;
+  let pistaContenido = "";
+  if (!entrada.soloArchivar && await pareceLegibleComoFactura(entrada.rutaLocal, entrada.mimeType, entrada.nombreArchivoOriginal)) {
     const datosFactura = await leerFacturaSinArchivarErrores(() =>
       extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo, entrada.nombreArchivoOriginal)
     );
@@ -190,7 +197,14 @@ export async function procesarDocumentoLocal(
       return "gasto_pendiente_datos";
     }
 
-
+    // El lector SÍ vio el contenido; el clasificador de carpetas solo ve nombre y texto. Lo que el lector concluyó
+    // (póliza de seguro, justificante aduanero…) se le pasa como pista para que elija bien la carpeta.
+    esDocumentoPoliza = datosFactura?.esDocumentoPoliza === true;
+    if (esDocumentoPoliza) {
+      pistaContenido = "Leído del contenido: es documentación de una PÓLIZA DE SEGURO (no un gasto); va en la carpeta " +
+        `de seguros de su empresa. Año en curso: ${new Date().getFullYear()}.` +
+        (datosFactura?.razonNoGasto ? ` ${datosFactura.razonNoGasto}` : "");
+    }
   }
 
   await manejarClasificacion({
@@ -199,9 +213,10 @@ export async function procesarDocumentoLocal(
     nombreArchivoOriginal: entrada.nombreArchivoOriginal,
     mimeType: entrada.mimeType,
     nombreParaClasificar: entrada.nombreParaClasificar,
-    captionEfectivo: entrada.captionEfectivo,
+    captionEfectivo: pistaContenido ? [pistaContenido, entrada.captionEfectivo].filter(Boolean).join("\n\n") : entrada.captionEfectivo,
     correoOrigen: entrada.correoOrigen,
     notaAdjunto: entrada.notaAdjunto,
+    esDocumentoPoliza,
   });
   return "archivo";
 }
