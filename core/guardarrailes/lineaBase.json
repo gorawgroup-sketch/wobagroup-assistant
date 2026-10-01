@@ -5,5 +5,5 @@
   "core/gmail/automatico/model.ts": 1,
   "core/gmail/automatico/service.ts": 2,
   "core/holded/write.ts": 5,
-  "core/jobs/revisarCorreoNuevo.ts": 16
+  "core/jobs/revisarCorreoNuevo.ts": 17
 }
