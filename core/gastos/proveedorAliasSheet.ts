@@ -166,6 +166,36 @@ export async function buscarAliasProveedor(
   return match ? { contactId: match.contactId, contactName: match.contactName } : undefined;
 }
 
+/**
+ * Entre varios contactos de Holded con el MISMO nombre (duplicados reales, p. ej. «… S.A.S» y «… SAS»), el que el
+ * operador ya eligió para este proveedor. Cuenta las confirmaciones de cualquier moneda: aquí no se decide entre
+ * marcas de países distintos, solo cuál de dos fichas idénticas se usa. Con empate o sin elección previa, undefined.
+ */
+export function contactoMasConfirmado(
+  filas: Array<Pick<FilaAlias, "contactId" | "vecesConfirmado">>,
+  contactIds: string[]
+): string | undefined {
+  const confirmaciones = new Map<string, number>();
+  for (const fila of filas) {
+    if (!contactIds.includes(fila.contactId)) continue;
+    confirmaciones.set(fila.contactId, (confirmaciones.get(fila.contactId) ?? 0) + Math.max(1, fila.vecesConfirmado || 0));
+  }
+  const orden = [...confirmaciones.entries()].sort((x, y) => y[1] - x[1]);
+  if (orden.length === 0) return undefined;
+  if (orden.length > 1 && orden[0][1] === orden[1][1]) return undefined;
+  return orden[0][0];
+}
+
+/** Ver contactoMasConfirmado. `mismoNombre` decide qué textos de proveedor cuentan como el mismo (normalización del llamador). */
+export async function buscarAliasEntreContactos(
+  empresa: Empresa,
+  mismoNombre: (nombreDetectado: string) => boolean,
+  contactIds: string[]
+): Promise<string | undefined> {
+  const filas = await leerFilas();
+  return contactoMasConfirmado(filas.filter((f) => f.empresa === empresa && mismoNombre(f.nombreDetectado)), contactIds);
+}
+
 const MAX_INTENTOS_ESCRITURA = 3;
 
 /**

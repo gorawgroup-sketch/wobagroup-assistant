@@ -8,6 +8,7 @@ import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { buscarCargoParaPropuesta, type ResultadoCargoPropuesta } from "./buscarCargoParaPropuesta";
+import { normalizarNombreContacto } from "../holded/durableContact";
 import { contextoCorreoCargoMayor, describirCargoMayor } from "../holded/cargoMayor";
 import { alinearTasaCambioAlMovimientoElegido } from "./alinearTasaAlMovimiento";
 import { alinearDocumentoAlCargoEnOtraMoneda } from "./alinearDocumentoAlCargo";
@@ -487,13 +488,21 @@ export async function finalizarGastoCorreoAntesDeRender(
   return true;
 }
 
+/** Fichas de Holded cuyo nombre es el del proveedor; dos o más son duplicados y no hay nada nuevo que crear. */
+function alternativasConElMismoNombre(resolucion: ResolucionContactoPendiente): AlternativaContacto[] {
+  const proveedor = normalizarNombreContacto(resolucion.propuesta.proveedor);
+  return proveedor ? resolucion.alternativas.filter((a) => normalizarNombreContacto(a.contactName) === proveedor) : [];
+}
+
 export function botonesResolucionContacto(resolucion: ResolucionContactoPendiente): InlineKeyboardButton[][] {
   const botones: InlineKeyboardButton[][] = resolucion.alternativas.map((alternativa, indice) => [{
     text: `✅ ${alternativa.contactName}`,
     callback_data: `gasto_usarcontacto:${resolucion.id}:${indice}`,
   }]);
   const proveedorReal = !esProveedorNoIdentificado(resolucion.propuesta.proveedor);
-  if (proveedorReal) {
+  // Con el proveedor ya duplicado en Holded, «Crear contacto nuevo» nunca puede funcionar (Holded devolvería otra
+  // coincidencia exacta): no se ofrece un botón que solo lleva a un error.
+  if (proveedorReal && alternativasConElMismoNombre(resolucion).length < 2) {
     botones.push([{
       text: `🆕 Crear contacto nuevo: "${resolucion.propuesta.proveedor}"`,
       callback_data: `gasto_crearcontactonuevo:${resolucion.id}`,
@@ -525,6 +534,16 @@ export function textoResolucionContacto(resolucion: ResolucionContactoPendiente)
   }
   const etiquetaMotivo = (a: AlternativaContacto) =>
     a.motivo === "nombre_parecido" ? "nombre parecido" : `mismo importe — ${a.detalle}`;
+  const duplicados = alternativasConElMismoNombre(resolucion);
+  if (duplicados.length > 1) {
+    return (
+      `⚠️ El proveedor "${resolucion.propuesta.proveedor}" está ${duplicados.length} veces en los contactos de Holded ` +
+      `(${resolucion.empresaFinal}) con el mismo nombre:\n\n` +
+      resolucion.alternativas.map((a, i) => `${i + 1}. ${a.contactName}`).join("\n") +
+      `\n\nElige cuál usar: lo recordaré y no volveré a preguntarlo. No hace falta crear otro contacto; ` +
+      `conviene unificar esas fichas en Holded. El gasto no se crea hasta que elijas.`
+    );
+  }
   return (
     `${encabezado}\n\nAlternativas encontradas:\n\n` +
     resolucion.alternativas.map((a, i) => `${i + 1}. ${a.contactName} (${etiquetaMotivo(a)})`).join("\n") +

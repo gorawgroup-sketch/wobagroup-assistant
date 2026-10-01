@@ -12,6 +12,7 @@ import {
   CuentaContableNoInferidaError,
   DescuadreFiscalGastoError,
   botonesResolucionContacto,
+  textoResolucionContacto,
   nombreProveedorParaBusqueda,
   ajustarPropuestaAlMovimientoRecomendado,
   type EstadoIntentoConciliacion,
@@ -687,4 +688,27 @@ test("una propuesta antigua sin fecha no permite aprobar ni reinferir", async ()
  await assert.rejects(prepararPropuestaFinalGasto(p,{empresa:"Footprint",concepto:p.concepto},{
  inferirCuenta: async()=>{throw new Error("No debe consultar ni mutar");}, combinarTags: combinarTagsGastoAprendidos,
  }),/Falta fecha documental verificable/);
+});
+
+test("proveedor duplicado en Holded: se elige entre las fichas y no se ofrece crear otro contacto (caso CAFE DE SANTA BARBARA)", () => {
+  const resolucion = {
+    id: "resolucion-duplicado",
+    propuesta: { id: "propuesta", proveedor: "CAFE DE SANTA BARBARA S.A.S" } as PropuestaGasto,
+    empresaFinal: "Footprint" as const,
+    conceptoFinal: "Alimentación",
+    alternativas: [
+      { contactId: "66d5", contactName: "CAFE DE SANTA BARBARA S.A.S", motivo: "nombre_parecido" as const },
+      { contactId: "6859", contactName: "CAFE DE SANTA BARBARA SAS", motivo: "nombre_parecido" as const },
+    ],
+    chatId: 77,
+    messageId: 801,
+    creadoEn: Date.now(),
+  };
+  assert.deepEqual(
+    botonesResolucionContacto(resolucion).flat().map((boton) => boton.text),
+    ["✅ CAFE DE SANTA BARBARA S.A.S", "✅ CAFE DE SANTA BARBARA SAS", "🆗 Crear sin contacto", "✏️ Dar instrucciones específicas"]
+  );
+  const texto = textoResolucionContacto(resolucion);
+  assert.match(texto, /está 2 veces en los contactos de Holded/);
+  assert.match(texto, /lo recordaré y no volveré a preguntarlo/);
 });
