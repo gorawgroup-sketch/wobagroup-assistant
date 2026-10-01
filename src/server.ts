@@ -748,6 +748,39 @@ app.options("/api/cerebro/seguros/marcar-pago", (_req: Request, res: Response) =
 });
 
 /**
+ * Hallazgo real de Carlos (2026-09-30/10-01): "el front de Seguros debería estar siempre
+ * actualizado, no debería tener que decírtelo yo". Causa raíz: el registro de pólizas
+ * (Sheet) se edita a menudo por FUERA de este servidor — scripts puntuales, o Carlos
+ * editando el Sheet directamente, el mismo patrón ya establecido para cashflow — y esas
+ * ediciones externas nunca pasan por invalidarEstadoCerebro(), así que una pestaña de
+ * Cerebro ya abierta nunca recibe el aviso en tiempo real "estado_actualizado" para ellas
+ * (solo lo recibe cuando la sección se repinta por una invalidación EXPLÍCITA en este
+ * proceso — ver seccionSWR.ts, alCompletarInvalidada). El refresco de fondo por caducidad
+ * (TTL 60s) sí termina trayendo el dato nuevo, pero sin avisar a quien ya tenía el panel
+ * abierto — hay que recargar o pulsar "actualizar" a mano para verlo.
+ *
+ * Esta ruta no lee datos sensibles ni escribe nada — solo dispara la MISMA invalidación que
+ * ya ocurre sola cada 60s, y el mismo aviso en tiempo real que ya dispara marcar-pago. Por
+ * eso no exige key maestra: no hay nada que proteger, es un "oye, revisa de nuevo" inofensivo
+ * que cualquiera (incluido un script externo tras editar el Sheet a mano) puede disparar para
+ * que quien ya tiene el panel abierto vea el cambio al instante en vez de esperar al próximo
+ * ciclo de refresco.
+ */
+app.post("/api/cerebro/seguros/invalidar", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "POST");
+  invalidarEstadoCerebro(["seguros"]);
+  publicarCambioCerebro("seguros:externo");
+  res.json({ ok: true });
+});
+
+app.options("/api/cerebro/seguros/invalidar", (_req: Request, res: Response) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "POST");
+  res.sendStatus(204);
+});
+
+/**
  * Diagnóstico Diario accionable — pedido explícito de Carlos: ante una incidencia crítica poder
  * resolverla desde el front, o saber exactamente qué hacer. Ninguna de estas rutas invoca un modelo.
  *
