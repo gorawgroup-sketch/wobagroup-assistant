@@ -7,6 +7,7 @@ import {
   verificarDuplicadoGastoEstricto,
   buscarMovimientoSimilar,
   buscarMovimientoAproximado,
+  buscarCargoMayorDelProveedor,
   buscarMovimientoEnMonedaAlternativa,
   inferirCuentaGasto,
   combinarTagsGastoAprendidos,
@@ -29,6 +30,7 @@ import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import { notaCargosMayores } from "../holded/cargoMayor";
 import {
   obtenerPoliticaMonedaLiquidacion,
   seleccionarMovimientoLiquidacionSeguro,
@@ -1056,6 +1058,20 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       }
     }
 
+    // Último recurso (cargoMayor.ts, caso Go Rent A Car): un cargo MAYOR del mismo proveedor del que este gasto puede
+    // ser solo una parte. Se ofrece como opción a elegir; nunca se recomienda ni se concilia solo.
+    let movimientosCargoMayor: Awaited<ReturnType<typeof buscarCargoMayorDelProveedor>> = [];
+    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
+        !movimientoMonedaAlternativa && !esProveedorNoIdentificado(datos.proveedor)) {
+      try {
+        movimientosCargoMayor = await buscarCargoMayorDelProveedor(
+          empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor }
+        );
+      } catch (error) {
+        console.error("[procesarGastoEntrante] Error buscando un cargo mayor del proveedor:", error);
+      }
+    }
+
     const notaAproximacion = usarEquivalente
       ? monedaParaHolded === "EUR"
         ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
@@ -1111,6 +1127,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
                 ? ` Ojo: hay ${movimientoMonedaAlternativa.otrosCandidatos} movimiento(s) más en ${movimientoMonedaAlternativa.moneda} igual de parecido(s) — no es un match único, revísalo con más cuidado.`
                 : "") +
               ` Confirma la moneda real antes de crear el gasto (no lo crees ni concilies todavía si no estás seguro).`
+            : movimientosCargoMayor.length > 0
+            ? notaCargosMayores(
+                movimientosCargoMayor,
+                { monto: montoParaHolded, moneda: monedaParaHolded, proveedor: datos.proveedor },
+                { hayCorreoOrigen: Boolean(propuesta.correoOrigen) }
+              )
             : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
               (!esProveedorNoIdentificado(datos.proveedor)
                 ? " — ni exacto ni aproximado por nombre y monto cercano"
@@ -1124,7 +1146,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // junto con la propuesta: al aprobar “Crear y conciliar” se usa ese
     // mismo accountId/movementId y no se repite una búsqueda mutable.
     if (movimientoAproximado) movimientoBancario = movimientoAproximado;
-    const movimientosParaElegir = candidatosMovAmbiguos.length > 0 ? candidatosMovAmbiguos : movimientosTipoCambio;
+    const movimientosParaElegir = candidatosMovAmbiguos.length > 0
+      ? candidatosMovAmbiguos
+      : movimientosTipoCambio.length > 0 ? movimientosTipoCambio : movimientosCargoMayor;
     const movimientosParaPersistir = movimientoBancario ? [movimientoBancario] : movimientosParaElegir;
 
     // Estos dos campos forman una sola promesa al operador: mostrar

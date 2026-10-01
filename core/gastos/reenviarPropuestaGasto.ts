@@ -1,5 +1,6 @@
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoParaPropuesta } from "./buscarCargoParaPropuesta";
+import { notaCargosMayores } from "../holded/cargoMayor";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
@@ -70,9 +71,11 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       movimientoRecomendado = r.movimientoRecomendado;
       movimientosAmbiguos = r.movimientosAmbiguos;
 
-      if (!movimientoEncontrado && movimientosAmbiguos.length === 0) {
+      // Un cargo en otra moneda que cuadra por tasa es mejor pista que un cargo mayor del mismo proveedor: gana si existe.
+      const soloCargoMayor = movimientosAmbiguos.length > 0 && movimientosAmbiguos.every((m) => m.origenCoincidencia === "cargo_mayor");
+      if (!movimientoEncontrado && (movimientosAmbiguos.length === 0 || soloCargoMayor)) {
         const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);
-        movimientosAmbiguos = await buscarMovimientosPorTipoCambio(
+        const porTipoCambio = await buscarMovimientosPorTipoCambio(
           propuesta.empresa,
           {
             monto: propuesta.monto,
@@ -82,6 +85,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
           },
           monedasReales
         );
+        if (porTipoCambio.length > 0 || !soloCargoMayor) movimientosAmbiguos = porTipoCambio;
       }
     } catch (error) {
       console.error("[reenviarPropuestaGasto] Error buscando movimiento bancario (no crítico):", error);
@@ -143,6 +147,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
               `en otra moneda/cuenta de ${propuesta.empresa} usando la tasa histórica como referencia:\n` +
               propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
+            : propuesta.movimientosAmbiguos.some((m) => m.origenCoincidencia === "cargo_mayor")
+              ? notaCargosMayores(propuesta.movimientosAmbiguos, propuesta, { hayCorreoOrigen: Boolean(propuesta.correoOrigen) })
             : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
           : `\n\n💳 No hay un cargo compatible confirmado. Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado antes de escribir) y conciliarlo cuando aparezca el cargo; la ausencia de cargo no demuestra un duplicado.` +
             (describirTrazaBusqueda(trazaBusqueda) ? `\n${describirTrazaBusqueda(trazaBusqueda)}` : "");
