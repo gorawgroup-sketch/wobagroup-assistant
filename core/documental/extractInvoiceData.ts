@@ -339,6 +339,15 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
     "Primero decide si es una factura, recibo, ticket o comprobante de un GASTO real (dinero que SALE " +
       "del grupo). Si es cualquier otra cosa (contrato, certificado, documento de RRHH, etc.), reporta " +
       "es_factura_o_gasto=false y no sigas extrayendo los demás campos.",
+    // Caso real (Carlos, 2026-10-01, Raminatrans/eWorks): el DUA de una importación se propuso como un gasto aparte
+    // de 5.852 € con una línea «base 27.863,43 + IVA 21 %», cuyo total fiscal (33.716,25) no cuadraba. Esos 5.852 €
+    // (IVA de importación + tasas) ya venían como suplido en la factura del agente de aduanas del mismo correo.
+    "Un DUA o documento de despacho aduanero (declaración de importación/exportación, liquidación de la aduana, " +
+      "«documento único administrativo») NO es una factura: el IVA de importación, aranceles y tasas que muestra " +
+      "los paga el grupo a través de la FACTURA DEL AGENTE DE ADUANAS o transitario, donde aparecen como suplidos. " +
+      "Reporta es_factura_o_gasto=false e indica en la razón que es el justificante aduanero de esa factura, para " +
+      "no registrar dos veces el mismo importe. La base imponible de un DUA es el valor de la mercancía, no un " +
+      "importe que se pague con ese documento: nunca la uses como base de una línea de gasto.",
     "IMPORTANTE — dirección del dinero: el grupo también FACTURA y COBRA a sus propios clientes en " +
       "muchos proyectos. Una factura de VENTA que el grupo emite, o una certificación de obra/avance de " +
       "proyecto (la contrapartida habitual de esa venta), es un INGRESO — nunca es_factura_o_gasto=true, " +
