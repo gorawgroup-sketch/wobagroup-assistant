@@ -31,6 +31,11 @@ export interface CriteriosCargoPropuesta {
   monto: number;
   moneda: string;
   fecha: string;
+  /**
+   * false cuando la búsqueda se repite bajo una decisión que el operador YA marcó por índice («Conciliar con #N»):
+   * una lista nueva con un cargo mayor en ese mismo índice lo conciliaría sin que nadie lo hubiera elegido.
+   */
+  ofrecerCargoMayor?: boolean;
 }
 
 const depsReales = { similar: buscarMovimientoSimilar, aproximado: buscarMovimientoAproximado, cargoMayor: buscarCargoMayorDelProveedor };
@@ -52,12 +57,15 @@ export async function buscarCargoParaPropuesta(
 
   let recomendado: MovimientoBancarioCandidato | undefined;
   let ambiguos: MovimientoBancarioCandidato[] = [];
+  // Si el barrido aproximado falla, no se puede afirmar «no hay cargo por ese importe»: tampoco se ofrece uno mayor.
+  let busquedaCompleta = true;
 
   if ((exactos.length === 0 || soloPorConfirmar) && c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
     try {
       const aproximados = await deps.aproximado(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor });
       if (aproximados.length > 0) recomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
     } catch (error) {
+      busquedaCompleta = false;
       // Un fallo del segundo barrido de Holded no debe hacer perder los cargos exactos ya encontrados.
       console.error("[buscarCargoParaPropuesta] Error buscando cargo aproximado (se sigue con los exactos):", error instanceof Error ? error.message : error);
     }
@@ -66,9 +74,10 @@ export async function buscarCargoParaPropuesta(
     if (exactos.length === 1) recomendado = { ...exactos[0], origenCoincidencia: "exacta" };
     else if (exactos.length > 1) ambiguos = exactos;
   }
-  if (!recomendado && ambiguos.length === 0 && deps.cargoMayor && c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
+  if (!recomendado && ambiguos.length === 0 && busquedaCompleta && c.ofrecerCargoMayor !== false && deps.cargoMayor &&
+      c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
     try {
-      ambiguos = await deps.cargoMayor(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor });
+      ambiguos = await deps.cargoMayor(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, concepto: c.concepto });
     } catch (error) {
       console.error("[buscarCargoParaPropuesta] Error buscando un cargo mayor del proveedor (se sigue sin él):", error instanceof Error ? error.message : error);
     }

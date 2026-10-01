@@ -10,6 +10,11 @@ export type EstadoConciliacionMovimiento =
   | "cancelada";
 
 export interface ResultadoConciliacionMovimiento {
+  /**
+   * Solo conciliaciones parciales elegidas (cargo mayor): lo que queda del cargo a la espera de otro gasto. No es
+   * una incidencia, por eso no viaja en `movimientoParcial`/`pendienteEnMovimiento` ni fuerza revisión.
+   */
+  restoEsperadoEnMovimiento?: number;
   ok: boolean;
   statusFinal: string;
   montoEnlazado: number;
@@ -134,7 +139,12 @@ export function identidadConciliacionMovimiento(
   documentId: string,
   fechaAproximada: string,
   proceso: string,
-  ahora = Date.now()
+  ahora = Date.now(),
+  /**
+   * Un cargo mayor admite varios documentos (cargoMayor.ts): cada conciliación parcial lleva su propio registro.
+   * Sin esto, el registro del primer gasto bloqueaba para siempre el del segundo contra el mismo movimiento.
+   */
+  porDocumento = false
 ): RegistroConciliacionMovimiento {
   const cuenta = accountId.trim();
   const movimiento = movementId.trim();
@@ -145,7 +155,7 @@ export function identidadConciliacionMovimiento(
   if (!documento || documento.length > 200) throw new Error("El id del documento a conciliar es obligatorio.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new Error("La fecha de conciliación debe usar YYYY-MM-DD.");
 
-  const clave = hash(`wobi-holded-bank-reconciliation-v1\0${empresa}\0${cuenta}\0${movimiento}`);
+  const clave = hash(`wobi-holded-bank-reconciliation-v1\0${empresa}\0${cuenta}\0${movimiento}${porDocumento ? `\0${documento}` : ""}`);
   return {
     clave,
     proceso,

@@ -83,3 +83,24 @@ test("con un cargo exacto no se busca ningún cargo mayor", async () => {
   assert.equal(r.movimientoRecomendado?.movementId, "m1");
   assert.equal(llamado, false);
 });
+
+test("bajo una decisión ya marcada por índice no se introduce un cargo mayor (ofrecerCargoMayor: false)", async () => {
+  let llamado = false;
+  const r = await buscarCargoParaPropuesta(
+    { ...c, ofrecerCargoMayor: false },
+    { ...deps([]), cargoMayor: (async () => { llamado = true; return [cargo("m-go", "Uber", { origenCoincidencia: "cargo_mayor" })]; }) as never }
+  );
+  assert.equal(llamado, false);
+  assert.deepEqual(r.movimientosPersistidos, []);
+});
+
+test("si la búsqueda aproximada falla no se afirma que no hay cargo ni se ofrece uno mayor", async () => {
+  let llamado = false;
+  const r = await buscarCargoParaPropuesta(c, {
+    similar: (async () => []) as never,
+    aproximado: (async () => { throw new Error("Error de la API de Holded (503)"); }) as never,
+    cargoMayor: (async () => { llamado = true; return []; }) as never,
+  });
+  assert.equal(llamado, false);
+  assert.equal(r.movimientoEncontrado, false);
+});

@@ -1,5 +1,7 @@
 import { paginarMovimientosBancarios } from "./paginarMovimientos";
-import { DIAS_ADELANTE_CARGO_MAYOR, DIAS_ATRAS_CARGO_MAYOR, elegirCargosMayores, evaluarCargoMayor } from "./cargoMayor";
+import {
+  DIAS_ADELANTE_CARGO_MAYOR, DIAS_ATRAS_CARGO_MAYOR, PROCESO_CONCILIACION_CARGO_MAYOR, elegirCargosMayores, evaluarCargoMayor,
+} from "./cargoMayor";
 import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConciliacionCompra";
 import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
@@ -5327,7 +5329,7 @@ export async function buscarMovimientoAproximado(
  */
 export async function buscarCargoMayorDelProveedor(
   empresa: Empresa,
-  criterios: { monto: number; fecha: string; moneda?: string; proveedor: string }
+  criterios: { monto: number; fecha: string; moneda?: string; proveedor: string; concepto?: string }
 ): Promise<MovimientoBancarioCandidato[]> {
   if (!criterios.proveedor.trim()) return [];
   const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
@@ -5367,9 +5369,15 @@ export async function buscarCargoMayorDelProveedor(
       if ((mov.currency ?? "EUR").toUpperCase().trim() !== monedaObjetivo) continue;
       if (!mov.description) continue;
       // El nombre del proveedor tiene que estar en el cargo: la categoría sola («otro alquiler de coches») no basta.
-      if (!movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, { nucleoDeMarca: true })) continue;
-      if (compatibleSoloPorCategoria(criterios.proveedor, "", mov.description, { nucleoDeMarca: true })) continue;
-      const evaluacion = evaluarCargoMayor(mov, criterios.monto, margen);
+      if (!nombreReconocidoEnDescripcion(criterios.proveedor, mov.description, { nucleoDeMarca: true })) continue;
+      // Mismo criterio que el teclado (candidatoUtilizableParaGasto): no se anuncia un cargo cuyo botón no saldría.
+      if (!movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description, { nucleoDeMarca: true })) continue;
+      // Un solo lector de importes de movimiento (punto decimal) para la oferta y para la validación al aprobar.
+      const evaluacion = evaluarCargoMayor(
+        { amount: parsearMontoMovimiento(mov.amount), reconciled_amount: parsearMontoMovimiento(mov.reconciled_amount) || 0 },
+        criterios.monto,
+        margen
+      );
       if (!evaluacion) continue;
       candidatos.push({
         accountId: cuenta.id,
@@ -5574,9 +5582,11 @@ export async function movimientoConRestoParaConciliar(
 ): Promise<boolean> {
   const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
   if (!movimiento || estaConciliado(movimiento.status)) return false;
+  // Los importes de un movimiento llegan con punto decimal ("-354.62"): se leen con parsearMontoMovimiento, nunca con
+  // numeroDesdeHolded (formato «a la española»), que convertiría 354.62 en 35462 y daría el cargo por agotado.
   const total = Math.abs(parsearMontoMovimiento(movimiento.amount));
-  const enlazado = Math.abs(numeroDesdeHolded(movimiento.reconciled_amount) || 0);
-  return Number.isFinite(total) && total - enlazado + TOLERANCIA_MONTO >= Math.abs(importe);
+  const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount) || 0);
+  return Number.isFinite(total) && total - enlazado + margenResiduoConversion(importe) >= Math.abs(importe);
 }
 
 /** Un movimiento parcialmente usado tampoco está libre, aunque Holded no lo marque aún como reconciliado. */
@@ -5649,9 +5659,12 @@ export async function validarCompraContraMovimiento(
         `No es seguro conciliar una parte del cargo: el documento está en ${monedaCompra} y el movimiento en ${monedaMovimiento}.`
       );
     }
-    const enlazado = Math.abs(numeroDesdeHolded(movimiento.reconciled_amount) || 0);
+    if (!(parsearMontoMovimiento(movimiento.amount) < 0)) {
+      throw new Error("No es seguro conciliar una parte del movimiento: no es un cargo (es un ingreso o una devolución).");
+    }
+    const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount) || 0);
     const resto = montoMovimiento - enlazado;
-    if (estaConciliado(movimiento.status) || resto + TOLERANCIA_MONTO < totalCompra) {
+    if (estaConciliado(movimiento.status) || resto + margenResiduoConversion(totalCompra) < totalCompra) {
       throw new Error(
         `No es seguro conciliar: al movimiento le quedan ${Math.max(0, resto).toFixed(2)} ${monedaMovimiento} sin asignar ` +
         `y el documento suma ${totalCompra.toFixed(2)} ${monedaCompra}.`
@@ -6113,14 +6126,18 @@ async function inspeccionarConciliacionRegistrada(
   const pendienteEnMovimiento = movimientoParcial
     ? residuoMovimientoFueraDeMargen(montoMovimiento, montoEnlazado)
     : undefined;
+  // Conciliación parcial ELEGIDA por el operador (cargoMayor.ts): el resto del cargo espera a otro gasto y no es una
+  // incidencia, así que no se informa como parcial a revisar. Lo dice el propio registro durable (su `proceso`).
+  const parcialEsperado = registro.proceso === PROCESO_CONCILIACION_CARGO_MAYOR;
   const resultado = {
     ok,
     statusFinal,
     montoEnlazado,
     pendienteEnCompra,
     ajusteCambioDivisa,
-    movimientoParcial: pendienteEnMovimiento !== undefined || undefined,
-    pendienteEnMovimiento,
+    movimientoParcial: parcialEsperado ? undefined : pendienteEnMovimiento !== undefined || undefined,
+    pendienteEnMovimiento: parcialEsperado ? undefined : pendienteEnMovimiento,
+    ...(parcialEsperado && pendienteEnMovimiento !== undefined ? { restoEsperadoEnMovimiento: pendienteEnMovimiento } : {}),
   };
   if (ok) return { estado: "verificada", resultado };
   if (estaConciliado(movimiento?.status)) return { estado: "ocupada", resultado };
@@ -6207,7 +6224,9 @@ export async function reconciliarMovimiento(
     movementId,
     documentoId,
     fechaAproximada,
-    "conciliacion_movimiento_aprobada"
+    opciones.permitirCargoMayor === true ? PROCESO_CONCILIACION_CARGO_MAYOR : "conciliacion_movimiento_aprobada",
+    undefined,
+    opciones.permitirCargoMayor === true
   );
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {

@@ -7,6 +7,7 @@ import {
   actualizarCandidatosPropuestaGasto,
   actualizarFlagMovimientoBancarioGasto,
   actualizarMovimientosAmbiguosPropuestaGasto,
+  actualizarSeleccionAccionesGasto,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
@@ -97,10 +98,22 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       throw new Error("No se pudo guardar durablemente el movimiento bancario antes de reenviar la propuesta.");
     }
     propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos: movimientosPersistidos };
+    // Un «Conciliar con #N» marcado sobre la lista anterior no vale para un cargo mayor recién ofrecido en ese mismo
+    // índice: el operador tiene que marcarlo él, viendo cuál es.
+    const marcadas = propuesta.seleccionAcciones ?? [];
+    if (movimientosPersistidos.some((m) => m.origenCoincidencia === "cargo_mayor") && marcadas.some((k) => k.startsWith("crearconciliar"))) {
+      const sinConciliar = marcadas.filter((k) => !k.startsWith("crearconciliar"));
+      if (!await actualizarSeleccionAccionesGasto(propuesta.id, sinConciliar)) {
+        throw new Error("No se pudo limpiar la selección anterior antes de reenviar la propuesta.");
+      }
+      propuesta = { ...propuesta, seleccionAcciones: sinConciliar };
+    }
   }
 
   // Renovar botones no omite la búsqueda de duplicados cuando no hay cargo válido.
-  if (!propuesta.hayMovimientoBancario && !propuesta.movimientosAmbiguos?.length && esFechaDocumentoValida(propuesta.fecha)) {
+  // Un cargo mayor no demuestra que este gasto sea nuevo: con solo esa pista se repite igual la búsqueda de duplicados.
+  const soloCargosMayores = (propuesta.movimientosAmbiguos ?? []).every((m) => m.origenCoincidencia === "cargo_mayor");
+  if (!propuesta.hayMovimientoBancario && soloCargosMayores && esFechaDocumentoValida(propuesta.fecha)) {
     const revision = await verificarDuplicadoGastoEstricto(propuesta.empresa, propuesta);
     if (!await actualizarCandidatosPropuestaGasto(propuesta.id, revision.compras)) throw new Error("No se pudo guardar la revisión de duplicados.");
     propuesta = { ...propuesta, candidatos: revision.compras };

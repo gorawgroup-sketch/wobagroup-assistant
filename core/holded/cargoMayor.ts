@@ -18,6 +18,18 @@ export const MAX_CANDIDATOS_CARGO_MAYOR = 3;
 
 const CENTIMO = 0.01;
 
+/** Nombre del proceso en el registro durable de conciliaciones: marca un parcial ELEGIDO, no una incidencia. */
+export const PROCESO_CONCILIACION_CARGO_MAYOR = "conciliacion_parcial_cargo_mayor";
+
+/**
+ * Holded enlaza los importes en moneda extranjera con la tasa a dos decimales, así que lo que queda libre de un cargo
+ * tras el primer gasto puede no ser «total − gasto» al céntimo. Misma fórmula que `margenResiduoConversion` (write.ts);
+ * se repite aquí para no crear una dependencia circular y una prueba comprueba que no se separan.
+ */
+export function margenRestoCargoMayor(importe: number): number {
+  return Math.min(1, Math.max(0.02, Math.abs(importe) * 0.005));
+}
+
 function numero(valor: string | number | null | undefined): number {
   if (typeof valor === "number") return valor;
   if (valor === null || valor === undefined || valor === "") return NaN;
@@ -58,10 +70,11 @@ export function evaluarCargoMayor(
   const gasto = Math.abs(montoGasto);
   if (!Number.isFinite(importe) || !(importe < 0) || !Number.isFinite(gasto) || gasto <= 0) return undefined;
   const resto = restoLibreMovimiento(movimiento);
-  if (!Number.isFinite(resto) || resto + CENTIMO < gasto) return undefined;
+  if (!Number.isFinite(resto) || resto + margenRestoCargoMayor(gasto) < gasto) return undefined;
   const enlazado = Math.abs(numero(movimiento.reconciled_amount) || 0);
   if (enlazado <= CENTIMO && Math.abs(importe) - gasto <= margenAproximado) return undefined;
-  return { resto, restoTrasConciliar: Math.max(0, redondear(resto - gasto)) };
+  const restoTras = Math.max(0, redondear(resto - gasto));
+  return { resto, restoTrasConciliar: restoTras <= margenRestoCargoMayor(gasto) ? 0 : restoTras };
 }
 
 /**
@@ -92,7 +105,7 @@ export function describirCargoMayor(m: CargoMayorDescrito, montoGasto: number, i
   const quedaria = Math.max(0, redondear(resto - Math.abs(montoGasto)));
   const yaUsado = redondear(total - resto);
   const usado = yaUsado > CENTIMO ? `, ya tiene ${yaUsado.toFixed(2)} ${m.moneda} conciliados con otro gasto` : "";
-  const despues = quedaria > CENTIMO
+  const despues = quedaria > margenRestoCargoMayor(montoGasto)
     ? `quedarían ${quedaria.toFixed(2)} ${m.moneda} del cargo a la espera de otro gasto`
     : "el cargo quedaría conciliado por completo";
   return `  ${indice + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${usado}; ` +
@@ -122,6 +135,8 @@ export function notaCargosMayores(
 export function contextoCorreoCargoMayor(cargo: CargoMayorDescrito, montoGasto: number): string {
   const resto = cargo.restoDisponible ?? Math.abs(cargo.monto);
   const diferencia = Math.max(0, redondear(resto - Math.abs(montoGasto)));
+  // El gasto que completa el cargo no deja nada que preguntar.
+  if (diferencia <= margenRestoCargoMayor(montoGasto)) return "";
   return ` El banco registra un cargo de ${Math.abs(cargo.monto).toFixed(2)} ${cargo.moneda} del ${cargo.fecha} ` +
     `("${cargo.descripcion || "sin descripción"}"), mayor que este comprobante: quedan ${diferencia.toFixed(2)} ${cargo.moneda} ` +
     `sin justificar. Pregunta a qué corresponde esa diferencia y pide el comprobante que falta.`;

@@ -967,6 +967,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoAproximado: Awaited<ReturnType<typeof buscarMovimientoAproximado>>[number] | undefined;
     let otrosAproximados = 0;
+    // Si Holded falla a media búsqueda no se puede afirmar «no hay cargo por ese importe»; tampoco se ofrece uno mayor.
+    let busquedaCargoCompleta = true;
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
@@ -1009,6 +1011,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         }
       }
     } catch (error) {
+      busquedaCargoCompleta = false;
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
 
@@ -1062,10 +1065,10 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // ser solo una parte. Se ofrece como opción a elegir; nunca se recomienda ni se concilia solo.
     let movimientosCargoMayor: Awaited<ReturnType<typeof buscarCargoMayorDelProveedor>> = [];
     if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
-        !movimientoMonedaAlternativa && !esProveedorNoIdentificado(datos.proveedor)) {
+        !movimientoMonedaAlternativa && busquedaCargoCompleta && !esProveedorNoIdentificado(datos.proveedor)) {
       try {
         movimientosCargoMayor = await buscarCargoMayorDelProveedor(
-          empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor }
+          empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto }
         );
       } catch (error) {
         console.error("[procesarGastoEntrante] Error buscando un cargo mayor del proveedor:", error);
