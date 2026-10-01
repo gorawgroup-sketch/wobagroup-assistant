@@ -23,6 +23,7 @@ import {
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
+import { extraerRemitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../gmail/remitenteReenvio";
 import { verificarFacturasEnlazadasEnCuerpo } from "../gmail/facturasEnlazadasEnCuerpo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
@@ -1448,32 +1449,67 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
 export async function procesarCorreoPuntual(
   chatId: number,
   busqueda: string
-): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean; yaRegistrado?: boolean }> {
+): Promise<{
+  encontrado: boolean;
+  de?: string;
+  asunto?: string;
+  yaEsElActivo?: boolean;
+  yaRegistrado?: boolean;
+  remitenteOriginal?: RemitenteOriginalReenvio;
+}> {
   return conCoordinadorCorreo(() => procesarCorreoPuntualInterno(chatId, busqueda));
 }
 async function procesarCorreoPuntualInterno(
   chatId: number,
   busqueda: string
-): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean; yaRegistrado?: boolean }> {
+): Promise<{
+  encontrado: boolean;
+  de?: string;
+  asunto?: string;
+  yaEsElActivo?: boolean;
+  yaRegistrado?: boolean;
+  remitenteOriginal?: RemitenteOriginalReenvio;
+}> {
   const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
   const ids = await buscarMensajes(query, 1);
   if (ids.length === 0) return { encontrado: false };
 
   const correo = await obtenerResumenCorreo(ids[0]);
 
+  // Hallazgo real de auditoría (Carlos, caso real Simon Talloen / Go Rent A Car, 2026-09-30): "de"
+  // (CorreoResumen.de) es el remitente del mensaje tal como llegó al buzón del asistente — para un
+  // correo REENVIADO, eso es casi siempre la persona del grupo que lo reenvió (ej. Carlos), nunca
+  // quien originó el asunto real (ej. Simon Talloen). Carlos pidió responderle directo a esa persona
+  // original y el sistema no sabía su email aunque ya estuviera, letra por letra, en el propio correo
+  // que acababa de procesar — esta es una lectura de solo el cuerpo (nunca toca colaRevisionStore ni
+  // dispara ningún flujo de gasto), así que es segura incluso cuando el correo ya está "activo" más
+  // abajo.
+  //
+  // El fallo se traga a propósito (dato cosmético, ver core/guardarrailes/lineaBase.json): esto es un
+  // enriquecimiento informativo sobre un correo que YA se encontró y se va a procesar/informar de
+  // todos modos — si Gmail falla leyendo el cuerpo, lo correcto es seguir sin el remitente original
+  // (el comportamiento de siempre, nunca peor), no abortar toda la búsqueda puntual por un dato extra.
+  const remitenteOriginal = await obtenerCuerpoCompletoCorreo(correo.id)
+    .then(extraerRemitenteOriginalDeReenvio)
+    .catch((error) => {
+      console.error("[revisarCorreoNuevo] No se pudo leer el cuerpo para buscar el remitente original del reenvío (no crítico):", error);
+      return undefined;
+    });
+
   // Hallazgo real de la auditoría: si el correo que se encuentra acá es JUSTO el mismo que ya está
   // "activo" en la cola en este momento, procesarlo también por este camino (deColaCorreo=false)
   // crearía una SEGUNDA propuesta/gasto para el mismo correo, sin que ninguna de las dos se entere
   // de la otra — confuso (dos mensajes con botones para lo mismo) y, en el peor caso, un intento de
   // gasto duplicado. En ese caso exacto, mejor avisar y dejar que se resuelva desde la propuesta que
-  // la cola ya mandó, en vez de duplicar el trabajo.
+  // la cola ya mandó, en vez de duplicar el trabajo. Esto nunca bloqueaba LEER el correo (ver arriba)
+  // — solo evita volver a procesarlo como gasto.
   const activo = await obtenerActivoActual(chatId).catch(() => undefined);
   // Comparar también por THREAD id: una búsqueda puntual puede devolver un
   // mensaje anterior del mismo hilo y no necesariamente el messageId más
   // reciente guardado en la cola. Sigue siendo la misma conversación y no
   // debe producir una segunda propuesta paralela.
   if (activo && (activo.id === correo.threadId || activo.mensajeId === correo.id)) {
-    return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
+    return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true, remitenteOriginal };
   }
 
   const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
@@ -1485,7 +1521,13 @@ async function procesarCorreoPuntualInterno(
       .catch(() => {});
   }
   await procesarCorreoLocalizado(chatId, correo, false);
-  return { encontrado: true, de: correo.de, asunto: correo.asunto, ...(yaRegistrado ? { yaRegistrado: true } : {}) };
+  return {
+    encontrado: true,
+    de: correo.de,
+    asunto: correo.asunto,
+    remitenteOriginal,
+    ...(yaRegistrado ? { yaRegistrado: true } : {}),
+  };
 }
 
 /**
