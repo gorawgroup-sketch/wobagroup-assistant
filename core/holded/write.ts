@@ -5586,7 +5586,7 @@ export async function movimientoConRestoParaConciliar(
   // numeroDesdeHolded (formato «a la española»), que convertiría 354.62 en 35462 y daría el cargo por agotado.
   const total = Math.abs(parsearMontoMovimiento(movimiento.amount));
   const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount) || 0);
-  return Number.isFinite(total) && total - enlazado + margenResiduoConversion(importe) >= Math.abs(importe);
+  return Number.isFinite(total) && total - enlazado + TOLERANCIA_MONTO >= Math.abs(importe);
 }
 
 /** Un movimiento parcialmente usado tampoco está libre, aunque Holded no lo marque aún como reconciliado. */
@@ -5664,7 +5664,9 @@ export async function validarCompraContraMovimiento(
     }
     const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount) || 0);
     const resto = montoMovimiento - enlazado;
-    if (estaConciliado(movimiento.status) || resto + margenResiduoConversion(totalCompra) < totalCompra) {
+    // Sin margen: si el documento superara lo que queda libre, Holded enlazaría solo una parte y la compra quedaría con
+    // saldo pendiente. Se rechaza antes de escribir.
+    if (estaConciliado(movimiento.status) || resto + TOLERANCIA_MONTO < totalCompra) {
       throw new Error(
         `No es seguro conciliar: al movimiento le quedan ${Math.max(0, resto).toFixed(2)} ${monedaMovimiento} sin asignar ` +
         `y el documento suma ${totalCompra.toFixed(2)} ${monedaCompra}.`

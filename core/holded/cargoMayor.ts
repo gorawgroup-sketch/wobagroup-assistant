@@ -22,9 +22,10 @@ const CENTIMO = 0.01;
 export const PROCESO_CONCILIACION_CARGO_MAYOR = "conciliacion_parcial_cargo_mayor";
 
 /**
- * Holded enlaza los importes en moneda extranjera con la tasa a dos decimales, así que lo que queda libre de un cargo
- * tras el primer gasto puede no ser «total − gasto» al céntimo. Misma fórmula que `margenResiduoConversion` (write.ts);
- * se repite aquí para no crear una dependencia circular y una prueba comprueba que no se separan.
+ * Holded enlaza los importes en moneda extranjera con la tasa a dos decimales y puede dejar unos céntimos sin asignar
+ * (caso real: Uber 10,95 USD enlazado por 10,93). Un resto así no espera a ningún gasto: se describe como «conciliado
+ * por completo». Misma fórmula que `margenResiduoConversion` (write.ts); se repite aquí para no crear una dependencia
+ * circular y una prueba comprueba que no se separan. Solo afecta al texto: nunca amplía lo que se deja conciliar.
  */
 export function margenRestoCargoMayor(importe: number): number {
   return Math.min(1, Math.max(0.02, Math.abs(importe) * 0.005));
@@ -70,7 +71,8 @@ export function evaluarCargoMayor(
   const gasto = Math.abs(montoGasto);
   if (!Number.isFinite(importe) || !(importe < 0) || !Number.isFinite(gasto) || gasto <= 0) return undefined;
   const resto = restoLibreMovimiento(movimiento);
-  if (!Number.isFinite(resto) || resto + margenRestoCargoMayor(gasto) < gasto) return undefined;
+  // Sin margen, igual que la validación al aprobar: un gasto mayor que lo que queda libre no cabe.
+  if (!Number.isFinite(resto) || resto + CENTIMO < gasto) return undefined;
   const enlazado = Math.abs(numero(movimiento.reconciled_amount) || 0);
   if (enlazado <= CENTIMO && Math.abs(importe) - gasto <= margenAproximado) return undefined;
   const restoTras = Math.max(0, redondear(resto - gasto));

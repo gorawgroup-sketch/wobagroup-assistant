@@ -54,11 +54,18 @@ test("segundo gasto: el resto de un cargo ya parcial se lee bien (el importe con
   assert.equal(await validar(true, "doc2"), "ok");
 });
 
-test("segundo gasto: Holded enlazó el primero con unos céntimos de diferencia y el resto sigue valiendo", async () => {
+test("segundo gasto: si Holded enlazó de menos el primero (redondeo de tasa), el resto mayor sigue valiendo", async () => {
   const w = await import("./write");
-  simularHolded(cargo({ status: "partial", reconciled_amount: "-355.10" }), compra("doc2", "390,25"));
+  simularHolded(cargo({ status: "partial", reconciled_amount: "-354.60" }), compra("doc2", "390,25"));
   assert.equal(await w.movimientoConRestoParaConciliar("Footprint", "cta", "mov", "2026-09-25", 390.25), true);
   assert.equal(await validar(true, "doc2"), "ok");
+});
+
+test("un documento mayor que lo que queda libre se rechaza antes de escribir, aunque sea por céntimos", async () => {
+  const w = await import("./write");
+  simularHolded(cargo({ status: "partial", reconciled_amount: "-355.10" }), compra("doc2", "390,25"));
+  assert.equal(await w.movimientoConRestoParaConciliar("Footprint", "cta", "mov", "2026-09-25", 390.25), false);
+  assert.match(await validar(true, "doc2"), /le quedan 389\.77 USD sin asignar/);
 });
 
 test("no se concilia si al cargo no le queda sitio, si ya está conciliado o si no es un cargo", async () => {

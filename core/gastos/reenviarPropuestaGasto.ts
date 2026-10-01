@@ -1,6 +1,7 @@
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoParaPropuesta } from "./buscarCargoParaPropuesta";
 import { notaCargosMayores } from "../holded/cargoMayor";
+import { obtenerPendienteSeleccionGastoPorChat } from "./pendienteSeleccionGastoStore";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
@@ -59,6 +60,11 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     let movimientosAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoRecomendado: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     try {
+      // Si el operador ya aprobó «Conciliar con #N» y solo falta un dato por texto, esa decisión se ejecutará por índice:
+      // no se introduce ahora un cargo mayor en la lista (si no se puede saber, tampoco).
+      const seleccionPendiente = await obtenerPendienteSeleccionGastoPorChat(propuesta.chatId);
+      const decisionPorIndice = seleccionPendiente?.propuestaId === propuesta.id &&
+        Boolean(seleccionPendiente.decisionFinal?.startsWith("crearconciliar"));
       const r = await buscarCargoParaPropuesta({
         empresa: propuesta.empresa,
         proveedor: propuesta.proveedor,
@@ -66,6 +72,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
+        ofrecerCargoMayor: !decisionPorIndice,
       });
       trazaBusqueda = r.traza;
       movimientoEncontrado = r.movimientoEncontrado;
