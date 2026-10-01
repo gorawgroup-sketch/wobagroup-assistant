@@ -760,6 +760,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // caso real: un vuelo de Booking.com se creó bajo la cuenta genérica
   // "Otros servicios" en vez de "Gastos de viaje", a pesar de que Footprint
   // ya tenía 159 líneas reales de gastos de viaje bajo la misma cuenta.
+  // Se captura una sola vez para reutilizarla tanto en inferirCuentaGasto como en la propuesta
+  // persistida (ver PropuestaGasto.ticketDeEquipo) — misma señal, nunca recalculada distinto.
+  const ticketDeEquipo = entrada.deColaCorreo === true && esRemitenteDelGrupo(entrada.correoOrigen?.de);
   const cuentaSugerida =
     candidatos.length === 0
       ? await inferirCuentaGasto(empresa, {
@@ -768,7 +771,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           personaAsociada: datos.personaAsociada,
           contextoDeViaje: datos.contextoDeViaje,
           reciboSimplificado: datos.reciboSimplificado,
-          ticketDeEquipo: entrada.deColaCorreo === true && esRemitenteDelGrupo(entrada.correoOrigen?.de),
+          ticketDeEquipo,
         }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;
@@ -827,6 +830,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,
     huellaContenido,
+    // Se persisten aunque candidatos.length>0 (cuentaSugerida no se calculó en ese caso): si más
+    // adelante se dispara una reinferencia (prepararPropuestaFinalGasto, gastoCallbackHandler.ts),
+    // debe poder recuperar la misma señal que tenía ESTE documento, no perderla en silencio.
+    contextoDeViaje: datos.contextoDeViaje,
+    reciboSimplificado: datos.reciboSimplificado,
+    ticketDeEquipo,
   });
 
   if (propuestaPendienteBloqueante) {

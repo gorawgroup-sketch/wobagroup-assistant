@@ -368,12 +368,24 @@ export async function prepararPropuestaFinalGasto(
     tagsAprendidos = cambioSemantico
       ? tagsAprendidos.filter((tag) => !esTagCategoriaContable(tag))
       : tagsAprendidos;
+    // Hallazgo real de auditoría (Carlos, caso real Droguería Pura / Simon Talloen, Footprint,
+    // 2026-10-01): contextoDeViaje/reciboSimplificado se tomaban SOLO de `cambios` (un botón nunca los
+    // "corrige", así que casi siempre llegan undefined) sin respaldo en la propuesta ORIGINAL que sí
+    // los había calculado bien al crearse — y ticketDeEquipo ni siquiera se pasaba. Resultado: la
+    // propuesta original acertaba la cuenta vía el tier "viaje" (ver calcularSenalDeViaje,
+    // core/holded/write.ts), pero cualquier reinferencia posterior (ej. al "Aprobar selección" tras
+    // elegir una conciliación) perdía esa señal — y para un proveedor nuevo sin precedente propio
+    // (una farmacia de aeropuerto nunca vista antes), la reinferencia fallaba con
+    // CuentaContableNoInferidaError, contradiciendo la propuesta que el operador ya había visto
+    // funcionar. `propuesta.contextoDeViaje/reciboSimplificado/ticketDeEquipo` ahora se persisten al
+    // crear la propuesta (ver PropuestaGasto) justamente para poder recuperarlos acá.
     const sugerencia = await dependencias.inferirCuenta(cambios.empresa, {
       proveedor: proveedorAprendizaje,
       concepto,
       personaAsociada: cambios.personaAsociada ?? propuesta.personaAsociada,
-      contextoDeViaje: cambios.contextoDeViaje,
-      reciboSimplificado: cambios.reciboSimplificado,
+      contextoDeViaje: cambios.contextoDeViaje ?? propuesta.contextoDeViaje,
+      reciboSimplificado: cambios.reciboSimplificado ?? propuesta.reciboSimplificado,
+      ticketDeEquipo: propuesta.ticketDeEquipo,
     });
     cuentaId = sugerencia?.accountId;
     tagsAprendidos = [...tagsAprendidos, ...(sugerencia?.tags ?? [])];
@@ -389,7 +401,7 @@ export async function prepararPropuestaFinalGasto(
     cambios.personaAsociada ?? propuesta.personaAsociada,
     tagsAprendidos,
     undefined,
-    cambios.contextoDeViaje
+    cambios.contextoDeViaje ?? propuesta.contextoDeViaje
   );
   return {
     ...propuesta,
