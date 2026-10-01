@@ -397,3 +397,15 @@ Carlos compartió dos enlaces a correos de Acodrid (correduría), ambos del 24/0
 2. El otro era el mismo presupuesto del 12/08 (transporte + equipos electrónicos) reenviado sin novedad — no generó cambios nuevos en el registro, ya estaba capturado como puntos 20 en §13.
 
 **Regla de envío de correo, confirmada por Carlos (2026-09-29)**: cuando haga falta responder a un corredor/aseguradora, Wobi puede enviar la respuesta usando el correo del asistente (la cuenta dedicada, no la de Carlos) — pero **única y exclusivamente cuando Carlos lo pida explícitamente en ese momento**, nunca por iniciativa propia ni de forma anticipada.
+
+## 23. Documentos de pólizas: archivado + lectura por Wobi Seguros (2026-10-01)
+
+Cierra los puntos 2, 3 y 4 de §4. Detalle de uso en `docs/manual_comandos_chat.md` («Canal de documentos corporativos»).
+
+- `core/documental/extractInvoiceData.ts`: el lector de contenido marca `es_documento_poliza` y deja de proponer como gasto la documentación de una póliza.
+- `core/seguros/extraerDatosPoliza.ts`: lector de pólizas (número, suplemento, aseguradora, tomador, coberturas, límites, prima, vigencia, resumen).
+- `core/seguros/integrarDocumentoPoliza.ts` + `documentosPolizaStore.ts` (pestaña `_documentos_polizas`): enlaza el documento con su fila del registro por número de póliza y suplemento; idempotente. No escribe en `_polizas_seguros`.
+- `core/documental/archiveFile.ts`: tras subir a Drive un documento de póliza o cualquier documento destinado a una carpeta de seguros, llama a la integración. Un fallo de lectura no deshace el archivado.
+- `consultar_polizas_seguro` incluye los documentos leídos; `integrar_documento_seguro` integra uno que ya está en Drive.
+- Verificado con el correo real de Acodrid (suplemento 3.3 de la RC 023S00453RCG y suplemento 2 del multirriesgo 054239034): ambos se reconocen como póliza, se enlazan a `woba_rc_suplemento_3_3` y `woba_showroom_complemento_2026_2027` y se proponen en `SEGUROS📜 / EUROPA / SEGURO WOBA 2026`.
+

@@ -30,7 +30,11 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
     "por ejemplo, para responderle directo a esa persona sin tener que volver a pedirle el dato al " +
     "usuario. Nunca uses esto para la revisión normal de correo (eso ya " +
     "pasa solo, por cron, o con /revisarcorreo) — solo cuando el usuario pida explícitamente saltar a " +
-    "un correo puntual, incluso si ya está leído.",
+    "un correo puntual, incluso si ya está leído. Con solo_archivar=true es el canal de DOCUMENTOS (no el de gastos): " +
+    "úsalo cuando el usuario pida guardar o archivar en Drive los adjuntos de un correo, o diga que un adjunto no es " +
+    "un gasto sino un documento (pólizas, contratos, normativa, compliance…) — cada adjunto aún no archivado recibe su " +
+    "propuesta de carpeta con botones, también si antes se propuso como gasto y se canceló, y también si es el correo " +
+    "activo de la cola. Los documentos de seguros, al archivarse, los lee Wobi Seguros automáticamente.",
   input_schema: {
     type: "object",
     properties: {
@@ -40,6 +44,12 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
           "Quién lo mandó y/o de qué trata, para encontrar el correo correcto (ej. 'Alberto', " +
           "'Alberto Comolli', 'la factura de Sinfonía', 'proveedor@dominio.com') — puede ser lenguaje " +
           "natural o una consulta real de Gmail (ej. 'from:alberto@wobagroup.com').",
+      },
+      solo_archivar: {
+        type: "boolean",
+        description:
+          "true cuando el usuario quiere GUARDAR los adjuntos de ese correo como documentos en Drive (no procesarlos " +
+          "como gastos). Sin esto, el correo recibe el tratamiento normal.",
       },
     },
     required: ["busqueda"],
@@ -56,7 +66,8 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
       return "La referencia es demasiado general para buscar también entre correos leídos. Usa revisar_cola_correo para procesar solo los no leídos, del más antiguo al más nuevo.";
     }
 
-    const resultado = await procesarCorreoPuntual(chatId, busqueda);
+    const soloArchivar = input.solo_archivar === true || input.solo_archivar === "true";
+    const resultado = await procesarCorreoPuntual(chatId, busqueda, { soloArchivar });
 
     if (!resultado.encontrado) {
       return `No encontré ningún correo que coincida con la referencia concreta "${busqueda}" en la bandeja de entrada, ni leído ni sin leer.`;
@@ -76,6 +87,19 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
           resultado.remitenteOriginal.nombre ? `${resultado.remitenteOriginal.nombre} ` : ""
         }<${resultado.remitenteOriginal.email}> — tal como lo escribió el correo, sin verificar aparte; confírmalo con el destinatario real antes de enviar nada.`
       : "";
+
+    if (soloArchivar) {
+      if (resultado.sinAdjuntos) {
+        return `Encontré "${resultado.asunto}" (de ${resultado.de}), pero no trae adjuntos que guardar en Drive.`;
+      }
+      return (
+        `Encontré "${resultado.asunto}" (de ${resultado.de}) y mandé a archivar sus ${resultado.adjuntos ?? ""} adjunto(s) como ` +
+        "documentos: cada uno que no estuviera ya archivado tiene arriba en el chat su propuesta de carpeta con el botón " +
+        "«✅ Sí, archivar aquí» (o «✏️ Elegir otra carpeta»). Los que van a la carpeta de seguros los leerá Wobi Seguros " +
+        "al archivarse. Si alguno de esos adjuntos tiene todavía abierta una propuesta de GASTO más arriba, dile al " +
+        "usuario que la cancele: archivar no la cierra." + notaRemitenteOriginal
+      );
+    }
 
     if (resultado.yaEsElActivo) {
       return (

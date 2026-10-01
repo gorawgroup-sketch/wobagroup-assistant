@@ -48,6 +48,8 @@ export interface ArchivoParaClasificar {
    * que quede claro que son decisiones independientes, no un error.
    */
   notaAdjunto?: string;
+  /** El lector de contenido determinó que es documentación de una póliza de seguro (ver extractInvoiceData.ts). */
+  esDocumentoPoliza?: boolean;
 }
 
 /**
@@ -161,6 +163,7 @@ async function ofrecerCapturaYRespuesta(archivo: ArchivoParaClasificar, clasific
  */
 export async function manejarClasificacion(archivo: ArchivoParaClasificar): Promise<void> {
   const clasificacion = await clasificarDocumento(archivo.nombreParaClasificar, archivo.captionEfectivo);
+  if (archivo.esDocumentoPoliza) clasificacion.esDocumentoPoliza = true;
 
   if (clasificacion.pareceIntencionDeCaptura && !archivo.esContinuacionDesambiguacion) {
     await ofrecerCapturaYRespuesta(archivo, clasificacion).catch((error) => {
@@ -329,6 +332,13 @@ export async function manejarClasificacion(archivo: ArchivoParaClasificar): Prom
           `¿Lo archivo en "${clasificacion.carpetaSugerida}"?`,
           ``,
           `(${clasificacion.razon})`,
+          // Canal de documentos corporativos (aparte del de gastos): una póliza la integra Wobi Seguros al archivarla
+          // (archiveFile.ts); el resto del material de referencia se puede guardar además como conocimiento.
+          ...(clasificacion.esDocumentoPoliza
+            ? [``, `🛡️ Es documentación de una póliza: al archivarlo, Wobi Seguros lo leerá y lo integrará a su conocimiento.`]
+            : clasificacion.esDocumentoDeReferencia
+              ? [``, `📚 Es un documento de referencia: además de archivarlo, con "🧠 Guardar como conocimiento" su contenido queda consultable.`]
+              : []),
         ].join("\n");
 
   const textoPropuesta = archivo.notaAdjunto ? `${archivo.notaAdjunto}\n\n${textoPropuestaBase}` : textoPropuestaBase;

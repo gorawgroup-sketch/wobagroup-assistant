@@ -1,9 +1,11 @@
-import { unlink } from "node:fs/promises";
+import { copyFile, unlink } from "node:fs/promises";
 import { resolverCarpetaDestino, resolverOCrearCarpeta, subirArchivoADrive } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { reDescargarAdjuntoSiFalta } from "../gmail/reDescargarAdjunto";
 import type { PropuestaClasificacion } from "./classificationStore";
 import { esArchivoLocalInexistente } from "../drive/durableUpload";
+import { integrarDocumentoPoliza } from "../seguros/integrarDocumentoPoliza";
+import { sendTelegramMessage } from "../telegram/client";
 
 export interface ResultadoArchivado {
   ok: boolean;
@@ -22,6 +24,56 @@ function extraerRutaCarpeta(carpetaSugerida: string): string[] {
 /** La misma ruta pero invertida — se prueba primero el segmento más específico (el último), para la búsqueda de resolverCarpetaDestino (nunca crea, solo busca en todo el árbol). */
 function extraerCandidatosCarpeta(carpetaSugerida: string): string[] {
   return extraerRutaCarpeta(carpetaSugerida).reverse();
+}
+
+/** «SEGUROS📜», «SEGURO WOBA 2026», «SEGURO / POLIZA»… pero no «Seguridad Social» ni «Seguros Sociales». */
+const CARPETA_DE_SEGUROS = /(^|[^a-záéíóúñ])seguros?(?![a-záéíóúñ])(?!\s+sociales)|p[oó]lizas?\s+de\s+seguro/i;
+
+/** El documento va a una carpeta de seguros o quien leyó su contenido lo marcó como póliza. */
+export function esDocumentoParaWobiSeguros(propuesta: Pick<PropuestaClasificacion, "clasificacion">, rutaDestino?: string): boolean {
+  return propuesta.clasificacion.esDocumentoPoliza === true ||
+    CARPETA_DE_SEGUROS.test(`${rutaDestino ?? ""} | ${propuesta.clasificacion.carpetaSugerida}`);
+}
+
+/**
+ * Lanza la lectura de Wobi Seguros SIN esperarla: leer un PDF largo tarda, y el archivado (propuesta ya consumida,
+ * cola de correo por avanzar) no puede quedar minutos a medias por ello. Se lee una copia propia del archivo, porque
+ * la original se borra al terminar de archivar; el resultado llega al chat en un mensaje aparte.
+ */
+async function avisarAWobiSeguros(propuesta: PropuestaClasificacion, rutaDestino: string | undefined, enlaceDrive?: string): Promise<string> {
+  if (!esDocumentoParaWobiSeguros(propuesta, rutaDestino)) return "";
+  const copia = `${propuesta.rutaLocal}.seguros`;
+  try {
+    await copyFile(propuesta.rutaLocal, copia);
+  } catch (error) {
+    console.error("[archiveFile] No hay copia local para que Wobi Seguros lea el documento:", error instanceof Error ? error.message : error);
+    return `\n⚠️ Wobi Seguros no pudo leerlo ahora. Dime «que Wobi Seguros lea ${propuesta.nombreArchivoOriginal}» y lo hago desde Drive.`;
+  }
+  void integrarDocumentoPoliza({
+    rutaLocal: copia,
+    mimeType: propuesta.mimeType,
+    nombreArchivo: propuesta.nombreArchivoOriginal,
+    enlaceDrive: enlaceDrive ?? "",
+    origen: propuesta.correoOrigen
+      ? `Correo de ${propuesta.correoOrigen.de}, asunto "${propuesta.correoOrigen.asunto}".`
+      : "Documento enviado por chat.",
+  })
+    .then((resultado) => resultado.mensaje
+      ? sendTelegramMessage(propuesta.chatId, `${resultado.mensaje}\n📄 ${propuesta.nombreArchivoOriginal}`)
+      : undefined)
+    .catch((error) => {
+      console.error("[archiveFile] Wobi Seguros no pudo leer el documento archivado:", error instanceof Error ? error.message : error);
+      return sendTelegramMessage(
+        propuesta.chatId,
+        `⚠️ "${propuesta.nombreArchivoOriginal}" quedó archivado, pero Wobi Seguros no pudo leerlo. Dime «que Wobi Seguros lea ` +
+          `${propuesta.nombreArchivoOriginal}» y lo reintento desde Drive.`
+      ).catch((errorAviso) => console.error("[archiveFile] Tampoco se pudo avisar del fallo de lectura:", errorAviso instanceof Error ? errorAviso.message : errorAviso));
+    })
+    .finally(() => unlink(copia).catch((error) => {
+      const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+      if (code !== "ENOENT") console.error("[archiveFile] No se pudo limpiar la copia para Wobi Seguros:", error instanceof Error ? error.name : "Error");
+    }));
+  return "\n🛡️ Wobi Seguros lo está leyendo; te confirmo en un momento qué integró.";
 }
 
 /**
@@ -98,6 +150,10 @@ export async function archivarDocumentoEnDrive(
       );
     }
 
+    // Canal de documentos corporativos: un documento de póliza recién archivado se le pasa a Wobi Seguros para que
+    // lo lea e integre (ver avisarAWobiSeguros). Nunca convierte un archivado correcto en un fallo.
+    const notaSeguros = await avisarAWobiSeguros(propuesta, destino.rutaEncontrada, subida.webViewLink);
+
     // La subida puede haberse recuperado desde el ledger después de un
     // redeploy, cuando la copia temporal ya no existe. Una limpieza local
     // fallida nunca convierte un archivo verificado en un falso fallo.
@@ -117,7 +173,7 @@ export async function archivarDocumentoEnDrive(
 
     return {
       ok: true,
-      mensaje: `Subido a ${notaCarpeta}.`,
+      mensaje: `Subido a ${notaCarpeta}.${notaSeguros}`,
       webViewLink: subida.webViewLink,
     };
   } catch (error) {

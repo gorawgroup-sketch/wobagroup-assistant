@@ -54,6 +54,7 @@ import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasShe
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
+import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
 import {
@@ -639,6 +640,12 @@ async function sincronizarColaCorreo(
 interface OpcionesProcesamientoCorreo {
   /** Reintento de un único adjunto: no vuelve a publicar la solicitud independiente del cuerpo. */
   omitirSolicitudCuerpo?: boolean;
+  /**
+   * El operador pidió GUARDAR los adjuntos de este correo como documentos (canal de documentos corporativos, aparte
+   * del de gastos): no se leen como factura ni se consulta si un gasto suyo se canceló antes. Los que ya están
+   * archivados no se repiten.
+   */
+  soloArchivar?: boolean;
 }
 
 async function procesarCorreoLocalizado(
@@ -708,7 +715,7 @@ async function procesarCorreoLocalizado(
     try {
       const analisisConAdjuntos = await analizarCorreo(correo, cuerpoCompleto, true);
       resumenCorreoParaAdjuntos = analisisConAdjuntos.resumen;
-      if (!opciones.omitirSolicitudCuerpo &&
+      if (!opciones.omitirSolicitudCuerpo && !opciones.soloArchivar &&
           (analisisConAdjuntos.tipo === "necesita_respuesta" || analisisConAdjuntos.tipo === "instruccion_jefe")) {
         let contadorReservado = false;
         let propuestaSolicitud: Awaited<ReturnType<typeof crearPropuestaAccionCorreo>> | undefined;
@@ -821,7 +828,7 @@ async function procesarCorreoLocalizado(
       // un chequeo a nivel de correo entero habría saltado también ese otro, sin resolver, por error.
       // partId (no attachmentId) — ver el comentario de AdjuntoCorreo.partId en gmail/client.ts:
       // attachmentId cambia en cada lectura del correo, partId no.
-      const gastoYaCreado = await buscarGastoDesdeCorreo(correo.id, adjunto.partId).catch((error) => {
+      const gastoYaCreado = opciones.soloArchivar ? undefined : await buscarGastoDesdeCorreo(correo.id, adjunto.partId).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya generó un gasto (no crítico, sigue igual):`, error);
         return undefined;
       });
@@ -882,7 +889,7 @@ async function procesarCorreoLocalizado(
       // revisar_correo_puntual — ambos pasan por este mismo loop) lo volvía a descargar y clasificar
       // desde cero. Mismo criterio granular que el chequeo de arriba: por adjunto, no por correo
       // entero, para no saltarse por error un adjunto real y distinto que sí siga pendiente.
-      const descartado = await gastoDescartadoPorOperador(correo.id, adjunto.partId).catch((error) => {
+      const descartado = opciones.soloArchivar ? undefined : await gastoDescartadoPorOperador(correo.id, adjunto.partId).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" fue descartado por el operador (no crítico, sigue igual):`, error);
         return undefined;
       });
@@ -914,6 +921,16 @@ async function procesarCorreoLocalizado(
           );
         }
         continue;
+      }
+
+      // «Solo archivar»: si este adjunto ya tiene una propuesta de archivo esperando (p. ej. la que publicó la cola),
+      // no se crea otra; dos propuestas del mismo adjunto acaban en dos copias en Drive.
+      if (opciones.soloArchivar) {
+        const pendientes = await obtenerPropuestasClasificacionPorChat(chatId);
+        if (pendientes.some((p) => p.correoOrigen?.mensajeIdGmail === correo.id && p.correoOrigen?.partId === adjunto.partId)) {
+          await sendTelegramMessage(chatId, `📄 "${adjunto.filename}" ya tiene arriba su propuesta de archivo pendiente: usa su botón «✅ Sí, archivar aquí».`).catch(() => {});
+          continue;
+        }
       }
 
       try {
@@ -975,6 +992,7 @@ async function procesarCorreoLocalizado(
             partId: adjunto.partId,
           },
           notaAdjunto,
+          soloArchivar: opciones.soloArchivar,
         });
 
         // Bug real encontrado en vivo: cuando procesarDocumentoLocal
@@ -1004,6 +1022,12 @@ async function procesarCorreoLocalizado(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[revisarCorreoNuevo] Error procesando adjunto "${adjunto.filename}":`, message);
+        // «Solo archivar» es una petición puntual fuera de la cola: un reintento técnico (acción de cola) descuadraría
+        // los pendientes del correo activo. Se avisa y basta con volver a pedirlo.
+        if (opciones.soloArchivar) {
+          await sendTelegramMessage(chatId, `⚠️ No pude preparar el archivado de "${adjunto.filename}" (${message}). Pídemelo de nuevo en un momento.`).catch(() => {});
+          continue;
+        }
         // No marcar como leído ni avanzar: el adjunto NO se procesó. La
         // acción persistida evita que el activo quede bloqueado sin botones.
         await publicarReintentoTecnico(
@@ -1448,7 +1472,8 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
  */
 export async function procesarCorreoPuntual(
   chatId: number,
-  busqueda: string
+  busqueda: string,
+  opciones: { soloArchivar?: boolean } = {}
 ): Promise<{
   encontrado: boolean;
   de?: string;
@@ -1456,12 +1481,16 @@ export async function procesarCorreoPuntual(
   yaEsElActivo?: boolean;
   yaRegistrado?: boolean;
   remitenteOriginal?: RemitenteOriginalReenvio;
+  /** Solo con soloArchivar: el correo no trae adjuntos que guardar / cuántos adjuntos se mandaron a archivar. */
+  sinAdjuntos?: boolean;
+  adjuntos?: number;
 }> {
-  return conCoordinadorCorreo(() => procesarCorreoPuntualInterno(chatId, busqueda));
+  return conCoordinadorCorreo(() => procesarCorreoPuntualInterno(chatId, busqueda, opciones));
 }
 async function procesarCorreoPuntualInterno(
   chatId: number,
-  busqueda: string
+  busqueda: string,
+  opciones: { soloArchivar?: boolean } = {}
 ): Promise<{
   encontrado: boolean;
   de?: string;
@@ -1469,6 +1498,9 @@ async function procesarCorreoPuntualInterno(
   yaEsElActivo?: boolean;
   yaRegistrado?: boolean;
   remitenteOriginal?: RemitenteOriginalReenvio;
+  /** Solo con soloArchivar: el correo no trae adjuntos que guardar / cuántos adjuntos se mandaron a archivar. */
+  sinAdjuntos?: boolean;
+  adjuntos?: number;
 }> {
   const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
   const ids = await buscarMensajes(query, 1);
@@ -1508,8 +1540,17 @@ async function procesarCorreoPuntualInterno(
   // mensaje anterior del mismo hilo y no necesariamente el messageId más
   // reciente guardado en la cola. Sigue siendo la misma conversación y no
   // debe producir una segunda propuesta paralela.
-  if (activo && (activo.id === correo.threadId || activo.mensajeId === correo.id)) {
+  // «Guárdalos en Drive» sí se atiende aunque sea el correo activo: archivar un adjunto no crea un segundo gasto, y
+  // negarse dejaba al operador sin forma de guardar un documento que la cola había tomado por factura.
+  if (!opciones.soloArchivar && activo && (activo.id === correo.threadId || activo.mensajeId === correo.id)) {
     return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true, remitenteOriginal };
+  }
+  if (opciones.soloArchivar) {
+    if (correo.adjuntos.length === 0) {
+      return { encontrado: true, de: correo.de, asunto: correo.asunto, remitenteOriginal, sinAdjuntos: true };
+    }
+    await procesarCorreoLocalizado(chatId, correo, false, { soloArchivar: true });
+    return { encontrado: true, de: correo.de, asunto: correo.asunto, remitenteOriginal, adjuntos: correo.adjuntos.length };
   }
 
   const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);

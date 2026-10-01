@@ -56,6 +56,7 @@ import { vacacionesHoldedTool } from "./vacacionesHolded";
 import { descartarRecomendacionControlDiarioTool } from "./descartarRecomendacionControlDiario";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
 import { consultarPolizasSeguroTool } from "./consultarPolizasSeguro";
+import { integrarDocumentoSeguroTool } from "./integrarDocumentoSeguro";
 import { busquedaConocimientoGlobalTool } from "./busquedaConocimientoGlobal";
 
 /**
@@ -120,6 +121,7 @@ const tools: ToolDefinition[] = [
   descartarRecomendacionControlDiarioTool,
   compararCashflowHoldedTool,
   consultarPolizasSeguroTool,
+  integrarDocumentoSeguroTool,
 ];
 
 /**
