@@ -139,6 +139,7 @@ import { obtenerDiagnosticoMetadataPestanas } from "../core/google/sheetsKeyValu
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
+import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, iniciarMantenimientoEstadoCerebro, obtenerDiagnosticoPanelCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
@@ -1686,6 +1687,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleEdicionValorCashflowCallback(callback);
     } else if (data.startsWith("regmanualcf_")) {
       await handleRegistroManualCashflowCallback(callback);
+    } else if (data.startsWith("loteimpuestos_")) {
+      await handleLoteImpuestosCallback(callback);
     } else if (data.startsWith("evento_")) {
       await handleEventoCallback(callback);
     } else if (data.startsWith("cerebroacceso_")) {

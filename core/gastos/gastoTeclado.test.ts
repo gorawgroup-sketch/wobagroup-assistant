@@ -103,3 +103,10 @@ test('con gastos parecidos ya registrados hay salida para descartar: «Crear gas
   assert.ok(claves.includes("nuevo"), "«Crear gasto nuevo» (ya no depende de que exista un cargo)");
   assert.ok(claves.includes("cancelar"), "«Cancelar» faltaba con candidatos de Holded");
 });
+
+test("un cargo mayor nunca es el movimiento recomendado, aunque el indicador de banco quede activo por error", () => {
+  const base = { hayMovimientoBancario: true, movimientosAmbiguos: [{ accountId: "a", movementId: "m", descripcion: "Go Rent A Car", monto: -744.87, moneda: "USD", fecha: "2026-09-25" }] };
+  assert.equal(movimientoRecomendadoPropuesta(base as never)?.movementId, "m");
+  const mayor = { ...base, movimientosAmbiguos: [{ ...base.movimientosAmbiguos[0], origenCoincidencia: "cargo_mayor" }] };
+  assert.equal(movimientoRecomendadoPropuesta(mayor as never), undefined);
+});

@@ -48,7 +48,9 @@ export interface OpcionesTecladoGasto {
 export function movimientoRecomendadoPropuesta(
   propuesta: PropuestaGasto
 ): MovimientoBancarioCandidato | undefined {
-  return propuesta.hayMovimientoBancario === true && propuesta.movimientosAmbiguos?.length === 1
+  // Un «cargo mayor» nunca es el recomendado: solo se concilia si el operador marcó su «Conciliar con #N».
+  return propuesta.hayMovimientoBancario === true && propuesta.movimientosAmbiguos?.length === 1 &&
+    propuesta.movimientosAmbiguos[0].origenCoincidencia !== "cargo_mayor"
     ? propuesta.movimientosAmbiguos[0]
     : undefined;
 }

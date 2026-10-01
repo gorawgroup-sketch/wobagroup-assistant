@@ -23,6 +23,7 @@ import {
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
+import { extraerRemitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../gmail/remitenteReenvio";
 import { verificarFacturasEnlazadasEnCuerpo } from "../gmail/facturasEnlazadasEnCuerpo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
@@ -53,6 +54,8 @@ import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasShe
 import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
+import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
+import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
 import {
   encolarCorreos,
   hayActivo,
@@ -830,7 +833,7 @@ async function procesarCorreoLocalizado(
         if (estadoRegistro === "confirmado") {
           await sendTelegramMessage(
             chatId,
-            `📄 "${adjunto.filename}" (${correo.asunto}) — ya generó el gasto VERIFICADO ${gastoYaCreado.gastoId} (${gastoYaCreado.empresa}) antes, no propongo uno nuevo.`
+            `📄 "${adjunto.filename}" (${correo.asunto}) — ya está registrado y verificado en Holded: ${describirGastoRegistrado(gastoYaCreado)}, no propongo uno nuevo.`
           ).catch(() => {});
           if (deColaCorreo) {
             await avanzarColaCorreoSiActivo(
@@ -844,7 +847,7 @@ async function procesarCorreoLocalizado(
         if (estadoRegistro === "incompleto") {
           await sendTelegramMessage(
             chatId,
-            `🔄 El gasto ${gastoYaCreado.gastoId} ya existe, pero quedó incompleto. Voy a reutilizar el flujo ` +
+            `🔄 El gasto ${describirGastoRegistrado(gastoYaCreado)} ya existe, pero quedó incompleto. Voy a reutilizar el flujo ` +
               `uno a uno para verificar/adjuntar este mismo soporte y retomar su conciliación; no se podrá crear otro gasto.`
           ).catch(() => {});
           // Sigue con la descarga y lectura del adjunto. procesarGastoEntrante
@@ -879,6 +882,21 @@ async function procesarCorreoLocalizado(
       // revisar_correo_puntual — ambos pasan por este mismo loop) lo volvía a descargar y clasificar
       // desde cero. Mismo criterio granular que el chequeo de arriba: por adjunto, no por correo
       // entero, para no saltarse por error un adjunto real y distinto que sí siga pendiente.
+      const descartado = await gastoDescartadoPorOperador(correo.id, adjunto.partId).catch((error) => {
+        console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" fue descartado por el operador (no crítico, sigue igual):`, error);
+        return undefined;
+      });
+      if (descartado) {
+        await sendTelegramMessage(
+          chatId,
+          `📄 "${adjunto.filename}" (${correo.asunto}) — ya lo descartaste tú antes (${descartado.proveedor} — ` +
+            `${descartado.monto.toFixed(2)} ${descartado.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, dímelo por chat.`
+        ).catch(() => {});
+        if (deColaCorreo) {
+          await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:adjunto:${adjunto.partId}:resolver`);
+        }
+        continue;
+      }
       const yaArchivado = await yaSeArchivoDesdeCorreo(correo.id, adjunto.partId).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error consultando si el adjunto "${adjunto.filename}" ya se archivó (no crítico, sigue igual):`, error);
         return false;
@@ -1060,6 +1078,19 @@ async function procesarCorreoLocalizado(
       console.error(`[revisarCorreoNuevo] Error consultando si el correo ${correo.id} ya generó un gasto (no crítico, sigue igual):`, error);
       return undefined;
     });
+    const descartadoEnCuerpo = await gastoDescartadoPorOperador(correo.id, undefined).catch((error) => {
+      console.error(`[revisarCorreoNuevo] Error consultando si el gasto del cuerpo del correo ${correo.id} fue descartado por el operador (no crítico, sigue igual):`, error);
+      return undefined;
+    });
+    if (descartadoEnCuerpo) {
+      await sendTelegramMessage(
+        chatId,
+        `📄 "${correo.asunto}" — ya lo descartaste tú antes (${descartadoEnCuerpo.proveedor} — ` +
+          `${descartadoEnCuerpo.monto.toFixed(2)} ${descartadoEnCuerpo.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, dímelo por chat.`
+      ).catch(() => {});
+      if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
+      return;
+    }
     if (gastoYaCreadoEnCuerpo) {
       const estadoRegistro = await revalidarRegistroRecienteDeCorreo(gastoYaCreadoEnCuerpo).catch((error) => {
         console.error(`[revisarCorreoNuevo] Error revalidando gasto ${gastoYaCreadoEnCuerpo.gastoId}:`, error);
@@ -1068,7 +1099,7 @@ async function procesarCorreoLocalizado(
       if (estadoRegistro === "confirmado") {
         await sendTelegramMessage(
           chatId,
-          `📄 "${correo.asunto}" — ya generó el gasto VERIFICADO ${gastoYaCreadoEnCuerpo.gastoId} (${gastoYaCreadoEnCuerpo.empresa}) antes, no propongo uno nuevo.`
+          `📄 "${correo.asunto}" — ya está registrado y verificado en Holded: ${describirGastoRegistrado(gastoYaCreadoEnCuerpo)}, no propongo uno nuevo.`
         ).catch(() => {});
         if (deColaCorreo) {
           await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
@@ -1078,7 +1109,7 @@ async function procesarCorreoLocalizado(
       if (estadoRegistro === "incompleto") {
         await sendTelegramMessage(
           chatId,
-          `🔄 El gasto ${gastoYaCreadoEnCuerpo.gastoId} ya existe, pero quedó incompleto. Voy a reconstruir fielmente ` +
+          `🔄 El gasto ${describirGastoRegistrado(gastoYaCreadoEnCuerpo)} ya existe, pero quedó incompleto. Voy a reconstruir fielmente ` +
             `el soporte desde este correo y retomar ese mismo gasto; no se podrá crear otro.`
         ).catch(() => {});
         // Sigue hasta procesarGastoEntrante, que convierte el registro
@@ -1418,32 +1449,67 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
 export async function procesarCorreoPuntual(
   chatId: number,
   busqueda: string
-): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean; yaRegistrado?: boolean }> {
+): Promise<{
+  encontrado: boolean;
+  de?: string;
+  asunto?: string;
+  yaEsElActivo?: boolean;
+  yaRegistrado?: boolean;
+  remitenteOriginal?: RemitenteOriginalReenvio;
+}> {
   return conCoordinadorCorreo(() => procesarCorreoPuntualInterno(chatId, busqueda));
 }
 async function procesarCorreoPuntualInterno(
   chatId: number,
   busqueda: string
-): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean; yaRegistrado?: boolean }> {
+): Promise<{
+  encontrado: boolean;
+  de?: string;
+  asunto?: string;
+  yaEsElActivo?: boolean;
+  yaRegistrado?: boolean;
+  remitenteOriginal?: RemitenteOriginalReenvio;
+}> {
   const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
   const ids = await buscarMensajes(query, 1);
   if (ids.length === 0) return { encontrado: false };
 
   const correo = await obtenerResumenCorreo(ids[0]);
 
+  // Hallazgo real de auditoría (Carlos, caso real Simon Talloen / Go Rent A Car, 2026-09-30): "de"
+  // (CorreoResumen.de) es el remitente del mensaje tal como llegó al buzón del asistente — para un
+  // correo REENVIADO, eso es casi siempre la persona del grupo que lo reenvió (ej. Carlos), nunca
+  // quien originó el asunto real (ej. Simon Talloen). Carlos pidió responderle directo a esa persona
+  // original y el sistema no sabía su email aunque ya estuviera, letra por letra, en el propio correo
+  // que acababa de procesar — esta es una lectura de solo el cuerpo (nunca toca colaRevisionStore ni
+  // dispara ningún flujo de gasto), así que es segura incluso cuando el correo ya está "activo" más
+  // abajo.
+  //
+  // El fallo se traga a propósito (dato cosmético, ver core/guardarrailes/lineaBase.json): esto es un
+  // enriquecimiento informativo sobre un correo que YA se encontró y se va a procesar/informar de
+  // todos modos — si Gmail falla leyendo el cuerpo, lo correcto es seguir sin el remitente original
+  // (el comportamiento de siempre, nunca peor), no abortar toda la búsqueda puntual por un dato extra.
+  const remitenteOriginal = await obtenerCuerpoCompletoCorreo(correo.id)
+    .then(extraerRemitenteOriginalDeReenvio)
+    .catch((error) => {
+      console.error("[revisarCorreoNuevo] No se pudo leer el cuerpo para buscar el remitente original del reenvío (no crítico):", error);
+      return undefined;
+    });
+
   // Hallazgo real de la auditoría: si el correo que se encuentra acá es JUSTO el mismo que ya está
   // "activo" en la cola en este momento, procesarlo también por este camino (deColaCorreo=false)
   // crearía una SEGUNDA propuesta/gasto para el mismo correo, sin que ninguna de las dos se entere
   // de la otra — confuso (dos mensajes con botones para lo mismo) y, en el peor caso, un intento de
   // gasto duplicado. En ese caso exacto, mejor avisar y dejar que se resuelva desde la propuesta que
-  // la cola ya mandó, en vez de duplicar el trabajo.
+  // la cola ya mandó, en vez de duplicar el trabajo. Esto nunca bloqueaba LEER el correo (ver arriba)
+  // — solo evita volver a procesarlo como gasto.
   const activo = await obtenerActivoActual(chatId).catch(() => undefined);
   // Comparar también por THREAD id: una búsqueda puntual puede devolver un
   // mensaje anterior del mismo hilo y no necesariamente el messageId más
   // reciente guardado en la cola. Sigue siendo la misma conversación y no
   // debe producir una segunda propuesta paralela.
   if (activo && (activo.id === correo.threadId || activo.mensajeId === correo.id)) {
-    return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
+    return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true, remitenteOriginal };
   }
 
   const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
@@ -1455,7 +1521,13 @@ async function procesarCorreoPuntualInterno(
       .catch(() => {});
   }
   await procesarCorreoLocalizado(chatId, correo, false);
-  return { encontrado: true, de: correo.de, asunto: correo.asunto, ...(yaRegistrado ? { yaRegistrado: true } : {}) };
+  return {
+    encontrado: true,
+    de: correo.de,
+    asunto: correo.asunto,
+    remitenteOriginal,
+    ...(yaRegistrado ? { yaRegistrado: true } : {}),
+  };
 }
 
 /**

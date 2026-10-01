@@ -37,6 +37,12 @@ export const ACCIONES_REABRIBLES_TRAS_COMPLETAR: ReadonlySet<string> = new Set([
   // correo — actúan sobre "el activo actual" del chat — así que un toque tardío reabierto podría cerrar/reprocesar
   // un correo DISTINTO del que el aviso original mostraba, si mientras tanto la cola avanzó.
   "gasto_aprobar",
+  // Mismo criterio (caso real 2026-09-30): el lote de impuestos del cashflow consume su propuesta de forma atómica
+  // ANTES de escribir (consumirPendienteLoteImpuestos elimina la fila), así que un segundo toque nunca puede aplicar
+  // el lote dos veces; y un primer toque que falló antes de consumirla (la pestaña del almacén no era visible para
+  // el servidor) dejaba el botón bloqueado con «Esta acción ya fue procesada» sin haber hecho nada.
+  "loteimpuestos_confirmar",
+  "loteimpuestos_cancelar",
 ]);
 /** Un doble toque o un reenvío de Telegram ocurren en segundos; pasado este margen es una decisión nueva. */
 export const VENTANA_DUPLICADO_CALLBACK_MS = 45_000;

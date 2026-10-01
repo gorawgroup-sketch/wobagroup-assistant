@@ -10,6 +10,7 @@ import { obtenerPropuestaClasificacionPendientePorChat } from "../documental/cla
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { obtenerPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
+import { obtenerBorradoresCorreoPorChat, seleccionarBorradorParaRecordatorio, type BorradorCorreo } from "../gmail/emailDraftStore";
 import { registrarBusquedaWeb } from "./webSearchLog";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA, type EjecucionIA } from "../ai/policy";
@@ -332,10 +333,10 @@ async function buildSystemPromptDinamico(
 
   if (chatId !== undefined) {
     // Reutiliza la lectura ya hecha en orquestarTurno (obtenerPendientesSensibles) cuando
-    // viene provista — evita repetir las mismas 4 lecturas de Sheets dos veces por turno.
+    // viene provista — evita repetir las mismas 5 lecturas de Sheets dos veces por turno.
     // Solo se vuelve a consultar acá si por algún motivo no llegó prefetch (defensivo).
     const pendientes = pendientesPrefetch ?? (await obtenerPendientesSensibles(chatId));
-    const { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente } = pendientes;
+    const { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto } = pendientes;
     if (propuesta) {
       const origenTxt = propuesta.correoOrigen
         ? ` Vino de un correo de ${propuesta.correoOrigen.de}, asunto "${propuesta.correoOrigen.asunto}".`
@@ -418,6 +419,39 @@ async function buildSystemPromptDinamico(
           "pide algo distinto (programar un recordatorio, guardar algo en la memoria del sistema, o cualquier " +
           "otra instrucción), atiende esa petición con la herramienta que corresponda — no repitas esta " +
           "pregunta de carpeta ni inventes una aclaración propia sobre el pendiente."
+      );
+    }
+
+    if (correoPropuesto) {
+      const LIMITE_CUERPO_EN_PROMPT = 2000;
+      const cortado = correoPropuesto.cuerpo.length > LIMITE_CUERPO_EN_PROMPT;
+      const cuerpoTxt = cortado ? correoPropuesto.cuerpo.slice(0, LIMITE_CUERPO_EN_PROMPT) : correoPropuesto.cuerpo;
+      const avisoCorte = cortado
+        ? "\n\n[NOTA INTERNA — nunca la copies al correo: el cuerpo de arriba está cortado en " +
+          `${LIMITE_CUERPO_EN_PROMPT} caracteres, el borrador real es más largo. Si el usuario pide ` +
+          "reenviarlo 'tal cual', no reconstruyas el final a ciegas — dile que el borrador es largo y " +
+          "pídele que use el botón '📤 Enviar así' del mensaje original para no perder nada, o pídele " +
+          "la parte exacta que falta si de verdad necesita reescribirlo.]"
+        : "";
+      partes.push(
+        `Hay un borrador de correo SIN RESPONDER en este chat, ya mandado con botones "Enviar así / Editar / ` +
+          `No enviar": para "${correoPropuesto.to}", asunto "${correoPropuesto.subject}". Si el mensaje actual ` +
+          "del usuario se refiere a ese borrador (ej. 'mándaselo a X en vez de a mí', 'cámbiale el asunto', " +
+          "'reenvíalo tal cual', 'agrégale X'), usa el cuerpo de abajo COPIADO LITERAL, palabra por palabra " +
+          "— NUNCA lo resumas, parafrasees ni lo reescribas desde tu propio entendimiento de la situación, " +
+          "aunque te parezca que puedes decirlo mejor o más corto. Cambia ÚNICAMENTE lo que el usuario pidió " +
+          "cambiar explícitamente (ej. el destinatario, el saludo, una frase puntual) — todo lo demás " +
+          "(hechos, cifras, preguntas, nombres) se mantiene exactamente igual, carácter por carácter. Un " +
+          "correo que cambia lo que dice (ej. convertir una pregunta pendiente en una afirmación de que ya " +
+          "está resuelto) es un error real, no una mejora de redacción. Nunca inventes un borrador nuevo " +
+          "desde cero ni le preguntes el asunto/cuerpo que ya escribiste, salvo que esté pidiendo cambiarlo " +
+          "explícitamente. Llama a proponer_envio_correo con el destinatario/asunto/cuerpo que corresponda " +
+          "tras aplicar SOLO el cambio pedido (eso crea un borrador nuevo con sus propios botones; el " +
+          "anterior sigue disponible por separado si el usuario prefiere usar esos botones directamente). " +
+          "Si su mensaje pide algo distinto (programar un recordatorio, guardar algo en la memoria del " +
+          "sistema, o cualquier otra instrucción), atiende esa petición con la herramienta que corresponda — " +
+          "no repitas ninguna pregunta sobre este borrador ni inventes una aclaración propia sobre él.\n" +
+          `Cuerpo del borrador (cópialo literal):\n"""\n${cuerpoTxt}\n"""${avisoCorte}`
       );
     }
   }
@@ -855,7 +889,7 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
  * Orquesta un turno completo: primer intento con Haiku (rápido y barato,
  * solo herramientas de lectura — ver getToolDefinitions(true) y
  * ToolDefinition.seguraParaModoRapido) — EXCEPTO si el chat tiene alguna de
- * las cuatro preguntas sensibles pendientes (ver obtenerPendientesSensibles),
+ * las cinco preguntas sensibles pendientes (ver obtenerPendientesSensibles),
  * en cuyo caso el intento con Haiku se salta directo y se va a Sonnet (ver
  * el comentario sobre obtenerPendientesSensibles para el porqué). Si Haiku sí
  * corre y responde el marcador ESCALAR (porque la petición necesita
@@ -892,7 +926,7 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
  * INSTRUCCION_MODO_RAPIDO le dice "ante la duda, escala", pero Haiku no
  * "dudó": entendió mal la relación y contestó directo, sin pasar por
  * ninguna tool (así que el chequeo de nombreNoDisponible en
- * ejecutarConversacion nunca se activó). Estas cuatro preguntas pendientes
+ * ejecutarConversacion nunca se activó). Estas cinco preguntas pendientes
  * son las únicas que dependen de que el modelo interprete texto libre para
  * decidir una acción real (a diferencia de otros pendientes, que Server.ts
  * intercepta directo sin pasar por Claude) — así que en vez de otro parche
@@ -901,7 +935,7 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
  *
  * Se lee UNA sola vez por turno (acá) y el resultado se reutiliza tanto para
  * decidir si saltar el modo rápido como para construir el aviso en
- * buildSystemPromptDinamico — evita leer las mismas 4 hojas de Sheets dos
+ * buildSystemPromptDinamico — evita leer las mismas 5 hojas de Sheets dos
  * veces (bug encontrado en la auditoría de este mismo cambio). A diferencia
  * del chequeo anterior, los errores de lectura SÍ se registran (antes se
  * descartaban en silencio con .catch(() => undefined), lo que podía hacer
@@ -914,10 +948,11 @@ export interface PendientesSensibles {
   resolucionContacto: Awaited<ReturnType<typeof obtenerResolucionContactoPendientePorChat>>;
   gastoPendiente: Awaited<ReturnType<typeof obtenerGastoPendienteDatosPorChat>>;
   reclasificacionPendiente: Awaited<ReturnType<typeof obtenerPendienteReclasificacionPorChat>>;
+  correoPropuesto: BorradorCorreo | undefined;
 }
 
 async function obtenerPendientesSensibles(chatId: number): Promise<PendientesSensibles> {
-  const [propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente] = await Promise.all([
+  const [propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto] = await Promise.all([
     obtenerPropuestaClasificacionPendientePorChat(chatId).catch((error) => {
       console.error("[claude/client] Error consultando propuesta de archivo pendiente (no crítico):", error);
       return undefined;
@@ -934,12 +969,23 @@ async function obtenerPendientesSensibles(chatId: number): Promise<PendientesSen
       console.error("[claude/client] Error consultando reclasificación de documento pendiente (no crítico):", error);
       return undefined;
     }),
+    // Ver seleccionarBorradorParaRecordatorio (core/gmail/emailDraftStore.ts) — hallazgo real de
+    // auditoría (Carlos, caso real Simon Talloen / Go Rent A Car, 2026-09-30): un borrador de correo
+    // ya propuesto solo vivía en el historial de mensajes del chat, sujeto al recorte de
+    // conversationStore (MAX_MESSAGES=30), sin ningún refuerzo en el prompt como SÍ tienen
+    // archivo/contacto/gasto/reclasificación.
+    obtenerBorradoresCorreoPorChat(chatId)
+      .then(seleccionarBorradorParaRecordatorio)
+      .catch((error) => {
+        console.error("[claude/client] Error consultando borrador de correo pendiente (no crítico):", error);
+        return undefined;
+      }),
   ]);
-  return { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente };
+  return { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto };
 }
 
 function haySensiblePendiente(p: PendientesSensibles): boolean {
-  return Boolean(p.propuesta || p.resolucionContacto || p.gastoPendiente || p.reclasificacionPendiente);
+  return Boolean(p.propuesta || p.resolucionContacto || p.gastoPendiente || p.reclasificacionPendiente || p.correoPropuesto);
 }
 
 async function orquestarTurno(

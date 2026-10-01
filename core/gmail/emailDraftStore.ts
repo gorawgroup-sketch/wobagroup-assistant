@@ -315,6 +315,25 @@ export async function obtenerBorradoresCorreoPorChat(chatId: number): Promise<Bo
 }
 
 /**
+ * El borrador manual más reciente de un chat, para recordárselo al modelo en el prompt dinámico
+ * (ver PendientesSensibles.correoPropuesto en core/claude/client.ts) — nunca uno vinculado a la cola
+ * de correo (`deColaCorreo`), que ya tiene su propio mecanismo de seguimiento (correo activo /
+ * huboSenalDeEntrega) y mezclar ambos confundiría el aviso.
+ *
+ * Hallazgo real de auditoría (Carlos, caso real Simon Talloen / Go Rent A Car, 2026-09-30): un
+ * borrador ya propuesto (proponer_envio_correo) solo vivía en el historial de mensajes del chat —
+ * sujeto al recorte de conversationStore (MAX_MESSAGES=30) — así que unos pocos turnos de
+ * herramientas bastaban para que el modelo dijera "no tengo registro de ningún correo propuesto"
+ * sobre un borrador que seguía 100% vivo en este store (TTL 48h) con sus botones todavía
+ * funcionales.
+ */
+export function seleccionarBorradorParaRecordatorio(borradores: readonly BorradorCorreo[]): BorradorCorreo | undefined {
+  return borradores
+    .filter((b) => !b.deColaCorreo)
+    .sort((a, b) => b.creadoEn - a.creadoEn)[0];
+}
+
+/**
  * Bug real encontrado en vivo (2026-09-08): continuarConOrientacion (emailCallbackHandler.ts) llama a
  * askClaude con la instrucción libre de Carlos y LUEGO, con un regex ("¿la instrucción menciona
  * 'correo'/'responder'/...?") sobre el TEXTO de esa instrucción, decide si además genera un segundo

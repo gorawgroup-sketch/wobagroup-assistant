@@ -1,11 +1,14 @@
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoParaPropuesta } from "./buscarCargoParaPropuesta";
+import { notaCargosMayores } from "../holded/cargoMayor";
+import { obtenerPendienteSeleccionGastoPorChat } from "./pendienteSeleccionGastoStore";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import {
   actualizarMessageIdGasto,
   actualizarCandidatosPropuestaGasto,
   actualizarFlagMovimientoBancarioGasto,
   actualizarMovimientosAmbiguosPropuestaGasto,
+  actualizarSeleccionAccionesGasto,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
@@ -57,6 +60,11 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
     let movimientosAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoRecomendado: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     try {
+      // Si el operador ya aprobó «Conciliar con #N» y solo falta un dato por texto, esa decisión se ejecutará por índice:
+      // no se introduce ahora un cargo mayor en la lista (si no se puede saber, tampoco).
+      const seleccionPendiente = await obtenerPendienteSeleccionGastoPorChat(propuesta.chatId);
+      const decisionPorIndice = seleccionPendiente?.propuestaId === propuesta.id &&
+        Boolean(seleccionPendiente.decisionFinal?.startsWith("crearconciliar"));
       const r = await buscarCargoParaPropuesta({
         empresa: propuesta.empresa,
         proveedor: propuesta.proveedor,
@@ -64,15 +72,18 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
+        ofrecerCargoMayor: !decisionPorIndice,
       });
       trazaBusqueda = r.traza;
       movimientoEncontrado = r.movimientoEncontrado;
       movimientoRecomendado = r.movimientoRecomendado;
       movimientosAmbiguos = r.movimientosAmbiguos;
 
-      if (!movimientoEncontrado && movimientosAmbiguos.length === 0) {
+      // Un cargo en otra moneda que cuadra por tasa es mejor pista que un cargo mayor del mismo proveedor: gana si existe.
+      const soloCargoMayor = movimientosAmbiguos.length > 0 && movimientosAmbiguos.every((m) => m.origenCoincidencia === "cargo_mayor");
+      if (!movimientoEncontrado && (movimientosAmbiguos.length === 0 || soloCargoMayor)) {
         const monedasReales = await obtenerMonedasCuentasReales(propuesta.empresa);
-        movimientosAmbiguos = await buscarMovimientosPorTipoCambio(
+        const porTipoCambio = await buscarMovimientosPorTipoCambio(
           propuesta.empresa,
           {
             monto: propuesta.monto,
@@ -82,6 +93,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
           },
           monedasReales
         );
+        if (porTipoCambio.length > 0 || !soloCargoMayor) movimientosAmbiguos = porTipoCambio;
       }
     } catch (error) {
       console.error("[reenviarPropuestaGasto] Error buscando movimiento bancario (no crítico):", error);
@@ -93,10 +105,22 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       throw new Error("No se pudo guardar durablemente el movimiento bancario antes de reenviar la propuesta.");
     }
     propuesta = { ...propuesta, hayMovimientoBancario: movimientoEncontrado, movimientosAmbiguos: movimientosPersistidos };
+    // Un «Conciliar con #N» marcado sobre la lista anterior no vale para un cargo mayor recién ofrecido en ese mismo
+    // índice: el operador tiene que marcarlo él, viendo cuál es.
+    const marcadas = propuesta.seleccionAcciones ?? [];
+    if (movimientosPersistidos.some((m) => m.origenCoincidencia === "cargo_mayor") && marcadas.some((k) => k.startsWith("crearconciliar"))) {
+      const sinConciliar = marcadas.filter((k) => !k.startsWith("crearconciliar"));
+      if (!await actualizarSeleccionAccionesGasto(propuesta.id, sinConciliar)) {
+        throw new Error("No se pudo limpiar la selección anterior antes de reenviar la propuesta.");
+      }
+      propuesta = { ...propuesta, seleccionAcciones: sinConciliar };
+    }
   }
 
   // Renovar botones no omite la búsqueda de duplicados cuando no hay cargo válido.
-  if (!propuesta.hayMovimientoBancario && !propuesta.movimientosAmbiguos?.length && esFechaDocumentoValida(propuesta.fecha)) {
+  // Un cargo mayor no demuestra que este gasto sea nuevo: con solo esa pista se repite igual la búsqueda de duplicados.
+  const soloCargosMayores = (propuesta.movimientosAmbiguos ?? []).every((m) => m.origenCoincidencia === "cargo_mayor");
+  if (!propuesta.hayMovimientoBancario && soloCargosMayores && esFechaDocumentoValida(propuesta.fecha)) {
     const revision = await verificarDuplicadoGastoEstricto(propuesta.empresa, propuesta);
     if (!await actualizarCandidatosPropuestaGasto(propuesta.id, revision.compras)) throw new Error("No se pudo guardar la revisión de duplicados.");
     propuesta = { ...propuesta, candidatos: revision.compras };
@@ -143,6 +167,8 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
               `en otra moneda/cuenta de ${propuesta.empresa} usando la tasa histórica como referencia:\n` +
               propuesta.movimientosAmbiguos.map((m, i) => describirMovimientoMultimoneda(m, i)).join("\n") +
               `\nMarca "Conciliar con #N" solo si reconoces el cargo; Wobi no lo elegirá automáticamente.`
+            : propuesta.movimientosAmbiguos.some((m) => m.origenCoincidencia === "cargo_mayor")
+              ? notaCargosMayores(propuesta.movimientosAmbiguos, propuesta, { hayCorreoOrigen: Boolean(propuesta.correoOrigen) })
             : `\n\n💳 Encontré ${propuesta.movimientosAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto — marca "Conciliar con #N" en el teclado.`
           : `\n\n💳 No hay un cargo compatible confirmado. Puedes crear el gasto sin conciliar (se vuelve a comprobar que no esté duplicado antes de escribir) y conciliarlo cuando aparezca el cargo; la ausencia de cargo no demuestra un duplicado.` +
             (describirTrazaBusqueda(trazaBusqueda) ? `\n${describirTrazaBusqueda(trazaBusqueda)}` : "");

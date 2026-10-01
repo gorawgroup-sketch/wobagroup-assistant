@@ -13,11 +13,15 @@ const TAB_NAME = "_gastos_pendientes";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las demás propuestas
 
 // Bug real de auditoría (agregar movimientosAmbiguosJSON como columna Y): el rango de columnas
-// (A1:__1 en ensureTab, A2:__10000 en leerTodas, A:__ en crearPropuestaGasto) está hardcodeado por
-// letra, NO se calcula de HEADERS.length — agregar una columna nueva a HEADERS sin extender los TRES
-// rangos deja la columna nueva escribible pero NUNCA legible (values.get con un rango explícito
-// nunca trae columnas fuera de él, así que row[n] de esa columna siempre sale undefined, sin ningún
-// error). La próxima columna que se agregue DEBE extender los tres rangos a la letra siguiente.
+// (A1:__1 en ensureTab, A2:__10000 en leerTodas, A:__ en crearPropuestaGasto, y los A{fila}:__{fila}
+// de crearPropuestaGasto/restaurarPropuestaGasto) está hardcodeado por letra, NO se calcula de
+// HEADERS.length — agregar una columna nueva a HEADERS sin extender TODOS esos rangos deja la
+// columna nueva escribible pero NUNCA legible, o (más grave, hallazgo real al agregar
+// contextoDeViaje/reciboSimplificado/ticketDeEquipo) el valor se pierde en silencio si el rango de
+// escritura de una fila completa (A{fila}:__{fila}) es más angosto que el array que propuestaToRow
+// devuelve — Sheets simplemente descarta los valores sobrantes del array, sin ningún error.
+// HEADERS termina ahora en la columna AD (30 campos) — la próxima columna que se agregue DEBE
+// extender TODOS esos rangos a la letra siguiente (AE).
 const HEADERS = [
   "id",
   "empresa",
@@ -46,6 +50,9 @@ const HEADERS = [
   "movimientosAmbiguosJSON",
   "huellaContenido",
   "personaAsociada",
+  "contextoDeViaje",
+  "reciboSimplificado",
+  "ticketDeEquipo",
 ];
 
 export interface PropuestaGasto {
@@ -157,6 +164,24 @@ export interface PropuestaGasto {
   /** SHA-256 de los bytes del comprobante, para deduplicar reenvíos del mismo archivo. */
   huellaContenido?: string;
   personaAsociada?: string;
+  /**
+   * Señales de inferirCuentaGasto (ver su comentario en core/holded/write.ts) tal como se calcularon
+   * al crear ESTA propuesta — se persisten para poder reusarlas si luego hace falta reinferir la
+   * cuenta (ver prepararPropuestaFinalGasto, gastoCallbackHandler.ts).
+   *
+   * Hallazgo real de auditoría (Carlos, caso real Droguería Pura / Simon Talloen, Footprint,
+   * 2026-10-01): la propuesta ORIGINAL (procesarGastoEntrante.ts) sí calculaba contextoDeViaje=true
+   * (ticket individual de alguien de viaje) y por eso acertó la cuenta contable la primera vez — pero
+   * nunca se guardaba en la propuesta. Cuando algo disparaba una reinferencia (prepararPropuestaFinalGasto,
+   * ej. al aprobar una selección de conciliación), esa señal ya no existía en ningún lado — ni en
+   * `cambios` (un botón no "corrige" el contexto de viaje) ni en la propuesta — así que el tier
+   * "viaje" nunca se evaluaba, y para un proveedor nuevo sin precedente (una farmacia de aeropuerto
+   * nunca vista antes) la reinferencia fallaba con "no pude inferir una cuenta contable segura",
+   * contradiciendo la propia propuesta original que el operador ya había visto funcionar bien.
+   */
+  contextoDeViaje?: boolean;
+  reciboSimplificado?: boolean;
+  ticketDeEquipo?: boolean;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -203,6 +228,10 @@ async function ensureTab(): Promise<number> {
     }
     await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AA1`,
       valueInputOption: "RAW", requestBody: { values: [["personaAsociada"]] } });
+    // Migración aditiva: contextoDeViaje/reciboSimplificado/ticketDeEquipo (ver su comentario en
+    // PropuestaGasto) — mismo patrón que personaAsociada arriba, una celda por columna nueva.
+    await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AB1:AD1`,
+      valueInputOption: "RAW", requestBody: { values: [["contextoDeViaje", "reciboSimplificado", "ticketDeEquipo"]] } });
     tabGridId = existingId;
     return tabGridId;
   }
@@ -219,7 +248,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:AA1`,
+    range: `${TAB_NAME}!A1:AD1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -314,6 +343,12 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     movimientosAmbiguos,
     huellaContenido: row[25] ? String(row[25]) : undefined,
     personaAsociada: row[26] ? String(row[26]) : undefined,
+    // Mismo criterio tri-estado que hayMovimientoBancario (arriba): "" (nunca calculado, filas viejas)
+    // debe distinguirse de "false" (se calculó y dio que no aplica) — ambos casos reales para
+    // inferirCuentaGasto, nunca la misma cosa.
+    contextoDeViaje: row[27] === "" || row[27] == null ? undefined : row[27] === true || row[27] === "true",
+    reciboSimplificado: row[28] === "" || row[28] == null ? undefined : row[28] === true || row[28] === "true",
+    ticketDeEquipo: row[29] === "" || row[29] == null ? undefined : row[29] === true || row[29] === "true",
   };
 }
 
@@ -346,6 +381,9 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.movimientosAmbiguos && p.movimientosAmbiguos.length > 0 ? JSON.stringify(p.movimientosAmbiguos) : "",
     p.huellaContenido ?? "",
     p.personaAsociada ?? "",
+    p.contextoDeViaje === undefined ? "" : p.contextoDeViaje ? "true" : "false",
+    p.reciboSimplificado === undefined ? "" : p.reciboSimplificado ? "true" : "false",
+    p.ticketDeEquipo === undefined ? "" : p.ticketDeEquipo ? "true" : "false",
   ];
 }
 
@@ -361,7 +399,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:AA10000`,
+    range: `${TAB_NAME}!A2:AD10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
 
@@ -438,7 +476,7 @@ async function siguienteFilaLibre(): Promise<number> {
   // última fila con algo, en cualquier columna del rango".
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:AA`,
+    range: `${TAB_NAME}!A:AD`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
   const rows = resp.data.values ?? [];
@@ -478,7 +516,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:AA${fila}`,
+        range: `${TAB_NAME}!A${fila}:AD${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(propuesta)] },
       });
@@ -761,7 +799,7 @@ export async function restaurarPropuestaGasto(propuesta: PropuestaGasto): Promis
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:AA${fila}`,
+        range: `${TAB_NAME}!A${fila}:AD${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(restaurada)] },
       });

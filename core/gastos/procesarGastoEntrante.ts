@@ -7,6 +7,7 @@ import {
   verificarDuplicadoGastoEstricto,
   buscarMovimientoSimilar,
   buscarMovimientoAproximado,
+  buscarCargoMayorDelProveedor,
   buscarMovimientoEnMonedaAlternativa,
   inferirCuentaGasto,
   combinarTagsGastoAprendidos,
@@ -29,6 +30,7 @@ import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import { notaCargosMayores } from "../holded/cargoMayor";
 import {
   obtenerPoliticaMonedaLiquidacion,
   seleccionarMovimientoLiquidacionSeguro,
@@ -728,12 +730,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         propuestaYaPendiente.correoOrigen?.mensajeIdGmail === entrada.correoOrigen.mensajeIdGmail)
     );
     if (mismaIdentidadDeCola) {
-      await sendTelegramMessage(
-        chatId,
-        `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta visible y pendiente para este mismo correo ` +
-          `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +
-          `No envié otra; resuelve la propuesta existente.${notaNumeroDocumento}`
-      );
+      // Caso real (Carlos, 2026-09-30): «resuelve la propuesta existente» dejaba el chat sin botones, porque esa
+      // propuesta estaba muchos mensajes más arriba (correo de 5 adjuntos). La decisión pendiente va siempre al
+      // final del chat, con sus botones; el aviso explica por qué no se propone otra.
+      const encabezado =
+        `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta pendiente para este mismo correo ` +
+        `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +
+        `No creé otra: te la reenvío aquí para que la resuelvas.${notaNumeroDocumento}`;
+      try {
+        await reenviarPropuestaGasto(propuestaYaPendiente, encabezado);
+      } catch (error) {
+        console.error("[procesarGastoEntrante] No se pudo reenviar la propuesta pendiente existente:", error);
+        await sendTelegramMessage(chatId, `${encabezado}\n\n⚠️ No pude reenviarla con botones; escríbeme «reenvía los botones de ${propuestaYaPendiente.proveedor}».`);
+      }
       return "propuesta_pendiente_existente";
     }
 
@@ -751,6 +760,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // caso real: un vuelo de Booking.com se creó bajo la cuenta genérica
   // "Otros servicios" en vez de "Gastos de viaje", a pesar de que Footprint
   // ya tenía 159 líneas reales de gastos de viaje bajo la misma cuenta.
+  // Se captura una sola vez para reutilizarla tanto en inferirCuentaGasto como en la propuesta
+  // persistida (ver PropuestaGasto.ticketDeEquipo) — misma señal, nunca recalculada distinto.
+  const ticketDeEquipo = entrada.deColaCorreo === true && esRemitenteDelGrupo(entrada.correoOrigen?.de);
   const cuentaSugerida =
     candidatos.length === 0
       ? await inferirCuentaGasto(empresa, {
@@ -759,7 +771,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           personaAsociada: datos.personaAsociada,
           contextoDeViaje: datos.contextoDeViaje,
           reciboSimplificado: datos.reciboSimplificado,
-          ticketDeEquipo: entrada.deColaCorreo === true && esRemitenteDelGrupo(entrada.correoOrigen?.de),
+          ticketDeEquipo,
         }).catch((error) => {
           console.error("[procesarGastoEntrante] Error infiriendo cuenta contable (no crítico):", error);
           return undefined;
@@ -818,6 +830,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,
     huellaContenido,
+    // Se persisten aunque candidatos.length>0 (cuentaSugerida no se calculó en ese caso): si más
+    // adelante se dispara una reinferencia (prepararPropuestaFinalGasto, gastoCallbackHandler.ts),
+    // debe poder recuperar la misma señal que tenía ESTE documento, no perderla en silencio.
+    contextoDeViaje: datos.contextoDeViaje,
+    reciboSimplificado: datos.reciboSimplificado,
+    ticketDeEquipo,
   });
 
   if (propuestaPendienteBloqueante) {
@@ -958,6 +976,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     let candidatosMovAmbiguos: Awaited<ReturnType<typeof buscarMovimientoSimilar>> = [];
     let movimientoAproximado: Awaited<ReturnType<typeof buscarMovimientoAproximado>>[number] | undefined;
     let otrosAproximados = 0;
+    // Si Holded falla a media búsqueda no se puede afirmar «no hay cargo por ese importe»; tampoco se ofrece uno mayor.
+    let busquedaCargoCompleta = true;
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
@@ -1000,6 +1020,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         }
       }
     } catch (error) {
+      busquedaCargoCompleta = false;
       console.error("[procesarGastoEntrante] Error buscando movimiento bancario similar:", error);
     }
 
@@ -1046,6 +1067,20 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         } catch (error) {
           console.error("[procesarGastoEntrante] Error buscando movimiento en moneda alternativa:", error);
         }
+      }
+    }
+
+    // Último recurso (cargoMayor.ts, caso Go Rent A Car): un cargo MAYOR del mismo proveedor del que este gasto puede
+    // ser solo una parte. Se ofrece como opción a elegir; nunca se recomienda ni se concilia solo.
+    let movimientosCargoMayor: Awaited<ReturnType<typeof buscarCargoMayorDelProveedor>> = [];
+    if (!movimientoBancario && !movimientoAproximado && candidatosMovAmbiguos.length === 0 && movimientosTipoCambio.length === 0 &&
+        !movimientoMonedaAlternativa && busquedaCargoCompleta && !esProveedorNoIdentificado(datos.proveedor)) {
+      try {
+        movimientosCargoMayor = await buscarCargoMayorDelProveedor(
+          empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto }
+        );
+      } catch (error) {
+        console.error("[procesarGastoEntrante] Error buscando un cargo mayor del proveedor:", error);
       }
     }
 
@@ -1104,6 +1139,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
                 ? ` Ojo: hay ${movimientoMonedaAlternativa.otrosCandidatos} movimiento(s) más en ${movimientoMonedaAlternativa.moneda} igual de parecido(s) — no es un match único, revísalo con más cuidado.`
                 : "") +
               ` Confirma la moneda real antes de crear el gasto (no lo crees ni concilies todavía si no estás seguro).`
+            : movimientosCargoMayor.length > 0
+            ? notaCargosMayores(
+                movimientosCargoMayor,
+                { monto: montoParaHolded, moneda: monedaParaHolded, proveedor: datos.proveedor },
+                { hayCorreoOrigen: Boolean(propuesta.correoOrigen) }
+              )
             : `\n\n💳 No encontré ningún movimiento bancario sin conciliar que coincida con ${importeTexto}` +
               (!esProveedorNoIdentificado(datos.proveedor)
                 ? " — ni exacto ni aproximado por nombre y monto cercano"
@@ -1117,7 +1158,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     // junto con la propuesta: al aprobar “Crear y conciliar” se usa ese
     // mismo accountId/movementId y no se repite una búsqueda mutable.
     if (movimientoAproximado) movimientoBancario = movimientoAproximado;
-    const movimientosParaElegir = candidatosMovAmbiguos.length > 0 ? candidatosMovAmbiguos : movimientosTipoCambio;
+    const movimientosParaElegir = candidatosMovAmbiguos.length > 0
+      ? candidatosMovAmbiguos
+      : movimientosTipoCambio.length > 0 ? movimientosTipoCambio : movimientosCargoMayor;
     const movimientosParaPersistir = movimientoBancario ? [movimientoBancario] : movimientosParaElegir;
 
     // Estos dos campos forman una sola promesa al operador: mostrar

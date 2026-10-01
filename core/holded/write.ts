@@ -1,3 +1,7 @@
+import { paginarMovimientosBancarios } from "./paginarMovimientos";
+import {
+  DIAS_ADELANTE_CARGO_MAYOR, DIAS_ATRAS_CARGO_MAYOR, PROCESO_CONCILIACION_CARGO_MAYOR, elegirCargosMayores, evaluarCargoMayor,
+} from "./cargoMayor";
 import { compraTienePagos, recuperarConciliacionCompra } from "./recuperarConciliacionCompra";
 import { gastoRecurrenteIndependiente, cargoConciliadoDeGastoIndependiente } from "./gastoRecurrente";
 import { esProveedorUber, seleccionarContactoUber, esProveedorUberEats, seleccionarContactoUberEats } from "../gastos/proveedorUber";
@@ -4784,7 +4788,12 @@ export interface MovimientoBancarioCandidato {
   monedaNativa?: string;
   fecha: string;
   /** Cómo se identificó este candidato. Los registros antiguos no incluyen el campo. */
-  origenCoincidencia?: "exacta" | "aproximada" | "tipo_cambio" | "moneda_alternativa";
+  origenCoincidencia?: "exacta" | "aproximada" | "tipo_cambio" | "moneda_alternativa" | "cargo_mayor";
+  /**
+   * Solo «cargo_mayor» (ver cargoMayor.ts): lo que al cargo le quedaba libre cuando se ofreció. `monto` sigue siendo el
+   * importe total del cargo; el gasto se concilia por su propio importe y el resto espera a otro documento.
+   */
+  restoDisponible?: number;
   /** Importe esperado tras aplicar una tasa de referencia, solo para coincidencias multimoneda. */
   montoReferencia?: number;
   /** Moneda original del documento antes de convertir la referencia. */
@@ -5036,30 +5045,25 @@ export async function buscarMovimientoSimilar(
   let aprendidos: Promise<ConciliacionVerificadaAprendida[]> | undefined;
 
   for (const cuenta of cuentas) {
-    const params = new URLSearchParams({
-      start_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde),
-      end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
-      limit: "100",
-    });
-    const data = (await holdedWriteCall(
-      empresa,
-      "GET",
-      `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
-    )) as {
-      has_more?: boolean;
-      items?: Array<{
-        id: string;
-        description?: string;
-        amount?: string | number;
-        currency?: string;
-        accounting_amount?: string | number | null;
-        booking_date?: string;
-        status?: string;
-        reconciled_amount?: string | number;
-      }>;
-    };
-
-    if (criterios.fechaExacta && data.has_more) throw new Error("Consulta bancaria incompleta; no se descartan duplicados.");
+    // TODAS las páginas del rango: leer solo la primera dejaba invisible cualquier cargo más antiguo que los
+    // movimientos más recientes de la cuenta (ver paginarMovimientos.ts, caso citizenM/Booking 124,91 €).
+    const data = { items: await paginarMovimientosBancarios<{
+      id: string;
+      description?: string;
+      amount?: string | number;
+      currency?: string;
+      accounting_amount?: string | number | null;
+      booking_date?: string;
+      status?: string;
+      reconciled_amount?: string | number;
+    }>(
+      (parametros) => holdedWriteCall(empresa, "GET",
+        `/treasury/accounts/${cuenta.id}/bank-movements?${new URLSearchParams(parametros).toString()}`),
+      {
+        start_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(desde),
+        end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
+      }
+    ) };
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
       /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
@@ -5263,26 +5267,20 @@ export async function buscarMovimientoAproximado(
   const candidatos: MovimientoBancarioAproximado[] = [];
 
   for (const cuenta of cuentas) {
-    const params = new URLSearchParams({
-      start_date: formatDateLocal(desde),
-      end_date: formatDateLocal(hasta),
-      limit: "100",
-    });
-    const data = (await holdedWriteCall(
-      empresa,
-      "GET",
-      `/treasury/accounts/${cuenta.id}/bank-movements?${params.toString()}`
-    )) as {
-      items?: Array<{
-        id: string;
-        description?: string;
-        amount?: string | number;
-        currency?: string;
-        accounting_amount?: string | number | null;
-        booking_date?: string;
-        status?: string;
-      }>;
-    };
+    const data = { items: await paginarMovimientosBancarios<{
+      id: string;
+      description?: string;
+      amount?: string | number;
+      currency?: string;
+      accounting_amount?: string | number | null;
+      booking_date?: string;
+      status?: string;
+      reconciled_amount?: string | number;
+    }>(
+      (parametros) => holdedWriteCall(empresa, "GET",
+        `/treasury/accounts/${cuenta.id}/bank-movements?${new URLSearchParams(parametros).toString()}`),
+      { start_date: formatDateLocal(desde), end_date: formatDateLocal(hasta) }
+    ) };
 
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
@@ -5322,6 +5320,81 @@ export async function buscarMovimientoAproximado(
   }
 
   return candidatos.sort((a, b) => a.diferenciaMonto - b.diferenciaMonto);
+}
+
+/**
+ * Último recurso al armar una propuesta: cargos del MISMO proveedor (por nombre, nunca solo por categoría), en la misma
+ * moneda que el gasto y cerca de su fecha, a los que les queda libre al menos el importe del gasto. Ver cargoMayor.ts.
+ * Solo informa: quien llama los ofrece como «Conciliar con #N»; nunca se autoselecciona ni se concilia sin el operador.
+ */
+export async function buscarCargoMayorDelProveedor(
+  empresa: Empresa,
+  criterios: { monto: number; fecha: string; moneda?: string; proveedor: string; concepto?: string }
+): Promise<MovimientoBancarioCandidato[]> {
+  if (!criterios.proveedor.trim()) return [];
+  const monedaObjetivo = (criterios.moneda ?? "EUR").toUpperCase().trim();
+  const fechaBase = new Date(criterios.fecha);
+  if (Number.isNaN(fechaBase.getTime())) return [];
+  const desde = new Date(fechaBase);
+  desde.setDate(desde.getDate() - DIAS_ATRAS_CARGO_MAYOR);
+  const hasta = new Date(fechaBase);
+  hasta.setDate(hasta.getDate() + DIAS_ADELANTE_CARGO_MAYOR);
+
+  const cuentasData = (await holdedWriteCall(empresa, "GET", "/treasury/accounts")) as {
+    items?: Array<{ id: string; archived?: boolean; currency?: string }>;
+  };
+  // Solo cuentas en la moneda del gasto: un cargo mayor en otra moneda no se puede repartir con certeza.
+  const cuentas = (cuentasData.items ?? []).filter(
+    (c) => !c.archived && (c.currency ?? "EUR").toUpperCase().trim() === monedaObjetivo
+  );
+  const margen = margenImporteAproximado(criterios.monto);
+  const candidatos: MovimientoBancarioCandidato[] = [];
+
+  for (const cuenta of cuentas) {
+    const movimientos = await paginarMovimientosBancarios<{
+      id: string;
+      description?: string;
+      amount?: string | number;
+      currency?: string;
+      booking_date?: string;
+      status?: string;
+      reconciled_amount?: string | number;
+    }>(
+      (parametros) => holdedWriteCall(empresa, "GET",
+        `/treasury/accounts/${cuenta.id}/bank-movements?${new URLSearchParams(parametros).toString()}`),
+      { start_date: formatDateLocal(desde), end_date: formatDateLocal(hasta) }
+    );
+    for (const mov of movimientos) {
+      if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
+      if ((mov.currency ?? "EUR").toUpperCase().trim() !== monedaObjetivo) continue;
+      if (!mov.description) continue;
+      // El nombre del proveedor tiene que estar en el cargo: la categoría sola («otro alquiler de coches») no basta.
+      if (!nombreReconocidoEnDescripcion(criterios.proveedor, mov.description, { nucleoDeMarca: true })) continue;
+      // Mismo criterio que el teclado (candidatoUtilizableParaGasto): no se anuncia un cargo cuyo botón no saldría.
+      if (!movimientoCompatibleConGasto(criterios.proveedor, criterios.concepto ?? "", mov.description, { nucleoDeMarca: true })) continue;
+      // Un solo lector de importes de movimiento (punto decimal) para la oferta y para la validación al aprobar.
+      const evaluacion = evaluarCargoMayor(
+        { amount: parsearMontoMovimiento(mov.amount), reconciled_amount: parsearMontoMovimiento(mov.reconciled_amount) || 0 },
+        criterios.monto,
+        margen
+      );
+      if (!evaluacion) continue;
+      candidatos.push({
+        accountId: cuenta.id,
+        movementId: mov.id,
+        descripcion: mov.description,
+        monto: parsearMontoMovimiento(mov.amount),
+        moneda: monedaObjetivo,
+        fecha: mov.booking_date ? mov.booking_date.slice(0, 10) : "",
+        origenCoincidencia: "cargo_mayor",
+        restoDisponible: evaluacion.resto,
+      });
+    }
+  }
+
+  return elegirCargosMayores(
+    candidatos.sort((a, b) => diasEntreFechas(a.fecha, criterios.fecha) - diasEntreFechas(b.fecha, criterios.fecha))
+  );
 }
 
 export interface MovimientoMonedaAlternativa extends MovimientoBancarioCandidato {
@@ -5496,6 +5569,26 @@ export async function estaMovimientoDisponibleParaConciliar(
   return movimientoLibreParaConciliar(movimiento);
 }
 
+/**
+ * Para un «cargo mayor» elegido por el operador (ver cargoMayor.ts): el cargo sigue sirviendo mientras no esté
+ * conciliado por completo y le quede libre al menos el importe del gasto, aunque ya tenga otra parte asignada.
+ */
+export async function movimientoConRestoParaConciliar(
+  empresa: Empresa,
+  accountId: string,
+  movementId: string,
+  fechaAproximada: string,
+  importe: number
+): Promise<boolean> {
+  const movimiento = await leerEstadoMovimiento(empresa, accountId, movementId, fechaAproximada);
+  if (!movimiento || estaConciliado(movimiento.status)) return false;
+  // Los importes de un movimiento llegan con punto decimal ("-354.62"): se leen con parsearMontoMovimiento, nunca con
+  // numeroDesdeHolded (formato «a la española»), que convertiría 354.62 en 35462 y daría el cargo por agotado.
+  const total = Math.abs(parsearMontoMovimiento(movimiento.amount));
+  const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount) || 0);
+  return Number.isFinite(total) && total - enlazado + TOLERANCIA_MONTO >= Math.abs(importe);
+}
+
 /** Un movimiento parcialmente usado tampoco está libre, aunque Holded no lo marque aún como reconciliado. */
 export function movimientoLibreParaConciliar(
   movimiento?: { status?: string; reconciled_amount?: string }
@@ -5518,7 +5611,9 @@ export async function validarCompraContraMovimiento(
   accountId: string,
   movementId: string,
   fechaAproximada: string,
-  permitirMonedaDistinta = false
+  permitirMonedaDistinta = false,
+  /** El operador eligió un cargo mayor que el documento (cargoMayor.ts): basta con que al cargo le quede libre su importe. */
+  permitirCargoMayor = false
 ): Promise<{ monedaCompra: string; monedaMovimiento: string }> {
   const [compra, movimiento, cuentasData] = await Promise.all([
     obtenerCompraHoldedPorId(empresa, documentoId),
@@ -5557,6 +5652,27 @@ export async function validarCompraContraMovimiento(
   const montoMovimiento = Math.abs(parsearMontoMovimiento(movimiento.amount));
   if (!Number.isFinite(totalCompra) || !Number.isFinite(montoMovimiento)) {
     throw new Error("Holded no devolvió importes válidos para comprobar la conciliación.");
+  }
+  if (permitirCargoMayor) {
+    if (monedaCompra !== monedaMovimiento) {
+      throw new Error(
+        `No es seguro conciliar una parte del cargo: el documento está en ${monedaCompra} y el movimiento en ${monedaMovimiento}.`
+      );
+    }
+    if (!(parsearMontoMovimiento(movimiento.amount) < 0)) {
+      throw new Error("No es seguro conciliar una parte del movimiento: no es un cargo (es un ingreso o una devolución).");
+    }
+    const enlazado = Math.abs(parsearMontoMovimiento(movimiento.reconciled_amount) || 0);
+    const resto = montoMovimiento - enlazado;
+    // Sin margen: si el documento superara lo que queda libre, Holded enlazaría solo una parte y la compra quedaría con
+    // saldo pendiente. Se rechaza antes de escribir.
+    if (estaConciliado(movimiento.status) || resto + TOLERANCIA_MONTO < totalCompra) {
+      throw new Error(
+        `No es seguro conciliar: al movimiento le quedan ${Math.max(0, resto).toFixed(2)} ${monedaMovimiento} sin asignar ` +
+        `y el documento suma ${totalCompra.toFixed(2)} ${monedaCompra}.`
+      );
+    }
+    return { monedaCompra, monedaMovimiento };
   }
   if (monedaCompra === monedaMovimiento && Math.abs(totalCompra - montoMovimiento) > TOLERANCIA_MONTO) {
     throw new Error(
@@ -6012,14 +6128,18 @@ async function inspeccionarConciliacionRegistrada(
   const pendienteEnMovimiento = movimientoParcial
     ? residuoMovimientoFueraDeMargen(montoMovimiento, montoEnlazado)
     : undefined;
+  // Conciliación parcial ELEGIDA por el operador (cargoMayor.ts): el resto del cargo espera a otro gasto y no es una
+  // incidencia, así que no se informa como parcial a revisar. Lo dice el propio registro durable (su `proceso`).
+  const parcialEsperado = registro.proceso === PROCESO_CONCILIACION_CARGO_MAYOR;
   const resultado = {
     ok,
     statusFinal,
     montoEnlazado,
     pendienteEnCompra,
     ajusteCambioDivisa,
-    movimientoParcial: pendienteEnMovimiento !== undefined || undefined,
-    pendienteEnMovimiento,
+    movimientoParcial: parcialEsperado ? undefined : pendienteEnMovimiento !== undefined || undefined,
+    pendienteEnMovimiento: parcialEsperado ? undefined : pendienteEnMovimiento,
+    ...(parcialEsperado && pendienteEnMovimiento !== undefined ? { restoEsperadoEnMovimiento: pendienteEnMovimiento } : {}),
   };
   if (ok) return { estado: "verificada", resultado };
   if (estaConciliado(movimiento?.status)) return { estado: "ocupada", resultado };
@@ -6028,7 +6148,8 @@ async function inspeccionarConciliacionRegistrada(
 
 async function aplicarConciliacionRegistrada(
   registro: RegistroConciliacionMovimiento,
-  permitirMonedaDistinta = false
+  permitirMonedaDistinta = false,
+  permitirCargoMayor = false
 ): Promise<void> {
   try {
     await validarCompraContraMovimiento(
@@ -6037,7 +6158,8 @@ async function aplicarConciliacionRegistrada(
       registro.accountId,
       registro.movementId,
       registro.fechaAproximada,
-      permitirMonedaDistinta
+      permitirMonedaDistinta,
+      permitirCargoMayor
     );
   } catch (error) {
     // Aún no se envió ningún POST: ver ConciliacionNoIntentadaError.
@@ -6096,7 +6218,7 @@ export async function reconciliarMovimiento(
   movementId: string,
   fechaAproximada: string,
   documentoId: string,
-  opciones: { permitirMonedaDistinta?: boolean } = {}
+  opciones: { permitirMonedaDistinta?: boolean; permitirCargoMayor?: boolean } = {}
 ): Promise<ResultadoConciliacionMovimiento> {
   const registro = identidadConciliacionMovimiento(
     empresa,
@@ -6104,12 +6226,14 @@ export async function reconciliarMovimiento(
     movementId,
     documentoId,
     fechaAproximada,
-    "conciliacion_movimiento_aprobada"
+    opciones.permitirCargoMayor === true ? PROCESO_CONCILIACION_CARGO_MAYOR : "conciliacion_movimiento_aprobada",
+    undefined,
+    opciones.permitirCargoMayor === true
   );
 
   if (!configuracionConciliacionesMovimientoDurables().habilitado) {
     try {
-      await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true);
+      await aplicarConciliacionRegistrada(registro, opciones.permitirMonedaDistinta === true, opciones.permitirCargoMayor === true);
     } catch (error) {
       // Sin registro durable no hay estado que proteger: se propaga el error original, no su envoltorio.
       throw error instanceof ConciliacionNoIntentadaError ? error.causa : error;
@@ -6133,7 +6257,7 @@ export async function reconciliarMovimiento(
     // Un rechazo local no es un POST incierto. Validar antes de reservar la escritura;
     // aplicarConciliacionRegistrada vuelve a validar justo antes del POST.
     await validarCompraContraMovimiento(empresa, documentoId, accountId, movementId, fechaAproximada,
-      opciones.permitirMonedaDistinta === true);
+      opciones.permitirMonedaDistinta === true, opciones.permitirCargoMayor === true);
     metricasConciliacionesMovimientoDurables.activas++;
     try {
       const ejecucion = await ejecutarConciliacionMovimientoDurable(
@@ -6142,7 +6266,7 @@ export async function reconciliarMovimiento(
         {
           inspeccionar: inspeccionarConciliacionRegistrada,
           conciliar: (pendiente) =>
-            aplicarConciliacionRegistrada(pendiente, opciones.permitirMonedaDistinta === true),
+            aplicarConciliacionRegistrada(pendiente, opciones.permitirMonedaDistinta === true, opciones.permitirCargoMayor === true),
         }
       );
       if (ejecucion.reutilizada) metricasConciliacionesMovimientoDurables.reutilizadas++;
