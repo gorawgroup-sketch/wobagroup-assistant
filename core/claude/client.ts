@@ -437,15 +437,21 @@ async function buildSystemPromptDinamico(
         `Hay un borrador de correo SIN RESPONDER en este chat, ya mandado con botones "Enviar así / Editar / ` +
           `No enviar": para "${correoPropuesto.to}", asunto "${correoPropuesto.subject}". Si el mensaje actual ` +
           "del usuario se refiere a ese borrador (ej. 'mándaselo a X en vez de a mí', 'cámbiale el asunto', " +
-          "'reenvíalo tal cual', 'agrégale X'), usa el contenido REAL del borrador de abajo como base — nunca " +
-          "inventes uno nuevo desde cero ni le preguntes el asunto/cuerpo que ya escribiste, salvo que esté " +
-          "pidiendo cambiarlo explícitamente. Llama a proponer_envio_correo con el destinatario/asunto/cuerpo " +
-          "que corresponda tras aplicar el cambio pedido (eso crea un borrador nuevo con sus propios botones; " +
-          "el anterior sigue disponible por separado si el usuario prefiere usar esos botones directamente). " +
+          "'reenvíalo tal cual', 'agrégale X'), usa el cuerpo de abajo COPIADO LITERAL, palabra por palabra " +
+          "— NUNCA lo resumas, parafrasees ni lo reescribas desde tu propio entendimiento de la situación, " +
+          "aunque te parezca que puedes decirlo mejor o más corto. Cambia ÚNICAMENTE lo que el usuario pidió " +
+          "cambiar explícitamente (ej. el destinatario, el saludo, una frase puntual) — todo lo demás " +
+          "(hechos, cifras, preguntas, nombres) se mantiene exactamente igual, carácter por carácter. Un " +
+          "correo que cambia lo que dice (ej. convertir una pregunta pendiente en una afirmación de que ya " +
+          "está resuelto) es un error real, no una mejora de redacción. Nunca inventes un borrador nuevo " +
+          "desde cero ni le preguntes el asunto/cuerpo que ya escribiste, salvo que esté pidiendo cambiarlo " +
+          "explícitamente. Llama a proponer_envio_correo con el destinatario/asunto/cuerpo que corresponda " +
+          "tras aplicar SOLO el cambio pedido (eso crea un borrador nuevo con sus propios botones; el " +
+          "anterior sigue disponible por separado si el usuario prefiere usar esos botones directamente). " +
           "Si su mensaje pide algo distinto (programar un recordatorio, guardar algo en la memoria del " +
           "sistema, o cualquier otra instrucción), atiende esa petición con la herramienta que corresponda — " +
           "no repitas ninguna pregunta sobre este borrador ni inventes una aclaración propia sobre él.\n" +
-          `Cuerpo del borrador:\n"""\n${cuerpoTxt}\n"""${avisoCorte}`
+          `Cuerpo del borrador (cópialo literal):\n"""\n${cuerpoTxt}\n"""${avisoCorte}`
       );
     }
   }
