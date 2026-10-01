@@ -16,7 +16,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { holdedGet, estaConciliado, invalidarCacheCuentasTesoreria, type Empresa } from "./client";
 import { obtenerPlanContable } from "./accounting";
 import { formatDateLocal } from "../utils/dateFormat";
-import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
+import { buscarAliasEntreContactos, buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
 import { comparteNaturaleza, palabrasNaturalezaGasto } from "./naturalezaConcepto";
 import { montosCercanos } from "../utils/montos";
@@ -982,6 +982,23 @@ export async function buscarContactoHolded(
   if (nombreNormalizadoExacto) {
     const exactos = conNombre.filter((c) => normalizarNombreContacto(c.name) === nombreNormalizadoExacto);
     if (exactos.length === 1) return exactos[0];
+    // Caso real (Footprint, «CAFE DE SANTA BARBARA S.A.S» y «… SAS», 2026-10-01): el mismo proveedor está DOS veces en
+    // Holded. El operador ya había elegido una de las dos fichas cinco veces, pero esa elección se descartaba más arriba
+    // (17 contactos empiezan por «CAFE») y aquí nadie desempataba: se volvía a preguntar en cada gasto. Entre fichas de
+    // nombre idéntico manda la que el operador ya confirmó; si nunca eligió, se pregunta (una vez).
+    if (exactos.length > 1) {
+      try {
+        const elegido = await buscarAliasEntreContactos(
+          empresa,
+          (detectado) => normalizarNombreContacto(detectado) === nombreNormalizadoExacto,
+          exactos.map((c) => c.id)
+        );
+        const contacto = exactos.find((c) => c.id === elegido);
+        if (contacto) return contacto;
+      } catch (error) {
+        console.error("[buscarContactoHolded] No se pudo leer la elección previa entre contactos duplicados:", error instanceof Error ? error.message : error);
+      }
+    }
   }
 
   // textosParecidos, no un substring simple — mismo bug real que
