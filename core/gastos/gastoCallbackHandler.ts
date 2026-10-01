@@ -810,6 +810,9 @@ async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: str
   const estado = await recuperarConciliacionExistenteCompra(empresa, gastoId);
   if (estado === "nueva") return undefined;
   if (estado === "conciliada") return { estado: "conciliada", nota: "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se creó otro pago." };
+  if (estado === "pagada_externamente") {
+    return { estado: "conciliada", nota: "\n\n✅ Esta compra ya figuraba pagada por completo en Holded (el pago se registró fuera de Wobi). No hay nada que conciliar y no se creó ningún pago." };
+  }
   return { estado: "incierta", nota: estado === "revision"
     ? "⚠️ La compra ya tiene pagos. Su conciliación requiere revisión; no se ofrecerán otros cargos ni se añadirán pagos. Verificar solo relee el resultado anterior."
     : "⏳ La operación anterior todavía requiere verificación. No se buscarán ni asignarán otros cargos; verificar solo relee compra y banco." };
@@ -1729,7 +1732,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         if (!cierreCorreoVerificado && !preguntaConciliacionPendiente) {
           await reponerPropuestaParaReintento(
             propuesta,
-            `✅ El soporte del gasto ${candidato.id} quedó confirmado, pero la conciliación todavía no terminó.` +
+            `✅ El soporte del gasto de ${candidato.contactName} (${candidato.total.toFixed(2)} ${propuesta.moneda}, ${candidato.fecha}, ` +
+              `${propuesta.empresa}) quedó confirmado, pero la conciliación todavía no terminó.` +
               `${resultadoConciliacion.nota}\n\nEl correo seguirá sin leer. Usa “Retomar conciliación del gasto creado”; ` +
               `la operación durable primero verifica el estado y no repite una escritura incierta.`,
             { ...candidato, conciliacionPendiente: true }

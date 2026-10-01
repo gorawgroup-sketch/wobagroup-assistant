@@ -54,6 +54,7 @@ import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
+import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
 import {
   encolarCorreos,
   hayActivo,
@@ -831,7 +832,7 @@ async function procesarCorreoLocalizado(
         if (estadoRegistro === "confirmado") {
           await sendTelegramMessage(
             chatId,
-            `📄 "${adjunto.filename}" (${correo.asunto}) — ya generó el gasto VERIFICADO ${gastoYaCreado.gastoId} (${gastoYaCreado.empresa}) antes, no propongo uno nuevo.`
+            `📄 "${adjunto.filename}" (${correo.asunto}) — ya está registrado y verificado en Holded: ${describirGastoRegistrado(gastoYaCreado)}, no propongo uno nuevo.`
           ).catch(() => {});
           if (deColaCorreo) {
             await avanzarColaCorreoSiActivo(
@@ -845,7 +846,7 @@ async function procesarCorreoLocalizado(
         if (estadoRegistro === "incompleto") {
           await sendTelegramMessage(
             chatId,
-            `🔄 El gasto ${gastoYaCreado.gastoId} ya existe, pero quedó incompleto. Voy a reutilizar el flujo ` +
+            `🔄 El gasto ${describirGastoRegistrado(gastoYaCreado)} ya existe, pero quedó incompleto. Voy a reutilizar el flujo ` +
               `uno a uno para verificar/adjuntar este mismo soporte y retomar su conciliación; no se podrá crear otro gasto.`
           ).catch(() => {});
           // Sigue con la descarga y lectura del adjunto. procesarGastoEntrante
@@ -1097,7 +1098,7 @@ async function procesarCorreoLocalizado(
       if (estadoRegistro === "confirmado") {
         await sendTelegramMessage(
           chatId,
-          `📄 "${correo.asunto}" — ya generó el gasto VERIFICADO ${gastoYaCreadoEnCuerpo.gastoId} (${gastoYaCreadoEnCuerpo.empresa}) antes, no propongo uno nuevo.`
+          `📄 "${correo.asunto}" — ya está registrado y verificado en Holded: ${describirGastoRegistrado(gastoYaCreadoEnCuerpo)}, no propongo uno nuevo.`
         ).catch(() => {});
         if (deColaCorreo) {
           await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
@@ -1107,7 +1108,7 @@ async function procesarCorreoLocalizado(
       if (estadoRegistro === "incompleto") {
         await sendTelegramMessage(
           chatId,
-          `🔄 El gasto ${gastoYaCreadoEnCuerpo.gastoId} ya existe, pero quedó incompleto. Voy a reconstruir fielmente ` +
+          `🔄 El gasto ${describirGastoRegistrado(gastoYaCreadoEnCuerpo)} ya existe, pero quedó incompleto. Voy a reconstruir fielmente ` +
             `el soporte desde este correo y retomar ese mismo gasto; no se podrá crear otro.`
         ).catch(() => {});
         // Sigue hasta procesarGastoEntrante, que convierte el registro

@@ -53,7 +53,9 @@ export async function cerrarPreguntasConciliacionResueltas(
     resumen.revisadas++;
     try {
       // Un fallo de lectura no es un dato: la pregunta se queda como está.
-      if (await deps.leerConciliacion(candidata.empresa, candidata.gastoId) !== "conciliada") continue;
+      // «pagada_externamente»: la compra ya está pagada entera en Holded fuera de Wobi; tampoco queda nada que decidir.
+      const estado = await deps.leerConciliacion(candidata.empresa, candidata.gastoId);
+      if (estado !== "conciliada" && estado !== "pagada_externamente") continue;
       const pendiente = await deps.consumir(candidata.id);
       if (!pendiente) continue;
       try {
