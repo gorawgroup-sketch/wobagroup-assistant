@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   consumirBorradorUnaVez,
   seleccionarBorradorCorrelacionado,
+  seleccionarBorradorParaRecordatorio,
   type BorradorCorreo,
   type DependenciasConsumoBorrador,
 } from "./emailDraftStore";
@@ -133,4 +134,47 @@ test("dos callbacks concurrentes consumen el mismo borrador una sola vez y no bo
 
   assert.equal(resultados.filter(Boolean).length, 1);
   assert.deepEqual(filas.map((fila) => fila.id), ["draft-b"]);
+});
+
+// Caso real (Carlos, Simon Talloen / Go Rent A Car, 2026-09-30): el modelo perdía de vista un
+// borrador ya propuesto porque solo vivía en el historial de mensajes (sujeto a recorte). Ver
+// PendientesSensibles.correoPropuesto en core/claude/client.ts.
+test("seleccionarBorradorParaRecordatorio: elige el manual más reciente, nunca uno de la cola de correo", () => {
+  const crear = (id: string, creadoEn: number, deColaCorreo = false): BorradorCorreo => ({
+    id,
+    chatId: 1,
+    messageId: 2,
+    to: "destino@example.com",
+    subject: "Asunto",
+    cuerpo: "Texto",
+    creadoEn,
+    deColaCorreo,
+  });
+
+  assert.equal(seleccionarBorradorParaRecordatorio([]), undefined);
+
+  const unico = crear("manual-1", 10);
+  assert.equal(seleccionarBorradorParaRecordatorio([unico])?.id, "manual-1");
+
+  const viejo = crear("viejo", 10);
+  const nuevo = crear("nuevo", 20);
+  assert.equal(
+    seleccionarBorradorParaRecordatorio([viejo, nuevo])?.id,
+    "nuevo",
+    "entre varios manuales, gana el más reciente por creadoEn"
+  );
+
+  const masReciente = crear("mas-reciente", 30);
+  const deCola = crear("de-cola", 40, true);
+  assert.equal(
+    seleccionarBorradorParaRecordatorio([masReciente, deCola])?.id,
+    "mas-reciente",
+    "un borrador de la cola de correo nunca se recuerda acá, aunque sea el más reciente — tiene su propio seguimiento"
+  );
+
+  assert.equal(
+    seleccionarBorradorParaRecordatorio([deCola]),
+    undefined,
+    "si el único borrador es de la cola, no hay nada que recordar por esta vía"
+  );
 });
