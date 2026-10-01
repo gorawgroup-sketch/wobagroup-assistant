@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
-import { listarSubcarpetas } from "../drive/client";
+import { listarCarpetasEnRuta } from "../drive/client";
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
@@ -69,6 +69,17 @@ export interface ClasificacionDocumento {
    * processClassification.ts).
    */
   carpetasCandidatas?: string[];
+  /**
+   * Documentación de una póliza de seguro. No lo decide este clasificador (no lee el contenido): lo marca quien sí
+   * lo leyó (extractInvoiceData.ts → processClassification.ts). Al archivarlo, Wobi Seguros lo integra.
+   */
+  esDocumentoPoliza?: boolean;
+  /**
+   * Documento corporativo de referencia (normativa, compliance, políticas internas, contratos marco, manuales): además
+   * de archivarse, merece quedar como conocimiento consultable. Pedido de Carlos (2026-10-01): es un canal aparte del
+   * de gastos, y no debería depender de que el correo diga literalmente «memorízalo».
+   */
+  esDocumentoDeReferencia?: boolean;
 }
 
 const REPORTAR_TOOL_NAME = "reportar_clasificacion_documento";
@@ -124,6 +135,14 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "informativo sin ninguna de estas señales — tiene que haber una petición explícita de " +
           "recordarlo/registrarlo, no solo de archivarlo.",
       },
+      es_documento_de_referencia: {
+        type: "boolean",
+        description:
+          "true si el nombre o el caption indican un documento corporativo de REFERENCIA cuyo contenido conviene " +
+          "poder consultar después: normativa o regulación, compliance, políticas y procedimientos internos, manuales, " +
+          "contratos marco, acuerdos, actas, certificaciones, instrucciones de un proveedor o de la gestoría. false " +
+          "para facturas, recibos, comprobantes de pago y documentos puramente transaccionales.",
+      },
       es_probable_gasto: {
         type: "boolean",
         description:
@@ -145,7 +164,8 @@ const LISTAR_CARPETAS_TOOL: Anthropic.Tool = {
   description:
     "Lista los nombres reales de las subcarpetas dentro de Drive para una empresa (WOBA, EWORKS o " +
     "Footprint). Sin 'carpeta_padre', lista las carpetas de primer nivel. Con 'carpeta_padre' (nombre " +
-    "parcial de una carpeta ya vista), lista lo que hay DENTRO de esa carpeta. Úsala antes de proponer " +
+    "parcial de una carpeta de primer nivel, o la RUTA desde la raíz separada por '/' para bajar más niveles, ej. " +
+    "'SEGUROS📜 / EUROPA'), lista lo que hay DENTRO de esa carpeta. Úsala antes de proponer " +
     "una carpeta_sugerida — los nombres reales pueden traer emojis o variaciones que no adivinarías " +
     "(ej. 'SEGUROS📜'), y a veces hay más de una carpeta plausible (ej. 'SEGUROS📜' junto a una carpeta " +
     "separada 'MOTO PIAGGIO 300') que debes detectar para preguntar en vez de adivinar.",
@@ -155,12 +175,19 @@ const LISTAR_CARPETAS_TOOL: Anthropic.Tool = {
       empresa: { type: "string", enum: ["WOBA", "EWORKS", "Footprint"] },
       carpeta_padre: {
         type: "string",
-        description: "Nombre (parcial) de una subcarpeta ya conocida, para listar su contenido. Opcional.",
+        description:
+          "Carpeta cuyo contenido listar: nombre (parcial) de una de primer nivel, o ruta desde la raíz separada por " +
+          "'/' ('SEGUROS📜 / EUROPA') para una carpeta más profunda. Opcional.",
       },
     },
     required: ["empresa"],
   },
 };
+
+/** «SEGUROS📜 / EUROPA» → ["SEGUROS📜", "EUROPA"]; sin carpeta, la raíz. */
+export function rutaDeCarpetaPadre(carpetaPadre: string | undefined): string[] {
+  return (carpetaPadre ?? "").split("/").map((s) => s.trim()).filter(Boolean);
+}
 
 const SYSTEM_PROMPT = [
   "Eres el clasificador de documentos entrantes del grupo (WOBA/BAE, Footprint, eWorks).",
@@ -191,6 +218,19 @@ const SYSTEM_PROMPT = [
     "Holded, no solo archivarse — marca es_probable_gasto=true en ese caso. Puede coexistir con " +
     "cualquier tipo_documento/carpeta_sugerida: archivar y procesar como gasto no son mutuamente " +
     "excluyentes, es al usuario a quien le toca elegir.",
+  // Caso real (Carlos, 2026-10-01): dos documentos de pólizas de WOBA se propusieron en «SEGUROS📜 / EUROPA» y él los
+  // quería en «SEGURO WOBA 2026», la carpeta del ciclo en curso que cuelga de ahí.
+  "Los documentos de seguros (pólizas, condiciones particulares, suplementos, certificados) van en la carpeta de " +
+    "seguros de la empresa del tomador. No te quedes en la carpeta general: lista su contenido y el de sus " +
+    "subcarpetas (dos niveles) antes de decidir. Si existe una subcarpeta del AÑO o ciclo en curso (su nombre lleva " +
+    "el año Y dice que es de seguros, ej. 'SEGURO WOBA 2026'), esa es la carpeta de todos los documentos de pólizas de " +
+    "ese ciclo, por encima de carpetas temáticas más antiguas: propón la ruta completa ('SEGUROS📜 / EUROPA / SEGURO " +
+    "WOBA 2026') con confianza alta. Si la subcarpeta del año tiene un nombre genérico que puede repetirse en otras " +
+    "partes del Drive (solo '2026', 'Facturas'…), NO la propongas: propón la carpeta de seguros que la contiene. Solo " +
+    "si no hay carpeta del año, usa la carpeta específica de esa póliza. Si el texto dice " +
+    "'Leído del contenido: …', eso viene de quien sí leyó el documento: dale prioridad sobre el nombre del archivo.",
+  "Marca es_documento_de_referencia=true cuando el documento sea material corporativo de consulta (normativa, " +
+    "compliance, políticas, manuales, contratos marco…): así se le recuerda al usuario que puede guardarlo como conocimiento.",
   `SIEMPRE debes terminar llamando a la herramienta ${REPORTAR_TOOL_NAME} con tu conclusión final.`,
 ].join("\n\n");
 
@@ -285,6 +325,7 @@ export async function clasificarDocumento(
         preguntaSiAmbiguo: input.pregunta_si_ambiguo as string | undefined,
         pareceIntencionDeCaptura: input.parece_intencion_de_captura === true,
         esProbableGasto: input.es_probable_gasto === true,
+        esDocumentoDeReferencia: input.es_documento_de_referencia === true,
         carpetasCandidatas: Array.isArray(input.carpetas_candidatas)
           ? (input.carpetas_candidatas as unknown[]).filter((c): c is string => typeof c === "string" && c.trim().length > 0).slice(0, 3)
           : undefined,
@@ -312,8 +353,19 @@ export async function clasificarDocumento(
         if (!rootId) {
           resultado = `Error: empresa "${input.empresa}" no reconocida.`;
         } else {
-          const nombres = await listarSubcarpetas(rootId, input.carpeta_padre);
-          resultado = nombres.length > 0 ? nombres.join("\n") : "(sin subcarpetas encontradas ahí)";
+          // Causa real de que nunca se propusiera una carpeta de tercer nivel (caso «SEGUROS📜 / EUROPA / SEGURO WOBA
+          // 2026», 2026-10-01): carpeta_padre se buscaba SOLO entre las de primer nivel, así que pedir el contenido
+          // de «EUROPA» devolvía vacío y el clasificador se quedaba en la carpeta general. Ahora admite una ruta.
+          // Primero el nombre tal cual (hay carpetas reales con «/» en el nombre, como «SEGURO / POLIZA» de eWorks);
+          // si no existe una así, se interpreta como ruta.
+          const entero = (input.carpeta_padre ?? "").trim();
+          let nombres = await listarCarpetasEnRuta(rootId, entero ? [entero] : []);
+          if (nombres.length === 0 && entero.includes("/")) {
+            nombres = await listarCarpetasEnRuta(rootId, rutaDeCarpetaPadre(entero));
+          }
+          resultado = nombres.length > 0
+            ? nombres.join("\n")
+            : "(sin subcarpetas ahí; si la carpeta no es de primer nivel, pasa en carpeta_padre su ruta completa desde la raíz, ej. 'SEGUROS📜 / EUROPA')";
         }
       } else {
         continue;

@@ -56,6 +56,13 @@ export interface LineaFactura {
 
 export interface DatosFactura {
   esFacturaOGasto: boolean;
+  /**
+   * El documento es documentación de una póliza de seguro (condiciones, suplemento, certificado…), no un gasto:
+   * se archiva y Wobi Seguros lo integra a su conocimiento (ver core/seguros/integrarDocumentoPoliza.ts).
+   */
+  esDocumentoPoliza?: boolean;
+  /** Motivo que dio el lector cuando el documento no es un gasto; sirve de pista para archivarlo bien. */
+  razonNoGasto?: string;
   proveedor: string;
   /** Total real de la factura (base + todo el IVA), tal como aparece impreso — se usa para el matching. */
   monto: number;
@@ -144,6 +151,12 @@ const REPORTAR_TOOL: Anthropic.Tool = {
   input_schema: {
     type: "object",
     properties: {
+      es_documento_poliza: {
+        type: "boolean",
+        description:
+          "true si el documento es documentación de una póliza de seguro (condiciones particulares/generales, " +
+          "suplemento, certificado, nota de cobertura, cotización de seguro). En ese caso es_factura_o_gasto=false.",
+      },
       es_factura_o_gasto: {
         type: "boolean",
         description:
@@ -342,6 +355,15 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
     // Caso real (Carlos, 2026-10-01, Raminatrans/eWorks): el DUA de una importación se propuso como un gasto aparte
     // de 5.852 € con una línea «base 27.863,43 + IVA 21 %», cuyo total fiscal (33.716,25) no cuadraba. Esos 5.852 €
     // (IVA de importación + tasas) ya venían como suplido en la factura del agente de aduanas del mismo correo.
+    // Caso real (Carlos, 2026-10-01, correo de Acodrid con las condiciones de la RC y el suplemento del showroom): el
+    // suplemento mencionaba su prima (289,14 €) y se propuso como gasto; el documento no se pudo archivar ni llegó a
+    // Wobi Seguros. Los documentos corporativos son un canal aparte del de gastos.
+    "La documentación de una PÓLIZA DE SEGURO (condiciones particulares o generales, suplemento, certificado, nota de " +
+      "cobertura, carta de garantía, cotización o propuesta de seguro) NO es una factura ni un gasto, aunque indique la " +
+      "prima o un recibo previsto: describe el contrato, no un pago. Reporta es_factura_o_gasto=false y " +
+      "es_documento_poliza=true. El RECIBO de prima, el aviso de cobro, la carta de pago o la factura de la correduría " +
+      "sí son un gasto (es_factura_o_gasto=true), también si vienen en el mismo PDF que la póliza. En general, un documento corporativo de referencia (normativa, compliance, políticas, contratos, " +
+      "certificados, escrituras) tampoco es un gasto por el hecho de mencionar importes.",
     "Un DUA o documento de despacho aduanero (declaración de importación/exportación, liquidación de la aduana, " +
       "«documento único administrativo») NO es una factura: el IVA de importación, aranceles y tasas que muestra " +
       "los paga el grupo a través de la FACTURA DEL AGENTE DE ADUANAS o transitario, donde aparecen como suplidos. " +
@@ -619,8 +641,13 @@ export async function extraerDatosFactura(
         tratamientoFiscal: "inversion_sujeto_pasivo",
       };
 
+      // Si el lector dice que ES un gasto (p. ej. un recibo de prima dentro del mismo PDF), manda eso: la marca de
+      // póliza solo cuenta cuando el documento no es un gasto.
+      const esDocumentoPoliza = !esFacturaOGasto && (input.es_documento_poliza === true || input.es_documento_poliza === "true");
       return {
         esFacturaOGasto,
+        ...(esDocumentoPoliza ? { esDocumentoPoliza: true } : {}),
+        ...(!esFacturaOGasto && typeof input.razon === "string" && input.razon.trim() ? { razonNoGasto: input.razon.trim().slice(0, 400) } : {}),
         proveedor,
         monto,
         moneda: (input.moneda as string) ?? "EUR",
