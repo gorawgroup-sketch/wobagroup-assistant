@@ -64,3 +64,43 @@ test("si falla la pasada del aproximado, los exactos ya encontrados no se pierde
   });
   assert.equal(r.movimientoRecomendado?.movementId, "m-otro");
 });
+
+test("sin cargo exacto ni aproximado se ofrecen los cargos MAYORES del proveedor, solo para elegir (caso Go Rent A Car)", async () => {
+  const mayor = cargo("m-go", "Go Rent A Car", { monto: -744.87, moneda: "USD", origenCoincidencia: "cargo_mayor", restoDisponible: 744.87 });
+  const r = await buscarCargoParaPropuesta(
+    { ...c, proveedor: "Go Rent A Car", monto: 354.62, moneda: "USD" },
+    { ...deps([]), cargoMayor: (async () => [mayor]) as never }
+  );
+  assert.equal(r.movimientoEncontrado, false);
+  assert.equal(r.movimientoRecomendado, undefined);
+  assert.deepEqual(r.movimientosAmbiguos.map((m) => m.movementId), ["m-go"]);
+  assert.deepEqual(r.movimientosPersistidos.map((m) => m.origenCoincidencia), ["cargo_mayor"]);
+});
+
+test("con un cargo exacto no se busca ningún cargo mayor", async () => {
+  let llamado = false;
+  const r = await buscarCargoParaPropuesta(c, { ...deps([cargo("m1", "Uber Pending")]), cargoMayor: (async () => { llamado = true; return []; }) as never });
+  assert.equal(r.movimientoRecomendado?.movementId, "m1");
+  assert.equal(llamado, false);
+});
+
+test("bajo una decisión ya marcada por índice no se introduce un cargo mayor (ofrecerCargoMayor: false)", async () => {
+  let llamado = false;
+  const r = await buscarCargoParaPropuesta(
+    { ...c, ofrecerCargoMayor: false },
+    { ...deps([]), cargoMayor: (async () => { llamado = true; return [cargo("m-go", "Uber", { origenCoincidencia: "cargo_mayor" })]; }) as never }
+  );
+  assert.equal(llamado, false);
+  assert.deepEqual(r.movimientosPersistidos, []);
+});
+
+test("si la búsqueda aproximada falla no se afirma que no hay cargo ni se ofrece uno mayor", async () => {
+  let llamado = false;
+  const r = await buscarCargoParaPropuesta(c, {
+    similar: (async () => []) as never,
+    aproximado: (async () => { throw new Error("Error de la API de Holded (503)"); }) as never,
+    cargoMayor: (async () => { llamado = true; return []; }) as never,
+  });
+  assert.equal(llamado, false);
+  assert.equal(r.movimientoEncontrado, false);
+});

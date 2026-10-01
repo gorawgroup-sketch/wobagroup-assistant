@@ -8,6 +8,7 @@ import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
 import { buscarCargoParaPropuesta, type ResultadoCargoPropuesta } from "./buscarCargoParaPropuesta";
+import { contextoCorreoCargoMayor, describirCargoMayor } from "../holded/cargoMayor";
 import { alinearTasaCambioAlMovimientoElegido } from "./alinearTasaAlMovimiento";
 import { alinearDocumentoAlCargoEnOtraMoneda } from "./alinearDocumentoAlCargo";
 import { obtenerContactoSinIdentificar } from "./contactoSinIdentificar";
@@ -104,6 +105,8 @@ import {
   reconciliarMovimiento,
   estaMovimientoYaConciliado,
   estaMovimientoDisponibleParaConciliar,
+  movimientoConRestoParaConciliar,
+  buscarCargoMayorDelProveedor,
   AdjuntoCompraInciertoError,
   ConciliacionMovimientoInciertaError,
   ContactosHoldedAmbiguosError,
@@ -718,7 +721,9 @@ async function ofrecerEleccionMovimientosAmbiguos(
   proveedor?: string,
   mensajeIdGmail?: string,
   comprobanteConfirmado: boolean = true,
-  threadIdGmail?: string
+  threadIdGmail?: string,
+  /** Importe del gasto: solo para describir cuánto quedaría pendiente de un cargo mayor. */
+  montoGasto?: number
 ): Promise<ResultadoIntentarConciliar> {
   let pendienteGuardada: ConciliacionAmbiguaPendiente | undefined;
   try {
@@ -763,17 +768,20 @@ async function ofrecerEleccionMovimientosAmbiguos(
       ? `\n\n⭐ La opción ${indiceSugerido + 1} coincide con conciliaciones anteriores verificadas de este proveedor.`
       : "";
     const hayTipoCambio = candidatos.some((c) => c.origenCoincidencia === "tipo_cambio");
+    const hayCargoMayor = candidatos.some((c) => c.origenCoincidencia === "cargo_mayor");
     const detalleCandidatos = candidatos
       .map((m, i) => hayTipoCambio
         ? describirMovimientoMultimoneda(m, i)
+        : m.origenCoincidencia === "cargo_mayor" && montoGasto !== undefined
+        ? describirCargoMayor(m, montoGasto, i)
         : `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
       .join("\n");
     await sendTelegramMessageWithButtons(
       chatId,
-      `💳 Encontré ${candidatos.length} movimientos bancarios${hayTipoCambio ? " en otra moneda usando una tasa histórica de referencia" : esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
+      `💳 Encontré ${hayCargoMayor ? (candidatos.length === 1 ? "un cargo MAYOR del mismo proveedor" : `${candidatos.length} cargos MAYORES del mismo proveedor`) : `${candidatos.length} movimientos bancarios`}${hayCargoMayor ? "" : hayTipoCambio ? " en otra moneda usando una tasa histórica de referencia" : esAproximado ? " parecidos (nombre y monto cercanos, no exactos)" : " sin conciliar parecidos"} para "${descripcionGasto}":\n` +
         detalleCandidatos +
         notaSugerido +
-        `\n\n¿Con cuál concilio?${hayTipoCambio ? " No elegiré ninguno automáticamente porque la tasa real del banco puede incluir margen; al elegir uno, ajustaré la tasa de cambio del gasto a ese cargo para que la conciliación quede sin diferencia." : ""}`,
+        `\n\n¿Con cuál concilio?${hayCargoMayor ? " Si lo eliges, el gasto conserva su importe y el cargo queda parcialmente conciliado a la espera del gasto del resto." : hayTipoCambio ? " No elegiré ninguno automáticamente porque la tasa real del banco puede incluir margen; al elegir uno, ajustaré la tasa de cambio del gasto a ese cargo para que la conciliación quede sin diferencia." : ""}`,
       filas
     );
     return {
@@ -898,6 +906,15 @@ async function intentarConciliar(
           threadIdGmail
         );
       }
+      // Último recurso, igual que en la propuesta (cargoMayor.ts): un único cargo mayor del mismo proveedor, del que
+      // este gasto puede ser una parte. Siempre se pide elegirlo; nunca se concilia solo.
+      if (proveedor && !esProveedorNoIdentificado(proveedor)) {
+        const cargosMayores = await buscarCargoMayorDelProveedor(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto });
+        if (cargosMayores.length > 0) {
+          return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, cargosMayores,
+            deColaCorreo, false, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail, monto);
+        }
+      }
       return { nota: `\n\n⚠️ No encontré un movimiento bancario libre que coincida. El correo seguirá sin leer ` +
         `para reintentar o resolverlo manualmente.`, estado: "sin_candidato" };
     }
@@ -1018,7 +1035,10 @@ async function conciliarContraMovimientoEspecifico(
       movimiento.movementId,
       movimiento.fecha,
       gastoId,
-      { permitirMonedaDistinta: movimiento.origenCoincidencia === "tipo_cambio" }
+      {
+        permitirMonedaDistinta: movimiento.origenCoincidencia === "tipo_cambio",
+        permitirCargoMayor: movimiento.origenCoincidencia === "cargo_mayor",
+      }
     );
 
     if (resultado.ok) {
@@ -1068,7 +1088,14 @@ async function conciliarContraMovimientoEspecifico(
                 `un residuo automático de cambio; no se regularizó ni se modificó ninguna otra operación. Revísalo a mano ` +
                 `en Holded (sección Pagos del documento).`
               : "";
-      const notaMovimientoParcial = resultado.movimientoParcial
+      // Cargo mayor elegido a propósito (cargoMayor.ts): que el movimiento quede parcial es lo esperado, no una incidencia.
+      const parcialEsperado = movimiento.origenCoincidencia === "cargo_mayor";
+      const notaMovimientoParcial = parcialEsperado
+        ? resultado.restoEsperadoEnMovimiento !== undefined
+          ? `\n\n🧩 El cargo era mayor que este gasto: quedan ${resultado.restoEsperadoEnMovimiento.toFixed(2)} ${movimiento.moneda} ` +
+            `del cargo sin asignar, a la espera del gasto que los cubra. Cuando llegue, Wobi te ofrecerá conciliarlo contra este mismo cargo.`
+          : `\n\n🧩 Con este gasto el cargo quedó conciliado por completo.`
+        : resultado.movimientoParcial
         ? `\n\n⚠️ La compra quedó pagada y el vínculo fue confirmado, pero el movimiento bancario continúa ` +
           `parcialmente conciliado${resultado.pendienteEnMovimiento !== undefined
             ? ` (${resultado.pendienteEnMovimiento.toFixed(2)} ${movimiento.moneda} todavía sin asignar)`
@@ -3037,12 +3064,21 @@ async function crearGastoYReportar(
   // libre mientras esperaba el clic, se aborta antes de crear el gasto; no
   // se sustituye silenciosamente por otro ni se deja una compra huérfana.
   if (movimientoObjetivo) {
-    const disponible = await estaMovimientoDisponibleParaConciliar(
-      empresaFinal,
-      movimientoObjetivo.accountId,
-      movimientoObjetivo.movementId,
-      movimientoObjetivo.fecha
-    );
+    // Un «cargo mayor» puede tener ya otra parte asignada: basta con que le quede libre el importe de este gasto.
+    const disponible = movimientoObjetivo.origenCoincidencia === "cargo_mayor"
+      ? await movimientoConRestoParaConciliar(
+          empresaFinal,
+          movimientoObjetivo.accountId,
+          movimientoObjetivo.movementId,
+          movimientoObjetivo.fecha,
+          propuesta.monto
+        )
+      : await estaMovimientoDisponibleParaConciliar(
+          empresaFinal,
+          movimientoObjetivo.accountId,
+          movimientoObjetivo.movementId,
+          movimientoObjetivo.fecha
+        );
     if (!disponible) {
       throw new Error(
         `El movimiento recomendado "${movimientoObjetivo.descripcion || "sin descripción"}" ya no existe o no está libre. ` +
@@ -4063,6 +4099,9 @@ async function refrescarCargoDePropuesta(propuestaActualizada: PropuestaGasto): 
       monto: propuestaActualizada.monto,
       fecha: propuestaActualizada.fecha,
       moneda: propuestaActualizada.moneda,
+      // Esta búsqueda corre bajo una decisión ya marcada por índice: un cargo mayor nuevo en ese índice se conciliaría
+      // sin haber sido elegido. El cargo mayor se ofrece al armar la propuesta y al renovar sus botones.
+      ofrecerCargoMayor: false,
     });
   } catch (error) {
     console.error("[gastoCallbackHandler] Error buscando el cargo tras corregir la propuesta (no crítico):", error);
@@ -4517,9 +4556,16 @@ async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: s
 async function ejecutarResponderCorreo(propuesta: PropuestaGasto): Promise<boolean> {
   if (!propuesta.correoOrigen) return false;
   const identidad = propuesta.deColaCorreo === true ? identidadCorreoDePropuestaGasto(propuesta) : undefined;
+  // Si el banco cobró más de lo que dice el comprobante, el borrador pregunta por la diferencia (ver cargoMayor.ts).
+  const elegido = (propuesta.seleccionAcciones ?? []).map((k) => indiceMovimientoAmbiguo(k as Parameters<typeof indiceMovimientoAmbiguo>[0])).find((i) => i !== undefined);
+  const cargoElegido = elegido !== undefined ? propuesta.movimientosAmbiguos?.[elegido] : undefined;
+  const cargoMayor = cargoElegido?.origenCoincidencia === "cargo_mayor"
+    ? cargoElegido
+    : (propuesta.movimientosAmbiguos ?? []).find((m) => m.origenCoincidencia === "cargo_mayor");
   const contexto =
     `Factura/gasto detectado en este correo: ${propuesta.proveedor}, ${propuesta.monto} ${propuesta.moneda}, ` +
-    `${propuesta.fecha}, concepto: ${propuesta.concepto}.`;
+    `${propuesta.fecha}, concepto: ${propuesta.concepto}.` +
+    (cargoMayor ? contextoCorreoCargoMayor(cargoMayor, propuesta.monto) : "");
   let iniciada = false;
   try {
     iniciada = await ejecutarAccionLateralGastoConReserva(
