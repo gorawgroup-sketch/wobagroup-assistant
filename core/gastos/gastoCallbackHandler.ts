@@ -410,6 +410,14 @@ export async function prepararPropuestaFinalGasto(
     cuentaId,
     cuentaTags,
     personaAsociada: cambios.personaAsociada ?? propuesta.personaAsociada,
+    // Hallazgo real al implementar la corrección de texto libre de contexto de viaje (ver
+    // extraerContextoLibreDeCorreccion): un cambios.contextoDeViaje/reciboSimplificado explícito SÍ se
+    // usaba para esta inferencia (arriba, en inferirCuenta/combinarTags) pero nunca quedaba reflejado
+    // en el objeto que esta función devuelve — cualquier reinferencia POSTERIOR (ej. tras guardar la
+    // propuesta corregida y volver a prepararla) releía el valor viejo de `propuesta`, perdiendo la
+    // corrección otra vez. Mismo patrón que personaAsociada arriba, que sí lo hacía bien.
+    contextoDeViaje: cambios.contextoDeViaje ?? propuesta.contextoDeViaje,
+    reciboSimplificado: cambios.reciboSimplificado ?? propuesta.reciboSimplificado,
   };
 }
 
@@ -422,6 +430,10 @@ async function reponerPropuestaParaReintento(
     ...propuesta,
     candidatos: candidatoSeguimiento ? [candidatoSeguimiento] : propuesta.candidatos,
     seleccionAcciones: [],
+    // Ver PropuestaGasto.motivoReintento — esta es la señal que distingue una propuesta ATASCADA
+    // (reponerPropuestaParaReintento SIEMPRE se llama tras algo que no terminó limpio) de una
+    // pendiente normal recién mandada, para el aviso en el prompt dinámico (PendientesSensibles.gastoPropuesta).
+    motivoReintento: mensaje,
   });
   const teclado = construirTecladoGasto(restaurada, opcionesTecladoDesdePropuesta(restaurada));
   try {
@@ -434,7 +446,7 @@ async function reponerPropuestaParaReintento(
 }
 
 async function reponerVerificacionCreacionIncierta(propuesta: PropuestaGasto, mensaje: string): Promise<void> {
-  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [], motivoReintento: mensaje });
   const teclado = [[{
     text: "🔎 Verificar estado sin repetir la creación",
     callback_data: `gasto_nuevo:${restaurada.id}`,
@@ -1260,7 +1272,7 @@ async function reponerSoloCierrePropuesta(
   propuesta: PropuestaGasto,
   mensaje: string
 ): Promise<void> {
-  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [], motivoReintento: mensaje });
   const botones = [[{
     text: "✅ Finalizar correo ya resuelto",
     callback_data: `gasto_cerrar_propuesta:${restaurada.id}`,
@@ -1278,7 +1290,7 @@ async function reponerSoloCierreCancelacion(
   propuesta: PropuestaGasto,
   mensaje: string
 ): Promise<void> {
-  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [] });
+  const restaurada = await restaurarPropuestaGasto({ ...propuesta, seleccionAcciones: [], motivoReintento: mensaje });
   const botones = [[{
     text: "✅ Finalizar descarte del correo",
     callback_data: `gasto_cancelar:${restaurada.id}`,
@@ -3541,17 +3553,21 @@ async function manejarFechaBloqueada(
 ): Promise<void> {
   const fechaHoy = new Date().toISOString().slice(0, 10);
 
+  const texto =
+    `⚠️ No pude crear el gasto de "${propuesta.proveedor}" — Holded dice que la fecha ${propuesta.fecha} ` +
+    `corresponde a un periodo contable ya cerrado/bloqueado.\n\n¿Lo registro con la fecha de hoy (${fechaHoy}) en su lugar?`;
+
   const { id: _idViejo, creadoEn: _creadoEnViejo, ...datosBase } = propuesta;
   const nuevaPropuesta = await crearPropuestaGasto({
     ...datosBase,
     empresa: empresaFinal,
     concepto: conceptoFinal || propuesta.concepto,
     fecha: fechaHoy,
+    // Propuesta NUEVA (no una reposición de restaurarPropuestaGasto) pero igual de atascada —
+    // se fija explícito en vez de heredar por el spread de ...datosBase un motivoReintento viejo de
+    // un intento anterior sin relación (ver PropuestaGasto.motivoReintento).
+    motivoReintento: texto,
   });
-
-  const texto =
-    `⚠️ No pude crear el gasto de "${propuesta.proveedor}" — Holded dice que la fecha ${propuesta.fecha} ` +
-    `corresponde a un periodo contable ya cerrado/bloqueado.\n\n¿Lo registro con la fecha de hoy (${fechaHoy}) en su lugar?`;
 
   const botones = [
     [{ text: `✅ Sí, usar ${fechaHoy}`, callback_data: `gasto_nuevo:${nuevaPropuesta.id}` }],
@@ -3833,6 +3849,39 @@ function parsearCorreccionClasificacion(
 }
 
 /**
+ * Reconoce "viaje" y la persona asociada en el texto libre de una corrección — ej. "es un gasto de
+ * viaje de Simon Talloen". Usada junto a parsearCorreccionClasificacion por los mismos dos caminos
+ * (continuarConCorreccionGasto y aplicarTextoCorreccion).
+ *
+ * Caso real de auditoría (Carlos, Droguería Pura / Simon Talloen, Footprint, 2026-10-01): antes de
+ * PR #282 no existía dónde guardar contextoDeViaje/personaAsociada en la propuesta; ahora que sí
+ * (PropuestaGasto.contextoDeViaje/personaAsociada), una corrección en texto libre puede fijarlas
+ * explícitamente en vez de depender solo de lo que detectó el documento original.
+ *
+ * Deliberadamente conservadora para no inventar clasificaciones que el operador no dijo con claridad:
+ * - contextoDeViaje se activa con que el texto mencione la palabra "viaje" en cualquier parte — nunca
+ *   false explícito (nada en este flujo pide "confirmar que NO es de viaje"), así que el resultado es
+ *   siempre true o undefined (deja el valor existente de la propuesta sin tocar).
+ * - personaAsociada SOLO se extrae cuando el nombre sigue directo a "viaje de" (ej. "viaje de Simon
+ *   Talloen", "de viaje de Nuria Ortiz") — nunca cualquier "de <Nombre propio>" suelto en el texto,
+ *   que capturaría mal nombres de proveedor/lugar en correcciones normales (ej. "factura de
+ *   Mediterránea" no debe convertir "Mediterránea" en una persona). Por el mismo motivo que
+ *   personaAsociada en el resto del sistema no valida contra ningún catálogo (ver el test "aprobar
+ *   conserva la persona del correo aunque no figure en el catálogo histórico"), esto puede capturar
+ *   un lugar si el texto literalmente dice "viaje de <Lugar>" — el operador puede corregirlo igual
+ *   que corregiría cualquier otro campo mal inferido, no es peor que aceptar cualquier texto suelto.
+ * - reciboSimplificado/ticketDeEquipo NUNCA se infieren de texto libre — sin un disparador tan claro
+ *   como "viaje", inventarlos arriesgaría una clasificación contable equivocada.
+ */
+export function extraerContextoLibreDeCorreccion(texto: string): { contextoDeViaje?: boolean; personaAsociada?: string } {
+  const contextoDeViaje = /\bviaje\b/i.test(texto) || undefined;
+  const trasViajeDe = /\bviaje\s+de\s+/i.exec(texto);
+  const resto = trasViajeDe ? texto.slice(trasViajeDe.index + trasViajeDe[0].length) : "";
+  const matchPersona = resto.match(/^([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ'-]*(?:\s+[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ'-]*){0,2})/);
+  return { contextoDeViaje, personaAsociada: matchPersona?.[1]?.trim() };
+}
+
+/**
  * Continúa el flujo cuando el usuario responde con la corrección tras
  * pulsar "✏️ Corregir clasificación".
  */
@@ -3854,10 +3903,17 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
   }
 
   const { empresa: empresaFinal, concepto: conceptoFinal } = parsearCorreccionClasificacion(textoUsuario, propuesta.empresa);
+  // Ver extraerContextoLibreDeCorreccion: ya mezclados con la propuesta original acá (no solo en
+  // `cambios`) para que, si prepararPropuestaFinalGasto falla más abajo y reponerPropuestaParaReintento
+  // repone propuestaCorregida (que en ese caso seguiría siendo esta misma base, ver el `let` de abajo),
+  // la corrección de viaje/persona no se pierda en el siguiente intento.
+  const { contextoDeViaje, personaAsociada } = extraerContextoLibreDeCorreccion(textoUsuario);
   const propuestaCorregidaBase: PropuestaGasto = {
     ...propuesta,
     empresa: empresaFinal,
     concepto: conceptoFinal || propuesta.concepto,
+    personaAsociada: personaAsociada ?? propuesta.personaAsociada,
+    contextoDeViaje: contextoDeViaje ?? propuesta.contextoDeViaje,
   };
   let propuestaCorregida = propuestaCorregidaBase;
 
@@ -3869,6 +3925,8 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
     propuestaCorregida = await prepararPropuestaFinalGasto(propuestaCorregidaBase, {
       empresa: empresaFinal,
       concepto: conceptoFinal || propuesta.concepto,
+      personaAsociada,
+      contextoDeViaje,
       forzarReinferencia: true,
     });
     const resultado = await crearGastoYReportar(
@@ -4523,15 +4581,22 @@ export async function continuarConAccionGasto(pendiente: PendienteAccionGasto, t
  * Núcleo de "✏️ Corregir clasificación" en su forma NO consumidora (teclado
  * de selección) — a diferencia de continuarConCorreccionGasto (el botón
  * standalone viejo, que crea el gasto de inmediato), esto SOLO actualiza
- * empresa/concepto y deja la propuesta viva.
+ * empresa/concepto (y, si el texto los menciona, contextoDeViaje/
+ * personaAsociada — ver extraerContextoLibreDeCorreccion) y deja la
+ * propuesta viva.
  */
 async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: string): Promise<ResultadoAplicarTexto> {
   const { empresa, concepto } = parsearCorreccionClasificacion(textoUsuario, propuesta.empresa);
+  // Ver extraerContextoLibreDeCorreccion — ej. "es un gasto de viaje de Simon Talloen" fija
+  // contextoDeViaje/personaAsociada además de empresa/concepto.
+  const { contextoDeViaje, personaAsociada } = extraerContextoLibreDeCorreccion(textoUsuario);
   let propuestaFinal: PropuestaGasto;
   try {
     propuestaFinal = await prepararPropuestaFinalGasto(propuesta, {
       empresa,
       concepto,
+      personaAsociada,
+      contextoDeViaje,
       forzarReinferencia: true,
     });
   } catch (error) {
@@ -4543,7 +4608,9 @@ async function aplicarTextoCorreccion(propuesta: PropuestaGasto, textoUsuario: s
     propuestaFinal.empresa,
     propuestaFinal.concepto,
     propuestaFinal.cuentaId,
-    propuestaFinal.cuentaTags
+    propuestaFinal.cuentaTags,
+    propuestaFinal.personaAsociada,
+    propuestaFinal.contextoDeViaje
   );
   if (!actualizado) {
     return { ok: false, reintentable: false, mensaje: "Esa propuesta ya no está disponible." };

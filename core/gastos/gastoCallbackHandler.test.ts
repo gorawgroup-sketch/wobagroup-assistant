@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ejecutarAccionLateralGastoConReserva,
+  extraerContextoLibreDeCorreccion,
   finalizarGastoCorreoAntesDeRender,
   gastoPermiteCerrarCorreo,
   prepararPropuestaFinalGasto,
@@ -422,6 +423,63 @@ test("el soporte y los reintentos conservan la empresa y el concepto corregidos"
   assert.match(fuente, /reponerPropuestaParaReintento\(\s*propuestaCorregida,/);
 });
 
+// Ver PropuestaGasto.motivoReintento y PendientesSensibles.gastoPropuesta (core/claude/client.ts) —
+// toda función que repone/crea una propuesta porque algo no terminó limpio debe fijar motivoReintento,
+// para que el prompt dinámico distinga una propuesta ATASCADA de una pendiente normal recién mandada.
+// reponerPropuestaParaReintento/reponerVerificacionCreacionIncierta/reponerSoloCierrePropuesta/
+// reponerSoloCierreCancelacion son funciones privadas (no exportadas) que llaman a
+// restaurarPropuestaGasto directo — se verifica por texto fuente, mismo patrón que el test de arriba.
+test("toda reposición/creación de una propuesta atascada fija motivoReintento", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+
+  assert.match(
+    fuente,
+    /async function reponerPropuestaParaReintento[\s\S]{0,700}?motivoReintento: mensaje,/,
+    "reponerPropuestaParaReintento — se llama en TODOS los catch de creación/corrección de gasto"
+  );
+  assert.match(
+    fuente,
+    /async function reponerVerificacionCreacionIncierta\(propuesta: PropuestaGasto, mensaje: string\): Promise<void> \{\s*const restaurada = await restaurarPropuestaGasto\(\{ \.\.\.propuesta, seleccionAcciones: \[\], motivoReintento: mensaje \}\);/
+  );
+  assert.match(
+    fuente,
+    /async function reponerSoloCierrePropuesta\(\s*propuesta: PropuestaGasto,\s*mensaje: string\s*\): Promise<void> \{\s*const restaurada = await restaurarPropuestaGasto\(\{ \.\.\.propuesta, seleccionAcciones: \[\], motivoReintento: mensaje \}\);/
+  );
+  assert.match(
+    fuente,
+    /async function reponerSoloCierreCancelacion\(\s*propuesta: PropuestaGasto,\s*mensaje: string\s*\): Promise<void> \{\s*const restaurada = await restaurarPropuestaGasto\(\{ \.\.\.propuesta, seleccionAcciones: \[\], motivoReintento: mensaje \}\);/
+  );
+  assert.match(
+    fuente,
+    /motivoReintento: texto,\s*\}\);/,
+    "manejarFechaBloqueada crea una propuesta NUEVA (no una reposición) pero igual de atascada — debe fijarlo explícito, no heredarlo del spread"
+  );
+});
+
+// Ver extraerContextoLibreDeCorreccion — ambos caminos de "Corregir clasificación" (el botón
+// standalone que crea el gasto de inmediato, y el del teclado de selección que solo actualiza
+// campos) deben pasar personaAsociada/contextoDeViaje a prepararPropuestaFinalGasto, y
+// aplicarTextoCorreccion (el que deja la propuesta viva) debe persistirlos en Sheets — si no, una
+// corrección de viaje en texto libre se perdería en la próxima reinferencia (mismo bug de fondo que
+// PR #282, para un campo distinto). aplicarTextoCorreccion no está exportada; se verifica por texto
+// fuente, mismo patrón que los demás tests de plumbing de este archivo.
+test("las dos correcciones por texto libre pasan y persisten contextoDeViaje/personaAsociada", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+
+  const ocurrencias = fuente.match(/const \{ contextoDeViaje, personaAsociada \} = extraerContextoLibreDeCorreccion\(textoUsuario\);/g);
+  assert.equal(ocurrencias?.length, 2, "los dos caminos (continuarConCorreccionGasto y aplicarTextoCorreccion) deben extraer el contexto libre");
+  assert.match(
+    fuente,
+    /const propuestaCorregidaBase: PropuestaGasto = \{\s*\.\.\.propuesta,\s*empresa: empresaFinal,\s*concepto: conceptoFinal \|\| propuesta\.concepto,\s*personaAsociada: personaAsociada \?\? propuesta\.personaAsociada,\s*contextoDeViaje: contextoDeViaje \?\? propuesta\.contextoDeViaje,\s*\};/,
+    "continuarConCorreccionGasto mezcla la corrección en propuestaCorregidaBase ANTES del try — si prepararPropuestaFinalGasto falla, reponerPropuestaParaReintento repone esa misma base y la corrección de viaje/persona sobrevive al siguiente intento"
+  );
+  assert.match(
+    fuente,
+    /actualizarClasificacionPropuestaGasto\(\s*propuesta\.id,\s*propuestaFinal\.empresa,\s*propuestaFinal\.concepto,\s*propuestaFinal\.cuentaId,\s*propuestaFinal\.cuentaTags,\s*propuestaFinal\.personaAsociada,\s*propuestaFinal\.contextoDeViaje\s*\)/,
+    "aplicarTextoCorreccion persiste en Sheets el valor YA MEZCLADO (cambios.X ?? propuesta.X vía prepararPropuestaFinalGasto), no el crudo de la extracción — así una corrección sin mención de viaje no borra lo que ya tenía la propuesta"
+  );
+});
+
 test("bloquea creación y conciliación cuando el total fiscal difiere más de 0,05", () => {
   const base = {
     monto: 121,
@@ -571,6 +629,75 @@ test("un contextoDeViaje explícito en cambios (ej. corrección manual) gana sob
   );
 
   assert.equal(criteriosRecibidos?.contextoDeViaje, false);
+});
+
+// Hallazgo real al implementar la corrección de texto libre de viaje (ver
+// extraerContextoLibreDeCorreccion): un cambios.contextoDeViaje/reciboSimplificado explícito SÍ se
+// usaba para inferir la cuenta (ver el test de arriba) pero nunca quedaba reflejado en el objeto que
+// prepararPropuestaFinalGasto devuelve — una reinferencia POSTERIOR volvía a leer el valor viejo de
+// la propuesta, perdiendo la corrección otra vez. personaAsociada sí lo hacía bien; esto lo iguala.
+test("prepararPropuestaFinalGasto persiste el contextoDeViaje/reciboSimplificado corregido en la propuesta devuelta, no solo en la inferencia", async () => {
+  const propuesta = {
+    id: "p-viaje-3",
+    empresa: "Footprint",
+    proveedor: "Proveedor",
+    monto: 10,
+    moneda: "EUR",
+    fecha: "2026-09-20",
+    concepto: "Gasto",
+    rutaLocal: "/tmp/recibo.pdf",
+    nombreArchivoOriginal: "recibo.pdf",
+    candidatos: [],
+    lineas: [],
+    chatId: 1,
+    messageId: 2,
+    creadoEn: 3,
+    contextoDeViaje: false,
+    reciboSimplificado: false,
+  } satisfies PropuestaGasto;
+
+  const final = await prepararPropuestaFinalGasto(
+    propuesta,
+    { empresa: "Footprint", concepto: propuesta.concepto, contextoDeViaje: true, reciboSimplificado: true, forzarReinferencia: true },
+    {
+      inferirCuenta: async () => ({ accountId: "cuenta-viaje", tags: [], ejemplo: "precedente", aprendidoDe: "viaje" }),
+      combinarTags: combinarTagsGastoAprendidos,
+    }
+  );
+
+  assert.equal(final.contextoDeViaje, true);
+  assert.equal(final.reciboSimplificado, true);
+});
+
+// Caso real de auditoría (Carlos, Droguería Pura / Simon Talloen, Footprint, 2026-10-01): "es un
+// gasto de viaje de Simon Talloen" debe fijar contextoDeViaje y personaAsociada desde texto libre.
+// Deliberadamente conservadora (ver su comentario en gastoCallbackHandler.ts): personaAsociada SOLO
+// se extrae tras "viaje de", nunca cualquier "de <Nombre propio>" suelto, para no capturar mal un
+// proveedor o un lugar en una corrección normal.
+test("extraerContextoLibreDeCorreccion reconoce viaje/persona de forma conservadora", () => {
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("es un gasto de viaje de Simon Talloen"),
+    { contextoDeViaje: true, personaAsociada: "Simon Talloen" }
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("de viaje de Nuria Ortiz, parking aeropuerto"),
+    { contextoDeViaje: true, personaAsociada: "Nuria Ortiz" }
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("parking del viaje a Barcelona"),
+    { contextoDeViaje: true, personaAsociada: undefined },
+    "menciona 'viaje' pero no 'viaje de <Nombre>' — contextoDeViaje se activa, pero no se inventa una persona"
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("Footprint, factura de Mediterránea"),
+    { contextoDeViaje: undefined, personaAsociada: undefined },
+    "un 'de <Nombre propio>' suelto sin la palabra 'viaje' nunca se confunde con una persona asociada"
+  );
+  assert.deepEqual(
+    extraerContextoLibreDeCorreccion("Footprint, parking aeropuerto"),
+    { contextoDeViaje: undefined, personaAsociada: undefined },
+    "una corrección normal sin ninguna mención de viaje no fija nada — se conserva lo que ya tenía la propuesta"
+  );
 });
 
 test("sin cuenta aprendida la reinferencia falla cerrado y nunca usa default", async () => {

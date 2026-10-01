@@ -20,8 +20,8 @@ const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las demás propues
 // contextoDeViaje/reciboSimplificado/ticketDeEquipo) el valor se pierde en silencio si el rango de
 // escritura de una fila completa (A{fila}:__{fila}) es más angosto que el array que propuestaToRow
 // devuelve — Sheets simplemente descarta los valores sobrantes del array, sin ningún error.
-// HEADERS termina ahora en la columna AD (30 campos) — la próxima columna que se agregue DEBE
-// extender TODOS esos rangos a la letra siguiente (AE).
+// HEADERS termina ahora en la columna AE (31 campos) — la próxima columna que se agregue DEBE
+// extender TODOS esos rangos a la letra siguiente (AF).
 const HEADERS = [
   "id",
   "empresa",
@@ -53,6 +53,7 @@ const HEADERS = [
   "contextoDeViaje",
   "reciboSimplificado",
   "ticketDeEquipo",
+  "motivoReintento",
 ];
 
 export interface PropuestaGasto {
@@ -182,6 +183,29 @@ export interface PropuestaGasto {
   contextoDeViaje?: boolean;
   reciboSimplificado?: boolean;
   ticketDeEquipo?: boolean;
+  /**
+   * Último aviso con el que se repuso esta propuesta (ver reponerPropuestaParaReintento y las demás
+   * reponerSoloCierre.../reponerVerificacionCreacionIncierta en gastoCallbackHandler.ts, todas las
+   * funciones que llaman a restaurarPropuestaGasto) — nunca se fija al crear una propuesta nueva por
+   * el camino normal (procesarGastoEntrante.ts → crearPropuestaGasto), SOLO cuando algo interrumpió
+   * el camino feliz (duplicado, soporte incierto, conciliación sin terminar, cuenta contable no
+   * inferida, etc.) y la propuesta quedó repuesta esperando otra decisión.
+   *
+   * Mismo patrón que PendientesSensibles.correoPropuesto (core/claude/client.ts, PR #280) — pero a
+   * diferencia de un borrador de correo (evento poco frecuente), una propuesta de gasto pendiente es
+   * el estado NORMAL la mayor parte del tiempo (casi siempre hay una esperando el primer botón), así
+   * que avisar de CUALQUIER propuesta pendiente en cada turno sería ruido constante y forzaría saltar
+   * a Sonnet en cada turno (ver haySensiblePendiente). Este campo es la señal que distingue "pendiente
+   * normal, nadie la tocó todavía" (motivoReintento ausente) de "ya se intentó y algo no terminó
+   * limpio" (motivoReintento presente) — solo la segunda se avisa en el prompt dinámico.
+   *
+   * Caso real que lo motivó (Carlos, Droguería Pura / Simon Talloen, Footprint, 2026-10-01): la
+   * propuesta falló con CuentaContableNoInferidaError al "Aprobar selección" y quedó repuesta con sus
+   * botones, pero cuando Carlos escribió "reprocesa el correo de Droguería Pura / Simon Talloen" en el
+   * chat, el modelo no tenía ninguna forma de saber que esa propuesta puntual seguía atascada — le
+   * contestó con una pregunta genérica en vez de reconocerla y usar reenviar_botones_propuesta_gasto.
+   */
+  motivoReintento?: string;
 }
 
 let writeClient: sheets_v4.Sheets | null = null;
@@ -232,6 +256,9 @@ async function ensureTab(): Promise<number> {
     // PropuestaGasto) — mismo patrón que personaAsociada arriba, una celda por columna nueva.
     await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AB1:AD1`,
       valueInputOption: "RAW", requestBody: { values: [["contextoDeViaje", "reciboSimplificado", "ticketDeEquipo"]] } });
+    // Migración aditiva: motivoReintento (ver su comentario en PropuestaGasto) — mismo patrón.
+    await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AE1`,
+      valueInputOption: "RAW", requestBody: { values: [["motivoReintento"]] } });
     tabGridId = existingId;
     return tabGridId;
   }
@@ -248,7 +275,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:AD1`,
+    range: `${TAB_NAME}!A1:AE1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -349,6 +376,7 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     contextoDeViaje: row[27] === "" || row[27] == null ? undefined : row[27] === true || row[27] === "true",
     reciboSimplificado: row[28] === "" || row[28] == null ? undefined : row[28] === true || row[28] === "true",
     ticketDeEquipo: row[29] === "" || row[29] == null ? undefined : row[29] === true || row[29] === "true",
+    motivoReintento: row[30] ? String(row[30]) : undefined,
   };
 }
 
@@ -384,6 +412,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.contextoDeViaje === undefined ? "" : p.contextoDeViaje ? "true" : "false",
     p.reciboSimplificado === undefined ? "" : p.reciboSimplificado ? "true" : "false",
     p.ticketDeEquipo === undefined ? "" : p.ticketDeEquipo ? "true" : "false",
+    p.motivoReintento ?? "",
   ];
 }
 
@@ -399,7 +428,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:AD10000`,
+    range: `${TAB_NAME}!A2:AE10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
 
@@ -476,7 +505,7 @@ async function siguienteFilaLibre(): Promise<number> {
   // última fila con algo, en cualquier columna del rango".
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:AD`,
+    range: `${TAB_NAME}!A:AE`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
   const rows = resp.data.values ?? [];
@@ -516,7 +545,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:AD${fila}`,
+        range: `${TAB_NAME}!A${fila}:AE${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(propuesta)] },
       });
@@ -569,6 +598,24 @@ export async function obtenerPropuestaGasto(id: string): Promise<PropuestaGasto 
 export async function obtenerPropuestasGastoPorChat(chatId: number): Promise<PropuestaGasto[]> {
   const todas = await leerTodas();
   return todas.filter(({ propuesta }) => propuesta.chatId === chatId).map(({ propuesta }) => propuesta);
+}
+
+/**
+ * La propuesta de gasto ATASCADA más reciente de un chat, para recordársela al modelo en el prompt
+ * dinámico (ver PendientesSensibles.gastoPropuesta en core/claude/client.ts) — mismo patrón que
+ * seleccionarBorradorParaRecordatorio (core/gmail/emailDraftStore.ts, PR #280), pero con un filtro
+ * adicional que ese caso no necesita: una propuesta de gasto pendiente es el estado NORMAL la mayor
+ * parte del tiempo (casi siempre hay una esperando el primer botón), así que avisar de CUALQUIER
+ * pendiente en cada turno sería ruido constante y forzaría saltar a Sonnet en cada turno (ver
+ * haySensiblePendiente). Solo cuenta una propuesta que YA se mandó con botones (messageId > 0, mismo
+ * criterio que obtenerBorradoresCorreoPorChat) y que además tiene motivoReintento — la señal de que
+ * ya se intentó y algo no terminó limpio (ver su comentario en PropuestaGasto para el caso real que lo
+ * motivó: Droguería Pura / Simon Talloen, Footprint, 2026-10-01).
+ */
+export function seleccionarPropuestaGastoParaRecordatorio(propuestas: readonly PropuestaGasto[]): PropuestaGasto | undefined {
+  return propuestas
+    .filter((p) => p.messageId > 0 && p.motivoReintento)
+    .sort((a, b) => b.creadoEn - a.creadoEn)[0];
 }
 
 /**
@@ -730,7 +777,9 @@ export async function actualizarClasificacionPropuestaGasto(
   empresa: Empresa,
   concepto: string,
   cuentaId?: string,
-  cuentaTags?: string[]
+  cuentaTags?: string[],
+  personaAsociada?: string,
+  contextoDeViaje?: boolean
 ): Promise<boolean> {
   const todas = await leerTodas();
   const match = todas.find(({ propuesta }) => propuesta.id === id);
@@ -739,6 +788,7 @@ export async function actualizarClasificacionPropuestaGasto(
   const sheetId = assertSheetId();
   const sheets = getClient();
   const actual = match.propuesta;
+  const contextoDeViajeFinal = contextoDeViaje ?? actual.contextoDeViaje;
 
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: sheetId,
@@ -757,6 +807,21 @@ export async function actualizarClasificacionPropuestaGasto(
           // y concepto nuevos junto con la cuenta/tags viejos.
           range: `${TAB_NAME}!P${match.rowIndex}:Q${match.rowIndex}`,
           values: [[cuentaId ?? actual.cuentaId ?? "", JSON.stringify(cuentaTags ?? actual.cuentaTags ?? [])]],
+        },
+        {
+          // personaAsociada/contextoDeViaje: caso real de auditoría (Carlos, Droguería Pura / Simon
+          // Talloen, Footprint, 2026-10-01) — "Corregir clasificación" solo tocaba B:G y P:Q, así que
+          // una corrección en texto libre que SÍ traía estas señales (ver
+          // extraerContextoLibreDeCorreccion, gastoCallbackHandler.ts) nunca quedaba guardada para una
+          // reinferencia posterior. El llamador ya trae el valor final mezclado
+          // (cambios.X ?? propuesta.X, ver prepararPropuestaFinalGasto); acá se escribe directo, con
+          // el mismo criterio tri-estado que rowToPropuesta para contextoDeViaje ("" = nunca
+          // calculado, nunca se pisa un true/false ya guardado con un undefined sin motivo).
+          range: `${TAB_NAME}!AA${match.rowIndex}:AB${match.rowIndex}`,
+          values: [[
+            personaAsociada ?? actual.personaAsociada ?? "",
+            contextoDeViajeFinal === undefined ? "" : contextoDeViajeFinal ? "true" : "false",
+          ]],
         },
       ],
     },
@@ -799,7 +864,7 @@ export async function restaurarPropuestaGasto(propuesta: PropuestaGasto): Promis
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:AD${fila}`,
+        range: `${TAB_NAME}!A${fila}:AE${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(restaurada)] },
       });

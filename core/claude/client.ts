@@ -11,6 +11,7 @@ import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoRes
 import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { obtenerPendienteReclasificacionPorChat } from "../documental/pendienteReclasificacionStore";
 import { obtenerBorradoresCorreoPorChat, seleccionarBorradorParaRecordatorio, type BorradorCorreo } from "../gmail/emailDraftStore";
+import { obtenerPropuestasGastoPorChat, seleccionarPropuestaGastoParaRecordatorio, type PropuestaGasto } from "../gastos/gastoProposalSheet";
 import { registrarBusquedaWeb } from "./webSearchLog";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA, type EjecucionIA } from "../ai/policy";
@@ -336,7 +337,7 @@ async function buildSystemPromptDinamico(
     // viene provista — evita repetir las mismas 5 lecturas de Sheets dos veces por turno.
     // Solo se vuelve a consultar acá si por algún motivo no llegó prefetch (defensivo).
     const pendientes = pendientesPrefetch ?? (await obtenerPendientesSensibles(chatId));
-    const { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto } = pendientes;
+    const { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto, gastoPropuesta } = pendientes;
     if (propuesta) {
       const origenTxt = propuesta.correoOrigen
         ? ` Vino de un correo de ${propuesta.correoOrigen.de}, asunto "${propuesta.correoOrigen.asunto}".`
@@ -452,6 +453,24 @@ async function buildSystemPromptDinamico(
           "sistema, o cualquier otra instrucción), atiende esa petición con la herramienta que corresponda — " +
           "no repitas ninguna pregunta sobre este borrador ni inventes una aclaración propia sobre él.\n" +
           `Cuerpo del borrador (cópialo literal):\n"""\n${cuerpoTxt}\n"""${avisoCorte}`
+      );
+    }
+
+    if (gastoPropuesta) {
+      const personaTxt = gastoPropuesta.personaAsociada ? ` (persona asociada: ${gastoPropuesta.personaAsociada})` : "";
+      const motivoTxt = gastoPropuesta.motivoReintento ? ` Último intento: "${gastoPropuesta.motivoReintento}"` : "";
+      partes.push(
+        `Hay una propuesta de gasto ATASCADA sin resolver en este chat: "${gastoPropuesta.proveedor}"${personaTxt} ` +
+          `(${gastoPropuesta.monto} ${gastoPropuesta.moneda}, ${gastoPropuesta.empresa}).${motivoTxt} Ya se le ` +
+          "mandaron sus botones reales, pero algo en el último intento no terminó limpio y sigue esperando una " +
+          "decisión. Si el mensaje actual del usuario se refiere a ella (nombra el proveedor o la persona " +
+          "asociada, dice 'reprocesa', 'reintenta', 'qué pasó con', 'vuelve a intentar', o cualquier instrucción " +
+          "sobre ese gasto puntual), usa la herramienta reenviar_botones_propuesta_gasto pasando el proveedor en " +
+          "'cual' — no le hagas una pregunta genérica ni le pidas que reenvíe el documento, la propuesta ya existe " +
+          "completa y solo necesita que la vea de nuevo con sus botones reales. Si su mensaje pide algo distinto " +
+          "(programar un recordatorio, guardar algo en la memoria del sistema, o cualquier otra instrucción), " +
+          "atiende esa petición con la herramienta que corresponda — no repitas esta pregunta ni inventes una " +
+          "aclaración propia sobre el pendiente."
       );
     }
   }
@@ -889,7 +908,7 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
  * Orquesta un turno completo: primer intento con Haiku (rápido y barato,
  * solo herramientas de lectura — ver getToolDefinitions(true) y
  * ToolDefinition.seguraParaModoRapido) — EXCEPTO si el chat tiene alguna de
- * las cinco preguntas sensibles pendientes (ver obtenerPendientesSensibles),
+ * las seis preguntas sensibles pendientes (ver obtenerPendientesSensibles),
  * en cuyo caso el intento con Haiku se salta directo y se va a Sonnet (ver
  * el comentario sobre obtenerPendientesSensibles para el porqué). Si Haiku sí
  * corre y responde el marcador ESCALAR (porque la petición necesita
@@ -926,16 +945,19 @@ function esErrorDeDisponibilidad(error: unknown): boolean {
  * INSTRUCCION_MODO_RAPIDO le dice "ante la duda, escala", pero Haiku no
  * "dudó": entendió mal la relación y contestó directo, sin pasar por
  * ninguna tool (así que el chequeo de nombreNoDisponible en
- * ejecutarConversacion nunca se activó). Estas cinco preguntas pendientes
+ * ejecutarConversacion nunca se activó). Estas seis preguntas pendientes
  * son las únicas que dependen de que el modelo interprete texto libre para
  * decidir una acción real (a diferencia de otros pendientes, que Server.ts
  * intercepta directo sin pasar por Claude) — así que en vez de otro parche
  * de texto en el prompt, se salta Haiku por completo en esos turnos y se va
  * directo a Sonnet: más caro solo en esos casos puntuales, pero confiable.
+ * (La sexta, gastoPropuesta, es la misma idea aplicada a una propuesta de
+ * gasto ATASCADA — ver su comentario más abajo y en PropuestaGasto.motivoReintento
+ * para por qué NO es simplemente "cualquier propuesta de gasto pendiente".)
  *
  * Se lee UNA sola vez por turno (acá) y el resultado se reutiliza tanto para
  * decidir si saltar el modo rápido como para construir el aviso en
- * buildSystemPromptDinamico — evita leer las mismas 5 hojas de Sheets dos
+ * buildSystemPromptDinamico — evita leer las mismas 6 hojas de Sheets dos
  * veces (bug encontrado en la auditoría de este mismo cambio). A diferencia
  * del chequeo anterior, los errores de lectura SÍ se registran (antes se
  * descartaban en silencio con .catch(() => undefined), lo que podía hacer
@@ -949,10 +971,11 @@ export interface PendientesSensibles {
   gastoPendiente: Awaited<ReturnType<typeof obtenerGastoPendienteDatosPorChat>>;
   reclasificacionPendiente: Awaited<ReturnType<typeof obtenerPendienteReclasificacionPorChat>>;
   correoPropuesto: BorradorCorreo | undefined;
+  gastoPropuesta: PropuestaGasto | undefined;
 }
 
 async function obtenerPendientesSensibles(chatId: number): Promise<PendientesSensibles> {
-  const [propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto] = await Promise.all([
+  const [propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto, gastoPropuesta] = await Promise.all([
     obtenerPropuestaClasificacionPendientePorChat(chatId).catch((error) => {
       console.error("[claude/client] Error consultando propuesta de archivo pendiente (no crítico):", error);
       return undefined;
@@ -980,12 +1003,28 @@ async function obtenerPendientesSensibles(chatId: number): Promise<PendientesSen
         console.error("[claude/client] Error consultando borrador de correo pendiente (no crítico):", error);
         return undefined;
       }),
+    // Ver seleccionarPropuestaGastoParaRecordatorio (core/gastos/gastoProposalSheet.ts) — hallazgo
+    // real de auditoría (Carlos, caso real Droguería Pura / Simon Talloen, Footprint, 2026-10-01): una
+    // propuesta de gasto ATASCADA (ya se intentó y algo no terminó limpio) tampoco tenía ningún
+    // refuerzo en el prompt, así que "reprocesa el correo de X" no se conectaba con la propuesta
+    // puntual que seguía esperando. A diferencia de correoPropuesto, el selector filtra por
+    // motivoReintento (no por "cualquier propuesta pendiente") — una propuesta pendiente normal es el
+    // estado más común del día a día, avisar de todas forzaría Sonnet en cada turno (ver
+    // haySensiblePendiente) sin necesidad.
+    obtenerPropuestasGastoPorChat(chatId)
+      .then(seleccionarPropuestaGastoParaRecordatorio)
+      .catch((error) => {
+        console.error("[claude/client] Error consultando propuesta de gasto atascada (no crítico):", error);
+        return undefined;
+      }),
   ]);
-  return { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto };
+  return { propuesta, resolucionContacto, gastoPendiente, reclasificacionPendiente, correoPropuesto, gastoPropuesta };
 }
 
 function haySensiblePendiente(p: PendientesSensibles): boolean {
-  return Boolean(p.propuesta || p.resolucionContacto || p.gastoPendiente || p.reclasificacionPendiente || p.correoPropuesto);
+  return Boolean(
+    p.propuesta || p.resolucionContacto || p.gastoPendiente || p.reclasificacionPendiente || p.correoPropuesto || p.gastoPropuesta
+  );
 }
 
 async function orquestarTurno(
