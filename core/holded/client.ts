@@ -1,3 +1,4 @@
+import { paginarMovimientosBancarios } from "./paginarMovimientos";
 import { formatDateLocal } from "../utils/dateFormat";
 import { CacheLectura, type LecturaConMeta } from "../utils/readCache";
 import { enteroAcotado } from "../utils/asyncTimeout";
@@ -166,17 +167,11 @@ export async function listBankMovements(
   desde?: string,
   hasta?: string
 ): Promise<BankMovement[]> {
-  const data = await holdedGet(empresa, `/treasury/accounts/${accountId}/bank-movements`, {
-    start_date: desde,
-    end_date: hasta,
-    limit: "200",
-  });
-
-  if (Array.isArray(data)) return data as BankMovement[];
-  if (data && Array.isArray((data as { items?: unknown }).items)) {
-    return (data as { items: BankMovement[] }).items;
-  }
-  return [];
+  // Todas las páginas del rango (ver paginarMovimientos.ts): una sola página dejaba fuera los movimientos más antiguos.
+  return paginarMovimientosBancarios<BankMovement>(
+    (parametros) => holdedGet(empresa, `/treasury/accounts/${accountId}/bank-movements`, parametros),
+    { start_date: desde, end_date: hasta }
+  );
 }
 
 const MAX_CUENTAS_A_REVISAR = 10;
