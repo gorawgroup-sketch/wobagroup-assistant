@@ -111,7 +111,17 @@ export function describirPeriodo(desde: string, hasta: string): string {
 const limpio = (t: string) => t.replace(/[→➜➔]/g, "-").replace(/[–—]/g, "-").replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
   .replace(/[^ -ÿ€]/g, "").replace(/\s+/g, " ").trim();
 
-const COLOR = { tinta: "#14213D", gris: "#5B6472", linea: "#D9DEE5", fondo: "#F4F6F9", verde: "#1E7F4F", ambar: "#B4540A", marca: "#0B3D2E" };
+const COLOR = { tinta: "#14213D", gris: "#5B6472", linea: "#D9DEE5", fondo: "#F4F6F9", verde: "#1E7F4F", ambar: "#B4540A" };
+
+/**
+ * Identidad de cada empresa en sus informes: color oscuro de la cabecera y color de acento. Los logos viven en
+ * `assets/marcas/<empresa>-blanco.png` (para la cabecera oscura) y `<empresa>.png`; sin logo se escribe el nombre.
+ * Footprint: azul y azul noche de su logotipo (enviado por Carlos el 2026-10-02).
+ */
+const MARCAS: Record<string, { oscuro: string; acento: string; suave: string }> = {
+  footprint: { oscuro: "#0B1C24", acento: "#0066FC", suave: "#B9D2FE" },
+};
+const MARCA_NEUTRA = { oscuro: "#14213D", acento: "#2F4B7C", suave: "#C9D3E6" };
 const MARGEN = 40;
 
 interface Columna { titulo: string; ancho: number; alinear?: "left" | "right"; valor: (g: GastoEtiquetado) => string }
@@ -129,15 +139,17 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
   const m = resumen.moneda;
 
   // ---------- cabecera ----------
-  doc.rect(0, 0, doc.page.width, 92).fill(COLOR.marca);
-  const logo = join(process.cwd(), "assets", "marcas", `${datos.empresa.toLowerCase()}.png`);
-  if (existsSync(logo)) doc.image(logo, MARGEN, 22, { fit: [170, 48] });
+  const marca = MARCAS[datos.empresa.toLowerCase()] ?? MARCA_NEUTRA;
+  doc.rect(0, 0, doc.page.width, 92).fill(marca.oscuro);
+  doc.rect(0, 92, doc.page.width, 3).fill(marca.acento);
+  const logo = join(process.cwd(), "assets", "marcas", `${datos.empresa.toLowerCase()}-blanco.png`);
+  if (existsSync(logo)) doc.image(logo, MARGEN, 12, { fit: [150, 68] });
   else doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(24).text(limpio(datos.empresa).toUpperCase(), MARGEN, 32, { characterSpacing: 3 });
-  doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(13).text("SOLICITUD DE REINTEGRO DE GASTOS", MARGEN, 30, { width: ancho, align: "right" });
-  doc.font("Helvetica").fontSize(9).fillColor("#CFE3DA").text(`Emitido el ${fechaCorta(emitido.toISOString().slice(0, 10))}`, MARGEN, 50, { width: ancho, align: "right" });
+  doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(13).text("SOLICITUD DE REINTEGRO DE GASTOS", MARGEN, 32, { width: ancho, align: "right" });
+  doc.font("Helvetica").fontSize(9).fillColor(marca.suave).text(`Emitido el ${fechaCorta(emitido.toISOString().slice(0, 10))}`, MARGEN, 52, { width: ancho, align: "right" });
 
   // ---------- datos del informe ----------
-  let y = 112;
+  let y = 116;
   doc.fillColor(COLOR.tinta).font("Helvetica-Bold").fontSize(18).text(limpio(datos.persona), MARGEN, y);
   y += 26;
   const ficha: Array<[string, string]> = [
@@ -157,7 +169,7 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
   const tarjetas: Array<[string, string, string, string]> = [
     ["PAGADO EN BANCOS", importe(resumen.totalPagado, m), `${resumen.pagados.length} gasto(s)`, COLOR.verde],
     ["SIN PAGAR EN BANCOS", importe(resumen.totalSinPagar, m), `${resumen.sinPagar.length} gasto(s)`, COLOR.ambar],
-    ["TOTAL A REINTEGRAR", importe(resumen.total, m), `${resumen.pagados.length + resumen.sinPagar.length} gasto(s)`, COLOR.tinta],
+    ["TOTAL A REINTEGRAR", importe(resumen.total, m), `${resumen.pagados.length + resumen.sinPagar.length} gasto(s)`, marca.acento],
   ];
   const anchoTarjeta = (ancho - 20) / 3;
   tarjetas.forEach(([titulo, valor, detalle, color], i) => {
@@ -175,7 +187,7 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
     saltoSiHaceFalta(60);
     doc.font("Helvetica-Bold").fontSize(11.5).fillColor(COLOR.tinta).text(texto, MARGEN, y);
     y += 17;
-    doc.moveTo(MARGEN, y).lineTo(MARGEN + ancho, y).lineWidth(1.2).strokeColor(COLOR.marca).stroke();
+    doc.moveTo(MARGEN, y).lineTo(MARGEN + ancho, y).lineWidth(1.2).strokeColor(marca.acento).stroke();
     y += 8;
   };
 
@@ -266,8 +278,9 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
 
   // ---------- cierre ----------
   saltoSiHaceFalta(120);
-  doc.roundedRect(MARGEN, y, ancho, 58, 5).fill(COLOR.marca);
-  doc.font("Helvetica").fontSize(9).fillColor("#CFE3DA")
+  doc.roundedRect(MARGEN, y, ancho, 58, 5).fill(marca.oscuro);
+  doc.rect(MARGEN, y, 5, 58).fill(marca.acento);
+  doc.font("Helvetica").fontSize(9).fillColor(marca.suave)
     .text(`Pagado en bancos  ${importe(resumen.totalPagado, m)}      Sin pagar en bancos  ${importe(resumen.totalSinPagar, m)}`, MARGEN + 16, y + 12);
   doc.font("Helvetica-Bold").fontSize(15).fillColor("#FFFFFF").text(`TOTAL A REINTEGRAR  ${importe(resumen.total, m)}`, MARGEN + 16, y + 30);
   y += 72;
