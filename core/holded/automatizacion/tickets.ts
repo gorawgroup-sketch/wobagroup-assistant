@@ -53,6 +53,51 @@ export function diferenciasInstantanea(antes: InstantaneaCompra, despues: Instan
     .filter((k) => !CAMPOS_INFORMATIVOS.includes(k) && JSON.stringify(antes[k]) !== JSON.stringify(despues[k]));
 }
 
+/**
+ * Efectos NORMALES de Holded al dejar de ser «factura de compra» (confirmado por Carlos y en la interfaz real, 2026-10-02):
+ * un ticket no lleva impuestos, así que Holded quita los impuestos de las líneas (p. ej. «Inversión del sujeto pasivo») y copia
+ * las etiquetas del gasto a la línea. Solo se aceptan bajo condiciones estrictas; cualquier otra diferencia sigue deteniendo el caso.
+ */
+function esCambioNormalDeTicket(d: DetalleDiferencia, antes: InstantaneaCompra, despues: InstantaneaCompra): boolean {
+  const ivaAntes = Number(String(antes.impuestos ?? "0").replace(/\./g, "").replace(",", "."));
+  // Los impuestos de la línea pueden quedar vacíos SOLO si el documento no tenía un importe real de IVA (si lo tenía, el total cambiaría).
+  if (/^linea\[\d+\]\.impuestos$/.test(d.campo)) return d.despues === "[]" && Number.isFinite(ivaAntes) && ivaAntes === 0;
+  // Las etiquetas del gasto aparecen también en la línea (antes vacía): solo si la línea refleja EXACTAMENTE las etiquetas del
+  // documento. Las etiquetas del documento nunca deben cambiar (son lo que permite identificar la transacción): si cambian,
+  // el campo «etiquetas» difiere y detiene el caso por su cuenta.
+  if (/^linea\[\d+\]\.etiquetas$/.test(d.campo)) {
+    if (d.antes !== "[]") return false;
+    try { return JSON.stringify([...(JSON.parse(d.despues) as string[])].sort()) === JSON.stringify([...despues.etiquetas].sort()) && antes.etiquetas.length === despues.etiquetas.length; }
+    catch { return false; }
+  }
+  return false;
+}
+
+/** Campos que cambiaron y NO son un efecto normal de pasar a ticket ni informativos: estos sí detienen el caso. */
+export function diferenciasInesperadas(antes: InstantaneaCompra, despues: InstantaneaCompra): string[] {
+  return detalleDiferencias(antes, despues).filter((d) => !d.informativo && !esCambioNormalDeTicket(d, antes, despues)).map((d) => d.campo);
+}
+
+/**
+ * Casos que antes de conocer estos efectos normales quedaron en «requiere intervención» solo por ellos: si ahora todas sus
+ * diferencias son normales y el gasto es ticket, se cierran como completados (el registro conserva el detalle y un evento).
+ */
+export async function reevaluarCambiosNormales(almacen: AlmacenTrabajos): Promise<number> {
+  let cerrados = 0;
+  for (const t of await almacen.listar({ tipo: "ticket", estados: ["requiere_intervencion"] })) {
+    const antes = t.evidencia.antes as InstantaneaCompra | undefined;
+    const despues = t.evidencia.despues as InstantaneaCompra | undefined;
+    if (!antes || !despues || !Array.isArray(t.evidencia.camposCambiados)) continue;
+    if (diferenciasInesperadas(antes, despues).length > 0) continue;
+    t.estado = "completado"; t.ultimoError = undefined; t.actualizadoEn = Date.now();
+    t.evidencia.camposCambiados = undefined;
+    await almacen.guardar(t);
+    await almacen.evento(t.clave, "reevaluado_cambios_normales", { motivo: "impuestos de línea y etiquetas: efecto normal de pasar a ticket" });
+    cerrados++;
+  }
+  return cerrados;
+}
+
 export interface DetalleDiferencia { campo: string; antes: string; despues: string; informativo?: boolean }
 const corto = (v: unknown) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > 140 ? `${s.slice(0, 140)}…` : s; };
 
@@ -221,7 +266,7 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
   catch (error) { return guardar("solicitado", `Guardado sin verificar (lectura fallida); se comprobará el estado real antes de repetir: ${msg(error)}`); }
   t.verificadoEn = ahora();
   if (despues.estado === "ticket" && despues.compra) {
-    const diffs = diferenciasInstantanea(antes, instantaneaCompra(despues.compra));
+    const diffs = diferenciasInesperadas(antes, instantaneaCompra(despues.compra));
     t.evidencia.despues = instantaneaCompra(despues.compra);
     t.evidencia.diferencias = detalleDiferencias(antes, instantaneaCompra(despues.compra));
     if (diffs.length > 0) { t.evidencia.camposCambiados = diffs; return guardar("requiere_intervencion", `Convertido, pero cambiaron campos inesperados: ${diffs.join(", ")}`); }

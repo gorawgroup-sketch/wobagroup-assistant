@@ -1,7 +1,7 @@
 import { crearNavegadorHolded } from "../holded/automatizacion/navegadorHolded";
 import { modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
 import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
-import { claveTicket, procesarColaTickets, type ResumenTickets } from "../holded/automatizacion/tickets";
+import { claveTicket, procesarColaTickets, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
 import { almacenTrabajosHolded, hayAlmacenDuradero, nuevoTrabajo } from "../holded/automatizacion/trabajos";
 import type { Empresa } from "../holded/client";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
@@ -53,6 +53,8 @@ export async function conversionTicketsHolded(opciones: { revisionNocturna?: boo
   const modo = modoSeguro("TICKETS");
   if (modo === "apagado") return undefined;
   const almacen = almacenTrabajosHolded();
+  const reevaluados = await reevaluarCambiosNormales(almacen).catch((error) => { console.error("[conversionTicketsHolded] No se pudo reevaluar casos previos:", error); return 0; });
+  if (reevaluados > 0) console.log(`[conversionTicketsHolded] ${reevaluados} caso(s) previos cerrados: solo tenían efectos normales de pasar a ticket`);
   // Lista aprobada por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:id,Empresa:id,…". Mientras exista, SOLO se tocan esos gastos
   // (el resto de la cola no se procesa) y el resultado de cada uno se comunica a los administradores en un solo aviso.
   const casos = parsearCasosAprobados(process.env.WOBI_HOLDED_TICKETS_CASO);
