@@ -26,14 +26,24 @@ const TIEMPO_MAXIMO_MS = 150_000;
 
 let enUso = false;
 
-export function sesionWebConfigurada(): boolean { return Boolean(process.env.WOBI_HOLDED_WEB_SESSION?.trim()); }
+/** Una sesión web por empresa: WOBI_HOLDED_WEB_SESSION_WOBA / _EWORKS / _FOOTPRINT (la general sirve de último recurso). */
+export const nombreVariableSesion = (empresa: Empresa) => `WOBI_HOLDED_WEB_SESSION_${empresa.toUpperCase()}`;
 
-function leerCookies(): Cookie[] | undefined {
-  const crudo = process.env.WOBI_HOLDED_WEB_SESSION?.trim();
+export function sesionWebConfigurada(empresa?: Empresa, env: NodeJS.ProcessEnv = process.env): boolean {
+  const hay = (nombre: string) => Boolean(env[nombre]?.trim());
+  return empresa ? hay(nombreVariableSesion(empresa)) || hay("WOBI_HOLDED_WEB_SESSION")
+    : (["WOBA", "EWORKS", "Footprint"] as const).some((e) => hay(nombreVariableSesion(e))) || hay("WOBI_HOLDED_WEB_SESSION");
+}
+
+/** `dedicada` = sesión propia de esa empresa (no hace falta cambiar de empresa por dentro, que es lo inestable). */
+function leerCookies(empresa: Empresa): { cookies: Cookie[]; dedicada: boolean } | undefined {
+  const propia = process.env[nombreVariableSesion(empresa)]?.trim();
+  const crudo = propia || process.env.WOBI_HOLDED_WEB_SESSION?.trim();
   if (!crudo) return undefined;
+  const dedicada = Boolean(propia);
   try {
     const lista = JSON.parse(Buffer.from(crudo, "base64").toString("utf8")) as Cookie[];
-    return Array.isArray(lista) && lista.length > 0 ? lista : undefined;
+    return Array.isArray(lista) && lista.length > 0 ? { cookies: lista, dedicada } : undefined;
   } catch { return undefined; }
 }
 
@@ -60,9 +70,10 @@ async function clicPorTexto(page: Page | Frame, etiquetas: string[], exacto = fa
   }, etiquetas, exacto, hacerClic);
 }
 
-async function abrirSesion(): Promise<{ browser: Browser; page: Page } | ResultadoNavegador> {
-  const cookies = leerCookies();
-  if (!cookies) return { estado: "no_disponible", detalle: "No hay sesión web de Holded configurada (WOBI_HOLDED_WEB_SESSION)" };
+async function abrirSesion(empresa: Empresa): Promise<{ browser: Browser; page: Page; dedicada: boolean } | ResultadoNavegador> {
+  const sesion = leerCookies(empresa);
+  if (!sesion) return { estado: "no_disponible", detalle: `No hay sesión web de Holded para ${empresa} (${nombreVariableSesion(empresa)})` };
+  const { cookies, dedicada } = sesion;
   const { rutaChrome, modoHeadlessComprobante } = await import("../../gmail/generarComprobantePDF");
   const { default: puppeteer } = await import("puppeteer-core");
   const chrome = await rutaChrome(process.env.WOBI_COMPROBANTE_CHROME_PATH);
@@ -74,7 +85,7 @@ async function abrirSesion(): Promise<{ browser: Browser; page: Page } | Resulta
     page.setDefaultTimeout(20_000);
     await page.evaluateOnNewDocument("window.__name = window.__name || function (f) { return f; }");
     await page.setCookie(...cookies);
-    return { browser, page };
+    return { browser, page, dedicada };
   } catch (error) { await browser.close().catch(() => undefined); throw error; }
 }
 
@@ -91,16 +102,16 @@ async function estadoSesion(page: Page): Promise<ResultadoNavegador> {
   return { estado: "ok" };
 }
 
-async function conPagina(tarea: (page: Page) => Promise<ResultadoNavegador>): Promise<ResultadoNavegador> {
+async function conPagina(empresa: Empresa, tarea: (page: Page, dedicada: boolean) => Promise<ResultadoNavegador>): Promise<ResultadoNavegador> {
   if (enUso) return { estado: "error", detalle: "Ya hay una acción de navegador de Holded en curso en este proceso" };
   enUso = true;
   let browser: Browser | undefined;
   try {
     return await conTiempo((async () => {
-      const abierto = await abrirSesion();
+      const abierto = await abrirSesion(empresa);
       if (!("browser" in abierto)) return abierto;
       browser = abierto.browser;
-      return tarea(abierto.page);
+      return tarea(abierto.page, abierto.dedicada);
     })(), TIEMPO_MAXIMO_MS, "Acción de navegador de Holded");
   } catch (error) {
     return { estado: "error", detalle: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
@@ -161,12 +172,15 @@ async function activarEmpresa(page: Page, empresa: Empresa, urlLigera: string): 
   return { estado: "elemento_no_encontrado", detalle: `No se pudo activar la empresa ${empresa} en Holded; no se tocó nada` };
 }
 
-async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o: { borrador: boolean; guardar: boolean }): Promise<ResultadoNavegador> {
+async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o: { borrador: boolean; guardar: boolean }, dedicada: boolean): Promise<ResultadoNavegador> {
   await page.emulateTimezone("Europe/Madrid"); // las fechas del editor no deben desplazarse por la zona horaria del servidor
   // Página de aterrizaje para cambiar de empresa: el menú de empresa está en todas, pero esta es la que se mantiene estable
   // en el navegador sin pantalla (el editor de un gasto de OTRA empresa da error y la portada/Compras se recargan en bucle).
-  const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
-  if (activada.estado !== "ok") return activada;
+  // Con sesión propia de la empresa no hay que cambiar de cuenta (lo inestable): se entra directo y se verifica más abajo.
+  if (!dedicada) {
+    const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+    if (activada.estado !== "ok") return activada;
+  }
   await page.goto(`${BASE}${RUTA_EDITAR_COMPRA.replace("{id}", encodeURIComponent(compraId))}`, { waitUntil: "domcontentloaded" });
   const sesion = await estadoSesion(page);
   if (sesion.estado !== "ok") return sesion;
@@ -228,8 +242,12 @@ async function conReintentosTransitorios(accion: () => Promise<ResultadoNavegado
 }
 
 export class NavegadorHoldedPuppeteer implements NavegadorHolded {
-  async sincronizarCuenta(_empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
-    return conPagina(async (page) => {
+  async sincronizarCuenta(empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
+    return conPagina(empresa, async (page, dedicada) => {
+      if (!dedicada) {
+        const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+        if (activada.estado !== "ok") return activada;
+      }
       await page.goto(`${BASE}${RUTA_TESORERIA}`, { waitUntil: "networkidle2" });
       const sesion = await estadoSesion(page);
       if (sesion.estado !== "ok") return sesion;
@@ -244,22 +262,27 @@ export class NavegadorHoldedPuppeteer implements NavegadorHolded {
   }
 
   async desmarcarFacturaDeCompra(empresa: Empresa, compraId: string, opciones: { borrador?: boolean } = {}): Promise<ResultadoNavegador> {
-    return conReintentosTransitorios(() => conPagina((page) => flujoDesmarcar(page, empresa, compraId, { borrador: opciones.borrador === true, guardar: true })));
+    return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoDesmarcar(page, empresa, compraId, { borrador: opciones.borrador === true, guardar: true }, dedicada)));
   }
 
   /** Ensayo: recorre el mismo camino pero NO guarda; informa de lo encontrado. El navegador se cierra sin cambios. */
   async ensayarDesmarcado(empresa: Empresa, compraId: string, borrador = false): Promise<ResultadoNavegador> {
-    return conReintentosTransitorios(() => conPagina((page) => flujoDesmarcar(page, empresa, compraId, { borrador, guardar: false })));
+    return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoDesmarcar(page, empresa, compraId, { borrador, guardar: false }, dedicada)));
   }
 
   async cerrar(): Promise<void> { /* cada acción abre y cierra su propio navegador */ }
 }
 
 /** Comprobación de solo lectura de la sesión (sin tocar nada): para el diagnóstico y el procedimiento de activación. */
-export async function comprobarSesionWeb(): Promise<ResultadoNavegador> {
-  return conPagina(async (page) => {
-    await page.goto(`${BASE}/`, { waitUntil: "networkidle2" });
-    return estadoSesion(page);
+export async function comprobarSesionWeb(empresa: Empresa): Promise<ResultadoNavegador> {
+  return conPagina(empresa, async (page) => {
+    await page.goto(`${BASE}${RUTA_ATERRIZAJE}`, { waitUntil: "domcontentloaded" });
+    const sesion = await estadoSesion(page);
+    if (sesion.estado !== "ok") return sesion;
+    const limite = Date.now() + 25_000;
+    let activa = "";
+    while (Date.now() < limite) { activa = await empresaActivaEnPantalla(page); if (activa.startsWith(empresa.toLowerCase())) return { estado: "ok", detalle: `Sesión válida; empresa activa: ${activa.slice(0, 30)}` }; await pausa(700); }
+    return { estado: "elemento_no_encontrado", detalle: `La sesión funciona pero la empresa activa es «${activa.slice(0, 30)}», no ${empresa}` };
   });
 }
 
