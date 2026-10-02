@@ -12,6 +12,7 @@ import {
 } from "./sincronizacionBancaria";
 import { claveTicket, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
+import { nombreVariableSesion, sesionWebConfigurada } from "./navegadorHolded";
 
 function conEntorno<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
   const previo: Record<string, string | undefined> = {};
@@ -29,6 +30,17 @@ test("en modo activo el alcance es explícito: sin lista no se toca ninguna empr
   assert.deepEqual(empresasAutomatizacion("TICKETS", { WOBI_HOLDED_TICKETS_MODO: "activo" }), []);
   assert.deepEqual(empresasAutomatizacion("TICKETS", { WOBI_HOLDED_TICKETS_MODO: "activo", WOBI_HOLDED_TICKETS_EMPRESAS: "footprint" }), ["Footprint"]);
   assert.deepEqual(empresasAutomatizacion("TICKETS", { WOBI_HOLDED_TICKETS_MODO: "apagado", WOBI_HOLDED_TICKETS_EMPRESAS: "WOBA" }), []);
+});
+
+test("sesión web por empresa: variable propia de cada empresa; la general solo como último recurso; sin ninguna, no hay sesión", () => {
+  assert.equal(nombreVariableSesion("Footprint"), "WOBI_HOLDED_WEB_SESSION_FOOTPRINT");
+  assert.equal(nombreVariableSesion("EWORKS"), "WOBI_HOLDED_WEB_SESSION_EWORKS");
+  assert.equal(sesionWebConfigurada("Footprint", {}), false);
+  assert.equal(sesionWebConfigurada(undefined, {}), false);
+  assert.equal(sesionWebConfigurada("Footprint", { WOBI_HOLDED_WEB_SESSION_FOOTPRINT: "x" }), true);
+  assert.equal(sesionWebConfigurada("WOBA", { WOBI_HOLDED_WEB_SESSION_FOOTPRINT: "x" }), false); // la de otra empresa no vale
+  assert.equal(sesionWebConfigurada("WOBA", { WOBI_HOLDED_WEB_SESSION: "x" }), true); // la general, último recurso
+  assert.equal(sesionWebConfigurada(undefined, { WOBI_HOLDED_WEB_SESSION_EWORKS: "x" }), true);
 });
 
 /* ───────── horario / cambio de hora ───────── */
