@@ -67,11 +67,19 @@ antes del marcador queda fuera de la conversión automática (el inventario lo m
 
 ## Sesión web de Holded (procedimiento seguro)
 
-1. En tu ordenador: `npx tsx scripts/holded-sesion.ts capturar` → se abre Chrome; **tú** inicias sesión (contraseña, 2FA y
-   CAPTCHA los resuelves tú). El script guarda solo cookies en `~/.wobi-holded-sesion.b64` (permisos 600, no se imprimen).
-2. Súbela al servidor sin pasar por el chat: `railway variables --set "WOBI_HOLDED_WEB_SESSION=$(cat ~/.wobi-holded-sesion.b64)"` y borra el archivo.
-3. Comprobación sin tocar nada: `npx tsx scripts/holded-sesion.ts comprobar`.
-4. Si caduca, los trabajos pasan a `requiere_intervencion` y se avisa: se repite el procedimiento. Se recomienda una cuenta
+**Una sesión por empresa** (`WOBI_HOLDED_WEB_SESSION_WOBA`, `_EWORKS`, `_FOOTPRINT`). El servidor no cambia de empresa por
+dentro: en Footprint (miles de documentos) la interfaz se recarga en bucle en el navegador sin pantalla y el cambio es
+inestable. Con sesión propia entra directo al editor del gasto y solo verifica que la empresa activa es la esperada. La
+variable general `WOBI_HOLDED_WEB_SESSION` queda como último recurso (con cambio de empresa interno, menos fiable).
+
+1. En tu ordenador: `npx tsx scripts/holded-sesion.ts capturar` (o `capturar Footprint` para una sola) → se abre Chrome y,
+   para cada empresa, una ventana nueva con sesión independiente: **tú** inicias sesión (contraseña, 2FA y CAPTCHA los
+   resuelves tú), dejas esa empresa activa y pulsas Enter. Solo se guardan cookies en `~/.wobi-holded-sesion-<empresa>.b64`
+   (permisos 600, no se imprimen).
+2. Súbelas al servidor sin pasar por el chat con la orden que imprime el script (`railway variables --set …`) y borra los archivos.
+3. Comprobación sin tocar nada: `npx tsx scripts/holded-sesion.ts comprobar` (verifica cada empresa y que sea la correcta).
+4. No pulses «Cerrar sesión» en Holded con esas cuentas: la invalidaría.
+5. Si caduca, los trabajos pasan a `requiere_intervencion` y se avisa: se repite el procedimiento. Se recomienda una cuenta
    de Holded dedicada para WOBI y no usar esa misma sesión a la vez en otro sitio.
 
 ## Navegador en servidor y costes
