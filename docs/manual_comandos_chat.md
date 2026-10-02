@@ -359,3 +359,12 @@ Pedido explícito de Carlos (01-10-2026), tras un caso real: un correo de la cor
 - **Preguntar después.** "¿Qué cubre la RC de WOBA?", "¿qué cambió con el suplemento del showroom?": `consultar_polizas_seguro` devuelve cada póliza con los documentos leídos (resumen y enlace de Drive); para una cláusula concreta, Wobi abre el documento completo.
 - **Otros documentos de referencia** (normativa, compliance, políticas, contratos marco): la propuesta de archivado recuerda que con "🧠 Guardar como conocimiento" su contenido queda consultable.
 
+## Facturas de venta por correo → Ingresos del cashflow + respuesta al remitente
+
+Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las facturas que WOBA y eWorks emiten a sus clientes, para saber cuándo entrará ese dinero.
+
+- El lector reconoce la factura de VENTA (no es un gasto) y saca cliente, total, número, fecha y **vencimiento**. Si la factura solo indica un plazo («a 45 días fecha factura»), calcula la fecha; si no indica nada, usa la fecha de emisión y lo avisa — nunca inventa un vencimiento.
+- Propone una fila nueva en **Ingresos** en la semana ISO del vencimiento (ej. vence 12/11/2026 → S46), con «Factura Nº · vence dd/mm/aaaa» en la columna de proyecto. Avisa si ya hay una fila que parece la misma factura, si la moneda no es EUR o si el vencimiento cae en otro año.
+- Botones: "✅ Registrar en Ingresos y responder al remitente" (escribe la fila y, solo después de verificarla, contesta en el mismo hilo que la factura ya está leída y su importe en el cashflow), "✅ Confirmar en Ingresos" (solo registra), "↪️ Mejor en <área>" y "❌ Cancelar". Nada se escribe ni se envía sin el botón.
+- Solo WOBA y eWorks (las dos empresas del cashflow); una factura de venta de Footprint sigue el archivado normal.
+

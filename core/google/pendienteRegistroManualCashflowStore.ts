@@ -29,6 +29,23 @@ export interface PendienteRegistroManualCashflow {
   /** Texto ya armado del resumen (para los mensajes de cancelado/confirmado). */
   resumen: string;
   creadoEn: number;
+  /**
+   * Solo cuando la propuesta nace de una factura de venta recibida por correo (ingresoDesdeFacturaVenta.ts): a quién
+   * responder tras registrar, con qué texto, y qué adjunto del correo queda resuelto.
+   */
+  correo?: CorreoDeRegistroCashflow;
+}
+
+export interface CorreoDeRegistroCashflow {
+  de: string;
+  asunto: string;
+  threadId: string;
+  messageIdHeader: string;
+  mensajeIdGmail?: string;
+  partId?: string;
+  deColaCorreo?: boolean;
+  /** Cuerpo de la respuesta que se envía si el operador elige «registrar y responder». */
+  textoRespuesta: string;
 }
 
 const TAB_NAME = "_pendientes_registro_manual_cashflow";
@@ -45,11 +62,23 @@ const HEADERS = [
   "valor",
   "resumen",
   "creadoEn",
+  "correoJSON",
 ];
 const NUM_COLS = HEADERS.length;
 // 24h — mismo criterio que pendienteEdicionValorCashflowStore.ts (una sola decisión puntual, no una
 // cola de turnos que deba sobrevivir más tiempo).
 const TTL_MS = 24 * 60 * 60 * 1000;
+
+function correoDeFila(valor: string | undefined): CorreoDeRegistroCashflow | undefined {
+  if (!valor) return undefined;
+  try {
+    const correo = JSON.parse(valor) as CorreoDeRegistroCashflow;
+    return correo && typeof correo.de === "string" && typeof correo.threadId === "string" ? correo : undefined;
+  } catch (error) {
+    console.error("[pendienteRegistroManualCashflowStore] correoJSON ilegible; la propuesta sigue sin respuesta de correo:", error instanceof Error ? error.message : error);
+    return undefined;
+  }
+}
 
 function filaAObjeto(valores: string[]): PendienteRegistroManualCashflow | null {
   if (!valores[3] || !valores[4]) return null;
@@ -66,6 +95,7 @@ function filaAObjeto(valores: string[]): PendienteRegistroManualCashflow | null 
     valor: Number(valores[9]),
     resumen: valores[10] ?? "",
     creadoEn: Number(valores[11]),
+    ...(correoDeFila(valores[12]) ? { correo: correoDeFila(valores[12]) } : {}),
   };
 }
 
@@ -83,6 +113,7 @@ function objetoAFila(p: PendienteRegistroManualCashflow): (string | number)[] {
     p.valor,
     p.resumen,
     p.creadoEn,
+    p.correo ? JSON.stringify(p.correo) : "",
   ];
 }
 
