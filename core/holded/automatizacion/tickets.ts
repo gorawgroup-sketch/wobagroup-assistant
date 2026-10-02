@@ -188,6 +188,7 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
   catch (error) { return guardar("solicitado", `Lectura de Holded fallida; se reintenta: ${msg(error)}`); }
   if (real.estado === "inexistente") return guardar("fallido", "El gasto ya no existe en Holded");
   if (real.estado === "ticket") { t.evidencia.yaEraTicket = true; t.verificadoEn = ahora(); return guardar("omitido", undefined); }
+  if (!t.evidencia.proveedor) t.evidencia.proveedor = String((real.compra as { contact_name?: string } | undefined)?.contact_name ?? "");
   // Regla de Carlos: solo gastos que WOBI creó, ya conciliados y completos con su comprobante. Se comprueba SIEMPRE antes de actuar.
   let adjuntos: number;
   try { adjuntos = await contarAdjuntos(empresa, t.objetivo, dep.leer); }

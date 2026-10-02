@@ -4,7 +4,7 @@ import cron from "node-cron";
 import { fechaHoyEspana } from "../../utils/diaHabil";
 import type { TreasuryAccount } from "../client";
 import { clasificarDocumento } from "./clasificacionTicket";
-import { empresasAutomatizacion, modoAutomatizacion } from "./modo";
+import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "./modo";
 import type { CuentaParaNavegador, NavegadorHolded, ResultadoNavegador } from "./navegador";
 import {
   clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, textoAvisoSincronizacion,
@@ -30,6 +30,14 @@ test("en modo activo el alcance es explícito: sin lista no se toca ninguna empr
   assert.deepEqual(empresasAutomatizacion("TICKETS", { WOBI_HOLDED_TICKETS_MODO: "activo" }), []);
   assert.deepEqual(empresasAutomatizacion("TICKETS", { WOBI_HOLDED_TICKETS_MODO: "activo", WOBI_HOLDED_TICKETS_EMPRESAS: "footprint" }), ["Footprint"]);
   assert.deepEqual(empresasAutomatizacion("TICKETS", { WOBI_HOLDED_TICKETS_MODO: "apagado", WOBI_HOLDED_TICKETS_EMPRESAS: "WOBA" }), []);
+});
+
+test("lista aprobada: formato estricto «Empresa:id» (24 hex), duplicados y entradas mal escritas se descartan", () => {
+  const a = "6abf7e24b0a79d7d54045e45", b = "6abfbede7b93a80707000b6d";
+  assert.deepEqual(parsearCasosAprobados(`Footprint:${a}, footprint:${b},Footprint:${a}`), [{ empresa: "Footprint", id: a }, { empresa: "Footprint", id: b }]);
+  assert.deepEqual(parsearCasosAprobados(`WOBA:${a},Inventada:${b},WOBA:corto,WOBA:,${b}`), [{ empresa: "WOBA", id: a }]);
+  assert.deepEqual(parsearCasosAprobados(undefined), []);
+  assert.deepEqual(parsearCasosAprobados(""), []);
 });
 
 test("sesión web por empresa: variable propia de cada empresa; la general solo como último recurso; sin ninguna, no hay sesión", () => {
