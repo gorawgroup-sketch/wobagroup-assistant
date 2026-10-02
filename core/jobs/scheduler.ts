@@ -20,6 +20,7 @@ import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaCo
 import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos";
 import { revisarAlertasSeguros } from "./revisarAlertasSeguros";
 import { esperarPrioridadInteractiva } from "./jobPriority";
+import { conversionTicketsHolded, sincronizacionBancariaHolded } from "./automatizacionHolded";
 import {
   CRON_CORREO_HABIL_SILENCIOSO,
   CRON_CORREO_INFORME_MANANA,
@@ -158,6 +159,26 @@ export function startScheduler(): void {
   } else {
     console.log("[scheduler] Revisión general programada de Gmail deshabilitada; se ejecuta solo por orden manual.");
   }
+
+  // Automatizaciones de Holded en servidor (sincronización bancaria y conversión a ticket). Cada una tiene su
+  // interruptor WOBI_HOLDED_*_MODO (apagado por defecto): con «apagado» estos crons terminan al instante sin tocar nada.
+  // 06:00 es la hora de INICIO de la sincronización; las pasadas siguientes verifican con evidencia de Holded.
+  cron.schedule("0 6 * * *", () => {
+    ejecutarSinSolapamiento("sincronizacionBancariaHolded_lanzar", () => sincronizacionBancariaHolded("lanzar"));
+  }, { timezone: TIMEZONE });
+  cron.schedule("10,30,50 6-9 * * *", () => {
+    ejecutarSinSolapamiento("sincronizacionBancariaHolded_verificar", () => sincronizacionBancariaHolded("verificar"));
+  }, { timezone: TIMEZONE });
+  cron.schedule("45 9 * * *", () => {
+    ejecutarSinSolapamiento("sincronizacionBancariaHolded_cierre", () => sincronizacionBancariaHolded("cierre"));
+  }, { timezone: TIMEZONE });
+  cron.schedule("5,35 * * * *", () => {
+    ejecutarSinSolapamiento("conversionTicketsHolded", () => conversionTicketsHolded());
+  }, { timezone: TIMEZONE });
+  cron.schedule("30 2 * * *", () => {
+    ejecutarSinSolapamiento("conversionTicketsHolded_revision", () => conversionTicketsHolded({ revisionNocturna: true }));
+  }, { timezone: TIMEZONE });
+  console.log(`[scheduler] Holded sincronización bancaria 06:00 (+verificación) y conversión a ticket programadas (${TIMEZONE}); apagadas salvo WOBI_HOLDED_*_MODO`);
 
   cron.schedule(
     // No coincidir con revisarCorreoNuevo, que corre al minuto 0

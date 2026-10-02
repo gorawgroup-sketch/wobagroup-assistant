@@ -104,7 +104,7 @@ export function prepararHtmlCorreoParaPDF(correo: DatosCorreoParaComprobante): s
   return documento;
 }
 
-interface RutaChrome {
+export interface RutaChrome {
   executablePath: string;
   args: string[];
   empaquetadoServerless: boolean;
@@ -112,7 +112,7 @@ interface RutaChrome {
 
 const ARGS_CHROME_SISTEMA = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"];
 
-async function rutaChrome(configurada?: string): Promise<RutaChrome> {
+export async function rutaChrome(configurada?: string): Promise<RutaChrome> {
   if (configurada) {
     return {
       executablePath: configurada,
