@@ -4342,6 +4342,11 @@ export interface CambiosCompraHolded {
   contactoIdNuevo?: string;
   /** Reemplaza las etiquetas visibles por una clasificación funcional ya verificada. */
   tagsNuevos?: string[];
+  /**
+   * Datos para DESPUÉS de verificar la edición (no participan en el PUT): el proveedor y el nombre de la cuenta para
+   * aprender la corrección, y si el gasto era un ticket para comprobar que siga siéndolo.
+   */
+  meta?: { proveedor: string; cuentaNombre: string; eraTicket?: boolean };
 }
 
 /**

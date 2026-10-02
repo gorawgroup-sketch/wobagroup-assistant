@@ -7,6 +7,8 @@ import {
 } from "./pendienteEdicionCompraHoldedStore";
 import { editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError, obtenerCompraHoldedPorId } from "./write";
 import { conciliarCargoConReembolso } from "./conciliarCargoConReembolso";
+import { estadoRealCompra } from "./automatizacion/tickets";
+import { registrarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
 import type { TelegramCallbackQuery } from "../telegram/types";
 
 async function answerCallbackQuerySafe(callbackQueryId: string, text?: string): Promise<void> {
@@ -91,12 +93,31 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
           `${errorEnlace instanceof Error ? errorEnlace.message : String(errorEnlace)}`;
       }
     }
+    // Cambio de cuenta contable (ver proponer_cambio_cuenta_contable_compra): con la edición ya verificada se aprende la
+    // corrección para ese proveedor y, si era un ticket, se comprueba que el guardado no lo devolviera a factura de compra.
+    let notaCuenta = "";
+    const meta = pendiente.cambios.meta;
+    if (pendiente.cambios.cuentaIdNueva && meta) {
+      try {
+        await registrarCuentaCorregidaAprendida(meta.proveedor, pendiente.empresa, pendiente.cambios.cuentaIdNueva, meta.cuentaNombre);
+        notaCuenta += `\n\n🧠 Aprendido: los gastos de «${meta.proveedor}» irán a ${meta.cuentaNombre}.`;
+      } catch (errorAprendizaje) {
+        console.error("[edicionCompraHoldedCallbackHandler] No se pudo guardar el aprendizaje de la cuenta (no crítico):", errorAprendizaje);
+        notaCuenta += "\n\n⚠️ El cambio quedó aplicado, pero no pude guardar el aprendizaje de la cuenta.";
+      }
+      if (meta.eraTicket) {
+        const despues = await estadoRealCompra(pendiente.empresa, pendiente.purchaseId).catch(() => undefined);
+        notaCuenta += despues?.estado === "ticket"
+          ? "\n\n🧾 Sigue siendo ticket."
+          : "\n\n⚠️ Era un ticket y ahora Holded lo muestra como factura de compra: hay que desmarcar «Es una factura de compra» de nuevo.";
+      }
+    }
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
       `${soloConciliar ? "🔗 Conciliación" : "✅ Editado en Holded"} — antes: ${pendiente.resumenAntes}\n` +
         `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).` +
-        notaConciliacion,
+        notaConciliacion + notaCuenta,
       []
     );
   } catch (error) {
