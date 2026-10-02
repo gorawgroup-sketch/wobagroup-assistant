@@ -41,6 +41,7 @@ import { saltarCorreoActivoTool } from "./saltarCorreoActivo";
 import { conciliarMovimientoTool } from "./conciliarMovimiento";
 import { programarAccionFuturaTool } from "./programarAccion";
 import { proponerEdicionCompraHoldedTool } from "./editarCompraHolded";
+import { cambiarCuentaContableCompraTool } from "./cambiarCuentaContableCompra";
 import { editarValorCashflowTool } from "./editarValorCashflow";
 import { registrarManualCashflowTool } from "./registrarManualCashflow";
 import { reporteAprendizajeTool } from "./reporteAprendizaje";
@@ -106,6 +107,7 @@ const tools: ToolDefinition[] = [
   conciliarMovimientoTool,
   programarAccionFuturaTool,
   proponerEdicionCompraHoldedTool,
+  cambiarCuentaContableCompraTool,
   editarValorCashflowTool,
   registrarManualCashflowTool,
   reporteAprendizajeTool,
