@@ -10,7 +10,7 @@ import {
   clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, textoAvisoSincronizacion,
   verificarSincronizacionBancaria, VENTANA_VERIFICACION_MS,
 } from "./sincronizacionBancaria";
-import { claveTicket, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
+import { claveTicket, reevaluarCambiosNormales, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
 import { nombreVariableSesion, sesionWebConfigurada } from "./navegadorHolded";
 
@@ -399,6 +399,39 @@ test("el detalle de diferencias dice QUÉ campo de QUÉ línea cambió (p. ej. l
   assert.deepEqual(diferenciasInstantanea(antes, despues), ["lineas"]); // lo informativo no detiene; la cuenta sí
   assert.deepEqual(diferenciasInstantanea(antes, instantaneaCompra(compra({ approved_at: "2026-10-02T12:35:07" }))), []); // solo el sello de aprobación: no bloquea
 });
+
+test("efectos normales de pasar a ticket (sin impuestos en las líneas, etiquetas copiadas a la línea) NO detienen el caso; lo demás sí", () =>
+  conEntorno(ENV_TICKETS, async () => {
+    const conInvSuj = () => compra({ lines: [{ name: "Viaje", price: "10,00", units: "1,00", discount: "0,00", tax: "0", taxes: ["p_iva_invsuj"], account: "acc1", retention: "0,00", tags: [] }] });
+    const comoTicket = (extra: Record<string, unknown> = {}) => compra({ ...extra, lines: [{ name: "Viaje", price: "10,00", units: "1,00", discount: "0,00", tax: "0", taxes: [], account: "acc1", retention: "0,00", tags: ["a", "b"] }] }); // la línea refleja las etiquetas del documento (["b","a"] en el fixture)
+    // 1) caso real de Footprint: impuesto «inversión sujeto pasivo» vacío + etiquetas en la línea → completado
+    let almacen = await preparar(); let mundo = new MundoHolded();
+    mundo.compras.set("c1", conInvSuj());
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: () => navegadorTickets(mundo, (m) => { m.listado.delete("c1"); m.compras.set("c1", comoTicket()); return { estado: "ok" }; }) });
+    const t = await almacen.obtener(claveTicket("Footprint", "c1"));
+    assert.equal(t?.estado, "completado");
+    assert.equal((t?.evidencia.diferencias as unknown[]).length, 2); // el detalle queda registrado aunque no detenga
+    // 2) además cambia la cuenta contable → sí se detiene
+    almacen = await preparar(); mundo = new MundoHolded(); mundo.compras.set("c1", conInvSuj());
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: () => navegadorTickets(mundo, (m) => {
+      m.listado.delete("c1"); const c = comoTicket(); (c.lines[0] as Record<string, unknown>).account = "OTRA"; m.compras.set("c1", c); return { estado: "ok" }; }) });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "requiere_intervencion");
+    // 3) el documento tenía IVA real (importe > 0): quitar impuestos NO es normal → se detiene
+    almacen = await preparar(); mundo = new MundoHolded(); mundo.compras.set("c1", compra({ tax: "2,10", lines: conInvSuj().lines }));
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: () => navegadorTickets(mundo, (m) => { m.listado.delete("c1"); m.compras.set("c1", comoTicket({ tax: "2,10" })); return { estado: "ok" }; }) });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "requiere_intervencion");
+    // 3b) las etiquetas del DOCUMENTO cambian (o la línea no las refleja exactamente) → se detiene
+    almacen = await preparar(); mundo = new MundoHolded(); mundo.compras.set("c1", conInvSuj());
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: () => navegadorTickets(mundo, (m) => { m.listado.delete("c1"); m.compras.set("c1", comoTicket({ tags: ["otra"] })); return { estado: "ok" }; }) });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "requiere_intervencion");
+    // 4) reevaluación de casos previos que solo tenían efectos normales
+    const previo = await almacen.obtener(claveTicket("Footprint", "c1"));
+    previo!.estado = "requiere_intervencion"; previo!.evidencia.camposCambiados = ["lineas"];
+    previo!.evidencia.antes = instantaneaCompra(conInvSuj()); previo!.evidencia.despues = instantaneaCompra(comoTicket());
+    await almacen.guardar(previo!);
+    assert.equal(await reevaluarCambiosNormales(almacen), 1);
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "completado");
+  }));
 
 test("instantánea: ignora el orden de etiquetas y detecta cambios reales", () => {
   assert.deepEqual(diferenciasInstantanea(instantaneaCompra(compra()), instantaneaCompra(compra({ tags: ["a", "b"] }))), []);
