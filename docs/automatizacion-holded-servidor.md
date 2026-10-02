@@ -87,6 +87,21 @@ servicio adicional de Railway); se consultará antes de contratarlo.
 
 ## Estado de validación de la interfaz web
 
-Las rutas y etiquetas de la interfaz (`/treasury`, «Sincronizar», «Editar» → «Opciones» → «Es una factura de compra» →
-«Guardar») están **sin validar contra la interfaz real** (no se dispone de sesión). Son configurables por entorno y
-cualquier elemento no encontrado detiene el caso en vez de adivinar. Se validan con el caso controlado antes de activar.
+**Conversión a ticket — validado contra la interfaz real (2026-10-02, solo lectura):** el editor del gasto tiene URL directa
+`/doc/purchase/<id>/edit`; ahí está «Opciones» → casilla «Es una factura de compra» (marcada en los gastos actuales) y los
+botones «Guardar como borrador» / «Guardar». El contenido vive en un marco anidado (el trabajador lo localiza). Guardado real
+**aún no ejecutado**: se hará con el caso controlado aprobado.
+
+Salvaguardas añadidas por lo visto en la interfaz:
+- Si el gasto es **borrador** (sin aprobar, sin número) se usa «Guardar como borrador»; «Guardar» podría aprobarlo.
+- La instantánea de verificación incluye borrador, aprobación y **vencimiento**: si el guardado los cambia, el caso se detiene.
+- El navegador se emula en hora de Madrid (el editor mostraba el vencimiento un día antes con hora UTC).
+- Solo actúa si la empresa activa en Holded es la esperada; con una sola sesión para las tres empresas, el cambio de empresa
+  aún no está automatizado (primero WOBA).
+
+**Sincronización bancaria — sin validar:** la pantalla de tesorería y el botón «Sincronizar» no se han visto aún; hasta
+validarlos solo se usa en modo `simulacion` (observación por API).
+
+**Caso controlado:** `WOBI_HOLDED_TICKETS_CASO="WOBA:<idCompra>"` (con `WOBI_HOLDED_TICKETS_MODO=activo` y
+`WOBI_HOLDED_TICKETS_EMPRESAS=WOBA`) limita la ejecución a ese único gasto y avisa del resultado a los administradores.
+Para quitarlo: borrar la variable.

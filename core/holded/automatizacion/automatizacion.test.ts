@@ -206,9 +206,9 @@ class MundoHolded {
     return c;
   };
 }
-const navegadorTickets = (mundo: MundoHolded, accion: (mundo: MundoHolded) => ResultadoNavegador): NavegadorHolded => ({
+const navegadorTickets = (mundo: MundoHolded, accion: (mundo: MundoHolded) => ResultadoNavegador, opcionesVistas?: Array<{ borrador?: boolean } | undefined>): NavegadorHolded => ({
   sincronizarCuenta: async () => ({ estado: "ok" }), cerrar: async () => {},
-  desmarcarFacturaDeCompra: async () => accion(mundo),
+  desmarcarFacturaDeCompra: async (_e, _id, opciones) => { opcionesVistas?.push(opciones); return accion(mundo); },
 });
 const ENV_TICKETS = { WOBI_HOLDED_TICKETS_MODO: "activo", WOBI_HOLDED_TICKETS_EMPRESAS: "Footprint" };
 async function preparar(estadoInicial: "solicitado" = "solicitado") {
@@ -304,6 +304,10 @@ test("simulación: lee y registra, nunca abre el navegador; el alcance de un cas
     assert.equal(abierto, false);
     assert.equal(r.revisados, 1);
     assert.equal((await almacen.obtener(claveTicket("Footprint", "otro")))?.estado, "solicitado");
+    // La simulación no consume el caso: sigue en cola con lo que haría, listo para cuando se active.
+    const simulado = await almacen.obtener(claveTicket("Footprint", "c1"));
+    assert.equal(simulado?.estado, "solicitado");
+    assert.ok(simulado?.evidencia.simulacion);
   }));
 
 test("ejecuciones duplicadas simultáneas sobre el mismo gasto: el navegador se usa una sola vez", () =>
@@ -313,6 +317,20 @@ test("ejecuciones duplicadas simultáneas sobre el mismo gasto: el navegador se 
     const nav = () => navegadorTickets(mundo, (m) => { usos++; m.listado.delete("c1"); return { estado: "ok" }; });
     await Promise.all([procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav }), procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav })]);
     assert.equal(usos, 1);
+  }));
+
+test("borrador: se pasa al navegador para guardar como borrador, y si el guardado lo aprueba o mueve el vencimiento, se detiene", () =>
+  conEntorno(ENV_TICKETS, async () => {
+    const almacen = await preparar(); const mundo = new MundoHolded();
+    mundo.compras.set("c1", compra({ draft: true, approved_at: null, due_date: "2026-09-09" }));
+    const vistas: Array<{ borrador?: boolean } | undefined> = [];
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: () => navegadorTickets(mundo, (m) => {
+      m.listado.delete("c1"); m.compras.set("c1", compra({ draft: false, approved_at: "2026-10-02T10:00:00", due_date: "2026-09-08" })); return { estado: "ok" };
+    }, vistas) });
+    assert.deepEqual(vistas, [{ borrador: true }]);
+    const t = await almacen.obtener(claveTicket("Footprint", "c1"));
+    assert.equal(t?.estado, "requiere_intervencion");
+    assert.deepEqual(t?.evidencia.camposCambiados, ["borrador", "aprobado", "vencimiento"]);
   }));
 
 test("instantánea: ignora el orden de etiquetas y detecta cambios reales", () => {
