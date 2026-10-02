@@ -48,6 +48,12 @@ reciente). Hay dos cuentas viejas que probablemente necesitan intervención huma
 
 ## Conversión a ticket
 
+**Regla obligatoria (Carlos, 2026-10-02):** solo se convierte un gasto que **WOBI creó** (marcador `[wobi:…]` en las notas),
+que está **conciliado con el banco** (cobro enlazado y nada pendiente), **completo** (contacto, importe, líneas con cuenta,
+estado completado) y con su **comprobante adjunto**. Se comprueba justo antes de actuar. Si no lo creó WOBI → `omitido`, no
+se toca. Si aún le falta conciliar o adjuntar → espera en cola (hasta 21 días; después decide una persona). Lo creado
+antes del marcador queda fuera de la conversión automática (el inventario lo muestra como «no elegible»).
+
 - **Al crear el gasto** (aprobación con botón) se clasifica una vez: `ticket` (se declara ticket/factura simplificada y no
   identifica al comprador) → cola; `factura` → omitido; **dudoso → revisión**. Que falte el número **no** basta para ser ticket.
   Se guarda la evidencia (motivos y señales).

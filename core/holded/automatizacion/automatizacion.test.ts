@@ -190,15 +190,17 @@ test("dudoso: falta el número o el extractor marcó simplificado «por duda» �
 
 /* ───────── conversión a ticket ───────── */
 const compra = (extra: Record<string, unknown> = {}) => ({ id: "c1", contact_id: "k1", date: "2026-09-20", currency: "USD", currency_change: "1.0905", subtotal: "10,00", total: "10,00", tax: "0,00",
-  document_number: "A-1", status: "paid", tags: ["b", "a"], payments_total: "10,00", payments_pending: "0,00", payments_detail: [{ id: "p1", amount: "10,00" }],
+  document_number: "A-1", status: "completed", notes: "[wobi:" + "a".repeat(64) + "]", tags: ["b", "a"], payments_total: "10,00", payments_pending: "0,00", payments_detail: [{ id: "p1", amount: "10,00", bank_id: "banco1" }],
   lines: [{ name: "Viaje", price: "10,00", units: "1,00", discount: "0,00", tax: "0", taxes: [], account: "acc1", retention: "0,00", tags: [] }], deduction_date: null, accounting_date: null, ...extra });
 
 class MundoHolded {
   listado = new Set<string>(["c1"]);
   compras = new Map<string, Record<string, unknown>>([["c1", compra()]]);
   fallaLectura = false;
+  adjuntos = 1;
   leer = async (_e: string, ruta: string) => {
     if (this.fallaLectura) throw Object.assign(new Error("503"), { status: 503 });
+    if (ruta.endsWith("/attachments")) return { items: Array.from({ length: this.adjuntos }, (_, i) => ({ id: `comprobante${i}.pdf` })) };
     if (ruta === "/purchases") return { items: [...this.listado].map((id) => ({ id })), has_more: false };
     const id = ruta.split("/").pop()!;
     const c = this.compras.get(id);
@@ -333,6 +335,38 @@ test("borrador: se pasa al navegador para guardar como borrador, y si el guardad
     assert.deepEqual(t?.evidencia.camposCambiados, ["borrador", "aprobado", "vencimiento"]);
   }));
 
+test("regla de Carlos: solo gastos creados por WOBI, conciliados y con comprobante; si falta algo se espera, y si no es de WOBI no se toca", () =>
+  conEntorno(ENV_TICKETS, async () => {
+    const abierto = { n: 0 };
+    const nav = (m: MundoHolded) => () => { abierto.n++; return navegadorTickets(m, (x) => { x.listado.delete("c1"); return { estado: "ok" }; }); };
+    // 1) no lo creó WOBI (sin marcador): omitido, jamás se abre el navegador
+    let almacen = await preparar(); let mundo = new MundoHolded();
+    mundo.compras.set("c1", compra({ notes: "creado a mano" }));
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav(mundo) });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "omitido");
+    // 2) aún sin conciliar: espera en cola, sin tocar nada
+    almacen = await preparar(); mundo = new MundoHolded();
+    mundo.compras.set("c1", compra({ payments_total: "0,00", payments_pending: "10,00", payments_detail: [] }));
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav(mundo) });
+    let t = await almacen.obtener(claveTicket("Footprint", "c1"));
+    assert.equal(t?.estado, "solicitado"); assert.match(t?.ultimoError ?? "", /no está conciliado/);
+    // 3) conciliado pero sin comprobante: espera
+    almacen = await preparar(); mundo = new MundoHolded(); mundo.adjuntos = 0;
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav(mundo) });
+    t = await almacen.obtener(claveTicket("Footprint", "c1"));
+    assert.equal(t?.estado, "solicitado"); assert.match(t?.ultimoError ?? "", /sin|no tiene comprobante/);
+    // 4) tras demasiados días esperando, lo decide una persona
+    almacen = await preparar(); mundo = new MundoHolded(); mundo.adjuntos = 0;
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav(mundo), ahora: () => Date.now() + 22 * 24 * 3_600_000 });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "requiere_intervencion");
+    assert.equal(abierto.n, 0);
+    // 5) completo, de WOBI, conciliado y con comprobante: se convierte
+    almacen = await preparar(); mundo = new MundoHolded();
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav(mundo) });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "completado");
+    assert.equal(abierto.n, 1);
+  }));
+
 test("instantánea: ignora el orden de etiquetas y detecta cambios reales", () => {
   assert.deepEqual(diferenciasInstantanea(instantaneaCompra(compra()), instantaneaCompra(compra({ tags: ["a", "b"] }))), []);
   assert.deepEqual(diferenciasInstantanea(instantaneaCompra(compra()), instantaneaCompra(compra({ total: "10,01" }))), ["total"]);
@@ -340,9 +374,13 @@ test("instantánea: ignora el orden de etiquetas y detecta cambios reales", () =
 
 test("inventario de candidatos antiguos: solo lectura; probable solo con proveedor de fuera de la UE sin identificación fiscal; el resto, a revisión", async () => {
   const leer = async (_e: string, ruta: string) => {
+    if (ruta.endsWith("/attachments")) return { items: [{ id: "comprobante.pdf" }] };
+    if (/^\/purchases\/\w+$/.test(ruta)) return compra();
     if (ruta === "/purchases") return { items: [{ id: "1", contact_id: "x", contact_name: "Uber", date: "2026-09-01", total: "5,00", currency: "USD", payments_total: "5,00" }, { id: "2", contact_id: "y", contact_name: "DHL Spain", date: "2026-09-02", total: "9,00", currency: "EUR", payments_total: "0,00" }], has_more: false };
     return ruta.endsWith("/x") ? { code: "", bill_address: { country_code: "US" } } : { code: "B123", bill_address: { country_code: "ES" } };
   };
   const c = await inventarioCandidatos("Footprint", "2026-09-01", "2026-09-30", leer);
   assert.deepEqual(c.map((x) => [x.compraId, x.nivel, x.conciliado]), [["1", "probable", true], ["2", "revisar", false]]);
+  assert.equal(c[0].elegible, true); // la regla completa solo se evalúa para los probables
+  assert.equal(c[1].elegible, undefined);
 });
