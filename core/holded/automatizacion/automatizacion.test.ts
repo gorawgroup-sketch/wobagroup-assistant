@@ -10,7 +10,7 @@ import {
   clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, textoAvisoSincronizacion,
   verificarSincronizacionBancaria, VENTANA_VERIFICACION_MS,
 } from "./sincronizacionBancaria";
-import { claveTicket, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
+import { claveTicket, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
 
 function conEntorno<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
@@ -366,6 +366,19 @@ test("regla de Carlos: solo gastos creados por WOBI, conciliados y con comproban
     assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "completado");
     assert.equal(abierto.n, 1);
   }));
+
+test("el detalle de diferencias dice QUÉ campo de QUÉ línea cambió (p. ej. la cuenta contable) y la fecha de aprobación es solo informativa", () => {
+  const antes = instantaneaCompra(compra({ approved_at: "2026-09-17T21:13:00" }));
+  const cambiada = compra({ approved_at: "2026-10-02T12:35:07" });
+  (cambiada.lines[0] as Record<string, unknown>).account = "OTRA_CUENTA";
+  const despues = instantaneaCompra(cambiada);
+  const detalle = detalleDiferencias(antes, despues);
+  assert.deepEqual(detalle.map((d) => d.campo), ["aprobadoEn", "linea[0].cuenta"]);
+  assert.equal(detalle[0].informativo, true);
+  assert.deepEqual(detalle[1], { campo: "linea[0].cuenta", antes: "acc1", despues: "OTRA_CUENTA" });
+  assert.deepEqual(diferenciasInstantanea(antes, despues), ["lineas"]); // lo informativo no detiene; la cuenta sí
+  assert.deepEqual(diferenciasInstantanea(antes, instantaneaCompra(compra({ approved_at: "2026-10-02T12:35:07" }))), []); // solo el sello de aprobación: no bloquea
+});
 
 test("instantánea: ignora el orden de etiquetas y detecta cambios reales", () => {
   assert.deepEqual(diferenciasInstantanea(instantaneaCompra(compra()), instantaneaCompra(compra({ tags: ["a", "b"] }))), []);

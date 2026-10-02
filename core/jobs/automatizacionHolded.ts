@@ -72,8 +72,9 @@ export async function conversionTicketsHolded(opciones: { revisionNocturna?: boo
     const hecho = resumen.detalle.find((d) => d.clave === claveTicket(empresaCaso as Empresa, idCaso) && d.estado !== "solicitado");
     if (hecho) {
       const t = await almacen.obtener(hecho.clave);
-      const cambios = Array.isArray(t?.evidencia.camposCambiados) ? ` Campos cambiados: ${(t!.evidencia.camposCambiados as string[]).join(", ")}.` : "";
-      await notificarAdmins(`🧪 Caso controlado de ticket (${empresaCaso} · ${idCaso}): ${hecho.estado.replace(/_/g, " ")}.${t?.ultimoError ? ` ${t.ultimoError}.` : ""}${cambios}`);
+      const dif = Array.isArray(t?.evidencia.diferencias) ? (t!.evidencia.diferencias as Array<{ campo: string; antes: string; despues: string; informativo?: boolean }>) : [];
+      const detalle = dif.slice(0, 10).map((d) => `\n  • ${d.campo}${d.informativo ? " (informativo)" : ""}: ${d.antes} → ${d.despues}`).join("");
+      await notificarAdmins(`🧪 Caso controlado de ticket (${empresaCaso} · ${idCaso}): ${hecho.estado.replace(/_/g, " ")}.${t?.ultimoError ? ` ${t.ultimoError}.` : ""}${detalle}`);
     }
   }
   if (opciones.revisionNocturna && modo === "activo") {
