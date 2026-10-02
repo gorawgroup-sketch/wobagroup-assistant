@@ -135,7 +135,7 @@ async function esperarMarco(page: Page, patron: RegExp, ms = 40_000): Promise<Fr
 }
 
 /** Como clicPorTexto, pero una recarga de la pantalla en mitad de la consulta cuenta como «aún no» en vez de error. */
-const clicPorTextoSeguro = (marco: Frame, etiquetas: string[], exacto: boolean) => clicPorTexto(marco, etiquetas, exacto).catch(() => false);
+const clicPorTextoSeguro = (marco: Frame, etiquetas: string[], exacto: boolean, hacerClic = true) => clicPorTexto(marco, etiquetas, exacto, hacerClic).catch(() => false);
 
 const empresaActivaEnPantalla = async (page: Page) =>
   (await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 60)).catch(() => "")).toLowerCase();
@@ -224,6 +224,42 @@ async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o:
 }
 
 /**
+ * Sincronización de UNA cuenta bancaria (verificado en la interfaz real, 2026-10-02): cada cuenta tiene su página
+ * `/banking/accounts/<id>` (el mismo id que la API de tesorería) con un botón azul «Sincronizar» arriba a la derecha.
+ * Una cuenta que necesita renovar el consentimiento del banco no mostrará ese botón: se informa, nunca se reconecta.
+ */
+async function flujoSincronizar(page: Page, empresa: Empresa, cuenta: CuentaParaNavegador, o: { pulsar: boolean }, dedicada: boolean): Promise<ResultadoNavegador> {
+  if (!dedicada) {
+    const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+    if (activada.estado !== "ok") return activada;
+  }
+  await page.goto(`${BASE}/banking/accounts/${encodeURIComponent(cuenta.id)}`, { waitUntil: "domcontentloaded" });
+  const sesion = await estadoSesion(page);
+  if (sesion.estado !== "ok") return sesion;
+  // Seguridad: la empresa activa debe ser la esperada.
+  const limite = Date.now() + 25_000;
+  let activa = "";
+  while (Date.now() < limite) { activa = await empresaActivaEnPantalla(page); if (activa.startsWith(empresa.toLowerCase())) break; await pausa(600); }
+  if (!activa.startsWith(empresa.toLowerCase())) return { estado: "elemento_no_encontrado", detalle: `La empresa activa en Holded no es ${empresa}; no se tocó nada` };
+  // Espera a que cargue la página de la cuenta y localiza el botón (sin pulsar todavía).
+  const espera = Date.now() + 30_000;
+  let hay = false;
+  while (Date.now() < espera && !hay) { hay = await clicPorTextoSeguro(page.mainFrame(), ["Sincronizar", "Synchronize"], true, false); if (!hay) await pausa(1000); }
+  if (!hay) {
+    const texto = await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ")).catch(() => "");
+    const pideConsentimiento = /reconectar|renovar|consentimiento|autorizar|reconnect|re-authenticate|reautoriz/i.test(texto);
+    return { estado: "elemento_no_encontrado", detalle: pideConsentimiento
+      ? "La cuenta pide renovar el consentimiento del banco; lo debe hacer una persona (WOBI no reconecta bancos)"
+      : "No se encontró el botón «Sincronizar» en la página de la cuenta" };
+  }
+  if (!o.pulsar) return { estado: "ok", detalle: `Ensayo correcto: página de «${cuenta.nombre}» y botón «Sincronizar» localizados (SIN pulsar)` };
+  if (!(await clicPorTextoSeguro(page.mainFrame(), ["Sincronizar", "Synchronize"], true, true))) return { estado: "error", detalle: "No se pudo pulsar «Sincronizar»" };
+  await pausa(3000);
+  const despues = await estadoSesion(page);
+  return despues.estado === "ok" ? { estado: "ok", detalle: "Botón «Sincronizar» pulsado; falta verificar con Holded" } : despues;
+}
+
+/**
  * La interfaz de Holded a veces se recarga a mitad de acción (sobre todo en Footprint). Un fallo así es transitorio y se
  * repite hasta 3 veces con un navegador nuevo. Repetir es seguro: si el guardado ya se había aplicado, la casilla aparece
  * desmarcada y el flujo termina sin guardar nada más; el llamador verifica además el estado real en Holded.
@@ -234,7 +270,7 @@ async function conReintentosTransitorios(accion: () => Promise<ResultadoNavegado
   for (let intento = 1; intento <= maximo; intento++) {
     r = await accion();
     const transitorio = r.estado === "error" ||
-      (r.estado === "elemento_no_encontrado" && /Cambiar cuenta|lista de cuentas|No se abrió el editor|No se pudo activar/i.test(r.detalle));
+      (r.estado === "elemento_no_encontrado" && /Cambiar cuenta|lista de cuentas|No se abrió el editor|No se pudo activar|No se encontró el botón «Sincronizar»/i.test(r.detalle));
     if (!transitorio) return r;
     await pausa(3000 * intento);
   }
@@ -243,22 +279,12 @@ async function conReintentosTransitorios(accion: () => Promise<ResultadoNavegado
 
 export class NavegadorHoldedPuppeteer implements NavegadorHolded {
   async sincronizarCuenta(empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
-    return conPagina(empresa, async (page, dedicada) => {
-      if (!dedicada) {
-        const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
-        if (activada.estado !== "ok") return activada;
-      }
-      await page.goto(`${BASE}${RUTA_TESORERIA}`, { waitUntil: "networkidle2" });
-      const sesion = await estadoSesion(page);
-      if (sesion.estado !== "ok") return sesion;
-      // Se entra en la cuenta por su nombre visible y se pulsa «Sincronizar»; si algo no está, se detiene.
-      if (!(await clicPorTexto(page, [cuenta.nombre]))) return { estado: "elemento_no_encontrado", detalle: `No se encontró la cuenta «${cuenta.nombre}» en la pantalla de tesorería` };
-      await pausa(1500);
-      if (!(await clicPorTexto(page, ["Sincronizar", "Synchronize", "Sync"]))) return { estado: "elemento_no_encontrado", detalle: "No se encontró el botón «Sincronizar» (¿banco que requiere renovar consentimiento?)" };
-      await pausa(2000);
-      const despues = await estadoSesion(page);
-      return despues.estado === "ok" ? { estado: "ok", detalle: "Botón «Sincronizar» pulsado; falta verificar con Holded" } : despues;
-    });
+    return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoSincronizar(page, empresa, cuenta, { pulsar: true }, dedicada)));
+  }
+
+  /** Ensayo: llega hasta el botón «Sincronizar» de la cuenta y confirma que existe, SIN pulsarlo. */
+  async ensayarSincronizacion(empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
+    return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoSincronizar(page, empresa, cuenta, { pulsar: false }, dedicada)));
   }
 
   async desmarcarFacturaDeCompra(empresa: Empresa, compraId: string, opciones: { borrador?: boolean } = {}): Promise<ResultadoNavegador> {

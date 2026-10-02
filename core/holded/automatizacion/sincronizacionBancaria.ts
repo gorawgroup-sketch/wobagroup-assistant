@@ -1,5 +1,5 @@
 import { listTreasuryAccounts, invalidarCacheCuentasTesoreria, type Empresa, type TreasuryAccount } from "../client";
-import { empresasAutomatizacion, modoAutomatizacion } from "./modo";
+import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "./modo";
 import { requiereIntervencion, type NavegadorHolded } from "./navegador";
 import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
 
@@ -100,8 +100,12 @@ export async function lanzarSincronizacionBancaria(fecha: string, dep: Dependenc
       resumen.porEstado.fallido = (resumen.porEstado.fallido ?? 0) + 1;
       continue;
     }
+    // Alcance aprobado por Carlos para las primeras ejecuciones: WOBI_HOLDED_SYNC_BANCARIA_CUENTAS="Empresa:idCuenta,…".
+    // Sin la variable, se sincronizan todas las cuentas conectadas de las empresas en alcance.
+    const aprobadas = parsearCasosAprobados(process.env.WOBI_HOLDED_SYNC_BANCARIA_CUENTAS);
     for (const cuenta of cuentas) {
       if (!cuenta.sincronizable) continue; // las manuales/archivadas no son trabajo: no ensucian el registro
+      if (aprobadas.length > 0 && !aprobadas.some((a) => a.empresa === empresa && a.id === cuenta.id)) continue;
       resumen.cuentas++;
       const clave = claveSincronizacion(fecha, cuenta);
       const resultado = await dep.almacen.conExclusion(clave, () => procesarCuenta(cuenta, clave, modo, dep, ahora, dormir));

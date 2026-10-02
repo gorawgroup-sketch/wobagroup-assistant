@@ -113,8 +113,12 @@ Salvaguardas añadidas por lo visto en la interfaz:
 - Solo actúa si la empresa activa en Holded es la esperada; con una sola sesión para las tres empresas, el cambio de empresa
   aún no está automatizado (primero WOBA).
 
-**Sincronización bancaria — sin validar:** la pantalla de tesorería y el botón «Sincronizar» no se han visto aún; hasta
-validarlos solo se usa en modo `simulacion` (observación por API).
+**Sincronización bancaria — validada en ensayo (sin pulsar):** cada cuenta tiene su página `/banking/accounts/<id>` (el mismo id
+que la API de tesorería) con un botón azul «Sincronizar» arriba a la derecha; la lista de cuentas muestra «Sincronizado hace N
+horas» (Holded sincroniza ~1 vez al día, por eso el aviso de las 06:00 aporta valor). Verificado sin pulsar en WOBA y EWORKS; una cuenta
+que pida renovar el consentimiento del banco no mostrará el botón y se informa (nunca se reconecta). El primer día se limita a una
+lista aprobada: `WOBI_HOLDED_SYNC_BANCARIA_CUENTAS="Empresa:idCuenta,…"` (con `WOBI_HOLDED_SYNC_BANCARIA_MODO=activo` y
+`WOBI_HOLDED_SYNC_BANCARIA_EMPRESAS`). Sin esa variable se sincronizan todas las cuentas conectadas de las empresas en alcance.
 
 **Caso controlado:** `WOBI_HOLDED_TICKETS_CASO="WOBA:<idCompra>"` (con `WOBI_HOLDED_TICKETS_MODO=activo` y
 `WOBI_HOLDED_TICKETS_EMPRESAS=WOBA`) limita la ejecución a ese único gasto y avisa del resultado a los administradores.

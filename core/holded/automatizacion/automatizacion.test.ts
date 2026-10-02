@@ -166,6 +166,16 @@ test("reinicio / doble disparo: la segunda ejecución del día no vuelve a lanza
     assert.equal(nav.llamadas.length, 1);
   }));
 
+test("lista aprobada de cuentas: solo se sincronizan esas aunque haya más cuentas conectadas", () =>
+  conEntorno({ ...ENV_SYNC, WOBI_HOLDED_SYNC_BANCARIA_CUENTAS: "WOBA:6abf8bd5817558d83806a754" }, async () => {
+    const almacen = new AlmacenTrabajosMemoria();
+    const nav = new NavegadorFalso();
+    const a = "6abf8bd5817558d83806a754", b = "6abf8bd5817558d83806a755";
+    await lanzarSincronizacionBancaria("2026-10-02", { almacen, navegador: () => nav, leerCuentas: async () => [cuenta(a), cuenta(b)], dormir: async () => {} });
+    assert.deepEqual(nav.llamadas, [a]);
+    assert.equal(await almacen.obtener(`sync:2026-10-02:WOBA:${b}`), undefined);
+  }));
+
 test("simulación: no abre el navegador ni escribe; solo registra lo que haría", () =>
   conEntorno({ WOBI_HOLDED_SYNC_BANCARIA_MODO: "simulacion" }, async () => {
     const almacen = new AlmacenTrabajosMemoria();
