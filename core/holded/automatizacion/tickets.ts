@@ -22,6 +22,8 @@ export interface InstantaneaCompra {
   fechaContable: string | null; fechaDeduccion: string | null;
   /** Estado de borrador/aprobación y vencimiento: guardar desde la interfaz no debe aprobar ni mover fechas. */
   borrador: boolean; aprobado: boolean; vencimiento: string | null;
+  /** Fecha/hora de aprobación: INFORMATIVA (Holded puede volver a sellarla al guardar); se registra pero no detiene el caso. */
+  aprobadoEn: string | null;
   lineas: string[];
 }
 
@@ -37,14 +39,39 @@ export function instantaneaCompra(raw: Raw): InstantaneaCompra {
     cobrado: txt(raw.payments_total), pendienteCobro: txt(raw.payments_pending),
     pagos: JSON.stringify(raw.payments_detail ?? []),
     fechaContable: txt(raw.accounting_date), fechaDeduccion: txt(raw.deduction_date),
-    borrador: raw.draft === true, aprobado: Boolean(raw.approved_at), vencimiento: txt(raw.due_date),
+    borrador: raw.draft === true, aprobado: Boolean(raw.approved_at), vencimiento: txt(raw.due_date), aprobadoEn: txt(raw.approved_at),
     lineas: lineas.map((l) => JSON.stringify([l.name, l.price, l.units, l.discount, l.tax, [...((l.taxes as unknown[]) ?? [])].sort(), l.account, l.retention, [...((l.tags as unknown[]) ?? [])].sort()])),
   };
 }
 
-/** Campos que cambiaron entre antes y después. Cualquier diferencia detiene el caso: no se corrige, se informa. */
+const CAMPOS_INFORMATIVOS: ReadonlyArray<keyof InstantaneaCompra> = ["aprobadoEn"];
+const CAMPOS_LINEA = ["concepto", "precio", "unidades", "descuento", "impuesto", "impuestos", "cuenta", "retencion", "etiquetas"];
+
+/** Campos BLOQUEANTES que cambiaron entre antes y después. Cualquier diferencia detiene el caso: no se corrige, se informa. */
 export function diferenciasInstantanea(antes: InstantaneaCompra, despues: InstantaneaCompra): string[] {
-  return (Object.keys(antes) as Array<keyof InstantaneaCompra>).filter((k) => JSON.stringify(antes[k]) !== JSON.stringify(despues[k]));
+  return (Object.keys(antes) as Array<keyof InstantaneaCompra>)
+    .filter((k) => !CAMPOS_INFORMATIVOS.includes(k) && JSON.stringify(antes[k]) !== JSON.stringify(despues[k]));
+}
+
+export interface DetalleDiferencia { campo: string; antes: string; despues: string; informativo?: boolean }
+const corto = (v: unknown) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > 140 ? `${s.slice(0, 140)}…` : s; };
+
+/** Detalle legible de TODO lo que cambió (valor anterior y posterior), incluidos los campos informativos y cada campo de cada línea. */
+export function detalleDiferencias(antes: InstantaneaCompra, despues: InstantaneaCompra): DetalleDiferencia[] {
+  const salida: DetalleDiferencia[] = [];
+  for (const k of Object.keys(antes) as Array<keyof InstantaneaCompra>) {
+    if (JSON.stringify(antes[k]) === JSON.stringify(despues[k])) continue;
+    const informativo = CAMPOS_INFORMATIVOS.includes(k);
+    if (k !== "lineas") { salida.push({ campo: k, antes: corto(antes[k]), despues: corto(despues[k]), informativo }); continue; }
+    const n = Math.max(antes.lineas.length, despues.lineas.length);
+    for (let i = 0; i < n; i++) {
+      const a = antes.lineas[i] ? (JSON.parse(antes.lineas[i]) as unknown[]) : undefined;
+      const d = despues.lineas[i] ? (JSON.parse(despues.lineas[i]) as unknown[]) : undefined;
+      if (!a || !d) { salida.push({ campo: `linea[${i}]`, antes: a ? "existía" : "no existía", despues: d ? "existe" : "no existe" }); continue; }
+      CAMPOS_LINEA.forEach((nombre, j) => { if (JSON.stringify(a[j]) !== JSON.stringify(d[j])) salida.push({ campo: `linea[${i}].${nombre}`, antes: corto(a[j]), despues: corto(d[j]) }); });
+    }
+  }
+  return salida;
 }
 
 /* ───────── Lectura del estado real ───────── */
@@ -195,6 +222,7 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
   if (despues.estado === "ticket" && despues.compra) {
     const diffs = diferenciasInstantanea(antes, instantaneaCompra(despues.compra));
     t.evidencia.despues = instantaneaCompra(despues.compra);
+    t.evidencia.diferencias = detalleDiferencias(antes, instantaneaCompra(despues.compra));
     if (diffs.length > 0) { t.evidencia.camposCambiados = diffs; return guardar("requiere_intervencion", `Convertido, pero cambiaron campos inesperados: ${diffs.join(", ")}`); }
     return guardar("completado");
   }
