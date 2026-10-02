@@ -125,6 +125,32 @@ export async function procesarColaTickets(dep: DependenciasTickets): Promise<Res
   return resumen;
 }
 
+/* ───────── Elegibilidad: creado por WOBI + conciliado + completo con comprobante ───────── */
+
+export const ESPERA_MAXIMA_ELEGIBILIDAD_MS = 21 * 24 * 3_600_000;
+/** Marcador opaco que WOBI guarda en las notas de cada gasto que crea (`[wobi:<hash>]`). */
+const MARCADOR_WOBI = /^\[wobi:[0-9a-f]{16,}\]$/i;
+
+export interface Elegibilidad { elegible: boolean; /** true = podría llegar a serlo (falta conciliar/adjuntar); false = no aplica */ esperar: boolean; motivos: string[] }
+
+export function evaluarElegibilidad(raw: Raw, adjuntos: number): Elegibilidad {
+  if (!MARCADOR_WOBI.test(String(raw.notes ?? "").trim())) return { elegible: false, esperar: false, motivos: ["no lo creó WOBI (sin marcador propio en las notas)"] };
+  const faltan: string[] = [];
+  const num = (v: unknown) => Number(String(v ?? "").replace(/\./g, "").replace(",", "."));
+  const pagos = Array.isArray(raw.payments_detail) ? (raw.payments_detail as Raw[]) : [];
+  const total = num(raw.total);
+  if (!(num(raw.payments_total) > 0) || Math.abs(num(raw.payments_pending)) > 0.001 || !pagos.some((p) => txt(p.bank_id))) faltan.push("no está conciliado con el banco");
+  if (adjuntos < 1) faltan.push("no tiene comprobante adjunto");
+  const lineas = Array.isArray(raw.lines) ? (raw.lines as Raw[]) : [];
+  if (!txt(raw.contact_id) || !(total > 0) || lineas.length === 0 || lineas.some((l) => !txt(l.account)) || raw.status !== "completed") faltan.push("el gasto no está completo (contacto, importe, líneas con cuenta o estado)");
+  return faltan.length === 0 ? { elegible: true, esperar: false, motivos: [] } : { elegible: false, esperar: true, motivos: faltan };
+}
+
+async function contarAdjuntos(empresa: Empresa, compraId: string, leer: NonNullable<DependenciasTickets["leer"]> = holdedGet): Promise<number> {
+  const r = (await leer(empresa, `/purchases/${encodeURIComponent(compraId)}/attachments`)) as { items?: unknown[] } | unknown[];
+  return Array.isArray(r) ? r.length : (r.items ?? []).length;
+}
+
 async function procesarTicket(clave: string, modo: string, dep: DependenciasTickets, ahora: () => number): Promise<Trabajo> {
   const t = (await dep.almacen.obtener(clave))!;
   if (t.estado !== "solicitado") return t; // otra ejecución ya lo resolvió
@@ -135,6 +161,18 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
   catch (error) { return guardar("solicitado", `Lectura de Holded fallida; se reintenta: ${msg(error)}`); }
   if (real.estado === "inexistente") return guardar("fallido", "El gasto ya no existe en Holded");
   if (real.estado === "ticket") { t.evidencia.yaEraTicket = true; t.verificadoEn = ahora(); return guardar("omitido", undefined); }
+  // Regla de Carlos: solo gastos que WOBI creó, ya conciliados y completos con su comprobante. Se comprueba SIEMPRE antes de actuar.
+  let adjuntos: number;
+  try { adjuntos = await contarAdjuntos(empresa, t.objetivo, dep.leer); }
+  catch (error) { return guardar("solicitado", `Lectura de adjuntos fallida; se reintenta: ${msg(error)}`); }
+  const elegibilidad = evaluarElegibilidad(real.compra!, adjuntos);
+  t.evidencia.elegibilidad = { ...elegibilidad, en: ahora() };
+  if (!elegibilidad.elegible) {
+    if (!elegibilidad.esperar) return guardar("omitido", `No se convierte: ${elegibilidad.motivos.join("; ")}`);
+    // Aún le falta algo (p. ej. conciliación): se espera en cola; si pasan demasiados días, lo decide una persona.
+    if (ahora() - t.creadoEn > ESPERA_MAXIMA_ELEGIBILIDAD_MS) return guardar("requiere_intervencion", `No llegó a estar completo y conciliado: ${elegibilidad.motivos.join("; ")}`);
+    return guardar("solicitado", `Esperando: ${elegibilidad.motivos.join("; ")}`);
+  }
   const antes = instantaneaCompra(real.compra!);
   t.evidencia.antes = antes;
   // La simulación NO consume el trabajo: lo deja en cola (solicitado) con lo que haría, para que al activarlo se ejecute.
@@ -168,7 +206,7 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
 
 const PAISES_UE = new Set(["ES","AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE","IT","LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","SE"]);
 
-export interface CandidatoTicket { empresa: Empresa; compraId: string; proveedor: string; fecha: string; total: string; moneda: string; numero: string | null; conciliado: boolean; nivel: "probable" | "revisar"; motivos: string[] }
+export interface CandidatoTicket { empresa: Empresa; compraId: string; proveedor: string; fecha: string; total: string; moneda: string; numero: string | null; conciliado: boolean; nivel: "probable" | "revisar"; motivos: string[]; /** Solo se calcula para los probables: creado por WOBI + conciliado + completo con comprobante. */ elegible?: boolean; faltantes?: string[] }
 
 export async function inventarioCandidatos(
   empresa: Empresa, desde: string, hasta: string,
@@ -189,9 +227,18 @@ export async function inventarioCandidatos(
       const pais = (txt((contacto?.bill_address as Raw | undefined)?.country_code) ?? "").toUpperCase();
       const extranjeroSinNif = Boolean(contacto) && !nif && pais !== "" && !PAISES_UE.has(pais);
       const conciliado = txt(c.payments_total) !== null && txt(c.payments_total) !== "0,00";
-      salida.push({ empresa, compraId: String(c.id), proveedor: String(c.contact_name ?? ""), fecha: String(c.date ?? ""), total: String(c.total ?? ""), moneda: String(c.currency ?? ""),
+      const candidato: CandidatoTicket = { empresa, compraId: String(c.id), proveedor: String(c.contact_name ?? ""), fecha: String(c.date ?? ""), total: String(c.total ?? ""), moneda: String(c.currency ?? ""),
         numero: txt(c.document_number), conciliado, nivel: extranjeroSinNif ? "probable" : "revisar",
-        motivos: extranjeroSinNif ? ["proveedor de fuera de la UE sin identificación fiscal (patrón habitual de tickets)"] : ["sin evidencia documental suficiente: requiere revisión humana"] });
+        motivos: extranjeroSinNif ? ["proveedor de fuera de la UE sin identificación fiscal (patrón habitual de tickets)"] : ["sin evidencia documental suficiente: requiere revisión humana"] };
+      // Solo los probables se someten a la regla completa (creado por WOBI + conciliado + comprobante): son pocas lecturas extra.
+      if (extranjeroSinNif) {
+        try {
+          const detalle = (await leer(empresa, `/purchases/${encodeURIComponent(String(c.id))}`)) as Raw;
+          const e = evaluarElegibilidad(detalle, await contarAdjuntos(empresa, String(c.id), leer));
+          candidato.elegible = e.elegible; candidato.faltantes = e.motivos;
+        } catch { candidato.faltantes = ["no se pudo comprobar la elegibilidad (lectura de Holded fallida)"]; }
+      }
+      salida.push(candidato);
     }
     if (!page.has_more) break;
     if (!page.cursor) throw new Error("Holded devolvió un listado incompleto al inventariar candidatos.");
