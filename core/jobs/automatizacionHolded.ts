@@ -73,14 +73,26 @@ export async function conversionTicketsHolded(opciones: { revisionNocturna?: boo
   if (casos.length > 0 && modo === "activo") {
     const lineas: string[] = [];
     for (const caso of casos) {
-      const hecho = resumen.detalle.find((d) => d.clave === claveTicket(caso.empresa, caso.id) && d.estado !== "solicitado");
-      if (!hecho) continue;
+      const clave = claveTicket(caso.empresa, caso.id);
+      const hecho = resumen.detalle.find((d) => d.clave === clave && d.estado !== "solicitado");
+      if (!hecho) {
+        // Gasto de la lista que NO se procesó en este ciclo: se informa su estado y motivo, una sola vez por cada cambio, para que
+        // nunca quede un caso sin explicar (p. ej. esperando conciliación o ya resuelto antes).
+        const p = await almacen.obtener(clave);
+        const huella = p ? `${p.estado}|${p.ultimoError ?? ""}` : "";
+        if (p && p.evidencia.reportado !== huella && (p.estado !== "solicitado" || p.ultimoError)) {
+          p.evidencia.reportado = huella;
+          await almacen.guardar(p);
+          lineas.push(`  • ${caso.empresa} · ${String(p.evidencia.proveedor ?? "")} (${caso.id.slice(0, 8)}…): ${p.estado.replace(/_/g, " ")} (no procesado en este ciclo)${p.ultimoError ? ` — ${p.ultimoError}` : ""}`);
+        }
+        continue;
+      }
       const t = await almacen.obtener(hecho.clave);
       const dif = Array.isArray(t?.evidencia.diferencias) ? (t!.evidencia.diferencias as Array<{ campo: string; antes: string; despues: string; informativo?: boolean }>) : [];
       const detalle = dif.slice(0, 6).map((d) => `\n    - ${d.campo}${d.informativo ? " (informativo)" : ""}: ${d.antes} → ${d.despues}`).join("");
       lineas.push(`  • ${caso.empresa} · ${String(t?.evidencia.proveedor ?? "")} (${caso.id.slice(0, 8)}…): ${hecho.estado.replace(/_/g, " ")}${t?.ultimoError ? ` — ${t.ultimoError}` : ""}${detalle}`);
     }
-    if (lineas.length > 0) await notificarAdmins(`🧪 Conversión a ticket (lista aprobada): ${lineas.length} procesado(s)\n${lineas.join("\n")}`);
+    if (lineas.length > 0) await notificarAdmins(`🧪 Conversión a ticket (lista aprobada): ${lineas.length} gasto(s)\n${lineas.join("\n")}`);
   }
   if (opciones.revisionNocturna && modo === "activo") {
     const dudosos = await almacen.listar({ tipo: "ticket", estados: ["requiere_intervencion", "no_confirmado", "fallido"] });
