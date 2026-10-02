@@ -1,5 +1,5 @@
 import { crearNavegadorHolded } from "../holded/automatizacion/navegadorHolded";
-import { modoAutomatizacion } from "../holded/automatizacion/modo";
+import { modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
 import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
 import { claveTicket, procesarColaTickets, type ResumenTickets } from "../holded/automatizacion/tickets";
 import { almacenTrabajosHolded, hayAlmacenDuradero, nuevoTrabajo } from "../holded/automatizacion/trabajos";
@@ -53,29 +53,32 @@ export async function conversionTicketsHolded(opciones: { revisionNocturna?: boo
   const modo = modoSeguro("TICKETS");
   if (modo === "apagado") return undefined;
   const almacen = almacenTrabajosHolded();
-  // Caso controlado aprobado por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:idDeLaCompra". Mientras exista, SOLO se toca ese
-  // gasto (el resto de la cola no se procesa) y su resultado se comunica a los administradores.
-  const [empresaCaso, idCaso] = (process.env.WOBI_HOLDED_TICKETS_CASO ?? "").trim().split(":");
-  const soloIds = idCaso ? new Set([idCaso]) : undefined;
-  if (idCaso && empresaCaso) {
-    const clave = claveTicket(empresaCaso as Empresa, idCaso);
+  // Lista aprobada por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:id,Empresa:id,…". Mientras exista, SOLO se tocan esos gastos
+  // (el resto de la cola no se procesa) y el resultado de cada uno se comunica a los administradores en un solo aviso.
+  const casos = parsearCasosAprobados(process.env.WOBI_HOLDED_TICKETS_CASO);
+  const soloIds = casos.length > 0 ? new Set(casos.map((c) => c.id)) : undefined;
+  for (const caso of casos) {
+    const clave = claveTicket(caso.empresa, caso.id);
     if (!(await almacen.obtener(clave))) {
-      const t = nuevoTrabajo({ clave, tipo: "ticket", empresa: empresaCaso, objetivo: idCaso }, Date.now());
-      t.evidencia = { origen: "caso_controlado_aprobado", clasificacion: "ticket" };
+      const t = nuevoTrabajo({ clave, tipo: "ticket", empresa: caso.empresa, objetivo: caso.id }, Date.now());
+      t.evidencia = { origen: "lista_aprobada", clasificacion: "ticket" };
       await almacen.guardar(t);
       await almacen.evento(clave, "caso_controlado_registrado", {});
     }
   }
   const resumen = await procesarColaTickets({ almacen, navegador: crearNavegadorHolded, soloIds });
   console.log("[conversionTicketsHolded]", JSON.stringify({ modo, revisados: resumen.revisados, porEstado: resumen.porEstado }));
-  if (idCaso && empresaCaso && modo === "activo") {
-    const hecho = resumen.detalle.find((d) => d.clave === claveTicket(empresaCaso as Empresa, idCaso) && d.estado !== "solicitado");
-    if (hecho) {
+  if (casos.length > 0 && modo === "activo") {
+    const lineas: string[] = [];
+    for (const caso of casos) {
+      const hecho = resumen.detalle.find((d) => d.clave === claveTicket(caso.empresa, caso.id) && d.estado !== "solicitado");
+      if (!hecho) continue;
       const t = await almacen.obtener(hecho.clave);
       const dif = Array.isArray(t?.evidencia.diferencias) ? (t!.evidencia.diferencias as Array<{ campo: string; antes: string; despues: string; informativo?: boolean }>) : [];
-      const detalle = dif.slice(0, 10).map((d) => `\n  • ${d.campo}${d.informativo ? " (informativo)" : ""}: ${d.antes} → ${d.despues}`).join("");
-      await notificarAdmins(`🧪 Caso controlado de ticket (${empresaCaso} · ${idCaso}): ${hecho.estado.replace(/_/g, " ")}.${t?.ultimoError ? ` ${t.ultimoError}.` : ""}${detalle}`);
+      const detalle = dif.slice(0, 6).map((d) => `\n    - ${d.campo}${d.informativo ? " (informativo)" : ""}: ${d.antes} → ${d.despues}`).join("");
+      lineas.push(`  • ${caso.empresa} · ${String(t?.evidencia.proveedor ?? "")} (${caso.id.slice(0, 8)}…): ${hecho.estado.replace(/_/g, " ")}${t?.ultimoError ? ` — ${t.ultimoError}` : ""}${detalle}`);
     }
+    if (lineas.length > 0) await notificarAdmins(`🧪 Conversión a ticket (lista aprobada): ${lineas.length} procesado(s)\n${lineas.join("\n")}`);
   }
   if (opciones.revisionNocturna && modo === "activo") {
     const dudosos = await almacen.listar({ tipo: "ticket", estados: ["requiere_intervencion", "no_confirmado", "fallido"] });
