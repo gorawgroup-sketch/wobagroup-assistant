@@ -54,6 +54,21 @@ export interface LineaFactura {
   retencionPct?: number;
 }
 
+export interface DatosFacturaVenta {
+  cliente: string;
+  /** Total a cobrar, impuestos incluidos, tal como aparece impreso. */
+  total: number;
+  moneda: string;
+  /** YYYY-MM-DD; vacío si el documento no la trae. */
+  fechaFactura: string;
+  /** YYYY-MM-DD; vacío si el documento no indica vencimiento ni plazo de pago. */
+  fechaVencimiento: string;
+  numero: string;
+  /** Empresa del grupo que emite la factura. */
+  empresa: EmpresaGasto;
+  concepto: string;
+}
+
 export interface DatosFactura {
   esFacturaOGasto: boolean;
   /**
@@ -63,6 +78,11 @@ export interface DatosFactura {
   esDocumentoPoliza?: boolean;
   /** Motivo que dio el lector cuando el documento no es un gasto; sirve de pista para archivarlo bien. */
   razonNoGasto?: string;
+  /**
+   * Factura de VENTA emitida por el grupo a un cliente: dinero que va a ENTRAR. No es un gasto; su importe se propone
+   * para el área de ingresos del cashflow en la semana de su vencimiento (ver core/google/ingresoDesdeFacturaVenta.ts).
+   */
+  facturaVenta?: DatosFacturaVenta;
   proveedor: string;
   /** Total real de la factura (base + todo el IVA), tal como aparece impreso — se usa para el matching. */
   monto: number;
@@ -151,6 +171,18 @@ const REPORTAR_TOOL: Anthropic.Tool = {
   input_schema: {
     type: "object",
     properties: {
+      es_factura_venta: {
+        type: "boolean",
+        description:
+          "true si el documento es una factura de VENTA emitida por una empresa del grupo a un cliente (dinero que va " +
+          "a entrar). En ese caso es_factura_o_gasto=false.",
+      },
+      venta_cliente: { type: "string", description: "Solo facturas de venta: razón social del cliente al que se factura." },
+      venta_total: { type: "number", description: "Solo facturas de venta: total a cobrar, impuestos incluidos." },
+      venta_vencimiento: {
+        type: "string",
+        description: "Solo facturas de venta: fecha de vencimiento YYYY-MM-DD (impresa, o fecha de factura + plazo). Vacía si no consta.",
+      },
       es_documento_poliza: {
         type: "boolean",
         description:
@@ -376,6 +408,15 @@ function buildSystemPrompt(clasificacionesAprendidas: string | null): string {
       "aunque tenga toda la forma de una factura real con monto y proveedor identificables. Antes de " +
       "concluir que es un gasto, confirma que el grupo es quien PAGA en esa transacción, no quien la " +
       "emite/cobra.",
+    // Pedido de Carlos (2026-10-02): las facturas que el grupo emite a sus clientes llegan por correo para anotar en el
+    // cashflow cuándo entrará ese dinero.
+    "Cuando el documento sea una factura de VENTA emitida por una empresa del grupo a un cliente, reporta " +
+      "es_factura_o_gasto=false y es_factura_venta=true, y rellena: venta_cliente (razón social del cliente), " +
+      "venta_total (total a cobrar con impuestos, tal como aparece impreso), moneda, fecha (fecha de la factura), " +
+      "numero_documento, concepto, empresa_probable (la empresa del grupo que EMITE la factura) y venta_vencimiento " +
+      "(fecha de vencimiento en formato YYYY-MM-DD: la impresa; si solo indica un plazo, como «30 días» o «pago a 60 " +
+      "días fecha factura», calcúlala sumando ese plazo a la fecha de la factura y dilo en la razón; si no hay ni " +
+      "fecha ni plazo, déjala vacía — nunca la inventes).",
     "Si sí es un gasto, extrae proveedor, monto total, moneda, fecha y un concepto breve, tal como " +
       "aparecen en el documento — no inventes ni redondees. Un gasto con proveedor vacío es una " +
       "lectura incompleta: vuelve a mirar el encabezado, la razón social, el nombre comercial y el " +
@@ -643,10 +684,27 @@ export async function extraerDatosFactura(
 
       // Si el lector dice que ES un gasto (p. ej. un recibo de prima dentro del mismo PDF), manda eso: la marca de
       // póliza solo cuenta cuando el documento no es un gasto.
+      const esFacturaVenta = !esFacturaOGasto && (input.es_factura_venta === true || input.es_factura_venta === "true");
+      const totalVenta = typeof input.venta_total === "number" ? input.venta_total : Number(input.venta_total);
+      const textoDe = (valor: unknown) => (typeof valor === "string" ? valor.trim() : "");
       const esDocumentoPoliza = !esFacturaOGasto && (input.es_documento_poliza === true || input.es_documento_poliza === "true");
       return {
         esFacturaOGasto,
         ...(esDocumentoPoliza ? { esDocumentoPoliza: true } : {}),
+        ...(esFacturaVenta && Number.isFinite(totalVenta) && totalVenta > 0 && textoDe(input.venta_cliente)
+          ? {
+              facturaVenta: {
+                cliente: textoDe(input.venta_cliente),
+                total: totalVenta,
+                moneda: (textoDe(input.moneda) || "EUR").toUpperCase(),
+                fechaFactura: textoDe(input.fecha),
+                fechaVencimiento: textoDe(input.venta_vencimiento),
+                numero: textoDe(input.numero_documento),
+                empresa: (input.empresa_probable as EmpresaGasto) ?? "desconocida",
+                concepto: textoDe(input.concepto),
+              },
+            }
+          : {}),
         ...(!esFacturaOGasto && typeof input.razon === "string" && input.razon.trim() ? { razonNoGasto: input.razon.trim().slice(0, 400) } : {}),
         proveedor,
         monto,

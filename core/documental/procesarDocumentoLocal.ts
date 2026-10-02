@@ -1,3 +1,4 @@
+import { proponerIngresoDesdeFacturaVenta } from "../google/ingresoDesdeFacturaVenta";
 import { leerFacturaSinArchivarErrores } from "./leerFacturaSinArchivarErrores";
 import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -195,6 +196,19 @@ export async function procesarDocumentoLocal(
       if (resultado === "propuesta_enviada") return "gasto_propuesto";
       if (resultado === "propuesta_duplicada") return "gasto_duplicado";
       return "gasto_pendiente_datos";
+    }
+
+    // Factura de VENTA de WOBA o eWorks: su importe se propone para Ingresos del cashflow en la semana del vencimiento
+    // (ingresoDesdeFacturaVenta.ts). De otra empresa, o si la propuesta no se pudo publicar, sigue el archivado normal.
+    if (datosFactura?.facturaVenta) {
+      const propuesto = await proponerIngresoDesdeFacturaVenta({
+        chatId: entrada.chatId,
+        factura: datosFactura.facturaVenta,
+        nombreArchivo: entrada.nombreArchivoOriginal,
+        correoOrigen: entrada.correoOrigen,
+        notaAdjunto: entrada.notaAdjunto,
+      });
+      if (propuesto) return "archivo";
     }
 
     // El lector SÍ vio el contenido; el clasificador de carpetas solo ve nombre y texto. Lo que el lector concluyó
