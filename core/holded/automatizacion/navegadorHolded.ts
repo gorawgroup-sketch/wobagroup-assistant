@@ -20,8 +20,9 @@ interface HTMLElement { children: { length: number }; textContent: string | null
 const BASE = (process.env.WOBI_HOLDED_WEB_URL ?? "https://app.holded.com").replace(/\/$/, "");
 // Verificado contra la interfaz real (2026-10-02): la edición de un gasto tiene URL directa.
 const RUTA_EDITAR_COMPRA = process.env.WOBI_HOLDED_WEB_RUTA_EDITAR_COMPRA ?? "/doc/purchase/{id}/edit";
-const RUTA_TESORERIA = process.env.WOBI_HOLDED_WEB_RUTA_TESORERIA ?? "/treasury";
-const TIEMPO_MAXIMO_MS = 90_000;
+const RUTA_ATERRIZAJE = process.env.WOBI_HOLDED_WEB_RUTA_ATERRIZAJE ?? "/contacts";
+const RUTA_TESORERIA =process.env.WOBI_HOLDED_WEB_RUTA_TESORERIA ?? "/treasury";
+const TIEMPO_MAXIMO_MS = 150_000;
 
 let enUso = false;
 
@@ -80,7 +81,9 @@ async function abrirSesion(): Promise<{ browser: Browser; page: Page } | Resulta
 /** Distingue sesión válida de login/verificación mirando la URL y los textos visibles; no interactúa con ellos. */
 async function estadoSesion(page: Page): Promise<ResultadoNavegador> {
   const url = page.url();
-  const cuerpo = await page.evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "");
+  // Una recarga justo en este instante (pasa en la portada de Footprint) no es un fallo: se reintenta una vez.
+  const leerCuerpo = () => page.evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "");
+  const cuerpo = await leerCuerpo().catch(async () => { await pausa(2500); return leerCuerpo(); });
   if (/captcha|no soy un robot|i'?m not a robot/i.test(cuerpo)) return { estado: "requiere_verificacion", detalle: "Holded pide CAPTCHA; lo debe resolver una persona" };
   if (/verification code|código de verificación|two-factor|autenticación en dos pasos/i.test(cuerpo)) return { estado: "requiere_verificacion", detalle: "Holded pide verificación en dos pasos" };
   const pareceLogin = /\/(login|signin|auth)\b/i.test(url) || (/iniciar sesión|log in|sign in/i.test(cuerpo.slice(0, 600)) && /contraseña|password/i.test(cuerpo));
@@ -120,8 +123,50 @@ async function esperarMarco(page: Page, patron: RegExp, ms = 40_000): Promise<Fr
   return undefined;
 }
 
+/** Como clicPorTexto, pero una recarga de la pantalla en mitad de la consulta cuenta como «aún no» en vez de error. */
+const clicPorTextoSeguro = (marco: Frame, etiquetas: string[], exacto: boolean) => clicPorTexto(marco, etiquetas, exacto).catch(() => false);
+
+const empresaActivaEnPantalla = async (page: Page) =>
+  (await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 60)).catch(() => "")).toLowerCase();
+
+/**
+ * Una sola sesión web sirve para las tres empresas: antes de actuar se activa la empresa pedida (menú de la empresa →
+ * «Cambiar cuenta» → «WOBA» / «Footprint Global» / «Eworks», verificado en la interfaz real) y se comprueba que quedó activa.
+ * Es la sesión propia de WOBI (cookies capturadas en un inicio de sesión aparte): no altera la empresa activa de nadie más.
+ */
+async function activarEmpresa(page: Page, empresa: Empresa, urlLigera: string): Promise<ResultadoNavegador> {
+  // Se aterriza en una página LIGERA (el editor del propio gasto): la portada y el listado de Compras de Footprint (miles de
+  // documentos) hacen que el navegador sin pantalla se recargue en bucle; el editor y su menú de empresa sí son estables.
+  await page.goto(urlLigera, { waitUntil: "domcontentloaded" });
+  const sesion = await estadoSesion(page);
+  if (sesion.estado !== "ok") return sesion;
+  const objetivo = empresa.toLowerCase();
+  // Si la empresa pedida ya es la activa, basta esperar a que la pantalla la muestre (hasta 12 s).
+  const limite = Date.now() + 12_000;
+  while (Date.now() < limite) { if ((await empresaActivaEnPantalla(page)).startsWith(objetivo)) return { estado: "ok" }; await pausa(600); }
+  await page.waitForNetworkIdle({ idleTime: 1500, timeout: 20_000 }).catch(() => undefined); // la portada se recarga mientras termina de cargar
+  // El menú se abre con un clic en el selector; si la pantalla aún se estaba recargando, se reintenta hasta 4 veces.
+  let menu = false;
+  for (let intento = 0; intento < 4 && !menu; intento++) {
+    await page.mouse.click(120, 69);
+    await pausa(1500);
+    menu = await clicPorTextoSeguro(page.mainFrame(), ["Cambiar cuenta"], true);
+    if (!menu) await pausa(2500);
+  }
+  if (!menu) return { estado: "elemento_no_encontrado", detalle: "No se encontró «Cambiar cuenta» en el menú de la empresa" };
+  await pausa(1200);
+  if (!(await clicPorTextoSeguro(page.mainFrame(), [empresa], false))) return { estado: "elemento_no_encontrado", detalle: `No apareció ${empresa} en la lista de cuentas de Holded` };
+  const espera = Date.now() + 25_000;
+  while (Date.now() < espera) { if ((await empresaActivaEnPantalla(page)).startsWith(objetivo)) return { estado: "ok" }; await pausa(700); }
+  return { estado: "elemento_no_encontrado", detalle: `No se pudo activar la empresa ${empresa} en Holded; no se tocó nada` };
+}
+
 async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o: { borrador: boolean; guardar: boolean }): Promise<ResultadoNavegador> {
   await page.emulateTimezone("Europe/Madrid"); // las fechas del editor no deben desplazarse por la zona horaria del servidor
+  // Página de aterrizaje para cambiar de empresa: el menú de empresa está en todas, pero esta es la que se mantiene estable
+  // en el navegador sin pantalla (el editor de un gasto de OTRA empresa da error y la portada/Compras se recargan en bucle).
+  const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+  if (activada.estado !== "ok") return activada;
   await page.goto(`${BASE}${RUTA_EDITAR_COMPRA.replace("{id}", encodeURIComponent(compraId))}`, { waitUntil: "domcontentloaded" });
   const sesion = await estadoSesion(page);
   if (sesion.estado !== "ok") return sesion;
@@ -164,6 +209,24 @@ async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o:
   return { estado: "ok", detalle: "Casilla desmarcada y guardado pulsado; falta verificar con Holded" };
 }
 
+/**
+ * La interfaz de Holded a veces se recarga a mitad de acción (sobre todo en Footprint). Un fallo así es transitorio y se
+ * repite hasta 3 veces con un navegador nuevo. Repetir es seguro: si el guardado ya se había aplicado, la casilla aparece
+ * desmarcada y el flujo termina sin guardar nada más; el llamador verifica además el estado real en Holded.
+ * Sesión caducada, verificación, CAPTCHA o «no hay sesión» NUNCA se reintentan.
+ */
+async function conReintentosTransitorios(accion: () => Promise<ResultadoNavegador>, maximo = 3): Promise<ResultadoNavegador> {
+  let r: ResultadoNavegador = { estado: "error", detalle: "sin intentos" };
+  for (let intento = 1; intento <= maximo; intento++) {
+    r = await accion();
+    const transitorio = r.estado === "error" ||
+      (r.estado === "elemento_no_encontrado" && /Cambiar cuenta|lista de cuentas|No se abrió el editor|No se pudo activar/i.test(r.detalle));
+    if (!transitorio) return r;
+    await pausa(3000 * intento);
+  }
+  return r;
+}
+
 export class NavegadorHoldedPuppeteer implements NavegadorHolded {
   async sincronizarCuenta(_empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
     return conPagina(async (page) => {
@@ -181,12 +244,12 @@ export class NavegadorHoldedPuppeteer implements NavegadorHolded {
   }
 
   async desmarcarFacturaDeCompra(empresa: Empresa, compraId: string, opciones: { borrador?: boolean } = {}): Promise<ResultadoNavegador> {
-    return conPagina((page) => flujoDesmarcar(page, empresa, compraId, { borrador: opciones.borrador === true, guardar: true }));
+    return conReintentosTransitorios(() => conPagina((page) => flujoDesmarcar(page, empresa, compraId, { borrador: opciones.borrador === true, guardar: true })));
   }
 
   /** Ensayo: recorre el mismo camino pero NO guarda; informa de lo encontrado. El navegador se cierra sin cambios. */
   async ensayarDesmarcado(empresa: Empresa, compraId: string, borrador = false): Promise<ResultadoNavegador> {
-    return conPagina((page) => flujoDesmarcar(page, empresa, compraId, { borrador, guardar: false }));
+    return conReintentosTransitorios(() => conPagina((page) => flujoDesmarcar(page, empresa, compraId, { borrador, guardar: false })));
   }
 
   async cerrar(): Promise<void> { /* cada acción abre y cierra su propio navegador */ }
