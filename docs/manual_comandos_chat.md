@@ -369,3 +369,14 @@ Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las factu
 - Botones: "✅ Registrar en Ingresos y responder al remitente" (escribe la fila y, solo después de verificarla, contesta en el mismo hilo que la factura ya está leída y su importe en el cashflow), "✅ Confirmar en Ingresos" (solo registra), "↪️ Mejor en <área>" y "❌ Cancelar". Nada se escribe ni se envía sin el botón.
 - Solo WOBA y eWorks (las dos empresas del cashflow); una factura de venta de Footprint sigue el archivado normal.
 
+## Informe de reintegro de gastos por persona o proyecto (PDF + comprobantes)
+
+Pedido explícito de Carlos (02-10-2026), tras un caso real: pidió los gastos de septiembre de Nuria Ortiz para reclamarlos a MIMO y el chat respondió «solo hay 1» cuando en Holded había 28.
+
+- **Por qué fallaba**: el listado de compras de Holded no devuelve los tickets (casi todos los gastos de Footprint), y la etiqueta se comparaba exacta («nuria» no encontraba «nuriaortiz»). Ahora la búsqueda suma las facturas del listado y los gastos que Wobi registró (leídos uno a uno, tickets incluidos), reconoce las variantes de la etiqueta y siempre dice su cobertura.
+- **Cómo pedirlo**: «informe de gastos de Nuria de septiembre para pedir el reintegro a MIMO» (o cualquier persona/proyecto con hashtag, cualquier empresa, un mes o un rango de fechas). Tool `generar_informe_reintegro_gastos`.
+- **Qué llega al chat**: un PDF con la marca de la empresa, los tres totales (pagado en bancos, sin pagar en bancos, total), el resumen por categoría y el listado numerado con fecha, proveedor, concepto, n.º de documento, categoría, fecha y cuenta del pago e importe; y el botón "📎 Descargar comprobantes (ZIP)", que envía los comprobantes de Holded numerados igual que el informe y avisa de los gastos sin comprobante.
+- **Criterio**: «pagado en bancos» = sin saldo pendiente en Holded y con pago registrado desde una cuenta; «sin pagar» = registrado sin cargo en banco. Solo lee Holded.
+- **Límite**: un ticket creado a mano en Holded, fuera de Wobi, puede no aparecer; el informe lo indica. El logo se toma de `assets/marcas/<empresa>.png` si existe; si no, se usa el nombre de la empresa.
+- La consulta rápida `buscar_gastos_por_etiqueta_holded` usa la misma búsqueda (tickets y variantes incluidos).
+

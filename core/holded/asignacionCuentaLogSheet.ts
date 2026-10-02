@@ -102,3 +102,9 @@ export async function purgarAsignacionesVencidas(): Promise<void> {
     await eliminarFila(TAB_NAME, fila.rowIndex, HEADERS);
   }
 }
+
+/** Ids de los gastos registrados aquí para una empresa, sin filtrar por antigüedad (ver gastosPorEtiqueta.ts). */
+export async function listarGastoIdsAsignados(empresa: Empresa): Promise<string[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  return filas.map((f) => filaAObjeto(f.valores)).filter((a): a is AsignacionCuenta => a !== null && a.empresa === empresa).map((a) => a.gastoId);
+}

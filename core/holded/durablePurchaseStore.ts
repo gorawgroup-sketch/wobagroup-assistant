@@ -150,6 +150,16 @@ class StoreCreacionesCompra implements RepositorioCreacionesCompra {
     });
   }
 
+  /** Ids de Holded de las compras que Wobi creó para una empresa (incluye tickets, que el listado de Holded oculta). */
+  async listarIdsDeCompras(empresa: RegistroCreacionCompra["empresa"]): Promise<string[]> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      return [...this.registros.values()]
+        .filter((r) => r.empresa === empresa && r.holdedPurchaseId)
+        .map((r) => r.holdedPurchaseId as string);
+    });
+  }
+
   async listarPendientes(): Promise<RegistroCreacionCompra[]> {
     return conMutex(CLAVE_MUTEX, async () => {
       await this.inicializarYPurgar();
