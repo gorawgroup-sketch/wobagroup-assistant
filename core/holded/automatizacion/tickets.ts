@@ -20,6 +20,8 @@ export interface InstantaneaCompra {
   subtotal: string | null; total: string | null; impuestos: string | null; numero: string | null; estado: string | null;
   etiquetas: string[]; cobrado: string | null; pendienteCobro: string | null; pagos: string;
   fechaContable: string | null; fechaDeduccion: string | null;
+  /** Estado de borrador/aprobación y vencimiento: guardar desde la interfaz no debe aprobar ni mover fechas. */
+  borrador: boolean; aprobado: boolean; vencimiento: string | null;
   lineas: string[];
 }
 
@@ -35,6 +37,7 @@ export function instantaneaCompra(raw: Raw): InstantaneaCompra {
     cobrado: txt(raw.payments_total), pendienteCobro: txt(raw.payments_pending),
     pagos: JSON.stringify(raw.payments_detail ?? []),
     fechaContable: txt(raw.accounting_date), fechaDeduccion: txt(raw.deduction_date),
+    borrador: raw.draft === true, aprobado: Boolean(raw.approved_at), vencimiento: txt(raw.due_date),
     lineas: lineas.map((l) => JSON.stringify([l.name, l.price, l.units, l.discount, l.tax, [...((l.taxes as unknown[]) ?? [])].sort(), l.account, l.retention, [...((l.tags as unknown[]) ?? [])].sort()])),
   };
 }
@@ -134,14 +137,15 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
   if (real.estado === "ticket") { t.evidencia.yaEraTicket = true; t.verificadoEn = ahora(); return guardar("omitido", undefined); }
   const antes = instantaneaCompra(real.compra!);
   t.evidencia.antes = antes;
-  if (modo === "simulacion") { await dep.almacen.evento(clave, "simulado", { haria: "desmarcar «Es una factura de compra»", conciliado: antes.cobrado !== "0,00" }); return guardar("simulado"); }
+  // La simulación NO consume el trabajo: lo deja en cola (solicitado) con lo que haría, para que al activarlo se ejecute.
+  if (modo === "simulacion") { t.evidencia.simulacion = { en: ahora(), haria: "desmarcar «Es una factura de compra»", cobrado: antes.cobrado, borrador: antes.borrador }; return guardar("solicitado"); }
 
   const navegador = dep.navegador?.();
   if (!navegador) return guardar("requiere_intervencion", "Sin sesión web de Holded configurada en el servidor");
   t.intentos++;
   t.solicitadoEn = ahora();
   await dep.almacen.guardar(t);
-  const r = await navegador.desmarcarFacturaDeCompra(empresa, t.objetivo).catch((e): { estado: "error"; detalle: string } => ({ estado: "error", detalle: msg(e) }));
+  const r = await navegador.desmarcarFacturaDeCompra(empresa, t.objetivo, { borrador: antes.borrador }).catch((e): { estado: "error"; detalle: string } => ({ estado: "error", detalle: msg(e) }));
   await dep.almacen.evento(clave, "guardado_en_holded", { resultado: r });
   if (requiereIntervencion(r)) return guardar("requiere_intervencion", (r as { detalle?: string }).detalle);
 
