@@ -403,7 +403,7 @@ test("el detalle de diferencias dice QUÉ campo de QUÉ línea cambió (p. ej. l
 test("efectos normales de pasar a ticket (sin impuestos en las líneas, etiquetas copiadas a la línea) NO detienen el caso; lo demás sí", () =>
   conEntorno(ENV_TICKETS, async () => {
     const conInvSuj = () => compra({ lines: [{ name: "Viaje", price: "10,00", units: "1,00", discount: "0,00", tax: "0", taxes: ["p_iva_invsuj"], account: "acc1", retention: "0,00", tags: [] }] });
-    const comoTicket = (extra: Record<string, unknown> = {}) => compra({ ...extra, lines: [{ name: "Viaje", price: "10,00", units: "1,00", discount: "0,00", tax: "0", taxes: [], account: "acc1", retention: "0,00", tags: ["alimentacion", "kelly"] }] });
+    const comoTicket = (extra: Record<string, unknown> = {}) => compra({ ...extra, lines: [{ name: "Viaje", price: "10,00", units: "1,00", discount: "0,00", tax: "0", taxes: [], account: "acc1", retention: "0,00", tags: ["a", "b"] }] }); // la línea refleja las etiquetas del documento (["b","a"] en el fixture)
     // 1) caso real de Footprint: impuesto «inversión sujeto pasivo» vacío + etiquetas en la línea → completado
     let almacen = await preparar(); let mundo = new MundoHolded();
     mundo.compras.set("c1", conInvSuj());
