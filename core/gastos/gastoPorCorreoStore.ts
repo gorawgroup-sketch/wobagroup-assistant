@@ -286,3 +286,9 @@ export async function buscarGastoProcesadoPorIdentidad(
   }
   return mejor;
 }
+
+/** Ids de los gastos creados desde correo para una empresa (ver core/holded/gastosPorEtiqueta.ts). */
+export async function listarGastoIdsDesdeCorreo(empresa: string): Promise<string[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  return filas.filter((f) => f.valores[3] === empresa && f.valores[2]).map((f) => f.valores[2]);
+}

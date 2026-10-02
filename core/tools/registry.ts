@@ -46,6 +46,7 @@ import { editarValorCashflowTool } from "./editarValorCashflow";
 import { registrarManualCashflowTool } from "./registrarManualCashflow";
 import { reporteAprendizajeTool } from "./reporteAprendizaje";
 import { buscarGastosPorEtiquetaTool } from "./buscarGastosPorEtiqueta";
+import { informeReintegroGastosTool } from "./informeReintegroGastos";
 import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
 import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
 import { revisarColaCorreoTool } from "./revisarColaCorreo";
@@ -112,6 +113,7 @@ const tools: ToolDefinition[] = [
   registrarManualCashflowTool,
   reporteAprendizajeTool,
   buscarGastosPorEtiquetaTool,
+  informeReintegroGastosTool,
   leerAdjuntosCompraHoldedTool,
   revisarCorreoPuntualTool,
   revisarColaCorreoTool,

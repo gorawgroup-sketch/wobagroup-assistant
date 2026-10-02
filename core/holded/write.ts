@@ -2170,7 +2170,7 @@ const SINONIMOS_ETIQUETA: Record<string, string[]> = {
  * real sería una desactivación silenciosa y permanente de los tiers 2/3 de categorización para toda
  * la empresa, visible solo en logs. Object.hasOwn evita tocar la cadena de prototipos.
  */
-function tagsConSinonimosSeSolapan(a: string[], b: string[]): boolean {
+export function tagsConSinonimosSeSolapan(a: string[], b: string[]): boolean {
   const expandir = (tags: string[]): Set<string> => {
     const set = new Set<string>();
     for (const t of tags) {
@@ -3443,6 +3443,26 @@ export async function leerAdjuntosCompraHolded(
   }
 
   return resultados;
+}
+
+/** Descarga tal cual los comprobantes adjuntos de una compra (para entregarlos, no para leerlos). */
+export async function descargarAdjuntosCompraHolded(
+  empresa: Empresa,
+  purchaseId: string
+): Promise<Array<{ nombreArchivo: string; bytes: Buffer }>> {
+  const apiKey = getWriteApiKey(empresa);
+  const attachments = (await holdedWriteCall(empresa, "GET", `/purchases/${purchaseId}/attachments`)) as { items?: Array<{ id: string }> };
+  const nombres = Array.from(new Set((attachments.items ?? []).map((a) => a.id).filter(Boolean)));
+  const archivos: Array<{ nombreArchivo: string; bytes: Buffer }> = [];
+  for (const nombreArchivo of nombres) {
+    const response = await fetch(
+      `${HOLDED_API_BASE}/purchases/${purchaseId}/attachments/${encodeURIComponent(nombreArchivo)}`,
+      { headers: { Authorization: `Bearer ${apiKey}` } }
+    );
+    if (!response.ok) throw new Error(`Holded devolvió HTTP ${response.status} al descargar el comprobante "${nombreArchivo}".`);
+    archivos.push({ nombreArchivo, bytes: Buffer.from(await response.arrayBuffer()) });
+  }
+  return archivos;
 }
 
 /**
