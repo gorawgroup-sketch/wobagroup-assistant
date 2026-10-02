@@ -13,8 +13,11 @@ export interface CuentaParaNavegador { id: string; nombre: string; institucion?:
 
 export interface NavegadorHolded {
   sincronizarCuenta(empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador>;
-  /** Abre la compra, Editar → Opciones → desmarca «Es una factura de compra» → Guardar. No verifica: eso lo hace el llamador. */
-  desmarcarFacturaDeCompra(empresa: Empresa, compraId: string): Promise<ResultadoNavegador>;
+  /**
+   * Abre la edición de la compra, Opciones → desmarca «Es una factura de compra» → Guardar. Si el gasto es borrador se usa
+   * «Guardar como borrador» para no aprobarlo. No verifica: eso lo hace el llamador.
+   */
+  desmarcarFacturaDeCompra(empresa: Empresa, compraId: string, opciones?: { borrador?: boolean }): Promise<ResultadoNavegador>;
   cerrar(): Promise<void>;
 }
 
