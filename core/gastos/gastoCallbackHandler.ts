@@ -66,6 +66,7 @@ import { registrarClasificacionAprendida } from "./clasificacionAprendidaSheet";
 import { debeRecordarProveedorAprobado, registrarAliasProveedor } from "./proveedorAliasSheet";
 import { registrarGastoDescartadoPorOperador } from "./gastoDescartadoPorOperadorStore";
 import { registrarAsignacionCuenta } from "../holded/asignacionCuentaLogSheet";
+import { registrarClasificacionTicketNoCritico } from "../holded/automatizacion/registroRecepcion";
 import { marcarGastoDesdeCorreoCompletado, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
 import {
   guardarResolucionContacto,
@@ -3376,6 +3377,12 @@ async function crearGastoYReportar(
           (error) => console.error("[gastoCallbackHandler] No se pudo registrar la asignación de cuenta (no crítico):", error)
         )
       : Promise.resolve(),
+    // Clasificación ticket/factura con su evidencia (no crítico y sin efecto si la automatización está apagada).
+    registrarClasificacionTicketNoCritico({
+      empresa: empresaFinal, compraId: gasto.id, proveedor: propuesta.proveedor, numeroDocumento: propuesta.numeroDocumento,
+      reciboSimplificado: propuesta.reciboSimplificado,
+      textoEvidencia: [propuesta.concepto, propuesta.nombreArchivoOriginal, propuesta.correoOrigen?.asunto].filter(Boolean).join(" · "),
+    }),
   ]);
 
   const nombreContacto = contacto.name ?? propuesta.proveedor;

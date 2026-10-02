@@ -45,6 +45,16 @@ ALTER TABLE wobi_mail_resume ADD COLUMN IF NOT EXISTS instance text NOT NULL DEF
 ALTER TABLE wobi_mail_resume ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS wobi_mail_operations_pending ON wobi_mail_operations(mailbox, state);
 CREATE INDEX IF NOT EXISTS wobi_mail_events_message ON wobi_mail_events(mailbox, message_id);
+CREATE TABLE IF NOT EXISTS wobi_holded_jobs (
+  key text PRIMARY KEY, kind text NOT NULL, company text NOT NULL, state text NOT NULL,
+  data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS wobi_holded_jobs_kind_state ON wobi_holded_jobs(kind, state);
+CREATE TABLE IF NOT EXISTS wobi_holded_job_events (
+  id bigserial PRIMARY KEY, key text NOT NULL, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS wobi_holded_job_events_key ON wobi_holded_job_events(key);
 `;
 let pool: Pool | undefined;
 export function hayCoordinacionDurable(): boolean { return Boolean(process.env.WOBI_MAIL_DATABASE_URL); }
