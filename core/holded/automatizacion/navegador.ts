@@ -6,7 +6,7 @@ import type { Empresa } from "../client";
  * orquestación con un navegador simulado, sin sesión real.
  */
 export type ResultadoNavegador =
-  | { estado: "ok"; detalle?: string }
+  | { estado: "ok"; detalle?: string; /** Texto que Holded mostró junto al saldo tras sincronizar (p. ej. «Actualizado hace unos segundos»). */ confirmadoEnPantalla?: string }
   | { estado: "sesion_caducada" | "requiere_verificacion" | "no_disponible" | "elemento_no_encontrado" | "error"; detalle: string };
 
 export interface CuentaParaNavegador { id: string; nombre: string; institucion?: string }
