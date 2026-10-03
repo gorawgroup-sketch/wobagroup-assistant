@@ -75,6 +75,11 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   }
   const resumen = await procesarColaTickets({ almacen, navegador: crearNavegadorHolded, soloIds });
   console.log("[conversionTicketsHolded]", JSON.stringify({ modo, revisados: resumen.revisados, porEstado: resumen.porEstado }));
+  // Traza visible en /health del estado de cada gasto de la lista aprobada (tanto si se procesó en este ciclo como si no).
+  for (const caso of casos) {
+    const p = await almacen.obtener(claveTicket(caso.empresa, caso.id)).catch(() => undefined);
+    registrarTraza("caso_ticket", { empresa: caso.empresa, id: caso.id.slice(0, 8), estado: p?.estado ?? "sin registro", intentos: p?.intentos ?? 0, error: p?.ultimoError?.slice(0, 140) ?? null });
+  }
   if (casos.length > 0 && modo === "activo") {
     const lineas: string[] = [];
     for (const caso of casos) {
