@@ -139,10 +139,42 @@ test("una cuenta que falla no bloquea a las demás; los errores transitorios se 
   conEntorno(ENV_SYNC, async () => {
     const almacen = new AlmacenTrabajosMemoria();
     const nav = new NavegadorFalso((c) => (c.id === "mala" ? { estado: "error", detalle: "boom" } : { estado: "ok" }));
-    await lanzarSincronizacionBancaria("2026-10-02", { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("mala"), cuenta("buena")], dormir: async () => {}, esperaMs: () => 0 });
-    assert.equal(nav.llamadas.filter((x) => x === "mala").length, 3);
-    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:mala"))?.estado, "fallido");
+    const dep = { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("mala"), cuenta("buena")], dormir: async () => {}, esperaMs: () => 0 };
+    // Pasada 1 (06:00): la mala queda «solicitada» para reintentarse; la buena se lanza y no se repite.
+    await lanzarSincronizacionBancaria("2026-10-02", dep);
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:mala"))?.estado, "solicitado");
     assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:buena"))?.estado, "en_curso");
+    // Pasadas 2 y 3 (06:40 y 07:20): al agotar las del día pasa a «fallido»; la buena sigue sin repetirse.
+    await lanzarSincronizacionBancaria("2026-10-02", dep);
+    await lanzarSincronizacionBancaria("2026-10-02", dep);
+    assert.equal(nav.llamadas.filter((x) => x === "mala").length, 3);
+    assert.equal(nav.llamadas.filter((x) => x === "buena").length, 1);
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:mala"))?.estado, "fallido");
+  }));
+
+test("fallo transitorio de la pantalla (empresa sin activar, botón aún sin aparecer): se recupera en una pasada posterior, sin intervención", () =>
+  conEntorno(ENV_SYNC, async () => {
+    const almacen = new AlmacenTrabajosMemoria();
+    let intento = 0;
+    const nav = new NavegadorFalso(() => (++intento === 1 ? { estado: "elemento_no_encontrado", detalle: "La empresa activa en Holded no es WOBA; no se tocó nada" } : { estado: "ok" }));
+    const dep = { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a")], dormir: async () => {} };
+    await lanzarSincronizacionBancaria("2026-10-02", dep);
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.estado, "solicitado"); // NO «requiere intervención»
+    await lanzarSincronizacionBancaria("2026-10-02", dep); // pasada de las 06:40
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.estado, "en_curso");
+  }));
+
+test("lo que sí exige a una persona no se reintenta: consentimiento del banco, sesión caducada", () =>
+  conEntorno(ENV_SYNC, async () => {
+    for (const r of [{ estado: "elemento_no_encontrado", detalle: "La cuenta pide renovar el consentimiento del banco" }, { estado: "sesion_caducada", detalle: "caducó" }] as ResultadoNavegador[]) {
+      const almacen = new AlmacenTrabajosMemoria();
+      const nav = new NavegadorFalso(() => r);
+      const dep = { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a")], dormir: async () => {} };
+      await lanzarSincronizacionBancaria("2026-10-02", dep);
+      await lanzarSincronizacionBancaria("2026-10-02", dep);
+      assert.equal(nav.llamadas.length, 1);
+      assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.estado, "requiere_intervencion");
+    }
   }));
 
 test("antes de reintentar se mira el estado real: si Holded ya actualizó, no se repite la acción", () =>
@@ -315,6 +347,19 @@ test("sesión caducada: requiere intervención y no se reintenta; error transito
     for (let i = 0; i < 3; i++) await procesarColaTickets({ almacen: a2, leer: mundo.leer, navegador: () => navegadorTickets(mundo, () => ({ estado: "error", detalle: "fallo" })) });
     const t = await a2.obtener(claveTicket("Footprint", "c1"));
     assert.equal(t?.estado, "fallido"); assert.equal(t?.intentos, 3);
+  }));
+
+test("conversión: un fallo transitorio de la pantalla deja el caso en cola para el siguiente ciclo (no «requiere intervención»); al agotar los intentos, «fallido»", () =>
+  conEntorno(ENV_TICKETS, async () => {
+    const almacen = await preparar(); const mundo = new MundoHolded();
+    const nav = () => navegadorTickets(mundo, () => ({ estado: "elemento_no_encontrado", detalle: "La empresa activa en Holded no es Footprint; no se tocó nada" }));
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav });
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "c1")))?.estado, "solicitado");
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav });
+    await procesarColaTickets({ almacen, leer: mundo.leer, navegador: nav });
+    const t = await almacen.obtener(claveTicket("Footprint", "c1"));
+    assert.equal(t?.estado, "fallido");
+    assert.equal(t?.intentos, 3);
   }));
 
 test("una lectura fallida de Holded no se interpreta: el caso queda en cola, sin tocar nada", () =>

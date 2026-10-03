@@ -40,8 +40,12 @@ reciente). Hay dos cuentas viejas que probablemente necesitan intervención huma
   (sesión caducada, 2FA/CAPTCHA, botón no encontrado/consentimiento) · `no_confirmado` (sin evidencia en 3 h) · `omitido` · `simulado`.
 - Pulsar el botón **nunca** marca completada: lo hace la pasada de verificación (06:10, :30, :50 hasta las 09:50) al ver
   `synced_at` posterior; registra la hora de verificación.
-- Una cuenta que falla no bloquea a las demás. Errores transitorios: hasta 3 intentos con espera creciente, mirando antes
-  el estado real de Holded para no repetir lo que sí surtió efecto.
+- Una cuenta que falla no bloquea a las demás. **Solo exigen a una persona** la sesión caducada, el 2FA/CAPTCHA, la falta de
+  sesión y un banco que pide renovar el consentimiento. Todo lo demás (pantalla recargada, empresa sin activar, botón que aún
+  no apareció) es transitorio: la cuenta queda «solicitada» y se repite en las pasadas de las **06:40 y 07:20** (3 pasadas al día;
+  después, «fallida»). Antes de repetir se mira el estado real de Holded para no repetir lo que sí surtió efecto. La conversión a
+  ticket aplica la misma política (hasta 3 ciclos de 30 min antes de «fallido»).
+- Consulta en el chat: «¿se sincronizó el banco hoy?» (herramienta `estado_automatizacion_holded`, solo lectura).
 - A las 09:45 se avisa por Telegram **solo a los administradores** y **solo si** hay cuentas fallidas, que requieren
   intervención o sin confirmar. Silencio = todo bien.
 - La conciliación posterior puede consultar `cuentaTieneActualizacionConfirmada(almacen, empresa, cuentaId, desde)`.
@@ -67,10 +71,15 @@ antes del marcador queda fuera de la conversión automática (el inventario lo m
 
 ## Sesión web de Holded (procedimiento seguro)
 
-**Una sesión por empresa** (`WOBI_HOLDED_WEB_SESSION_WOBA`, `_EWORKS`, `_FOOTPRINT`). El servidor no cambia de empresa por
-dentro: en Footprint (miles de documentos) la interfaz se recarga en bucle en el navegador sin pantalla y el cambio es
-inestable. Con sesión propia entra directo al editor del gasto y solo verifica que la empresa activa es la esperada. La
-variable general `WOBI_HOLDED_WEB_SESSION` queda como último recurso (con cambio de empresa interno, menos fiable).
+**La empresa activa en Holded es del USUARIO, no de la sesión** (descubierto el 2026-10-03: la primera sincronización de las 06:00
+falló en las 3 cuentas). Cualquier acción —de WOBI, de una prueba o de una persona usando esa cuenta— cambia la empresa activa
+para TODAS las sesiones, así que nunca se puede suponer cuál es. Por eso el trabajador **activa siempre la empresa pedida antes
+de actuar** (menú de la empresa → «Cambiar cuenta») y verifica que quedó activa; si ya lo era, no toca nada. Las páginas de
+Footprint (miles de documentos) tardan 10-15 s en asentarse porque se recargan al abrir: se espera a que el texto sea estable
+antes de interactuar. Variables: `WOBI_HOLDED_WEB_SESSION_WOBA|_EWORKS|_FOOTPRINT` (cualquiera de ellas vale: son el mismo
+usuario) y `WOBI_HOLDED_WEB_SESSION` como general. **Efecto a tener en cuenta:** si una persona usa Holded con ese mismo usuario
+mientras corre una automatización, su empresa activa puede cambiar al recargar; la solución limpia es un usuario de Holded
+dedicado a WOBI.
 
 1. En tu ordenador: `npx tsx scripts/holded-sesion.ts capturar` (o `capturar Footprint` para una sola) → se abre Chrome y,
    para cada empresa, una ventana nueva con sesión independiente: **tú** inicias sesión (contraseña, 2FA y CAPTCHA los
