@@ -1,4 +1,5 @@
 import { holdedGet, type Empresa } from "../client";
+import { MAX_CONVERSIONES_POR_CICLO, MAX_CONVERSIONES_POR_DIA, UMBRAL_DISYUNTOR } from "./cuidados";
 import { clasificarDocumento, type SenalesDocumento } from "./clasificacionTicket";
 import { empresasAutomatizacion, modoAutomatizacion } from "./modo";
 import { requiereIntervencion, type NavegadorHolded } from "./navegador";
@@ -224,7 +225,7 @@ export interface DependenciasTickets {
   /** Empresas con un caso controlado aprobado; si se define, solo esos ids se tocan (alcance de la prueba). */
   soloIds?: ReadonlySet<string>;
 }
-export interface ResumenTickets { modo: string; revisados: number; porEstado: Record<string, number>; detalle: Array<{ clave: string; estado: string; nota?: string }> }
+export interface ResumenTickets { /** Casos con cambios inesperados hoy: si alcanza el umbral, la conversión se detiene sola. */ disyuntor?: number; modo: string; revisados: number; porEstado: Record<string, number>; detalle: Array<{ clave: string; estado: string; nota?: string }> }
 
 export async function procesarColaTickets(dep: DependenciasTickets): Promise<ResumenTickets> {
   const modo = modoAutomatizacion("TICKETS");
@@ -238,7 +239,13 @@ export async function procesarColaTickets(dep: DependenciasTickets): Promise<Res
   const empresasRegla = new Set<string>(empresasAutomatizacion("TICKETS_REGLA"));
   const cola = (await dep.almacen.listar({ tipo: "ticket", estados: ["solicitado"] })).filter((t) =>
     t.evidencia.origen === "regla_auto" ? reglaActiva && empresasRegla.has(t.empresa) : empresas.has(t.empresa) && (!dep.soloIds || dep.soloIds.has(t.objetivo)));
-  for (const job of cola) {
+  // Cuidados (el usuario de WOBI en Holded es Administrador): disyuntor y topes. Si dos casos del día terminaron con cambios
+  // inesperados en Holded, no se procesa NADA más hasta que una persona lo revise; y nunca más de N conversiones por ciclo/día.
+  const recientes = await dep.almacen.listar({ tipo: "ticket", desde: ahora() - 24 * 3_600_000 });
+  const inesperados = recientes.filter((t) => t.estado === "requiere_intervencion" && Array.isArray(t.evidencia.camposCambiados) && t.evidencia.camposCambiados.length > 0).length;
+  if (inesperados >= UMBRAL_DISYUNTOR) { resumen.disyuntor = inesperados; return resumen; }
+  const presupuesto = Math.max(0, Math.min(MAX_CONVERSIONES_POR_CICLO, MAX_CONVERSIONES_POR_DIA - recientes.filter((t) => t.estado === "completado").length));
+  for (const job of cola.slice(0, presupuesto)) {
     const r = await dep.almacen.conExclusion(job.clave, () => procesarTicket(job.clave, modo, dep, ahora));
     const t = r === "ocupado" ? await dep.almacen.obtener(job.clave) : r;
     resumen.revisados++;

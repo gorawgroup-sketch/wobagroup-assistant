@@ -1,5 +1,7 @@
 import type { Browser, Frame, Page, Cookie } from "puppeteer-core";
 import type { Empresa } from "../client";
+import { esSolicitudPeligrosa, exigirEtiquetasPermitidas } from "./cuidados";
+import { registrarTraza } from "./traza";
 import type { CuentaParaNavegador, NavegadorHolded, ResultadoNavegador } from "./navegador";
 
 /**
@@ -59,6 +61,7 @@ const pausa = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Clic en el primer elemento visible cuyo texto coincide con alguna de las etiquetas. */
 async function clicPorTexto(page: Page | Frame, etiquetas: string[], exacto = false, hacerClic = true): Promise<boolean> {
+  if (hacerClic) exigirEtiquetasPermitidas(etiquetas);
   return page.evaluate((tags, soloExacto, clic) => {
     const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
     const buscados = tags.map(norm);
@@ -85,6 +88,15 @@ async function abrirSesion(empresa: Empresa): Promise<{ browser: Browser; page: 
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(20_000);
+    // Cuidado de seguridad (el usuario de WOBI es Administrador): se bloquea cualquier borrado y cualquier escritura sobre usuarios,
+    // suscripción, facturación o cierre de periodos, y se deja constancia en /health.
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      if (esSolicitudPeligrosa(req.method(), req.url())) {
+        registrarTraza("peticion_bloqueada", { metodo: req.method(), ruta: (() => { try { return new URL(req.url()).pathname.slice(0, 80); } catch { return "?"; } })() });
+        void req.abort("blockedbyclient").catch(() => undefined);
+      } else void req.continue().catch(() => undefined);
+    });
     await page.evaluateOnNewDocument("window.__name = window.__name || function (f) { return f; }");
     await page.setCookie(...cookies);
     return { browser, page, dedicada };

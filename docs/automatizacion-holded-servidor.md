@@ -100,6 +100,19 @@ Interruptores propios: `WOBI_HOLDED_TICKETS_REGLA_MODO` (apagado | simulacion | 
 En **simulación** la exploración (cada 30 min, últimos 14 días) registra candidatos y avisa a los administradores, pero la cola no
 procesa ninguno ni toca Holded. Solo con el modo en `activo` se convierten. Ver también `/health` → `automatizacionHolded`.
 
+## Cuidados con el usuario Administrador de WOBI en Holded
+
+El usuario de WOBI en Holded tiene rol Administrador (decisión de Carlos). Para que eso no pueda perjudicar la contabilidad, lo que
+el rol permitiría se recorta en el propio navegador de WOBI (`core/holded/automatizacion/cuidados.ts`, con pruebas):
+- **Bloqueo de red:** se rechaza cualquier petición DELETE y cualquier escritura sobre invitaciones/gestión de usuarios,
+  suscripción, facturación, cierre de periodos o claves de API. Cada bloqueo queda en `/health` (`peticion_bloqueada`).
+- **Clics:** el sistema se niega a pulsar etiquetas como «Eliminar», «Borrar», «Invitar», «Cerrar periodo», «Cancelar suscripción».
+- **Topes:** máximo 10 conversiones por ciclo (30 min) y 40 por día.
+- **Disyuntor:** si 2 gastos de las últimas 24 h terminan con cambios inesperados en Holded, la conversión se detiene sola, se avisa a
+  los administradores y no se procesa nada más hasta que una persona lo revise.
+- Se mantienen las salvaguardas de siempre: nombre legal de la empresa verificado antes de actuar, id de cuenta/gasto propio de cada
+  empresa, alcance por listas aprobadas, botones de aprobación para toda escritura por API, y WOBI nunca reconecta bancos.
+
 ## Sesión web de Holded (procedimiento seguro)
 
 **La empresa activa en Holded es del USUARIO, no de la sesión** (descubierto el 2026-10-03: la primera sincronización de las 06:00
