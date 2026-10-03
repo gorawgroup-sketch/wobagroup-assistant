@@ -53,6 +53,7 @@ async function sincronizacionBancariaHoldedInterna(fase: "lanzar" | "verificar" 
   return undefined;
 }
 
+let ultimoAvisoDisyuntor = "";
 async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boolean } = {}): Promise<ResumenTickets | undefined> {
   const modo = modoSeguro("TICKETS");
   if (modo === "apagado") return undefined;
@@ -85,6 +86,14 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   for (const caso of casos) await registrarCasoAprobado(almacen, caso.empresa, caso.id);
   const resumen = await procesarColaTickets({ almacen, navegador: crearNavegadorHolded, soloIds });
   console.log("[conversionTicketsHolded]", JSON.stringify({ modo, revisados: resumen.revisados, porEstado: resumen.porEstado }));
+  if (resumen.disyuntor) {
+    registrarTraza("disyuntor_conversion", { casosInesperados: resumen.disyuntor });
+    const dia = fechaHoyEspana();
+    if (ultimoAvisoDisyuntor !== dia) {
+      ultimoAvisoDisyuntor = dia;
+      await notificarAdmins(`🛑 Conversión a ticket DETENIDA por seguridad: ${resumen.disyuntor} gasto(s) de las últimas 24 h terminaron con cambios inesperados en Holded. No se convierte nada más hasta que lo revises (pídeme el estado de las automatizaciones de Holded).`).catch(() => undefined);
+    }
+  }
   // Traza visible en /health del estado de cada gasto de la lista aprobada (tanto si se procesó en este ciclo como si no).
   for (const caso of casos) {
     const p = await almacen.obtener(claveTicket(caso.empresa, caso.id)).catch(() => undefined);
