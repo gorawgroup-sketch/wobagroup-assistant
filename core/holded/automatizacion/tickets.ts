@@ -120,6 +120,31 @@ export async function reabrirTicketsTransitorios(almacen: AlmacenTrabajos): Prom
   return reabiertos;
 }
 
+/**
+ * Registra un gasto de la LISTA APROBADA por Carlos. Si ya existía un registro creado al recibir el documento que quedó en revisión
+ * por «clasificación dudosa» (nunca se llegó a intentar nada), la aprobación explícita lo sobrescribe y pasa a la cola.
+ * Cualquier otro estado existente se respeta.
+ */
+export async function registrarCasoAprobado(almacen: AlmacenTrabajos, empresa: Empresa, id: string, ahora: number = Date.now()): Promise<"creado" | "reabierto" | "existente"> {
+  const clave = claveTicket(empresa, id);
+  const previo = await almacen.obtener(clave);
+  if (!previo) {
+    const t = nuevoTrabajo({ clave, tipo: "ticket", empresa, objetivo: id }, ahora);
+    t.evidencia = { origen: "lista_aprobada", clasificacion: "ticket" };
+    await almacen.guardar(t);
+    await almacen.evento(clave, "caso_controlado_registrado", {});
+    return "creado";
+  }
+  if (previo.estado === "requiere_intervencion" && previo.intentos === 0 && /Clasificación dudosa/.test(previo.ultimoError ?? "")) {
+    previo.estado = "solicitado"; previo.ultimoError = undefined; previo.actualizadoEn = ahora;
+    previo.evidencia = { ...previo.evidencia, origen: "lista_aprobada", aprobadoPorCarlos: true };
+    await almacen.guardar(previo);
+    await almacen.evento(clave, "aprobado_por_lista", { motivo: "la lista aprobada por escrito manda sobre la clasificación dudosa" });
+    return "reabierto";
+  }
+  return "existente";
+}
+
 export interface DetalleDiferencia { campo: string; antes: string; despues: string; informativo?: boolean }
 const corto = (v: unknown) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > 140 ? `${s.slice(0, 140)}…` : s; };
 

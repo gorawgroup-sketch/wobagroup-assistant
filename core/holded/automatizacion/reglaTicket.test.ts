@@ -67,3 +67,18 @@ test("SIMULACIÓN de la regla: los casos registrados NO se procesan ni tocan Hol
     assert.ok(lecturas > 0); // con la regla activa, el caso entra en la cola y se intenta
   } finally { for (const k of Object.keys(process.env)) if (!(k in prev)) delete process.env[k]; Object.assign(process.env, prev); }
 });
+
+test("lista aprobada: la aprobación escrita de Carlos manda sobre una clasificación dudosa que nunca se intentó; respeta cualquier otro estado", async () => {
+  const { registrarCasoAprobado } = await import("./tickets");
+  const almacen = new AlmacenTrabajosMemoria();
+  assert.equal(await registrarCasoAprobado(almacen, "Footprint", "n1"), "creado");
+  const base = { tipo: "ticket" as const, empresa: "Footprint", creadoEn: 1, actualizadoEn: 1, evidencia: { origen: "recepcion" } as Record<string, unknown> };
+  await almacen.guardar({ ...base, clave: claveTicket("Footprint", "dudoso"), objetivo: "dudoso", estado: "requiere_intervencion", intentos: 0, ultimoError: "Clasificación dudosa: pendiente de revisión" });
+  await almacen.guardar({ ...base, clave: claveTicket("Footprint", "hecho"), objetivo: "hecho", estado: "completado", intentos: 1 });
+  await almacen.guardar({ ...base, clave: claveTicket("Footprint", "intentado"), objetivo: "intentado", estado: "requiere_intervencion", intentos: 2, ultimoError: "Clasificación dudosa: pendiente de revisión" });
+  assert.equal(await registrarCasoAprobado(almacen, "Footprint", "dudoso"), "reabierto");
+  assert.equal((await almacen.obtener(claveTicket("Footprint", "dudoso")))?.estado, "solicitado");
+  assert.equal((await almacen.obtener(claveTicket("Footprint", "dudoso")))?.evidencia.origen, "lista_aprobada");
+  assert.equal(await registrarCasoAprobado(almacen, "Footprint", "hecho"), "existente");
+  assert.equal(await registrarCasoAprobado(almacen, "Footprint", "intentado"), "existente");
+});
