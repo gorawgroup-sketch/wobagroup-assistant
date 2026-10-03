@@ -11,6 +11,19 @@ existentes, aunque sea más lento. El detalle y el porqué (incidentes reales qu
 están en [docs/principios-de-construccion.md](docs/principios-de-construccion.md) — léelo
 antes de agregar una capacidad nueva.
 
+## Orden de trabajo — antes de empezar cualquier cosa (Carlos, 2026-10-03)
+
+El sistema crece con varias sesiones a la vez (Claude Code y Codex). Para no crecer desordenado:
+
+- Lee y actualiza el tablero [docs/trabajo-en-curso.md](docs/trabajo-en-curso.md): una fila por trabajo, con su rama,
+  su área y quién lo lleva. Una sola sesión por área a la vez.
+- Si tu encargo cita una rama, un commit o una copia de trabajo, compruébalos primero; si no coinciden con la realidad,
+  detente y dilo antes de tocar nada. Nunca continúes en una rama ya fusionada ni en la copia de trabajo de otra sesión.
+- Cada capacidad nueva en su propia carpeta; los archivos centrales (`core/holded/write.ts`,
+  `core/gastos/gastoCallbackHandler.ts`, `src/server.ts`, `core/jobs/revisarCorreoNuevo.ts`) solo reciben el punto de
+  conexión.
+- Al fusionar: borra la rama, cierra la copia de trabajo y actualiza el tablero.
+
 ## Los 3 puntos de extensión ya existentes — úsalos, no los reinventes
 
 1. **Nuevo módulo de Cerebro (front)** → entrada en `SECCIONES`
