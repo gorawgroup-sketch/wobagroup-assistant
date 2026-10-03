@@ -267,9 +267,17 @@ async function flujoSincronizar(page: Page, empresa: Empresa, cuenta: CuentaPara
   }
   if (!o.pulsar) return { estado: "ok", detalle: `Ensayo correcto: página de «${cuenta.nombre}» y botón «Sincronizar» localizados (SIN pulsar)` };
   if (!(await clicPorTextoSeguro(page.mainFrame(), ["Sincronizar", "Synchronize"], true, true))) return { estado: "error", detalle: "No se pudo pulsar «Sincronizar»" };
-  await pausa(3000);
+  // Confirmación en pantalla: tras sincronizar, junto al saldo Holded cambia «Actualizado hace N horas» por «Actualizado hace unos
+  // segundos». Es la prueba de que se sincronizó, cuenta por cuenta; se espera hasta 2 minutos.
+  const limiteConfirmacion = Date.now() + 120_000;
+  while (Date.now() < limiteConfirmacion) {
+    const texto = await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ")).catch(() => "");
+    const m = /Actualizado hace (unos segundos|\d+ segundos?|un minuto|un momento|unos instantes)/i.exec(texto);
+    if (m) return { estado: "ok", detalle: `Sincronizada: «${m[0]}»`, confirmadoEnPantalla: m[0] };
+    await pausa(2000);
+  }
   const despues = await estadoSesion(page);
-  return despues.estado === "ok" ? { estado: "ok", detalle: "Botón «Sincronizar» pulsado; falta verificar con Holded" } : despues;
+  return despues.estado === "ok" ? { estado: "ok", detalle: "Botón «Sincronizar» pulsado; la pantalla no mostró «Actualizado hace unos segundos» en 2 min (se verifica con Holded)" } : despues;
 }
 
 /**

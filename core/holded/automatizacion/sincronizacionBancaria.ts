@@ -195,6 +195,11 @@ async function procesarCuenta(
     const r = await navegador.sincronizarCuenta(cuenta.empresa, { id: cuenta.id, nombre: cuenta.nombre, institucion: cuenta.institucion })
       .catch((e): { estado: "error"; detalle: string } => ({ estado: "error", detalle: msg(e) }));
     await dep.almacen.evento(clave, "lanzado", { intento, resultado: r });
+    if (r.estado === "ok" && r.confirmadoEnPantalla) {
+      // Holded mostró «Actualizado hace unos segundos» junto al saldo: sincronizada, con la hora y el texto como evidencia.
+      t.ultimoError = undefined; t.verificadoEn = ahora(); t.evidencia.confirmadoEnPantalla = r.confirmadoEnPantalla;
+      return guardar("completado");
+    }
     if (r.estado === "ok") { t.ultimoError = undefined; return guardar("en_curso"); }
     t.ultimoError = r.detalle;
     if (requiereIntervencion(r)) return guardar("requiere_intervencion");

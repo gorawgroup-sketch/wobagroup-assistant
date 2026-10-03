@@ -220,6 +220,18 @@ test("las cuentas de hoy que fallaron por un motivo transitorio se reabren; las 
     assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:ayer"))?.estado, "requiere_intervencion"); // de otro día: no se toca
   }));
 
+test("confirmación en pantalla: «Actualizado hace unos segundos» junto al saldo deja la cuenta completada, con el texto y la hora como evidencia", () =>
+  conEntorno(ENV_SYNC, async () => {
+    const almacen = new AlmacenTrabajosMemoria();
+    const nav = new NavegadorFalso(() => ({ estado: "ok", detalle: "Sincronizada", confirmadoEnPantalla: "Actualizado hace unos segundos" }));
+    await lanzarSincronizacionBancaria("2026-10-02", { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a"), cuenta("b")], dormir: async () => {} });
+    const t = await almacen.obtener("sync:2026-10-02:WOBA:a");
+    assert.equal(t?.estado, "completado");
+    assert.equal(t?.evidencia.confirmadoEnPantalla, "Actualizado hace unos segundos");
+    assert.ok(t?.verificadoEn);
+    assert.equal((await cuentaTieneActualizacionConfirmada(almacen, "WOBA", "a", 0)).confirmada, true);
+  }));
+
 test("lo que sí exige a una persona no se reintenta: consentimiento del banco, sesión caducada", () =>
   conEntorno(ENV_SYNC, async () => {
     for (const r of [{ estado: "elemento_no_encontrado", detalle: "La cuenta pide renovar el consentimiento del banco" }, { estado: "sesion_caducada", detalle: "caducó" }] as ResultadoNavegador[]) {
