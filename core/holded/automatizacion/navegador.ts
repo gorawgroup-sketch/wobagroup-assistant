@@ -18,6 +18,8 @@ export interface NavegadorHolded {
    * «Guardar como borrador» para no aprobarlo. No verifica: eso lo hace el llamador.
    */
   desmarcarFacturaDeCompra(empresa: Empresa, compraId: string, opciones?: { borrador?: boolean }): Promise<ResultadoNavegador>;
+  /** Solo lectura: nombre LEGAL de la empresa que queda activa tras activarla (p. ej. «Business Atelier Europa SL»). Opcional. */
+  leerNombreLegal?(empresa: Empresa): Promise<ResultadoNavegador>;
   cerrar(): Promise<void>;
 }
 

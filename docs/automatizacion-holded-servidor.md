@@ -69,6 +69,25 @@ antes del marcador queda fuera de la conversión automática (el inventario lo m
 - **Gastos antiguos**: solo inventario de candidatos (solo lectura), sin conversión masiva:
   `npx tsx scripts/holded-auto.ts inventario Footprint 2026-08-15 2026-10-02`.
 
+## Nombres de las empresas (no confundir título y nombre legal)
+
+El título que Holded muestra arriba a la izquierda **no es el nombre legal**. Validado en Holded → Configuración (2026-10-03):
+
+| Título en Holded | Nombre legal (como lo muestra Holded) |
+|---|---|
+| WOBA | Business Atelier Europa SL |
+| Eworks | COMPAÑIA DE PROYECTOS EWORKS SL (Compañía de Proyectos eWorks SL) |
+| Footprint Global | BUSINESS FOOTPRINT EU SL |
+
+Antes de lanzar la sincronización de una empresa, el sistema lee ese nombre legal del panel de Configuración y lo compara (sin
+tildes ni mayúsculas) con el esperado (`core/holded/automatizacion/empresas.ts`). Si **no coincide** no se toca nada y lo decide
+una persona; si no se pudo leer, es transitorio y se reintenta. Los avisos muestran «WOBA (Business Atelier Europa SL)».
+Las cuentas se abren por su id (`/banking/accounts/<id>`), que es propio de cada empresa: en la empresa equivocada simplemente
+no existen. `npx tsx scripts/holded-sesion.ts comprobar` valida las tres.
+
+Para pruebas fuera de horario: `WOBI_HOLDED_SYNC_BANCARIA_CRON_EXTRA` (pasada extra de lanzamiento) y
+`WOBI_HOLDED_SYNC_BANCARIA_CRON_EXTRA_VERIFICAR` (verificación y cierre), con una expresión cron; vacías por defecto.
+
 ## Sesión web de Holded (procedimiento seguro)
 
 **La empresa activa en Holded es del USUARIO, no de la sesión** (descubierto el 2026-10-03: la primera sincronización de las 06:00

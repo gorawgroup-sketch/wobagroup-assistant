@@ -295,6 +295,39 @@ export class NavegadorHoldedPuppeteer implements NavegadorHolded {
     return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoSincronizar(page, empresa, cuenta, { pulsar: true }, dedicada)));
   }
 
+  /**
+   * Solo lectura: activa la empresa, abre Configuración desde el menú de la empresa y devuelve el NOMBRE LEGAL que muestra el panel
+   * (p. ej. «Business Atelier Europa SL»). Sirve para verificar la identidad de la empresa activa. No modifica nada.
+   */
+  async leerNombreLegal(empresa: Empresa): Promise<ResultadoNavegador> {
+    return conReintentosTransitorios(() => conPagina(empresa, async (page) => {
+      const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+      if (activada.estado !== "ok") return activada;
+      // Menú de la empresa → «Configuración» (verificado en la interfaz real); se reintenta si la pantalla aún se recarga.
+      let abierto = false;
+      for (let intento = 0; intento < 5 && !abierto; intento++) {
+        await esperarEstable(page, 30_000);
+        await page.mouse.click(120, 69);
+        await pausa(1500);
+        abierto = await clicPorTextoSeguro(page.mainFrame(), ["Configuración", "Settings"], true);
+        if (!abierto) await pausa(2000);
+      }
+      if (!abierto) return { estado: "elemento_no_encontrado", detalle: "No se encontró «Configuración» en el menú de la empresa" };
+      // El panel de configuración muestra «CONFIGURACIÓN <nombre legal>» en su cabecera.
+      const limite = Date.now() + 40_000;
+      while (Date.now() < limite) {
+        for (const marco of page.frames()) {
+          const t = await marco.evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ").trim()).catch(() => "");
+          // El panel va al final de un texto largo (la pantalla de debajo sigue en el DOM): se busca en todo el texto.
+          const m = /CONFIGURACI[ÓO]N\s+(.{3,80}?)\s+(?:Buscar en ajustes|Cuenta Personaliza|Facturaci[óo]n)/.exec(t);
+          if (m) return { estado: "ok", detalle: m[1].trim() };
+        }
+        await pausa(1000);
+      }
+      return { estado: "elemento_no_encontrado", detalle: "No se pudo leer el nombre legal en el panel de configuración" };
+    }));
+  }
+
   /** Ensayo: llega hasta el botón «Sincronizar» de la cuenta y confirma que existe, SIN pulsarlo. */
   async ensayarSincronizacion(empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
     return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoSincronizar(page, empresa, cuenta, { pulsar: false }, dedicada)));

@@ -1,3 +1,4 @@
+import { etiquetaEmpresa } from "../holded/automatizacion/empresas";
 import { empresasAutomatizacion, modoAutomatizacion } from "../holded/automatizacion/modo";
 import { almacenTrabajosHolded, hayAlmacenDuradero, type Trabajo } from "../holded/automatizacion/trabajos";
 import { fechaHoyEspana } from "../utils/diaHabil";
@@ -31,7 +32,7 @@ export const estadoAutomatizacionHoldedTool: ToolDefinition = {
     lineas.push("", `Sincronización de hoy (${hoy}): ${sync.length === 0 ? "sin cuentas registradas todavía" : `${sync.length} cuenta(s)`}`);
     for (const t of sync) {
       const ver = t.verificadoEn ? `, verificada ${new Date(t.verificadoEn).toISOString().slice(11, 16)} UTC` : "";
-      lineas.push(`  - ${t.empresa} · ${String(t.evidencia.nombre ?? t.objetivo)}: ${fmt(t)}${ver}`);
+      lineas.push(`  - ${etiquetaEmpresa(t.empresa)} · ${String(t.evidencia.nombre ?? t.objetivo)}: ${fmt(t)}${ver}`);
     }
 
     const tickets = await almacen.listar({ tipo: "ticket", desde: ahora - 7 * 24 * 3_600_000 });
@@ -39,7 +40,7 @@ export const estadoAutomatizacionHoldedTool: ToolDefinition = {
     for (const t of tickets) porEstado[t.estado] = (porEstado[t.estado] ?? 0) + 1;
     lineas.push("", `Conversión a ticket (últimos 7 días): ${tickets.length === 0 ? "sin casos" : Object.entries(porEstado).map(([e, n]) => `${n} ${e.replace(/_/g, " ")}`).join(", ")}`);
     for (const t of tickets.filter((x) => ["solicitado", "requiere_intervencion", "no_confirmado", "fallido"].includes(x.estado)).slice(0, 15)) {
-      lineas.push(`  - ${t.empresa} · ${String(t.evidencia.proveedor ?? t.objetivo)} (${t.objetivo.slice(0, 8)}…): ${fmt(t)}`);
+      lineas.push(`  - ${etiquetaEmpresa(t.empresa)} · ${String(t.evidencia.proveedor ?? t.objetivo)} (${t.objetivo.slice(0, 8)}…): ${fmt(t)}`);
     }
     return lineas.join("\n");
   },

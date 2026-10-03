@@ -1,6 +1,7 @@
 import { listTreasuryAccounts, invalidarCacheCuentasTesoreria, type Empresa, type TreasuryAccount } from "../client";
 import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "./modo";
-import { requiereIntervencion, type NavegadorHolded } from "./navegador";
+import { coincideNombreLegal, etiquetaEmpresa, NOMBRES_LEGALES } from "./empresas";
+import { requiereIntervencion, type NavegadorHolded, type ResultadoNavegador } from "./navegador";
 import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
 
 /**
@@ -92,6 +93,7 @@ export async function lanzarSincronizacionBancaria(fecha: string, dep: Dependenc
   if (modo === "apagado") return resumen;
   const leer = dep.leerCuentas ?? leerCuentasFrescas;
   const dormir = dep.dormir ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
+  if (modo === "activo") await reabrirTransitoriasDelDia(dep.almacen, fecha, ahora);
 
   for (const empresa of empresasAutomatizacion("SYNC_BANCARIA")) {
     let cuentas: CuentaBancaria[];
@@ -105,12 +107,15 @@ export async function lanzarSincronizacionBancaria(fecha: string, dep: Dependenc
     // Alcance aprobado por Carlos para las primeras ejecuciones: WOBI_HOLDED_SYNC_BANCARIA_CUENTAS="Empresa:idCuenta,…".
     // Sin la variable, se sincronizan todas las cuentas conectadas de las empresas en alcance.
     const aprobadas = parsearCasosAprobados(process.env.WOBI_HOLDED_SYNC_BANCARIA_CUENTAS);
+    // Identidad de la empresa activa: se lee UNA vez por empresa y pasada (solo si hay alguna cuenta que lanzar).
+    let identidad: Promise<ResultadoNavegador> | undefined;
+    const verificarIdentidad = (nav: NavegadorHolded) => (identidad ??= nav.leerNombreLegal ? nav.leerNombreLegal(empresa).catch((e): ResultadoNavegador => ({ estado: "error", detalle: msg(e) })) : Promise.resolve({ estado: "ok" as const, detalle: "" }));
     for (const cuenta of cuentas) {
       if (!cuenta.sincronizable) continue; // las manuales/archivadas no son trabajo: no ensucian el registro
       if (aprobadas.length > 0 && !aprobadas.some((a) => a.empresa === empresa && a.id === cuenta.id)) continue;
       resumen.cuentas++;
       const clave = claveSincronizacion(fecha, cuenta);
-      const resultado = await dep.almacen.conExclusion(clave, () => procesarCuenta(cuenta, clave, modo, dep, ahora, dormir));
+      const resultado = await dep.almacen.conExclusion(clave, () => procesarCuenta(cuenta, clave, modo, dep, ahora, dormir, verificarIdentidad));
       const t = resultado === "ocupado" ? await dep.almacen.obtener(clave) : resultado;
       const estado = t?.estado ?? "en_curso";
       resumen.porEstado[estado] = (resumen.porEstado[estado] ?? 0) + 1;
@@ -120,8 +125,32 @@ export async function lanzarSincronizacionBancaria(fecha: string, dep: Dependenc
   return resumen;
 }
 
+const MOTIVO_TRANSITORIO = /empresa activa|Cambiar cuenta|lista de cuentas|No se abrió|No se pudo activar|No se encontró el botón|No se pudo verificar la identidad|No se pudo leer el nombre/i;
+const MOTIVO_HUMANO = /consentimiento|renovar|reconectar|reautoriz|sesión web|sesion web|Sin sesión|nombre legal/i;
+
+/**
+ * Cuentas de HOY que quedaron en «requiere intervención» por un motivo que ahora se sabe transitorio (pantalla recargada, empresa
+ * sin activar…): se reabren para la siguiente pasada, dentro del límite de pasadas del día. Nunca las que exigen a una persona
+ * (consentimiento del banco, sesión, nombre legal que no coincide).
+ */
+export async function reabrirTransitoriasDelDia(almacen: AlmacenTrabajos, fecha: string, ahora: () => number = Date.now): Promise<number> {
+  let reabiertas = 0;
+  const candidatos = (await almacen.listar({ tipo: "sync_bancaria", estados: ["requiere_intervencion"], desde: ahora() - 36 * 3_600_000 })).filter((t) => t.clave.startsWith(`sync:${fecha}:`));
+  for (const t of candidatos) {
+    const motivo = t.ultimoError ?? "";
+    if (MOTIVO_HUMANO.test(motivo) || !MOTIVO_TRANSITORIO.test(motivo) || Number(t.evidencia.pasadas ?? 0) >= MAX_PASADAS_DIA) continue;
+    t.estado = "solicitado"; t.actualizadoEn = ahora();
+    t.evidencia.pasadas = Number(t.evidencia.pasadas ?? 0) + 1;
+    await almacen.guardar(t);
+    await almacen.evento(t.clave, "reabierta_transitoria", { motivo });
+    reabiertas++;
+  }
+  return reabiertas;
+}
+
 async function procesarCuenta(
   cuenta: CuentaBancaria, clave: string, modo: string, dep: DependenciasSync, ahora: () => number, dormir: (ms: number) => Promise<void>,
+  verificarIdentidad: (navegador: NavegadorHolded) => Promise<ResultadoNavegador>,
 ): Promise<Trabajo> {
   let t = await dep.almacen.obtener(clave);
   // Reanudación tras reinicio o doble disparo: solo se repite lo que NO llegó a lanzarse.
@@ -139,6 +168,22 @@ async function procesarCuenta(
     t.ultimoError = "Sin sesión web de Holded configurada en el servidor";
     await dep.almacen.evento(clave, "sin_navegador");
     return guardar("requiere_intervencion");
+  }
+  // Identidad: el nombre LEGAL de la empresa activa en Holded debe ser el esperado (el título del selector no basta). Si no
+  // coincide, no se toca nada y lo decide una persona; si no se pudo leer, es transitorio (se reintenta en la siguiente pasada).
+  const identidad = await verificarIdentidad(navegador);
+  if (identidad.estado === "ok" && identidad.detalle) {
+    if (!coincideNombreLegal(cuenta.empresa, identidad.detalle)) {
+      t.ultimoError = `El nombre legal de la empresa activa en Holded («${identidad.detalle}») no es el esperado («${NOMBRES_LEGALES[cuenta.empresa]}»); no se tocó nada`;
+      await dep.almacen.evento(clave, "identidad_no_coincide", { leido: identidad.detalle });
+      return guardar("requiere_intervencion");
+    }
+    t.evidencia.nombreLegalVerificado = identidad.detalle;
+  } else if (identidad.estado !== "ok") {
+    t.ultimoError = `No se pudo verificar la identidad de la empresa: ${identidad.detalle}`;
+    if (requiereIntervencion(identidad)) return guardar("requiere_intervencion");
+    t.evidencia.pasadas = Number(t.evidencia.pasadas ?? 0) + 1;
+    return guardar(Number(t.evidencia.pasadas) >= MAX_PASADAS_DIA ? "fallido" : "solicitado");
   }
   const lanzamiento = ahora();
   // Un intento por pasada: el propio navegador ya reintenta internamente. Si falla de forma transitoria, el trabajo queda
@@ -204,7 +249,7 @@ export async function verificarSincronizacionBancaria(dep: DependenciasSync, des
 export function textoAvisoSincronizacion(trabajos: Trabajo[]): string | undefined {
   const mal = trabajos.filter((t) => ["fallido", "requiere_intervencion", "no_confirmado"].includes(t.estado));
   if (mal.length === 0) return undefined;
-  const lineas = mal.map((t) => `  • ${t.empresa} · ${String(t.evidencia.nombre ?? t.objetivo)}: ${t.estado.replace(/_/g, " ")}${t.ultimoError ? ` — ${t.ultimoError}` : ""}`);
+  const lineas = mal.map((t) => `  • ${etiquetaEmpresa(t.empresa)} · ${String(t.evidencia.nombre ?? t.objetivo)}: ${t.estado.replace(/_/g, " ")}${t.ultimoError ? ` — ${t.ultimoError}` : ""}`);
   return [`⚠️ Sincronización bancaria de Holded: ${mal.length} cuenta(s) sin actualización confirmada.`, ...lineas,
     "", "Si hace falta renovar el consentimiento del banco o la sesión web de Holded, tiene que hacerlo una persona; el sistema no reconecta bancos."].join("\n");
 }

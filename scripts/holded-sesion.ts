@@ -3,7 +3,8 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { comprobarSesionWeb, nombreVariableSesion, sesionWebConfigurada } from "../core/holded/automatizacion/navegadorHolded";
+import { coincideNombreLegal, NOMBRES_LEGALES } from "../core/holded/automatizacion/empresas";
+import { NavegadorHoldedPuppeteer, nombreVariableSesion, sesionWebConfigurada } from "../core/holded/automatizacion/navegadorHolded";
 import { rutaChrome } from "../core/gmail/generarComprobantePDF";
 import type { Empresa } from "../core/holded/client";
 
@@ -63,10 +64,11 @@ async function comprobar(empresas: Empresa[]): Promise<void> {
   let fallos = 0;
   for (const empresa of empresas) {
     if (!sesionWebConfigurada(empresa)) { console.log(`[${empresa}] Sin sesión configurada (${nombreVariableSesion(empresa)}).`); fallos++; continue; }
-    const r = await comprobarSesionWeb(empresa);
-    const ok = r.estado === "ok";
+    // Activa la empresa y lee su NOMBRE LEGAL en Holded → Configuración: debe ser el esperado (el título del selector no basta).
+    const r = await new NavegadorHoldedPuppeteer().leerNombreLegal(empresa);
+    const ok = r.estado === "ok" && coincideNombreLegal(empresa, r.detalle ?? "");
     if (!ok) fallos++;
-    console.log(`[${empresa}] ${ok ? "OK" : `NO utilizable: ${r.estado}`} — ${r.detalle ?? ""}`);
+    console.log(`[${empresa}] ${ok ? `OK — ${r.detalle}` : r.estado === "ok" ? `NOMBRE LEGAL NO COINCIDE: Holded dice «${r.detalle}», esperado «${NOMBRES_LEGALES[empresa]}»` : `NO utilizable: ${r.estado} — ${r.detalle ?? ""}`}`);
   }
   process.exitCode = fallos === 0 ? 0 : 1;
 }

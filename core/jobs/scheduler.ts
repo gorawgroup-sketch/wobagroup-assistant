@@ -176,6 +176,22 @@ export function startScheduler(): void {
   cron.schedule("45 9 * * *", () => {
     ejecutarSinSolapamiento("sincronizacionBancariaHolded_cierre", () => sincronizacionBancariaHolded("cierre"));
   }, { timezone: TIMEZONE });
+  // Pruebas controladas FUERA del horario habitual (solo si se definen; vacías por defecto): una pasada extra de lanzamiento y
+  // otra de verificación/cierre, con una expresión cron propia. Se quitan al terminar la prueba.
+  const cronExtraLanzar = process.env.WOBI_HOLDED_SYNC_BANCARIA_CRON_EXTRA?.trim();
+  if (cronExtraLanzar && cron.validate(cronExtraLanzar)) {
+    cron.schedule(cronExtraLanzar, () => {
+      ejecutarSinSolapamiento("sincronizacionBancariaHolded_lanzar", () => sincronizacionBancariaHolded("lanzar"));
+    }, { timezone: TIMEZONE });
+    console.log(`[scheduler] Sincronización bancaria Holded: pasada EXTRA de lanzamiento "${cronExtraLanzar}"`);
+  }
+  const cronExtraVerificar = process.env.WOBI_HOLDED_SYNC_BANCARIA_CRON_EXTRA_VERIFICAR?.trim();
+  if (cronExtraVerificar && cron.validate(cronExtraVerificar)) {
+    cron.schedule(cronExtraVerificar, () => {
+      ejecutarSinSolapamiento("sincronizacionBancariaHolded_cierre", () => sincronizacionBancariaHolded("cierre"));
+    }, { timezone: TIMEZONE });
+    console.log(`[scheduler] Sincronización bancaria Holded: pasada EXTRA de verificación y cierre "${cronExtraVerificar}"`);
+  }
   cron.schedule("5,35 * * * *", () => {
     ejecutarSinSolapamiento("conversionTicketsHolded", () => conversionTicketsHolded());
   }, { timezone: TIMEZONE });
