@@ -384,3 +384,12 @@ Pedido explícito de Carlos (02-10-2026), tras un caso real: pidió los gastos d
 - **Límite**: un ticket creado a mano en Holded, fuera de Wobi, puede no aparecer; el informe lo indica. El logo se toma de `assets/marcas/<empresa>.png` si existe; si no, se usa el nombre de la empresa.
 - La consulta rápida `buscar_gastos_por_etiqueta_holded` usa la misma búsqueda (tickets y variantes incluidos).
 
+## Transferencias y conversiones entre cuentas de la misma empresa
+
+Pedido de Carlos (03-10-2026). Detalle técnico en `docs/transferencias-internas.md`.
+
+- **Cómo pedirlo**: «revisa las transferencias internas» (de una empresa o de las tres). Tool `revisar_transferencias_internas`. Solo lee Holded.
+- **Qué llega**: hasta 5 propuestas por pasada, cada una con empresa, fecha, cuenta e importe de salida y de entrada, tasa aplicada y del día en las conversiones, las descripciones de las dos patas y el nivel de confianza.
+- **Botones**: "✅ Conciliar transferencia" (crea un único asiento debe destino / haber origen y concilia los dos movimientos; solo para parejas autorizadas por escrito y con el modo activo), "⏭️ Saltar por ahora" (sigue pendiente y vuelve a proponerse), "🚫 No es una transferencia" (no se vuelve a proponer) y "🔎 Revisar manualmente" (queda a cargo de Carlos en Holded).
+- **Seguridad**: apagado por defecto (`WOBI_TRANSFERENCIAS_MODO`); nunca cruza empresas; nunca reutiliza un movimiento; no reintenta una escritura incierta; las conversiones de moneda todavía no se ejecutan.
+

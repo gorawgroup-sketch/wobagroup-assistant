@@ -139,6 +139,7 @@ import { obtenerDiagnosticoMetadataPestanas } from "../core/google/sheetsKeyValu
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
+import { handleTransferenciasCallback } from "../core/holded/transferencias/telegram";
 import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
@@ -1690,6 +1691,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleEdicionValorCashflowCallback(callback);
     } else if (data.startsWith("regmanualcf_")) {
       await handleRegistroManualCashflowCallback(callback);
+    } else if (data.startsWith("transfint_")) {
+      await handleTransferenciasCallback(callback);
     } else if (data.startsWith("reintegrozip:")) {
       await handleReintegroZipCallback(callback);
     } else if (data.startsWith("loteimpuestos_")) {

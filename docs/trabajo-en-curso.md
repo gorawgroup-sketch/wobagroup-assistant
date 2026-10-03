@@ -42,7 +42,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
 | Regla de tickets / lista aprobada de Holded | Automatización de Holded | `fix/holded-lista-aprobada-manda` (copia `/private/tmp/woba_auto`) | Otra sesión de Claude | Activa el 03-10-2026; no tocar esa copia |
-| Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | por crear desde `origin/main` | Claude Code | Siguiente trabajo; empieza en modo observación |
+| Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | `feat/transferencias-ejecucion` (copia `.worktrees/transferencias-internas`) | Claude Code | Fase 1 (detección) fusionada en #308. Fase 2 (registro, botones, ejecutor) en PR; ejecución apagada hasta la prueba controlada autorizada por Carlos |
 
 ## Pendiente de decisión de Carlos
 
@@ -63,3 +63,5 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 - No se tocó ninguna copia con cambios sin guardar ni las que gestionan las aplicaciones de Claude (`.claude/worktrees/`)
   y Codex (`~/.codex/worktrees/`): las limpia cada aplicación.
 - Railway despliega solo desde `main`; borrar ramas fusionadas no afecta a producción.
+- La copia `.worktrees/mail-auto-integration` guarda la instalación completa de `node_modules` que enlazan otras copias:
+  no cerrarla sin reinstalar antes en otro sitio.
