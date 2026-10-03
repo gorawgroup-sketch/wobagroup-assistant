@@ -11,7 +11,7 @@ import {
   clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, reabrirTransitoriasDelDia, textoAvisoSincronizacion,
   verificarSincronizacionBancaria, VENTANA_VERIFICACION_MS,
 } from "./sincronizacionBancaria";
-import { claveTicket, reevaluarCambiosNormales, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
+import { claveTicket, reabrirTicketsTransitorios, reevaluarCambiosNormales, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
 import { nombreVariableSesion, sesionWebConfigurada } from "./navegadorHolded";
 
@@ -572,4 +572,29 @@ test("inventario de candidatos antiguos: solo lectura; probable solo con proveed
   assert.deepEqual(c.map((x) => [x.compraId, x.nivel, x.conciliado]), [["1", "probable", true], ["2", "revisar", false]]);
   assert.equal(c[0].elegible, true); // la regla completa solo se evalúa para los probables
   assert.equal(c[1].elegible, undefined);
+});
+
+test("conversión: un caso atascado por un fallo transitorio de pantalla se reabre; los que exigen a una persona o ya guardaron, no", async () => {
+  const almacen = new AlmacenTrabajosMemoria();
+  const base = { tipo: "ticket" as const, empresa: "Footprint", intentos: 1, creadoEn: 1, actualizadoEn: 1, estado: "requiere_intervencion" as const, evidencia: {} as Record<string, unknown> };
+  await almacen.guardar({ ...base, clave: "ticket:Footprint:a", objetivo: "a", ultimoError: "La empresa activa en Holded no es Footprint; no se tocó nada" });
+  await almacen.guardar({ ...base, clave: "ticket:Footprint:b", objetivo: "b", ultimoError: "La sesión web de Holded caducó" });
+  await almacen.guardar({ ...base, clave: "ticket:Footprint:c", objetivo: "c", evidencia: { despues: {} }, ultimoError: "No se encontró algo" });
+  await almacen.guardar({ ...base, clave: "ticket:Footprint:d", objetivo: "d", intentos: 3, ultimoError: "No se abrió el editor del gasto" });
+  assert.equal(await reabrirTicketsTransitorios(almacen), 1);
+  assert.equal((await almacen.obtener("ticket:Footprint:a"))?.estado, "solicitado");
+  for (const k of ["b", "c", "d"]) assert.equal((await almacen.obtener(`ticket:Footprint:${k}`))?.estado, "requiere_intervencion");
+});
+
+test("traza visible en /health: guarda los últimos eventos con hora y la versión, sin datos sensibles", async () => {
+  const { registrarTraza, obtenerTrazaAutomatizacion, reiniciarTrazaParaPruebas, marcarEnEjecucion } = await import("./traza");
+  reiniciarTrazaParaPruebas();
+  for (let i = 0; i < 100; i++) registrarTraza("cuenta", { n: i });
+  marcarEnEjecucion("sync_lanzar", true);
+  const t = obtenerTrazaAutomatizacion();
+  assert.equal(t.ultimosEventos.length, 40);
+  assert.equal(t.ultimosEventos[39].datos?.n, 99);
+  assert.ok("sync_lanzar" in t.enEjecucion);
+  marcarEnEjecucion("sync_lanzar", false);
+  assert.deepEqual(obtenerTrazaAutomatizacion().enEjecucion, {});
 });

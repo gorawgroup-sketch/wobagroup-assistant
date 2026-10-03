@@ -207,6 +207,7 @@ import {
   precalentarMonedasCuentasReales,
   reconciliarContactosAlArrancar,
 } from "../core/holded/write";
+import { obtenerTrazaAutomatizacion } from "../core/holded/automatizacion/traza";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -488,6 +489,7 @@ app.get("/health", (_req: Request, res: Response) => {
     adjuntosHolded: obtenerEstadoAdjuntosCompraDurables(),
     conciliacionesHolded: obtenerEstadoConciliacionesMovimientoDurables(),
     contactosHolded: obtenerEstadoCreacionesContactoDurables(),
+    automatizacionHolded: obtenerTrazaAutomatizacion(),
   });
 });
 

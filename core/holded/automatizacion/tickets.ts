@@ -98,6 +98,28 @@ export async function reevaluarCambiosNormales(almacen: AlmacenTrabajos): Promis
   return cerrados;
 }
 
+const TICKET_TRANSITORIO = /empresa activa|Cambiar cuenta|lista de cuentas|No se abrió|No se pudo activar|No se encontró|Lectura de|sin verificar|superó|timeout/i;
+const TICKET_HUMANO = /sesión|sesion|verificaci[oó]n|CAPTCHA|consentimiento|Sin sesión|inesperados/i;
+
+/**
+ * Casos que quedaron en «requiere intervención» por un fallo TRANSITORIO de pantalla ANTES de que el sistema distinguiera esos
+ * fallos (no llegaron a guardarse en Holded): se reabren para el siguiente ciclo, con el límite de intentos. Nunca los que exigen
+ * a una persona ni los que ya guardaron algo (esos tienen «después» y se revisan por sus diferencias).
+ */
+export async function reabrirTicketsTransitorios(almacen: AlmacenTrabajos): Promise<number> {
+  let reabiertos = 0;
+  for (const t of await almacen.listar({ tipo: "ticket", estados: ["requiere_intervencion"] })) {
+    const motivo = t.ultimoError ?? "";
+    if (t.evidencia.despues || t.intentos >= MAX_INTENTOS_TICKET) continue;
+    if (TICKET_HUMANO.test(motivo) || !TICKET_TRANSITORIO.test(motivo)) continue;
+    t.estado = "solicitado"; t.actualizadoEn = Date.now();
+    await almacen.guardar(t);
+    await almacen.evento(t.clave, "reabierto_transitorio", { motivo });
+    reabiertos++;
+  }
+  return reabiertos;
+}
+
 export interface DetalleDiferencia { campo: string; antes: string; despues: string; informativo?: boolean }
 const corto = (v: unknown) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > 140 ? `${s.slice(0, 140)}…` : s; };
 
