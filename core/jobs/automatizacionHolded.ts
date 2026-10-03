@@ -1,7 +1,8 @@
 import { crearNavegadorHolded } from "../holded/automatizacion/navegadorHolded";
 import { marcarEnEjecucion, registrarTraza } from "../holded/automatizacion/traza";
 import { etiquetaEmpresa } from "../holded/automatizacion/empresas";
-import { modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
+import { escanearReglaTicket, type CandidatoRegla } from "../holded/automatizacion/escaneoTickets";
+import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
 import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
 import { claveTicket, procesarColaTickets, reabrirTicketsTransitorios, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
 import { almacenTrabajosHolded, hayAlmacenDuradero, nuevoTrabajo } from "../holded/automatizacion/trabajos";
@@ -60,6 +61,23 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   const reabiertos = await reabrirTicketsTransitorios(almacen).catch((error) => { console.error("[conversionTicketsHolded] No se pudo reabrir casos transitorios:", error); return 0; });
   if (reabiertos > 0) console.log(`[conversionTicketsHolded] ${reabiertos} caso(s) reabiertos tras un fallo transitorio de pantalla`);
   if (reevaluados > 0) console.log(`[conversionTicketsHolded] ${reevaluados} caso(s) previos cerrados: solo tenían efectos normales de pasar a ticket`);
+  // Regla amplia: explora las compras recientes de las empresas en alcance y registra en la cola las que son ticket. En
+  // «simulacion» solo registra y avisa (nada se convierte hasta que Carlos apruebe la lista real).
+  const reglaModo = modoAutomatizacion("TICKETS_REGLA");
+  if (reglaModo !== "apagado") {
+    const nuevos: CandidatoRegla[] = [];
+    for (const empresa of empresasAutomatizacion("TICKETS_REGLA")) {
+      try {
+        const r = await escanearReglaTicket(empresa, almacen, { simulada: reglaModo !== "activo" });
+        nuevos.push(...r.candidatos);
+        registrarTraza("escaneo_regla", { empresa, revisadas: r.revisadas, candidatos: r.candidatos.length, aRevisar: r.aRevisar, excluidas: r.excluidas });
+      } catch (error) { console.error(`[conversionTicketsHolded] Error explorando candidatos de ${empresa}:`, error instanceof Error ? error.message : error); }
+    }
+    if (nuevos.length > 0) {
+      const lista = nuevos.slice(0, 12).map((c) => `  • ${etiquetaEmpresa(c.empresa)} · ${c.proveedor} · ${c.total} ${c.moneda} (${c.fecha}) — ${c.motivos.join("; ")}`).join("\n");
+      await notificarAdmins(`🧾 Regla de ticket (${reglaModo === "activo" ? "ACTIVA" : "SIMULACIÓN: no se convierte nada"}): ${nuevos.length} candidato(s) nuevo(s)\n${lista}${nuevos.length > 12 ? `\n  … y ${nuevos.length - 12} más` : ""}`).catch(() => undefined);
+    }
+  }
   // Lista aprobada por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:id,Empresa:id,…". Mientras exista, SOLO se tocan esos gastos
   // (el resto de la cola no se procesa) y el resultado de cada uno se comunica a los administradores en un solo aviso.
   const casos = parsearCasosAprobados(process.env.WOBI_HOLDED_TICKETS_CASO);
@@ -78,7 +96,7 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   // Traza visible en /health del estado de cada gasto de la lista aprobada (tanto si se procesó en este ciclo como si no).
   for (const caso of casos) {
     const p = await almacen.obtener(claveTicket(caso.empresa, caso.id)).catch(() => undefined);
-    registrarTraza("caso_ticket", { empresa: caso.empresa, id: caso.id.slice(0, 8), estado: p?.estado ?? "sin registro", intentos: p?.intentos ?? 0, error: p?.ultimoError?.slice(0, 140) ?? null });
+    registrarTraza("caso_ticket", { empresa: caso.empresa, id: caso.id.slice(0, 8), estado: p?.estado ?? "sin registro", intentos: p?.intentos ?? 0, error: p?.ultimoError?.slice(0, 140) ?? null }, `ticket:${caso.empresa}:${caso.id.slice(0, 8)}`);
   }
   if (casos.length > 0 && modo === "activo") {
     const lineas: string[] = [];

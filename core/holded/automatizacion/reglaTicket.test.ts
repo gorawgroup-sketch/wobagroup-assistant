@@ -1,0 +1,69 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { evaluarReglaTicket, TOPE_EUR_AUTOMATICO } from "./reglaTicket";
+import { escanearReglaTicket, reiniciarVistosParaPruebas } from "./escaneoTickets";
+import { procesarColaTickets, claveTicket } from "./tickets";
+import { AlmacenTrabajosMemoria } from "./trabajos";
+
+const base = { moneda: "EUR", totalEUR: 20, tieneNif: false, proveedorConvertidoAntes: false };
+
+test("regla: sin NIF y moneda distinta del euro → ticket (restaurante o taxi en Colombia)", () => {
+  assert.equal(evaluarReglaTicket({ ...base, moneda: "COP", totalEUR: 28 }).decision, "ticket");
+});
+test("regla: sin NIF y de fuera de la UE → ticket (Anthropic, Uber EEUU)", () => {
+  assert.equal(evaluarReglaTicket({ ...base, pais: "US" }).decision, "ticket");
+});
+test("regla: sin NIF, en euros y de la UE o sin señales (correduría de seguros) → revisión, nunca ticket automático", () => {
+  assert.equal(evaluarReglaTicket({ ...base, pais: "ES" }).decision, "revisar");
+  assert.equal(evaluarReglaTicket({ ...base }).decision, "revisar");
+});
+test("regla: proveedor ya convertido antes o documento que se declara ticket → ticket", () => {
+  assert.equal(evaluarReglaTicket({ ...base, proveedorConvertidoAntes: true }).decision, "ticket");
+  assert.equal(evaluarReglaTicket({ ...base, textoEvidencia: "Factura Simplificada nº 12" }).decision, "ticket");
+});
+test("regla: las exclusiones ganan siempre — con NIF/CIF (factura formal) o por encima del tope", () => {
+  assert.equal(evaluarReglaTicket({ ...base, moneda: "COP", tieneNif: true, proveedorConvertidoAntes: true }).decision, "nunca");
+  assert.equal(evaluarReglaTicket({ ...base, moneda: "USD", totalEUR: TOPE_EUR_AUTOMATICO + 1, pais: "US" }).decision, "nunca");
+  assert.equal(evaluarReglaTicket({ ...base, moneda: "USD", totalEUR: null }).decision, "revisar");
+});
+
+const compra = (id: string, extra: Record<string, unknown> = {}) => ({ id, contact_id: `k-${id}`, contact_name: `Prov ${id}`, date: "2026-10-01", currency: "COP", currency_change: "4000", total: "100000,00",
+  notes: "[wobi:" + "b".repeat(64) + "]", status: "completed", lines: [{ name: "Cena", account: "a" }], ...extra });
+const mundo = (compras: Record<string, unknown>[], contactos: Record<string, unknown>) => async (_e: string, ruta: string) => {
+  if (ruta === "/purchases") return { items: compras.map((c) => ({ id: c.id, contact_name: c.contact_name })), has_more: false };
+  if (ruta.startsWith("/contacts/")) return contactos[ruta.split("/").pop()!] ?? {};
+  return compras.find((c) => ruta.endsWith(String(c.id)))!;
+};
+
+test("exploración: registra solo los que son ticket de WOBI; no WOBI, con NIF y dudosos no se registran; es idempotente", async () => {
+  reiniciarVistosParaPruebas();
+  const almacen = new AlmacenTrabajosMemoria();
+  const compras = [compra("t1"), compra("sinMarca", { notes: "a mano" }), compra("conNif"), compra("grande", { total: "9000000,00" }), compra("euros", { currency: "EUR", currency_change: "1.00", total: "40,00" })];
+  const contactos = { "k-conNif": { code: "B12345678" }, "k-t1": { code: "" }, "k-grande": { code: "" }, "k-euros": { bill_address: { country_code: "ES" } } };
+  const r = await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, contactos), simulada: true });
+  assert.deepEqual(r.candidatos.map((c) => c.id), ["t1"]);
+  assert.equal(r.aRevisar, 1); // el de euros sin señales
+  assert.equal(r.excluidas, 2); // con NIF y por encima del tope
+  const t = await almacen.obtener(claveTicket("Footprint", "t1"));
+  assert.equal(t?.estado, "solicitado"); assert.equal(t?.evidencia.origen, "regla_auto"); assert.equal(t?.evidencia.simulada, true);
+  assert.equal((await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, contactos), simulada: true })).candidatos.length, 0);
+});
+
+test("SIMULACIÓN de la regla: los casos registrados NO se procesan ni tocan Holded; con la regla activa y empresa en alcance, sí", async () => {
+  const prev = { ...process.env };
+  try {
+    reiniciarVistosParaPruebas();
+    process.env.WOBI_HOLDED_TICKETS_MODO = "activo"; process.env.WOBI_HOLDED_TICKETS_EMPRESAS = "WOBA";
+    process.env.WOBI_HOLDED_TICKETS_REGLA_MODO = "simulacion"; process.env.WOBI_HOLDED_TICKETS_REGLA_EMPRESAS = "Footprint";
+    const almacen = new AlmacenTrabajosMemoria();
+    await escanearReglaTicket("Footprint", almacen, { leer: mundo([compra("t1")], { "k-t1": { code: "" } }), simulada: true });
+    let lecturas = 0;
+    const leerEspia = async () => { lecturas++; throw new Error("no debería leerse"); };
+    const r = await procesarColaTickets({ almacen, leer: leerEspia });
+    assert.equal(r.revisados, 0); assert.equal(lecturas, 0);
+    assert.equal((await almacen.obtener(claveTicket("Footprint", "t1")))?.estado, "solicitado");
+    process.env.WOBI_HOLDED_TICKETS_REGLA_MODO = "activo";
+    await procesarColaTickets({ almacen, leer: async () => { lecturas++; throw Object.assign(new Error("503"), { status: 503 }); } });
+    assert.ok(lecturas > 0); // con la regla activa, el caso entra en la cola y se intenta
+  } finally { for (const k of Object.keys(process.env)) if (!(k in prev)) delete process.env[k]; Object.assign(process.env, prev); }
+});

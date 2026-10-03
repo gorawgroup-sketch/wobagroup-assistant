@@ -7,7 +7,7 @@ import type { Empresa } from "../client";
  *  - activo:     ejecuta de verdad, SOLO sobre las empresas listadas explícitamente en *_EMPRESAS.
  */
 export type ModoAutomatizacion = "apagado" | "simulacion" | "activo";
-export type Automatizacion = "SYNC_BANCARIA" | "TICKETS";
+export type Automatizacion = "SYNC_BANCARIA" | "TICKETS" | "TICKETS_REGLA";
 
 const EMPRESAS: readonly Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 

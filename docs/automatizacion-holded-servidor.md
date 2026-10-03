@@ -88,6 +88,18 @@ no existen. `npx tsx scripts/holded-sesion.ts comprobar` valida las tres.
 Para pruebas fuera de horario: `WOBI_HOLDED_SYNC_BANCARIA_CRON_EXTRA` (pasada extra de lanzamiento) y
 `WOBI_HOLDED_SYNC_BANCARIA_CRON_EXTRA_VERIFICAR` (verificación y cierre), con una expresión cron; vacías por defecto.
 
+## Regla amplia de conversión a ticket (aprobada 2026-10-03, WOBA + EWORKS + Footprint)
+
+Se aplica a gastos que WOBI creó, tras las condiciones de seguridad de siempre (conciliado, completo, con comprobante). Basta **una**
+señal de ticket: (1) proveedor sin NIF/CIF y gasto en moneda distinta del euro; (2) proveedor sin NIF de fuera de la UE; (3) ya se
+convirtió antes un gasto de ese proveedor; (4) el documento se declara ticket/factura simplificada. **Exclusiones que ganan siempre:**
+proveedor con NIF/CIF registrado (factura formal) e importe superior a 500 € (equivalente; total ÷ tasa del documento). Lo demás va a
+revisión; nunca se convierte solo.
+
+Interruptores propios: `WOBI_HOLDED_TICKETS_REGLA_MODO` (apagado | simulacion | activo) y `WOBI_HOLDED_TICKETS_REGLA_EMPRESAS`.
+En **simulación** la exploración (cada 30 min, últimos 14 días) registra candidatos y avisa a los administradores, pero la cola no
+procesa ninguno ni toca Holded. Solo con el modo en `activo` se convierten. Ver también `/health` → `automatizacionHolded`.
+
 ## Sesión web de Holded (procedimiento seguro)
 
 **La empresa activa en Holded es del USUARIO, no de la sesión** (descubierto el 2026-10-03: la primera sincronización de las 06:00
