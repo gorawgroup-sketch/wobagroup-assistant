@@ -1,5 +1,6 @@
 import { listTreasuryAccounts, invalidarCacheCuentasTesoreria, type Empresa, type TreasuryAccount } from "../client";
 import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "./modo";
+import { registrarTraza } from "./traza";
 import { coincideNombreLegal, etiquetaEmpresa, NOMBRES_LEGALES } from "./empresas";
 import { requiereIntervencion, type NavegadorHolded, type ResultadoNavegador } from "./navegador";
 import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
@@ -179,6 +180,7 @@ async function procesarCuenta(
       return guardar("requiere_intervencion");
     }
     t.evidencia.nombreLegalVerificado = identidad.detalle;
+    registrarTraza("identidad_verificada", { empresa: cuenta.empresa });
     console.log("[sincronizacionBancariaHolded] identidad verificada", JSON.stringify({ empresa: cuenta.empresa, nombreLegal: identidad.detalle }));
   } else if (identidad.estado !== "ok") {
     t.ultimoError = `No se pudo verificar la identidad de la empresa: ${identidad.detalle}`;
@@ -197,6 +199,7 @@ async function procesarCuenta(
       .catch((e): { estado: "error"; detalle: string } => ({ estado: "error", detalle: msg(e) }));
     await dep.almacen.evento(clave, "lanzado", { intento, resultado: r });
     console.log("[sincronizacionBancariaHolded] cuenta", JSON.stringify({ clave, intento, resultado: r.estado, detalle: r.detalle?.slice(0, 160) }));
+    registrarTraza("cuenta", { empresa: cuenta.empresa, nombre: cuenta.nombre, resultado: r.estado, detalle: r.detalle?.slice(0, 120) ?? null });
     if (r.estado === "ok" && r.confirmadoEnPantalla) {
       // Holded mostró «Actualizado hace unos segundos» junto al saldo: sincronizada, con la hora y el texto como evidencia.
       t.ultimoError = undefined; t.verificadoEn = ahora(); t.evidencia.confirmadoEnPantalla = r.confirmadoEnPantalla;

@@ -1,8 +1,9 @@
 import { crearNavegadorHolded } from "../holded/automatizacion/navegadorHolded";
+import { marcarEnEjecucion, registrarTraza } from "../holded/automatizacion/traza";
 import { etiquetaEmpresa } from "../holded/automatizacion/empresas";
 import { modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
 import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
-import { claveTicket, procesarColaTickets, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
+import { claveTicket, procesarColaTickets, reabrirTicketsTransitorios, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
 import { almacenTrabajosHolded, hayAlmacenDuradero, nuevoTrabajo } from "../holded/automatizacion/trabajos";
 import type { Empresa } from "../holded/client";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
@@ -30,7 +31,7 @@ function modoSeguro(nombre: "SYNC_BANCARIA" | "TICKETS"): "apagado" | "simulacio
   return modo;
 }
 
-export async function sincronizacionBancariaHolded(fase: "lanzar" | "verificar" | "cierre", ahora: Date = new Date()): Promise<ResumenSync | undefined> {
+async function sincronizacionBancariaHoldedInterna(fase: "lanzar" | "verificar" | "cierre", ahora: Date = new Date()): Promise<ResumenSync | undefined> {
   const modo = modoSeguro("SYNC_BANCARIA");
   if (modo === "apagado") return undefined;
   console.log("[sincronizacionBancariaHolded] inicio", JSON.stringify({ fase, modo }));
@@ -51,11 +52,13 @@ export async function sincronizacionBancariaHolded(fase: "lanzar" | "verificar" 
   return undefined;
 }
 
-export async function conversionTicketsHolded(opciones: { revisionNocturna?: boolean } = {}): Promise<ResumenTickets | undefined> {
+async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boolean } = {}): Promise<ResumenTickets | undefined> {
   const modo = modoSeguro("TICKETS");
   if (modo === "apagado") return undefined;
   const almacen = almacenTrabajosHolded();
   const reevaluados = await reevaluarCambiosNormales(almacen).catch((error) => { console.error("[conversionTicketsHolded] No se pudo reevaluar casos previos:", error); return 0; });
+  const reabiertos = await reabrirTicketsTransitorios(almacen).catch((error) => { console.error("[conversionTicketsHolded] No se pudo reabrir casos transitorios:", error); return 0; });
+  if (reabiertos > 0) console.log(`[conversionTicketsHolded] ${reabiertos} caso(s) reabiertos tras un fallo transitorio de pantalla`);
   if (reevaluados > 0) console.log(`[conversionTicketsHolded] ${reevaluados} caso(s) previos cerrados: solo tenían efectos normales de pasar a ticket`);
   // Lista aprobada por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:id,Empresa:id,…". Mientras exista, SOLO se tocan esos gastos
   // (el resto de la cola no se procesa) y el resultado de cada uno se comunica a los administradores en un solo aviso.
@@ -105,3 +108,23 @@ export async function conversionTicketsHolded(opciones: { revisionNocturna?: boo
   }
   return resumen;
 }
+
+/** Envoltorio con traza visible en /health: inicio, fin (o error) y duración de cada pasada. */
+async function conTraza<T>(nombre: string, tarea: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  registrarTraza("inicio", { tarea: nombre });
+  marcarEnEjecucion(nombre, true);
+  try {
+    const r = await tarea();
+    registrarTraza("fin", { tarea: nombre, segundos: Math.round((Date.now() - t0) / 1000) });
+    return r;
+  } catch (error) {
+    registrarTraza("error", { tarea: nombre, segundos: Math.round((Date.now() - t0) / 1000), mensaje: (error instanceof Error ? error.message : String(error)).slice(0, 200) });
+    throw error;
+  } finally { marcarEnEjecucion(nombre, false); }
+}
+
+export const sincronizacionBancariaHolded = (fase: "lanzar" | "verificar" | "cierre", ahora: Date = new Date()) =>
+  conTraza(`sync_${fase}`, () => sincronizacionBancariaHoldedInterna(fase, ahora));
+export const conversionTicketsHolded = (opciones: { revisionNocturna?: boolean } = {}) =>
+  conTraza(opciones.revisionNocturna ? "tickets_revision" : "tickets", () => conversionTicketsHoldedInterna(opciones));
