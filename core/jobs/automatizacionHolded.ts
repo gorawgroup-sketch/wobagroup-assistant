@@ -33,6 +33,7 @@ function modoSeguro(nombre: "SYNC_BANCARIA" | "TICKETS"): "apagado" | "simulacio
 export async function sincronizacionBancariaHolded(fase: "lanzar" | "verificar" | "cierre", ahora: Date = new Date()): Promise<ResumenSync | undefined> {
   const modo = modoSeguro("SYNC_BANCARIA");
   if (modo === "apagado") return undefined;
+  console.log("[sincronizacionBancariaHolded] inicio", JSON.stringify({ fase, modo }));
   const dep = { almacen: almacenTrabajosHolded(), navegador: crearNavegadorHolded };
   const fecha = fechaHoyEspana(ahora);
   if (fase === "lanzar") {

@@ -23,6 +23,8 @@ const RUTA_EDITAR_COMPRA = process.env.WOBI_HOLDED_WEB_RUTA_EDITAR_COMPRA ?? "/d
 const RUTA_ATERRIZAJE = process.env.WOBI_HOLDED_WEB_RUTA_ATERRIZAJE ?? "/contacts";
 const RUTA_TESORERIA =process.env.WOBI_HOLDED_WEB_RUTA_TESORERIA ?? "/treasury";
 const TIEMPO_MAXIMO_MS = 150_000;
+const LIMITE_SINCRONIZAR_MS = 540_000;
+const ESPERA_CONFIRMACION_MS = 300_000;
 
 let enUso = false;
 
@@ -102,7 +104,7 @@ async function estadoSesion(page: Page): Promise<ResultadoNavegador> {
   return { estado: "ok" };
 }
 
-async function conPagina(empresa: Empresa, tarea: (page: Page, dedicada: boolean) => Promise<ResultadoNavegador>): Promise<ResultadoNavegador> {
+async function conPagina(empresa: Empresa, tarea: (page: Page, dedicada: boolean) => Promise<ResultadoNavegador>, limiteMs = TIEMPO_MAXIMO_MS): Promise<ResultadoNavegador> {
   if (enUso) return { estado: "error", detalle: "Ya hay una acción de navegador de Holded en curso en este proceso" };
   enUso = true;
   let browser: Browser | undefined;
@@ -112,7 +114,7 @@ async function conPagina(empresa: Empresa, tarea: (page: Page, dedicada: boolean
       if (!("browser" in abierto)) return abierto;
       browser = abierto.browser;
       return tarea(abierto.page, abierto.dedicada);
-    })(), TIEMPO_MAXIMO_MS, "Acción de navegador de Holded");
+    })(), limiteMs, "Acción de navegador de Holded");
   } catch (error) {
     return { estado: "error", detalle: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
   } finally {
@@ -268,8 +270,8 @@ async function flujoSincronizar(page: Page, empresa: Empresa, cuenta: CuentaPara
   if (!o.pulsar) return { estado: "ok", detalle: `Ensayo correcto: página de «${cuenta.nombre}» y botón «Sincronizar» localizados (SIN pulsar)` };
   if (!(await clicPorTextoSeguro(page.mainFrame(), ["Sincronizar", "Synchronize"], true, true))) return { estado: "error", detalle: "No se pudo pulsar «Sincronizar»" };
   // Confirmación en pantalla: tras sincronizar, junto al saldo Holded cambia «Actualizado hace N horas» por «Actualizado hace unos
-  // segundos». Es la prueba de que se sincronizó, cuenta por cuenta; se espera hasta 2 minutos.
-  const limiteConfirmacion = Date.now() + 120_000;
+  // segundos». Es la prueba de que se sincronizó, cuenta por cuenta; se espera hasta 5 minutos SIN salir de la página.
+  const limiteConfirmacion = Date.now() + ESPERA_CONFIRMACION_MS;
   while (Date.now() < limiteConfirmacion) {
     const texto = await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ")).catch(() => "");
     const m = /Actualizado hace (unos segundos|\d+ segundos?|un minuto|un momento|unos instantes)/i.exec(texto);
@@ -277,7 +279,10 @@ async function flujoSincronizar(page: Page, empresa: Empresa, cuenta: CuentaPara
     await pausa(2000);
   }
   const despues = await estadoSesion(page);
-  return despues.estado === "ok" ? { estado: "ok", detalle: "Botón «Sincronizar» pulsado; la pantalla no mostró «Actualizado hace unos segundos» en 2 min (se verifica con Holded)" } : despues;
+  if (despues.estado !== "ok") return despues;
+  // No se da por buena ni se pasa a la siguiente como si nada: la cuenta se reintenta en la pasada siguiente (antes se mirará la
+  // fecha de sincronización real de Holded por si sí se actualizó).
+  return { estado: "error", detalle: "No se confirmó la sincronización: la pantalla no mostró «Actualizado hace unos segundos» en 5 minutos" };
 }
 
 /**
@@ -290,6 +295,8 @@ async function conReintentosTransitorios(accion: () => Promise<ResultadoNavegado
   let r: ResultadoNavegador = { estado: "error", detalle: "sin intentos" };
   for (let intento = 1; intento <= maximo; intento++) {
     r = await accion();
+    // Tras pulsar «Sincronizar» sin confirmación NO se vuelve a pulsar dentro de la misma pasada (se mira antes el estado real).
+    if (r.estado === "error" && /No se confirmó la sincronización/.test(r.detalle)) return r;
     const transitorio = r.estado === "error" ||
       (r.estado === "elemento_no_encontrado" && /Cambiar cuenta|lista de cuentas|No se abrió el editor|No se pudo activar|No se encontró el botón «Sincronizar»/i.test(r.detalle));
     if (!transitorio) return r;
@@ -300,7 +307,9 @@ async function conReintentosTransitorios(accion: () => Promise<ResultadoNavegado
 
 export class NavegadorHoldedPuppeteer implements NavegadorHolded {
   async sincronizarCuenta(empresa: Empresa, cuenta: CuentaParaNavegador): Promise<ResultadoNavegador> {
-    return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoSincronizar(page, empresa, cuenta, { pulsar: true }, dedicada)));
+    // Cuenta por cuenta y SIN abandonar la página hasta ver la confirmación: salir antes puede abortar la sincronización. El límite
+    // cubre activar la empresa (hasta ~3 min) más hasta 5 min de espera de la confirmación.
+    return conReintentosTransitorios(() => conPagina(empresa, (page, dedicada) => flujoSincronizar(page, empresa, cuenta, { pulsar: true }, dedicada), LIMITE_SINCRONIZAR_MS), 2);
   }
 
   /**
