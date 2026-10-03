@@ -203,6 +203,35 @@ async function holdedWriteCall(
       method === "POST" ? { path, body } : undefined);
 }
 
+/**
+ * Asiento contable manual (POST /ledger-entries). Punto de conexión para core/holded/transferencias/: pasa por la
+ * misma guardia que el resto de escrituras. Devuelve el id del asiento; nunca se reintenta aquí.
+ */
+export async function crearAsientoHolded(
+  empresa: Empresa,
+  asiento: { date: string; notes?: string; lines: Array<{ account: number; description?: string; debit: string; credit: string }> }
+): Promise<string> {
+  const data = (await holdedWriteCall(empresa, "POST", "/ledger-entries", asiento)) as { id?: string };
+  if (!data?.id) throw new Error("Holded no devolvió el id del asiento creado.");
+  return data.id;
+}
+
+/** Concilia un movimiento bancario contra un asiento ya existente. No es idempotente en Holded: no se reintenta. */
+export async function conciliarMovimientoContraAsientoHolded(
+  empresa: Empresa, accountId: string, movementId: string, asientoId: string
+): Promise<void> {
+  invalidarCacheCuentasTesoreria(empresa);
+  try {
+    await holdedWriteCall(
+      empresa, "POST",
+      `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements/${encodeURIComponent(movementId)}/reconcile`,
+      { documents: [{ document_id: asientoId, document_type: "entry" }] }
+    );
+  } finally {
+    invalidarCacheCuentasTesoreria(empresa);
+  }
+}
+
 async function holdedWriteCallSinGuardia(
   empresa: Empresa,
   method: "GET" | "POST" | "PUT",

@@ -391,6 +391,12 @@ const ACCIONES_SENSIBLES = new Set([
   // mismo criterio que regmanualcf_confirmar/cancelar.
   "loteimpuestos_confirmar",
   "loteimpuestos_cancelar",
+  // Transferencias entre cuentas propias (core/holded/transferencias/telegram.ts): «Conciliar» crea un asiento y concilia
+  // dos movimientos en Holded; las otras tres decisiones cierran la propuesta. Todo se centraliza en superadmin.
+  "transfint_conciliar",
+  "transfint_saltar",
+  "transfint_noes",
+  "transfint_manual",
   // Pedido explícito de Carlos: aprobar un hilo para conversación automática
   // (ver hiloAutorespuestaStore.ts / revisarConversacionesAutomaticas.ts) es
   // la decisión MÁS sensible de todo el flujo de correo — a diferencia de
