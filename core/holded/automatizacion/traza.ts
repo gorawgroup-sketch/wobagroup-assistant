@@ -8,9 +8,12 @@ export interface EventoTraza { en: string; evento: string; datos?: Record<string
 const MAX_EVENTOS = 80;
 const eventos: EventoTraza[] = [];
 let enEjecucion: Record<string, string> = {};
+const ultimoPorClave: Record<string, EventoTraza> = {};
 
-export function registrarTraza(evento: string, datos?: EventoTraza["datos"]): void {
-  eventos.push({ en: new Date().toISOString(), evento, datos });
+export function registrarTraza(evento: string, datos?: EventoTraza["datos"], clave?: string): void {
+  const e = { en: new Date().toISOString(), evento, datos };
+  eventos.push(e);
+  if (clave) ultimoPorClave[clave] = e;
   if (eventos.length > MAX_EVENTOS) eventos.splice(0, eventos.length - MAX_EVENTOS);
 }
 
@@ -25,7 +28,9 @@ export function obtenerTrazaAutomatizacion() {
     ahora: new Date().toISOString(),
     enEjecucion: { ...enEjecucion },
     ultimosEventos: eventos.slice(-40),
+    /** Último estado conocido de cada elemento con clave (p. ej. cada gasto de la lista aprobada), aunque el historial lo haya desplazado. */
+    ultimoPorClave: { ...ultimoPorClave },
   };
 }
 
-export function reiniciarTrazaParaPruebas(): void { eventos.length = 0; enEjecucion = {}; }
+export function reiniciarTrazaParaPruebas(): void { eventos.length = 0; enEjecucion = {}; for (const k of Object.keys(ultimoPorClave)) delete ultimoPorClave[k]; }

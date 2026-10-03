@@ -207,7 +207,12 @@ export async function procesarColaTickets(dep: DependenciasTickets): Promise<Res
   const resumen: ResumenTickets = { modo, revisados: 0, porEstado: {}, detalle: [] };
   if (modo === "apagado") return resumen;
   const empresas = new Set<string>(empresasAutomatizacion("TICKETS"));
-  const cola = (await dep.almacen.listar({ tipo: "ticket", estados: ["solicitado"] })).filter((t) => empresas.has(t.empresa) && (!dep.soloIds || dep.soloIds.has(t.objetivo)));
+  // Casos de la REGLA AMPLIA: solo se procesan con su propio interruptor en «activo» y para sus empresas; en simulación quedan en
+  // cola sin tocar nada. El resto (lista aprobada) mantiene su alcance explícito.
+  const reglaActiva = modoAutomatizacion("TICKETS_REGLA") === "activo";
+  const empresasRegla = new Set<string>(empresasAutomatizacion("TICKETS_REGLA"));
+  const cola = (await dep.almacen.listar({ tipo: "ticket", estados: ["solicitado"] })).filter((t) =>
+    t.evidencia.origen === "regla_auto" ? reglaActiva && empresasRegla.has(t.empresa) : empresas.has(t.empresa) && (!dep.soloIds || dep.soloIds.has(t.objetivo)));
   for (const job of cola) {
     const r = await dep.almacen.conExclusion(job.clave, () => procesarTicket(job.clave, modo, dep, ahora));
     const t = r === "ocupado" ? await dep.almacen.obtener(job.clave) : r;
@@ -224,6 +229,9 @@ export async function procesarColaTickets(dep: DependenciasTickets): Promise<Res
 export const ESPERA_MAXIMA_ELEGIBILIDAD_MS = 21 * 24 * 3_600_000;
 /** Marcador opaco que WOBI guarda en las notas de cada gasto que crea (`[wobi:<hash>]`). */
 const MARCADOR_WOBI = /^\[wobi:[0-9a-f]{16,}\]$/i;
+
+/** true si las notas del gasto llevan el marcador propio de WOBI (`[wobi:…]`). */
+export const creadoPorWobi = (raw: Raw): boolean => MARCADOR_WOBI.test(String(raw.notes ?? "").trim());
 
 export interface Elegibilidad { elegible: boolean; /** true = podría llegar a serlo (falta conciliar/adjuntar); false = no aplica */ esperar: boolean; motivos: string[] }
 
