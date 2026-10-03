@@ -58,22 +58,31 @@ Imprime las operaciones detectadas por empresa y, al final, cuántas lecturas hi
 | `ejecucion.ts` | Ejecuta UNA transferencia en la misma moneda y la verifica. |
 | `core/tools/transferenciasInternas.ts` | Tool de chat `revisar_transferencias_internas`. |
 
-### Cómo se concilia (misma moneda)
+### Cómo se concilia (por ahora, solo EUR)
 
 Leído de una transferencia real conciliada a mano en la interfaz (WOBA, 02/09/2026, asiento 3126): Holded deja **un único
 asiento**, debe la cuenta contable del banco de destino y haber la del banco de origen, y los dos movimientos conciliados.
 El ejecutor reproduce eso por API:
 
-1. Relee las dos cuentas y los dos movimientos. Si algo cambió (ya conciliado, importe distinto, cuenta archivada o sin
-   cuenta contable 572/520), no escribe nada y deja la operación en revisión manual.
+1. Relee las dos cuentas y los dos movimientos (con ventana de ±3 días: la consulta de un único día exacto a veces
+   devuelve vacío) y **repite la detección**: la pareja debe seguir siendo inequívoca. Si algo cambió (ya conciliado,
+   importe distinto, cuenta archivada, no EUR, sin cuenta contable 572/520, otro candidato), no escribe nada y la deja en
+   revisión manual.
 2. Guarda el estado `ejecutando` **antes** de escribir.
-3. `POST /ledger-entries`: debe destino / haber origen, con la marca `[wobi:transferencia:<id>]`. Guarda el id del asiento.
+3. `POST /ledger-entries`: debe destino / haber origen, con la marca `[wobi:transferencia:<id>]`. Guarda el id del asiento
+   (y lo deja en el registro del servidor). Si Holded rechaza la petición sin crear nada (4xx o la guardia de escrituras),
+   la propuesta vuelve a estar disponible.
 4. `POST …/reconcile` del movimiento de destino y del de origen contra ese asiento (`document_type: entry`).
-5. Verifica por lectura: los dos movimientos conciliados con su importe, el asiento con exactamente esas dos líneas, y que
-   en cada cuenta contable solo apareció UNA línea nueva (la conciliación no generó otro cobro, pago o gasto).
+5. Verifica por lectura: los dos movimientos conciliados con su importe; el asiento, leído por su id, con exactamente esas
+   dos líneas; y que en cada cuenta contable solo apareció UNA línea nueva entre tres días antes de los movimientos y
+   mañana (así se ve también un asiento que Holded fechara hoy).
 
-Nunca se reintenta una escritura. Si un paso falla o el proceso se corta, la operación queda `fallida` con el id del
-asiento; volver a pulsar «Conciliar» solo verifica por lectura. Un `POST …/reconcile` con cuerpo vacío nunca se usa.
+Nunca se reintenta una escritura. Si un paso falla o el proceso se corta, la operación queda `fallida`; el botón
+«Verificar cómo quedó en Holded» (siempre en un mensaje nuevo: cada botón de Telegram se atiende una sola vez) solo lee, y
+si el id del asiento no llegó a guardarse lo busca por la marca. Un `POST …/reconcile` con cuerpo vacío nunca se usa.
+
+Las transferencias en otra moneda (USD↔USD, COP↔COP) y las conversiones se proponen pero no se ejecutan: el asiento se
+escribe en EUR y falta su valoración contable. Las parejas bloqueadas por ambigüedad se publican sin el botón de conciliar.
 
 ### Recuperación
 

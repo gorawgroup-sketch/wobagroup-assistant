@@ -213,7 +213,7 @@ export async function crearAsientoHolded(
 ): Promise<string> {
   const data = (await holdedWriteCall(empresa, "POST", "/ledger-entries", asiento)) as { id?: string };
   if (!data?.id) throw new Error("Holded no devolvió el id del asiento creado.");
-  return data.id;
+  return String(data.id);
 }
 
 /** Concilia un movimiento bancario contra un asiento ya existente. No es idempotente en Holded: no se reintenta. */
