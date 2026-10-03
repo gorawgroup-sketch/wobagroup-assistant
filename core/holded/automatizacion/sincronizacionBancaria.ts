@@ -179,6 +179,7 @@ async function procesarCuenta(
       return guardar("requiere_intervencion");
     }
     t.evidencia.nombreLegalVerificado = identidad.detalle;
+    console.log("[sincronizacionBancariaHolded] identidad verificada", JSON.stringify({ empresa: cuenta.empresa, nombreLegal: identidad.detalle }));
   } else if (identidad.estado !== "ok") {
     t.ultimoError = `No se pudo verificar la identidad de la empresa: ${identidad.detalle}`;
     if (requiereIntervencion(identidad)) return guardar("requiere_intervencion");
@@ -195,6 +196,7 @@ async function procesarCuenta(
     const r = await navegador.sincronizarCuenta(cuenta.empresa, { id: cuenta.id, nombre: cuenta.nombre, institucion: cuenta.institucion })
       .catch((e): { estado: "error"; detalle: string } => ({ estado: "error", detalle: msg(e) }));
     await dep.almacen.evento(clave, "lanzado", { intento, resultado: r });
+    console.log("[sincronizacionBancariaHolded] cuenta", JSON.stringify({ clave, intento, resultado: r.estado, detalle: r.detalle?.slice(0, 160) }));
     if (r.estado === "ok" && r.confirmadoEnPantalla) {
       // Holded mostró «Actualizado hace unos segundos» junto al saldo: sincronizada, con la hora y el texto como evidencia.
       t.ultimoError = undefined; t.verificadoEn = ahora(); t.evidencia.confirmadoEnPantalla = r.confirmadoEnPantalla;
