@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import cron from "node-cron";
 import { fechaHoyEspana } from "../../utils/diaHabil";
-import type { TreasuryAccount } from "../client";
+import type { Empresa, TreasuryAccount } from "../client";
+import { coincideNombreLegal, etiquetaEmpresa, NOMBRES_LEGALES } from "./empresas";
 import { clasificarDocumento } from "./clasificacionTicket";
 import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "./modo";
 import type { CuentaParaNavegador, NavegadorHolded, ResultadoNavegador } from "./navegador";
 import {
-  clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, textoAvisoSincronizacion,
+  clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, reabrirTransitoriasDelDia, textoAvisoSincronizacion,
   verificarSincronizacionBancaria, VENTANA_VERIFICACION_MS,
 } from "./sincronizacionBancaria";
 import { claveTicket, reevaluarCambiosNormales, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
@@ -75,7 +76,11 @@ test("clasifica: conectada vs manual, efectivo y archivada", () => {
 
 class NavegadorFalso implements NavegadorHolded {
   llamadas: string[] = [];
-  constructor(private respuesta: (c: CuentaParaNavegador) => ResultadoNavegador = () => ({ estado: "ok" })) {}
+  identidades: string[] = [];
+  leerNombreLegal?: (empresa: Empresa) => Promise<ResultadoNavegador>;
+  constructor(private respuesta: (c: CuentaParaNavegador) => ResultadoNavegador = () => ({ estado: "ok" }), identidad?: (empresa: Empresa) => ResultadoNavegador) {
+    if (identidad) this.leerNombreLegal = async (e) => { this.identidades.push(e); return identidad(e); };
+  }
   async sincronizarCuenta(_e: string, c: CuentaParaNavegador) { this.llamadas.push(c.id); return this.respuesta(c); }
   async desmarcarFacturaDeCompra(): Promise<ResultadoNavegador> { throw new Error("no aplica"); }
   async cerrar() {}
@@ -162,6 +167,57 @@ test("fallo transitorio de la pantalla (empresa sin activar, botón aún sin apa
     assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.estado, "solicitado"); // NO «requiere intervención»
     await lanzarSincronizacionBancaria("2026-10-02", dep); // pasada de las 06:40
     assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.estado, "en_curso");
+  }));
+
+test("nombres legales: coinciden sin tildes/mayúsculas/puntuación y el título de Holded no cuenta como nombre legal", () => {
+  assert.equal(coincideNombreLegal("EWORKS", "COMPAÑIA DE PROYECTOS EWORKS SL"), true); // así lo muestra Holded
+  assert.equal(coincideNombreLegal("WOBA", "Business Atelier Europa SL"), true);
+  assert.equal(coincideNombreLegal("Footprint", "business footprint eu s.l."), false); // «S.L.» ≠ «SL»: no se acepta a ojo
+  assert.equal(coincideNombreLegal("Footprint", "BUSINESS FOOTPRINT EU SL"), true);
+  assert.equal(coincideNombreLegal("WOBA", "WOBA"), false);
+  assert.equal(coincideNombreLegal("WOBA", "BUSINESS FOOTPRINT EU SL"), false); // empresa equivocada
+  assert.equal(etiquetaEmpresa("Footprint"), `Footprint (${NOMBRES_LEGALES.Footprint})`);
+  assert.match(textoAvisoSincronizacion([{ clave: "k", tipo: "sync_bancaria", empresa: "WOBA", objetivo: "x", estado: "fallido", intentos: 1, creadoEn: 1, actualizadoEn: 1, evidencia: { nombre: "Main" } }]) ?? "", /WOBA \(Business Atelier Europa SL\)/);
+});
+
+test("identidad: si el nombre legal de la empresa activa NO coincide, no se pulsa nada y lo decide una persona; si coincide, se sincroniza", () =>
+  conEntorno(ENV_SYNC, async () => {
+    // 1) nombre equivocado (p. ej. la empresa activa es otra)
+    let almacen = new AlmacenTrabajosMemoria();
+    let nav = new NavegadorFalso(() => ({ estado: "ok" }), () => ({ estado: "ok", detalle: "BUSINESS FOOTPRINT EU SL" }));
+    await lanzarSincronizacionBancaria("2026-10-02", { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a"), cuenta("b")], dormir: async () => {} });
+    assert.equal(nav.llamadas.length, 0);
+    assert.equal(nav.identidades.length, 1); // se lee UNA vez por empresa y pasada, no por cuenta
+    const t = await almacen.obtener("sync:2026-10-02:WOBA:a");
+    assert.equal(t?.estado, "requiere_intervencion");
+    assert.match(t?.ultimoError ?? "", /nombre legal.*no es el esperado/);
+    // 2) nombre correcto → sincroniza y deja constancia
+    almacen = new AlmacenTrabajosMemoria();
+    nav = new NavegadorFalso(() => ({ estado: "ok" }), () => ({ estado: "ok", detalle: "Business Atelier Europa SL" }));
+    await lanzarSincronizacionBancaria("2026-10-02", { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a")], dormir: async () => {} });
+    assert.deepEqual(nav.llamadas, ["a"]);
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.evidencia.nombreLegalVerificado, "Business Atelier Europa SL");
+    // 3) no se pudo leer la identidad: transitorio (no se pulsa nada, se reintenta en la siguiente pasada)
+    almacen = new AlmacenTrabajosMemoria();
+    nav = new NavegadorFalso(() => ({ estado: "ok" }), () => ({ estado: "elemento_no_encontrado", detalle: "No se pudo leer el nombre legal en el panel de configuración" }));
+    await lanzarSincronizacionBancaria("2026-10-02", { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a")], dormir: async () => {} });
+    assert.equal(nav.llamadas.length, 0);
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:a"))?.estado, "solicitado");
+  }));
+
+test("las cuentas de hoy que fallaron por un motivo transitorio se reabren; las que exigen a una persona, no; y con límite de pasadas", () =>
+  conEntorno(ENV_SYNC, async () => {
+    const almacen = new AlmacenTrabajosMemoria();
+    const base = { tipo: "sync_bancaria" as const, empresa: "WOBA", intentos: 1, creadoEn: Date.now(), actualizadoEn: Date.now(), estado: "requiere_intervencion" as const };
+    await almacen.guardar({ ...base, clave: "sync:2026-10-03:WOBA:t", objetivo: "t", evidencia: {}, ultimoError: "La empresa activa en Holded no es WOBA; no se tocó nada" });
+    await almacen.guardar({ ...base, clave: "sync:2026-10-03:WOBA:c", objetivo: "c", evidencia: {}, ultimoError: "La cuenta pide renovar el consentimiento del banco" });
+    await almacen.guardar({ ...base, clave: "sync:2026-10-03:WOBA:n", objetivo: "n", evidencia: {}, ultimoError: "El nombre legal de la empresa activa en Holded («X») no es el esperado («Y»); no se tocó nada" });
+    await almacen.guardar({ ...base, clave: "sync:2026-10-03:WOBA:l", objetivo: "l", evidencia: { pasadas: 3 }, ultimoError: "La empresa activa en Holded no es WOBA; no se tocó nada" });
+    await almacen.guardar({ ...base, clave: "sync:2026-10-02:WOBA:ayer", objetivo: "ayer", evidencia: {}, ultimoError: "La empresa activa en Holded no es WOBA; no se tocó nada" });
+    assert.equal(await reabrirTransitoriasDelDia(almacen, "2026-10-03"), 1);
+    assert.equal((await almacen.obtener("sync:2026-10-03:WOBA:t"))?.estado, "solicitado");
+    for (const k of ["c", "n", "l"]) assert.equal((await almacen.obtener(`sync:2026-10-03:WOBA:${k}`))?.estado, "requiere_intervencion");
+    assert.equal((await almacen.obtener("sync:2026-10-02:WOBA:ayer"))?.estado, "requiere_intervencion"); // de otro día: no se toca
   }));
 
 test("lo que sí exige a una persona no se reintenta: consentimiento del banco, sesión caducada", () =>
