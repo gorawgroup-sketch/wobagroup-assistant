@@ -11,7 +11,7 @@ import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
  *  - Nunca se desconecta ni se reconecta un banco.
  */
 export const VENTANA_VERIFICACION_MS = 3 * 60 * 60_000; // pasada esa ventana sin evidencia → «no confirmado»
-export const MAX_INTENTOS_LANZAR = 3;
+export const MAX_PASADAS_DIA = 3; // pasadas de lanzamiento por cuenta y día (06:00, 06:40, 07:20)
 
 export interface CuentaBancaria {
   empresa: Empresa;
@@ -64,6 +64,8 @@ export interface DependenciasSync {
   leerCuentas?: (empresa: Empresa) => Promise<TreasuryAccount[]>;
   notificar?: (texto: string) => Promise<void>;
   ahora?: () => number;
+  /** Intentos dentro de una misma pasada (por defecto 1: el navegador ya reintenta por dentro). */
+  intentosPorPasada?: number;
   /** Espera entre intentos al lanzar (ms); en pruebas, 0. */
   esperaMs?: (intento: number) => number;
   dormir?: (ms: number) => Promise<void>;
@@ -139,8 +141,11 @@ async function procesarCuenta(
     return guardar("requiere_intervencion");
   }
   const lanzamiento = ahora();
-  for (let intento = 1; intento <= MAX_INTENTOS_LANZAR; intento++) {
-    t.intentos = intento;
+  // Un intento por pasada: el propio navegador ya reintenta internamente. Si falla de forma transitoria, el trabajo queda
+  // «solicitado» y las pasadas siguientes del día (06:40 y 07:20) lo repiten; tras MAX_PASADAS_DIA pasa a «fallido».
+  const intentosPorPasada = dep.intentosPorPasada ?? 1;
+  for (let intento = 1; intento <= intentosPorPasada; intento++) {
+    t.intentos = (t.intentos ?? 0) + 1;
     t.solicitadoEn = lanzamiento;
     const r = await navegador.sincronizarCuenta(cuenta.empresa, { id: cuenta.id, nombre: cuenta.nombre, institucion: cuenta.institucion })
       .catch((e): { estado: "error"; detalle: string } => ({ estado: "error", detalle: msg(e) }));
@@ -149,14 +154,15 @@ async function procesarCuenta(
     t.ultimoError = r.detalle;
     if (requiereIntervencion(r)) return guardar("requiere_intervencion");
     await guardar();
-    // Reintento con espera creciente; antes de repetir se mira el estado real por si la acción sí llegó a surtir efecto.
-    await dormir((dep.esperaMs ?? ((n) => n * 30_000))(intento));
+    // Antes de repetir se mira el estado real de Holded por si la acción sí llegó a surtir efecto.
+    if (intento < intentosPorPasada) await dormir((dep.esperaMs ?? ((n) => n * 30_000))(intento));
     const frescas = await (dep.leerCuentas ?? leerCuentasFrescas)(cuenta.empresa).catch(() => undefined);
     const actual = frescas?.find((c) => c.id === cuenta.id);
     const sync = marcaSync(actual);
     if (sync !== undefined && sync > lanzamiento) { t.evidencia.syncedAtDespues = actual!.synced_at; return guardar("en_curso"); }
   }
-  return guardar("fallido");
+  t.evidencia.pasadas = Number(t.evidencia.pasadas ?? 0) + 1;
+  return guardar(Number(t.evidencia.pasadas) >= MAX_PASADAS_DIA ? "fallido" : "solicitado");
 }
 
 /**

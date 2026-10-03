@@ -163,7 +163,11 @@ export function startScheduler(): void {
   // Automatizaciones de Holded en servidor (sincronización bancaria y conversión a ticket). Cada una tiene su
   // interruptor WOBI_HOLDED_*_MODO (apagado por defecto): con «apagado» estos crons terminan al instante sin tocar nada.
   // 06:00 es la hora de INICIO de la sincronización; las pasadas siguientes verifican con evidencia de Holded.
-  cron.schedule("0 6 * * *", () => {
+  // 06:40 y 07:20 repiten SOLO las cuentas cuyo lanzamiento falló de forma transitoria (las ya lanzadas no se tocan).
+  cron.schedule("0,40 6 * * *", () => {
+    ejecutarSinSolapamiento("sincronizacionBancariaHolded_lanzar", () => sincronizacionBancariaHolded("lanzar"));
+  }, { timezone: TIMEZONE });
+  cron.schedule("20 7 * * *", () => {
     ejecutarSinSolapamiento("sincronizacionBancariaHolded_lanzar", () => sincronizacionBancariaHolded("lanzar"));
   }, { timezone: TIMEZONE });
   cron.schedule("10,30,50 6-9 * * *", () => {

@@ -21,7 +21,15 @@ export interface NavegadorHolded {
   cerrar(): Promise<void>;
 }
 
-/** Estados del navegador que nunca se arreglan reintentando: exigen a una persona (sesión, 2FA, CAPTCHA, UI cambiada). */
+const PIDE_CONSENTIMIENTO = /consentimiento|renovar|reconectar|reautoriz/i;
+
+/**
+ * Estados que nunca se arreglan reintentando y exigen a una persona: sesión caducada, 2FA/CAPTCHA, sin sesión configurada y
+ * un banco que pide renovar el consentimiento. Todo lo demás (una pantalla de Holded que se recargó, un elemento que aún no
+ * apareció, una empresa que no llegó a activarse) es TRANSITORIO: se reintenta en la siguiente pasada, con límite, en vez de
+ * dejar el caso atascado a la espera de alguien.
+ */
 export function requiereIntervencion(r: ResultadoNavegador): boolean {
-  return r.estado === "sesion_caducada" || r.estado === "requiere_verificacion" || r.estado === "no_disponible" || r.estado === "elemento_no_encontrado";
+  if (r.estado === "sesion_caducada" || r.estado === "requiere_verificacion" || r.estado === "no_disponible") return true;
+  return r.estado === "elemento_no_encontrado" && PIDE_CONSENTIMIENTO.test(r.detalle);
 }

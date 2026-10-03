@@ -141,34 +141,48 @@ const empresaActivaEnPantalla = async (page: Page) =>
   (await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 60)).catch(() => "")).toLowerCase();
 
 /**
- * Una sola sesión web sirve para las tres empresas: antes de actuar se activa la empresa pedida (menú de la empresa →
- * «Cambiar cuenta» → «WOBA» / «Footprint Global» / «Eworks», verificado en la interfaz real) y se comprueba que quedó activa.
- * Es la sesión propia de WOBI (cookies capturadas en un inicio de sesión aparte): no altera la empresa activa de nadie más.
+ * Espera a que la pantalla deje de recargarse: el mismo texto no vacío durante 3 lecturas seguidas. Las páginas de Footprint
+ * (miles de documentos) tardan 10-15 s en asentarse y mientras tanto se recargan; interactuar antes hace fallar los clics.
+ */
+async function esperarEstable(page: Page, ms = 60_000): Promise<boolean> {
+  const limite = Date.now() + ms;
+  let previo = "", iguales = 0;
+  while (Date.now() < limite) {
+    const t = await empresaActivaEnPantalla(page);
+    if (t !== "" && t === previo) iguales++; else iguales = 0;
+    previo = t;
+    if (iguales >= 3) return true;
+    await pausa(1000);
+  }
+  return false;
+}
+
+/**
+ * Antes de CUALQUIER acción se activa la empresa pedida. En Holded la empresa activa es del USUARIO (no de la sesión): cualquier
+ * otra acción —incluida una persona usando esa misma cuenta— la cambia para todas las sesiones, así que nunca se puede suponer
+ * cuál es. Menú de la empresa → «Cambiar cuenta» → «WOBA» / «Footprint Global» / «Eworks» (verificado en la interfaz real); después
+ * se comprueba que quedó activa. Si ya lo era, no se toca nada.
  */
 async function activarEmpresa(page: Page, empresa: Empresa, urlLigera: string): Promise<ResultadoNavegador> {
-  // Se aterriza en una página LIGERA (el editor del propio gasto): la portada y el listado de Compras de Footprint (miles de
-  // documentos) hacen que el navegador sin pantalla se recargue en bucle; el editor y su menú de empresa sí son estables.
   await page.goto(urlLigera, { waitUntil: "domcontentloaded" });
   const sesion = await estadoSesion(page);
   if (sesion.estado !== "ok") return sesion;
   const objetivo = empresa.toLowerCase();
-  // Si la empresa pedida ya es la activa, basta esperar a que la pantalla la muestre (hasta 12 s).
-  const limite = Date.now() + 12_000;
-  while (Date.now() < limite) { if ((await empresaActivaEnPantalla(page)).startsWith(objetivo)) return { estado: "ok" }; await pausa(600); }
-  await page.waitForNetworkIdle({ idleTime: 1500, timeout: 20_000 }).catch(() => undefined); // la portada se recarga mientras termina de cargar
-  // El menú se abre con un clic en el selector; si la pantalla aún se estaba recargando, se reintenta hasta 4 veces.
+  await esperarEstable(page);
+  if ((await empresaActivaEnPantalla(page)).startsWith(objetivo)) return { estado: "ok" };
+  // El menú se abre con un clic en el selector; si la pantalla aún se estaba recargando, se reintenta hasta 5 veces.
   let menu = false;
-  for (let intento = 0; intento < 4 && !menu; intento++) {
+  for (let intento = 0; intento < 5 && !menu; intento++) {
     await page.mouse.click(120, 69);
     await pausa(1500);
     menu = await clicPorTextoSeguro(page.mainFrame(), ["Cambiar cuenta"], true);
-    if (!menu) await pausa(2500);
+    if (!menu) { await pausa(2500); await esperarEstable(page, 20_000); }
   }
   if (!menu) return { estado: "elemento_no_encontrado", detalle: "No se encontró «Cambiar cuenta» en el menú de la empresa" };
   await pausa(1200);
   if (!(await clicPorTextoSeguro(page.mainFrame(), [empresa], false))) return { estado: "elemento_no_encontrado", detalle: `No apareció ${empresa} en la lista de cuentas de Holded` };
-  const espera = Date.now() + 25_000;
-  while (Date.now() < espera) { if ((await empresaActivaEnPantalla(page)).startsWith(objetivo)) return { estado: "ok" }; await pausa(700); }
+  const espera = Date.now() + 60_000;
+  while (Date.now() < espera) { if ((await empresaActivaEnPantalla(page)).startsWith(objetivo)) { await esperarEstable(page, 30_000); return { estado: "ok" }; } await pausa(1000); }
   return { estado: "elemento_no_encontrado", detalle: `No se pudo activar la empresa ${empresa} en Holded; no se tocó nada` };
 }
 
@@ -176,14 +190,13 @@ async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o:
   await page.emulateTimezone("Europe/Madrid"); // las fechas del editor no deben desplazarse por la zona horaria del servidor
   // Página de aterrizaje para cambiar de empresa: el menú de empresa está en todas, pero esta es la que se mantiene estable
   // en el navegador sin pantalla (el editor de un gasto de OTRA empresa da error y la portada/Compras se recargan en bucle).
-  // Con sesión propia de la empresa no hay que cambiar de cuenta (lo inestable): se entra directo y se verifica más abajo.
-  if (!dedicada) {
-    const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
-    if (activada.estado !== "ok") return activada;
-  }
+  void dedicada; // la empresa activa es del usuario, no de la sesión: se activa SIEMPRE antes de actuar
+  const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+  if (activada.estado !== "ok") return activada;
   await page.goto(`${BASE}${RUTA_EDITAR_COMPRA.replace("{id}", encodeURIComponent(compraId))}`, { waitUntil: "domcontentloaded" });
   const sesion = await estadoSesion(page);
   if (sesion.estado !== "ok") return sesion;
+  await esperarEstable(page);
   const editor = () => esperarMarco(page, /Editar Compra/, 15_000);
   if (!(await esperarMarco(page, /Editar Compra/))) return { estado: "elemento_no_encontrado", detalle: "No se abrió el editor del gasto (¿no existe o no es de la empresa activa?)" };
   // Seguridad: la sesión actúa sobre la empresa activa en Holded; si no es la esperada, no se toca nada.
@@ -229,13 +242,13 @@ async function flujoDesmarcar(page: Page, empresa: Empresa, compraId: string, o:
  * Una cuenta que necesita renovar el consentimiento del banco no mostrará ese botón: se informa, nunca se reconecta.
  */
 async function flujoSincronizar(page: Page, empresa: Empresa, cuenta: CuentaParaNavegador, o: { pulsar: boolean }, dedicada: boolean): Promise<ResultadoNavegador> {
-  if (!dedicada) {
-    const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
-    if (activada.estado !== "ok") return activada;
-  }
+  void dedicada; // la empresa activa es del usuario, no de la sesión: se activa SIEMPRE antes de actuar
+  const activada = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+  if (activada.estado !== "ok") return activada;
   await page.goto(`${BASE}/banking/accounts/${encodeURIComponent(cuenta.id)}`, { waitUntil: "domcontentloaded" });
   const sesion = await estadoSesion(page);
   if (sesion.estado !== "ok") return sesion;
+  await esperarEstable(page);
   // Seguridad: la empresa activa debe ser la esperada.
   const limite = Date.now() + 25_000;
   let activa = "";
@@ -301,14 +314,10 @@ export class NavegadorHoldedPuppeteer implements NavegadorHolded {
 
 /** Comprobación de solo lectura de la sesión (sin tocar nada): para el diagnóstico y el procedimiento de activación. */
 export async function comprobarSesionWeb(empresa: Empresa): Promise<ResultadoNavegador> {
+  // Activa la empresa pedida (la empresa activa es del usuario, no de la sesión) y confirma que quedó activa.
   return conPagina(empresa, async (page) => {
-    await page.goto(`${BASE}${RUTA_ATERRIZAJE}`, { waitUntil: "domcontentloaded" });
-    const sesion = await estadoSesion(page);
-    if (sesion.estado !== "ok") return sesion;
-    const limite = Date.now() + 25_000;
-    let activa = "";
-    while (Date.now() < limite) { activa = await empresaActivaEnPantalla(page); if (activa.startsWith(empresa.toLowerCase())) return { estado: "ok", detalle: `Sesión válida; empresa activa: ${activa.slice(0, 30)}` }; await pausa(700); }
-    return { estado: "elemento_no_encontrado", detalle: `La sesión funciona pero la empresa activa es «${activa.slice(0, 30)}», no ${empresa}` };
+    const r = await activarEmpresa(page, empresa, `${BASE}${RUTA_ATERRIZAJE}`);
+    return r.estado === "ok" ? { estado: "ok", detalle: `Sesión válida; empresa ${empresa} activa` } : r;
   });
 }
 
