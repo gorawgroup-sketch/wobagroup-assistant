@@ -4,7 +4,7 @@ import { etiquetaEmpresa } from "../holded/automatizacion/empresas";
 import { escanearReglaTicket, type CandidatoRegla } from "../holded/automatizacion/escaneoTickets";
 import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
 import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
-import { claveTicket, procesarColaTickets, reabrirTicketsTransitorios, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
+import { claveTicket, procesarColaTickets, reabrirTicketsTransitorios, registrarCasoAprobado, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
 import { almacenTrabajosHolded, hayAlmacenDuradero, nuevoTrabajo } from "../holded/automatizacion/trabajos";
 import type { Empresa } from "../holded/client";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
@@ -82,15 +82,7 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   // (el resto de la cola no se procesa) y el resultado de cada uno se comunica a los administradores en un solo aviso.
   const casos = parsearCasosAprobados(process.env.WOBI_HOLDED_TICKETS_CASO);
   const soloIds = casos.length > 0 ? new Set(casos.map((c) => c.id)) : undefined;
-  for (const caso of casos) {
-    const clave = claveTicket(caso.empresa, caso.id);
-    if (!(await almacen.obtener(clave))) {
-      const t = nuevoTrabajo({ clave, tipo: "ticket", empresa: caso.empresa, objetivo: caso.id }, Date.now());
-      t.evidencia = { origen: "lista_aprobada", clasificacion: "ticket" };
-      await almacen.guardar(t);
-      await almacen.evento(clave, "caso_controlado_registrado", {});
-    }
-  }
+  for (const caso of casos) await registrarCasoAprobado(almacen, caso.empresa, caso.id);
   const resumen = await procesarColaTickets({ almacen, navegador: crearNavegadorHolded, soloIds });
   console.log("[conversionTicketsHolded]", JSON.stringify({ modo, revisados: resumen.revisados, porEstado: resumen.porEstado }));
   // Traza visible en /health del estado de cada gasto de la lista aprobada (tanto si se procesó en este ciclo como si no).
