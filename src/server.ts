@@ -210,6 +210,7 @@ import {
 } from "../core/holded/write";
 import { obtenerTrazaAutomatizacion } from "../core/holded/automatizacion/traza";
 import { handleTicketReglaCallback } from "../core/holded/automatizacion/telegramTickets";
+import { handleConciliacionMultipleCallback } from "../core/holded/conciliacionMultiple/callback";
 
 // Heurística para distinguir "CAPTURA: <la información va aquí mismo>" (se
 // guarda literal, sin tocar Claude) de "CAPTURA lo que llegó en el correo de
@@ -1686,6 +1687,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleGastoPendienteDatosCallback(callback);
     } else if (data.startsWith("gasto_")) {
       await handleGastoCallback(callback);
+    } else if (data.startsWith("concilmulti_")) {
+      await handleConciliacionMultipleCallback(callback);
     } else if (data.startsWith("tktregla_") || data.startsWith("tktdis_")) {
       await handleTicketReglaCallback(callback);
     } else if (data.startsWith("edicioncompra_")) {

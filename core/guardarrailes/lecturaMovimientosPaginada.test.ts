@@ -15,6 +15,7 @@ const PERMITIDOS: Record<string, string> = {
   "core/holded/paginarMovimientos.ts": "el paginador",
   "core/gastos/busquedaSinFecha.ts": "pagina con cursor y falla si queda incompleta",
   "core/gmail/automatico/holded.ts": "HoldedAuto.listar pagina con cursor y falla si queda incompleta",
+  "core/holded/conciliacionMultiple/holdedAdapter.ts": "busca el movimiento por id recorriendo el cursor hasta agotarlo; falla si queda incompleto; reconcile es escritura",
   "core/casosReales/banco.ts": "simulador de pruebas con casos reales",
   "core/gmail/automatico/postgres.ts": "solo reconoce la ruta de ESCRITURA …/reconcile para la guardia; no lee movimientos",
 };
