@@ -43,7 +43,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 |---|---|---|---|---|
 | Regla de tickets / lista aprobada de Holded | Automatización de Holded | `fix/holded-lista-aprobada-manda` (copia `/private/tmp/woba_auto`) | Otra sesión de Claude | Activa el 03-10-2026; no tocar esa copia |
 | Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | `feat/transferencias-ejecucion` (copia `.worktrees/transferencias-internas`) | Claude Code | Fase 1 (detección) fusionada en #308. Fase 2 (registro, botones, ejecutor) en PR; ejecución apagada hasta la prueba controlada autorizada por Carlos |
-| Recibos cobrados en varios pagos + guardia de fecha en coincidencias aproximadas (fase 1, observación) | Conciliación y bancos | `feat/pagos-multiples-recibo` (copia `/private/tmp/woba_auto`) | Claude Code | Fase 1 fusionada (#313); fase 2 fusionada (#314, #315); divisa + reanudar lote en `fix/conciliacion-multiple-divisa` (módulo `conciliacionMultiple` portado a main, moneda habilitable por `WOBI_CONCILIACION_MULTIPLE_MONEDAS`, por defecto solo EUR). Nueva carpeta `core/holded/pagosMultiples/`, solo 2 puntos de conexión (`extractInvoiceData.ts`, `procesarGastoEntrante.ts`). Caso autorizado por Carlos: Uber 8,95 USD = 6,91 + 2,04 (Footprint) |
+| Puente automático de recibos con varios pagos (fase 1, observación) | Conciliación y bancos | _sin rama todavía_ | Claude Code | Pendiente de empezar. La conciliación múltiple en divisa y reanudar lote ya están en `main` (#313–#317). Los pares emparejados se guardan en un registro aparte, no como columna nueva de `_gastos_pendientes`
 
 ## Pendiente de decisión de Carlos
 
@@ -54,7 +54,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Aplazar un gasto y continuar la cola de correo | PR #217 `codex/skip-pending-email` | 28-09-2026 | Abierto sin decidir |
 | Ramas con PR cerrado sin fusionar | `claude/fix-env-loading`, `codex/wobi-seguros-reviewed`, `feat/gasto-siempre-y-soporte-eml`, `fix/desambiguacion-confianza-en-usuario`, `fix/eml-equivalente-eur` | septiembre | ¿Se descartan? |
 | Ramas sin PR | `codex/claude-max-worker`, `codex/wobi-microfono-continuo`, `fix/descartar-gasto-pendiente-datos` | septiembre | ¿Se retoman o se descartan? |
-| Checkout principal con cambios sin guardar | `/Volumes/Seagate Backup Plus Drive/apps/WOBA_Copilot`, rama `codex/holded-proyectos` (33 archivos modificados, 37 nuevos, desde el 27-09) | 27-09-2026 | Revisar qué de eso ya está en `main` antes de limpiar; no se ha tocado |
+| Checkout principal con cambios sin guardar | `/Volumes/Seagate Backup Plus Drive/apps/WOBA_Copilot`, rama `codex/holded-proyectos` (33 archivos modificados, 37 nuevos, desde el 27-09) | 27-09-2026 | Inventariado el 04-10 (solo lectura): ver [inventario](mantenimiento/inventario-checkout-principal-2026-10-04.md). Decidir: respaldar en una rama, portar Proyectos de Holded y la clasificación contable contextual, y limpiar. No se ha tocado nada |
 
 ## Mantenimiento
 
