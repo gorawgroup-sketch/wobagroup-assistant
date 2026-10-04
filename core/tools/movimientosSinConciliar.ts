@@ -5,6 +5,22 @@ import type { ToolDefinition } from "./types";
 const DIAS_POR_DEFECTO = 90;
 const MAX_CUENTAS_A_REVISAR = 10;
 
+export interface MovimientoSinConciliarDescrito { cuentaId: string; movimientoId: string; estado: string; cuenta: string; descripcion: string; monto: number; moneda: string; equivalenteEur: number | null; fecha: string }
+
+/**
+ * La cuenta puede operar en una divisa distinta a EUR — etiquetar todo como «€» sin más era incorrecto (mostraba un monto en USD con
+ * símbolo de euro): si no es EUR se muestra también el equivalente que trae Holded. Cada línea lleva los ids reales del cargo
+ * (accountId y movementId) para las herramientas que escriben (conciliar_multiples_movimientos_bancarios): sin ellos el asistente no
+ * puede referirse a un cargo concreto y acaba inventando o rechazando (caso real Metroart, 2026-10-04).
+ */
+export function lineaMovimientoSinConciliar(m: MovimientoSinConciliarDescrito): string {
+  const montoTexto = m.moneda !== "EUR" && m.equivalenteEur != null
+    ? `${m.monto.toFixed(2)} ${m.moneda} (≈ ${m.equivalenteEur.toFixed(2)} €)`
+    : `${m.monto.toFixed(2)} €`;
+  const ids = m.movimientoId ? ` · accountId=${m.cuentaId} movementId=${m.movimientoId}${m.estado && m.estado !== "pending" ? ` estado=${m.estado}` : ""}` : "";
+  return `- [${m.cuenta}] ${m.descripcion} — ${montoTexto} (${m.fecha})${ids}`;
+}
+
 export const movimientosSinConciliarTool: ToolDefinition = {
   name: "consultar_movimientos_sin_conciliar",
   // Hallazgo real de auditoría xhigh (2ª pasada, sobre este mismo fix): el
@@ -43,7 +59,8 @@ export const movimientosSinConciliarTool: ToolDefinition = {
     "verificar_cashflow_actualizado, que sí compara contra lo ya registrado en la hoja y sí entiende " +
     "semanas concretas (ej. 'S37', 'esta semana'). No intentes cruzar el resultado de esta tool con la " +
     "hoja de cashflow a mano — se te van a escapar coincidencias reales (falsos 'falta registrar'), usa " +
-    "la tool dedicada. Solo consulta — nunca crea ni concilia nada.",
+    "la tool dedicada. Cada línea trae los ids reales (accountId y movementId) del cargo: úsalos tal cual en las herramientas que " +
+    "concilian (conciliar_multiples_movimientos_bancarios); nunca los inventes. Solo consulta — nunca crea ni concilia nada.",
   input_schema: {
     type: "object",
     properties: {
@@ -72,7 +89,7 @@ export const movimientosSinConciliarTool: ToolDefinition = {
       return `No se encontraron cuentas bancarias activas en Holded para ${empresa}.`;
     }
 
-    const sinConciliar: Array<{ cuenta: string; descripcion: string; monto: number; moneda: string; equivalenteEur: number | null; fecha: string }> = [];
+    const sinConciliar: MovimientoSinConciliarDescrito[] = [];
     let total = 0;
 
     for (const cuenta of cuentas) {
@@ -81,6 +98,9 @@ export const movimientosSinConciliarTool: ToolDefinition = {
         total++;
         if (!estaConciliado(m.status)) {
           sinConciliar.push({
+            cuentaId: cuenta.id,
+            movimientoId: String(m.id ?? ""),
+            estado: String(m.status ?? ""),
             cuenta: cuenta.name ?? "(sin nombre)",
             descripcion: (m.description as string) ?? "(sin descripción)",
             monto: typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0),
@@ -102,13 +122,7 @@ export const movimientosSinConciliarTool: ToolDefinition = {
     // agrega también el equivalente que ya trae Holded.
     const lineas = sinConciliar
       .sort((a, b) => b.fecha.localeCompare(a.fecha))
-      .map((m) => {
-        const montoTexto =
-          m.moneda !== "EUR" && m.equivalenteEur != null
-            ? `${m.monto.toFixed(2)} ${m.moneda} (≈ ${m.equivalenteEur.toFixed(2)} €)`
-            : `${m.monto.toFixed(2)} €`;
-        return `- [${m.cuenta}] ${m.descripcion} — ${montoTexto} (${m.fecha})`;
-      });
+      .map(lineaMovimientoSinConciliar);
 
     return (
       `${sinConciliar.length} movimiento(s) bancario(s) de ${empresa} sin conciliar (de ${total} revisados, últimos ${dias} días):\n\n` +
