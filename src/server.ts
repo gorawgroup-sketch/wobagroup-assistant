@@ -566,16 +566,16 @@ app.get("/api/cerebro/estado", async (req: Request, res: Response) => {
 
   try {
     res.set("Cache-Control", "no-store");
-    // La lectura manual puede durar más que el timeout HTTP. Aceptamos la orden
-    // sin bloquear la respuesta; el estado nuevo llega por sondeo/SSE al terminar.
-    if (req.query.actualizar === "1") {
+    // Solo el front nuevo usa el acuse asíncrono. La ruta existente
+    // ?actualizar=1 conserva su respuesta de estado para otros consumidores.
+    if (req.query.actualizar === "1" && req.query.asincrono === "1") {
       const acuse = solicitarActualizacion(() => obtenerEstadoCerebro(true), (error) => {
         console.warn("[api/cerebro/estado] Actualización manual incompleta:", error instanceof Error ? error.message : String(error));
       });
       res.status(202).json(acuse);
       return;
     }
-    const estado = await obtenerEstadoCerebro(false);
+    const estado = await obtenerEstadoCerebro(req.query.actualizar === "1");
     res.json(estado);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

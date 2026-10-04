@@ -3638,7 +3638,7 @@ export default function CerebroWoba() {
     setRefreshing(true);
     try {
       // Solo el botón «actualizar» fuerza al servidor; el resto lee lo último que tiene, al instante.
-      const url = fuerzaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1` : CEREBRO_ENDPOINT;
+      const url = fuerzaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1&asincrono=1` : CEREBRO_ENDPOINT;
       const res = await fetch(url, { headers: { "X-Cerebro-Key": apiKey }, cache: "no-store", signal });
       signal.throwIfAborted();
       if (res.status === 403) {
