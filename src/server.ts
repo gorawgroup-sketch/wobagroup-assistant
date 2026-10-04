@@ -62,6 +62,7 @@ import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStor
 import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "../core/documental/pendienteReclasificacionStore";
 import { esMensajeCaptura } from "../core/knowledge/capture";
+import { ejecutarComandoPreguntas, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
@@ -2217,6 +2218,18 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     } catch (error) {
       console.error("[chat/vincular] Error confirmando vínculo:", error instanceof Error ? error.name : "Error");
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude completar la vinculación. Inténtalo de nuevo.");
+    }
+    return;
+  }
+
+  // Comando fijo: reenvía la pregunta/propuesta pendiente con sus botones, sin pasar por el modelo (ver comandoPreguntas.ts).
+  const cualPregunta = parsearComandoPreguntas(incoming.text);
+  if (cualPregunta !== undefined) {
+    try {
+      await sendTelegramMessage(incoming.chatId, await ejecutarComandoPreguntas(incoming.chatId, cualPregunta));
+    } catch (error) {
+      console.error("[preguntas] Error reenviando la pregunta pendiente:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude reenviar la pregunta pendiente ahora. No se tocó nada; inténtalo de nuevo en un momento.");
     }
     return;
   }
