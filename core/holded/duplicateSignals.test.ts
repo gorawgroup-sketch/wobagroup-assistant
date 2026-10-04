@@ -246,9 +246,29 @@ test("un cargo libre único del recibo distingue otro cargo antiguo por el mismo
     assert.deepEqual(aplicar([antiguo], new Set(["a", "b"])), [antiguo]);
     for (const fecha of [criterios.fecha, "2026-06-22", "2026-06-20", "invalida"]) {
       const ambiguo = { ...antiguo, fecha };
-      assert.deepEqual(aplicar([ambiguo]), [ambiguo]);
+      // Mismo importe al céntimo: sigue ambiguo en 3 días. Un céntimo de diferencia: solo ambiguo si cae el mismo día del recibo
+      // (o si la fecha no se puede comparar). Decisión de Carlos, 2026-10-04: importe y día distintos = otro viaje.
+      const sigueAmbiguo = monto === 4.25 || fecha === criterios.fecha || fecha === "invalida";
+      assert.deepEqual(aplicar([ambiguo]), sigueAmbiguo ? [ambiguo] : []);
     }
     const exacto = { ...antiguo, nivel: "exacta" as const };
     assert.deepEqual(priorizarCargoLibreExacto([exacto], new Set(["a"]), 4.25, "EUR", criterios.fecha), [exacto]);
   }
+});
+
+test("caso Uber 5,95 USD: el cargo libre exacto del 02/10 gana al conciliado 5,96 del 29/09 (importe y día distintos)", () => {
+  const criterios = { proveedor: "Uber", monto: 5.95, moneda: "USD", fecha: "2026-10-02" };
+  const libre = { id: "6ac1161152090c3def0044c7", origin: "bankin", description: "Uber Pending", amount: "-5.95", currency: "USD", booking_date: "2026-10-02", status: "pending", reconciled_amount: "0.00" };
+  assert.equal(esCargoLibreExactoParaDuplicado(libre, criterios), true);
+  const aplicar = (items: Array<{ nivel: "probable" | "exacta"; monto: number; moneda: string; fecha: string }>) =>
+    priorizarCargoLibreExacto(items, new Set(["ftg/libre"]), criterios.monto, criterios.moneda, criterios.fecha);
+  const deOtroViaje = { nivel: "probable" as const, monto: 5.96, moneda: "USD", fecha: "2026-09-29" };
+  assert.deepEqual(aplicar([deOtroViaje]), []);
+  // Sigue bloqueando: mismo importe al céntimo, o el mismo día del recibo con un céntimo de diferencia.
+  const mismoImporte = { ...deOtroViaje, monto: 5.95 };
+  const mismoDia = { ...deOtroViaje, fecha: "2026-10-02" };
+  assert.deepEqual(aplicar([mismoImporte]), [mismoImporte]);
+  assert.deepEqual(aplicar([mismoDia]), [mismoDia]);
+  // Sin cargo libre único, no se descarta nada.
+  assert.deepEqual(priorizarCargoLibreExacto([deOtroViaje], new Set(), 5.95, "USD", "2026-10-02"), [deOtroViaje]);
 });

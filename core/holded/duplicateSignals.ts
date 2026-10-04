@@ -215,8 +215,17 @@ export function priorizarCargoLibreExacto<T extends { nivel: "exacta" | "probabl
   // distinguish a repeated expense from an older, merely probable match.
   // Missing dates and nearby occupied charges remain ambiguous. Registered
   // purchase/document checks are independent and must still run.
+  // Caso real (Footprint, 2026-10-04): recibo Uber 5,95 USD del 02/10 con su cargo libre exacto «Uber Pending» 5,95 del
+  // 02/10, y un cargo YA conciliado «Dlc*uber Rides» 5,96 del 29/09 (3 días antes, un céntimo de diferencia): bloqueaba
+  // como «probable duplicado». Un cargo que difiere en el importe Y en el día no puede ser el cargo de este recibo
+  // cuando existe un único cargo libre exacto (mismo día, mismo proveedor, mismo importe): es otro viaje. Sigue siendo
+  // ambiguo, y por tanto bloquea, el que tiene el mismo importe al céntimo o cae el mismo día del recibo.
+  const mismoDia = (m: { fecha?: string }) => Boolean(fecha && m.fecha && m.fecha.slice(0, 10) === fecha.slice(0, 10));
+  const fechaComparable = (m: { fecha?: string }) => Boolean(fecha && m.fecha && Number.isFinite(diferenciaDiasCalendario(m.fecha, fecha)));
+  const mismoImporteAlCentimo = (m: { monto: number }) => Math.abs(Math.abs(m.monto) - monto) <= 0.005;
   return conciliados.filter(m => m.nivel === "exacta" || m.moneda.toUpperCase() !== moneda.toUpperCase() ||
     (Math.abs(Math.abs(m.monto) - monto) <= 0.011 &&
       !(fecha && m.fecha && Number.isFinite(diferenciaDiasCalendario(m.fecha, fecha)) &&
-        diferenciaDiasCalendario(m.fecha, fecha) > 3)));
+        diferenciaDiasCalendario(m.fecha, fecha) > 3) &&
+      (!fechaComparable(m) || mismoDia(m) || mismoImporteAlCentimo(m))));
 }
