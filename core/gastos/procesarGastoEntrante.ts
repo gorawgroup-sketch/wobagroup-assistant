@@ -41,6 +41,7 @@ import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad } from "./gastoPorCorreoStore";
 import { calcularHuellaContenido } from "./identidadGasto";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
+import { evaluarPagosMultiples } from "../holded/pagosMultiples/pagos";
 
 export interface GastoEntrante {
   chatId: number;
@@ -1084,6 +1085,17 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       }
     }
 
+    // Recibo cobrado en varios pagos (fase de observación) + guardia: un movimiento anterior al gasto no se propone como coincidencia.
+    let notaPagosMultiples = "";
+    try {
+      const pm = await evaluarPagosMultiples({
+        empresa, moneda: monedaParaHolded, total: montoParaHolded, fechaGasto: datos.fecha, pagos: datos.pagos,
+        aproximada: movimientoAproximado ? { fecha: movimientoAproximado.fecha, monto: movimientoAproximado.monto, descripcion: movimientoAproximado.descripcion } : undefined,
+      });
+      if (pm.descartarAproximado) { movimientoAproximado = undefined; if (!movimientoBancario) otrosAproximados = 0; }
+      notaPagosMultiples = pm.nota;
+    } catch (error) { console.error("[procesarGastoEntrante] Error evaluando pagos múltiples (no crítico):", error instanceof Error ? error.message : error); }
+
     const notaAproximacion = usarEquivalente
       ? monedaParaHolded === "EUR"
         ? ` (monto aproximado — la factura está en ${monedaOriginal} y el banco convierte a EUR con su propio ` +
@@ -1200,7 +1212,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         ? `${desgloseIva} — recibo simplificado (sin datos fiscales completos), sujeto pasivo.`
         : desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
-    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento;
+    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento + notaPagosMultiples;
 
     // Publicar desde el mismo estado que acaba de quedar guardado. La propuesta
     // inicial aún no tenía banco y los controles ocultaban las acciones válidas.

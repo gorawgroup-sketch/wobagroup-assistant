@@ -43,6 +43,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 |---|---|---|---|---|
 | Regla de tickets / lista aprobada de Holded | Automatización de Holded | `fix/holded-lista-aprobada-manda` (copia `/private/tmp/woba_auto`) | Otra sesión de Claude | Activa el 03-10-2026; no tocar esa copia |
 | Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | `feat/transferencias-ejecucion` (copia `.worktrees/transferencias-internas`) | Claude Code | Fase 1 (detección) fusionada en #308. Fase 2 (registro, botones, ejecutor) en PR; ejecución apagada hasta la prueba controlada autorizada por Carlos |
+| Recibos cobrados en varios pagos + guardia de fecha en coincidencias aproximadas (fase 1, observación) | Conciliación y bancos | `feat/pagos-multiples-recibo` (copia `/private/tmp/woba_auto`) | Claude Code | Fase 1 en PR; nueva carpeta `core/holded/pagosMultiples/`, solo 2 puntos de conexión (`extractInvoiceData.ts`, `procesarGastoEntrante.ts`). Fase 2 (conciliar con varios movimientos, USD) pendiente de autorización de Carlos; reutiliza el módulo `conciliacionMultiple` de `codex/holded-proyectos` (solo EUR) |
 
 ## Pendiente de decisión de Carlos
 
