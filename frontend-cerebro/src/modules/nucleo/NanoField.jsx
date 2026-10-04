@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 /** A live, bounded swarm, drawn locally. No image, video, network or perpetual hidden loop. */
-export default function NanoField({ expanded = false, activeNode = null, nodes = [] }) {
+export default function NanoField({ expanded = false, activeNode = null, nodes = [], compact = false }) {
   const ref = useRef(null);
   const config = useRef({ expanded, activeNode, nodes });
   const redraw = useRef(null);
@@ -11,7 +11,7 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
     const ctx = canvas?.getContext('2d');
     if (!ctx) return;
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const count = 2800;
+    const count = compact ? 1000 : 2800;
     const particles = Array.from({ length: count }, (_, i) => {
       const y = 1 - 2 * (i + .5) / count;
       return { y, ring: Math.sqrt(1 - y * y), angle: i * 2.399963, seed: Math.sin(i * 127.1) * .5 + .5, amber: i % 7 === 0 };
@@ -19,6 +19,7 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
     const focusStrength = new Map();
     let frame = 0, width = 0, height = 0, last = 0, time = 0, spread = 0;
     const dot = (x, y, size, alpha, amber, glow = false) => {
+      if (compact) size *= .65;
       ctx.globalAlpha = alpha;
       ctx.fillStyle = amber ? '#ffc36d' : '#62d8ff';
       if (glow) { ctx.globalAlpha = alpha * .12; ctx.beginPath(); ctx.arc(x,y,size * 4,0,Math.PI * 2);ctx.fill();ctx.globalAlpha = alpha; }
@@ -55,8 +56,9 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
         dot(px,py,size,alpha,p.amber,i%17===0&&front>.4);
       }
       // Warm filaments circulate through the center, preserving WOBi's amber identity.
-      for(let i=0;i<520;i++) {
-        const u=i/520;
+      const filamentCount = compact ? 190 : 520;
+      for(let i=0;i<filamentCount;i++) {
+        const u=i/filamentCount;
         const a=u*Math.PI*18-t*.9;
         const waist=.14+Math.sin(u*Math.PI)*.25;
         const depth=(Math.sin(a)+1)/2;
@@ -91,7 +93,7 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
         }
       }
       // Loose outer particles make the boundary breathe instead of looking like a rigid globe.
-      for(let i=0;i<240;i++) {
+      for(let i=0;i<(compact ? 75 : 240);i++) {
         const a=i*2.399963-t*.12;
         const r=radius*(1.07+(Math.sin(i*29)*.5+.5)*.62);
         dot(cx+Math.cos(a)*r,cy+Math.sin(a)*r*.7+Math.sin(a*3+t)*9,.8,.15+(i%5)*.035,i%17===0);
@@ -112,6 +114,6 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
     observer.observe(canvas);
     document.addEventListener('visibilitychange',resume);motion.addEventListener('change',resume);
     return ()=>{cancelAnimationFrame(frame);redraw.current=null;observer.disconnect();document.removeEventListener('visibilitychange',resume);motion.removeEventListener('change',resume);};
-  }, []);
+  }, [compact]);
   return <canvas ref={ref} className="nv-field" aria-hidden="true" />;
 }
