@@ -21,7 +21,9 @@ function comprobarCompra(esperada: CompraExacta, actual: CompraExacta): void {
   }
 }
 function comprobarMovimiento(esperado: MovimientoExacto, actual: MovimientoExacto, conciliado = false): void {
-  const identidad = (m: MovimientoExacto) => JSON.stringify([m.accountId, m.movementId, m.fecha, m.centimos, m.moneda, m.descripcion, m.cuenta, m.contableCentimos ?? null]);
+  // Los planes guardados antes de existir `contableCentimos` no lo traen: entonces solo se compara el resto de la identidad.
+  const identidad = (m: MovimientoExacto) => JSON.stringify([m.accountId, m.movementId, m.fecha, m.centimos, m.moneda, m.descripcion, m.cuenta,
+    esperado.contableCentimos === undefined ? null : (m.contableCentimos ?? null)]);
   if (identidad(esperado) !== identidad(actual)) throw new Error("Cambió un movimiento seleccionado.");
   if (conciliado) {
     if (!["reconciled", "forced_reconciled"].includes(actual.estado) || actual.conciliadoCentimos !== esperado.centimos) {
@@ -204,9 +206,12 @@ export class ServicioConciliacionMultiple {
         if (!actual.pagos.some((pago) => JSON.stringify(pago) === JSON.stringify(anterior))) throw new Error("Un pago anterior al plan cambió o desapareció.");
         pagosExplicados.add(anterior.id);
       }
-      for (const m of p.movimientos) {
+      for (let i = 0; i < p.movimientos.length; i++) {
+        const m = p.movimientos[i];
         const ahora = await this.holded.movimiento(p.empresa, m);
-        const importeEsperado = divisa ? m.contableCentimos : -m.centimos;
+        // Plan antiguo sin el equivalente en EUR: se incorpora el que Holded informa ahora (la identidad del resto ya se comprueba abajo).
+        if (m.contableCentimos === undefined && ahora.contableCentimos !== undefined) p.movimientos[i] = { ...m, contableCentimos: ahora.contableCentimos };
+        const importeEsperado = divisa ? p.movimientos[i].contableCentimos : -m.centimos;
         try { comprobarMovimiento(m, ahora, true); } catch {
           comprobarMovimiento(m, ahora); // si tampoco está libre, lanza: estado ambiguo, no se adivina.
           libres.push(claveMovimiento(m));
