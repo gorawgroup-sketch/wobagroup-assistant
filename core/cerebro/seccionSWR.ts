@@ -78,6 +78,7 @@ export class SeccionSWR<T> {
   /** Antigüedad de la lectura actual en ms (Infinity si no hay ninguna). */
   get antiguedadMs(): number { return this.edad(); }
   get obtenidoEn(): number | null { return this.entrada?.obtenidoEn ?? null; }
+  get datosActuales(): T | null { return this.entrada?.datos ?? null; }
   get tieneDatos(): boolean { return this.entrada !== null; }
   get estaVencida(): boolean { return this.vencida(); }
 

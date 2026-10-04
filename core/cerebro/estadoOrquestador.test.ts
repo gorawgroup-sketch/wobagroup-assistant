@@ -231,7 +231,21 @@ test("el diagnóstico para /health da la antigüedad de cada sección sin expone
   await o.obtener();
   const d = o.diagnostico();
   assert.equal(d.secciones.cashflow.refrescando, false);
+  assert.equal(d.secciones.cashflow.fuentesFallidas, 0);
   assert.ok((d.secciones.cashflow.edadSegundos ?? 99) <= 1);
   assert.equal(d.conteosPesados.edadSegundos, 90);
   assert.doesNotMatch(JSON.stringify(d), /"v":|datos/);
+});
+
+test("el diagnóstico distingue fallos de fuente aunque la sección se haya actualizado", async () => {
+  const def = seccion("cashflow", 60_000, { n: 0 }, { cargar: async () => ({
+    datos: { importePrivado: 100 },
+    fuentes: [{ fuente: "cashflow.hoja", ok: false, verificadoEn: "x", ultimoExitoEn: null, conservado: false, causa: "timeout" }],
+  }) });
+  const { o } = crear({ secciones: [def] });
+  await o.obtener();
+  const d = o.diagnostico();
+  assert.equal(d.secciones.cashflow.fuentesFallidas, 1);
+  assert.deepEqual(d.secciones.cashflow.causas, { timeout: 1 });
+  assert.equal(JSON.stringify(d).includes("importePrivado"), false);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { conPrioridadSheets, crearAdaptadorSheetsConCuota, esPeticionSheets, LimitadorVentana } from "./limitadorSheets";
+import { conCancelacionSheets, conPrioridadSheets, crearAdaptadorSheetsConCuota, esPeticionSheets, LimitadorVentana } from "./limitadorSheets";
 
 function reloj() {
   let t = 1_000_000;
@@ -44,6 +44,20 @@ test("el trabajo de fondo cede una reserva y lo interactivo pasa primero", async
   await r.avanzar(60_100);
   await fondo;
   assert.deepEqual(orden, ["interactiva-1", "fondo"]);
+});
+
+test("una lectura vencida abandona la cola y no consume cuota después", async () => {
+  const r = reloj();
+  const l = new LimitadorVentana(1, 0, 60_000, r.deps);
+  await l.adquirir("fondo");
+  const abortar = new AbortController();
+  const pendiente = l.adquirir("fondo", abortar.signal);
+  assert.equal(l.estado.enCola, 1);
+  abortar.abort(new Error("lectura vencida"));
+  await assert.rejects(pendiente, /lectura vencida/);
+  assert.equal(l.estado.enCola, 0);
+  await r.avanzar(60_100);
+  assert.equal(l.estado.enVentana, 0);
 });
 
 test("solo interviene en Sheets: Gmail, Drive y OAuth pasan intactos al adaptador por defecto", async () => {
@@ -98,4 +112,21 @@ test("el timeout empieza al salir de la cola, no mientras se esperaba turno", as
   await adaptador({ url: SHEETS, timeout: 45_000, signal: AbortSignal.abort() }, porDefecto);
   assert.ok(senal);
   assert.equal(senal!.aborted, false);
+});
+
+test("un consumidor cancelado no envía una lectura Sheets pendiente", async () => {
+  const r = reloj();
+  const l = new LimitadorVentana(1, 0, 60_000, r.deps);
+  await l.adquirir("fondo");
+  const adaptador = crearAdaptadorSheetsConCuota({ limitadores: { lectura: l, escritura: l } });
+  const abortar = new AbortController();
+  let enviadas = 0;
+  const pendiente = conCancelacionSheets(abortar.signal, () =>
+    adaptador({ url: SHEETS }, async () => { enviadas++; return respuesta(200); }));
+  await new Promise((res) => setImmediate(res));
+  assert.equal(l.estado.enCola, 1);
+  abortar.abort(new Error("fuente vencida"));
+  await assert.rejects(pendiente, /fuente vencida/);
+  await r.avanzar(60_100);
+  assert.equal(enviadas, 0);
 });

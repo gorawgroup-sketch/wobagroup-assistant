@@ -137,6 +137,7 @@ import {
   restaurarPendienteSeleccionGasto,
 } from "../core/gastos/pendienteSeleccionGastoStore";
 import { obtenerDiagnosticoMetadataPestanas } from "../core/google/sheetsKeyValueStore";
+import { estadoLimitadorSheets } from "../core/google/limitadorSheets";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
@@ -485,6 +486,7 @@ app.get("/health", (_req: Request, res: Response) => {
     cacheLecturas: resumirMetricasCachesLectura(),
     panelCerebro: obtenerDiagnosticoPanelCerebro(),
     metadataSheets: obtenerDiagnosticoMetadataPestanas(),
+    cuotaSheets: estadoLimitadorSheets(),
     entregasTelegram: { habilitado: configuracionTelegramDurable.habilitado, ...coordinadorEntregasTelegram.estado },
     enviosCorreo: obtenerEstadoEnviosCorreoDurables(),
     subidasDrive: obtenerEstadoSubidasDriveDurables(),

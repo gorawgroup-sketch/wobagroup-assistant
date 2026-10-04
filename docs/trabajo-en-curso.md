@@ -41,6 +41,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
+| Lecturas de fuentes de Cerebro bajo la cola de Sheets | Cerebro (front) | `codex/cerebro-fuentes-frescas` ([PR #330](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/330)) | Codex | Plazo de Sheets ampliado; las lecturas vencidas salen de la cola y `/health` expone cuota y causas seguras. Producción aún muestra fuentes parciales; no publicar ni fusionar hasta demostrar recuperación y lectura integral real. |
 | Regla de tickets / lista aprobada de Holded | Automatización de Holded | `fix/holded-lista-aprobada-manda` (copia `/private/tmp/woba_auto`) | Otra sesión de Claude | Activa el 03-10-2026; no tocar esa copia |
 | Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | `feat/transferencias-ejecucion` (copia `.worktrees/transferencias-internas`) | Claude Code | Fase 1 (detección) fusionada en #308. Fase 2 (registro, botones, ejecutor) en PR; ejecución apagada hasta la prueba controlada autorizada por Carlos |
 | Proyectos de Holded (solo lectura): listar y reporte financiero por proyecto | Conciliación y bancos (`core/holded/`, `core/tools/`) | `feat/holded-proyectos-lectura` | Claude Code | Portado el 04-10-2026 desde la rama de respaldo `respaldo/checkout-principal-2026-10-04`; PR abierto, a la espera de que Carlos decida la fusión. Solo GET, sin escrituras |
