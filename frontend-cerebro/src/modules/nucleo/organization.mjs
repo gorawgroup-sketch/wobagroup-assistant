@@ -10,7 +10,7 @@ export const AREAS = Object.freeze([
   { id: 'finance', name: 'Finanzas', short: 'Finanzas', symbol: '01', stage: 'available', description: 'Contabilidad, conciliaciones, gastos y facturas. Accede a las herramientas actuales o consulta a WOBi.', modules: [{ id: 'holded', name: 'Contabilidad en Holded' }, { id: 'cashflow', name: 'Tesorería y cashflow' }, { id: 'fiscal', name: 'Fiscalidad' }] },
   { id: 'operations', name: 'Operaciones y procesos', short: 'Operaciones', symbol: '02', stage: 'available', description: 'Documentación, correo y procesos de trabajo en un mismo espacio.', modules: [{ id: 'drive', name: 'Documentos en Drive' }, { id: 'correo', name: 'Correo' }, { id: 'conocimiento', name: 'Conocimiento' }, { id: 'calendario', name: 'Calendario' }] },
   { id: 'insurance', name: 'Seguros', short: 'Seguros', symbol: '03', stage: 'available', description: 'Consulta pólizas, vencimientos y el estado del módulo de seguros.', modules: [{ id: 'seguros', name: 'Control de seguros' }] },
-  { id: 'corporate', name: 'Corporate', short: 'Corporate', symbol: '04', stage: 'documents', description: 'Localiza documentos corporativos en Drive con WOBi. El mapa de relaciones societarias está pendiente de integrar.', modules: [{ id: 'drive', name: 'Documentación corporativa' }] },
+  { id: 'corporate', name: 'Corporate', short: 'Corporate', symbol: '04', stage: 'documents', description: 'Documentación corporativa y espacio de planeación estratégica por compañía. La fuente de los planes se conectará cuando estén aprobados.', modules: [{ id: 'drive', name: 'Documentación corporativa' }, { id: 'strategic_planning', name: 'Planeación estratégica' }] },
   { id: 'people', name: 'Gestión humana', short: 'Personas', symbol: '05', stage: 'planned', description: 'Espacio previsto para personas y procesos de gestión humana. Todavía sin agente especializado.', modules: [] },
   { id: 'marketing', name: 'Marketing y social media', short: 'Marketing', symbol: '06', stage: 'planned', description: 'Campañas y seguimiento de redes de cada compañía. Las cuentas sociales todavía no están integradas.', modules: [] },
   { id: 'commercial', name: 'Ventas y clientes', short: 'Comercial', symbol: '07', stage: 'planned', description: 'Espacio para ventas y clientes. El programa externo de generación de leads de eWorks está pendiente de integración.', modules: [] },
@@ -23,4 +23,3 @@ export const AREAS = Object.freeze([
 export const STAGES = { available: 'Herramientas disponibles', documents: 'Consulta documental', planned: 'Previsto' };
 export const companyById = id => COMPANIES.find(company => company.id === id) || COMPANIES[0];
 export const areaById = id => AREAS.find(area => area.id === id) || null;
-

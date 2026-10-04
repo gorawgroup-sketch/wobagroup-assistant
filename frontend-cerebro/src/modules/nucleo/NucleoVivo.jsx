@@ -4,6 +4,7 @@ import NanoAmbient from './NanoAmbient.jsx';
 import AreaIcon, { AREA_COLORS } from './AreaIcon.jsx';
 import DocumentSearch from './DocumentSearch.jsx';
 import ModuleWorkspace from './ModuleWorkspace.jsx';
+import StrategicPlanning from './StrategicPlanning.jsx';
 import { TELEGRAM_URL, TELEGRAM_WEB_URL } from './TelegramHandoff.jsx';
 import { AREAS, COMPANIES, STAGES, areaById, companyById } from './organization.mjs';
 import { systemAttention } from './attention.mjs';
@@ -45,7 +46,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const [areaId, setAreaId] = useState(null);
   const [activeNode, setActiveNode] = useState(null);
   const [workspaceId, setWorkspaceId] = useState(null);
-  const availableModules = [...modules, { id:'control_diario',name:'Control diario',detail:'Diagnóstico y prioridades del sistema' }, {id:'administracion',name:'Ajustes y administración',detail:'Usuarios, programaciones y conexiones'}];
+  const availableModules = [...modules, { id:'strategic_planning',name:'Planeación estratégica',detail:'Hoja de seguimiento pendiente de conectar' }, { id:'control_diario',name:'Control diario',detail:'Diagnóstico y prioridades del sistema' }, {id:'administracion',name:'Ajustes y administración',detail:'Usuarios, programaciones y conexiones'}];
   const workspace = availableModules.find(item => item.id === workspaceId);
   const company = companyById(companyId);
   const area = areaById(areaId);
@@ -80,7 +81,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {workspace ? <ModuleWorkspace module={workspace} modules={availableModules} onOpen={openModule}
       onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={companyScopeNote(workspace.id, company.name)}>
-      {renderModule(workspace.id, openModule, company.id)}
+      {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id)}
     </ModuleWorkspace> : <main className="nv-universe is-expanded" aria-label="Núcleo de WOBi">
       <div className="nv-constellation">
         <NanoField expanded activeNode={activeNode} nodes={visibleAreas.map((item,index) => { const [x,y] = POSITIONS[index]; return { id:item.id,x,y }; })} />
