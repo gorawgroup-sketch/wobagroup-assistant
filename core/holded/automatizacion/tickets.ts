@@ -3,6 +3,7 @@ import { MAX_CONVERSIONES_POR_CICLO, MAX_CONVERSIONES_POR_DIA, UMBRAL_DISYUNTOR 
 import { clasificarDocumento, type SenalesDocumento } from "./clasificacionTicket";
 import { empresasAutomatizacion, modoAutomatizacion } from "./modo";
 import { requiereIntervencion, type NavegadorHolded } from "./navegador";
+import { entradaReglaDesdeCompra, evaluarReglaTicket } from "./reglaTicket";
 import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
 
 /**
@@ -307,6 +308,18 @@ async function procesarTicket(clave: string, modo: string, dep: DependenciasTick
     // Aún le falta algo (p. ej. conciliación): se espera en cola; si pasan demasiados días, lo decide una persona.
     if (ahora() - t.creadoEn > ESPERA_MAXIMA_ELEGIBILIDAD_MS) return guardar("requiere_intervencion", `No llegó a estar completo y conciliado: ${elegibilidad.motivos.join("; ")}`);
     return guardar("solicitado", `Esperando: ${elegibilidad.motivos.join("; ")}`);
+  }
+  // Defensa en profundidad: un caso que vino del escáner de la regla vuelve a pasar por sus EXCLUSIONES (NIF/CIF y tope de 500 €) con
+  // datos frescos justo antes de actuar. Una exploración anterior pudo registrarlo con otros datos (p. ej. antes de corregir el
+  // cálculo del tope en divisa, o antes de que se cambiara el proveedor): lo que ya no cumple la regla no se convierte.
+  if (t.evidencia.origen === "regla_auto") {
+    const leerRegla = dep.leer ?? holdedGet;
+    const cid = String((real.compra as Raw).contact_id ?? "");
+    let contacto: Raw | null;
+    try { contacto = cid ? ((await leerRegla(empresa, `/contacts/${encodeURIComponent(cid)}`)) as Raw) : null; }
+    catch (error) { return guardar("solicitado", `Lectura del proveedor fallida; se reintenta: ${msg(error)}`); }
+    const revision = evaluarReglaTicket(entradaReglaDesdeCompra(real.compra as Raw, contacto, true));
+    if (revision.decision === "nunca") return guardar("omitido", `No se convierte: la regla ya no lo aprueba (${revision.motivos.join("; ")})`);
   }
   const antes = instantaneaCompra(real.compra!);
   t.evidencia.antes = antes;
