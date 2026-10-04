@@ -3,6 +3,7 @@ import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
 import { obtenerConciliacionesPendientesPorChat } from "./conciliacionPendienteStore";
 import { obtenerConciliacionesAmbiguasPendientesPorChat } from "./conciliacionAmbiguaPendienteStore";
 import { recuperarConciliacionExistenteCompra } from "../holded/write";
+import { consultarCargoParcial, conciliarParcialDeRecibo, textoOfertaParcial, type ConsultaCargoParcial } from "./conciliacionParcialRecibo";
 import { candidatoUtilizableParaGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
@@ -1246,12 +1247,29 @@ async function preguntarSiConciliar(
     // repetirse (el registro durable lo bloquea): solo se ofrece verificar lo hecho. Caso real El Meson Sandwiches (2026-10-04).
     const previa = await recuperarConciliacionExistenteCompra(empresa, gastoId).catch(() => "nueva" as const);
     const soloVerificar = previa === "incierta" || previa === "revision";
-    const texto = soloVerificar
+    // Recibo cobrado en varios pagos del que solo aparece una parte en el banco: si hay UN único cargo libre del mismo proveedor menor
+    // que el gasto, se ofrece conciliar esa parte (el resto queda abierto) en vez de la pregunta genérica, que no encontraría nada.
+    const consultaParcial: ConsultaCargoParcial = !soloVerificar && previa === "nueva"
+      ? await consultarCargoParcial({ empresa, proveedor, monto, moneda, fecha })
+      : { tipo: "ninguno" };
+    const ofertaParcial = consultaParcial.tipo === "oferta" ? consultaParcial.cargo : undefined;
+    const avisoConsulta = consultaParcial.tipo === "consulta_fallida"
+      ? "\n\n⚠️ No pude consultar ahora el banco para ver si hay una parte de este recibo ya cobrada; si crees que la hay, pídemelo de nuevo en unos minutos."
+      : "";
+    const texto = ofertaParcial
+      ? textoOfertaParcial(ofertaParcial, { empresa, proveedor, monto, moneda, fecha }, descripcionGasto)
+      : soloVerificar
       ? (previa === "revision"
           ? `⚠️ "${descripcionGasto}" ya tiene pagos aplicados y su conciliación requiere revisión. No se buscarán otros cargos ni se añadirán pagos; verificar solo relee el resultado anterior.`
           : `⏳ La conciliación de "${descripcionGasto}" se aplicó pero Holded no la confirmó todavía. No se buscarán otros cargos ni se repetirá nada; verificar solo relee compra y banco.`)
-      : `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`;
-    const botones = soloVerificar
+      : `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?${avisoConsulta}`;
+    const botones = ofertaParcial
+      ? [[
+          { text: `🔗 Conciliar esta parte (${ofertaParcial.monto.toFixed(2)} ${moneda}; quedan ${(monto - ofertaParcial.monto).toFixed(2)} abiertos)`, callback_data: `gasto_conciliar_si:${pendiente.id}:p${ofertaParcial.movementId}` },
+        ], [
+          { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
+        ]]
+      : soloVerificar
       ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${pendiente.id}:lectura` }]]
       : [[
           { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
@@ -2133,8 +2151,17 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       );
       return;
     }
+    // «Conciliar esta parte» (gasto_conciliar_si:ID:p<movementId>): misma pregunta, mismo cierre y misma autorización de siempre;
+    // solo cambia QUIÉN concilia: la conciliación múltiple en modo parcial, con el único cargo que se ofreció.
+    const parcialId = typeof extra === "string" && /^p[0-9a-fA-F]{24}$/.test(extra) ? extra.slice(1) : undefined;
     const resultadoConciliacion = previaLectura
       ? previaLectura
+      : parcialId
+      ? await conciliarParcialDeRecibo(
+          { empresa: pendiente.empresa, chatId: pendiente.chatId, gastoId: pendiente.gastoId, proveedor: pendiente.proveedor ?? "", monto: pendiente.monto, moneda: pendiente.moneda ?? "EUR", fecha: pendiente.fecha },
+          parcialId,
+          callback.from.id
+        )
       : await intentarConciliar(
       pendiente.empresa,
       pendiente.monto,

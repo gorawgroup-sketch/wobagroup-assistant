@@ -76,5 +76,5 @@ Caso real (Footprint, 2026-10-04): hotel Metroart, 581,92 USD cobrados en 451,30
 - Es la misma maquinaria verificada paso a paso (registro durable, pago nuevo por cargo, relectura de ambos lados, botón de superadministrador); en divisa, cada pago se verifica contra el equivalente en EUR del cargo.
 - No cierra ningún residuo de cambio (el resto es una deuda real, no redondeo) y el plan termina **completado** con «queda X pendiente».
 - Para cerrar el saldo después, un segundo plan con el cargo que llega (basta uno si la compra ya tiene pagos). Un plan completado ya no reserva la compra.
-- Pendiente (fase B): el botón «Crear y conciliar lo encontrado» en la propia propuesta, para un solo clic.
+- Fase B (hecha): tras crear el gasto, `core/gastos/conciliacionParcialRecibo.ts` ofrece el cargo con un botón («Conciliar esta parte») cuando hay UN único candidato del mismo proveedor (palabra distintiva), moneda y fecha; el botón reutiliza `gasto_conciliar_si:ID:p<movementId>` y vuelve a localizar el cargo antes de escribir.
 
