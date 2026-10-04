@@ -1,5 +1,7 @@
 import ModuleDetails from "./modules/nucleo/ModuleDetails.jsx";
 import NucleoVivo from "./modules/nucleo/NucleoVivo.jsx";
+import SettingsHub from "./modules/nucleo/SettingsHub.jsx";
+import { scopeSnapshot } from "./modules/nucleo/companyScope.mjs";
 import TelegramHandoff from "./modules/nucleo/TelegramHandoff.jsx";
 import { createRefreshCoordinator, fuerzaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
 import { borrarSnapshotLocal, guardarSnapshotLocal, leerSnapshotLocal } from "./snapshotLocal.js";
@@ -2197,7 +2199,7 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
             padding: "6px 12px",
           }}
         >
-          abrir el registro ↗
+          abrir el registro conjunto ↗
         </a>
       )}
     </div>
@@ -3771,23 +3773,35 @@ export default function CerebroWoba() {
     : frescura === "parcial" || conexionesCaidas.length ? { texto: "Actualización con incidencias", color: C.amberBright }
     : estadoVisualBase;
 
-  const renderModuleDetails = m => <ModuleDetails {...{ m, liveData, fuentesFallidas, periodoCashflow, setPeriodoCashflow, verPagosRecurrentes, setVerPagosRecurrentes, verDocumentos, setVerDocumentos, verCapturasRecientes, setVerCapturasRecientes, verCorreccionesRecientes, setVerCorreccionesRecientes, C, get, timeAgo, Desplegable, liveRowsForModule }}
+  const verificarAdministracion = async () => {
+    try {
+      const response = await fetch(ACCESOS_ACTIVOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } });
+      setEsAdmin(response.ok);
+      return response.ok;
+    } catch {
+      setEsAdmin(false);
+      return false;
+    }
+  };
+
+  const renderModuleDetails = (m, companyId = null) => {
+    const moduleData = companyId ? scopeSnapshot(m.id, liveData, companyId) : liveData;
+    return <ModuleDetails {...{ m, fuentesFallidas, periodoCashflow, setPeriodoCashflow, verPagosRecurrentes, setVerPagosRecurrentes, verDocumentos, setVerDocumentos, verCapturasRecientes, setVerCapturasRecientes, verCorreccionesRecientes, C, get, timeAgo, Desplegable, liveRowsForModule }} liveData={moduleData}
     auditContent={m.id === "auditoria" ? <AuditoriaProgramadaContenido data={liveData} /> : null}>
               {/* Las conexiones se verifican con el panel completo, incluso si este nodo está cerrado. */}
               {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
-              {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
+              {m.id === "calendario" && apiKey && <><p style={{color:C.dim}}>Programaciones de WOBi · vista conjunta de todas las compañías</p><MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} /></>}
               {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.conexiones} onRefresh={refreshLiveData} />}
-              {m.id === "seguros" && apiKey && <SegurosContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.seguros} onRefresh={refreshLiveData} />}
+              {m.id === "seguros" && apiKey && <SegurosContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={moduleData?.seguros} onRefresh={refreshLiveData} />}
   </ModuleDetails>;
-  const renderNucleoModule = (id, onOpen) => {
+  };
+  const renderNucleoModule = (id, onOpen, companyId) => {
     if (id === "control_diario") return <ControlDiarioPanel data={liveData} apiKey={apiKey}
       actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")}
       onAbrir={onOpen} onPreguntarWobi={preguntarWobi} puedeResolver={esAdmin} onRefresh={refreshLiveData} />;
-    if (id === "administracion") return esAdmin ? <><AdminPanel apiKey={apiKey}
-      actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} /><UsuariosPanel apiKey={apiKey}
-      actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} /></> : null;
+    if (id === "administracion") return <SettingsHub isAdmin={esAdmin} onVerifyAdmin={verificarAdministracion} onLogout={cerrarSesion} apiKey={apiKey} data={liveData} onOpen={onOpen} onRefresh={refreshLiveData} refreshing={refreshing} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} users={<UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />} accesses={<AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />} />;
     const module = MODULES.find(item => item.id === id);
-    return module ? renderModuleDetails(module) : null;
+    return module ? renderModuleDetails(module, companyId) : null;
   };
 
   return (

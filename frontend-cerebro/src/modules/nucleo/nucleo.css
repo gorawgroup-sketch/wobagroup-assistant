@@ -307,3 +307,62 @@
  .nv-module-heading h1 { font-size:25px; }
 }
 .nv-module-heading h1:focus { outline:none; }
+/* Always-visible navigation and master-key settings use the same living shell. */
+.nv-settings-shortcut { display:flex; align-items:center; gap:8px; margin-left:auto; padding:7px 12px; color:#b9deec; background:#0d2434; border:1px solid #6fbdd352; border-radius:12px; font-size:12px!important; transition:background .2s,transform .25s,box-shadow .25s; }
+.nv-settings-shortcut:hover { background:#153a4e; transform:translateY(-2px); box-shadow:0 0 22px #4fcce328; }
+.nv-settings-shortcut>span:first-child { font-size:18px; line-height:1; color:#85def0; }
+.nv-settings-shortcut+.nv-telegram-shortcut { margin-left:0; }
+.nv-area-map { display:grid; gap:6px; margin-top:16px; }
+.nv-area-map>button { display:flex; align-items:center; gap:14px; width:100%; text-align:left; padding:10px 12px; border:1px solid #83bfd028; border-radius:12px; background:linear-gradient(100deg,color-mix(in srgb,var(--area-color) 11%,#0b1d2b),#0a1926); color:#dcecf5; transition:transform .25s,border-color .25s,box-shadow .25s; }
+.nv-area-map>button:hover { transform:translateX(4px); border-color:var(--area-color); box-shadow:0 0 22px color-mix(in srgb,var(--area-color) 15%,transparent); }
+.nv-area-map>button>span:nth-child(2) { flex:1; display:grid; gap:0; }
+.nv-area-map strong { font-weight:500; font-size:13px; }
+.nv-area-map small { font-size:10px; }
+.nv-map-icon { display:grid; place-items:center; color:var(--area-color); width:32px; height:32px; border:1px solid color-mix(in srgb,var(--area-color) 45%,transparent); border-radius:50%; }
+.nv-map-icon svg { width:18px; height:18px; }
+.nv-scope-note { display:flex; gap:12px; align-items:center; padding:10px 14px; border:1px solid #64bdd433; border-radius:12px; background:linear-gradient(90deg,#123149bc,#0a1c2bb5); color:#a9cddd; font-size:12px; }
+.nv-scope-note span { color:#82d8ec; white-space:nowrap; font-weight:600; }
+.nv-settings { max-width:1100px; margin:auto; }
+.nv-settings-intro { padding:4px 0 18px; }
+.nv-settings-intro>span { color:#82d8ec; letter-spacing:.13em; font-size:10px; }
+.nv-settings-intro h2 { margin:6px 0; font-size:28px; font-weight:400; color:#e0f0f6; }
+.nv-settings-intro p,.nv-settings-section p { color:#9ab9c8; margin:4px 0 14px; }
+.nv-settings-tabs { display:flex; flex-wrap:wrap; gap:7px; padding-bottom:20px; }
+.nv-settings-tabs button { border:1px solid #5d9cba52; border-radius:999px; padding:8px 14px; background:#0e2636; color:#a6c5d4; }
+.nv-settings-tabs button.is-active { background:linear-gradient(100deg,#1c6077,#274064); color:#effbff; border-color:#73d6e7; box-shadow:0 0 22px #51cbde30; }
+.nv-settings-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.nv-settings-overview>button { position:relative; display:flex; flex-direction:column; text-align:left; min-height:132px; padding:18px 20px; border:1px solid #76c5e640; border-radius:16px; background:linear-gradient(145deg,#15334c,#0b2030); color:#ddf1f8; box-shadow:0 15px 28px #020c165c; transition:transform .25s,border-color .25s,box-shadow .25s; }
+.nv-settings-overview>button:nth-child(2) { background:linear-gradient(145deg,#24314e,#0e1e32); }
+.nv-settings-overview>button:nth-child(3) { background:linear-gradient(145deg,#153a3c,#0b2533); }
+.nv-settings-overview>button:nth-child(4) { background:linear-gradient(145deg,#3b2d3c,#0d2030); }
+.nv-settings-overview>button:hover { transform:translateY(-4px); border-color:#80ddea; box-shadow:0 18px 34px #020c1680,0 0 28px #4ecde12c; }
+.nv-settings-overview>button span { color:#79cfe6; font-size:10px; letter-spacing:.08em; }
+.nv-settings-overview>button strong { margin-top:10px; font-size:20px; font-weight:450; }
+.nv-settings-overview>button small { color:#a3bfcc; }
+.nv-settings-overview>button b { position:absolute; right:20px; top:19px; color:#83d7e6; }
+.nv-settings-section { padding:10px 0 24px; }
+.nv-settings-section h2 { color:#dceff6; font-size:20px; font-weight:450; margin:0; }
+.nv-settings-section-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+.nv-settings-section-head button,.nv-settings-open { border:1px solid #74d1e265; border-radius:10px; background:#113046; color:#afe3ee; padding:8px 12px; }
+.nv-schedule { padding:14px 17px; margin:10px 0; border:1px solid #7bc4dc3d; border-radius:13px; background:linear-gradient(120deg,#102e3c,#0b1b2c); }
+.nv-schedule-kind { color:#7dd3e8; font-size:10px; letter-spacing:.07em; text-transform:uppercase; }
+.nv-schedule h3 { margin:5px 0; font-weight:450; font-size:16px; }
+.nv-schedule p { margin:0; }
+.nv-schedule small { color:#8eacb9; }
+.nv-settings-note { border-left:2px solid #e8bd83; padding-left:12px; }
+.nv-settings-section>a { color:#8ddff0; }
+.nv-settings-connection { display:flex; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid #7ac3da24; }
+.nv-settings-connection strong { flex:1; font-weight:450; }
+.nv-settings-connection .is-ok { color:#61d6ab; }.nv-settings-connection .is-broken,.nv-settings-error { color:#e9b77c; }
+.nv-settings-open { margin-top:16px; }
+@media(max-width:700px){ .nv-settings-shortcut { padding:7px; }.nv-settings-shortcut>span:last-child { display:none; }.nv-settings-overview { grid-template-columns:1fr; }.nv-scope-note { align-items:flex-start; flex-direction:column; gap:3px; } }
+
+.nv-settings-locked { max-width:620px; margin:36px auto; padding:35px; border:1px solid #73c5db57; border-radius:20px; background:linear-gradient(145deg,#123148,#0a1b2b); box-shadow:0 20px 60px #01091066; }
+.nv-settings-locked>span { font-size:36px; color:#8bd9ee; }
+.nv-settings-locked h2 { font-size:27px; font-weight:400; margin:8px 0; }
+.nv-settings-locked p { color:#aac9d5; }
+.nv-settings-locked button { border:1px solid #8dd8e7; border-radius:10px; padding:10px 16px; background:#153b50; color:#e9f8fa; }
+
+.nv-settings-section>div[style] { max-width:900px!important; border-color:#6ebdd854!important; border-radius:16px!important; background:linear-gradient(145deg,#153247,#0b1d2c)!important; box-shadow:0 14px 35px #020c1559; }
+
+.nv-settings-locked button+button { margin-left:10px; background:transparent; color:#a9d1e1; border-color:#6a9db1; }
