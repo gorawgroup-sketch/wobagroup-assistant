@@ -128,3 +128,40 @@ test("tope de 500 €: un gasto en USD con tasa «1.12» se convierte bien al eu
   assert.deepEqual(r.candidatos.map((c) => c.id).sort(), ["justo", "pequeno"]);
   assert.equal(r.excluidas, 2);
 });
+
+test("la cola vuelve a comprobar las EXCLUSIONES de la regla al procesar: tope de 500 € y NIF/CIF no se convierten aunque el escáner los apuntara", async () => {
+  const prev = { ...process.env };
+  try {
+    process.env.WOBI_HOLDED_TICKETS_MODO = "activo"; process.env.WOBI_HOLDED_TICKETS_EMPRESAS = "WOBA";
+    process.env.WOBI_HOLDED_TICKETS_REGLA_MODO = "activo"; process.env.WOBI_HOLDED_TICKETS_REGLA_EMPRESAS = "Footprint";
+    const base = { tipo: "ticket" as const, empresa: "Footprint", creadoEn: 1, actualizadoEn: 1, intentos: 0, estado: "solicitado" as const, evidencia: { origen: "regla_auto" } as Record<string, unknown> };
+    const almacen = new AlmacenTrabajosMemoria();
+    for (const id of ["grande", "conNif", "bueno"]) await almacen.guardar({ ...base, clave: claveTicket("Footprint", id), objetivo: id });
+    const compras: Record<string, Record<string, unknown>> = {
+      grande: compra("grande", { currency: "USD", currency_change: "1.12", total: "2372,42", payments_total: "2372,42", payments_pending: "0,00", payments_detail: [{ bank_id: "b" }] }),
+      conNif: compra("conNif", { currency: "USD", currency_change: "1.12", total: "16,57", payments_total: "16,57", payments_pending: "0,00", payments_detail: [{ bank_id: "b" }] }),
+      bueno: compra("bueno", { currency: "USD", currency_change: "1.12", total: "16,57", payments_total: "16,57", payments_pending: "0,00", payments_detail: [{ bank_id: "b" }] }),
+    };
+    const contactos: Record<string, Record<string, unknown>> = { "k-grande": { code: "" }, "k-conNif": { vat_number: "B63258438" }, "k-bueno": { code: "" } };
+    const leer = async (_e: string, ruta: string) => {
+      if (ruta === "/purchases") return { items: [], has_more: false };
+      if (ruta.endsWith("/attachments")) return { items: [{ id: "a" }] };
+      if (ruta.startsWith("/contacts/")) return contactos[decodeURIComponent(ruta.split("/").pop()!)] ?? {};
+      return compras[ruta.split("/").pop()!];
+    };
+    // Para llegar a la comprobación de la regla, la cola tiene que ver el gasto como factura de compra (figura en el listado).
+    const leerComoFactura = async (e: string, ruta: string, params?: Record<string, string | undefined>) => {
+      if (ruta === "/purchases") return { items: Object.keys(compras).map((id) => ({ id })), has_more: false };
+      return leer(e, ruta);
+    };
+    const r = await procesarColaTickets({ almacen, leer: leerComoFactura });
+    const estado = async (id: string) => (await almacen.obtener(claveTicket("Footprint", id)))!;
+    assert.equal((await estado("grande")).estado, "omitido");
+    assert.match((await estado("grande")).ultimoError ?? "", /ya no lo aprueba.*500/);
+    assert.equal((await estado("conNif")).estado, "omitido");
+    assert.match((await estado("conNif")).ultimoError ?? "", /NIF\/CIF/);
+    // El válido sigue su camino normal (aquí se detiene por falta de navegador, no por la regla).
+    assert.notEqual((await estado("bueno")).estado, "omitido");
+    assert.ok(r.revisados >= 3);
+  } finally { for (const k of Object.keys(process.env)) if (!(k in prev)) delete process.env[k]; Object.assign(process.env, prev); }
+});
