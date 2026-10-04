@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluarEstadoWebhookTelegram } from "./conexiones";
+import { evaluarEstadoWebhookTelegram, verificarSheetsParaPanel } from "./conexiones";
+import { conPrioridadSheets, crearAdaptadorSheetsConCuota, type LimitadorVentana } from "../google/limitadorSheets";
 
 const AHORA = Date.parse("2026-09-12T18:00:00.000Z");
 
@@ -47,4 +48,18 @@ test("un webhook configurado y sin errores está sano", () => {
     pendingUpdateCount: 0,
   }, AHORA);
   assert.deepEqual(estado, { ok: true });
+});
+
+
+test("la sonda de Sheets usa la reserva interactiva aunque el panel se refresque en fondo", async () => {
+  const prioridades: string[] = [];
+  const limitador = { adquirir: async (prioridad: string) => { prioridades.push(prioridad); } } as unknown as LimitadorVentana;
+  const adaptador = crearAdaptadorSheetsConCuota({ limitadores: { lectura: limitador, escritura: limitador } });
+  const comprobar = async () => {
+    await adaptador({ url: "https://sheets.googleapis.com/v4/spreadsheets/test" }, async () => ({ status: 200 }));
+    return { ok: true };
+  };
+  const resultado = await conPrioridadSheets("fondo", () => verificarSheetsParaPanel(comprobar));
+  assert.deepEqual(resultado, { ok: true });
+  assert.deepEqual(prioridades, ["interactiva"]);
 });
