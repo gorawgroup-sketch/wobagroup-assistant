@@ -13,13 +13,18 @@ export const conciliarMultiplesMovimientosTool: ToolDefinition = {
     "Nunca inventes IDs ni sustituyas el ID por el número de factura. Verifica por lectura la compra y todos los movimientos, " +
     "exige suma exacta del saldo pendiente, misma empresa y EUR, y presenta el desglose para aprobación por botón. " +
     "La suma por sí sola no demuestra la relación: explica la evidencia en motivo. No crea gastos ni escribe en Holded al proponer. " +
-    "No afirmar conciliado/resuelto hasta estado completado. Si hay más de una selección plausible, pregunta cuál antes de proponer.",
+    "No afirmar conciliado/resuelto hasta estado completado. Si hay más de una selección plausible, pregunta cuál antes de proponer. " +
+    "CONCILIACIÓN PARCIAL (parcial=true): cuando un recibo se cobró en varios pagos y solo ha aparecido en el banco UNA parte, " +
+    "concilia solo esos cargos (basta uno) y deja el resto del saldo ABIERTO a propósito, a la espera de su cargo; el plan lo dice y " +
+    "queda como completado con el pendiente indicado. Cuando llegue el cargo que falta, vuelve a llamarla (sin parcial) con ese " +
+    "único cargo para cerrar el saldo. Si los cargos cubren todo el saldo, no es parcial: usa la conciliación normal.",
   input_schema: {
     type: "object",
     properties: {
       empresa: { type: "string", enum: ["WOBA", "EWORKS", "Footprint"] },
       compra_id: { type: "string", description: "ID real de la compra en Holded; no el número de documento." },
-      movimientos: { type: "array", minItems: 2, maxItems: 20, items: {
+      parcial: { type: "boolean", description: "true: conciliar solo esta parte y dejar el resto del saldo abierto (recibo cobrado en varios pagos del que solo aparece una parte)." },
+      movimientos: { type: "array", minItems: 1, maxItems: 20, items: {
         type: "object", properties: { accountId: { type: "string" }, movementId: { type: "string" }, fecha: { type: "string", description: "Fecha bancaria YYYY-MM-DD." } },
         required: ["accountId", "movementId", "fecha"], additionalProperties: false,
       } },
@@ -33,14 +38,14 @@ export const conciliarMultiplesMovimientosTool: ToolDefinition = {
     try {
       const p = await conciliacionMultiple.preparar({ empresa: input.empresa as Empresa, chatId: context.chatId,
         compraId: typeof input.compra_id === "string" ? input.compra_id : "", movimientos: input.movimientos as ReferenciaMovimiento[],
-        motivo: typeof input.motivo === "string" ? input.motivo : "" });
+        motivo: typeof input.motivo === "string" ? input.motivo : "", parcial: input.parcial === true });
       planId = p.id;
       const { sendTelegramMessage, sendTelegramMessageWithButtons } = await import("../telegram/client");
       const resumen = resumenPlan(p);
       // Mostrar siempre el desglose completo, incluso cuando excede un mensaje de Telegram.
       for (let i = 0; i < resumen.length; i += 3000) await sendTelegramMessage(p.chatId, resumen.slice(i, i + 3000));
       await sendTelegramMessageWithButtons(p.chatId,
-        `Plan ${p.id}: ¿confirmas vincular estos ${p.movimientos.length} movimientos a la compra ${p.compra.numero || p.compra.id}? ` +
+        `Plan ${p.id}: ¿confirmas vincular ${p.movimientos.length === 1 ? "este movimiento" : `estos ${p.movimientos.length} movimientos`} a la compra ${p.compra.numero || p.compra.id}${p.parcial ? " dejando el resto del saldo abierto" : ""}? ` +
         "Se comprobarán otra vez los datos antes de escribir. Si un paso falla, se detendrá el lote y se informará del avance real.",
         [[{ text: "Confirmar conciliación múltiple", callback_data: `concilmulti_si:${p.id}` }],
           [{ text: "Cancelar", callback_data: `concilmulti_no:${p.id}` }]]);

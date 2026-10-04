@@ -417,3 +417,53 @@ testDivisa("reanudar: un plan guardado antes de existir el equivalente en EUR (s
   assert.equal(fin.estado, "completado", fin.detalle);
   assert.deepEqual(f.posts, ["m1", "m2"]);
 });
+
+// ---- Conciliación PARCIAL (recibo cobrado en varios pagos del que solo aparece una parte en el banco) ----
+test("parcial EUR: concilia solo una parte, deja el resto abierto, y otro plan cierra el saldo con el cargo que llega después", async () => {
+  const f = fixture();
+  const primero = f.movimientos.slice(0, 1); // 1.000 de 3.200
+  const plan = await f.servicio.preparar({ ...f.datos, movimientos: primero, parcial: true });
+  assert.equal(plan.parcial, true);
+  assert.match(resumenPlan(plan), /CONCILIACIÓN PARCIAL.*quedan 2200\.00 EUR ABIERTOS/);
+  const r = await f.servicio.decidir(plan.id, 123, 9, true);
+  assert.equal(r.estado, "completado", r.detalle);
+  assert.match(r.detalle ?? "", /PARCIAL.*2200\.00 EUR pendientes/);
+  assert.equal(f.compra.pendienteCentimos, 220000);
+  assert.deepEqual(f.posts, ["mov-0"]);
+  // Llega el resto: un segundo plan (sin parcial) con los tres cargos que faltan cierra el saldo; el plan completado no reserva la compra.
+  const resto = f.movimientos.slice(1);
+  const segundo = await f.servicio.preparar({ ...f.datos, movimientos: resto });
+  const fin = await f.servicio.decidir(segundo.id, 123, 9, true);
+  assert.equal(fin.estado, "completado", fin.detalle);
+  assert.equal(f.compra.pendienteCentimos, 0);
+  assert.deepEqual(f.posts, ["mov-0", "mov-1", "mov-2", "mov-3"]);
+});
+test("parcial: un solo cargo basta; si los cargos cubren todo el saldo o lo superan, se rechaza", async () => {
+  const f = fixture();
+  await assert.rejects(() => f.servicio.preparar({ ...f.datos, movimientos: f.movimientos, parcial: true }), /no es una conciliación parcial/);
+  const g = fixture();
+  g.compra.pendienteCentimos = 100000; g.compra.totalCentimos = 100000; // el cargo de 1.000 cubre todo
+  await assert.rejects(() => g.servicio.preparar({ ...g.datos, movimientos: g.movimientos.slice(0, 1), parcial: true }), /no es una conciliación parcial/);
+  const h = fixture();
+  h.compra.pendienteCentimos = 90000; h.compra.totalCentimos = 90000; // el cargo de 1.000 supera el saldo
+  await assert.rejects(() => h.servicio.preparar({ ...h.datos, movimientos: h.movimientos.slice(0, 1), parcial: true }));
+  // Sin parcial, un solo cargo sobre una compra sin pagos sigue exigiendo el saldo exacto.
+  const i = fixture();
+  await assert.rejects(() => i.servicio.preparar({ ...i.datos, movimientos: i.movimientos.slice(0, 1) }));
+});
+testDivisa("parcial en divisa (recibo de 581,92 USD cobrado en 451,30 + 130,62): concilia 451,30 sin cerrar residuo y deja 130,62 abiertos", async () => {
+  const f = fixtureDivisa();
+  // Este recibo: total 895 (8,95) y solo aparece el primer cargo de 6,91; el de 2,04 llega después.
+  const plan = await f.servicio.preparar({ ...f.datos, movimientos: f.movimientos.slice(0, 1), parcial: true });
+  const r = await f.servicio.decidir(plan.id, 7, 1, true);
+  assert.equal(r.estado, "completado", r.detalle);
+  assert.equal(r.ajusteCambio, undefined, "una parcial no cierra residuos");
+  assert.deepEqual(f.posts, ["m1"]);
+  assert.ok(f.compra().pendienteCentimos > 100, "el resto queda abierto");
+  // Llega el cargo que faltaba: el segundo plan, con un solo cargo, cierra el saldo y el residuo de redondeo.
+  const segundo = await f.servicio.preparar({ ...f.datos, movimientos: f.movimientos.slice(1) });
+  const fin = await f.servicio.decidir(segundo.id, 7, 1, true);
+  assert.equal(fin.estado, "completado", fin.detalle);
+  assert.equal(f.compra().pendienteCentimos, 0);
+  assert.deepEqual(f.posts, ["m1", "m2"]);
+});

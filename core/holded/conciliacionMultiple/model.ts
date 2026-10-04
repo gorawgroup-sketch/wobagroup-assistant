@@ -43,6 +43,8 @@ export interface PlanConciliacion {
   detalle?: string;
   /** Compra tal como estaba al preparar el plan (la de `compra` se renueva al reanudar un lote detenido). */
   compraInicial?: CompraExacta;
+  /** Conciliación PARCIAL pedida: se concilian solo estos cargos y el resto del saldo de la compra queda abierto a propósito. */
+  parcial?: boolean;
   /** Cierre del residuo de redondeo de una compra en divisa (pago «Ajustar cambio de divisa», ver write.ts). */
   ajusteCambio?: { estado: string; montoCentimos: number; motivo: string };
 }
@@ -129,9 +131,11 @@ export function validarCompra(c: CompraExacta): void {
   if (!esDivisaExtranjera(c) && suma !== BigInt(c.pagadoCentimos)) throw new Error("El detalle de pagos no coincide con el total pagado.");
 }
 /** `recuperacion`: se reanuda un lote detenido; puede quedar un solo movimiento. */
-export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[], opciones: { recuperacion?: boolean } = {}): void {
+export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[], opciones: { recuperacion?: boolean; parcial?: boolean } = {}): void {
   validarCompra(c);
-  if (movimientos.length < (opciones.recuperacion ? 1 : 2) || movimientos.length > 20) throw new Error("Selecciona entre 2 y 20 movimientos identificados.");
+  // Una compra que YA tiene pagos puede completarse con un solo cargo; una parcial, también (deja el resto abierto).
+  const minimo = opciones.recuperacion || opciones.parcial || c.pagos.length > 0 ? 1 : 2;
+  if (movimientos.length < minimo || movimientos.length > 20) throw new Error("Selecciona entre 2 y 20 movimientos identificados.");
   if (c.pendienteCentimos <= 0) throw new Error("La compra no tiene saldo pendiente.");
   const ids = new Set<string>();
   let suma = 0n;
@@ -148,6 +152,14 @@ export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[
     }
     suma -= BigInt(m.centimos);
   }
+  if (opciones.parcial) {
+    // Parcial: los cargos tienen que sumar MENOS que el saldo (si suman todo, no es parcial) y dejar un resto que no sea redondeo.
+    const resto = c.pendienteCentimos - Number(suma);
+    if (resto <= margenResiduoCentimos(c.totalCentimos)) {
+      throw new Error(`Los cargos (${importe(Number(suma))}) cubren todo el saldo (${importe(c.pendienteCentimos)} ${c.moneda}): no es una conciliación parcial. Usa la conciliación normal.`);
+    }
+    return;
+  }
   // Con pagos previos en divisa el saldo ya arrastra el redondeo de Holded: se compara dentro del margen; en cualquier otro caso, exacto.
   if (esDivisaExtranjera(c) && c.pagos.length > 0) {
     const margen = margenResiduoCentimos(c.totalCentimos);
@@ -162,6 +174,9 @@ export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[
 }
 export function reservaActiva(p: PlanConciliacion, ahora = Date.now()): boolean {
   if (p.estado === "cancelado" || p.estado === "rechazado") return false;
+  // Un plan completado y verificado ya no reserva nada: sus cargos están conciliados (no se pueden reutilizar) y una
+  // compra parcial debe poder completarse después con otro plan.
+  if (p.estado === "completado") return false;
   return p.estado !== "propuesto" || ahora - p.creadoEn <= TTL_PLAN;
 }
 export function resumenPlan(p: PlanConciliacion): string {
@@ -176,6 +191,7 @@ export function resumenPlan(p: PlanConciliacion): string {
     `Saldo a conciliar: ${importe(p.compra.pendienteCentimos)} ${p.compra.moneda}\n\n` +
     (hechos.length ? `Ya conciliados y verificados en Holded:\n${hechos.map(linea).join("\n")}\n\nPor conciliar ahora:\n` : "") +
     restantes.map(linea).join("\n") +
+    (p.parcial ? `\n\nCONCILIACIÓN PARCIAL: se concilian ${importe(suma)} ${p.compra.moneda} y quedan ${importe(p.compra.pendienteCentimos - suma)} ${p.compra.moneda} ABIERTOS a propósito, a la espera de su cargo.` : "") +
     `\n\nSuma de cargos: ${importe(suma)} ${p.compra.moneda}. Diferencia: ${importe(diferencia)} ${p.compra.moneda}` +
     (esDivisaExtranjera(p.compra) && diferencia !== 0 ? " (redondeo de Holded al convertir a EUR; se cierra con el ajuste de cambio)" : "") +
     (esDivisaExtranjera(p.compra) ? `.\nCada pago se verifica contra su equivalente en EUR (${restantes.map((m) => importe(m.contableCentimos ?? 0)).join(" + ")} EUR).` : ".") +
