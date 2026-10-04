@@ -374,6 +374,10 @@ const ACCIONES_SENSIBLES = new Set([
   // (centralizar la decisión completa en superadmin, no solo la escritura).
   "edicioncompra_confirmar",
   "edicioncompra_cancelar",
+  // Conversión a ticket (core/holded/automatizacion/telegramTickets.ts): aprobar/rechazar un gasto dudoso y reanudar tras el disyuntor.
+  "tktregla_ok",
+  "tktregla_no",
+  "tktdis_reanudar",
   // Pedido explícito de Carlos: corregir un valor YA ESCRITO en el cashflow
   // (ver proponerEdicionValorCashflowTool/editarValorEnFilaCashflow) —
   // mismo criterio que edicioncompra_confirmar/cancelar: se protege igual

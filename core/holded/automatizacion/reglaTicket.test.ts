@@ -82,3 +82,28 @@ test("lista aprobada: la aprobación escrita de Carlos manda sobre una clasifica
   assert.equal(await registrarCasoAprobado(almacen, "Footprint", "hecho"), "existente");
   assert.equal(await registrarCasoAprobado(almacen, "Footprint", "intentado"), "existente");
 });
+
+test("botones: un gasto dudoso se registra UNA vez a la espera de Carlos; «Convertir» lo pasa a la cola, «No es ticket» lo cierra; no se vuelve a preguntar", async () => {
+  const { registrarDudoso, aprobarDudoso, rechazarDudoso, reanudarDisyuntor } = await import("./decisionesTickets");
+  const almacen = new AlmacenTrabajosMemoria();
+  const a = "6abf7e24b0a79d7d54045e45", b = "6abfbede7b93a80707000b6d";
+  assert.equal(await registrarDudoso(almacen, { empresa: "WOBA", id: a, proveedor: "X", motivos: ["sin señal"] }), true);
+  assert.equal(await registrarDudoso(almacen, { empresa: "WOBA", id: a, proveedor: "X", motivos: ["sin señal"] }), false); // no se pregunta dos veces
+  await registrarDudoso(almacen, { empresa: "WOBA", id: b, proveedor: "Y", motivos: [] });
+  assert.equal(await aprobarDudoso(almacen, "WOBA", a), "aprobado");
+  const t = await almacen.obtener(claveTicket("WOBA", a));
+  assert.equal(t?.estado, "solicitado"); assert.equal(t?.evidencia.aprobadoPorCarlos, true);
+  assert.equal(await aprobarDudoso(almacen, "WOBA", a), "ya_resuelto"); // doble pulsación: inocua
+  assert.equal(await rechazarDudoso(almacen, "WOBA", b), "rechazado");
+  assert.equal((await almacen.obtener(claveTicket("WOBA", b)))?.estado, "omitido");
+  assert.equal(await aprobarDudoso(almacen, "WOBA", "inexistente"), "no_encontrado");
+  // reanudar tras el disyuntor: los casos con cambios inesperados quedan revisados y el contador vuelve a cero
+  await almacen.guardar({ clave: claveTicket("Footprint", "d1"), tipo: "ticket", empresa: "Footprint", objetivo: "d1", estado: "requiere_intervencion", intentos: 1, creadoEn: Date.now(), actualizadoEn: Date.now(), evidencia: { camposCambiados: ["total"] } });
+  assert.equal(await reanudarDisyuntor(almacen), 1);
+  assert.equal(await reanudarDisyuntor(almacen), 0);
+});
+
+test("botones: las decisiones del chat son acciones sensibles (solo superadministrador)", async () => {
+  const { esAccionSensible } = await import("../../telegram/authorizedUsersSheet");
+  for (const d of ["tktregla_ok:WOBA:6abf7e24b0a79d7d54045e45", "tktregla_no:Footprint:6abf7e24b0a79d7d54045e45", "tktdis_reanudar"]) assert.equal(esAccionSensible(d), true, d);
+});

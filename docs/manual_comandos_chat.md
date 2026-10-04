@@ -222,6 +222,7 @@ registrar en cashflow) sin que presiones uno de estos botones.
 
 **Sobre las automatizaciones de Holded en servidor (sincronización bancaria de las 06:00 y conversión de gastos a ticket):**
 - Pregunta en texto libre, por ejemplo: "¿se sincronizó el banco hoy?", "¿cómo van las automatizaciones de Holded?" o "¿por qué no se convirtió el gasto de Uber Colombia?". WOBI responde con el estado real leído del registro del servidor: modo y empresas en alcance; cada cuenta de hoy (solicitada, en curso, completada, fallida, requiere intervención o no confirmada) con su motivo; y los gastos de la conversión a ticket pendientes o que requieren revisión, con su motivo. Es solo lectura: no cambia nada.
+- **Botones de autorización de la conversión a ticket** (solo superadministrador): cuando la regla no puede decidir sola si un gasto es ticket, llega un mensaje con **✅ Convertir a ticket / ❌ No es ticket** (si apruebas, se convierte solo cuando esté conciliado y con su comprobante; no se vuelve a preguntar por ese gasto). Si el disyuntor detiene la conversión por cambios inesperados en Holded, llega un aviso con **▶️ Reanudar conversión** para cuando hayas revisado los casos.
 - Los avisos automáticos por Telegram a los administradores son: resultado de la conversión de la lista aprobada, y (09:45) cuentas sin actualización confirmada. Si todo va bien no se manda nada.
 
 **Sobre corregir una compra/gasto que YA está creado en Holded (WOBA, EWORKS y Footprint):**

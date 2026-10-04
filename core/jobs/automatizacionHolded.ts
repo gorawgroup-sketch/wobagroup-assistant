@@ -1,6 +1,7 @@
 import { crearNavegadorHolded } from "../holded/automatizacion/navegadorHolded";
 import { marcarEnEjecucion, registrarTraza } from "../holded/automatizacion/traza";
 import { etiquetaEmpresa } from "../holded/automatizacion/empresas";
+import { avisarDisyuntorPorBoton, preguntarDudosoPorBoton } from "../holded/automatizacion/telegramTickets";
 import { escanearReglaTicket, type CandidatoRegla } from "../holded/automatizacion/escaneoTickets";
 import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
 import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
@@ -67,16 +68,19 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
   const reglaModo = modoAutomatizacion("TICKETS_REGLA");
   if (reglaModo !== "apagado") {
     const nuevos: CandidatoRegla[] = [];
+    const dudosos: CandidatoRegla[] = [];
     for (const empresa of empresasAutomatizacion("TICKETS_REGLA")) {
       try {
         const r = await escanearReglaTicket(empresa, almacen, { simulada: reglaModo !== "activo" });
-        nuevos.push(...r.candidatos);
+        nuevos.push(...r.candidatos); dudosos.push(...r.dudosos);
         registrarTraza("escaneo_regla", { empresa, revisadas: r.revisadas, candidatos: r.candidatos.length, aRevisar: r.aRevisar, excluidas: r.excluidas });
       } catch (error) { console.error(`[conversionTicketsHolded] Error explorando candidatos de ${empresa}:`, error instanceof Error ? error.message : error); }
     }
+    // Gastos que la regla no puede decidir sola: se pregunta con botones (máx. 6 por ciclo; el resto, en el siguiente).
+    for (const d of dudosos.slice(0, 6)) await preguntarDudosoPorBoton(d).catch(() => undefined);
     if (nuevos.length > 0) {
       const lista = nuevos.slice(0, 12).map((c) => `  • ${etiquetaEmpresa(c.empresa)} · ${c.proveedor} · ${c.total} ${c.moneda} (${c.fecha}) — ${c.motivos.join("; ")}`).join("\n");
-      await notificarAdmins(`🧾 Regla de ticket (${reglaModo === "activo" ? "ACTIVA" : "SIMULACIÓN: no se convierte nada"}): ${nuevos.length} candidato(s) nuevo(s)\n${lista}${nuevos.length > 12 ? `\n  … y ${nuevos.length - 12} más` : ""}`).catch(() => undefined);
+      await notificarAdmins(`🧾 Regla de ticket (${reglaModo === "activo" ? "ACTIVA: se convierten solos cuando estén conciliados y con comprobante" : "SIMULACIÓN: no se convierte nada"}): ${nuevos.length} candidato(s) nuevo(s)\n${lista}${nuevos.length > 12 ? `\n  … y ${nuevos.length - 12} más` : ""}`).catch(() => undefined);
     }
   }
   // Lista aprobada por Carlos: WOBI_HOLDED_TICKETS_CASO="Empresa:id,Empresa:id,…". Mientras exista, SOLO se tocan esos gastos
@@ -91,7 +95,7 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
     const dia = fechaHoyEspana();
     if (ultimoAvisoDisyuntor !== dia) {
       ultimoAvisoDisyuntor = dia;
-      await notificarAdmins(`🛑 Conversión a ticket DETENIDA por seguridad: ${resumen.disyuntor} gasto(s) de las últimas 24 h terminaron con cambios inesperados en Holded. No se convierte nada más hasta que lo revises (pídeme el estado de las automatizaciones de Holded).`).catch(() => undefined);
+      await avisarDisyuntorPorBoton(resumen.disyuntor).catch(() => undefined);
     }
   }
   // Traza visible en /health del estado de cada gasto de la lista aprobada (tanto si se procesó en este ciclo como si no).
