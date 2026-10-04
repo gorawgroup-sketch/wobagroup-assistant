@@ -3,7 +3,8 @@ import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { manejarClasificacion } from "./processClassification";
 import { sendTelegramMessage } from "../telegram/client";
 
-export const MIMES_LEGIBLES_COMO_FACTURA = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
+import { esDocumentoLegible } from "./readableFormats";
+export { MIMES_LEGIBLES_COMO_FACTURA } from "./readableFormats";
 
 export interface DocumentoLocalEntrante {
   chatId: number;
@@ -44,7 +45,7 @@ export interface DocumentoLocalEntrante {
 export async function procesarDocumentoLocal(
   entrada: DocumentoLocalEntrante
 ): Promise<"gasto_propuesto" | "gasto_pendiente_datos" | "gasto_duplicado" | "archivo"> {
-  if (entrada.mimeType && MIMES_LEGIBLES_COMO_FACTURA.includes(entrada.mimeType)) {
+  if (esDocumentoLegible(entrada.mimeType, entrada.nombreArchivoOriginal)) {
     // Hallazgo real de auditoría (correo con 8 adjuntos de banca móvil, 6 clasificados mal como
     // "no es un gasto"): antes, CUALQUIER excepción real de extraerDatosFactura (un fallo transitorio
     // de la API de Anthropic, o agotar MAX_ITERATIONS sin decisión — ver el throw explícito agregado

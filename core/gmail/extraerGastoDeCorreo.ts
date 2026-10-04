@@ -197,7 +197,7 @@ export async function extraerGastoDeCorreo(
     razon: "No fue posible analizar el correo.",
   };
 
-  const cuerpoRecortado = cuerpoCompleto.trim().slice(0, 8000);
+  const cuerpoRecortado = cuerpoCompleto.trim();
   if (!cuerpoRecortado) return fallback;
 
   const anthropic = getClient();

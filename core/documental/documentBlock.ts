@@ -5,6 +5,9 @@
 // extractInvoiceData.ts (lectura de facturas) y transcribeForCapture.ts
 // (transcripción de documentos para la base de conocimiento) — misma
 // conversión MIME real, dos usos distintos de Claude vision.
+import { convertirHeicAJpeg } from "./convertHeic";
+import { MIMES_HEIC, mimeDeLectura } from "./readableFormats";
+
 export interface DocumentOrImageBlock {
   type: "document" | "image";
   source: { type: "base64"; media_type: string; data: string };
@@ -23,6 +26,7 @@ export interface TextBlock {
 const MIMES_TEXTO_PLANO = ["text/markdown", "text/x-markdown", "text/plain"];
 
 export function mimeADocumentBlock(rutaLocal: string, mimeType: string | undefined, data: Buffer): DocumentOrImageBlock | TextBlock {
+  mimeType = mimeDeLectura(mimeType, rutaLocal);
   if (mimeType && MIMES_TEXTO_PLANO.includes(mimeType)) {
     return { type: "text", text: data.toString("utf-8") };
   }
@@ -39,4 +43,16 @@ export function mimeADocumentBlock(rutaLocal: string, mimeType: string | undefin
   }
 
   throw new Error(`Tipo de archivo no soportado para lectura de documentos: ${mimeType ?? "(desconocido)"} (${rutaLocal})`);
+}
+
+/** HEIC can contain several images: send them all rather than silently reading only the first. */
+export async function prepararBloquesDocumento(
+  rutaLocal: string, mimeType: string | undefined, data: Buffer, nombreArchivo = rutaLocal
+): Promise<Array<DocumentOrImageBlock | TextBlock>> {
+  const mime = mimeDeLectura(mimeType, nombreArchivo);
+  if (!MIMES_HEIC.includes(mime)) return [mimeADocumentBlock(rutaLocal, mime, data)];
+  const images = await convertirHeicAJpeg(data);
+  return images.map((image) => ({
+    type: "image", source: { type: "base64", media_type: "image/jpeg", data: image.toString("base64") },
+  }));
 }

@@ -42,6 +42,135 @@ async function holdedGet(empresa: Empresa, path: string, params: Record<string, 
   return response.json();
 }
 
+export interface HoldedProject {
+  id: string;
+  name: string;
+  description?: string;
+  contact_id?: string | null;
+  contact_name?: string;
+  start_date?: string | null;
+  due_date?: string | null;
+  tags?: string[];
+  archived?: boolean;
+  /** Holded devuelve hoy un entero, aunque el filtro de listado use nombres de estado. */
+  status?: number;
+  number_of_tasks?: number;
+  completed_tasks?: number;
+  billable?: boolean;
+  scope?: string;
+  [key: string]: unknown;
+}
+
+export interface HoldedProjectSummary {
+  name?: string;
+  desc?: string;
+  projectEvolution?: {
+    tasks?: { total?: number; completed?: number };
+    dueDate?: number | string | null;
+  };
+  profitability?: {
+    sales?: number;
+    expenses?: { documents?: number; personnel?: number; total?: number };
+    profit?: number;
+  };
+  economicStatus?: {
+    sales?: number;
+    quoted?: number;
+    difference?: number;
+    estimatePrice?: number;
+    billed?: number;
+    collected?: number;
+    remaining?: number;
+  };
+  [key: string]: unknown;
+}
+
+const PROJECT_CACHE_TTL_MS = 5 * 60 * 1000;
+const projectCache = new Map<Empresa, { expiresAt: number; projects: HoldedProject[] }>();
+
+function normalizarNombreProyecto(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Lista el catálogo que la API key de la empresa puede ver. Es importante
+ * no confundirlo con todo lo que ve un usuario en la web: los proyectos
+ * privados de un usuario no aparecen para una API key de organización.
+ */
+export async function listProjects(empresa: Empresa, forceRefresh = false): Promise<HoldedProject[]> {
+  const cached = projectCache.get(empresa);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.projects;
+
+  const projects: HoldedProject[] = [];
+  let cursor: string | undefined;
+
+  for (let page = 0; page < 20; page++) {
+    const data = (await holdedGet(empresa, "/projects", {
+      limit: "100",
+      cursor,
+    })) as { items?: HoldedProject[]; has_more?: boolean; cursor?: string | null };
+
+    projects.push(...(Array.isArray(data.items) ? data.items : []));
+    if (!data.has_more || !data.cursor) break;
+    cursor = data.cursor;
+  }
+
+  projectCache.set(empresa, { expiresAt: Date.now() + PROJECT_CACHE_TTL_MS, projects });
+  return projects;
+}
+
+/** Obtiene los importes agregados de un proyecto. Siempre es una consulta GET. */
+export async function getProjectSummary(empresa: Empresa, projectId: string): Promise<HoldedProjectSummary> {
+  return (await holdedGet(empresa, `/projects/${encodeURIComponent(projectId)}/summary`)) as HoldedProjectSummary;
+}
+
+export interface ProjectMatch {
+  exact?: HoldedProject;
+  candidates: HoldedProject[];
+}
+
+/**
+ * Resuelve por id o nombre exacto normalizado. Los candidatos parciales se
+ * devuelven solo para explicar/preguntar; jamás autorizan una imputación.
+ */
+export function matchProject(projects: HoldedProject[], query: string, includeArchived = false): ProjectMatch {
+  const available = includeArchived ? projects : projects.filter((project) => !project.archived);
+  const trimmed = query.trim();
+  const normalized = normalizarNombreProyecto(trimmed);
+  if (!trimmed) return { candidates: available };
+
+  const idMatch = available.find((project) => project.id === trimmed);
+  if (idMatch) return { exact: idMatch, candidates: [idMatch] };
+
+  const exactByName = available.filter((project) => normalizarNombreProyecto(project.name) === normalized);
+  if (exactByName.length === 1) return { exact: exactByName[0], candidates: exactByName };
+  if (exactByName.length > 1) return { candidates: exactByName };
+
+  const partial = available.filter((project) => {
+    const name = normalizarNombreProyecto(project.name);
+    return normalized.length >= 3 && (name.includes(normalized) || normalized.includes(name));
+  });
+  return { candidates: partial };
+}
+
+/**
+ * Variante deliberadamente estricta para escrituras contables: solo acepta
+ * una coincidencia única por id o nombre exacto, nunca una aproximación.
+ */
+export async function resolveProjectExact(
+  empresa: Empresa,
+  query: string,
+  forceRefresh = false
+): Promise<ProjectMatch> {
+  return matchProject(await listProjects(empresa, forceRefresh), query, false);
+}
+
 /**
  * Chequeo mínimo de conexión: una sola cuenta de tesorería, la llamada más
  * barata disponible que igual confirma que la API key de LECTURA todavía es

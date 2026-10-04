@@ -4,6 +4,7 @@ import { searchDriveFiles, descargarArchivoDrive, palabrasSignificativas, type D
 import { ROOT_FOLDERS, type EmpresaConCarpeta } from "../drive/rootFolders";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
 import type { ToolDefinition } from "./types";
+import { esDocumentoLegible } from "../documental/readableFormats";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -67,8 +68,7 @@ async function leerContenido(
   empresa: EmpresaConCarpeta,
   consulta: string
 ): Promise<string> {
-  const mimesLegibles = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
-  if (!resultado.mimeType || !mimesLegibles.includes(resultado.mimeType)) {
+  if (!esDocumentoLegible(resultado.mimeType, resultado.name)) {
     return (
       `Encontré "${resultado.name}" (${resultado.folderPath}) pero es de un tipo que no puedo leer ` +
       `todavía (${resultado.mimeType ?? "desconocido"} — solo PDF/imagen por ahora). Link: ${resultado.webViewLink}`

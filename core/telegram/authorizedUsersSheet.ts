@@ -321,6 +321,8 @@ const ACCIONES_SENSIBLES = new Set([
   // confirmar una conciliación real en Holded. Mismo criterio que
   // email_descartar/anotcf_descartar: se protegen las dos opciones (sí y
   // no), no solo la que escribe, para centralizar la decisión completa.
+  "concilmulti_si",
+  "concilmulti_no",
   "gasto_conciliar_si",
   "gasto_conciliar_no",
   // Mismo criterio y mismo día: cuando "¿Quieres conciliar?" encuentra varios movimientos

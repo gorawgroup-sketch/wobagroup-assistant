@@ -107,7 +107,6 @@ const ETIQUETA_APRENDIDO_DE: Record<CuentaSugerida["aprendidoDe"], string> = {
   categoria: "por categoría",
   viaje: "por contexto de viaje/desplazamiento",
   correccion_confirmada: "corrección ya confirmada por ti",
-  ia: "elegida por IA",
 };
 
 function esNumeroDocumentoUtilizable(normalizado: string): boolean {
@@ -855,10 +854,10 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     const notaTags = `, tags: ${[notaPersonaTxt, notaCategoriaTxt].filter(Boolean).join(" + ")}`;
 
     const notaCuenta = cuentaSugerida
-      ? `\nCuenta contable: ${cuentaSugerida.ejemplo ? `misma que "${cuentaSugerida.ejemplo}"` : cuentaSugerida.accountId}` +
+      ? `\nCuenta contable: ${cuentaSugerida.nombreCuenta} [${cuentaSugerida.accountId}] — ${cuentaSugerida.evidencia.length} precedente(s): ${cuentaSugerida.evidencia.map((e) => `${e.documento || e.compraId} (${e.fecha})`).join(", ")}` +
         ` (${ETIQUETA_APRENDIDO_DE[cuentaSugerida.aprendidoDe]})` +
         notaTags
-      : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto. Si sabes a qué categoría debería ir (ej. "Gastos de viaje"), dímelo antes de aprobar y lo corrijo.` +
+      : `\nCuenta contable: pendiente de revisión. No hay evidencia suficiente de una cuenta compatible; no se creará ni conciliará el gasto con una cuenta por defecto.` +
         notaTags;
 
     texto = [

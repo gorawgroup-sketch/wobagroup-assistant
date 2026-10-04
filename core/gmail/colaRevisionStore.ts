@@ -150,21 +150,25 @@ export async function encolarCorreos(
     }
 
     if (existente.item.estado === "cola" && existente.item.mensajeId !== item.mensajeId) {
-      // fechaOrden NUNCA se actualiza acá a propósito: sigue reflejando cuándo empezó a esperar sin
-      // leer (lo que de verdad importa para "más antiguo primero") — solo el CONTENIDO (de quién es,
-      // asunto, y sobre todo mensajeId, que es lo que procesarSiguienteCorreoActivo usa para traer el
-      // texto real) se refresca, para que al activarse por fin muestre la conversación tal como está
-      // AHORA, no como estaba cuando se encoló.
+      // Ordenar por el mensaje pendiente real: el anterior puede haberse resuelto
+      // automáticamente mientras otro mensaje del mismo hilo sigue sin leer.
       const actualizado: ItemColaCorreo = {
         ...existente.item,
         mensajeId: item.mensajeId,
         de: item.de,
         asunto: item.asunto,
+        fechaOrden: item.fechaOrden,
       };
       await actualizarFila(TAB_NAME, existente.rowIndex, NUM_COLS, objetoAFila(actualizado));
     }
   }
   return agregados;
+}
+
+/** Solo después de un listado Gmail completo. No elimina la revisión manual activa. */
+export async function quitarCorreosYaLeidosDeCola(chatId: number, hilosNoLeidos: Set<string>): Promise<void> {
+  const filas = (await leerTodas()).filter(f => f.item.chatId === chatId && f.item.estado === "cola" && !hilosNoLeidos.has(f.item.id));
+  for (const f of filas.sort((a, b) => b.rowIndex - a.rowIndex)) await eliminarFila(TAB_NAME, f.rowIndex, HEADERS);
 }
 
 /** true si hay un correo "activo" (mostrado, esperando resolución) para este chat. */

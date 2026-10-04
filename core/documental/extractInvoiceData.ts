@@ -5,7 +5,7 @@ import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendi
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
-import { mimeADocumentBlock, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
+import { prepararBloquesDocumento, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
 
 const MODEL = resolverModeloDocumental("extraer_factura");
 const MAX_ITERATIONS = 4;
@@ -189,6 +189,7 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       contexto_de_viaje: {
         type: "boolean",
         description:
+          "Nunca true para software, créditos de IA (Anthropic/Claude), suscripciones o servicios profesionales, aunque la persona esté viajando o pague con su tarjeta personal. " +
           "true si este es un gasto INDIVIDUAL de comida, transporte u hospedaje de UNA persona " +
           "identificada (ver persona_asociada) — un almuerzo/cena/taxi/hotel de esa persona en " +
           "concreto, no una compra o contrato a nombre de la empresa (ej. un servicio de catering para " +
@@ -414,27 +415,13 @@ export async function extraerDatosFactura(
   contextoCorreo?: string,
   nombreArchivo?: string
 ): Promise<DatosFactura> {
-  const fallback: DatosFactura = {
-    esFacturaOGasto: false,
-    proveedor: "",
-    monto: 0,
-    moneda: "",
-    fecha: "",
-    concepto: "",
-    reciboSimplificado: true,
-    lineas: [],
-    empresaProbable: "desconocida",
-    confianza: "baja",
-    razon: "No fue posible leer el documento.",
-  };
-
-  let documentBlock: DocumentOrImageBlock | TextBlock;
+  let documentBlocks: Array<DocumentOrImageBlock | TextBlock>;
   try {
     const data = await readFile(rutaLocal);
-    documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
+    documentBlocks = await prepararBloquesDocumento(rutaLocal, mimeType, data, nombreArchivo);
   } catch (error) {
     console.error("[extractInvoiceData] Error leyendo/preparando el archivo:", error);
-    return fallback;
+    throw new Error(`No fue posible preparar el documento para leer la factura: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
   const anthropic = getClient();
@@ -471,7 +458,7 @@ export async function extraerDatosFactura(
       // El cast es necesario porque el SDK instalado no declara bloques
       // "document"/"image" con source base64 en su tipo MessageParam,
       // aunque la API sí los acepta (ver DocumentOrImageBlock arriba).
-      content: [documentBlock, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
+      content: [...documentBlocks, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
     },
   ];
 

@@ -88,7 +88,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
 
   const notaCuenta = propuesta.cuentaId
     ? `\nCuenta contable: ya identificada${propuesta.cuentaTags && propuesta.cuentaTags.length > 0 ? ` (tags: ${propuesta.cuentaTags.join(", ")})` : ""}`
-    : `\nCuenta contable: no encontré una categoría real parecida ya en uso — Holded usará su cuenta por defecto.`;
+    : `\nCuenta contable: pendiente de revisión: la creación está bloqueada hasta validar una cuenta respaldada por el historial.`;
 
   const notaCandidatos =
     propuesta.candidatos.length > 0

@@ -175,7 +175,7 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     REPORTAR_TOOL,
   ];
 
-  const cuerpoRecortado = cuerpoCompleto.trim().slice(0, 8000); // suficiente para juzgar contenido real sin gastar de más en correos larguísimos
+  const cuerpoRecortado = cuerpoCompleto.trim(); // Nunca descartar instrucciones al final del correo.
 
   const userText = [
     `De: ${correo.de}`,

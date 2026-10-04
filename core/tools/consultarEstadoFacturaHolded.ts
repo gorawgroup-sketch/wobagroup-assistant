@@ -111,7 +111,7 @@ export const consultarEstadoFacturaHoldedTool: ToolDefinition = {
       const porLinea = r.coincidenciaPorLinea
         ? ` — 🔎 el proveedor NO se llama "${contacto}", coincide porque una línea de este documento dice "${r.lineaCoincidente}"`
         : "";
-      return `- [${tipoTexto}] ${r.contactName} — doc ${r.documentNumber}, fecha ${r.fecha}${vencimiento} — ${estadoPago}${borrador}${comprobante}${tags}${porLinea}`;
+      return `- [${tipoTexto}] [id: ${r.id}] ${r.contactName} — doc ${r.documentNumber}, fecha ${r.fecha}${vencimiento} — ${estadoPago}${borrador}${comprobante}${tags}${porLinea}`;
     });
 
     const huboCoincidenciaSoloPorMonto = resultados.some((r) => r.coincidenciaSoloPorMonto);

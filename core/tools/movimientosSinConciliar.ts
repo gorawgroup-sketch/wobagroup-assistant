@@ -72,7 +72,7 @@ export const movimientosSinConciliarTool: ToolDefinition = {
       return `No se encontraron cuentas bancarias activas en Holded para ${empresa}.`;
     }
 
-    const sinConciliar: Array<{ cuenta: string; descripcion: string; monto: number; moneda: string; equivalenteEur: number | null; fecha: string }> = [];
+    const sinConciliar: Array<{ accountId: string; movementId: string; estado: string; cuenta: string; descripcion: string; monto: number; moneda: string; equivalenteEur: number | null; fecha: string }> = [];
     let total = 0;
 
     for (const cuenta of cuentas) {
@@ -81,6 +81,9 @@ export const movimientosSinConciliarTool: ToolDefinition = {
         total++;
         if (!estaConciliado(m.status)) {
           sinConciliar.push({
+            accountId: cuenta.id,
+            movementId: m.id ?? "",
+            estado: m.status ?? "desconocido",
             cuenta: cuenta.name ?? "(sin nombre)",
             descripcion: (m.description as string) ?? "(sin descripción)",
             monto: typeof m.amount === "number" ? m.amount : Number(m.amount ?? 0),
@@ -107,7 +110,7 @@ export const movimientosSinConciliarTool: ToolDefinition = {
           m.moneda !== "EUR" && m.equivalenteEur != null
             ? `${m.monto.toFixed(2)} ${m.moneda} (≈ ${m.equivalenteEur.toFixed(2)} €)`
             : `${m.monto.toFixed(2)} €`;
-        return `- [${m.cuenta}] ${m.descripcion} — ${montoTexto} (${m.fecha})`;
+        return `- [${m.cuenta}] ${m.descripcion} — ${montoTexto} (${m.fecha}) [accountId: ${m.accountId}; movementId: ${m.movementId}; estado: ${m.estado}]`;
       });
 
     return (

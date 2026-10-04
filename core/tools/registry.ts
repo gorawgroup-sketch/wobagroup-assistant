@@ -1,3 +1,4 @@
+import { revisarCuentaContableGastoTool } from "./revisarCuentaContableGasto";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext, ToolDefinition } from "./types";
 import { knowledgeBaseTool } from "./knowledgeBase";
@@ -34,6 +35,7 @@ import { reintentarGastoPendienteTool } from "./reintentarGastoPendiente";
 import { reenviarBotonesPropuestaGastoTool } from "./reenviarBotonesPropuestaGasto";
 import { reclasificarDocumentoPendienteTool, descartarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
 import { saltarCorreoActivoTool } from "./saltarCorreoActivo";
+import { conciliarMultiplesMovimientosTool, consultarConciliacionMultipleTool } from "./conciliarMultiplesMovimientos";
 import { conciliarMovimientoTool } from "./conciliarMovimiento";
 import { programarAccionFuturaTool } from "./programarAccion";
 import { proponerEdicionCompraHoldedTool } from "./editarCompraHolded";
@@ -48,6 +50,7 @@ import { avanzarColaCorreoTool } from "./avanzarColaCorreo";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
 import { marcarCorreoLeidoTool } from "./marcarCorreoLeido";
 import { escalarDesarrolloTool } from "./escalarDesarrollo";
+import { proyectosHoldedTool } from "./proyectosHolded";
 
 /**
  * Registro central de herramientas disponibles para Claude.
@@ -90,7 +93,10 @@ const tools: ToolDefinition[] = [
   reclasificarDocumentoPendienteTool,
   descartarDocumentoPendienteTool,
   saltarCorreoActivoTool,
+  revisarCuentaContableGastoTool,
   conciliarMovimientoTool,
+  conciliarMultiplesMovimientosTool,
+  consultarConciliacionMultipleTool,
   programarAccionFuturaTool,
   proponerEdicionCompraHoldedTool,
   editarValorCashflowTool,
@@ -104,6 +110,7 @@ const tools: ToolDefinition[] = [
   gestionarContactoAutorespuestaTool,
   marcarCorreoLeidoTool,
   escalarDesarrolloTool,
+  proyectosHoldedTool,
 ];
 
 /**

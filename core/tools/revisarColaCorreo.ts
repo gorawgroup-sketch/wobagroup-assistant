@@ -14,17 +14,16 @@ import type { ToolDefinition } from "./types";
 export const revisarColaCorreoTool: ToolDefinition = {
   name: "revisar_cola_correo",
   description:
-    "Sincroniza y muestra la cola de correos SIN LEER: toma únicamente is:unread in:inbox, la ordena del más " +
-    "antiguo al más nuevo y agrega los hilos nuevos. NO descarga ni procesa ningún correo por sí sola — solo " +
-    "sincroniza el estado de la cola. Úsala para pedidos generales como 'revisa los correos', 'qué correos " +
-    "tengo sin leer' o 'sincroniza la bandeja'. Si el usuario además pide procesarlos/avanzar ('revisa y " +
-    "procésalos', 'sigue con la cola'), usa también procesar_siguiente_correo_cola después de esta — esa es " +
-    "la que de verdad descarga, lee y decide cada correo. Si un correo leído se volvió a marcar sin leer, " +
-    "esta cola lo incorpora de nuevo. No la uses para un correo puntual expresamente identificado; para eso " +
-    "existe revisar_correo_puntual.",
+    "Revisa todos los correos sin leer: primero ejecuta la fase automática de gastos conforme a su configuración " +
+    "y después sincroniza los pendientes para revisión manual del más antiguo al más nuevo. Solo informa creación " +
+    "y conciliación cuando el resultado está verificado. Los pendientes necesitan aprobación individual; usa " +
+    "procesar_siguiente_correo_cola solo cuando el usuario quiera empezar o avanzar. No confundir simulación con ejecución.",
   input_schema: { type: "object", properties: {} },
   handler: async (_input, context) => {
     const resultado = await revisarCorreoNuevo(true, context?.chatId);
+    const { resumenAutomatico } = await import("../gmail/automatico/service");
+    const auto = resultado.automatico ? resumenAutomatico(resultado.automatico) : "";
+    if (auto) return auto + (resultado.activoBloqueando ? `\nContinúa primero con el correo activo: ${resultado.activoBloqueando.asunto}.` : "\nLos pendientes se revisan uno a uno; el siguiente requiere tu indicación.");
     if (resultado.activoBloqueando) {
       return `La cola está sincronizada, pero ya hay un correo activo esperando resolución: "${resultado.activoBloqueando.asunto}" de ${resultado.activoBloqueando.de}. No procesé otro encima.`;
     }

@@ -52,11 +52,14 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
     // misma confusión ("parece euros, es dólares") que el fix de fondo
     // elimina de Holded.
     const monedaDespues = (resultado.currency ?? "EUR").toUpperCase().trim();
+    const proyectoDespues = pendiente.cambios.proyectoId
+      ? `, proyecto ${pendiente.cambios.proyectoId}`
+      : "";
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
       `✅ Editado en Holded — antes: ${pendiente.resumenAntes}\n` +
-        `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).`,
+        `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}"${proyectoDespues} (id ${resultado.id} — mismo documento, no se recreó).`,
       []
     );
   } catch (error) {

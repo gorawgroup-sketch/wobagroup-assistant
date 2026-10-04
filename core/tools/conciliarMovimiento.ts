@@ -1,4 +1,4 @@
-import { buscarGastoSimilar } from "../holded/write";
+import { buscarGastoSimilar, verificarCuentaAntesDeConciliar } from "../holded/write";
 import { guardarConciliacionPendiente, obtenerConciliacionesPendientesPorChat, TTL_MS } from "../gastos/conciliacionPendienteStore";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import type { Empresa } from "../holded/client";
@@ -32,6 +32,7 @@ import type { ToolDefinition } from "./types";
 export const conciliarMovimientoTool: ToolDefinition = {
   name: "conciliar_movimiento_bancario",
   description:
+    "Solo para UN movimiento. Si hay varios pagos identificados para un gasto, usa conciliar_multiples_movimientos_bancarios con sus IDs; no busques un movimiento por el total. " +
     "Prepara la conciliación de un gasto ya registrado en Holded con su movimiento bancario — manda una " +
     "pregunta con botones (Sí/No) para que el usuario confirme antes de escribir nada, igual que el resto " +
     "de las escrituras de este sistema. Úsala cuando el usuario pida conciliar/vincular/enlazar un gasto " +
@@ -95,6 +96,8 @@ export const conciliarMovimientoTool: ToolDefinition = {
     }
 
     const gasto = candidatosGasto[0];
+    try { await verificarCuentaAntesDeConciliar(empresa, gasto.id); }
+    catch (error) { return `No se preparó la conciliación: ${error instanceof Error ? error.message : String(error)}. Usa revisar_cuenta_contable_gasto con empresa e ID de compra.`; }
     const descripcionGasto = `${gasto.contactName} — ${gasto.total.toFixed(2)} ${moneda}`;
 
     try {

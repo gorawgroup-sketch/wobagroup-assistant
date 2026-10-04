@@ -12,7 +12,7 @@ let gmailClient: gmail_v1.Gmail | null = null;
  * delegación de dominio autoriza impersonar a cualquier usuario del
  * dominio, por scope — no hace falta configurar nada extra por persona.
  */
-function getGmailClient(): gmail_v1.Gmail {
+export function getGmailClient(): gmail_v1.Gmail {
   if (gmailClient) return gmailClient;
 
   const credentials = loadServiceAccountCredentials();
@@ -139,7 +139,7 @@ let gmailModifyClient: gmail_v1.Gmail | null = null;
  * falla con "insufficient authentication scopes" (mismo patrón que se vivió
  * al agregar Calendar).
  */
-function getGmailModifyClient(): gmail_v1.Gmail {
+export function getGmailModifyClient(): gmail_v1.Gmail {
   if (gmailModifyClient) return gmailModifyClient;
 
   const credentials = loadServiceAccountCredentials();
@@ -203,14 +203,14 @@ export async function listarHilosNoLeidos(): Promise<string[]> {
   do {
     const res = await gmail.users.threads.list({
       userId: "me",
-      q: "is:unread in:inbox",
+      q: "is:unread -in:spam -in:trash",
       maxResults: 500,
       pageToken,
     });
     (res.data.threads ?? []).forEach((t) => t.id && ids.push(t.id));
     pageToken = res.data.nextPageToken ?? undefined;
     paginas += 1;
-  } while (pageToken && paginas < 10);
+  } while (pageToken);
 
   return ids;
 }
@@ -351,6 +351,27 @@ export async function obtenerUltimoMensajeDeHilo(
     de: leerHeader(ultimo.payload?.headers, "From"),
     asunto: leerHeader(ultimo.payload?.headers, "Subject"),
   };
+}
+
+/** Mensaje pendiente más antiguo; los demás del hilo conservan su propia revisión. */
+export async function obtenerPrimerMensajeNoLeidoDeHilo(threadId: string): Promise<{
+  messageId: string; fecha: string; recibidoEn: number; de: string; asunto: string;
+} | undefined> {
+  const res = await getGmailClient().users.threads.get({ userId: "me", id: threadId, format: "metadata",
+    metadataHeaders: ["Date", "From", "Subject"] });
+  if (!Array.isArray(res.data.messages)) throw new Error("Gmail no devolvió los mensajes del hilo.");
+  const primero = res.data.messages.filter(m => m.labelIds?.includes("UNREAD"))
+    .sort((a, b) => Number(a.internalDate) - Number(b.internalDate))[0];
+  if (!primero) return undefined;
+  if (!primero.id || !Number.isFinite(Number(primero.internalDate))) throw new Error("Mensaje pendiente sin identidad o fecha.");
+  return { messageId: primero.id, recibidoEn: Number(primero.internalDate), fecha: leerHeader(primero.payload?.headers, "Date"),
+    de: leerHeader(primero.payload?.headers, "From"), asunto: leerHeader(primero.payload?.headers, "Subject") };
+}
+
+export async function marcarMensajeComoLeido(id: string): Promise<boolean> {
+  await getGmailModifyClient().users.messages.modify({ userId: "me", id, requestBody: { removeLabelIds: ["UNREAD"] } });
+  const res = await getGmailClient().users.messages.get({ userId: "me", id, format: "minimal" });
+  return res.data.id === id && !res.data.labelIds?.includes("UNREAD");
 }
 
 export interface AdjuntoCorreo {

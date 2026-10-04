@@ -1,7 +1,7 @@
 import { buscarDocumentosHolded } from "../holded/write";
 import { crearPendienteEdicionCompraHolded, actualizarMessageIdEdicionCompraHolded } from "../holded/pendienteEdicionCompraHoldedStore";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
-import type { Empresa } from "../holded/client";
+import { resolveProjectExact, type Empresa } from "../holded/client";
 import type { ToolDefinition } from "./types";
 
 /**
@@ -21,7 +21,7 @@ import type { ToolDefinition } from "./types";
 export const proponerEdicionCompraHoldedTool: ToolDefinition = {
   name: "proponer_edicion_compra_holded",
   description:
-    "Propone corregir el número de documento y/o el monto total de una compra/gasto YA CREADO en Holded " +
+    "Propone corregir el número de documento, el monto total y/o asignar un proyecto a una compra/gasto YA CREADO en Holded " +
     "(nunca lo edita directo — solo muestra la propuesta con botones Confirmar/Cancelar). Úsala cuando te " +
     "pidan corregir, arreglar o cambiar un dato de un gasto que ya está registrado en Holded (no uno nuevo " +
     "por registrar — para eso está el flujo normal de propuesta de gasto). Si hay varias compras parecidas " +
@@ -48,6 +48,11 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
         type: "number",
         description: "El monto TOTAL correcto a dejar (ej. el total con IVA real de la factura). Opcional si solo se corrige el número de documento.",
       },
+      proyecto: {
+        type: "string",
+        description:
+          "Nombre EXACTO o id del proyecto de Holded al que se asignará la compra. No uses aproximaciones; si hay duda, consulta primero consultar_proyectos_holded.",
+      },
     },
     required: ["empresa", "contacto"],
   },
@@ -70,8 +75,26 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
     const numeroDocumentoNuevo =
       typeof input.numero_documento_nuevo === "string" && input.numero_documento_nuevo.trim() ? input.numero_documento_nuevo.trim() : undefined;
     const montoNuevo = typeof input.monto_nuevo === "number" ? input.monto_nuevo : undefined;
-    if (numeroDocumentoNuevo === undefined && montoNuevo === undefined) {
-      return "Error: hace falta al menos uno de 'numero_documento_nuevo' o 'monto_nuevo' — qué corregir.";
+    const proyectoSolicitado = typeof input.proyecto === "string" && input.proyecto.trim() ? input.proyecto.trim() : undefined;
+    if (numeroDocumentoNuevo === undefined && montoNuevo === undefined && proyectoSolicitado === undefined) {
+      return "Error: hace falta al menos uno de 'numero_documento_nuevo', 'monto_nuevo' o 'proyecto' — qué corregir/asignar.";
+    }
+
+    let proyectoId: string | undefined;
+    let proyectoNombre: string | undefined;
+    if (proyectoSolicitado) {
+      const match = await resolveProjectExact(empresa, proyectoSolicitado, true);
+      if (!match.exact) {
+        const alternativas = match.candidates.length
+          ? ` Posibles proyectos visibles: ${match.candidates.map((p) => `${p.name} [${p.id}]`).join(", ")}.`
+          : " Puede ser un proyecto privado que la web muestra al usuario pero la API no puede ver.";
+        return (
+          `No puedo asignar la compra a "${proyectoSolicitado}" de forma segura en ${empresa}: no hay una coincidencia única y exacta visible por API.` +
+          `${alternativas} No se creó ninguna propuesta ni se modificó Holded.`
+        );
+      }
+      proyectoId = match.exact.id;
+      proyectoNombre = match.exact.name;
     }
 
     const montoActualAprox = typeof input.monto_actual_aproximado === "number" ? input.monto_actual_aproximado : undefined;
@@ -102,6 +125,7 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
     const cambiosTexto = [
       numeroDocumentoNuevo !== undefined ? `número de documento → "${numeroDocumentoNuevo}"` : undefined,
       montoNuevo !== undefined ? `monto total → ${montoNuevo.toFixed(2)} ${compra.moneda}` : undefined,
+      proyectoId !== undefined ? `proyecto → "${proyectoNombre}" [${proyectoId}]` : undefined,
     ]
       .filter(Boolean)
       .join(", ");
@@ -126,7 +150,7 @@ export const proponerEdicionCompraHoldedTool: ToolDefinition = {
       messageId: 0,
       empresa,
       purchaseId: compra.id,
-      cambios: { numeroDocumento: numeroDocumentoNuevo, montoNuevo },
+      cambios: { numeroDocumento: numeroDocumentoNuevo, montoNuevo, proyectoId },
       resumenAntes,
     });
 

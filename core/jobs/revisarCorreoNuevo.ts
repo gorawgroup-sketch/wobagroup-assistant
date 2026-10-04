@@ -1,12 +1,16 @@
+import { conCoordinadorCorreo } from "../gmail/automatico/postgres";
+import { revisarGastosAutomaticos, comprobarCorreoDisponible } from "../gmail/automatico/runtime";
+import { resumenAutomatico } from "../gmail/automatico/service";
+import type { ResultadoAuto } from "../gmail/automatico/model";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   listarHilosNoLeidos,
-  obtenerUltimoMensajeDeHilo,
+  obtenerPrimerMensajeNoLeidoDeHilo,
+  marcarMensajeComoLeido,
   obtenerResumenCorreo,
   obtenerCuerpoCompletoCorreo,
   descargarAdjunto,
-  marcarHiloComoLeido,
   buscarMensajes,
   type CorreoResumen,
 } from "../gmail/client";
@@ -18,7 +22,7 @@ import { esContactoAutorespuesta } from "../gmail/autorespuestaContactoStore";
 import { obtenerEstadoHiloAutorespuesta } from "../gmail/hiloAutorespuestaStore";
 import { esDiaHabilEspana } from "../utils/diaHabil";
 import { yaSeAvisoHoy, marcarAvisadoHoy } from "./avisoUnicoPorDiaStore";
-import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons, sendTelegramMessageSmart, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
@@ -29,6 +33,7 @@ import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import {
   encolarCorreos,
+  quitarCorreosYaLeidosDeCola,
   hayActivo,
   contarPendientesTotal,
   iniciarSiguienteActivo,
@@ -76,6 +81,7 @@ function sanitizarNombre(nombre: string): string {
  */
 export interface ResultadoRevisarCorreo {
   correosRevisados: number;
+  automatico?: ResultadoAuto;
   /**
    * Cuando correosRevisados=0 porque ya había un correo "activo" sin
    * resolver (no porque no hubiera nada pendiente) — para que el llamador
@@ -104,7 +110,7 @@ export interface ResultadoRevisarCorreo {
  * el resumen diario de pendientes ya la reporta si se olvida).
  */
 async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string): Promise<void> {
-  await sendTelegramMessageWithButtons(chatId, mensaje, [
+  await sendTelegramMessageSmart(chatId, mensaje, [
     [{ text: "▶️ Sí, siguiente", callback_data: "colacorreo_siguiente" }],
   ]);
 }
@@ -119,8 +125,22 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
  * (para que /revisarcorreo o la conversación automática siempre vean el estado real), solo el AVISO
  * proactivo de "¿empezamos?" se limita a una vez por día hábil.
  */
-export async function revisarCorreoNuevo(forzarAviso = false): Promise<ResultadoRevisarCorreo> {
-  const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
+const revisionesEnCurso = new Map<number, Promise<ResultadoRevisarCorreo>>();
+export async function revisarCorreoNuevo(forzarAviso = false, chatIdSolicitado?: number): Promise<ResultadoRevisarCorreo> {
+  const chatId = chatIdSolicitado ?? (process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : 0);
+  if (!chatId) throw new Error("Falta el chat para informar de la revisión de correo.");
+  const existente = revisionesEnCurso.get(chatId);
+  if (existente) return existente;
+  const tarea = conCoordinadorCorreo(async () => {
+    const automatico = await revisarGastosAutomaticos(chatId);
+    const cola = await sincronizarColaCorreo(forzarAviso, chatId, resumenAutomatico(automatico));
+    return { ...cola, automatico };
+  });
+  revisionesEnCurso.set(chatId, tarea);
+  try { return await tarea; } finally { revisionesEnCurso.delete(chatId); }
+}
+
+async function sincronizarColaCorreo(forzarAviso: boolean, chatId: number, resumenAuto: string): Promise<ResultadoRevisarCorreo> {
 
   if (!chatId) {
     console.error("[revisarCorreoNuevo] Falta CASHFLOW_ALERTS_CHAT_ID, no se puede notificar.");
@@ -138,7 +158,7 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
     return undefined;
   });
   if (pendienteDeConfirmar) {
-    const marcado = await marcarHiloComoLeido(pendienteDeConfirmar.id).catch((error: unknown) => {
+    const marcado = await marcarMensajeComoLeido(pendienteDeConfirmar.mensajeId).catch((error: unknown) => {
       console.error("[revisarCorreoNuevo] Error reintentando marcar el hilo como leído:", error);
       return false;
     });
@@ -183,7 +203,7 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
     ids = await listarHilosNoLeidos();
   } catch (error) {
     console.error("[revisarCorreoNuevo] Error listando hilos sin leer:", error);
-    ids = [];
+    throw error; // Un fallo de Gmail no significa una bandeja vacía.
   }
 
   console.log(`[revisarCorreoNuevo] ${ids.length} hilo(s) sin leer en la bandeja`);
@@ -196,12 +216,13 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
     console.error("[revisarCorreoNuevo] Error guardando el último check (no crítico):", error)
   );
 
+  await quitarCorreosYaLeidosDeCola(chatId, new Set(ids));
   const [habiaActivoAntes, totalAntesDeEncolar] = await Promise.all([hayActivo(chatId), contarPendientesTotal(chatId)]);
 
   const itemsParaEncolar: Array<{ id: string; mensajeId: string; de: string; asunto: string; fechaOrden: number }> = [];
   for (const threadId of ids) {
     try {
-      const ultimo = await obtenerUltimoMensajeDeHilo(threadId);
+      const ultimo = await obtenerPrimerMensajeNoLeidoDeHilo(threadId);
       if (!ultimo) continue;
 
       // Pedido explícito de Carlos: la aprobación de conversación automática
@@ -219,7 +240,7 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
         if (estadoHilo?.estado === "aprobado" || estadoHilo?.estado === "pendiente") continue;
       }
 
-      const fechaOrden = Date.parse(ultimo.fecha);
+      const fechaOrden = ultimo.recibidoEn;
       itemsParaEncolar.push({
         id: threadId,
         mensajeId: ultimo.messageId,
@@ -243,9 +264,9 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
   // nuevo, si no hay nada activo y sí hay algo pendiente (nuevo o de antes),
   // se avisa (con botón — nunca se muestra el siguiente correo directo, ver
   // pedirConfirmacionSiguienteCorreo).
-  const totalPendienteTrasEncolar = totalAntesDeEncolar + nuevos;
+  const totalPendienteTrasEncolar = await contarPendientesTotal(chatId);
   if (!habiaActivoAntes && totalPendienteTrasEncolar > 0) {
-    const debeAvisar = forzarAviso || (esDiaHabilEspana() && !(await yaSeAvisoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId)));
+    const debeAvisar = forzarAviso || Boolean(resumenAuto) || (esDiaHabilEspana() && !(await yaSeAvisoHoy(TEMA_AVISO_CORREO_PENDIENTE, chatId)));
 
     if (debeAvisar) {
       // Pedido explícito de Carlos: el aviso trae el conteo de "nuevos" solo
@@ -256,7 +277,7 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
         nuevos > 0 && totalAntesDeEncolar === 0
           ? `📬 Tienes ${nuevos} correo${nuevos === 1 ? "" : "s"} nuevo${nuevos === 1 ? "" : "s"} sin leer — ¿empezamos por el más antiguo?`
           : `Quedan ${totalPendienteTrasEncolar} correo${totalPendienteTrasEncolar === 1 ? "" : "s"} sin leer por revisar — ¿seguimos?`;
-      await pedirConfirmacionSiguienteCorreo(chatId, mensaje);
+      await pedirConfirmacionSiguienteCorreo(chatId, [resumenAuto, mensaje].filter(Boolean).join("\n\n"));
       // Se marca SIEMPRE, incluso si este envío fue forzado (/revisarcorreo, endpoint admin) — el
       // objetivo real es "nunca el mismo aviso dos veces el mismo día" sin importar qué lo disparó
       // primero. Hallazgo real de auditoría: antes solo se marcaba en el camino sin forzar, así que
@@ -266,6 +287,8 @@ export async function revisarCorreoNuevo(forzarAviso = false): Promise<Resultado
     }
     return { correosRevisados: nuevos };
   }
+
+  if (resumenAuto) await sendTelegramMessageSmart(chatId, resumenAuto);
 
   if (habiaActivoAntes) {
     const activo = await obtenerActivoActual(chatId).catch(() => undefined);
@@ -675,20 +698,24 @@ async function procesarCorreoLocalizado(chatId: number, correo: CorreoResumen, d
  * dejar la cola trabada en un correo roto para siempre.
  */
 export async function procesarSiguienteCorreoActivo(chatId: number): Promise<void> {
+  return conCoordinadorCorreo(() => procesarSiguienteCorreoActivoInterno(chatId));
+}
+async function procesarSiguienteCorreoActivoInterno(chatId: number): Promise<void> {
   const activo = await iniciarSiguienteActivo(chatId);
   if (!activo) return; // cola vacía — nada más que revisar.
 
   try {
+    await comprobarCorreoDisponible(activo.id);
     const correo = await obtenerResumenCorreo(activo.mensajeId);
     await establecerPendientesActivo(chatId, activo.id, correo.adjuntos.length > 0 ? correo.adjuntos.length : 1);
     await procesarCorreoLocalizado(chatId, correo, true);
   } catch (error) {
     console.error(`[revisarCorreoNuevo] Error procesando correo activo ${activo.id}:`, error);
-    await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — lo salto y sigo con el siguiente.`).catch(
+    await sendTelegramMessage(chatId, `⚠️ Hubo un error revisando un correo ("${activo.asunto}") — queda pendiente para reintentar sin marcarlo como leído.`).catch(
       () => {}
     );
+    // Un error técnico nunca resuelve ni marca leído un correo.
     await establecerPendientesActivo(chatId, activo.id, 1);
-    await avanzarColaCorreoSiActivo(chatId);
   }
 }
 
@@ -705,7 +732,10 @@ export async function procesarSiguienteCorreoActivo(chatId: number): Promise<voi
  * la cola) — eso ya lo hace, si corresponde, la resolución de la propuesta
  * resultante a través del mecanismo normal.
  */
-export async function procesarCorreoPuntual(
+export async function procesarCorreoPuntual(chatId: number, busqueda: string): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean }> {
+  return conCoordinadorCorreo(() => procesarCorreoPuntualInterno(chatId, busqueda));
+}
+async function procesarCorreoPuntualInterno(
   chatId: number,
   busqueda: string
 ): Promise<{ encontrado: boolean; de?: string; asunto?: string; yaEsElActivo?: boolean }> {
@@ -726,6 +756,7 @@ export async function procesarCorreoPuntual(
     return { encontrado: true, de: correo.de, asunto: correo.asunto, yaEsElActivo: true };
   }
 
+  await comprobarCorreoDisponible(correo.threadId);
   await procesarCorreoLocalizado(chatId, correo, false);
   return { encontrado: true, de: correo.de, asunto: correo.asunto };
 }
@@ -745,6 +776,9 @@ export async function procesarCorreoPuntual(
  * handleColaCorreoSiguienteCallback más abajo para el porqué).
  */
 export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
+  return conCoordinadorCorreo(() => avanzarColaCorreoSiActivoInterno(chatId));
+}
+async function avanzarColaCorreoSiActivoInterno(chatId: number): Promise<void> {
   const resultado = await resolverUnoActivo(chatId).catch((error) => {
     console.error("[revisarCorreoNuevo] Error avanzando la cola de revisión de correo (no crítico):", error);
     return { terminado: false as const };
@@ -762,7 +796,9 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
     // de verdad devolvió éxito — si falla, la fila queda "activa" (bloqueando, visible) para que se
     // reintente sola en la próxima revisión (ver reintentarActivoPendienteDeMarcarLeido, al principio
     // de esta función) o se destrabe a mano con los mecanismos ya existentes.
-    const marcado = await marcarHiloComoLeido(resultado.gmailIdResuelto).catch((error: unknown) => {
+    const activoResuelto = await obtenerActivoActual(chatId);
+    if (!activoResuelto || activoResuelto.id !== resultado.gmailIdResuelto) return;
+    const marcado = await marcarMensajeComoLeido(activoResuelto.mensajeId).catch((error: unknown) => {
       console.error("[revisarCorreoNuevo] Error marcando el hilo como leído:", error);
       return false;
     });
@@ -781,6 +817,11 @@ export async function avanzarColaCorreoSiActivo(chatId: number): Promise<void> {
     );
   }
 
+  if (resultado.gmailIdResuelto) {
+    const siguiente = await obtenerPrimerMensajeNoLeidoDeHilo(resultado.gmailIdResuelto);
+    if (siguiente) await encolarCorreos(chatId, [{ id: resultado.gmailIdResuelto, mensajeId: siguiente.messageId,
+      de: siguiente.de, asunto: siguiente.asunto, fechaOrden: siguiente.recibidoEn }]);
+  }
   const quedan = await contarPendientesTotal(chatId);
   if (quedan === 0) {
     await sendTelegramMessage(chatId, "✅ Ya no quedan correos sin leer por resolver — al día.").catch(() => {});
@@ -859,11 +900,16 @@ export async function handleColaCorreoSiguienteCallback(callback: TelegramCallba
  * directo (callback).
  */
 export async function saltarCorreoActivo(chatId: number): Promise<string> {
+  return conCoordinadorCorreo(() => saltarCorreoActivoInterno(chatId));
+}
+async function saltarCorreoActivoInterno(chatId: number): Promise<string> {
   const activo = await obtenerActivoActual(chatId);
   if (!activo) {
     return "Ya no hay ningún correo activo esperando — nada que saltar.";
   }
 
+  const marcado = await marcarMensajeComoLeido(activo.mensajeId);
+  if (!marcado) return "No pude marcar el correo como leído. Sigue activo para reintentar sin perderlo de la cola.";
   const borrado = await descartarActivoEstancado(chatId, activo.id);
 
   // Bug real encontrado en vivo (2026-09-03): esto NO marcaba el hilo como
@@ -877,9 +923,9 @@ export async function saltarCorreoActivo(chatId: number): Promise<string> {
   // acá es una decisión EXPLÍCITA del usuario ("esto ya lo gestioné") — se
   // marca leído para que de verdad quede resuelto, no solo oculto un rato.
   if (borrado) {
-    marcarHiloComoLeido(activo.id).catch((error: unknown) =>
-      console.error("[revisarCorreoNuevo] Error marcando el hilo como leído tras descartar (no crítico):", error)
-    );
+    const siguiente = await obtenerPrimerMensajeNoLeidoDeHilo(activo.id);
+    if (siguiente) await encolarCorreos(chatId, [{ id: activo.id, mensajeId: siguiente.messageId,
+      de: siguiente.de, asunto: siguiente.asunto, fechaOrden: siguiente.recibidoEn }]);
   }
 
   const notaDescartado = borrado
@@ -911,5 +957,4 @@ export async function handleDescartarActivoCallback(callback: TelegramCallbackQu
   const resultado = await saltarCorreoActivo(chatId);
   await sendTelegramMessage(chatId, resultado).catch(() => {});
 }
-
 

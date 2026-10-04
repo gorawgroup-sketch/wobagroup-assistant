@@ -1,3 +1,5 @@
+import { CuentaContableRevisionError, exigirCuentaRevalidada } from "../holded/cuentaContableContexto";
+import { evaluarCuentaGasto, verificarCuentaAntesDeConciliar } from "../holded/write";
 import { unlink } from "node:fs/promises";
 import { conMutex } from "../utils/asyncMutex";
 import {
@@ -54,7 +56,8 @@ import {
   type AlternativaContacto,
   type ResolucionContactoPendiente,
 } from "./contactoResolucionStore";
-import { guardarConciliacionPendiente, consumirConciliacionPendiente } from "./conciliacionPendienteStore";
+import { buscarPlanActivoDeCompra } from "../holded/conciliacionMultiple/store";
+import { guardarConciliacionPendiente, consumirConciliacionPendiente, obtenerConciliacionesPendientesPorChat } from "./conciliacionPendienteStore";
 import { guardarConciliacionAmbiguaPendiente, consumirConciliacionAmbiguaPendiente } from "./conciliacionAmbiguaPendienteStore";
 import {
   buscarContactoHolded,
@@ -219,6 +222,7 @@ async function adjuntarYLimpiar(propuesta: PropuestaGasto, purchaseId: string): 
 }
 
 interface ResultadoIntentarConciliar {
+  requiereRevision?: boolean;
   nota: string;
   /**
    * true si se mandó un mensaje aparte con botones para elegir entre varios movimientos parecidos
@@ -322,6 +326,7 @@ async function intentarConciliar(
   deColaCorreo: boolean = false
 ): Promise<ResultadoIntentarConciliar> {
   try {
+    await verificarCuentaAntesDeConciliar(empresa, gastoId);
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
     const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda });
 
@@ -380,7 +385,7 @@ async function intentarConciliar(
     return { nota, esperandoEleccion: false };
   } catch (error) {
     console.error("[gastoCallbackHandler] Error intentando conciliar movimiento bancario:", error);
-    return { nota: "", esperandoEleccion: false };
+    return { nota: `\n\nConciliación detenida para revisión: ${error instanceof Error ? error.message : String(error)}`, esperandoEleccion: false, requiereRevision: true };
   }
 }
 
@@ -465,6 +470,7 @@ async function conciliarContraMovimientoEspecifico(
     );
   } catch (error) {
     console.error("[gastoCallbackHandler] Error conciliando contra el movimiento elegido:", error);
+    if (error instanceof CuentaContableRevisionError) throw error;
     if (error instanceof ConciliacionMovimientoInciertaError) {
       return (
         `\n\n⏳ Holded no confirmó si concilió el movimiento "${movimiento.descripcion || "sin descripción"}". ` +
@@ -693,6 +699,18 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   }
 
   if (accion === "gasto_adjuntar" || accion === "gasto_nuevo" || accion === "gasto_nuevo_conciliar") {
+    if (accion !== "gasto_adjuntar") {
+      const antes = await obtenerPropuestaGasto(propuestaId);
+      if (antes) {
+        try {
+          exigirCuentaRevalidada(antes.cuentaId, await evaluarCuentaGasto(antes.empresa, { proveedor: antes.proveedor, concepto: antes.concepto }));
+        } catch (error) {
+          await answerCallbackQuerySafe(callback.id, "Revisa la cuenta contable antes de crear.");
+          await sendTelegramMessage(antes.chatId, `No se creó el gasto. ${error instanceof Error ? error.message : String(error)} La propuesta se conserva para revisión.`);
+          return;
+        }
+      }
+    }
     const propuesta = await consumirPropuestaGasto(propuestaId);
     if (!propuesta) {
       await answerCallbackQuerySafe(callback.id, "Esta propuesta ya no está disponible.");
@@ -729,7 +747,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
         await registrarClasificacionAprendida(propuesta.proveedor, propuesta.empresa, propuesta.concepto).catch(
           (error) => console.error("[gastoCallbackHandler] No se pudo guardar la clasificación aprendida (no crítico):", error)
         );
-        const { nota: notaConciliacion, esperandoEleccion } = await intentarConciliar(
+        const { nota: notaConciliacion, esperandoEleccion, requiereRevision } = await intentarConciliar(
           propuesta.empresa,
           propuesta.monto,
           propuesta.fecha,
@@ -740,7 +758,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           propuesta.proveedor,
           propuesta.deColaCorreo === true
         );
-        preguntaConciliacionPendiente = esperandoEleccion;
+        preguntaConciliacionPendiente = esperandoEleccion || requiereRevision === true;
 
         await editTelegramMessage(
           propuesta.chatId,
@@ -833,6 +851,17 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
   }
 
   if (accion === "gasto_conciliar_si" || accion === "gasto_conciliar_no") {
+    // Una pregunta antigua de un solo movimiento no puede consumir ni cerrar un lote pendiente.
+    const chatConciliacion = callback.message?.chat.id;
+    if (chatConciliacion !== undefined) {
+      const anterior = (await obtenerConciliacionesPendientesPorChat(chatConciliacion)).find((p) => p.id === propuestaId);
+      const lote = anterior ? await buscarPlanActivoDeCompra(anterior.empresa, anterior.gastoId) : undefined;
+      if (lote) {
+        await answerCallbackQuerySafe(callback.id, "Este gasto tiene una conciliación múltiple.");
+        await sendTelegramMessage(chatConciliacion, `Usa el plan de conciliación múltiple ${lote.id} (${lote.estado}). Esta pregunta antigua no ejecutará otra conciliación ni cerrará la revisión del correo.`);
+        return;
+      }
+    }
     const pendiente = await consumirConciliacionPendiente(propuestaId);
     if (!pendiente) {
       await answerCallbackQuerySafe(callback.id, "Esta pregunta ya no está disponible.");
@@ -847,7 +876,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
-    const { nota: notaConciliacion, esperandoEleccion } = await intentarConciliar(
+    const { nota: notaConciliacion, esperandoEleccion, requiereRevision } = await intentarConciliar(
       pendiente.empresa,
       pendiente.monto,
       pendiente.fecha,
@@ -870,7 +899,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
     // Igual que preguntaConciliacionPendiente arriba: si quedó esperando que Carlos elija cuál,
     // la cola de correo espera esa respuesta (ver gasto_conciliar_elegir/_no) en vez de avanzar ya.
-    if (pendiente.deColaCorreo && !esperandoEleccion) await avanzarColaCorreoSiActivo(pendiente.chatId);
+    if (pendiente.deColaCorreo && !esperandoEleccion && !requiereRevision) await avanzarColaCorreoSiActivo(pendiente.chatId);
     return;
   }
 
@@ -1499,23 +1528,6 @@ async function crearGastoYReportar(
         `(puede ser una retención de IRPF u otro descuento que no se haya interpretado bien).`
       : "";
 
-  // Pedido explícito de Carlos, tras un caso real: un billete de tren OUIGO
-  // se registró con la cuenta contable por defecto de Holded ("Compras de
-  // mercaderías") en vez de algo relacionado con viajes — inferirCuentaGasto
-  // (core/holded/write.ts) SOLO puede sugerir una cuenta que YA esté en uso
-  // real en otra compra parecida (Holded no expone su plan de cuentas
-  // completo por API, así que nunca puede inventar un id) — cuando no
-  // encuentra ninguna coincidencia razonable (ej. el primer gasto de este
-  // tipo para esta empresa), deja que Holded use su cuenta genérica en
-  // silencio. Ahora se avisa explícitamente en vez de dejarlo pasar sin
-  // decir nada — "buscar en Holded o preguntar": ya se buscó y no había
-  // nada parecido, así que toca preguntar/corregir a mano.
-  const notaCuentaSinInferir = !propuesta.cuentaId
-    ? `\n\n⚠️ No encontré ninguna compra parecida ya registrada para elegir la cuenta contable — Holded lo dejó en su ` +
-      `cuenta genérica por defecto. Revisa y corrige la "Cuenta contable" a mano en Holded si no es la correcta ` +
-      `(la próxima vez que aparezca algo parecido, ya la usaré directo).`
-    : "";
-
   // Pedido explícito de Carlos, tras un caso real (recibo de Uber sin
   // ningún folio/número visible): "recuerda que si no lo identificas en el
   // anexo lo rellenas con 00000" — crearGastoHolded ya rellena el campo
@@ -1583,6 +1595,7 @@ async function crearGastoYReportar(
       empresaFinal,
       {
         contactId: contacto.id,
+        proveedor: propuesta.proveedor,
         fecha: fechaBusqueda,
         descripcion: descripcionFinal,
         lineas,
@@ -1721,7 +1734,6 @@ async function crearGastoYReportar(
     notaComprobante +
     notaPlaceholder +
     notaDescuadre +
-    notaCuentaSinInferir +
     notaNumeroDocumento;
 
   if (conciliarInline) {
@@ -1749,7 +1761,7 @@ async function crearGastoYReportar(
     // aparecer en la descripción de ningún movimiento bancario real, así
     // que la búsqueda aproximada nunca encontraba nada aunque el nombre
     // real (que sí se conocía) hubiera hecho match.
-    const { nota: notaConciliacion, esperandoEleccion } = await intentarConciliar(
+    const { nota: notaConciliacion, esperandoEleccion, requiereRevision } = await intentarConciliar(
       empresaFinal,
       propuesta.monto,
       propuesta.fecha,
@@ -1760,7 +1772,7 @@ async function crearGastoYReportar(
       propuesta.proveedor,
       propuesta.deColaCorreo === true
     );
-    return { mensaje: `${baseMensaje}${notaConciliacion}`, esperandoEleccionConciliacion: esperandoEleccion };
+    return { mensaje: `${baseMensaje}${notaConciliacion}`, esperandoEleccionConciliacion: esperandoEleccion || requiereRevision === true };
   }
 
   return {

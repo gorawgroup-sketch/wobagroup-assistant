@@ -157,13 +157,15 @@ async function ensureTab(): Promise<void> {
  * factura por separado). Se llama en "fire and forget" desde askClaude para
  * no añadir la latencia de escribir en Sheets a la respuesta del usuario.
  */
-export type AutenticacionIA = "anthropic_api_key" | "claude_subscription" | "chatgpt_subscription";
+export type AutenticacionIA = "anthropic_api_key" | "openai_api_key" | "claude_subscription" | "chatgpt_subscription";
 
 export interface MetadatosUsoIA {
   proceso: string;
   autenticacion?: AutenticacionIA;
   ejecucionId?: string;
   llamadaNumero?: number;
+  /** Coste calculado por un proveedor/modalidad con tarifa propia. */
+  costoUSD?: number;
 }
 
 export async function registrarUsoIA(
@@ -176,10 +178,12 @@ export async function registrarUsoIA(
   const sheetId = assertSheetId();
   const sheets = getClient();
 
-  const costoUSD = calcularCostoUSD(usage, modelo);
+  const costoUSD = metadata.costoUSD ?? calcularCostoUSD(usage, modelo);
+  if (!Number.isFinite(costoUSD) || costoUSD < 0) throw new Error("Coste de IA inválido.");
   const autenticacion = metadata.autenticacion ?? "anthropic_api_key";
-  const gastoRealApiUSD = autenticacion === "anthropic_api_key" ? costoUSD : 0;
-  const costoEquivalenteSuscripcionUSD = autenticacion === "anthropic_api_key" ? 0 : costoUSD;
+  const esApi = autenticacion === "anthropic_api_key" || autenticacion === "openai_api_key";
+  const gastoRealApiUSD = esApi ? costoUSD : 0;
+  const costoEquivalenteSuscripcionUSD = esApi ? 0 : costoUSD;
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,

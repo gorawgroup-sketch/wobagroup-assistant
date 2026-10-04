@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
-import { mimeADocumentBlock } from "./documentBlock";
+import { prepararBloquesDocumento } from "./documentBlock";
 
 const MODEL = resolverModeloDocumental("transcribir_captura");
 // Sonnet 5 (el modelo que resuelve resolverModeloDocumental) piensa en modo adaptativo por
@@ -62,7 +62,7 @@ export async function transcribirParaCaptura(
   const ejecucion = crearEjecucionIA("transcribir_captura");
 
   const data = await readFile(rutaLocal);
-  const documentBlock = mimeADocumentBlock(rutaLocal, mimeType, data);
+  const documentBlocks = await prepararBloquesDocumento(rutaLocal, mimeType, data);
 
   const textoInstruccion = [
     "Transcribe el contenido real de este documento/imagen en texto, de forma clara y COMPLETA — es " +
@@ -81,12 +81,15 @@ export async function transcribirParaCaptura(
   // documento sí cambiaba en cada invocación real. Si el documento es lo bastante grande para superar
   // el mínimo cacheable, los turnos de continuación leen ese bloque desde caché en vez de pagarlo de
   // nuevo entero; si no llega al mínimo, o si nunca hace falta continuar, no genera costo extra real.
-  const documentBlockConCache = { ...documentBlock, cache_control: { type: "ephemeral" } };
+  // One cache breakpoint after the complete document, even for multi-image HEIC.
+  const documentBlocksConCache = documentBlocks.map((block, index) =>
+    index === documentBlocks.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block
+  );
 
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: [documentBlockConCache, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
+      content: [...documentBlocksConCache, { type: "text", text: textoInstruccion }] as unknown as Anthropic.MessageParam["content"],
     },
   ];
 

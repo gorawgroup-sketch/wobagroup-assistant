@@ -1,14 +1,16 @@
+import { protegerEscrituraHolded } from "../gmail/automatico/postgres";
+import { evaluarCuentaContable, exigirCuentaRevalidada, CuentaContableRevisionError, type CuentaSugeridaContextual, type CuentaContableReal, type CompraPrecedente, type CriteriosCuenta, type EvaluacionCuenta } from "./cuentaContableContexto";
+import { conMutex } from "../utils/asyncMutex";
+import { mutexConciliacion } from "./conciliacionMultiple/model";
+import { comprobarReservaConciliacionMultiple } from "./conciliacionMultiple/store";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import Anthropic from "@anthropic-ai/sdk";
-import { estaConciliado, type Empresa } from "./client";
+import { estaConciliado, resolveProjectExact, type Empresa } from "./client";
 import { formatDateLocal } from "../utils/dateFormat";
 import { buscarAliasProveedor } from "../gastos/proveedorAliasSheet";
 import { buscarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
 import { montosCercanos } from "../utils/montos";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
-import { crearMensajeAnthropic } from "../ai/anthropicGateway";
-import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
 
@@ -66,7 +68,12 @@ export class HoldedApiError extends Error {
   }
 }
 
-async function holdedWriteCall(
+async function holdedWriteCall(empresa: Empresa, method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<unknown> {
+  return method === "GET" ? holdedWriteCallSinGuardia(empresa, method, path, body)
+    : protegerEscrituraHolded(empresa, () => holdedWriteCallSinGuardia(empresa, method, path, body), method === "POST" ? { path, body } : undefined);
+}
+
+async function holdedWriteCallSinGuardia(
   empresa: Empresa,
   method: "GET" | "POST" | "PUT",
   path: string,
@@ -1043,543 +1050,71 @@ export function inferirTagsCategoria(concepto: string, proveedor: string): strin
   return [];
 }
 
-export interface CuentaSugerida {
-  accountId: string;
-  tags: string[];
-  ejemplo: string;
-  aprendidoDe: "proveedor" | "concepto" | "categoria" | "viaje" | "ia" | "correccion_confirmada";
+export type CuentaSugerida = CuentaSugeridaContextual;
+
+/** Catálogo real, no IDs inferidos a partir de etiquetas o de la frecuencia global. */
+export async function obtenerCuentasContablesReales(empresa: Empresa): Promise<CuentaContableReal[]> {
+  const data = await holdedWriteCall(empresa, "GET", "/expenses-accounts") as { items?: CuentaContableReal[] };
+  if (!Array.isArray(data.items)) throw new Error("No se pudo leer el catálogo de cuentas contables de Holded.");
+  return data.items;
 }
 
-interface LineaConCuenta {
-  contactName: string;
-  descripcion: string;
-  lineName: string;
-  account: string;
-  tags: string[];
-}
-
-const MAX_PAGINAS_CUENTAS = 10;
-// 5+ caracteres (no 4) a propósito, igual que textosParecidos — bug real
-// encontrado en vivo: con el umbral en 4, palabras genéricas cortas
-// (ej. "real", "cargo") de un concepto sintético coincidían por azar con
-// líneas de compra totalmente ajenas (una factura de suscripción de
-// Holded), llevando a una cuenta contable sin ninguna relación real.
-// Hallazgo real (caso Kelly Correales, Uber Eats — Green House Churubusco): "comprobante" es parte
-// del mismo tipo de relleno automático que ya se excluía acá ("(250.25 MXN, comprobante en MXN)",
-// "comprobante generado desde el cuerpo del correo...", ver procesarGastoEntrante.ts/
-// revisarCorreoNuevo.ts) — aparece en la gran mayoría de los conceptos con conversión de moneda sin
-// decir nada sobre la NATURALEZA del gasto, y sin excluirla arrastraba coincidencias falsas hacia
-// cuentas totalmente ajenas.
-// "correo"/"cuerpo"/"original" — mismo hallazgo, esta vez del relleno automático que usa
-// revisarCorreoNuevo.ts cuando un gasto se detecta en el cuerpo de un correo sin adjunto: "(...,
-// comprobante generado desde el cuerpo del correo, sin adjunto original)".
-const PALABRAS_IGNORADAS_CONCEPTO = new Set([
-  "para", "desde", "sobre", "hasta", "todavía", "documento", "adjunto", "generado",
-  "comprobante", "correo", "cuerpo", "original",
-]);
-// Umbral mínimo de evidencia para confiar en un match por CONCEPTO (señal más débil que por
-// proveedor, ver construirSugerenciaDesdeCoincidencias) — una sola línea histórica nunca basta.
-const MIN_EVIDENCIA_CONCEPTO = 2;
-// Umbral propio del tier "viaje" (ver inferirCuentaGasto) — deliberadamente MÁS ALTO que
-// MIN_EVIDENCIA_CONCEPTO. Hallazgo real de auditoría xhigh (3 ángulos independientes coincidieron): a
-// diferencia de tiers 1/2 (proveedor/concepto), que solo aceptan su sugerencia si NO contradice a
-// sugeridoPorCategoria (el "juez" que evita que 2 líneas viejas mal archivadas decidan para siempre,
-// caso real Greengrass), el tier "viaje" no puede usar ese mismo juez — por diseño, existe justo para
-// SUPERAR la categoría propia del ticket (un supermercado en viaje debe ganar sobre "alimentación"
-// genérica, no perder contra ella). Sin ningún cruce, un mínimo de apenas 2 líneas mal etiquetadas
-// bastaría para que gane. 3 no es una prueba matemática, pero sube el costo real de que una
-// contaminación puntual (en vez de precedente real y establecido, como el verificado en vivo en las 3
-// empresas del grupo) decida la cuenta — mismo principio que ya se aplicó para el match por concepto
-// (2, no 1) cuando ese tier también resultó ser una señal más débil de lo que parecía.
-const MIN_EVIDENCIA_VIAJE = 3;
-// Cuánto tiempo se confía en una corrección de cuenta confirmada (tier 0, ver inferirCuentaGasto) antes
-// de volver a los tiers normales de inferencia. Hallazgo real de auditoría xhigh: como el tier 0 ya no
-// se cruza contra evidencia de categoría (ver comentario junto a su uso, más abajo), esta es su única
-// protección real contra quedar obsoleto — 180 días es suficiente para que una corrección real siga
-// siendo útil, y suficientemente corto para que un error puntual (o una cuenta que Holded reorganizó
-// después) se autocorrija solo en vez de confiar en ella para siempre.
-const TTL_CORRECCION_VIGENTE_MS = 180 * 24 * 60 * 60 * 1000;
-
-function palabrasSignificativas(texto: string): string[] {
-  return normalizar(texto)
-    .split(/\s+/)
-    .filter((p) => p.length >= 5 && !PALABRAS_IGNORADAS_CONCEPTO.has(p));
-}
-
-async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuenta[]> {
-  const lineas: LineaConCuenta[] = [];
+async function leerPrecedentesCuenta(empresa: Empresa, contactId?: string): Promise<CompraPrecedente[]> {
+  const compras: CompraPrecedente[] = [];
   let cursor: string | undefined;
-
-  for (let pagina = 0; pagina < MAX_PAGINAS_CUENTAS; pagina++) {
-    const params = new URLSearchParams({ limit: "100" });
+  const cursores = new Set<string>();
+  for (let pagina = 0; pagina < 30; pagina++) {
+    const params = new URLSearchParams({ limit: "200", sort: "-date" });
+    if (contactId) params.set("contact_id", contactId);
+    else params.set("start_date", new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10));
     if (cursor) params.set("cursor", cursor);
-
-    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{
-        contact_name?: string;
-        description?: string;
-        tags?: string[];
-        lines?: Array<{ name?: string; account?: string }>;
-      }>;
-      cursor?: string;
-      has_more?: boolean;
+    const data = await holdedWriteCall(empresa, "GET", `/purchases?${params}`) as {
+      items?: CompraPrecedente[]; has_more?: boolean; cursor?: string;
     };
-
-    for (const item of data.items ?? []) {
-      for (const line of item.lines ?? []) {
-        if (!line.account) continue;
-        lineas.push({
-          contactName: item.contact_name ?? "",
-          descripcion: item.description ?? "",
-          lineName: line.name ?? "",
-          account: line.account,
-          tags: item.tags ?? [],
-        });
-      }
-    }
-
-    if (!data.has_more || !data.cursor) break;
+    if (!Array.isArray(data.items)) throw new Error("Historial contable incompleto.");
+    if (contactId && data.items.some((p) => p.contact_id !== contactId)) throw new Error("El historial no corresponde al proveedor solicitado.");
+    compras.push(...data.items);
+    if (data.has_more === false) return compras;
+    if (data.has_more !== true || !data.cursor || cursores.has(data.cursor)) throw new Error("No se pudo completar la paginación del historial contable.");
     cursor = data.cursor;
+    cursores.add(cursor);
   }
-
-  return lineas;
+  throw new Error("El historial supera el límite de lectura; se requiere revisión contable.");
 }
 
-/**
- * minEvidencia — hallazgo real de auditoría: si TODAS las coincidencias por concepto apuntan (por
- * casualidad) a la MISMA cuenta, nunca hay ambigüedad que dispare elegirCuentaConIA (eso solo pasa
- * si hay VARIAS cuentas distintas) — así que una sola línea histórica mal archivada podía decidir la
- * cuenta con "toda la confianza" aunque la evidencia real fuera mínima. El match por proveedor (señal
- * fuerte y determinística por diseño) usa el valor por defecto (1); el match por concepto (señal más
- * débil, la que causó el caso real Kelly Correales/Uber Eats) exige más de una coincidencia real.
- */
-function construirSugerenciaDesdeCoincidencias(
-  matches: LineaConCuenta[],
-  origen: CuentaSugerida["aprendidoDe"],
-  minEvidencia = 1
-): CuentaSugerida | undefined {
-  if (matches.length === 0) return undefined;
-
-  const conteo = new Map<string, number>();
-  for (const m of matches) conteo.set(m.account, (conteo.get(m.account) ?? 0) + 1);
-  const [cuentaGanadora, votos] = Array.from(conteo.entries()).sort((a, b) => b[1] - a[1])[0];
-  if (votos < minEvidencia) return undefined;
-
-  const delGrupo = matches.filter((m) => m.account === cuentaGanadora);
-  const tagsFrecuentes = new Map<string, number>();
-  for (const m of delGrupo) for (const t of m.tags) tagsFrecuentes.set(t, (tagsFrecuentes.get(t) ?? 0) + 1);
-  const tags = Array.from(tagsFrecuentes.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([t]) => t);
-
-  const ejemplo = delGrupo.find((m) => m.lineName || m.descripcion);
-
-  return { accountId: cuentaGanadora, tags, ejemplo: ejemplo ? ejemplo.lineName || ejemplo.descripcion : "", aprendidoDe: origen };
+export async function evaluarCuentaGasto(empresa: Empresa, criterios: CriteriosCuenta): Promise<EvaluacionCuenta> {
+  const contacto = criterios.contactId ? undefined : await buscarContactoHolded(empresa, criterios.proveedor);
+  const contactId = criterios.contactId ?? contacto?.id;
+  const [cuentas, compras, correccion] = await Promise.all([
+    obtenerCuentasContablesReales(empresa),
+    leerPrecedentesCuenta(empresa, contactId),
+    buscarCuentaCorregidaAprendida(criterios.proveedor, empresa),
+  ]);
+  const criteriosCompletos = { ...criterios, contactId, tagsCategoria: inferirTagsCategoria(criterios.concepto, criterios.proveedor) };
+  const evaluacion = evaluarCuentaContable(criteriosCompletos, compras, cuentas, correccion);
+  // Ante conflicto del proveedor, nunca diluirlo con una mayoría de gastos de otros proveedores.
+  if (evaluacion.sugerencia || !contactId || evaluacion.motivo.includes("cuentas distintas")) return evaluacion;
+  const similares = await leerPrecedentesCuenta(empresa);
+  return evaluarCuentaContable(criteriosCompletos, [...compras, ...similares], cuentas, correccion);
 }
 
-/**
- * Cuando varias cuentas candidatas empatan o no hay un ganador claro por
- * palabras clave, le pide a Claude que elija la más adecuada ENTRE esas
- * candidatas reales (nunca inventa una cuenta nueva) — pedido explícito de
- * Carlos: "usa el modelo IA que se requiera para que esto sea preciso".
- */
-async function elegirCuentaConIA(
-  criterios: { proveedor: string; concepto: string; contextoDeViaje?: boolean },
-  candidatos: LineaConCuenta[]
-): Promise<CuentaSugerida | undefined> {
-  const porCuenta = new Map<string, LineaConCuenta[]>();
-  for (const c of candidatos) {
-    const arr = porCuenta.get(c.account) ?? [];
-    if (arr.length < 3) arr.push(c);
-    porCuenta.set(c.account, arr);
+export async function inferirCuentaGasto(empresa: Empresa, criterios: CriteriosCuenta): Promise<CuentaSugerida | undefined> {
+  return (await evaluarCuentaGasto(empresa, criterios)).sugerencia;
+}
+
+/** Precondición para conciliar: identidad por ID, documento actual excluido del precedente. */
+export async function verificarCuentaAntesDeConciliar(empresa: Empresa, compraId: string): Promise<void> {
+  const compra = await obtenerCompraHoldedPorId(empresa, compraId);
+  const cuentaIds = new Set((compra.lines ?? []).map((l) => l.account));
+  if (!compra.contact_id || cuentaIds.size !== 1 || cuentaIds.has(null) || cuentaIds.has(undefined)) {
+    throw new CuentaContableRevisionError("La compra requiere revisar su clasificación contable antes de conciliar (líneas sin cuenta o con cuentas distintas).");
   }
-  const opciones = Array.from(porCuenta.entries()).slice(0, 6);
-  if (opciones.length < 2) return undefined;
-
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return undefined;
-
-  try {
-    const anthropic = new Anthropic({ apiKey });
-    const listado = opciones
-      .map(
-        ([accountId, ejemplos], i) =>
-          `${i + 1}. cuenta "${accountId}" — ejemplos ya registrados: ${ejemplos
-            .map((e) => `"${e.lineName || e.descripcion}"`)
-            .join(", ")}`
-      )
-      .join("\n");
-
-    const response = await crearMensajeAnthropic(anthropic, crearEjecucionIA("elegir_cuenta_contable"), {
-      model: "claude-sonnet-5",
-      max_tokens: 20,
-      messages: [
-        {
-          role: "user",
-          content:
-            `Gasto nuevo — proveedor: "${criterios.proveedor}", concepto: "${criterios.concepto}".` +
-            (criterios.contextoDeViaje
-              ? ` Este gasto ocurrió durante un viaje/desplazamiento de trabajo de la persona asociada — si ` +
-                `alguna de las opciones es claramente una cuenta de gastos de viaje/desplazamiento, prefiérela ` +
-                `aunque el proveedor/concepto por sí solos no lo sugieran (ej. comida comprada durante un ` +
-                `viaje sigue siendo gasto de viaje, no un gasto normal de oficina).`
-              : "") +
-            ` ¿Cuál de estas cuentas contables (identificadas solo por ejemplos reales ya registrados en Holded) ` +
-            `es la más adecuada para este gasto? Responde SOLO con el número de la opción, o "0" si ninguna encaja bien.\n\n${listado}`,
-        },
-      ],
-    });
-
-    const textBlock = response.content.find((b) => b.type === "text");
-    const numero = textBlock && textBlock.type === "text" ? parseInt(textBlock.text.trim(), 10) : NaN;
-    if (!Number.isFinite(numero) || numero < 1 || numero > opciones.length) return undefined;
-
-    const [accountId, ejemplos] = opciones[numero - 1];
-    return {
-      accountId,
-      tags: [],
-      ejemplo: ejemplos[0]?.lineName || ejemplos[0]?.descripcion || "",
-      aprendidoDe: "ia",
-    };
-  } catch (error) {
-    console.error("[write] Error eligiendo cuenta contable con IA (no crítico):", error);
-    return undefined;
-  }
-}
-
-/**
- * Hallazgo real de auditoría (caso Uber México/Guadalajara, Footprint, 2026-09-08): textosParecidos
- * exige que la palabra del OBJETIVO tenga 5+ caracteres para contar como "distintiva" — diseñado para
- * no engancharse con rellenos genéricos dentro de una frase larga. Pero cuando el proveedor completo
- * ES una marca corta de una sola palabra ("Uber", 4 caracteres — también aplicaría a "Ikea", "Aldi",
- * "Grab", "Bolt"...), esa palabra nunca pasa el filtro y el match por proveedor (tier 1, la señal más
- * fuerte y determinística) queda desactivado SIEMPRE para esa marca, sin importar cuántas compras
- * reales de "UBER MEXICO"/"UBER COLOMBIA" ya existan — cae directo al tier 2 (concepto), más frágil.
- * Verificado en vivo: Footprint ya tenía 15+ líneas reales de Uber bajo la cuenta correcta de viajes,
- * pero nunca se usaban porque "Uber" (el valor exacto de `proveedor`) jamás superaba el umbral de 5
- * caracteres de textosParecidos. Esto es distinto del riesgo que ese umbral evita: ahí el objetivo es
- * una frase/oración ruidosa donde una palabra corta suelta podría ser relleno; acá el objetivo YA es
- * el nombre exacto y completo del proveedor (una sola palabra, sin ruido) — coincidencia exacta de esa
- * palabra completa contra una palabra completa del contacto es una señal fuerte, no ruido.
- */
-function coincideProveedorCorto(proveedor: string, contactName: string): boolean {
-  const palabrasProveedor = palabrasDe(proveedor, 1);
-  if (palabrasProveedor.length !== 1) return false; // solo aplica si el proveedor entero es una sola palabra
-  return palabrasDe(contactName, 1).includes(palabrasProveedor[0]);
-}
-
-/**
- * Busca qué cuenta contable de Holded ya se usa en compras reales
- * parecidas — por proveedor o por palabras clave del concepto — para no
- * dejar que Holded caiga en su cuenta genérica por defecto en gastos que
- * ya tienen una categoría real establecida (ej. "Gastos de viaje" para
- * vuelos/hoteles/taxis, en vez de "Otros servicios"). Caso real que
- * motivó esto: una factura de Booking.com (Footprint) se creó sin cuenta
- * ni tags — verificado en vivo que Footprint ya tiene 159 líneas reales de
- * gastos de viaje (KLM, Uber, hoteles, Booking.com, incluyendo vuelos del
- * mismo colaborador) todas bajo la MISMA cuenta contable.
- *
- * Holded no expone un endpoint público para listar el plan de cuentas
- * (verificado en vivo: /accounting/accounts, /expenseaccounts,
- * /chartofaccounts — todos 404 o devuelven el HTML del front, no datos) —
- * así que la única fuente confiable es lo que YA está en uso real. Nunca
- * inventa un id de cuenta.
- *
- * 1) Si hay compras del MISMO proveedor (nombre parecido, o coincidencia
- *    exacta de marca corta de una sola palabra — ver coincideProveedorCorto,
- *    caso real Uber México/Guadalajara: "Uber" nunca pasaba el filtro de 5+
- *    caracteres de textosParecidos), usa la cuenta más frecuente entre esas
- *    — caso fuerte y determinístico.
- * 2) Si no, busca por palabras clave del concepto (excluyendo primero las
- *    que coincidan con el nombre de personaAsociada, si se dio — el nombre
- *    de una persona aparece en TODOS sus gastos sin importar la categoría,
- *    así que nunca debe decidir la cuenta contable, caso real: Kelly
- *    Correales + Uber Eats terminó en "Servicios de profesionales
- *    independientes" solo por compartir su nombre con una factura no
- *    relacionada) compartidas con líneas ya registradas. Si de ahí salen
- *    varias cuentas candidatas distintas sin un proveedor que desempate,
- *    se le pide a Claude que elija (elegirCuentaConIA) en vez de quedarse
- *    con la primera por azar.
- * 3) Si tampoco hay match por concepto, busca por la ETIQUETA DE CATEGORÍA
- *    (ver inferirTagsCategoria más abajo — "alimentacion", "transporte"+
- *    "taxi", "hospedaje"...), comparando contra las etiquetas YA puestas en
- *    compras reales anteriores. Caso real que motivó este tercer nivel: un
- *    pedido de Uber Eats de un restaurante nunca antes visto ("Taquearte
- *    Turbo") no comparte NINGUNA palabra real con un pedido anterior de OTRO
- *    restaurante ("Teikit Del Valle") — el nivel 1 (proveedor) nunca
- *    coincide porque cada pedido trae el nombre del restaurante, distinto
- *    cada vez; el nivel 2 (concepto) tampoco, por el mismo motivo — así que
- *    Holded caía en su cuenta genérica por defecto ("Otros servicios") para
- *    CUALQUIER restaurante nuevo, aunque Footprint ya tuviera pedidos de
- *    Uber Eats de sobra bajo la cuenta real de alimentación. La etiqueta de
- *    categoría, en cambio, es la MISMA sin importar el restaurante — es
- *    exactamente la señal que sí generaliza, y ya se calcula de forma
- *    confiable (inferirTagsCategoria no mira nombres de proveedor/persona,
- *    solo la naturaleza real del gasto). Exige coincidencia de TODAS las
- *    etiquetas de categoría (no solo una) para no confundir, ej., un taxi
- *    con un tren solo porque ambos comparten "transporte".
- * 4) Si tampoco hay match por categoría, es el ÚLTIMO recurso: se le muestran a Claude las cuentas
- *    reales más usadas (con ejemplos reales, ver elegirCuentaConIA) junto con el concepto/proveedor de
- *    este gasto — decide con sentido, o dice que ninguna encaja, en cuyo caso recién ahí Holded usa su
- *    cuenta por defecto (undefined), igual que antes de esta función existir.
- *
- * IMPORTANTE (actualizado 2026-09-08, caso real Greengrass/GRUPO PRACAR DE RL DE CV): el orden real de
- * ejecución NO es estrictamente 1→2→3→4 de arriba abajo. El nivel 3 (categoría) se calcula PRIMERO,
- * antes de intentar el 1 y el 2, y se usa como JUEZ DE REFERENCIA para ambos — un match por proveedor o
- * concepto solo se acepta si además coincide con lo que la categoría (evidencia agregada de TODA la
- * empresa, no solo de este proveedor) también señala; si señalan a cuentas distintas, gana la
- * categoría. Esto evita que una compra ya mal archivada (ej. en "Otros servicios", con el tag correcto
- * pero la cuenta equivocada) se repita para siempre solo porque el mismo proveedor vuelve a aparecer.
- * Ver contradiceCategoria dentro de la función.
- */
-// Tags que por sí solos son evidencia inequívoca de desplazamiento (transporte de cualquier medio +
-// hospedaje) — deliberadamente SIN "alimentacion"/"parking"/"gasolina", que también ocurren fuera de
-// un viaje y no bastan solos para identificar la cuenta de "Gastos de viaje". Se usa para el tier de
-// contexto de viaje de inferirCuentaGasto (ver más abajo) — nunca para inferirTagsCategoria, que sigue
-// decidiendo el tag de ESTE gasto por su propia naturaleza, no por el contexto de viaje.
-const TAGS_VIAJE_REFERENCIA = ["transporte", "taxi", "tren", "avion", "alquilercoche", "peaje", "barco", "hospedaje"];
-
-export async function inferirCuentaGasto(
-  empresa: Empresa,
-  criterios: { proveedor: string; concepto: string; personaAsociada?: string; contextoDeViaje?: boolean }
-): Promise<CuentaSugerida | undefined> {
-  // Tier 0 — pedido explícito de Carlos ("que la práctica te vaya dando
-  // experticia"): si revisarCorreccionesCuentaContable.ts (job semanal) ya
-  // detectó y confirmó que Carlos corrigió a mano la cuenta de este
-  // proveedor, esa confirmación EXPLÍCITA es evidencia más fuerte que
-  // cualquier inferencia por precedente. Se busca ya (no hace falta esperar
-  // a recolectarLineasConCuenta).
-  const corregidaPromise = buscarCuentaCorregidaAprendida(criterios.proveedor, empresa).catch((error) => {
-    console.error("[write] Error consultando cuenta corregida aprendida (no crítico, sigue con los tiers normales):", error);
-    return undefined;
+  const evaluacion = await evaluarCuentaGasto(empresa, {
+    proveedor: typeof compra.contact_name === "string" ? compra.contact_name : "",
+    concepto: [compra.description, ...(compra.lines ?? []).map((l) => l.name)].filter(Boolean).join(" "),
+    contactId: compra.contact_id, excluirCompraId: compraId,
   });
-
-  const lineas = await recolectarLineasConCuenta(empresa);
-  const corregida = await corregidaPromise;
-  if (lineas.length === 0 && !corregida) return undefined;
-
-  // Hallazgo real de auditoría xhigh (2ª pasada, 2 agentes independientes): la versión anterior
-  // gateaba el tier 0 detrás de `contradiceCategoria` (el mismo juez que protege tiers 1/2, ver más
-  // abajo) — pero ese juez compara contra evidencia AGREGADA de categoría, que casi siempre INCLUYE
-  // las mismas compras viejas y mal archivadas que motivaron la corrección en primer lugar (ej. 2+
-  // compras ya mal archivadas, con el tag correcto pero la cuenta vieja — exactamente el patrón real
-  // del caso Greengrass). Resultado: el gate podía vetar justo la corrección que existe para arreglar
-  // ese patrón, derrotando el propósito del tier 0 para su caso de uso más obvio (un proveedor
-  // reincidente). La diferencia de fondo: tiers 1/2/3 son INFERENCIA estadística sobre precedente (por
-  // eso necesitan cruzarse contra evidencia más amplia) — el tier 0 es un HECHO verificado en vivo por
-  // el job semanal contra la cuenta real que Carlos dejó en Holded, no una inferencia. Se confía en él
-  // sin cruzarlo contra categoría.
-  //
-  // La protección real contra que esta corrección se vuelva obsoleta con el tiempo (cuenta
-  // reorganizada/borrada en Holded, o un caso puntual que no debía generalizarse) es el TTL de abajo,
-  // no un cruce con categoría — vence sola y vuelve a los tiers normales en vez de confiar para
-  // siempre. La calidad de ENTRADA a cuentaCorregidaAprendidaSheet también se reforzó por separado
-  // (ver revisarCorreccionesCuentaContable.ts y gastoCallbackHandler.ts) para que llegue menos "ruido"
-  // a este tier de máxima confianza.
-  if (corregida) {
-    const vigente = corregida.confirmadoEn ? Date.now() - new Date(corregida.confirmadoEn).getTime() <= TTL_CORRECCION_VIGENTE_MS : false;
-    if (vigente) {
-      // Hallazgo real de auditoría: devolver tags:[] a ciegas le quitaba a
-      // este proveedor los tags que tiers 1/2 SÍ habrían adjuntado (ver
-      // procesarGastoEntrante.ts, que usa cuentaSugerida.tags como fallback de
-      // persona cuando no hay personaAsociada explícita) — una regresión
-      // silenciosa justo para el proveedor que ya se corrigió. Se reutiliza el
-      // mismo cálculo de tags frecuentes que tiers 1/2/3 (construirSugerenciaDesdeCoincidencias),
-      // filtrado a las líneas que YA usan la cuenta corregida — la cuenta en
-      // sí nunca cambia (viene de la corrección confirmada), solo se
-      // enriquecen tags/ejemplo si ya hay precedente real que los traiga.
-      const desdeCorreccion = construirSugerenciaDesdeCoincidencias(
-        lineas.filter((l) => l.account === corregida.cuentaId),
-        "correccion_confirmada",
-        0
-      );
-      return (
-        desdeCorreccion ?? {
-          accountId: corregida.cuentaId,
-          tags: [],
-          ejemplo: "corrección ya confirmada para este proveedor",
-          aprendidoDe: "correccion_confirmada",
-        }
-      );
-    }
-    console.error(
-      `[write] La cuenta corregida aprendida para "${criterios.proveedor}" (${empresa}) venció (más de ${TTL_CORRECCION_VIGENTE_MS / 86400000} días) — se ignora, sigue con los tiers normales.`
-    );
-  }
-
-  // Tier "viaje" — pedido explícito de Carlos, casos reales (Simon Talloen en desplazamiento, tickets
-  // de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien de viaje debe
-  // contabilizarse como gasto de viaje/desplazamiento — "profesionales independientes" y la cuenta
-  // genérica por defecto casi nunca son lo correcto ahí, sin importar qué proveedor/concepto tenga el
-  // ticket puntual (un supermercado no tiene NADA en su nombre/concepto que apunte a "viaje"). Cuando
-  // extraerDatosFactura reporta contexto real de desplazamiento (ver contextoDeViaje más arriba), se
-  // busca la cuenta que el grupo YA usa de verdad para gastos de transporte/hospedaje (evidencia
-  // inequívoca de viaje, ver TAGS_VIAJE_REFERENCIA — nunca alimentación/parking/gasolina solos, que
-  // también ocurren sin viaje) y se usa ESA, antes de que el proveedor/concepto de este ticket en
-  // concreto puedan arrastrarlo hacia una cuenta sin relación real (ej. un precedente viejo mal
-  // archivado en "profesionales independientes"). Se resuelve ANTES que tiers 1/2/3 a propósito — un
-  // contexto de viaje confirmado es una señal más fuerte que la inferencia estadística por
-  // proveedor/concepto de ESTE ticket puntual, que nunca va a mencionar viaje por sí solo.
-  if (criterios.contextoDeViaje) {
-    const porViaje = lineas.filter((l) => TAGS_VIAJE_REFERENCIA.some((t) => tagsConSinonimosSeSolapan([t], l.tags)));
-    const sugeridoPorViaje = construirSugerenciaDesdeCoincidencias(porViaje, "viaje", MIN_EVIDENCIA_VIAJE);
-    if (sugeridoPorViaje) return sugeridoPorViaje;
-  }
-
-  // textosParecidos (no un simple includes/substring) — bug real encontrado
-  // en vivo: "Booking.com" (como lo lee la extracción de la factura) nunca
-  // matcheaba por substring contra "BOOKING HOLDINGS Inc. (Booking)" (el
-  // nombre real del contacto en Holded), así que el match por proveedor
-  // fallaba SIEMPRE para ese caso real y caía al fallback de concepto/IA,
-  // menos confiable. Mismo criterio ya usado en el resto del sistema para
-  // razón social vs. nombre comercial.
-  // Se calcula ANTES de cualquier tier (no solo como fallback del tier 3) — ver más abajo.
-  const tagsCategoria = inferirTagsCategoria(criterios.concepto, criterios.proveedor);
-
-  // Hallazgo real de auditoría (caso Greengrass/GRUPO PRACAR DE RL DE CV, Kelly Correales, Footprint,
-  // 2026-09-08): un veto que solo compara TAGS (¿el grupo ganador tiene esta etiqueta?) no detecta el
-  // caso real donde una compra ya quedó mal archivada en "Otros servicios" (la cuenta genérica de
-  // Holded) pero SÍ con el tag correcto puesto a mano/por el propio sistema — ahí no hay ninguna
-  // "contradicción de tags" que detectar, el tag es correcto, es la CUENTA la que está mal. La próxima
-  // vez que aparece el MISMO proveedor, el tier 1 encuentra esa única línea histórica y la repite con
-  // total confianza ("fuerte y determinístico"), perpetuando el error para siempre en vez de
-  // corregirse solo — exactamente lo que Carlos reportó en vivo.
-  //
-  // La corrección de fondo: en vez de preguntar "¿esta cuenta tiene el tag correcto?", se pregunta
-  // "¿esta cuenta es la MISMA que ya usan, con evidencia real e independiente, el resto de los gastos
-  // de esta categoría?" — se calcula el tier 3 (categoría) PRIMERO, no al final como último recurso, y
-  // se usa como el juez de referencia para los demás tiers (1/2, NO el tier 0 — ver arriba): analiza
-  // TODAS las líneas reales de esta categoría (no solo las del mismo proveedor) y solo se acepta un
-  // match por proveedor/concepto cuando SEÑALA A LA MISMA CUENTA que esa evidencia agregada — si
-  // señalan a cuentas distintas, gana la evidencia de categoría (más amplia, menos manipulable por un
-  // solo historial contaminado). Si tagsCategoria no reconoce ninguna categoría, o no hay evidencia
-  // suficiente para el tier 3 todavía, no hay nada con qué cruzar — tiers 1/2 quedan intactos (ej.
-  // "Uber", cuyas líneas reales están etiquetadas "uber" y no "taxi", nunca alcanza el mínimo de
-  // evidencia del tier 3 con tagsCategoria estricto — sigue resolviendo por proveedor, sin cambios).
-  const porCategoria = tagsCategoria.length > 0 ? lineas.filter((l) => tagsCategoria.every((t) => tagsConSinonimosSeSolapan([t], l.tags))) : [];
-  const sugeridoPorCategoria = construirSugerenciaDesdeCoincidencias(porCategoria, "categoria", MIN_EVIDENCIA_CONCEPTO);
-
-  const contradiceCategoria = (accountId: string): boolean =>
-    sugeridoPorCategoria !== undefined && sugeridoPorCategoria.accountId !== accountId;
-
-  // Hallazgo real de auditoría (caso "RESTAURANTE... SA DE CV" vs. "ADEL RESTAURACION SL", Footprint,
-  // 2026-09-08): textosParecidos por sí solo no exige que la palabra compartida sea DISTINTIVA — solo
-  // que tenga 5+ caracteres — así que "restaurante" y "restauracion" (mismo prefijo de 6, ninguna
-  // relación real entre las dos empresas) contaban como "el mismo proveedor". Ya existe exactamente
-  // esta protección para contactos de Holded (puntuarDistintividad + MAX_CONTACTOS_COMPARTIENDO_PALABRA,
-  // caso real GoTo/LinkedIn) — se reutiliza acá: una coincidencia de textosParecidos solo cuenta si
-  // ADEMÁS es distintiva dentro de `lineas` (pocas líneas reales comparten esa palabra). coincideProveedorCorto
-  // (marca corta de una sola palabra, ej. "Uber") sigue sin necesitar esto — ya es una coincidencia exacta.
-  //
-  // Hallazgo real de auditoría xhigh de este mismo cambio: MAX_CONTACTOS_COMPARTIENDO_PALABRA se
-  // calibró para `obtenerTodosLosContactos()` (la lista de CONTACTOS de Holded, cada proveedor real
-  // aparece una sola vez) — pasar `lineas` (líneas de COMPRA, sin deduplicar) rompe esa calibración:
-  // un proveedor real y bien establecido con solo 3+ compras propias ya "comparte la palabra consigo
-  // mismo" más de MAX_CONTACTOS_COMPARTIENDO_PALABRA veces y se auto-veta — justo los proveedores
-  // frecuentes para los que el tier 1 debería ser más fuerte (confirmado con Booking.com, citado en el
-  // propio comentario de más abajo: 159 líneas reales). Se deduplica antes de pasarlo, restaurando el
-  // significado real de la constante ("cuántos PROVEEDORES DISTINTOS comparten esta palabra").
-  const nombresContactosLineas = Array.from(new Set(lineas.map((l) => l.contactName)));
-  const porNombre = criterios.proveedor.trim()
-    ? lineas.filter((l) => {
-        if (!l.contactName) return false;
-        if (coincideProveedorCorto(criterios.proveedor, l.contactName)) return true;
-        return (
-          textosParecidos(criterios.proveedor, l.contactName) &&
-          puntuarDistintividad(criterios.proveedor, l.contactName, nombresContactosLineas) > 0
-        );
-      })
-    : [];
-
-  const sugeridoPorNombre = construirSugerenciaDesdeCoincidencias(porNombre, "proveedor");
-  if (sugeridoPorNombre) {
-    if (!contradiceCategoria(sugeridoPorNombre.accountId)) return sugeridoPorNombre;
-  }
-
-  // Hallazgo real de auditoría (caso Kelly Correales, Uber Eats — Green House Churubusco): el
-  // concepto casi siempre trae el nombre de la persona ("... — Kelly Correales — 2 sep 2026..."), y
-  // esa persona tiene gastos reales de TODO tipo (vuelos, comida, taxis) — sin excluir su nombre, la
-  // coincidencia por palabras del concepto terminaba arrastrando la cuenta contable de un gasto
-  // TOTALMENTE distinto (ej. "Servicios de profesionales independientes" de otra factura suya) solo
-  // porque compartían su nombre, no la naturaleza del gasto. El nombre es señal fuerte para el TAG de
-  // persona (ver inferirTagsCategoria/tagsPersona en procesarGastoEntrante.ts) pero nunca debe decidir
-  // la CATEGORÍA contable — mismo principio que ya se aplicó ahí, aplicado acá también.
-  const palabrasPersona = criterios.personaAsociada ? new Set(palabrasSignificativas(criterios.personaAsociada)) : new Set<string>();
-  const palabrasConcepto = palabrasSignificativas(criterios.concepto).filter((p) => !palabrasPersona.has(p));
-
-  if (palabrasConcepto.length > 0) {
-    const porConcepto = lineas.filter((l) => {
-      const texto = normalizar(`${l.descripcion} ${l.lineName}`);
-      return palabrasConcepto.some((p) => texto.includes(p));
-    });
-
-    // Hallazgo real de auditoría (caso Uber Braga/Portugal, WOBA, 2026-09-08): "viaje" es una palabra
-    // ≥5 caracteres genuinamente relacionada con el gasto, no un relleno como "comprobante"/"correo"
-    // (ver PALABRAS_IGNORADAS_CONCEPTO) — pero es tan común en CUALQUIER concepto de viaje que
-    // aparece en líneas de naturaleza totalmente distinta. Acá matcheó 7 líneas reales: 6 bajo la
-    // cuenta real de viajes/transporte, 1 sola bajo "Servicios de profesionales independientes"
-    // (una factura de servicios ligada a un viaje, no un gasto de viaje en sí). Antes, CUALQUIER
-    // conteo de cuentas distintas ≥2 disparaba elegirCuentaConIA — con un voto tan desbalanceado
-    // (6 contra 1), el voto por mayoría ya tiene una respuesta clara y confiable; solo tiene sentido
-    // pedirle a Claude que decida cuando el voto está genuinamente empatado en el primer lugar (ningún
-    // recuento real le gana al otro), no cada vez que aparece una segunda cuenta con un solo ejemplo
-    // suelto.
-    const conteoPorCuenta = new Map<string, number>();
-    for (const m of porConcepto) conteoPorCuenta.set(m.account, (conteoPorCuenta.get(m.account) ?? 0) + 1);
-    const conteosOrdenados = Array.from(conteoPorCuenta.values()).sort((a, b) => b - a);
-    const hayEmpateEnElPrimerLugar = conteosOrdenados.length > 1 && conteosOrdenados[0] === conteosOrdenados[1];
-
-    // Hallazgo real de auditoría (casos Uber México/Guadalajara y Ke Rico NichoT1, Footprint,
-    // 2026-09-08 — mismo gasto de viaje, dos líneas del correo): "business" es una palabra ≥5
-    // caracteres genuinamente presente en el concepto ("Business Trip GDL", texto que Jorge/Carlos
-    // repiten en TODOS los gastos de ese viaje) pero también es, por pura coincidencia, parte del
-    // nombre legal de la propia empresa ("BUSINESS FOOTPRINT EU SL") — que aparece en TODAS las
-    // facturas recurrentes de software de la empresa (Holded, Canva...). Esas facturas administrativas
-    // son muchas y repetidas, así que ganan el voto por mayoría con facilidad, arrastrando un taxi o
-    // una comida hacia la cuenta de "Gastos de marketing y Herramienta" sin que exista ningún empate
-    // que dispare elegirCuentaConIA. No alcanza con añadir "business" a PALABRAS_IGNORADAS_CONCEPTO —
-    // cualquier otra palabra del concepto podría coincidir por casualidad con el nombre de la empresa o
-    // con un documento administrativo genérico. La corrección de fondo: si ya existe una señal de
-    // categoría independiente y confiable (tagsCategoria, ver inferirTagsCategoria — no depende de
-    // palabras sueltas del concepto, sino de la naturaleza real del gasto) y la cuenta ganadora del
-    // tier 2 no tiene NINGUNA línea histórica de respaldo con esa etiqueta (considerando sinónimos, ver
-    // tagsConSinonimosSeSolapan — sin esto una cuenta con historial etiquetado "alojamiento" en vez de
-    // "hospedaje" también cuenta como evidencia real de esa cuenta), la evidencia del tier 2 se
-    // descarta como sospechosa y gana el tier 3 (ya calculado arriba, con evidencia agregada de TODA
-    // la categoría — más confiable que el historial de un solo proveedor/concepto).
-    if (hayEmpateEnElPrimerLugar) {
-      const viaIA = await elegirCuentaConIA(criterios, porConcepto);
-      if (viaIA && !contradiceCategoria(viaIA.accountId)) return viaIA;
-      // Hallazgo real de auditoría xhigh: si el empate es real y la IA no devolvió nada usable (sin
-      // API key, vetada, o inexistente), NUNCA se debe caer al voto por mayoría de abajo — con un
-      // empate genuino, "la cuenta más votada" no tiene ningún significado real,
-      // construirSugerenciaDesdeCoincidencias solo desempataría por orden de aparición en `lineas` (un
-      // artefacto de paginación de Holded, no evidencia). Eso reintroducía exactamente el tipo de
-      // elección arbitraria que este mismo tier de empate existe para evitar — pedido explícito de Carlos
-      // ya aplicado una vez a esta función ("solo tiene sentido pedirle a Claude que decida cuando el
-      // voto está genuinamente empatado"). Se cae directo al tier 3 (categoría) en vez de al voto por
-      // mayoría de acá.
-    } else {
-      const sugeridoPorConcepto = construirSugerenciaDesdeCoincidencias(porConcepto, "concepto", MIN_EVIDENCIA_CONCEPTO);
-      if (sugeridoPorConcepto && !contradiceCategoria(sugeridoPorConcepto.accountId)) return sugeridoPorConcepto;
-    }
-  }
-
-  if (sugeridoPorCategoria) return sugeridoPorCategoria;
-
-  // Último recurso — pedido explícito de Carlos, tras varios casos reales (Uber México/Guadalajara,
-  // Ke Rico NichoT1, Greengrass, ADP GDL Aeromarket): "crea un agente que analice todas las
-  // categorías que tiene Holded y analice los gastos parecidos al que estás creando en el momento en
-  // que lo creas". Hasta acá, si tagsCategoria no reconoció ninguna categoría por palabra clave (ej.
-  // "Consumo ADP GDL Aeromarket" — ni "restaurante" ni ninguna otra palabra de PALABRAS_ALIMENTACION),
-  // no había NADA con qué cruzar el resultado de los tiers 1/2, y una compra sin ningún historial
-  // fiable de proveedor/concepto caía directo en la cuenta genérica de Holded sin que Claude llegara
-  // a intentar nada. Se le muestran las cuentas REALES más usadas (con ejemplos reales, nunca
-  // inventadas — mismo mecanismo ya probado en elegirCuentaConIA, ver arriba) junto con el concepto y
-  // proveedor de este gasto, y decide con sentido — o dice que ninguna encaja, en cuyo caso Holded
-  // sigue usando su cuenta por defecto igual que antes de esto existir.
-  return await elegirCuentaConIA(criterios, lineas);
+  exigirCuentaRevalidada([...cuentaIds][0] ?? undefined, evaluacion);
 }
 
 export interface GastoSinComprobante {
@@ -1902,6 +1437,9 @@ export async function contarFacturasRecientes(empresa: Empresa, dias: number): P
  * endpoint espera un archivo real, no JSON.
  */
 export async function adjuntarComprobanteHolded(empresa: Empresa, purchaseId: string, rutaLocal: string, nombreArchivo: string, mimeType: string | undefined): Promise<void> {
+  return protegerEscrituraHolded(empresa, () => adjuntarComprobanteHoldedSinGuardia(empresa, purchaseId, rutaLocal, nombreArchivo, mimeType));
+}
+async function adjuntarComprobanteHoldedSinGuardia(empresa: Empresa, purchaseId: string, rutaLocal: string, nombreArchivo: string, mimeType: string | undefined): Promise<void> {
   const apiKey = getWriteApiKey(empresa);
   const bytes = await readFile(rutaLocal);
 
@@ -2002,11 +1540,12 @@ export interface LineaGastoHolded {
 }
 
 export interface NuevoGastoHolded {
+  proveedor?: string;
   contactId: string;
   fecha: string; // YYYY-MM-DD
   descripcion: string;
   lineas: LineaGastoHolded[];
-  /** Cuenta contable real de Holded a asignar (ver inferirCuentaGasto) — si no se da, Holded usa su cuenta por defecto. */
+  /** Cuenta contable revisada en la propuesta; si falta o el historial no la respalda, la creación se bloquea. */
   cuentaId?: string;
   /** Tags del documento (ej. ["avion","transporte"]) — ver inferirCuentaGasto. */
   tags?: string[];
@@ -2040,6 +1579,12 @@ export interface NuevoGastoHolded {
    * placeholder "PROVEEDOR SIN IDENTIFICAR" cuando no hay proveedor real.
    */
   numeroDocumento?: string;
+  /**
+   * Id real de un proyecto de la MISMA empresa. Nunca se acepta un nombre
+   * aproximado: crearGastoHolded vuelve a comprobar contra el catálogo que
+   * la API key de esa empresa puede ver justo antes de escribir.
+   */
+  proyectoId?: string;
 }
 
 /**
@@ -2170,6 +1715,21 @@ async function calcularTasaCambioParaCreacion(moneda: string | undefined, fecha:
 }
 
 export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded): Promise<{ id: string }> {
+  // No reutilizar una cuenta de otra empresa o de una propuesta antigua sin revisar el historial.
+  const evaluacionCuenta = await evaluarCuentaGasto(empresa, {
+    proveedor: gasto.proveedor ?? "", contactId: gasto.contactId,
+    concepto: [gasto.descripcion, ...gasto.lineas.map((l) => l.concepto)].join(" "),
+  });
+  exigirCuentaRevalidada(gasto.cuentaId, evaluacionCuenta);
+  if (gasto.proyectoId) {
+    const proyecto = await resolveProjectExact(empresa, gasto.proyectoId, true);
+    if (!proyecto.exact || proyecto.exact.id !== gasto.proyectoId) {
+      throw new Error(
+        `No se puede asignar el gasto al proyecto ${gasto.proyectoId}: no está visible por API en Holded (${empresa}) o no pertenece a esa empresa.`
+      );
+    }
+  }
+
   const catalogo = await obtenerCatalogoImpuestos(empresa);
   const tasaCambio = await calcularTasaCambioParaCreacion(gasto.moneda, gasto.fecha);
 
@@ -2187,6 +1747,7 @@ export async function crearGastoHolded(empresa: Empresa, gasto: NuevoGastoHolded
       tax: 0,
       taxes,
       ...(gasto.cuentaId ? { account: gasto.cuentaId } : {}),
+      ...(gasto.proyectoId ? { project_id: gasto.proyectoId } : {}),
     };
   });
 
@@ -2381,6 +1942,8 @@ export interface CambiosCompraHolded {
    * comportamiento normal de esta función.
    */
   tasaCambioNueva?: number;
+  /** Id real del proyecto al que se asignarán TODAS las líneas de la compra. */
+  proyectoId?: string;
 }
 
 /**
@@ -2404,7 +1967,11 @@ export interface CambiosCompraHolded {
  * escalado proporcional de montoNuevo); si no, se usa el precio real tal
  * cual viene de Holded.
  */
-function lineaCrudaAItem(l: LineaCompraHoldedCruda, priceOverride?: number): Record<string, unknown> {
+function lineaCrudaAItem(
+  l: LineaCompraHoldedCruda,
+  priceOverride?: number,
+  projectIdOverride?: string
+): Record<string, unknown> {
   return {
     name: l.name ?? "(línea)",
     type: l.type ?? "product",
@@ -2417,13 +1984,22 @@ function lineaCrudaAItem(l: LineaCompraHoldedCruda, priceOverride?: number): Rec
     tags: l.tags ?? [],
     sku: l.sku ?? undefined,
     account: l.account ?? undefined,
-    project_id: l.project_id ?? undefined,
+    project_id: projectIdOverride ?? l.project_id ?? undefined,
     retention: numeroDesdeHolded(l.retention) || undefined,
     unit_type: l.unit_type ?? undefined,
   };
 }
 
 export async function editarCompraHolded(empresa: Empresa, purchaseId: string, cambios: CambiosCompraHolded): Promise<CompraHoldedCruda> {
+  if (cambios.proyectoId) {
+    const proyecto = await resolveProjectExact(empresa, cambios.proyectoId, true);
+    if (!proyecto.exact || proyecto.exact.id !== cambios.proyectoId) {
+      throw new Error(
+        `No se puede asignar la compra al proyecto ${cambios.proyectoId}: no está visible por API en Holded (${empresa}) o no pertenece a esa empresa.`
+      );
+    }
+  }
+
   const actual = await obtenerCompraHoldedPorId(empresa, purchaseId);
 
   const catalogo = cambios.lineas ? await obtenerCatalogoImpuestos(empresa) : undefined;
@@ -2444,6 +2020,7 @@ export async function editarCompraHolded(empresa: Empresa, purchaseId: string, c
           units: 1,
           price: linea.base,
           taxes: [taxKey, retencionKey].filter((k): k is string => Boolean(k)),
+          ...(cambios.proyectoId ? { project_id: cambios.proyectoId } : {}),
         };
       })
     : cambios.montoNuevo !== undefined
@@ -2452,12 +2029,23 @@ export async function editarCompraHolded(empresa: Empresa, purchaseId: string, c
           // escalar proporcionalmente (nunca reemplazar por el total completo
           // en cada línea) — de otro modo varias líneas reales quedarían
           // todas con el monto NUEVO completo en vez de repartirlo entre ellas.
-          lineasCrudasActuales.map((l) => lineaCrudaAItem(l, (numeroDesdeHolded(l.price) * cambios.montoNuevo!) / totalActual))
+          lineasCrudasActuales.map((l) =>
+            lineaCrudaAItem(l, (numeroDesdeHolded(l.price) * cambios.montoNuevo!) / totalActual, cambios.proyectoId)
+          )
         : // Sin línea previa con total real (0€ o sin líneas) — no hay proporción
           // que escalar, se reemplaza por una única línea limpia con el monto
           // nuevo, mismo criterio que el caso degenerado de aplicarTextoAjusteMonto.
-          [{ name: actual.description ?? "(línea)", type: "product", units: 1, price: cambios.montoNuevo, taxes: [] }]
-      : lineasCrudasActuales.map((l) => lineaCrudaAItem(l));
+          [
+            {
+              name: actual.description ?? "(línea)",
+              type: "product",
+              units: 1,
+              price: cambios.montoNuevo,
+              taxes: [],
+              ...(cambios.proyectoId ? { project_id: cambios.proyectoId } : {}),
+            },
+          ]
+      : lineasCrudasActuales.map((l) => lineaCrudaAItem(l, undefined, cambios.proyectoId));
 
   // Bug real de gravedad alta encontrado en vivo (2026-09-08, gasto de Google
   // Workspace en USD, Footprint — reporte explícito de Carlos): este PUT
@@ -2545,6 +2133,16 @@ export async function editarCompraHolded(empresa: Empresa, purchaseId: string, c
   }
   if ((releido.lines?.length ?? 0) === 0 && items.length > 0) {
     throw new EdicionNoVerificadaError("Holded aceptó la edición pero la compra quedó SIN líneas — revisar a mano en Holded antes de dar esto por corregido.", purchaseId);
+  }
+  if (
+    cambios.proyectoId &&
+    (releido.lines?.length ?? 0) > 0 &&
+    releido.lines!.some((linea) => linea.project_id !== cambios.proyectoId)
+  ) {
+    throw new EdicionNoVerificadaError(
+      `Holded aceptó la edición pero no todas las líneas quedaron asignadas al proyecto ${cambios.proyectoId} — revisar a mano antes de darla por completada.`,
+      purchaseId
+    );
   }
   // Red de seguridad para el bug de moneda de arriba: si a pesar de mandarla
   // explícita la moneda quedó distinta de la que tenía el documento, el
@@ -3021,6 +2619,16 @@ export async function estaMovimientoYaConciliado(
  * reportar éxito sin más.
  */
 export async function reconciliarMovimiento(
+  empresa: Empresa, accountId: string, movementId: string, fechaAproximada: string, documentoId: string
+): Promise<{ ok: boolean; statusFinal: string; montoEnlazado: number; pendienteEnCompra?: number }> {
+  return conMutex(mutexConciliacion(empresa), async () => {
+    await comprobarReservaConciliacionMultiple(empresa, documentoId, accountId, movementId);
+    await verificarCuentaAntesDeConciliar(empresa, documentoId);
+    return reconciliarMovimientoSinReserva(empresa, accountId, movementId, fechaAproximada, documentoId);
+  });
+}
+
+async function reconciliarMovimientoSinReserva(
   empresa: Empresa,
   accountId: string,
   movementId: string,

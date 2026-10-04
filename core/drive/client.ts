@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import { google, drive_v3 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
+import { esDocumentoLegible } from "../documental/readableFormats";
 
 /** Escapa un valor para usarlo dentro de una consulta de Drive (name = '...' / name contains '...') — compartido por todas las búsquedas de este archivo, antes 4 copias independientes de la misma línea. */
 function escaparParaConsultaDrive(nombre: string): string {
@@ -231,8 +232,6 @@ export interface ArchivoDriveDescargado {
   name: string;
 }
 
-const MIMES_LEGIBLES_DRIVE = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/gif"];
-
 /**
  * Descarga el contenido real (bytes) de un archivo de Drive por su id —
  * scope drive.readonly ya alcanza para esto (no hace falta escritura).
@@ -240,8 +239,8 @@ const MIMES_LEGIBLES_DRIVE = ["application/pdf", "image/jpeg", "image/png", "ima
  * en Drive ("guía rápida de control de accesos") no se podía CONSULTAR
  * directamente — solo se sabía que existía (buscar_documento_drive), sin
  * poder leer su contenido para responder con la información real. Solo
- * soporta los mismos tipos que Claude vision puede leer (PDF/imagen, ver
- * MIMES_LEGIBLES_DRIVE) — un Google Doc/Sheet nativo necesitaría exportarse
+ * soporta PDF e imágenes, incluyendo HEIC/HEIF convertidos antes de la lectura.
+ * Un Google Doc/Sheet nativo necesitaría exportarse
  * primero, no soportado todavía (nunca se ha dado un caso real).
  */
 export async function descargarArchivoDrive(fileId: string): Promise<ArchivoDriveDescargado> {
@@ -255,7 +254,7 @@ export async function descargarArchivoDrive(fileId: string): Promise<ArchivoDriv
   const mimeType = meta.data.mimeType ?? "";
   const name = meta.data.name ?? "(sin nombre)";
 
-  if (!MIMES_LEGIBLES_DRIVE.includes(mimeType)) {
+  if (!esDocumentoLegible(mimeType, name)) {
     throw new Error(
       `El archivo "${name}" es de tipo ${mimeType || "desconocido"} — solo se puede leer el contenido de PDF o imágenes por ahora.`
     );
