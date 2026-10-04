@@ -42,6 +42,7 @@ import { conciliarMovimientoTool } from "./conciliarMovimiento";
 import { programarAccionFuturaTool } from "./programarAccion";
 import { proponerEdicionCompraHoldedTool } from "./editarCompraHolded";
 import { cambiarCuentaContableCompraTool } from "./cambiarCuentaContableCompra";
+import { cambiarProveedorCompraTool } from "./cambiarProveedorCompra";
 import { estadoAutomatizacionHoldedTool } from "./estadoAutomatizacionHolded";
 import { conciliarMultiplesMovimientosTool, consultarConciliacionMultipleTool, reanudarConciliacionMultipleTool } from "./conciliarMultiplesMovimientos";
 import { editarValorCashflowTool } from "./editarValorCashflow";
@@ -113,6 +114,7 @@ const tools: ToolDefinition[] = [
   programarAccionFuturaTool,
   proponerEdicionCompraHoldedTool,
   cambiarCuentaContableCompraTool,
+  cambiarProveedorCompraTool,
   estadoAutomatizacionHoldedTool,
   conciliarMultiplesMovimientosTool,
   consultarConciliacionMultipleTool,
