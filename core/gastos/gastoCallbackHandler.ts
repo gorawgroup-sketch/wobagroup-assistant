@@ -1264,11 +1264,7 @@ async function preguntarSiConciliar(
           : `⏳ La conciliación de "${descripcionGasto}" se aplicó pero Holded no la confirmó todavía. No se buscarán otros cargos ni se repetirá nada; verificar solo relee compra y banco.`)
       : `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?${avisoConsulta}`;
     const botones = ofertaParcial
-      ? [[
-          { text: `🔗 Conciliar esta parte (${ofertaParcial.monto.toFixed(2)} ${moneda}; quedan ${(monto - ofertaParcial.monto).toFixed(2)} abiertos)`, callback_data: `gasto_conciliar_si:${pendiente.id}:p${ofertaParcial.movementId}` },
-        ], [
-          { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
-        ]]
+      ? botonesOfertaParcial(pendiente.id, ofertaParcial, { monto, moneda })
       : soloVerificar
       ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${pendiente.id}:lectura` }]]
       : [[
@@ -1290,6 +1286,14 @@ async function preguntarSiConciliar(
   }
 }
 
+/** Botones de la oferta «Conciliar esta parte»: el mismo `gasto_conciliar_si` de siempre con el modificador `:p<movementId>`, más «No, dejar así». */
+function botonesOfertaParcial(pendienteId: string, cargo: { movementId: string; monto: number }, gasto: { monto: number; moneda: string }) {
+  return [
+    [{ text: `🔗 Conciliar esta parte (${cargo.monto.toFixed(2)} ${gasto.moneda}; quedan ${(gasto.monto - cargo.monto).toFixed(2)} abiertos)`, callback_data: `gasto_conciliar_si:${pendienteId}:p${cargo.movementId}` }],
+    [{ text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendienteId}` }],
+  ];
+}
+
 async function reponerPreguntaConciliacion(
   pendiente: ConciliacionPendiente,
   mensajeId: number | undefined,
@@ -1297,7 +1301,16 @@ async function reponerPreguntaConciliacion(
   soloLectura = false
 ): Promise<void> {
   const restaurada = await restaurarConciliacionPendiente(pendiente);
-  const botones = soloLectura ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${restaurada.id}:lectura` }]] : [[
+  // Una pregunta que se vuelve a mostrar (p. ej. tras un «sí, conciliar» sin cargo exacto) también ofrece la PARTE del recibo si el banco
+  // tiene un único cargo del proveedor menor que el gasto; así las preguntas que ya estaban en el chat se curan solas.
+  const datosGasto = { empresa: restaurada.empresa, proveedor: restaurada.proveedor ?? "", monto: restaurada.monto, moneda: restaurada.moneda ?? "EUR", fecha: restaurada.fecha };
+  const consulta: ConsultaCargoParcial = soloLectura ? { tipo: "ninguno" } : await consultarCargoParcial(datosGasto);
+  const oferta = consulta.tipo === "oferta" ? consulta.cargo : undefined;
+  if (oferta) aviso = `${aviso}\n\n${textoOfertaParcial(oferta, datosGasto, restaurada.descripcionGasto)}`;
+  else if (consulta.tipo === "consulta_fallida") aviso = `${aviso}\n\n⚠️ No pude consultar ahora el banco para ver si hay una parte de este recibo ya cobrada.`;
+  const botones = soloLectura ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${restaurada.id}:lectura` }]] : oferta
+    ? botonesOfertaParcial(restaurada.id, oferta, datosGasto)
+    : [[
     { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${restaurada.id}` },
     { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${restaurada.id}` },
   ]];
