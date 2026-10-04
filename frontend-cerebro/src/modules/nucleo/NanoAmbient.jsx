@@ -58,7 +58,7 @@ export default function NanoAmbient() {
           const points = [[sourceX,sourceY],[sourceX,sourceSeam],[gutterX,sourceSeam],[gutterX,ty],[tx,ty]];
           const lengths = points.slice(1).map((p,i)=>Math.hypot(p[0]-points[i][0],p[1]-points[i][1]));
           const total = lengths.reduce((a,b)=>a+b,0)||1;
-          const count = focused ? 240 : 100;
+          const count = focused ? 360 : 180;
           for (let i=0;i<count;i++) {
             const n = (Math.sin(i*127.1+index)*43758.5453)%1;
             const seed = Math.abs(n);
@@ -71,10 +71,10 @@ export default function NanoAmbient() {
             const curl = Math.sin(p*24-t*2+seed*4)*(2+seed*3)*(focused ? 1 : .55);
             const x = a[0]+dx*u-dy/len*curl;
             const y = a[1]+dy*u+dx/len*curl;
-            const parcel = .22+.78*Math.sin(p*10-t*.4+index)**6;
-            ctx.globalAlpha = (focused ? .8 : .42)*parcel*(.4+seed*.6);
+            const parcel = .4+.6*Math.sin(p*10-t*.4+index)**4;
+            ctx.globalAlpha = (focused ? 1 : .8)*parcel*(.55+seed*.45);
             ctx.fillStyle = i%13===0 ? '#edbb72' : '#65d6f2';
-            const size = .7+seed*.65;
+            const size = .9+seed*.8;
             ctx.fillRect(x,y,size,size);
           }
           if (focused) wisp(tx,ty,95+burst*70,14+burst*9,1,.75,150);
