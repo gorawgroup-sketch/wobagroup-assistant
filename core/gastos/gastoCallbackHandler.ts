@@ -3,7 +3,7 @@ import { posponerCorreoActivoYContinuar } from "../gmail/posponerCorreoActivo";
 import { obtenerConciliacionesPendientesPorChat } from "./conciliacionPendienteStore";
 import { obtenerConciliacionesAmbiguasPendientesPorChat } from "./conciliacionAmbiguaPendienteStore";
 import { recuperarConciliacionExistenteCompra } from "../holded/write";
-import { consultarCargoParcial, conciliarParcialDeRecibo, textoOfertaParcial, type ConsultaCargoParcial } from "./conciliacionParcialRecibo";
+import { botonesOfertaParcial, consultarCargoParcial, conciliarParcialDeRecibo, textoOfertaParcial, type ConsultaCargoParcial } from "./conciliacionParcialRecibo";
 import { candidatoUtilizableParaGasto } from "../holded/write";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
@@ -1284,14 +1284,6 @@ async function preguntarSiConciliar(
     if (pendiente) await consumirConciliacionPendiente(pendiente.id).catch(() => undefined);
     return false;
   }
-}
-
-/** Botones de la oferta «Conciliar esta parte»: el mismo `gasto_conciliar_si` de siempre con el modificador `:p<movementId>`, más «No, dejar así». */
-function botonesOfertaParcial(pendienteId: string, cargo: { movementId: string; monto: number }, gasto: { monto: number; moneda: string }) {
-  return [
-    [{ text: `🔗 Conciliar esta parte (${cargo.monto.toFixed(2)} ${gasto.moneda}; quedan ${(gasto.monto - cargo.monto).toFixed(2)} abiertos)`, callback_data: `gasto_conciliar_si:${pendienteId}:p${cargo.movementId}` }],
-    [{ text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendienteId}` }],
-  ];
 }
 
 async function reponerPreguntaConciliacion(
