@@ -89,7 +89,7 @@ export function validarCompra(c: CompraExacta): void {
   // compra, la cuenta y todos los movimientos deben estar en esa misma moneda (se comprueba más abajo y en el adaptador).
   const permitidas = (process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS ?? "EUR").split(",").map((m) => m.trim().toUpperCase()).filter(Boolean);
   if (!permitidas.includes(c.moneda)) throw new Error(`La conciliación múltiple no está habilitada para ${c.moneda}; hoy solo: ${permitidas.join(", ")}. Otras monedas requieren validar antes la liquidación de Holded.`);
-  if (c.borrador || !["pending", "partial", "completed"].includes(c.estado)) throw new Error("Compra no contabilizada, cancelada o con estado desconocido.");
+  if (!["pending", "partial", "completed"].includes(c.estado)) throw new Error("Compra cancelada o con estado desconocido.");
   if (!Array.isArray(c.cuentasContables) || c.cuentasContables.length !== 1 || !c.cuentasContables[0]) throw new Error("Cuenta contable no identificada o múltiple; requiere revisión.");
   if (!c.id || !c.proveedorId) throw new Error("La compra no tiene identidad y proveedor verificables.");
   for (const n of [c.totalCentimos, c.pagadoCentimos, c.pendienteCentimos]) {

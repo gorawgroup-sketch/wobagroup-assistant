@@ -90,7 +90,6 @@ for (const [caso, alterar] of Object.entries<(f: ReturnType<typeof fixture>) => 
   parcial: (f) => { f.movimientos[0].estado = "partial"; },
   importeConciliado: (f) => { f.movimientos[0].conciliadoCentimos = -1; },
   estadoDesconocido: (f) => { f.movimientos[0].estado = ""; },
-  borrador: (f) => { f.compra.borrador = true; },
   anulada: (f) => { f.compra.estado = "cancelled"; },
   saldosInconsistentes: (f) => { f.compra.pagadoCentimos = 1; },
   proveedorAusente: (f) => { f.compra.proveedorId = ""; },
@@ -223,14 +222,16 @@ test("relectura final detecta un movimiento anterior desconciliado durante el lo
   };
   assert.equal((await f.servicio.decidir(p.id, 123, 9, true)).estado, "incierto");
 });
-test("adaptador admite importes ES y decimales, rechaza borradores y detalle ausente", async () => {
+test("adaptador admite importes ES y decimales, acepta borradores (nacen así), rechaza estado de borrador ilegible y detalle ausente", async () => {
   process.env.HOLDED_API_KEY_EWORKS = "test-read";
   const raw: Record<string, unknown> = { id: "gora-compra", contact_id: "gora", contact_name: "Gora", document_number: "991", date: "2026-09-16",
     lines: [{ account: "servicios" }], currency: "EUR", total: "3.200,00", payments_total: "0.00", payments_pending: "3200.00", payments_detail: [], draft: false, status: "pending" };
   const adapter = new HoldedConciliacionAdapter(async () => Response.json(raw));
   assert.equal((await adapter.compra("EWORKS", "gora-compra")).totalCentimos, 320000);
   raw.draft = true;
-  await assert.rejects(() => adapter.compra("EWORKS", "gora-compra"), /contabilizada/);
+  assert.equal((await adapter.compra("EWORKS", "gora-compra")).borrador, true);
+  delete raw.draft;
+  await assert.rejects(() => adapter.compra("EWORKS", "gora-compra"), /borrador/);
   raw.draft = false; delete raw.payments_detail;
   await assert.rejects(() => adapter.compra("EWORKS", "gora-compra"), /detalle/);
 });
@@ -272,4 +273,9 @@ test("USD: por defecto NO está habilitado (solo EUR); con la variable explícit
     assert.throws(() => validarSeleccion(compraUber, [movUber(691, "a"), movUber(205, "b")]), /debe coincidir exactamente/); // un céntimo de más: no
     assert.throws(() => validarSeleccion(compraUber, [movUber(691, "a"), movUber(204, "b", "EUR")]), /monedas no coinciden/i); // sin conversión
   } finally { if (prev === undefined) delete process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS; else process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS = prev; }
+});
+
+test("una compra en borrador (así la crea WOBI) se puede preparar para conciliación múltiple", async () => {
+  const f = fixture(); f.compra.borrador = true;
+  assert.ok((await f.servicio.preparar(f.datos)).id);
 });
