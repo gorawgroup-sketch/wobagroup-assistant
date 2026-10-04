@@ -209,7 +209,19 @@ export function crearOrquestadorEstado(opciones: OpcionesOrquestador) {
     diagnostico() {
       const edad = (ms: number) => (Number.isFinite(ms) ? Math.round(ms / 1000) : null);
       return {
-        secciones: Object.fromEntries([...secciones].map(([nombre, s]) => [nombre, { edadSegundos: edad(s.antiguedadMs), refrescando: s.refrescando }])),
+        secciones: Object.fromEntries([...secciones].map(([nombre, s]) => {
+          const fallidas = (s.datosActuales?.fuentes ?? []).filter((f) => !f.ok);
+          return [nombre, {
+            edadSegundos: edad(s.antiguedadMs),
+            refrescando: s.refrescando,
+            fuentesFallidas: fallidas.length,
+            causas: fallidas.reduce<Record<string, number>>((acc, f) => {
+              const causa = f.causa ?? "desconocida";
+              acc[causa] = (acc[causa] ?? 0) + 1;
+              return acc;
+            }, {}),
+          }];
+        })),
         conteosPesados: { edadSegundos: edad(opciones.conteos.edadMs()), refrescando: opciones.conteos.leer().refrescando },
       };
     },

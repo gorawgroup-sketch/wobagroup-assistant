@@ -27,29 +27,37 @@ export type PrioridadSheets = "interactiva" | "fondo";
 type Tipo = "lectura" | "escritura";
 
 const contextoPrioridad = new AsyncLocalStorage<PrioridadSheets>();
+const contextoCancelacion = new AsyncLocalStorage<AbortSignal>();
 
 /** Marca todo lo que se ejecute dentro como trabajo de fondo (o interactivo) frente a la cuota. */
 export function conPrioridadSheets<T>(prioridad: PrioridadSheets, tarea: () => Promise<T>): Promise<T> {
   return contextoPrioridad.run(prioridad, tarea);
 }
 
+/** Cancela lecturas Sheets que todavía esperan turno cuando su consumidor ya expiró. */
+export function conCancelacionSheets<T>(senal: AbortSignal, tarea: () => Promise<T>): Promise<T> {
+  return contextoCancelacion.run(senal, tarea);
+}
+
 interface Dependencias {
   ahora: () => number;
-  programar: (fn: () => void, ms: number) => void;
+  programar: (fn: () => void, ms: number) => ReturnType<typeof setTimeout> | void;
 }
 const REALES: Dependencias = {
   ahora: Date.now,
   // Sin unref a propósito: el despertador solo existe mientras hay peticiones esperando turno, y una
   // petición en espera es trabajo real. Con unref, un script o tarea cuyo único trabajo pendiente eran
   // lecturas en cola terminaba en silencio sin hacerlas (detectado en la verificación en vivo).
-  programar: (fn, ms) => { setTimeout(fn, ms); },
+  programar: (fn, ms) => setTimeout(fn, ms),
 };
 
 export class LimitadorVentana {
   private readonly enviados: number[] = [];
-  private readonly cola: Array<{ prioridad: PrioridadSheets; continuar: () => void }> = [];
+  private readonly cola: Array<{ prioridad: PrioridadSheets; continuar: () => void; cancelar: () => void }> = [];
   private despertadorPendiente = false;
+  private despertador?: ReturnType<typeof setTimeout>;
   private esperas = 0;
+  private cancelaciones = 0;
 
   constructor(
     private readonly maximo: number,
@@ -60,17 +68,37 @@ export class LimitadorVentana {
 
   get estado() {
     this.purgar();
-    return { enVentana: this.enviados.length, enCola: this.cola.length, esperas: this.esperas, maximo: this.maximo };
+    return { enVentana: this.enviados.length, enCola: this.cola.length, esperas: this.esperas, cancelaciones: this.cancelaciones, maximo: this.maximo };
   }
 
-  adquirir(prioridad: PrioridadSheets): Promise<void> {
+  adquirir(prioridad: PrioridadSheets, senal?: AbortSignal): Promise<void> {
+    if (senal?.aborted) return Promise.reject(senal.reason);
     if (this.cola.length === 0 && this.hayHueco(prioridad)) {
       this.enviados.push(this.deps.ahora());
       return Promise.resolve();
     }
     this.esperas++;
-    return new Promise<void>((resolve) => {
-      this.cola.push({ prioridad, continuar: resolve });
+    return new Promise<void>((resolve, reject) => {
+      const entrada = {
+        prioridad,
+        continuar: () => { senal?.removeEventListener("abort", entrada.cancelar); resolve(); },
+        cancelar: () => {
+          const indice = this.cola.indexOf(entrada);
+          if (indice >= 0) {
+            this.cola.splice(indice, 1);
+            this.cancelaciones++;
+            if (this.cola.length === 0 && this.despertador) {
+              clearTimeout(this.despertador);
+              this.despertador = undefined;
+              this.despertadorPendiente = false;
+            }
+          }
+          reject(senal?.reason);
+        },
+      };
+      senal?.addEventListener("abort", entrada.cancelar, { once: true });
+      if (senal?.aborted) { entrada.cancelar(); return; }
+      this.cola.push(entrada);
       this.despachar();
     });
   }
@@ -101,7 +129,11 @@ export class LimitadorVentana {
       this.despertadorPendiente = true;
       const masAntiguo = this.enviados[0] ?? this.deps.ahora();
       const espera = Math.max(50, masAntiguo + this.ventanaMs - this.deps.ahora() + 5);
-      this.deps.programar(() => { this.despertadorPendiente = false; this.despachar(); }, espera);
+      this.despertador = this.deps.programar(() => {
+        this.despertador = undefined;
+        this.despertadorPendiente = false;
+        this.despachar();
+      }, espera) || undefined;
     }
   }
 }
@@ -161,12 +193,15 @@ export function crearAdaptadorSheetsConCuota(opciones: OpcionesAdaptador = {}) {
     const tipo: Tipo = (peticion.method ?? "GET").toUpperCase() === "GET" ? "lectura" : "escritura";
     const limitador = (opciones.limitadores ?? obtenerLimitadores())[tipo];
     const prioridad = contextoPrioridad.getStore() ?? "interactiva";
+    // Las escrituras pueden tener resultado incierto: no se abortan desde un lector del panel.
+    const cancelacion = tipo === "lectura" ? contextoCancelacion.getStore() : undefined;
 
     for (let intento = 0; ; intento++) {
-      await limitador.adquirir(prioridad);
+      await limitador.adquirir(prioridad, cancelacion);
       // El timeout empieza cuando la petición sale de verdad, no mientras esperaba su turno: el
       // reloj que trae `signal` arrancó antes de entrar en la cola.
-      const enviada = peticion.timeout ? { ...peticion, signal: AbortSignal.timeout(peticion.timeout) } : peticion;
+      const senales = [cancelacion, peticion.timeout ? AbortSignal.timeout(peticion.timeout) : peticion.signal].filter((s): s is AbortSignal => Boolean(s));
+      const enviada = senales.length > 0 ? { ...peticion, signal: senales.length === 1 ? senales[0] : AbortSignal.any(senales) } : peticion;
       const respuesta = await porDefecto(enviada);
       if (respuesta.status !== 429 || tipo !== "lectura" || intento >= 2) return respuesta;
       console.warn(`[sheets/cuota] Google respondió 429 a una lectura pese al limitador (intento ${intento + 1}); reintento en ${pausa / 1000} s.`);
