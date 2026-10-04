@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { evaluarReglaTicket, TOPE_EUR_AUTOMATICO } from "./reglaTicket";
-import { escanearReglaTicket, reiniciarVistosParaPruebas } from "./escaneoTickets";
+import { escanearReglaTicket, reiniciarVistosParaPruebas, tasaDeCambio } from "./escaneoTickets";
 import { procesarColaTickets, claveTicket } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
 
@@ -106,4 +106,25 @@ test("botones: un gasto dudoso se registra UNA vez a la espera de Carlos; «Conv
 test("botones: las decisiones del chat son acciones sensibles (solo superadministrador)", async () => {
   const { esAccionSensible } = await import("../../telegram/authorizedUsersSheet");
   for (const d of ["tktregla_ok:WOBA:6abf7e24b0a79d7d54045e45", "tktregla_no:Footprint:6abf7e24b0a79d7d54045e45", "tktdis_reanudar"]) assert.equal(esAccionSensible(d), true, d);
+});
+
+test("tasa de cambio: «1.12» es 1,12 (decimal plano de Holded), no 112; con coma es formato ES", () => {
+  assert.equal(tasaDeCambio("1.12"), 1.12);
+  assert.equal(tasaDeCambio("3718.16"), 3718.16);
+  assert.equal(tasaDeCambio("4000"), 4000);
+  assert.equal(tasaDeCambio("1,1378"), 1.1378);
+  assert.ok(Number.isNaN(tasaDeCambio(undefined)));
+  assert.ok(Number.isNaN(tasaDeCambio("abc")));
+});
+
+test("tope de 500 €: un gasto en USD con tasa «1.12» se convierte bien al euro (antes dividía por 112 y el tope nunca saltaba)", async () => {
+  reiniciarVistosParaPruebas();
+  const almacen = new AlmacenTrabajosMemoria();
+  const usd = (id: string, total: string) => compra(id, { currency: "USD", currency_change: "1.12", total });
+  const compras = [usd("pequeno", "16,57"), usd("grande", "600,00"), usd("justo", "560,00"), usd("sobre", "561,00")];
+  const contactos = { "k-pequeno": { code: "" }, "k-grande": { code: "" }, "k-justo": { code: "" }, "k-sobre": { code: "" } };
+  const r = await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, contactos), simulada: true });
+  // 560 USD ÷ 1,12 = 500,00 € (en el tope, entra); 561 USD = 500,89 € y 600 USD = 535,71 € quedan fuera.
+  assert.deepEqual(r.candidatos.map((c) => c.id).sort(), ["justo", "pequeno"]);
+  assert.equal(r.excluidas, 2);
 });

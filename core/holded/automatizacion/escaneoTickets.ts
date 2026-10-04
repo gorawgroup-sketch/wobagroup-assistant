@@ -15,6 +15,13 @@ export interface ResultadoEscaneo { revisadas: number; candidatos: CandidatoRegl
 type Leer = (empresa: Empresa, ruta: string, params?: Record<string, string | undefined>) => Promise<unknown>;
 type Raw = Record<string, unknown>;
 const num = (v: unknown): number => { const n = Number(String(v ?? "").replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : NaN; };
+/** Tipo de cambio (`currency_change`): Holded lo da en decimal plano («1.12», «3718.16»); si trae coma es formato ES. NO quitar el punto: «1.12» no es 112. */
+export const tasaDeCambio = (v: unknown): number => {
+  const t = String(v ?? "").trim();
+  if (t === "") return NaN;
+  const n = t.includes(",") ? Number(t.replace(/\./g, "").replace(",", ".")) : Number(t);
+  return Number.isFinite(n) ? n : NaN;
+};
 
 /** Ids ya decididos en este proceso: evita volver a leer en cada ciclo lo que no es candidato. */
 const vistos = new Map<string, "candidato" | "no_wobi" | "revisar" | "excluida">();
@@ -52,7 +59,7 @@ export async function escanearReglaTicket(
       const contacto = cid ? contactos.get(cid) ?? null : null;
       const nif = (String(contacto?.vat_number ?? contacto?.code ?? "")).trim();
       const moneda = String(d.currency ?? "EUR");
-      const total = num(d.total), tasa = num(d.currency_change);
+      const total = num(d.total), tasa = tasaDeCambio(d.currency_change);
       const totalEUR = moneda.toUpperCase() === "EUR" ? (Number.isFinite(total) ? total : null) : (Number.isFinite(total) && Number.isFinite(tasa) && tasa > 0 ? total / tasa : null);
       const r = evaluarReglaTicket({
         moneda, totalEUR, tieneNif: nif !== "", pais: String((contacto?.bill_address as Raw | undefined)?.country_code ?? ""),
