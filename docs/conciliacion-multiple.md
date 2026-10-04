@@ -57,3 +57,13 @@ Antes de activar el flujo en producción: compilación completa limpia, único e
 - [Conciliar un movimiento](https://www.holded.com/developers/api-reference/banking-accounts/reconcile-a-bank-movement): POST con `documents: [{ document_id, document_type: "purchase" }]`; no se envía un cuerpo vacío ni un importe no documentado.
 - [Detalle de compra](https://www.holded.com/developers/api-reference/purchases/get-a-purchase): saldo y `payments_detail` usados para verificar el pago en el documento correcto.
 - [Movimientos bancarios](https://www.holded.com/developers/api-reference/banking-accounts/list-banking-account-movements): paginación por cursor y estado/importe conciliado. Los filtros de fecha usan fecha valor, por eso la búsqueda por ID no presupone que coincida con `booking_date`.
+
+## Compras en divisa (USD, etc.) y reanudar un lote detenido
+
+Caso real (Uber 8,95 USD, Footprint, 2026-10-04): dos cargos USD de 6,91 + 2,04. Holded no paga la compra en USD: cada movimiento de una cuenta en divisa lleva su equivalente en EUR (`accounting_amount`: 6,07 y 1,79) y el pago se crea por ese importe a la tasa del documento. Como cada pago se redondea por separado, la suma (7,86 €) puede quedar un céntimo por debajo del total del gasto (7,87 €) y los saldos nativos que expone la API dejan de sumar al céntimo (6,91 + 2,05 ≠ 8,95). Por eso, en divisa:
+
+- Cada pago se verifica contra el **equivalente en EUR del movimiento** (no contra su importe nativo), y el saldo nativo se acepta dentro del margen de redondeo estándar (`margenResiduoConversion`).
+- Al terminar el lote, el residuo se cierra **una sola vez** con el mismo ajuste de cambio de divisa que ya cierra los gastos de un solo movimiento (pago contra la cuenta «Main» EUR, registro durable e idempotente, proveedor excluido si se corrigió a mano). Si no se puede cerrar, el plan queda **incierto** y se dice; nunca «completado» con saldo pendiente.
+- EUR no cambia: sigue exigiendo igualdad exacta al céntimo.
+
+**Reanudar** (`reanudar_conciliacion_multiple`): si un lote se detiene a mitad (plan incierto/ejecutando), la herramienta relee Holded, demuestra qué movimientos ya están conciliados con su pago exacto (cuenta, fecha e importe) y propone solo los que faltan, con el mismo botón del superadministrador. No repite ningún pago; si hay un pago que el plan no explica, aborta y pide revisión manual.

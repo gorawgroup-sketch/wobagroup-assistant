@@ -6108,6 +6108,63 @@ async function aplicarOReportarAjusteCambio(
 }
 
 /**
+ * Cierre del residuo de redondeo al FINAL de una conciliación múltiple (core/holded/conciliacionMultiple/) de una compra
+ * en divisa. Caso real (Uber 8,95 USD, Footprint, 2026-10-04): dos cargos USD de 6,91 + 2,04 se pagan en EUR a la tasa del
+ * documento (6,07 + 1,79 = 7,86 €) y el total del gasto vale 7,87 €: Holded deja 0,01 € de residuo, el mismo que el flujo
+ * de un solo movimiento ya cierra con el ajuste de cambio de divisa (pedido de Carlos, 2026-09-16). Misma maquinaria, mismas
+ * pruebas de seguridad (margenResiduoConversion, exclusión aprendida del proveedor, registro durable e idempotente), pero
+ * con la prueba de «un solo movimiento» sustituida por la que ya hizo el servicio del lote: cada pago verificado uno a uno.
+ * Falla cerrado: si algo no encaja devuelve requiere_revision y no escribe nada.
+ */
+export async function cerrarResiduoCambioConciliacionMultiple(
+  empresa: Empresa,
+  compraId: string,
+  ancla: { accountId: string; movementId: string; fecha: string }
+): Promise<{ estado: "sin_residuo" | "aplicado" | "ya_aplicado" | "requiere_revision" | "incierto"; montoCentimos: number; motivo: string }> {
+  const revision = (motivo: string, montoCentimos = 0) => ({ estado: "requiere_revision" as const, montoCentimos, motivo });
+  const compra = await obtenerCompraHoldedPorId(empresa, compraId);
+  const moneda = (compra.currency || "EUR").toUpperCase().trim();
+  if (moneda === "EUR") return { estado: "sin_residuo", montoCentimos: 0, motivo: "La compra está en EUR; no hay conversión que ajustar." };
+  const pendiente = parsearMontoHolded(compra.payments_pending);
+  if (!Number.isFinite(pendiente)) return revision("Holded no informó el saldo pendiente de la compra.");
+  const pendienteCentimos = Math.round(pendiente * 100);
+  if (pendienteCentimos === 0) return { estado: "sin_residuo", montoCentimos: 0, motivo: "La compra no tiene saldo pendiente." };
+  if (pendienteCentimos < 0) return revision("La compra quedó con saldo pendiente negativo (sobrepago); requiere revisión manual.", pendienteCentimos);
+  const totalNativo = Math.abs(numeroDesdeHolded(compra.total));
+  const pagadoNativo = Math.abs(numeroDesdeHolded(compra.payments_total));
+  const tasaCambio = numeroDecimalPlano(compra.currency_change);
+  const margenCentimos = Math.round(margenResiduoConversion(totalNativo) * 100);
+  if (![totalNativo, pagadoNativo, tasaCambio].every((n) => Number.isFinite(n) && n >= 0) || tasaCambio <= 0) {
+    return revision("Faltan el total, el pagado o el tipo de cambio de la compra para demostrar el residuo.", pendienteCentimos);
+  }
+  if (pendienteCentimos > margenCentimos) {
+    return revision(`El saldo pendiente (${pendiente.toFixed(2)} ${moneda}) supera el margen de redondeo (${(margenCentimos / 100).toFixed(2)}); no es un residuo de conversión.`, pendienteCentimos);
+  }
+  if (Math.abs(Math.round(pagadoNativo * 100) + pendienteCentimos - Math.round(totalNativo * 100)) > margenCentimos) {
+    return revision("Pagado + pendiente no recompone el total de la compra dentro del margen de redondeo.", pendienteCentimos);
+  }
+  const montoCentimos = Math.round((pendiente / tasaCambio) * 100);
+  if (montoCentimos <= 0 || montoCentimos > margenCentimos) {
+    return revision("El residuo convertido a EUR queda fuera del margen de redondeo.", pendienteCentimos);
+  }
+  const pagosEur = (compra.payments_detail ?? []).reduce((suma, p) => suma + Math.abs(parsearMontoHolded(p.amount) || 0), 0);
+  const elegible: AjusteCambioResidualElegible = {
+    monto: montoCentimos / 100,
+    monedaDocumento: moneda,
+    montoNativo: totalNativo,
+    montoContableMovimiento: pagosEur,
+    montoContableDocumento: Math.round((totalNativo / tasaCambio) * 100) / 100,
+    tasaCambio,
+  };
+  const registro = {
+    empresa, documentId: compraId, movementId: ancla.movementId, accountId: ancla.accountId, fechaAproximada: ancla.fecha,
+  } as RegistroConciliacionMovimiento;
+  const r = await aplicarOReportarAjusteCambio(registro, compra, elegible);
+  const estado = r?.estado ?? "requiere_revision";
+  return { estado: estado as "aplicado" | "ya_aplicado" | "requiere_revision" | "incierto", montoCentimos, motivo: r?.motivo ?? "Sin resultado del ajuste." };
+}
+
+/**
  * Hallazgo real de auditoría (caso Salesmate/RapidOps, Footprint, 2026-09-08): el MOVIMIENTO bancario
  * (en USD, -554.84) quedó reconciled_amount="-554.84" — coincide exacto con el total de la compra, y
  * es justo lo que este chequeo ya verificaba (montoEnlazado > 0, y de hecho el valor completo). Pero

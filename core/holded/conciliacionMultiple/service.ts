@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { conMutex } from "../../utils/asyncMutex";
 import type { Empresa } from "../client";
 import {
-  claveMovimiento, mutexConciliacion, reservaActiva, TTL_PLAN, validarCompra, validarReferencia, validarSeleccion,
+  claveMovimiento, esDivisaExtranjera, importe, margenResiduoCentimos, mutexConciliacion, reservaActiva, TTL_PLAN, validarCompra, validarReferencia, validarSeleccion,
   type CompraExacta, type MovimientoExacto, type PlanConciliacion, type PuertoHolded, type ReferenciaMovimiento, type StorePlanes,
 } from "./model";
 
@@ -21,7 +21,7 @@ function comprobarCompra(esperada: CompraExacta, actual: CompraExacta): void {
   }
 }
 function comprobarMovimiento(esperado: MovimientoExacto, actual: MovimientoExacto, conciliado = false): void {
-  const identidad = (m: MovimientoExacto) => JSON.stringify([m.accountId, m.movementId, m.fecha, m.centimos, m.moneda, m.descripcion, m.cuenta]);
+  const identidad = (m: MovimientoExacto) => JSON.stringify([m.accountId, m.movementId, m.fecha, m.centimos, m.moneda, m.descripcion, m.cuenta, m.contableCentimos ?? null]);
   if (identidad(esperado) !== identidad(actual)) throw new Error("Cambió un movimiento seleccionado.");
   if (conciliado) {
     if (!["reconciled", "forced_reconciled"].includes(actual.estado) || actual.conciliadoCentimos !== esperado.centimos) {
@@ -62,7 +62,7 @@ export class ServicioConciliacionMultiple {
       await this.holded.validarClasificacion(datos.empresa, compra.id);
       const plan: PlanConciliacion = {
         id: randomUUID().slice(0, 18), empresa: datos.empresa, chatId: datos.chatId, creadoEn: this.ahora(),
-        compra, movimientos, motivo: datos.motivo.trim(), estado: "propuesto", verificados: [], pagosVerificados: [],
+        compra, compraInicial: compra, movimientos, motivo: datos.motivo.trim(), estado: "propuesto", verificados: [], pagosVerificados: [],
       };
       await this.store.guardar(plan);
       return plan;
@@ -89,12 +89,18 @@ export class ServicioConciliacionMultiple {
         await this.store.guardar(p);
         return p;
       }
+      // Tras reanudar un lote detenido, los movimientos ya verificados no se vuelven a enviar: solo se comprueba que siguen conciliados.
+      const hechos = p.movimientos.filter((m) => p.verificados.includes(claveMovimiento(m)));
+      const restantes = p.movimientos.filter((m) => !p.verificados.includes(claveMovimiento(m)));
+      const reanudado = hechos.length > 0;
       try {
         // Preflight completo: ni una escritura si falla cualquiera de las referencias.
-        validarSeleccion(p.compra, p.movimientos);
+        if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: reanudado });
+        else validarCompra(p.compra);
         await this.holded.validarClasificacion(p.empresa, p.compra.id);
         comprobarCompra(p.compra, await this.holded.compra(p.empresa, p.compra.id));
-        for (const m of p.movimientos) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m));
+        for (const m of hechos) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m), true);
+        for (const m of restantes) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m));
       } catch (error) {
         p.estado = "rechazado";
         p.detalle = `No se envió ninguna conciliación: ${error instanceof Error ? error.message : String(error)}`;
@@ -106,7 +112,8 @@ export class ServicioConciliacionMultiple {
       await this.store.guardar(p);
       let esperada = p.compra;
       try {
-        for (const m of p.movimientos) {
+        const divisa = esDivisaExtranjera(p.compra);
+        for (const m of restantes) {
           comprobarCompra(esperada, await this.holded.compra(p.empresa, p.compra.id));
           comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m));
           await this.holded.validarClasificacion(p.empresa, p.compra.id);
@@ -119,11 +126,17 @@ export class ServicioConciliacionMultiple {
           const aplicado = -m.centimos;
           const nuevos = despues.pagos.filter((pago) => !esperada.pagos.some((anterior) => anterior.id === pago.id));
           const anterioresIntactos = esperada.pagos.every((anterior) => despues.pagos.some((pago) => JSON.stringify(pago) === JSON.stringify(anterior)));
-          if (identidadCompra(despues) !== identidadCompra(esperada) ||
-              despues.pendienteCentimos !== esperada.pendienteCentimos - aplicado ||
-              despues.pagadoCentimos !== esperada.pagadoCentimos + aplicado || !anterioresIntactos ||
-              nuevos.length !== 1 || nuevos[0].centimos !== aplicado || nuevos[0].accountId !== m.accountId || nuevos[0].fecha !== m.fecha) {
-            throw new Error("El pago nuevo, su cuenta/fecha o la variación del saldo de compra no coinciden exactamente.");
+          // EUR: aritmética exacta. Divisa: el pago nuevo debe valer el equivalente en EUR del movimiento y el saldo nativo bajar lo que
+          // el movimiento, salvo el redondeo de Holded (margen estándar); el residuo se cierra al final con el ajuste de cambio.
+          const margen = margenResiduoCentimos(p.compra.totalCentimos);
+          const saldoOk = divisa
+            ? Math.abs((esperada.pendienteCentimos - despues.pendienteCentimos) - aplicado) <= margen &&
+              Math.abs((despues.pagadoCentimos - esperada.pagadoCentimos) - aplicado) <= margen
+            : despues.pendienteCentimos === esperada.pendienteCentimos - aplicado && despues.pagadoCentimos === esperada.pagadoCentimos + aplicado;
+          const importePagoEsperado = divisa ? m.contableCentimos : aplicado;
+          if (identidadCompra(despues) !== identidadCompra(esperada) || !saldoOk || !anterioresIntactos ||
+              nuevos.length !== 1 || nuevos[0].centimos !== importePagoEsperado || nuevos[0].accountId !== m.accountId || nuevos[0].fecha !== m.fecha) {
+            throw new Error("El pago nuevo, su cuenta/fecha o la variación del saldo de compra no coinciden con lo esperado.");
           }
           p.verificados.push(claveMovimiento(m));
           p.pagosVerificados.push({ movimiento: claveMovimiento(m), pago: nuevos[0], pendienteCentimos: despues.pendienteCentimos });
@@ -131,12 +144,28 @@ export class ServicioConciliacionMultiple {
           await this.store.guardar(p);
           esperada = despues;
         }
+        // Divisa: lo que queda es el residuo de redondeo de Holded. Se cierra una sola vez con el ajuste de cambio durable
+        // (su propia idempotencia evita repetirlo si el proceso se interrumpe aquí) y se relee la compra.
+        if (divisa && esperada.pendienteCentimos !== 0) {
+          p.enVuelo = "ajuste-cambio";
+          await this.store.guardar(p);
+          const cierre = await this.holded.cerrarResiduoCambio(p.empresa, p.compra.id, p.movimientos[p.movimientos.length - 1]);
+          p.ajusteCambio = { estado: cierre.estado, montoCentimos: cierre.montoCentimos, motivo: cierre.motivo };
+          if (cierre.estado !== "aplicado" && cierre.estado !== "ya_aplicado" && cierre.estado !== "sin_residuo") {
+            throw new Error(`El residuo de cambio no se cerró (${cierre.estado}): ${cierre.motivo}`);
+          }
+          p.enVuelo = undefined;
+          await this.store.guardar(p);
+          esperada = await this.holded.compra(p.empresa, p.compra.id);
+          validarCompra(esperada);
+        }
         // Relectura final de AMBOS lados, también de los primeros movimientos del lote.
         comprobarCompra(esperada, await this.holded.compra(p.empresa, p.compra.id));
         for (const m of p.movimientos) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m), true);
-        if (esperada.pendienteCentimos !== 0) throw new Error("La compra conserva saldo pendiente.");
+        if (esperada.pendienteCentimos !== 0) throw new Error(`La compra conserva saldo pendiente (${importe(esperada.pendienteCentimos)} ${esperada.moneda}).`);
         p.estado = "completado";
-        p.detalle = "Todos los movimientos y pagos verificados; saldo pendiente de compra: 0.00.";
+        p.detalle = "Todos los movimientos y pagos verificados; saldo pendiente de compra: 0.00." +
+          (p.ajusteCambio && p.ajusteCambio.montoCentimos > 0 ? ` Residuo de redondeo de la divisa cerrado con el ajuste de cambio de ${importe(p.ajusteCambio.montoCentimos)} EUR.` : "");
         await this.store.guardar(p);
         return p;
       } catch (error) {
@@ -147,6 +176,70 @@ export class ServicioConciliacionMultiple {
         await this.store.guardar(p);
         return p;
       }
+    });
+  }
+
+  /**
+   * Reanuda un lote detenido (estado incierto/ejecutando) sin repetir ningún pago: relee Holded, DEMUESTRA qué movimientos ya
+   * están conciliados con su pago exacto en esta compra (cuenta, fecha e importe) y deja el plan de nuevo «propuesto» solo con
+   * lo que falta, para que el superadministrador lo apruebe con el mismo botón. Cualquier pago o movimiento que no se pueda
+   * explicar por el plan aborta: la reanudación nunca adivina.
+   */
+  async reanudar(id: string, chatId: number): Promise<PlanConciliacion> {
+    const inicial = await this.consultar(id, chatId);
+    return conMutex(mutexConciliacion(inicial.empresa), async () => {
+      const p = await this.consultar(id, chatId);
+      if (p.estado !== "incierto" && p.estado !== "ejecutando") {
+        throw new Error(`El plan está ${p.estado}; solo se reanuda un lote detenido (incierto o ejecutando).`);
+      }
+      const actual = await this.holded.compra(p.empresa, p.compra.id);
+      validarCompra(actual);
+      const base = p.compraInicial ?? p.compra;
+      if (identidadCompra(base) !== identidadCompra(actual)) throw new Error("La compra cambió de identidad desde la aprobación.");
+      const divisa = esDivisaExtranjera(actual);
+      const libres: string[] = [];
+      const hechos: PlanConciliacion["pagosVerificados"] = [];
+      const pagosExplicados = new Set<string>();
+      for (const anterior of base.pagos) {
+        if (!actual.pagos.some((pago) => JSON.stringify(pago) === JSON.stringify(anterior))) throw new Error("Un pago anterior al plan cambió o desapareció.");
+        pagosExplicados.add(anterior.id);
+      }
+      for (const m of p.movimientos) {
+        const ahora = await this.holded.movimiento(p.empresa, m);
+        const importeEsperado = divisa ? m.contableCentimos : -m.centimos;
+        try { comprobarMovimiento(m, ahora, true); } catch {
+          comprobarMovimiento(m, ahora); // si tampoco está libre, lanza: estado ambiguo, no se adivina.
+          libres.push(claveMovimiento(m));
+          continue;
+        }
+        const pagos = actual.pagos.filter((pago) => !pagosExplicados.has(pago.id) &&
+          pago.accountId === m.accountId && pago.fecha === m.fecha && pago.centimos === importeEsperado);
+        if (pagos.length !== 1) throw new Error(`El movimiento ${claveMovimiento(m)} figura conciliado pero no hay exactamente un pago que lo explique en la compra.`);
+        pagosExplicados.add(pagos[0].id);
+        hechos.push({ movimiento: claveMovimiento(m), pago: pagos[0], pendienteCentimos: actual.pendienteCentimos });
+      }
+      const sinExplicar = actual.pagos.filter((pago) => !pagosExplicados.has(pago.id));
+      if (sinExplicar.length > 0 && !(p.enVuelo === "ajuste-cambio" || p.ajusteCambio)) {
+        throw new Error("La compra tiene pagos que el plan no explica; requiere revisión manual.");
+      }
+      if (sinExplicar.length > 1) throw new Error("La compra tiene más de un pago ajeno al plan; requiere revisión manual.");
+      p.compraInicial = base;
+      p.compra = actual;
+      p.verificados = hechos.map((h) => h.movimiento);
+      p.pagosVerificados = hechos;
+      p.enVuelo = undefined;
+      p.aprobadoPor = undefined;
+      p.creadoEn = this.ahora();
+      if (libres.length === 0 && actual.pendienteCentimos === 0) {
+        p.estado = "completado";
+        p.detalle = "Reanudado: todos los movimientos y pagos ya estaban verificados; saldo pendiente 0.00.";
+      } else {
+        p.estado = "propuesto";
+        p.detalle = `Reanudado tras un lote detenido: ${hechos.length} movimiento(s) ya conciliado(s) y verificado(s) en Holded; ` +
+          `faltan ${libres.length}. Saldo pendiente actual: ${importe(actual.pendienteCentimos)} ${actual.moneda}.`;
+      }
+      await this.store.guardar(p);
+      return p;
     });
   }
 }
