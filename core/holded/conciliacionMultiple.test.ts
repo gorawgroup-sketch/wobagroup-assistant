@@ -402,3 +402,18 @@ test("adaptador: lee el equivalente en EUR (accounting_amount) del movimiento de
   item = movimiento({ accounting_amount: "-6.07", accounting_currency: "GBP" });
   assert.equal((await adapter.movimiento("Footprint", ref)).contableCentimos, undefined);
 });
+
+testDivisa("reanudar: un plan guardado antes de existir el equivalente en EUR (sin contableCentimos) se reanuda y se completa", async () => {
+  const f = fixtureDivisa({ fallarAlConciliar: 2 });
+  const plan = await f.servicio.preparar(f.datos);
+  await f.servicio.decidir(plan.id, 7, 1, true);
+  const antiguo = structuredClone(f.eventos.at(-1)!);
+  for (const m of antiguo.movimientos) delete m.contableCentimos; // así se guardó el plan real del caso Uber
+  f.eventos.push(antiguo);
+  const r = await f.servicio.reanudar(plan.id, 7);
+  assert.equal(r.estado, "propuesto");
+  assert.equal(r.movimientos[1].contableCentimos, 179);
+  const fin = await f.servicio.decidir(plan.id, 7, 1, true);
+  assert.equal(fin.estado, "completado", fin.detalle);
+  assert.deepEqual(f.posts, ["m1", "m2"]);
+});
