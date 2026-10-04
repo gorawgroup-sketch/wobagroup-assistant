@@ -8,6 +8,8 @@ export interface MovimientoExacto extends ReferenciaMovimiento {
   centimos: number; // negativo: salida bancaria
   conciliadoCentimos: number;
   estado: string;
+  /** Equivalente en EUR que Holded asigna al movimiento (accounting_amount, en valor absoluto). Solo se exige en compras en divisa. */
+  contableCentimos?: number;
 }
 export interface PagoExacto { id: string; centimos: number; accountId: string; fecha: string }
 export interface CompraExacta {
@@ -39,16 +41,29 @@ export interface PlanConciliacion {
   enVuelo?: string;
   aprobadoPor?: number;
   detalle?: string;
+  /** Compra tal como estaba al preparar el plan (la de `compra` se renueva al reanudar un lote detenido). */
+  compraInicial?: CompraExacta;
+  /** Cierre del residuo de redondeo de una compra en divisa (pago «Ajustar cambio de divisa», ver write.ts). */
+  ajusteCambio?: { estado: string; montoCentimos: number; motivo: string };
 }
+export interface ResultadoCierreResiduo { estado: "sin_residuo" | "aplicado" | "ya_aplicado" | "requiere_revision" | "incierto"; montoCentimos: number; motivo: string }
 export interface PuertoHolded {
   validarClasificacion(empresa: Empresa, compraId: string): Promise<void>;
   compra(empresa: Empresa, id: string): Promise<CompraExacta>;
   movimiento(empresa: Empresa, ref: ReferenciaMovimiento): Promise<MovimientoExacto>;
   conciliar(empresa: Empresa, ref: ReferenciaMovimiento, compraId: string): Promise<void>;
+  /** Solo compras en divisa: cierra el residuo de redondeo (≤ margen) con el ajuste de cambio durable. `ancla` identifica el lote. */
+  cerrarResiduoCambio(empresa: Empresa, compraId: string, ancla: ReferenciaMovimiento): Promise<ResultadoCierreResiduo>;
 }
 export interface StorePlanes {
   listar(): Promise<PlanConciliacion[]>;
   guardar(plan: PlanConciliacion): Promise<void>;
+}
+/** Compra en una divisa distinta del EUR: Holded paga en EUR a su tasa y redondea cada pago, así que los saldos nativos no suman al céntimo. */
+export const esDivisaExtranjera = (c: Pick<CompraExacta, "moneda">): boolean => c.moneda !== "EUR";
+/** Mismo margen de redondeo que write.ts (margenResiduoConversion): min(1, max(0,02, 0,5 % del total)), en céntimos. Una prueba fija la igualdad. */
+export function margenResiduoCentimos(totalCentimos: number): number {
+  return Math.round(Math.min(1, Math.max(0.02, (Math.abs(totalCentimos) / 100) * 0.005)) * 100);
 }
 export const TTL_PLAN = 24 * 60 * 60 * 1000;
 export const claveMovimiento = (m: ReferenciaMovimiento): string => `${m.accountId}/${m.movementId}`;
@@ -95,7 +110,12 @@ export function validarCompra(c: CompraExacta): void {
   for (const n of [c.totalCentimos, c.pagadoCentimos, c.pendienteCentimos]) {
     if (!Number.isSafeInteger(n) || n < 0) throw new Error("Saldo de compra inválido.");
   }
-  if (c.totalCentimos <= 0 || BigInt(c.pagadoCentimos) + BigInt(c.pendienteCentimos) !== BigInt(c.totalCentimos)) {
+  if (esDivisaExtranjera(c)) {
+    // Holded expone pagado/pendiente en la divisa del documento a partir de pagos en EUR redondeados: cuadran solo dentro del margen de redondeo.
+    if (c.totalCentimos <= 0 || Math.abs(c.pagadoCentimos + c.pendienteCentimos - c.totalCentimos) > margenResiduoCentimos(c.totalCentimos)) {
+      throw new Error("Total, pagos y saldo pendiente de la compra no cuadran ni dentro del margen de redondeo de la divisa.");
+    }
+  } else if (c.totalCentimos <= 0 || BigInt(c.pagadoCentimos) + BigInt(c.pendienteCentimos) !== BigInt(c.totalCentimos)) {
     throw new Error("Total, pagos y saldo pendiente de la compra no cuadran exactamente.");
   }
   const ids = new Set<string>();
@@ -105,11 +125,13 @@ export function validarCompra(c: CompraExacta): void {
     ids.add(p.id);
     suma += BigInt(p.centimos);
   }
-  if (suma !== BigInt(c.pagadoCentimos)) throw new Error("El detalle de pagos no coincide con el total pagado.");
+  // En divisa los pagos van en EUR y el pagado en la divisa del documento: no son comparables al céntimo.
+  if (!esDivisaExtranjera(c) && suma !== BigInt(c.pagadoCentimos)) throw new Error("El detalle de pagos no coincide con el total pagado.");
 }
-export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[]): void {
+/** `recuperacion`: se reanuda un lote detenido; puede quedar un solo movimiento. */
+export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[], opciones: { recuperacion?: boolean } = {}): void {
   validarCompra(c);
-  if (movimientos.length < 2 || movimientos.length > 20) throw new Error("Selecciona entre 2 y 20 movimientos identificados.");
+  if (movimientos.length < (opciones.recuperacion ? 1 : 2) || movimientos.length > 20) throw new Error("Selecciona entre 2 y 20 movimientos identificados.");
   if (c.pendienteCentimos <= 0) throw new Error("La compra no tiene saldo pendiente.");
   const ids = new Set<string>();
   let suma = 0n;
@@ -121,7 +143,18 @@ export function validarSeleccion(c: CompraExacta, movimientos: MovimientoExacto[
     if (m.moneda !== c.moneda) throw new Error("Las monedas no coinciden.");
     if (!Number.isSafeInteger(m.centimos) || m.centimos >= 0) throw new Error("Solo se aceptan cargos bancarios con importe exacto.");
     if (m.estado !== "pending" || m.conciliadoCentimos !== 0) throw new Error("Un movimiento ya está conciliado, es parcial o tiene estado desconocido.");
+    if (esDivisaExtranjera(c) && !(Number.isSafeInteger(m.contableCentimos) && (m.contableCentimos as number) > 0)) {
+      throw new Error("Holded no informa el equivalente en EUR de un movimiento; no se puede verificar su pago en una compra en divisa.");
+    }
     suma -= BigInt(m.centimos);
+  }
+  // Con pagos previos en divisa el saldo ya arrastra el redondeo de Holded: se compara dentro del margen; en cualquier otro caso, exacto.
+  if (esDivisaExtranjera(c) && c.pagos.length > 0) {
+    const margen = margenResiduoCentimos(c.totalCentimos);
+    if (Math.abs(Number(suma) - c.pendienteCentimos) > margen) {
+      throw new Error(`La suma (${importe(Number(suma))}) no coincide con el saldo pendiente (${importe(c.pendienteCentimos)} ${c.moneda}) ni dentro del margen de redondeo.`);
+    }
+    return;
   }
   if (suma !== BigInt(c.pendienteCentimos)) {
     throw new Error(`La suma (${importe(Number(suma))}) debe coincidir exactamente con el saldo pendiente (${importe(c.pendienteCentimos)} ${c.moneda}).`);
@@ -132,12 +165,21 @@ export function reservaActiva(p: PlanConciliacion, ahora = Date.now()): boolean 
   return p.estado !== "propuesto" || ahora - p.creadoEn <= TTL_PLAN;
 }
 export function resumenPlan(p: PlanConciliacion): string {
+  const hechos = p.movimientos.filter((m) => p.verificados.includes(claveMovimiento(m)));
+  const restantes = p.movimientos.filter((m) => !p.verificados.includes(claveMovimiento(m)));
+  const linea = (m: MovimientoExacto, i: number) => `${i + 1}. ${m.fecha} | ${importe(m.centimos)} ${m.moneda} | ${m.cuenta}\n${m.descripcion}\n[${claveMovimiento(m)}]`;
+  const suma = restantes.reduce((t, m) => t - m.centimos, 0);
+  const diferencia = suma - p.compra.pendienteCentimos;
   return `Conciliación múltiple — ${p.empresa}\nProveedor: ${p.compra.proveedor}\n` +
     `Compra ${p.compra.numero || "sin número"} [${p.compra.id}] — ${p.compra.fecha}\n` +
     `Cuenta contable: ${p.compra.cuentasContables.join(", ")}\nTotal: ${importe(p.compra.totalCentimos)} ${p.compra.moneda}; pagado: ${importe(p.compra.pagadoCentimos)} ${p.compra.moneda}\n` +
     `Saldo a conciliar: ${importe(p.compra.pendienteCentimos)} ${p.compra.moneda}\n\n` +
-    p.movimientos.map((m, i) => `${i + 1}. ${m.fecha} | ${importe(m.centimos)} ${m.moneda} | ${m.cuenta}\n${m.descripcion}\n[${claveMovimiento(m)}]`).join("\n") +
-    `\n\nSuma de cargos: ${importe(p.compra.pendienteCentimos)} ${p.compra.moneda}. Diferencia: 0.00 ${p.compra.moneda}.\nMotivo: ${p.motivo}\nPlan: ${p.id}`;
+    (hechos.length ? `Ya conciliados y verificados en Holded:\n${hechos.map(linea).join("\n")}\n\nPor conciliar ahora:\n` : "") +
+    restantes.map(linea).join("\n") +
+    `\n\nSuma de cargos: ${importe(suma)} ${p.compra.moneda}. Diferencia: ${importe(diferencia)} ${p.compra.moneda}` +
+    (esDivisaExtranjera(p.compra) && diferencia !== 0 ? " (redondeo de Holded al convertir a EUR; se cierra con el ajuste de cambio)" : "") +
+    (esDivisaExtranjera(p.compra) ? `.\nCada pago se verifica contra su equivalente en EUR (${restantes.map((m) => importe(m.contableCentimos ?? 0)).join(" + ")} EUR).` : ".") +
+    `\nMotivo: ${p.motivo}\nPlan: ${p.id}`;
 }
 
 export function estadoPlan(p: PlanConciliacion): string {

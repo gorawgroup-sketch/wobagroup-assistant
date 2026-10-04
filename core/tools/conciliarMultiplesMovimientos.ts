@@ -51,6 +51,33 @@ export const conciliarMultiplesMovimientosTool: ToolDefinition = {
   },
 };
 
+export const reanudarConciliacionMultipleTool: ToolDefinition = {
+  name: "reanudar_conciliacion_multiple",
+  description: "Reanuda un plan de conciliación múltiple que quedó detenido (estado incierto o ejecutando) sin repetir ningún pago: " +
+    "relee Holded, demuestra qué movimientos ya están conciliados con su pago exacto y propone SOLO los que faltan, con el mismo botón de " +
+    "aprobación del superadministrador. Úsala cuando un plan se detuvo a mitad de lote; no vuelvas a preparar el plan desde cero ni " +
+    "concilies los movimientos restantes por la vía individual. No escribe en Holded al proponer.",
+  input_schema: { type: "object", properties: { plan_id: { type: "string" } }, required: ["plan_id"] },
+  handler: async (input, context) => {
+    if (context?.chatId === undefined || typeof input.plan_id !== "string") return "Falta el chat o el ID del plan.";
+    try {
+      const p = await conciliacionMultiple.reanudar(input.plan_id, context.chatId);
+      const { sendTelegramMessage, sendTelegramMessageWithButtons } = await import("../telegram/client");
+      if (p.estado !== "propuesto") return estadoPlan(p);
+      const resumen = resumenPlan(p);
+      for (let i = 0; i < resumen.length; i += 3000) await sendTelegramMessage(p.chatId, resumen.slice(i, i + 3000));
+      await sendTelegramMessageWithButtons(p.chatId,
+        `Plan ${p.id} reanudado: ¿confirmas conciliar los ${p.movimientos.length - p.verificados.length} movimiento(s) que faltan con la compra ${p.compra.numero || p.compra.id}? ` +
+        "Se comprobarán otra vez los datos antes de escribir y no se repetirá ningún pago ya hecho.",
+        [[{ text: "Confirmar conciliación múltiple", callback_data: `concilmulti_si:${p.id}` }],
+          [{ text: "Cancelar", callback_data: `concilmulti_no:${p.id}` }]]);
+      return `Plan ${p.id} reanudado y enviado para aprobación. ${p.detalle ?? ""} No se ha escrito nada en Holded todavía.`;
+    } catch (error) {
+      return `No se pudo reanudar: ${error instanceof Error ? error.message : String(error)}. No se escribió nada en Holded; revisa el plan en Holded antes de repetir nada.`;
+    }
+  },
+};
+
 export const consultarConciliacionMultipleTool: ToolDefinition = {
   name: "consultar_conciliacion_multiple",
   description: "Consulta el registro persistente de un plan de conciliación múltiple y su avance verificado. " +

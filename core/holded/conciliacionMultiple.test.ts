@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ServicioConciliacionMultiple } from "./conciliacionMultiple/service";
 import { HoldedConciliacionAdapter } from "./conciliacionMultiple/holdedAdapter";
-import { centimos, importe, validarSeleccion, reservaActiva, TTL_PLAN, type CompraExacta, type MovimientoExacto, type PlanConciliacion, type StorePlanes, type PuertoHolded } from "./conciliacionMultiple/model";
+import { margenResiduoConversion } from "./write";
+import { resumenPlan } from "./conciliacionMultiple/model";
+import { centimos, importe, validarSeleccion, margenResiduoCentimos, reservaActiva, TTL_PLAN, type CompraExacta, type MovimientoExacto, type PlanConciliacion, type StorePlanes, type PuertoHolded } from "./conciliacionMultiple/model";
 
 const compraBase: CompraExacta = {
   id: "gora-compra", proveedorId: "gora", proveedor: "Gora World Group LLC", numero: "991", fecha: "2026-09-16",
@@ -29,6 +31,7 @@ function fixture() {
       if (!m) throw new Error("No encontrado");
       return structuredClone(m);
     },
+    async cerrarResiduoCambio() { return { estado: "sin_residuo" as const, montoCentimos: 0, motivo: "EUR" }; },
     async conciliar(_empresa, ref, id) {
       assert.equal(id, compra.id);
       const m = movimientos.find((m) => m.movementId === ref.movementId)!;
@@ -261,7 +264,7 @@ test("cambio de clasificación tras aprobación detiene el lote", async () => {
 
 // ── Moneda distinta del euro: solo con habilitación explícita y SIN conversión (caso Uber Footprint 28/09/2026: 8,95 USD = 6,91 + 2,04) ──
 const compraUber: CompraExacta = { ...compraBase, id: "uber", proveedor: "Uber", moneda: "USD", totalCentimos: 895, pendienteCentimos: 895, numero: "-" };
-const movUber = (n: number, id: string, moneda = "USD"): MovimientoExacto => ({ accountId: "ftg-usd", movementId: id, fecha: "2026-09-28", descripcion: "Uber Pending", cuenta: "FTG USD", moneda, centimos: -n, conciliadoCentimos: 0, estado: "pending" });
+const movUber = (n: number, id: string, moneda = "USD"): MovimientoExacto => ({ accountId: "ftg-usd", movementId: id, fecha: "2026-09-28", descripcion: "Uber Pending", cuenta: "FTG USD", moneda, centimos: -n, contableCentimos: Math.round(n / 1.1378), conciliadoCentimos: 0, estado: "pending" });
 
 test("USD: por defecto NO está habilitado (solo EUR); con la variable explícita sí, con suma exacta y misma moneda", () => {
   const prev = process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS;
@@ -278,4 +281,124 @@ test("USD: por defecto NO está habilitado (solo EUR); con la variable explícit
 test("una compra en borrador (así la crea WOBI) se puede preparar para conciliación múltiple", async () => {
   const f = fixture(); f.compra.borrador = true;
   assert.ok((await f.servicio.preparar(f.datos)).id);
+});
+
+// ---- Compra en divisa (caso real Uber 8,95 USD, Footprint, 2026-10-04): Holded paga en EUR a la tasa del documento ----
+function fixtureDivisa(opciones: { fallarAlConciliar?: number; cierre?: "aplicar" | "revision" } = {}) {
+  const TOTAL_EUR = 787; // 8,95 USD a 1,1378
+  const eur: Array<{ id: string; centimos: number; accountId: string; fecha: string }> = [];
+  const movimientos: MovimientoExacto[] = [
+    { accountId: "usd", movementId: "m1", fecha: "2026-09-28", descripcion: "Uber Pending", cuenta: "FTG USD", moneda: "USD", centimos: -691, contableCentimos: 607, conciliadoCentimos: 0, estado: "pending" },
+    { accountId: "usd", movementId: "m2", fecha: "2026-09-28", descripcion: "Uber Pending", cuenta: "FTG USD", moneda: "USD", centimos: -204, contableCentimos: 179, conciliadoCentimos: 0, estado: "pending" },
+  ];
+  let conciliaciones = 0;
+  const posts: string[] = [];
+  const compra = (): CompraExacta => {
+    const sumaEur = eur.reduce((t, p) => t + p.centimos, 0);
+    const pagadoNativo = movimientos.filter((m) => m.estado === "reconciled").reduce((t, m) => t - m.centimos, 0);
+    return {
+      id: "uber-compra", proveedorId: "uber", proveedor: "Uber", numero: "00000", fecha: "2026-09-28", cuentasContables: ["viaje"], moneda: "USD",
+      totalCentimos: 895, pagadoCentimos: pagadoNativo, pendienteCentimos: eur.length === 0 ? 895 : Math.round(((TOTAL_EUR - sumaEur) * 114) / 100), // sin pagos Holded muestra el total; con pagos, el resto en EUR × tasa (1,14)
+      pagos: eur.map((p) => ({ ...p })), estado: sumaEur >= TOTAL_EUR ? "completed" : sumaEur > 0 ? "partial" : "pending", borrador: true,
+    };
+  };
+  const eventos: PlanConciliacion[] = [];
+  const store: StorePlanes = {
+    async listar() { return [...new Map(eventos.map((p) => [p.id, structuredClone(p)])).values()]; },
+    async guardar(p) { eventos.push(structuredClone(p)); },
+  };
+  const holded: PuertoHolded = {
+    async validarClasificacion() {},
+    async compra() { return compra(); },
+    async movimiento(_e, ref) { return structuredClone(movimientos.find((m) => m.movementId === ref.movementId)!); },
+    async conciliar(_e, ref) {
+      conciliaciones++;
+      if (opciones.fallarAlConciliar === conciliaciones) throw new Error("Holded respondió HTTP 500.");
+      const m = movimientos.find((x) => x.movementId === ref.movementId)!;
+      assert.equal(m.estado, "pending");
+      posts.push(ref.movementId);
+      m.estado = "reconciled"; m.conciliadoCentimos = m.centimos;
+      eur.push({ id: `pago-${m.movementId}`, centimos: m.contableCentimos!, accountId: m.accountId, fecha: m.fecha });
+    },
+    async cerrarResiduoCambio() {
+      if (opciones.cierre === "revision") return { estado: "requiere_revision" as const, montoCentimos: 1, motivo: "Ajuste automático desactivado para Uber." };
+      eur.push({ id: "ajuste", centimos: TOTAL_EUR - eur.reduce((t, p) => t + p.centimos, 0), accountId: "main-eur", fecha: "2026-09-28" });
+      return { estado: "aplicado" as const, montoCentimos: eur.at(-1)!.centimos, motivo: "Ajuste de cambio" };
+    },
+  };
+  const servicio = new ServicioConciliacionMultiple(holded, store, () => 1000);
+  const datos = { empresa: "Footprint" as const, chatId: 7, compraId: "uber-compra", movimientos, motivo: "Recibo de Uber cobrado en dos pagos." };
+  return { servicio, datos, posts, eventos, eur, movimientos, compra };
+}
+function testDivisa(nombre: string, fn: () => Promise<void>): void {
+  test(nombre, async () => {
+    const prev = process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS;
+    process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS = "EUR,USD";
+    try { await fn(); } finally { if (prev === undefined) delete process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS; else process.env.WOBI_CONCILIACION_MULTIPLE_MONEDAS = prev; }
+  });
+}
+testDivisa("divisa: Uber 6,91 + 2,04 USD se concilia en EUR (6,07 + 1,79) y el residuo de redondeo se cierra con el ajuste de cambio", async () => {
+  const f = fixtureDivisa();
+  const plan = await f.servicio.preparar(f.datos);
+  const r = await f.servicio.decidir(plan.id, 7, 1, true);
+  assert.equal(r.estado, "completado", r.detalle);
+  assert.deepEqual(f.posts, ["m1", "m2"]);
+  assert.equal(f.compra().pendienteCentimos, 0);
+  assert.equal(r.ajusteCambio?.estado, "aplicado");
+  assert.equal(r.ajusteCambio?.montoCentimos, 1);
+  assert.equal(f.eur.length, 3);
+});
+testDivisa("divisa: si el residuo no se puede cerrar el plan NO se da por completado", async () => {
+  const f = fixtureDivisa({ cierre: "revision" });
+  const plan = await f.servicio.preparar(f.datos);
+  const r = await f.servicio.decidir(plan.id, 7, 1, true);
+  assert.equal(r.estado, "incierto");
+  assert.match(r.detalle ?? "", /residuo de cambio no se cerró/);
+});
+testDivisa("divisa: un lote detenido tras el primer pago se reanuda sin repetirlo y se completa", async () => {
+  const f = fixtureDivisa({ fallarAlConciliar: 2 });
+  const plan = await f.servicio.preparar(f.datos);
+  const detenido = await f.servicio.decidir(plan.id, 7, 1, true);
+  assert.equal(detenido.estado, "incierto");
+  assert.deepEqual(f.posts, ["m1"]);
+  const r = await f.servicio.reanudar(plan.id, 7);
+  assert.equal(r.estado, "propuesto");
+  assert.deepEqual(r.verificados, ["usd/m1"]);
+  assert.match(resumen(r), /Ya conciliados y verificados/);
+  const fin = await f.servicio.decidir(plan.id, 7, 1, true);
+  assert.equal(fin.estado, "completado", fin.detalle);
+  assert.deepEqual(f.posts, ["m1", "m2"], "el primer pago no se repite");
+  assert.equal(f.compra().pendienteCentimos, 0);
+});
+const resumen = (p: PlanConciliacion): string => resumenPlan(p);
+testDivisa("reanudar: rechaza un pago de la compra que el plan no explica, y un plan que no está detenido", async () => {
+  const f = fixtureDivisa({ fallarAlConciliar: 2 });
+  const plan = await f.servicio.preparar(f.datos);
+  await assert.rejects(() => f.servicio.reanudar(plan.id, 7), /solo se reanuda un lote detenido/);
+  await f.servicio.decidir(plan.id, 7, 1, true);
+  f.eur.push({ id: "ajeno", centimos: 1, accountId: "otro", fecha: "2026-09-30" });
+  await assert.rejects(() => f.servicio.reanudar(plan.id, 7), /no explica|más de un pago ajeno|revisión manual/);
+});
+testDivisa("divisa: un movimiento sin equivalente en EUR no se puede preparar", async () => {
+  const f = fixtureDivisa();
+  delete f.movimientos[0].contableCentimos;
+  await assert.rejects(() => f.servicio.preparar(f.datos), /equivalente en EUR/);
+});
+test("el margen de redondeo del módulo coincide con el de write.ts", () => {
+  for (const total of [0.5, 3, 8.95, 50, 233.21, 1000, 5000, 100000]) {
+    assert.equal(margenResiduoCentimos(Math.round(total * 100)), Math.round(margenResiduoConversion(total) * 100), String(total));
+  }
+});
+
+test("adaptador: lee el equivalente en EUR (accounting_amount) del movimiento de una cuenta USD y lo deja ausente si no es EUR", async () => {
+  process.env.HOLDED_API_KEY_FOOTPRINT = "test-read";
+  const movimiento = (extra: Record<string, unknown>) => ({ id: "m1", banking_account_id: "usd", booking_date: "2026-09-28T00:00:00+00:00", currency: "USD",
+    amount: "-6.91", reconciled_amount: "0.00", status: "pending", description: "Uber Pending", ...extra });
+  let item: Record<string, unknown> = movimiento({ accounting_amount: "-6.07", accounting_currency: "EUR" });
+  const adapter = new HoldedConciliacionAdapter(async (url) => Response.json(String(url).includes("bank-movements")
+    ? { items: [item], has_more: false } : { id: "usd", name: "FTG USD", currency: "USD" }));
+  const ref = { accountId: "usd", movementId: "m1", fecha: "2026-09-28" };
+  assert.equal((await adapter.movimiento("Footprint", ref)).contableCentimos, 607);
+  item = movimiento({ accounting_amount: "-6.07", accounting_currency: "GBP" });
+  assert.equal((await adapter.movimiento("Footprint", ref)).contableCentimos, undefined);
 });

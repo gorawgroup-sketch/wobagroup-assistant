@@ -1,6 +1,6 @@
 import { protegerEscrituraHolded } from "../../gmail/automatico/postgres";
 import type { Empresa } from "../client";
-import { centimos, validarReferencia, type CompraExacta, type MovimientoExacto, type PuertoHolded, type ReferenciaMovimiento } from "./model";
+import { centimos, validarReferencia, type CompraExacta, type MovimientoExacto, type PuertoHolded, type ReferenciaMovimiento, type ResultadoCierreResiduo } from "./model";
 
 type Registro = Record<string, unknown>;
 function objeto(raw: unknown): Registro {
@@ -94,6 +94,9 @@ export class HoldedConciliacionAdapter implements PuertoHolded {
         return {
           ...ref, descripcion: typeof m.description === "string" ? m.description : "", cuenta: texto(cuenta.name, "nombre de cuenta"),
           moneda, centimos: centimos(m.amount), conciliadoCentimos: centimos(m.reconciled_amount), estado: texto(m.status, "estado bancario"),
+          // accounting_amount: el equivalente en EUR que Holded usa para pagar la compra cuando la cuenta está en otra divisa.
+          ...(m.accounting_amount != null && String(m.accounting_currency ?? "").toUpperCase() === "EUR"
+            ? { contableCentimos: Math.abs(centimos(m.accounting_amount)) } : {}),
         };
       }
       if (data.has_more === false) throw new Error("El movimiento seleccionado no existe en la cuenta indicada.");
@@ -102,6 +105,11 @@ export class HoldedConciliacionAdapter implements PuertoHolded {
       cursores.add(cursor);
     }
     throw new Error("No se pudo completar la búsqueda bancaria; no se conciliará nada.");
+  }
+  async cerrarResiduoCambio(empresa: Empresa, compraId: string, ancla: ReferenciaMovimiento): Promise<ResultadoCierreResiduo> {
+    validarReferencia(ancla);
+    const { cerrarResiduoCambioConciliacionMultiple } = await import("../write");
+    return cerrarResiduoCambioConciliacionMultiple(empresa, compraId, ancla);
   }
   async conciliar(empresa: Empresa, ref: ReferenciaMovimiento, compraId: string): Promise<void> {
     validarReferencia(ref);
