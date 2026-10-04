@@ -41,8 +41,9 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
-| Lecturas de fuentes de Cerebro bajo la cola de Sheets | Cerebro (front) | [PR #330](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/330) | Codex | Fusionado y desplegado el 04-10-2026. Lecturas completas de 20/20 fuentes durante la observación; la sonda separada de Sheets puede agotar sus 6 s cuando hereda prioridad de fondo. |
-| Sonda de Sheets bajo carga de fondo | Cerebro (front) | `codex/cerebro-sonda-sheets-prioritaria` | Codex | Corrección aislada y probada; conserva la reserva de cuota interactiva para verificar metadata. PR en borrador, sin despliegue hasta validación. |
+| Lecturas de fuentes de Cerebro bajo la cola de Sheets | Cerebro (front) | [PR #330](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/330) | Codex | Fusionado y desplegado el 04-10-2026; durante la observación las 20 fuentes siguieron completas y frescas. |
+| Sonda de Sheets bajo carga de fondo | Cerebro (front) | [PR #334](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/334) | Codex | Fusionado el 04-10-2026; Railway y comprobación bajo carga pendientes de completar. Usa la reserva interactiva del regulador para evitar falsos timeouts. |
+| Núcleo fluido: áreas, búsqueda documental y Telegram Web | Cerebro (front) | `codex/wobi-nucleo-vivo`, [PR #320](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/320) | Codex | Implementado y probado en copia aislada; publicación tras verificar la sonda de Sheets y los flujos existentes. [Alcance](wobi-nucleo-vivo.md) |
 | Regla de tickets / lista aprobada de Holded | Automatización de Holded | `fix/holded-lista-aprobada-manda` (copia `/private/tmp/woba_auto`) | Otra sesión de Claude | Activa el 03-10-2026; no tocar esa copia |
 | Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | `feat/transferencias-ejecucion` (copia `.worktrees/transferencias-internas`) | Claude Code | Fase 1 (detección) fusionada en #308. Fase 2 (registro, botones, ejecutor) en PR; ejecución apagada hasta la prueba controlada autorizada por Carlos |
 | Proyectos de Holded (solo lectura): listar y reporte financiero por proyecto | Conciliación y bancos (`core/holded/`, `core/tools/`) | `feat/holded-proyectos-lectura` | Claude Code | Portado el 04-10-2026 desde la rama de respaldo `respaldo/checkout-principal-2026-10-04`; PR abierto, a la espera de que Carlos decida la fusión. Solo GET, sin escrituras |
@@ -60,10 +61,6 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Ramas con PR cerrado sin fusionar | `claude/fix-env-loading`, `codex/wobi-seguros-reviewed`, `feat/gasto-siempre-y-soporte-eml`, `fix/desambiguacion-confianza-en-usuario`, `fix/eml-equivalente-eur` | septiembre | ¿Se descartan? |
 | Ramas sin PR | `codex/claude-max-worker`, `codex/wobi-microfono-continuo`, `fix/descartar-gasto-pendiente-datos` | septiembre | ¿Se retoman o se descartan? |
 | Checkout principal con cambios sin guardar | `/Volumes/Seagate Backup Plus Drive/apps/WOBA_Copilot`, rama `codex/holded-proyectos` (33 archivos modificados, 37 nuevos, desde el 27-09) | 27-09-2026 | Inventariado el 04-10 (solo lectura): ver [inventario](mantenimiento/inventario-checkout-principal-2026-10-04.md). Decidir: respaldar en una rama, portar Proyectos de Holded y la clasificación contable contextual, y limpiar. No se ha tocado nada |
-
-## Hecho reciente
-
-- Núcleo vivo de WOBi (`codex/wobi-nucleo-vivo`, Codex): portada por compañía y áreas, búsqueda documental de solo lectura y Telegram Web en otra pestaña. Módulos clásicos conservados. Implementado y verificado; publicación sujeta al CI obligatorio. [Alcance y límites](wobi-nucleo-vivo.md).
 
 ## Mantenimiento
 
