@@ -120,3 +120,11 @@ export async function conciliarParcialDeRecibo(
     return { estado: "fallida", nota: `\n\n⚠️ No pude preparar la conciliación parcial: ${error instanceof Error ? error.message : String(error)}. No se escribió nada en Holded.` };
   }
 }
+
+/** Botones de la oferta «Conciliar esta parte»: el mismo `gasto_conciliar_si` de siempre con el modificador `:p<movementId>`, más «No, dejar así». */
+export function botonesOfertaParcial(pendienteId: string, cargo: { movementId: string; monto: number }, gasto: { monto: number; moneda: string }) {
+  return [
+    [{ text: `🔗 Conciliar esta parte (${cargo.monto.toFixed(2)} ${gasto.moneda}; quedan ${(gasto.monto - cargo.monto).toFixed(2)} abiertos)`, callback_data: `gasto_conciliar_si:${pendienteId}:p${cargo.movementId}` }],
+    [{ text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendienteId}` }],
+  ];
+}

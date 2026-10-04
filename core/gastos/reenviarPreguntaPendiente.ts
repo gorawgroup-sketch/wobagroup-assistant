@@ -6,6 +6,7 @@ import {
 import { obtenerPropuestasGastoPorChat } from "./gastoProposalSheet";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { botonContinuarConciliacion } from "./continuarCorreoConciliacion";
+import { botonesOfertaParcial, consultarCargoParcial, textoOfertaParcial } from "./conciliacionParcialRecibo";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import { montosCercanos } from "../utils/montos";
 
@@ -30,13 +31,21 @@ export type PreguntaReenviada =
   | { tipo: "conciliacion_ambigua"; descripcion: string };
 
 export async function reenviarPreguntaConciliacion(p: ConciliacionPendiente, encabezado: string): Promise<number> {
-  const botones = [[
-    { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${p.id}` },
-    { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${p.id}` },
-  ], ...botonContinuarConciliacion(p)];
-  const texto =
-    `${encabezado}\n\n🔗 El gasto «${p.descripcionGasto}» ya está creado en Holded. ` +
-    `¿Quieres que intente conciliarlo con el cargo bancario?`;
+  // Si el banco tiene UN único cargo del proveedor menor que el gasto (recibo cobrado en varios pagos), el reenvío ya trae el botón de la parte.
+  const datos = { empresa: p.empresa, proveedor: p.proveedor ?? "", monto: p.monto, moneda: p.moneda ?? "EUR", fecha: p.fecha };
+  const consulta = await consultarCargoParcial(datos);
+  const oferta = consulta.tipo === "oferta" ? consulta.cargo : undefined;
+  const botones = oferta
+    ? [...botonesOfertaParcial(p.id, oferta, datos), ...botonContinuarConciliacion(p)]
+    : [[
+        { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${p.id}` },
+        { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${p.id}` },
+      ], ...botonContinuarConciliacion(p)];
+  const base = `${encabezado}\n\n🔗 El gasto «${p.descripcionGasto}» ya está creado en Holded. `;
+  const texto = oferta
+    ? `${base}\n\n${textoOfertaParcial(oferta, datos, p.descripcionGasto)}`
+    : `${base}¿Quieres que intente conciliarlo con el cargo bancario?` +
+      (consulta.tipo === "consulta_fallida" ? "\n\n⚠️ No pude consultar ahora el banco para ver si hay una parte de este recibo ya cobrada." : "");
   return sendTelegramMessageWithButtons(p.chatId, texto, botones);
 }
 
