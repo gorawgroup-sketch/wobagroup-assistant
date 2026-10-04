@@ -322,6 +322,9 @@
 .nv-map-icon svg { width:18px; height:18px; }
 .nv-scope-note { display:flex; gap:12px; align-items:center; padding:10px 14px; border:1px solid #64bdd433; border-radius:12px; background:linear-gradient(90deg,#123149bc,#0a1c2bb5); color:#a9cddd; font-size:12px; }
 .nv-scope-note span { color:#82d8ec; white-space:nowrap; font-weight:600; }
+.nv-cashflow-scope { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:13px 16px; margin-top:14px; border:1px solid #e3b57955; border-radius:12px; background:linear-gradient(105deg,#243045d9,#132537c9); color:#f2d9ad; font-size:13px; line-height:1.45; }
+.nv-cashflow-scope button { flex:none; border:1px solid #e3b579aa; border-radius:9px; padding:8px 12px; color:#ffe2b4; background:#342d2b; cursor:pointer; font:inherit; }
+.nv-cashflow-scope button:hover,.nv-cashflow-scope button:focus-visible { background:#624937; box-shadow:0 0 16px #e3b57930; }
 .nv-settings { max-width:1100px; margin:auto; }
 .nv-settings-intro { padding:4px 0 18px; }
 .nv-settings-intro>span { color:#82d8ec; letter-spacing:.13em; font-size:10px; }
@@ -355,7 +358,7 @@
 .nv-settings-connection strong { flex:1; font-weight:450; }
 .nv-settings-connection .is-ok { color:#61d6ab; }.nv-settings-connection .is-broken,.nv-settings-error { color:#e9b77c; }
 .nv-settings-open { margin-top:16px; }
-@media(max-width:700px){ .nv-settings-shortcut { padding:7px; }.nv-settings-shortcut>span:last-child { display:none; }.nv-settings-overview { grid-template-columns:1fr; }.nv-scope-note { align-items:flex-start; flex-direction:column; gap:3px; } }
+@media(max-width:700px){ .nv-settings-shortcut { padding:7px; }.nv-settings-shortcut>span:last-child { display:none; }.nv-settings-overview { grid-template-columns:1fr; }.nv-scope-note,.nv-cashflow-scope { align-items:flex-start; flex-direction:column; gap:8px; } }
 
 .nv-settings-locked { max-width:620px; margin:36px auto; padding:35px; border:1px solid #73c5db57; border-radius:20px; background:linear-gradient(145deg,#123148,#0a1b2b); box-shadow:0 20px 60px #01091066; }
 .nv-settings-locked>span { font-size:36px; color:#8bd9ee; }

@@ -147,6 +147,7 @@ import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, iniciarMantenimientoEstadoCerebro, obtenerDiagnosticoPanelCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { solicitarActualizacion } from "../core/cerebro/solicitarActualizacion";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
 import { listarPolizas, actualizarPoliza } from "../core/seguros/polizaRegistroSheet";
 import { formatDateLocal } from "../core/utils/dateFormat";
@@ -565,7 +566,16 @@ app.get("/api/cerebro/estado", async (req: Request, res: Response) => {
 
   try {
     res.set("Cache-Control", "no-store");
-    const estado = await obtenerEstadoCerebro(req.query.actualizar === "1");
+    // La lectura manual puede durar más que el timeout HTTP. Aceptamos la orden
+    // sin bloquear la respuesta; el estado nuevo llega por sondeo/SSE al terminar.
+    if (req.query.actualizar === "1") {
+      const acuse = solicitarActualizacion(() => obtenerEstadoCerebro(true), (error) => {
+        console.warn("[api/cerebro/estado] Actualización manual incompleta:", error instanceof Error ? error.message : String(error));
+      });
+      res.status(202).json(acuse);
+      return;
+    }
+    const estado = await obtenerEstadoCerebro(false);
     res.json(estado);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

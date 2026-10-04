@@ -6,6 +6,7 @@ const onlyCompany = (items, id) => Array.isArray(items) ? items.filter(item => b
 
 export function companyScopeNote(moduleId, companyName) {
   if (moduleId === 'administracion') return 'Configuración global del sistema. Solo disponible con acceso de administración verificado por el servidor.';
+  if (moduleId === 'cashflow' && companyName === 'Footprint Global') return 'Footprint no tiene un archivo Cashflow conectado. No se atribuyen a esta compañía los balances del archivo WOBA/eWorks.';
   if (moduleId === 'cashflow') return `Propuestas y pagos identificados de ${companyName}. Los balances del Sheet son conjuntos (WOBA/eWorks) y no se atribuyen a una sola compañía.`;
   if (COMPANY_MODULES.has(moduleId)) return `Datos identificados de ${companyName}. El selector no altera tus permisos.`;
   return 'Vista conjunta del sistema. Esta fuente no ofrece una separación fiable por compañía.';

@@ -2,6 +2,7 @@ import ModuleDetails from "./modules/nucleo/ModuleDetails.jsx";
 import NucleoVivo from "./modules/nucleo/NucleoVivo.jsx";
 import SettingsHub from "./modules/nucleo/SettingsHub.jsx";
 import { scopeSnapshot } from "./modules/nucleo/companyScope.mjs";
+import { cashflowRows } from "./modules/nucleo/cashflowView.mjs";
 import TelegramHandoff from "./modules/nucleo/TelegramHandoff.jsx";
 import { createRefreshCoordinator, fuerzaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
 import { borrarSnapshotLocal, guardarSnapshotLocal, leerSnapshotLocal } from "./snapshotLocal.js";
@@ -292,38 +293,7 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
   if (!d) return [];
   switch (id) {
     case "cashflow": {
-      const bal =
-        periodoCashflow === "mes"
-          ? get(d, "cashflow.balanceUltimoMes")
-          : get(d, "cashflow.balanceUltimaSemana");
-      const props = get(d, "cashflow.propuestasPendientes", []);
-      const recurrentes = get(d, "cashflow.pagosRecurrentes", []);
-      const alertas = get(d, "cashflow.alertasPagosRecurrentesProximas", []);
-      const rows = [];
-      if (bal && periodoCashflow === "mes") {
-        rows.push([`Balance ${bal.mesLabel}`, fmtMoney(bal.balanceFinal)]);
-        rows.push([`Ingresos de ${bal.mesLabel}`, fmtMoney(bal.ingresos)]);
-        rows.push([`Gastos de ${bal.mesLabel}`, fmtMoney(bal.gastos)]);
-      } else if (bal) {
-        rows.push([`Balance ${bal.semana}`, fmtMoney(bal.balanceFinal)]);
-      }
-      rows.push(["Propuestas pendientes", String(props.length)]);
-      rows.push(["Pagos recurrentes catalogados", String(recurrentes.length)]);
-      const ultDeteccion = get(d, "cashflow.ultimaDeteccionHolded");
-      if (ultDeteccion) rows.push(["Última revisión de Holded", timeAgo(ultDeteccion)]);
-
-      // Lo que Wobi ya está generando internamente (el cron diario de alertas
-      // fiscales) aunque todavía no exista ningún movimiento real en
-      // Holded/cashflow — antes era invisible en este panel.
-      if (alertas.length === 0) {
-        rows.push(["Próximas alertas de pagos recurrentes", "ninguna en ventana"]);
-      } else {
-        alertas.forEach((a) => {
-          rows.push([`⏰ ${a.concepto} (${a.empresa})`, a.diasRestantes === 0 ? "vence HOY" : `en ${a.diasRestantes} día(s)`]);
-        });
-      }
-
-      return rows;
+      return cashflowRows(d, periodoCashflow, fmtMoney, timeAgo);
     }
     case "holded": {
       const porEmpresa = get(d, "holded.porEmpresa", {});
@@ -3680,6 +3650,14 @@ export default function CerebroWoba() {
         setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
         return false;
       }
+      if (res.status === 202 && fuerzaLecturaNueva(motivo)) {
+        // El servidor aceptó la orden; aún no hay datos nuevos. Volver a consultar
+        // la lectura normal mientras las secciones terminan, sin guardar el acuse
+        // como si fuese un snapshot del negocio.
+        setErrorSincronizacion("");
+        programarReintentoSiRefrescando({ refrescando: true });
+        return true;
+      }
       if (!res.ok) throw new Error(`estado_${res.status}`);
       const json = await res.json();
       signal.throwIfAborted();
@@ -3786,7 +3764,7 @@ export default function CerebroWoba() {
 
   const renderModuleDetails = (m, companyId = null) => {
     const moduleData = companyId ? scopeSnapshot(m.id, liveData, companyId) : liveData;
-    return <ModuleDetails {...{ m, fuentesFallidas, periodoCashflow, setPeriodoCashflow, verPagosRecurrentes, setVerPagosRecurrentes, verDocumentos, setVerDocumentos, verCapturasRecientes, setVerCapturasRecientes, verCorreccionesRecientes, C, get, timeAgo, Desplegable, liveRowsForModule }} liveData={moduleData}
+    return <ModuleDetails {...{ m, fuentesFallidas, periodoCashflow, setPeriodoCashflow, verPagosRecurrentes, setVerPagosRecurrentes, verDocumentos, setVerDocumentos, verCapturasRecientes, setVerCapturasRecientes, verCorreccionesRecientes, C, get, timeAgo, Desplegable, liveRowsForModule }} liveData={moduleData} groupData={liveData} companyId={companyId}
     auditContent={m.id === "auditoria" ? <AuditoriaProgramadaContenido data={liveData} /> : null}>
               {/* Las conexiones se verifican con el panel completo, incluso si este nodo está cerrado. */}
               {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
