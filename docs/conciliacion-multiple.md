@@ -15,7 +15,7 @@ La suma exacta es necesaria, pero no demuestra por sí sola que los pagos corres
 ## Invariantes
 
 - Todos los recursos se leen con las credenciales de la misma empresa. Se exige que el ID y la cuenta devueltos coincidan con los solicitados.
-- Entre 2 y 20 cargos completos, únicos, pendientes y con importe conciliado cero. Se rechazan abonos, movimientos parciales, estados desconocidos, borradores y compras anuladas.
+- Entre 2 y 20 cargos completos, únicos, pendientes y con importe conciliado cero. Se rechazan abonos, movimientos parciales, estados desconocidos y compras anuladas. La compra puede estar en borrador: así la crea WOBI y el flujo normal también concilia sobre el borrador.
 - Inicialmente solo EUR, sin conversiones ni ajustes por comisiones. El repositorio documenta un incidente previo de aplicación incorrecta de importes en otras monedas por Holded.
 - Se calcula en céntimos enteros. No hay tolerancia ni redondeo. Se admiten los decimales de la API y los importes ES con coma usados por Holded; las representaciones ambiguas se rechazan.
 - La suma debe ser igual al **saldo pendiente**, no necesariamente al total original. Se admiten compras con pagos anteriores cuando su detalle y saldos cuadran exactamente.

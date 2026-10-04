@@ -55,7 +55,8 @@ export class HoldedConciliacionAdapter implements PuertoHolded {
   async compra(empresa: Empresa, id: string): Promise<CompraExacta> {
     const c = objeto(await this.api(empresa, `/purchases/${encodeURIComponent(id)}`));
     if (c.id !== id || !Array.isArray(c.payments_detail) || !Array.isArray(c.lines) || c.lines.length === 0) throw new Error("No se pudo verificar la compra y su detalle de pagos.");
-    if (c.draft !== false) throw new Error("No se pudo confirmar que la compra está contabilizada.");
+    // Las compras que crea WOBI nacen en borrador y se concilian sobre ese borrador (flujo normal de gastos); lo que sí se exige es conocer el estado.
+    if (typeof c.draft !== "boolean") throw new Error("No se pudo leer si la compra es un borrador.");
     if (c.payments_refunds != null && centimos(c.payments_refunds, true) !== 0) throw new Error("Compra con devoluciones: requiere revisión específica.");
     return {
       cuentasContables: [...new Set(c.lines.map((raw) => texto(objeto(raw).account, "cuenta contable")))],
@@ -63,7 +64,7 @@ export class HoldedConciliacionAdapter implements PuertoHolded {
       numero: typeof c.document_number === "string" ? c.document_number : "", fecha: fecha(c.date),
       moneda: texto(c.currency, "moneda").toUpperCase(), totalCentimos: centimos(c.total, true),
       pagadoCentimos: centimos(c.payments_total, true), pendienteCentimos: centimos(c.payments_pending, true),
-      estado: texto(c.status, "estado de compra"), borrador: false,
+      estado: texto(c.status, "estado de compra"), borrador: c.draft,
       pagos: c.payments_detail.map((raw) => {
         const p = objeto(raw);
         return { id: texto(p.id, "pago ID"), centimos: centimos(p.amount, true), accountId: texto(p.bank_id, "cuenta del pago"), fecha: fecha(p.date) };
