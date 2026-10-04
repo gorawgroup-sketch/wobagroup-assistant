@@ -2,7 +2,7 @@
 
 Documento vivo: se actualiza cada vez que se agrega una palabra clave, comando o
 patrón nuevo que el asistente reconoce en el chat de Telegram. Última
-actualización: 2026-09-22 (el resultado de "▶️ Aprobar selección" siempre aparece al final del chat, y una instrucción ya ejecutada nunca se vuelve a dejar pendiente para repetirse).
+actualización: 2026-10-04 (consulta de Proyectos de Holded, ver sección al final); anterior 2026-09-22 (el resultado de "▶️ Aprobar selección" siempre aparece al final del chat, y una instrucción ya ejecutada nunca se vuelve a dejar pendiente para repetirse).
 
 Para casi todo lo demás (consultar cashflow, buscar en Drive, ver movimientos de
 Holded, alertas fiscales, preguntas generales) no hace falta ningún comando —
@@ -395,4 +395,13 @@ Pedido de Carlos (03-10-2026). Detalle técnico en `docs/transferencias-internas
 - **Qué llega**: hasta 5 propuestas por pasada, cada una con empresa, fecha, cuenta e importe de salida y de entrada, tasa aplicada y del día en las conversiones, las descripciones de las dos patas y el nivel de confianza.
 - **Botones**: "✅ Conciliar transferencia" (crea un único asiento debe destino / haber origen y concilia los dos movimientos; solo para parejas autorizadas por escrito y con el modo activo), "⏭️ Saltar por ahora" (sigue pendiente y vuelve a proponerse), "🚫 No es una transferencia" (no se vuelve a proponer) y "🔎 Revisar manualmente" (queda a cargo de Carlos en Holded).
 - **Seguridad**: apagado por defecto (`WOBI_TRANSFERENCIAS_MODO`); nunca cruza empresas; nunca reutiliza un movimiento; no reintenta una escritura incierta; las conversiones de moneda todavía no se ejecutan.
+
+## Proyectos de Holded (solo lectura)
+
+Pedido de Carlos. Tool `consultar_proyectos_holded`; no hace falta ningún comando, se pide en lenguaje natural. Solo consulta: no crea, edita ni imputa nada en Holded.
+
+- **Listar**: «¿qué proyectos tiene Footprint en Holded?», «lista los proyectos activos de WOBA» (por defecto sin archivados; di «incluye archivados» para verlos).
+- **Reporte de un proyecto**: «¿cómo va el proyecto Sinfonía Miami de EWORKS?», «rentabilidad del proyecto X», «cuánto se ha facturado y cobrado en X». Devuelve cliente, estado, facturable, fechas, ventas/ingresos, gastos de documentos, coste de personal, gastos totales, beneficio, presupuestado, facturado, cobrado, pendiente y tareas completadas. Los importes son los del resumen agregado de Holded, en la moneda base de la empresa.
+- **Cómo busca**: por id o nombre exacto (sin distinguir mayúsculas ni tildes). Si el texto solo coincide con parte del nombre y hay una única opción, la usa; si hay varias, las lista y pide el nombre exacto o el id, nunca elige por intuición.
+- **Límite importante**: solo ve lo que la clave de API de la empresa puede ver. Un proyecto privado de un usuario, visible en la web, puede no aparecer; en ese caso el asistente dice que «no está visible para la API», nunca que no existe. Si Holded falla, devuelve el error en vez de una lista vacía. El catálogo se guarda 5 minutos en memoria.
 

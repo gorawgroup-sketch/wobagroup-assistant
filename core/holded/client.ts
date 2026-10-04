@@ -67,6 +67,154 @@ export async function holdedGet<T = unknown>(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Proyectos de Holded (SOLO LECTURA). Todo lo de este bloque son GET: no hay
+// ninguna escritura de proyectos en el sistema.
+// ---------------------------------------------------------------------------
+
+export interface HoldedProject {
+  id: string;
+  name: string;
+  description?: string;
+  contact_id?: string | null;
+  contact_name?: string;
+  start_date?: string | null;
+  due_date?: string | null;
+  tags?: string[];
+  archived?: boolean;
+  /** Holded devuelve hoy un entero, aunque el filtro de listado use nombres de estado. */
+  status?: number;
+  number_of_tasks?: number;
+  completed_tasks?: number;
+  billable?: boolean;
+  scope?: string;
+  [key: string]: unknown;
+}
+
+export interface HoldedProjectSummary {
+  name?: string;
+  desc?: string;
+  projectEvolution?: {
+    tasks?: { total?: number; completed?: number };
+    dueDate?: number | string | null;
+  };
+  profitability?: {
+    sales?: number;
+    expenses?: { documents?: number; personnel?: number; total?: number };
+    profit?: number;
+  };
+  economicStatus?: {
+    sales?: number;
+    quoted?: number;
+    difference?: number;
+    estimatePrice?: number;
+    billed?: number;
+    collected?: number;
+    remaining?: number;
+  };
+  [key: string]: unknown;
+}
+
+const CACHE_PROYECTOS_TTL_MS = 5 * 60 * 1000;
+/** Tope de páginas (100 por página). Si se supera, el catálogo sería incompleto y se falla en vez de ocultarlo. */
+const MAX_PAGINAS_PROYECTOS = 50;
+const cachesProyectos = new Map<Empresa, CacheLectura<HoldedProject[]>>();
+
+function cacheProyectosDe(empresa: Empresa): CacheLectura<HoldedProject[]> {
+  let cache = cachesProyectos.get(empresa);
+  if (!cache) {
+    cache = new CacheLectura<HoldedProject[]>("holded_proyectos", CACHE_PROYECTOS_TTL_MS);
+    cachesProyectos.set(empresa, cache);
+  }
+  return cache;
+}
+
+function normalizarNombreProyecto(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+async function cargarProyectos(empresa: Empresa): Promise<HoldedProject[]> {
+  const projects: HoldedProject[] = [];
+  let cursor: string | undefined;
+
+  for (let page = 0; page < MAX_PAGINAS_PROYECTOS; page++) {
+    const data = await holdedGet<{ items?: HoldedProject[]; has_more?: boolean; cursor?: string | null }>(
+      empresa,
+      "/projects",
+      { limit: "100", cursor }
+    );
+    projects.push(...(Array.isArray(data?.items) ? data.items : []));
+    if (!data?.has_more || !data.cursor) return projects;
+    cursor = data.cursor;
+  }
+  throw new Error(`El catálogo de proyectos de ${empresa} supera ${MAX_PAGINAS_PROYECTOS} páginas; no se devuelve incompleto.`);
+}
+
+/**
+ * Lista el catálogo que la API key de la empresa puede ver. Es importante
+ * no confundirlo con todo lo que ve un usuario en la web: los proyectos
+ * privados de un usuario no aparecen para una API key de organización.
+ * Un fallo de Holded se propaga: nunca se convierte en «no hay proyectos».
+ */
+export async function listProjects(empresa: Empresa, forceRefresh = false): Promise<HoldedProject[]> {
+  const cache = cacheProyectosDe(empresa);
+  if (forceRefresh) cache.invalidar();
+  return (await cache.obtener(() => cargarProyectos(empresa))).datos;
+}
+
+/** Obtiene los importes agregados de un proyecto. Siempre es una consulta GET. */
+export async function getProjectSummary(empresa: Empresa, projectId: string): Promise<HoldedProjectSummary> {
+  return holdedGet<HoldedProjectSummary>(empresa, `/projects/${encodeURIComponent(projectId)}/summary`);
+}
+
+export interface ProjectMatch {
+  exact?: HoldedProject;
+  candidates: HoldedProject[];
+}
+
+/**
+ * Resuelve por id o nombre exacto normalizado. Los candidatos parciales se
+ * devuelven solo para explicar/preguntar; jamás autorizan una imputación.
+ */
+export function matchProject(projects: HoldedProject[], query: string, includeArchived = false): ProjectMatch {
+  const available = includeArchived ? projects : projects.filter((project) => !project.archived);
+  const trimmed = query.trim();
+  const normalized = normalizarNombreProyecto(trimmed);
+  if (!trimmed) return { candidates: available };
+
+  const idMatch = available.find((project) => project.id === trimmed);
+  if (idMatch) return { exact: idMatch, candidates: [idMatch] };
+
+  const exactByName = available.filter((project) => normalizarNombreProyecto(project.name) === normalized);
+  if (exactByName.length === 1) return { exact: exactByName[0], candidates: exactByName };
+  if (exactByName.length > 1) return { candidates: exactByName };
+
+  const partial = available.filter((project) => {
+    const name = normalizarNombreProyecto(project.name);
+    // Ambas direcciones exigen >= 3 caracteres: un proyecto llamado «A» no debe casar con cualquier consulta.
+    return normalized.length >= 3 && name.length >= 3 && (name.includes(normalized) || normalized.includes(name));
+  });
+  return { candidates: partial };
+}
+
+/**
+ * Variante deliberadamente estricta para escrituras contables: solo acepta
+ * una coincidencia única por id o nombre exacto, nunca una aproximación.
+ */
+export async function resolveProjectExact(
+  empresa: Empresa,
+  query: string,
+  forceRefresh = false
+): Promise<ProjectMatch> {
+  return matchProject(await listProjects(empresa, forceRefresh), query, false);
+}
+
 /**
  * Chequeo mínimo de conexión: una sola cuenta de tesorería, la llamada más
  * barata disponible que igual confirma que la API key de LECTURA todavía es
