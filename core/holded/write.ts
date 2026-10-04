@@ -5950,7 +5950,12 @@ export function evaluarAjusteCambioResidual(
   // pendientes. Se exige que no haya otros pagos y que total pagado + pendiente
   // recomponga exactamente el total nativo.
   if (!Number.isFinite(totalPagadoNativo) ||
-      centimos(totalPagadoNativo) + pendienteCentimos !== centimos(totalNativo)) return undefined;
+      // Holded redondea por separado lo pagado (EUR × tasa) y lo pendiente: la suma puede quedar a UN céntimo del total sin que
+      // haya ningún pago ajeno (caso real El Meson Sandwiches, Footprint, 2026-10-04: 16,53 + 0,03 = 16,56 frente a 16,57).
+      // Que no hay otros pagos ya lo prueban, en EUR y al céntimo, los controles de payments_detail de arriba.
+      // Solo "corta": redondear a la baja los dos valores puede dejar la suma un céntimo por debajo del total, nunca por encima.
+      (centimos(totalNativo) - (centimos(totalPagadoNativo) + pendienteCentimos) < 0 ||
+        centimos(totalNativo) - (centimos(totalPagadoNativo) + pendienteCentimos) > 1)) return undefined;
 
   const montoAjusteCentimos = Math.round((pendiente / tasaCambio) * 100);
   if (montoAjusteCentimos <= 0 || montoAjusteCentimos > margenCentimos) return undefined;
@@ -6332,11 +6337,16 @@ export async function enviarConciliacionMovimientoHolded(
   }
 }
 
-export async function recuperarConciliacionExistenteCompra(empresa: Empresa, documentId: string) {
+/**
+ * Por defecto solo lee. `cerrarResiduoCambio: true` lo usa ÚNICAMENTE el botón «Verificar resultado anterior» que pulsa una
+ * persona: si el movimiento está conciliado por completo y solo queda el residuo de redondeo de la divisa, lo cierra con el
+ * ajuste de cambio durable (idempotente: su propio registro impide repetirlo). Nunca en el arranque ni en tareas automáticas.
+ */
+export async function recuperarConciliacionExistenteCompra(empresa: Empresa, documentId: string, opciones: { cerrarResiduoCambio?: boolean } = {}) {
   return recuperarConciliacionCompra(empresa, documentId, {
     leerCompra: obtenerCompraHoldedPorId,
     listar: (e, id) => durableBankReconciliationStore.listarPorDocumento(e, id),
-    inspeccionar: registro => inspeccionarConciliacionRegistrada(registro, { permitirAjusteCambioAutomatico: false }),
+    inspeccionar: registro => inspeccionarConciliacionRegistrada(registro, { permitirAjusteCambioAutomatico: opciones.cerrarResiduoCambio === true }),
   });
 }
 

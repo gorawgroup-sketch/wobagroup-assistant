@@ -660,14 +660,14 @@ test("caso real Kiwi: convierte el saldo nativo a EUR cuando Holded conserva la 
   assert.equal(resultado.tasaCambio, 1.15);
 });
 
-test("una tasa redondeada no habilita el ajuste si el residuo no explica exactamente el saldo nativo", () => {
+test("una tasa redondeada no habilita el ajuste si el residuo no explica el saldo nativo (más de un céntimo de desfase)", () => {
   const resultado = evaluarAjusteCambioResidual(
     {
       currency: "USD",
       currency_change: "1.15",
       total: "151,00",
       payments_total: "150,44",
-      payments_pending: "0,55",
+      payments_pending: "0,54",
       payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-16", amount: "130,81" }],
     },
     {
@@ -782,4 +782,21 @@ test("el margen tiene piso de 2 céntimos (factura chica) y techo de 1 unidad (f
   // Factura grande: el 0,5% (5.000) es mucho más que el techo de 1 unidad — un hueco de 2 no se tolera.
   const residuoGrande = residuoMovimientoFueraDeMargen(1_000_000, 999_998);
   assert.ok(residuoGrande !== undefined && Math.abs(residuoGrande - 2) < 1e-9);
+});
+
+test("caso real El Meson Sandwiches (Footprint, 2026-10-04): pagado 16,53 + pendiente 0,03 queda a un céntimo de 16,57 y aun así se cierra con el ajuste", () => {
+  const compra = {
+    currency: "USD", currency_change: "1.12", total: "16,57", payments_total: "16,53", payments_pending: "0,03",
+    payments_detail: [{ bank_id: "ftg-usd", date: "2026-10-02", amount: "14,73" }],
+  };
+  const movimiento = { status: "reconciled", currency: "USD", amount: "-16.57", reconciled_amount: "-16.57", accounting_amount: "-14.73" };
+  const resultado = evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-10-02");
+  assert.ok(resultado);
+  assert.equal(resultado.monto, 0.03);
+  assert.equal(resultado.montoNativo, 16.57);
+  // Con un pago ajeno (lo pagado en EUR ya no coincide con el movimiento) sigue sin habilitarse.
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_detail: [...compra.payments_detail, { bank_id: "otra", date: "2026-10-02", amount: "1,00" }] }, movimiento, "ftg-usd", "2026-10-02"), undefined);
+  // Dos céntimos cortos o más: no es redondeo. Y una suma que SUPERA el total es una inconsistencia, nunca un redondeo.
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_total: "16,52" }, movimiento, "ftg-usd", "2026-10-02"), undefined);
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_pending: "0,05" }, movimiento, "ftg-usd", "2026-10-02"), undefined);
 });
