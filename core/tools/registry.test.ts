@@ -43,6 +43,11 @@ test("la consulta de vacaciones está disponible en chat y autorrespuesta como l
   assert.equal(permitidos.has("consultar_vacaciones_holded"), true);
 });
 
+test("la consulta de proyectos de Holded está disponible en el modo de lectura", () => {
+  const permitidos = new Set(getToolDefinitions(true).map((tool) => tool.name));
+  assert.equal(permitidos.has("consultar_proyectos_holded"), true);
+});
+
 test("el motor oficial y sus alias de cashflow-Holded están disponibles en el modo de lectura", () => {
   const permitidos = new Set(getToolDefinitions(true).map((tool) => tool.name));
   assert.equal(permitidos.has("comparar_cashflow_holded"), true);

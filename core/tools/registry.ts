@@ -57,6 +57,7 @@ import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespu
 import { marcarCorreoLeidoTool } from "./marcarCorreoLeido";
 import { escalarDesarrolloTool } from "./escalarDesarrollo";
 import { vacacionesHoldedTool } from "./vacacionesHolded";
+import { proyectosHoldedTool } from "./proyectosHolded";
 import { descartarRecomendacionControlDiarioTool } from "./descartarRecomendacionControlDiario";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
 import { consultarPolizasSeguroTool } from "./consultarPolizasSeguro";
@@ -129,6 +130,7 @@ const tools: ToolDefinition[] = [
   marcarCorreoLeidoTool,
   escalarDesarrolloTool,
   vacacionesHoldedTool,
+  proyectosHoldedTool,
   descartarRecomendacionControlDiarioTool,
   compararCashflowHoldedTool,
   consultarPolizasSeguroTool,
