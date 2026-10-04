@@ -35,6 +35,7 @@ import { resolverRespuestaCarpeta } from "../core/documental/respuestaCarpeta";
 import { obtenerResumenColaPorChat } from "../core/gmail/colaRevisionStore";
 import { avisoEstadoCola, esContinuacionCorreo, avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
 import "../core/google/globalOptions";
+import { crearRouterDocumentos } from "../core/cerebro/documentos/router";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
@@ -146,6 +147,7 @@ import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
 import { invalidarEstadoCerebro, iniciarMantenimientoEstadoCerebro, obtenerDiagnosticoPanelCerebro, obtenerEstadoCerebro } from "../core/cerebro/estadoAgregado";
+import { solicitarActualizacion } from "../core/cerebro/solicitarActualizacion";
 import { obtenerEstadoConexiones, arreglarConexion } from "../core/cerebro/conexiones";
 import { listarPolizas, actualizarPoliza } from "../core/seguros/polizaRegistroSheet";
 import { formatDateLocal } from "../core/utils/dateFormat";
@@ -564,6 +566,15 @@ app.get("/api/cerebro/estado", async (req: Request, res: Response) => {
 
   try {
     res.set("Cache-Control", "no-store");
+    // Solo el front nuevo usa el acuse asíncrono. La ruta existente
+    // ?actualizar=1 conserva su respuesta de estado para otros consumidores.
+    if (req.query.actualizar === "1" && req.query.asincrono === "1") {
+      const acuse = solicitarActualizacion(() => obtenerEstadoCerebro(true), (error) => {
+        console.warn("[api/cerebro/estado] Actualización manual incompleta:", error instanceof Error ? error.message : String(error));
+      });
+      res.status(202).json(acuse);
+      return;
+    }
     const estado = await obtenerEstadoCerebro(req.query.actualizar === "1");
     res.json(estado);
   } catch (error) {
@@ -597,6 +608,7 @@ async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> 
 }
 
 app.use("/api/cerebro/voz", crearRouterVoz(exigeAccesoValido));
+app.use("/api/cerebro/documentos", crearRouterDocumentos(exigeAccesoValido));
 
 /**
  * Canal de invalidación en tiempo real. Envía solo metadatos; los datos de

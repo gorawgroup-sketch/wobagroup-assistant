@@ -1,3 +1,9 @@
+import ModuleDetails from "./modules/nucleo/ModuleDetails.jsx";
+import NucleoVivo from "./modules/nucleo/NucleoVivo.jsx";
+import SettingsHub from "./modules/nucleo/SettingsHub.jsx";
+import { scopeSnapshot } from "./modules/nucleo/companyScope.mjs";
+import { cashflowRows } from "./modules/nucleo/cashflowView.mjs";
+import TelegramHandoff from "./modules/nucleo/TelegramHandoff.jsx";
 import { createRefreshCoordinator, fuerzaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
 import { borrarSnapshotLocal, guardarSnapshotLocal, leerSnapshotLocal } from "./snapshotLocal.js";
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
@@ -287,38 +293,7 @@ function liveRowsForModule(id, d, periodoCashflow = "semana") {
   if (!d) return [];
   switch (id) {
     case "cashflow": {
-      const bal =
-        periodoCashflow === "mes"
-          ? get(d, "cashflow.balanceUltimoMes")
-          : get(d, "cashflow.balanceUltimaSemana");
-      const props = get(d, "cashflow.propuestasPendientes", []);
-      const recurrentes = get(d, "cashflow.pagosRecurrentes", []);
-      const alertas = get(d, "cashflow.alertasPagosRecurrentesProximas", []);
-      const rows = [];
-      if (bal && periodoCashflow === "mes") {
-        rows.push([`Balance ${bal.mesLabel}`, fmtMoney(bal.balanceFinal)]);
-        rows.push([`Ingresos de ${bal.mesLabel}`, fmtMoney(bal.ingresos)]);
-        rows.push([`Gastos de ${bal.mesLabel}`, fmtMoney(bal.gastos)]);
-      } else if (bal) {
-        rows.push([`Balance ${bal.semana}`, fmtMoney(bal.balanceFinal)]);
-      }
-      rows.push(["Propuestas pendientes", String(props.length)]);
-      rows.push(["Pagos recurrentes catalogados", String(recurrentes.length)]);
-      const ultDeteccion = get(d, "cashflow.ultimaDeteccionHolded");
-      if (ultDeteccion) rows.push(["Última revisión de Holded", timeAgo(ultDeteccion)]);
-
-      // Lo que Wobi ya está generando internamente (el cron diario de alertas
-      // fiscales) aunque todavía no exista ningún movimiento real en
-      // Holded/cashflow — antes era invisible en este panel.
-      if (alertas.length === 0) {
-        rows.push(["Próximas alertas de pagos recurrentes", "ninguna en ventana"]);
-      } else {
-        alertas.forEach((a) => {
-          rows.push([`⏰ ${a.concepto} (${a.empresa})`, a.diasRestantes === 0 ? "vence HOY" : `en ${a.diasRestantes} día(s)`]);
-        });
-      }
-
-      return rows;
+      return cashflowRows(d, periodoCashflow, fmtMoney, timeAgo);
     }
     case "holded": {
       const porEmpresa = get(d, "holded.porEmpresa", {});
@@ -1562,12 +1537,12 @@ function formatoRestante(expiraEnMs) {
 function Desplegable({ titulo, abierto, onToggle, children }) {
   return (
     <div style={{ marginTop: 6 }}>
-      <div onClick={onToggle} style={{ display: "flex", alignItems: "center", padding: "5px 0", cursor: "pointer" }}>
+      <button type="button" className="nv-disclosure-toggle" aria-expanded={abierto} onClick={onToggle} style={{ display: "flex", alignItems: "center", padding: "5px 0", cursor: "pointer", background:"transparent", border:0 }}>
         <span style={{ fontFamily: C.sans, fontSize: 12, color: C.amberBright }}>
           {abierto ? "▾" : "▸"} {titulo}
         </span>
-      </div>
-      {abierto && <div style={{ paddingLeft: 8, borderLeft: `1px solid ${C.line}` }}>{children}</div>}
+      </button>
+      {abierto && <div className="nv-disclosure-body" style={{ paddingLeft: 8, borderLeft: `1px solid ${C.line}` }}>{children}</div>}
     </div>
   );
 }
@@ -2105,6 +2080,7 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
               {deEstaEmpresa.map((p) => (
                 <div
                   key={p.id}
+                  className="nv-policy"
                   style={{ padding: "8px 10px", background: C.voidSoft, borderRadius: 6, border: `1px solid ${C.line}` }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
@@ -2137,7 +2113,7 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
                     </div>
                   )}
                   {p.notas && (
-                    <div style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{p.notas}</div>
+                    <div className="nv-policy-notes" style={{ fontFamily: C.sans, fontSize: 10.5, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>{p.notas}</div>
                   )}
                   {(p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar") && puedeArreglar && (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
@@ -2193,7 +2169,7 @@ function SegurosContenido({ apiKey, puedeArreglar, estado, onRefresh }) {
             padding: "6px 12px",
           }}
         >
-          abrir el registro ↗
+          abrir el registro conjunto ↗
         </a>
       )}
     </div>
@@ -3438,7 +3414,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, revisionSo
 }
 
 export default function CerebroWoba() {
-  const modoChatCompleto = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("chat") === "grande";
+  const [nucleoActivo, setNucleoActivo] = useState(() => new URLSearchParams(window.location.search).get("vista") !== "clasica");
   const [active, setActive] = useState(null);
   // Pedido explícito de Carlos: poder tener varios módulos abiertos a la vez
   // (antes un solo valor `open`) — ver el comentario de "cerebro-layout" más
@@ -3492,8 +3468,6 @@ export default function CerebroWoba() {
   const [apiKey, setApiKey] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [estadoTiempoReal, setEstadoTiempoReal] = useState("desconectado");
-  const [ultimoContactoEn, setUltimoContactoEn] = useState(null);
-  const [revisionSolicitudesChat, setRevisionSolicitudesChat] = useState(0);
   const [errorSincronizacion, setErrorSincronizacion] = useState("");
   const [relojDatos, setRelojDatos] = useState(Date.now());
   useEffect(() => { const id = setInterval(() => setRelojDatos(Date.now()), 10_000); return () => clearInterval(id); }, []);
@@ -3530,7 +3504,6 @@ export default function CerebroWoba() {
     guardarSnapshotLocal(almacenLocal(), key, json);
     setApiKey(key);
     setNombreUsuario(nombre || "");
-    setUltimoContactoEn(new Date().toISOString());
     setErrorSincronizacion("");
     try {
       localStorage.setItem(LOCALSTORAGE_TOKEN_KEY, JSON.stringify({ token: key, nombre: nombre || "" }));
@@ -3586,7 +3559,6 @@ export default function CerebroWoba() {
           aplicarLectura(json, sesionGuardada.token);
           setApiKey(sesionGuardada.token);
           setNombreUsuario(sesionGuardada.nombre || "");
-          setUltimoContactoEn(new Date().toISOString());
           setErrorSincronizacion("");
           // Una sesión válida no vuelve a obligar a pasar por la animación de
           // bienvenida en cada visita.
@@ -3666,7 +3638,7 @@ export default function CerebroWoba() {
     setRefreshing(true);
     try {
       // Solo el botón «actualizar» fuerza al servidor; el resto lee lo último que tiene, al instante.
-      const url = fuerzaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1` : CEREBRO_ENDPOINT;
+      const url = fuerzaLecturaNueva(motivo) ? `${CEREBRO_ENDPOINT}?actualizar=1&asincrono=1` : CEREBRO_ENDPOINT;
       const res = await fetch(url, { headers: { "X-Cerebro-Key": apiKey }, cache: "no-store", signal });
       signal.throwIfAborted();
       if (res.status === 403) {
@@ -3678,11 +3650,18 @@ export default function CerebroWoba() {
         setErrorSincronizacion("La sesión venció o fue revocada. Solicita acceso nuevamente.");
         return false;
       }
+      if (res.status === 202 && fuerzaLecturaNueva(motivo)) {
+        // El servidor aceptó la orden; aún no hay datos nuevos. Volver a consultar
+        // la lectura normal mientras las secciones terminan, sin guardar el acuse
+        // como si fuese un snapshot del negocio.
+        setErrorSincronizacion("");
+        programarReintentoSiRefrescando({ refrescando: true });
+        return true;
+      }
       if (!res.ok) throw new Error(`estado_${res.status}`);
       const json = await res.json();
       signal.throwIfAborted();
       if (!aplicarLectura(json, apiKey)) return true; // llegó una lectura más nueva mientras tanto
-      setUltimoContactoEn(new Date().toISOString());
       setErrorSincronizacion("");
       programarReintentoSiRefrescando(json);
       return true;
@@ -3698,17 +3677,10 @@ export default function CerebroWoba() {
   const refreshLiveData = useCallback((motivo = "manual") => actualizador.refresh(motivo), [actualizador]);
   refrescarRef.current = refreshLiveData;
 
-  const manejarEventoTiempoReal = useCallback((evento) => {
-    if (evento?.tipo?.startsWith("chat_solicitud:")) {
-      setRevisionSolicitudesChat((actual) => actual + 1);
-    }
-  }, []);
-
   useCerebroRealtime({
     apiKey,
     onRefresh: refreshLiveData,
     onStatus: setEstadoTiempoReal,
-    onEvent: manejarEventoTiempoReal,
   });
 
   const cerrarSesion = useCallback(() => {
@@ -3725,7 +3697,6 @@ export default function CerebroWoba() {
     setLiveData(null);
     setEsAdmin(false);
     setNombreUsuario("");
-    setUltimoContactoEn(null);
     setEstadoTiempoReal("desconectado");
     setOpenIds([]);
     setOpenGroups([]);
@@ -3745,9 +3716,7 @@ export default function CerebroWoba() {
     }, 80);
   }, []);
 
-  // Pedido explícito de Carlos: puentea ControlDiarioPanel (hermano de WobiChat, no un hijo) con el
-  // chat real — "que yo le pueda dar la orden al sistema desde el mismo front". `key: Date.now()`
-  // asegura que WobiChat dispare aunque se repita la misma pregunta dos veces seguidas.
+  // Las consultas operativas se preparan para continuar en Telegram, sin enviarlas automáticamente.
   const [preguntaControlDiario, setPreguntaControlDiario] = useState(null);
   const preguntarWobi = useCallback((texto) => {
     setPreguntaControlDiario({ texto, key: Date.now() });
@@ -3782,12 +3751,43 @@ export default function CerebroWoba() {
     : frescura === "parcial" || conexionesCaidas.length ? { texto: "Actualización con incidencias", color: C.amberBright }
     : estadoVisualBase;
 
+  const verificarAdministracion = async () => {
+    try {
+      const response = await fetch(ACCESOS_ACTIVOS_ENDPOINT, { headers: { "X-Cerebro-Key": apiKey } });
+      setEsAdmin(response.ok);
+      return response.ok;
+    } catch {
+      setEsAdmin(false);
+      return false;
+    }
+  };
+
+  const renderModuleDetails = (m, companyId = null) => {
+    const moduleData = companyId ? scopeSnapshot(m.id, liveData, companyId) : liveData;
+    return <ModuleDetails {...{ m, fuentesFallidas, periodoCashflow, setPeriodoCashflow, verPagosRecurrentes, setVerPagosRecurrentes, verDocumentos, setVerDocumentos, verCapturasRecientes, setVerCapturasRecientes, verCorreccionesRecientes, C, get, timeAgo, Desplegable, liveRowsForModule }} liveData={moduleData} groupData={liveData} companyId={companyId}
+    auditContent={m.id === "auditoria" ? <AuditoriaProgramadaContenido data={liveData} /> : null}>
+              {/* Las conexiones se verifican con el panel completo, incluso si este nodo está cerrado. */}
+              {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
+              {m.id === "calendario" && apiKey && <><p style={{color:C.dim}}>Programaciones de WOBi · vista conjunta de todas las compañías</p><MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} /></>}
+              {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.conexiones} onRefresh={refreshLiveData} />}
+              {m.id === "seguros" && apiKey && <SegurosContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={moduleData?.seguros} onRefresh={refreshLiveData} />}
+  </ModuleDetails>;
+  };
+  const renderNucleoModule = (id, onOpen, companyId) => {
+    if (id === "control_diario") return <ControlDiarioPanel data={liveData} apiKey={apiKey}
+      actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")}
+      onAbrir={onOpen} onPreguntarWobi={preguntarWobi} puedeResolver={esAdmin} onRefresh={refreshLiveData} />;
+    if (id === "administracion") return <SettingsHub isAdmin={esAdmin} onVerifyAdmin={verificarAdministracion} onLogout={cerrarSesion} apiKey={apiKey} data={liveData} onOpen={onOpen} onRefresh={refreshLiveData} refreshing={refreshing} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} users={<UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />} accesses={<AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />} />;
+    const module = MODULES.find(item => item.id === id);
+    return module ? renderModuleDetails(module, companyId) : null;
+  };
+
   return (
     <div
       style={{
         background: `radial-gradient(ellipse at 50% 32%, #10233A 0%, ${C.void} 66%)`,
         minHeight: "100svh",
-        padding: "36px 20px 48px",
+        padding: nucleoActivo ? "12px clamp(16px, 3vw, 48px) 32px" : "36px 20px 48px",
         fontFamily: C.sans,
         position: "relative",
         overflow: "hidden",
@@ -4632,6 +4632,14 @@ export default function CerebroWoba() {
       `}</style>
 
       <div inert={!entered || !liveData} aria-hidden={!entered || !liveData}>
+      {entered && apiKey && nucleoActivo && (
+        <NucleoVivo apiKey={apiKey} modules={MODULES} renderModule={renderNucleoModule}
+          onRefresh={refreshLiveData} onLogout={cerrarSesion} refreshing={refreshing}
+          status={estadoVisual} data={liveData} error={errorSincronizacion} isAdmin={esAdmin} name={nombreUsuario} />
+      )}
+      {preguntaControlDiario && <TelegramHandoff key={preguntaControlDiario.key} question={preguntaControlDiario.texto} onClose={() => setPreguntaControlDiario(null)} />}
+      {!nucleoActivo && <button className="nv-classic-return" type="button" onClick={() => setNucleoActivo(true)}>← Volver al Núcleo vivo</button>}
+      {!nucleoActivo && <div>
       <div
         style={{
           textAlign: "center",
@@ -4714,17 +4722,6 @@ export default function CerebroWoba() {
         )}
 
       </div>
-
-      {entered && apiKey && (
-        <WobiChat
-          apiKey={apiKey}
-          nombreUsuario={nombreUsuario}
-          revisionTiempoReal={ultimoContactoEn}
-          revisionSolicitudes={revisionSolicitudesChat}
-          modoCompleto={modoChatCompleto}
-          preguntaExterna={preguntaControlDiario}
-        />
-      )}
 
       {liveData && <AtencionAhora data={liveData} onAbrir={abrirModuloDesdeResumen} />}
       {liveData && apiKey && (
@@ -4994,167 +4991,7 @@ export default function CerebroWoba() {
               </div>
               <p style={{ fontFamily: C.sans, fontSize: 13, color: "#CBD8E6", lineHeight: 1.6, marginTop: 14, marginBottom: 0 }}>{m.desc}</p>
 
-              {m.id === "cashflow" && (
-                <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
-                  {[
-                    ["semana", "Semanal"],
-                    ["mes", "Mensual"],
-                  ].map(([valor, etiqueta]) => (
-                    <button
-                      key={valor}
-                      onClick={() => setPeriodoCashflow(valor)}
-                      style={{
-                        background: periodoCashflow === valor ? C.amber : "none",
-                        border: `1px solid ${C.amber}`,
-                        color: periodoCashflow === valor ? C.ink : C.amberBright,
-                        borderRadius: 6,
-                        padding: "5px 12px",
-                        fontFamily: C.mono,
-                        fontSize: 10.5,
-                        cursor: "pointer",
-                      }}
-                    >
-                      {etiqueta}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {fuentesFallidas.some(f => f.fuente.split(".")[0] === m.id && f.conservado) && (
-                <div role="status" style={{ color: C.amberBright, marginTop: 12 }}>Esta fuente no respondió. Se muestran datos de su última lectura válida: {fuentesFallidas.filter(f => f.fuente.split(".")[0] === m.id && f.conservado).map(f => timeAgo(f.ultimoExitoEn)).join(", ")}.</div>
-              )}
-              {liveData && fuentesFallidas.some(f => f.fuente.split(".")[0] === m.id && !f.conservado) ? (
-                <div role="status" style={{ color: C.amberBright, marginTop: 14 }}>Datos no disponibles: no se pudo verificar esta fuente. Se reintentará automáticamente.</div>
-              ) : liveData ? (
-                <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
-                  {liveRowsForModule(m.id, liveData, periodoCashflow).map(([label, value], i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 12.5 }}>
-                      <span style={{ fontFamily: C.sans, color: C.dim }}>{label}</span>
-                      <span style={{ fontFamily: C.mono, color: C.coreBright, textAlign: "right", maxWidth: "60%" }}>{value}</span>
-                    </div>
-                  ))}
-                  {m.id === "cashflow" && (
-                    <div style={{ marginTop: 6 }}>
-                      <div
-                        onClick={() => setVerPagosRecurrentes((v) => !v)}
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          padding: "5px 0",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <span style={{ fontFamily: C.sans, fontSize: 12, color: C.amberBright }}>
-                          {verPagosRecurrentes ? "▾" : "▸"} Ver cuáles son los pagos recurrentes catalogados
-                        </span>
-                      </div>
-                      {verPagosRecurrentes && (
-                        <div style={{ paddingLeft: 8, borderLeft: `1px solid ${C.line}` }}>
-                          {get(liveData, "cashflow.pagosRecurrentes", []).length === 0 ? (
-                            <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>
-                              Ninguno catalogado para WOBA/EWORKS.
-                            </div>
-                          ) : (
-                            get(liveData, "cashflow.pagosRecurrentes", []).map((p, i) => (
-                              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 11.5 }}>
-                                <span style={{ fontFamily: C.sans, color: C.dim }}>{p.concepto} · {p.empresa}</span>
-                                <span style={{ fontFamily: C.mono, color: C.coreBright }}>{p.periodicidad}</span>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {m.id === "cashflow" && get(liveData, "cashflow.linkSheet") && (
-                    <a
-                      href={get(liveData, "cashflow.linkSheet")}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ display: "inline-block", marginTop: 10, fontFamily: C.mono, fontSize: 11, color: C.amberBright, textDecoration: "none", border: `1px solid ${C.amber}`, borderRadius: 6, padding: "6px 12px" }}
-                    >
-                      abrir el cashflow ↗
-                    </a>
-                  )}
-
-                  {m.id === "conocimiento" && (
-                    <>
-                      <Desplegable
-                        titulo={`Ver los ${get(liveData, "conocimiento.documentos", 0)} documentos de proceso`}
-                        abierto={verDocumentos}
-                        onToggle={() => setVerDocumentos((v) => !v)}
-                      >
-                        {get(liveData, "conocimiento.listaDocumentos", []).length === 0 ? (
-                          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>Sin documentos.</div>
-                        ) : (
-                          get(liveData, "conocimiento.listaDocumentos", []).map((doc, i) => (
-                            <div key={i} style={{ padding: "5px 0" }}>
-                              <div style={{ fontFamily: C.mono, fontSize: 11, color: C.coreBright }}>{doc.nombre}</div>
-                              {doc.resumen && (
-                                <div style={{ fontFamily: C.sans, fontSize: 11, color: C.dim, marginTop: 1 }}>{doc.resumen}</div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </Desplegable>
-
-                      <Desplegable
-                        titulo="Ver las últimas capturas guardadas"
-                        abierto={verCapturasRecientes}
-                        onToggle={() => setVerCapturasRecientes((v) => !v)}
-                      >
-                        {get(liveData, "conocimiento.ultimasCapturas", []).length === 0 ? (
-                          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>Ninguna todavía.</div>
-                        ) : (
-                          get(liveData, "conocimiento.ultimasCapturas", []).map((c, i) => (
-                            <div key={i} style={{ padding: "5px 0" }}>
-                              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim }}>
-                                {timeAgo(c.fecha)}{c.empresas ? ` · ${c.empresas}` : ""}{c.autor ? ` · ${c.autor}` : ""}
-                              </div>
-                              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, marginTop: 1 }}>{c.resumen}</div>
-                            </div>
-                          ))
-                        )}
-                      </Desplegable>
-
-                      <Desplegable
-                        titulo="Ver las últimas correcciones registradas"
-                        abierto={verCorreccionesRecientes}
-                        onToggle={() => setVerCorreccionesRecientes((v) => !v)}
-                      >
-                        {get(liveData, "conocimiento.ultimasCorrecciones", []).length === 0 ? (
-                          <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, padding: "4px 0" }}>Ninguna todavía.</div>
-                        ) : (
-                          get(liveData, "conocimiento.ultimasCorrecciones", []).map((c, i) => (
-                            <div key={i} style={{ padding: "5px 0" }}>
-                              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.dim }}>{timeAgo(c.fecha)}</div>
-                              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.dim, marginTop: 1 }}>
-                                Antes: <span style={{ color: "#B8899A" }}>{c.antes}</span>
-                              </div>
-                              <div style={{ fontFamily: C.sans, fontSize: 11.5, color: C.cream, marginTop: 1 }}>
-                                Ahora: <span style={{ color: C.coreBright }}>{c.ahora}</span>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </Desplegable>
-                    </>
-                  )}
-
-                  {m.id === "auditoria" && <AuditoriaProgramadaContenido data={liveData} />}
-                </div>
-              ) : (
-                <div style={{ fontFamily: C.mono, fontSize: 9.5, color: C.dim, marginTop: 14, letterSpacing: "0.03em" }}>
-                  estado en vivo no disponible todavía
-                </div>
-              )}
-
-              {/* Las conexiones se verifican con el panel completo, incluso si este nodo está cerrado. */}
-              {m.id === "busqueda_web" && apiKey && <BusquedaWebContenido apiKey={apiKey} />}
-              {m.id === "calendario" && apiKey && <MiniCalendario apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
-              {m.id === "conexiones" && apiKey && <ConexionesContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.conexiones} onRefresh={refreshLiveData} />}
-              {m.id === "seguros" && apiKey && <SegurosContenido apiKey={apiKey} puedeArreglar={esAdmin} estado={liveData?.seguros} onRefresh={refreshLiveData} />}
+              {renderModuleDetails(m)}
             </div>
               </div>
             );
@@ -5208,6 +5045,7 @@ export default function CerebroWoba() {
 
       {esAdmin && <AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
       {esAdmin && <UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
+      </div>}
       </div>
     </div>
   );
