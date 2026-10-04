@@ -8,6 +8,7 @@ import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
+import { normalizarPagos, type PagoRecibo } from "../holded/pagosMultiples/pagos";
 
 const MODEL = resolverModeloDocumental("extraer_factura");
 const MAX_ITERATIONS = 4;
@@ -125,6 +126,8 @@ export interface DatosFactura {
    */
   contextoDeViaje?: boolean;
   fecha: string; // YYYY-MM-DD, según lo que diga el documento
+  /** Cobros que muestra el recibo en su sección de pagos (p. ej. Uber: 6,91 + 2,04) cuando son VARIOS; vacío si hay uno solo. */
+  pagos?: PagoRecibo[];
   concepto: string;
   /**
    * Pedido explícito de Carlos: al crear el gasto en Holded, "Número de
@@ -295,6 +298,14 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "adivines uno, y nunca uses un número parecido a falta de uno real.",
       },
       concepto: { type: "string", description: "Breve descripción de qué es el gasto. " + INSTRUCCION_GEOGRAFIA_UBER },
+      pagos: {
+        type: "array",
+        description:
+          "Solo si el recibo muestra en su sección de pagos (Payments) VARIOS cobros que suman el total (ej. Uber: 'Mastercard ••3646 $6.91' y " +
+          "'Mastercard ••3646 $2.04' = total $8.95): lista cada cobro con su importe y su fecha (YYYY-MM-DD). Si hay un solo pago, o el " +
+          "recibo no muestra pagos, deja el array vacío. Nunca inventes pagos.",
+        items: { type: "object", properties: { monto: { type: "number", description: "Importe del cobro, positivo." }, fecha: { type: "string", description: "Fecha del cobro YYYY-MM-DD, si se ve." } }, required: ["monto"] },
+      },
       recibo_simplificado: {
         type: "boolean",
         description:
@@ -720,6 +731,7 @@ export async function extraerDatosFactura(
         numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
         concepto: (input.concepto as string) ?? "",
         reciboSimplificado,
+        pagos: normalizarPagos(input.pagos),
         // Si Claude no reportó líneas (o vinieron vacías), se usa una sola
         // línea con el total completo y sujeto pasivo en vez de perder el
         // importe — para esta contabilidad nunca se envía IVA 0 % a Holded.
