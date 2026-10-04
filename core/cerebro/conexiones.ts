@@ -6,6 +6,7 @@ import {
 } from "../telegram/client";
 import { obtenerUltimoEstadoClaude, verificarConexionClaude, obtenerUltimoEstadoBusquedaWeb } from "../claude/client";
 import { verificarConexionSheets } from "../google/sheetsClient";
+import { conPrioridadSheets } from "../google/limitadorSheets";
 import { verificarConexionDrive } from "../drive/client";
 import { verificarConexionGmail } from "../gmail/client";
 import { verificarConexionCalendar } from "../google/calendarClient";
@@ -94,6 +95,13 @@ async function conConTimeout<T>(promesa: Promise<T>, ms: number): Promise<T> {
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 const TIMEOUT_MS = 6000;
 
+/** Reserva una plaza interactiva para la sonda, incluso si el panel se recalcula en segundo plano. */
+export function verificarSheetsParaPanel(
+  verificar: () => Promise<{ ok: boolean; detalle?: string }> = verificarConexionSheets,
+): Promise<{ ok: boolean; detalle?: string }> {
+  return conPrioridadSheets("interactiva", verificar);
+}
+
 async function chequearUno(
   id: string,
   nombre: string,
@@ -120,7 +128,8 @@ async function verificarTodas(): Promise<ConexionEstado[]> {
 
   const resultados = await Promise.all([
     chequearUno("telegram", "Telegram", verificarTelegram, "🔧 Reconfigurar webhook"),
-    chequearUno("google_sheets", "Google Sheets", verificarConexionSheets, "🔄 Reintentar"),
+    // La sonda no debe heredar prioridad de fondo y agotar sus 6 s esperando cuota.
+    chequearUno("google_sheets", "Google Sheets", verificarSheetsParaPanel, "🔄 Reintentar"),
     chequearUno("google_drive", "Google Drive", verificarConexionDrive, "🔄 Reintentar"),
     chequearUno("gmail", "Gmail", verificarConexionGmail, "🔄 Reintentar"),
     chequearUno("google_calendar", "Google Calendar", verificarConexionCalendar, "🔄 Reintentar"),
