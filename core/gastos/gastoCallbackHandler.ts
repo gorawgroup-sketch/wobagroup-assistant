@@ -876,10 +876,14 @@ async function ofrecerEleccionMovimientosAmbiguos(
  * un fallo aquí no debe tumbar el flujo principal de creación/adjunto, que
  * ya tuvo éxito.
  */
-async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: string): Promise<ResultadoIntentarConciliar | undefined> {
-  const estado = await recuperarConciliacionExistenteCompra(empresa, gastoId);
+async function recuperarConciliacionAntesDeBuscar(empresa: Empresa, gastoId: string, opciones: { cerrarResiduoCambio?: boolean } = {}): Promise<ResultadoIntentarConciliar | undefined> {
+  const estado = await recuperarConciliacionExistenteCompra(empresa, gastoId, opciones);
   if (estado === "nueva") return undefined;
-  if (estado === "conciliada") return { estado: "conciliada", nota: "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se creó otro pago." };
+  if (estado === "conciliada") {
+    return { estado: "conciliada", nota: opciones.cerrarResiduoCambio
+      ? "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se repitió la conciliación; si solo quedaba el residuo de redondeo de la divisa, se cerró con el ajuste de cambio (puedes verlo en los pagos de la compra)."
+      : "\n\n✅ Conciliación anterior confirmada por lectura de compra y banco. No se creó otro pago." };
+  }
   if (estado === "pagada_externamente") {
     return { estado: "conciliada", nota: "\n\n✅ Esta compra ya figuraba pagada por completo en Holded (el pago se registró fuera de Wobi). No hay nada que conciliar y no se creó ningún pago." };
   }
@@ -1237,11 +1241,22 @@ async function preguntarSiConciliar(
       comprobanteConfirmado,
       threadIdGmail,
     });
-    const texto = `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`;
-    const botones = [[
-      { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
-      { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
-    ]];
+    // Si este gasto ya tiene una conciliación registrada que no terminó de verificarse (el intento al aprobar «Crear y conciliar»
+    // llegó a Holded pero no se pudo confirmar), preguntar «¿quieres que intente conciliar?» es contradictorio y no puede
+    // repetirse (el registro durable lo bloquea): solo se ofrece verificar lo hecho. Caso real El Meson Sandwiches (2026-10-04).
+    const previa = await recuperarConciliacionExistenteCompra(empresa, gastoId).catch(() => "nueva" as const);
+    const soloVerificar = previa === "incierta" || previa === "revision";
+    const texto = soloVerificar
+      ? (previa === "revision"
+          ? `⚠️ "${descripcionGasto}" ya tiene pagos aplicados y su conciliación requiere revisión. No se buscarán otros cargos ni se añadirán pagos; verificar solo relee el resultado anterior.`
+          : `⏳ La conciliación de "${descripcionGasto}" se aplicó pero Holded no la confirmó todavía. No se buscarán otros cargos ni se repetirá nada; verificar solo relee compra y banco.`)
+      : `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?`;
+    const botones = soloVerificar
+      ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${pendiente.id}:lectura` }]]
+      : [[
+          { text: "🔗 Sí, conciliar", callback_data: `gasto_conciliar_si:${pendiente.id}` },
+          { text: "❌ No, dejar así", callback_data: `gasto_conciliar_no:${pendiente.id}` },
+        ]];
     botones.push(...botonContinuarConciliacion(pendiente));
     try {
       await sendTelegramMessageWithButtons(chatId, texto, botones);
@@ -2103,8 +2118,9 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
     }
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
+    // «Verificar resultado anterior» lo pulsa una persona: aquí sí puede cerrarse el residuo de redondeo de la divisa.
     const previaLectura = callback.data?.endsWith(":lectura")
-      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId)
+      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId, { cerrarResiduoCambio: true })
       : undefined;
     if (callback.data?.endsWith(":lectura") && !previaLectura) {
       // Ninguna conciliación anterior quedó registrada (p. ej. tras una reversión auditada de un intento sin efecto):
@@ -2261,7 +2277,7 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
 
     await answerCallbackQuerySafe(callback.id, "Conciliando...");
     const previaLecturaAmbigua = callback.data?.endsWith(":lectura")
-      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId)
+      ? await recuperarConciliacionAntesDeBuscar(pendiente.empresa, pendiente.gastoId, { cerrarResiduoCambio: true })
       : undefined;
     if (callback.data?.endsWith(":lectura") && !previaLecturaAmbigua) {
       // Mismo caso que arriba: sin conciliación anterior registrada se ofrecen otra vez los botones normales.
