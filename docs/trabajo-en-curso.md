@@ -45,6 +45,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Transferencias internas y conversiones entre cuentas de la misma empresa | Conciliación y bancos | `feat/transferencias-ejecucion` (copia `.worktrees/transferencias-internas`) | Claude Code | Fase 1 (detección) fusionada en #308. Fase 2 (registro, botones, ejecutor) en PR; ejecución apagada hasta la prueba controlada autorizada por Carlos |
 | Proyectos de Holded (solo lectura): listar y reporte financiero por proyecto | Conciliación y bancos (`core/holded/`, `core/tools/`) | `feat/holded-proyectos-lectura` | Claude Code | Portado el 04-10-2026 desde la rama de respaldo `respaldo/checkout-principal-2026-10-04`; PR abierto, a la espera de que Carlos decida la fusión. Solo GET, sin escrituras |
 | Puente automático de recibos con varios pagos (fase 1, observación) | Conciliación y bancos | _sin rama todavía_ | Claude Code | Pendiente de empezar. La conciliación múltiple en divisa y reanudar lote ya están en `main` (#313–#317). Los pares emparejados se guardan en un registro aparte, no como columna nueva de `_gastos_pendientes`
+| Cambiar el proveedor de un gasto ya creado + corregir el alias aprendido | Conciliación y bancos | `feat/cambiar-proveedor-compra` | Claude Code | En PR. Tool `proponer_cambio_proveedor_compra`, reutiliza la edición verificada y los botones `edicioncompra_*` |
 
 ## Pendiente de decisión de Carlos
 

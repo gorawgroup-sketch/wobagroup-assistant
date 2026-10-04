@@ -5,7 +5,8 @@ import {
   eliminarPendienteEdicionCompraHolded,
   obtenerPendienteEdicionCompraHolded,
 } from "./pendienteEdicionCompraHoldedStore";
-import { editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError, obtenerCompraHoldedPorId } from "./write";
+import { crearContactoHolded, editarCompraHolded, EdicionCompraInciertaError, EdicionNoVerificadaError, obtenerCompraHoldedPorId } from "./write";
+import { aprenderProveedorCorregido } from "./cambioProveedorCompra";
 import { conciliarCargoConReembolso } from "./conciliarCargoConReembolso";
 import { estadoRealCompra } from "./automatizacion/tickets";
 import { registrarCuentaCorregidaAprendida } from "./cuentaCorregidaAprendidaSheet";
@@ -57,12 +58,29 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
   await editTelegramMessage(pendiente.chatId, pendiente.messageId, `🔄 Editando en Holded — ${pendiente.resumenAntes}...`, []);
 
   try {
+    // Cambio de proveedor (ver proponer_cambio_proveedor_compra): si el contacto correcto aún no existe, se crea AHORA, tras la
+    // aprobación y con la creación durable e idempotente (reutiliza uno con el mismo nombre; nunca duplica). Los pagos de la
+    // compra se leen antes y después para comprobar que la edición no los tocó.
+    const cp = pendiente.cambios.meta?.cambioProveedor;
+    let cambiosAplicar = pendiente.cambios;
+    let contactoNuevoId = pendiente.cambios.contactoIdNuevo ?? "";
+    let contactoNuevoNombre = cp?.nombreNuevo ?? "";
+    let pagosAntes = "";
+    if (cp) {
+      if (!contactoNuevoId) {
+        const creado = await crearContactoHolded(pendiente.empresa, cp.nombreNuevo);
+        contactoNuevoId = creado.id;
+        contactoNuevoNombre = creado.name;
+        cambiosAplicar = { ...pendiente.cambios, contactoIdNuevo: creado.id };
+      }
+      pagosAntes = JSON.stringify((await obtenerCompraHoldedPorId(pendiente.empresa, pendiente.purchaseId)).payments_detail ?? []);
+    }
     // Propuesta que solo enlaza cargo y reembolso (la edición ya se aplicó antes): no se reenvía el documento.
     const soloConciliar = pendiente.cambios.despuesConciliar !== undefined &&
       Object.entries(pendiente.cambios).every(([campo, valor]) => campo === "despuesConciliar" || valor === undefined);
     const resultado = soloConciliar
       ? await obtenerCompraHoldedPorId(pendiente.empresa, pendiente.purchaseId)
-      : await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, pendiente.cambios, {
+      : await editarCompraHolded(pendiente.empresa, pendiente.purchaseId, cambiosAplicar, {
           idempotencyKey: `propuesta-edicion:${pendiente.id}`,
           proceso: "edicion_compra_aprobada",
         });
@@ -112,12 +130,35 @@ export async function handleEdicionCompraHoldedCallback(callback: TelegramCallba
           : "\n\n⚠️ Era un ticket y ahora Holded lo muestra como factura de compra: hay que desmarcar «Es una factura de compra» de nuevo.";
       }
     }
+    // Cambio de proveedor: con la edición ya verificada se corrige el alias aprendido, se comprueban los pagos y, si era ticket, que siga siéndolo.
+    let notaProveedor = "";
+    if (cp && contactoNuevoId) {
+      try {
+        const aprendizaje = await aprenderProveedorCorregido({
+          empresa: pendiente.empresa, contactoViejoId: cp.contactoViejoId, nombreLeido: cp.nombreLeido, nombreNuevo: cp.nombreNuevo,
+          contactoNuevoId, contactoNuevoNombre, moneda: cp.moneda,
+        });
+        notaProveedor += `\n\n🧠 Proveedor corregido a «${contactoNuevoNombre}»` +
+          (aprendizaje.repuntados > 0 ? `; ${aprendizaje.repuntados} alias equivocado(s) re-apuntado(s).` : "; alias aprendido para los próximos comprobantes.");
+      } catch (errorAprendizaje) {
+        console.error("[edicionCompraHoldedCallbackHandler] No se pudo corregir el alias del proveedor (no crítico):", errorAprendizaje);
+        notaProveedor += "\n\n⚠️ El proveedor quedó cambiado, pero no pude corregir el alias aprendido: el próximo comprobante podría volver al proveedor anterior.";
+      }
+      const pagosDespues = JSON.stringify(resultado.payments_detail ?? []);
+      notaProveedor += pagosDespues === pagosAntes ? "\n\n💳 Los pagos de la compra siguen idénticos." : "\n\n⚠️ Ojo: los pagos de la compra cambiaron tras la edición; revísalo en Holded.";
+      if (pendiente.cambios.meta?.eraTicket) {
+        const despues = await estadoRealCompra(pendiente.empresa, pendiente.purchaseId).catch(() => undefined);
+        notaProveedor += despues?.estado === "ticket"
+          ? "\n\n🧾 Sigue siendo ticket."
+          : "\n\n⚠️ Era un ticket y ahora Holded lo muestra como factura de compra: hay que desmarcar «Es una factura de compra» de nuevo.";
+      }
+    }
     await editTelegramMessage(
       pendiente.chatId,
       pendiente.messageId,
       `${soloConciliar ? "🔗 Conciliación" : "✅ Editado en Holded"} — antes: ${pendiente.resumenAntes}\n` +
         `Ahora: ${totalDespues} ${monedaDespues}, doc "${resultado.document_number || "(sin número)"}" (id ${resultado.id} — mismo documento, no se recreó).` +
-        notaConciliacion + notaCuenta,
+        notaConciliacion + notaCuenta + notaProveedor,
       []
     );
   } catch (error) {

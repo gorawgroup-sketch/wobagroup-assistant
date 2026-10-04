@@ -86,3 +86,11 @@ test("carga simulada: mismo resultado y llamadas, dos lecturas simultáneas por 
   assert.equal(despues.llamadas, antes.llamadas);
   t.diagnostic(`Simulación de 8 lecturas de 20 ms: secuencial=${antes.ms} ms, paralelo=${despues.ms} ms; 8 llamadas en ambos casos. No es una medición de producción.`);
 });
+
+test("proponer_cambio_proveedor_compra está registrada y exige empresa y proveedor nuevo", () => {
+  const tool = getToolDefinitions().find((t) => t.name === "proponer_cambio_proveedor_compra");
+  assert.ok(tool, "la herramienta debe estar en el registro");
+  assert.deepEqual((tool.input_schema as { required?: string[] }).required, ["empresa", "proveedor_nuevo"]);
+  // Es una propuesta con botones, no una escritura directa: no debe ofrecerse en modo rápido.
+  assert.equal(getToolDefinitions(true).some((t) => t.name === "proponer_cambio_proveedor_compra"), false);
+});

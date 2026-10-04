@@ -4395,7 +4395,13 @@ export interface CambiosCompraHolded {
    * Datos para DESPUÉS de verificar la edición (no participan en el PUT): el proveedor y el nombre de la cuenta para
    * aprender la corrección, y si el gasto era un ticket para comprobar que siga siéndolo.
    */
-  meta?: { proveedor: string; cuentaNombre: string; eraTicket?: boolean };
+  meta?: {
+    proveedor: string;
+    cuentaNombre: string;
+    eraTicket?: boolean;
+    /** Cambio de proveedor (ver core/holded/cambioProveedorCompra.ts): el contacto nuevo se crea, si hace falta, SOLO tras la aprobación. */
+    cambioProveedor?: { contactoViejoId: string; contactoViejoNombre: string; nombreNuevo: string; nombreLeido: string; moneda: string; crearSiNoExiste: boolean };
+  };
 }
 
 /**
