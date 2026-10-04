@@ -34,6 +34,9 @@ const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
 const lecturas = new LecturaFuentes();
 const seguro = <T>(etiqueta: string, fn: () => Promise<T>, fallback: T) => lecturas.leer(etiqueta, fn, fallback);
+// La cola de cuota de Sheets puede esperar hasta una ventana de 60 s antes de enviar la petición.
+// El plazo ordinario de 45 s marcaría una lectura sana como fallida mientras aún está en cola.
+const seguroSheets = <T>(etiqueta: string, fn: () => Promise<T>, fallback: T) => lecturas.leer(etiqueta, fn, fallback, 75_000);
 
 const NOMBRES_MES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -83,9 +86,9 @@ function calcularBalanceMesActual(conDatos: ResumenSemana[], hoy: Date) {
 
 async function construirCashflow() {
   const [semanas, propuestas, ultimoRunUnix] = await Promise.all([
-    seguro("cashflow.semanas", fetchResumenSemanas, [] as Awaited<ReturnType<typeof fetchResumenSemanas>>),
-    seguro("cashflow.propuestas", listarPropuestasPendientes, [] as Awaited<ReturnType<typeof listarPropuestasPendientes>>),
-    seguro("cashflow.ultimoRun", obtenerUltimoRunHoldedCashflow, undefined as number | undefined),
+    seguroSheets("cashflow.semanas", fetchResumenSemanas, [] as Awaited<ReturnType<typeof fetchResumenSemanas>>),
+    seguroSheets("cashflow.propuestas", listarPropuestasPendientes, [] as Awaited<ReturnType<typeof listarPropuestasPendientes>>),
+    seguroSheets("cashflow.ultimoRun", obtenerUltimoRunHoldedCashflow, undefined as number | undefined),
   ]);
 
   const conDatos = semanas.filter((s) => s.balanceFinal.trim() !== "");
@@ -246,8 +249,8 @@ async function construirCrm() {
 async function construirCorreo() {
   const [noLeidos, ultimoCheckUnix, borradoresPendientes] = await Promise.all([
     seguro("correo.noLeidos", contarNoLeidos, 0),
-    seguro("correo.ultimoCheck", obtenerUltimoCheck, 0),
-    seguro("correo.borradores", contarBorradoresPendientes, 0),
+    seguroSheets("correo.ultimoCheck", obtenerUltimoCheck, 0),
+    seguroSheets("correo.borradores", contarBorradoresPendientes, 0),
   ]);
 
   return {
@@ -353,8 +356,8 @@ async function construirConocimiento() {
       fragmentos: 0,
       maxCaracteresPorConsulta: 14_000,
     }),
-    seguro("conocimiento.capturas", obtenerCapturasCrudas, []),
-    seguro("conocimiento.correcciones", obtenerCorreccionesCrudas, []),
+    seguroSheets("conocimiento.capturas", obtenerCapturasCrudas, []),
+    seguroSheets("conocimiento.correcciones", obtenerCorreccionesCrudas, []),
   ]);
 
   const indiceDocumentos = seguroSync(() => obtenerIndiceDocumentos(), []);
@@ -410,7 +413,7 @@ const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"];
  * que se puedan desalinear.
  */
 async function construirSeguros() {
-  const polizas = await seguro("seguros.polizas", listarPolizas, [] as Awaited<ReturnType<typeof listarPolizas>>);
+  const polizas = await seguroSheets("seguros.polizas", listarPolizas, [] as Awaited<ReturnType<typeof listarPolizas>>);
   const { proximasARenovar, pagosSinConfirmar } = calcularAlertasSeguros(polizas);
 
   const porEmpresa = Object.fromEntries(
@@ -547,12 +550,12 @@ const SECCIONES: DefinicionSeccion[] = [
     fallback: vacio({ archivosSubidosUltimos7dias: 0, ultimoArchivo: null, porEmpresa: {} }) },
   { nombre: "conocimiento", ttlMs: 60_000, cargar: () => enSeccion(construirConocimiento),
     fallback: vacio(null as unknown) },
-  { nombre: "usuarios", ttlMs: 60_000, cargar: () => enSeccion(() => seguro("accesos.usuarios", obtenerUsuariosAutorizados, [])),
+  { nombre: "usuarios", ttlMs: 60_000, cargar: () => enSeccion(() => seguroSheets("accesos.usuarios", obtenerUsuariosAutorizados, [])),
     fallback: vacio([] as unknown) },
-  { nombre: "controlDiario", ttlMs: 60_000, cargar: () => enSeccion(() => seguro("controlDiario", construirControlDiario, null)),
+  { nombre: "controlDiario", ttlMs: 60_000, cargar: () => enSeccion(() => seguroSheets("controlDiario", construirControlDiario, null)),
     fallback: vacio(null as unknown) },
   { nombre: "auditoria", ttlMs: 60_000,
-    cargar: () => enSeccion(() => seguro("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, ESTADO_AUDITORIA_POR_DEFECTO as EstadoAuditoriaProgramadaFront)),
+    cargar: () => enSeccion(() => seguroSheets("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, ESTADO_AUDITORIA_POR_DEFECTO as EstadoAuditoriaProgramadaFront)),
     fallback: vacio(ESTADO_AUDITORIA_POR_DEFECTO as unknown) },
   { nombre: "seguros", ttlMs: 60_000, cargar: () => enSeccion(construirSeguros),
     fallback: vacio({ polizas: [], proximasARenovar: [], pagosSinConfirmar: [], porEmpresa: {}, totalPolizasActivas: 0, linkRegistro: "" }) },

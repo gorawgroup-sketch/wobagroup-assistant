@@ -20,13 +20,13 @@ export class LecturaFuentes {
     return { datos, fuentes };
   }
 
-  async leer<T>(fuente: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  async leer<T>(fuente: string, fn: () => Promise<T>, fallback: T, timeoutMs = this.timeoutMs): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const estados = this.contexto.getStore();
     try {
       const dato = await Promise.race([
         Promise.resolve().then(fn),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Tiempo de lectura agotado")), this.timeoutMs); }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Tiempo de lectura agotado")), timeoutMs); }),
       ]);
       const en = new Date().toISOString();
       this.anteriores.set(fuente, { dato, en });

@@ -22,3 +22,14 @@ test("una fuente bloqueada queda marcada sin lectura válida y no bloquea todo e
   assert.equal(result.fuentes[0].conservado, false);
   assert.equal(result.fuentes[0].ultimoExitoEn, null);
 });
+
+test("una lectura con espera de cuota mayor al plazo ordinario conserva el resultado verificado", async () => {
+  const reader = new LecturaFuentes(10);
+  const result = await reader.ejecutar(() => reader.leer("sheets", async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return 23;
+  }, 0, 50));
+  assert.equal(result.datos, 23);
+  assert.equal(result.fuentes[0].ok, true);
+  assert.equal(result.fuentes[0].conservado, false);
+});
