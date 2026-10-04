@@ -61,6 +61,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Ramas sin PR | `codex/claude-max-worker`, `codex/wobi-microfono-continuo`, `fix/descartar-gasto-pendiente-datos` | septiembre | ¿Se retoman o se descartan? |
 | Checkout principal con cambios sin guardar | `/Volumes/Seagate Backup Plus Drive/apps/WOBA_Copilot`, rama `codex/holded-proyectos` (33 archivos modificados, 37 nuevos, desde el 27-09) | 27-09-2026 | Inventariado el 04-10 (solo lectura): ver [inventario](mantenimiento/inventario-checkout-principal-2026-10-04.md). Decidir: respaldar en una rama, portar Proyectos de Holded y la clasificación contable contextual, y limpiar. No se ha tocado nada |
 
+## Hecho reciente
+
+- Núcleo vivo de WOBi (`codex/wobi-nucleo-vivo`, Codex): portada por compañía y áreas, búsqueda documental de solo lectura y Telegram Web en otra pestaña. Módulos clásicos conservados. Implementado y verificado; publicación sujeta al CI obligatorio. [Alcance y límites](wobi-nucleo-vivo.md).
+
 ## Mantenimiento
 
 - Limpieza del 03-10-2026: 217 ramas fusionadas borradas de GitHub (lista y cómo recuperarlas en

@@ -1,3 +1,5 @@
+import NucleoVivo from "./modules/nucleo/NucleoVivo.jsx";
+import TelegramHandoff from "./modules/nucleo/TelegramHandoff.jsx";
 import { createRefreshCoordinator, fuerzaLecturaNueva, estadoFrescura } from "./refreshCoordinator.js";
 import { borrarSnapshotLocal, guardarSnapshotLocal, leerSnapshotLocal } from "./snapshotLocal.js";
 import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
@@ -3438,7 +3440,7 @@ export function WobiChat({ apiKey, nombreUsuario, revisionTiempoReal, revisionSo
 }
 
 export default function CerebroWoba() {
-  const modoChatCompleto = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("chat") === "grande";
+  const [nucleoActivo, setNucleoActivo] = useState(() => new URLSearchParams(window.location.search).get("vista") !== "clasica");
   const [active, setActive] = useState(null);
   // Pedido explícito de Carlos: poder tener varios módulos abiertos a la vez
   // (antes un solo valor `open`) — ver el comentario de "cerebro-layout" más
@@ -3492,8 +3494,6 @@ export default function CerebroWoba() {
   const [apiKey, setApiKey] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [estadoTiempoReal, setEstadoTiempoReal] = useState("desconectado");
-  const [ultimoContactoEn, setUltimoContactoEn] = useState(null);
-  const [revisionSolicitudesChat, setRevisionSolicitudesChat] = useState(0);
   const [errorSincronizacion, setErrorSincronizacion] = useState("");
   const [relojDatos, setRelojDatos] = useState(Date.now());
   useEffect(() => { const id = setInterval(() => setRelojDatos(Date.now()), 10_000); return () => clearInterval(id); }, []);
@@ -3530,7 +3530,6 @@ export default function CerebroWoba() {
     guardarSnapshotLocal(almacenLocal(), key, json);
     setApiKey(key);
     setNombreUsuario(nombre || "");
-    setUltimoContactoEn(new Date().toISOString());
     setErrorSincronizacion("");
     try {
       localStorage.setItem(LOCALSTORAGE_TOKEN_KEY, JSON.stringify({ token: key, nombre: nombre || "" }));
@@ -3586,7 +3585,6 @@ export default function CerebroWoba() {
           aplicarLectura(json, sesionGuardada.token);
           setApiKey(sesionGuardada.token);
           setNombreUsuario(sesionGuardada.nombre || "");
-          setUltimoContactoEn(new Date().toISOString());
           setErrorSincronizacion("");
           // Una sesión válida no vuelve a obligar a pasar por la animación de
           // bienvenida en cada visita.
@@ -3682,7 +3680,6 @@ export default function CerebroWoba() {
       const json = await res.json();
       signal.throwIfAborted();
       if (!aplicarLectura(json, apiKey)) return true; // llegó una lectura más nueva mientras tanto
-      setUltimoContactoEn(new Date().toISOString());
       setErrorSincronizacion("");
       programarReintentoSiRefrescando(json);
       return true;
@@ -3698,17 +3695,10 @@ export default function CerebroWoba() {
   const refreshLiveData = useCallback((motivo = "manual") => actualizador.refresh(motivo), [actualizador]);
   refrescarRef.current = refreshLiveData;
 
-  const manejarEventoTiempoReal = useCallback((evento) => {
-    if (evento?.tipo?.startsWith("chat_solicitud:")) {
-      setRevisionSolicitudesChat((actual) => actual + 1);
-    }
-  }, []);
-
   useCerebroRealtime({
     apiKey,
     onRefresh: refreshLiveData,
     onStatus: setEstadoTiempoReal,
-    onEvent: manejarEventoTiempoReal,
   });
 
   const cerrarSesion = useCallback(() => {
@@ -3725,7 +3715,6 @@ export default function CerebroWoba() {
     setLiveData(null);
     setEsAdmin(false);
     setNombreUsuario("");
-    setUltimoContactoEn(null);
     setEstadoTiempoReal("desconectado");
     setOpenIds([]);
     setOpenGroups([]);
@@ -3745,9 +3734,7 @@ export default function CerebroWoba() {
     }, 80);
   }, []);
 
-  // Pedido explícito de Carlos: puentea ControlDiarioPanel (hermano de WobiChat, no un hijo) con el
-  // chat real — "que yo le pueda dar la orden al sistema desde el mismo front". `key: Date.now()`
-  // asegura que WobiChat dispare aunque se repita la misma pregunta dos veces seguidas.
+  // Las consultas operativas se preparan para continuar en Telegram, sin enviarlas automáticamente.
   const [preguntaControlDiario, setPreguntaControlDiario] = useState(null);
   const preguntarWobi = useCallback((texto) => {
     setPreguntaControlDiario({ texto, key: Date.now() });
@@ -3787,7 +3774,7 @@ export default function CerebroWoba() {
       style={{
         background: `radial-gradient(ellipse at 50% 32%, #10233A 0%, ${C.void} 66%)`,
         minHeight: "100svh",
-        padding: "36px 20px 48px",
+        padding: nucleoActivo ? "12px clamp(16px, 3vw, 48px) 32px" : "36px 20px 48px",
         fontFamily: C.sans,
         position: "relative",
         overflow: "hidden",
@@ -4632,6 +4619,15 @@ export default function CerebroWoba() {
       `}</style>
 
       <div inert={!entered || !liveData} aria-hidden={!entered || !liveData}>
+      {entered && apiKey && nucleoActivo && (
+        <NucleoVivo apiKey={apiKey} onClassic={() => setNucleoActivo(false)}
+          onModule={(id) => { setNucleoActivo(false); abrirModuloDesdeResumen(id); }}
+          onRefresh={refreshLiveData} onLogout={cerrarSesion} refreshing={refreshing}
+          status={estadoVisual} data={liveData} error={errorSincronizacion} isAdmin={esAdmin} name={nombreUsuario} />
+      )}
+      {preguntaControlDiario && <TelegramHandoff key={preguntaControlDiario.key} question={preguntaControlDiario.texto} onClose={() => setPreguntaControlDiario(null)} />}
+      {!nucleoActivo && <button className="nv-classic-return" type="button" onClick={() => setNucleoActivo(true)}>← Volver al Núcleo vivo</button>}
+      <div hidden={nucleoActivo}>
       <div
         style={{
           textAlign: "center",
@@ -4714,17 +4710,6 @@ export default function CerebroWoba() {
         )}
 
       </div>
-
-      {entered && apiKey && (
-        <WobiChat
-          apiKey={apiKey}
-          nombreUsuario={nombreUsuario}
-          revisionTiempoReal={ultimoContactoEn}
-          revisionSolicitudes={revisionSolicitudesChat}
-          modoCompleto={modoChatCompleto}
-          preguntaExterna={preguntaControlDiario}
-        />
-      )}
 
       {liveData && <AtencionAhora data={liveData} onAbrir={abrirModuloDesdeResumen} />}
       {liveData && apiKey && (
@@ -5208,6 +5193,7 @@ export default function CerebroWoba() {
 
       {esAdmin && <AdminPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
       {esAdmin && <UsuariosPanel apiKey={apiKey} actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")} />}
+      </div>
       </div>
     </div>
   );

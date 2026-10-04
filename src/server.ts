@@ -35,6 +35,7 @@ import { resolverRespuestaCarpeta } from "../core/documental/respuestaCarpeta";
 import { obtenerResumenColaPorChat } from "../core/gmail/colaRevisionStore";
 import { avisoEstadoCola, esContinuacionCorreo, avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
 import "../core/google/globalOptions";
+import { crearRouterDocumentos } from "../core/cerebro/documentos/router";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
@@ -597,6 +598,7 @@ async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> 
 }
 
 app.use("/api/cerebro/voz", crearRouterVoz(exigeAccesoValido));
+app.use("/api/cerebro/documentos", crearRouterDocumentos(exigeAccesoValido));
 
 /**
  * Canal de invalidación en tiempo real. Envía solo metadatos; los datos de
