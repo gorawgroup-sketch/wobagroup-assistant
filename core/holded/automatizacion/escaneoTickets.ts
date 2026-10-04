@@ -2,7 +2,7 @@ import { holdedGet, type Empresa } from "../client";
 import { entradaReglaDesdeCompra, evaluarReglaTicket } from "./reglaTicket";
 import { registrarDudoso } from "./decisionesTickets";
 import { claveTicket, creadoPorWobi } from "./tickets";
-import { nuevoTrabajo, type AlmacenTrabajos } from "./trabajos";
+import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
 
 /**
  * Exploración de candidatos de la REGLA AMPLIA de conversión a ticket: mira las compras recientes de una empresa que aún son
@@ -15,6 +15,18 @@ export interface ResultadoEscaneo { revisadas: number; candidatos: CandidatoRegl
 type Leer = (empresa: Empresa, ruta: string, params?: Record<string, string | undefined>) => Promise<unknown>;
 type Raw = Record<string, unknown>;
 export { tasaDeCambio } from "./reglaTicket";
+
+/**
+ * Cada gasto que crea WOBI recibe, al nacer, un registro con una clasificación PROVISIONAL del documento (registrarClasificacionDocumento).
+ * Si el documento no se declara claramente ticket queda «clasificación dudosa» (requiere_intervencion) u «omitido» (factura declarada),
+ * siempre con 0 intentos. Ese registro no es una decisión de la regla ni un intento de conversión: la regla aprobada por Carlos (sin NIF
+ * y de fuera de la UE o en divisa → ticket) manda sobre él. Solo se reabre lo que NUNCA se intentó; cualquier otro estado se respeta.
+ */
+export function puedeReabrirPorRegla(t: Pick<Trabajo, "estado" | "intentos" | "ultimoError" | "evidencia">): boolean {
+  if (t.intentos !== 0 || t.evidencia.origen !== "recepcion") return false;
+  if (t.estado === "requiere_intervencion") return /Clasificación dudosa/.test(t.ultimoError ?? "");
+  return t.estado === "omitido" && t.evidencia.clasificacion === "factura";
+}
 
 /** Ids ya decididos en este proceso: evita volver a leer en cada ciclo lo que no es candidato. */
 const vistos = new Map<string, "candidato" | "no_wobi" | "revisar" | "excluida">();
@@ -43,7 +55,9 @@ export async function escanearReglaTicket(
     for (const item of page.items ?? []) {
       const id = String(item.id);
       const clave = `${empresa}:${id}`;
-      if (vistos.has(clave) || (await almacen.obtener(claveTicket(empresa, id)))) continue;
+      if (vistos.has(clave)) continue;
+      const previo = await almacen.obtener(claveTicket(empresa, id));
+      if (previo && !puedeReabrirPorRegla(previo)) continue;
       salida.revisadas++;
       const d = (await leer(empresa, `/purchases/${encodeURIComponent(id)}`)) as Raw;
       if (!creadoPorWobi(d)) { vistos.set(clave, "no_wobi"); continue; }
@@ -61,10 +75,13 @@ export async function escanearReglaTicket(
         continue;
       }
       const proveedor = String(d.contact_name ?? item.contact_name ?? "");
-      const t = nuevoTrabajo({ clave: claveTicket(empresa, id), tipo: "ticket", empresa, objetivo: id }, ahora());
-      t.evidencia = { origen: "regla_auto", proveedor, motivos: r.motivos, simulada: opciones.simulada, clasificacion: "ticket" };
+      const t = previo ?? nuevoTrabajo({ clave: claveTicket(empresa, id), tipo: "ticket", empresa, objetivo: id }, ahora());
+      const clasificacionProvisional = previo ? { estado: previo.estado, clasificacion: previo.evidencia.clasificacion, motivos: previo.evidencia.motivos } : undefined;
+      if (previo) { previo.estado = "solicitado"; previo.ultimoError = undefined; previo.actualizadoEn = ahora(); }
+      t.evidencia = { ...(previo ? previo.evidencia : {}), origen: "regla_auto", proveedor, motivos: r.motivos, simulada: opciones.simulada, clasificacion: "ticket",
+        ...(clasificacionProvisional ? { reabiertoPorRegla: true, clasificacionProvisional } : {}) };
       await almacen.guardar(t);
-      await almacen.evento(t.clave, "candidato_regla", { motivos: r.motivos, simulada: opciones.simulada });
+      await almacen.evento(t.clave, previo ? "reabierto_por_regla" : "candidato_regla", { motivos: r.motivos, simulada: opciones.simulada });
       vistos.set(clave, "candidato");
       salida.candidatos.push({ empresa, id, proveedor, total: String(d.total ?? ""), moneda, fecha: String(d.date ?? ""), motivos: r.motivos });
     }
