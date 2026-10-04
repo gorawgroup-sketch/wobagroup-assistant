@@ -96,6 +96,8 @@ convirtió antes un gasto de ese proveedor; (4) el documento se declara ticket/f
 proveedor con NIF/CIF registrado (factura formal) e importe superior a 500 € (equivalente; total ÷ tasa del documento). Lo demás va a
 
 > **Corrección 04-10-2026:** el equivalente en euros se calculaba leyendo `currency_change` «1.12» como 112, así que en gastos en divisa el tope de 500 € nunca saltaba. Ahora la tasa se lee como decimal plano (`tasaDeCambio` en `escaneoTickets.ts`); un gasto de 600 USD a 1,12 son 535,71 € y queda excluido. Ningún gasto ya convertido superaba el tope.
+
+> **Defensa en profundidad 04-10-2026:** al procesar un caso que vino del escáner de la regla, la cola vuelve a aplicar las EXCLUSIONES (NIF/CIF y tope de 500 €) con datos frescos justo antes de actuar; si ya no se cumplen, el caso queda `omitido` con el motivo. Evita que un candidato apuntado con datos antiguos (o antes de corregir un proveedor) se convierta después. `entradaReglaDesdeCompra` (reglaTicket.ts) es la única forma de armar la entrada de la regla: el escáner y la cola usan la misma.
 revisión; nunca se convierte solo.
 
 Interruptores propios: `WOBI_HOLDED_TICKETS_REGLA_MODO` (apagado | simulacion | activo) y `WOBI_HOLDED_TICKETS_REGLA_EMPRESAS`.

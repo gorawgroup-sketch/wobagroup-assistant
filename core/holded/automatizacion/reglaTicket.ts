@@ -37,3 +37,27 @@ export function evaluarReglaTicket(e: EntradaRegla): ResultadoRegla {
   if (e.textoEvidencia && clasificarDocumento({ proveedor: "", textoEvidencia: e.textoEvidencia }).tipo === "ticket") motivos.push("el documento se declara ticket / factura simplificada");
   return motivos.length > 0 ? { decision: "ticket", motivos } : { decision: "revisar", motivos: ["sin señal clara de ticket"] };
 }
+
+type Raw = Record<string, unknown>;
+const numES = (v: unknown): number => { const n = Number(String(v ?? "").replace(/\./g, "").replace(",", ".")); return Number.isFinite(n) ? n : NaN; };
+
+/** Tipo de cambio (`currency_change`): Holded lo da en decimal plano («1.12», «3718.16»); si trae coma es formato ES. NO quitar el punto: «1.12» no es 112. */
+export const tasaDeCambio = (v: unknown): number => {
+  const t = String(v ?? "").trim();
+  if (t === "") return NaN;
+  const n = t.includes(",") ? Number(t.replace(/\./g, "").replace(",", ".")) : Number(t);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+/** Arma la entrada de la regla a partir de la compra de Holded y su contacto. Es la ÚNICA forma de calcularla: el escáner y la cola usan esta. */
+export function entradaReglaDesdeCompra(d: Raw, contacto: Raw | null, proveedorConvertidoAntes: boolean): EntradaRegla {
+  const nif = String(contacto?.vat_number ?? contacto?.code ?? "").trim();
+  const moneda = String(d.currency ?? "EUR");
+  const total = numES(d.total), tasa = tasaDeCambio(d.currency_change);
+  const totalEUR = moneda.toUpperCase() === "EUR" ? (Number.isFinite(total) ? total : null) : (Number.isFinite(total) && Number.isFinite(tasa) && tasa > 0 ? total / tasa : null);
+  return {
+    moneda, totalEUR, tieneNif: nif !== "", pais: String((contacto?.bill_address as Raw | undefined)?.country_code ?? ""),
+    proveedorConvertidoAntes,
+    textoEvidencia: [d.description, (Array.isArray(d.lines) ? (d.lines as Raw[])[0]?.name : "")].filter(Boolean).join(" · "),
+  };
+}
