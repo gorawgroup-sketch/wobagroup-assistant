@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { evaluarReglaTicket, TOPE_EUR_AUTOMATICO } from "./reglaTicket";
-import { escanearReglaTicket, reiniciarVistosParaPruebas, tasaDeCambio } from "./escaneoTickets";
+import { escanearReglaTicket, puedeReabrirPorRegla, reiniciarVistosParaPruebas, tasaDeCambio } from "./escaneoTickets";
 import { procesarColaTickets, claveTicket } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
 
@@ -164,4 +164,44 @@ test("la cola vuelve a comprobar las EXCLUSIONES de la regla al procesar: tope d
     assert.notEqual((await estado("bueno")).estado, "omitido");
     assert.ok(r.revisados >= 3);
   } finally { for (const k of Object.keys(process.env)) if (!(k in prev)) delete process.env[k]; Object.assign(process.env, prev); }
+});
+
+test("la regla manda sobre la clasificación provisional del nacimiento del gasto: reabre «dudosa» y «factura declarada» nunca intentadas, y respeta todo lo demás", async () => {
+  reiniciarVistosParaPruebas();
+  const almacen = new AlmacenTrabajosMemoria();
+  const base = { tipo: "ticket" as const, empresa: "Footprint", creadoEn: 1, actualizadoEn: 1 };
+  const prov = (id: string, estado: "requiere_intervencion" | "omitido" | "completado" | "fallido", extra: Record<string, unknown> = {}, intentos = 0, ultimoError?: string) =>
+    almacen.guardar({ ...base, clave: claveTicket("Footprint", id), objetivo: id, estado, intentos, ultimoError, evidencia: { origen: "recepcion", clasificacion: estado === "omitido" ? "factura" : "revisar", ...extra } });
+  await prov("dudosa", "requiere_intervencion", {}, 0, "Clasificación dudosa: pendiente de revisión");
+  await prov("facturaDeclarada", "omitido");
+  await prov("yaConvertida", "completado", {}, 1);
+  await prov("intentada", "requiere_intervencion", {}, 2, "Clasificación dudosa: pendiente de revisión");
+  await prov("fallida", "fallido", {}, 3);
+  await prov("conNif", "requiere_intervencion", {}, 0, "Clasificación dudosa: pendiente de revisión");
+  const ids = ["dudosa", "facturaDeclarada", "yaConvertida", "intentada", "fallida", "conNif", "nueva"];
+  const compras = ids.map((id) => compra(id, { currency: "COP", currency_change: "4000", total: "30000,00" }));
+  const contactos = Object.fromEntries(ids.map((id) => [`k-${id}`, id === "conNif" ? { vat_number: "B63258438" } : { code: "" }]));
+  const r = await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, contactos), simulada: false });
+  assert.deepEqual(r.candidatos.map((c) => c.id).sort(), ["dudosa", "facturaDeclarada", "nueva"]);
+  const e = async (id: string) => (await almacen.obtener(claveTicket("Footprint", id)))!;
+  for (const id of ["dudosa", "facturaDeclarada"]) {
+    assert.equal((await e(id)).estado, "solicitado"); assert.equal((await e(id)).evidencia.origen, "regla_auto");
+    assert.equal((await e(id)).evidencia.reabiertoPorRegla, true); assert.equal((await e(id)).ultimoError, undefined);
+  }
+  assert.equal((await e("yaConvertida")).estado, "completado");
+  assert.equal((await e("intentada")).estado, "requiere_intervencion");
+  assert.equal((await e("fallida")).estado, "fallido");
+  assert.equal((await e("conNif")).estado, "requiere_intervencion", "con NIF/CIF la regla dice «nunca»: no se reabre");
+  assert.equal((await e("nueva")).evidencia.origen, "regla_auto");
+  // Idempotente: una segunda exploración no vuelve a registrar nada.
+  assert.equal((await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, contactos), simulada: false })).candidatos.length, 0);
+});
+test("puedeReabrirPorRegla: solo lo provisional y nunca intentado", () => {
+  const t = (estado: string, intentos: number, evidencia: Record<string, unknown>, ultimoError?: string) => ({ estado, intentos, ultimoError, evidencia }) as never;
+  assert.equal(puedeReabrirPorRegla(t("requiere_intervencion", 0, { origen: "recepcion" }, "Clasificación dudosa: pendiente de revisión")), true);
+  assert.equal(puedeReabrirPorRegla(t("omitido", 0, { origen: "recepcion", clasificacion: "factura" })), true);
+  assert.equal(puedeReabrirPorRegla(t("omitido", 0, { origen: "recepcion", clasificacion: "ticket" })), false);
+  assert.equal(puedeReabrirPorRegla(t("omitido", 1, { origen: "recepcion", clasificacion: "factura" })), false);
+  assert.equal(puedeReabrirPorRegla(t("requiere_intervencion", 0, { origen: "regla_auto" }, "Clasificación dudosa")), false);
+  assert.equal(puedeReabrirPorRegla(t("requiere_intervencion", 0, { origen: "recepcion" }, "Sin sesión web de Holded")), false);
 });
