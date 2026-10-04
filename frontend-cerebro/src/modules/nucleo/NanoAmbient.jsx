@@ -40,14 +40,15 @@ export default function NanoAmbient() {
       wisp(width*.20,height-16,Math.min(width*.35,260),48,2,.6,350);
       const origin = canvas.getBoundingClientRect();
       const source = scope.querySelector('.nv-module-glyph,.nv-area-emblem');
-      const focused = target?.isConnected && scope.contains(target) ? target : null;
+      const keyboardTarget = document.activeElement?.matches(controls) && scope.contains(document.activeElement) ? document.activeElement : null;
+      const focused = target?.isConnected && scope.contains(target) ? target : keyboardTarget;
       const destinations = focused ? [focused] : [...scope.querySelectorAll('.nv-metric,.nv-tool-entry')].slice(0,3);
       if (source) {
         const sourceRect = source.getBoundingClientRect();
         const surfaceRect = scope.querySelector('.nv-module-surface')?.getBoundingClientRect();
         const sourceX = sourceRect.left-origin.left+sourceRect.width*.5;
         const sourceY = Math.max(20,sourceRect.bottom-origin.top-12);
-        const gutterX = surfaceRect ? surfaceRect.left-origin.left+14 : width-14;
+        const gutterX = surfaceRect ? Math.max(8,surfaceRect.left-origin.left-12) : width-14;
         for (const [index,destination] of destinations.entries()) {
           const rect = destination.getBoundingClientRect();
           if (rect.bottom<0 || rect.top>innerHeight) continue;
@@ -55,7 +56,18 @@ export default function NanoAmbient() {
           const ty = rect.top-origin.top-9;
           // Route through the spaces outside the reading surfaces, then into their upper seam.
           const sourceSeam = sourceRect.bottom-origin.top+8;
-          const points = [[sourceX,sourceY],[sourceX,sourceSeam],[gutterX,sourceSeam],[gutterX,ty],[tx,ty]];
+          const anchors = [[sourceX,sourceY],[sourceX,sourceSeam],[gutterX,sourceSeam],[gutterX,ty],[tx,ty]];
+          const points = [anchors[0]];
+          for (let k=1;k<anchors.length-1;k++) {
+            const a=anchors[k-1],b=anchors[k],c=anchors[k+1];
+            const before=Math.hypot(b[0]-a[0],b[1]-a[1])||1,after=Math.hypot(c[0]-b[0],c[1]-b[1])||1;
+            const radius=Math.min(25,before*.4,after*.4);
+            const enter=[b[0]+(a[0]-b[0])*radius/before,b[1]+(a[1]-b[1])*radius/before];
+            const leave=[b[0]+(c[0]-b[0])*radius/after,b[1]+(c[1]-b[1])*radius/after];
+            points.push(enter);
+            for(let q=1;q<=8;q++) { const u=q/8,v=1-u;points.push([v*v*enter[0]+2*v*u*b[0]+u*u*leave[0],v*v*enter[1]+2*v*u*b[1]+u*u*leave[1]]); }
+          }
+          points.push(anchors[anchors.length-1]);
           const lengths = points.slice(1).map((p,i)=>Math.hypot(p[0]-points[i][0],p[1]-points[i][1]));
           const total = lengths.reduce((a,b)=>a+b,0)||1;
           const count = focused ? 360 : 180;
