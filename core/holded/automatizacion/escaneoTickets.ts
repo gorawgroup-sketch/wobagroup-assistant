@@ -1,5 +1,6 @@
 import { holdedGet, type Empresa } from "../client";
 import { evaluarReglaTicket } from "./reglaTicket";
+import { registrarDudoso } from "./decisionesTickets";
 import { claveTicket, creadoPorWobi } from "./tickets";
 import { nuevoTrabajo, type AlmacenTrabajos } from "./trabajos";
 
@@ -9,7 +10,7 @@ import { nuevoTrabajo, type AlmacenTrabajos } from "./trabajos";
  * la cola decide cuándo actuar (conciliación, comprobante…) y solo actúa con el interruptor de la regla en «activo».
  */
 export interface CandidatoRegla { empresa: Empresa; id: string; proveedor: string; total: string; moneda: string; fecha: string; motivos: string[] }
-export interface ResultadoEscaneo { revisadas: number; candidatos: CandidatoRegla[]; aRevisar: number; excluidas: number }
+export interface ResultadoEscaneo { revisadas: number; candidatos: CandidatoRegla[]; aRevisar: number; excluidas: number; /** Gastos que la regla no pudo decidir: se pregunta a Carlos con botones. */ dudosos: CandidatoRegla[] }
 
 type Leer = (empresa: Empresa, ruta: string, params?: Record<string, string | undefined>) => Promise<unknown>;
 type Raw = Record<string, unknown>;
@@ -26,7 +27,7 @@ export async function escanearReglaTicket(
   const ahora = opciones.ahora ?? Date.now;
   const dia = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   const desde = dia(ahora() - (opciones.dias ?? 14) * 86_400_000), hasta = dia(ahora() + 86_400_000);
-  const salida: ResultadoEscaneo = { revisadas: 0, candidatos: [], aRevisar: 0, excluidas: 0 };
+  const salida: ResultadoEscaneo = { revisadas: 0, candidatos: [], aRevisar: 0, excluidas: 0, dudosos: [] };
 
   // Aprendizaje: contactos de gastos que ya se convirtieron (completados) en esta empresa.
   const convertidos = new Set<string>();
@@ -58,7 +59,13 @@ export async function escanearReglaTicket(
         proveedorConvertidoAntes: cid !== "" && convertidos.has(cid), textoEvidencia: [d.description, (Array.isArray(d.lines) ? (d.lines as Raw[])[0]?.name : "")].filter(Boolean).join(" · "),
       });
       if (r.decision === "nunca") { vistos.set(clave, "excluida"); salida.excluidas++; continue; }
-      if (r.decision === "revisar") { vistos.set(clave, "revisar"); salida.aRevisar++; continue; }
+      if (r.decision === "revisar") {
+        vistos.set(clave, "revisar"); salida.aRevisar++;
+        // Solo se pregunta por los que WOBI creó, y una sola vez (queda registrado a la espera de la decisión de Carlos).
+        const proveedorDudoso = String(d.contact_name ?? item.contact_name ?? "");
+        if (await registrarDudoso(almacen, { empresa, id, proveedor: proveedorDudoso, motivos: r.motivos })) salida.dudosos.push({ empresa, id, proveedor: proveedorDudoso, total: String(d.total ?? ""), moneda, fecha: String(d.date ?? ""), motivos: r.motivos });
+        continue;
+      }
       const proveedor = String(d.contact_name ?? item.contact_name ?? "");
       const t = nuevoTrabajo({ clave: claveTicket(empresa, id), tipo: "ticket", empresa, objetivo: id }, ahora());
       t.evidencia = { origen: "regla_auto", proveedor, motivos: r.motivos, simulada: opciones.simulada, clasificacion: "ticket" };
