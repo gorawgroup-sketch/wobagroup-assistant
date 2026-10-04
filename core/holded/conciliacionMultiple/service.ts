@@ -37,10 +37,10 @@ function comprobarMovimiento(esperado: MovimientoExacto, actual: MovimientoExact
 export class ServicioConciliacionMultiple {
   constructor(private readonly holded: PuertoHolded, private readonly store: StorePlanes, private readonly ahora = Date.now) {}
 
-  async preparar(datos: { empresa: Empresa; chatId: number; compraId: string; movimientos: ReferenciaMovimiento[]; motivo: string }): Promise<PlanConciliacion> {
+  async preparar(datos: { empresa: Empresa; chatId: number; compraId: string; movimientos: ReferenciaMovimiento[]; motivo: string; parcial?: boolean }): Promise<PlanConciliacion> {
     if (!["WOBA", "EWORKS", "Footprint"].includes(datos.empresa) || !Number.isSafeInteger(datos.chatId)) throw new Error("Empresa o chat inválido.");
     if (!/^[a-zA-Z0-9_-]{1,100}$/.test(datos.compraId)) throw new Error("Identifica la compra por su ID real de Holded.");
-    if (!Array.isArray(datos.movimientos) || datos.movimientos.length < 2 || datos.movimientos.length > 20) throw new Error("Selecciona de 2 a 20 movimientos.");
+    if (!Array.isArray(datos.movimientos) || datos.movimientos.length < 1 || datos.movimientos.length > 20) throw new Error("Selecciona de 1 a 20 movimientos.");
     datos.movimientos.forEach(validarReferencia);
     if (!datos.motivo?.trim() || datos.motivo.length > 500) throw new Error("Indica el motivo que vincula estos pagos con la compra (hasta 500 caracteres).");
     return conMutex(mutexConciliacion(datos.empresa), async () => {
@@ -60,11 +60,12 @@ export class ServicioConciliacionMultiple {
         if (claveMovimiento(m) !== claveMovimiento(ref) || m.fecha !== ref.fecha) throw new Error("El movimiento devuelto no coincide con la selección.");
         movimientos.push(m);
       }
-      validarSeleccion(compra, movimientos);
+      validarSeleccion(compra, movimientos, { parcial: datos.parcial === true });
       await this.holded.validarClasificacion(datos.empresa, compra.id);
       const plan: PlanConciliacion = {
         id: randomUUID().slice(0, 18), empresa: datos.empresa, chatId: datos.chatId, creadoEn: this.ahora(),
         compra, compraInicial: compra, movimientos, motivo: datos.motivo.trim(), estado: "propuesto", verificados: [], pagosVerificados: [],
+        ...(datos.parcial === true ? { parcial: true } : {}),
       };
       await this.store.guardar(plan);
       return plan;
@@ -97,7 +98,7 @@ export class ServicioConciliacionMultiple {
       const reanudado = hechos.length > 0;
       try {
         // Preflight completo: ni una escritura si falla cualquiera de las referencias.
-        if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: reanudado });
+        if (restantes.length > 0) validarSeleccion(p.compra, restantes, { recuperacion: reanudado, parcial: p.parcial === true });
         else validarCompra(p.compra);
         await this.holded.validarClasificacion(p.empresa, p.compra.id);
         comprobarCompra(p.compra, await this.holded.compra(p.empresa, p.compra.id));
@@ -148,7 +149,7 @@ export class ServicioConciliacionMultiple {
         }
         // Divisa: lo que queda es el residuo de redondeo de Holded. Se cierra una sola vez con el ajuste de cambio durable
         // (su propia idempotencia evita repetirlo si el proceso se interrumpe aquí) y se relee la compra.
-        if (divisa && esperada.pendienteCentimos !== 0) {
+        if (divisa && !p.parcial && esperada.pendienteCentimos !== 0) {
           p.enVuelo = "ajuste-cambio";
           await this.store.guardar(p);
           const cierre = await this.holded.cerrarResiduoCambio(p.empresa, p.compra.id, p.movimientos[p.movimientos.length - 1]);
@@ -164,9 +165,14 @@ export class ServicioConciliacionMultiple {
         // Relectura final de AMBOS lados, también de los primeros movimientos del lote.
         comprobarCompra(esperada, await this.holded.compra(p.empresa, p.compra.id));
         for (const m of p.movimientos) comprobarMovimiento(m, await this.holded.movimiento(p.empresa, m), true);
-        if (esperada.pendienteCentimos !== 0) throw new Error(`La compra conserva saldo pendiente (${importe(esperada.pendienteCentimos)} ${esperada.moneda}).`);
+        if (p.parcial) {
+          // Parcial a propósito: el saldo que queda es el esperado (el resto del saldo inicial menos lo conciliado), no un fallo.
+          if (esperada.pendienteCentimos <= 0) throw new Error("Una conciliación parcial no debería dejar la compra sin saldo; revisar en Holded.");
+        } else if (esperada.pendienteCentimos !== 0) throw new Error(`La compra conserva saldo pendiente (${importe(esperada.pendienteCentimos)} ${esperada.moneda}).`);
         p.estado = "completado";
-        p.detalle = "Todos los movimientos y pagos verificados; saldo pendiente de compra: 0.00." +
+        p.detalle = p.parcial
+          ? `Conciliación PARCIAL verificada: ${p.movimientos.length} cargo(s) conciliado(s); la compra queda con ${importe(esperada.pendienteCentimos)} ${esperada.moneda} pendientes a la espera de su cargo.`
+          : "Todos los movimientos y pagos verificados; saldo pendiente de compra: 0.00." +
           (p.ajusteCambio && p.ajusteCambio.montoCentimos > 0 ? ` Residuo de redondeo de la divisa cerrado con el ajuste de cambio de ${importe(p.ajusteCambio.montoCentimos)} EUR.` : "");
         await this.store.guardar(p);
         return p;

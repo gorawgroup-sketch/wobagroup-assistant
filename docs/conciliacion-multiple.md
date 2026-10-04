@@ -67,3 +67,14 @@ Caso real (Uber 8,95 USD, Footprint, 2026-10-04): dos cargos USD de 6,91 + 2,04.
 - EUR no cambia: sigue exigiendo igualdad exacta al céntimo.
 
 **Reanudar** (`reanudar_conciliacion_multiple`): si un lote se detiene a mitad (plan incierto/ejecutando), la herramienta relee Holded, demuestra qué movimientos ya están conciliados con su pago exacto (cuenta, fecha e importe) y propone solo los que faltan, con el mismo botón del superadministrador. No repite ningún pago; si hay un pago que el plan no explica, aborta y pide revisión manual.
+
+## Conciliación parcial (recibo cobrado en varios pagos del que solo aparece una parte)
+
+Caso real (Footprint, 2026-10-04): hotel Metroart, 581,92 USD cobrados en 451,30 + 130,62; en el banco solo estaba el primero. Antes solo se podía «Crear (sin conciliar)». Ahora `conciliar_multiples_movimientos_bancarios` admite `parcial: true`:
+
+- Acepta de 1 a 20 cargos cuya suma sea **menor** que el saldo y deje un resto mayor que el margen de redondeo. Si cubren todo el saldo (o lo superan), se rechaza: no es parcial.
+- Es la misma maquinaria verificada paso a paso (registro durable, pago nuevo por cargo, relectura de ambos lados, botón de superadministrador); en divisa, cada pago se verifica contra el equivalente en EUR del cargo.
+- No cierra ningún residuo de cambio (el resto es una deuda real, no redondeo) y el plan termina **completado** con «queda X pendiente».
+- Para cerrar el saldo después, un segundo plan con el cargo que llega (basta uno si la compra ya tiene pagos). Un plan completado ya no reserva la compra.
+- Pendiente (fase B): el botón «Crear y conciliar lo encontrado» en la propia propuesta, para un solo clic.
+
