@@ -25,8 +25,11 @@ import type { ToolDefinition } from "./types";
  */
 export const consultarPolizasSeguroTool: ToolDefinition = {
   name: "consultar_polizas_seguro",
-  seguraParaModoRapido: true,
+  // Ya no es de modo rápido: las preguntas de seguros las responde el especialista (consultar_agente_seguros), que razona,
+  // recuerda las decisiones de Carlos y lee banco, correo y documentos. Esta queda como lectura cruda para el chat completo
+  // y como respaldo del especialista cuando la IA no está disponible.
   description:
+    "DATOS CRUDOS, sin análisis: para responder preguntas de seguros usa consultar_agente_seguros (el especialista). Esta herramienta solo tiene sentido si necesitas el volcado completo del registro. " +
     "Consulta el registro real de pólizas de seguro del grupo (WOBA, EWORKS, Footprint): qué pólizas " +
     "existen, aseguradora, corredor, número de póliza, capital asegurado, prima, vigencia, y — lo más " +
     "importante — qué está PENDIENTE ahora mismo (pagos sin confirmar o devueltos por el banco, pólizas " +

@@ -28,7 +28,7 @@ import {
   type EstadoAuditoriaProgramadaFront,
 } from "./auditoriaProgramadaStore";
 import { listarPolizas } from "../seguros/polizaRegistroSheet";
-import { calcularAlertasSeguros } from "../seguros/alertas";
+import { construirEstadoSeguros, ESTADO_SEGUROS_VACIO, leerComplementosSeguros } from "../seguros/estadoCerebro";
 
 const EMPRESAS_HOLDED: Empresa[] = ["WOBA", "EWORKS", "Footprint"];
 
@@ -396,7 +396,6 @@ async function construirConocimiento() {
   };
 }
 
-const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"];
 
 /**
  * Registro de pólizas de seguro (ver docs/wobi-seguros.md §5, §17-19) —
@@ -414,50 +413,10 @@ const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"];
  */
 async function construirSeguros() {
   const polizas = await seguroSheets("seguros.polizas", listarPolizas, [] as Awaited<ReturnType<typeof listarPolizas>>);
-  const { proximasARenovar, pagosSinConfirmar } = calcularAlertasSeguros(polizas);
-
-  const porEmpresa = Object.fromEntries(
-    EMPRESAS_SEGUROS.map((empresa) => {
-      const deEstaEmpresa = polizas.filter((p) => p.empresa === empresa);
-      return [
-        empresa,
-        {
-          total: deEstaEmpresa.length,
-          vigentes: deEstaEmpresa.filter((p) => p.estado === "vigente").length,
-          pendientesConfirmar: deEstaEmpresa.filter((p) => p.estadoPago === "pendiente" || p.estadoPago === "sin_confirmar").length,
-        },
-      ];
-    })
-  ) as Record<string, { total: number; vigentes: number; pendientesConfirmar: number }>;
-
-  return {
-    polizas: polizas.map((p) => ({
-      id: p.id,
-      empresa: p.empresa,
-      aseguradora: p.aseguradora,
-      correduria: p.correduria,
-      numeroPoliza: p.numeroPoliza,
-      tipoCobertura: p.tipoCobertura,
-      activoAsociado: p.activoAsociado,
-      capitalAsegurado: p.capitalAsegurado,
-      franquicia: p.franquicia,
-      prima: p.prima,
-      moneda: p.moneda,
-      periodicidad: p.periodicidad,
-      fechaInicioVigencia: p.fechaInicioVigencia,
-      fechaVencimiento: p.fechaVencimiento,
-      estado: p.estado,
-      estadoPago: p.estadoPago,
-      notas: p.notas,
-      rutaDocumento: p.rutaDocumento,
-      ultimaVerificacion: p.ultimaVerificacion,
-    })),
-    proximasARenovar,
-    pagosSinConfirmar,
-    porEmpresa,
-    totalPolizasActivas: polizas.filter((p) => p.estado !== "no_contratada").length,
-    linkRegistro: `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`,
-  };
+  // Memoria, documentos y última revisión: lectura aparte (con caché de 5 min) para no multiplicar las lecturas de Sheets;
+  // si falla, la sección lo declara (complementosDisponibles: false) en vez de presentar ceros.
+  const complementos = await seguroSheets("seguros.complementos", () => leerComplementosSeguros(), null as Awaited<ReturnType<typeof leerComplementosSeguros>> | null);
+  return construirEstadoSeguros(polizas, complementos, new Date(), `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`);
 }
 
 function construirAccesos(
@@ -558,7 +517,7 @@ const SECCIONES: DefinicionSeccion[] = [
     cargar: () => enSeccion(() => seguroSheets("auditoriaProgramada", obtenerEstadoAuditoriaProgramada, ESTADO_AUDITORIA_POR_DEFECTO as EstadoAuditoriaProgramadaFront)),
     fallback: vacio(ESTADO_AUDITORIA_POR_DEFECTO as unknown) },
   { nombre: "seguros", ttlMs: 60_000, cargar: () => enSeccion(construirSeguros),
-    fallback: vacio({ polizas: [], proximasARenovar: [], pagosSinConfirmar: [], porEmpresa: {}, totalPolizasActivas: 0, linkRegistro: "" }) },
+    fallback: vacio(ESTADO_SEGUROS_VACIO) },
   // Verifica todas las conexiones (Telegram, Sheets, Drive, Gmail, Calendar, Holded ×3): ~8 llamadas por lectura,
   // por eso solo se repite cada minuto en vez de en cada carga del panel.
   { nombre: "conexiones", ttlMs: 60_000,
