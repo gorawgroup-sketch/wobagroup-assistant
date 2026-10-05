@@ -49,3 +49,9 @@ test("por encima del tamaño máximo se conserva el comportamiento anterior", ()
   const filas = Array.from({ length: MAX_RECIBOS_REPARTO + 1 }, (_, i) => [i === 0 ? 0.025 : 0.001]);
   assert.equal(cargoCorrespondeMejorAOtroRecibo(filas, 0), false);
 });
+
+test("un cargo peor para este recibo que otra alternativa suya, pero que nadie más necesita, se conserva", () => {
+  // Cargos [c0, c1, propio del competidor]. Este recibo: c0 2,9 %, c1 1,1 %. Competidor: c0 0,2 %, c1 1,5 %, propio 0 %.
+  const matriz = [[0.029, 0.011, undefined], [0.002, 0.015, 0]];
+  assert.equal(cargoCorrespondeMejorAOtroRecibo(matriz, 0), false, "el competidor se queda con su propio cargo");
+});
