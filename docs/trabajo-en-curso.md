@@ -41,6 +41,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
+| Panel de Seguros del Núcleo (P1–P7) | Cerebro (front) | `codex/seguros-panel` | Codex | Listo para revisión en PR; solo frontend, pruebas y verificación en vivo. |
 | Lecturas de fuentes de Cerebro bajo la cola de Sheets | Cerebro (front) | [PR #330](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/330) | Codex | Fusionado y desplegado el 04-10-2026; durante la observación las 20 fuentes siguieron completas y frescas. |
 | Sonda de Sheets bajo carga de fondo | Cerebro (front) | [PR #334](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/334) | Codex | Fusionado el 04-10-2026; Railway y comprobación bajo carga pendientes de completar. Usa la reserva interactiva del regulador para evitar falsos timeouts. |
 | Núcleo fluido: áreas, búsqueda documental y Telegram Web | Cerebro (front) | `codex/wobi-nucleo-vivo`, [PR #320](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/320) | Codex | Implementado y probado en copia aislada; publicación tras verificar la sonda de Sheets y los flujos existentes. [Alcance](wobi-nucleo-vivo.md) |

@@ -4,7 +4,7 @@ import { companyScopeNote, scopeSnapshot } from './modules/nucleo/companyScope.m
 const sample = {
   holded: { porEmpresa: { WOBA: { facturasUltimos7dias: 1 }, EWORKS: { facturasUltimos7dias: 5 } } },
   drive: { porEmpresa: { WOBA: { archivosUltimos7dias: 2 }, EWORKS: { archivosUltimos7dias: 4 } }, ultimoArchivo: { nombre:'Otro', empresa:'EWORKS' } },
-  seguros: { polizas:[{ id:'w',empresa:'WOBA',estado:'vigente' },{ id:'e',empresa:'EWORKS',estado:'vigente' }], proximasARenovar:[{empresa:'EWORKS'}], pagosSinConfirmar:[{empresa:'WOBA'}], totalPolizasActivas:2 },
+  seguros: { polizas:[{ id:'w',empresa:'WOBA',estado:'vigente' },{ id:'old',empresa:'WOBA',estado:'vencida' },{ id:'hold',empresa:'WOBA',estado:'pendiente_confirmacion' },{ id:'e',empresa:'EWORKS',estado:'vigente' }], proximasARenovar:[{empresa:'EWORKS'}], proximos:[{empresa:'WOBA',polizaId:'w'},{empresa:'EWORKS',polizaId:'e'}], pagosSinConfirmar:[{empresa:'WOBA'}], totalPolizasActivas:2, documentos:[{empresa:'WOBA'},{empresa:'EWORKS'}], memoria:[{tipo:'hecho'}], esperandoACarlos:[{id:'group'}], vigilante:{ultimaRevision:null} },
   fiscal: { proximasAlertas:[{empresa:'WOBA'},{empresa:'Footprint'}], catalogoPagosRecurrentes:[{empresa:'Footprint'}] },
   crm: { actividadesProgramadas:[{empresa:'WOBA'},{empresa:'EWORKS'}] },
   cashflow: { balanceUltimaSemana:{balanceFinal:500}, propuestasPendientes:[{empresa:'WOBA'},{empresa:'EWORKS'}], pagosRecurrentes:[{empresa:'WOBA'},{empresa:'EWORKS'}], alertasPagosRecurrentesProximas:[{empresa:'EWORKS'}], linkSheet:'https://example.com' },
@@ -20,9 +20,16 @@ test('company context isolates available per-company modules without mutating so
   assert.deepEqual(Object.keys(drive.drive.porEmpresa), ['WOBA']);
   const seguros = scopeSnapshot('seguros', sample, 'WOBA');
   assert.equal(seguros.seguros.totalPolizasActivas, 1);
-  assert.deepEqual(seguros.seguros.polizas.map(p=>p.id), ['w']);
+  assert.equal(seguros.seguros.resumen.vigentes, 1);
+  assert.equal(seguros.seguros.resumen.vencidas, 1);
+  assert.equal(seguros.seguros.resumen.porConfirmarOEnHold, 1);
+  assert.deepEqual(seguros.seguros.polizas.map(p=>p.id), ['w','old','hold']);
   assert.equal(seguros.seguros.proximasARenovar.length, 0);
+  assert.deepEqual(seguros.seguros.proximos.map(p=>p.polizaId), ['w']);
   assert.equal(seguros.seguros.pagosSinConfirmar.length, 1);
+  assert.equal(seguros.seguros.documentos.length, 1);
+  assert.equal(seguros.seguros.memoria.length, 1);
+  assert.equal(seguros.seguros.esperandoACarlos.length, 1);
   assert.equal(scopeSnapshot('fiscal', sample, 'Footprint').fiscal.proximasAlertas.length, 1);
   assert.equal(scopeSnapshot('calendario', sample, 'WOBA').crm.actividadesProgramadas.length, 1);
 });
