@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { identidadAjusteCambio } from "./durableFxResidualAdjustment";
 import {
   ConciliacionMovimientoInciertaError,
   ConciliacionMovimientoCanceladaError,
@@ -847,4 +848,31 @@ test("el hueco sigue exigiendo revisión si hay una sola moneda, supera el 5 %, 
 
 test("un hueco dentro del margen de redondeo no produce ni pendiente ni diferencia", () => {
   assert.deepEqual(decidirResiduoMovimiento({ montoMovimiento: 10.95, montoEnlazado: 10.93, ok: true, parcialEsperado: false, monedaMovimiento: "USD", monedaCompra: "EUR" }), {});
+});
+
+test("cadena completa Salesmate 600 USD: lo que evaluarAjusteCambioResidual declara elegible lo acepta también el último guardián que escribe el pago (segundo tope, 2026-10-05)", () => {
+  const compra = {
+    currency: "USD", currency_change: "1.12", total: "600,00", payments_total: "598,17", payments_pending: "1,83",
+    payments_detail: [{ bank_id: "ftg-usd", date: "2026-10-03", amount: "532,89" }],
+  };
+  const movimiento = { status: "reconciled", currency: "USD", amount: "-600.00", reconciled_amount: "-600.00", accounting_amount: "-532.89" };
+  const elegible = evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-10-03");
+  assert.ok(elegible);
+  const registro = identidadAjusteCambio({
+    empresa: "Footprint", purchaseId: "p", movementId: "m", sourceAccountId: "ftg-usd", targetTreasuryId: "main-eur",
+    fecha: "2026-10-03", monto: elegible.monto, totalNativoCompra: elegible.montoNativo,
+  });
+  assert.equal(registro.montoCentimos, 163);
+});
+
+test("el importe del ajuste usa el cambio EFECTIVO de Holded (pagado nativo ÷ pagos en EUR), no el declarado redondeado a 2 decimales", () => {
+  const compra = {
+    currency: "USD", currency_change: "1.12", total: "600,00", payments_total: "590,00", payments_pending: "10,00",
+    payments_detail: [{ bank_id: "ftg-usd", date: "2026-10-03", amount: "525,60" }],
+  };
+  const movimiento = { status: "reconciled", currency: "USD", amount: "-600.00", reconciled_amount: "-600.00", accounting_amount: "-525.60" };
+  const elegible = evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-10-03");
+  assert.ok(elegible);
+  // 10 ÷ 1,12 = 8,93 (declarado, redondeado) frente a 10 ÷ (590/525,60 = 1,12253) = 8,91 (efectivo): el pendiente final queda en 0.
+  assert.equal(elegible.monto, 8.91);
 });
