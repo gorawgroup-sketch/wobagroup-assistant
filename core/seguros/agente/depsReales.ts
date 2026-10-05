@@ -10,6 +10,7 @@ import { crearMensajeAnthropic } from "../../ai/anthropicGateway";
 import { crearEjecucionIA } from "../../ai/policy";
 import { invalidarEstadoCerebro } from "../../cerebro/estadoAgregado";
 import { publicarCambioCerebro } from "../../cerebro/realtime";
+import { invalidarComplementosSeguros } from "../estadoCerebro";
 import { searchDriveFilesAllRoots } from "../../drive/client";
 import { ROOT_FOLDERS } from "../../drive/rootFolders";
 import { buscarMensajes, obtenerCuerpoCompletoCorreo, obtenerResumenCorreo } from "../../gmail/client";
@@ -104,6 +105,7 @@ export function depsRealesAgente(): DepsConsulta {
     },
     conocimiento: almacenConocimientoReal,
     invalidarCerebro: () => {
+      invalidarComplementosSeguros();
       invalidarEstadoCerebro(["seguros"]);
       publicarCambioCerebro("seguros:agente");
     },

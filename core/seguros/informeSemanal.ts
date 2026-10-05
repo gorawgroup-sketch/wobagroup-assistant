@@ -14,6 +14,8 @@ export interface EventoProximo {
   fecha: string;
   texto: string;
   tipo: "vencimiento" | "pago";
+  polizaId: string;
+  empresa: string;
 }
 
 const FECHA_EN_TEXTO = /(\d{2})\/(\d{2})\/(\d{4})/;
@@ -29,14 +31,14 @@ export function eventosProximos(polizas: PolizaConFila[], hoy: string, dias = HO
     if (p.estado === "vencida" || p.estado === "no_contratada" || p.estado === "pendiente_confirmacion") continue;
     if (p.fechaVencimiento) {
       const d = diasEntre(hoy, p.fechaVencimiento);
-      if (d <= dias) eventos.push({ fecha: p.fechaVencimiento, tipo: "vencimiento", texto: `Vence ${p.tipoCobertura} (${p.aseguradora || "aseguradora sin confirmar"}${p.numeroPoliza ? `, ${p.numeroPoliza}` : ""})` });
+      if (d <= dias) eventos.push({ fecha: p.fechaVencimiento, tipo: "vencimiento", polizaId: p.id, empresa: p.empresa, texto: `Vence ${p.tipoCobertura} (${p.aseguradora || "aseguradora sin confirmar"}${p.numeroPoliza ? `, ${p.numeroPoliza}` : ""})` });
     }
     for (const frase of p.notas.matchAll(/PRÓXIMO PAGO:[^|]*/g)) {
       const m = frase[0].match(FECHA_EN_TEXTO);
       if (!m) continue;
       const fecha = `${m[3]}-${m[2]}-${m[1]}`;
       const d = diasEntre(hoy, fecha);
-      if (d >= 0 && d <= dias) eventos.push({ fecha, tipo: "pago", texto: `[${p.empresa}] ${frase[0].replace("PRÓXIMO PAGO:", "").trim().replace(/\.$/, "")}` });
+      if (d >= 0 && d <= dias) eventos.push({ fecha, tipo: "pago", polizaId: p.id, empresa: p.empresa, texto: `[${p.empresa}] ${frase[0].replace("PRÓXIMO PAGO:", "").trim().replace(/\.$/, "")}` });
     }
   }
   return eventos.sort((a, b) => a.fecha.localeCompare(b.fecha));

@@ -53,6 +53,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Reglas «ya está sumado en otra línea» del cashflow (botón Explicar + herramienta de chat) | Cashflow | `feat/reglas-cashflow-agregadas` | Claude Code | En PR. Carpeta `core/cashflow/` (reglas, explicación, almacén de espera) + 4 puntos de conexión |
 | Wobi Seguros: vigilante autónomo (banco + correo + registro) | Seguros | `claude/seguros-vigilante` ([PR #352](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/352)) | Claude Code | En PR: job 8:35 y 17:35, sin IA. |
 | Wobi Seguros: agente especialista independiente (memoria propia, herramientas, caché de documentos, resumen semanal) | Seguros | `claude/seguros-agente` (apilada sobre #352) | Claude Code | En PR. Puntos de conexión: 1 import en `registry.ts`, 1 línea en `requestBudget.ts`, 1 cron en `scheduler.ts`. Pendiente aparte: calendario de pagos con alertas a 3 días; contrato de datos y panel de Seguros en Cerebro (encargo a Codex) |
+| Wobi Seguros: contrato de datos de Seguros para Cerebro (contadores veraces, próximos pagos, memoria, documentos, última revisión) | Seguros | `claude/seguros-estado-cerebro` (apilada sobre el agente) | Claude Code | En PR. Un cambio en `estadoAgregado.ts` (`construirSeguros` delega). Encargo del panel para Codex: [encargo-codex-seguros-front.md](encargo-codex-seguros-front.md) |
 
 ## Pendiente de decisión de Carlos
 

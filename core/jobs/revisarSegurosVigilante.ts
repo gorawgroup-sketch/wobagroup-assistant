@@ -1,4 +1,6 @@
 import { sendTelegramMessageExpandable } from "../telegram/client";
+import { invalidarComplementosSeguros } from "../seguros/estadoCerebro";
+import { CLAVE_ULTIMA_REVISION, resumirRevision } from "../seguros/vigilante/ultimaRevision";
 import { guardarEstadoVigilante, purgarEstadoVigilante } from "../seguros/vigilante/estadoStore";
 import { fuentesRealesVigilante } from "../seguros/vigilante/fuentesReales";
 import type { Informe } from "../seguros/vigilante/informe";
@@ -27,6 +29,11 @@ export async function revisarSegurosVigilante(
 
   const resultado = await ejecutarVigilanteSeguros(fuentes);
   let avisado = false;
+
+  // Resumen para el panel de Cerebro («última revisión…»): se guarda siempre, haya o no aviso.
+  await guardarEstadoVigilante([{ id: CLAVE_ULTIMA_REVISION, version: JSON.stringify(resumirRevision(resultado, fuentes.ahora())) }])
+    .then(() => invalidarComplementosSeguros())
+    .catch((error) => console.error("[revisarSegurosVigilante] No se pudo guardar el resumen de la revisión (no crítico):", error));
 
   // 1) Un informe anterior que no llegó a entregarse va primero.
   let pendiente = resultado.pendienteEnvio;

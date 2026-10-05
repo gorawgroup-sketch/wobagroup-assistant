@@ -420,6 +420,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           if (contenido.length < 20 || contenido.length > 1500) return "Error: el texto debe tener entre 20 y 1.500 caracteres.";
           const hoy = deps.hoy();
           const guardada = await agregarConocimiento({ tipo, texto: contenido, fuente: `${texto(e.fuente) || "conversación"}, ${diaMes(hoy)}/${hoy.slice(0, 4)}`, fecha: hoy }, deps.conocimiento);
+          try { deps.invalidarCerebro(); } catch (error) { console.error("[agenteSeguros] No se pudo refrescar Cerebro (no crítico):", error); }
           return `Guardado en la memoria de Wobi Seguros (${guardada.id}).`;
         },
       },
@@ -439,6 +440,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const existentes = await leerConocimiento(deps.conocimiento);
           if (!existentes.some((x) => x.id === texto(e.id) && x.vigente)) return `Error: no hay un recuerdo vigente con id «${texto(e.id)}».`;
           const ok = await deps.conocimiento.retirar(texto(e.id), texto(e.motivo) || "retirado a petición de la persona");
+          if (ok) { try { deps.invalidarCerebro(); } catch (error) { console.error("[agenteSeguros] No se pudo refrescar Cerebro (no crítico):", error); } }
           return ok ? "Retirado de la memoria." : "Error: no se pudo retirar.";
         },
       },

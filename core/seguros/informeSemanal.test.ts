@@ -18,8 +18,8 @@ test("los «PRÓXIMO PAGO» con fecha dentro del horizonte entran en el calendar
   assert.deepEqual(eventosProximos([p], "2026-10-05", 60), []);
   const cerca = eventosProximos([p], "2027-01-15", 60);
   assert.equal(cerca.length, 1);
-  assert.deepEqual(cerca[0], { fecha: "2027-03-01", tipo: "pago", texto: "[WOBA] 2ª cuota semestral el 01/03/2027 (por confirmar)" });
-  assert.deepEqual(eventosProximos([poliza({ id: "b", notas: "PRÓXIMO PAGO: sin fecha clara" })], "2027-01-15", 400), [{ fecha: "2027-08-31", tipo: "vencimiento", texto: "Vence Todo riesgo showroom (Allianz, 054239034)" }]);
+  assert.deepEqual(cerca[0], { fecha: "2027-03-01", tipo: "pago", polizaId: "a", empresa: "WOBA", texto: "[WOBA] 2ª cuota semestral el 01/03/2027 (por confirmar)" });
+  assert.deepEqual(eventosProximos([poliza({ id: "b", notas: "PRÓXIMO PAGO: sin fecha clara" })], "2027-01-15", 400), [{ fecha: "2027-08-31", tipo: "vencimiento", polizaId: "b", empresa: "WOBA", texto: "Vence Todo riesgo showroom (Allianz, 054239034)" }]);
 });
 
 test("lo vencido, lo no contratado y lo que está en hold no genera vencimientos", () => {

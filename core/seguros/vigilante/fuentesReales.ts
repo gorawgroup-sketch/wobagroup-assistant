@@ -5,6 +5,7 @@
  */
 import { invalidarEstadoCerebro } from "../../cerebro/estadoAgregado";
 import { publicarCambioCerebro } from "../../cerebro/realtime";
+import { invalidarComplementosSeguros } from "../estadoCerebro";
 import { buscarMensajes, obtenerResumenCorreo } from "../../gmail/client";
 import { listBankMovements, listTreasuryAccounts } from "../../holded/client";
 import { actualizarPoliza, listarPolizas } from "../polizaRegistroSheet";
@@ -29,6 +30,7 @@ export function fuentesRealesVigilante(): FuentesVigilante {
     purgarCorreosVistos: (fechaLimite) =>
       purgarEstadoVigilante((e) => e.id.startsWith("correo:") && e.actualizadoEn.slice(0, 10) < fechaLimite),
     invalidarCerebro: () => {
+      invalidarComplementosSeguros();
       invalidarEstadoCerebro(["seguros"]);
       publicarCambioCerebro("seguros:vigilante");
     },

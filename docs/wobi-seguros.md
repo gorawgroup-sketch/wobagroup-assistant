@@ -465,3 +465,11 @@ Pedido de Carlos (05/10/2026): que Wobi Seguros sea «lo suficientemente indepen
 - Añade entre 30 y 100 segundos a una pregunta de condiciones.
 - Pendiente (PRs aparte): calendario de pagos estructurado con alertas a 3 días y verificación de caja (§6.2); contrato de datos y panel de Cerebro para Seguros (encargo a Codex).
 
+## 26. Lo que Seguros entrega a Cerebro (2026-10-05)
+
+La sección `seguros` del estado agregado la construye ahora `core/seguros/estadoCerebro.ts` (el único dueño de su forma; `core/cerebro/estadoAgregado.ts` solo delega). Es el **contrato con el front**: el front dibuja y no recalcula nada de seguros. Ejemplo real en `docs/ejemplos/estado-seguros.json`; el encargo para el front, en `docs/encargo-codex-seguros-front.md`.
+
+- **Compatible hacia atrás.** `polizas`, `proximasARenovar`, `pagosSinConfirmar`, `porEmpresa`, `totalPolizasActivas` y `linkRegistro` conservan su forma. Un solo significado cambia, a propósito: `totalPolizasActivas` cuenta las pólizas **vigentes** (el panel decía 9 «activas» con 6 vigentes, porque incluía una vencida y dos en hold).
+- **Nuevo:** `resumen` (vigentes, pago sin confirmar, en hold o por confirmar, vencidas, no contratadas), `proximos` (vencimientos y pagos anotados a 400 días, con días que faltan, empresa y póliza), `esperandoACarlos` (con los días que lleva), `memoria` (decisiones, reglas, contactos y hechos vigentes de Wobi Seguros), `documentos` (los ya leídos, con resumen y enlace) y `vigilante.ultimaRevision` (qué encontró el vigilante en su última revisión, incluidos los cargos en tránsito).
+- **Frescura honesta.** La memoria, los documentos y la última revisión se leen aparte (`seguros.complementos`), con caché de 5 minutos para no multiplicar las lecturas de Sheets del panel (1 lectura/minuto antes; ahora ~1,6). Si esa lectura falla, `complementosDisponibles` es `false` y esos campos van a `null`: el front debe decir «Sin lectura actual», nunca mostrar un cero. El vigilante, el especialista y el job descartan la caché cuando escriben.
+
