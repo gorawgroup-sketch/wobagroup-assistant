@@ -1,27 +1,33 @@
-import { EscrituraHoldedNoIniciadaError } from "../../gmail/automatico/postgres";
 import { estaConciliado, holdedGet, listBankMovements, listTreasuryAccounts, type Empresa } from "../client";
-import { conciliarMovimientoContraAsientoHolded, crearAsientoHolded, HoldedApiError } from "../write";
+import { conciliarMovimientoContraPagoHolded } from "../write";
 import type { CuentaTransferencia, MovimientoTransferencia } from "./deteccion";
 import { aCuenta, aMovimiento, detectarTransferenciasDeEmpresa } from "./lectura";
+import { transferirMovimientoEnHolded, type OrdenTransferir, type ResultadoTransferir } from "./navegadorTransferencia";
 import { guardarRegistro, type RegistroTransferencia } from "./registro";
 
 /**
- * Ejecución de UNA transferencia interna en EUR.
+ * Ejecución de UNA transferencia interna en EUR, igual que se hace a mano en Holded:
  *
- * Reproduce lo que deja la interfaz de Holded con «Transferir»: un único asiento que carga la cuenta bancaria de
- * destino y abona la de origen (leído de una transferencia real conciliada a mano: WOBA, 02/09/2026, asiento 3126,
- * debe 57200001 / haber 57200015), y los dos movimientos conciliados contra ese asiento. No crea ingreso ni gasto.
+ *  1. Sobre el movimiento de ENTRADA se pulsa «Transferir» eligiendo la cuenta contable del banco de origen (lo hace el
+ *     robot de navegador: la API no lo ofrece). Holded crea un asiento numerado (debe destino / haber origen), concilia
+ *     ese movimiento y deja un cobro y un pago enlazados de tipo «trans» (leído de transferencias reales: WOBA 02/09/2026).
+ *  2. El movimiento de SALIDA se concilia por la API contra ese pago, que queda pendiente en la cuenta de origen.
+ *
+ * El primer método (asiento por POST /ledger-entries + conciliación contra «entry») falló en la prueba del 05-10-2026:
+ * el asiento queda sin número y Holded responde 200 sin enlazar nada.
  *
  * Garantías:
  *  - Antes de escribir relee cuentas y movimientos y repite la detección: la pareja debe seguir siendo inequívoca.
- *  - El estado «ejecutando» y el id del asiento se guardan ANTES de seguir: tras un corte no se repite ninguna escritura.
- *  - Una escritura incierta nunca se reintenta: se verifica por lectura y, si no cuadra, queda «fallida» para una persona.
- *  - No se da por bueno un HTTP 200: se exige estado conciliado, importe conciliado, el asiento exacto y ningún otro
- *    asiento nuevo en las dos cuentas contables hasta el día de hoy.
+ *  - El estado «ejecutando» se guarda ANTES de actuar. Lo que pasó en Holded se decide siempre leyendo: si existe el
+ *    par cobro/pago de la transferencia, el paso 1 ocurrió y no se repite jamás.
+ *  - No se da por bueno un clic ni un HTTP 200: se exigen los dos movimientos conciliados, el cobro y el pago
+ *    conciliados y un único asiento nuevo en las dos cuentas contables.
  */
 
 export interface LineaAsiento { asientoId: string; cuenta: string; debe: number; haber: number; descripcion: string }
 export interface AsientoHolded { id: string; fecha: string; lineas: Array<{ cuenta: string; debe: number; haber: number }> }
+/** Cobro o pago que Holded crea al pulsar «Transferir» (document_type «trans», document_id = movimiento pulsado). */
+export interface PagoTransferencia { id: string; tipo: "payment" | "collection"; cuentaId: string; importe: number; conciliado: boolean }
 
 export interface DependenciasEjecucion {
   leerCuentas(empresa: Empresa): Promise<CuentaTransferencia[]>;
@@ -30,15 +36,21 @@ export interface DependenciasEjecucion {
   leerLineas(empresa: Empresa, cuentaContable: string, desde: string, hasta: string): Promise<LineaAsiento[]>;
   /** El asiento completo por su id; undefined si no existe. */
   leerAsiento(empresa: Empresa, asientoId: string): Promise<AsientoHolded | undefined>;
+  /** Cobro y pago generados por «Transferir» sobre ese movimiento; vacío si no se ha transferido. */
+  leerPagosDeTransferencia(empresa: Empresa, movimientoId: string, fecha: string): Promise<PagoTransferencia[]>;
   /** Motivo por el que la pareja YA NO es una transferencia inequívoca (otro candidato, descripción, sincronización); undefined si lo sigue siendo. */
   motivoYaNoInequivoca(registro: RegistroTransferencia): Promise<string | undefined>;
-  crearAsiento(empresa: Empresa, asiento: { date: string; notes: string; lines: Array<{ account: number; description: string; debit: string; credit: string }> }): Promise<string>;
-  conciliar(empresa: Empresa, cuentaId: string, movimientoId: string, asientoId: string): Promise<void>;
+  /** Pulsa «Transferir» en la interfaz de Holded sobre un movimiento. */
+  transferir(empresa: Empresa, orden: OrdenTransferir): Promise<ResultadoTransferir>;
+  conciliarConPago(empresa: Empresa, cuentaId: string, movimientoId: string, pagoId: string, tipo: "payment" | "collection"): Promise<void>;
   guardar(registro: RegistroTransferencia): Promise<void>;
   hoy(): string;
+  /** Espera entre lecturas mientras Holded termina de registrar la transferencia. */
+  esperar(ms: number): Promise<void>;
 }
 
 export interface ResultadoEjecucion { estado: RegistroTransferencia["estado"]; mensaje: string; registro: RegistroTransferencia }
+export interface OpcionesEjecucion { /** false = solo se lee y se informa (modo no activo o pareja sin autorizar). */ permitirEscritura: boolean }
 
 const CENTIMO = 0.005;
 export const marcaDeOperacion = (r: Pick<RegistroTransferencia, "id">) => `[wobi:transferencia:${r.id}]`;
@@ -90,134 +102,152 @@ export function motivoParaNoEjecutar(
   return undefined;
 }
 
-/** Comprueba por lectura que la operación quedó exactamente como debe. Devuelve los fallos encontrados (vacío = correcta). */
+/** El par cobro/pago de la transferencia, si es exactamente el esperado: un pago en la cuenta de origen y un cobro en la de destino. */
+function parDeTransferencia(r: RegistroTransferencia, pagos: PagoTransferencia[]): { pago: PagoTransferencia; cobro: PagoTransferencia } | undefined {
+  const importe = Math.abs(r.importeDestino);
+  const pagosOrigen = pagos.filter((p) => p.tipo === "payment" && p.cuentaId === r.origenCuenta && Math.abs(Math.abs(p.importe) - importe) <= CENTIMO);
+  const cobrosDestino = pagos.filter((p) => p.tipo === "collection" && p.cuentaId === r.destinoCuenta && Math.abs(Math.abs(p.importe) - importe) <= CENTIMO);
+  return pagos.length === 2 && pagosOrigen.length === 1 && cobrosDestino.length === 1 ? { pago: pagosOrigen[0], cobro: cobrosDestino[0] } : undefined;
+}
+
+/**
+ * Comprueba por lectura que la operación quedó exactamente como debe. Devuelve los fallos (vacío = correcta) y el asiento
+ * de la transferencia cuando se identifica. `asientosAntes` = ids de asiento que ya había en cada cuenta contable.
+ */
 export async function verificarTransferencia(
   r: RegistroTransferencia,
   d: DependenciasEjecucion,
-  lineasAntes?: { origen: number; destino: number }
-): Promise<string[]> {
+  asientosAntes?: { origen: string[]; destino: string[] }
+): Promise<{ fallos: string[]; asientoId: string }> {
   const fallos: string[] = [];
   const e = await leerEstado(r, d);
-  if (!e.origenCuenta || !e.destinoCuenta || !e.origen || !e.destino) return ["No se pudieron releer las cuentas o los movimientos."];
+  if (!e.origenCuenta || !e.destinoCuenta || !e.origen || !e.destino) return { fallos: ["No se pudieron releer las cuentas o los movimientos."], asientoId: r.asientoId };
   for (const [m, nombre, esperado] of [[e.origen, "de salida", r.importeOrigen], [e.destino, "de entrada", r.importeDestino]] as const) {
     if (!estaConciliado(m.estado)) fallos.push(`El movimiento ${nombre} no quedó conciliado (estado ${m.estado}).`);
     if (Math.abs(Math.abs(m.conciliado) - Math.abs(esperado)) > CENTIMO) fallos.push(`El movimiento ${nombre} tiene conciliados ${m.conciliado.toFixed(2)} en lugar de ${texto(esperado)}.`);
   }
+  const pagos = await d.leerPagosDeTransferencia(r.empresa, r.destinoMovimiento, r.destinoFecha);
+  const par = parDeTransferencia(r, pagos);
+  if (!par) fallos.push(`Holded no muestra exactamente un cobro y un pago de transferencia por ${texto(r.importeDestino)} para este movimiento (hay ${pagos.length}).`);
+  else if (!par.pago.conciliado || !par.cobro.conciliado) fallos.push("El cobro o el pago de la transferencia sigue pendiente de conciliar.");
+
+  // Un único asiento: debe la cuenta de destino, haber la de origen. Nada más (ni ingreso ni gasto).
   const importe = Math.abs(r.importeDestino);
-  if (!r.asientoId) return [...fallos, "No hay asiento registrado para esta operación."];
-  const asiento = await d.leerAsiento(r.empresa, r.asientoId);
-  if (!asiento) fallos.push(`El asiento ${r.asientoId} no existe en Holded.`);
+  const { desde, hasta } = ventana(r, d.hoy());
+  const lineasDestino = await d.leerLineas(r.empresa, e.destinoCuenta.cuentaContable!, desde, hasta);
+  const lineasOrigen = await d.leerLineas(r.empresa, e.origenCuenta.cuentaContable!, desde, hasta);
+  let asientoId = r.asientoId;
+  if (asientosAntes) {
+    const nuevosDestino = [...new Set(lineasDestino.map((l) => l.asientoId))].filter((id) => !asientosAntes.destino.includes(id));
+    const nuevosOrigen = [...new Set(lineasOrigen.map((l) => l.asientoId))].filter((id) => !asientosAntes.origen.includes(id));
+    if (nuevosDestino.length !== 1 || nuevosOrigen.length !== 1 || nuevosDestino[0] !== nuevosOrigen[0]) {
+      fallos.push(`Se esperaba un único asiento nuevo en las dos cuentas contables y hay ${nuevosDestino.length} en la de destino y ${nuevosOrigen.length} en la de origen.`);
+    } else asientoId = nuevosDestino[0];
+  } else if (!asientoId) {
+    const candidatos = lineasDestino.filter((l) => Math.abs(l.debe - importe) <= CENTIMO && lineasOrigen.some((o) => o.asientoId === l.asientoId && Math.abs(o.haber - importe) <= CENTIMO));
+    if (candidatos.length === 1) asientoId = candidatos[0].asientoId;
+  }
+  if (!asientoId) fallos.push("No se identificó el asiento de la transferencia en el libro diario.");
   else {
-    const debe = asiento.lineas.filter((l) => l.cuenta === e.destinoCuenta!.cuentaContable && Math.abs(l.debe - importe) <= CENTIMO && l.haber <= CENTIMO);
-    const haber = asiento.lineas.filter((l) => l.cuenta === e.origenCuenta!.cuentaContable && Math.abs(l.haber - importe) <= CENTIMO && l.debe <= CENTIMO);
-    if (asiento.lineas.length !== 2 || debe.length !== 1 || haber.length !== 1) {
-      fallos.push(`El asiento ${r.asientoId} no tiene exactamente un cargo de ${texto(importe)} en la cuenta de destino y un abono en la de origen.`);
+    const asiento = await d.leerAsiento(r.empresa, asientoId);
+    const debe = asiento?.lineas.filter((l) => l.cuenta === e.destinoCuenta!.cuentaContable && Math.abs(l.debe - importe) <= CENTIMO && l.haber <= CENTIMO) ?? [];
+    const haber = asiento?.lineas.filter((l) => l.cuenta === e.origenCuenta!.cuentaContable && Math.abs(l.haber - importe) <= CENTIMO && l.debe <= CENTIMO) ?? [];
+    if (!asiento || asiento.lineas.length !== 2 || debe.length !== 1 || haber.length !== 1) {
+      fallos.push(`El asiento ${asientoId} no tiene exactamente un cargo de ${texto(importe)} en la cuenta de destino y un abono en la de origen.`);
     }
   }
-  // La conciliación no debe haber generado otros asientos (un cobro, un pago, un gasto) además del nuestro.
-  if (lineasAntes) {
-    const { desde, hasta } = ventana(r, d.hoy());
-    const destinoAhora = (await d.leerLineas(r.empresa, e.destinoCuenta.cuentaContable!, desde, hasta)).length;
-    const origenAhora = (await d.leerLineas(r.empresa, e.origenCuenta.cuentaContable!, desde, hasta)).length;
-    if (destinoAhora !== lineasAntes.destino + 1) fallos.push(`En la cuenta contable de destino aparecieron ${destinoAhora - lineasAntes.destino} líneas nuevas; se esperaba 1.`);
-    if (origenAhora !== lineasAntes.origen + 1) fallos.push(`En la cuenta contable de origen aparecieron ${origenAhora - lineasAntes.origen} líneas nuevas; se esperaba 1.`);
-  }
-  return fallos;
-}
-
-/** El rechazo ocurrió ANTES de que Holded recibiera o aceptara la escritura: no hay nada incierto. */
-function escrituraNoRealizada(error: unknown): boolean {
-  if (error instanceof EscrituraHoldedNoIniciadaError) return true;
-  return error instanceof HoldedApiError && [400, 401, 403, 404, 422].includes(error.status);
+  return { fallos, asientoId };
 }
 
 const motivoDe = (error: unknown) => (error instanceof Error ? error.message.slice(0, 220) : "error desconocido");
+const LECTURAS_TRAS_TRANSFERIR = 8;
 
-export async function ejecutarTransferencia(registro: RegistroTransferencia, d: DependenciasEjecucion = dependenciasHolded): Promise<ResultadoEjecucion> {
+export async function ejecutarTransferencia(
+  registro: RegistroTransferencia,
+  d: DependenciasEjecucion = dependenciasHolded,
+  opciones: OpcionesEjecucion = { permitirEscritura: false }
+): Promise<ResultadoEjecucion> {
   let r = registro;
   const cerrar = async (estado: RegistroTransferencia["estado"], mensaje: string): Promise<ResultadoEjecucion> => {
     r = { ...r, estado, detalle: mensaje };
     await d.guardar(r);
     return { estado, mensaje, registro: r };
   };
+  /** Paso 2 y verificación: el par cobro/pago ya existe en Holded. */
+  const completar = async (pagos: PagoTransferencia[], asientosAntes?: { origen: string[]; destino: string[] }): Promise<ResultadoEjecucion> => {
+    const par = parDeTransferencia(r, pagos);
+    if (!par) return cerrar("fallida", `Holded registró una transferencia sobre este movimiento, pero no es el cobro y el pago esperados (${pagos.length} documento(s)). No se continúa; revísalo en Holded.`);
+    const estado = await leerEstado(r, d);
+    const origenLibre = estado.origen?.estado === "pending" && Math.abs(estado.origen.conciliado) <= CENTIMO;
+    if (!par.pago.conciliado && origenLibre) {
+      if (!opciones.permitirEscritura) return cerrar("fallida", "La transferencia ya está creada en Holded, pero falta conciliar el movimiento de salida y esta pareja no está autorizada para escribir.");
+      try {
+        await d.conciliarConPago(r.empresa, r.origenCuenta, r.origenMovimiento, par.pago.id, "payment");
+      } catch (error) {
+        // Rechazada sin efecto o incierta: en los dos casos decide la lectura de abajo y no se repite sola.
+        console.error(`[transferencias] Conciliación del movimiento de salida de ${r.clave}:`, motivoDe(error));
+      }
+    }
+    const v = await verificarTransferencia(r, d, asientosAntes);
+    r = { ...r, asientoId: v.asientoId };
+    if (v.fallos.length > 0) return cerrar("fallida", `La transferencia se creó en Holded, pero la verificación no cuadra y no se continúa sola. ${v.fallos.join(" ")}`);
+    const c = await d.leerCuentas(r.empresa);
+    const nombre = (id: string) => c.find((x) => x.id === id)?.nombre ?? id;
+    return cerrar("verificada", `Transferencia conciliada: ${nombre(r.origenCuenta)} → ${nombre(r.destinoCuenta)} por ${Math.abs(r.importeDestino).toFixed(2)} ${r.monedaDestino}. Un único asiento (${v.asientoId}) y los dos movimientos conciliados.`);
+  };
 
   if (r.estado === "verificada") return { estado: "verificada", mensaje: "Esta transferencia ya estaba conciliada y verificada.", registro: r };
+  if (!["aprobada", "ejecutando", "fallida"].includes(r.estado)) return { estado: r.estado, mensaje: `La operación está en estado «${r.estado}»; no se ejecuta.`, registro: r };
 
-  // Un intento anterior se cortó a medias: no se repite ninguna escritura; solo se mira cómo quedó.
-  if (r.estado === "ejecutando" || r.estado === "fallida") {
-    if (!r.asientoId) {
-      // El id pudo no llegar a guardarse (corte, respuesta perdida): el asiento se busca por la marca de la operación.
-      const cuentas = await d.leerCuentas(r.empresa);
-      const contable = cuentas.find((c) => c.id === r.destinoCuenta)?.cuentaContable;
-      const { desde, hasta } = ventana(r, d.hoy());
-      const encontrado = contable ? (await d.leerLineas(r.empresa, contable, desde, hasta)).find((l) => l.descripcion.includes(marcaDeOperacion(r))) : undefined;
-      if (encontrado) { r = { ...r, asientoId: encontrado.asientoId }; await d.guardar(r); }
+  // 0) Lo primero es mirar si la transferencia YA existe en Holded (un intento anterior): entonces el paso 1 no se repite.
+  const previos = await d.leerPagosDeTransferencia(r.empresa, r.destinoMovimiento, r.destinoFecha);
+  if (previos.length > 0) return completar(previos);
+
+  // Asiento suelto del primer método (creado por API, sin enlazar): mientras exista duplicaría la transferencia.
+  if (r.asientoId) {
+    if (await d.leerAsiento(r.empresa, r.asientoId)) {
+      return cerrar("fallida", `Sigue existiendo en Holded el asiento suelto ${r.asientoId} del intento anterior (no está enlazado a ningún movimiento). Bórralo en Contabilidad → Libro diario y vuelve a pulsar: no escribí nada.`);
     }
-    const fallos = r.asientoId ? await verificarTransferencia(r, d) : ["No hay ningún asiento con la marca de esta operación: el intento anterior no llegó a crearlo."];
-    return fallos.length === 0
-      ? cerrar("verificada", "El intento anterior sí había quedado completo: verificado por lectura.")
-      : cerrar("fallida", `El intento anterior quedó incompleto y no se repite solo. Revísalo en Holded${r.asientoId ? ` (asiento ${r.asientoId})` : ""}: ${fallos.join(" ")}`);
+    r = { ...r, asientoId: "" };
   }
-  if (r.estado !== "aprobada") return { estado: r.estado, mensaje: `La operación está en estado «${r.estado}»; no se ejecuta.`, registro: r };
+  if (!opciones.permitirEscritura) {
+    return r.estado === "aprobada"
+      ? cerrar("propuesta", "No escribí nada en Holded: esta transferencia no está autorizada para ejecutarse.")
+      : cerrar("fallida", "En Holded no hay ninguna transferencia registrada sobre estos movimientos. No está autorizada para ejecutarse de nuevo.");
+  }
 
   // 1) Relectura: nada cambió desde la propuesta, y la pareja sigue siendo la única posible.
   const antes = await leerEstado(r, d);
   const motivo = motivoParaNoEjecutar(r, antes) ?? await d.motivoYaNoInequivoca(r);
-  if (motivo) return cerrar("revision_manual", `No se escribió nada en Holded. ${motivo}`);
+  if (motivo) {
+    // Tras un intento anterior no se puede afirmar que no se escribió: queda para comprobar. Si es el primer intento, la
+    // propuesta sigue viva con sus botones (el motivo puede ser pasajero: una lectura vacía, una sincronización atrasada).
+    return registro.estado === "aprobada"
+      ? cerrar("propuesta", `No se escribió nada en Holded. ${motivo}`)
+      : cerrar("fallida", `No continué: ${motivo} Revisa en Holded cómo quedaron los dos movimientos.`);
+  }
   const origenCuenta = antes.origenCuenta!, destinoCuenta = antes.destinoCuenta!;
-  const importe = Math.abs(r.importeDestino);
   const { desde, hasta } = ventana(r, d.hoy());
+  const asientosAntes = {
+    destino: [...new Set((await d.leerLineas(r.empresa, destinoCuenta.cuentaContable!, desde, hasta)).map((l) => l.asientoId))],
+    origen: [...new Set((await d.leerLineas(r.empresa, origenCuenta.cuentaContable!, desde, hasta)).map((l) => l.asientoId))],
+  };
 
-  // 2) Si el asiento de esta operación ya existe (marca), no se crea otro.
-  const lineasDestinoAntes = await d.leerLineas(r.empresa, destinoCuenta.cuentaContable!, desde, hasta);
-  const lineasOrigenAntes = await d.leerLineas(r.empresa, origenCuenta.cuentaContable!, desde, hasta);
-  if ([...lineasDestinoAntes, ...lineasOrigenAntes].some((l) => l.descripcion.includes(marcaDeOperacion(r)))) {
-    return cerrar("fallida", "Ya existe en Holded un asiento con la marca de esta operación sin que conste terminada. No se escribió nada más; revísalo.");
-  }
-
-  // 3) A partir de aquí se escribe. El estado queda guardado antes de cada paso.
-  r = { ...r, estado: "ejecutando", detalle: "Creando el asiento de la transferencia." };
+  // 2) «Transferir» en la interfaz sobre el movimiento de entrada. El estado queda guardado antes.
+  r = { ...r, estado: "ejecutando", detalle: "Pulsando «Transferir» en Holded sobre el movimiento de entrada." };
   await d.guardar(r);
-  const descripcion = `Transferencia entre cuentas propias: ${origenCuenta.nombre} → ${destinoCuenta.nombre} ${marcaDeOperacion(r)}`;
-  let asientoId: string;
-  try {
-    asientoId = await d.crearAsiento(r.empresa, {
-      date: r.destinoFecha,
-      notes: descripcion,
-      lines: [
-        { account: Number(destinoCuenta.cuentaContable), description: descripcion, debit: importe.toFixed(2), credit: "0.00" },
-        { account: Number(origenCuenta.cuentaContable), description: descripcion, debit: "0.00", credit: importe.toFixed(2) },
-      ],
-    });
-  } catch (error) {
-    // Holded rechazó la petición sin crear nada: la propuesta vuelve a estar disponible.
-    if (escrituraNoRealizada(error)) return cerrar("propuesta", `No se escribió nada en Holded: el asiento fue rechazado antes de crearse (${motivoDe(error)}). Puedes volver a intentarlo.`);
-    return cerrar("fallida", `Holded no confirmó la creación del asiento (${motivoDe(error)}). No se concilió nada y no se reintenta solo; al verificar buscaré el asiento por su marca.`);
-  }
-  // El id queda en el registro del servidor aunque fallara el guardado en la hoja.
-  console.log(`[transferencias] Asiento ${asientoId} creado para ${r.clave} (${marcaDeOperacion(r)}).`);
-  r = { ...r, asientoId, detalle: `Asiento ${asientoId} creado; conciliando los dos movimientos.` };
-  try {
-    await d.guardar(r);
-  } catch (error) {
-    console.error(`[transferencias] No se pudo guardar el asiento ${asientoId} de ${r.clave}; reintento una vez:`, motivoDe(error));
-    await d.guardar(r);
-  }
+  const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: origenCuenta.cuentaContable!, importe: r.importeDestino });
+  console.log(`[transferencias] Robot «Transferir» para ${r.clave}: ${robot.estado} (pulsado: ${robot.pulsado}) ${robot.detalle ?? ""}`);
+  if (!robot.pulsado) return cerrar("propuesta", `No se escribió nada en Holded: no llegué a pulsar «Transferir y conciliar» (${robot.detalle ?? robot.estado}). Puedes volver a intentarlo.`);
 
-  try {
-    await d.conciliar(r.empresa, r.destinoCuenta, r.destinoMovimiento, asientoId);
-    await d.conciliar(r.empresa, r.origenCuenta, r.origenMovimiento, asientoId);
-  } catch (error) {
-    const fallos = await verificarTransferencia(r, d, { origen: lineasOrigenAntes.length, destino: lineasDestinoAntes.length }).catch(() => ["No se pudo verificar por lectura."]);
-    if (fallos.length === 0) return cerrar("verificada", "Holded devolvió un error al conciliar, pero la lectura confirma que quedó completa.");
-    return cerrar("fallida", `El asiento ${asientoId} se creó, pero la conciliación no quedó completa (${motivoDe(error)}). No se reintenta solo. ${fallos.join(" ")}`);
+  // 3) Se pulsó: lo ocurrido se decide leyendo. Holded puede tardar unos segundos en mostrar el cobro y el pago.
+  let pagos: PagoTransferencia[] = [];
+  for (let lectura = 0; lectura < LECTURAS_TRAS_TRANSFERIR && pagos.length < 2; lectura++) {
+    if (lectura > 0) await d.esperar(4000);
+    pagos = await d.leerPagosDeTransferencia(r.empresa, r.destinoMovimiento, r.destinoFecha);
   }
-
-  // 4) Verificación completa por lectura.
-  const fallos = await verificarTransferencia(r, d, { origen: lineasOrigenAntes.length, destino: lineasDestinoAntes.length });
-  return fallos.length === 0
-    ? cerrar("verificada", `Transferencia conciliada: asiento ${asientoId}, debe ${destinoCuenta.cuentaContable} (${destinoCuenta.nombre}) / haber ${origenCuenta.cuentaContable} (${origenCuenta.nombre}) por ${importe.toFixed(2)} ${r.monedaDestino}; los dos movimientos conciliados.`)
-    : cerrar("fallida", `Se escribió en Holded, pero la verificación no cuadra y no se continúa. Asiento ${asientoId}. ${fallos.join(" ")}`);
+  if (pagos.length === 0) return cerrar("fallida", `Pulsé «Transferir y conciliar», pero Holded no muestra la transferencia (${robot.detalle ?? robot.estado}). No se repite sola: al verificar volveré a leer cómo quedó.`);
+  return completar(pagos, asientosAntes);
 }
 
 /** «1300,00» (asiento por id) o «1300.00» (listado): los dos formatos que devuelve Holded. */
@@ -270,8 +300,36 @@ export const dependenciasHolded: DependenciasEjecucion = {
     if (!actual) return "Al repetir la detección, esta pareja ya no aparece como transferencia entre cuentas propias.";
     return actual.confianza === "automatica" ? undefined : `Al repetir la detección, la pareja ya no es inequívoca: ${actual.motivos[actual.motivos.length - 1]}`;
   },
-  crearAsiento: crearAsientoHolded,
-  conciliar: conciliarMovimientoContraAsientoHolded,
+  // GET /payments: el cobro y el pago de una transferencia llevan document_type «trans» y document_id = movimiento pulsado.
+  leerPagosDeTransferencia: async (empresa, movimientoId, fecha) => {
+    const pagos: PagoTransferencia[] = [];
+    let cursor: string | undefined;
+    for (let pagina = 0; pagina < 40; pagina++) {
+      // Hasta mañana: Holded podría fechar el cobro y el pago el día en que se pulsa y no el del movimiento.
+      const hasta = [sumarDias(fecha, 4), sumarDias(new Date().toISOString().slice(0, 10), 1)].sort()[1];
+      const parametros: Record<string, string> = { start_date: sumarDias(fecha, -4), end_date: hasta, limit: "200" };
+      if (cursor) parametros.cursor = cursor;
+      const data = (await holdedGet(empresa, "/payments", parametros)) as { items?: Array<Record<string, unknown>>; cursor?: string; next_cursor?: string; has_more?: boolean };
+      // Una respuesta con otra forma no es «no hay transferencia»: sin esta lectura no se puede decidir nada.
+      if (!Array.isArray(data?.items)) throw new Error("Holded devolvió los pagos y cobros con un formato inesperado.");
+      const items = data.items;
+      for (const p of items) {
+        if (p.document_type !== "trans" || p.document_id !== movimientoId || (p.type !== "payment" && p.type !== "collection")) continue;
+        pagos.push({ id: String(p.id ?? ""), tipo: p.type, cuentaId: String(p.bank_account_id ?? ""), importe: importeDeHolded(p.amount), conciliado: p.reconciliation_status === "reconciled" });
+      }
+      const siguiente = data.next_cursor ?? data.cursor;
+      if (items.length === 0 || data.has_more === false) return pagos;
+      if (!siguiente || siguiente === cursor) {
+        if (data.has_more === true) throw new Error("Holded indica más páginas de pagos y cobros pero no da cómo seguir.");
+        return pagos;
+      }
+      cursor = siguiente;
+    }
+    throw new Error("Holded devolvió demasiadas páginas de pagos y cobros; no se puede verificar con seguridad.");
+  },
+  transferir: transferirMovimientoEnHolded,
+  conciliarConPago: conciliarMovimientoContraPagoHolded,
+  esperar: (ms) => new Promise((resolver) => setTimeout(resolver, ms)),
   guardar: guardarRegistro,
   hoy: () => new Date().toISOString().slice(0, 10),
 };
