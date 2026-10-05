@@ -21,6 +21,12 @@ export interface ResultadoConciliacionMovimiento {
   pendienteEnCompra?: number;
   movimientoParcial?: boolean;
   pendienteEnMovimiento?: number;
+  /**
+   * Compra pagada por completo y vínculo verificado, pero el banco cobró algo más de lo que vale el gasto al cambio del
+   * documento (margen de conversión de la tarjeta entre monedas distintas, ver decidirResiduoMovimiento). Es informativo:
+   * en la moneda del movimiento, NO fuerza revisión.
+   */
+  diferenciaCambioBancario?: number;
   ajusteCambioDivisa?: {
     estado: "aplicado" | "ya_aplicado" | "incierto" | "requiere_revision";
     monto: number;

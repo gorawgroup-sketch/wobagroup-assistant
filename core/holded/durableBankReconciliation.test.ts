@@ -24,6 +24,7 @@ import {
   margenResiduoConversion,
   movimientoLibreParaConciliar,
   residuoMovimientoFueraDeMargen,
+  decidirResiduoMovimiento,
   verificarPagoCompraEnMovimiento,
 } from "./write";
 
@@ -799,4 +800,29 @@ test("caso real El Meson Sandwiches (Footprint, 2026-10-04): pagado 16,53 + pend
   // Dos céntimos cortos o más: no es redondeo. Y una suma que SUPERA el total es una inconsistencia, nunca un redondeo.
   assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_total: "16,52" }, movimiento, "ftg-usd", "2026-10-02"), undefined);
   assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_pending: "0,05" }, movimiento, "ftg-usd", "2026-10-02"), undefined);
+});
+
+test("caso real hotel MOME (Footprint, 2026-10-05): 112,87 USD con 109,88 enlazados y gasto en COP pagado por completo es diferencia de cambio, no revisión", () => {
+  const d = decidirResiduoMovimiento({ montoMovimiento: 112.87, montoEnlazado: 109.88, ok: true, parcialEsperado: false, monedaMovimiento: "USD", monedaCompra: "COP" });
+  assert.equal(d.pendienteEnMovimiento, undefined);
+  assert.ok(d.diferenciaCambioBancario !== undefined && Math.abs(d.diferenciaCambioBancario - 2.99) < 1e-9);
+  const resultado: ResultadoConciliacionMovimiento = { ok: true, statusFinal: "partial", montoEnlazado: 109.88, ...(d.diferenciaCambioBancario !== undefined ? { diferenciaCambioBancario: d.diferenciaCambioBancario } : {}) };
+  assert.equal(conciliacionRequiereRevision(resultado), false);
+});
+
+test("el hueco sigue exigiendo revisión si hay una sola moneda, supera el 5 %, la compra no está verificada o es un cargo mayor elegido", () => {
+  const base = { montoMovimiento: 112.87, montoEnlazado: 109.88, ok: true, parcialEsperado: false, monedaMovimiento: "USD", monedaCompra: "COP" };
+  const exigeRevision = (cambios: Partial<typeof base>) => {
+    const d = decidirResiduoMovimiento({ ...base, ...cambios });
+    return d.pendienteEnMovimiento !== undefined && d.diferenciaCambioBancario === undefined;
+  };
+  assert.ok(exigeRevision({ monedaCompra: "USD" }), "misma moneda: puede ser otro documento");
+  assert.ok(exigeRevision({ montoEnlazado: 100 }), "12,87 % del cargo: no es un spread");
+  assert.ok(exigeRevision({ ok: false }), "vínculo o pago no verificado");
+  assert.ok(exigeRevision({ monedaCompra: undefined }), "sin moneda de la compra no se demuestra el cambio");
+  assert.equal(decidirResiduoMovimiento({ ...base, parcialEsperado: true }).diferenciaCambioBancario, undefined, "cargo mayor elegido: lo trata otro camino");
+});
+
+test("un hueco dentro del margen de redondeo no produce ni pendiente ni diferencia", () => {
+  assert.deepEqual(decidirResiduoMovimiento({ montoMovimiento: 10.95, montoEnlazado: 10.93, ok: true, parcialEsperado: false, monedaMovimiento: "USD", monedaCompra: "EUR" }), {});
 });
