@@ -5090,6 +5090,11 @@ export async function buscarMovimientoSimilar(
      * compatible por nombre o categoría.
      */
     incluirPorConfirmar?: boolean;
+    /**
+     * El importe buscado es una REFERENCIA por tipo de cambio (no el importe real del cargo): «exacto» pasa a significar
+     * «dentro de la tolerancia de cambio», para que un cargo del día con nombre distinto pueda ofrecerse «por confirmar».
+     */
+    importeAproximadoPorCambio?: boolean;
     /** Si se da, la búsqueda anota qué cuentas revisó y qué cargos del mismo importe descartó (no cambia el resultado). */
     traza?: TrazaBusqueda;
   },
@@ -5170,7 +5175,7 @@ export async function buscarMovimientoSimilar(
       let compatibilidad: "por_confirmar" | "aprendido" | undefined;
       if (criterios.proveedor) {
         const importeYFechaExactos =
-          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
+          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= (criterios.importeAproximadoPorCambio ? toleranciaEur : TOLERANCIA_MONTO) &&
           diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
         const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);
