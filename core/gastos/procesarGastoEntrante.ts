@@ -1044,6 +1044,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             proveedor: datos.proveedor,
             concepto: datos.concepto,
             incluirPorConfirmar: true,
+            repartoConPendientes: {},
           },
           otrasMonedas
         );

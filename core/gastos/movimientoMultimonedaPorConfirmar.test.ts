@@ -88,3 +88,93 @@ test("un cargo que respalda el nombre gana a uno solo «por confirmar» (no fuer
     assert.deepEqual(r.map((c) => c.movementId), ["b"]);
     assert.equal(r[0].compatibilidad, undefined);
   }));
+
+// ---- Reparto óptimo entre recibos pendientes (caso hotel MOME, 2026-10-05) ----
+import type { ReciboCompetidor } from "./movimientoMultimoneda";
+import type { MovimientoBancarioCandidato } from "../holded/write";
+
+const competidor = (o: Partial<ReciboCompetidor> = {}): ReciboCompetidor => ({
+  id: "otra", monto: 34700, moneda: "COP", fecha: "2026-10-03", proveedor: "Gustavocado SAS", concepto: "Desayuno", ...o,
+});
+const conCompetidores = (lista: ReciboCompetidor[] | Error): DependenciasBusquedaMultimoneda => ({
+  ...dependencias(),
+  obtenerCompetidores: async () => { if (lista instanceof Error) throw lista; return lista; },
+});
+const buscar = (deps: DependenciasBusquedaMultimoneda, extra: Record<string, unknown> = { repartoConPendientes: {} }) =>
+  buscarMovimientosPorTipoCambio("Footprint", { ...criterios, incluirPorConfirmar: true, ...extra }, ["COP", "EUR"], deps);
+const ids = (r: MovimientoBancarioCandidato[]) => r.map((c) => c.movementId).sort();
+
+// Este recibo: 33.800 COP → 9,05 €. El competidor por defecto: 34.700 COP → 9,29 €.
+const cargoA = () => mov({ id: "a", description: "Gustavocado" }); // −9,31: este 2,9 %, el otro 0,2 %
+const cargoB = () => mov({ id: "b", description: "Gustavocado", amount: "-9.15", accounting_amount: "-9.15" }); // este 1,1 %, el otro 1,5 %
+
+test("reparto: un cargo que encaja claramente mejor con otro recibo se retira y este se queda con el suyo", () =>
+  conHolded([cargoA(), cargoB()], async () => {
+    assert.deepEqual(ids(await buscar(conCompetidores([competidor()]))), ["b"]);
+  }));
+
+test("reparto: sin el indicador (rutas que resuelven solas, conciliación tras crear) no cambia nada", () =>
+  conHolded([cargoA(), cargoB()], async () => {
+    assert.deepEqual(ids(await buscar(conCompetidores([competidor()]), {})), ["a", "b"]);
+  }));
+
+test("reparto: nunca deja a este recibo sin ningún cargo; si todos le tocarían a otros se ofrece la lista completa", () =>
+  conHolded([cargoA()], async () => {
+    assert.deepEqual(ids(await buscar(conCompetidores([competidor()]))), ["a"]);
+  }));
+
+test("reparto: un competidor que no encaja (importe o fecha lejanos, sin identificar) no desplaza nada", async () => {
+  const casos: Array<[string, ReciboCompetidor]> = [
+    ["importe lejano", competidor({ monto: 60000 })],
+    ["fecha lejana", competidor({ fecha: "2026-09-20" })],
+    ["cargo sin nombre reconocido y fecha a 2 días (exige ±1)", competidor({ fecha: "2026-10-05" })],
+    ["proveedor sin identificar (admitiría cualquier cargo)", competidor({ proveedor: "PROVEEDOR SIN IDENTIFICAR" })],
+  ];
+  for (const [nombre, c] of casos) {
+    await conHolded([cargoA(), cargoB()], async () => {
+      assert.deepEqual(ids(await buscar(conCompetidores([c]))), ["a", "b"], nombre);
+    });
+  }
+});
+
+test("reparto: un competidor que solo coincide por categoría no le quita a este recibo un cargo que lleva su nombre", () =>
+  conHolded([mov({ id: "n", description: "SMASH AVOCADERIA BOGOTA" }), cargoB()], async () => {
+    // «n» respalda el nombre de este recibo (Smash Avocadería) y encaja 2,9 %; el competidor (otro comercio, mismo rubro)
+    // lo ajusta al 0,2 % solo por categoría: no debe llevárselo.
+    // (Un cargo que respalda el nombre gana además a los «por confirmar»: la lista queda solo con «n».)
+    assert.deepEqual(ids(await buscar(conCompetidores([competidor({ proveedor: "Otro Restaurante", concepto: "Desayuno" })]))), ["n"]);
+  }));
+
+test("reparto: el competidor con su propio cargo exacto no se lleva el de este recibo", () =>
+  conHolded([cargoA(), cargoB()], async () => {
+    const propio: MovimientoBancarioCandidato = {
+      accountId: "cuenta-eur", movementId: "suyo", descripcion: "Gustavocado", monto: -9.29, moneda: "EUR", fecha: "2026-10-03",
+    };
+    // Con su alternativa exacta (0 %), el otro recibo no necesita «a»: nadie lo reclama, aunque este recibo prefiera «b».
+    const r = await buscar(conCompetidores([competidor({ cargosPropios: [propio] })]));
+    assert.ok(ids(r).includes("a"), "«a» no se retira: el otro recibo tiene su cargo propio");
+  }));
+
+test("reparto: un fallo al leer los recibos pendientes no impide ofrecer los cargos", () =>
+  conHolded([cargoA(), cargoB()], async () => {
+    assert.deepEqual(ids(await buscar(conCompetidores(new Error("Sheets caído")))), ["a", "b"]);
+  }));
+
+test("reparto: si falla la tasa de un competidor se ofrece la lista completa", () =>
+  conHolded([cargoA(), cargoB()], async () => {
+    const base = dependencias();
+    let llamadas = 0;
+    const deps: DependenciasBusquedaMultimoneda = {
+      ...base,
+      // La primera consulta (la de la búsqueda) funciona; las siguientes (competidores en otra moneda) fallan.
+      obtenerTasa: async (...args) => { if (llamadas++ === 0) return base.obtenerTasa(...args); throw new Error("BCE caído"); },
+      obtenerCompetidores: async () => [competidor({ moneda: "USD", fecha: "2026-10-02" })],
+    };
+    assert.deepEqual(ids(await buscar(deps)), ["a", "b"]);
+  }));
+
+test("reparto: la propia propuesta (excluida) no compite consigo misma", () =>
+  conHolded([cargoA(), cargoB()], async () => {
+    const r = await buscar(conCompetidores([competidor({ id: "yo" })]), { repartoConPendientes: { excluirPropuestaId: "yo" } });
+    assert.deepEqual(ids(r), ["a", "b"]);
+  }));
