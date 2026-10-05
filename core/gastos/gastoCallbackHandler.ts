@@ -39,6 +39,8 @@ import {
   actualizarFlagMovimientoBancarioGasto,
   actualizarMovimientosAmbiguosPropuestaGasto,
   actualizarSeleccionAccionesGasto,
+  modificarSeleccionAccionesGasto,
+  conSeleccionGasto,
   actualizarClasificacionPropuestaGasto,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
@@ -2570,30 +2572,30 @@ async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propue
     return;
   }
 
-  const propuesta = await obtenerPropuestaGasto(propuestaId);
-  if (!propuesta) {
+  // Una sola lectura y todo bajo la cola de la propuesta: «Aprobar selección» siempre lee DESPUÉS de las casillas anteriores.
+  const resultado = await modificarSeleccionAccionesGasto(propuestaId, (actual) => {
+    const seleccion = new Set(actual);
+    if (esAccionFinal(key)) {
+      // Grupo mutuamente excluyente (crear/crearconciliar/cancelar/nuevo/adjuntar_<i>)
+      // — marcar uno desmarca cualquier otro del mismo grupo, como un radio button.
+      if (seleccion.has(key)) {
+        seleccion.delete(key);
+      } else {
+        for (const k of Array.from(seleccion)) if (esAccionFinal(k)) seleccion.delete(k);
+        seleccion.add(key);
+      }
+    } else if (seleccion.has(key)) {
+      seleccion.delete(key);
+    } else {
+      seleccion.add(key);
+    }
+    return Array.from(seleccion);
+  });
+  if (!resultado) {
     await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
-
-  const seleccion = new Set(propuesta.seleccionAcciones ?? []);
-  if (esAccionFinal(key)) {
-    // Grupo mutuamente excluyente (crear/crearconciliar/cancelar/nuevo/adjuntar_<i>)
-    // — marcar uno desmarca cualquier otro del mismo grupo, como un radio button.
-    if (seleccion.has(key)) {
-      seleccion.delete(key);
-    } else {
-      for (const k of Array.from(seleccion)) if (esAccionFinal(k)) seleccion.delete(k);
-      seleccion.add(key);
-    }
-  } else if (seleccion.has(key)) {
-    seleccion.delete(key);
-  } else {
-    seleccion.add(key);
-  }
-
-  const nuevaSeleccion = Array.from(seleccion);
-  await actualizarSeleccionAccionesGasto(propuesta.id, nuevaSeleccion);
+  const { propuesta, seleccion: nuevaSeleccion } = resultado;
   await answerCallbackQuerySafe(callback.id);
 
   const propuestaActualizada: PropuestaGasto = { ...propuesta, seleccionAcciones: nuevaSeleccion };
@@ -2801,7 +2803,8 @@ async function dispararDecisionFinalVisible(
  *    había ninguna acción de texto marcada).
  */
 async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propuestaId: string): Promise<void> {
-  const propuesta = await obtenerPropuestaGasto(propuestaId);
+  // En la cola de la propuesta: si una casilla marcada hace un momento aún se está guardando, esta lectura espera a que termine.
+  const propuesta = await conSeleccionGasto(propuestaId, () => obtenerPropuestaGasto(propuestaId));
   if (!propuesta) {
     await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
