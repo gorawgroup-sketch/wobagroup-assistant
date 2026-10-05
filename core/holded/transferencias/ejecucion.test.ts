@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CuentaTransferencia, MovimientoTransferencia } from "./deteccion";
 import { ejecutarTransferencia, importeDeHolded, motivoConversionNoEjecutable, type DependenciasEjecucion, type LineaAsiento, type PagoTransferencia } from "./ejecucion";
-import { casosAutorizados, ejecucionAutorizada, modoTransferencias } from "./modo";
+import { casosAutorizados, diferenciaAFavorAutorizada, ejecucionAutorizada, modoTransferencias } from "./modo";
 import { importeEnPantalla } from "./navegadorTransferencia";
 import type { RegistroTransferencia } from "./registro";
 
 const O = "a".repeat(24), D = "b".repeat(24);
 const HOY = "2026-10-03";
-const SI = { permitirEscritura: true };
+const SI = { permitirEscritura: true, permitirDiferenciaAFavor: true };
 const registro = (extra: Partial<RegistroTransferencia> = {}): RegistroTransferencia => ({
   clave: `WOBA:${O}>${D}`, id: "abc123def456", empresa: "WOBA", tipo: "transferencia", fecha: "2026-10-01",
   origenCuenta: "main", origenMovimiento: O, origenFecha: "2026-10-01", destinoCuenta: "bbva", destinoMovimiento: D, destinoFecha: "2026-10-01",
@@ -351,6 +351,19 @@ test("diferencia a favor: si el segundo «Transferir» no se pulsa queda fallida
   const segundo = await ejecutarTransferencia(res.registro, h.deps, SI);
   assert.equal(segundo.estado, "verificada", segundo.mensaje);
   assert.deepEqual(h.escrituras.slice(2), ["transferir:bbva:destino:62600000:0.03"]);
+});
+
+test("la diferencia a favor sigue pareja a pareja: sin su autorización no se pulsa nada", async () => {
+  const { h, r } = conversionAFavor();
+  const res = await ejecutarTransferencia(r, h.deps, { permitirEscritura: true });
+  assert.equal(res.estado, "propuesta");
+  assert.match(res.mensaje, /diferencia a favor.*en prueba/);
+  assert.deepEqual(h.escrituras, []);
+  const clave = `EWORKS:${O}>${D}`;
+  const abierto = { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "eur,conversiones" };
+  assert.equal(diferenciaAFavorAutorizada(clave, abierto), false);
+  assert.equal(diferenciaAFavorAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_CASOS: clave }), true);
+  assert.equal(diferenciaAFavorAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_ALCANCE: "eur,conversiones,conversiones_a_favor" }), true);
 });
 
 test("las conversiones solo se autorizan pareja a pareja, aunque las transferencias en euros estén abiertas", () => {

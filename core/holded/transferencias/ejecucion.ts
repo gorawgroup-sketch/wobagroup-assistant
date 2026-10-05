@@ -56,7 +56,12 @@ export interface DependenciasEjecucion {
 }
 
 export interface ResultadoEjecucion { estado: RegistroTransferencia["estado"]; mensaje: string; registro: RegistroTransferencia }
-export interface OpcionesEjecucion { /** false = solo se lee y se informa (modo no activo o pareja sin autorizar). */ permitirEscritura: boolean }
+export interface OpcionesEjecucion {
+  /** false = solo se lee y se informa (modo no activo o pareja sin autorizar). */
+  permitirEscritura: boolean;
+  /** true = esta pareja puede ejecutarse aunque tenga diferencia a favor (paso todavía en prueba). */
+  permitirDiferenciaAFavor?: boolean;
+}
 
 const CENTIMO = 0.005;
 export const marcaDeOperacion = (r: Pick<RegistroTransferencia, "id">) => `[wobi:transferencia:${r.id}]`;
@@ -169,6 +174,11 @@ function motivoLimitesConversion(plan: Plan, entradaEnEuros: boolean): string | 
  * tres empresas, la misma que ya se usaba a mano en Footprint). Existe en el plan contable de las tres.
  */
 export const CUENTA_DIFERENCIAS_CAMBIO = "62600000";
+
+/** ¿La entrada vale más en euros que la salida? Para decidir el botón y la autorización de la propuesta. */
+export function tieneDiferenciaAFavor(origen: MovimientoTransferencia, destino: MovimientoTransferencia): boolean {
+  return restoAFavor({ pulsado: "origen", importePar: valorEur(origen), valorOtroEur: valorEur(destino) }) > 0;
+}
 
 /** Euros que la entrada vale de más respecto a la salida (0 si no hay diferencia a favor). */
 function restoAFavor(plan: Plan): number {
@@ -312,7 +322,7 @@ export async function ejecutarTransferencia(
       const lista = entrada && r.monedaDestino === "EUR" && entrada.moneda === "EUR" && restoReal > CENTIMO && Math.abs(restoReal - resto) <= tolerancia(r) &&
         cobroPrincipal?.conciliado === true && !motivoLimitesConversion(plan, true);
       if (lista) {
-        if (!opciones.permitirEscritura) return cerrar("fallida", `La conversión está hecha salvo la diferencia a favor de ${resto.toFixed(2)} EUR, y esta pareja no está autorizada para escribir.`);
+        if (!opciones.permitirEscritura || !opciones.permitirDiferenciaAFavor) return cerrar("fallida", `La conversión está hecha salvo la diferencia a favor de ${resto.toFixed(2)} EUR, y esta pareja no está autorizada para escribir.`);
         r = { ...r, estado: "ejecutando", detalle: `Llevando la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}.` };
         await d.guardar(r);
         const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: restoReal, descripcion: entrada.descripcion });
@@ -370,6 +380,9 @@ export async function ejecutarTransferencia(
     return registro.estado === "aprobada"
       ? cerrar("propuesta", `No se escribió nada en Holded. ${motivo}`)
       : cerrar("fallida", `No continué: ${motivo} Revisa en Holded cómo quedaron los dos movimientos.`);
+  }
+  if (esConversion(r) && restoAFavor(planDe(r, antes)!) > 0 && !opciones.permitirDiferenciaAFavor) {
+    return cerrar("propuesta", "No se escribió nada en Holded: esta conversión tiene diferencia a favor y ese paso todavía está en prueba; solo se ejecuta la pareja autorizada.");
   }
   const origenCuenta = antes.origenCuenta!, destinoCuenta = antes.destinoCuenta!;
   const { desde, hasta } = ventana(r, d.hoy());
