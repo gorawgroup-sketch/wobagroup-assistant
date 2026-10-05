@@ -325,7 +325,7 @@ export async function ejecutarTransferencia(
         if (!opciones.permitirEscritura || !opciones.permitirDiferenciaAFavor) return cerrar("fallida", `La conversión está hecha salvo la diferencia a favor de ${resto.toFixed(2)} EUR, y esta pareja no está autorizada para escribir.`);
         r = { ...r, estado: "ejecutando", detalle: `Llevando la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}.` };
         await d.guardar(r);
-        const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: restoReal, descripcion: entrada.descripcion });
+        const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: Math.abs(entrada.importe), restante: restoReal, descripcion: entrada.descripcion });
         console.log(`[transferencias] Robot «Transferir» (diferencia a favor) para ${r.clave}: ${robot.estado} (pulsado: ${robot.pulsado}) ${robot.detalle ?? ""}`);
         if (!robot.pulsado) {
           return cerrar("fallida", `La conversión quedó hecha en Holded (asiento y los dos movimientos enlazados), pero falta llevar la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}: no llegué a pulsar (${robot.detalle ?? robot.estado}). Puedes reintentar solo ese paso o hacerlo a mano con «Transferir» sobre la entrada.`);

@@ -27,6 +27,12 @@ export interface OrdenTransferir {
   cuentaContable: string;
   /** Importe que debe mostrar el formulario (Holded lo enseña en EUR), para comprobar que es el movimiento correcto. */
   importe: number;
+  /**
+   * Para un movimiento ya conciliado en parte: lo que le queda por conciliar. El formulario enseña el importe COMPLETO del
+   * movimiento, pero Holded transfiere solo lo restante (visto en la pantalla real el 05-10-2026 y en las conversiones hechas
+   * a mano en Footprint); se exige que el panel muestre «Restante por conciliar» con este importe antes de abrir el formulario.
+   */
+  restante?: number;
   /** Descripción del movimiento en el banco: sirve para filtrar la lista cuando no está en la primera página. */
   descripcion?: string;
 }
@@ -115,6 +121,10 @@ async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransfe
   }, orden.movimientoId);
   if (!seleccion.sola) return { estado: "elemento_no_encontrado", detalle: `No quedó seleccionado únicamente el movimiento pedido (${seleccion.cuantas} seleccionados); no se tocó nada` };
 
+  if (orden.restante !== undefined) {
+    const restante = new RegExp(`Restante por conciliar\\s*[+-]?${importeEnPantalla(orden.restante).replace(/\./g, "\\.")}\\s*€`);
+    if (!(await esperarTexto(page, restante, 12_000))) return { estado: "elemento_no_encontrado", detalle: `La pantalla no muestra «Restante por conciliar ${importeEnPantalla(orden.restante)} €» para este movimiento; no se tocó nada` };
+  }
   if (!(await clicPorTexto(page.mainFrame(), ["Transferir"], true))) return { estado: "elemento_no_encontrado", detalle: "No se encontró el botón «Transferir»" };
   if (!(await esperarTexto(page, /Transferir a cuenta contable/, 15_000))) return { estado: "elemento_no_encontrado", detalle: "No se abrió el formulario «Transferir a cuenta contable»" };
   // Solo el diálogo: la tabla del fondo también contiene el importe del movimiento.
