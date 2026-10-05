@@ -300,7 +300,7 @@ function conversionAFavor(opciones: { segundoRobotNoPulsa?: boolean } = {}) {
   h.deps.transferir = async (_e, orden) => {
     const sobreOrigen = orden.movimientoId === O;
     if (!sobreOrigen && opciones.segundoRobotNoPulsa) return { estado: "elemento_no_encontrado", detalle: "El formulario no muestra el importe 0,03", pulsado: false };
-    h.escrituras.push(`transferir:${orden.cuentaId}:${sobreOrigen ? "origen" : "destino"}:${orden.cuentaContable}:${orden.importe}`);
+    h.escrituras.push(`transferir:${orden.cuentaId}:${sobreOrigen ? "origen" : "destino"}:${orden.cuentaContable}:${orden.importe}${orden.restante !== undefined ? `:resto${orden.restante}` : ""}`);
     if (sobreOrigen) {
       h.lineas.push({ asientoId: "pago-1", cuenta: "57200001", debe: 513.7, haber: 0, descripcion: "Exchanged", fecha: "2026-10-01" });
       h.lineas.push({ asientoId: "pago-1", cuenta: "57200015", debe: 0, haber: 513.7, descripcion: "Exchanged", fecha: "2026-10-01" });
@@ -327,7 +327,7 @@ test("conversión con diferencia a favor: tras conciliar la entrada, el resto va
   const { h, r } = conversionAFavor();
   const res = await ejecutarTransferencia(r, h.deps, SI);
   assert.equal(res.estado, "verificada", res.mensaje);
-  assert.deepEqual(h.escrituras, ["transferir:main:origen:57200001:513.7", "conciliar:bbva:destino:cobro-doc:collection", "transferir:bbva:destino:62600000:0.03"]);
+  assert.deepEqual(h.escrituras, ["transferir:main:origen:57200001:513.7", "conciliar:bbva:destino:cobro-doc:collection", "transferir:bbva:destino:62600000:513.73:resto0.03"]);
   assert.match(res.mensaje, /diferencia a favor de 0\.03 EUR quedó en la cuenta 62600000/);
   assert.equal(res.registro.asientoId, "pago-1");
 });
@@ -341,7 +341,7 @@ test("diferencia a favor: si el segundo «Transferir» no se pulsa queda fallida
   // Al retomar: la transferencia y la conciliación ya existen; solo se pulsa el resto.
   const { h } = fallo;
   h.deps.transferir = async (_e, orden) => {
-    h.escrituras.push(`transferir:${orden.cuentaId}:destino:${orden.cuentaContable}:${orden.importe}`);
+    h.escrituras.push(`transferir:${orden.cuentaId}:destino:${orden.cuentaContable}:${orden.importe}:resto${orden.restante}`);
     h.lineas.push({ asientoId: "resto-1", cuenta: "57200001", debe: 0.03, haber: 0, descripcion: "x", fecha: "2026-10-01" });
     h.lineas.push({ asientoId: "resto-1", cuenta: "62600000", debe: 0, haber: 0.03, descripcion: "x", fecha: "2026-10-01" });
     h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 513.73 });
@@ -350,7 +350,7 @@ test("diferencia a favor: si el segundo «Transferir» no se pulsa queda fallida
   };
   const segundo = await ejecutarTransferencia(res.registro, h.deps, SI);
   assert.equal(segundo.estado, "verificada", segundo.mensaje);
-  assert.deepEqual(h.escrituras.slice(2), ["transferir:bbva:destino:62600000:0.03"]);
+  assert.deepEqual(h.escrituras.slice(2), ["transferir:bbva:destino:62600000:513.73:resto0.03"]);
 });
 
 test("la diferencia a favor sigue pareja a pareja: sin su autorización no se pulsa nada", async () => {
