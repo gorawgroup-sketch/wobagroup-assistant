@@ -35,7 +35,7 @@ export function textoPropuesta(p: PropuestaTransferencia): string {
     (p.confianza === "bloqueada"
       ? "Está bloqueada: no se puede conciliar desde aquí; decide qué hacer con ella."
       : p.tipo === "conversion"
-        ? "Es una conversión de moneda: por ahora solo se propone; todavía no se ejecuta desde aquí."
+        ? "Es una conversión de moneda: solo se ejecuta desde aquí si esta pareja está autorizada por escrito; si no, solo se propone."
         : "Al conciliar se hace en Holded la transferencia entre las dos cuentas (un único asiento: debe la de destino, haber la de origen) y quedan conciliados los dos movimientos. No se crea ingreso ni gasto.") +
     `\nReferencia para autorizarla: ${p.clave}`;
 }
@@ -68,8 +68,8 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
       const registro = registroDesdePropuesta(p);
       const bloqueada = p.confianza === "bloqueada";
       await guardarRegistro(registro);
-      // Las conversiones de moneda todavía no se ejecutan: se proponen sin el botón de conciliar.
-      const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && p.tipo !== "conversion" }));
+      // Las conversiones de moneda solo llevan botón de conciliar si esa pareja está autorizada por escrito.
+      const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && (p.tipo !== "conversion" || ejecucionAutorizada(p.clave, process.env, "conversion")) }));
       await guardarRegistro({ ...registro, estado: bloqueada ? "ambigua" : "propuesta", chatId, messageId });
       publicadas++;
     }
@@ -123,7 +123,7 @@ export async function handleTransferenciasCallback(callback: TelegramCallbackQue
   if (!["propuesta", "aprobada", "ejecutando", "fallida"].includes(registro.estado)) { await responder(callback, `Ya está ${registro.estado}.`); return; }
   // Verificar un intento anterior es solo lectura; ejecutar exige el modo activo y la autorización escrita de la pareja.
   const soloVerificacion = registro.estado === "ejecutando" || registro.estado === "fallida";
-  if (!soloVerificacion && !ejecucionAutorizada(registro.clave)) {
+  if (!soloVerificacion && !ejecucionAutorizada(registro.clave, process.env, registro.tipo)) {
     await responder(callback, "Ejecución no autorizada todavía.");
     await cerrarMensaje(`⛔ ${resumenRegistro(registro)}\nNo escribí nada en Holded: esta transferencia todavía no está autorizada.`);
     await republicar(registro, `🔁 ${resumenRegistro(registro)}\nSigue pendiente. Solo se ejecutan las parejas autorizadas por escrito.\nReferencia para autorizarla: ${registro.clave}`, {});
@@ -146,7 +146,7 @@ async function ejecutarEnSuCarril(
     const resultado = await conMutex("transferencias:ejecucion", async () => {
       const actual = (await obtenerRegistroPorId(registro.id)) ?? registro;
       // Escribir exige el modo activo y la autorización escrita de la pareja; sin ella el ejecutor solo lee e informa.
-      const opciones = { permitirEscritura: ejecucionAutorizada(actual.clave) };
+      const opciones = { permitirEscritura: ejecucionAutorizada(actual.clave, process.env, actual.tipo) };
       if (actual.estado !== "propuesta") return ejecutarTransferencia(actual, undefined, opciones);
       const aprobada: RegistroTransferencia = { ...actual, estado: "aprobada", detalle: "Aprobada por el operador." };
       await guardarRegistro(aprobada);

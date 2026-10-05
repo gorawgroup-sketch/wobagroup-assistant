@@ -123,7 +123,8 @@ test("si al repetir la detección la pareja ya no es inequívoca (apareció otro
 
 test("conversiones, transferencias que no son en EUR y registros que no coinciden con su clave no se ejecutan", async () => {
   const casos: Array<[Partial<RegistroTransferencia>, RegExp]> = [
-    [{ tipo: "conversion", monedaOrigen: "USD", importeOrigen: -400 }, /conversiones de moneda/],
+    [{ tipo: "conversion" }, /las dos monedas son iguales/],
+    [{ tipo: "conversion", monedaOrigen: "USD", monedaDestino: "COP" }, /una pata en euros/],
     // Un asiento de 1.000 «USD» se escribiría como 1.000 EUR en el diario.
     [{ monedaOrigen: "USD", monedaDestino: "USD" }, /solo se ejecutan transferencias en EUR/],
     [{ origenMovimiento: "c".repeat(24) }, /no coincide con su clave/],
@@ -233,6 +234,68 @@ test("tras un intento anterior, un movimiento que ya no está libre no se da por
   assert.equal(r.estado, "fallida");
   assert.doesNotMatch(r.mensaje, /No se escribió nada/);
   assert.deepEqual(h.escrituras, []);
+});
+
+/** Conversión real de eWorks (02/09/2026): −433,96 EUR → +500 USD, que Holded valora en 431,85 EUR. */
+function conversion(valorEntradaEur = 431.85) {
+  const h = holded();
+  h.cuentas[1].moneda = "USD";
+  h.movimientos.set(O, { ...h.movimientos.get(O)!, importe: -433.96 });
+  h.movimientos.set(D, { ...h.movimientos.get(D)!, importe: 500, moneda: "USD", equivalenteEur: valorEntradaEur });
+  const r = registro({ tipo: "conversion", importeOrigen: -433.96, importeDestino: 500, monedaDestino: "USD" });
+  // En una conversión se pulsa sobre la SALIDA: pago conciliado en origen y cobro pendiente en destino, por el valor de la salida.
+  h.deps.transferir = async (_e, orden) => {
+    h.escrituras.push(`transferir:${orden.cuentaId}:${orden.movimientoId === O ? "origen" : "destino"}:${orden.cuentaContable}:${orden.importe}`);
+    h.lineas.push({ asientoId: "pago-1", cuenta: "57200001", debe: 433.96, haber: 0, descripcion: "Exchanged", fecha: "2026-10-01" });
+    h.lineas.push({ asientoId: "pago-1", cuenta: "57200015", debe: 0, haber: 433.96, descripcion: "Exchanged", fecha: "2026-10-01" });
+    h.movimientos.set(O, { ...h.movimientos.get(O)!, estado: "reconciled", conciliado: -433.96 });
+    h.pagos.push({ id: "pago-doc", tipo: "payment", cuentaId: "main", importe: 433.96, conciliado: true, movimiento: O });
+    h.pagos.push({ id: "cobro-doc", tipo: "collection", cuentaId: "bbva", importe: 433.96, conciliado: false, movimiento: O });
+    return { estado: "ok", pulsado: true };
+  };
+  h.deps.conciliarConPago = async (_e, cuentaId, movimientoId, pagoId, tipo) => {
+    h.escrituras.push(`conciliar:${cuentaId}:${movimientoId === O ? "origen" : "destino"}:${pagoId}:${tipo}`);
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 500 });
+    const cobro = h.pagos.find((p) => p.id === pagoId)!;
+    cobro.parcial = true; cobro.aplicado = valorEntradaEur;
+  };
+  return { h, r };
+}
+
+test("conversión EUR→USD: «Transferir» sobre la salida, la entrada contra el cobro, y la diferencia de cambio queda en el cobro", async () => {
+  const { h, r } = conversion();
+  const res = await ejecutarTransferencia(r, h.deps, SI);
+  assert.equal(res.estado, "verificada");
+  assert.deepEqual(h.escrituras, ["transferir:main:origen:57200001:433.96", "conciliar:bbva:destino:cobro-doc:collection"]);
+  assert.match(res.mensaje, /Conversión conciliada: Main 433\.96 EUR → BBVA 500\.00 USD.*433\.96 EUR.*diferencia de cambio de 2\.11 EUR/);
+  assert.equal(res.registro.asientoId, "pago-1");
+});
+
+test("conversión: si la entrada vale más en euros que la salida, o Holded no da la valoración, no se escribe nada", async () => {
+  for (const [valor, motivo] of [[440, /vale más en euros/], [0, /valoración en euros/], [300, /supera el 3 %/]] as const) {
+    const { h, r } = conversion(valor);
+    const res = await ejecutarTransferencia(r, h.deps, SI);
+    assert.equal(res.estado, "propuesta");
+    assert.match(res.mensaje, motivo);
+    assert.deepEqual(h.escrituras, []);
+  }
+});
+
+test("conversión: un cobro conciliado por un importe que no es el valor de la entrada es un fallo", async () => {
+  const { h, r } = conversion();
+  const original = h.deps.conciliarConPago;
+  h.deps.conciliarConPago = async (...a) => { await original(...a); h.pagos.find((p) => p.id === "cobro-doc")!.aplicado = 100; };
+  const res = await ejecutarTransferencia(r, h.deps, SI);
+  assert.equal(res.estado, "fallida");
+  assert.match(res.mensaje, /cobro de la transferencia en la otra cuenta sigue pendiente/);
+});
+
+test("las conversiones solo se autorizan pareja a pareja, aunque las transferencias en euros estén abiertas", () => {
+  const clave = `EWORKS:${O}>${D}`;
+  const abierto = { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "eur" };
+  assert.equal(ejecucionAutorizada(clave, abierto, "transferencia"), true);
+  assert.equal(ejecucionAutorizada(clave, abierto, "conversion"), false);
+  assert.equal(ejecucionAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_CASOS: clave }, "conversion"), true);
 });
 
 test("los importes se buscan en pantalla como los escribe Holded", () => {
