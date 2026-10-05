@@ -432,6 +432,10 @@ const ACCIONES_SENSIBLES = new Set([
   // superadmin igual que el resto de escrituras externas del sistema.
   "escaladev_confirmar",
   "escaladev_cancelar",
+  // Wobi Seguros propone cambios del registro de pólizas y de su memoria (core/seguros/agente/cambiosPendientes.ts): los
+  // aprueba o cancela un superadministrador viendo el antes y el ahora; el agente nunca escribe solo.
+  "segcambio_aplicar",
+  "segcambio_cancelar",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

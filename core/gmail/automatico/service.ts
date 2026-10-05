@@ -469,7 +469,11 @@ export class ServicioCorreoAutomatico {
       try {
         if (analisis) {
           resultado.revisados++;
-          if (!analisis.completo) motivos.push("lectura_incompleta");
+          if (!analisis.completo) {
+            motivos.push("lectura_incompleta");
+            // La parte CONCRETA que no se pudo leer (si el analizador la nombró) viaja con el motivo para decírsela al operador.
+            if (analisis.detalleIncompleto) motivos.push(`lectura:${analisis.detalleIncompleto.slice(0, 200)}`);
+          }
           if (analisis.otrasAcciones) motivos.push("otras_acciones_pendientes");
           if (analisis.motivoManual) motivos.push(analisis.motivoManual);
           if (!analisis.recibos.length) motivos.push("correo_sin_gastos_automatizables");
@@ -631,7 +635,10 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   }
   if (errorTecnico) return `Una comprobación técnica falló y se reintentará en la siguiente pasada: ${acotar(errorTecnico)}`;
   if (tiene("lectura_incompleta")) {
-    return "El analizador no dio por completa la lectura de este correo (algún adjunto, enlace o parte del hilo no se pudo leer).";
+    const parte = motivos.find(motivo => motivo.startsWith("lectura:"))?.slice("lectura:".length).trim();
+    return parte
+      ? `El analizador no pudo leer una parte de este correo: ${acotar(parte)}`
+      : "El analizador no dio por completa la lectura de este correo (algún adjunto, enlace o parte del hilo no se pudo leer).";
   }
   if (tiene("otras_acciones_pendientes")) return "El correo contiene además otra solicitud que debe revisar el operador.";
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";

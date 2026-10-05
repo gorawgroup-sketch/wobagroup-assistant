@@ -22,7 +22,7 @@ export const integrarDocumentoSeguroTool: ToolDefinition = {
     "usuario pida que Wobi Seguros lea, conozca o integre un documento de seguros que ya está en Drive («dile a Wobi " +
     "Seguros que lea las condiciones de la RC», «que seguros tenga en cuenta el suplemento del showroom»). Los " +
     "documentos que se archivan desde un correo en la carpeta de seguros ya se integran solos: no hace falta llamarla " +
-    "para esos. Después, consultar_polizas_seguro muestra el documento con su resumen y su enlace.",
+    "para esos. Después, el especialista (consultar_agente_seguros) puede responder con ese documento, su resumen y su enlace.",
   input_schema: {
     type: "object",
     properties: {

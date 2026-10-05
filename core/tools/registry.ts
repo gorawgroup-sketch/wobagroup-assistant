@@ -63,6 +63,7 @@ import { proyectosHoldedTool } from "./proyectosHolded";
 import { descartarRecomendacionControlDiarioTool } from "./descartarRecomendacionControlDiario";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
 import { consultarPolizasSeguroTool } from "./consultarPolizasSeguro";
+import { consultarAgenteSegurosTool } from "./consultarAgenteSeguros";
 import { transferenciasInternasTool } from "./transferenciasInternas";
 import { integrarDocumentoSeguroTool } from "./integrarDocumentoSeguro";
 import { busquedaConocimientoGlobalTool } from "./busquedaConocimientoGlobal";
@@ -138,6 +139,7 @@ const tools: ToolDefinition[] = [
   descartarRecomendacionControlDiarioTool,
   compararCashflowHoldedTool,
   consultarPolizasSeguroTool,
+  consultarAgenteSegurosTool,
   transferenciasInternasTool,
   integrarDocumentoSeguroTool,
 ];

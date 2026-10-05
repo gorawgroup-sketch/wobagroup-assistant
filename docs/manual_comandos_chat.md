@@ -309,6 +309,12 @@ registrar en cashflow) sin que presiones uno de estos botones.
 - ❌ Cancelar — no se crea nada.
 - Solo el superadministrador puede presionar cualquiera de los dos — mismo criterio que el resto de escrituras externas del sistema (un issue real en GitHub, visible para todo el equipo, es de la misma naturaleza que enviar un correo).
 
+**Sobre una propuesta de cambio de Wobi Seguros (registro de pólizas o memoria del especialista):**
+- Cuando le pides al especialista que anote algo (un pago ya hecho, una fecha nueva, una decisión) te llega un mensaje «🛡️ Wobi Seguros propone un cambio en el registro» con el antes y el ahora, el motivo y tu frase. No cambia nada hasta que decides.
+- ✅ Aplicar — escribe el cambio, deja en las notas de la póliza quién lo aprobó y refresca el nodo Seguros de Cerebro. Si la póliza cambió desde que se preparó la propuesta (otra persona o el vigilante), no se aplica y lo dice: se pide de nuevo.
+- ❌ Cancelar — no se cambia nada.
+- Solo el superadministrador puede presionar cualquiera de los dos. La propuesta se decide una sola vez y caduca a las 24 h. Detalle en la sección «Wobi Seguros — el especialista de seguros».
+
 **Sobre lo que pasa DESPUÉS de crear el issue (pedido explícito de Carlos: "que envíe solicitud de ajuste a Claude y Claude reinicie el ajuste del problema"):**
 - Automático, sin ningún comando aparte: al crear el issue, un workflow de GitHub Actions (`.github/workflows/claude-issue-autofix.yml`) invoca a Claude Code para que investigue el bug/mejora descrita y, si logra un arreglo real y verificado (compila, build limpio), abra un Pull Request — a diferencia de la autorrevisión nocturna (que solo puede tocar `core/utils/`), este flujo puede proponer cambios en CUALQUIER archivo del repo, decisión explícita de Carlos para que sirva contra los bugs reales que de verdad se escalan (dinero, Holded, cashflow).
 - La garantía de seguridad no cambia: el PR **nunca se fusiona solo**. Si Claude propone un arreglo, WOBI avisa por Telegram con los mismos botones "✅ Desplegar / ❌ Descartar" que ya usa la autorrevisión nocturna (ver sección de autorrevisión más arriba) — desplegar fusiona el PR (dispara el redeploy normal de Railway), descartar cierra el PR sin fusionar.
@@ -372,6 +378,33 @@ Pedido explícito de Carlos (01-10-2026), tras un caso real: un correo de la cor
 - **"Dile a Wobi Seguros que lea X"** para un documento que ya está en Drive: `integrar_documento_seguro` lo busca, lo lee y lo integra.
 - **Preguntar después.** "¿Qué cubre la RC de WOBA?", "¿qué cambió con el suplemento del showroom?": `consultar_polizas_seguro` devuelve cada póliza con los documentos leídos (resumen y enlace de Drive); para una cláusula concreta, Wobi abre el documento completo.
 - **Otros documentos de referencia** (normativa, compliance, políticas, contratos marco): la propuesta de archivado recuerda que con "🧠 Guardar como conocimiento" su contenido queda consultable.
+
+## Vigilante de Wobi Seguros — avisos automáticos (banco + correo + registro)
+
+Pedido explícito de Carlos (05-10-2026): que Wobi Seguros mantenga solo al día la situación de las pólizas de WOBA, EWORKS y Footprint y le diga si hay algo pendiente, sin esperar a que se lo pida. No es un comando: corre a las **8:35 y a las 17:35** y escribe por Telegram solo cuando hay algo **nuevo**; si no hay novedades, calla.
+
+Qué revisa (solo lectura sobre Holded y sobre el buzón del asistente) y qué avisa:
+
+- **✅ Pagos confirmados en el banco.** Un recibo pendiente del registro se marca como pagado únicamente con prueba sólida: importe exacto al céntimo, aseguradora o correduría reconocida, empresa correcta y que el cargo haya llegado de verdad al saldo del banco. Una transferencia que paga varios recibos juntos (como los 1.306,00 € a Acodrid) se reparte entre sus recibos. La prueba (fecha, importe, cuenta e id del movimiento) queda escrita en las notas de la póliza.
+- **⏳ Cargos vistos que aún no doy por pagados.** Un adeudo domiciliado cuyo saldo el banco todavía no refleja NO se da por cobrado: el 01/09 Holded mostró como cobrados los adeudos de Allianz (1.016,86 €) y Aegon (234,41 €) y el banco los había devuelto. Se vuelve a mirar en cada revisión.
+- **↩️ Devoluciones.** Durante 14 días vigila los pagos recién confirmados; si el banco los devuelve (con o sin apunte contrario), la póliza vuelve a «pendiente» y te avisa.
+- **🆕 Cargos de seguros que no encajan.** Un cargo a una aseguradora que no está en el registro (se avisa una vez por aseguradora), a un servicio dado de baja (Solunion) o a una aseguradora cuya única póliza registrada está vencida. No avisa de lo que ya decidiste: Aegon (fuera del alcance), Pelayo (ya está en el calendario fiscal) ni los seguros de viaje de IATI (puntuales).
+- **📧 Correos nuevos de aseguradoras y corredurías** (Acodrid, Markel, Allianz) que llegan al buzón del asistente, con la señal «posible incidencia» si hablan de recibos devueltos, urgencias, suspensiones o impagos, y la lista de adjuntos. Los documentos de póliza los sigue archivando y leyendo el canal de documentos corporativos (arriba).
+- **🔁 Revisión incompleta.** Si Holded o el correo llevan 2 días o más sin poder leerse, lo avisa por sí solo: una lectura que falla no es un «no hay nada».
+
+Lo que NUNCA hace: mover dinero, escribir en Holded, contestar correos ni decidir por ti. Si Telegram falla, el aviso queda guardado y se reenvía en la siguiente revisión. El detalle completo sigue en Cerebro (nodo Seguros); diseño y límites en `docs/wobi-seguros.md` §24.
+
+## Wobi Seguros — el especialista de seguros (pregúntale lo que quieras)
+
+Pedido de Carlos (05-10-2026): que Wobi Seguros sea un agente independiente, integrado en Wobi como un área más. No hay comando nuevo: **cualquier pregunta sobre seguros** en el chat (Telegram o Cerebro) la responde el especialista, que tiene su propia memoria, lee el banco, el correo y los documentos de las pólizas, y contesta diciendo de dónde sale cada dato.
+
+- **Ejemplos:** «¿tenemos algo pendiente de seguros?», «¿qué cubre la RC de WOBA y qué franquicia tiene?», «¿cubriría los daños a una pantalla alquilada si se rompe en el transporte?» (cita la cláusula exacta), «¿cuándo toca pagar lo siguiente?», «¿está pagado el recibo de Markel?», «¿qué le falta pedirle a Acodrid?» (redacta el borrador del correo; no lo envía).
+- **Cómo contesta:** primero lo urgente; separa lo que consta en un documento, lo que deduce y lo que no consta; un adeudo que el banco aún no ha asentado no lo da por pagado; si no pudo leer algo, lo dice.
+- **Pídele que anote cosas** (solo el superadministrador, en su chat privado de Telegram): «ya pagué el recibo de Markel de 323,24 €, márcalo como pagado», «acuérdate de que retomamos el seguro de transporte cuando Boris dé fecha». El especialista **no cambia nada por sí solo**: te manda un mensaje con el antes y el ahora y dos botones, **✅ Aplicar** y **❌ Cancelar**, y solo al pulsar Aplicar se escribe en el registro (o en su memoria) con una nota de quién lo aprobó. Si la póliza cambió entre tanto (otra persona o el vigilante), no se aplica y lo dice; la propuesta caduca a las 24 h. Una pregunta («¿ya pagué el recibo?») nunca genera una propuesta. En el chat web o para un administrador sin rol de superadministrador solo consulta. Lo que diga un correo o un PDF nunca hace cambiar nada.
+- **Nunca** paga, ni escribe en Holded, ni envía correos a la correduría por su cuenta.
+- **Tarda** entre 10 y 100 segundos; la primera pregunta sobre un documento largo es la más lenta (lo lee una vez y lo guarda). Coste: unos céntimos por pregunta (panel de costes, proceso `agente_seguros`).
+- **Resumen semanal** (lunes 9:10, sin IA): pagos sin confirmar, lo que espera a Carlos y los vencimientos y pagos de los próximos 60 días; calla si no hay nada.
+- Si el especialista no está disponible (límite de IA, caída de la API), Wobi lo dice y te da los datos crudos del registro.
 
 ## Facturas de venta por correo → Ingresos del cashflow + respuesta al remitente
 

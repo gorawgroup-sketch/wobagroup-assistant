@@ -31,13 +31,21 @@ test("con la cola de la propuesta, la aprobación espera a la casilla anterior y
   await casilla;
 });
 
-test("la cola es por propuesta: una casilla lenta de una propuesta no retrasa a otra", async () => {
-  const hoja = hojaLenta();
-  const lenta = conSeleccionGasto("p1", () => hoja.marcar("crear"));
-  const inicio = Date.now();
-  await conSeleccionGasto("p2", async () => undefined);
-  assert.ok(Date.now() - inicio < 30, "p2 no espera a p1");
+test("la cola es por propuesta: una casilla pendiente de una propuesta no retrasa a otra (sin depender de tiempos)", async () => {
+  let liberar!: () => void;
+  const retenida = new Promise<void>((resolver) => { liberar = resolver; });
+  const lenta = conSeleccionGasto("p1", () => retenida);
+  // p2 termina mientras p1 sigue ocupada: si compartieran cola, esto no resolvería hasta liberar p1.
+  assert.equal(await conSeleccionGasto("p2", async () => "p2 terminó"), "p2 terminó");
+  // Y una segunda operación de p1 sí espera a la primera.
+  const ordenadas: string[] = [];
+  const segunda = conSeleccionGasto("p1", async () => { ordenadas.push("segunda"); });
+  await Promise.resolve();
+  assert.deepEqual(ordenadas, []);
+  liberar();
   await lenta;
+  await segunda;
+  assert.deepEqual(ordenadas, ["segunda"]);
 });
 
 test("guarda: marcar y aprobar usan la cola de la propuesta (si alguien la quita, vuelve el fallo «No marcaste ninguna acción»)", () => {

@@ -1,0 +1,542 @@
+{
+  "polizas": [
+    {
+      "id": "woba_rc_markel",
+      "empresa": "WOBA",
+      "aseguradora": "Markel Insurance SE",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "023S00453RCG",
+      "tipoCobertura": "Responsabilidad civil general",
+      "activoAsociado": "",
+      "capitalAsegurado": "600.000 € por siniestro y por anualidad",
+      "franquicia": "300 € general (1.200 € en coberturas específicas)",
+      "prima": "1475.84",
+      "moneda": "EUR",
+      "periodicidad": "anual",
+      "fechaInicioVigencia": "2026-04-17",
+      "fechaVencimiento": "2027-04-16",
+      "estado": "vigente",
+      "estadoPago": "pagado",
+      "notas": "PRÓXIMO PAGO: renovación 17/04/2027. Con la actividad de alquiler de pantallas incluida (suplemento 3.3) las nuevas condiciones indican una prima bruta mínima y de depósito de 2.012,65 € (no 1.475,84 €): estimación a confirmar con Acodrid. || CONFIRMADO 2026-09-27 via Drive: renovación real 2026/2027, prima 1.475,84€ (baja respecto a la anualidad anterior de 1.603,88€, no es un error). Carta de pago real del 17/04/2026. El pago real en Holded (-1.475,84€, cuenta Main, 16/06/2026) que antes quedó como 'posible complemento sin identificar' ERA esta renovación normal — no está relacionado con el complemento del showroom/Rental Code, que es una póliza distinta (Allianz).",
+      "rutaDocumento": "Wobi_seguros/WOba Europa/Seguro Responsabilidad Civil WOBA/",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "woba_showroom_allianz",
+      "empresa": "WOBA",
+      "aseguradora": "Allianz, Compañía de Seguros y Reaseguros, S.A.",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "054239034",
+      "tipoCobertura": "Todo riesgo showroom",
+      "activoAsociado": "Showroom — Calle Tomás Redondo 3, Madrid",
+      "capitalAsegurado": "Edificación 75.000€ / Mobiliario y equipamiento 210.000€ / Mercancías 125.000€ (base 2023/2024)",
+      "franquicia": "150 € daños materiales / 300 € RC",
+      "prima": "955.73 + 903.11 (2 cuotas semestrales 2025/2026)",
+      "moneda": "EUR",
+      "periodicidad": "semestral",
+      "fechaInicioVigencia": "2025-09-01",
+      "fechaVencimiento": "2026-09-01",
+      "estado": "vencida",
+      "estadoPago": "pagado",
+      "notas": "Cuotas 2025/2026: 955,73€ (01/09/25-01/03/26) y 903,11€ (01/03/26-01/09/26), ambas con sello PAGADO y coincidentes con Holded. ACTUALIZADO 2026-09-29: ciclo 2025/2026 terminado (venció 01/09/2026), superado por el Suplemento nº 2 / 54239034.2 del ciclo 2026/2027 (fila woba_showroom_complemento_2026_2027) — marcado vencida para no confundirlo con la póliza vigente real.",
+      "rutaDocumento": "Wobi_seguros/WOba Europa/Seguro Showroom Europa/",
+      "ultimaVerificacion": "2026-09-29"
+    },
+    {
+      "id": "woba_showroom_complemento_2026_2027",
+      "empresa": "WOBA",
+      "aseguradora": "Allianz, Compañía de Seguros y Reaseguros, S.A.",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "054239034 (Suplemento nº 2 / 54239034.2) — Pyme 2038",
+      "tipoCobertura": "Todo riesgo showroom — complemento por ampliación (Rental Code)",
+      "activoAsociado": "Showroom — Calle Tomás Redondo 3, Madrid + actividad secundaria material eléctrico/electrónico",
+      "capitalAsegurado": "Edificación 84.323€ / Mobiliario y equipamiento 236.105€ / Mercancías 230.539€",
+      "franquicia": "Igual que la póliza base",
+      "prima": "289.14",
+      "moneda": "EUR",
+      "periodicidad": "semestral",
+      "fechaInicioVigencia": "2026-09-10",
+      "fechaVencimiento": "2027-08-31",
+      "estado": "vigente",
+      "estadoPago": "pagado",
+      "notas": "✅ AL CORRIENTE (verificado 05/10/2026). Recibo nº 898301878, póliza 54239034/0, periodo 10/09/2026–01/03/2027, 289,14 € (prima 246,23 + IPS 20,19 + recargos 6,92 + FNG/Consorcio 15,80), tipo suplemento/apéndice, semestral. Pagado en la misma transferencia de 1.306,00 € del 30/09/2026 (ver la fila de la renovación woba_showroom_2026_2027: 289,14 + 1.016,86). Suplemento nº 2 (054239034.2) recibido de Acodrid el 01/10 y archivado en documentos de pólizas. || Historia: el recibo fue devuelto por el banco el 01/09 (póliza en suspenso desde esa fecha; plazo legal ~01/10) y regularizado el 30/09 por transferencia. Sin confirmación escrita de rehabilitación sin interrupción. || PRÓXIMO PAGO: el suplemento llega hasta el 01/03/2027; desde esa fecha habrá otro recibo del suplemento (01/03–01/09/2027), importe por confirmar con Acodrid (este semestre: 289,14 €).",
+      "rutaDocumento": "Wobi_seguros/WOba Europa/Seguro Showroom Europa/2026:2027/Complemento seguro de todo riesgo del showroom.pdf",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "woba_accidentes_empleados",
+      "empresa": "WOBA",
+      "aseguradora": "",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "",
+      "tipoCobertura": "Accidentes de empleados",
+      "activoAsociado": "",
+      "capitalAsegurado": "",
+      "franquicia": "",
+      "prima": "",
+      "moneda": "",
+      "periodicidad": "",
+      "fechaInicioVigencia": "",
+      "fechaVencimiento": "",
+      "estado": "no_contratada",
+      "estadoPago": "no_aplica",
+      "notas": "No exigido por el convenio colectivo de los empleados de WOBA (confirmado por escrito por Acodrid, 21/04/2023). Solo se activaría por exigencia comercial de un cliente, o decisión propia de contratar un seguro colectivo privado ad-hoc.",
+      "rutaDocumento": "Wobi_seguros/WOba Europa/Seguro Accidentes Empleados /",
+      "ultimaVerificacion": "2026-09-27"
+    },
+    {
+      "id": "eworks_rc_markel",
+      "empresa": "EWORKS",
+      "aseguradora": "Markel Insurance SE",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "025S00287RCG",
+      "tipoCobertura": "Responsabilidad civil general",
+      "activoAsociado": "",
+      "capitalAsegurado": "1.000.000 € por siniestro y por anualidad",
+      "franquicia": "300 € general / 1.200 € post-trabajos, productos, colindantes",
+      "prima": "840.74 + 838.41 (2 cuotas semestrales)",
+      "moneda": "EUR",
+      "periodicidad": "semestral",
+      "fechaInicioVigencia": "2026-02-27",
+      "fechaVencimiento": "2027-02-26",
+      "estado": "vigente",
+      "estadoPago": "pagado",
+      "notas": "✅ AL CORRIENTE (verificado 05/10/2026 en Holded): 1ª cuota −840,94 € el 10/04/2026 (cuenta Euros EWKS, «Markel Insurance Se Recibo 111190»; 0,20 € más que los 840,74 € de la carta de pago de 2025) y 2ª cuota −838,41 € el 15/09/2026 (CAIXA BANK EWORKS, adeudo «MARKEL INSURANCE W2764898I641», aún sin conciliar en Holded; el mandato de 2025 nombraba la cuenta Revolut …4606, pero el cobro domiciliado se hizo en CaixaBank, y la 1ª cuota se pagó a mano por transferencia). PRÓXIMO PAGO: renovación 27/02/2027 (dos cuotas semestrales, 27/02 y 27/08; ~1.679 €/año; Acodrid/Markel avisan el importe exacto por carta de pago hacia principios de marzo). || CONFIRMADO 2026-09-27 via Drive: Suplemento nº 1 de Renovación 2026/2027, firmado electrónicamente 12/02/2026 (German Alejandro Robles, certificado AC Representación). Misma prima que el año anterior (1.679,15€, 840,74+838,41 semestral) — sin cambios. Discrepancia de CP sigue igual (28043 en condiciones vs 28033 en mandato).",
+      "rutaDocumento": "Wobi_seguros/Eworks/025s00287rcgcompaadeproyectoseworkss_l_/",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "footprint_rc_markel",
+      "empresa": "Footprint",
+      "aseguradora": "Markel Insurance SE",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "026S00905RCP",
+      "tipoCobertura": "Responsabilidad civil profesional",
+      "activoAsociado": "",
+      "capitalAsegurado": "600.000 € por siniestro y por anualidad",
+      "franquicia": "300-400 € según garantía",
+      "prima": "1671.03",
+      "moneda": "EUR",
+      "periodicidad": "anual (pago único)",
+      "fechaInicioVigencia": "2026-08-25",
+      "fechaVencimiento": "2027-08-24",
+      "estado": "vigente",
+      "estadoPago": "pagado",
+      "notas": "✅ AL CORRIENTE (verificado 05/10/2026): sin novedades; pagado el 27/08/2026 (−1.671,03 €, movimiento Holded 6a914774ee0e2a8f6d0aafa5). PRÓXIMO PAGO: renovación 25/08/2027 (~1.671,03 €, pago único). || CONFIRMADO 2026-09-27 via Drive: carta de pago real de Acodrid/Markel (25/08/2026) cita exacto Nº POLIZA 026S00905RCP, periodo 25/08/2026-24/08/2027, importe 1.671,03€ — coincide al céntimo y casi al día con el pago real en Holded (27/08/2026). La cotización 1/424572 sí se formalizó; la carpeta local 'Aprobado y pagado 2026' estaba incompleta, la carpeta real de Drive (SEGUROS, Footprint) tiene las condiciones particulares y la carta de pago completas.",
+      "rutaDocumento": "Wobi_seguros/Footprint/SEGURO RESP CIVIL/Aprobado y pagado 2026/",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "footprint_seguro_viajes",
+      "empresa": "Footprint",
+      "aseguradora": "Sin confirmar (posible IATI)",
+      "correduria": "",
+      "numeroPoliza": "",
+      "tipoCobertura": "Seguro de viaje (desplazamientos de empleados)",
+      "activoAsociado": "10 asegurados (1 empleado + 9 autónomos)",
+      "capitalAsegurado": "Variable por garantía — ver documento",
+      "franquicia": "150 € en daños materiales combinados; resto sin franquicia o excluida",
+      "prima": "1524.98",
+      "moneda": "EUR",
+      "periodicidad": "anual",
+      "fechaInicioVigencia": "",
+      "fechaVencimiento": "",
+      "estado": "no_contratada",
+      "estadoPago": "no_aplica",
+      "notas": "DECISIÓN EXPLÍCITA DE CARLOS (30/09/2026): no se va a comprar la póliza anual (cotización de 1.524,98 €). Descartado, no es un pendiente por resolver. || ACLARADO 05/10/2026: los cargos «Iati Seguros»/«Iati Colombia» de Holded son seguros de viaje contratados viaje a viaje con la tarjeta (ej. correo de Juan Camilo Salazar del 28/09, «€ 22,06 – Iati – Revolut: Travel insurance», con su recibo). Entre 10/2025 y 10/2026 suman al menos ~310 € en 7 cargos (38,99; 55,92; 22,06 € y cuatro en USD ≈ 193,56 €), frente a los 1.524,98 € de la póliza anual descartada. No requieren registro como póliza.",
+      "rutaDocumento": "Wobi_seguros/Footprint/Seguro de viajes .docx",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "woba_rc_suplemento_3_3",
+      "empresa": "WOBA",
+      "aseguradora": "Markel Insurance SE",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "023S00453RCG (Suplemento 3.3)",
+      "tipoCobertura": "Responsabilidad civil general — suplemento por inclusión de actividad (alquiler pantallas LED / Rental.co)",
+      "activoAsociado": "Actividad Rental.co — alquiler de pantallas LED",
+      "capitalAsegurado": "Incluida en el capital general de la póliza base (600.000€/siniestro-anualidad) — facturación total ya en 700.000€ (500.000€ + 200.000€ de esta actividad)",
+      "franquicia": "Igual que la póliza base (300€ general / 1.200€ específicas)",
+      "prima": "323.24",
+      "moneda": "EUR",
+      "periodicidad": "único (prorrateado hasta la renovación anual del 17/04/2027)",
+      "fechaInicioVigencia": "2026-09-10",
+      "fechaVencimiento": "2027-04-16",
+      "estado": "vigente",
+      "estadoPago": "sin_confirmar",
+      "notas": "⏳ SIN CONFIRMAR (verificado 05/10/2026): hoy aparece en Holded un adeudo «Markel Insurance SE» de −323,24 € en la cuenta BBVA de WOBA (movimiento 6ac321017157b2882d0e5a07, sin conciliar), exactamente el importe de este recibo, pero el saldo del banco todavía no lo refleja: ahora mismo no se puede asegurar que se haya cobrado. Precedente: el 01/09 Holded también mostró como cobrados dos adeudos (Allianz 1.016,86 € y Aegon 234,41 €) que el banco devolvió sin dejar ningún apunte contrario. Se vuelve a comprobar en cuanto el banco asiente movimientos posteriores: si el saldo ya lo incluye → pagado; si no, sigue pendiente. El recibo ya había sido devuelto una vez (aviso de Acodrid del 24/09) y el 30/09 Acodrid ofreció volver a pasarlo al cobro. || PENDIENTE de nuestra parte: Acodrid pidió (24/09) devolver firmadas todas las páginas de las condiciones particulares del suplemento; no consta que se haya enviado. || Qué es: suplemento 3.3 a la RC 023S00453RCG por incluir la actividad de alquiler de pantallas LED (Rental.co); recibo adicional de 323,24 € por 10/09/2026–17/04/2027 (prorrata hasta la renovación). Facturación asegurada 700.000 €, de los cuales 200.000 € son la actividad nueva (correo de Acodrid, 24/09). || Condiciones particulares recibidas de Acodrid el 01/10/2026 (archivadas en documentos de pólizas): prima bruta mínima y de depósito anual 2.012,65 € (neta 1.860,98 + IPS 148,88 + CCS 2,79). La renovación del 17/04/2027 apunta por tanto a ~2.012,65 € y no a los 1.475,84 € de 2026 (estimación a confirmar con Acodrid; «mínima y de depósito» sugiere además una posible regularización de prima según facturación).",
+      "rutaDocumento": "",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "woba_transporte_pantallas_pendiente",
+      "empresa": "WOBA",
+      "aseguradora": "",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "",
+      "tipoCobertura": "Daños durante transporte de pantallas LED (por vehículo)",
+      "activoAsociado": "Pantallas LED Rental.co en tránsito",
+      "capitalAsegurado": "100.000€ por vehículo (cotizado)",
+      "franquicia": "",
+      "prima": "529.16 (cotizado, anual)",
+      "moneda": "EUR",
+      "periodicidad": "anual",
+      "fechaInicioVigencia": "",
+      "fechaVencimiento": "",
+      "estado": "pendiente_confirmacion",
+      "estadoPago": "no_aplica",
+      "notas": "🧊 EN HOLD por decisión explícita de Carlos (30/09/2026) — congelado, no es un olvido. No preguntar de nuevo hasta que él decida retomarlo. Cotizado por Acodrid el 12/08/2026 (529,16€/año, 100.000€ por vehículo) para cubrir daños a las pantallas durante su traslado cuando lo hace WOBA con medios propios. No se ha contratado (decisión pendiente, en hold). || DESENCADENANTE DOCUMENTADO (hilo «seguro rentalco», 30/09/2026, Jaquelin Lovey/Boris/Carlos): las condiciones generales de Rental.co (art. 3) prevén un servicio de entrega y recogida con medios de WOBA; Acodrid recuerda que, si se presta, hay que contratar este seguro de transporte (con carga y descarga) ANTES del primer transporte y pide aviso con antelación. Boris indicó que el servicio llegará al terminar el proyecto piloto (aún unos meses, sin fecha de lanzamiento). Carlos respondió que mientras se decide es importante que quien transporte tenga los seguros necesarios. La decisión sigue siendo de Carlos; esto solo deja constancia del momento en que dejaría de poder esperar.",
+      "rutaDocumento": "",
+      "ultimaVerificacion": "2026-10-05"
+    },
+    {
+      "id": "woba_equipos_electronicos_pendiente",
+      "empresa": "WOBA",
+      "aseguradora": "",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "",
+      "tipoCobertura": "Equipos electrónicos — daños durante eventos organizados por WOBA",
+      "activoAsociado": "Pantallas LED y electrónica asociada, Rental.co",
+      "capitalAsegurado": "90.000€ (cotizado)",
+      "franquicia": "",
+      "prima": "4142.76 (cotizado, anual)",
+      "moneda": "EUR",
+      "periodicidad": "anual",
+      "fechaInicioVigencia": "",
+      "fechaVencimiento": "",
+      "estado": "pendiente_confirmacion",
+      "estadoPago": "no_aplica",
+      "notas": "🧊 EN HOLD por decisión explícita de Carlos (30/09/2026) — congelado, no es un olvido. No preguntar de nuevo hasta que él decida retomarlo. Cotizado por Acodrid el 12/08/2026 (4.142,76€/año, 90.000€ de capital) para eventos donde WOBA usa las pantallas con medios propios (no alquiladas a terceros) — cobertura amplia (manejo, eléctricos, incendio, agua, robo, 6.000€ recuperación de archivos, 36.000€/año incremento de costes). Prima significativa. NO hay confirmación en los correos leídos de que se haya contratado — falta preguntarle a Carlos.",
+      "rutaDocumento": "",
+      "ultimaVerificacion": "2026-09-29"
+    },
+    {
+      "id": "woba_showroom_2026_2027",
+      "empresa": "WOBA",
+      "aseguradora": "Allianz, Compañía de Seguros y Reaseguros, S.A.",
+      "correduria": "Acodrid Correduría de Seguros, S.A.",
+      "numeroPoliza": "054239034 (S4239034 en el listado oficial de Acodrid)",
+      "tipoCobertura": "Todo riesgo showroom — renovación ciclo 2026/2027",
+      "activoAsociado": "Showroom — Calle Tomás Redondo 3, Madrid",
+      "capitalAsegurado": "",
+      "franquicia": "",
+      "prima": "1971.86 (2 cuotas semestrales: 1.016,86 + ~955 aprox)",
+      "moneda": "EUR",
+      "periodicidad": "semestral",
+      "fechaInicioVigencia": "2026-09-01",
+      "fechaVencimiento": "2027-08-31",
+      "estado": "vigente",
+      "estadoPago": "pagado",
+      "notas": "✅ AL CORRIENTE (verificado 05/10/2026). Recibo nº 634402139, póliza 54239034/0, periodo 01/09/2026–01/03/2027, 1.016,86 € (prima 841,35 + IPS 68,99 + recargos 23,55 + FNG/Consorcio 82,97), cartera semestral. Pagado junto con el suplemento por UNA transferencia SEPA instantánea de 1.306,00 € desde Revolut (cuenta Main) el 30/09/2026 a las 20:05 (estado COMPLETED, referencia «POLIZA 054239034») a Correduría de Seguros Acodrid; movimiento Holded 6abe302ee953c890b8019160, ya conciliado con la compra «Pago prima seguro multirriesgo» (1.306,00 €). Acodrid confirmó la gestión el 01/10 y envió duplicados de los dos recibos. || Historia: el cobro por domiciliación del 01/09 FALLÓ (el banco devolvió el recibo; Acodrid lo confirmó el 30/09 y exigió transferencia; la póliza estuvo en suspenso desde el 01/09 y el plazo legal vencía hacia el 01/10, así que se pagó a tiempo). Holded conserva una línea del 01/09 («ALLIANZ … ADEUDO», −1.016,86 €, conciliada) que no figura en la cadena de saldos del banco: parece un cargo devuelto, no un pago real. No consta confirmación escrita de Allianz/Acodrid de que la cobertura esté rehabilitada sin interrupción. || PRÓXIMO PAGO: 2ª cuota semestral el 01/03/2027 (importe por confirmar; en el ciclo anterior fueron 955,73 € y 903,11 €). || Cashflow (aclarado por Carlos 30/09): fila 13 «SEGURO SHOWROOM» 1.016 € en S40 = esta deuda real, ya pagada; fila 18 «SEGURO Activos Showrrom» 1.016,86 € en S10/2027 = proyección del mismo pago recurrente para el año siguiente, no la misma deuda (no sumarlas).",
+      "rutaDocumento": "",
+      "ultimaVerificacion": "2026-10-05"
+    }
+  ],
+  "proximasARenovar": [],
+  "pagosSinConfirmar": [
+    {
+      "id": "woba_rc_suplemento_3_3",
+      "empresa": "WOBA",
+      "tipoCobertura": "Responsabilidad civil general — suplemento por inclusión de actividad (alquiler pantallas LED / Rental.co)",
+      "aseguradora": "Markel Insurance SE",
+      "prima": "323.24",
+      "moneda": "EUR",
+      "estadoPago": "sin_confirmar",
+      "notas": "⏳ SIN CONFIRMAR (verificado 05/10/2026): hoy aparece en Holded un adeudo «Markel Insurance SE» de −323,24 € en la cuenta BBVA de WOBA (movimiento 6ac321017157b2882d0e5a07, sin conciliar), exactamente el importe de este recibo, pero el saldo del banco todavía no lo refleja: ahora mismo no se puede asegurar que se haya cobrado. Precedente: el 01/09 Holded también mostró como cobrados dos adeudos (Allianz 1.016,86 € y Aegon 234,41 €) que el banco devolvió sin dejar ningún apunte contrario. Se vuelve a comprobar en cuanto el banco asiente movimientos posteriores: si el saldo ya lo incluye → pagado; si no, sigue pendiente. El recibo ya había sido devuelto una vez (aviso de Acodrid del 24/09) y el 30/09 Acodrid ofreció volver a pasarlo al cobro. || PENDIENTE de nuestra parte: Acodrid pidió (24/09) devolver firmadas todas las páginas de las condiciones particulares del suplemento; no consta que se haya enviado. || Qué es: suplemento 3.3 a la RC 023S00453RCG por incluir la actividad de alquiler de pantallas LED (Rental.co); recibo adicional de 323,24 € por 10/09/2026–17/04/2027 (prorrata hasta la renovación). Facturación asegurada 700.000 €, de los cuales 200.000 € son la actividad nueva (correo de Acodrid, 24/09). || Condiciones particulares recibidas de Acodrid el 01/10/2026 (archivadas en documentos de pólizas): prima bruta mínima y de depósito anual 2.012,65 € (neta 1.860,98 + IPS 148,88 + CCS 2,79). La renovación del 17/04/2027 apunta por tanto a ~2.012,65 € y no a los 1.475,84 € de 2026 (estimación a confirmar con Acodrid; «mínima y de depósito» sugiere además una posible regularización de prima según facturación)."
+    }
+  ],
+  "porEmpresa": {
+    "WOBA": {
+      "total": 8,
+      "vigentes": 4,
+      "pendientesConfirmar": 1
+    },
+    "EWORKS": {
+      "total": 1,
+      "vigentes": 1,
+      "pendientesConfirmar": 0
+    },
+    "Footprint": {
+      "total": 2,
+      "vigentes": 1,
+      "pendientesConfirmar": 0
+    }
+  },
+  "totalPolizasActivas": 6,
+  "linkRegistro": "https://docs.google.com/spreadsheets/d/ID_DE_LA_HOJA/edit",
+  "resumen": {
+    "vigentes": 6,
+    "sinConfirmarPago": 1,
+    "porConfirmarOEnHold": 2,
+    "vencidas": 1,
+    "noContratadas": 2
+  },
+  "proximos": [
+    {
+      "fecha": "2027-02-26",
+      "diasRestantes": 144,
+      "tipo": "vencimiento",
+      "empresa": "EWORKS",
+      "polizaId": "eworks_rc_markel",
+      "texto": "Vence Responsabilidad civil general (Markel Insurance SE, 025S00287RCG)"
+    },
+    {
+      "fecha": "2027-02-27",
+      "diasRestantes": 145,
+      "tipo": "pago",
+      "empresa": "EWORKS",
+      "polizaId": "eworks_rc_markel",
+      "texto": "[EWORKS] renovación 27/02/2027 (dos cuotas semestrales, 27/02 y 27/08; ~1.679 €/año; Acodrid/Markel avisan el importe exacto por carta de pago hacia principios de marzo)"
+    },
+    {
+      "fecha": "2027-03-01",
+      "diasRestantes": 147,
+      "tipo": "pago",
+      "empresa": "WOBA",
+      "polizaId": "woba_showroom_complemento_2026_2027",
+      "texto": "[WOBA] el suplemento llega hasta el 01/03/2027; desde esa fecha habrá otro recibo del suplemento (01/03–01/09/2027), importe por confirmar con Acodrid (este semestre: 289,14 €)"
+    },
+    {
+      "fecha": "2027-03-01",
+      "diasRestantes": 147,
+      "tipo": "pago",
+      "empresa": "WOBA",
+      "polizaId": "woba_showroom_2026_2027",
+      "texto": "[WOBA] 2ª cuota semestral el 01/03/2027 (importe por confirmar; en el ciclo anterior fueron 955,73 € y 903,11 €)"
+    },
+    {
+      "fecha": "2027-04-16",
+      "diasRestantes": 193,
+      "tipo": "vencimiento",
+      "empresa": "WOBA",
+      "polizaId": "woba_rc_markel",
+      "texto": "Vence Responsabilidad civil general (Markel Insurance SE, 023S00453RCG)"
+    },
+    {
+      "fecha": "2027-04-16",
+      "diasRestantes": 193,
+      "tipo": "vencimiento",
+      "empresa": "WOBA",
+      "polizaId": "woba_rc_suplemento_3_3",
+      "texto": "Vence Responsabilidad civil general — suplemento por inclusión de actividad (alquiler pantallas LED / Rental.co) (Markel Insurance SE, 023S00453RCG (Suplemento 3.3))"
+    },
+    {
+      "fecha": "2027-04-17",
+      "diasRestantes": 194,
+      "tipo": "pago",
+      "empresa": "WOBA",
+      "polizaId": "woba_rc_markel",
+      "texto": "[WOBA] renovación 17/04/2027. Con la actividad de alquiler de pantallas incluida (suplemento 3.3) las nuevas condiciones indican una prima bruta mínima y de depósito de 2.012,65 € (no 1.475,84 €): estimación a confirmar con Acodrid"
+    },
+    {
+      "fecha": "2027-08-24",
+      "diasRestantes": 323,
+      "tipo": "vencimiento",
+      "empresa": "Footprint",
+      "polizaId": "footprint_rc_markel",
+      "texto": "Vence Responsabilidad civil profesional (Markel Insurance SE, 026S00905RCP)"
+    },
+    {
+      "fecha": "2027-08-25",
+      "diasRestantes": 324,
+      "tipo": "pago",
+      "empresa": "Footprint",
+      "polizaId": "footprint_rc_markel",
+      "texto": "[Footprint] renovación 25/08/2027 (~1.671,03 €, pago único)"
+    },
+    {
+      "fecha": "2027-08-31",
+      "diasRestantes": 330,
+      "tipo": "vencimiento",
+      "empresa": "WOBA",
+      "polizaId": "woba_showroom_complemento_2026_2027",
+      "texto": "Vence Todo riesgo showroom — complemento por ampliación (Rental Code) (Allianz, Compañía de Seguros y Reaseguros, S.A., 054239034 (Suplemento nº 2 / 54239034.2) — Pyme 2038)"
+    },
+    {
+      "fecha": "2027-08-31",
+      "diasRestantes": 330,
+      "tipo": "vencimiento",
+      "empresa": "WOBA",
+      "polizaId": "woba_showroom_2026_2027",
+      "texto": "Vence Todo riesgo showroom — renovación ciclo 2026/2027 (Allianz, Compañía de Seguros y Reaseguros, S.A., 054239034 (S4239034 en el listado oficial de Acodrid))"
+    }
+  ],
+  "complementosDisponibles": true,
+  "esperandoACarlos": [
+    {
+      "id": "pend-excluir-rc-multirriesgo",
+      "texto": "Excluir la garantía de RC del multirriesgo de WOBA (Allianz 054239034). Acodrid la propone porque sigue con la facturación antigua (112.431,28 € frente a los 700.000 € actuales) y así no encarece la prima; la RC independiente es la de Markel (023S00453RCG). Carlos debe confirmarlo por escrito respondiendo al correo de Acodrid; Wobi no lo decide.",
+      "desde": "2026-09-24",
+      "diasEsperando": 11
+    },
+    {
+      "id": "pend-firma-suplemento-3-3",
+      "texto": "Devolver a Acodrid firmadas todas las páginas de las condiciones particulares del suplemento 3.3 de la RC de WOBA (Markel 023S00453RCG). No consta que se haya enviado.",
+      "desde": "2026-09-24",
+      "diasEsperando": 11
+    },
+    {
+      "id": "pend-condiciones-allianz-2026-27",
+      "texto": "Faltan las condiciones particulares de la RENOVACIÓN 2026/2027 del multirriesgo de WOBA (Allianz 054239034): se pidieron a Acodrid el 30/09/2026 y el 01/10 llegaron el suplemento nº 2 y las condiciones del suplemento 3.3 de Markel, pero no esas.",
+      "desde": "2026-10-01",
+      "diasEsperando": 4
+    }
+  ],
+  "memoria": [
+    {
+      "id": "dec-aegon-fuera-de-alcance",
+      "tipo": "decision",
+      "texto": "Aegon (el seguro de salud que WOBA paga cada mes, unos 234 €) está FUERA del alcance de Wobi Seguros: no se registra ni se avisa de sus cargos.",
+      "fuente": "Carlos, 27/09/2026 (docs/wobi-seguros.md §13 punto 9)",
+      "fecha": "2026-09-27"
+    },
+    {
+      "id": "dec-solunion-baja",
+      "tipo": "decision",
+      "texto": "Solunion (seguro de crédito de WOBA) está dado de baja. Un cargo nuevo suyo sería una anomalía que hay que avisar.",
+      "fuente": "Carlos, 27/09/2026 (§13 punto 10)",
+      "fecha": "2026-09-27"
+    },
+    {
+      "id": "dec-suramericana-fuera",
+      "tipo": "decision",
+      "texto": "El reintegro de la póliza de Suramericana (Footprint, oficina de Medellín) queda fuera del alcance inicial.",
+      "fuente": "Carlos, 27/09/2026 (§16)",
+      "fecha": "2026-09-27"
+    },
+    {
+      "id": "dec-pelayo-calendario-fiscal",
+      "tipo": "decision",
+      "texto": "Los seguros de Pelayo (coche en agosto, moto en mayo y piso en febrero) se avisan por el calendario fiscal (docs/calendario_fiscal.json); no están en el registro de pólizas de Wobi Seguros.",
+      "fuente": "docs/calendario_fiscal.json y docs/wobi-seguros.md §16",
+      "fecha": "2026-09-27"
+    },
+    {
+      "id": "dec-viaje-footprint-no",
+      "tipo": "decision",
+      "texto": "No se compra el seguro de viaje anual de Footprint (cotización de 1.524,98 €). Los cargos de IATI son seguros de viaje contratados trayecto a trayecto con tarjeta (unos 310 € en 12 meses): no son una póliza que registrar.",
+      "fuente": "Carlos, 30/09/2026; cargos verificados en Holded el 05/10/2026",
+      "fecha": "2026-09-30"
+    },
+    {
+      "id": "dec-hold-transporte-equipos",
+      "tipo": "decision",
+      "texto": "Seguro de transporte de pantallas (529,16 €/año, 100.000 € por vehículo) y seguro de equipos electrónicos (4.142,76 €/año, 90.000 € de capital): EN HOLD, congelados por decisión de Carlos. No volver a preguntar por ellos hasta que él los retome. Los cotizó Acodrid el 12/08/2026.",
+      "fuente": "Carlos, 30/09/2026",
+      "fecha": "2026-09-30"
+    },
+    {
+      "id": "hecho-transporte-desencadenante",
+      "tipo": "hecho",
+      "texto": "Antes del primer transporte con medios propios de WOBA (el servicio de entrega y recogida de Rental.co, previsto al terminar el proyecto piloto y sin fecha todavía) hay que tener contratado el seguro de transporte con carga y descarga: Acodrid pide aviso con antelación. Carlos pidió que mientras tanto quien transporte tenga los seguros necesarios. Sigue en hold; solo recordarlo cuando haya fecha de lanzamiento del servicio.",
+      "fuente": "hilo «seguro rentalco», 30/09/2026 (Jaquelin Lovey, Boris Dallafontana y Carlos)",
+      "fecha": "2026-09-30"
+    },
+    {
+      "id": "regla-correos",
+      "tipo": "regla",
+      "texto": "Solo se escribe a corredores o aseguradoras cuando Carlos lo pide en ese momento, desde asistente@wobagroup.com, nunca por iniciativa propia. Al pedir un documento a Acodrid se pide solo el documento, sin explicaciones. Wobi Seguros redacta el borrador; no lo envía.",
+      "fuente": "Carlos, 29 y 30/09/2026",
+      "fecha": "2026-09-30"
+    },
+    {
+      "id": "regla-dinero",
+      "tipo": "regla",
+      "texto": "Wobi Seguros nunca ejecuta pagos ni transferencias y no escribe en Holded: avisa, prepara y verifica; el pago lo hace una persona.",
+      "fuente": "docs/wobi-seguros.md §11",
+      "fecha": "2026-09-18"
+    },
+    {
+      "id": "contacto-acodrid",
+      "tipo": "contacto",
+      "texto": "Acodrid Correduría de Seguros (Madrid) gestiona las pólizas de WOBA, EWORKS y Footprint. Jaquelin Lovey, gestora de las pólizas (jaquelin.lovey@acodrid.com); María José Mejía, recibos y justificantes de pago (mjose.mejia@acodrid.com); Andrés García Aguado, asesoramiento y cláusulas (andres.g.aguado@acodrid.com); general: acodrid@acodrid.com. Los seguros no generan factura (no hay IVA): el soporte contable es el justificante de pago y el duplicado del recibo.",
+      "fuente": "correos de Acodrid, 24/09 a 01/10/2026",
+      "fecha": "2026-10-01"
+    },
+    {
+      "id": "hecho-cuentas-de-cobro",
+      "tipo": "hecho",
+      "texto": "Cómo se paga cada póliza. WOBA domicilia en BBVA …6229, una cuenta que suele tener un saldo casi nulo el día 1 de mes (los recibos de Allianz y Aegon del 01/09 se devolvieron); sus pagos manuales salen de Revolut (cuenta Main). EWORKS: el mandato de Markel de 2025 nombra Revolut …4606, pero el cobro domiciliado de septiembre de 2026 se hizo en CaixaBank. Footprint paga la RC de Markel desde Revolut.",
+      "fuente": "Holded y mandatos, verificado el 05/10/2026",
+      "fecha": "2026-10-05"
+    },
+    {
+      "id": "hecho-suspension-showroom",
+      "tipo": "hecho",
+      "texto": "La póliza multirriesgo del showroom de WOBA estuvo en suspenso desde el 01/09/2026 por el recibo devuelto del suplemento nº 2 (aviso directo de Allianz; plazo legal de un mes, hasta ~01/10). Se regularizó el 30/09/2026 con la transferencia de 1.306,00 € a Acodrid (289,14 € del suplemento + 1.016,86 € de la 1ª cuota de la renovación). No consta confirmación escrita de que la cobertura quedara rehabilitada sin interrupción.",
+      "fuente": "correos de Allianz y Acodrid; justificante de Revolut del 30/09/2026",
+      "fecha": "2026-10-01"
+    },
+    {
+      "id": "hecho-rentalco-rc-cliente",
+      "tipo": "hecho",
+      "texto": "Rental.co: las condiciones generales (art. 7) obligan al ARRENDATARIO a tener su propia RC en vigor y subirla a su portal. WOBA cubre su propia actividad de alquiler con el suplemento 3.3 de la RC de Markel (200.000 € de facturación de la actividad nueva).",
+      "fuente": "hilo «seguro rentalco», 23 a 30/09/2026",
+      "fecha": "2026-09-30"
+    },
+    {
+      "id": "hecho-checklist-cobertura",
+      "tipo": "hecho",
+      "texto": "Cobertura que Carlos considera necesaria: WOBA = responsabilidad civil + todo riesgo del showroom (accidentes de empleados no es obligatorio por su convenio); EWORKS = responsabilidad civil; Footprint = responsabilidad civil.",
+      "fuente": "Carlos, 27/09/2026 (§15)",
+      "fecha": "2026-09-27"
+    },
+    {
+      "id": "hecho-375led",
+      "tipo": "hecho",
+      "texto": "375LED America LLC (entidad de WOBA en EE. UU.): hay histórico de General Liability con Kinsale a través de Bass Underwriters hasta el 13/10/2023; no se sabe si hoy hay póliza. Preguntar a Carlos antes de asumir nada.",
+      "fuente": "Drive y docs/wobi-seguros.md §13 punto 16",
+      "fecha": "2026-09-27"
+    },
+    {
+      "id": "hecho-prima-minima-markel",
+      "tipo": "hecho",
+      "texto": "La RC de WOBA (Markel 023S00453RCG) tiene prima «mínima y de depósito» (2.012,65 € brutos al año con el suplemento 3.3): puede haber regularización de prima según la facturación; confirmarlo con Acodrid antes de la renovación del 17/04/2027.",
+      "fuente": "condiciones particulares del suplemento 3.3 (recibidas el 01/10/2026)",
+      "fecha": "2026-10-05"
+    }
+  ],
+  "documentos": [
+    {
+      "polizaId": "woba_showroom_complemento_2026_2027",
+      "empresa": "WOBA",
+      "nombre": "054239034.2 (SUPLEMENTO).pdf",
+      "tipo": "condiciones particulares (suplemento)",
+      "fechaDocumento": "2026-09-10",
+      "vigencia": "2026-09-10 → 2027-08-31",
+      "prima": "289,14 (Total Recibo; Prima Neta 246,23) EUR",
+      "capital": "Edificación 84.323 € / Mobiliario y Equipamiento 236.105 € / Mercancías 230.539 €; RC: 750.000 € por siniestro y anualidad, 300.000 € por víctima",
+      "resumen": "Tomador: BUSINESS ATELIER EUROPA, S.L.. Cobertura: Multirriesgo (Allianz Negocio PLUS Industrias y Servicios) con RC General. Franquicia: 150 € (daños materiales en general); 300 € en RC; en Acción del agua y Fenómenos atmosféricos 150 €. Póliza Allianz Negocio PLUS (multirriesgo PYME) nº 054239034, suplemento 2, tomador Business Atelier Europa SL (WOBA), para actividad de Sala de exposiciones (secundaria: material eléctrico/electrónico, almacén sin reciclaje) en CL Tomás Redondo 3, 2º, Madrid. Vigencia 10/9/2026 a 31/8/2027, prorrogable. Sumas aseguradas: Edificación 84.323 €, Mobiliario y Equipamiento 236.105 €, Mercancías 230.539 €; facturación declarada 112.431,28 € como base de RC. Cubre incendio/explosión/rayo y gastos derivados (100% suma asegurada, honorarios profesionales/peritos máx. 150.000 € cada uno), acción del agua y fenómenos atmosféricos (franquicia 150 €), riesgos complementarios (impacto, humo, reparación estética 10% edif., reposición de moldes 10%/máx.60.000€ y archivos 10%/máx.150.000€ de Mob.), rotura de cristales (máx. 50.000 €), fenómenos eléctricos y daños eléctricos (máx. 50.000 €, franquicia 150 €), avería de equipos electrónicos (máx. 50.000 €, franquicia 150 €), robo y riesgos asociados (edificación máx. 50.000 €, dinero en caja fuerte máx. 10.000 €, fuera de caja 1.000 €), RC Inmobiliaria/Locativa/Explotación contratadas (límite 750.000 €/siniestro-año, 300.000 €/víctima, franquicia 300 €; excluidas RC Patronal, Productos y Trabajos en el Exterior), más asistencia, protección jurídica y cláusula de evento cibernético con exclusiones habituales. Recibo semestral (10/9/2026-28/2/2027): prima neta 246,23 €, recargos 0,76, arbitrio 6,16, IPS 20,19, consorcio 15,80, total 289,14 €, domiciliado en BBVA. Exclusiones generales típicas (guerra, dolo, desgaste, contaminación, pandemias, reciclaje de residuos, etc.) y cláusula de exclusión expresa de reciclaje/valorización de residuos dado el epígrafe de actividad. Firmado por tomador y aseguradora el 10/9/2026.",
+      "enlace": "https://drive.google.com/file/d/1guQNAYDuujFeMQTfVPik08QF40WzHAJ-/view?usp=drivesdk"
+    },
+    {
+      "polizaId": "woba_rc_suplemento_3_3",
+      "empresa": "WOBA",
+      "nombre": "BUSINESS ATELIER EUROPA, S.L.  023S00453RCG Condiciones Particulares.pdf",
+      "tipo": "Condiciones particulares (suplemento)",
+      "fechaDocumento": "2026-09-11",
+      "vigencia": "2026-04-17 → 2027-04-16",
+      "prima": "2.012,65 € (Prima Bruta Mínima y de Depósito); Prima Neta Mínima y de Depósito: 1.860,98 €; I.P.S. 8%: 148,88 €; R.C.C.S. 0,15%: 2,79 € EUR",
+      "capital": "600.000,00 €",
+      "resumen": "Tomador: BUSINESS ATELIER EUROPA, S.L.. Cobertura: RC General. Franquicia: General: 300,00 € por siniestro; RC Subsidiaria Vehículos Terrestres de Motor: 300,00 €; Daños a líneas y conducciones aéreas/subterráneas: 1.200,00 €; Participación en UTES: 300,00 €; Profesional de Empleados: 300,00 €; RC de Explotación: 300,00 €; Locativa: 300,00 €; RC Subsidiaria de Contratistas y Subcontratistas: 300,00 €; RC Post-Trabajos: 1.200,00 €; RC de Productos: 1.200,00 €; Daños a colindantes: 1.200,00 €; RC Cruzada: 300,00 € (todas por siniestro). Suplemento nº 3.3 de la póliza de RC General 023S00453RCG de Markel para Business Atelier Europa, S.L. (WOBA), con efecto desde el 10/09/2026 hasta vencimiento (periodo de seguro: 17/04/2026 a 16/04/2027). Cubre RC de Explotación, Patronal, Productos, Post-Trabajos, Locativa, Cruzada, Subsidiaria de Contratistas/Subcontratistas, Profesional de Empleados, daños a líneas/conducciones, daños a colindantes, participación en UTES y RC Subsidiaria de Vehículos Terrestres de Motor, con límite de 600.000 € por siniestro y anualidad (sublímites de 300.000 € en Locativa y para Profesional de Empleados/Patronal/Cruzada por víctima). Incluye Gastos de Defensa y Fianzas y Liberación de Gastos. Franquicias entre 300 € y 1.200 € por siniestro según cobertura. Actividad asegurada: consultoría y ejecución de proyectos audiovisuales, venta/instalación de equipos de sonido/video, representación de marcas, y participación/alquiler de equipos en eventos corporativos y sociales. Ámbito territorial y jurisdiccional: todo el mundo excepto USA/Canadá. Prima calculada según tasas del 0,58‰ (alquiler/explotación de pantallas, facturación base 200.000 €, prima neta mínima 1.052,32 €) y 1,08‰ (instaladores de electricidad/telecomunicaciones, base 500.000 €, prima neta mínima 808,67 €), resultando una Prima Bruta Mínima y de Depósito de 2.012,65 €, pagadera en 30 días desde la fecha de efecto bajo pena de cancelación (Art. 15 LCS). El tomador debe declarar la facturación del ejercicio cerrado dentro de los 30 días tras el fin del periodo para regularizar la prima. Incluye exclusiones de riesgos cibernéticos y fraude de suplantación de identidad. Lo no modificado por este suplemento permanece conforme a condiciones previas.",
+      "enlace": "https://drive.google.com/file/d/11C_5M2KEp5JYY5NfGnwFavWFqtZkvfQ5/view?usp=drivesdk"
+    }
+  ],
+  "vigilante": {
+    "ultimaRevision": {
+      "fecha": "2026-10-05T15:35:00.000Z",
+      "confirmados": 0,
+      "enTransito": [
+        "[WOBA] Responsabilidad civil general — suplemento (023S00453RCG (Suplemento 3.3)): -323,24 € el 05/10 en BBVA («N 2026275001954588 Markel Insurance SE ADEUDO A SU CARGO»)"
+      ],
+      "devoluciones": 0,
+      "cargosARevisar": 0,
+      "correosNuevos": 0,
+      "advertencias": []
+    },
+    "horarios": [
+      "08:35",
+      "17:35"
+    ]
+  }
+}

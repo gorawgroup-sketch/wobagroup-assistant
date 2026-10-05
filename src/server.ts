@@ -55,6 +55,7 @@ import {
 } from "../core/telegram/authorizedUsersSheet";
 import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/adminNotify";
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
+import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion, restaurarPendienteDesambiguacion, type PendienteDesambiguacion } from "../core/documental/disambiguationStore";
@@ -1744,6 +1745,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleAutorrepairCallback(callback);
     } else if (data.startsWith("escaladev_")) {
       await handleEscalacionCallback(callback);
+    } else if (data.startsWith("segcambio_")) {
+      await handleSegurosCambioCallback(callback);
     } else {
       await handleCallbackQuery(callback);
     }
