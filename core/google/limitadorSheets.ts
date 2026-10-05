@@ -156,6 +156,85 @@ function obtenerLimitadores(): Record<Tipo, LimitadorVentana> {
   return limitadores;
 }
 
+/**
+ * Medición de quién gasta la cuota (caso 2026-10-05: 429 sin saber qué los provocaba). Cada petición que sale a Sheets se
+ * anota con su pestaña y el módulo del proyecto que la hizo (sacado de la pila de llamadas), durante 10 minutos. Solo se
+ * consulta desde una ruta de administración protegida (`/admin/uso-sheets`): los nombres de pestañas no van a /health.
+ */
+const VENTANA_USO_MS = 10 * 60_000;
+
+/** Pestaña (o tipo de operación) de una URL de la API de Sheets, con la hoja abreviada. Nunca incluye valores de celdas. */
+export function clasificarPeticionSheets(url: string): { hoja: string; destino: string } {
+  try {
+    const u = new URL(url);
+    const m = u.pathname.match(/\/v4\/spreadsheets\/([^/:]+)(.*)$/);
+    if (!m) return { hoja: "?", destino: u.pathname.slice(0, 60) };
+    const hoja = m[1].slice(-4);
+    const resto = m[2];
+    const pestana = (rango: string) => decodeURIComponent(rango).replace(/^'|'$/g, "").split("!")[0].replace(/'$/, "");
+    if (resto.startsWith("/values/")) return { hoja, destino: pestana(resto.slice("/values/".length).split(":append")[0].split(":clear")[0]) };
+    if (resto.startsWith("/values:batchGet")) {
+      const tabs = [...new Set(u.searchParams.getAll("ranges").map(pestana))];
+      return { hoja, destino: `batchGet[${tabs.join(",")}]`.slice(0, 120) };
+    }
+    return { hoja, destino: resto === "" ? "metadatos" : resto.replace(/^[/:]/, "").slice(0, 40) };
+  } catch {
+    return { hoja: "?", destino: "?" };
+  }
+}
+
+/** Primer módulo del proyecto (core/, src/, modules/) en una pila de llamadas, ignorando la capa de transporte de Sheets. */
+export function origenDesdePila(pila: string): string {
+  for (const linea of pila.split("\n")) {
+    if (linea.includes("node_modules")) continue; // librerías (gaxios, googleapis): el origen es el código del proyecto
+    const m = linea.match(/((?:core|src|modules)\/[^\s:()]+?)\.(?:js|ts)/);
+    if (!m) continue;
+    if (/limitadorSheets|sheetsReadRetry|sheetsClient|globalOptions|sheetsMetadataCache/.test(m[1])) continue;
+    return m[1];
+  }
+  return "(sin origen)";
+}
+
+interface UsoSheets { tipo: Tipo; prioridad: PrioridadSheets; hoja: string; destino: string; origen: string; en: number[] }
+const usoSheets = new Map<string, UsoSheets>();
+
+function anotarUsoSheets(tipo: Tipo, prioridad: PrioridadSheets, url: string, ahora = Date.now()): void {
+  const { hoja, destino } = clasificarPeticionSheets(url);
+  // La pila por defecto (10 marcos) se agota dentro de gaxios/googleapis antes de llegar al código del proyecto.
+  const limitePrevio = Error.stackTraceLimit;
+  Error.stackTraceLimit = 60;
+  const pila = new Error().stack ?? "";
+  Error.stackTraceLimit = limitePrevio;
+  const origen = origenDesdePila(pila);
+  const clave = `${tipo}|${prioridad}|${hoja}|${destino}|${origen}`;
+  const registro = usoSheets.get(clave) ?? { tipo, prioridad, hoja, destino, origen, en: [] };
+  registro.en.push(ahora);
+  usoSheets.set(clave, registro);
+  // Poda: se descartan marcas antiguas y claves vacías para que el mapa no crezca sin límite.
+  const limite = ahora - VENTANA_USO_MS;
+  if (registro.en.length > 200 || usoSheets.size > 300) {
+    for (const [k, r] of usoSheets) {
+      while (r.en.length > 0 && r.en[0] <= limite) r.en.shift();
+      if (r.en.length === 0) usoSheets.delete(k);
+    }
+  }
+}
+
+/** Uso de Sheets de los últimos 10 min agrupado por pestaña y módulo, de mayor a menor (para /admin/uso-sheets). */
+export function usoSheetsReciente(ahora = Date.now(), maximo = 40) {
+  const limite = ahora - VENTANA_USO_MS;
+  const filas = [...usoSheets.values()]
+    .map((r) => ({ tipo: r.tipo, prioridad: r.prioridad, hoja: r.hoja, destino: r.destino, origen: r.origen, peticiones: r.en.filter((t) => t > limite).length }))
+    .filter((f) => f.peticiones > 0)
+    .sort((a, b) => b.peticiones - a.peticiones);
+  return {
+    ventanaMinutos: VENTANA_USO_MS / 60_000,
+    total: filas.reduce((suma, f) => suma + f.peticiones, 0),
+    porTipo: { lectura: filas.filter((f) => f.tipo === "lectura").reduce((s, f) => s + f.peticiones, 0), escritura: filas.filter((f) => f.tipo === "escritura").reduce((s, f) => s + f.peticiones, 0) },
+    mayores: filas.slice(0, maximo),
+  };
+}
+
 /** Contadores agregados para diagnóstico (sin datos ni nombres de pestañas). */
 export function estadoLimitadorSheets() {
   const l = obtenerLimitadores();
@@ -198,6 +277,7 @@ export function crearAdaptadorSheetsConCuota(opciones: OpcionesAdaptador = {}) {
 
     for (let intento = 0; ; intento++) {
       await limitador.adquirir(prioridad, cancelacion);
+      anotarUsoSheets(tipo, prioridad, String(peticion.url ?? ""));
       // El timeout empieza cuando la petición sale de verdad, no mientras esperaba su turno: el
       // reloj que trae `signal` arrancó antes de entrar en la cola.
       const senales = [cancelacion, peticion.timeout ? AbortSignal.timeout(peticion.timeout) : peticion.signal].filter((s): s is AbortSignal => Boolean(s));
