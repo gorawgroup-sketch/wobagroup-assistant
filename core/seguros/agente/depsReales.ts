@@ -15,7 +15,8 @@ import { searchDriveFilesAllRoots } from "../../drive/client";
 import { ROOT_FOLDERS } from "../../drive/rootFolders";
 import { buscarMensajes, obtenerCuerpoCompletoCorreo, obtenerResumenCorreo } from "../../gmail/client";
 import { listBankMovements, listTreasuryAccounts, type Empresa } from "../../holded/client";
-import { obtenerAdmins } from "../../telegram/authorizedUsersSheet";
+import { sendTelegramMessageWithButtons } from "../../telegram/client";
+import { obtenerRolUsuario } from "../../telegram/authorizedUsersSheet";
 import { descargarArchivoDrive } from "../../drive/client";
 import { esFormatoVisual, extraerTextoDeterminista } from "../../documental/extractReadableText";
 import { transcribirParaCaptura } from "../../documental/transcribeForCapture";
@@ -30,6 +31,7 @@ import { leerMovimientosBancarios } from "../vigilante/lecturaBancaria";
 import { EMPRESAS_VIGILADAS } from "../vigilante/tipos";
 import { ejecutarVigilanteSeguros } from "../vigilante/vigilante";
 import { PROCESO_IA_AGENTE, resolverModeloAgente, type DepsConsulta } from "./agente";
+import { almacenCambiosReal, type DepsAplicar } from "./cambiosPendientes";
 import { almacenConocimientoReal } from "./conocimiento";
 import { almacenTextosReal, textoDeDocumento, type LectorDocumentos } from "./textosStore";
 
@@ -63,11 +65,25 @@ const lectorReal: LectorDocumentos = {
   },
 };
 
-export function depsRealesAgente(): DepsConsulta {
+/** Lo que necesita aplicar un cambio aprobado: el registro, la memoria y el refresco de Cerebro. */
+export function depsAplicarReales(): DepsAplicar {
   return {
     hoy,
     listarPolizas,
     actualizarPoliza,
+    conocimiento: almacenConocimientoReal,
+    invalidarCerebro: () => {
+      invalidarComplementosSeguros();
+      invalidarEstadoCerebro(["seguros"]);
+      publicarCambioCerebro("seguros:agente");
+    },
+  };
+}
+
+export function depsRealesAgente(): DepsConsulta {
+  return {
+    hoy,
+    listarPolizas,
     listarDocumentos: listarDocumentosPoliza,
     buscarDocumentosDrive: async (consulta, empresa) => {
       const raices = empresa && ROOT_FOLDERS[empresa] ? { [empresa]: ROOT_FOLDERS[empresa] } : ROOT_FOLDERS;
@@ -97,19 +113,36 @@ export function depsRealesAgente(): DepsConsulta {
     },
     correosRecientes: (dias) => leerCorreosDeSeguros(restarDias(hoy(), dias), { buscarMensajes, obtenerResumenCorreo }),
     cuerpoCorreo: obtenerCuerpoCompletoCorreo,
-    revisarAhora: async () => {
-      const resultado = await ejecutarVigilanteSeguros(fuentesRealesVigilante());
+    revisarAhora: async (puedeActuar) => {
+      const reales = fuentesRealesVigilante();
+      if (!puedeActuar) {
+        // Consulta: ni escribe en el registro ni marca nada como avisado (quien pregunta sin permiso no puede cambiar datos ni consumir los avisos de Carlos).
+        const consulta = { ...reales, actualizarPoliza: async () => {}, guardarEstado: async () => {}, borrarEstado: async () => {}, purgarCorreosVistos: async () => 0, invalidarCerebro: () => {} };
+        return (await ejecutarVigilanteSeguros(consulta, { aplicar: false })).respuestaChat;
+      }
+      const resultado = await ejecutarVigilanteSeguros(reales);
       // Lo que se cuenta aquí ya lo ha visto la persona: no se vuelve a avisar por Telegram.
       await guardarEstadoVigilante(resultado.clavesAvisadas).catch((e) => console.error("[agenteSeguros] No se pudo marcar lo avisado (no crítico):", e));
       return resultado.respuestaChat;
     },
     conocimiento: almacenConocimientoReal,
-    invalidarCerebro: () => {
-      invalidarComplementosSeguros();
-      invalidarEstadoCerebro(["seguros"]);
-      publicarCambioCerebro("seguros:agente");
+    proponerCambio: async (chatId, propuesta) => {
+      const cambio = await almacenCambiosReal.crear({ chatId, accion: propuesta.accion, datos: JSON.stringify(propuesta.datos), cita: propuesta.cita });
+      let messageId: number;
+      try {
+        messageId = await sendTelegramMessageWithButtons(chatId, propuesta.texto, [[
+          { text: "✅ Aplicar", callback_data: `segcambio_aplicar:${cambio.id}` },
+          { text: "❌ Cancelar", callback_data: `segcambio_cancelar:${cambio.id}` },
+        ]]);
+      } catch (error) {
+        // Sin mensaje no hay botón que la decida: no se deja una propuesta huérfana en la hoja.
+        await almacenCambiosReal.consumir(cambio.id).catch(() => undefined);
+        throw error;
+      }
+      await almacenCambiosReal.actualizarMessageId(cambio.id, messageId);
     },
-    esAdministrador: async (chatId) => (chatId != null ? (await obtenerAdmins()).some((a) => a.userId === chatId) : false),
+    // Solo un superadministrador en un chat privado de Telegram: es quien puede aprobar el botón (ACCIONES_SENSIBLES).
+    puedeProponer: async (chatId) => chatId != null && chatId > 0 && (await obtenerRolUsuario(chatId)) === "superadmin",
     crearMensaje: (chatId) => {
       const ejecucion = crearEjecucionIA(PROCESO_IA_AGENTE);
       return (params) => crearMensajeAnthropic(cliente(), ejecucion, params, chatId);

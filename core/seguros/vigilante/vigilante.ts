@@ -323,7 +323,7 @@ export async function ejecutarVigilanteSeguros(
     hoy,
     contenido,
     informe: construirInforme(contenido),
-    respuestaChat: construirRespuestaChat(contenidoCompleto),
+    respuestaChat: construirRespuestaChat(contenidoCompleto, !aplicar),
     clavesAvisadas,
     pendienteEnvio,
     escribioRegistro,
