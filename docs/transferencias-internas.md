@@ -115,15 +115,24 @@ movimientos conciliados, el cobro y el pago conciliados y un único asiento nuev
 
 ### Estado de la validación
 
-Pendiente la **prueba controlada** del método vigente con el mismo par WOBA de 350 € (01/10, Main → BBVA). La pantalla y los
-documentos que deja «Transferir» están leídos de Holded real; el clic del robot aún no se ha ejecutado en producción.
+**Validado por Carlos el 05-10-2026** con la prueba WOBA 01/10, Main → BBVA, 350 €: los dos movimientos conciliados, cobro
+y pago conciliados y un único asiento tipo «Cobro» (debe 57200001 / haber 57200015), revisado por él en Holded.
+
+Desde entonces, con `WOBI_TRANSFERENCIAS_MODO=activo` y `WOBI_TRANSFERENCIAS_ALCANCE=eur`, cualquier transferencia EUR↔EUR
+inequívoca se ejecuta al pulsar su botón, sin autorización escrita pareja a pareja. Las conversiones se proponen sin botón
+de conciliar.
+
+### Carril propio
+
+La ejecución corre en segundo plano y en su propia cola (una transferencia cada vez, en el orden en que se pulsaron): el
+chat queda libre para correos, gastos y otras conciliaciones. El navegador del robot es único: si lo ocupa la sincronización
+de bancos o la conversión de tickets, la transferencia espera su turno (hasta ~6 min) y, si no lo consigue, queda disponible
+sin haber escrito nada. Un despliegue en mitad de una transferencia la deja «a medias»: al pedir de nuevo la revisión se
+ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Prueba controlada**: un único par EUR↔EUR pequeño e inequívoco. Si cualquier verificación falla, se detiene y no se
-   prueba otro par.
-2. **Resto de transferencias en la misma moneda**, una vez validada la prueba.
-3. **Conversiones de moneda** (EUR↔USD): «Transferir» también las admite (Holded valora el movimiento en EUR y el cobro
+1. **Conversiones de moneda** (EUR↔USD): «Transferir» también las admite (Holded valora el movimiento en EUR y el cobro
    o pago de la otra cuenta queda con un resto pequeño por la diferencia de cambio). Falta decidir con una conversión real
    cómo se cierra ese resto. El ejecutor las rechaza hasta entonces.
-4. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
+2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.

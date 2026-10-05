@@ -68,7 +68,8 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
       const registro = registroDesdePropuesta(p);
       const bloqueada = p.confianza === "bloqueada";
       await guardarRegistro(registro);
-      const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada }));
+      // Las conversiones de moneda todavía no se ejecutan: se proponen sin el botón de conciliar.
+      const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && p.tipo !== "conversion" }));
       await guardarRegistro({ ...registro, estado: bloqueada ? "ambigua" : "propuesta", chatId, messageId });
       publicadas++;
     }
@@ -128,11 +129,21 @@ export async function handleTransferenciasCallback(callback: TelegramCallbackQue
     await republicar(registro, `🔁 ${resumenRegistro(registro)}\nSigue pendiente. Solo se ejecutan las parejas autorizadas por escrito.\nReferencia para autorizarla: ${registro.clave}`, {});
     return;
   }
-  await responder(callback, soloVerificacion ? "Verificando..." : "Conciliando...");
-  await cerrarMensaje(`🔄 ${soloVerificacion ? "Verificando" : "Conciliando la transferencia"} — ${resumenRegistro(registro)}...`);
+  await responder(callback, soloVerificacion ? "Verificando..." : "En cola para conciliar...");
+  await cerrarMensaje(`🔄 ${soloVerificacion ? "Verificando" : "Conciliando la transferencia"} — ${resumenRegistro(registro)}...\nTarda 1–3 minutos (más si hay otras en cola). Puedes seguir usando Wobi mientras tanto; te aviso aquí al terminar.`);
+  // Carril propio: la ejecución sigue en segundo plano y el chat queda libre para correos, gastos y otras conciliaciones.
+  // Las transferencias se atienden de una en una, en el orden en que se pulsaron; el estado se relee dentro.
+  void ejecutarEnSuCarril(registro, cerrarMensaje, republicar).catch((e) =>
+    console.error("[transferencias] Fallo inesperado en el carril de ejecución:", e instanceof Error ? e.message : e));
+}
+
+async function ejecutarEnSuCarril(
+  registro: RegistroTransferencia,
+  cerrarMensaje: (texto: string) => Promise<unknown>,
+  republicar: (r: RegistroTransferencia, texto: string, opciones: Parameters<typeof botonesPropuesta>[1]) => Promise<void>
+): Promise<void> {
   try {
-    // Un doble toque no puede lanzar dos ejecuciones: se serializa por pareja y el estado se relee dentro.
-    const resultado = await conMutex(`transferencia:${registro.clave}`, async () => {
+    const resultado = await conMutex("transferencias:ejecucion", async () => {
       const actual = (await obtenerRegistroPorId(registro.id)) ?? registro;
       // Escribir exige el modo activo y la autorización escrita de la pareja; sin ella el ejecutor solo lee e informa.
       const opciones = { permitirEscritura: ejecucionAutorizada(actual.clave) };

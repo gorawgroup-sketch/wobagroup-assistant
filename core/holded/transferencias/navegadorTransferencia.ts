@@ -29,6 +29,8 @@ export interface OrdenTransferir {
   importe: number;
 }
 
+const ESPERAS_NAVEGADOR_OCUPADO = 24;
+
 /** `pulsado` = se llegó a pulsar «Transferir y conciliar»: a partir de ahí el resultado solo se conoce leyendo Holded. */
 export type ResultadoTransferir = ResultadoNavegador & { pulsado: boolean };
 
@@ -161,10 +163,12 @@ async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransfe
 export async function transferirMovimientoEnHolded(empresa: Empresa, orden: OrdenTransferir): Promise<ResultadoTransferir> {
   let pulsado = false;
   let resultado: ResultadoNavegador = { estado: "error", detalle: "sin intentos" };
-  for (let intento = 1; intento <= 2 && !pulsado; intento++) {
+  const ocupado = () => /Ya hay una acción de navegador/.test(resultado.detalle ?? "");
+  for (let intento = 1, esperas = 0; intento <= 2 && !pulsado; intento++) {
     resultado = await conPagina(empresa, (page) => flujoTransferir(page, empresa, orden, (valor) => { pulsado = valor; }), 240_000);
     if (resultado.estado === "ok" || resultado.estado === "sesion_caducada" || resultado.estado === "requiere_verificacion" || resultado.estado === "no_disponible") break;
-    if (/Ya hay una acción de navegador/.test(resultado.detalle ?? "")) break;
+    // El navegador es único: si lo ocupa la sincronización de bancos o la conversión de tickets, se espera el turno (hasta ~6 min).
+    if (ocupado()) { if (++esperas > ESPERAS_NAVEGADOR_OCUPADO) break; await pausa(15_000); intento--; continue; }
     if (!pulsado && intento < 2) await pausa(4000);
   }
   return { ...resultado, pulsado } as ResultadoTransferir;
