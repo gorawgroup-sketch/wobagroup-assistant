@@ -19,6 +19,10 @@ export interface DatosInformeReintegro {
   gastos: GastoEtiquetado[];
   cobertura: CoberturaBusqueda;
   emitido?: Date;
+  /** Informe solo con lo pagado en bancos: sin la tarjeta, columna ni sección de «sin pagar». */
+  soloPagados?: boolean;
+  /** Proveedores excluidos a petición (se cobran por separado), tal como los dijo el operador; solo para la nota. */
+  exclusiones?: string[];
 }
 
 const ETIQUETAS_CATEGORIA: Array<[RegExp, string]> = [
@@ -166,12 +170,18 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
   y += 62;
 
   // ---------- tres totales ----------
-  const tarjetas: Array<[string, string, string, string]> = [
-    ["PAGADO EN BANCOS", importe(resumen.totalPagado, m), `${resumen.pagados.length} gasto(s)`, COLOR.verde],
-    ["SIN PAGAR EN BANCOS", importe(resumen.totalSinPagar, m), `${resumen.sinPagar.length} gasto(s)`, COLOR.ambar],
-    ["TOTAL A REINTEGRAR", importe(resumen.total, m), `${resumen.pagados.length + resumen.sinPagar.length} gasto(s)`, marca.acento],
-  ];
-  const anchoTarjeta = (ancho - 20) / 3;
+  const soloPagados = datos.soloPagados === true;
+  const tarjetas: Array<[string, string, string, string]> = soloPagados
+    ? [
+      ["PAGADO EN BANCOS", importe(resumen.totalPagado, m), `${resumen.pagados.length} gasto(s)`, COLOR.verde],
+      ["TOTAL A REINTEGRAR", importe(resumen.total, m), `${resumen.pagados.length} gasto(s)`, marca.acento],
+    ]
+    : [
+      ["PAGADO EN BANCOS", importe(resumen.totalPagado, m), `${resumen.pagados.length} gasto(s)`, COLOR.verde],
+      ["SIN PAGAR EN BANCOS", importe(resumen.totalSinPagar, m), `${resumen.sinPagar.length} gasto(s)`, COLOR.ambar],
+      ["TOTAL A REINTEGRAR", importe(resumen.total, m), `${resumen.pagados.length + resumen.sinPagar.length} gasto(s)`, marca.acento],
+    ];
+  const anchoTarjeta = (ancho - 10 * (tarjetas.length - 1)) / tarjetas.length;
   tarjetas.forEach(([titulo, valor, detalle, color], i) => {
     const x = MARGEN + i * (anchoTarjeta + 10);
     doc.roundedRect(x, y, anchoTarjeta, 64, 5).fill(COLOR.fondo);
@@ -193,8 +203,8 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
 
   // ---------- resumen por categoría ----------
   titulo("Resumen por categoría");
-  const colsCat = [200, 60, 85, 85, 85];
-  const cabeceraCat = ["Categoría", "Gastos", "Pagado", "Sin pagar", "Total"];
+  const colsCat = soloPagados ? [275, 80, 160] : [200, 60, 85, 85, 85];
+  const cabeceraCat = soloPagados ? ["Categoría", "Gastos", "Total"] : ["Categoría", "Gastos", "Pagado", "Sin pagar", "Total"];
   const filaCat = (celdas: string[], negrita: boolean) => {
     let x = MARGEN;
     celdas.forEach((c, i) => {
@@ -206,10 +216,14 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
   };
   doc.rect(MARGEN, y - 3, ancho, 16).fill(COLOR.fondo);
   filaCat(cabeceraCat, true);
-  for (const c of resumen.porCategoria) filaCat([c.categoria, String(c.cantidad), importe(c.pagado, m), importe(c.sinPagar, m), importe(c.total, m)], false);
+  for (const c of resumen.porCategoria) {
+    filaCat(soloPagados ? [c.categoria, String(c.cantidad), importe(c.total, m)] : [c.categoria, String(c.cantidad), importe(c.pagado, m), importe(c.sinPagar, m), importe(c.total, m)], false);
+  }
   doc.moveTo(MARGEN, y - 2).lineTo(MARGEN + ancho, y - 2).lineWidth(0.6).strokeColor(COLOR.linea).stroke();
   y += 2;
-  filaCat(["Total", String(resumen.pagados.length + resumen.sinPagar.length), importe(resumen.totalPagado, m), importe(resumen.totalSinPagar, m), importe(resumen.total, m)], true);
+  filaCat(soloPagados
+    ? ["Total", String(resumen.pagados.length), importe(resumen.total, m)]
+    : ["Total", String(resumen.pagados.length + resumen.sinPagar.length), importe(resumen.totalPagado, m), importe(resumen.totalSinPagar, m), importe(resumen.total, m)], true);
   y += 12;
 
   // ---------- tablas de detalle ----------
@@ -268,8 +282,9 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
     { titulo: "Importe", ancho: 62, alinear: "right", valor: (g) => importe(g.total, g.moneda) },
   ], resumen.pagados, `Total pagado en bancos: ${importe(resumen.pagados.reduce((s, g) => s + g.total, 0), m)}`);
 
-  titulo(`2. Gastos sin pagar en bancos (${resumen.sinPagar.length})`);
-  if (resumen.sinPagar.length === 0) { doc.font("Helvetica").fontSize(9).fillColor(COLOR.gris).text("Todos los gastos del periodo están pagados.", MARGEN, y); y += 22; }
+  if (!soloPagados) titulo(`2. Gastos sin pagar en bancos (${resumen.sinPagar.length})`);
+  if (soloPagados) { /* sin sección de «sin pagar» */ }
+  else if (resumen.sinPagar.length === 0) { doc.font("Helvetica").fontSize(9).fillColor(COLOR.gris).text("Todos los gastos del periodo están pagados.", MARGEN, y); y += 22; }
   else tabla([
     numerar(resumen.sinPagar, resumen.pagados.length + 1), ...base.slice(1),
     { titulo: "Situación", ancho: 88, valor: (g) => g.estado === "parcial" ? `Pago parcial; pendiente ${importe(g.pendiente, g.moneda)}` : "Registrado; sin cargo en banco" },
@@ -281,12 +296,17 @@ export async function generarInformeReintegroPDF(datos: DatosInformeReintegro): 
   doc.roundedRect(MARGEN, y, ancho, 58, 5).fill(marca.oscuro);
   doc.rect(MARGEN, y, 5, 58).fill(marca.acento);
   doc.font("Helvetica").fontSize(9).fillColor(marca.suave)
-    .text(`Pagado en bancos  ${importe(resumen.totalPagado, m)}      Sin pagar en bancos  ${importe(resumen.totalSinPagar, m)}`, MARGEN + 16, y + 12);
+    .text(soloPagados
+      ? `${resumen.pagados.length} gasto(s) pagados en bancos`
+      : `Pagado en bancos  ${importe(resumen.totalPagado, m)}      Sin pagar en bancos  ${importe(resumen.totalSinPagar, m)}`, MARGEN + 16, y + 12);
   doc.font("Helvetica-Bold").fontSize(15).fillColor("#FFFFFF").text(`TOTAL A REINTEGRAR  ${importe(resumen.total, m)}`, MARGEN + 16, y + 30);
   y += 72;
 
   const notas = [
-    "Criterio: «pagado en bancos» es el gasto que Holded tiene sin saldo pendiente y con el pago registrado desde una cuenta bancaria; «sin pagar en bancos» es el gasto registrado cuyo cargo todavía no consta.",
+    soloPagados
+      ? "Criterio: este informe incluye únicamente los gastos pagados en bancos: los que Holded tiene sin saldo pendiente y con el pago registrado desde una cuenta bancaria."
+      : "Criterio: «pagado en bancos» es el gasto que Holded tiene sin saldo pendiente y con el pago registrado desde una cuenta bancaria; «sin pagar en bancos» es el gasto registrado cuyo cargo todavía no consta.",
+    ...(datos.exclusiones && datos.exclusiones.length > 0 ? [`No incluye: ${datos.exclusiones.join(", ")} (se cobra por separado).`] : []),
     `Alcance: gastos con una etiqueta de la persona (#${datos.etiqueta} y sus variantes) con fecha dentro del periodo. Se revisaron ${datos.cobertura.facturasListadas} factura(s) del periodo y ${datos.cobertura.comprasPropiasLeidas} gasto(s) registrado(s) por el asistente (incluye tickets).` +
       (datos.cobertura.lecturasFallidas > 0 ? ` ${datos.cobertura.lecturasFallidas} registro(s) no se pudieron leer en Holded y podrían faltar.` : "") +
       " Un ticket introducido a mano en Holded, fuera del asistente, puede no figurar.",
