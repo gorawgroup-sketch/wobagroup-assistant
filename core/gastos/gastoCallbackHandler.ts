@@ -1205,6 +1205,17 @@ async function conciliarContraMovimientoEspecifico(
   }
 }
 
+/** Solo lectura: ¿hay ahora algún cargo libre (exacto, por confirmar o aproximado por nombre) para este gasto? Lanza si Holded falla. */
+async function hayCargoLibreParaConciliar(
+  empresa: Empresa,
+  gasto: { monto: number; fecha: string; moneda: string; proveedor: string }
+): Promise<boolean> {
+  const similares = await buscarMovimientoSimilar(empresa, { ...gasto, incluirPorConfirmar: true });
+  if (similares.length > 0) return true;
+  if (!gasto.proveedor || esProveedorNoIdentificado(gasto.proveedor)) return false;
+  return (await buscarMovimientoAproximado(empresa, gasto)).length > 0;
+}
+
 /**
  * Manda el mensaje de seguimiento preguntando si conciliar el movimiento
  * bancario — solo se usa cuando NO se confirmó un movimiento coincidente
@@ -1265,14 +1276,34 @@ async function preguntarSiConciliar(
     const avisoConsulta = consultaParcial.tipo === "consulta_fallida"
       ? "\n\n⚠️ No pude consultar ahora el banco para ver si hay una parte de este recibo ya cobrada; si crees que la hay, pídemelo de nuevo en unos minutos."
       : "";
-    const texto = ofertaParcial
+    // Preguntar «¿quieres que intente conciliar?» justo después de decir que no hay cargo en el banco es contradictorio
+    // (caso real Iberdrola, Carlos, 05-10-2026). Se mira el banco ahora: si no hay ningún cargo libre que coincida, se dice
+    // que queda sin conciliar y se ofrece volver a buscar cuando aparezca. Si la consulta falla, se deja la pregunta de siempre.
+    let sinCargoAhora = false;
+    if (!ofertaParcial && !soloVerificar && previa === "nueva" && consultaParcial.tipo !== "consulta_fallida") {
+      try {
+        sinCargoAhora = !(await hayCargoLibreParaConciliar(empresa, { monto, fecha, moneda, proveedor }));
+      } catch (error) {
+        // Un fallo de Holded no es «no hay cargo»: se conserva la pregunta normal.
+        console.error("[gastoCallbackHandler] No pude mirar el banco antes de preguntar la conciliación:", error instanceof Error ? error.message : error);
+      }
+    }
+    const texto = sinCargoAhora
+      ? `💳 "${descripcionGasto}" queda creado sin conciliar: ahora mismo no hay en el banco ningún cargo libre que coincida. ` +
+        "Cuando el cargo aparezca (con el banco sincronizado), pulsa «Buscar el cargo de nuevo»."
+      : ofertaParcial
       ? textoOfertaParcial(ofertaParcial, { empresa, proveedor, monto, moneda, fecha }, descripcionGasto)
       : soloVerificar
       ? (previa === "revision"
           ? `⚠️ "${descripcionGasto}" ya tiene pagos aplicados y su conciliación requiere revisión. No se buscarán otros cargos ni se añadirán pagos; verificar solo relee el resultado anterior.`
           : `⏳ La conciliación de "${descripcionGasto}" se aplicó pero Holded no la confirmó todavía. No se buscarán otros cargos ni se repetirá nada; verificar solo relee compra y banco.`)
       : `¿Quieres que intente conciliar el movimiento bancario correspondiente a "${descripcionGasto}"?${avisoConsulta}`;
-    const botones = ofertaParcial
+    const botones = sinCargoAhora
+      ? [[
+          { text: "🔎 Buscar el cargo de nuevo", callback_data: `gasto_conciliar_si:${pendiente.id}` },
+          { text: "❌ Dejar sin conciliar", callback_data: `gasto_conciliar_no:${pendiente.id}` },
+        ]]
+      : ofertaParcial
       ? botonesOfertaParcial(pendiente.id, ofertaParcial, { monto, moneda })
       : soloVerificar
       ? [[{ text: "🔎 Verificar resultado anterior", callback_data: `gasto_conciliar_si:${pendiente.id}:lectura` }]]
