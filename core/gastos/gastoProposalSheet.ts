@@ -701,21 +701,52 @@ export async function actualizarMonedaPropuestaGasto(id: string, nuevaMoneda: st
  * — puramente estado de UI, no dispara nada por sí sola. No consume la
  * propuesta (mismo criterio que actualizarMontoPropuestaGasto).
  */
-export async function actualizarSeleccionAccionesGasto(id: string, acciones: string[]): Promise<boolean> {
-  const todas = await leerTodas();
-  const match = todas.find(({ propuesta }) => propuesta.id === id);
-  if (!match) return false;
+/**
+ * Pone en fila, POR PROPUESTA, todo lo que lee o escribe su selección de acciones (marcar una casilla, «Aprobar selección»,
+ * limpiar tras aplicar). Caso real 2026-10-05 (Rappi, Footprint): con Sheets devolviendo 429 las lecturas tardaron 20 s; la
+ * casilla «Crear y conciliar» y «Aprobar selección» (5 s después) se procesaron en paralelo, la aprobación leyó la selección
+ * vacía antes de que la casilla terminara de guardarse y respondió «No marcaste ninguna acción». Con la cola, la aprobación
+ * siempre lee DESPUÉS de las casillas que llegaron antes.
+ */
+export function conSeleccionGasto<T>(id: string, tarea: () => Promise<T>): Promise<T> {
+  return conMutex(`gasto-seleccion:${id}`, tarea);
+}
 
-  const sheetId = assertSheetId();
-  const sheets = getClient();
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `${TAB_NAME}!W${match.rowIndex}`,
+async function escribirSeleccion(rowIndex: number, acciones: string[]): Promise<void> {
+  await getClient().spreadsheets.values.update({
+    spreadsheetId: assertSheetId(),
+    range: `${TAB_NAME}!W${rowIndex}`,
     valueInputOption: "RAW",
     requestBody: { values: [[acciones.length > 0 ? JSON.stringify(acciones) : ""]] },
   });
-  return true;
+}
+
+export async function actualizarSeleccionAccionesGasto(id: string, acciones: string[]): Promise<boolean> {
+  // Orden de candados: selección de la propuesta → hoja. Un borrado de fila (consumirPropuestaGasto) no puede desplazar la
+  // fila entre la lectura y la escritura.
+  return conSeleccionGasto(id, () => conMutex(TAB_NAME, async () => {
+    const match = (await leerTodas()).find(({ propuesta }) => propuesta.id === id);
+    if (!match) return false;
+    await escribirSeleccion(match.rowIndex, acciones);
+    return true;
+  }));
+}
+
+/**
+ * Lee la selección actual, calcula la nueva con `transformar` y la guarda: UNA sola lectura de la hoja (antes eran dos, una
+ * para leer la selección y otra para ubicar la fila) y todo bajo la cola de la propuesta. undefined si la propuesta ya no existe.
+ */
+export async function modificarSeleccionAccionesGasto(
+  id: string,
+  transformar: (actual: string[]) => string[]
+): Promise<{ propuesta: PropuestaGasto; seleccion: string[] } | undefined> {
+  return conSeleccionGasto(id, () => conMutex(TAB_NAME, async () => {
+    const match = (await leerTodas()).find(({ propuesta }) => propuesta.id === id);
+    if (!match) return undefined;
+    const seleccion = transformar(match.propuesta.seleccionAcciones ?? []);
+    await escribirSeleccion(match.rowIndex, seleccion);
+    return { propuesta: match.propuesta, seleccion };
+  }));
 }
 
 /**
