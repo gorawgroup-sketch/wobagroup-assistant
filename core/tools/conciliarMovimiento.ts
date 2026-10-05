@@ -1,4 +1,6 @@
-import { buscarGastoSimilar } from "../holded/write";
+import { buscarGastoSimilar, obtenerCompraHoldedPorId } from "../holded/write";
+import { listBankMovements } from "../holded/client";
+import { evaluarParElegido, numeroHolded } from "../gastos/parConciliacionElegida";
 import { guardarConciliacionPendiente, obtenerConciliacionesPendientesPorChat, TTL_MS } from "../gastos/conciliacionPendienteStore";
 import { sendTelegramMessageWithButtons } from "../telegram/client";
 import type { Empresa } from "../holded/client";
@@ -41,7 +43,12 @@ export const conciliarMovimientoTool: ToolDefinition = {
     "su cuenta y, si es un match único y claro, manda la pregunta. Si hay varios gastos parecidos, NUNCA " +
     "elige solo — te dice exactamente cuáles encontró para que confirmes cuál es. Si en cambio piden " +
     "'conciliar/verificar el cashflow' de forma general (sin un gasto puntual en mente), esa es otra " +
-    "pregunta — usa verificar_cashflow_actualizado.",
+    "pregunta — usa verificar_cashflow_actualizado. " +
+    "TICKETS y gastos que no aparecen en el listado de compras (los que devuelve buscar_gastos_por_etiqueta_holded, " +
+    "con su [id]): pasa `gasto_id` y se lee la compra directamente por id. Si el usuario YA identificó el par " +
+    "(«concilia Transavia con Air France, es el mismo gasto»), pasa también `cuenta_id` y `movimiento_id` del cargo " +
+    "(los da consultar_movimientos_sin_conciliar): se valida el par y se manda la pregunta «Conciliar con #1», aunque " +
+    "el nombre, la fecha o la moneda del cargo sean distintos; al confirmar, el sistema alinea la moneda, concilia y aprende el par.",
   input_schema: {
     type: "object",
     properties: {
@@ -53,8 +60,12 @@ export const conciliarMovimientoTool: ToolDefinition = {
       monto: { type: "number", description: "Importe del gasto." },
       fecha: { type: "string", description: "Fecha del gasto en formato YYYY-MM-DD." },
       moneda: { type: "string", description: "Código de moneda, ej. EUR, USD. Opcional, por defecto EUR." },
+      gasto_id: { type: "string", description: "Id de la compra/ticket en Holded (el [id] que devuelven las consultas). Con él no hacen falta proveedor, monto ni fecha." },
+      cuenta_id: { type: "string", description: "Con movimiento_id: id de la cuenta bancaria del cargo elegido por el usuario." },
+      movimiento_id: { type: "string", description: "Con cuenta_id: id del movimiento bancario que el usuario dice que corresponde a este gasto." },
+      fecha_movimiento: { type: "string", description: "YYYY-MM-DD del cargo (opcional; ayuda a localizarlo si difiere de la fecha del gasto)." },
     },
-    required: ["empresa", "proveedor", "monto", "fecha"],
+    required: ["empresa"],
   },
   handler: async (input, context) => {
     const chatId = context?.chatId;
@@ -67,34 +78,96 @@ export const conciliarMovimientoTool: ToolDefinition = {
       return "Error: 'empresa' debe ser WOBA, EWORKS o Footprint.";
     }
 
-    const proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : "";
+    let proveedor = typeof input.proveedor === "string" ? input.proveedor.trim() : "";
     const monto = typeof input.monto === "number" ? input.monto : NaN;
     const fecha = typeof input.fecha === "string" ? input.fecha.trim() : "";
-    const moneda = typeof input.moneda === "string" && input.moneda.trim() ? input.moneda.trim().toUpperCase() : "EUR";
+    let moneda = typeof input.moneda === "string" && input.moneda.trim() ? input.moneda.trim().toUpperCase() : "EUR";
+    const gastoId = typeof input.gasto_id === "string" ? input.gasto_id.trim() : "";
+    const cuentaId = typeof input.cuenta_id === "string" ? input.cuenta_id.trim() : "";
+    const movimientoId = typeof input.movimiento_id === "string" ? input.movimiento_id.trim() : "";
+    const fechaMovimiento = typeof input.fecha_movimiento === "string" ? input.fecha_movimiento.trim() : "";
 
-    if (!proveedor || !Number.isFinite(monto) || !fecha) {
-      return "Error: faltan datos — hacen falta proveedor, monto (número) y fecha (YYYY-MM-DD) del gasto.";
-    }
+    let gasto: { id: string; contactName: string; total: number; fecha: string };
+    if (gastoId) {
+      // Por id: lee la compra directamente, así encuentra también los TICKETS (que /purchases no lista).
+      let compra: Awaited<ReturnType<typeof obtenerCompraHoldedPorId>>;
+      try {
+        compra = await obtenerCompraHoldedPorId(empresa, gastoId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `No pude leer el gasto ${gastoId} en Holded (${empresa}): ${message}`;
+      }
+      const total = Math.abs(numeroHolded(compra.total));
+      const contactName = (compra["contact_name"] as string | undefined) ?? proveedor ?? "";
+      const fechaCompra = typeof compra.date === "string" ? compra.date.slice(0, 10) : fecha;
+      if (!Number.isFinite(total) || total <= 0) return `El gasto ${gastoId} no tiene un total legible; no se prepara ninguna conciliación.`;
+      moneda = (compra.currency || "EUR").toUpperCase().trim();
+      proveedor = proveedor || contactName;
+      gasto = { id: gastoId, contactName: contactName || proveedor, total, fecha: fechaCompra };
 
-    let candidatosGasto: Awaited<ReturnType<typeof buscarGastoSimilar>>;
-    try {
-      candidatosGasto = await buscarGastoSimilar(empresa, { proveedor, monto, fecha });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return `Error buscando el gasto en Holded: ${message}`;
-    }
+      if ((cuentaId && !movimientoId) || (!cuentaId && movimientoId)) {
+        return "Error: para emparejar con un cargo concreto hacen falta cuenta_id y movimiento_id juntos.";
+      }
+      if (cuentaId && movimientoId) {
+        // El usuario ya identificó el par: se valida y se manda «Conciliar con #1»; nunca se concilia sin el botón.
+        const centro = fechaMovimiento || fechaCompra;
+        const base = new Date(centro);
+        if (Number.isNaN(base.getTime())) return "Error: fecha_movimiento no es una fecha válida (YYYY-MM-DD).";
+        const desde = new Date(base.getTime() - 20 * 86_400_000).toISOString().slice(0, 10);
+        const hasta = new Date(base.getTime() + 20 * 86_400_000).toISOString().slice(0, 10);
+        let movimiento: Awaited<ReturnType<typeof listBankMovements>>[number] | undefined;
+        try {
+          movimiento = (await listBankMovements(empresa, cuentaId, desde, hasta)).find((m) => m.id === movimientoId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `No pude leer el movimiento bancario en Holded (${empresa}): ${message}. No se preparó nada.`;
+        }
+        if (!movimiento) {
+          return `No encontré el movimiento ${movimientoId} en la cuenta ${cuentaId} entre ${desde} y ${hasta}. Pasa fecha_movimiento con la fecha real del cargo.`;
+        }
+        const par = evaluarParElegido(compra, movimiento as never, cuentaId);
+        if (par.estado === "rechazado") {
+          return `No preparo esa conciliación: ${par.motivo}`;
+        }
+        try {
+          const { ofrecerEleccionMovimientosAmbiguos } = await import("../gastos/gastoCallbackHandler");
+          const descripcionPar = `${gasto.contactName} — ${gasto.total.toFixed(2)} ${moneda}`;
+          const resultado = await ofrecerEleccionMovimientosAmbiguos(
+            empresa, gastoId, descripcionPar, chatId, [par.candidato], false, true, proveedor, undefined, true, undefined
+          );
+          return `Preparé la conciliación elegida por el usuario: ${descripcionPar} ↔ «${par.candidato.descripcion}» ` +
+            `(${(par.candidato.montoNativo ?? par.candidato.monto).toFixed(2)} ${par.candidato.monedaNativa ?? par.candidato.moneda}, ${par.candidato.fecha}). ` +
+            `Ya le mandé por Telegram el botón «Conciliar con #1» — todavía falta que lo pulse; no digas que ya quedó conciliado. (${resultado.estado})`;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return `El par es válido pero hubo un error preparando la pregunta de confirmación: ${message}`;
+        }
+      }
+    } else {
+      if (!proveedor || !Number.isFinite(monto) || !fecha) {
+        return "Error: faltan datos — hacen falta gasto_id, o bien proveedor, monto (número) y fecha (YYYY-MM-DD) del gasto.";
+      }
 
-    if (candidatosGasto.length === 0) {
-      return `No encontré ningún gasto de "${proveedor}" por ${monto} ${moneda} cerca del ${fecha} en Holded (${empresa}) — confirma esos datos antes de reintentar.`;
-    }
-    if (candidatosGasto.length > 1) {
-      const lista = candidatosGasto
-        .map((c) => `  • ${c.contactName} — ${c.total.toFixed(2)} € (${c.fecha}) — ${c.descripcion} [id: ${c.id}]`)
-        .join("\n");
-      return `Encontré ${candidatosGasto.length} gastos parecidos, no sé cuál conciliar — dime cuál es:\n${lista}`;
-    }
+      let candidatosGasto: Awaited<ReturnType<typeof buscarGastoSimilar>>;
+      try {
+        candidatosGasto = await buscarGastoSimilar(empresa, { proveedor, monto, fecha });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `Error buscando el gasto en Holded: ${message}`;
+      }
 
-    const gasto = candidatosGasto[0];
+      if (candidatosGasto.length === 0) {
+        return `No encontré ningún gasto de "${proveedor}" por ${monto} ${moneda} cerca del ${fecha} en Holded (${empresa}) en el listado de compras. ` +
+          `Si es un TICKET (no aparece en ese listado), búscalo con buscar_gastos_por_etiqueta_holded y vuelve a llamar con su gasto_id.`;
+      }
+      if (candidatosGasto.length > 1) {
+        const lista = candidatosGasto
+          .map((c) => `  • ${c.contactName} — ${c.total.toFixed(2)} € (${c.fecha}) — ${c.descripcion} [id: ${c.id}]`)
+          .join("\n");
+        return `Encontré ${candidatosGasto.length} gastos parecidos, no sé cuál conciliar — dime cuál es:\n${lista}`;
+      }
+      gasto = candidatosGasto[0];
+    }
     const descripcionGasto = `${gasto.contactName} — ${gasto.total.toFixed(2)} ${moneda}`;
 
     try {
