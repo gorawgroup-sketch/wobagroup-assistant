@@ -176,7 +176,8 @@ export const almacenConocimientoReal: AlmacenConocimiento = {
   },
   async retirar(id, motivo) {
     const filas = (await leerFilas(TAB_NAME, NUM_COLS, HEADERS)).map(filaAEntrada);
-    const fila = filas.find((e) => e.id === id);
+    // La fila vigente con ese id: si el mismo texto se retiró y se volvió a añadir, la primera con ese id es la ya retirada.
+    const fila = filas.find((e) => e.id === id && e.vigente) ?? filas.find((e) => e.id === id);
     if (!fila) return false;
     const { rowIndex, ...entrada } = fila;
     await actualizarFila(TAB_NAME, rowIndex, NUM_COLS, entradaAFila({ ...entrada, texto: `${entrada.texto} [RETIRADO: ${motivo}]`, vigente: false }));
@@ -201,22 +202,39 @@ export async function leerConocimiento(almacen: AlmacenConocimiento = almacenCon
   return almacen.leer();
 }
 
-/** Identificador estable y legible para una entrada nueva que añade el agente. */
-export function idConocimientoNuevo(tipo: TipoConocimiento, texto: string, fecha: string): string {
+/** Una sola línea, sin saltos: un salto de línea en un recuerdo podría fabricar otra entrada en el dossier. */
+export function sanearTexto(valor: string, max = 1200): string {
+  return valor.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+/** Identificador estable y legible para una entrada nueva que añade el agente (`k-…`; la memoria base no empieza así). */
+export function idConocimientoNuevo(tipo: TipoConocimiento, texto: string, fecha: string, intento = 0): string {
   let hash = 0;
   for (const c of `${tipo}|${texto}`) hash = (hash * 31 + c.charCodeAt(0)) >>> 0;
-  return `k-${fecha.replace(/-/g, "")}-${hash.toString(36).slice(0, 6)}`;
+  return `k-${fecha.replace(/-/g, "")}-${hash.toString(36).slice(0, 6)}${intento > 0 ? `-${intento + 1}` : ""}`;
 }
+
+/** Solo lo que añade el agente se puede retirar con la herramienta; la memoria base (decisiones, reglas, contactos) la cambia Carlos en la hoja. */
+export const esRecuerdoRetirable = (id: string): boolean => id.startsWith("k-");
 
 export async function agregarConocimiento(
   entrada: Omit<EntradaConocimiento, "id" | "vigente">,
   almacen: AlmacenConocimiento = almacenConocimientoReal
 ): Promise<EntradaConocimiento> {
-  const completa: EntradaConocimiento = { ...entrada, id: idConocimientoNuevo(entrada.tipo, entrada.texto, entrada.fecha), vigente: true };
+  const limpia = { ...entrada, texto: sanearTexto(entrada.texto), fuente: sanearTexto(entrada.fuente, 160) };
   const existentes = await leerConocimiento(almacen);
-  if (existentes.some((e) => e.id === completa.id && e.vigente)) return completa; // ya estaba: idempotente
-  await almacen.agregar(completa);
-  return completa;
+  // El mismo recuerdo vigente no se duplica; si el mismo texto se retiró antes, el nuevo lleva otro id (no comparte el del retirado).
+  for (let intento = 0; intento < 6; intento++) {
+    const id = idConocimientoNuevo(limpia.tipo, limpia.texto, limpia.fecha, intento);
+    const previo = existentes.find((e) => e.id === id);
+    if (previo?.vigente) return previo;
+    if (!previo) {
+      const completa: EntradaConocimiento = { ...limpia, id, vigente: true };
+      await almacen.agregar(completa);
+      return completa;
+    }
+  }
+  throw new Error("No se pudo asignar un identificador libre al recuerdo.");
 }
 
 const ETIQUETA_TIPO: Record<TipoConocimiento, string> = {
@@ -234,7 +252,7 @@ export function formatearConocimiento(entradas: EntradaConocimiento[]): string {
   for (const tipo of TIPOS_CONOCIMIENTO) {
     const delTipo = vigentes.filter((e) => e.tipo === tipo);
     if (delTipo.length === 0) continue;
-    bloques.push(`${ETIQUETA_TIPO[tipo]}:\n${delTipo.map((e) => `- [${e.id}] ${e.texto} (${e.fuente})`).join("\n")}`);
+    bloques.push(`${ETIQUETA_TIPO[tipo]}:\n${delTipo.map((e) => `- [${e.id}] ${sanearTexto(e.texto)} (${sanearTexto(e.fuente, 160)})`).join("\n")}`);
   }
   return bloques.join("\n\n");
 }

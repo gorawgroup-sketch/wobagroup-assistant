@@ -155,8 +155,13 @@ function cuerpoDelInforme(c: ContenidoInforme, paraChat: boolean): string {
   return bloques.join("\n\n");
 }
 
-/** Respuesta para el chat («revisa los seguros»): siempre responde, aunque no haya novedades. */
-export function construirRespuestaChat(c: ContenidoInforme): string {
+/** Respuesta para el chat («revisa los seguros»): siempre responde, aunque no haya novedades. `soloConsulta`: no se ha escrito nada. */
+export function construirRespuestaChat(c: ContenidoInforme, soloConsulta = false): string {
+  const aviso = soloConsulta ? "(Revisión en modo consulta: no se ha escrito nada en el registro ni se han marcado avisos como vistos.)\n\n" : "";
+  return aviso + respuestaChatBase(c);
+}
+
+function respuestaChatBase(c: ContenidoInforme): string {
   const hayNovedad =
     c.devoluciones.length + c.confirmados.length + c.enTransito.length + c.cargos.length + c.correos.length + c.ambiguos.length + c.sinPago.length +
       c.fallosPersistentes.length > 0;

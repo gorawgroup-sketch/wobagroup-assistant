@@ -45,17 +45,18 @@ export const consultarAgenteSegurosTool: ToolDefinition = {
   name: "consultar_agente_seguros",
   // Disponible también en el modo rápido y en las sesiones web de solo lectura, a propósito: es la ÚNICA puerta de seguros en
   // esos modos (la herramienta cruda ya no lo está), así que sin esto esas sesiones se quedarían sin poder preguntar por
-  // seguros. No incumple el sentido de la marca: el especialista solo tiene herramientas de escritura si quien pregunta es
-  // administrador y cita su frase literal, y todo lo que escribe es idempotente (repetir la misma petición no duplica nada),
-  // así que un turno que se reinicia no puede dejar nada a medias. Una sesión de solo lectura no tiene identidad de
-  // administrador y, por tanto, solo lee.
+  // seguros. No incumple el sentido de la marca: el especialista NUNCA escribe por sí mismo. Solo si quien pregunta es un
+  // superadministrador en un chat privado de Telegram se le ofrecen herramientas de PROPUESTA, que mandan un mensaje con el
+  // antes y el ahora y dos botones; el cambio lo aplica el botón (core/seguros/agente/cambiosPendientes.ts), con la huella de
+  // la fila para no pisar una edición intermedia. Repetir un turno solo repite una propuesta, que no cambia nada por sí sola.
+  // Una sesión web o sin identidad de superadministrador solo lee.
   seguraParaModoRapido: true,
   description:
     "Wobi Seguros: el ESPECIALISTA de seguros del grupo (WOBA, EWORKS, Footprint). Úsalo para CUALQUIER tema de seguros: qué pólizas hay y cómo están, qué cubre algo, franquicias y límites, " +
     "si una situación está cubierta, vencimientos y próximos pagos, si un recibo está pagado o devuelto, qué falta pedirle a la correduría (Acodrid), qué hay de nuevo en el banco o el correo sobre seguros, " +
     "y también para pedirle que anote algo (una decisión, un pago que ya se hizo). Tiene su propia memoria (decisiones de Carlos, contactos, asuntos pendientes), lee el banco, el correo y los documentos de las pólizas, " +
-    "y actualiza el registro cuando la persona se lo pide. NO razones tú sobre seguros ni respondas de memoria: pásale la pregunta. En `pregunta` pon el mensaje de la persona TAL CUAL lo escribió " +
-    "(literal, sin reescribirlo ni resumirlo: si pide un cambio en el registro, el especialista solo lo hace citando sus palabras exactas). En `contexto`, si hace falta, 1-3 frases de la conversación. " +
+    "y, si la persona se lo pide, PROPONE el cambio del registro: manda un mensaje con el antes y el ahora y botones, y solo se aplica cuando la persona pulsa «Aplicar» (tú no lo apruebas ni lo aplicas). NO razones tú sobre seguros ni respondas de memoria: pásale la pregunta. " +
+    "En `pregunta` pon el mensaje de la persona TAL CUAL lo escribió (literal, sin reescribirlo ni resumirlo: para proponer un cambio, el especialista cita sus palabras exactas). En `contexto`, si hace falta, 1-3 frases de la conversación. " +
     "Para vencimientos y próximos pagos de seguros usa SIEMPRE esta herramienta y no consultar_proximas_alertas (que solo tiene fechas aproximadas del calendario fiscal). " +
     "Tarda entre 10 y 100 segundos. Transmite su respuesta completa, sin recortar cifras, fechas, fuentes ni avisos.",
   input_schema: {
