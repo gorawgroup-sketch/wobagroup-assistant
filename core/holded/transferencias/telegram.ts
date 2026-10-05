@@ -4,10 +4,10 @@ import type { TelegramCallbackQuery } from "../../telegram/types";
 import { conMutex } from "../../utils/asyncMutex";
 import { etiquetaEmpresa } from "../automatizacion/empresas";
 import type { PropuestaTransferencia } from "./deteccion";
-import { ejecutarTransferencia, motivoConversionNoEjecutable } from "./ejecucion";
+import { ejecutarTransferencia, motivoConversionNoEjecutable, tieneDiferenciaAFavor } from "./ejecucion";
 import { describirPropuesta } from "./informe";
 import { detectarTransferenciasDeEmpresa } from "./lectura";
-import { ejecucionAutorizada, modoTransferencias } from "./modo";
+import { diferenciaAFavorAutorizada, ejecucionAutorizada, modoTransferencias } from "./modo";
 import { guardarRegistro, listarRegistros, obtenerRegistroPorId, registroDesdePropuesta, type RegistroTransferencia } from "./registro";
 
 /** Propuestas de transferencias internas en Telegram y sus cuatro botones. Solo «Conciliar» puede llegar a escribir en Holded. */
@@ -32,7 +32,8 @@ export function botonesPropuesta(id: string, opciones: { conConciliar?: boolean;
 
 /** Una conversión lleva botón de conciliar si está autorizada y cabe en los límites que el ejecutor aplica. */
 const conversionConBoton = (p: PropuestaTransferencia) =>
-  ejecucionAutorizada(p.clave, process.env, "conversion") && !motivoConversionNoEjecutable(p.origen.movimiento, p.destino.movimiento);
+  ejecucionAutorizada(p.clave, process.env, "conversion") && !motivoConversionNoEjecutable(p.origen.movimiento, p.destino.movimiento) &&
+  (!tieneDiferenciaAFavor(p.origen.movimiento, p.destino.movimiento) || diferenciaAFavorAutorizada(p.clave));
 
 export function textoPropuesta(p: PropuestaTransferencia): string {
   return `🔁 Operación entre cuentas propias — ${etiquetaEmpresa(p.empresa)}\n${describirPropuesta(p)}\n\n` +
@@ -41,7 +42,7 @@ export function textoPropuesta(p: PropuestaTransferencia): string {
       : p.tipo === "conversion"
         ? (conversionConBoton(p)
             ? "Es una conversión de moneda: al conciliar, Wobi pulsa «Transferir» en Holded sobre la salida y concilia la entrada contra el cobro que se genera; si hay diferencia de cambio, queda pendiente en ese cobro, igual que a mano."
-            : `Es una conversión de moneda que todavía no se ejecuta desde aquí. ${motivoConversionNoEjecutable(p.origen.movimiento, p.destino.movimiento) ?? "Las conversiones no están abiertas."}`)
+            : `Es una conversión de moneda que todavía no se ejecuta desde aquí. ${motivoConversionNoEjecutable(p.origen.movimiento, p.destino.movimiento) ?? (tieneDiferenciaAFavor(p.origen.movimiento, p.destino.movimiento) ? "Tiene diferencia a favor y ese paso todavía está en prueba." : "Las conversiones no están abiertas.")}`)
         : "Al conciliar se hace en Holded la transferencia entre las dos cuentas (un único asiento: debe la de destino, haber la de origen) y quedan conciliados los dos movimientos. No se crea ingreso ni gasto.") +
     `\nReferencia para autorizarla: ${p.clave}`;
 }
@@ -152,7 +153,7 @@ async function ejecutarEnSuCarril(
     const resultado = await conMutex("transferencias:ejecucion", async () => {
       const actual = (await obtenerRegistroPorId(registro.id)) ?? registro;
       // Escribir exige el modo activo y la autorización escrita de la pareja; sin ella el ejecutor solo lee e informa.
-      const opciones = { permitirEscritura: ejecucionAutorizada(actual.clave, process.env, actual.tipo) };
+      const opciones = { permitirEscritura: ejecucionAutorizada(actual.clave, process.env, actual.tipo), permitirDiferenciaAFavor: diferenciaAFavorAutorizada(actual.clave) };
       if (actual.estado !== "propuesta") return ejecutarTransferencia(actual, undefined, opciones);
       const aprobada: RegistroTransferencia = { ...actual, estado: "aprobada", detalle: "Aprobada por el operador." };
       await guardarRegistro(aprobada);

@@ -38,6 +38,14 @@ function alcance(env: NodeJS.ProcessEnv): Set<string> {
 export function alcanceEurAbierto(env: NodeJS.ProcessEnv = process.env): boolean { return alcance(env).has("eur"); }
 export function alcanceConversionesAbierto(env: NodeJS.ProcessEnv = process.env): boolean { return alcance(env).has("conversiones"); }
 
+/**
+ * Las conversiones con diferencia a favor (segundo «Transferir» hacia la cuenta de diferencias) siguen pareja a pareja hasta
+ * que Carlos valide su prueba; después se abren añadiendo `conversiones_a_favor` al alcance.
+ */
+export function diferenciaAFavorAutorizada(clave: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return modoTransferencias(env) === "activo" && CLAVE.test(clave) && (alcance(env).has("conversiones_a_favor") || casosAutorizados(env).has(clave));
+}
+
 /** Cada tipo de operación tiene su propio alcance; una pareja en WOBI_TRANSFERENCIAS_CASOS vale siempre. */
 export function ejecucionAutorizada(clave: string, env: NodeJS.ProcessEnv = process.env, tipo: "transferencia" | "conversion" = "transferencia"): boolean {
   if (modoTransferencias(env) !== "activo" || !CLAVE.test(clave)) return false;
