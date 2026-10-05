@@ -1277,9 +1277,15 @@ async function preguntarSiConciliar(
     // Preguntar «¿quieres que intente conciliar?» justo después de decir que no hay cargo en el banco es contradictorio
     // (caso real Iberdrola, Carlos, 05-10-2026). Se mira el banco ahora: si no hay ningún cargo libre que coincida, se dice
     // que queda sin conciliar y se ofrece volver a buscar cuando aparezca. Si la consulta falla, se deja la pregunta de siempre.
-    const sinCargoAhora = !ofertaParcial && !soloVerificar && previa === "nueva" && consultaParcial.tipo !== "consulta_fallida"
-      ? await hayCargoLibreParaConciliar(empresa, { monto, fecha, moneda, proveedor }).then((hay) => !hay).catch(() => false)
-      : false;
+    let sinCargoAhora = false;
+    if (!ofertaParcial && !soloVerificar && previa === "nueva" && consultaParcial.tipo !== "consulta_fallida") {
+      try {
+        sinCargoAhora = !(await hayCargoLibreParaConciliar(empresa, { monto, fecha, moneda, proveedor }));
+      } catch (error) {
+        // Un fallo de Holded no es «no hay cargo»: se conserva la pregunta normal.
+        console.error("[gastoCallbackHandler] No pude mirar el banco antes de preguntar la conciliación:", error instanceof Error ? error.message : error);
+      }
+    }
     const texto = sinCargoAhora
       ? `💳 "${descripcionGasto}" queda creado sin conciliar: ahora mismo no hay en el banco ningún cargo libre que coincida. ` +
         "Cuando el cargo aparezca (con el banco sincronizado), pulsa «Buscar el cargo de nuevo»."
