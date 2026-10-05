@@ -19,6 +19,7 @@ import { publicarCambioCerebro } from "../cerebro/realtime";
 import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaContable";
 import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos";
 import { revisarAlertasSeguros } from "./revisarAlertasSeguros";
+import { revisarSegurosVigilante } from "./revisarSegurosVigilante";
 import { esperarPrioridadInteractiva } from "./jobPriority";
 import { conversionTicketsHolded, sincronizacionBancariaHolded } from "./automatizacionHolded";
 import {
@@ -292,6 +293,17 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarAlertasSeguros programado: diario 8:50 (${TIMEZONE})`);
+
+  // Vigilante de Wobi Seguros (core/seguros/vigilante/): banco + correo + registro. Antes de los avisos de las 8:50
+  // para que estos ya vean el registro actualizado; y otra vez por la tarde para no esperar un día a un correo urgente.
+  cron.schedule(
+    "35 8,17 * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarSegurosVigilante", () => revisarSegurosVigilante());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarSegurosVigilante programado: diario 8:35 y 17:35 (${TIMEZONE})`);
 
   cron.schedule(
     "5 * * * *",

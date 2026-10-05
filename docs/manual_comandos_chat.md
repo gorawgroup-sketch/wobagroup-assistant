@@ -373,6 +373,21 @@ Pedido explícito de Carlos (01-10-2026), tras un caso real: un correo de la cor
 - **Preguntar después.** "¿Qué cubre la RC de WOBA?", "¿qué cambió con el suplemento del showroom?": `consultar_polizas_seguro` devuelve cada póliza con los documentos leídos (resumen y enlace de Drive); para una cláusula concreta, Wobi abre el documento completo.
 - **Otros documentos de referencia** (normativa, compliance, políticas, contratos marco): la propuesta de archivado recuerda que con "🧠 Guardar como conocimiento" su contenido queda consultable.
 
+## Vigilante de Wobi Seguros — avisos automáticos (banco + correo + registro)
+
+Pedido explícito de Carlos (05-10-2026): que Wobi Seguros mantenga solo al día la situación de las pólizas de WOBA, EWORKS y Footprint y le diga si hay algo pendiente, sin esperar a que se lo pida. No es un comando: corre a las **8:35 y a las 17:35** y escribe por Telegram solo cuando hay algo **nuevo**; si no hay novedades, calla.
+
+Qué revisa (solo lectura sobre Holded y sobre el buzón del asistente) y qué avisa:
+
+- **✅ Pagos confirmados en el banco.** Un recibo pendiente del registro se marca como pagado únicamente con prueba sólida: importe exacto al céntimo, aseguradora o correduría reconocida, empresa correcta y que el cargo haya llegado de verdad al saldo del banco. Una transferencia que paga varios recibos juntos (como los 1.306,00 € a Acodrid) se reparte entre sus recibos. La prueba (fecha, importe, cuenta e id del movimiento) queda escrita en las notas de la póliza.
+- **⏳ Cargos vistos que aún no doy por pagados.** Un adeudo domiciliado cuyo saldo el banco todavía no refleja NO se da por cobrado: el 01/09 Holded mostró como cobrados los adeudos de Allianz (1.016,86 €) y Aegon (234,41 €) y el banco los había devuelto. Se vuelve a mirar en cada revisión.
+- **↩️ Devoluciones.** Durante 14 días vigila los pagos recién confirmados; si el banco los devuelve (con o sin apunte contrario), la póliza vuelve a «pendiente» y te avisa.
+- **🆕 Cargos de seguros que no encajan.** Un cargo a una aseguradora que no está en el registro (se avisa una vez por aseguradora), a un servicio dado de baja (Solunion) o a una aseguradora cuya única póliza registrada está vencida. No avisa de lo que ya decidiste: Aegon (fuera del alcance), Pelayo (ya está en el calendario fiscal) ni los seguros de viaje de IATI (puntuales).
+- **📧 Correos nuevos de aseguradoras y corredurías** (Acodrid, Markel, Allianz) que llegan al buzón del asistente, con la señal «posible incidencia» si hablan de recibos devueltos, urgencias, suspensiones o impagos, y la lista de adjuntos. Los documentos de póliza los sigue archivando y leyendo el canal de documentos corporativos (arriba).
+- **🔁 Revisión incompleta.** Si Holded o el correo llevan 2 días o más sin poder leerse, lo avisa por sí solo: una lectura que falla no es un «no hay nada».
+
+Lo que NUNCA hace: mover dinero, escribir en Holded, contestar correos ni decidir por ti. Si Telegram falla, el aviso queda guardado y se reenvía en la siguiente revisión. El detalle completo sigue en Cerebro (nodo Seguros); diseño y límites en `docs/wobi-seguros.md` §24.
+
 ## Facturas de venta por correo → Ingresos del cashflow + respuesta al remitente
 
 Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las facturas que WOBA y eWorks emiten a sus clientes, para saber cuándo entrará ese dinero.
