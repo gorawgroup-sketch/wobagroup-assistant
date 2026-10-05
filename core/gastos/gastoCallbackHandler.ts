@@ -776,7 +776,7 @@ export function gastoPermiteCerrarCorreo(
  * doble-conciliación) para ejecutar el elegido, sin repetir la búsqueda que volvería a toparse con
  * la misma ambigüedad.
  */
-async function ofrecerEleccionMovimientosAmbiguos(
+export async function ofrecerEleccionMovimientosAmbiguos(
   empresa: Empresa,
   gastoId: string,
   descripcionGasto: string,

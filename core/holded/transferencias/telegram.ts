@@ -4,7 +4,7 @@ import type { TelegramCallbackQuery } from "../../telegram/types";
 import { conMutex } from "../../utils/asyncMutex";
 import { etiquetaEmpresa } from "../automatizacion/empresas";
 import type { PropuestaTransferencia } from "./deteccion";
-import { ejecutarTransferencia } from "./ejecucion";
+import { ejecutarTransferencia, motivoConversionNoEjecutable } from "./ejecucion";
 import { describirPropuesta } from "./informe";
 import { detectarTransferenciasDeEmpresa } from "./lectura";
 import { ejecucionAutorizada, modoTransferencias } from "./modo";
@@ -30,12 +30,18 @@ export function botonesPropuesta(id: string, opciones: { conConciliar?: boolean;
   ];
 }
 
+/** Una conversión lleva botón de conciliar si está autorizada y cabe en los límites que el ejecutor aplica. */
+const conversionConBoton = (p: PropuestaTransferencia) =>
+  ejecucionAutorizada(p.clave, process.env, "conversion") && !motivoConversionNoEjecutable(p.origen.movimiento, p.destino.movimiento);
+
 export function textoPropuesta(p: PropuestaTransferencia): string {
   return `🔁 Operación entre cuentas propias — ${etiquetaEmpresa(p.empresa)}\n${describirPropuesta(p)}\n\n` +
     (p.confianza === "bloqueada"
       ? "Está bloqueada: no se puede conciliar desde aquí; decide qué hacer con ella."
       : p.tipo === "conversion"
-        ? "Es una conversión de moneda: solo se ejecuta desde aquí si esta pareja está autorizada por escrito; si no, solo se propone."
+        ? (conversionConBoton(p)
+            ? "Es una conversión de moneda: al conciliar, Wobi pulsa «Transferir» en Holded sobre la salida y concilia la entrada contra el cobro que se genera; si hay diferencia de cambio, queda pendiente en ese cobro, igual que a mano."
+            : `Es una conversión de moneda que todavía no se ejecuta desde aquí. ${motivoConversionNoEjecutable(p.origen.movimiento, p.destino.movimiento) ?? "Las conversiones no están abiertas."}`)
         : "Al conciliar se hace en Holded la transferencia entre las dos cuentas (un único asiento: debe la de destino, haber la de origen) y quedan conciliados los dos movimientos. No se crea ingreso ni gasto.") +
     `\nReferencia para autorizarla: ${p.clave}`;
 }
@@ -68,8 +74,8 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
       const registro = registroDesdePropuesta(p);
       const bloqueada = p.confianza === "bloqueada";
       await guardarRegistro(registro);
-      // Las conversiones de moneda solo llevan botón de conciliar si esa pareja está autorizada por escrito.
-      const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && (p.tipo !== "conversion" || ejecucionAutorizada(p.clave, process.env, "conversion")) }));
+      // Una conversión solo lleva botón de conciliar si está autorizada y cabe en los límites del ejecutor.
+      const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && (p.tipo !== "conversion" || conversionConBoton(p)) }));
       await guardarRegistro({ ...registro, estado: bloqueada ? "ambigua" : "propuesta", chatId, messageId });
       publicadas++;
     }

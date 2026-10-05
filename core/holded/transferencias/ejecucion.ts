@@ -145,6 +145,15 @@ export function motivoParaNoEjecutar(r: RegistroTransferencia, e: Estado): strin
   return motivoLimitesConversion(planDe(r, e)!);
 }
 
+/**
+ * Para decidir si una propuesta de conversión lleva botón de conciliar: mismos límites que aplica después el ejecutor.
+ * Devuelve el motivo por el que todavía no se ejecuta desde aquí, o undefined si se puede.
+ */
+export function motivoConversionNoEjecutable(origen: MovimientoTransferencia, destino: MovimientoTransferencia): string | undefined {
+  if (origen.moneda !== "EUR" && destino.moneda !== "EUR") return `Por ahora solo se ejecutan conversiones con una pata en euros (esta es ${origen.moneda} → ${destino.moneda}).`;
+  return motivoLimitesConversion({ pulsado: "origen", importePar: valorEur(origen), valorOtroEur: valorEur(destino) });
+}
+
 /** Límites de una conversión; se comprueban antes de pulsar y también antes de conciliar la entrada al retomar un intento. */
 function motivoLimitesConversion(plan: Plan): string | undefined {
   if (!(plan.importePar > 0) || !(plan.valorOtroEur > 0)) return "Holded no da la valoración en euros de la pata en otra moneda; sin ella no se puede comprobar la conversión.";

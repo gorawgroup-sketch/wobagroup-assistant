@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CuentaTransferencia, MovimientoTransferencia } from "./deteccion";
-import { ejecutarTransferencia, importeDeHolded, type DependenciasEjecucion, type LineaAsiento, type PagoTransferencia } from "./ejecucion";
+import { ejecutarTransferencia, importeDeHolded, motivoConversionNoEjecutable, type DependenciasEjecucion, type LineaAsiento, type PagoTransferencia } from "./ejecucion";
 import { casosAutorizados, ejecucionAutorizada, modoTransferencias } from "./modo";
 import { importeEnPantalla } from "./navegadorTransferencia";
 import type { RegistroTransferencia } from "./registro";
@@ -296,6 +296,22 @@ test("las conversiones solo se autorizan pareja a pareja, aunque las transferenc
   assert.equal(ejecucionAutorizada(clave, abierto, "transferencia"), true);
   assert.equal(ejecucionAutorizada(clave, abierto, "conversion"), false);
   assert.equal(ejecucionAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_CASOS: clave }, "conversion"), true);
+  // Cada alcance abre solo lo suyo.
+  const conversiones = { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: " EUR , Conversiones " };
+  assert.equal(ejecucionAutorizada(clave, conversiones, "conversion"), true);
+  assert.equal(ejecucionAutorizada(clave, conversiones, "transferencia"), true);
+  assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "conversiones" }, "transferencia"), false);
+  assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "observacion", WOBI_TRANSFERENCIAS_ALCANCE: "conversiones" }, "conversion"), false);
+});
+
+test("una conversión solo lleva botón si cabe en los límites: una pata en euros y la entrada no vale más que la salida", () => {
+  const mov = (importe: number, moneda: string, equivalenteEur?: number): MovimientoTransferencia =>
+    ({ id: "x", cuentaId: "c", fecha: "2026-09-02", importe, moneda, equivalenteEur, descripcion: "", estado: "pending", conciliado: 0 });
+  assert.equal(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 431.85)), undefined);
+  assert.equal(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.70, "EUR")), undefined);
+  assert.match(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.73, "EUR")) ?? "", /vale más en euros/);
+  assert.match(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1290)) ?? "", /una pata en euros/);
+  assert.match(motivoConversionNoEjecutable(mov(-100, "EUR"), mov(110, "USD")) ?? "", /valoración en euros/);
 });
 
 test("los importes se buscan en pantalla como los escribe Holded", () => {
