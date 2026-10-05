@@ -88,3 +88,72 @@ test("un cargo que respalda el nombre gana a uno solo «por confirmar» (no fuer
     assert.deepEqual(r.map((c) => c.movementId), ["b"]);
     assert.equal(r[0].compatibilidad, undefined);
   }));
+
+// ---- Reparto óptimo entre recibos pendientes (caso hotel MOME, 2026-10-05) ----
+const competidor = (o: Partial<import("./movimientoMultimoneda").ReciboCompetidor> = {}): import("./movimientoMultimoneda").ReciboCompetidor => ({
+  id: "otra", monto: 34700, moneda: "COP", fecha: "2026-10-03", proveedor: "Gustavocado SAS", concepto: "Desayuno", ...o,
+});
+const conCompetidores = (lista: Array<import("./movimientoMultimoneda").ReciboCompetidor> | Error): DependenciasBusquedaMultimoneda => ({
+  ...dependencias(),
+  obtenerCompetidores: async () => { if (lista instanceof Error) throw lista; return lista; },
+});
+const buscar = (deps: DependenciasBusquedaMultimoneda, extra: Record<string, unknown> = { repartoConPendientes: {} }) =>
+  buscarMovimientosPorTipoCambio("Footprint", { ...criterios, incluirPorConfirmar: true, ...extra }, ["COP", "EUR"], deps);
+
+test("reparto: un cargo que encaja claramente mejor con otro recibo pendiente no se ofrece a este", () =>
+  conHolded([mov({ description: "Gustavocado" })], async () => {
+    // Este recibo: 33.800 COP → 9,05 € (2,9 % frente a 9,31 €). El otro: 34.700 COP → 9,29 € (0,2 %).
+    assert.deepEqual(await buscar(conCompetidores([competidor()])), []);
+  }));
+
+test("reparto: sin el indicador (rutas que resuelven solas o que no arman propuesta) no cambia nada", () =>
+  conHolded([mov()], async () => {
+    const r = await buscar(conCompetidores([competidor()]), {});
+    assert.equal(r.length, 1);
+  }));
+
+test("reparto: un competidor que no encaja con el cargo (importe lejano o fecha lejana) no lo desplaza", async () => {
+  const casos: Array<[string, ReturnType<typeof competidor>]> = [
+    ["importe lejano", competidor({ monto: 60000 })],
+    ["fecha lejana", competidor({ fecha: "2026-09-20" })],
+    ["cargo sin nombre reconocido y fecha a 2 días (exige ±1)", competidor({ fecha: "2026-10-05" })],
+  ];
+  for (const [nombre, c] of casos) {
+    await conHolded([mov()], async () => {
+      assert.equal((await buscar(conCompetidores([c]))).length, 1, nombre);
+    });
+  }
+});
+
+test("reparto: este recibo encaja mejor que el competidor → conserva el cargo", () =>
+  conHolded([mov({ description: "Gustavocado", amount: "-9.10", accounting_amount: "-9.10" })], async () => {
+    // Referencia de este recibo 9,05 € (0,6 %); el competidor (34.700 COP → 9,29 €) queda al 2,0 %.
+    assert.equal((await buscar(conCompetidores([competidor()]))).length, 1);
+  }));
+
+test("reparto: un fallo al leer los recibos pendientes no impide ofrecer el cargo", () =>
+  conHolded([mov()], async () => {
+    assert.equal((await buscar(conCompetidores(new Error("Sheets caído")))).length, 1);
+  }));
+
+test("reparto: no se cuenta a sí misma (propuesta excluida) y dos cargos se reparten sin dejar a ninguno sin pareja", () =>
+  conHolded([mov({ id: "a", description: "Gustavocado" }), mov({ id: "b", description: "Gustavocado", amount: "-9.60", accounting_amount: "-9.60" })], async () => {
+    // Referencias: este recibo 9,05 €, el otro 9,29 €. Cargos: a −9,31 € (rec.0 2,9 %, rec.1 0,2 %), b −9,60 € (rec.0 6 %, fuera; rec.1 3,3 %, fuera).
+    // Solo «a» es admisible para este recibo y el otro lo ajusta mejor → se retira; la propia propuesta excluida no compite.
+    assert.deepEqual(await buscar(conCompetidores([competidor()])), []);
+    const propia = await buscar(conCompetidores([competidor({ id: "yo" })]), { repartoConPendientes: { excluirPropuestaId: "yo" } });
+    assert.equal(propia.length, 1);
+  }));
+
+test("reparto: si falla la tasa de un competidor se ofrece la lista completa (no se pierde el cargo por un fallo de lectura)", () =>
+  conHolded([mov()], async () => {
+    const base = dependencias();
+    let llamadas = 0;
+    const deps: DependenciasBusquedaMultimoneda = {
+      ...base,
+      // La primera consulta (la de la búsqueda) funciona; las siguientes (competidores en otra fecha) fallan.
+      obtenerTasa: async (...args) => { if (llamadas++ === 0) return base.obtenerTasa(...args); throw new Error("BCE caído"); },
+      obtenerCompetidores: async () => [competidor({ moneda: "USD", fecha: "2026-10-02" })],
+    };
+    assert.equal((await buscar(deps)).length, 1);
+  }));

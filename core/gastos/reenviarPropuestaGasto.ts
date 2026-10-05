@@ -91,6 +91,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
             fecha: propuesta.fecha,
             proveedor: propuesta.proveedor,
             incluirPorConfirmar: true,
+            repartoConPendientes: { excluirPropuestaId: propuesta.id },
           },
           monedasReales
         );
