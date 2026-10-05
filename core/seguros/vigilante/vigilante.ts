@@ -66,6 +66,11 @@ export interface ResultadoVigilante {
   contenido: ContenidoInforme;
   /** Informe para Telegram (solo lo nuevo); null si no hay nada que contar. */
   informe: Informe | null;
+  /**
+   * La situación completa de ahora mismo (lo que sigue en tránsito, los cargos que siguen sin encajar, los últimos
+   * correos), no solo lo nuevo: es lo que cuentan el chat y el panel de Cerebro.
+   */
+  situacion: ContenidoInforme;
   /** Respuesta para el chat: la situación completa de ahora mismo, no solo lo nuevo (siempre responde). */
   respuestaChat: string;
   /** Lo que hay que marcar como ya avisado en cuanto el informe se entregue. */
@@ -323,6 +328,7 @@ export async function ejecutarVigilanteSeguros(
     hoy,
     contenido,
     informe: construirInforme(contenido),
+    situacion: contenidoCompleto,
     respuestaChat: construirRespuestaChat(contenidoCompleto, !aplicar),
     clavesAvisadas,
     pendienteEnvio,
