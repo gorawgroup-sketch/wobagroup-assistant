@@ -5908,6 +5908,19 @@ interface MovimientoParaAjusteCambio {
   currency?: string;
 }
 
+/**
+ * Margen del residuo cuando el cargo coincide EXACTAMENTE con el total nativo del documento (el resto de pruebas de
+ * evaluarAjusteCambioResidual: movimiento conciliado al 100 %, un único pago igual al importe contable del movimiento,
+ * pagado + pendiente = total). Con esa evidencia el residuo no puede ser una deuda real —el banco cobró justo lo que vale
+ * la factura— y es solo la diferencia entre el cambio del documento (Holded lo redondea a 2 decimales) y el que aplicó el
+ * banco. Caso real Salesmate 600 USD (Footprint, 2026-10-05): 1,83 USD pendientes (0,3 %) superaban el techo de 1 unidad de
+ * margenResiduoConversion y la conciliación quedaba «incierta» sin cerrarse. Se admite hasta el 2 % del total (techo 50).
+ * Solo lo usa esa función: el resto de comprobaciones (conciliación múltiple, huecos del movimiento) conserva su margen.
+ */
+export function margenAjusteCambioExacto(totalNativo: number): number {
+  return Math.min(50, Math.max(margenResiduoConversion(totalNativo), Math.abs(totalNativo) * 0.02));
+}
+
 export interface AjusteCambioResidualElegible {
   monto: number;
   monedaDocumento: string;
@@ -5956,7 +5969,8 @@ export function evaluarAjusteCambioResidual(
   }
 
   const pendiente = parsearMontoHolded(compra.payments_pending);
-  const margenCentimos = Math.round(margenResiduoConversion(totalNativo) * 100);
+  // Más abajo se exige que el cargo coincida exactamente con el total nativo: con esa prueba rige el margen ampliado.
+  const margenCentimos = Math.round(margenAjusteCambioExacto(totalNativo) * 100);
   if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) <= 0 || Math.round(pendiente * 100) > margenCentimos) {
     return undefined;
   }
