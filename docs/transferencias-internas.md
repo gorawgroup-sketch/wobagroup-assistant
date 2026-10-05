@@ -122,7 +122,7 @@ Desde entonces, con `WOBI_TRANSFERENCIAS_MODO=activo` y `WOBI_TRANSFERENCIAS_ALC
 inequívoca se ejecuta al pulsar su botón, sin autorización escrita pareja a pareja. Las conversiones se proponen sin botón
 de conciliar.
 
-### Conversiones de moneda (en prueba)
+### Conversiones de moneda
 
 Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint y eWorks, jun–ago 2026):
 
@@ -133,8 +133,10 @@ Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint 
 
 Límites actuales: una pata debe ser en euros; si la entrada vale MÁS en EUR que la salida no se ejecuta (ese resto va a la
 cuenta de diferencias de cambio de la empresa —en Footprint, 62600000— y ese segundo paso no está construido); diferencia
-máxima 3 %. Las conversiones solo se ejecutan pareja a pareja (`WOBI_TRANSFERENCIAS_CASOS`), aunque
-`WOBI_TRANSFERENCIAS_ALCANCE=eur` esté activo, hasta que Carlos valide la prueba.
+máxima 3 %. **Validado por Carlos el 05-10-2026**
+(eWorks 02/09, −433,96 EUR → +500 USD: asiento único de 433,96 €, los dos movimientos conciliados y 2,11 € de diferencia
+pendientes en el cobro). Con `WOBI_TRANSFERENCIAS_ALCANCE=eur,conversiones` las conversiones dentro de estos límites llevan
+botón de conciliar; las demás se proponen sin botón y con el motivo.
 
 ### Carril propio
 
@@ -146,6 +148,6 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Conversiones**: validar la prueba de una sola (eWorks 02/09, −433,96 EUR → +500 USD), después el caso con diferencia a favor
-   (cuenta de diferencias de cambio por empresa) y abrirlas.
+1. **Conversiones con diferencia a favor** (la entrada vale más en EUR que la salida): llevar el resto a la cuenta de
+   diferencias de cambio de cada empresa (Footprint 62600000; WOBA y eWorks por confirmar con Carlos), con su prueba.
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
