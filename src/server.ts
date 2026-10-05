@@ -144,7 +144,9 @@ import { estadoLimitadorSheets } from "../core/google/limitadorSheets";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
-import { handleTransferenciasCallback } from "../core/holded/transferencias/telegram";
+import { handleTransferenciasCallback, publicarPropuestasTransferencias } from "../core/holded/transferencias/telegram";
+import { EMPRESAS_TRANSFERENCIAS } from "../core/holded/transferencias/modo";
+import { parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
 import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
@@ -2267,6 +2269,26 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     return;
   }
 
+  // Menú de Telegram → transferencias entre cuentas propias: mismo efecto que pedirlo por escrito, sin pasar por la IA.
+  const empresaTransferencias = parsearComandoTransferencias(incoming.text);
+  if (empresaTransferencias !== undefined) {
+    // Muestra movimientos bancarios: solo administración. En un chat privado el id del chat es el del usuario.
+    const rolTransferencias = await obtenerRolUsuario(incoming.chatId);
+    if (rolTransferencias !== "superadmin" && rolTransferencias !== "admin") {
+      await sendTelegramMessage(incoming.chatId, "Esta orden muestra movimientos bancarios y solo está disponible para administración.");
+      return;
+    }
+    await sendTelegramMessage(incoming.chatId, "🔄 Revisando las transferencias entre cuentas propias...");
+    try {
+      const empresas = empresaTransferencias === "todas" ? EMPRESAS_TRANSFERENCIAS : [empresaTransferencias];
+      await sendTelegramMessage(incoming.chatId, await publicarPropuestasTransferencias(incoming.chatId, empresas));
+    } catch (error) {
+      console.error("[transferencias] Error revisando las transferencias internas:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude revisar las transferencias ahora. No se tocó nada en Holded; inténtalo de nuevo en un momento.");
+    }
+    return;
+  }
+
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
     await sendTelegramMessage(incoming.chatId, "🔄 Revisando correo nuevo...");
     // La revisión vive en core/jobs/revisionCorreoManual.ts para que la reanudación tras un
@@ -2947,6 +2969,8 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
 servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
+  // Menú de comandos de Telegram (core/telegram/menuComandos.ts): se publica en cada arranque; nunca bloquea.
+  void publicarMenuComandos();
   // Panel /cerebro: lo deja caliente antes de que llegue el primer visitante y lo mantiene fresco en segundo plano.
   iniciarMantenimientoEstadoCerebro();
   if (configuracionTelegramDurable.habilitado) {

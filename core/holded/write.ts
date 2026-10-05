@@ -204,29 +204,22 @@ async function holdedWriteCall(
 }
 
 /**
- * Asiento contable manual (POST /ledger-entries). Punto de conexión para core/holded/transferencias/: pasa por la
- * misma guardia que el resto de escrituras. Devuelve el id del asiento; nunca se reintenta aquí.
+ * Punto de conexión para core/holded/transferencias/: concilia un movimiento contra el cobro o el pago que Holded genera
+ * al pulsar «Transferir» en el otro movimiento. Pasa por la misma guardia que el resto de escrituras; no es idempotente
+ * en Holded y nunca se reintenta aquí.
+ * (Conciliar contra un asiento manual, `document_type: "entry"`, devuelve 200 y no enlaza nada: comprobado el 05-10-2026.)
  */
-export async function crearAsientoHolded(
-  empresa: Empresa,
-  asiento: { date: string; notes?: string; lines: Array<{ account: number; description?: string; debit: string; credit: string }> }
-): Promise<string> {
-  const data = (await holdedWriteCall(empresa, "POST", "/ledger-entries", asiento)) as { id?: string };
-  if (!data?.id) throw new Error("Holded no devolvió el id del asiento creado.");
-  return String(data.id);
-}
-
-/** Concilia un movimiento bancario contra un asiento ya existente. No es idempotente en Holded: no se reintenta. */
-export async function conciliarMovimientoContraAsientoHolded(
-  empresa: Empresa, accountId: string, movementId: string, asientoId: string
+export async function conciliarMovimientoContraPagoHolded(
+  empresa: Empresa, accountId: string, movementId: string, pagoId: string, tipo: "payment" | "collection"
 ): Promise<void> {
   invalidarCacheCuentasTesoreria(empresa);
   try {
-    await holdedWriteCall(
+    const respuesta = await holdedWriteCall(
       empresa, "POST",
       `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements/${encodeURIComponent(movementId)}/reconcile`,
-      { documents: [{ document_id: asientoId, document_type: "entry" }] }
+      { documents: [{ document_id: pagoId, document_type: tipo }] }
     );
+    console.log(`[transferencias] Conciliación ${movementId} ↔ ${tipo} ${pagoId}: ${JSON.stringify(respuesta ?? null).slice(0, 300)}`);
   } finally {
     invalidarCacheCuentasTesoreria(empresa);
   }
@@ -5097,6 +5090,11 @@ export async function buscarMovimientoSimilar(
      * compatible por nombre o categoría.
      */
     incluirPorConfirmar?: boolean;
+    /**
+     * El importe buscado es una REFERENCIA por tipo de cambio (no el importe real del cargo): «exacto» pasa a significar
+     * «dentro de la tolerancia de cambio», para que un cargo del día con nombre distinto pueda ofrecerse «por confirmar».
+     */
+    importeAproximadoPorCambio?: boolean;
     /** Si se da, la búsqueda anota qué cuentas revisó y qué cargos del mismo importe descartó (no cambia el resultado). */
     traza?: TrazaBusqueda;
   },
@@ -5177,7 +5175,7 @@ export async function buscarMovimientoSimilar(
       let compatibilidad: "por_confirmar" | "aprendido" | undefined;
       if (criterios.proveedor) {
         const importeYFechaExactos =
-          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
+          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= (criterios.importeAproximadoPorCambio ? toleranciaEur : TOLERANCIA_MONTO) &&
           diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
         const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);
@@ -5805,6 +5803,41 @@ export function residuoMovimientoFueraDeMargen(montoMovimiento: number, montoEnl
 }
 
 /**
+ * Máximo (5 % del cargo) que se acepta como margen de conversión de la tarjeta cuando el gasto y el cargo están en monedas
+ * distintas. Más allá ya no es un spread: puede ser otro documento y sigue pidiendo revisión.
+ */
+export const MARGEN_DIFERENCIA_CAMBIO_BANCARIO = 0.05;
+
+/**
+ * Qué hacer con el hueco de un movimiento `partial` ya enlazado a una compra. Caso real 2026-10-05 (hotel, Footprint):
+ * gasto de 364.546 COP pagado por completo con 97,59 € ligados a un cargo de 112,87 USD; el banco cobró 2,99 USD más de lo
+ * que vale el gasto al cambio del documento (2,6 %). Ese hueco superaba el margen de redondeo (0,5 %), así que la
+ * conciliación quedaba «en revisión» para siempre: «Verificar» solo releía lo mismo y no dejaba seguir con el correo.
+ *
+ * Es una diferencia de cambio bancaria (no una conciliación a medias) solo si TODO esto se cumple: el vínculo está
+ * verificado y la compra pagada por completo (`ok`), no es un cargo mayor elegido, el cargo y el gasto están en monedas
+ * distintas y el hueco no pasa del 5 % del cargo. En cualquier otro caso se mantiene el comportamiento anterior.
+ */
+export function decidirResiduoMovimiento(p: {
+  montoMovimiento: number;
+  montoEnlazado: number;
+  ok: boolean;
+  parcialEsperado: boolean;
+  monedaMovimiento?: string;
+  monedaCompra?: string;
+}): { pendienteEnMovimiento?: number; diferenciaCambioBancario?: number } {
+  const residuo = residuoMovimientoFueraDeMargen(p.montoMovimiento, p.montoEnlazado);
+  if (residuo === undefined) return {};
+  const monedaMovimiento = (p.monedaMovimiento ?? "").toUpperCase().trim();
+  const monedaCompra = (p.monedaCompra ?? "").toUpperCase().trim();
+  const esDiferenciaDeCambio =
+    p.ok && !p.parcialEsperado &&
+    monedaMovimiento !== "" && monedaCompra !== "" && monedaMovimiento !== monedaCompra &&
+    residuo <= p.montoMovimiento * MARGEN_DIFERENCIA_CAMBIO_BANCARIO;
+  return esDiferenciaDeCambio ? { diferenciaCambioBancario: residuo } : { pendienteEnMovimiento: residuo };
+}
+
+/**
  * Confirma que el importe conciliado del movimiento terminó como pago del
  * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
  * confundir un movimiento conciliado contra otro documento con el efecto
@@ -5875,6 +5908,19 @@ interface MovimientoParaAjusteCambio {
   currency?: string;
 }
 
+/**
+ * Margen del residuo cuando el cargo coincide EXACTAMENTE con el total nativo del documento (el resto de pruebas de
+ * evaluarAjusteCambioResidual: movimiento conciliado al 100 %, un único pago igual al importe contable del movimiento,
+ * pagado + pendiente = total). Con esa evidencia el residuo no puede ser una deuda real —el banco cobró justo lo que vale
+ * la factura— y es solo la diferencia entre el cambio del documento (Holded lo redondea a 2 decimales) y el que aplicó el
+ * banco. Caso real Salesmate 600 USD (Footprint, 2026-10-05): 1,83 USD pendientes (0,3 %) superaban el techo de 1 unidad de
+ * margenResiduoConversion y la conciliación quedaba «incierta» sin cerrarse. Se admite hasta el 2 % del total (techo 50).
+ * Solo lo usa esa función: el resto de comprobaciones (conciliación múltiple, huecos del movimiento) conserva su margen.
+ */
+export function margenAjusteCambioExacto(totalNativo: number): number {
+  return Math.min(50, Math.max(margenResiduoConversion(totalNativo), Math.abs(totalNativo) * 0.02));
+}
+
 export interface AjusteCambioResidualElegible {
   monto: number;
   monedaDocumento: string;
@@ -5923,7 +5969,8 @@ export function evaluarAjusteCambioResidual(
   }
 
   const pendiente = parsearMontoHolded(compra.payments_pending);
-  const margenCentimos = Math.round(margenResiduoConversion(totalNativo) * 100);
+  // Más abajo se exige que el cargo coincida exactamente con el total nativo: con esa prueba rige el margen ampliado.
+  const margenCentimos = Math.round(margenAjusteCambioExacto(totalNativo) * 100);
   if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) <= 0 || Math.round(pendiente * 100) > margenCentimos) {
     return undefined;
   }
@@ -6217,9 +6264,11 @@ async function inspeccionarConciliacionRegistrada(
   let pendienteEnCompra: number | undefined;
   let ajusteCambioDivisa: ResultadoConciliacionMovimiento["ajusteCambioDivisa"];
   let pagoDelDocumentoConfirmado = false;
+  let monedaCompra: string | undefined;
   if (tieneEnlace) {
     try {
       const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.documentId);
+      monedaCompra = compra.currency;
       const pago = verificarPagoCompraEnMovimiento(
         compra,
         registro.accountId,
@@ -6264,18 +6313,19 @@ async function inspeccionarConciliacionRegistrada(
   // movimientoParcial y pendienteEnMovimiento nacen de la MISMA decisión: si el residuo es de
   // redondeo, ninguno de los dos debe forzar revisión (antes movimientoParcial=true por sí solo ya
   // la forzaba, sin mirar el tamaño del hueco).
-  const pendienteEnMovimiento = movimientoParcial
-    ? residuoMovimientoFueraDeMargen(montoMovimiento, montoEnlazado)
-    : undefined;
   // Conciliación parcial ELEGIDA por el operador (cargoMayor.ts): el resto del cargo espera a otro gasto y no es una
   // incidencia, así que no se informa como parcial a revisar. Lo dice el propio registro durable (su `proceso`).
   const parcialEsperado = registro.proceso === PROCESO_CONCILIACION_CARGO_MAYOR;
+  const { pendienteEnMovimiento, diferenciaCambioBancario } = movimientoParcial
+    ? decidirResiduoMovimiento({ montoMovimiento, montoEnlazado, ok, parcialEsperado, monedaMovimiento: movimiento?.currency, monedaCompra })
+    : {};
   const resultado = {
     ok,
     statusFinal,
     montoEnlazado,
     pendienteEnCompra,
     ajusteCambioDivisa,
+    ...(diferenciaCambioBancario !== undefined ? { diferenciaCambioBancario } : {}),
     movimientoParcial: parcialEsperado ? undefined : pendienteEnMovimiento !== undefined || undefined,
     pendienteEnMovimiento: parcialEsperado ? undefined : pendienteEnMovimiento,
     ...(parcialEsperado && pendienteEnMovimiento !== undefined ? { restoEsperadoEnMovimiento: pendienteEnMovimiento } : {}),

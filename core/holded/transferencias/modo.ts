@@ -4,7 +4,10 @@ import type { Empresa } from "../client";
  * Interruptor de la conciliación de transferencias internas. Desplegar el código no cambia nada: por defecto apagado.
  *  - apagado:      ni detecta ni propone.
  *  - observacion:  detecta y propone; «Conciliar transferencia» no ejecuta nada.
- *  - activo:       ejecuta SOLO las parejas autorizadas por escrito en WOBI_TRANSFERENCIAS_CASOS.
+ *  - activo:       ejecuta las parejas autorizadas por escrito en WOBI_TRANSFERENCIAS_CASOS y, si
+ *                  WOBI_TRANSFERENCIAS_ALCANCE=eur, cualquier transferencia EUR↔EUR inequívoca (validado por Carlos el
+ *                  05-10-2026 con la prueba WOBA de 350 €). Cada una sigue necesitando su pulsación en Telegram, y el
+ *                  ejecutor rechaza por su cuenta conversiones, otras monedas y parejas ambiguas.
  */
 export type ModoTransferencias = "apagado" | "observacion" | "activo";
 
@@ -22,8 +25,14 @@ export function casosAutorizados(env: NodeJS.ProcessEnv = process.env): Set<stri
   return new Set((env.WOBI_TRANSFERENCIAS_CASOS ?? "").split(",").map((c) => c.trim()).filter((c) => CLAVE.test(c)));
 }
 
+/** true = las transferencias en euros ya no necesitan autorización escrita pareja a pareja. */
+export function alcanceEurAbierto(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.WOBI_TRANSFERENCIAS_ALCANCE ?? "").trim().toLowerCase() === "eur";
+}
+
 export function ejecucionAutorizada(clave: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  return modoTransferencias(env) === "activo" && casosAutorizados(env).has(clave);
+  if (modoTransferencias(env) !== "activo" || !CLAVE.test(clave)) return false;
+  return alcanceEurAbierto(env) || casosAutorizados(env).has(clave);
 }
 
 export const EMPRESAS_TRANSFERENCIAS: readonly Empresa[] = ["WOBA", "EWORKS", "Footprint"];

@@ -610,6 +610,15 @@ export async function obtenerPropuestasGastoPorChat(chatId: number): Promise<Pro
 }
 
 /**
+ * Propuestas ya mostradas (con botones) de una empresa: son los recibos que compiten por los mismos cargos bancarios
+ * (ver repartoOptimo.ts). Una propuesta que nunca llegó a mostrarse (messageId 0) no compite.
+ */
+export async function obtenerPropuestasGastoPorEmpresa(empresa: Empresa): Promise<PropuestaGasto[]> {
+  const todas = await leerTodas();
+  return todas.map(({ propuesta }) => propuesta).filter((p) => p.empresa === empresa && p.messageId > 0);
+}
+
+/**
  * La propuesta de gasto ATASCADA más reciente de un chat, para recordársela al modelo en el prompt
  * dinámico (ver PendientesSensibles.gastoPropuesta en core/claude/client.ts) — mismo patrón que
  * seleccionarBorradorParaRecordatorio (core/gmail/emailDraftStore.ts, PR #280), pero con un filtro

@@ -399,7 +399,7 @@ Pedido de Carlos (03-10-2026). Detalle técnico en `docs/transferencias-internas
 
 - **Cómo pedirlo**: «revisa las transferencias internas» (de una empresa o de las tres). Tool `revisar_transferencias_internas`. Solo lee Holded.
 - **Qué llega**: hasta 5 propuestas por pasada, cada una con empresa, fecha, cuenta e importe de salida y de entrada, tasa aplicada y del día en las conversiones, las descripciones de las dos patas y el nivel de confianza.
-- **Botones**: "✅ Conciliar transferencia" (crea un único asiento debe destino / haber origen y concilia los dos movimientos; solo para parejas autorizadas por escrito y con el modo activo), "⏭️ Saltar por ahora" (sigue pendiente y vuelve a proponerse), "🚫 No es una transferencia" (no se vuelve a proponer) y "🔎 Revisar manualmente" (queda a cargo de Carlos en Holded).
+- **Botones**: "✅ Conciliar transferencia" (Wobi pulsa «Transferir» en Holded y concilia los dos movimientos; con el modo activo y `WOBI_TRANSFERENCIAS_ALCANCE=eur` vale para cualquier transferencia en euros; corre en segundo plano, 1–3 min, una cada vez, y avisa al terminar; las conversiones salen sin este botón), "⏭️ Saltar por ahora" (sigue pendiente y vuelve a proponerse), "🚫 No es una transferencia" (no se vuelve a proponer) y "🔎 Revisar manualmente" (queda a cargo de Carlos en Holded).
 - **Seguridad**: apagado por defecto (`WOBI_TRANSFERENCIAS_MODO`); nunca cruza empresas; nunca reutiliza un movimiento; no reintenta una escritura incierta; las conversiones de moneda todavía no se ejecutan.
 
 ## Proyectos de Holded (solo lectura)
@@ -410,4 +410,12 @@ Pedido de Carlos. Tool `consultar_proyectos_holded`; no hace falta ningún coman
 - **Reporte de un proyecto**: «¿cómo va el proyecto Sinfonía Miami de EWORKS?», «rentabilidad del proyecto X», «cuánto se ha facturado y cobrado en X». Devuelve cliente, estado, facturable, fechas, ventas/ingresos, gastos de documentos, coste de personal, gastos totales, beneficio, presupuestado, facturado, cobrado, pendiente y tareas completadas. Los importes son los del resumen agregado de Holded, en la moneda base de la empresa.
 - **Cómo busca**: por id o nombre exacto (sin distinguir mayúsculas ni tildes). Si el texto solo coincide con parte del nombre y hay una única opción, la usa; si hay varias, las lista y pide el nombre exacto o el id, nunca elige por intuición.
 - **Límite importante**: solo ve lo que la clave de API de la empresa puede ver. Un proyecto privado de un usuario, visible en la web, puede no aparecer; en ese caso el asistente dice que «no está visible para la API», nunca que no existe. Si Holded falla, devuelve el error en vez de una lista vacía. El catálogo se guarda 5 minutos en memoria.
+
+## Menú de Telegram (botón de menú, abajo a la izquierda)
+
+Pedido de Carlos (04-10-2026): las órdenes frecuentes deben estar a un clic. El menú se define en `core/telegram/menuComandos.ts` y se publica solo en cada arranque del servidor; para añadir una orden al menú se añade a esa lista.
+
+- `/revisarcorreo` — revisar el correo nuevo.
+- `/transferencias` — detecta las transferencias y conversiones entre cuentas propias sin conciliar (las tres empresas) y publica las propuestas con botones. También vale escrito: «revisa las transferencias internas de WOBA».
+- `/preguntas` — vuelve a mostrar las preguntas pendientes.
 
