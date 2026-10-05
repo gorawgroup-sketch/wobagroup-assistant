@@ -955,7 +955,7 @@ async function intentarConciliar(
       const monedasReales = await obtenerMonedasCuentasReales(empresa);
       const porTipoCambio = await buscarMovimientosPorTipoCambio(
         empresa,
-        { monto, moneda, fecha: fechaBusqueda, proveedor, concepto: descripcionGasto },
+        { monto, moneda, fecha: fechaBusqueda, proveedor, concepto: descripcionGasto, incluirPorConfirmar: true },
         monedasReales
       );
       if (porTipoCambio.length > 0) {

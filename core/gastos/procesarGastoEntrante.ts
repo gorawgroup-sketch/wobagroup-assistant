@@ -1043,6 +1043,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             fecha: datos.fecha,
             proveedor: datos.proveedor,
             concepto: datos.concepto,
+            incluirPorConfirmar: true,
           },
           otrasMonedas
         );
