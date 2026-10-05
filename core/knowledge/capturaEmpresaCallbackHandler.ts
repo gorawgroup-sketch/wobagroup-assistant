@@ -46,8 +46,22 @@ function construirTeclado(seleccionadas: EmpresaCaptura[]): InlineKeyboardButton
   ];
 }
 
-function mensajePregunta(): string {
-  return "📌 Antes de guardar: ¿a qué empresa corresponde? Puedes elegir varias.";
+/**
+ * La selección y los avisos van escritos en el propio mensaje, no solo en el aviso emergente del botón: cuando el
+ * sistema atiende la pulsación con retraso (chat ocupado con otro correo, Sheets lento), Telegram descarta ese aviso
+ * emergente (400) y la persona se quedaba sin ninguna respuesta (caso real, Carlos, 05-10-2026).
+ */
+export function mensajePregunta(seleccionadas: EmpresaCaptura[] = [], aviso?: string): string {
+  return "📌 Antes de guardar: ¿a qué empresa corresponde? Puedes elegir varias." +
+    `\n${seleccionadas.length > 0 ? `Seleccionadas: ${seleccionadas.join(", ")}. Pulsa «Confirmar y guardar».` : "Todavía no hay ninguna seleccionada."}` +
+    (aviso ? `\n\n⚠️ ${aviso}` : "");
+}
+
+/** Aviso que debe verse sí o sí: emergente y además en el mensaje (los botones siguen igual). */
+async function avisarEnMensaje(callback: TelegramCallbackQuery, pendiente: PendienteCapturaEmpresa, aviso: string): Promise<void> {
+  await answerCallbackQuerySafe(callback.id, aviso);
+  await editTelegramMessage(pendiente.chatId, pendiente.messageId, mensajePregunta(pendiente.empresasSeleccionadas, aviso), construirTeclado(pendiente.empresasSeleccionadas))
+    .catch((error) => console.error("[capturaEmpresaCallbackHandler] No se pudo mostrar el aviso en el mensaje (no crítico):", error instanceof Error ? error.message : error));
 }
 
 async function avanzarCapturaDeCorreoSiCorresponde(pendiente: PendienteCapturaEmpresa): Promise<boolean> {
@@ -144,7 +158,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
 
   if (data === "capturaempresa_confirmar") {
     if (pendiente.empresasSeleccionadas.length === 0) {
-      await answerCallbackQuerySafe(callback.id, "Selecciona al menos una empresa antes de confirmar.");
+      await avisarEnMensaje(callback, pendiente, "No se guardó nada todavía: elige al menos una empresa (debe quedar con ✅) y vuelve a pulsar «Confirmar y guardar».");
       return;
     }
 
@@ -154,7 +168,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
       return;
     }
     if (claim.estado === "en_proceso") {
-      await answerCallbackQuerySafe(callback.id, "Esta captura ya se está guardando. Espera un momento antes de reintentar.");
+      await avisarEnMensaje(callback, pendiente, "Esta captura ya se está guardando. Espera un momento antes de reintentar.");
       return;
     }
     let reclamada = claim.pendiente;
@@ -256,7 +270,7 @@ export async function handleCapturaEmpresaCallback(callback: TelegramCallbackQue
       return;
     }
     await answerCallbackQuerySafe(callback.id);
-    await editTelegramMessage(chatId, actualizada.messageId, mensajePregunta(), construirTeclado(actualizada.empresasSeleccionadas));
+    await editTelegramMessage(chatId, actualizada.messageId, mensajePregunta(actualizada.empresasSeleccionadas), construirTeclado(actualizada.empresasSeleccionadas));
     return;
   }
 
