@@ -97,9 +97,13 @@ async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransfe
 
   if (!(await clicPorTexto(page.mainFrame(), ["Transferir"], true))) return { estado: "elemento_no_encontrado", detalle: "No se encontró el botón «Transferir»" };
   if (!(await esperarTexto(page, /Transferir a cuenta contable/, 15_000))) return { estado: "elemento_no_encontrado", detalle: "No se abrió el formulario «Transferir a cuenta contable»" };
-  const formulario = await textoPagina(page);
+  // Solo el diálogo: la tabla del fondo también contiene el importe del movimiento.
+  const formulario = await page.mainFrame().evaluate(() => {
+    const dialogo = (Array.from(document.querySelectorAll('[role="dialog"]')) as any[]).find((x) => /Transferir a cuenta contable/.test(x.innerText ?? ""));
+    return ((dialogo ?? document.body).innerText ?? "").replace(/\s+/g, " ");
+  }).catch(() => "");
   if (!/Movimiento \(1\)/.test(formulario)) return { estado: "elemento_no_encontrado", detalle: "El formulario no muestra exactamente un movimiento; no se tocó nada" };
-  if (!formulario.includes(importeEnPantalla(orden.importe))) return { estado: "elemento_no_encontrado", detalle: `El formulario no muestra el importe ${importeEnPantalla(orden.importe)}; no se tocó nada` };
+  if (!new RegExp(`(^|[^\\d.,])[+-]?${importeEnPantalla(orden.importe).replace(/\./g, "\\.")}(?![\\d,])`).test(formulario)) return { estado: "elemento_no_encontrado", detalle: `El formulario no muestra el importe ${importeEnPantalla(orden.importe)}; no se tocó nada` };
 
   // Cuenta contable: se abre el desplegable, se escribe el número completo y debe quedar UNA sola opción que empiece por él.
   const campo = await page.mainFrame().evaluate(() => {
@@ -115,7 +119,7 @@ async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransfe
   await page.keyboard.type(orden.cuentaContable, { delay: 40 });
   await pausa(1800);
   const opcion = await page.mainFrame().evaluate((numero) => {
-    const candidatas = (Array.from(document.querySelectorAll('[role="option"], li')) as any[])
+    const candidatas = (Array.from(document.querySelectorAll('[role="option"]')) as any[])
       .filter((e) => e.getClientRects().length > 0 && (e.textContent ?? "").replace(/\s+/g, " ").trim().startsWith(numero));
     if (candidatas.length !== 1) return { cuantas: candidatas.length };
     const r = candidatas[0].getBoundingClientRect();
@@ -128,10 +132,12 @@ async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransfe
     const valores = (Array.from(document.querySelectorAll("input")) as any[]).map((i) => i.value ?? "");
     const fecha = (Array.from(document.querySelectorAll('input[type="radio"]')) as any[])
       .find((i) => /fecha movimiento/i.test(i.closest("label")?.textContent ?? i.parentElement?.parentElement?.textContent ?? ""));
-    return { cuenta: valores.some((v) => v.includes(numero)) || (document.body.innerText ?? "").includes(numero), fechaMovimiento: fecha ? fecha.checked : undefined };
+    // Elegida = el desplegable se cerró (no queda ninguna opción a la vista) y el número sigue mostrado en el formulario.
+    const abiertas = (Array.from(document.querySelectorAll('[role="option"]')) as any[]).filter((e) => e.getClientRects().length > 0).length;
+    return { cuenta: abiertas === 0 && (valores.some((v) => v.includes(numero)) || (document.body.innerText ?? "").includes(numero)), fechaMovimiento: fecha ? fecha.checked : undefined };
   }, orden.cuentaContable);
   if (!elegido.cuenta) return { estado: "elemento_no_encontrado", detalle: "La cuenta contable no quedó elegida en el formulario; no se tocó nada" };
-  if (elegido.fechaMovimiento === false) return { estado: "elemento_no_encontrado", detalle: "El formulario no tiene marcada «Fecha movimiento»; no se tocó nada" };
+  if (elegido.fechaMovimiento !== true) return { estado: "elemento_no_encontrado", detalle: "No pude confirmar que el formulario tenga marcada «Fecha movimiento»; no se tocó nada" };
 
   // Se marca ANTES de pulsar: si el navegador se corta justo aquí, lo ocurrido solo se sabe leyendo Holded.
   marcarPulsado(true);

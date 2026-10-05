@@ -107,7 +107,7 @@ test("si algo cambió desde la propuesta no se escribe nada en Holded", async ()
     const h = holded();
     alterar(h);
     const r = await ejecutarTransferencia(registro(), h.deps, SI);
-    assert.equal(r.estado, "revision_manual", nombre);
+    assert.equal(r.estado, "propuesta", nombre);
     assert.match(r.mensaje, motivo, nombre);
     assert.deepEqual(h.escrituras, [], nombre);
   }
@@ -116,7 +116,7 @@ test("si algo cambió desde la propuesta no se escribe nada en Holded", async ()
 test("si al repetir la detección la pareja ya no es inequívoca (apareció otro candidato), no se escribe nada", async () => {
   const h = holded({ noInequivoca: "Ambiguo: alguno de estos movimientos también encaja con otro." });
   const r = await ejecutarTransferencia(registro(), h.deps, SI);
-  assert.equal(r.estado, "revision_manual");
+  assert.equal(r.estado, "propuesta");
   assert.match(r.mensaje, /Ambiguo/);
   assert.deepEqual(h.escrituras, []);
 });
@@ -132,7 +132,7 @@ test("conversiones, transferencias que no son en EUR y registros que no coincide
   for (const [extra, motivo] of casos) {
     const h = holded();
     const r = await ejecutarTransferencia(registro(extra), h.deps, SI);
-    assert.equal(r.estado, "revision_manual");
+    assert.equal(r.estado, "propuesta");
     assert.match(r.mensaje, motivo);
     assert.deepEqual(h.escrituras, []);
   }
@@ -224,6 +224,15 @@ test("el asiento suelto del primer método bloquea mientras exista; una vez borr
   assert.equal(segundo.estado, "verificada");
   assert.equal(segundo.registro.asientoId, "cobro-1");
   assert.deepEqual(h.escrituras, [TRANSFERIR, CONCILIAR]);
+});
+
+test("tras un intento anterior, un movimiento que ya no está libre no se da por «no escrito»: queda para comprobar", async () => {
+  const h = holded();
+  h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 350 });
+  const r = await ejecutarTransferencia(registro({ estado: "fallida" }), h.deps, SI);
+  assert.equal(r.estado, "fallida");
+  assert.doesNotMatch(r.mensaje, /No se escribió nada/);
+  assert.deepEqual(h.escrituras, []);
 });
 
 test("los importes se buscan en pantalla como los escribe Holded", () => {

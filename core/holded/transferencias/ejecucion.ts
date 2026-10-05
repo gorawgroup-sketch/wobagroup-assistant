@@ -105,8 +105,8 @@ export function motivoParaNoEjecutar(
 /** El par cobro/pago de la transferencia, si es exactamente el esperado: un pago en la cuenta de origen y un cobro en la de destino. */
 function parDeTransferencia(r: RegistroTransferencia, pagos: PagoTransferencia[]): { pago: PagoTransferencia; cobro: PagoTransferencia } | undefined {
   const importe = Math.abs(r.importeDestino);
-  const pagosOrigen = pagos.filter((p) => p.tipo === "payment" && p.cuentaId === r.origenCuenta && Math.abs(p.importe - importe) <= CENTIMO);
-  const cobrosDestino = pagos.filter((p) => p.tipo === "collection" && p.cuentaId === r.destinoCuenta && Math.abs(p.importe - importe) <= CENTIMO);
+  const pagosOrigen = pagos.filter((p) => p.tipo === "payment" && p.cuentaId === r.origenCuenta && Math.abs(Math.abs(p.importe) - importe) <= CENTIMO);
+  const cobrosDestino = pagos.filter((p) => p.tipo === "collection" && p.cuentaId === r.destinoCuenta && Math.abs(Math.abs(p.importe) - importe) <= CENTIMO);
   return pagos.length === 2 && pagosOrigen.length === 1 && cobrosDestino.length === 1 ? { pago: pagosOrigen[0], cobro: cobrosDestino[0] } : undefined;
 }
 
@@ -219,7 +219,13 @@ export async function ejecutarTransferencia(
   // 1) Relectura: nada cambió desde la propuesta, y la pareja sigue siendo la única posible.
   const antes = await leerEstado(r, d);
   const motivo = motivoParaNoEjecutar(r, antes) ?? await d.motivoYaNoInequivoca(r);
-  if (motivo) return cerrar("revision_manual", `No se escribió nada en Holded. ${motivo}`);
+  if (motivo) {
+    // Tras un intento anterior no se puede afirmar que no se escribió: queda para comprobar. Si es el primer intento, la
+    // propuesta sigue viva con sus botones (el motivo puede ser pasajero: una lectura vacía, una sincronización atrasada).
+    return registro.estado === "aprobada"
+      ? cerrar("propuesta", `No se escribió nada en Holded. ${motivo}`)
+      : cerrar("fallida", `No continué: ${motivo} Revisa en Holded cómo quedaron los dos movimientos.`);
+  }
   const origenCuenta = antes.origenCuenta!, destinoCuenta = antes.destinoCuenta!;
   const { desde, hasta } = ventana(r, d.hoy());
   const asientosAntes = {
@@ -299,16 +305,24 @@ export const dependenciasHolded: DependenciasEjecucion = {
     const pagos: PagoTransferencia[] = [];
     let cursor: string | undefined;
     for (let pagina = 0; pagina < 40; pagina++) {
-      const parametros: Record<string, string> = { start_date: sumarDias(fecha, -4), end_date: sumarDias(fecha, 4), limit: "200" };
+      // Hasta mañana: Holded podría fechar el cobro y el pago el día en que se pulsa y no el del movimiento.
+      const hasta = [sumarDias(fecha, 4), sumarDias(new Date().toISOString().slice(0, 10), 1)].sort()[1];
+      const parametros: Record<string, string> = { start_date: sumarDias(fecha, -4), end_date: hasta, limit: "200" };
       if (cursor) parametros.cursor = cursor;
       const data = (await holdedGet(empresa, "/payments", parametros)) as { items?: Array<Record<string, unknown>>; cursor?: string; next_cursor?: string; has_more?: boolean };
-      const items = data.items ?? [];
+      // Una respuesta con otra forma no es «no hay transferencia»: sin esta lectura no se puede decidir nada.
+      if (!Array.isArray(data?.items)) throw new Error("Holded devolvió los pagos y cobros con un formato inesperado.");
+      const items = data.items;
       for (const p of items) {
         if (p.document_type !== "trans" || p.document_id !== movimientoId || (p.type !== "payment" && p.type !== "collection")) continue;
         pagos.push({ id: String(p.id ?? ""), tipo: p.type, cuentaId: String(p.bank_account_id ?? ""), importe: importeDeHolded(p.amount), conciliado: p.reconciliation_status === "reconciled" });
       }
       const siguiente = data.next_cursor ?? data.cursor;
-      if (items.length === 0 || data.has_more === false || !siguiente || siguiente === cursor) return pagos;
+      if (items.length === 0 || data.has_more === false) return pagos;
+      if (!siguiente || siguiente === cursor) {
+        if (data.has_more === true) throw new Error("Holded indica más páginas de pagos y cobros pero no da cómo seguir.");
+        return pagos;
+      }
       cursor = siguiente;
     }
     throw new Error("Holded devolvió demasiadas páginas de pagos y cobros; no se puede verificar con seguridad.");
