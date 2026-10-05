@@ -122,6 +122,20 @@ Desde entonces, con `WOBI_TRANSFERENCIAS_MODO=activo` y `WOBI_TRANSFERENCIAS_ALC
 inequívoca se ejecuta al pulsar su botón, sin autorización escrita pareja a pareja. Las conversiones se proponen sin botón
 de conciliar.
 
+### Conversiones de moneda (en prueba)
+
+Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint y eWorks, jun–ago 2026):
+
+1. «Transferir» se pulsa sobre la **SALIDA**, con la cuenta contable del banco de destino. Holded crea el asiento por el valor
+   en EUR de la salida (debe destino / haber origen), un pago conciliado en origen y un cobro pendiente en destino.
+2. La **entrada** se concilia por la API contra ese cobro. Si vale menos en EUR que la salida, el cobro queda
+   `partial_reconciled` con la diferencia de cambio pendiente; así es como queda también a mano.
+
+Límites actuales: una pata debe ser en euros; si la entrada vale MÁS en EUR que la salida no se ejecuta (ese resto va a la
+cuenta de diferencias de cambio de la empresa —en Footprint, 62600000— y ese segundo paso no está construido); diferencia
+máxima 3 %. Las conversiones solo se ejecutan pareja a pareja (`WOBI_TRANSFERENCIAS_CASOS`), aunque
+`WOBI_TRANSFERENCIAS_ALCANCE=eur` esté activo, hasta que Carlos valide la prueba.
+
 ### Carril propio
 
 La ejecución corre en segundo plano y en su propia cola (una transferencia cada vez, en el orden en que se pulsaron): el
@@ -132,7 +146,6 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Conversiones de moneda** (EUR↔USD): «Transferir» también las admite (Holded valora el movimiento en EUR y el cobro
-   o pago de la otra cuenta queda con un resto pequeño por la diferencia de cambio). Falta decidir con una conversión real
-   cómo se cierra ese resto. El ejecutor las rechaza hasta entonces.
+1. **Conversiones**: validar la prueba de una sola (eWorks 02/09, −433,96 EUR → +500 USD), después el caso con diferencia a favor
+   (cuenta de diferencias de cambio por empresa) y abrirlas.
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.

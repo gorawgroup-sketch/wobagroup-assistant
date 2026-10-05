@@ -30,9 +30,10 @@ export function alcanceEurAbierto(env: NodeJS.ProcessEnv = process.env): boolean
   return (env.WOBI_TRANSFERENCIAS_ALCANCE ?? "").trim().toLowerCase() === "eur";
 }
 
-export function ejecucionAutorizada(clave: string, env: NodeJS.ProcessEnv = process.env): boolean {
+/** Las conversiones de moneda siguen pareja a pareja (WOBI_TRANSFERENCIAS_CASOS) hasta que Carlos valide su prueba. */
+export function ejecucionAutorizada(clave: string, env: NodeJS.ProcessEnv = process.env, tipo: "transferencia" | "conversion" = "transferencia"): boolean {
   if (modoTransferencias(env) !== "activo" || !CLAVE.test(clave)) return false;
-  return alcanceEurAbierto(env) || casosAutorizados(env).has(clave);
+  return (tipo === "transferencia" && alcanceEurAbierto(env)) || casosAutorizados(env).has(clave);
 }
 
 export const EMPRESAS_TRANSFERENCIAS: readonly Empresa[] = ["WOBA", "EWORKS", "Footprint"];
