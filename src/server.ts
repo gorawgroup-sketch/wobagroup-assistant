@@ -64,6 +64,8 @@ import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAl
 import { guardarPendienteReclasificacion } from "../core/documental/pendienteReclasificacionStore";
 import { esMensajeCaptura } from "../core/knowledge/capture";
 import { ejecutarComandoPreguntas, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
+import { consumirPendienteExplicacion } from "../core/cashflow/pendienteExplicacionStore";
+import { continuarConExplicacion } from "../core/cashflow/explicacionCashflow";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
 import { iniciarSeleccionEmpresaCaptura, handleCapturaEmpresaCallback } from "../core/knowledge/capturaEmpresaCallbackHandler";
 import { obtenerPendientesCapturaEmpresaPorChat } from "../core/knowledge/pendienteCapturaEmpresaStore";
@@ -1852,6 +1854,23 @@ async function intentarResolverPendienteTextoLibre(
 ): Promise<boolean> {
   if (await resolverRespuestaCarpeta(chatId, replyToMessageId, replyToText,
     (pendiente) => continuarRespuestaDesambiguacion(chatId, texto, pendiente))) return true;
+
+  // «📝 Explicar» del aviso de movimientos sin registrar en el cashflow: la respuesta se convierte en una regla aprendida.
+  const pendienteExplicacion = await consumirPendienteExplicacion(chatId, replyToMessageId);
+  if (pendienteExplicacion) {
+    try {
+      await sendTelegramMessage(chatId, await continuarConExplicacion(pendienteExplicacion, texto));
+    } catch (error) {
+      // Ya produjo efectos: nunca se re-arma para "reintentar" (ver core/utils/errorTrasEjecucion.ts).
+      if (esErrorTrasEjecucion(error)) {
+        await sendTelegramMessage(chatId, mensajeFalloTrasEjecucion(error)).catch(() => undefined);
+        throw error;
+      }
+      console.error("Error aprendiendo la explicación del cashflow:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(chatId, "⚠️ No pude guardar la regla ahora. No se cambió nada; pulsa «📝 Explicar» otra vez cuando quieras.");
+    }
+    return true;
+  }
 
   const pendienteMontoPago = await consumirPendienteMontoPago(chatId);
   if (pendienteMontoPago) {

@@ -62,7 +62,9 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
 
     for (const empresa of empresas) {
       try {
-        const candidatos = await detectarNoRegistrados(empresa, semanaLabel, desde, hasta);
+        const avisosReglas: string[] = [];
+        const candidatos = await detectarNoRegistrados(empresa, semanaLabel, desde, hasta, avisosReglas);
+        if (avisosReglas.length > 0) partes.push(`${empresa}: ${avisosReglas.join(" ")}`);
 
         if (candidatos.length === 0) {
           partes.push(`✅ ${empresa}: no falta nada por proponer en ${semanaLabel}.`);

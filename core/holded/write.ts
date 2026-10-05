@@ -5803,6 +5803,41 @@ export function residuoMovimientoFueraDeMargen(montoMovimiento: number, montoEnl
 }
 
 /**
+ * Máximo (5 % del cargo) que se acepta como margen de conversión de la tarjeta cuando el gasto y el cargo están en monedas
+ * distintas. Más allá ya no es un spread: puede ser otro documento y sigue pidiendo revisión.
+ */
+export const MARGEN_DIFERENCIA_CAMBIO_BANCARIO = 0.05;
+
+/**
+ * Qué hacer con el hueco de un movimiento `partial` ya enlazado a una compra. Caso real 2026-10-05 (hotel, Footprint):
+ * gasto de 364.546 COP pagado por completo con 97,59 € ligados a un cargo de 112,87 USD; el banco cobró 2,99 USD más de lo
+ * que vale el gasto al cambio del documento (2,6 %). Ese hueco superaba el margen de redondeo (0,5 %), así que la
+ * conciliación quedaba «en revisión» para siempre: «Verificar» solo releía lo mismo y no dejaba seguir con el correo.
+ *
+ * Es una diferencia de cambio bancaria (no una conciliación a medias) solo si TODO esto se cumple: el vínculo está
+ * verificado y la compra pagada por completo (`ok`), no es un cargo mayor elegido, el cargo y el gasto están en monedas
+ * distintas y el hueco no pasa del 5 % del cargo. En cualquier otro caso se mantiene el comportamiento anterior.
+ */
+export function decidirResiduoMovimiento(p: {
+  montoMovimiento: number;
+  montoEnlazado: number;
+  ok: boolean;
+  parcialEsperado: boolean;
+  monedaMovimiento?: string;
+  monedaCompra?: string;
+}): { pendienteEnMovimiento?: number; diferenciaCambioBancario?: number } {
+  const residuo = residuoMovimientoFueraDeMargen(p.montoMovimiento, p.montoEnlazado);
+  if (residuo === undefined) return {};
+  const monedaMovimiento = (p.monedaMovimiento ?? "").toUpperCase().trim();
+  const monedaCompra = (p.monedaCompra ?? "").toUpperCase().trim();
+  const esDiferenciaDeCambio =
+    p.ok && !p.parcialEsperado &&
+    monedaMovimiento !== "" && monedaCompra !== "" && monedaMovimiento !== monedaCompra &&
+    residuo <= p.montoMovimiento * MARGEN_DIFERENCIA_CAMBIO_BANCARIO;
+  return esDiferenciaDeCambio ? { diferenciaCambioBancario: residuo } : { pendienteEnMovimiento: residuo };
+}
+
+/**
  * Confirma que el importe conciliado del movimiento terminó como pago del
  * documento correcto: misma cuenta bancaria, fecha e importe. Esto evita
  * confundir un movimiento conciliado contra otro documento con el efecto
@@ -5873,6 +5908,19 @@ interface MovimientoParaAjusteCambio {
   currency?: string;
 }
 
+/**
+ * Margen del residuo cuando el cargo coincide EXACTAMENTE con el total nativo del documento (el resto de pruebas de
+ * evaluarAjusteCambioResidual: movimiento conciliado al 100 %, un único pago igual al importe contable del movimiento,
+ * pagado + pendiente = total). Con esa evidencia el residuo no puede ser una deuda real —el banco cobró justo lo que vale
+ * la factura— y es solo la diferencia entre el cambio del documento (Holded lo redondea a 2 decimales) y el que aplicó el
+ * banco. Caso real Salesmate 600 USD (Footprint, 2026-10-05): 1,83 USD pendientes (0,3 %) superaban el techo de 1 unidad de
+ * margenResiduoConversion y la conciliación quedaba «incierta» sin cerrarse. Se admite hasta el 2 % del total (techo 50).
+ * Solo lo usa esa función: el resto de comprobaciones (conciliación múltiple, huecos del movimiento) conserva su margen.
+ */
+export function margenAjusteCambioExacto(totalNativo: number): number {
+  return Math.min(50, Math.max(margenResiduoConversion(totalNativo), Math.abs(totalNativo) * 0.02));
+}
+
 export interface AjusteCambioResidualElegible {
   monto: number;
   monedaDocumento: string;
@@ -5921,7 +5969,8 @@ export function evaluarAjusteCambioResidual(
   }
 
   const pendiente = parsearMontoHolded(compra.payments_pending);
-  const margenCentimos = Math.round(margenResiduoConversion(totalNativo) * 100);
+  // Más abajo se exige que el cargo coincida exactamente con el total nativo: con esa prueba rige el margen ampliado.
+  const margenCentimos = Math.round(margenAjusteCambioExacto(totalNativo) * 100);
   if (!Number.isFinite(pendiente) || Math.round(pendiente * 100) <= 0 || Math.round(pendiente * 100) > margenCentimos) {
     return undefined;
   }
@@ -5961,7 +6010,14 @@ export function evaluarAjusteCambioResidual(
       (centimos(totalNativo) - (centimos(totalPagadoNativo) + pendienteCentimos) < 0 ||
         centimos(totalNativo) - (centimos(totalPagadoNativo) + pendienteCentimos) > 1)) return undefined;
 
-  const montoAjusteCentimos = Math.round((pendiente / tasaCambio) * 100);
+  // La API redondea `currency_change` a 2 decimales (1,1225 se lee como 1,12): con residuos de más de unos céntimos ese error
+  // dejaría un pendiente final fuera de tolerancia tras el pago. El cambio EFECTIVO de Holded sale de sus propios pagos
+  // (pagado nativo ÷ pagos en EUR); solo se usa si no se aparta más de un 1 % del declarado.
+  const tasaEfectiva = totalPagos > 0 ? totalPagadoNativo / totalPagos : NaN;
+  const tasaUsada = Number.isFinite(tasaEfectiva) && tasaEfectiva > 0 && Math.abs(tasaEfectiva - tasaCambio) / tasaCambio <= 0.01
+    ? tasaEfectiva
+    : tasaCambio;
+  const montoAjusteCentimos = Math.round((pendiente / tasaUsada) * 100);
   if (montoAjusteCentimos <= 0 || montoAjusteCentimos > margenCentimos) return undefined;
   const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
 
@@ -6215,9 +6271,11 @@ async function inspeccionarConciliacionRegistrada(
   let pendienteEnCompra: number | undefined;
   let ajusteCambioDivisa: ResultadoConciliacionMovimiento["ajusteCambioDivisa"];
   let pagoDelDocumentoConfirmado = false;
+  let monedaCompra: string | undefined;
   if (tieneEnlace) {
     try {
       const compra = await obtenerCompraHoldedPorId(registro.empresa, registro.documentId);
+      monedaCompra = compra.currency;
       const pago = verificarPagoCompraEnMovimiento(
         compra,
         registro.accountId,
@@ -6262,18 +6320,19 @@ async function inspeccionarConciliacionRegistrada(
   // movimientoParcial y pendienteEnMovimiento nacen de la MISMA decisión: si el residuo es de
   // redondeo, ninguno de los dos debe forzar revisión (antes movimientoParcial=true por sí solo ya
   // la forzaba, sin mirar el tamaño del hueco).
-  const pendienteEnMovimiento = movimientoParcial
-    ? residuoMovimientoFueraDeMargen(montoMovimiento, montoEnlazado)
-    : undefined;
   // Conciliación parcial ELEGIDA por el operador (cargoMayor.ts): el resto del cargo espera a otro gasto y no es una
   // incidencia, así que no se informa como parcial a revisar. Lo dice el propio registro durable (su `proceso`).
   const parcialEsperado = registro.proceso === PROCESO_CONCILIACION_CARGO_MAYOR;
+  const { pendienteEnMovimiento, diferenciaCambioBancario } = movimientoParcial
+    ? decidirResiduoMovimiento({ montoMovimiento, montoEnlazado, ok, parcialEsperado, monedaMovimiento: movimiento?.currency, monedaCompra })
+    : {};
   const resultado = {
     ok,
     statusFinal,
     montoEnlazado,
     pendienteEnCompra,
     ajusteCambioDivisa,
+    ...(diferenciaCambioBancario !== undefined ? { diferenciaCambioBancario } : {}),
     movimientoParcial: parcialEsperado ? undefined : pendienteEnMovimiento !== undefined || undefined,
     pendienteEnMovimiento: parcialEsperado ? undefined : pendienteEnMovimiento,
     ...(parcialEsperado && pendienteEnMovimiento !== undefined ? { restoEsperadoEnMovimiento: pendienteEnMovimiento } : {}),

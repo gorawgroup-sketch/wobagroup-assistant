@@ -77,6 +77,17 @@ function margenResiduoConversion(total: number): number {
   return Math.min(1, Math.max(0.02, Math.abs(total) * 0.005));
 }
 
+/**
+ * MISMA fórmula que margenAjusteCambioExacto en core/holded/write.ts (duplicada por el mismo motivo): cuando el cargo
+ * coincide exactamente con el total nativo, el residuo admitido llega al 2 % del total (techo 50). Este es el ÚLTIMO
+ * guardián antes de escribir el pago: tener aquí un tope más estricto que el de evaluarAjusteCambioResidual descartaba
+ * el ajuste ya demostrado (caso Salesmate 600 USD, 1,83 USD pendientes, 2026-10-05). Quien exige un margen más estricto
+ * (conciliación múltiple) lo comprueba antes, en su propio código.
+ */
+function margenAjusteCambioExacto(total: number): number {
+  return Math.min(50, Math.max(margenResiduoConversion(total), Math.abs(total) * 0.02));
+}
+
 export function identidadAjusteCambio(
   entrada: {
     empresa: Empresa;
@@ -104,7 +115,7 @@ export function identidadAjusteCambio(
     throw new Error("El ajuste de cambio no puede registrarse en la misma cuenta extranjera conciliada.");
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) throw new Error("La fecha del ajuste debe usar YYYY-MM-DD.");
-  const margenCentimos = Math.round(margenResiduoConversion(entrada.totalNativoCompra) * 100);
+  const margenCentimos = Math.round(margenAjusteCambioExacto(entrada.totalNativoCompra) * 100);
   if (montoCentimos <= 0 || montoCentimos > margenCentimos) {
     throw new Error(
       `La regularización automática solo admite un residuo entre 0,01 y el margen de esta compra (${(margenCentimos / 100).toFixed(2)}).`
