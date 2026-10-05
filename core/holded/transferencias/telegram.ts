@@ -22,7 +22,7 @@ const CERRADOS: ReadonlyArray<RegistroTransferencia["estado"]> = ["propuesta", "
  * así que todo lo que deba poder pulsarse de nuevo se publica en un mensaje nuevo.
  */
 export function botonesPropuesta(id: string, opciones: { conConciliar?: boolean; soloVerificar?: boolean } = {}) {
-  if (opciones.soloVerificar) return [[{ text: "🔎 Verificar cómo quedó en Holded", callback_data: `transfint_conciliar:${id}` }]];
+  if (opciones.soloVerificar) return [[{ text: "🔎 Comprobar en Holded y continuar", callback_data: `transfint_conciliar:${id}` }]];
   return [
     ...(opciones.conConciliar === false ? [] : [[{ text: "✅ Conciliar transferencia", callback_data: `transfint_conciliar:${id}` }]]),
     [{ text: "⏭️ Saltar por ahora", callback_data: `transfint_saltar:${id}` }, { text: "🚫 No es una transferencia", callback_data: `transfint_noes:${id}` }],
@@ -36,7 +36,7 @@ export function textoPropuesta(p: PropuestaTransferencia): string {
       ? "Está bloqueada: no se puede conciliar desde aquí; decide qué hacer con ella."
       : p.tipo === "conversion"
         ? "Es una conversión de moneda: por ahora solo se propone; todavía no se ejecuta desde aquí."
-        : "Al conciliar se crea un único asiento (debe la cuenta de destino, haber la de origen) y se concilian los dos movimientos. No se crea ingreso ni gasto.") +
+        : "Al conciliar se hace en Holded la transferencia entre las dos cuentas (un único asiento: debe la de destino, haber la de origen) y quedan conciliados los dos movimientos. No se crea ingreso ni gasto.") +
     `\nReferencia para autorizarla: ${p.clave}`;
 }
 
@@ -134,15 +134,17 @@ export async function handleTransferenciasCallback(callback: TelegramCallbackQue
     // Un doble toque no puede lanzar dos ejecuciones: se serializa por pareja y el estado se relee dentro.
     const resultado = await conMutex(`transferencia:${registro.clave}`, async () => {
       const actual = (await obtenerRegistroPorId(registro.id)) ?? registro;
-      if (actual.estado !== "propuesta") return ejecutarTransferencia(actual);
+      // Escribir exige el modo activo y la autorización escrita de la pareja; sin ella el ejecutor solo lee e informa.
+      const opciones = { permitirEscritura: ejecucionAutorizada(actual.clave) };
+      if (actual.estado !== "propuesta") return ejecutarTransferencia(actual, undefined, opciones);
       const aprobada: RegistroTransferencia = { ...actual, estado: "aprobada", detalle: "Aprobada por el operador." };
       await guardarRegistro(aprobada);
-      return ejecutarTransferencia(aprobada);
+      return ejecutarTransferencia(aprobada, undefined, opciones);
     });
     const icono = resultado.estado === "verificada" ? "✅" : resultado.estado === "fallida" ? "🛑" : "⚠️";
     await cerrarMensaje(`${icono} ${resumenRegistro(registro)}\n${resultado.mensaje}`);
     if (resultado.estado === "propuesta") await republicar(resultado.registro, `🔁 ${resumenRegistro(registro)}\nSigue pendiente; puedes volver a intentarlo.`, {});
-    if (resultado.estado === "fallida") await republicar(resultado.registro, `🛑 ${resumenRegistro(registro)}\nCuando lo hayas revisado en Holded, puedo comprobar de nuevo cómo quedó.`, { soloVerificar: true });
+    if (resultado.estado === "fallida") await republicar(resultado.registro, `🛑 ${resumenRegistro(registro)}\nCuando lo hayas revisado en Holded, pulsa: leo cómo quedó y, si la pareja está autorizada y no hay nada a medias, la termino.`, { soloVerificar: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("[transferencias] Error ejecutando la transferencia:", message);
