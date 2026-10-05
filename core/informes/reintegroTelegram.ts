@@ -27,9 +27,11 @@ export function rangoDeMes(mes: string): { desde: string; hasta: string } | unde
 }
 
 /** El mismo orden y numeración que el informe: primero los pagados, después los no pagados. */
-export function gastosNumerados(gastos: GastoEtiquetado[]): Array<{ numero: number; gasto: GastoEtiquetado }> {
+export function gastosNumerados(gastos: GastoEtiquetado[], sinDistinguirPago = false): Array<{ numero: number; gasto: GastoEtiquetado }> {
   const r = resumirReintegro(gastos);
-  return [...r.pagados, ...r.sinPagar].map((gasto, i) => ({ numero: i + 1, gasto }));
+  // Sin distinguir pago: un único listado en el orden de fecha (el mismo que usa el PDF), solo los gastos de la moneda principal.
+  const lista = sinDistinguirPago ? gastos.filter((g) => g.moneda === r.moneda) : [...r.pagados, ...r.sinPagar];
+  return lista.map((gasto, i) => ({ numero: i + 1, gasto }));
 }
 
 export function nombreComprobante(numero: number, gasto: GastoEtiquetado, original: string, indice: number): string {
@@ -46,6 +48,8 @@ export interface PeticionReintegro {
   destinatario?: string;
   /** Solo los gastos pagados en bancos (sin la parte de «sin pagar»). */
   soloPagados?: boolean;
+  /** Todos los gastos en un único listado y total, sin mencionar si están pagados (ver FiltrosReintegro). */
+  sinDistinguirPago?: boolean;
   /** Proveedores/palabras a excluir del informe (se cobran por separado), p. ej. «Northgate España». */
   excluir?: string[];
 }
@@ -59,16 +63,22 @@ export async function enviarInformeReintegro(chatId: number, p: PeticionReintegr
   }
   // Los filtros viajan en el botón del ZIP: el PDF y los comprobantes usan EXACTAMENTE los mismos (misma lista y numeración).
   const baseBoton = `reintegrozip:${p.empresa}:${etiquetaCompacta(p.etiqueta)}:${p.desde}:${p.hasta}`;
-  const filtros = ajustarFiltrosAlBoton(baseBoton, { soloPagados: p.soloPagados === true, excluir: normalizarExclusiones(p.excluir ?? []) });
+  const filtros = ajustarFiltrosAlBoton(baseBoton, {
+    soloPagados: p.soloPagados === true && p.sinDistinguirPago !== true,
+    ...(p.sinDistinguirPago === true ? { sinDistinguirPago: true } : {}),
+    excluir: normalizarExclusiones(p.excluir ?? []),
+  });
   const { gastos, excluidos, omitidosSinPagar } = prepararGastosReintegro(encontrados, filtros);
   if (gastos.length === 0) {
     return `Tras aplicar los filtros no queda ningún gasto (excluidos ${excluidos.length}, sin pagar en banco ${omitidosSinPagar.length}); no se generó el informe.`;
   }
   const r = resumirReintegro(gastos);
   const pdf = await generarInformeReintegroPDF({
-    ...p, gastos, cobertura, soloPagados: filtros.soloPagados, exclusiones: p.excluir?.length ? p.excluir : undefined,
+    ...p, gastos, cobertura, soloPagados: filtros.soloPagados, sinDistinguirPago: filtros.sinDistinguirPago === true, exclusiones: p.excluir?.length ? p.excluir : undefined,
   });
-  const totales = filtros.soloPagados
+  const totales = filtros.sinDistinguirPago
+    ? `Total a reintegrar: ${importe(r.total, r.moneda)} (${gastos.length} gastos)`
+    : filtros.soloPagados
     ? `Pagado en bancos: ${importe(r.totalPagado, r.moneda)} (${r.pagados.length} gastos) · Total a reintegrar: ${importe(r.total, r.moneda)}`
     : `Pagado en bancos: ${importe(r.totalPagado, r.moneda)} (${r.pagados.length}) · Sin pagar en bancos: ${importe(r.totalSinPagar, r.moneda)} (${r.sinPagar.length}) · Total: ${importe(r.total, r.moneda)} (${r.pagados.length + r.sinPagar.length})`;
   await sendTelegramDocument(chatId, pdf, `Reintegro_${paraArchivo(p.persona)}_${paraArchivo(periodo)}.pdf`, `Solicitud de reintegro — ${p.persona} — ${periodo}\n${totales}`);
@@ -114,7 +124,7 @@ export async function handleReintegroZipCallback(callback: TelegramCallbackQuery
     const { gastos: encontrados } = await buscarGastosDeEtiqueta(empresa as Empresa, etiqueta, desde, hasta);
     // Mismos filtros y misma preparación que el informe (vienen en el botón): la numeración coincide con la del PDF.
     const { gastos } = prepararGastosReintegro(encontrados, decodificarFiltros(segmentoFiltros));
-    const numerados = gastosNumerados(gastos);
+    const numerados = gastosNumerados(gastos, decodificarFiltros(segmentoFiltros).sinDistinguirPago === true);
     const sinComprobante: string[] = [];
     const fallidos: string[] = [];
     const lotes: Array<{ zip: JSZip; bytes: number; archivos: number }> = [{ zip: new JSZip(), bytes: 0, archivos: 0 }];
