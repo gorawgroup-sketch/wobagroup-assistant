@@ -44,6 +44,17 @@ export const ACCIONES_REABRIBLES_TRAS_COMPLETAR: ReadonlySet<string> = new Set([
   "loteimpuestos_confirmar",
   "loteimpuestos_cancelar",
 ]);
+/**
+ * «Verificar resultado anterior» (`gasto_conciliar_si:ID:lectura`, `gasto_conciliar_elegir:ID:N:lectura`): solo relee compra y banco
+ * y, como mucho, cierra el residuo de cambio con un registro durable idempotente, así que repetirlo no puede duplicar nada. Cuando
+ * la verificación aún no cierra (p. ej. mientras se despliega un arreglo) el sistema vuelve a mostrar ESE mismo botón en el mismo
+ * mensaje; sin reabrirlo, la segunda pulsación quedaba bloqueada para siempre con «Esta acción ya fue procesada» (Salesmate
+ * 600 USD, 2026-10-05). La variante que concilia de verdad (sin `:lectura`) conserva la deduplicación total.
+ */
+export function esVerificacionSoloLectura(data: string | undefined): boolean {
+  return /^gasto_conciliar_(?:si|elegir):[^:]+(?::\d+)?:lectura$/.test(data ?? "");
+}
+
 /** Un doble toque o un reenvío de Telegram ocurren en segundos; pasado este margen es una decisión nueva. */
 export const VENTANA_DUPLICADO_CALLBACK_MS = 45_000;
 
@@ -84,7 +95,8 @@ export function crearEntregaTelegram(
     : update.message ? "mensaje" : "otro";
 
   const accion = (callback?.data ?? "").split(":")[0];
-  const reabrible = Boolean(callback && callbackSensible && ACCIONES_REABRIBLES_TRAS_COMPLETAR.has(accion));
+  const reabrible = Boolean(callback && callbackSensible &&
+    (ACCIONES_REABRIBLES_TRAS_COMPLETAR.has(accion) || esVerificacionSoloLectura(callback.data)));
 
   return {
     ...(reabrible ? { reabrirCompletadaTrasMs: VENTANA_DUPLICADO_CALLBACK_MS } : {}),
