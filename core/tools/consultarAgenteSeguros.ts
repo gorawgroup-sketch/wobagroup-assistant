@@ -4,8 +4,9 @@ import type { ToolContext, ToolDefinition } from "./types";
 
 /** Cabecera que acompaña a la respuesta del especialista para que Wobi la transmita sin recortarla. */
 export const CABECERA_RESPUESTA_AGENTE =
-  "[Respuesta de Wobi Seguros, el especialista de seguros de Wobi. Transmítela a la persona tal cual (puedes ajustar el saludo y el tono); " +
-  "no quites cifras, fechas, fuentes ni avisos, y no añadas datos de seguros que no estén aquí.]";
+  "[Respuesta de Wobi Seguros, el especialista de seguros de Wobi. Está redactada para ser la respuesta FINAL: entrégasela a la persona COPIADA LITERAL, " +
+  "palabra por palabra, tal como aparece entre las comillas triples. No la resumas, no la reordenes, no cambies cifras ni fechas y no añadas datos de seguros " +
+  "que no estén aquí. Solo puedes poner un saludo breve antes y, al final, preguntar si necesita algo más.]";
 
 export interface DepsRespuestaAgente {
   consultar(peticion: { pregunta: string; contexto?: string; chatId?: number }): Promise<{ texto: string }>;
@@ -20,7 +21,7 @@ export async function responderConPuertaUnica(
 ): Promise<string> {
   try {
     const respuesta = await deps.consultar(peticion);
-    return `${CABECERA_RESPUESTA_AGENTE}\n\n${respuesta.texto}`;
+    return `${CABECERA_RESPUESTA_AGENTE}\n\n"""\n${respuesta.texto}\n"""`;
   } catch (error) {
     const motivo = error instanceof Error ? error.message : String(error);
     console.error("[consultarAgenteSeguros] El especialista no pudo responder; se devuelven los datos crudos del registro:", motivo);
@@ -55,7 +56,8 @@ export const consultarAgenteSegurosTool: ToolDefinition = {
     "y también para pedirle que anote algo (una decisión, un pago que ya se hizo). Tiene su propia memoria (decisiones de Carlos, contactos, asuntos pendientes), lee el banco, el correo y los documentos de las pólizas, " +
     "y actualiza el registro cuando la persona se lo pide. NO razones tú sobre seguros ni respondas de memoria: pásale la pregunta. En `pregunta` pon el mensaje de la persona TAL CUAL lo escribió " +
     "(literal, sin reescribirlo ni resumirlo: si pide un cambio en el registro, el especialista solo lo hace citando sus palabras exactas). En `contexto`, si hace falta, 1-3 frases de la conversación. " +
-    "Tarda entre 10 y 40 segundos. Transmite su respuesta completa, sin recortar cifras, fechas, fuentes ni avisos.",
+    "Para vencimientos y próximos pagos de seguros usa SIEMPRE esta herramienta y no consultar_proximas_alertas (que solo tiene fechas aproximadas del calendario fiscal). " +
+    "Tarda entre 10 y 100 segundos. Transmite su respuesta completa, sin recortar cifras, fechas, fuentes ni avisos.",
   input_schema: {
     type: "object",
     properties: {
