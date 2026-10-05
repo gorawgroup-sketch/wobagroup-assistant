@@ -17,7 +17,7 @@ export const informeReintegroGastosTool: ToolDefinition = {
     "el listado normal de Holded no devuelve. Úsala cuando pidan los gastos de alguien para reclamarlos o refacturarlos " +
     "a otra empresa («gastos de Nuria de septiembre para pedir el reintegro a MIMO»), o un informe/listado descargable " +
     "de los gastos de una persona o proyecto. Para una consulta rápida sin documento usa " +
-    "buscar_gastos_por_etiqueta_holded. Solo lee Holded; no crea ni modifica nada.",
+    "buscar_gastos_por_etiqueta_holded. Con solo_pagados_en_banco y excluir_proveedores el PDF y el ZIP llevan los mismos gastos y numeración. Solo lee Holded; no crea ni modifica nada.",
   input_schema: {
     type: "object",
     properties: {
@@ -28,6 +28,8 @@ export const informeReintegroGastosTool: ToolDefinition = {
       desde: { type: "string", description: "Inicio del periodo YYYY-MM-DD, si no es un mes natural." },
       hasta: { type: "string", description: "Fin del periodo YYYY-MM-DD, si no es un mes natural." },
       destinatario: { type: "string", description: "Empresa a la que se pide el reintegro (ej. 'MIMO'). Opcional." },
+      solo_pagados_en_banco: { type: "boolean", description: "true = el informe y los comprobantes incluyen SOLO los gastos pagados en bancos (sin la parte de «sin pagar»). Úsalo cuando pidan «solo lo descontado de bancos»." },
+      excluir_proveedores: { type: "array", items: { type: "string" }, description: "Proveedores/palabras a EXCLUIR del informe y de los comprobantes porque se cobran por separado (ej. ['Northgate España'] para el renting)." },
     },
     required: ["empresa", "etiqueta"],
   },
@@ -48,6 +50,8 @@ export const informeReintegroGastosTool: ToolDefinition = {
       empresa, etiqueta, desde, hasta,
       persona: texto(input.persona) || etiqueta.charAt(0).toUpperCase() + etiqueta.slice(1),
       destinatario: texto(input.destinatario) || undefined,
+      soloPagados: input.solo_pagados_en_banco === true,
+      excluir: Array.isArray(input.excluir_proveedores) ? input.excluir_proveedores.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()) : undefined,
     });
   },
 };
