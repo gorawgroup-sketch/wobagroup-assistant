@@ -7,7 +7,7 @@ Pedido de Carlos (05-10-2026): que **toda la información de Seguros esté actua
 - **Claude Code (backend, ya hecho):** qué datos entrega Seguros. Contrato en `core/seguros/estadoCerebro.ts` (la forma exacta, comentada) y un ejemplo real en `docs/ejemplos/estado-seguros.json`. Si el front necesita un dato que no está, **se pide a Claude Code**; el front no recalcula nada de seguros ni lee Sheets.
 - **Codex (front):** dibujar esos datos en el Núcleo, con el diseño y las reglas que ya existen. Archivos: `frontend-cerebro/`. No tocar `core/`.
 - Antes de empezar: leer `docs/trabajo-en-curso.md` y añadir tu fila (área «Cerebro (front)»). Rama sugerida: `codex/seguros-panel`, un solo PR.
-- **Orden de fusión de los datos** (necesario para verificar en vivo): PR #352 (vigilante) → #354 (agente) → el PR del contrato de datos (`claude/seguros-estado-cerebro`). Puedes construir el front ya contra el JSON de ejemplo y verificar en vivo cuando estén fusionados.
+- **Los datos ya están en `main` y desplegados** (PR #355: el vigilante, el agente y el contrato de datos llegaron juntos). Parte de `origin/main` actual, construye contra el JSON de ejemplo y verifica en vivo con `GET /api/cerebro/estado`.
 
 ## Lo que hay hoy y está mal (comprobado en producción el 05-10-2026)
 
@@ -49,7 +49,7 @@ Pedido de Carlos (05-10-2026): que **toda la información de Seguros esté actua
 
 - Actualizar `frontend-cerebro/src/companyScope.test.mjs` (contador por vigentes, filtro de `proximos`). Pruebas nuevas de los helpers con `docs/ejemplos/estado-seguros.json` como fixture: distintivo por estado, primera frase de las notas, agrupación de memoria, ≤ 60 días, `null` ⇒ «Sin lectura actual».
 - `npm test` y `npm run build`.
-- En vivo, tras fusionar los PRs de datos: `GET /api/cerebro/estado` debe traer `seguros.resumen.vigentes = 6`, `seguros.proximos` con 11 entradas, `seguros.memoria` con 16, `seguros.esperandoACarlos` con 3 y `seguros.documentos` con 2; el panel debe mostrar 6 vigentes, el recibo de Markel de 323,24 € como sin confirmar, y el cargo en tránsito. Captura de pantalla de las tres vistas (WOBA, eWorks, Footprint) y de «Sin lectura actual» simulando `complementosDisponibles: false`.
+- En vivo (los datos ya están desplegados): `GET /api/cerebro/estado` debe traer `seguros.resumen.vigentes = 6`, `seguros.proximos` con 11 entradas, `seguros.memoria` con 16, `seguros.esperandoACarlos` con 3 y `seguros.documentos` con 2; el panel debe mostrar 6 vigentes, el recibo de Markel de 323,24 € como sin confirmar, y el cargo en tránsito. Captura de pantalla de las tres vistas (WOBA, eWorks, Footprint) y de «Sin lectura actual» simulando `complementosDisponibles: false`.
 
 ## Fuera de alcance
 
