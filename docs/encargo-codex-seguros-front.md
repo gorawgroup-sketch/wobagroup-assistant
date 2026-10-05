@@ -38,6 +38,8 @@ Pedido de Carlos (05-10-2026): que **toda la información de Seguros esté actua
 **P6 — «Preguntar a Wobi Seguros».** Botón que reutiliza el diálogo «copiar y abrir Telegram» de `TelegramHandoff.jsx` con consultas preparadas, por ejemplo: «¿Tenemos algo pendiente de seguros?», «¿Cuándo toca pagar lo siguiente?», «¿Qué cubre la RC de WOBA?», «¿Qué le falta pedirle a Acodrid?». El usuario decide qué enviar; no se manda nada solo.
 
 **P7 — Frescura honesta.** Si `complementosDisponibles === false`, `esperandoACarlos`, `memoria`, `documentos` y la última revisión vienen a `null`: mostrar «Sin lectura actual» en esas partes, nunca un cero ni una lista vacía. Mostrar «última revisión del vigilante: hoy 08:35» (`vigilante.ultimaRevision.fecha`) y los `horarios`; si la última revisión es de hace más de 24 h, decirlo.
+  - **Dos «null» distintos en `vigilante.ultimaRevision`:** con `complementosDisponibles === false` es «Sin lectura actual»; con `complementosDisponibles === true` significa que aún no se ha registrado ninguna revisión (entorno nuevo): decir «Aún sin revisión registrada», no «Sin lectura actual».
+  - `ultimaRevision.enTransito` es la situación de ahora (todos los cargos que siguen sin confirmar, no solo los recién vistos), así que sirve tal cual para «Atención ahora».
 
 ## Cómo hacerlo
 
