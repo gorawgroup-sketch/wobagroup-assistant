@@ -21,6 +21,7 @@ import {
 import {
   configuracionConciliacionesMovimientoDurables,
   evaluarAjusteCambioResidual,
+  margenAjusteCambioExacto,
   margenResiduoConversion,
   movimientoLibreParaConciliar,
   residuoMovimientoFueraDeMargen,
@@ -689,24 +690,45 @@ test("el margen del ajuste de cambio tiene techo: un residuo que cuadra matemát
     {
       currency: "USD",
       currency_change: "1.1",
-      // Compra de 100: margen = max(0,02, 100*0,005) = 0,50 — un residuo de 0,60 cuadra con el
-      // cálculo (100/1.1=90,91, pago 90,31) pero excede ese margen, así que sigue sin aceptarse.
+      // Compra de 100: margen del ajuste exacto = 2 % = 2,00 — un residuo de 2,50 cuadra con el
+      // cálculo (100/1.1=90,91, pago 88,64) pero excede ese margen, así que sigue sin aceptarse.
       total: "100,00",
-      payments_total: "99,40",
-      payments_pending: "0,60",
-      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-10", amount: "90,31" }],
+      payments_total: "97,50",
+      payments_pending: "2,50",
+      payments_detail: [{ bank_id: "ftg-usd", date: "2026-09-10", amount: "88,64" }],
     },
     {
       status: "reconciled",
       currency: "USD",
       amount: "-100.00",
       reconciled_amount: "-100.00",
-      accounting_amount: "-90.31",
+      accounting_amount: "-88.64",
     },
     "ftg-usd",
     "2026-09-10"
   );
   assert.equal(resultado, undefined);
+});
+
+test("caso real Salesmate 600 USD (Footprint, 2026-10-05): 1,83 USD pendientes con el cargo exacto se cierran con el ajuste de cambio (antes quedaba «incierta»)", () => {
+  const compra = {
+    currency: "USD", currency_change: "1.12", total: "600,00", payments_total: "598,17", payments_pending: "1,83",
+    payments_detail: [{ bank_id: "ftg-usd", date: "2026-10-03", amount: "532,89" }],
+  };
+  const movimiento = { status: "reconciled", currency: "USD", amount: "-600.00", reconciled_amount: "-600.00", accounting_amount: "-532.89" };
+  const resultado = evaluarAjusteCambioResidual(compra, movimiento, "ftg-usd", "2026-10-03");
+  assert.ok(resultado);
+  assert.equal(resultado.monto, 1.63);
+  // Las demás pruebas siguen mandando: otro pago, cargo que no es exactamente el total, o un residuo mayor al 2 % no se ajustan.
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_detail: [...compra.payments_detail, { bank_id: "otra", date: "2026-10-03", amount: "5,00" }] }, movimiento, "ftg-usd", "2026-10-03"), undefined);
+  assert.equal(evaluarAjusteCambioResidual(compra, { ...movimiento, amount: "-599.00", reconciled_amount: "-599.00" }, "ftg-usd", "2026-10-03"), undefined);
+  assert.equal(evaluarAjusteCambioResidual({ ...compra, payments_total: "587,00", payments_pending: "13,00" }, movimiento, "ftg-usd", "2026-10-03"), undefined, "2,2 % del total");
+});
+
+test("margenAjusteCambioExacto: nunca menos que el margen de redondeo, 2 % del total y techo de 50", () => {
+  assert.equal(margenAjusteCambioExacto(1), 0.02);
+  assert.equal(margenAjusteCambioExacto(600), 12);
+  assert.equal(margenAjusteCambioExacto(100_000), 50);
 });
 
 test("no ajusta si el céntimo puede ser deuda real, pago parcial o una cuenta distinta", () => {
