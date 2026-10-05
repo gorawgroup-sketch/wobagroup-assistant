@@ -25,15 +25,24 @@ export function casosAutorizados(env: NodeJS.ProcessEnv = process.env): Set<stri
   return new Set((env.WOBI_TRANSFERENCIAS_CASOS ?? "").split(",").map((c) => c.trim()).filter((c) => CLAVE.test(c)));
 }
 
-/** true = las transferencias en euros ya no necesitan autorización escrita pareja a pareja. */
-export function alcanceEurAbierto(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.WOBI_TRANSFERENCIAS_ALCANCE ?? "").trim().toLowerCase() === "eur";
+/**
+ * WOBI_TRANSFERENCIAS_ALCANCE, separado por comas: lo que ya no necesita autorización escrita pareja a pareja.
+ *  - eur:           transferencias EUR↔EUR (validado por Carlos el 05-10-2026, WOBA 350 €).
+ *  - conversiones:  conversiones con una pata en euros en las que la entrada no vale más que la salida
+ *                   (validado por Carlos el 05-10-2026, eWorks −433,96 EUR → +500 USD).
+ */
+function alcance(env: NodeJS.ProcessEnv): Set<string> {
+  return new Set((env.WOBI_TRANSFERENCIAS_ALCANCE ?? "").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean));
 }
 
-/** Las conversiones de moneda siguen pareja a pareja (WOBI_TRANSFERENCIAS_CASOS) hasta que Carlos valide su prueba. */
+export function alcanceEurAbierto(env: NodeJS.ProcessEnv = process.env): boolean { return alcance(env).has("eur"); }
+export function alcanceConversionesAbierto(env: NodeJS.ProcessEnv = process.env): boolean { return alcance(env).has("conversiones"); }
+
+/** Cada tipo de operación tiene su propio alcance; una pareja en WOBI_TRANSFERENCIAS_CASOS vale siempre. */
 export function ejecucionAutorizada(clave: string, env: NodeJS.ProcessEnv = process.env, tipo: "transferencia" | "conversion" = "transferencia"): boolean {
   if (modoTransferencias(env) !== "activo" || !CLAVE.test(clave)) return false;
-  return (tipo === "transferencia" && alcanceEurAbierto(env)) || casosAutorizados(env).has(clave);
+  const abierto = tipo === "conversion" ? alcanceConversionesAbierto(env) : alcanceEurAbierto(env);
+  return abierto || casosAutorizados(env).has(clave);
 }
 
 export const EMPRESAS_TRANSFERENCIAS: readonly Empresa[] = ["WOBA", "EWORKS", "Footprint"];
