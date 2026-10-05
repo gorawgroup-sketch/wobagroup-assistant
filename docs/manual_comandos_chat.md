@@ -410,3 +410,11 @@ Pedido de Carlos. Tool `consultar_proyectos_holded`; no hace falta ningún coman
 - **Cómo busca**: por id o nombre exacto (sin distinguir mayúsculas ni tildes). Si el texto solo coincide con parte del nombre y hay una única opción, la usa; si hay varias, las lista y pide el nombre exacto o el id, nunca elige por intuición.
 - **Límite importante**: solo ve lo que la clave de API de la empresa puede ver. Un proyecto privado de un usuario, visible en la web, puede no aparecer; en ese caso el asistente dice que «no está visible para la API», nunca que no existe. Si Holded falla, devuelve el error en vez de una lista vacía. El catálogo se guarda 5 minutos en memoria.
 
+## Menú de Telegram (botón de menú, abajo a la izquierda)
+
+Pedido de Carlos (04-10-2026): las órdenes frecuentes deben estar a un clic. El menú se define en `core/telegram/menuComandos.ts` y se publica solo en cada arranque del servidor; para añadir una orden al menú se añade a esa lista.
+
+- `/revisarcorreo` — revisar el correo nuevo.
+- `/transferencias` — detecta las transferencias y conversiones entre cuentas propias sin conciliar (las tres empresas) y publica las propuestas con botones. También vale escrito: «revisa las transferencias internas de WOBA».
+- `/preguntas` — vuelve a mostrar las preguntas pendientes.
+
