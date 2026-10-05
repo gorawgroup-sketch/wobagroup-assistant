@@ -5,6 +5,8 @@ import { AREAS_PROPUESTA_CASHFLOW, botonesAreasCashflow } from "../google/cashfl
 import { cashflowEscrituraTool } from "../tools/cashflowEscritura";
 import { registrarDuplicadoConfirmado } from "../cashflow/duplicadosConfirmadosSheet";
 import { buscarDuplicadoCashflowActual } from "../jobs/revisarHoldedVsCashflow";
+import { consumirPendienteExplicacion } from "../cashflow/pendienteExplicacionStore";
+import { iniciarExplicacion, quitarReglaPorBoton } from "../cashflow/explicacionCashflow";
 import type { TelegramCallbackQuery } from "./types";
 
 /**
@@ -42,6 +44,29 @@ export async function handleCallbackQuery(
   }
 
   const [accion, id, bloqueElegido] = data.split(":");
+
+  // «📝 Explicar»: no consume la propuesta; pide una frase y aprende una regla (ver cashflow/explicacionCashflow.ts).
+  if (accion === "cf_explicar" || accion === "cf_explicar_no" || accion === "cf_regla_quitar") {
+    const chat = callback.message?.chat.id;
+    if (chat === undefined || !id) { await answerCallbackQuerySafe(callback.id, "Acción no válida."); return; }
+    try {
+      if (accion === "cf_explicar") {
+        await answerCallbackQuerySafe(callback.id, await iniciarExplicacion(id, chat));
+      } else if (accion === "cf_explicar_no") {
+        await consumirPendienteExplicacion(chat);
+        await answerCallbackQuerySafe(callback.id, "Cancelado.");
+        if (callback.message) await editTelegramMessage(chat, callback.message.message_id, "❌ Explicación cancelada. La propuesta sigue pendiente.", []);
+      } else {
+        const aviso = await quitarReglaPorBoton(id);
+        await answerCallbackQuerySafe(callback.id, "Hecho.");
+        if (callback.message) await editTelegramMessage(chat, callback.message.message_id, `${callback.message.text ?? ""}\n\n${aviso}`.slice(0, 3900), []);
+      }
+    } catch (error) {
+      console.error("[callbackHandler] Error en el botón de explicación del cashflow:", error instanceof Error ? error.message : error);
+      await answerCallbackQuerySafe(callback.id, "No pude completarlo; no se cambió nada.");
+    }
+    return;
+  }
 
   if (accion !== "cf_approve" && accion !== "cf_reject" && accion !== "cf_duplicado" && accion !== "cf_area") {
     await answerCallbackQuerySafe(callback.id);

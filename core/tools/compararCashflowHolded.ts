@@ -1,3 +1,4 @@
+import { aplicarReglasAgregadas, listarReglasAgregadas, textoCubiertos, type ReglaAgregada } from "../cashflow/reglasAgregadas";
 import {
   claveMovimientoGlobal,
   generarCruceCashflowGastosHolded,
@@ -372,9 +373,19 @@ export const compararCashflowHoldedTool: ToolDefinition = {
         : await Promise.all(
             empresasInvestigadas.map((item) => generarCruceCashflowGastosHolded(item, rango.semana, rango.desde, rango.hasta))
           );
+    // Reglas aprendidas («ya está sumado en otra línea», p. ej. las nóminas): esos movimientos no se dan por «sin fila», y el informe lo dice.
+    let reglasAprendidas: ReglaAgregada[] = [];
+    let avisoReglas = "";
+    try { reglasAprendidas = await listarReglasAgregadas(); }
+    catch (errorReglas) { avisoReglas = `⚠️ No pude leer las reglas aprendidas (${errorReglas instanceof Error ? errorReglas.message : String(errorReglas)}): el informe puede incluir movimientos que ya explicaste.`; }
+    const cubiertosPorRegla: Array<{ movimiento: { descripcion: string }; regla: ReglaAgregada }> = [];
     const resultadosVisibles = resultados.filter((resultado) =>
       empresasMostradas.includes(resultado.empresa)
-    );
+    ).map((resultado) => {
+      const { pendientes, cubiertos } = aplicarReglasAgregadas(resultado.movimientosSinCashflow, reglasAprendidas);
+      cubiertosPorRegla.push(...cubiertos);
+      return { ...resultado, movimientosSinCashflow: pendientes };
+    });
     const resultadosGastosVisibles = resultadosGastos.filter((resultado) =>
       empresasMostradas.includes(resultado.empresa)
     );
@@ -423,6 +434,9 @@ export const compararCashflowHoldedTool: ToolDefinition = {
         formatearGastosHolded(resultado, resolucionGastosSegura, direccion)
       ),
     ];
+
+    if (cubiertosPorRegla.length > 0) partes.push(`\n${textoCubiertos(cubiertosPorRegla)}`);
+    if (avisoReglas) partes.push(`\n${avisoReglas}`);
 
     if (conflictos.length > 0) {
       partes.push(
