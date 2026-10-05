@@ -318,6 +318,7 @@ export async function ejecutarTransferencia(
   const robot = await d.transferir(r.empresa, {
     cuentaId: lado.pulsado.cuenta, movimientoId: lado.pulsado.movimiento,
     cuentaContable: (pulsaOrigen ? destinoCuenta : origenCuenta).cuentaContable!, importe: plan.importePar,
+    descripcion: (pulsaOrigen ? antes.origen : antes.destino)?.descripcion,
   });
   console.log(`[transferencias] Robot «Transferir» para ${r.clave}: ${robot.estado} (pulsado: ${robot.pulsado}) ${robot.detalle ?? ""}`);
   if (!robot.pulsado) return cerrar("propuesta", `No se escribió nada en Holded: no llegué a pulsar «Transferir y conciliar» (${robot.detalle ?? robot.estado}). Puedes volver a intentarlo.`);
