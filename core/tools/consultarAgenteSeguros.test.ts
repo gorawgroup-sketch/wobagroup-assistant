@@ -21,9 +21,9 @@ test("si el especialista no puede responder (IA bloqueada, API caída), el chat 
   assert.match(r, /woba_rc_markel/);
 });
 
-test("la herramienta exige la pregunta y no es de modo rápido (puede escribir en el registro)", async () => {
+test("la herramienta exige la pregunta y está disponible en modo rápido y en solo lectura (es la única puerta de seguros ahí)", async () => {
   assert.equal(consultarAgenteSegurosTool.name, "consultar_agente_seguros");
-  assert.equal(consultarAgenteSegurosTool.seguraParaModoRapido, undefined);
+  assert.equal(consultarAgenteSegurosTool.seguraParaModoRapido, true);
   assert.deepEqual(consultarAgenteSegurosTool.input_schema.required, ["pregunta"]);
   assert.match(String(await consultarAgenteSegurosTool.handler({ pregunta: "  " })), /falta la pregunta/);
 });

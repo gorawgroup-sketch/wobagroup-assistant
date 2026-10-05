@@ -42,6 +42,13 @@ export async function responderConPuertaUnica(
  */
 export const consultarAgenteSegurosTool: ToolDefinition = {
   name: "consultar_agente_seguros",
+  // Disponible también en el modo rápido y en las sesiones web de solo lectura, a propósito: es la ÚNICA puerta de seguros en
+  // esos modos (la herramienta cruda ya no lo está), así que sin esto esas sesiones se quedarían sin poder preguntar por
+  // seguros. No incumple el sentido de la marca: el especialista solo tiene herramientas de escritura si quien pregunta es
+  // administrador y cita su frase literal, y todo lo que escribe es idempotente (repetir la misma petición no duplica nada),
+  // así que un turno que se reinicia no puede dejar nada a medias. Una sesión de solo lectura no tiene identidad de
+  // administrador y, por tanto, solo lee.
+  seguraParaModoRapido: true,
   description:
     "Wobi Seguros: el ESPECIALISTA de seguros del grupo (WOBA, EWORKS, Footprint). Úsalo para CUALQUIER tema de seguros: qué pólizas hay y cómo están, qué cubre algo, franquicias y límites, " +
     "si una situación está cubierta, vencimientos y próximos pagos, si un recibo está pagado o devuelto, qué falta pedirle a la correduría (Acodrid), qué hay de nuevo en el banco o el correo sobre seguros, " +
