@@ -142,12 +142,16 @@ export function motivoParaNoEjecutar(r: RegistroTransferencia, e: Estado): strin
   if (!esConversion(r)) {
     return Math.abs(Math.abs(e.origen.importe) - e.destino.importe) > CENTIMO ? "Los importes ya no son una salida y una entrada iguales." : undefined;
   }
-  const plan = planDe(r, e)!;
+  return motivoLimitesConversion(planDe(r, e)!);
+}
+
+/** Límites de una conversión; se comprueban antes de pulsar y también antes de conciliar la entrada al retomar un intento. */
+function motivoLimitesConversion(plan: Plan): string | undefined {
   if (!(plan.importePar > 0) || !(plan.valorOtroEur > 0)) return "Holded no da la valoración en euros de la pata en otra moneda; sin ella no se puede comprobar la conversión.";
   if (Math.abs(plan.valorOtroEur - plan.importePar) > plan.importePar * DIFERENCIA_MAXIMA_CAMBIO) return `La diferencia entre las dos patas en euros (${plan.importePar.toFixed(2)} y ${plan.valorOtroEur.toFixed(2)}) supera el ${DIFERENCIA_MAXIMA_CAMBIO * 100} %.`;
-  // Entrada que vale MÁS que la salida: quedaría un resto en el movimiento de entrada que hay que llevar a la cuenta de
-  // diferencias de cambio de la empresa; ese segundo paso todavía no está construido.
-  if (plan.valorOtroEur > plan.importePar + tolerancia(r)) return `La entrada vale más en euros (${plan.valorOtroEur.toFixed(2)}) que la salida (${plan.importePar.toFixed(2)}): esa diferencia a favor todavía no se registra desde aquí; hazla a mano en Holded.`;
+  // Entrada que vale MÁS que la salida (aunque sea un céntimo): quedaría un resto en el movimiento de entrada que hay que
+  // llevar a la cuenta de diferencias de cambio de la empresa; ese segundo paso todavía no está construido.
+  if (plan.valorOtroEur > plan.importePar + CENTIMO) return `La entrada vale más en euros (${plan.valorOtroEur.toFixed(2)}) que la salida (${plan.importePar.toFixed(2)}): esa diferencia a favor todavía no se registra desde aquí; hazla a mano en Holded.`;
   return undefined;
 }
 
@@ -237,13 +241,16 @@ export async function ejecutarTransferencia(
   const completar = async (pagos: PagoTransferencia[], asientosAntes?: { origen: string[]; destino: string[] }): Promise<ResultadoEjecucion> => {
     const estado = await leerEstado(r, d);
     const plan = planDe(r, estado);
-    const par = plan ? parDeTransferencia(r, pagos, plan.importePar) : undefined;
-    if (!plan || !par) return cerrar("fallida", `Holded registró una transferencia sobre este movimiento, pero no es el cobro y el pago esperados (${pagos.length} documento(s)). No se continúa; revísalo en Holded.`);
+    if (!plan) return cerrar("fallida", "No se pudieron releer los dos movimientos en Holded; no hice nada. Vuelve a comprobar en unos minutos.");
+    const par = parDeTransferencia(r, pagos, plan.importePar);
+    if (!par) return cerrar("fallida", `Holded registró una transferencia sobre este movimiento, pero no es el cobro y el pago esperados (${pagos.length} documento(s)). No se continúa; revísalo en Holded.`);
     const docOtro = lado.tipoOtro === "collection" ? par.cobro : par.pago;
     const movimientoOtro = lado.tipoOtro === "collection" ? estado.destino : estado.origen;
     const otroLibre = movimientoOtro?.estado === "pending" && Math.abs(movimientoOtro.conciliado) <= CENTIMO;
     if (!docOtro.conciliado && !docOtro.parcial && otroLibre) {
       if (!opciones.permitirEscritura) return cerrar("fallida", `La transferencia ya está creada en Holded, pero falta conciliar el movimiento ${lado.nombreOtro} y esta pareja no está autorizada para escribir.`);
+      const limite = esConversion(r) ? motivoLimitesConversion(plan) : undefined;
+      if (limite) return cerrar("fallida", `La transferencia ya está creada en Holded, pero no concilié el movimiento ${lado.nombreOtro}: ${limite}`);
       try {
         await d.conciliarConPago(r.empresa, lado.otro.cuenta, lado.otro.movimiento, docOtro.id, lado.tipoOtro);
       } catch (error) {

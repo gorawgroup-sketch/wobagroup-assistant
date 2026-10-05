@@ -272,7 +272,7 @@ test("conversión EUR→USD: «Transferir» sobre la salida, la entrada contra e
 });
 
 test("conversión: si la entrada vale más en euros que la salida, o Holded no da la valoración, no se escribe nada", async () => {
-  for (const [valor, motivo] of [[440, /vale más en euros/], [0, /valoración en euros/], [300, /supera el 3 %/]] as const) {
+  for (const [valor, motivo] of [[440, /vale más en euros/], [433.97, /vale más en euros/], [0, /valoración en euros/], [300, /supera el 3 %/]] as const) {
     const { h, r } = conversion(valor);
     const res = await ejecutarTransferencia(r, h.deps, SI);
     assert.equal(res.estado, "propuesta");
