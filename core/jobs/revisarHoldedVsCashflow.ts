@@ -10,6 +10,7 @@ import { textosParecidos } from "../utils/textoParecido";
 import { obtenerTodosLosDuplicadosConfirmados, type FilaDuplicado } from "../cashflow/duplicadosConfirmadosSheet";
 import { generarCruceCashflowHolded, parsearImporteCashflow } from "../cashflow/cruceHoldedCashflow";
 import { esCambioDivisaCashflow } from "../google/cashflowProposalButtons";
+import { aplicarReglasAgregadas, listarReglasAgregadas, textoCubiertos, type ReglaAgregada } from "../cashflow/reglasAgregadas";
 
 const TOLERANCIA_EUR = 0.01;
 // Deliberadamente acotado a WOBA/EWORKS (no el tipo Empresa completo de
@@ -166,7 +167,7 @@ export async function buscarDuplicadoCashflowActual(
  * también la use el tool conversacional verificar_cashflow_actualizado
  * (core/tools/verificarCashflowActualizado.ts) sin duplicarla.
  */
-export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: string, desde: string, hasta: string) {
+export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabel: string, desde: string, hasta: string, avisos?: string[]) {
   const cruce = await generarCruceCashflowHolded(empresa, semanaLabel, desde, hasta);
   if (cruce.problemasCobertura.length > 0) {
     throw new Error(
@@ -225,7 +226,13 @@ export async function detectarNoRegistrados(empresa: EmpresaCashflow, semanaLabe
     );
   }
 
-  return candidatos;
+  // Reglas aprendidas («ya está sumado en otra línea»): se excluyen y se avisa cuántos cubren; si no se pueden leer, se dice.
+  let reglas: ReglaAgregada[] = [];
+  try { reglas = await listarReglasAgregadas(); }
+  catch (errorReglas) { avisos?.push(`⚠️ No pude leer las reglas aprendidas (${errorReglas instanceof Error ? errorReglas.message : String(errorReglas)}): este informe puede incluir movimientos que ya explicaste.`); }
+  const { pendientes, cubiertos } = aplicarReglasAgregadas(candidatos, reglas);
+  if (cubiertos.length > 0) avisos?.push(textoCubiertos(cubiertos));
+  return pendientes;
 }
 
 /**
@@ -307,6 +314,8 @@ export async function enviarPropuestaCandidato(
       ...(candidato.posibleDuplicadoDe
         ? [[{ text: "🔁 Es duplicado", callback_data: `cf_duplicado:${propuesta.id}` }]]
         : []),
+      // Para movimientos que NO tienen fila propia porque el cashflow los suma en otra línea (p. ej. nóminas): se explica una vez y se aprende.
+      [{ text: "📝 Explicar: ya está incluido en otra línea", callback_data: `cf_explicar:${propuesta.id}` }],
       [{ text: "❌ No registrar", callback_data: `cf_reject:${propuesta.id}` }],
     ];
 
@@ -376,8 +385,12 @@ export async function revisarHoldedVsCashflow(
   for (const empresa of EMPRESAS) {
     let candidatos: CandidatoNoRegistrado[] = [];
 
+    const avisosReglas: string[] = [];
     try {
-      candidatos = await detectarNoRegistrados(empresa, semanaLabel, desde, hasta);
+      candidatos = await detectarNoRegistrados(empresa, semanaLabel, desde, hasta, avisosReglas);
+      if (avisosReglas.length > 0) {
+        await sendTelegramMessage(chatId, `${empresa} · ${semanaLabel}\n${avisosReglas.join("\n")}`).catch((errorAviso) => console.error("[revisarHoldedVsCashflow] No se pudo avisar de las reglas aplicadas:", errorAviso));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[revisarHoldedVsCashflow] Error revisando ${empresa}:`, message);
