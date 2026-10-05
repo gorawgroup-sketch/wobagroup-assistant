@@ -164,6 +164,8 @@ export function monedaDocumentoAuto(recibo: ReciboAuto): MonedaDocumentoAuto {
 export interface AnalisisAuto {
   completo: boolean; resumen: string; otrasAcciones: boolean;
   recibos: ReciboAuto[]; motivoManual?: string;
+  /** Cuando `completo` es false: la parte CONCRETA (adjunto, enlace, página) que no se pudo leer y por qué. Nunca una duda de interpretación. */
+  detalleIncompleto?: string;
 }
 export interface MovimientoAuto {
   id: string; cuentaId: string; moneda: string; fecha: string; centimos: number;
