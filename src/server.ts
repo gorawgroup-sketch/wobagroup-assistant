@@ -140,7 +140,7 @@ import {
   restaurarPendienteSeleccionGasto,
 } from "../core/gastos/pendienteSeleccionGastoStore";
 import { obtenerDiagnosticoMetadataPestanas } from "../core/google/sheetsKeyValueStore";
-import { estadoLimitadorSheets } from "../core/google/limitadorSheets";
+import { estadoLimitadorSheets, usoSheetsReciente } from "../core/google/limitadorSheets";
 import { handleEdicionCompraHoldedCallback } from "../core/holded/edicionCompraHoldedCallbackHandler";
 import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorCashflowCallbackHandler";
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
@@ -282,6 +282,8 @@ process.on("uncaughtException", (error) => {
 let actualizacionesEnCurso = 0;
 let cerrandoPorSigterm = false;
 let servidorHttp: HttpServer | null = null;
+/** Detiene el refresco en segundo plano del panel /cerebro (ver SIGTERM: el contenedor viejo no debe seguir leyendo Sheets). */
+let detenerMantenimientoCerebro: (() => void) | undefined;
 
 /**
  * Para cualquier trabajo real que, como /webhook/telegram, responde rápido y sigue corriendo después en
@@ -359,6 +361,8 @@ process.on("SIGTERM", () => {
   // registro durable de reanudación y avisa al chat — antes de esperar nada, por si el SIGKILL
   // llega primero; el proceso nuevo la retoma al arrancar (core/jobs/revisionCorreoManual.ts).
   solicitarCierre();
+  // Durante el drenado el contenedor viejo seguía refrescando 11 secciones del panel y gastando la misma cuota de Sheets que el nuevo.
+  detenerMantenimientoCerebro?.();
   trackearEnSegundoPlano(
     avisarYRegistrarRevisionesInterrumpidas().catch((error) =>
       console.error("[server] No se pudo registrar/avisar las revisiones de correo interrumpidas:", error)
@@ -2520,6 +2524,15 @@ app.post("/admin/run-fiscal-check", async (req: Request, res: Response) => {
  * Telegram. Protegido por ADMIN_SECRET. Antes leía docs/conocimiento_capturado.md
  * en disco local, migrado el 2026-08-26 porque no sobrevivía un redeploy.
  */
+/** Quién gasta la cuota de Sheets en los últimos 10 min, por pestaña y módulo. Solo con ADMIN_SECRET (los nombres de pestañas no van a /health). */
+app.get("/admin/uso-sheets", (req: Request, res: Response) => {
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!adminSecret) { res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." }); return; }
+  if (req.query.secret !== adminSecret) { res.status(403).json({ error: "Secret inválido." }); return; }
+  res.set("Cache-Control", "no-store");
+  res.json({ ...usoSheetsReciente(), limitador: estadoLimitadorSheets() });
+});
+
 app.get("/admin/conocimiento-capturado", async (req: Request, res: Response) => {
   const adminSecret = process.env.ADMIN_SECRET;
 
@@ -2972,7 +2985,7 @@ servidorHttp = app.listen(PORT, () => {
   // Menú de comandos de Telegram (core/telegram/menuComandos.ts): se publica en cada arranque; nunca bloquea.
   void publicarMenuComandos();
   // Panel /cerebro: lo deja caliente antes de que llegue el primer visitante y lo mantiene fresco en segundo plano.
-  iniciarMantenimientoEstadoCerebro();
+  detenerMantenimientoCerebro = iniciarMantenimientoEstadoCerebro();
   if (configuracionTelegramDurable.habilitado) {
     trackearEnSegundoPlano(
       coordinadorEntregasTelegram.recuperar().catch((error) => {

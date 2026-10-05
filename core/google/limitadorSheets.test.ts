@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { conCancelacionSheets, conPrioridadSheets, crearAdaptadorSheetsConCuota, esPeticionSheets, LimitadorVentana } from "./limitadorSheets";
+import { clasificarPeticionSheets, conCancelacionSheets, conPrioridadSheets, crearAdaptadorSheetsConCuota, esPeticionSheets, LimitadorVentana, origenDesdePila, usoSheetsReciente } from "./limitadorSheets";
 
 function reloj() {
   let t = 1_000_000;
@@ -129,4 +129,54 @@ test("un consumidor cancelado no envía una lectura Sheets pendiente", async () 
   await assert.rejects(pendiente, /fuente vencida/);
   await r.avanzar(60_100);
   assert.equal(enviadas, 0);
+});
+
+
+test("clasificarPeticionSheets: pestaña de una lectura, escritura, batchGet y metadatos (sin valores de celdas)", () => {
+  const base = "https://sheets.googleapis.com/v4/spreadsheets/1AbCdEfGhIjKlMnOpQrStUvWxYz";
+  assert.deepEqual(clasificarPeticionSheets(`${base}/values/_gastos_pendientes!A2%3AAE10000?valueRenderOption=UNFORMATTED_VALUE`), { hoja: "WxYz", destino: "_gastos_pendientes" });
+  assert.deepEqual(clasificarPeticionSheets(`${base}/values/'DATOS%20X'!W7?valueInputOption=RAW`), { hoja: "WxYz", destino: "DATOS X" });
+  assert.deepEqual(clasificarPeticionSheets(`${base}/values/_cola!A1:append?valueInputOption=RAW`), { hoja: "WxYz", destino: "_cola" });
+  assert.deepEqual(clasificarPeticionSheets(`${base}/values:batchGet?ranges=DATOS!A1:Z9&ranges=DATOS!X1:Z300&ranges=Otra!A1`), { hoja: "WxYz", destino: "batchGet[DATOS,Otra]" });
+  assert.deepEqual(clasificarPeticionSheets(`${base}?fields=sheets.properties`), { hoja: "WxYz", destino: "metadatos" });
+  assert.deepEqual(clasificarPeticionSheets(`${base}:batchUpdate`), { hoja: "WxYz", destino: "batchUpdate" });
+  assert.deepEqual(clasificarPeticionSheets("no es una url"), { hoja: "?", destino: "?" });
+});
+
+test("origenDesdePila: primer módulo del proyecto, ignorando la capa de transporte de Sheets", () => {
+  const pila = [
+    "Error",
+    "    at anotarUsoSheets (/app/dist/core/google/limitadorSheets.js:120:25)",
+    "    at async Gaxios._request (/app/node_modules/gaxios/build/src/gaxios.js:150:20)",
+    "    at async leerSheetsConReintento (/app/dist/core/google/sheetsReadRetry.js:10:20)",
+    "    at async leerTodas (/app/dist/core/gastos/gastoProposalSheet.js:454:18)",
+    "    at async handleGastoAprobarCallback (/app/dist/core/gastos/gastoCallbackHandler.js:2790:22)",
+  ].join("\n");
+  assert.equal(origenDesdePila(pila), "core/gastos/gastoProposalSheet");
+  assert.equal(origenDesdePila("Error\n    at node:internal/process"), "(sin origen)");
+});
+
+test("usoSheetsReciente arranca vacío y devuelve la forma esperada", () => {
+  const uso = usoSheetsReciente(Date.now());
+  assert.equal(typeof uso.total, "number");
+  assert.deepEqual(Object.keys(uso.porTipo).sort(), ["escritura", "lectura"]);
+  assert.ok(Array.isArray(uso.mayores));
+});
+
+test("el adaptador anota cada petición a Sheets (tipo, prioridad y pestaña) y no las de otras APIs", async () => {
+  const antes = usoSheetsReciente().total;
+  const adaptador = crearAdaptadorSheetsConCuota({
+    limitadores: { lectura: new LimitadorVentana(50, 0), escritura: new LimitadorVentana(50, 0) },
+    esperar: async () => undefined,
+  });
+  const ok = async () => ({ status: 200 });
+  await conPrioridadSheets("fondo", () => adaptador({ url: "https://sheets.googleapis.com/v4/spreadsheets/IDPRUEBA1234/values/_pestana_de_prueba!A1:B2" }, ok));
+  await adaptador({ url: "https://www.googleapis.com/drive/v3/files" }, ok);
+  const uso = usoSheetsReciente();
+  assert.equal(uso.total, antes + 1, "solo cuenta la de Sheets");
+  const fila = uso.mayores.find((f) => f.destino === "_pestana_de_prueba");
+  assert.ok(fila);
+  assert.equal(fila.tipo, "lectura");
+  assert.equal(fila.prioridad, "fondo");
+  assert.equal(fila.hoja, "1234");
 });

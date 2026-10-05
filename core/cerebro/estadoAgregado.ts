@@ -595,9 +595,17 @@ export function invalidarEstadoCerebro(secciones?: SeccionCerebro[]): void { orq
 export function obtenerDiagnosticoPanelCerebro() { return orquestador.diagnostico(); }
 
 /** Arranque: deja el panel caliente antes de que llegue el primer visitante y lo mantiene fresco. */
-export function iniciarMantenimientoEstadoCerebro(): () => void {
-  void orquestador.precalentar().catch((error) => console.warn("[cerebro] Precalentamiento incompleto:", error instanceof Error ? error.message : error));
-  return orquestador.iniciar();
+export function iniciarMantenimientoEstadoCerebro(retrasoPrecalentadoMs = Number(process.env.WOBI_CEREBRO_PRECALENTAR_MS ?? 75_000)): () => void {
+  // El precalentado lee ~11 fuentes de golpe. En el segundo cero de un arranque coincide con las reconciliaciones al arrancar y con el
+  // contenedor anterior aún vivo (los dos suman más que los 60 lecturas/min que Google da a la cuenta de servicio: los 429 del
+  // 2026-10-05 llegaron ~3 min tras un despliegue). Un visitante que llegue antes igualmente dispara la carga de su sección.
+  const retraso = Number.isFinite(retrasoPrecalentadoMs) && retrasoPrecalentadoMs >= 0 ? retrasoPrecalentadoMs : 75_000;
+  const temporizador = setTimeout(() => {
+    void orquestador.precalentar().catch((error) => console.warn("[cerebro] Precalentamiento incompleto:", error instanceof Error ? error.message : error));
+  }, retraso);
+  temporizador.unref?.();
+  const detenerMantenimiento = orquestador.iniciar();
+  return () => { clearTimeout(temporizador); detenerMantenimiento(); };
 }
 
 /**
