@@ -228,8 +228,9 @@ export async function verificarTransferencia(
   const lineasDestino = await d.leerLineas(r.empresa, e.destinoCuenta.cuentaContable!, desde, hasta);
   const lineasOrigen = await d.leerLineas(r.empresa, e.origenCuenta.cuentaContable!, desde, hasta);
   let asientoId = r.asientoId;
+  let nuevosDestino: string[] | undefined;
   if (asientosAntes) {
-    const nuevosDestino = [...new Set(lineasDestino.map((l) => l.asientoId))].filter((id) => !asientosAntes.destino.includes(id));
+    nuevosDestino = [...new Set(lineasDestino.map((l) => l.asientoId))].filter((id) => !asientosAntes.destino.includes(id));
     const nuevosOrigen = [...new Set(lineasOrigen.map((l) => l.asientoId))].filter((id) => !asientosAntes.origen.includes(id));
     // Con diferencia a favor hay un segundo asiento, solo en la cuenta de destino (el del resto).
     const esperadosDestino = resto > 0 ? 2 : 1;
@@ -251,12 +252,14 @@ export async function verificarTransferencia(
   }
   if (resto > 0) {
     // El asiento del resto: debe la cuenta de destino, haber la cuenta de diferencias, y nada más.
+    // Si se sabe qué asientos son nuevos, solo se miran esos: otra conversión con un resto parecido no debe confundir.
     let correctos = 0;
-    for (const id of [...new Set(lineasDestino.filter((l) => l.asientoId !== asientoId && Math.abs(l.debe - resto) <= tol).map((l) => l.asientoId))]) {
+    const delResto = lineasDestino.filter((l) => l.asientoId !== asientoId && Math.abs(l.debe - resto) <= tol && (!nuevosDestino || nuevosDestino.includes(l.asientoId)));
+    for (const id of [...new Set(delResto.map((l) => l.asientoId))]) {
       const a = await d.leerAsiento(r.empresa, id);
       if (a && a.lineas.length === 2 && a.lineas.some((l) => l.cuenta === CUENTA_DIFERENCIAS_CAMBIO && Math.abs(l.haber - resto) <= tol && l.debe <= CENTIMO)) correctos++;
     }
-    if (correctos !== 1) fallos.push(`No se identificó un único asiento de ${resto.toFixed(2)} EUR con debe en la cuenta de destino y haber en la ${CUENTA_DIFERENCIAS_CAMBIO} (hay ${correctos}).`);
+    if (nuevosDestino ? correctos !== 1 : correctos < 1) fallos.push(`No se identificó un único asiento de ${resto.toFixed(2)} EUR con debe en la cuenta de destino y haber en la ${CUENTA_DIFERENCIAS_CAMBIO} (hay ${correctos}).`);
   }
   return { fallos, asientoId };
 }
@@ -302,12 +305,17 @@ export async function ejecutarTransferencia(
     const resto = esConversion(r) ? restoAFavor(plan) : 0;
     if (resto > 0 && (await d.leerPagosDeTransferencia(r.empresa, r.destinoMovimiento, r.destinoFecha)).length === 0) {
       const entrada = (await leerEstado(r, d)).destino;
-      const lista = entrada && Math.abs(Math.abs(entrada.conciliado) - plan.importePar) <= tolerancia(r);
+      // El resto real es lo que le falta por conciliar a la entrada; debe coincidir con la diferencia calculada. Se vuelven a
+      // exigir entrada en euros, cobro principal ya conciliado y los límites de la conversión antes de pulsar nada.
+      const restoReal = entrada ? Math.round((Math.abs(entrada.importe) - Math.abs(entrada.conciliado)) * 100) / 100 : 0;
+      const cobroPrincipal = parDeTransferencia(r, await d.leerPagosDeTransferencia(r.empresa, lado.pulsado.movimiento, lado.pulsado.fecha), plan.importePar)?.cobro;
+      const lista = entrada && r.monedaDestino === "EUR" && entrada.moneda === "EUR" && restoReal > CENTIMO && Math.abs(restoReal - resto) <= tolerancia(r) &&
+        cobroPrincipal?.conciliado === true && !motivoLimitesConversion(plan, true);
       if (lista) {
         if (!opciones.permitirEscritura) return cerrar("fallida", `La conversión está hecha salvo la diferencia a favor de ${resto.toFixed(2)} EUR, y esta pareja no está autorizada para escribir.`);
         r = { ...r, estado: "ejecutando", detalle: `Llevando la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}.` };
         await d.guardar(r);
-        const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: resto, descripcion: entrada.descripcion });
+        const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: restoReal, descripcion: entrada.descripcion });
         console.log(`[transferencias] Robot «Transferir» (diferencia a favor) para ${r.clave}: ${robot.estado} (pulsado: ${robot.pulsado}) ${robot.detalle ?? ""}`);
         if (!robot.pulsado) {
           return cerrar("fallida", `La conversión quedó hecha en Holded (asiento y los dos movimientos enlazados), pero falta llevar la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}: no llegué a pulsar (${robot.detalle ?? robot.estado}). Puedes reintentar solo ese paso o hacerlo a mano con «Transferir» sobre la entrada.`);
