@@ -5,6 +5,7 @@ import { obtenerConciliacionesAmbiguasPendientesPorChat } from "./conciliacionAm
 import { recuperarConciliacionExistenteCompra } from "../holded/write";
 import { botonesOfertaParcial, consultarCargoParcial, conciliarParcialDeRecibo, textoOfertaParcial, type ConsultaCargoParcial } from "./conciliacionParcialRecibo";
 import { candidatoUtilizableParaGasto } from "../holded/write";
+import { conceptoParaBusqueda } from "./conceptoParaBusqueda";
 import { esFechaDocumentoValida } from "./fechaDocumento";
 import { retirarPreguntaCaducada, retirarPreguntaTrasEnviar } from "../telegram/preguntaCaducada";
 import { ajustarCompraAlMovimientoElegido } from "./ajustarCompraAlMovimiento";
@@ -911,7 +912,9 @@ async function intentarConciliar(
     const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
     if (recuperada) return recuperada;
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
-    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto });
+    // La descripción recibida suele ser solo «contacto — importe»: el concepto real (categoría) se recupera de la compra.
+    const conceptoBusqueda = await conceptoParaBusqueda(empresa, gastoId, descripcionGasto, proveedor);
+    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda });
 
     let candidato: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let esAproximado = false;
@@ -939,7 +942,7 @@ async function intentarConciliar(
       // «Crear (sin conciliar)» existe para los cargos que llegan tarde o con otro nombre: si la búsqueda estricta no
       // encuentra nada, se repite admitiendo los «por confirmar»/«aprendidos» (nombre distinto o solo la categoría con la fecha
       // lejana) y se pide ELEGIR con aviso. Nunca se concilia solo, pero tampoco queda un «No encontré» para siempre.
-      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto, incluirPorConfirmar: true }))
+      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda, incluirPorConfirmar: true }))
         .filter((m) => m.compatibilidad);
       if (paraElegir.length > 0) {
         return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, paraElegir,
@@ -955,7 +958,7 @@ async function intentarConciliar(
       const monedasReales = await obtenerMonedasCuentasReales(empresa);
       const porTipoCambio = await buscarMovimientosPorTipoCambio(
         empresa,
-        { monto, moneda, fecha: fechaBusqueda, proveedor, concepto: descripcionGasto, incluirPorConfirmar: true },
+        { monto, moneda, fecha: fechaBusqueda, proveedor, concepto: conceptoBusqueda, incluirPorConfirmar: true },
         monedasReales
       );
       if (porTipoCambio.length > 0) {
@@ -976,7 +979,7 @@ async function intentarConciliar(
       // Último recurso, igual que en la propuesta (cargoMayor.ts): un único cargo mayor del mismo proveedor, del que
       // este gasto puede ser una parte. Siempre se pide elegirlo; nunca se concilia solo.
       if (proveedor && !esProveedorNoIdentificado(proveedor)) {
-        const cargosMayores = await buscarCargoMayorDelProveedor(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: descripcionGasto });
+        const cargosMayores = await buscarCargoMayorDelProveedor(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda });
         if (cargosMayores.length > 0) {
           return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, cargosMayores,
             deColaCorreo, false, proveedor, mensajeIdGmail, comprobanteConfirmado, threadIdGmail, monto);
