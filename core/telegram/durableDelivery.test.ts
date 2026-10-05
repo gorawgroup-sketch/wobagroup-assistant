@@ -7,6 +7,7 @@ import {
   crearEntregaTelegram,
   type EntregaTelegramDurable,
   type RepositorioEntregasTelegram,
+  esVerificacionSoloLectura,
 } from "./durableDelivery";
 import type { TelegramUpdate } from "./types";
 
@@ -283,7 +284,7 @@ test("solo «Aprobar selección» se reabre: las demás acciones sensibles, incl
     callback_query: { id: `cb-${id}`, from: { id: 7, is_bot: false }, data,
       message: { message_id: 4627, date: 1, chat: { id: 7, type: "private" } } },
   });
-  for (const data of ["gasto_nuevo_conciliar:propuesta-1", "colacorreo_reprocesaractivo", "colacorreo_descartaractivo"]) {
+  for (const data of ["gasto_nuevo_conciliar:propuesta-1", "gasto_conciliar_si:1898488c", "gasto_conciliar_elegir:1898488c:0", "colacorreo_reprocesaractivo", "colacorreo_descartaractivo"]) {
     procesadas.length = 0;
     const a = await coordinador.reservar(crear(1, data), true);
     await coordinador.atender(a.entrega, a.nueva);
@@ -305,4 +306,38 @@ test("una entrega incierta de «Aprobar selección» nunca se reabre por el marg
   ahora += 10 * 60_000;
   const b = await coordinador.reservar(aprobar(2, 2), true);
   assert.equal(b.nueva, false);
+});
+
+test("«Verificar resultado anterior» (…:lectura) se puede repetir pasado el margen; un doble toque inmediato sigue siendo duplicado (Salesmate, 2026-10-05)", async () => {
+  for (const data of ["gasto_conciliar_si:1898488c:lectura", "gasto_conciliar_elegir:1898488c:0:lectura"]) {
+    const repo = new RepoMemoria();
+    const procesadas: number[] = [];
+    let ahora = 1_000_000;
+    const coordinador = new CoordinadorEntregasTelegram(repo, async (u) => { procesadas.push(u.update_id); }, async () => {}, { ahora: () => ahora });
+    const crear = (id: number): TelegramUpdate => ({
+      update_id: id,
+      callback_query: { id: `cb-${id}`, from: { id: 7, is_bot: false }, data,
+        message: { message_id: 5001, date: 1, chat: { id: 7, type: "private" } } },
+    });
+    const a = await coordinador.reservar(crear(1), true);
+    await coordinador.atender(a.entrega, a.nueva);
+    repo.filas.get(a.entrega.clave)!.actualizadoEn = ahora;
+    ahora += 5_000;
+    const rebote = await coordinador.reservar(crear(2), true);
+    assert.equal(rebote.nueva, false, `${data}: doble toque`);
+    ahora += 60_000;
+    const reintento = await coordinador.reservar(crear(3), true);
+    assert.equal(reintento.nueva, true, `${data}: reintento tras el margen`);
+    await coordinador.atender(reintento.entrega, reintento.nueva);
+    assert.deepEqual(procesadas, [1, 3], data);
+  }
+});
+
+test("esVerificacionSoloLectura reconoce solo las variantes de verificación, no las que concilian", () => {
+  assert.equal(esVerificacionSoloLectura("gasto_conciliar_si:1898488c:lectura"), true);
+  assert.equal(esVerificacionSoloLectura("gasto_conciliar_elegir:1898488c:2:lectura"), true);
+  assert.equal(esVerificacionSoloLectura("gasto_conciliar_si:1898488c"), false);
+  assert.equal(esVerificacionSoloLectura("gasto_conciliar_si:1898488c:p6ac1161152090c3def0044c9"), false);
+  assert.equal(esVerificacionSoloLectura("gasto_nuevo_conciliar:1898488c:lectura"), false);
+  assert.equal(esVerificacionSoloLectura(undefined), false);
 });
