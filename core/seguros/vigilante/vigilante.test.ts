@@ -272,3 +272,16 @@ test("la respuesta de chat siempre responde, también sin novedades, y cuenta lo
   const vacio = montar({ polizas: [], correos: [] });
   assert.match((await ejecutarVigilanteSeguros(vacio.fuentes)).respuestaChat, /sin novedades/);
 });
+
+test("la situación completa conserva el cargo en tránsito ya avisado (Telegram calla, el panel de Cerebro no puede olvidarlo)", async () => {
+  const m = montar({ polizas: [suplementoMarkel()], movimientos: BBVA_REAL, correos: [] });
+  const primera = await ejecutarVigilanteSeguros(m.fuentes);
+  assert.equal(primera.contenido.enTransito.length, 1);
+  assert.equal(primera.situacion.enTransito.length, 1);
+
+  marcarAvisado(m.estado, primera.clavesAvisadas);
+  const segunda = await ejecutarVigilanteSeguros(m.fuentes);
+  assert.equal(segunda.contenido.enTransito.length, 0, "lo nuevo: nada");
+  assert.equal(segunda.situacion.enTransito.length, 1, "la situación: el cargo sigue sin confirmar");
+  assert.match(segunda.situacion.enTransito[0].motivo, /saldo|banco/i);
+});

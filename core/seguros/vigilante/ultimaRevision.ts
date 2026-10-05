@@ -11,21 +11,27 @@ export interface UltimaRevisionVigilante {
   /** Instante de la revisión (ISO). */
   fecha: string;
   confirmados: number;
-  /** Cargos vistos que aún no se dan por pagados, en una línea cada uno. */
+  /** Cargos vistos que aún no se dan por pagados (todos los que siguen así ahora, no solo los nuevos), en una línea cada uno. */
   enTransito: string[];
   devoluciones: number;
+  /** Cargos de seguros que siguen sin encajar ahora. */
   cargosARevisar: number;
   correosNuevos: number;
   advertencias: string[];
 }
 
+/**
+ * Lo que persiste (cargos en tránsito, cargos que no encajan) sale de la SITUACIÓN de ahora, no de lo nuevo: un cargo ya
+ * avisado sigue sin estar confirmado y el panel debe seguir mostrándolo hasta que se resuelva. Lo que ocurre una vez por
+ * revisión (pagos confirmados, devoluciones, correos nuevos) sí es de esa revisión.
+ */
 export function resumirRevision(r: ResultadoVigilante, ahora: Date): UltimaRevisionVigilante {
   return {
     fecha: ahora.toISOString(),
     confirmados: r.contenido.confirmados.length,
-    enTransito: r.contenido.enTransito.map((t) => `${t.polizas.map(etiquetaPoliza).join(" + ")}: ${describirMovimiento(t.movimiento)}`),
+    enTransito: r.situacion.enTransito.map((t) => `${t.polizas.map(etiquetaPoliza).join(" + ")}: ${describirMovimiento(t.movimiento)}`),
     devoluciones: r.contenido.devoluciones.length,
-    cargosARevisar: r.contenido.cargos.length,
+    cargosARevisar: r.situacion.cargos.length,
     correosNuevos: r.contenido.correos.length,
     advertencias: [...r.contenido.advertencias, ...r.contenido.fallosPersistentes].map((a) => a.slice(0, 240)),
   };
