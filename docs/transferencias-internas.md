@@ -131,9 +131,11 @@ Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint 
 2. La **entrada** se concilia por la API contra ese cobro. Si vale menos en EUR que la salida, el cobro queda
    `partial_reconciled` con la diferencia de cambio pendiente; así es como queda también a mano.
 
-Límites actuales: una pata debe ser en euros; si la entrada vale MÁS en EUR que la salida no se ejecuta (ese resto va a la
-cuenta de diferencias de cambio de la empresa —en Footprint, 62600000— y ese segundo paso no está construido); diferencia
-máxima 3 %. **Validado por Carlos el 05-10-2026**
+3. **Diferencia a favor** (la entrada vale MÁS en EUR que la salida; solo con entrada en euros): tras el paso 2 la entrada
+   queda conciliada en parte y el resto se lleva a la cuenta **62600000** con un segundo «Transferir» sobre la entrada
+   (decisión de Carlos, 05-10-2026: la misma cuenta en WOBA, eWorks y Footprint). **Pendiente de su prueba controlada.**
+
+Límites actuales: una pata debe ser en euros; diferencia a favor solo si la entrada es en euros; diferencia máxima 3 %. **Validado por Carlos el 05-10-2026**
 (eWorks 02/09, −433,96 EUR → +500 USD: asiento único de 433,96 €, los dos movimientos conciliados y 2,11 € de diferencia
 pendientes en el cobro). Con `WOBI_TRANSFERENCIAS_ALCANCE=eur,conversiones` las conversiones dentro de estos límites llevan
 botón de conciliar; las demás se proponen sin botón y con el motivo.
@@ -148,6 +150,5 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Conversiones con diferencia a favor** (la entrada vale más en EUR que la salida): llevar el resto a la cuenta de
-   diferencias de cambio de cada empresa (Footprint 62600000; WOBA y eWorks por confirmar con Carlos), con su prueba.
+1. **Conversiones con diferencia a favor**: prueba controlada de una sola (eWorks 16/09, −593 USD → +513,73 EUR, 0,03 € a favor).
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
