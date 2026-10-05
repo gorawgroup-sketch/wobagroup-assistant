@@ -25,8 +25,10 @@ export interface OrdenTransferir {
   movimientoId: string;
   /** Cuenta contable (8 dígitos) del otro banco. */
   cuentaContable: string;
-  /** Importe del movimiento en su moneda, para comprobar que el formulario muestra el movimiento correcto. */
+  /** Importe que debe mostrar el formulario (Holded lo enseña en EUR), para comprobar que es el movimiento correcto. */
   importe: number;
+  /** Descripción del movimiento en el banco: sirve para filtrar la lista cuando no está en la primera página. */
+  descripcion?: string;
 }
 
 const ESPERAS_NAVEGADOR_OCUPADO = 24;
@@ -51,30 +53,43 @@ async function esperarTexto(page: Page, patron: RegExp, ms: number, presente = t
   return false;
 }
 
-/** Centro en pantalla de la fila del movimiento; la tabla solo pinta las filas visibles, así que se va bajando hasta dar con ella. */
-async function localizarFila(page: Page, movimientoId: string): Promise<{ x: number; y: number } | undefined> {
-  for (let paso = 0; paso < 120; paso++) {
+/**
+ * Centro en pantalla de la fila del movimiento. La tabla de pendientes está PAGINADA (25 por página, comprobado el
+ * 05-10-2026 en eWorks): la página pinta todas sus filas, así que si la fila no está entre ellas no sirve desplazarse.
+ */
+async function localizarFila(page: Page, movimientoId: string, esperaMs = 15_000): Promise<{ x: number; y: number } | undefined> {
+  const limite = Date.now() + esperaMs;
+  while (Date.now() < limite) {
     const punto = await page.mainFrame().evaluate((id) => {
       const fila = document.querySelector(`[role="row"][data-id="${id}"]`);
-      if (fila) {
-        fila.scrollIntoView({ block: "center" });
-        const celda = fila.querySelector('[data-field="description"]') ?? fila;
-        const r = celda.getBoundingClientRect();
-        return { x: r.left + Math.min(r.width / 2, 120), y: r.top + r.height / 2 };
-      }
-      const primera = document.querySelector('[role="row"][data-id]');
-      let n: any = primera?.parentElement ?? null;
-      while (n && !(n.scrollHeight > n.clientHeight + 20 && /auto|scroll/.test(getComputedStyle(n).overflowY))) n = n.parentElement;
-      if (!n) return "sin_tabla" as const;
-      const antes = n.scrollTop;
-      n.scrollTop = antes + Math.max(300, n.clientHeight - 120);
-      return n.scrollTop === antes ? ("fin" as const) : ("bajando" as const);
-    }, movimientoId).catch(() => "bajando" as const);
+      if (!fila) return document.querySelectorAll('[role="row"][data-id]').length > 0 ? ("no_esta" as const) : ("sin_filas" as const);
+      fila.scrollIntoView({ block: "center" });
+      const celda = fila.querySelector('[data-field="description"]') ?? fila;
+      const r = celda.getBoundingClientRect();
+      return { x: r.left + Math.min(r.width / 2, 120), y: r.top + r.height / 2 };
+    }, movimientoId).catch(() => "sin_filas" as const);
     if (typeof punto === "object") { await pausa(400); return punto; }
-    if (punto === "fin") return undefined;
-    await pausa(punto === "sin_tabla" ? 1000 : 350);
+    if (punto === "no_esta") return undefined;
+    await pausa(700);
   }
   return undefined;
+}
+
+/** Filtra la lista de pendientes con el buscador de la pantalla (solo filtra; no modifica nada). */
+async function filtrarPendientes(page: Page, textoBusqueda: string): Promise<boolean> {
+  const campo = await page.mainFrame().evaluate(() => {
+    const visibles = (Array.from(document.querySelectorAll('input[placeholder="Buscar"]')) as any[]).filter((i) => i.getClientRects().length > 0);
+    if (visibles.length === 0) return undefined;
+    // Con un movimiento seleccionado hay otro buscador en el panel derecho: el de la lista es el de más a la izquierda.
+    const r = visibles.map((i) => i.getBoundingClientRect()).sort((a, b) => a.left - b.left)[0];
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }).catch(() => undefined);
+  if (!campo) return false;
+  await page.mouse.click(campo.x, campo.y);
+  await pausa(300);
+  await page.keyboard.type(textoBusqueda, { delay: 30 });
+  await pausa(3000);
+  return true;
 }
 
 async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransferir, marcarPulsado: (valor: boolean) => void): Promise<ResultadoNavegador> {
@@ -87,7 +102,10 @@ async function flujoTransferir(page: Page, empresa: Empresa, orden: OrdenTransfe
   if (!(await empresaActivaEnPantalla(page)).startsWith(empresa.toLowerCase())) return { estado: "elemento_no_encontrado", detalle: `La empresa activa en Holded no es ${empresa}; no se tocó nada` };
   if (!(await esperarTexto(page, /Conciliaci[óo]n/, 30_000))) return { estado: "elemento_no_encontrado", detalle: "No se abrió la pantalla de conciliación de la cuenta" };
 
-  const fila = await localizarFila(page, orden.movimientoId);
+  let fila = await localizarFila(page, orden.movimientoId);
+  // No está en la primera página: se filtra por su descripción y se vuelve a buscar por su id (el id es lo que decide).
+  const busqueda = (orden.descripcion ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+  if (!fila && busqueda && await filtrarPendientes(page, busqueda)) fila = await localizarFila(page, orden.movimientoId, 8000);
   if (!fila) return { estado: "elemento_no_encontrado", detalle: "El movimiento no aparece entre los pendientes de la cuenta en la pantalla de Holded" };
   await page.mouse.click(fila.x, fila.y);
   await pausa(1500);
