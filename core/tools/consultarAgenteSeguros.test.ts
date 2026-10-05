@@ -7,7 +7,8 @@ test("la respuesta del especialista llega al chat con la cabecera que pide trans
     consultar: async () => ({ texto: "Cubre RC general con franquicia de 300 €." }),
     respaldo: () => "no debería usarse",
   });
-  assert.equal(r, `${CABECERA_RESPUESTA_AGENTE}\n\nCubre RC general con franquicia de 300 €.`);
+  assert.equal(r, `${CABECERA_RESPUESTA_AGENTE}\n\n"""\nCubre RC general con franquicia de 300 €.\n"""`);
+  assert.match(CABECERA_RESPUESTA_AGENTE, /COPIADA LITERAL/);
 });
 
 test("si el especialista no puede responder (IA bloqueada, API caída), el chat recibe el registro crudo con el aviso, nunca nada", async () => {

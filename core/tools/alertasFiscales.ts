@@ -60,10 +60,13 @@ export const alertasFiscalesTool: ToolDefinition = {
   seguraParaModoRapido: true,
   description:
     "Consulta qué vencimientos fiscales o pagos recurrentes del grupo (seguridad social, créditos, " +
-    "seguros, impuestos, controles médicos...) están próximos a vencer — Y de una vez busca el monto " +
+    "impuestos, suscripciones, controles médicos...) están próximos a vencer — Y de una vez busca el monto " +
     "real de cada uno en el cashflow (no hace falta llamar a consultar_cashflow_detalle aparte para " +
     "esto). Úsala cuando el usuario pregunte qué vence pronto, qué hay que pagar, cuánto suma lo que " +
-    "viene, o sobre seguros/impuestos/domiciliaciones próximas.",
+    "viene, o sobre impuestos/domiciliaciones próximas. NO la uses para SEGUROS: pólizas, recibos y " +
+    "vencimientos de seguros los lleva el especialista Wobi Seguros (consultar_agente_seguros), que conoce " +
+    "las fechas y los importes reales de cada póliza; esta herramienta solo tiene entradas genéricas " +
+    "del calendario fiscal (con fechas aproximadas) y se equivocaría.",
   input_schema: {
     type: "object",
     properties: {
