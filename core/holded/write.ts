@@ -204,29 +204,22 @@ async function holdedWriteCall(
 }
 
 /**
- * Asiento contable manual (POST /ledger-entries). Punto de conexión para core/holded/transferencias/: pasa por la
- * misma guardia que el resto de escrituras. Devuelve el id del asiento; nunca se reintenta aquí.
+ * Punto de conexión para core/holded/transferencias/: concilia un movimiento contra el cobro o el pago que Holded genera
+ * al pulsar «Transferir» en el otro movimiento. Pasa por la misma guardia que el resto de escrituras; no es idempotente
+ * en Holded y nunca se reintenta aquí.
+ * (Conciliar contra un asiento manual, `document_type: "entry"`, devuelve 200 y no enlaza nada: comprobado el 05-10-2026.)
  */
-export async function crearAsientoHolded(
-  empresa: Empresa,
-  asiento: { date: string; notes?: string; lines: Array<{ account: number; description?: string; debit: string; credit: string }> }
-): Promise<string> {
-  const data = (await holdedWriteCall(empresa, "POST", "/ledger-entries", asiento)) as { id?: string };
-  if (!data?.id) throw new Error("Holded no devolvió el id del asiento creado.");
-  return String(data.id);
-}
-
-/** Concilia un movimiento bancario contra un asiento ya existente. No es idempotente en Holded: no se reintenta. */
-export async function conciliarMovimientoContraAsientoHolded(
-  empresa: Empresa, accountId: string, movementId: string, asientoId: string
+export async function conciliarMovimientoContraPagoHolded(
+  empresa: Empresa, accountId: string, movementId: string, pagoId: string, tipo: "payment" | "collection"
 ): Promise<void> {
   invalidarCacheCuentasTesoreria(empresa);
   try {
-    await holdedWriteCall(
+    const respuesta = await holdedWriteCall(
       empresa, "POST",
       `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements/${encodeURIComponent(movementId)}/reconcile`,
-      { documents: [{ document_id: asientoId, document_type: "entry" }] }
+      { documents: [{ document_id: pagoId, document_type: tipo }] }
     );
+    console.log(`[transferencias] Conciliación ${movementId} ↔ ${tipo} ${pagoId}: ${JSON.stringify(respuesta ?? null).slice(0, 300)}`);
   } finally {
     invalidarCacheCuentasTesoreria(empresa);
   }
@@ -5097,6 +5090,11 @@ export async function buscarMovimientoSimilar(
      * compatible por nombre o categoría.
      */
     incluirPorConfirmar?: boolean;
+    /**
+     * El importe buscado es una REFERENCIA por tipo de cambio (no el importe real del cargo): «exacto» pasa a significar
+     * «dentro de la tolerancia de cambio», para que un cargo del día con nombre distinto pueda ofrecerse «por confirmar».
+     */
+    importeAproximadoPorCambio?: boolean;
     /** Si se da, la búsqueda anota qué cuentas revisó y qué cargos del mismo importe descartó (no cambia el resultado). */
     traza?: TrazaBusqueda;
   },
@@ -5177,7 +5175,7 @@ export async function buscarMovimientoSimilar(
       let compatibilidad: "por_confirmar" | "aprendido" | undefined;
       if (criterios.proveedor) {
         const importeYFechaExactos =
-          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= TOLERANCIA_MONTO &&
+          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= (criterios.importeAproximadoPorCambio ? toleranciaEur : TOLERANCIA_MONTO) &&
           diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
         const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);

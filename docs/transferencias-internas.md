@@ -84,26 +84,55 @@ si el id del asiento no llegó a guardarse lo busca por la marca. Un `POST …/r
 Las transferencias en otra moneda (USD↔USD, COP↔COP) y las conversiones se proponen pero no se ejecutan: el asiento se
 escribe en EUR y falta su valoración contable. Las parejas bloqueadas por ambigüedad se publican sin el botón de conciliar.
 
+### Cómo se ejecuta (método vigente desde el 05-10-2026)
+
+Igual que a mano en Holded, en dos pasos:
+
+1. **«Transferir» en la interfaz** sobre el movimiento de ENTRADA, eligiendo la cuenta contable del banco de origen. Lo pulsa
+   el robot de navegador (`navegadorTransferencia.ts`, sobre `core/holded/automatizacion/navegadorHolded.ts`): Tesorería →
+   cuenta → Conciliación (`/banking/accounts/<id>/reconcile`) → fila con `data-id` = id del movimiento → «Transferir» →
+   «Transferir a cuenta contable» → cuenta contable → «Transferir y conciliar». Holded crea un asiento numerado (debe destino /
+   haber origen), concilia ese movimiento y deja un cobro y un pago enlazados (`GET /payments`: `document_type: "trans"`,
+   `document_id` = movimiento pulsado).
+2. **La salida se concilia por la API** contra ese pago (`document_type: "payment"`), que queda pendiente en la cuenta de origen.
+
+Lo ocurrido se decide siempre leyendo: si el cobro y el pago existen, el paso 1 no se repite jamás. Se verifican los dos
+movimientos conciliados, el cobro y el pago conciliados y un único asiento nuevo en las dos cuentas contables.
+
+**Método descartado (prueba del 05-10-2026, WOBA 350 €):** crear el asiento con `POST /ledger-entries` y conciliar contra él
+(`document_type: "entry"`). El asiento queda sin número y Holded responde 200 sin enlazar nada. La API pública no ofrece
+«Transferir» (`POST /payments` no admite cuenta de contrapartida).
+
 ### Recuperación
 
-- **Fallida con asiento creado y movimientos sin conciliar:** el asiento se puede borrar en Holded (Contabilidad → Libro
-  diario) o conciliar a mano contra él. Después, marcar la propuesta como revisada.
-- **Verificación que no cuadra por líneas de más:** parar; revisar en el libro diario de las dos cuentas contables qué
-  asiento adicional apareció. No se procesa ninguna otra pareja hasta entenderlo.
+- **Asiento suelto del método descartado:** mientras exista, el ejecutor no hace nada y pide borrarlo en Holded
+  (Contabilidad → Libro diario). Wobi no borra asientos.
+- **El robot no llegó a pulsar el botón final** (elemento no encontrado, sesión caducada, navegador ocupado): no se
+  escribió nada; la propuesta vuelve a estar disponible.
+- **Se pulsó pero Holded no muestra la transferencia, o la verificación no cuadra:** queda `fallida`; el botón
+  «Comprobar en Holded y continuar» relee y solo termina lo que falte.
 - **Volver a observación:** `WOBI_TRANSFERENCIAS_MODO=observacion` (o quitar la pareja de `WOBI_TRANSFERENCIAS_CASOS`).
 
 ### Estado de la validación
 
-Lo que aún no está demostrado en Holded real: que conciliar un movimiento contra un asiento manual (`entry`) deje el mismo
-resultado que «Transferir» en la interfaz, sin generar asientos adicionales. Eso es lo que comprueba la **prueba
-controlada** con un único par EUR↔EUR pequeño, con autorización escrita de Carlos. Hasta entonces el modo es `apagado` u
-`observacion` y nada escribe.
+**Validado por Carlos el 05-10-2026** con la prueba WOBA 01/10, Main → BBVA, 350 €: los dos movimientos conciliados, cobro
+y pago conciliados y un único asiento tipo «Cobro» (debe 57200001 / haber 57200015), revisado por él en Holded.
+
+Desde entonces, con `WOBI_TRANSFERENCIAS_MODO=activo` y `WOBI_TRANSFERENCIAS_ALCANCE=eur`, cualquier transferencia EUR↔EUR
+inequívoca se ejecuta al pulsar su botón, sin autorización escrita pareja a pareja. Las conversiones se proponen sin botón
+de conciliar.
+
+### Carril propio
+
+La ejecución corre en segundo plano y en su propia cola (una transferencia cada vez, en el orden en que se pulsaron): el
+chat queda libre para correos, gastos y otras conciliaciones. El navegador del robot es único: si lo ocupa la sincronización
+de bancos o la conversión de tickets, la transferencia espera su turno (hasta ~6 min) y, si no lo consigue, queda disponible
+sin haber escrito nada. Un despliegue en mitad de una transferencia la deja «a medias»: al pedir de nuevo la revisión se
+ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Prueba controlada**: un único par EUR↔EUR pequeño e inequívoco. Si cualquier verificación falla, se detiene y no se
-   prueba otro par.
-2. **Resto de transferencias en la misma moneda**, una vez validada la prueba.
-3. **Conversiones de moneda**: diferencias de cambio y comisiones contra las cuentas reales del plan contable de cada
-   empresa (668/768 y la de comisiones), nunca asumidas. El ejecutor las rechaza hasta entonces.
-4. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
+1. **Conversiones de moneda** (EUR↔USD): «Transferir» también las admite (Holded valora el movimiento en EUR y el cobro
+   o pago de la otra cuenta queda con un resto pequeño por la diferencia de cambio). Falta decidir con una conversión real
+   cómo se cierra ese resto. El ejecutor las rechaza hasta entonces.
+2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.

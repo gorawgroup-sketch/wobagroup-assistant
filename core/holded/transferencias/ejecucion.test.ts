@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EscrituraHoldedNoIniciadaError } from "../../gmail/automatico/postgres";
 import type { CuentaTransferencia, MovimientoTransferencia } from "./deteccion";
-import { ejecutarTransferencia, importeDeHolded, type DependenciasEjecucion, type LineaAsiento } from "./ejecucion";
+import { ejecutarTransferencia, importeDeHolded, type DependenciasEjecucion, type LineaAsiento, type PagoTransferencia } from "./ejecucion";
 import { casosAutorizados, ejecucionAutorizada, modoTransferencias } from "./modo";
+import { importeEnPantalla } from "./navegadorTransferencia";
 import type { RegistroTransferencia } from "./registro";
 
 const O = "a".repeat(24), D = "b".repeat(24);
 const HOY = "2026-10-03";
+const SI = { permitirEscritura: true };
 const registro = (extra: Partial<RegistroTransferencia> = {}): RegistroTransferencia => ({
   clave: `WOBA:${O}>${D}`, id: "abc123def456", empresa: "WOBA", tipo: "transferencia", fecha: "2026-10-01",
   origenCuenta: "main", origenMovimiento: O, origenFecha: "2026-10-01", destinoCuenta: "bbva", destinoMovimiento: D, destinoFecha: "2026-10-01",
@@ -17,10 +18,13 @@ const registro = (extra: Partial<RegistroTransferencia> = {}): RegistroTransfere
 
 type LineaConFecha = LineaAsiento & { fecha: string };
 interface Opciones {
+  /** El robot no llega a pulsar el botón final (elemento no encontrado, sesión caducada, navegador ocupado). */
+  robotNoPulsa?: string;
+  /** El robot pulsa, pero Holded no registra la transferencia. */
+  transferirSinEfecto?: boolean;
   conciliarFalla?: boolean; conciliarNoSurteEfecto?: boolean; noInequivoca?: string;
-  /** La conciliación genera otro asiento, fechado el día indicado. */
+  /** Holded genera otro asiento además del de la transferencia, fechado el día indicado. */
   asientoExtraFechado?: string;
-  errorAlCrear?: Error;
 }
 
 /** Holded simulado: las escrituras cambian el estado que después devuelven las lecturas. */
@@ -34,8 +38,18 @@ function holded(opciones: Opciones = {}) {
     [D, { id: D, cuentaId: "bbva", fecha: "2026-10-01", importe: 350, moneda: "EUR", descripcion: "Transferencia propia", estado: "pending", conciliado: 0 }],
   ]);
   const lineas: LineaConFecha[] = [{ asientoId: "previo", cuenta: "57200001", debe: 12, haber: 0, descripcion: "otro cobro", fecha: "2026-10-01" }];
+  const pagos: Array<PagoTransferencia & { movimiento: string }> = [];
   const escrituras: string[] = [];
   const guardados: RegistroTransferencia[] = [];
+  /** Lo que deja «Transferir y conciliar» sobre el movimiento de entrada. */
+  const transferirEnHolded = () => {
+    lineas.push({ asientoId: "cobro-1", cuenta: "57200001", debe: 350, haber: 0, descripcion: "Transferencia propia", fecha: "2026-10-01" });
+    lineas.push({ asientoId: "cobro-1", cuenta: "57200015", debe: 0, haber: 350, descripcion: "Transferencia propia", fecha: "2026-10-01" });
+    movimientos.set(D, { ...movimientos.get(D)!, estado: "reconciled", conciliado: 350 });
+    pagos.push({ id: "cobro-doc", tipo: "collection", cuentaId: "bbva", importe: 350, conciliado: true, movimiento: D });
+    pagos.push({ id: "pago-doc", tipo: "payment", cuentaId: "main", importe: 350, conciliado: false, movimiento: D });
+    if (opciones.asientoExtraFechado) lineas.push({ asientoId: "extra", cuenta: "57200001", debe: 350, haber: 0, descripcion: "cobro generado", fecha: opciones.asientoExtraFechado });
+  };
   const deps: DependenciasEjecucion = {
     leerCuentas: async () => cuentas,
     leerMovimiento: async (_e, _c, id) => movimientos.get(id),
@@ -44,35 +58,39 @@ function holded(opciones: Opciones = {}) {
       const suyas = lineas.filter((l) => l.asientoId === id);
       return suyas.length ? { id, fecha: suyas[0].fecha, lineas: suyas.map((l) => ({ cuenta: l.cuenta, debe: l.debe, haber: l.haber })) } : undefined;
     },
+    leerPagosDeTransferencia: async (_e, movimientoId) => pagos.filter((p) => p.movimiento === movimientoId),
     motivoYaNoInequivoca: async () => opciones.noInequivoca,
-    crearAsiento: async (_e, asiento) => {
-      escrituras.push(`asiento:${asiento.date}:${asiento.lines.map((l) => `${l.account}/${l.debit}/${l.credit}`).join("|")}`);
-      if (opciones.errorAlCrear) throw opciones.errorAlCrear;
-      for (const l of asiento.lines) lineas.push({ asientoId: "asiento-1", cuenta: String(l.account), debe: Number(l.debit), haber: Number(l.credit), descripcion: l.description, fecha: asiento.date });
-      return "asiento-1";
+    transferir: async (_e, orden) => {
+      if (opciones.robotNoPulsa) return { estado: "elemento_no_encontrado", detalle: opciones.robotNoPulsa, pulsado: false };
+      escrituras.push(`transferir:${orden.cuentaId}:${orden.movimientoId === D ? "destino" : "origen"}:${orden.cuentaContable}:${orden.importe}`);
+      if (!opciones.transferirSinEfecto) transferirEnHolded();
+      return { estado: "ok", pulsado: true };
     },
-    conciliar: async (_e, _cuenta, movimientoId, asientoId) => {
-      escrituras.push(`conciliar:${movimientoId === O ? "origen" : "destino"}:${asientoId}`);
-      if (opciones.conciliarFalla && movimientoId === O) throw new Error("Error de la API de Holded (502)");
+    conciliarConPago: async (_e, cuentaId, movimientoId, pagoId, tipo) => {
+      escrituras.push(`conciliar:${cuentaId}:${movimientoId === O ? "origen" : "destino"}:${pagoId}:${tipo}`);
+      if (opciones.conciliarFalla) throw new Error("Error de la API de Holded (502)");
       if (opciones.conciliarNoSurteEfecto) return;
       const m = movimientos.get(movimientoId)!;
-      movimientos.set(movimientoId, { ...m, estado: "forced_reconciled", conciliado: m.importe });
-      if (opciones.asientoExtraFechado && movimientoId === D) lineas.push({ asientoId: "cobro-extra", cuenta: "57200001", debe: 350, haber: 0, descripcion: "cobro generado", fecha: opciones.asientoExtraFechado });
+      movimientos.set(movimientoId, { ...m, estado: "reconciled", conciliado: m.importe });
+      pagos.find((p) => p.id === pagoId)!.conciliado = true;
     },
     guardar: async (r) => { guardados.push(r); },
     hoy: () => HOY,
+    esperar: async () => undefined,
   };
-  return { deps, cuentas, movimientos, lineas, escrituras, guardados };
+  return { deps, cuentas, movimientos, lineas, pagos, escrituras, guardados, transferirEnHolded };
 }
 
-test("transferencia EUR↔EUR: un asiento debe destino / haber origen, las dos patas conciliadas y verificado por lectura", async () => {
+const TRANSFERIR = "transferir:bbva:destino:57200015:350", CONCILIAR = "conciliar:main:origen:pago-doc:payment";
+
+test("transferencia EUR↔EUR: «Transferir» sobre la entrada con la cuenta contable del origen, y la salida contra el pago generado", async () => {
   const h = holded();
-  const r = await ejecutarTransferencia(registro(), h.deps);
+  const r = await ejecutarTransferencia(registro(), h.deps, SI);
   assert.equal(r.estado, "verificada");
-  assert.deepEqual(h.escrituras, ["asiento:2026-10-01:57200001/350.00/0.00|57200015/0.00/350.00", "conciliar:destino:asiento-1", "conciliar:origen:asiento-1"]);
-  // El estado «ejecutando» y el id del asiento quedan guardados antes de seguir.
-  assert.deepEqual(h.guardados.map((g) => [g.estado, g.asientoId]), [["ejecutando", ""], ["ejecutando", "asiento-1"], ["verificada", "asiento-1"]]);
-  assert.match(r.mensaje, /debe 57200001 \(BBVA\) \/ haber 57200015 \(Main\) por 350\.00 EUR/);
+  assert.deepEqual(h.escrituras, [TRANSFERIR, CONCILIAR]);
+  // «ejecutando» queda guardado antes de actuar; al final consta el asiento que creó Holded.
+  assert.deepEqual(h.guardados.map((g) => [g.estado, g.asientoId]), [["ejecutando", ""], ["verificada", "cobro-1"]]);
+  assert.match(r.mensaje, /Main → BBVA por 350\.00 EUR/);
 });
 
 test("si algo cambió desde la propuesta no se escribe nada en Holded", async () => {
@@ -88,8 +106,8 @@ test("si algo cambió desde la propuesta no se escribe nada en Holded", async ()
   for (const [nombre, alterar, motivo] of casos) {
     const h = holded();
     alterar(h);
-    const r = await ejecutarTransferencia(registro(), h.deps);
-    assert.equal(r.estado, "revision_manual", nombre);
+    const r = await ejecutarTransferencia(registro(), h.deps, SI);
+    assert.equal(r.estado, "propuesta", nombre);
     assert.match(r.mensaje, motivo, nombre);
     assert.deepEqual(h.escrituras, [], nombre);
   }
@@ -97,8 +115,8 @@ test("si algo cambió desde la propuesta no se escribe nada en Holded", async ()
 
 test("si al repetir la detección la pareja ya no es inequívoca (apareció otro candidato), no se escribe nada", async () => {
   const h = holded({ noInequivoca: "Ambiguo: alguno de estos movimientos también encaja con otro." });
-  const r = await ejecutarTransferencia(registro(), h.deps);
-  assert.equal(r.estado, "revision_manual");
+  const r = await ejecutarTransferencia(registro(), h.deps, SI);
+  assert.equal(r.estado, "propuesta");
   assert.match(r.mensaje, /Ambiguo/);
   assert.deepEqual(h.escrituras, []);
 });
@@ -113,97 +131,114 @@ test("conversiones, transferencias que no son en EUR y registros que no coincide
   ];
   for (const [extra, motivo] of casos) {
     const h = holded();
-    const r = await ejecutarTransferencia(registro(extra), h.deps);
-    assert.equal(r.estado, "revision_manual");
+    const r = await ejecutarTransferencia(registro(extra), h.deps, SI);
+    assert.equal(r.estado, "propuesta");
     assert.match(r.mensaje, motivo);
     assert.deepEqual(h.escrituras, []);
   }
 });
 
-test("solo se ejecuta una operación aprobada; una ya verificada no repite nada", async () => {
-  for (const estado of ["propuesta", "detectada", "saltada", "descartada", "ambigua", "verificada"] as const) {
+test("solo se ejecuta una operación aprobada; una ya verificada no repite nada; sin autorización no se escribe", async () => {
+  for (const estado of ["propuesta", "saltada", "descartada", "verificada", "revision_manual"] as const) {
     const h = holded();
-    const r = await ejecutarTransferencia(registro({ estado }), h.deps);
+    const r = await ejecutarTransferencia(registro({ estado }), h.deps, SI);
     assert.equal(r.estado, estado);
     assert.deepEqual(h.escrituras, []);
   }
-});
-
-test("un rechazo de Holded antes de crear el asiento no quema la operación: vuelve a estar disponible", async () => {
-  for (const error of [new EscrituraHoldedNoIniciadaError(new Error("Recurso reservado")), Object.assign(Object.create((await import("../write")).HoldedApiError.prototype), { status: 422, message: "Error de la API de Holded (422)" })]) {
-    const h = holded({ errorAlCrear: error as Error });
-    const r = await ejecutarTransferencia(registro(), h.deps);
-    assert.equal(r.estado, "propuesta");
-    assert.match(r.mensaje, /No se escribió nada en Holded/);
-    assert.equal(h.escrituras.filter((e) => e.startsWith("conciliar")).length, 0);
-  }
-});
-
-test("una creación de asiento sin respuesta clara queda fallida y, al verificar, se busca por su marca", async () => {
-  const h = holded({ errorAlCrear: new Error("The operation was aborted due to timeout") });
-  const r = await ejecutarTransferencia(registro(), h.deps);
-  assert.equal(r.estado, "fallida");
-  assert.equal(r.registro.asientoId, "");
-  // El asiento SÍ se había creado en Holded y quedó sin conciliar: la verificación lo encuentra por la marca.
-  h.lineas.push({ asientoId: "huerfano", cuenta: "57200001", debe: 350, haber: 0, descripcion: "Transferencia [wobi:transferencia:abc123def456]", fecha: "2026-10-01" },
-    { asientoId: "huerfano", cuenta: "57200015", debe: 0, haber: 350, descripcion: "Transferencia [wobi:transferencia:abc123def456]", fecha: "2026-10-01" });
-  const escriturasAntes = h.escrituras.length;
-  const otra = await ejecutarTransferencia(r.registro, h.deps);
-  assert.equal(otra.estado, "fallida");
-  assert.equal(otra.registro.asientoId, "huerfano");
-  assert.match(otra.mensaje, /asiento huerfano/);
-  assert.equal(h.escrituras.length, escriturasAntes);
-});
-
-test("una conciliación que falla tras crear el asiento no se reintenta: queda fallida con el asiento a la vista", async () => {
-  const h = holded({ conciliarFalla: true });
-  const r = await ejecutarTransferencia(registro(), h.deps);
-  assert.equal(r.estado, "fallida");
-  assert.match(r.mensaje, /asiento asiento-1 se creó.*No se reintenta solo/);
-  assert.equal(h.escrituras.filter((e) => e.startsWith("asiento")).length, 1);
-  // Volver a pulsar no escribe nada: solo verifica por lectura.
-  const antes = h.escrituras.length;
-  const otra = await ejecutarTransferencia(r.registro, h.deps);
-  assert.equal(otra.estado, "fallida");
-  assert.equal(h.escrituras.length, antes);
-});
-
-test("un corte en mitad de la ejecución no repite escrituras: se verifica cómo quedó", async () => {
-  const sinAsiento = holded();
-  const r1 = await ejecutarTransferencia(registro({ estado: "ejecutando" }), sinAsiento.deps);
-  assert.equal(r1.estado, "fallida");
-  assert.deepEqual(sinAsiento.escrituras, []);
-
-  // El intento anterior sí terminó en Holded, pero el proceso murió antes de anotarlo (ni siquiera el id del asiento).
-  const completo = holded();
-  await ejecutarTransferencia(registro(), completo.deps);
-  const escriturasPrevias = completo.escrituras.length;
-  const r2 = await ejecutarTransferencia(registro({ estado: "ejecutando", asientoId: "" }), completo.deps);
-  assert.equal(r2.estado, "verificada");
-  assert.equal(r2.registro.asientoId, "asiento-1");
-  assert.equal(completo.escrituras.length, escriturasPrevias);
-});
-
-test("HTTP 200 no basta: movimientos sin conciliar, u otro asiento generado (también si Holded lo fecha hoy), son un fallo", async () => {
-  const sinEfecto = holded({ conciliarNoSurteEfecto: true });
-  const r1 = await ejecutarTransferencia(registro(), sinEfecto.deps);
-  assert.equal(r1.estado, "fallida");
-  assert.match(r1.mensaje, /no quedó conciliado/);
-
-  for (const fecha of ["2026-10-01", HOY]) {
-    const duplicado = holded({ asientoExtraFechado: fecha });
-    const r2 = await ejecutarTransferencia(registro(), duplicado.deps);
-    assert.equal(r2.estado, "fallida", `asiento extra fechado ${fecha}`);
-    assert.match(r2.mensaje, /aparecieron 2 líneas nuevas; se esperaba 1/);
-  }
-});
-
-test("si ya existe un asiento con la marca de la operación, no se crea otro", async () => {
   const h = holded();
-  h.lineas.push({ asientoId: "viejo", cuenta: "57200001", debe: 350, haber: 0, descripcion: "Transferencia [wobi:transferencia:abc123def456]", fecha: "2026-10-02" });
-  const r = await ejecutarTransferencia(registro(), h.deps);
+  const r = await ejecutarTransferencia(registro(), h.deps, { permitirEscritura: false });
+  assert.equal(r.estado, "propuesta");
+  assert.deepEqual(h.escrituras, []);
+  // Por defecto (sin opciones) tampoco se escribe.
+  assert.equal((await ejecutarTransferencia(registro(), holded().deps)).estado, "propuesta");
+});
+
+test("si el robot no llega a pulsar el botón final no se escribió nada: la propuesta vuelve a estar disponible", async () => {
+  const h = holded({ robotNoPulsa: "No se encontró el botón «Transferir»" });
+  const r = await ejecutarTransferencia(registro(), h.deps, SI);
+  assert.equal(r.estado, "propuesta");
+  assert.match(r.mensaje, /No se escribió nada.*No se encontró el botón/);
+  assert.deepEqual(h.escrituras, []);
+});
+
+test("si se pulsó pero Holded no muestra la transferencia queda fallida; al volver, lee antes de actuar", async () => {
+  const h = holded({ transferirSinEfecto: true });
+  const r = await ejecutarTransferencia(registro(), h.deps, SI);
+  assert.equal(r.estado, "fallida");
+  assert.deepEqual(h.escrituras, [TRANSFERIR]);
+  // Holded sí la había registrado (tardó): al volver NO se pulsa otra vez, solo se concilia la salida.
+  h.transferirEnHolded();
+  const segundo = await ejecutarTransferencia(r.registro, h.deps, SI);
+  assert.equal(segundo.estado, "verificada");
+  assert.deepEqual(h.escrituras, [TRANSFERIR, CONCILIAR]);
+});
+
+test("un corte tras «Transferir» no repite el clic: se concilia la salida contra el pago que ya existe", async () => {
+  const h = holded();
+  h.transferirEnHolded();
+  const r = await ejecutarTransferencia(registro({ estado: "ejecutando" }), h.deps, SI);
+  assert.equal(r.estado, "verificada");
+  assert.deepEqual(h.escrituras, [CONCILIAR]);
+  // Sin autorización para escribir, solo informa.
+  const h2 = holded();
+  h2.transferirEnHolded();
+  const r2 = await ejecutarTransferencia(registro({ estado: "ejecutando" }), h2.deps, { permitirEscritura: false });
+  assert.equal(r2.estado, "fallida");
+  assert.deepEqual(h2.escrituras, []);
+});
+
+test("una conciliación de la salida que falla o no surte efecto queda fallida y no se repite sola dentro del intento", async () => {
+  for (const opciones of [{ conciliarFalla: true }, { conciliarNoSurteEfecto: true }]) {
+    const h = holded(opciones);
+    const r = await ejecutarTransferencia(registro(), h.deps, SI);
+    assert.equal(r.estado, "fallida");
+    assert.match(r.mensaje, /movimiento de salida no quedó conciliado/);
+    assert.deepEqual(h.escrituras, [TRANSFERIR, CONCILIAR]);
+  }
+});
+
+test("un clic no basta: otro asiento generado (también si Holded lo fecha hoy) o documentos inesperados son un fallo", async () => {
+  for (const fecha of ["2026-10-01", HOY]) {
+    const h = holded({ asientoExtraFechado: fecha });
+    const r = await ejecutarTransferencia(registro(), h.deps, SI);
+    assert.equal(r.estado, "fallida", fecha);
+    assert.match(r.mensaje, /único asiento nuevo/);
+  }
+  const h = holded();
+  h.pagos.push({ id: "raro", tipo: "payment", cuentaId: "otra", importe: 350, conciliado: false, movimiento: D });
+  const r = await ejecutarTransferencia(registro({ estado: "ejecutando" }), h.deps, SI);
   assert.equal(r.estado, "fallida");
   assert.deepEqual(h.escrituras, []);
+});
+
+test("el asiento suelto del primer método bloquea mientras exista; una vez borrado, la transferencia se ejecuta", async () => {
+  const h = holded();
+  h.lineas.push({ asientoId: "suelto", cuenta: "57200001", debe: 350, haber: 0, descripcion: "[wobi:transferencia:abc123def456]", fecha: "2026-10-01" });
+  h.lineas.push({ asientoId: "suelto", cuenta: "57200015", debe: 0, haber: 350, descripcion: "[wobi:transferencia:abc123def456]", fecha: "2026-10-01" });
+  const r = await ejecutarTransferencia(registro({ estado: "fallida", asientoId: "suelto" }), h.deps, SI);
+  assert.equal(r.estado, "fallida");
+  assert.match(r.mensaje, /asiento suelto suelto.*Bórralo/);
+  assert.deepEqual(h.escrituras, []);
+  h.lineas.splice(-2, 2);
+  const segundo = await ejecutarTransferencia(r.registro, h.deps, SI);
+  assert.equal(segundo.estado, "verificada");
+  assert.equal(segundo.registro.asientoId, "cobro-1");
+  assert.deepEqual(h.escrituras, [TRANSFERIR, CONCILIAR]);
+});
+
+test("tras un intento anterior, un movimiento que ya no está libre no se da por «no escrito»: queda para comprobar", async () => {
+  const h = holded();
+  h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 350 });
+  const r = await ejecutarTransferencia(registro({ estado: "fallida" }), h.deps, SI);
+  assert.equal(r.estado, "fallida");
+  assert.doesNotMatch(r.mensaje, /No se escribió nada/);
+  assert.deepEqual(h.escrituras, []);
+});
+
+test("los importes se buscan en pantalla como los escribe Holded", () => {
+  assert.equal(importeEnPantalla(350), "350,00");
+  assert.equal(importeEnPantalla(-1300), "1.300,00");
+  assert.equal(importeEnPantalla(1234567.5), "1.234.567,50");
 });
 
 test("Holded devuelve los importes con punto en el listado y con coma en el asiento por id", () => {
@@ -224,4 +259,9 @@ test("el interruptor: apagado por defecto, y en activo solo ejecuta las parejas 
   assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_CASOS: ` ${clave} , basura, WOBA:xx>yy` }), true);
   assert.equal(ejecucionAutorizada(`WOBA:${D}>${O}`, { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_CASOS: clave }), false);
   assert.equal(casosAutorizados({ WOBI_TRANSFERENCIAS_CASOS: "*,todas" }).size, 0);
+  // Alcance abierto a euros (validado con la prueba del 05-10-2026): cualquier pareja bien formada, solo en modo activo.
+  assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "EUR" }), true);
+  assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "observacion", WOBI_TRANSFERENCIAS_ALCANCE: "eur" }), false);
+  assert.equal(ejecucionAutorizada("WOBA:xx>yy", { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "eur" }), false);
+  assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "todo" }), false);
 });

@@ -19,7 +19,7 @@ import type { CuentaParaNavegador, NavegadorHolded, ResultadoNavegador } from ".
 declare const document: { body?: { innerText?: string }; querySelectorAll<T = HTMLElement>(selector: string): ArrayLike<T>; querySelector(selector: string): HTMLElement | null };
 interface HTMLElement { children: { length: number }; textContent: string | null; offsetParent: unknown; getClientRects(): { length: number }; click(): void; querySelector(s: string): unknown; parentElement: HTMLElement | null }
 
-const BASE = (process.env.WOBI_HOLDED_WEB_URL ?? "https://app.holded.com").replace(/\/$/, "");
+export const BASE = (process.env.WOBI_HOLDED_WEB_URL ?? "https://app.holded.com").replace(/\/$/, "");
 // Verificado contra la interfaz real (2026-10-02): la edición de un gasto tiene URL directa.
 const RUTA_EDITAR_COMPRA = process.env.WOBI_HOLDED_WEB_RUTA_EDITAR_COMPRA ?? "/doc/purchase/{id}/edit";
 const RUTA_ATERRIZAJE = process.env.WOBI_HOLDED_WEB_RUTA_ATERRIZAJE ?? "/contacts";
@@ -57,10 +57,10 @@ async function conTiempo<T>(tarea: Promise<T>, ms: number, nombre: string): Prom
   try { return await Promise.race([tarea, limite]); } finally { clearTimeout(t!); }
 }
 
-const pausa = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+export const pausa = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Clic en el primer elemento visible cuyo texto coincide con alguna de las etiquetas. */
-async function clicPorTexto(page: Page | Frame, etiquetas: string[], exacto = false, hacerClic = true): Promise<boolean> {
+export async function clicPorTexto(page: Page | Frame, etiquetas: string[], exacto = false, hacerClic = true): Promise<boolean> {
   if (hacerClic) exigirEtiquetasPermitidas(etiquetas);
   return page.evaluate((tags, soloExacto, clic) => {
     const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
@@ -104,7 +104,7 @@ async function abrirSesion(empresa: Empresa): Promise<{ browser: Browser; page: 
 }
 
 /** Distingue sesión válida de login/verificación mirando la URL y los textos visibles; no interactúa con ellos. */
-async function estadoSesion(page: Page): Promise<ResultadoNavegador> {
+export async function estadoSesion(page: Page): Promise<ResultadoNavegador> {
   const url = page.url();
   // Una recarga justo en este instante (pasa en la portada de Footprint) no es un fallo: se reintenta una vez.
   const leerCuerpo = () => page.evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "");
@@ -116,7 +116,7 @@ async function estadoSesion(page: Page): Promise<ResultadoNavegador> {
   return { estado: "ok" };
 }
 
-async function conPagina(empresa: Empresa, tarea: (page: Page, dedicada: boolean) => Promise<ResultadoNavegador>, limiteMs = TIEMPO_MAXIMO_MS): Promise<ResultadoNavegador> {
+export async function conPagina(empresa: Empresa, tarea: (page: Page, dedicada: boolean) => Promise<ResultadoNavegador>, limiteMs = TIEMPO_MAXIMO_MS): Promise<ResultadoNavegador> {
   if (enUso) return { estado: "error", detalle: "Ya hay una acción de navegador de Holded en curso en este proceso" };
   enUso = true;
   let browser: Browser | undefined;
@@ -151,14 +151,14 @@ async function esperarMarco(page: Page, patron: RegExp, ms = 40_000): Promise<Fr
 /** Como clicPorTexto, pero una recarga de la pantalla en mitad de la consulta cuenta como «aún no» en vez de error. */
 const clicPorTextoSeguro = (marco: Frame, etiquetas: string[], exacto: boolean, hacerClic = true) => clicPorTexto(marco, etiquetas, exacto, hacerClic).catch(() => false);
 
-const empresaActivaEnPantalla = async (page: Page) =>
+export const empresaActivaEnPantalla = async (page: Page) =>
   (await page.mainFrame().evaluate(() => (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 60)).catch(() => "")).toLowerCase();
 
 /**
  * Espera a que la pantalla deje de recargarse: el mismo texto no vacío durante 3 lecturas seguidas. Las páginas de Footprint
  * (miles de documentos) tardan 10-15 s en asentarse y mientras tanto se recargan; interactuar antes hace fallar los clics.
  */
-async function esperarEstable(page: Page, ms = 60_000): Promise<boolean> {
+export async function esperarEstable(page: Page, ms = 60_000): Promise<boolean> {
   const limite = Date.now() + ms;
   let previo = "", iguales = 0;
   while (Date.now() < limite) {
@@ -177,7 +177,7 @@ async function esperarEstable(page: Page, ms = 60_000): Promise<boolean> {
  * cuál es. Menú de la empresa → «Cambiar cuenta» → «WOBA» / «Footprint Global» / «Eworks» (verificado en la interfaz real); después
  * se comprueba que quedó activa. Si ya lo era, no se toca nada.
  */
-async function activarEmpresa(page: Page, empresa: Empresa, urlLigera: string): Promise<ResultadoNavegador> {
+export async function activarEmpresa(page: Page, empresa: Empresa, urlLigera: string = `${BASE}${RUTA_ATERRIZAJE}`): Promise<ResultadoNavegador> {
   await page.goto(urlLigera, { waitUntil: "domcontentloaded" });
   const sesion = await estadoSesion(page);
   if (sesion.estado !== "ok") return sesion;
