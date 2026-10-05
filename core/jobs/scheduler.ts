@@ -20,6 +20,7 @@ import { revisarCorreccionesCuentaContable } from "./revisarCorreccionesCuentaCo
 import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos";
 import { revisarAlertasSeguros } from "./revisarAlertasSeguros";
 import { revisarSegurosVigilante } from "./revisarSegurosVigilante";
+import { informeSemanalSeguros } from "./informeSemanalSeguros";
 import { esperarPrioridadInteractiva } from "./jobPriority";
 import { conversionTicketsHolded, sincronizacionBancariaHolded } from "./automatizacionHolded";
 import {
@@ -304,6 +305,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarSegurosVigilante programado: diario 8:35 y 17:35 (${TIMEZONE})`);
+
+  cron.schedule(
+    "10 9 * * 1",
+    () => {
+      ejecutarSinSolapamiento("informeSemanalSeguros", () => informeSemanalSeguros());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] informeSemanalSeguros programado: lunes 9:10 (${TIMEZONE})`);
 
   cron.schedule(
     "5 * * * *",

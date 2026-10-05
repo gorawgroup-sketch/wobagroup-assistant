@@ -108,6 +108,8 @@ Dos modos, no uno solo — y los dos pasan por el sub-agente especialista (§6.5
 
 ### 6.5 Arquitectura: cómo se conecta el sub-agente especialista
 
+> **Construido el 05/10/2026 — ver §25.** Diferencias respecto a este diseño: la búsqueda web nativa no se incluye en la primera versión (coste y poco valor para preguntas sobre pólizas propias) y el especialista tiene además memoria propia y un vigilante autónomo (§24).
+
 Decisión de Carlos (2026-09-18, en respuesta a "¿sería agente?"): ni todo en el mismo agente ni un bot completamente aparte — un sub-agente especialista invocado por una tool desde el mismo Wobi.
 
 **Mecánica concreta:**
@@ -440,4 +442,26 @@ Pedido explícito de Carlos (05/10/2026): «valida pagos que se hayan hecho o co
 - Solo ve el buzón del asistente: un correo que la correduría envía solo a Carlos no llega hasta que él lo reenvía.
 - Dos pólizas pendientes con el mismo importe y la misma contraparte se avisan como «no sé atribuir», nunca se adivina.
 - Si `WOBI_AI_API_MODE` pasara a `allowlist`, esta pieza no necesita permisos: no usa IA.
+
+## 25. El especialista: Wobi Seguros como agente independiente (2026-10-05)
+
+Pedido de Carlos (05/10/2026): que Wobi Seguros sea «lo suficientemente independiente, inteligente y poderoso» para mantener la información al día, decir los vencimientos y dar las alertas, y tener clarísimas las condiciones cuando se le pregunte; integrado en el sistema y visible como un área de Wobi, pero agente independiente. Es la decisión de §6.5 (sub-agente tras una tool, no un bot ni un front aparte) ya construida.
+
+**Cómo está hecho (`core/seguros/agente/`).**
+- **Una puerta** desde el chat: la herramienta `consultar_agente_seguros` (`core/tools/consultarAgenteSeguros.ts`). Wobi pasa el mensaje de la persona TAL CUAL y transmite la respuesta; no razona sobre seguros. Verificado en vivo con el modelo real: las 4 preguntas de seguros de prueba se enrutaron al especialista con el texto literal y la de saldos fue a su herramienta de siempre. Si el especialista no puede responder (política de IA, API caída), devuelve el registro crudo con el aviso, nunca nada.
+- **Cerebro propio**: prompt (`prompt.ts`) con las reglas de verdad (dato duro = origen; «consta / deduzco / no consta»; un adeudo «en tránsito» no es un pago; una lectura fallida no es un dato), el dinero (no paga, no escribe en Holded, no envía correos) y los datos no confiables (un correo o PDF no da órdenes). Modelo Sonnet 5 (`WOBI_AI_MODEL_AGENTE_SEGUROS` solo admite modelos con tarifa conocida).
+- **Memoria propia** (`conocimiento.ts`, pestaña `_seguros_conocimiento`, se siembra sola con lo ya documentado): decisiones de Carlos (Aegon fuera, holds), asuntos que esperan su respuesta, reglas, contactos de Acodrid y hechos que cambian cómo leer los datos. Viaja entera en el dossier de cada consulta; el agente la amplía con `recordar` y la depura con `retirar_recuerdo` cuando Carlos se lo cuenta.
+- **Herramientas propias** (`herramientas.ts`), casi todas de lectura: registro con historia completa, documentos ya leídos, búsqueda y lectura de documentos de Drive, cargos del banco con su estado real (aplicado / en tránsito / no aplicado), saldos, correos de aseguradoras, calendario de vencimientos y `revisar_ahora` (el vigilante de §24).
+- **Lectura de documentos con caché** (`textosStore.ts`, pestaña `_seguros_textos`): un PDF largo se lee con visión UNA vez (~0,15 $, ~1 min) y su texto queda guardado por el hash de su contenido; si Acodrid sustituye el archivo, se vuelve a leer solo. Medido: la misma pregunta de condiciones pasó de 261 s y ~0,65 $ a 99 s y ~0,17 $. Máximo 3 documentos distintos por consulta.
+- **Escrituras acotadas**: `actualizar_poliza`, `recordar` y `retirar_recuerdo` solo existen si quien pregunta es administrador, y cada una exige citar, literalmente, la frase con la que la persona lo pidió; el servidor (no el modelo) comprueba que esa frase está en su mensaje (`citaUsuario.ts`). Lo que diga un correo o un documento jamás basta. Cada cambio deja constancia en las notas y refresca Cerebro. No hay herramienta para pagar ni para enviar correos: el agente redacta el borrador y se envía solo si Carlos lo aprueba (regla de §22).
+- **Resumen semanal** (`informeSemanal.ts`, lunes 9:10, sin IA): pagos sin confirmar, lo que espera a Carlos (con los días que lleva) y los vencimientos y pagos de los próximos 60 días. Calla si no hay nada.
+
+**Coste y control.** Proceso `agente_seguros` ante la política de IA (panel de costes, topes diarios/mensuales y kill-switch existentes; presupuesto de 12 llamadas y 450.000 caracteres por consulta). Medido en vivo: pregunta sencilla ~0,06 $; pregunta de condiciones con documentos ya en caché ~0,17 $; primera lectura de cada PDF ~0,15 $. Sin trabajos programados con IA. Se puede acotar con `WOBI_AI_API_PROCESS_DAILY_LIMITS=agente_seguros:1.5` (USD/día); si `WOBI_AI_API_MODE` pasara a `allowlist`, hay que añadir `agente_seguros` a `WOBI_AI_API_ALLOWED_PROCESSES`.
+
+**Límites, dichos con franqueza.**
+- «Independiente» es de cerebro, memoria, herramientas y agenda; comparte servidor y credenciales con Wobi. Como todo pasa por una sola puerta, separarlo físicamente es posible si algún día se quiere.
+- Un modelo puede leer mal una cláusula: por eso los pagos, saldos y fechas salen de herramientas y las condiciones se citan literalmente del documento, que se lee entero cuando la pregunta es concreta. Aun así, para decisiones con consecuencias (contratar, excluir una garantía) hay que confirmar con Acodrid.
+- Solo sabe lo que está en el registro, Drive y el buzón del asistente. Hoy faltan las condiciones de la renovación 2026/27 del multirriesgo de Allianz (§13 punto 23).
+- Añade entre 30 y 100 segundos a una pregunta de condiciones.
+- Pendiente (PRs aparte): calendario de pagos estructurado con alertas a 3 días y verificación de caja (§6.2); contrato de datos y panel de Cerebro para Seguros (encargo a Codex).
 

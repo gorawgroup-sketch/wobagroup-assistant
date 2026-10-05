@@ -15,6 +15,8 @@ const PRESUPUESTOS_POR_PROCESO: Record<string, PresupuestoSolicitudIA> = {
   correo_gastos_automatico: { maxLlamadasPorEjecucion: 1, maxCaracteresEntrada: 300_000 },
   transcribir_captura: { maxLlamadasPorEjecucion: 3, maxCaracteresEntrada: 220_000 },
   chat_conversacional: { maxLlamadasPorEjecucion: 24, maxCaracteresEntrada: 900_000 },
+  // Wobi Seguros (core/seguros/agente/): 10 pasos de herramientas + el cierre forzado + margen; 450.000 caracteres de contexto.
+  agente_seguros: { maxLlamadasPorEjecucion: 12, maxCaracteresEntrada: 450_000 },
 };
 
 const PRESUPUESTO_DEFECTO: PresupuestoSolicitudIA = {

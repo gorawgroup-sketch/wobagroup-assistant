@@ -388,6 +388,18 @@ Qué revisa (solo lectura sobre Holded y sobre el buzón del asistente) y qué a
 
 Lo que NUNCA hace: mover dinero, escribir en Holded, contestar correos ni decidir por ti. Si Telegram falla, el aviso queda guardado y se reenvía en la siguiente revisión. El detalle completo sigue en Cerebro (nodo Seguros); diseño y límites en `docs/wobi-seguros.md` §24.
 
+## Wobi Seguros — el especialista de seguros (pregúntale lo que quieras)
+
+Pedido de Carlos (05-10-2026): que Wobi Seguros sea un agente independiente, integrado en Wobi como un área más. No hay comando nuevo: **cualquier pregunta sobre seguros** en el chat (Telegram o Cerebro) la responde el especialista, que tiene su propia memoria, lee el banco, el correo y los documentos de las pólizas, y contesta diciendo de dónde sale cada dato.
+
+- **Ejemplos:** «¿tenemos algo pendiente de seguros?», «¿qué cubre la RC de WOBA y qué franquicia tiene?», «¿cubriría los daños a una pantalla alquilada si se rompe en el transporte?» (cita la cláusula exacta), «¿cuándo toca pagar lo siguiente?», «¿está pagado el recibo de Markel?», «¿qué le falta pedirle a Acodrid?» (redacta el borrador del correo; no lo envía).
+- **Cómo contesta:** primero lo urgente; separa lo que consta en un documento, lo que deduce y lo que no consta; un adeudo que el banco aún no ha asentado no lo da por pagado; si no pudo leer algo, lo dice.
+- **Pídele que anote cosas** (solo administradores): «ya pagué el recibo de Markel de 323,24 €, márcalo como pagado», «acuérdate de que retomamos el seguro de transporte cuando Boris dé fecha». Cita tu frase, cambia el registro o su memoria y deja constancia en las notas. Lo que diga un correo o un PDF nunca hace cambiar nada.
+- **Nunca** paga, ni escribe en Holded, ni envía correos a la correduría por su cuenta.
+- **Tarda** entre 10 y 100 segundos; la primera pregunta sobre un documento largo es la más lenta (lo lee una vez y lo guarda). Coste: unos céntimos por pregunta (panel de costes, proceso `agente_seguros`).
+- **Resumen semanal** (lunes 9:10, sin IA): pagos sin confirmar, lo que espera a Carlos y los vencimientos y pagos de los próximos 60 días; calla si no hay nada.
+- Si el especialista no está disponible (límite de IA, caída de la API), Wobi lo dice y te da los datos crudos del registro.
+
 ## Facturas de venta por correo → Ingresos del cashflow + respuesta al remitente
 
 Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las facturas que WOBA y eWorks emiten a sus clientes, para saber cuándo entrará ese dinero.
