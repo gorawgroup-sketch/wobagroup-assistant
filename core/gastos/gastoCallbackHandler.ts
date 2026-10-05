@@ -1168,8 +1168,12 @@ async function conciliarContraMovimientoEspecifico(
         : resultado.movimientoParcial
         ? `\n\n⚠️ La compra quedó pagada y el vínculo fue confirmado, pero el movimiento bancario continúa ` +
           `parcialmente conciliado${resultado.pendienteEnMovimiento !== undefined
-            ? ` (${resultado.pendienteEnMovimiento.toFixed(2)} ${movimiento.moneda} todavía sin asignar)`
+            ? ` (${resultado.pendienteEnMovimiento.toFixed(2)} ${movimiento.monedaNativa ?? movimiento.moneda} todavía sin asignar)`
             : ""}. Revisa si el resto corresponde a otra partida.`
+        : resultado.diferenciaCambioBancario !== undefined
+        ? `\n\n💱 El banco cobró ${resultado.diferenciaCambioBancario.toFixed(2)} ${movimiento.monedaNativa ?? movimiento.moneda} más de lo que vale el gasto al cambio ` +
+          `del documento (margen de conversión de la tarjeta entre monedas distintas). El gasto queda pagado y conciliado; esa ` +
+          `diferencia queda sin asignar en el movimiento del banco.`
         : "";
       const requiereRevision = conciliacionRequiereRevision(resultado);
       return { nota:
