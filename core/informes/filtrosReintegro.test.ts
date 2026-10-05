@@ -84,3 +84,33 @@ test("el PDF solo-pagados se genera (sin sección de sin pagar) y el normal sigu
   const normal = await generarInformeReintegroPDF({ empresa: "Footprint", persona: "Nuria Ortiz", etiqueta: "nuria", desde: "2026-09-01", hasta: "2026-09-30", gastos: todos, cobertura });
   assert.equal(normal.subarray(0, 4).toString("ascii"), "%PDF");
 });
+
+// ---- Sin distinguir pago (pedido de Carlos 2026-10-05: Kyriad 107,97 € y Navigo 14,00 € sumados al total, sin mencionar pagos) ----
+test("sin distinguir pago: entran también los no pagados, Northgate sigue fuera y el segmento del botón lo conserva", () => {
+  const f = { soloPagados: false, sinDistinguirPago: true, excluir: normalizarExclusiones(["Northgate España"]) };
+  const r = prepararGastosReintegro(todos, f);
+  assert.deepEqual(r.gastos.map((x) => x.proveedor), ["Bolt", "Kyriad Créteil Bonneuil sur Marne", "Parcial SA", "Air France"]);
+  assert.equal(r.omitidosSinPagar.length, 0);
+  const base = "reintegrozip:Footprint:nuriaortiz:2026-09-01:2026-09-30";
+  const efectivo = ajustarFiltrosAlBoton(base, f);
+  const seg = codificarFiltros(efectivo);
+  assert.match(seg, /^u~/);
+  assert.ok(Buffer.byteLength(`${base}:${seg}`) <= 64);
+  assert.deepEqual(decodificarFiltros(seg), efectivo);
+});
+
+test("sin distinguir pago: PDF y ZIP numeran el mismo listado único en orden de fecha (no «pagados primero»)", () => {
+  const f = { soloPagados: false, sinDistinguirPago: true, excluir: [] as string[] };
+  const gastos = prepararGastosReintegro([bolt, kyriad, airFrance], f).gastos;
+  const numerados = gastosNumerados(gastos, true);
+  assert.deepEqual(numerados.map((x) => [x.numero, x.gasto.proveedor]), [[1, "Bolt"], [2, "Kyriad Créteil Bonneuil sur Marne"], [3, "Air France"]]);
+  // El modo normal separa pagados y no pagados (otro orden): por eso el ZIP necesita saber el modo.
+  assert.deepEqual(gastosNumerados(gastos, false).map((x) => x.gasto.proveedor), ["Bolt", "Air France", "Kyriad Créteil Bonneuil sur Marne"]);
+});
+
+test("sin distinguir pago: el PDF neutro se genera con todos los gastos", async () => {
+  const cobertura = { facturasListadas: 35, comprasPropiasLeidas: 293, lecturasFallidas: 0 };
+  const gastos = prepararGastosReintegro(todos, { soloPagados: false, sinDistinguirPago: true, excluir: ["northgateespan"] }).gastos;
+  const pdf = await generarInformeReintegroPDF({ empresa: "Footprint", persona: "Nuria Ortiz", etiqueta: "nuria", desde: "2026-09-01", hasta: "2026-09-30", destinatario: "MIMO", gastos, cobertura, sinDistinguirPago: true, exclusiones: ["Northgate España"] });
+  assert.equal(pdf.subarray(0, 4).toString("ascii"), "%PDF");
+});
