@@ -6010,7 +6010,14 @@ export function evaluarAjusteCambioResidual(
       (centimos(totalNativo) - (centimos(totalPagadoNativo) + pendienteCentimos) < 0 ||
         centimos(totalNativo) - (centimos(totalPagadoNativo) + pendienteCentimos) > 1)) return undefined;
 
-  const montoAjusteCentimos = Math.round((pendiente / tasaCambio) * 100);
+  // La API redondea `currency_change` a 2 decimales (1,1225 se lee como 1,12): con residuos de más de unos céntimos ese error
+  // dejaría un pendiente final fuera de tolerancia tras el pago. El cambio EFECTIVO de Holded sale de sus propios pagos
+  // (pagado nativo ÷ pagos en EUR); solo se usa si no se aparta más de un 1 % del declarado.
+  const tasaEfectiva = totalPagos > 0 ? totalPagadoNativo / totalPagos : NaN;
+  const tasaUsada = Number.isFinite(tasaEfectiva) && tasaEfectiva > 0 && Math.abs(tasaEfectiva - tasaCambio) / tasaCambio <= 0.01
+    ? tasaEfectiva
+    : tasaCambio;
+  const montoAjusteCentimos = Math.round((pendiente / tasaUsada) * 100);
   if (montoAjusteCentimos <= 0 || montoAjusteCentimos > margenCentimos) return undefined;
   const totalContableDocumentoCentimos = centimos(totalNativo / tasaCambio);
 
