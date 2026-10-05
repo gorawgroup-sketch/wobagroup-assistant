@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { conSeleccionGasto } from "./gastoProposalSheet";
 
@@ -40,8 +41,8 @@ test("la cola es por propuesta: una casilla lenta de una propuesta no retrasa a 
 });
 
 test("guarda: marcar y aprobar usan la cola de la propuesta (si alguien la quita, vuelve el fallo «No marcaste ninguna acción»)", () => {
-  const manejador = readFileSync(new URL("./gastoCallbackHandler.ts", import.meta.url), "utf8");
-  const hoja = readFileSync(new URL("./gastoProposalSheet.ts", import.meta.url), "utf8");
+  const manejador = readFileSync(join(process.cwd(), "core/gastos/gastoCallbackHandler.ts"), "utf8");
+  const hoja = readFileSync(join(process.cwd(), "core/gastos/gastoProposalSheet.ts"), "utf8");
   const bloque = (fuente: string, inicio: string) => {
     const i = fuente.indexOf(inicio);
     assert.ok(i >= 0, `no se encuentra ${inicio}`);
