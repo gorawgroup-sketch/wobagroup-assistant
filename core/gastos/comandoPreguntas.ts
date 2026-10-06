@@ -2,7 +2,7 @@ import { obtenerConciliacionesPendientesPorChat, type ConciliacionPendiente } fr
 import { obtenerConciliacionesAmbiguasPendientesPorChat, type ConciliacionAmbiguaPendiente } from "./conciliacionAmbiguaPendienteStore";
 import { obtenerPropuestasGastoPorChat, type PropuestaGasto } from "./gastoProposalSheet";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
-import { filtrarConciliacionesPorTexto, reenviarPreguntaConciliacion, reenviarPreguntaConciliacionAmbigua } from "./reenviarPreguntaPendiente";
+import { filtrarConciliacionesPorTexto, importeDeBusqueda, normalizarBusqueda, reenviarPreguntaConciliacion, reenviarPreguntaConciliacionAmbigua } from "./reenviarPreguntaPendiente";
 import { montosCercanos } from "../utils/montos";
 import { answerCallbackQuery } from "../telegram/client";
 import type { InlineKeyboardButton, TelegramCallbackQuery } from "../telegram/types";
@@ -43,11 +43,11 @@ export function parsearComandoPreguntas(texto: string): string | undefined {
 }
 
 function propuestasPorTexto(propuestas: PropuestaGasto[], cual: string): PropuestaGasto[] {
-  const t = cual.trim().toLowerCase();
-  if (!t) return propuestas;
-  const porNombre = propuestas.filter((p) => `${p.proveedor} ${p.concepto ?? ""}`.toLowerCase().includes(t));
+  const t = normalizarBusqueda(cual);
+  if (!t) return cual.trim() ? [] : propuestas;
+  const porNombre = propuestas.filter((p) => normalizarBusqueda(`${p.proveedor} ${p.concepto ?? ""}`).includes(t));
   if (porNombre.length > 0) return porNombre;
-  const monto = Number(t.replace(/[^\d.,]/g, "").replace(",", "."));
+  const monto = importeDeBusqueda(cual);
   return Number.isFinite(monto) && monto > 0 ? propuestas.filter((p) => montosCercanos(p.monto, monto, 0.01)) : [];
 }
 
