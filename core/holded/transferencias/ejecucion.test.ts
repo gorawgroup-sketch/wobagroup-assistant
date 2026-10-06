@@ -124,7 +124,6 @@ test("si al repetir la detección la pareja ya no es inequívoca (apareció otro
 test("conversiones, transferencias que no son en EUR y registros que no coinciden con su clave no se ejecutan", async () => {
   const casos: Array<[Partial<RegistroTransferencia>, RegExp]> = [
     [{ tipo: "conversion" }, /las dos monedas son iguales/],
-    [{ tipo: "conversion", monedaOrigen: "USD", monedaDestino: "COP" }, /una pata en euros/],
     // Un asiento de 1.000 «USD» se escribiría como 1.000 EUR en el diario.
     [{ monedaOrigen: "USD", monedaDestino: "USD" }, /solo se ejecutan transferencias en EUR/],
     [{ origenMovimiento: "c".repeat(24) }, /no coincide con su clave/],
@@ -271,8 +270,8 @@ test("conversión EUR→USD: «Transferir» sobre la salida, la entrada contra e
   assert.equal(res.registro.asientoId, "pago-1");
 });
 
-test("conversión: si la entrada vale más en euros que la salida, o Holded no da la valoración, no se escribe nada", async () => {
-  for (const [valor, motivo] of [[440, /vale más en euros/], [433.97, /vale más en euros/], [0, /valoración en euros/], [300, /supera el 3 %/]] as const) {
+test("conversión: si Holded no da la valoración o la diferencia supera el 3 %, no se escribe nada", async () => {
+  for (const [valor, motivo] of [[0, /valoración en euros/], [300, /supera el 3 %/], [460, /supera el 3 %/]] as const) {
     const { h, r } = conversion(valor);
     const res = await ejecutarTransferencia(r, h.deps, SI);
     assert.equal(res.estado, "propuesta");
@@ -332,6 +331,39 @@ test("conversión con diferencia a favor: tras conciliar la entrada, el resto va
   assert.equal(res.registro.asientoId, "pago-1");
 });
 
+test("diferencia a favor con entrada en otra moneda (USD → COP): el resto se pasa a euros con la valoración de Holded", async () => {
+  const { h, r } = conversionAFavor();
+  // Entrada de 4.750.000 COP valorada en 1.300,71 EUR; la salida vale 1.300,00 EUR → 0,71 EUR a favor.
+  h.cuentas[1].moneda = "COP";
+  h.movimientos.set(O, { ...h.movimientos.get(O)!, importe: -1531.63, equivalenteEur: -1300 });
+  h.movimientos.set(D, { ...h.movimientos.get(D)!, importe: 4750000, moneda: "COP", equivalenteEur: 1300.71 });
+  const reg = { ...r, importeOrigen: -1531.63, importeDestino: 4750000, monedaDestino: "COP" };
+  const original = h.deps.transferir;
+  h.deps.transferir = async (e, orden) => {
+    if (orden.movimientoId === O) {
+      h.escrituras.push(`transferir:origen:${orden.cuentaContable}:${orden.importe}`);
+      h.lineas.push({ asientoId: "pago-1", cuenta: "57200001", debe: 1300, haber: 0, descripcion: "x", fecha: "2026-10-01" }, { asientoId: "pago-1", cuenta: "57200015", debe: 0, haber: 1300, descripcion: "x", fecha: "2026-10-01" });
+      h.movimientos.set(O, { ...h.movimientos.get(O)!, estado: "reconciled", conciliado: -1531.63 });
+      h.pagos.push({ id: "pago-doc", tipo: "payment", cuentaId: "main", importe: 1300, conciliado: true, movimiento: O }, { id: "cobro-doc", tipo: "collection", cuentaId: "bbva", importe: 1300, conciliado: false, movimiento: O });
+      return { estado: "ok", pulsado: true };
+    }
+    h.escrituras.push(`transferir:destino:${orden.cuentaContable}:${orden.importe}:resto${orden.restante}`);
+    h.lineas.push({ asientoId: "resto-1", cuenta: "57200001", debe: 0.71, haber: 0, descripcion: "x", fecha: "2026-10-01" }, { asientoId: "resto-1", cuenta: "62600000", debe: 0, haber: 0.71, descripcion: "x", fecha: "2026-10-01" });
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 4750000 });
+    h.pagos.push({ id: "cobro-resto", tipo: "collection", cuentaId: "bbva", importe: 0.71, conciliado: true, movimiento: D });
+    void e; void original;
+    return { estado: "ok", pulsado: true };
+  };
+  h.deps.conciliarConPago = async (_e, _c, _m, pagoId) => {
+    // Holded aplica 1.300 EUR: en COP quedan sin conciliar los que equivalen a 0,71 EUR.
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "partial", conciliado: Math.round(4750000 * (1300 / 1300.71)) });
+    h.pagos.find((p) => p.id === pagoId)!.conciliado = true;
+  };
+  const res = await ejecutarTransferencia(reg, h.deps, SI);
+  assert.equal(res.estado, "verificada", res.mensaje);
+  assert.deepEqual(h.escrituras, ["transferir:origen:57200001:1300", "transferir:destino:62600000:1300.71:resto0.71"]);
+});
+
 test("diferencia a favor: si el segundo «Transferir» no se pulsa queda fallida y al retomar solo se hace ese paso", async () => {
   const fallo = conversionAFavor({ segundoRobotNoPulsa: true });
   const res = await ejecutarTransferencia(fallo.r, fallo.h.deps, SI);
@@ -380,15 +412,17 @@ test("las conversiones solo se autorizan pareja a pareja, aunque las transferenc
   assert.equal(ejecucionAutorizada(clave, { WOBI_TRANSFERENCIAS_MODO: "observacion", WOBI_TRANSFERENCIAS_ALCANCE: "conversiones" }, "conversion"), false);
 });
 
-test("una conversión solo lleva botón si cabe en los límites: una pata en euros y, con diferencia a favor, entrada en euros", () => {
+test("una conversión solo lleva botón si cabe en los límites (valoración en euros, 3 %)", () => {
   const mov = (importe: number, moneda: string, equivalenteEur?: number): MovimientoTransferencia =>
     ({ id: "x", cuentaId: "c", fecha: "2026-09-02", importe, moneda, equivalenteEur, descripcion: "", estado: "pending", conciliado: 0 });
   assert.equal(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 431.85)), undefined);
   assert.equal(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.70, "EUR")), undefined);
-  // Diferencia a favor: se ejecuta si la entrada es en euros (el resto va a la cuenta de diferencias); si no, todavía no.
+  // Diferencia a favor: se ejecuta sea cual sea la moneda de la entrada (el resto va a la cuenta de diferencias).
   assert.equal(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.73, "EUR")), undefined);
-  assert.match(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 440)) ?? "", /vale más en euros/);
-  assert.match(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1290)) ?? "", /una pata en euros/);
+  assert.equal(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 436)), undefined);
+  // Sin pata en euros (USD → COP) también vale: Holded valora las dos patas en euros.
+  assert.equal(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1290)), undefined);
+  assert.equal(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1300.71)), undefined);
   assert.match(motivoConversionNoEjecutable(mov(-100, "EUR"), mov(110, "USD")) ?? "", /valoración en euros/);
 });
 
