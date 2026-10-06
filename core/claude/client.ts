@@ -1,3 +1,4 @@
+import { REGLA_PROCESO_SOPORTES } from "../soportes/reglaProceso";
 import { notaContinuidadConversacion, textoDeMensajeHistorial, type ContextoConversacion } from "./temaConversacion";
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, executeToolBatch, getToolDefinitions } from "../tools/registry";
@@ -108,6 +109,7 @@ const SYSTEM_PROMPT_ESTATICO = [
     "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
     "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
     "borrador con un botón en Telegram, así que proponer uno es siempre seguro.",
+  REGLA_PROCESO_SOPORTES,
   "El envío automatizado (con botón de aprobación) es SOLO para correo — decisión explícita de Carlos. " +
     "Para cualquier otro canal (WhatsApp, SMS, una llamada, avisar a alguien en persona, o cuando una " +
     "recomendación tuya implica 'avisar al proveedor'/'avisar a X'), NUNCA intentes enviarlo ni digas " +

@@ -361,3 +361,18 @@ test("el MIME lleva texto plano + HTML con la tabla + la hoja adjunta, y ninguna
   assert.match(mime, /filename="s\.xlsx"/);
   assert.ok(mime.split(/\r?\n/).every((l) => l.length <= 998));
 });
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { REGLA_PROCESO_SOPORTES } from "./reglaProceso";
+
+test("la regla del proceso de soportes está en el prompt fijo del asistente y conserva todas sus reglas", () => {
+  const cliente = readFileSync(join(process.cwd(), "core/claude/client.ts"), "utf-8");
+  const prompt = cliente.slice(cliente.indexOf("const SYSTEM_PROMPT_ESTATICO"), cliente.indexOf("const SYSTEM_PROMPT_RESPUESTA_AUTOMATICA"));
+  assert.ok(prompt.includes("REGLA_PROCESO_SOPORTES"), "la regla debe formar parte del prompt estático");
+  for (const clave of [
+    "/soportes", "«Payer»", "UN resumen con una casilla por persona", "proponer_envio_correo", "un solo correo por persona",
+    "asistente@wobagroup.com", "CUADRO", "hoja de Excel", "nunca se suman monedas", "reenvíen", "dominio de la empresa",
+    "registrar_email_titular_soportes", "«Enviar»", "sociedad", "menos de 7 días", "recordatorio",
+  ]) assert.ok(REGLA_PROCESO_SOPORTES.includes(clave), `falta «${clave}» en la regla`);
+});
