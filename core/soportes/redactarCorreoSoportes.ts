@@ -66,6 +66,8 @@ export function redactarCorreoSoportes(d: DatosCorreoSoportes): string {
     "",
     `Total de ${d.cargos.length} ${d.cargos.length === 1 ? "cargo" : "cargos"}: ${totales}.`,
     "",
+    "Te adjuntamos esta misma lista en Excel, con una columna de estado, solo para tu propio control: no hace falta devolverla; lo que necesitamos son los soportes.",
+    "",
     "Si un mismo comprobante cubre varias operaciones, indícanos cuáles. Si algún cargo no lo reconoces o corresponde a otra persona, cuéntanoslo para revisarlo.",
     "",
     "Gracias por tu ayuda.",

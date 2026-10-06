@@ -172,7 +172,7 @@ test("un recordatorio lo dice y un solo cargo va en singular", () => {
 const persona = (o: Partial<PersonaCampana>): PersonaCampana => ({
   rowIndex: 2, campana: "abcd1234", indice: 0, chatId: 1, messageId: 9, empresa: "WOBA", desde: "2026-09-01", hasta: "2026-10-06",
   titular: "Ana Prueba Lopez", email: "ana@x.com", fuenteEmail: "confirmado", seleccionado: true, estado: "pendiente", yaSolicitados: 0, creadoEn: 1,
-  cargos: [cargo({})], nota: "Analicé el extracto.", ...o,
+  cargos: [cargo({})], nota: "Analicé el extracto.", sugerencias: "", ...o,
 });
 
 test("el resumen muestra una casilla por persona y avisa de quién no tiene email", () => {
@@ -242,4 +242,122 @@ test("si casi nada del extracto aparece en Holded de la empresa elegida, se fren
 
 test("el comando está en el menú", () => {
   assert.ok(COMANDOS_MENU.some((c) => c.command === "soportes"));
+});
+
+import ExcelJS from "exceljs";
+import { direccionesDeHeader, encajaConPersona } from "./direccionesEnBuzon";
+import { decidirEmailTitular } from "./emailTitular";
+import { esTitularEmpresa } from "./cruceExtracto";
+import { generarSeguimientoXlsx, redactarCorreoSoportesHtml, tablaCargosHtml } from "./correoSoportesHtml";
+
+test("las direcciones de un header se leen con y sin nombre, y con comas dentro de comillas", () => {
+  assert.deepEqual(direccionesDeHeader('Alberto Comolli <Alberto@WobaGroup.com>, "Gonzalez, Carlos" <carlos@x.com>, solo@y.org'), [
+    { nombre: "Alberto Comolli", email: "alberto@wobagroup.com" },
+    { nombre: "Gonzalez, Carlos", email: "carlos@x.com" },
+    { nombre: "", email: "solo@y.org" },
+  ]);
+  assert.deepEqual(direccionesDeHeader(""), []);
+});
+
+test("una dirección encaja con la persona solo con dos palabras en común (nombre visto o parte local)", () => {
+  assert.equal(encajaConPersona("Nuria Coral Ortiz Herranz", "Nuria Ortiz", "nuria.ortiz@footprint.global"), true);
+  assert.equal(encajaConPersona("Nicolas David Gomez Osorio", "Nicolás Gómez", "nicolas.gomez@footprint.global"), true);
+  assert.equal(encajaConPersona("Kelly Johanna Correales Ducuara", "Kelly J. Correales Ducuara", "kelly@footprint.global"), true);
+  assert.equal(encajaConPersona("Juan Camilo Salazar Gonzalez", "Juan Pérez", "juan@x.com"), false);
+  assert.equal(encajaConPersona("Alberto Comolli", "Alberto Otro", "alberto@x.com"), false);
+});
+
+const dir = (email: string, fuerte = true, extra = {}) => ({ email, fuerte, nombreVisto: "", comoRemitente: 3, comoDestinatario: 0, ...extra });
+
+test("el email se decide: una sola dirección segura, o varias para elegir, o solo sugerencias", () => {
+  assert.deepEqual(decidirEmailTitular([], [dir("kelly@footprint.global")]), { tipo: "resuelto", email: "kelly@footprint.global", fuente: "buzon" });
+  assert.deepEqual(decidirEmailTitular(["nuria.ortiz@footprint.global"], [dir("nuria.ortiz@footprint.global")]), { tipo: "resuelto", email: "nuria.ortiz@footprint.global", fuente: "directorio" });
+  assert.deepEqual(decidirEmailTitular([], []), { tipo: "nada" });
+  assert.deepEqual(decidirEmailTitular([], [dir("alberto@x.com", false)]), { tipo: "sugerencias", candidatos: ["alberto@x.com"] });
+});
+
+test("con dos direcciones se elige la del dominio de la empresa; si no hay una sola, se ofrecen todas", () => {
+  const dos = [dir("alberto@wobagroup.com"), dir("alberto@footprint.global")];
+  assert.deepEqual(decidirEmailTitular([], dos, "footprint.global"), { tipo: "resuelto", email: "alberto@footprint.global", fuente: "buzon" });
+  assert.deepEqual(decidirEmailTitular([], dos, "wobagroup.com"), { tipo: "resuelto", email: "alberto@wobagroup.com", fuente: "buzon" });
+  assert.deepEqual(decidirEmailTitular([], dos), { tipo: "varios", candidatos: ["alberto@wobagroup.com", "alberto@footprint.global"] });
+  const simon = decidirEmailTitular(["s.talloen@gmail.com"], [dir("s.talloen@gmail.com"), dir("simon@footprint.global")]);
+  assert.equal(simon.tipo, "varios", "dos direcciones sin preferencia de dominio no se deciden solas");
+});
+
+test("una sociedad no es una persona a quien escribir", () => {
+  assert.equal(esTitularEmpresa("BUSINESS FOOTPRINT EU, SOCIEDAD LIMITADA"), true);
+  assert.equal(esTitularEmpresa("Acme Holdings LLC"), true);
+  for (const n of ["Kelly Johanna Correales Ducuara", "Jorge Gerardo Jácome Muñoz", "Juan Camilo Salazar Gonzalez", "Yessenia Carolina Dos Prazeres Ferreira", "Alejandro Florez Lopez", "Simon Talloen"]) {
+    assert.equal(esTitularEmpresa(n), false, n);
+  }
+});
+
+test("el resumen muestra las direcciones posibles cuando no hay una segura, y ofrece marcar a todos", () => {
+  const ps = [
+    persona({ email: "ana@x.com", fuenteEmail: "buzon", seleccionado: false }),
+    persona({ indice: 1, titular: "Simon Talloen", email: "", fuenteEmail: "", seleccionado: false, sugerencias: "s.talloen@gmail.com, simon@footprint.global", nota: "" }),
+    persona({ indice: 2, titular: "BUSINESS FOOTPRINT EU, SOCIEDAD LIMITADA", email: "", fuenteEmail: "", seleccionado: false, estado: "omitido", nota: "" }),
+  ];
+  const t = textoResumen(ps);
+  assert.match(t, /ana@x\.com \(del buzón de Wobi, confírmalo\)/);
+  assert.match(t, /sin email seguro\. Posibles: s\.talloen@gmail\.com, simon@footprint\.global/);
+  assert.match(t, /tarjeta de empresa, no de una persona/);
+  assert.ok(botonesResumen(ps).flat().some((b) => b.callback_data === "sop_m:abcd1234"));
+});
+
+const DATOS = {
+  titular: "Simon Talloen", empresa: "Footprint", desde: "2026-08-01", hasta: "2026-10-06",
+  cargos: [
+    cargo({ id: "2", fecha: "2026-10-05", comercio: "Airbnb * <Hm25>", total: -386, monedaCuenta: "USD", importeOriginal: 339.2, monedaOriginal: "EUR", tarjeta4: "1766" }),
+    cargo({ id: "1", fecha: "2026-10-02", comercio: "Tienda D1   Manila", total: -10.33, importeOriginal: 38360, monedaOriginal: "COP", tarjeta4: "1766" }),
+  ],
+};
+
+test("el correo lleva un cuadro HTML ordenado por fecha, con totales por moneda y sin colar HTML del comercio", () => {
+  const tabla = tablaCargosHtml(DATOS);
+  assert.match(tabla, /<th[^>]*>Nº<\/th>.*Fecha.*Comercio.*Importe cargado.*Importe en el comercio.*Tarjeta.*Soporte/s);
+  assert.ok(tabla.indexOf("Tienda D1 Manila") < tabla.indexOf("Airbnb"), "orden por fecha");
+  assert.match(tabla, /Airbnb \* &lt;Hm25&gt;/);
+  assert.match(tabla, /386,00 USD/);
+  assert.match(tabla, /38\.360,00 COP/);
+  assert.match(tabla, /Total EUR/);
+  assert.match(tabla, /Total USD/);
+  assert.match(tabla, /☐ Pendiente/);
+  const html = redactarCorreoSoportesHtml(DATOS);
+  assert.match(html, /Hola, Simon:/);
+  assert.match(html, /mailto:asistente@wobagroup\.com/);
+  assert.match(html, /solo para tu propio control/);
+  assert.ok(html.split("\n").every((l) => l.length < 900), "líneas cortas para el MIME");
+});
+
+test("la hoja de seguimiento trae la misma lista, importes numéricos, estado desplegable y totales", async () => {
+  const libro = new ExcelJS.Workbook();
+  await libro.xlsx.load(await generarSeguimientoXlsx(DATOS) as never);
+  const hoja = libro.getWorksheet("Soportes pendientes")!;
+  assert.deepEqual((hoja.getRow(1).values as unknown[]).slice(1, 12), ["Nº", "Fecha", "Comercio", "Importe cargado", "Moneda", "Importe en el comercio", "Moneda comercio", "Tarjeta", "Estado del soporte", "Fecha en que lo enviaste", "Comentarios"]);
+  assert.equal(hoja.getCell("C2").value, "Tienda D1 Manila");
+  assert.equal(hoja.getCell("D2").value, 10.33);
+  assert.equal(hoja.getCell("I2").value, "Pendiente");
+  assert.match(String(hoja.getCell("I2").dataValidation.formulae?.[0]), /No lo reconozco/);
+  assert.equal(hoja.getCell("F3").value, 339.2);
+  const total = hoja.getRow(5);
+  assert.equal(total.getCell(3).value, "Total EUR");
+  assert.match(String((total.getCell(4).value as { formula: string }).formula), /SUMIF\(E2:E3,"EUR",D2:D3\)/);
+});
+
+import { construirMimeConAdjuntos } from "../gmail/client";
+
+test("el MIME lleva texto plano + HTML con la tabla + la hoja adjunta, y ninguna línea pasa de 998 caracteres", async () => {
+  const mime = construirMimeConAdjuntos({
+    to: "a@b.com", asunto: "Soportes", cuerpo: redactarCorreoSoportes(DATOS), cuerpoHtml: redactarCorreoSoportesHtml(DATOS),
+    messageIdPropio: "<x@y>", adjuntos: [{ filename: "s.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", content: await generarSeguimientoXlsx(DATOS) }],
+  }).toString("utf-8");
+  assert.match(mime, /Content-Type: multipart\/mixed/);
+  assert.match(mime, /Content-Type: multipart\/alternative/);
+  assert.match(mime, /Content-Type: text\/plain; charset="UTF-8"/);
+  assert.match(mime, /Content-Type: text\/html; charset="UTF-8"/);
+  assert.match(mime, /<table /);
+  assert.match(mime, /filename="s\.xlsx"/);
+  assert.ok(mime.split(/\r?\n/).every((l) => l.length <= 998));
 });

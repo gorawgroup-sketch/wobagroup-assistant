@@ -5,13 +5,13 @@ import { editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButton
 import type { InlineKeyboardButton } from "../telegram/types";
 import { crearCampana, fijarMensaje, leerCampana, type PersonaCampana } from "./campanaSoportesStore";
 import {
-  agruparPorTitular, coincideConPropuestaPendiente, cruzarConBanco, elegirCuentasHolded, VENTANA_DIAS_CRUCE,
+  agruparPorTitular, coincideConPropuestaPendiente, cruzarConBanco, elegirCuentasHolded, esTitularEmpresa, VENTANA_DIAS_CRUCE,
   type CargoCruzado, type MovimientoBanco,
 } from "./cruceExtracto";
 import { esPagoConTarjeta, parsearExtractoRevolut, periodoDelExtracto } from "./extractoRevolut";
 import { totalesPorMoneda } from "./redactarCorreoSoportes";
 import { leerSolicitudes, pedidoRecientemente } from "./solicitudesSoportesSheet";
-import { resolverEmailTitular } from "./titularesSoportesSheet";
+import { resolverEmailCompleto } from "./emailTitular";
 
 /**
  * Del extracto de Revolut al mensaje resumen: qué cargos con tarjeta siguen sin soporte conciliado en Holded, de quién
@@ -114,8 +114,12 @@ export function textoResumen(personas: PersonaCampana[]): string {
     const marca = p.estado === "enviado" ? "📤" : p.estado === "fallido" ? "⚠️" : p.estado === "omitido" ? "—" : p.seleccionado ? "☑" : "☐";
     const destino = p.titular === "(sin titular)"
       ? "el extracto no dice quién gastó: revisa estos cargos a mano"
+      : esTitularEmpresa(p.titular)
+      ? "es una tarjeta de empresa, no de una persona: revisa estos cargos a mano"
       : p.email
-      ? `${p.email}${p.fuenteEmail === "directorio" ? " (del directorio, confírmalo)" : ""}`
+      ? `${p.email}${p.fuenteEmail === "directorio" ? " (del directorio, confírmalo)" : p.fuenteEmail === "buzon" ? " (del buzón de Wobi, confírmalo)" : ""}`
+      : p.sugerencias
+      ? `⚠️ sin email seguro. Posibles: ${p.sugerencias}. Dime cuál: «el correo de ${p.titular} es …» y pulsa 🔄`
       : `⚠️ sin email: escríbeme «el correo de ${p.titular} es …» y pulsa 🔄`;
     const estado = p.estado === "enviado" ? " — ENVIADO" : p.estado === "fallido" ? " — FALLÓ el envío, se puede reintentar" : "";
     return `${marca} ${p.titular} — ${p.cargos.length} ${p.cargos.length === 1 ? "cargo" : "cargos"} · ${tot}${p.yaSolicitados ? ` (${p.yaSolicitados} recordatorio)` : ""}\n     ${destino}${estado}`;
@@ -137,6 +141,9 @@ export function botonesResumen(personas: PersonaCampana[]): InlineKeyboardButton
   const aEnviar = personas.filter((p) => p.seleccionado && p.email && ["pendiente", "enviando", "fallido"].includes(p.estado)).length;
   const hayPendientes = personas.some((p) => ["pendiente", "enviando", "fallido"].includes(p.estado));
   if (hayPendientes) {
+    if (personas.some((p) => p.email && !p.seleccionado && ["pendiente", "fallido"].includes(p.estado))) {
+      filas.push([{ text: "☑ Marcar todos los que tienen email", callback_data: `sop_m:${id}` }]);
+    }
     filas.push([
       { text: aEnviar ? `📤 Enviar ${aEnviar} ${aEnviar === 1 ? "correo" : "correos"}` : "📤 Enviar (marca a alguien)", callback_data: `sop_e:${id}` },
       { text: "🔄 Actualizar emails", callback_data: `sop_a:${id}` },
@@ -179,13 +186,14 @@ export async function prepararCampanaSoportes(chatId: number, empresa: Empresa, 
   const creadoEn = Date.now();
   const personas: Array<Omit<PersonaCampana, "rowIndex">> = [];
   for (const [indice, g] of grupos.entries()) {
-    const sinTitular = !g.clave;
-    const resuelto = sinTitular ? undefined : await resolverEmailTitular(g.titular);
+    const sinTitular = !g.clave || esTitularEmpresa(g.titular);
+    const r = sinTitular ? ({ tipo: "nada" } as const) : await resolverEmailCompleto(g.titular, empresa);
     personas.push({
       campana, indice, chatId, messageId: 0, empresa, desde: a.desde, hasta: a.hasta, titular: g.titular,
-      email: resuelto?.email ?? "", fuenteEmail: resuelto?.fuente ?? "",
-      // Con email del directorio no se marca solo: Carlos lo confirma tocando la casilla.
-      seleccionado: resuelto?.fuente === "confirmado",
+      email: r.tipo === "resuelto" ? r.email : "", fuenteEmail: r.tipo === "resuelto" ? r.fuente : "",
+      sugerencias: r.tipo === "varios" || r.tipo === "sugerencias" ? r.candidatos.join(", ") : "",
+      // Solo el email que Carlos ya confirmó se marca solo; el del directorio o del buzón lo confirma él tocando la casilla.
+      seleccionado: r.tipo === "resuelto" && r.fuente === "confirmado",
       estado: sinTitular ? "omitido" : "pendiente",
       yaSolicitados: g.cargos.filter((c) => a.yaSolicitados.has(c.fila.id)).length,
       creadoEn, nota: indice === 0 ? nota : "",
