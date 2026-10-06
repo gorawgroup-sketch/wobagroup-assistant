@@ -124,8 +124,6 @@ test("si al repetir la detección la pareja ya no es inequívoca (apareció otro
 test("conversiones, transferencias que no son en EUR y registros que no coinciden con su clave no se ejecutan", async () => {
   const casos: Array<[Partial<RegistroTransferencia>, RegExp]> = [
     [{ tipo: "conversion" }, /las dos monedas son iguales/],
-    // Un asiento de 1.000 «USD» se escribiría como 1.000 EUR en el diario.
-    [{ monedaOrigen: "USD", monedaDestino: "USD" }, /solo se ejecutan transferencias en EUR/],
     [{ origenMovimiento: "c".repeat(24) }, /no coincide con su clave/],
     [{ empresa: "Footprint" }, /no coincide con su clave/],
   ];
@@ -396,6 +394,30 @@ test("la diferencia a favor sigue pareja a pareja: sin su autorización no se pu
   assert.equal(diferenciaAFavorAutorizada(clave, abierto), false);
   assert.equal(diferenciaAFavorAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_CASOS: clave }), true);
   assert.equal(diferenciaAFavorAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_ALCANCE: "eur,conversiones,conversiones_a_favor" }), true);
+});
+
+test("transferencia USD↔USD: se asienta por la valoración en euros, como una conversión (pulsar sobre la salida)", async () => {
+  const h = holded();
+  h.cuentas[0].moneda = "USD"; h.cuentas[1].moneda = "USD";
+  h.movimientos.set(O, { ...h.movimientos.get(O)!, importe: -3492.72, moneda: "USD", equivalenteEur: -3103.95 });
+  h.movimientos.set(D, { ...h.movimientos.get(D)!, importe: 3492.72, moneda: "USD", equivalenteEur: 3103.95 });
+  const r = registro({ importeOrigen: -3492.72, monedaOrigen: "USD", importeDestino: 3492.72, monedaDestino: "USD" });
+  h.deps.transferir = async (_e, orden) => {
+    h.escrituras.push(`transferir:${orden.cuentaId}:${orden.movimientoId === O ? "origen" : "destino"}:${orden.cuentaContable}:${orden.importe}`);
+    h.lineas.push({ asientoId: "pago-1", cuenta: "57200001", debe: 3103.95, haber: 0, descripcion: "x", fecha: "2026-10-01" }, { asientoId: "pago-1", cuenta: "57200015", debe: 0, haber: 3103.95, descripcion: "x", fecha: "2026-10-01" });
+    h.movimientos.set(O, { ...h.movimientos.get(O)!, estado: "reconciled", conciliado: -3492.72 });
+    h.pagos.push({ id: "pago-doc", tipo: "payment", cuentaId: "main", importe: 3103.95, conciliado: true, movimiento: O }, { id: "cobro-doc", tipo: "collection", cuentaId: "bbva", importe: 3103.95, conciliado: false, movimiento: O });
+    return { estado: "ok", pulsado: true };
+  };
+  h.deps.conciliarConPago = async (_e, cuentaId, movimientoId, pagoId, tipo) => {
+    h.escrituras.push(`conciliar:${cuentaId}:${movimientoId === O ? "origen" : "destino"}:${pagoId}:${tipo}`);
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 3492.72 });
+    const cobro = h.pagos.find((p) => p.id === pagoId)!; cobro.conciliado = true; cobro.aplicado = 3103.95;
+  };
+  const res = await ejecutarTransferencia(r, h.deps, SI);
+  assert.equal(res.estado, "verificada", res.mensaje);
+  assert.deepEqual(h.escrituras, ["transferir:main:origen:57200001:3103.95", "conciliar:bbva:destino:cobro-doc:collection"]);
+  assert.match(res.mensaje, /^Transferencia conciliada: Main 3492\.72 USD → BBVA 3492\.72 USD.*3103\.95 EUR/);
 });
 
 test("las conversiones solo se autorizan pareja a pareja, aunque las transferencias en euros estén abiertas", () => {
