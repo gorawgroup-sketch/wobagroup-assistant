@@ -432,7 +432,7 @@ Pedido explícito de Carlos (02-10-2026), tras un caso real: pidió los gastos d
 Pedido de Carlos (03-10-2026). Detalle técnico en `docs/transferencias-internas.md`.
 
 - **Cómo pedirlo**: «revisa las transferencias internas» (de una empresa o de las tres). Tool `revisar_transferencias_internas`. Solo lee Holded.
-- **Qué llega**: hasta 5 propuestas por pasada, cada una con empresa, fecha, cuenta e importe de salida y de entrada, tasa aplicada y del día en las conversiones, las descripciones de las dos patas y el nivel de confianza.
+- **Qué llega**: hasta 5 propuestas por empresa y pasada, cada una con empresa, fecha, cuenta e importe de salida y de entrada, tasa aplicada y del día en las conversiones, las descripciones de las dos patas y el nivel de confianza.
 - **Botones**: "✅ Conciliar transferencia" (Wobi pulsa «Transferir» en Holded y concilia los dos movimientos; con el modo activo y `WOBI_TRANSFERENCIAS_ALCANCE=eur` vale para cualquier transferencia en euros; corre en segundo plano, 1–3 min, una cada vez, y avisa al terminar; las conversiones llevan este botón solo si la entrada no vale más en euros que la salida), "⏭️ Saltar por ahora" (sigue pendiente y vuelve a proponerse), "🚫 No es una transferencia" (no se vuelve a proponer) y "🔎 Revisar manualmente" (queda a cargo de Carlos en Holded).
 - **Seguridad**: apagado por defecto (`WOBI_TRANSFERENCIAS_MODO`); nunca cruza empresas; nunca reutiliza un movimiento; no reintenta una escritura incierta; las conversiones de moneda todavía no se ejecutan.
 
