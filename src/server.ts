@@ -58,6 +58,7 @@ import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleSoportesCallback } from "../core/soportes/soportesTelegram";
+import { handleSoportesModoCallback, iniciarSoportes } from "../core/soportes/comandoSoportes";
 import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion, restaurarPendienteDesambiguacion, type PendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { consumirPendienteReglaClasificacion } from "../core/documental/pendienteReglaClasificacionStore";
@@ -148,7 +149,7 @@ import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorC
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
 import { handleTransferenciasCallback, publicarPropuestasTransferencias } from "../core/holded/transferencias/telegram";
 import { EMPRESAS_TRANSFERENCIAS } from "../core/holded/transferencias/modo";
-import { parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
+import { parsearComandoSoportes, parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
 import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
@@ -1724,6 +1725,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleRegistroManualCashflowCallback(callback);
     } else if (data.startsWith("transfint_")) {
       await handleTransferenciasCallback(callback);
+    } else if (data.startsWith("sopm_")) {
+      await handleSoportesModoCallback(callback);
     } else if (data.startsWith("sop_")) {
       await handleSoportesCallback(callback);
     } else if (data.startsWith("reintegrozip:")) {
@@ -2275,6 +2278,24 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     } catch (error) {
       console.error("[preguntas] Error reenviando la pregunta pendiente:", error instanceof Error ? error.message : error);
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude reenviar la pregunta pendiente ahora. No se tocó nada; inténtalo de nuevo en un momento.");
+    }
+    return;
+  }
+
+  // Menú de Telegram → pedir soportes a quien gastó con la tarjeta (core/soportes/): deja armado el proceso y espera el CSV.
+  const comandoSoportes = parsearComandoSoportes(incoming.text);
+  if (comandoSoportes !== undefined) {
+    // Trabaja con movimientos bancarios y puede acabar enviando correos: solo administración.
+    const rolSoportes = await obtenerRolUsuario(incoming.chatId);
+    if (rolSoportes !== "superadmin" && rolSoportes !== "admin") {
+      await sendTelegramMessage(incoming.chatId, "Esta orden trabaja con movimientos bancarios y solo está disponible para administración.");
+      return;
+    }
+    try {
+      await iniciarSoportes(incoming.chatId, comandoSoportes.empresa);
+    } catch (error) {
+      console.error("[soportes] Error iniciando el proceso de soportes:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude iniciar el proceso ahora. No se tocó nada; inténtalo de nuevo en un momento.");
     }
     return;
   }

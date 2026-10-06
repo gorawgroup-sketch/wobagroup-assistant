@@ -212,3 +212,34 @@ test("el recuento explica cada grupo para que Carlos vea qué se dejó fuera y p
   assert.match(nota, /1 de hace más de 10 días no tienen en Holded un movimiento con ese mismo importe.*11\/09\/2026 Uber \*trip 10,96 EUR/);
   assert.match(nota, /No encontré en Holded la cuenta «USD Pocket»/);
 });
+
+import { decidirEmpresa } from "./recibirExtracto";
+import { pareceDeOtraEmpresa } from "./campanaSoportes";
+import { COMANDOS_MENU } from "../telegram/menuComandos";
+
+test("la empresa se decide: texto del archivo, luego /soportes, luego el IBAN ya conocido", () => {
+  assert.deepEqual(decidirEmpresa("EWORKS", "WOBA", []), { empresa: "EWORKS", origen: "texto" });
+  assert.deepEqual(decidirEmpresa(undefined, "WOBA", []), { empresa: "WOBA", origen: "comando" });
+  assert.deepEqual(decidirEmpresa(undefined, undefined, ["Footprint"]), { empresa: "Footprint", origen: "iban" });
+  assert.deepEqual(decidirEmpresa(undefined, undefined, []), { error: "sin_empresa" });
+});
+
+test("un extracto de una cuenta ya conocida de otra empresa no se analiza", () => {
+  assert.deepEqual(decidirEmpresa(undefined, "WOBA", ["EWORKS"]), { error: "iban_de_otra", conocida: "EWORKS", pedida: "WOBA" });
+  assert.deepEqual(decidirEmpresa("WOBA", undefined, ["Footprint"]), { error: "iban_de_otra", conocida: "Footprint", pedida: "WOBA" });
+  assert.deepEqual(decidirEmpresa("WOBA", undefined, ["WOBA", "EWORKS"]), { error: "iban_mezclado" });
+  assert.deepEqual(decidirEmpresa("WOBA", undefined, ["WOBA"]), { empresa: "WOBA", origen: "texto" });
+});
+
+test("si casi nada del extracto aparece en Holded de la empresa elegida, se frena", () => {
+  const r = (pagosConTarjeta: number, noSincronizados: number) => ({ recuento: { pagosConTarjeta, noSincronizados } as never });
+  assert.equal(pareceDeOtraEmpresa(r(39, 3)), false);
+  assert.equal(pareceDeOtraEmpresa(r(39, 35)), true);
+  assert.equal(pareceDeOtraEmpresa(r(4, 4)), false, "con tan pocos pagos no se puede concluir");
+  assert.equal(pareceDeOtraEmpresa(r(10, 7)), false, "30 % emparejado es el límite");
+  assert.equal(pareceDeOtraEmpresa(r(10, 8)), true);
+});
+
+test("el comando está en el menú", () => {
+  assert.ok(COMANDOS_MENU.some((c) => c.command === "soportes"));
+});

@@ -27,6 +27,8 @@ export interface FilaExtracto {
   comision: number;
   /** Cuenta de Revolut tal como la nombra el extracto («EUR Main»). */
   cuenta: string;
+  /** IBAN de la cuenta de Revolut («International account number»); identifica de qué empresa es el extracto. */
+  ibanCuenta: string;
   /** Número de fila en el CSV (1 = cabecera) para poder citarla. */
   lineaCsv: number;
 }
@@ -95,6 +97,7 @@ export function parsearExtractoRevolut(texto: string): FilaExtracto[] {
     monedaCuenta: (col(f, "Payment currency") || col(f, "Fee currency")).toUpperCase(),
     comision: numero(col(f, "Fee")),
     cuenta: col(f, "Account"),
+    ibanCuenta: col(f, "International account number"),
     lineaCsv: i + 2,
   }));
 }

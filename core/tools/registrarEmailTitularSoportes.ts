@@ -9,7 +9,7 @@ export const registrarEmailTitularSoportesTool: ToolDefinition = {
   name: "registrar_email_titular_soportes",
   description:
     "Guarda el email de una persona titular de una tarjeta, para el flujo SEMANAL de pedir soportes. El flujo completo es: " +
-    "el usuario sube al chat el CSV de movimientos de Revolut de una empresa (con el nombre de la empresa en el texto); el " +
+    "el usuario pulsa /soportes en el menú (o escribe «pedir soportes»), elige la empresa y sube el CSV de movimientos de Revolut; el " +
     "sistema lo lee solo —NO es un documento para archivar—, cruza cada pago con tarjeta contra Bancos de Holded, detecta los que " +
     "siguen sin soporte conciliado, los agrupa por titular (columna «Payer» del CSV) y muestra un resumen con una casilla por " +
     "persona; al pulsar «Enviar» sale UN correo por persona desde asistente@wobagroup.com pidiendo los soportes a ese mismo buzón. " +
