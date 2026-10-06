@@ -67,6 +67,23 @@ test("los próximos vencimientos y pagos van ordenados, con los días que faltan
   assert.ok(e.proximos.every((p) => p.polizaId !== "woba_showroom_allianz" && p.polizaId !== "woba_transporte_pantallas_pendiente"));
 });
 
+test("con el calendario de pagos, los pagos de «próximos» salen de él (importe, estimado y cuenta) y no se duplican con las notas; sin él, de las notas", async () => {
+  const { pago } = await import("./pagos/pruebas");
+  const conCalendario = construirEstadoSeguros(
+    REGISTRO,
+    { ...complementos, pagos: [pago({ id: "woba_showroom_complemento_2026_2027:2027-03-01", polizaId: "woba_showroom_complemento_2026_2027", fecha: "2027-03-01", importe: 289.14, concepto: "Allianz showroom — complemento", estimado: true })] },
+    HOY,
+    "x"
+  );
+  const pagos = conCalendario.proximos.filter((p) => p.tipo === "pago" && p.polizaId === "woba_showroom_complemento_2026_2027");
+  assert.equal(pagos.length, 1);
+  assert.match(pagos[0].texto, /\[WOBA\] Allianz showroom — complemento — 289,14 € \(estimado\) · adeudo en «BBVA»/);
+  assert.equal(pagos[0].diasRestantes, 147);
+  const sinCalendario = construirEstadoSeguros(REGISTRO, complementos, HOY, "x");
+  assert.match(sinCalendario.proximos.find((p) => p.tipo === "pago")?.texto ?? "", /2º recibo del suplemento el 01\/03\/2027/);
+  assert.equal(conCalendario.proximos.length, sinCalendario.proximos.length, "la misma cantidad de hitos: el calendario sustituye, no añade");
+});
+
 test("lo que espera a Carlos lleva los días que lleva esperando y la memoria vigente no repite los pendientes ni lo retirado", () => {
   const e = construirEstadoSeguros(REGISTRO, complementos, HOY, "x");
   assert.deepEqual(e.esperandoACarlos, [{ id: "pend-a", texto: "texto pend-a", desde: "2026-09-24", diasEsperando: 11 }]);

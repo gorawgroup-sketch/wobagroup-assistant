@@ -1,5 +1,7 @@
 import { leerConocimiento } from "../seguros/agente/conocimiento";
 import { construirInformeSemanal } from "../seguros/informeSemanal";
+import { leerPagosSeguros } from "../seguros/pagos/pagosStore";
+import type { PagoSeguro } from "../seguros/pagos/tipos";
 import { listarPolizas } from "../seguros/polizaRegistroSheet";
 import { formatDateLocal } from "../utils/dateFormat";
 import { sendTelegramMessageExpandable } from "../telegram/client";
@@ -16,7 +18,10 @@ export async function informeSemanalSeguros(): Promise<{ enviado: boolean }> {
     return { enviado: false };
   }
   const [polizas, conocimiento] = await Promise.all([listarPolizas(), leerConocimiento()]);
-  const informe = construirInformeSemanal({ hoy: formatDateLocal(new Date()), polizas, conocimiento });
+  // Sin el calendario de pagos el resumen sigue (los pagos salen de las notas del registro); no se cae por eso.
+  let pagos: PagoSeguro[] | undefined;
+  try { pagos = await leerPagosSeguros(); } catch (error) { console.error("[informeSemanalSeguros] No se pudo leer el calendario de pagos (se usan las notas):", error); }
+  const informe = construirInformeSemanal({ hoy: formatDateLocal(new Date()), polizas, conocimiento, pagos });
   if (!informe) return { enviado: false };
   await sendTelegramMessageExpandable(chatId, informe.titulo, informe.cuerpo);
   console.log("[informeSemanalSeguros] resumen semanal enviado.");

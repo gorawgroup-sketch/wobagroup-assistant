@@ -335,6 +335,29 @@ test("el calendario de vencimientos muestra fechas, pagos pendientes y lo anotad
   assert.match(salida, /woba_rc_suplemento_3_3 .* ⚠️ pago sin_confirmar/);
 });
 
+test("el calendario de vencimientos añade el calendario de pagos estructurado (fecha, importe estimado, cuenta y si ya tiene evento) y avisa si no se pudo leer", async () => {
+  const { pago } = await import("../pagos/pruebas");
+  const deps = depsFalsas();
+  deps.listarPagos = async () => [
+    pago({ fecha: "2027-03-01", eventoCalendarId: "evt1", notas: "Importe por confirmar con Acodrid." }),
+    pago({ id: "x", fecha: "2027-04-17", polizaId: "woba_rc_markel", importe: 2012.65, concepto: "RC Markel — renovación", cuentaDeCargo: "BBVA", estimado: true }),
+    pago({ id: "y", estado: "pagado", fecha: "2027-03-01" }),
+    pago({ id: "z", fecha: "2030-01-01" }),
+  ];
+  const herramienta = (d: typeof deps) => crearHerramientas({ deps: d, textoDeLaPersona: "q", puedeProponer: false }).find((h) => h.definicion.name === "calendario_vencimientos")!;
+  const salida = await herramienta(deps).ejecutar({});
+  assert.match(salida, /Calendario de pagos \(_pagos_seguros, 2\)/);
+  assert.match(salida, /- 2027-03-01 · \[WOBA\] Allianz showroom .* 955,00 € \(estimado\) · adeudo en «BBVA» · evento de calendario puesto · Importe por confirmar con Acodrid\./);
+  assert.match(salida, /- 2027-04-17 · \[WOBA\] RC Markel — renovación — 2\.012,65 € \(estimado\) · adeudo en «BBVA» · sin evento de calendario aún/);
+  assert.doesNotMatch(salida, /2030-01-01/, "fuera del horizonte");
+  assert.match(salida, /woba_rc_markel .* vence 2027-04-16/, "lo del registro sigue ahí");
+
+  const roto = depsFalsas();
+  roto.listarPagos = async () => { throw new Error("Sheets agotado"); };
+  assert.match(await herramienta(roto).ejecutar({}), /\(No pude leer el calendario de pagos: Sheets agotado\. Lo de arriba sale solo del registro\.\)/);
+  assert.doesNotMatch(await herramienta(depsFalsas()).ejecutar({}), /Calendario de pagos/, "sin la dependencia no inventa nada");
+});
+
 test("el modelo del especialista solo admite modelos con tarifa conocida", () => {
   assert.equal(resolverModeloAgente({}), "claude-sonnet-5");
   assert.equal(resolverModeloAgente({ WOBI_AI_MODEL_AGENTE_SEGUROS: "claude-sonnet-4-6" }), "claude-sonnet-4-6");

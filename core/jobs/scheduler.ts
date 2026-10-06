@@ -21,6 +21,7 @@ import { revisarAjustesCambioRevertidos } from "./revisarAjustesCambioRevertidos
 import { revisarAlertasSeguros } from "./revisarAlertasSeguros";
 import { revisarSegurosVigilante } from "./revisarSegurosVigilante";
 import { informeSemanalSeguros } from "./informeSemanalSeguros";
+import { revisarPagosSeguros } from "./revisarPagosSeguros";
 import { esperarPrioridadInteractiva } from "./jobPriority";
 import { conversionTicketsHolded, sincronizacionBancariaHolded } from "./automatizacionHolded";
 import {
@@ -305,6 +306,17 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarSegurosVigilante programado: diario 8:35 y 17:35 (${TIMEZONE})`);
+
+  // Calendario de pagos de seguros (core/seguros/pagos/): eventos de calendario y aviso a 3 días con la comprobación de caja.
+  // Después del vigilante (8:35: confirma o devuelve lo ya cobrado) y de los avisos de las 8:50.
+  cron.schedule(
+    "55 8 * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarPagosSeguros", () => revisarPagosSeguros());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarPagosSeguros programado: diario 8:55 (${TIMEZONE})`);
 
   cron.schedule(
     "10 9 * * 1",
