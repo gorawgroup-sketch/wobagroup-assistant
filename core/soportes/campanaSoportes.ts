@@ -152,13 +152,28 @@ export async function mostrarResumen(personas: PersonaCampana[]): Promise<void> 
 }
 
 /** Analiza el extracto, guarda la campaña y muestra el resumen con una casilla por persona. */
-export async function prepararCampanaSoportes(chatId: number, empresa: Empresa, texto: string, nombreArchivo: string): Promise<void> {
+export type ResultadoCampana = "campana" | "nada_que_pedir" | "empresa_dudosa";
+
+/**
+ * Si casi ningún pago del extracto aparece en Bancos de Holded de la empresa elegida, lo más probable es que el CSV sea
+ * de otra empresa: se frena antes de armar nada, en vez de mostrar un resumen vacío que parezca «todo en orden».
+ */
+export function pareceDeOtraEmpresa(r: Pick<ResultadoAnalisis, "recuento">): boolean {
+  const x = r.recuento;
+  return x.pagosConTarjeta >= 5 && (x.pagosConTarjeta - x.noSincronizados) / x.pagosConTarjeta < 0.3;
+}
+
+export async function prepararCampanaSoportes(chatId: number, empresa: Empresa, texto: string, nombreArchivo: string): Promise<ResultadoCampana> {
   const a = await analizarExtracto(empresa, texto);
+  if (pareceDeOtraEmpresa(a)) {
+    await sendTelegramMessage(chatId, `⚠️ Solo ${a.recuento.pagosConTarjeta - a.recuento.noSincronizados} de los ${a.recuento.pagosConTarjeta} pagos con tarjeta de este extracto aparecen en Bancos de Holded de ${empresa}. Lo más probable es que el CSV sea de otra empresa (o que Holded no esté sincronizado). No armé ningún correo. Pulsa /soportes, elige la empresa correcta y súbelo de nuevo.`);
+    return "empresa_dudosa";
+  }
   const nota = notaDeRecuento(a, nombreArchivo);
   const grupos = agruparPorTitular(a.paraPedir);
   if (grupos.length === 0) {
     await sendTelegramMessage(chatId, `✅ ${empresa}: no hay nada que pedir.\n\n${nota}`);
-    return;
+    return "nada_que_pedir";
   }
   const campana = randomUUID().slice(0, 8);
   const creadoEn = Date.now();
@@ -184,4 +199,5 @@ export async function prepararCampanaSoportes(chatId: number, empresa: Empresa, 
   const messageId = await sendTelegramMessageWithButtons(chatId, "📋 Preparando el resumen de soportes…", botonesResumen(guardadas));
   await fijarMensaje(campana, messageId);
   await mostrarResumen(await leerCampana(campana));
+  return "campana";
 }
