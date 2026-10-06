@@ -51,6 +51,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Cambiar el proveedor de un gasto ya creado + corregir el alias aprendido | Conciliación y bancos | `feat/cambiar-proveedor-compra` | Claude Code | En PR. Tool `proponer_cambio_proveedor_compra`, reutiliza la edición verificada y los botones `edicioncompra_*` |
 | Botón «Conciliar esta parte» tras crear un gasto cuyo recibo se cobró en varios pagos (fase B) | Conciliación y bancos | `feat/conciliacion-parcial-boton` | Claude Code | En PR. Módulo `core/gastos/conciliacionParcialRecibo.ts`; 2 puntos de conexión en `gastoCallbackHandler.ts` |
 | Reglas «ya está sumado en otra línea» del cashflow (botón Explicar + herramienta de chat) | Cashflow | `feat/reglas-cashflow-agregadas` | Claude Code | En PR. Carpeta `core/cashflow/` (reglas, explicación, almacén de espera) + 4 puntos de conexión |
+| Documentos pendientes de datos sin salida: botones en todos los motivos, `/preguntas` y resumen de las 19:10, sin duplicados, y candado de la versión de lectura | Conciliación y bancos | `fix/gasto-pendiente-banco-botones` ([PR #365](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/365)) | Claude Code | En PR (casos Anthropic y Uber MXN del 06-10). Cambios en `gastoPendienteDatos*`, `procesarGastoEntrante.ts` (3 mensajes con botones), `comandoPreguntas.ts`, `resumenPendientesDiario.ts` y `VERSION_ANALISIS`. Al fusionar: quitar esta fila |
 
 ## Pendiente de decisión de Carlos
 

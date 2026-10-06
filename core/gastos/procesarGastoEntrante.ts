@@ -25,6 +25,7 @@ import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import {
   botonesCargosCandidatos,
   botonesEsperaBancaria,
+  botonesSalidaPendiente,
   botonesFalloTemporalVerificacionPendiente,
   botonesVerificacionDuplicadoPendiente,
 } from "./gastoPendienteDatosActions";
@@ -200,22 +201,35 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   // de empresa, soporte, duplicados y conciliación del flujo habitual.
 
   if (!esEmpresaHolded(datos.empresaProbable)) {
-    await sendTelegramMessage(
-      chatId,
+    // Se guarda ANTES de preguntar: el id de la pendiente viaja en los botones (elegir la empresa, dejarla pendiente o descartarla).
+    let pendienteEmpresa: Awaited<ReturnType<typeof guardarGastoPendienteDatos>> | undefined;
+    try {
+      pendienteEmpresa = await guardarGastoPendienteDatos({
+        chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos,
+        motivo: "empresa",
+        deColaCorreo: entrada.deColaCorreo,
+        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+        correoOrigen: entrada.correoOrigen,
+      });
+    } catch (error) {
+      // Sin pendiente no hay botones: la pregunta sale igual, en texto libre (como antes de existir los botones).
+      console.error("[procesarGastoEntrante] Error guardando pendiente (empresa):", error);
+    }
+    const textoEmpresa =
       `📄 Detecté una factura/gasto (${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${datos.moneda}) ` +
-        `pero no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece si quieres que lo registre en Holded.`
-    );
-    await guardarGastoPendienteDatos({
-      chatId,
-      rutaLocal: entrada.rutaLocal,
-      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-      mimeType: entrada.mimeType,
-      datos,
-      motivo: "empresa",
-      deColaCorreo: entrada.deColaCorreo,
-      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-      correoOrigen: entrada.correoOrigen,
-    }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (empresa):", error));
+      `pero no tengo clara la empresa. ` +
+      (pendienteEmpresa
+        ? `Pulsa a qué empresa pertenece (o escríbemelo) si quieres que lo registre en Holded.`
+        : `Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece si quieres que lo registre en Holded.`);
+    if (pendienteEmpresa) {
+      await sendTelegramMessageWithButtons(chatId, textoEmpresa, botonesSalidaPendiente(pendienteEmpresa.id, "empresa", entrada.deColaCorreo === true));
+    } else {
+      await sendTelegramMessage(chatId, textoEmpresa);
+    }
     return "pendiente_datos";
   }
 
@@ -244,17 +258,18 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       return procesarGastoEntrante({ ...entrada, datos: { ...datos, fecha: fechaBancaria,
         concepto: `${datos.concepto} [Fecha de referencia bancaria: ${fechaBancaria}; recibo sin fecha]` } });
     }
-    await guardarGastoPendienteDatos({
+    const pendienteFecha = await guardarGastoPendienteDatos({
       chatId, rutaLocal: entrada.rutaLocal, nombreArchivoOriginal: entrada.nombreArchivoOriginal,
       mimeType: entrada.mimeType, datos, motivo: "fecha", deColaCorreo: entrada.deColaCorreo,
       origenAdjuntoGmail: entrada.origenAdjuntoGmail, correoOrigen: entrada.correoOrigen,
     });
-    await sendTelegramMessage(chatId,
+    await sendTelegramMessageWithButtons(chatId,
       `🔎 ${datos.proveedor || "Gasto"} · ${datos.monto} ${datos.moneda}: el comprobante no tiene una fecha verificable. ` +
       (busquedaIncompleta ? `La consulta bancaria quedó incompleta; se conserva el caso para reintento. ` : `Se buscaron cargos por importe y categoría compatible en los últimos 90 días, incluidos conciliados, sin una coincidencia única. `) +
       `No se ofrece crear otro gasto. ` +
       `Hay que contrastar el correo original, los comprobantes anteriores y los movimientos, incluidos los ya conciliados. ` +
-      `No se ha usado la fecha de hoy ni se ha concluido que falte el cargo. La revisión puede retomarse con la fecha documentada sin releer el adjunto.`);
+      `No se ha usado la fecha de hoy ni se ha concluido que falte el cargo. La revisión puede retomarse con la fecha documentada sin releer el adjunto.`,
+      botonesSalidaPendiente(pendienteFecha.id, "fecha", entrada.deColaCorreo === true));
     return "pendiente_datos";
   }
 
@@ -498,24 +513,31 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   } catch (error) {
     const detalle = error instanceof Error ? error.message : String(error);
     console.error("[procesarGastoEntrante] Error consultando identidad interna de duplicados:", error);
-    await sendTelegramMessage(
-      chatId,
+    let pendienteIdentidad: Awaited<ReturnType<typeof guardarGastoPendienteDatos>> | undefined;
+    try {
+      pendienteIdentidad = await guardarGastoPendienteDatos({
+        chatId,
+        rutaLocal: entrada.rutaLocal,
+        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+        mimeType: entrada.mimeType,
+        datos,
+        motivo: "verificacion_duplicado",
+        deColaCorreo: entrada.deColaCorreo,
+        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+        correoOrigen: entrada.correoOrigen,
+      });
+    } catch (errorStore) {
+      console.error("[procesarGastoEntrante] Error guardando el reintento de identidad documental:", errorStore);
+    }
+    const textoIdentidad =
       `⚠️ No pude comprobar el registro interno de comprobantes ya procesados (${detalle}). Por seguridad NO propuse ` +
-        `crear ni conciliar el gasto. El correo queda pendiente para reintentarlo cuando la verificación vuelva a estar disponible.`
-    ).catch(() => {});
-    await guardarGastoPendienteDatos({
-      chatId,
-      rutaLocal: entrada.rutaLocal,
-      nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-      mimeType: entrada.mimeType,
-      datos,
-      motivo: "verificacion_duplicado",
-      deColaCorreo: entrada.deColaCorreo,
-      origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-      correoOrigen: entrada.correoOrigen,
-    }).catch((errorStore) =>
-      console.error("[procesarGastoEntrante] Error guardando el reintento de identidad documental:", errorStore)
-    );
+      `crear ni conciliar el gasto. El correo queda pendiente para reintentarlo cuando la verificación vuelva a estar disponible.`;
+    if (pendienteIdentidad) {
+      // Nunca «confirmar el análisis» tras un fallo técnico: solo reintentar, dejar pendiente y seguir, o descartar.
+      await sendTelegramMessageWithButtons(chatId, textoIdentidad, botonesSalidaPendiente(pendienteIdentidad.id, "verificacion_duplicado", entrada.deColaCorreo === true)).catch(() => {});
+    } else {
+      await sendTelegramMessage(chatId, textoIdentidad).catch(() => {});
+    }
     return "pendiente_datos";
   }
   if (duplicadoInterno) {

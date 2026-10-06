@@ -19,9 +19,13 @@ test("una pendiente ya consumida se retira con el mecanismo compartido de pregun
 // Una pendiente que espera al banco («moneda») ya no se rechaza como «no corresponde»: se puede buscar de nuevo, elegir uno
 // de los cargos ofrecidos (reanuda con su importe y moneda REALES) o dejarla pendiente y seguir. Confirmar el análisis
 // sigue siendo solo para duplicados.
-test("las pendientes de moneda aceptan reintentar, elegir cargo y posponer; confirmar sigue siendo solo de duplicados", async () => {
+test("las pendientes aceptan reintentar, elegir cargo o empresa, descartar y posponer; confirmar sigue siendo solo de duplicados", async () => {
   const fuente = await readFile(join(process.cwd(), "core/gastos/gastoPendienteDatosCallbackHandler.ts"), "utf8");
-  assert.match(fuente, /const MOTIVOS_CON_BOTONES = new Set\(\["verificacion_duplicado", "moneda"\]\)/);
+  assert.match(fuente, /const MOTIVOS_CON_BOTONES = new Set\(\["verificacion_duplicado", "moneda", "empresa", "fecha", "proveedor"\]\)/);
+  assert.match(fuente, /accion === "gpd_empresa" && pendiente\.motivo !== "empresa"/);
+  assert.match(fuente, /empresaProbable: empresaElegida\.empresa/);
+  assert.match(fuente, /if \(accion === "gpd_descartar"\) \{/);
+  assert.match(fuente, /gasto-pendiente-datos:\$\{pendiente\.id\}:descartar/);
   assert.match(fuente, /accion === "gpd_confirmar" \? pendiente\.motivo === "verificacion_duplicado" : MOTIVOS_CON_BOTONES\.has\(pendiente\.motivo\)/);
   assert.match(fuente, /accion === "gpd_cargo" && pendiente\.motivo !== "moneda"/);
   assert.match(fuente, /montoEquivalente: cargoElegido\.monto, monedaEquivalente: cargoElegido\.moneda/);
@@ -31,6 +35,8 @@ test("las pendientes de moneda aceptan reintentar, elegir cargo y posponer; conf
 test("elegir un cargo es una acción sensible (solo superadministrador) y el despachador la enruta al mismo manejador", async () => {
   const sensibles = await readFile(join(process.cwd(), "core/telegram/authorizedUsersSheet.ts"), "utf8");
   assert.match(sensibles, /"gpd_cargo",/);
+  assert.match(sensibles, /"gpd_empresa",/);
+  assert.match(sensibles, /"gpd_descartar",/);
   const servidor = await readFile(join(process.cwd(), "src/server.ts"), "utf8");
   assert.match(servidor, /data\.startsWith\("gpd_"\)/);
 });

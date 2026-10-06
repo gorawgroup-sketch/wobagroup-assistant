@@ -2,6 +2,9 @@ import { obtenerConciliacionesPendientesPorChat, type ConciliacionPendiente } fr
 import { obtenerConciliacionesAmbiguasPendientesPorChat, type ConciliacionAmbiguaPendiente } from "./conciliacionAmbiguaPendienteStore";
 import { obtenerPropuestasGastoPorChat, type PropuestaGasto } from "./gastoProposalSheet";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
+import { describirFaltaPendiente } from "./gastoPendienteDatosActions";
+import { obtenerGastosPendienteDatosPorChat, type GastoPendienteDatos } from "./gastoPendienteDatosStore";
+import { reenviarPendienteDatos } from "./reenviarPendienteDatos";
 import { filtrarConciliacionesPorTexto, reenviarPreguntaConciliacion, reenviarPreguntaConciliacionAmbigua } from "./reenviarPreguntaPendiente";
 import { montosCercanos } from "../utils/montos";
 
@@ -19,6 +22,9 @@ export interface DependenciasComandoPreguntas {
   reenviarPropuesta(p: PropuestaGasto): Promise<unknown>;
   reenviarSimple(p: ConciliacionPendiente): Promise<unknown>;
   reenviarAmbigua(p: ConciliacionAmbiguaPendiente): Promise<unknown>;
+  /** Documentos ya leídos que esperan un dato (cargo del banco, empresa, fecha…). Opcional: sin ellos el comando se comporta como antes. */
+  pendientesDatos?(chatId: number): Promise<GastoPendienteDatos[]>;
+  reenviarPendienteDatos?(p: GastoPendienteDatos): Promise<unknown>;
 }
 
 const ENCABEZADO = "🔁 Pregunta pendiente renovada — toca la decisión que quieras aplicar.";
@@ -29,6 +35,8 @@ const depsReales: DependenciasComandoPreguntas = {
   reenviarPropuesta: (p) => reenviarPropuestaGasto(p, "🔁 Botones renovados — toca la decisión que quieras aplicar."),
   reenviarSimple: (p) => reenviarPreguntaConciliacion(p, ENCABEZADO),
   reenviarAmbigua: (p) => reenviarPreguntaConciliacionAmbigua(p, ENCABEZADO),
+  pendientesDatos: obtenerGastosPendienteDatosPorChat,
+  reenviarPendienteDatos,
 };
 
 /**
@@ -49,22 +57,37 @@ function propuestasPorTexto(propuestas: PropuestaGasto[], cual: string): Propues
   return Number.isFinite(monto) && monto > 0 ? propuestas.filter((p) => montosCercanos(p.monto, monto, 0.01)) : [];
 }
 
+function pendientesDatosPorTexto(pendientes: GastoPendienteDatos[], cual: string): GastoPendienteDatos[] {
+  const t = cual.trim().toLowerCase();
+  if (!t) return pendientes;
+  const porNombre = pendientes.filter((p) => `${p.datos.proveedor} ${p.datos.concepto ?? ""}`.toLowerCase().includes(t));
+  if (porNombre.length > 0) return porNombre;
+  const monto = Number(t.replace(/[^\d.,]/g, "").replace(",", "."));
+  return Number.isFinite(monto) && monto > 0 ? pendientes.filter((p) => montosCercanos(p.datos.monto, monto, 0.01)) : [];
+}
+
 export async function ejecutarComandoPreguntas(chatId: number, cual: string, deps: DependenciasComandoPreguntas = depsReales): Promise<string> {
-  const [todasP, todasS, todasA] = await Promise.all([deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId)]);
+  const [todasP, todasS, todasA, todasD] = await Promise.all([
+    deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId), deps.pendientesDatos ? deps.pendientesDatos(chatId) : Promise.resolve([] as GastoPendienteDatos[]),
+  ]);
   const items = [
     ...propuestasPorTexto(todasP, cual).map((p) => ({ descripcion: `Propuesta de gasto: ${p.proveedor} — ${p.monto.toFixed(2)} ${p.moneda}`, enviar: () => deps.reenviarPropuesta(p) })),
     ...filtrarConciliacionesPorTexto(todasS, cual).map((p) => ({ descripcion: `Conciliar: ${p.descripcionGasto}`, enviar: () => deps.reenviarSimple(p) })),
     ...filtrarConciliacionesPorTexto(todasA, cual).map((p) => ({ descripcion: `Elegir cargo: ${p.descripcionGasto}`, enviar: () => deps.reenviarAmbigua(p) })),
+    ...pendientesDatosPorTexto(todasD, cual).map((p) => ({
+      descripcion: `Documento esperando ${describirFaltaPendiente(p.motivo)}: ${p.datos.proveedor} — ${p.datos.monto} ${p.datos.moneda}`,
+      enviar: async () => { await deps.reenviarPendienteDatos?.(p); },
+    })),
   ];
   if (items.length === 1) {
     await items[0].enviar();
     return `🔁 Reenvié al final del chat: ${items[0].descripcion}. Toca el botón que corresponda (esto no creó ni concilió nada).`;
   }
   if (items.length === 0) {
-    const hay = todasP.length + todasS.length + todasA.length;
+    const hay = todasP.length + todasS.length + todasA.length + todasD.length;
     return cual
       ? `No encuentro ninguna pregunta pendiente que coincida con «${cual}».${hay > 0 ? ` Hay ${hay} pendientes: escribe /preguntas sin texto para verlas.` : ""}`
-      : "No hay ninguna propuesta de gasto ni pregunta de conciliación pendiente en este chat.";
+      : "No hay ninguna propuesta de gasto, pregunta de conciliación ni documento pendiente de un dato en este chat.";
   }
   return `Hay ${items.length} pendientes${cual ? ` que coinciden con «${cual}»` : ""}:\n` +
     items.map((i, k) => `${k + 1}. ${i.descripcion}`).join("\n") +

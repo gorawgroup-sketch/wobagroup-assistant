@@ -332,6 +332,9 @@ const ACCIONES_SENSIBLES = new Set([
   "gpd_posponer",
   // Elegir con un botón el cargo real de un documento que espera al banco: reanuda la creación del gasto, mismo criterio.
   "gpd_cargo",
+  // Elegir la empresa de un documento ya leído (reanuda su creación) y descartarlo: mismo criterio.
+  "gpd_empresa",
+  "gpd_descartar",
   "resumen_descartar_todo",
   // Mismo criterio: descartar UN pendiente individual del resumen de fin de día (ver
   // resumenPendientesDiario.ts) es la misma clase de decisión que "Descartar todo", solo que a

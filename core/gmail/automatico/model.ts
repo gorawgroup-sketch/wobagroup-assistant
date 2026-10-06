@@ -14,7 +14,7 @@ export const VERSION_POLITICA = "correo-gastos-v25";
 // v22 invalida únicamente las lecturas automáticas antiguas. Varias quedaron
 // persistidas como incompletas durante el incidente del límite diario de IA;
 // conservarlas para siempre impediría que una orden manual pudiera repararlas.
-export const VERSION_ANALISIS = "correo-gastos-analysis-v22";
+export const VERSION_ANALISIS = "correo-gastos-analysis-v23";
 /**
  * Misma ventana ya aprendida por el flujo manual. En viajes, la fecha del
  * comprobante puede ser la del servicio y el cargo haberse producido semanas

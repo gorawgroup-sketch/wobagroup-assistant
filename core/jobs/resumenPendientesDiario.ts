@@ -6,7 +6,8 @@ import type { TelegramCallbackQuery, InlineKeyboardButton } from "../telegram/ty
 import { obtenerResumenColaPorChat, vaciarColaCorreoDelChat } from "../gmail/colaRevisionStore";
 import { obtenerPropuestaClasificacionPendientePorChat, consumirPropuestaClasificacionPorChat, consumirPropuestaClasificacion } from "../documental/classificationStore";
 import { obtenerResolucionContactoPendientePorChat } from "../gastos/contactoResolucionStore";
-import { obtenerGastoPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
+import { obtenerGastosPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
+import { describirFaltaPendiente } from "../gastos/gastoPendienteDatosActions";
 import { obtenerPendientesEdicionCompraHoldedPorChat } from "../holded/pendienteEdicionCompraHoldedStore";
 import { obtenerPendientesEdicionValorCashflowPorChat } from "../google/pendienteEdicionValorCashflowStore";
 import { obtenerPendientesRegistroManualCashflowPorChat } from "../google/pendienteRegistroManualCashflowStore";
@@ -146,6 +147,8 @@ function truncar(texto: string, max: number): string {
   return texto.length > max ? `${texto.slice(0, max)}…` : texto;
 }
 
+const PREFIJO_GASTO_SIN_CONFIRMAR = "💸 Gasto sin confirmar ";
+
 async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   const items: ItemPendiente[] = [];
 
@@ -200,20 +203,10 @@ async function recolectarPendientes(chatId: number): Promise<ItemPendiente[]> {
   }
 
   try {
-    const g = await obtenerGastoPendienteDatosPorChat(chatId);
-    if (g) {
-      const queFalta =
-        g.motivo === "fecha"
-          ? "fecha documentada y comprobación de duplicados"
-          : g.motivo === "empresa"
-          ? "empresa"
-          : g.motivo === "proveedor"
-            ? "proveedor real"
-            : g.motivo === "verificacion_duplicado"
-              ? "verificación de duplicados"
-              : "monto/moneda exactos";
+    // TODAS las pendientes de datos (antes solo salía la más reciente: cuatro filas de un mismo pago aparecían como una).
+    for (const g of await obtenerGastosPendienteDatosPorChat(chatId)) {
       items.push({
-        descripcion: `💸 Gasto sin confirmar (falta ${queFalta}): "${g.datos.proveedor}" — ${g.datos.monto} ${g.datos.moneda} — revisar individual, no se borra con "Descartar todo" (si no tienes el dato y no lo vas a conseguir, dile a Wobi en el chat que lo descarte)`,
+        descripcion: `${PREFIJO_GASTO_SIN_CONFIRMAR}(falta ${describirFaltaPendiente(g.motivo)}): "${g.datos.proveedor}" — ${g.datos.monto} ${g.datos.moneda} — revisar individual, no se borra con "Descartar todo"`,
         creadoEn: g.creadoEn,
       });
     }
@@ -412,6 +405,9 @@ export async function enviarResumenPendientesDiario(): Promise<void> {
         `🕖 Fin del día — te quedan ${items.length} cosa${items.length === 1 ? "" : "s"} pendiente${items.length === 1 ? "" : "s"} sin resolver:`,
         "",
         ...items.map((it, i) => `${i + 1}. ${it.descripcion} (${formatAntiguedad(it.creadoEn)})`),
+        ...(items.some((it) => it.descripcion.startsWith(PREFIJO_GASTO_SIN_CONFIRMAR))
+          ? ["", "👉 Toca /preguntas para ver cada documento pendiente con sus botones (buscar el cargo, elegir empresa, dejarlo o descartarlo)."]
+          : []),
       ].join("\n");
 
       // Caso real reportado por Carlos: antes SOLO había "Descartar todo" — sin forma de descartar

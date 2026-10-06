@@ -185,11 +185,35 @@ async function purgarVencidas(): Promise<void> {
   }
 }
 
+/**
+ * ¿Es el MISMO adjunto del mismo correo? Un adjunto tiene a lo sumo UNA pendiente: reprocesarlo sustituye la anterior en vez de añadir otra
+ * (caso Anthropic, 2026-10-06: 4 filas para un solo pago). Se identifica por mensaje de Gmail + parte MIME (estable entre lecturas; el
+ * attachmentId puede cambiar) o, sin ella, por el nombre del archivo. Sin correo de origen (subidas manuales) nunca se considera el mismo.
+ */
+export function esMismoAdjuntoPendiente(
+  a: Pick<GastoPendienteDatos, "chatId" | "nombreArchivoOriginal" | "correoOrigen" | "origenAdjuntoGmail">,
+  b: Pick<GastoPendienteDatos, "chatId" | "nombreArchivoOriginal" | "correoOrigen" | "origenAdjuntoGmail">
+): boolean {
+  if (a.chatId !== b.chatId) return false;
+  const mensajeA = a.origenAdjuntoGmail?.mensajeIdGmail ?? a.correoOrigen?.mensajeIdGmail;
+  const mensajeB = b.origenAdjuntoGmail?.mensajeIdGmail ?? b.correoOrigen?.mensajeIdGmail;
+  if (!mensajeA || mensajeA !== mensajeB) return false;
+  const parteA = a.origenAdjuntoGmail?.partId;
+  const parteB = b.origenAdjuntoGmail?.partId;
+  if (parteA && parteB) return parteA === parteB;
+  return Boolean(a.nombreArchivoOriginal) && a.nombreArchivoOriginal === b.nombreArchivoOriginal;
+}
+
 export async function guardarGastoPendienteDatos(
   datos: Omit<GastoPendienteDatos, "id" | "creadoEn">
 ): Promise<GastoPendienteDatos> {
   return conMutex(CLAVE_MUTEX, async () => {
     await purgarVencidas();
+
+    // El mismo adjunto no acumula pendientes: la nueva sustituye a las anteriores (de mayor a menor fila, para no desplazar índices).
+    const anteriores = (await leerTodas()).filter(({ pendiente }) => esMismoAdjuntoPendiente(pendiente, datos));
+    anteriores.sort((a, b) => b.rowIndex - a.rowIndex);
+    for (const { rowIndex } of anteriores) await eliminarFila(rowIndex);
 
     const pendiente: GastoPendienteDatos = { ...datos, id: randomUUID().slice(0, 8), creadoEn: Date.now() };
 

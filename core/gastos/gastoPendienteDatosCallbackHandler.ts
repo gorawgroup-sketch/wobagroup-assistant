@@ -14,7 +14,7 @@ import {
   obtenerGastosPendienteDatosPorChat,
   restaurarGastoPendienteDatos,
 } from "./gastoPendienteDatosStore";
-import { parsearCargoElegido } from "./gastoPendienteDatosActions";
+import { parsearCargoElegido, parsearEmpresaElegida } from "./gastoPendienteDatosActions";
 import { procesarGastoEntrante } from "./procesarGastoEntrante";
 
 async function responderCallback(id: string, texto?: string): Promise<void> {
@@ -23,8 +23,8 @@ async function responderCallback(id: string, texto?: string): Promise<void> {
   );
 }
 
-/** Pendientes de un documento ya leído que esperan el cargo del banco o la verificación de duplicados. */
-const MOTIVOS_CON_BOTONES = new Set(["verificacion_duplicado", "moneda"]);
+/** Pendientes de un documento ya leído: el cargo del banco, la empresa, la fecha, el proveedor o la verificación de duplicados. */
+const MOTIVOS_CON_BOTONES = new Set(["verificacion_duplicado", "moneda", "empresa", "fecha", "proveedor"]);
 
 /**
  * Resuelve los botones de una pendiente de datos:
@@ -38,13 +38,15 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
   const data = callback.data ?? "";
   const [accion, pendienteIdCrudo] = data.split(":");
   const cargoElegido = accion === "gpd_cargo" ? parsearCargoElegido(data) : null;
-  const pendienteId = accion === "gpd_cargo" ? cargoElegido?.id : pendienteIdCrudo;
+  const empresaElegida = accion === "gpd_empresa" ? parsearEmpresaElegida(data) : null;
+  const pendienteId = accion === "gpd_cargo" ? cargoElegido?.id : accion === "gpd_empresa" ? empresaElegida?.id : pendienteIdCrudo;
   const chatId = callback.message?.chat.id;
   const messageId = callback.message?.message_id;
 
   if (chatId === undefined || !pendienteId ||
-      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer" && accion !== "gpd_cargo") ||
-      (accion === "gpd_cargo" && !cargoElegido)) {
+      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer" && accion !== "gpd_cargo" &&
+        accion !== "gpd_empresa" && accion !== "gpd_descartar") ||
+      (accion === "gpd_cargo" && !cargoElegido) || (accion === "gpd_empresa" && !empresaElegida)) {
     await responderCallback(callback.id, "Esta acción no es válida.");
     return;
   }
@@ -74,7 +76,7 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
   // «Confirmar el análisis» solo existe para duplicados; el resto de botones también valen para un documento a la espera del banco.
   const motivoValido = accion === "gpd_confirmar" ? pendiente.motivo === "verificacion_duplicado" : MOTIVOS_CON_BOTONES.has(pendiente.motivo);
   // Elegir un cargo solo tiene sentido cuando lo que falta es el cargo real («moneda»).
-  if (!motivoValido || (accion === "gpd_cargo" && pendiente.motivo !== "moneda")) {
+  if (!motivoValido || (accion === "gpd_cargo" && pendiente.motivo !== "moneda") || (accion === "gpd_empresa" && pendiente.motivo !== "empresa")) {
     await restaurarGastoPendienteDatos(pendiente);
     await responderCallback(callback.id, "Este botón no corresponde a esta pendiente.");
     return;
@@ -84,7 +86,9 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
     callback.id,
     accion === "gpd_confirmar" ? "Confirmando y continuando..."
       : accion === "gpd_cargo" ? "Usando ese cargo..."
-        : pendiente.motivo === "moneda" ? "Buscando el cargo otra vez..." : "Reprocesando..."
+        : accion === "gpd_empresa" ? `Usando ${empresaElegida?.empresa}...`
+          : accion === "gpd_descartar" ? "Descartando..."
+            : pendiente.motivo === "moneda" ? "Buscando el cargo otra vez..." : "Reprocesando..."
   );
   if (messageId !== undefined) {
     await editTelegramMessageReplyMarkup(chatId, messageId, []).catch((error) =>
@@ -130,10 +134,37 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
     return;
   }
 
-  // Con un cargo elegido, el documento se reanuda con el importe y la moneda reales de ese cargo: lo mismo que escribirlos a mano.
+  if (accion === "gpd_descartar") {
+    try {
+      if (pendiente.deColaCorreo) {
+        await avanzarColaCorreoSiActivo(
+          chatId,
+          { threadId: pendiente.correoOrigen?.threadId, mensajeId: pendiente.correoOrigen?.mensajeIdGmail },
+          `gasto-pendiente-datos:${pendiente.id}:descartar`
+        );
+      }
+    } catch (error) {
+      await restaurarGastoPendienteDatos(pendiente).catch(() => {});
+      const detalle = error instanceof Error ? error.message : String(error);
+      await sendTelegramMessage(chatId, `⚠️ No pude descartar esta pendiente (${detalle}). La conservé intacta; no se modificó Holded.`).catch(() => {});
+      return;
+    }
+    await unlink(pendiente.rutaLocal).catch(() => {});
+    const texto = `🗑️ Descartado — ${pendiente.datos.proveedor} (${pendiente.datos.monto} ${pendiente.datos.moneda}). No se creó ni se propuso ningún gasto en Holded.`;
+    if (messageId !== undefined) {
+      await editTelegramMessage(chatId, messageId, texto, []).catch(() => sendTelegramMessage(chatId, texto).catch(() => {}));
+    } else {
+      await sendTelegramMessage(chatId, texto).catch(() => {});
+    }
+    return;
+  }
+
+  // Con un cargo o una empresa elegidos, el documento se reanuda con ese dato: lo mismo que escribirlo a mano.
   const datosParaReanudar = cargoElegido
     ? { ...pendiente.datos, montoEquivalente: cargoElegido.monto, monedaEquivalente: cargoElegido.moneda }
-    : pendiente.datos;
+    : empresaElegida
+      ? { ...pendiente.datos, empresaProbable: empresaElegida.empresa }
+      : pendiente.datos;
 
   try {
     const resultado = await procesarGastoEntrante({
