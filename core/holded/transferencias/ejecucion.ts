@@ -124,7 +124,6 @@ export function motivoParaNoEjecutar(r: RegistroTransferencia, e: Estado): strin
   if (r.clave !== `${r.empresa}:${r.origenMovimiento}>${r.destinoMovimiento}`) return "El registro no coincide con su clave (¿editado a mano?).";
   if (esConversion(r)) {
     if (r.monedaOrigen === r.monedaDestino) return "El registro dice conversión pero las dos monedas son iguales.";
-    if (r.monedaOrigen !== "EUR" && r.monedaDestino !== "EUR") return `Por ahora solo se ejecutan conversiones con una pata en euros (esta es ${r.monedaOrigen} → ${r.monedaDestino}).`;
   } else {
     if (r.tipo !== "transferencia" || r.monedaOrigen !== r.monedaDestino) return "El registro no es una transferencia en la misma moneda ni una conversión.";
     // Un traspaso USD↔USD necesita su valoración contable en EUR, que aún no está construida.
@@ -147,7 +146,7 @@ export function motivoParaNoEjecutar(r: RegistroTransferencia, e: Estado): strin
   if (!esConversion(r)) {
     return Math.abs(Math.abs(e.origen.importe) - e.destino.importe) > CENTIMO ? "Los importes ya no son una salida y una entrada iguales." : undefined;
   }
-  return motivoLimitesConversion(planDe(r, e)!, r.monedaDestino === "EUR");
+  return motivoLimitesConversion(planDe(r, e)!);
 }
 
 /**
@@ -155,17 +154,14 @@ export function motivoParaNoEjecutar(r: RegistroTransferencia, e: Estado): strin
  * Devuelve el motivo por el que todavía no se ejecuta desde aquí, o undefined si se puede.
  */
 export function motivoConversionNoEjecutable(origen: MovimientoTransferencia, destino: MovimientoTransferencia): string | undefined {
-  if (origen.moneda !== "EUR" && destino.moneda !== "EUR") return `Por ahora solo se ejecutan conversiones con una pata en euros (esta es ${origen.moneda} → ${destino.moneda}).`;
-  return motivoLimitesConversion({ pulsado: "origen", importePar: valorEur(origen), valorOtroEur: valorEur(destino) }, destino.moneda === "EUR");
+  return motivoLimitesConversion({ pulsado: "origen", importePar: valorEur(origen), valorOtroEur: valorEur(destino) });
 }
 
 /** Límites de una conversión; se comprueban antes de pulsar y también antes de conciliar la entrada al retomar un intento. */
-function motivoLimitesConversion(plan: Plan, entradaEnEuros: boolean): string | undefined {
+function motivoLimitesConversion(plan: Plan): string | undefined {
   if (!(plan.importePar > 0) || !(plan.valorOtroEur > 0)) return "Holded no da la valoración en euros de la pata en otra moneda; sin ella no se puede comprobar la conversión.";
   if (Math.abs(plan.valorOtroEur - plan.importePar) > plan.importePar * DIFERENCIA_MAXIMA_CAMBIO) return `La diferencia entre las dos patas en euros (${plan.importePar.toFixed(2)} y ${plan.valorOtroEur.toFixed(2)}) supera el ${DIFERENCIA_MAXIMA_CAMBIO * 100} %.`;
-  // Entrada que vale MÁS que la salida: el resto del movimiento de entrada se lleva a la cuenta de diferencias con un segundo
-  // «Transferir». Solo cuando la entrada es en euros (el resto es entonces un importe en euros de un movimiento en euros).
-  if (restoAFavor(plan) > 0 && !entradaEnEuros) return `La entrada vale más en euros (${plan.valorOtroEur.toFixed(2)}) que la salida (${plan.importePar.toFixed(2)}) y no es una cuenta en euros: esa diferencia a favor todavía no se registra desde aquí; hazla a mano en Holded.`;
+  // Sin pata en euros (USD → COP) vale lo mismo: Holded valora las dos en euros y el cobro/pago se crea por ese valor.
   return undefined;
 }
 
@@ -301,7 +297,7 @@ export async function ejecutarTransferencia(
     const otroLibre = movimientoOtro?.estado === "pending" && Math.abs(movimientoOtro.conciliado) <= CENTIMO;
     if (!docOtro.conciliado && !docOtro.parcial && otroLibre) {
       if (!opciones.permitirEscritura) return cerrar("fallida", `La transferencia ya está creada en Holded, pero falta conciliar el movimiento ${lado.nombreOtro} y esta pareja no está autorizada para escribir.`);
-      const limite = esConversion(r) ? motivoLimitesConversion(plan, r.monedaDestino === "EUR") : undefined;
+      const limite = esConversion(r) ? motivoLimitesConversion(plan) : undefined;
       if (limite) return cerrar("fallida", `La transferencia ya está creada en Holded, pero no concilié el movimiento ${lado.nombreOtro}: ${limite}`);
       try {
         await d.conciliarConPago(r.empresa, lado.otro.cuenta, lado.otro.movimiento, docOtro.id, lado.tipoOtro);
@@ -315,17 +311,18 @@ export async function ejecutarTransferencia(
     const resto = esConversion(r) ? restoAFavor(plan) : 0;
     if (resto > 0 && (await d.leerPagosDeTransferencia(r.empresa, r.destinoMovimiento, r.destinoFecha)).length === 0) {
       const entrada = (await leerEstado(r, d)).destino;
-      // El resto real es lo que le falta por conciliar a la entrada; debe coincidir con la diferencia calculada. Se vuelven a
-      // exigir entrada en euros, cobro principal ya conciliado y los límites de la conversión antes de pulsar nada.
-      const restoReal = entrada ? Math.round((Math.abs(entrada.importe) - Math.abs(entrada.conciliado)) * 100) / 100 : 0;
+      // El resto real es lo que le falta por conciliar a la entrada, pasado a euros con la valoración de Holded de ese
+      // movimiento; debe coincidir con la diferencia calculada. Se vuelven a exigir cobro principal ya conciliado y los
+      // límites de la conversión antes de pulsar nada.
+      const tasaEur = entrada && entrada.moneda !== "EUR" && Math.abs(entrada.importe) > 0 ? valorEur(entrada) / Math.abs(entrada.importe) : 1;
+      const restoReal = entrada ? Math.round((Math.abs(entrada.importe) - Math.abs(entrada.conciliado)) * tasaEur * 100) / 100 : 0;
       const cobroPrincipal = parDeTransferencia(r, await d.leerPagosDeTransferencia(r.empresa, lado.pulsado.movimiento, lado.pulsado.fecha), plan.importePar)?.cobro;
-      const lista = entrada && r.monedaDestino === "EUR" && entrada.moneda === "EUR" && restoReal > CENTIMO && Math.abs(restoReal - resto) <= tolerancia(r) &&
-        cobroPrincipal?.conciliado === true && !motivoLimitesConversion(plan, true);
+      const lista = entrada && restoReal > CENTIMO && Math.abs(restoReal - resto) <= 0.02 && cobroPrincipal?.conciliado === true && !motivoLimitesConversion(plan);
       if (lista) {
         if (!opciones.permitirEscritura || !opciones.permitirDiferenciaAFavor) return cerrar("fallida", `La conversión está hecha salvo la diferencia a favor de ${resto.toFixed(2)} EUR, y esta pareja no está autorizada para escribir.`);
         r = { ...r, estado: "ejecutando", detalle: `Llevando la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}.` };
         await d.guardar(r);
-        const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: Math.abs(entrada.importe), restante: restoReal, descripcion: entrada.descripcion });
+        const robot = await d.transferir(r.empresa, { cuentaId: r.destinoCuenta, movimientoId: r.destinoMovimiento, cuentaContable: CUENTA_DIFERENCIAS_CAMBIO, importe: valorEur(entrada), restante: restoReal, descripcion: entrada.descripcion });
         console.log(`[transferencias] Robot «Transferir» (diferencia a favor) para ${r.clave}: ${robot.estado} (pulsado: ${robot.pulsado}) ${robot.detalle ?? ""}`);
         if (!robot.pulsado) {
           return cerrar("fallida", `La conversión quedó hecha en Holded (asiento y los dos movimientos enlazados), pero falta llevar la diferencia a favor de ${resto.toFixed(2)} EUR a la cuenta ${CUENTA_DIFERENCIAS_CAMBIO}: no llegué a pulsar (${robot.detalle ?? robot.estado}). Puedes reintentar solo ese paso o hacerlo a mano con «Transferir» sobre la entrada.`);
