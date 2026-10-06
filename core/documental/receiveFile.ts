@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { downloadTelegramFile, getTelegramFile, sendTelegramMessage } from "../telegram/client";
 import { procesarDocumentoLocal } from "./procesarDocumentoLocal";
+import { intentarExtractoRevolut } from "../soportes/recibirExtracto";
 import type { TelegramMessage } from "../telegram/types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -95,6 +96,9 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
     }
 
     const bytes = await downloadTelegramFile(fileInfo.file_path);
+
+    // Un extracto de Revolut no es un documento para archivar: es la entrada del flujo de soportes por titular.
+    if (await intentarExtractoRevolut(chatId, bytes, archivo.nombreOriginal, archivo.mimeType, message.caption)) return;
 
     await mkdir(UPLOADS_DIR, { recursive: true });
 
