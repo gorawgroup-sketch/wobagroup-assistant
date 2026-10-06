@@ -12,6 +12,7 @@ import { guardarRegistro, listarRegistros, obtenerRegistroPorId, registroDesdePr
 
 /** Propuestas de transferencias internas en Telegram y sus cuatro botones. Solo «Conciliar» puede llegar a escribir en Holded. */
 
+/** Por EMPRESA: antes era global y, con WOBA primero, eWorks y Footprint se quedaban sin propuestas (Carlos, 06-10-2026). */
 const MAX_PROPUESTAS_POR_PASADA = 5;
 const DIAS_ATRAS = 45;
 /** Estados en los que la operación ya tiene una propuesta viva, una decisión o un resultado: no se vuelve a proponer. */
@@ -65,13 +66,13 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
 
   for (const empresa of empresas) {
     const lectura = await detectarTransferenciasDeEmpresa(empresa, desde, hoy, hoy);
-    let sinDecidir = 0;
+    let sinDecidir = 0, publicadasEmpresa = 0;
     for (const p of lectura.propuestas) {
       // El registro se relee justo antes de escribir: una pasada no puede pisar una operación que otra acaba de tocar.
       const actual = (await listarRegistros()).find((r) => r.clave === p.clave);
       if (actual && CERRADOS.includes(actual.estado)) continue;
       sinDecidir++;
-      if (publicadas >= MAX_PROPUESTAS_POR_PASADA) { restantes++; continue; }
+      if (publicadasEmpresa >= MAX_PROPUESTAS_POR_PASADA) { restantes++; continue; }
       const registro = registroDesdePropuesta(p);
       const bloqueada = p.confianza === "bloqueada";
       await guardarRegistro(registro);
@@ -79,6 +80,7 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
       const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && (p.tipo !== "conversion" || conversionConBoton(p)) }));
       await guardarRegistro({ ...registro, estado: bloqueada ? "ambigua" : "propuesta", chatId, messageId });
       publicadas++;
+      publicadasEmpresa++;
     }
     resumen.push(`${empresa}: ${lectura.propuestas.length} detectada(s), ${sinDecidir} sin decidir`);
   }
