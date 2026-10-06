@@ -98,14 +98,19 @@ export async function buscarMovimientosPorTipoCambio(
   ).filter((moneda) => moneda && moneda !== monedaOrigen);
   const resultados = new Map<string, MovimientoBancarioCandidato>();
 
-  for (const monedaDestino of monedasDestino) {
-    let tasa: number | undefined;
+  // Las tasas de todas las monedas destino se piden a la vez: con el servicio de tipo de cambio lento (2026-10-06) cada una
+  // podía tardar 20 s y en serie la propuesta de Casa Peppe tardaba 47 s en renovarse.
+  const tasasPorMoneda = new Map<string, number | undefined>(await Promise.all(monedasDestino.map(async (monedaDestino): Promise<[string, number | undefined]> => {
     try {
-      tasa = await dependencias.obtenerTasa(criterios.fecha, monedaOrigen, monedaDestino);
+      return [monedaDestino, await dependencias.obtenerTasa(criterios.fecha, monedaOrigen, monedaDestino)];
     } catch (error) {
       console.error(`[movimientoMultimoneda] Error consultando tasa ${monedaOrigen}->${monedaDestino}:`, error);
-      continue;
+      return [monedaDestino, undefined];
     }
+  })));
+
+  for (const monedaDestino of monedasDestino) {
+    const tasa = tasasPorMoneda.get(monedaDestino);
     if (tasa === undefined || !Number.isFinite(tasa) || tasa <= 0) continue;
 
     const montoReferencia = Math.abs(criterios.monto) * tasa;
