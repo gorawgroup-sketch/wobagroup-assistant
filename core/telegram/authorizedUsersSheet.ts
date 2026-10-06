@@ -436,6 +436,9 @@ const ACCIONES_SENSIBLES = new Set([
   // aprueba o cancela un superadministrador viendo el antes y el ahora; el agente nunca escribe solo.
   "segcambio_aplicar",
   "segcambio_cancelar",
+  // Envía correos reales a las personas del equipo (soportes de cargos con tarjeta, core/soportes/): efecto externo,
+  // solo un superadmin. Las casillas, «Ver correo», «Actualizar emails» y «Cancelar» no envían nada y no son sensibles.
+  "sop_e",
 ]);
 
 export function esAccionSensible(callbackData: string): boolean {

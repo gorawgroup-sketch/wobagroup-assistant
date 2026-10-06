@@ -999,7 +999,7 @@ export interface ParametrosEnvioCorreo {
   cuerpo: string;
   /** Identidad estable del efecto aprobado; nunca debe incluir secretos ni el cuerpo. */
   idempotencyKey: string;
-  proceso: "borrador_aprobado" | "reporte_contable" | "autorespuesta";
+  proceso: "borrador_aprobado" | "reporte_contable" | "autorespuesta" | "soportes_titular";
   threadId?: string;
   messageIdHeader?: string;
   adjuntos?: AdjuntoParaEnviar[];

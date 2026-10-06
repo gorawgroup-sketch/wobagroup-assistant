@@ -57,6 +57,7 @@ import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/a
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
+import { handleSoportesCallback } from "../core/soportes/soportesTelegram";
 import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion, restaurarPendienteDesambiguacion, type PendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { consumirPendienteReglaClasificacion } from "../core/documental/pendienteReglaClasificacionStore";
@@ -1723,6 +1724,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleRegistroManualCashflowCallback(callback);
     } else if (data.startsWith("transfint_")) {
       await handleTransferenciasCallback(callback);
+    } else if (data.startsWith("sop_")) {
+      await handleSoportesCallback(callback);
     } else if (data.startsWith("reintegrozip:")) {
       await handleReintegroZipCallback(callback);
     } else if (data.startsWith("loteimpuestos_")) {

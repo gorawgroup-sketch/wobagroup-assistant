@@ -415,6 +415,17 @@ Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las factu
 - Botones: "✅ Registrar en Ingresos y responder al remitente" (escribe la fila y, solo después de verificarla, contesta en el mismo hilo que la factura ya está leída y su importe en el cashflow), "✅ Confirmar en Ingresos" (solo registra), "↪️ Mejor en <área>" y "❌ Cancelar". Nada se escribe ni se envía sin el botón.
 - Solo WOBA y eWorks (las dos empresas del cashflow); una factura de venta de Footprint sigue el archivado normal.
 
+## Pedir soportes a quien gastó con la tarjeta (flujo semanal con el CSV de Revolut)
+
+Pensado para hacerse una vez por semana, por empresa:
+
+1. **Sube al chat el CSV de movimientos de Revolut** (el «transaction-statement_…csv») con el nombre de la empresa en el texto («transacciones de WOBA revolut»; vale también en el nombre del archivo). Se reconoce por sus columnas, **no se archiva** en Drive ni se guarda en disco. Si no dice la empresa, o dice varias, lo pide de nuevo.
+2. Wobi cruza cada **pago con tarjeta** del extracto contra Bancos de Holded (importe, moneda y fecha ±5 días) y separa: ya conciliados con soporte · **sin conciliar (se piden)** · ya llegaron y esperan tu aprobación en el chat (no se piden) · pedidos hace menos de 7 días (no se repiten aún) · conciliación parcial · sin movimiento en Holded (no se reclaman: banco sin sincronizar; los de más de 10 días se listan para revisar) · ambiguos (mismo importe, distinto titular). Ingresos, transferencias, cambios y reembolsos no llevan soporte de un titular.
+3. Agrupa por **titular** (columna «Payer» del CSV, que es lo único que dice quién gastó: Holded no lo guarda) y muestra **un solo mensaje resumen** con una casilla por persona, su email y el total por moneda (nunca suma monedas distintas). Botones: casilla por persona, «👁 Ver correo» (el texto exacto), «🔄 Actualizar emails», «📤 Enviar N correos», «❌ Cancelar».
+4. **Emails:** la primera vez que sale una persona sin email, dile en el chat «el correo de Yessenia Carolina Dos Prazeres Ferreira es …» (herramienta `registrar_email_titular_soportes`) y pulsa «🔄 Actualizar emails»; queda guardado para todas las semanas. Si el directorio de personas tiene una ficha inequívoca (mínimo dos palabras del nombre) se propone, marcada «del directorio, confírmalo», y la casilla queda sin marcar hasta que la toques.
+5. «📤 Enviar» (solo superadmin) manda **un correo por persona desde asistente@wobagroup.com** con todos sus cargos, pidiendo que respondan a ese mismo buzón con los soportes. Texto fijo (sin IA): estamos mejorando la conciliación y la estabilización contable mensual; si ya los enviaron, que los reenvíen porque el sistema no los reconoció; no debería repetirse. Cada correo lleva clave de idempotencia: un doble toque o un reintento nunca duplica. Si alguno falla, el mismo botón reintenta solo los que faltan.
+6. Los cargos pedidos quedan registrados (`_soportes_solicitados`); la semana siguiente solo se piden los nuevos, y los de más de 7 días sin conciliar vuelven marcados como recordatorio. Cuando los soportes llegan a asistente@wobagroup.com, el flujo de correo normal crea el gasto y lo concilia.
+
 ## Informe de reintegro de gastos por persona o proyecto (PDF + comprobantes)
 
 Pedido explícito de Carlos (02-10-2026), tras un caso real: pidió los gastos de septiembre de Nuria Ortiz para reclamarlos a MIMO y el chat respondió «solo hay 1» cuando en Holded había 28.

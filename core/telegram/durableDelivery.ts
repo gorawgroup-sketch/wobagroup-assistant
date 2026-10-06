@@ -43,6 +43,10 @@ export const ACCIONES_REABRIBLES_TRAS_COMPLETAR: ReadonlySet<string> = new Set([
   // el servidor) dejaba el botón bloqueado con «Esta acción ya fue procesada» sin haber hecho nada.
   "loteimpuestos_confirmar",
   "loteimpuestos_cancelar",
+  // «Enviar» del resumen de soportes: tras un envío parcial (algún correo falló) el operador pulsa el MISMO botón para
+  // reintentar solo los que faltan. Es seguro repetirlo: cada correo lleva una clave de idempotencia por campaña+persona+
+  // destinatario y las personas ya enviadas quedan marcadas, así que nunca se manda dos veces lo mismo.
+  "sop_e",
 ]);
 /**
  * «Verificar resultado anterior» (`gasto_conciliar_si:ID:lectura`, `gasto_conciliar_elegir:ID:N:lectura`): solo relee compra y banco
