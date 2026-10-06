@@ -21,6 +21,9 @@ export interface VerificacionTasaCambio {
   diferenciaPct: number;
 }
 
+const VIGENCIA_PROVISIONAL_MS = 60_000;
+const VIGENCIA_FALLO_MS = 30_000;
+const VIGENCIA_TASA_OBTENIDA_MS = 7 * 24 * 60 * 60_000;
 const cacheHistorica = new Map<string, { hasta: number; valor: Promise<number | undefined> }>();
 
 /** Cache compartida entre revisión automática y manual, sin gastar llamadas de IA. */
@@ -33,7 +36,12 @@ export function obtenerTasaCambioHistorica(fecha: string, origen: string, destin
   if (anterior && anterior.hasta > Date.now()) return anterior.valor;
   if (cacheHistorica.size >= 1000) cacheHistorica.clear();
   const valor = consultarTasaHistorica(fecha, origen, destino);
-  cacheHistorica.set(clave, { hasta: Date.now() + 15 * 60_000, valor });
+  const entrada = { hasta: Date.now() + VIGENCIA_PROVISIONAL_MS, valor };
+  cacheHistorica.set(clave, entrada);
+  // Una tasa histórica no cambia: si se obtuvo, se conserva días. Un fallo (timeout, 5xx) solo se recuerda unos segundos:
+  // cachearlo 15 minutos dejaba la propuesta sin cargos candidatos y sin reintentar mientras la API se recuperaba
+  // (Casa Peppe, 2026-10-06: Frankfurter lento y «No había ningún cargo con ese importe» durante horas).
+  void valor.then((tasa) => { entrada.hasta = Date.now() + (tasa === undefined ? VIGENCIA_FALLO_MS : VIGENCIA_TASA_OBTENIDA_MS); });
   return valor;
 }
 
@@ -41,7 +49,7 @@ async function tasaHistoricaAmpliada(fecha: string, origen: string, destino: str
   // Cotizar COP por EUR/USD evita perder precisión al redondearse 1 COP a cinco decimales.
   const inversa = origen === "COP";
   const base = inversa ? destino : origen, quote = inversa ? origen : destino;
-  const response = await fetch(`https://api.frankfurter.dev/v2/rate/${base}/${quote}?date=${fecha}`, { signal: AbortSignal.timeout(10_000) });
+  const response = await fetch(`https://api.frankfurter.dev/v2/rate/${base}/${quote}?date=${fecha}`, { signal: AbortSignal.timeout(TIMEOUT_AMPLIADA_MS) });
   if (!response.ok) return undefined;
   const d = await response.json() as { date?: string; base?: string; quote?: string; rate?: number };
   const dias = (Date.parse(fecha) - Date.parse(d.date ?? "")) / 86_400_000;
@@ -49,6 +57,10 @@ async function tasaHistoricaAmpliada(fecha: string, origen: string, destino: str
       typeof d.rate !== "number" || !Number.isFinite(d.rate) || d.rate <= 0) return undefined;
   return inversa ? 1 / d.rate : d.rate;
 }
+/** Frankfurter v2 puede tardar 6-9 s en un mal día (2026-10-06): 10 s de límite lo cortaba justo antes de responder. */
+const TIMEOUT_AMPLIADA_MS = 20_000;
+/** Monedas que el BCE no publica: preguntar antes al v1 solo gasta el tiempo (404 seguro, o un 522 de 10 s como hoy). */
+const SOLO_COBERTURA_AMPLIADA = new Set(["COP"]);
 const FRANKFURTER_BASE = "https://api.frankfurter.dev/v1";
 
 /**
@@ -63,6 +75,18 @@ async function consultarTasaHistorica(
   monedaDestino: string
 ): Promise<number | undefined> {
   if (monedaOrigen === monedaDestino) return 1;
+
+  if (SOLO_COBERTURA_AMPLIADA.has(monedaOrigen) || SOLO_COBERTURA_AMPLIADA.has(monedaDestino)) {
+    // Un reintento: un timeout aislado no debe dejar un gasto en esa moneda sin cargos candidatos.
+    for (let intento = 1; intento <= 2; intento++) {
+      try {
+        return await tasaHistoricaAmpliada(fecha, monedaOrigen, monedaDestino);
+      } catch (error) {
+        console.error(`[exchangeRate] Error consultando la tasa de cambio ${monedaOrigen}->${monedaDestino} del ${fecha} (intento ${intento}/2):`, error);
+      }
+    }
+    return undefined;
+  }
 
   try {
     const url = `${FRANKFURTER_BASE}/${fecha}?base=${encodeURIComponent(monedaOrigen)}&symbols=${encodeURIComponent(monedaDestino)}`;

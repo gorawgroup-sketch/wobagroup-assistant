@@ -4,7 +4,7 @@ import { obtenerPropuestasGastoPorChat, type PropuestaGasto } from "./gastoPropo
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { filtrarConciliacionesPorTexto, reenviarPreguntaConciliacion, reenviarPreguntaConciliacionAmbigua } from "./reenviarPreguntaPendiente";
 import { montosCercanos } from "../utils/montos";
-import { answerCallbackQuery } from "../telegram/client";
+import { answerCallbackQuery, sendTelegramMessage } from "../telegram/client";
 import type { InlineKeyboardButton, TelegramCallbackQuery } from "../telegram/types";
 
 /**
@@ -106,10 +106,11 @@ export async function handleReenviarPreguntaCallback(callback: TelegramCallbackQ
   const clave = (callback.data ?? "").replace(/^preg_r:/, "");
   const responder = async (t?: string) => { try { await answerCallbackQuery(callback.id, t); } catch (error) { console.error("[preguntas] No se pudo responder al botón (no crítico):", error instanceof Error ? error.message : error); } };
   if (!chatId || !clave) { await responder("Petición no válida."); return; }
+  // Se responde ANTES de leer las tres tablas: Telegram caduca el aviso del botón y, con Sheets lento, llegaba tarde (400).
+  await responder("Te la reenvío abajo ↓");
   const [todasP, todasS, todasA] = await Promise.all([deps.propuestas(chatId), deps.simples(chatId), deps.ambiguas(chatId)]);
   const items = listarPendientes(todasP, todasS, todasA, "", deps);
   const item = clave === "primera" ? items[0] : items.find((i) => i.clave === clave);
-  if (!item) { await responder(items.length ? "Esa ya no está pendiente. Escribe /preguntas para ver las que quedan." : "No queda nada pendiente."); return; }
-  await responder("Te la reenvío abajo ↓");
+  if (!item) { await sendTelegramMessage(chatId, items.length ? "Esa ya no está pendiente. Escribe /preguntas para ver las que quedan." : "No queda nada pendiente."); return; }
   await item.enviar();
 }
