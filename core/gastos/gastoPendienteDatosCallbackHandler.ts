@@ -14,6 +14,7 @@ import {
   obtenerGastosPendienteDatosPorChat,
   restaurarGastoPendienteDatos,
 } from "./gastoPendienteDatosStore";
+import { parsearCargoElegido } from "./gastoPendienteDatosActions";
 import { procesarGastoEntrante } from "./procesarGastoEntrante";
 
 async function responderCallback(id: string, texto?: string): Promise<void> {
@@ -22,27 +23,35 @@ async function responderCallback(id: string, texto?: string): Promise<void> {
   );
 }
 
+/** Pendientes de un documento ya leído que esperan el cargo del banco o la verificación de duplicados. */
+const MOTIVOS_CON_BOTONES = new Set(["verificacion_duplicado", "moneda"]);
+
 /**
- * Resuelve los dos botones de una verificacion estricta de duplicados:
- * reintentar la misma factura, o confirmar que el analisis es correcto y
- * cerrar solo esa unidad de trabajo. El id del pendiente y el chat deben
- * coincidir; nunca se consume "el ultimo" ni se busca por proveedor/monto.
+ * Resuelve los botones de una pendiente de datos:
+ *  - verificación estricta de duplicados: reintentar, confirmar el análisis o dejarla pendiente y seguir;
+ *  - documento que espera el cargo del banco («moneda»): buscar el cargo otra vez, elegir uno de los cargos
+ *    ofrecidos (`gpd_cargo`, que reanuda con el importe y la moneda REALES de ese cargo, igual que escribirlos a mano)
+ *    o dejarla pendiente y seguir.
+ * El id del pendiente y el chat deben coincidir; nunca se consume "el ultimo" ni se busca por proveedor/monto.
  */
 export async function handleGastoPendienteDatosCallback(callback: TelegramCallbackQuery): Promise<void> {
   const data = callback.data ?? "";
-  const [accion, pendienteId] = data.split(":");
+  const [accion, pendienteIdCrudo] = data.split(":");
+  const cargoElegido = accion === "gpd_cargo" ? parsearCargoElegido(data) : null;
+  const pendienteId = accion === "gpd_cargo" ? cargoElegido?.id : pendienteIdCrudo;
   const chatId = callback.message?.chat.id;
   const messageId = callback.message?.message_id;
 
   if (chatId === undefined || !pendienteId ||
-      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer")) {
+      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer" && accion !== "gpd_cargo") ||
+      (accion === "gpd_cargo" && !cargoElegido)) {
     await responderCallback(callback.id, "Esta acción no es válida.");
     return;
   }
 
   if (accion === "gpd_posponer") {
     const pendiente = (await obtenerGastosPendienteDatosPorChat(chatId)).find(p => p.id === pendienteId);
-    if (!pendiente || pendiente.motivo !== "verificacion_duplicado" || !pendiente.deColaCorreo ||
+    if (!pendiente || !MOTIVOS_CON_BOTONES.has(pendiente.motivo) || !pendiente.deColaCorreo ||
         !pendiente.correoOrigen?.threadId || !pendiente.correoOrigen?.mensajeIdGmail) {
       await responderCallback(callback.id, "No hay un correo exacto pendiente para este botón.");
       return;
@@ -62,7 +71,10 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
     return;
   }
 
-  if (pendiente.motivo !== "verificacion_duplicado") {
+  // «Confirmar el análisis» solo existe para duplicados; el resto de botones también valen para un documento a la espera del banco.
+  const motivoValido = accion === "gpd_confirmar" ? pendiente.motivo === "verificacion_duplicado" : MOTIVOS_CON_BOTONES.has(pendiente.motivo);
+  // Elegir un cargo solo tiene sentido cuando lo que falta es el cargo real («moneda»).
+  if (!motivoValido || (accion === "gpd_cargo" && pendiente.motivo !== "moneda")) {
     await restaurarGastoPendienteDatos(pendiente);
     await responderCallback(callback.id, "Este botón no corresponde a esta pendiente.");
     return;
@@ -70,7 +82,9 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
 
   await responderCallback(
     callback.id,
-    accion === "gpd_reintentar" ? "Reprocesando..." : "Confirmando y continuando..."
+    accion === "gpd_confirmar" ? "Confirmando y continuando..."
+      : accion === "gpd_cargo" ? "Usando ese cargo..."
+        : pendiente.motivo === "moneda" ? "Buscando el cargo otra vez..." : "Reprocesando..."
   );
   if (messageId !== undefined) {
     await editTelegramMessageReplyMarkup(chatId, messageId, []).catch((error) =>
@@ -116,13 +130,18 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
     return;
   }
 
+  // Con un cargo elegido, el documento se reanuda con el importe y la moneda reales de ese cargo: lo mismo que escribirlos a mano.
+  const datosParaReanudar = cargoElegido
+    ? { ...pendiente.datos, montoEquivalente: cargoElegido.monto, monedaEquivalente: cargoElegido.moneda }
+    : pendiente.datos;
+
   try {
     const resultado = await procesarGastoEntrante({
       chatId,
       rutaLocal: pendiente.rutaLocal,
       nombreArchivoOriginal: pendiente.nombreArchivoOriginal,
       mimeType: pendiente.mimeType,
-      datos: pendiente.datos,
+      datos: datosParaReanudar,
       deColaCorreo: pendiente.deColaCorreo,
       correoOrigen: pendiente.correoOrigen,
       origenAdjuntoGmail: pendiente.origenAdjuntoGmail,
@@ -141,7 +160,9 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
 
     const textoResultado =
       resultado === "pendiente_datos"
-        ? "🔄 Pendiente reprocesada. La verificación actualizada y sus botones aparecen en el mensaje nuevo."
+        ? pendiente.motivo === "moneda"
+          ? "🔄 Sigue pendiente: el mensaje nuevo dice qué falta y trae sus botones."
+          : "🔄 Pendiente reprocesada. La verificación actualizada y sus botones aparecen en el mensaje nuevo."
         : resultado === "propuesta_duplicada"
           ? "✅ Reprocesado: Holded confirmó evidencia suficiente de duplicado. No se creó otro gasto."
           : resultado === "propuesta_pendiente_existente"

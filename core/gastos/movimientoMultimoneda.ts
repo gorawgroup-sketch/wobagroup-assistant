@@ -291,8 +291,11 @@ export function describirMovimientoMultimoneda(
   const nombre = movimiento.coincideProveedor
     ? "; además coincide el proveedor"
     : movimiento.compatibilidad === "por_confirmar" ? "; ⚠️ nombre distinto: confírmalo" : "";
-  return (
-    `${prefijo}"${movimiento.descripcion || "(sin descripción)"}" — ${movimiento.monto.toFixed(2)} ` +
-    `${movimiento.moneda} (${movimiento.fecha}${referencia}${nombre})`
-  );
+  // Un cargo de una cuenta en OTRA moneda se muestra con su importe REAL (−11,77 USD) y el equivalente contable entre
+  // paréntesis, no como «−10,45 EUR»: caso Gomerco (−55,32 USD mostrado como −48,58 EUR) y, en este camino, el Uber de 211,21 MXN.
+  const importe =
+    movimiento.montoNativo !== undefined && movimiento.monedaNativa && movimiento.monedaNativa !== movimiento.moneda
+      ? `${movimiento.montoNativo.toFixed(2)} ${movimiento.monedaNativa} (≈ ${movimiento.monto.toFixed(2)} ${movimiento.moneda})`
+      : `${movimiento.monto.toFixed(2)} ${movimiento.moneda}`;
+  return `${prefijo}"${movimiento.descripcion || "(sin descripción)"}" — ${importe} (${movimiento.fecha}${referencia}${nombre})`;
 }

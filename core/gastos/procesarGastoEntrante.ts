@@ -23,6 +23,8 @@ import {
 } from "./gastoProposalSheet";
 import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
 import {
+  botonesCargosCandidatos,
+  botonesEsperaBancaria,
   botonesFalloTemporalVerificacionPendiente,
   botonesVerificacionDuplicadoPendiente,
 } from "./gastoPendienteDatosActions";
@@ -331,7 +333,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       montoEquivalenteResuelto = Math.abs(movimientoLiquidacionUsado.monto);
       monedaEquivalenteResuelta = politicaLiquidacion.moneda;
     } else {
-      await guardarGastoPendienteDatos({
+      const pendienteLiquidacion = await guardarGastoPendienteDatos({
         chatId,
         rutaLocal: entrada.rutaLocal,
         nombreArchivoOriginal: entrada.nombreArchivoOriginal,
@@ -342,14 +344,17 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         origenAdjuntoGmail: entrada.origenAdjuntoGmail,
         correoOrigen: entrada.correoOrigen,
       });
-      await sendTelegramMessage(
+      // Con botón: antes esta pendiente no tenía ninguna vía de reanudación, el correo quedaba «activo» sin pregunta que
+      // contestar y lo único visible acababa siendo «Descartar» (caso Anthropic, 2026-10-05). Reintentar es decisión de la persona.
+      await sendTelegramMessageWithButtons(
         chatId,
         `📄 ${empresa} · ${datos.proveedor || "Anthropic"} · ${datos.monto.toFixed(2)} ${monedaOriginal} · ${fechaBusqueda}.\n\n` +
           `La liquidación se registra en ${politicaLiquidacion.moneda} usando el importe real del banco. ` +
           `La búsqueda todavía no permite vincular un cargo disponible de forma inequívoca; esto no demuestra que no se haya cobrado. ` +
           `El movimiento puede estar pendiente de sincronización, ya conciliado o tener varios candidatos.\n\n` +
-          `No necesitas calcular ni facilitar el cambio. El documento queda pendiente de comprobación bancaria; ` +
-          `al retomarlo se vuelve a buscar el cargo y se comprueba que no exista ya el gasto antes de crearlo.`
+          `No necesitas calcular ni facilitar el cambio. El documento queda pendiente de comprobación bancaria: ` +
+          `cuando el banco ya muestre el cargo, pulsa «Buscar el cargo otra vez» (se vuelve a buscar y se comprueba que no exista ya el gasto antes de crearlo).`,
+        botonesEsperaBancaria(pendienteLiquidacion.id, entrada.deColaCorreo === true)
       );
       return "pendiente_datos";
     }
@@ -423,30 +428,50 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             `spread de la tarjeta, por eso no lo registro directamente): ${referencias.join(" / ")}.`;
         }
       }
-      await sendTelegramMessage(
-        chatId,
+      // Se guarda ANTES de preguntar: el id de la pendiente viaja en los botones (un botón por cargo ofrecido).
+      let pendienteMoneda: Awaited<ReturnType<typeof guardarGastoPendienteDatos>> | undefined;
+      try {
+        pendienteMoneda = await guardarGastoPendienteDatos({
+          chatId,
+          rutaLocal: entrada.rutaLocal,
+          nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+          mimeType: entrada.mimeType,
+          datos,
+          motivo: "moneda",
+          deColaCorreo: entrada.deColaCorreo,
+          origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+          correoOrigen: entrada.correoOrigen,
+        });
+      } catch (error) {
+        // Sin pendiente no hay botones: la pregunta sale igual, en texto libre (como antes de existir los botones).
+        console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error);
+      }
+      const textoPregunta =
         `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
-          `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
-          `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
-          `trae el monto equivalente en alguna de esas monedas, y ` +
-          (busquedaFxIncompleta
-            ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
-            : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
-          `${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
-          `a calcular un tipo de cambio yo mismo) antes de registrar nada. Respóndeme aquí mismo en texto libre con el ` +
-          `monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`
-      );
-      await guardarGastoPendienteDatos({
-        chatId,
-        rutaLocal: entrada.rutaLocal,
-        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-        mimeType: entrada.mimeType,
-        datos,
-        motivo: "moneda",
-        deColaCorreo: entrada.deColaCorreo,
-        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-        correoOrigen: entrada.correoOrigen,
-      }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
+        `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
+        `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
+        `trae el monto equivalente en alguna de esas monedas, y ` +
+        (busquedaFxIncompleta
+          ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
+          : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
+        `${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
+        `a calcular un tipo de cambio yo mismo) antes de registrar nada. ` +
+        (pendienteMoneda && candidatosFx.length > 1 ? `Pulsa el cargo que corresponde, o respóndeme` : `Respóndeme`) +
+        ` aquí mismo en texto libre con el monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`;
+      if (pendienteMoneda) {
+        const deCola = entrada.deColaCorreo === true;
+        const botones = candidatosFx.length > 1
+          ? botonesCargosCandidatos(
+              pendienteMoneda.id,
+              // El importe y la moneda REALES del cargo (en la cuenta donde se cobró), no su equivalente contable.
+              candidatosFx.map((c) => ({ monto: Math.abs(c.montoNativo ?? c.monto), moneda: c.monedaNativa ?? c.moneda, fecha: c.fecha, descripcion: c.descripcion ?? "" })),
+              deCola
+            )
+          : botonesEsperaBancaria(pendienteMoneda.id, deCola);
+        await sendTelegramMessageWithButtons(chatId, textoPregunta, botones);
+      } else {
+        await sendTelegramMessage(chatId, textoPregunta);
+      }
       return "pendiente_datos";
     }
   }

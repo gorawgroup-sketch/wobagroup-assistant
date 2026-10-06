@@ -118,3 +118,12 @@ test('foreign currency search rejects taxi/fuel for food before text or buttons,
  });
  assert.deepEqual(r.map(m=>m.movementId),['food']);
 });
+
+test("un cargo de una cuenta en otra moneda se describe con su importe REAL y el equivalente contable entre paréntesis", () => {
+  const cargo: MovimientoBancarioCandidato = { ...movimiento("uber", -10.45, "Dlo*serv Uber Rides"), montoNativo: -11.77, monedaNativa: "USD", fecha: "2026-10-04" };
+  const texto = describirMovimientoMultimoneda(cargo, 0);
+  assert.match(texto, /— -11\.77 USD \(≈ -10\.45 EUR\) \(2026-10-04/);
+  // Sin importe nativo (cuenta en la misma moneda) la descripción no cambia.
+  assert.match(describirMovimientoMultimoneda(movimiento("x", -9.38, "Dlo*serv Uber Rides Ca"), 1), /— -9\.38 EUR \(2026-09-10/);
+});
+
