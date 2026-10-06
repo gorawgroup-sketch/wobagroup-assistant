@@ -135,7 +135,7 @@ Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint 
    queda conciliada en parte y el resto se lleva a la cuenta **62600000** con un segundo «Transferir» sobre la entrada
    (decisión de Carlos, 05-10-2026: la misma cuenta en WOBA, eWorks y Footprint). **Pendiente de su prueba controlada.**
 
-Límites actuales: diferencia máxima 3 % entre las valoraciones en euros de las dos patas (Holded valora en euros también las patas en otra moneda: USD → COP vale igual). Primera USD → COP pendiente de verificar en vivo (Footprint 11/09, 0,71 € a favor). **Validado por Carlos el 05-10-2026**
+Los traspasos en una misma moneda distinta del euro (USD↔USD) se ejecutan igual que una conversión (pulsar sobre la salida; valoración en euros de Holded). Límites actuales: diferencia máxima 3 % entre las valoraciones en euros de las dos patas (Holded valora en euros también las patas en otra moneda: USD → COP vale igual). Primera USD → COP pendiente de verificar en vivo (Footprint 11/09, 0,71 € a favor). **Validado por Carlos el 05-10-2026**
 (eWorks 02/09, −433,96 EUR → +500 USD: asiento único de 433,96 €, los dos movimientos conciliados y 2,11 € de diferencia
 pendientes en el cobro). Con `WOBI_TRANSFERENCIAS_ALCANCE=eur,conversiones` las conversiones dentro de estos límites llevan
 botón de conciliar; las demás se proponen sin botón y con el motivo.
