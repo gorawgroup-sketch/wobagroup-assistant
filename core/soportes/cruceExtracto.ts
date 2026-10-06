@@ -151,3 +151,11 @@ export function elegirCuentasHolded<T extends { name?: string; currency?: string
   }
   return moneda ? cuentas.filter((c) => (c.currency ?? "").toUpperCase() === moneda) : cuentas;
 }
+
+/**
+ * ¿El «titular» del extracto es una sociedad y no una persona (tarjeta de empresa, p. ej. «BUSINESS FOOTPRINT EU, SOCIEDAD
+ * LIMITADA»)? No hay a quién escribir: esos cargos se revisan a mano, no se mandan a ninguna dirección.
+ */
+export function esTitularEmpresa(titular: string): boolean {
+  return /\b(sociedad|limitada|s\.?\s?l\.?u?|s\.?\s?a\.?|llc|inc|ltd|gmbh|corp|business|company)\b/i.test(titular.normalize("NFD").replace(/[̀-ͯ]/g, ""));
+}

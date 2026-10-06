@@ -898,6 +898,8 @@ export function construirMimeConAdjuntos(params: {
   messageIdPropio: string;
   adjuntos?: AdjuntoParaEnviar[];
   firmaHtml?: string;
+  /** Versión HTML del cuerpo (por ejemplo con una tabla); `cuerpo` sigue siendo la versión en texto plano. */
+  cuerpoHtml?: string;
 }): Buffer {
   // Solo se antepone "Re:" cuando es respuesta a un hilo existente
   // (messageIdHeader presente) — un correo nuevo debe llevar el asunto tal cual.
@@ -924,14 +926,14 @@ export function construirMimeConAdjuntos(params: {
   let cuerpoContentType: string;
   let cuerpoBuffer: Buffer;
 
-  if (!firma) {
+  if (!firma && !params.cuerpoHtml) {
     cuerpoContentType = `text/plain; charset="UTF-8"`;
     cuerpoBuffer = Buffer.from(params.cuerpo, "utf-8");
   } else {
     const altBoundary = `wobi-alt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const firmaTexto = htmlATexto(firma);
-    const cuerpoPlano = `${params.cuerpo}\r\n\r\n--\r\n${firmaTexto}`;
-    const cuerpoHtml = `${textoAHtmlBasico(params.cuerpo)}\n<br>\n${firma}`;
+    const firmaTexto = firma ? htmlATexto(firma) : "";
+    const cuerpoPlano = firma ? `${params.cuerpo}\r\n\r\n--\r\n${firmaTexto}` : params.cuerpo;
+    const cuerpoHtml = `${params.cuerpoHtml ?? textoAHtmlBasico(params.cuerpo)}${firma ? `\n<br>\n${firma}` : ""}`;
 
     cuerpoContentType = `multipart/alternative; boundary="${altBoundary}"`;
     cuerpoBuffer = Buffer.from(
@@ -1004,6 +1006,8 @@ export interface ParametrosEnvioCorreo {
   messageIdHeader?: string;
   adjuntos?: AdjuntoParaEnviar[];
   firmaOverride?: string;
+  /** Versión HTML del cuerpo (tabla, etc.); `cuerpo` es la de texto plano. */
+  cuerpoHtml?: string;
 }
 
 const metricasEnviosDurables = {

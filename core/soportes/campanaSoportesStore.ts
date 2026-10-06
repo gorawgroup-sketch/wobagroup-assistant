@@ -10,7 +10,7 @@ import type { CargoCorreo } from "./redactarCorreoSoportes";
 const TAB_NAME = "_campanas_soportes";
 const HEADERS = [
   "campana", "indice", "chatId", "messageId", "empresa", "desde", "hasta", "titular", "email", "fuenteEmail",
-  "seleccionado", "estado", "yaSolicitados", "creadoEn", "cargosJson", "nota",
+  "seleccionado", "estado", "yaSolicitados", "creadoEn", "cargosJson", "nota", "sugerencias",
 ];
 const NUM_COLS = HEADERS.length;
 const TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -30,7 +30,7 @@ export interface PersonaCampana {
   hasta: string;
   titular: string;
   email: string;
-  fuenteEmail: "confirmado" | "directorio" | "";
+  fuenteEmail: "confirmado" | "directorio" | "buzon" | "";
   seleccionado: boolean;
   estado: EstadoPersona;
   yaSolicitados: number;
@@ -38,6 +38,8 @@ export interface PersonaCampana {
   cargos: CargoCorreo[];
   /** Recuento del análisis (solo en la primera persona): se vuelve a mostrar en cada actualización del resumen. */
   nota: string;
+  /** Direcciones posibles cuando no hay una segura (separadas por coma): se muestran para que Carlos elija. */
+  sugerencias: string;
 }
 
 function aFila(p: Omit<PersonaCampana, "rowIndex">): (string | number)[] {
@@ -46,7 +48,7 @@ function aFila(p: Omit<PersonaCampana, "rowIndex">): (string | number)[] {
     throw new Error(`${p.titular} tiene demasiados cargos (${p.cargos.length}) para guardarlos en una campaña.`);
   }
   return [p.campana, p.indice, p.chatId, p.messageId, p.empresa, p.desde, p.hasta, p.titular, p.email, p.fuenteEmail,
-    p.seleccionado ? "true" : "false", p.estado, p.yaSolicitados, p.creadoEn, cargosJson, p.nota];
+    p.seleccionado ? "true" : "false", p.estado, p.yaSolicitados, p.creadoEn, cargosJson, p.nota, p.sugerencias];
 }
 
 function desdeFila(rowIndex: number, v: string[]): PersonaCampana | undefined {
@@ -58,7 +60,7 @@ function desdeFila(rowIndex: number, v: string[]): PersonaCampana | undefined {
   return {
     rowIndex, campana: v[0], indice: Number(v[1]), chatId: Number(v[2]), messageId: Number(v[3]), empresa: v[4], desde: v[5], hasta: v[6],
     titular: v[7], email: v[8], fuenteEmail: v[9] as PersonaCampana["fuenteEmail"], seleccionado: v[10] === "true",
-    estado: v[11] as EstadoPersona, yaSolicitados: Number(v[12]) || 0, creadoEn: Number(v[13]) || 0, cargos, nota: v[15] ?? "",
+    estado: v[11] as EstadoPersona, yaSolicitados: Number(v[12]) || 0, creadoEn: Number(v[13]) || 0, cargos, nota: v[15] ?? "", sugerencias: v[16] ?? "",
   };
 }
 

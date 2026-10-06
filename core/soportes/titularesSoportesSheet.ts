@@ -41,6 +41,13 @@ export async function registrarEmailTitular(nombre: string, email: string): Prom
   return true;
 }
 
+/** Solo el email que Carlos ya confirmó para este titular (o undefined). */
+export async function resolverEmailGuardado(nombre: string): Promise<string | undefined> {
+  const clave = claveTitular(nombre);
+  const guardado = clave ? (await cargar()).get(clave) : undefined;
+  return guardado?.email && emailValido(guardado.email) ? guardado.email : undefined;
+}
+
 export interface EmailResuelto { email: string; fuente: "confirmado" | "directorio" }
 
 const tokens = (t: string): string[] => claveTitular(t).split(" ").filter(Boolean);
