@@ -125,3 +125,11 @@ Caso real (Footprint, gasto Hospedaje Guadalajara): el comprobante generado desd
 
 - `limpiarTextoParaPDF` (`core/gmail/generarComprobantePDF.ts`, con prueba): normaliza saltos a `\n`, quita caracteres de control, compacta líneas en blanco y acorta los enlaces de más de 70 caracteres (conserva acentos, ñ y €). Se aplica a todo el texto del PDF de texto. El render visual desde HTML (Chromium) no cambia.
 - Los comprobantes ya adjuntos en Holded no se tocan: Holded no permite sustituirlos por API.
+
+## Aviso de «misma estancia» (recibo de Booking + factura del hotel) (2026-10-07)
+
+Caso real (Footprint, Hotel101 Madrid, 9→11 septiembre): el recibo de Booking (232,20 €) y la factura del hotel 50808 (242,19 € = 232,20 € de habitaciones + 10,00 € de carga eléctrica) llegaron por correos distintos, con números distintos, y se registraron los dos: la misma estancia contada dos veces.
+
+- `core/gastos/mismaEstancia.ts` (pura, con 7 pruebas de casos reales): dos gastos de hospedaje son la misma estancia si coinciden hotel, persona, fechas de entrada y salida (se leen del concepto «Hospedaje <hotel> — <persona> — 09-11 sep 2026 …») e importe (≤ 8 %, misma moneda). Estancias distintas del mismo huésped y hotel, otro huésped o otra moneda no coinciden.
+- `core/gastos/mismaEstanciaRegistrada.ts`: busca esa coincidencia en (1) el registro de gastos creados desde correo —los tickets que Holded oculta de /purchases solo se encuentran por su id; las filas antiguas sin concepto se leen por id, con tope— y (2) los hospedajes del listado de compras de Holded (±45 días).
+- `procesarGastoEntrante.ts`: añade a la propuesta el aviso «⚠️ Posible MISMA estancia ya registrada: gasto … » y nunca bloquea ni decide. Los candidatos de la propia propuesta se excluyen. Si falla la lectura, el aviso se omite y la propuesta sale como siempre.
