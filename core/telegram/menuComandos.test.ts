@@ -22,7 +22,7 @@ test("el menú cumple las reglas de Telegram: minúsculas, sin espacios, descrip
     assert.match(c.command, /^[a-z0-9_]{1,32}$/);
     assert.ok(c.description.length >= 3 && c.description.length <= 256);
   }
-  assert.deepEqual(COMANDOS_MENU.map((c) => c.command), ["revisarcorreo", "soportes", "transferencias", "preguntas"]);
+  assert.deepEqual(COMANDOS_MENU.map((c) => c.command), ["revisarcorreo", "soportes", "transferencias", "preguntas", "conocimiento"]);
 });
 
 test("«/soportes» y «pedir soportes» arrancan el proceso, con o sin empresa", async () => {
