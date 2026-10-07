@@ -21,6 +21,18 @@ Las tolerancias existentes identifican candidatos: un céntimo en moneda nativa,
 
 **Lectura robusta del analizador (2026-10-05).** Caso real: correos que se leían bien uno a uno salían «El analizador no dio por completa la lectura». Causas corregidas en `core/gmail/automatico/analyze.ts`: (1) un adjunto que el lector visual no admite (Word, Excel…) ya no tumba el correo entero: se intenta su texto sin IA y, si tampoco se puede, se declara NO LEGIBLE al modelo y se decide por regla (nombre tipo comprobante → lectura incompleta; informativo → no afecta); (2) «completo» mide solo LEGIBILIDAD, no dudas de interpretación, y toda lectura incompleta debe citar la parte concreta (`detalleIncompleto`, que llega al aviso del chat); (3) un bucle de reparo (hasta 3 intentos) cuando el modelo responde con formato inválido, número de llamadas incorrecto o se corta por límite de tokens; (4) una segunda lectura de confirmación cuando marca incompleto sin poder nombrar la parte. Verificado en 17 correos reales: 17/17 con lectura completa. Pruebas: `analyze.lectura.test.ts`.
 
+## Lectura de la cadena del correo (2026-10-07, `core/correo/lectura/`)
+
+Antes de clasificar, cada correo se lee como una **cadena**: quién lo escribe de verdad, quién lo reenvió, cuál es el mensaje nuevo y qué dice el historial. Es determinista (sin IA), se probó con formatos reales del buzón (28 de 40 correos con «Re:/Fwd:» eran reenvíos) y se valida con 80 correos reales de los últimos 45 días.
+
+- Reconoce reenvíos de Gmail («Forwarded message / Mensaje reenviado», `De:`/`From:`), Outlook en línea (`De/Enviado/Para/Asunto` tras una raya y «Original Message»), atribuciones de respuesta en inglés, español, francés y alemán («On … wrote:», «El … escribió:», incluso partidas en dos líneas) y reenvíos citados con `>` anidados.
+- **Remitente real** = el autor del mensaje reenviado más reciente que no sea el propio buzón (si el correo es un reenvío); en una respuesta, la cabecera. Se informa también quién reenvió y el autor más antiguo visible.
+- **El mensaje nuevo** es solo lo que escribe quien envía el correo, sin las citas y sin su firma ni aviso legal; un reenvío sin nota se dice como tal («sin nota — solo reenvía»).
+- El clasificador de la cola manual ya **no recorta a 8.000 caracteres**: el mensaje nuevo y el primer mensaje de la cadena van completos; el historial más antiguo tiene un presupuesto (24.000 caracteres) y, si se excede, el texto lo avisa para que el modelo no concluya nada sobre lo omitido.
+- El resumen del análisis empieza con «Remitente real (según el texto del correo, sin verificar): …, reenviado por …».
+- **Seguridad:** el texto de un reenvío lo puede escribir cualquiera. El remitente real sale del cuerpo, nunca se trata como verificado, **no se registra en el directorio de personas** (evita que alguien lo envenene para que el asistente resuelva un nombre a una dirección falsa) y no autoriza nada. Se conservan todas las protecciones del extractor anterior: la dirección es la de los ángulos, un nombre con «@» no es un nombre y un formato corrupto no produce email.
+- Sustituye a `core/gmail/remitenteReenvio.ts` (retirado): el camino de «correo puntual» usa el mismo lector.
+
 ## Única ruta de creación y conversión manual a ticket
 
 La fase automática no mantiene reglas paralelas para crear compras. Reutiliza las mismas funciones durables del flujo uno a uno para inferir la cuenta desde los precedentes y correcciones confirmadas, componer las etiquetas funcionales, crear o corregir la compra, adjuntar el comprobante y conciliar el movimiento. Si esa memoria no permite demostrar una cuenta o cualquier otro dato, el correo queda para revisión manual; no se sustituye por una cuenta, etiqueta o valor por defecto.

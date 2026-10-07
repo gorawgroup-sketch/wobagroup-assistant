@@ -6,6 +6,8 @@ import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import { obtenerInstruccionesAplicablesCorreo } from "./instruccionesAprendidasStore";
 import { analizarRespuestaDeSoportes } from "../soportes/respuestaSoportes";
+import { leerCadena } from "../correo/lectura/cadena";
+import { lineaRemitenteReal, textoParaClasificador } from "../correo/lectura/paraClasificador";
 
 const MODEL = resolverModeloDocumental("clasificar_correo");
 const MAX_ITERATIONS = 4;
@@ -106,6 +108,11 @@ function buildSystemPrompt(hayAdjuntos: boolean): string {
         "y providencia de apremio de 815,24€] y redactar un informe con los montos, plazos y si procede " +
         "recurrir') — nunca algo vago."
       : "",
+    "El correo puede ser un REENVÍO o una CADENA de respuestas: el texto que recibes ya separa quién es el remitente real " +
+      "(el autor del contenido; en un reenvío NO es quien lo reenvió), el mensaje nuevo de quien envía este correo y los " +
+      "mensajes anteriores. Atribuye cada petición a quien la hizo: lo que dice el historial citado ya se atendió o es " +
+      "contexto, no una petición nueva; lo que pide quien reenvía está en su nota (si no hay nota, solo quiere que se " +
+      "atienda el contenido reenviado). Si el aviso dice que se omitió parte del historial, no concluyas nada sobre lo omitido.",
     "Clasifica el correo en uno de estos tipos (solo para contexto interno, no determina qué botones ve el " +
       "usuario — todos los correos reciben las mismas opciones):",
     "- documento_para_archivar: trae un adjunto que parece un documento del negocio (factura, contrato, etc.)" +
@@ -186,7 +193,8 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     REPORTAR_TOOL,
   ];
 
-  const cuerpoRecortado = cuerpoCompleto.trim().slice(0, 8000); // suficiente para juzgar contenido real sin gastar de más en correos larguísimos
+  // Lectura de la cadena (core/correo/lectura/): remitente real, mensaje nuevo y historial; nada se recorta en silencio.
+  const lectura = leerCadena(correo.de, cuerpoCompleto);
   const instruccionesAprendidas = await obtenerInstruccionesAplicablesCorreo(correo.de, correo.asunto).catch((error) => {
     console.error("[classifyEmail] No se pudo consultar la memoria de instrucciones (continúa sin ella):", error);
     return [];
@@ -202,11 +210,8 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     : "";
 
   const userText = [
-    `De: ${correo.de}`,
-    `Asunto: ${correo.asunto}`,
-    `Fecha: ${correo.fecha}`,
     contextoAprendido,
-    `Cuerpo completo:\n${cuerpoRecortado || "(vacío)"}`,
+    textoParaClasificador({ de: correo.de, asunto: correo.asunto, fecha: correo.fecha }, lectura, cuerpoCompleto),
   ].filter(Boolean).join("\n");
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
@@ -247,9 +252,10 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     const reportar = toolUseBlocks.find((b) => b.name === REPORTAR_TOOL_NAME);
     if (reportar) {
       const input = reportar.input as Record<string, unknown>;
+      const remitenteReal = lineaRemitenteReal(lectura);
       return {
         tipo: (input.tipo as TipoCorreo) ?? "informativo",
-        resumen: (input.resumen as string) ?? correo.asunto,
+        resumen: `${remitenteReal ? `${remitenteReal}\n` : ""}${(input.resumen as string) ?? correo.asunto}`,
         accionSugerida: (input.accion_sugerida as string) ?? "Ninguna.",
         razon: (input.razon as string) ?? "",
       };
