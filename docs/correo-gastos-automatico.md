@@ -112,3 +112,9 @@ Caso real (Footprint, Booking «Antaris», 207,09 €): el gasto existía pero s
 
 - `core/gastos/soporteDistinto.ts` (`debeOfrecerSoporteDistinto`, con prueba): en el bloqueo por identidad (`mismo_numero_y_proveedor`) se descargan los adjuntos del gasto y, si ya tiene ese mismo archivo, se bloquea como siempre. Si no lo tiene y o bien no hay adjuntos, o el archivo nuevo es un PDF y todo lo adjunto son imágenes, se ofrece el flujo normal «Es este (#1)» (adjuntar al existente), nunca crear ni conciliar solo.
 - Si no se pueden leer los adjuntos de Holded, se bloquea como siempre. Un PDF distinto sobre un gasto que ya tiene un PDF no se ofrece (puede ser otra versión del mismo documento).
+
+## Buscar un correo por asunto cuando lleva importes con coma (2026-10-07)
+
+Caso real: «Revisa el correo con asunto "Fwd: €204.65 - $4,036.92MXN - Hospedaje - Business Trip Guadalajara"» respondía «no encontré ningún correo» aunque el asunto era exacto. Gmail no casa importes con separador de miles («$4,036.92MXN»); el del asunto sin coma sí se encontraba.
+
+- `procesarCorreoPuntual` (`core/jobs/revisarCorreoNuevo.ts`): si la búsqueda literal da 0, repite con `subject:(palabras)` (`core/gmail/consultaCorreoTolerante.ts`, con prueba) y acepta solo un correo cuyo asunto real contenga TODAS esas palabras. No se activa con consultas de Gmail con operadores (`from:`, etc.) ni con búsquedas de menos de 3 palabras.

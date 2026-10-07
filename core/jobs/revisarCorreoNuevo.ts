@@ -21,6 +21,7 @@ import {
   extraerDireccionCorreo,
   type CorreoResumen,
 } from "../gmail/client";
+import { asuntoContieneLasPalabras, consultasDeRespaldo } from "../gmail/consultaCorreoTolerante";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { remitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../correo/lectura/cadena";
@@ -1503,7 +1504,17 @@ async function procesarCorreoPuntualInterno(
   adjuntos?: number;
 }> {
   const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
-  const ids = await buscarMensajes(query, 1);
+  let ids = await buscarMensajes(query, 1);
+  // Gmail no casa los importes con separador de miles («$4,036.92MXN»): si la consulta literal no halla nada, se repite con las
+  // palabras del asunto y solo se acepta un correo cuyo asunto las contenga todas (ver consultaCorreoTolerante.ts).
+  if (ids.length === 0 && busqueda.trim()) {
+    for (const respaldo of consultasDeRespaldo(busqueda)) {
+      for (const candidato of await buscarMensajes(`${respaldo} in:inbox`, 5)) {
+        if (asuntoContieneLasPalabras((await obtenerResumenCorreo(candidato)).asunto, busqueda)) { ids = [candidato]; break; }
+      }
+      if (ids.length > 0) break;
+    }
+  }
   if (ids.length === 0) return { encontrado: false };
 
   const correo = await obtenerResumenCorreo(ids[0]);
