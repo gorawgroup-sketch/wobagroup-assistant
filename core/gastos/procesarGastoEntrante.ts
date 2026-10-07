@@ -42,6 +42,7 @@ import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad } from "./gastoPorCorreoStore";
+import { buscarMismaEstanciaRegistrada } from "./mismaEstanciaRegistrada";
 import { calcularHuellaContenido } from "./identidadGasto";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
 import { evaluarPagosMultiples } from "../holded/pagosMultiples/pagos";
@@ -905,6 +906,25 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     )
     .join("\n");
 
+  // Aviso (nunca bloqueo): ¿ya hay un gasto de la MISMA estancia de hotel? El recibo de Booking y la factura del hotel llegan por
+  // correos distintos, con números distintos, y son el mismo gasto (caso Hotel101 Madrid, 232,20 € vs 242,19 €).
+  let notaMismaEstancia = "";
+  try {
+    const mismas = await buscarMismaEstanciaRegistrada(
+      empresa,
+      { concepto: datos.concepto, monto: montoParaHolded, moneda: monedaParaHolded },
+      { fecha: datos.fecha, excluirMensajeIdGmail: entrada.correoOrigen?.mensajeIdGmail, excluirGastoIds: candidatos.map((c) => c.id) }
+    );
+    if (mismas.length > 0) {
+      notaMismaEstancia =
+        `⚠️ Posible MISMA estancia ya registrada: ` +
+        mismas.map((m) => `gasto ${m.gastoId.slice(0, 8)} (${m.proveedor}, ${Number.isFinite(m.monto) ? m.monto.toFixed(2) : "?"} ${m.moneda}, ${m.fecha || "sin fecha"})`).join("; ") +
+        `. El recibo de Booking y la factura del hotel de una misma estancia son UN solo gasto: si lo es, no lo crees — cancela y decide cuál conservar ` +
+        `(lo normal es la factura del hotel, con el pago del recibo aplicado a ella).`;
+    }
+  } catch (error) {
+    console.error("[procesarGastoEntrante] No se pudo comprobar si el hospedaje ya estaba registrado (el aviso se omite):", error instanceof Error ? error.message : error);
+  }
   const importeTexto = usarEquivalente
     ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal}` +
       `${movimientoLiquidacionUsado ? "; importe EUR tomado del cargo bancario exacto" : ""})`
@@ -976,6 +996,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     }
     if (avisoNumeroDocumento) lineasTexto.push(``, avisoNumeroDocumento);
     if (notaTicket) lineasTexto.push(``, notaTicket);
+    if (notaMismaEstancia) lineasTexto.push(``, notaMismaEstancia);
     lineasTexto.push(
       ``,
       esRecuperacionIncompleta
@@ -1256,7 +1277,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         ? `${desgloseIva} — recibo simplificado (sin datos fiscales completos), sujeto pasivo.`
         : desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
-    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento + notaPagosMultiples;
+    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + (notaMismaEstancia ? `\n\n${notaMismaEstancia}` : "") + notaMovimiento + notaPagosMultiples;
 
     // Publicar desde el mismo estado que acaba de quedar guardado. La propuesta
     // inicial aún no tenía banco y los controles ocultaban las acciones válidas.

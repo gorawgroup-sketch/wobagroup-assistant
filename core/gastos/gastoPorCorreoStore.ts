@@ -292,3 +292,17 @@ export async function listarGastoIdsDesdeCorreo(empresa: string): Promise<string
   const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
   return filas.filter((f) => f.valores[3] === empresa && f.valores[2]).map((f) => f.valores[2]);
 }
+
+/** Registros de gastos creados desde correo para una empresa (uno por gasto), más recientes primero. Pueden ser filas antiguas sin identidad completa. */
+export async function listarRegistrosGastoPorEmpresa(empresa: Empresa): Promise<GastoPorCorreo[]> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const ahora = Date.now();
+  const porGasto = new Map<string, GastoPorCorreo>();
+  for (const fila of filas) {
+    const registro = filaARegistro(fila.valores);
+    if (!registro || registro.empresa !== empresa || ahora - registro.creadoEn > TTL_MS) continue;
+    const previo = porGasto.get(registro.gastoId);
+    if (!previo || registro.creadoEn > previo.creadoEn) porGasto.set(registro.gastoId, registro);
+  }
+  return [...porGasto.values()].sort((a, b) => b.creadoEn - a.creadoEn);
+}
