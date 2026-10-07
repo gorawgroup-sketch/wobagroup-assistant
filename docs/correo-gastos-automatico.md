@@ -133,3 +133,12 @@ Caso real (Footprint, Hotel101 Madrid, 9→11 septiembre): el recibo de Booking 
 - `core/gastos/mismaEstancia.ts` (pura, con 7 pruebas de casos reales): dos gastos de hospedaje son la misma estancia si coinciden hotel, persona, fechas de entrada y salida (se leen del concepto «Hospedaje <hotel> — <persona> — 09-11 sep 2026 …») e importe (≤ 8 %, misma moneda). Estancias distintas del mismo huésped y hotel, otro huésped o otra moneda no coinciden.
 - `core/gastos/mismaEstanciaRegistrada.ts`: busca esa coincidencia en (1) el registro de gastos creados desde correo —los tickets que Holded oculta de /purchases solo se encuentran por su id; las filas antiguas sin concepto se leen por id, con tope— y (2) los hospedajes del listado de compras de Holded (±45 días).
 - `procesarGastoEntrante.ts`: añade a la propuesta el aviso «⚠️ Posible MISMA estancia ya registrada: gasto … » y nunca bloquea ni decide. Los candidatos de la propia propuesta se excluyen. Si falla la lectura, el aviso se omite y la propuesta sale como siempre.
+
+## El número de reserva del correo cuenta como número de documento (2026-10-07)
+
+Caso real (Footprint, Hospedaje Guadalajara): el gasto existía con la reserva 5773032811 como número de documento, pero al leer una captura del mismo correo el extractor no devolvía ningún número; la detección de duplicados se apoya en el número y no lo reconoció.
+
+- `core/documental/numeroDeReserva.ts` (`numeroDeReservaEnTexto`, con prueba): último recurso **determinista**, solo cuando el modelo no devuelve número. Lee del texto del correo un número de 6 a 20 cifras junto a una etiqueta de reserva o confirmación («Número de reserva», «Booking number», «Confirmation number», «Confirmation:», «Localizador»…). Si el texto menciona dos o más números distintos, no elige ninguno.
+- Conectado en `extraerDatosFactura` (contexto del correo del adjunto) y en `extraerGastoDeCorreo` (cuerpo completo).
+- Comprobado en vivo con el correo real: las capturas de Guadalajara ahora devuelven el número 5773032811.
+- Alcance honesto: el gasto de Guadalajara ya existente no se puede recuperar con esto (es un ticket que Holded oculta de /purchases y no está en el registro de Wobi); sí quedan con número, y por tanto reconocibles, los gastos que se creen desde ahora.
