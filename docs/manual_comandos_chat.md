@@ -437,6 +437,10 @@ Herramienta `proponer_cerrar_cargo_sin_soporte` (se pide en el chat: «concília
 
 Marcar como conciliado sin documento un cargo que sí es un gasto real **no está permitido**: lo dejaría fuera de los libros.
 
+## Cashflow: «solo ingresos» o «solo gastos» al registrar lo que falta
+
+`proponer_registro_cashflow`, `verificar_cashflow_actualizado` y `comparar_cashflow_holded` aceptan `tipo_movimiento`: **`ingresos`** (entradas, cobros, abonos), **`gastos`** (salidas, pagos, cargos) o **`todos`** (por defecto). Se pide en lenguaje natural: «registra solo los ingresos que faltan de EWORKS», «dime solo los gastos sin registrar de la semana». Con el filtro, solo se mandan las propuestas con botones (o se listan) las del tipo pedido; **lo que queda fuera nunca desaparece en silencio**: el mensaje dice cuántos de la otra clase se ocultaron y cómo verlos («solo gastos» / «todos»). Un valor que no se entiende es un error, no un «todos» silencioso. El informe de verificación indica además «ingreso» o «gasto» en cada línea. Sin filtro todo funciona como antes. Origen: 07-10-2026, EWORKS — se pidieron solo los ingresos y llegaron mezclados con los gastos (Markel, Uber, Anthropic…).
+
 ## Informe de reintegro de gastos por persona o proyecto (PDF + comprobantes)
 
 Pedido explícito de Carlos (02-10-2026), tras un caso real: pidió los gastos de septiembre de Nuria Ortiz para reclamarlos a MIMO y el chat respondió «solo hay 1» cuando en Holded había 28.
