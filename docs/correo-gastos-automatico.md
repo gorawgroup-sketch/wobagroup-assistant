@@ -99,3 +99,9 @@ Las pruebas cubren elegibilidad, duplicados, lectura completa, simulación, corr
 Caso real (Footprint, «Lunch – 180 pesos mexicanos – revolut», 06-10): el único cargo posible era «Merpago*eugeniodiaz» (−8,92 EUR, Mercado Pago). La búsqueda de la rama «moneda sin cuenta real y sin equivalente» no admitía cargos con nombre distinto («por confirmar»), no encontraba nada y Wobi pedía el importe en texto libre, sin botones.
 
 - `procesarGastoEntrante.ts` busca ahora con `incluirPorConfirmar` y `cargoUnicoParaEquivalente` (`movimientoMultimoneda.ts`) decide: un cargo seguro gana a uno por confirmar; sin seguros, un único por confirmar sirve para armar la **propuesta con botones**, que lo muestra con «⚠️ nombre distinto» y exige que se confirme. Con varios candidatos sigue la pregunta en texto libre (pendiente de unificar con «Conciliar con #N»).
+
+## Gasto ya registrado con otra fecha leída (2026-10-07)
+
+Caso real (Footprint, Booking «Pulse 95», documento 5580815125): la misma reserva se leyó con fecha 02-09 (el cargo) y con 21-09 (la entrada al hotel). La búsqueda de duplicados en Holded solo mira ±10 días, así que con 21-09 no veía el gasto ya creado y Wobi propuso **crear uno nuevo** (sin la opción de adjuntar el comprobante al existente).
+
+- `buscarGastoSimilar` (`core/holded/write.ts`): si el pase normal no encuentra nada y el documento tiene número identificable, repite con una ventana de ±120 días aceptando **solo** número de documento + proveedor + importe iguales (`totalSiCompraCoincide`, con prueba). La fecha no cuenta; el pase ancho nunca bloquea si queda incompleto.

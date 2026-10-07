@@ -1407,6 +1407,8 @@ function montoEnEuros(mov: { amount?: string | number; currency?: string; accoun
 
 const TOLERANCIA_MONTO = 0.01;
 const VENTANA_DIAS_BUSQUEDA = 10;
+/** Ventana del segundo pase de buscarGastoSimilar, que solo acepta número de documento + proveedor + importe iguales. */
+const VENTANA_DIAS_NUMERO_EXACTO = 120;
 const MAX_PAGINAS_PURCHASES = 10;
 
 /**
@@ -1426,6 +1428,48 @@ const MAX_PAGINAS_PURCHASES = 10;
  * más fuerte disponible para esa distinción — ver cómo se usa en
  * procesarGastoEntrante.ts.
  */
+export interface CompraListadaHolded { id: string; contact_name?: string; date?: string; total?: string; description?: string; document_number?: string | null; currency?: string }
+
+/**
+ * ¿Esta compra de Holded es el gasto que se describe? Devuelve su total si coincide. `soloNumeroExacto` (segundo pase de ventana
+ * ancha de buscarGastoSimilar) exige número de documento + proveedor + importe iguales: la fecha no cuenta.
+ */
+export function totalSiCompraCoincide(
+  criterios: { proveedor: string; monto: number; moneda?: string; numeroDocumento?: string },
+  item: CompraListadaHolded,
+  soloNumeroExacto = false
+): number | undefined {
+  const numeroObjetivo = (criterios.numeroDocumento ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+  const numeroObjetivoUtil = numeroObjetivo !== "" && numeroObjetivo !== "00000";
+  if (!item.contact_name) return undefined;
+  // textosParecidos, no un substring simple — bug real encontrado en
+  // vivo: "Booking.com" (nombre comercial, como lo lee la extracción de
+  // la factura) nunca es substring de "BOOKING HOLDINGS Inc. (Booking)"
+  // (razón social real del contacto en Holded) ni al revés, así que
+  // esta comprobación de "¿ya existe este gasto?" fallaba SIEMPRE para
+  // ese caso real — arriesgando crear un gasto DUPLICADO en vez de
+  // detectar el que ya existía.
+  const coincideProveedor = textosParecidos(criterios.proveedor, item.contact_name);
+  const total = parsearMontoHolded(item.total);
+  if (!Number.isFinite(total)) return undefined;
+  const coincideMonto = montosCercanos(total, criterios.monto, TOLERANCIA_MONTO);
+  const numeroItem = (item.document_number ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+  const coincideNumero = numeroObjetivoUtil && numeroItem === numeroObjetivo;
+  const coincideMoneda =
+    !criterios.moneda ||
+    !item.currency ||
+    item.currency.toUpperCase() === criterios.moneda.toUpperCase();
+  // Un número de documento real + el mismo proveedor es evidencia más
+  // fuerte que una moneda o un total mal guardados. Esto permite detectar
+  // y reparar documentos legacy como el de Anthropic sin tratarlos como
+  // inexistentes ni crear un duplicado. Sin número exacto, la moneda sigue
+  // siendo obligatoria.
+  if (soloNumeroExacto && !(coincideNumero && coincideProveedor && coincideMonto)) return undefined;
+  if (!coincideMoneda && !(coincideNumero && coincideProveedor)) return undefined;
+  if (!(coincideProveedor && coincideMonto) && !(coincideNumero && (coincideProveedor || coincideMonto))) return undefined;
+  return total;
+}
+
 export async function buscarGastoSimilar(
   empresa: Empresa,
   criterios: { proveedor: string; monto: number; fecha: string; moneda?: string; numeroDocumento?: string }
@@ -1434,72 +1478,62 @@ export async function buscarGastoSimilar(
   const numeroObjetivo = (criterios.numeroDocumento ?? "").trim().toUpperCase().replace(/\s+/g, " ");
   const numeroObjetivoUtil = numeroObjetivo !== "" && numeroObjetivo !== "00000";
 
-  const desde = new Date(fechaBase);
-  desde.setDate(desde.getDate() - VENTANA_DIAS_BUSQUEDA);
-  const hasta = new Date(fechaBase);
-  hasta.setDate(hasta.getDate() + VENTANA_DIAS_BUSQUEDA);
-
   const candidatos: PurchaseCandidato[] = [];
-  let cursor: string | undefined;
 
-  for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
-    const params = new URLSearchParams({
-      limit: "100",
-      start_date: formatDateLocal(desde),
-      end_date: formatDateLocal(hasta),
-    });
-    if (cursor) params.set("cursor", cursor);
+  // `soloNumeroExacto`: segundo pase con ventana ancha, ver más abajo. En el pase normal se aplican las reglas de siempre.
+  const escanear = async (ventanaDias: number, soloNumeroExacto: boolean): Promise<void> => {
+    const desde = new Date(fechaBase);
+    desde.setDate(desde.getDate() - ventanaDias);
+    const hasta = new Date(fechaBase);
+    hasta.setDate(hasta.getDate() + ventanaDias);
+    let cursor: string | undefined;
 
-    const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
-      items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; document_number?: string | null; currency?: string }>;
-      cursor?: string;
-      has_more?: boolean;
-    };
-
-    for (const item of data.items ?? []) {
-      if (!item.contact_name) continue;
-      // textosParecidos, no un substring simple — bug real encontrado en
-      // vivo: "Booking.com" (nombre comercial, como lo lee la extracción de
-      // la factura) nunca es substring de "BOOKING HOLDINGS Inc. (Booking)"
-      // (razón social real del contacto en Holded) ni al revés, así que
-      // esta comprobación de "¿ya existe este gasto?" fallaba SIEMPRE para
-      // ese caso real — arriesgando crear un gasto DUPLICADO en vez de
-      // detectar el que ya existía.
-      const coincideProveedor = textosParecidos(criterios.proveedor, item.contact_name);
-      const total = parsearMontoHolded(item.total);
-      if (!Number.isFinite(total)) continue;
-      const coincideMonto = montosCercanos(total, criterios.monto, TOLERANCIA_MONTO);
-      const numeroItem = (item.document_number ?? "").trim().toUpperCase().replace(/\s+/g, " ");
-      const coincideNumero = numeroObjetivoUtil && numeroItem === numeroObjetivo;
-      const coincideMoneda =
-        !criterios.moneda ||
-        !item.currency ||
-        item.currency.toUpperCase() === criterios.moneda.toUpperCase();
-      // Un número de documento real + el mismo proveedor es evidencia más
-      // fuerte que una moneda o un total mal guardados. Esto permite detectar
-      // y reparar documentos legacy como el de Anthropic sin tratarlos como
-      // inexistentes ni crear un duplicado. Sin número exacto, la moneda sigue
-      // siendo obligatoria.
-      if (!coincideMoneda && !(coincideNumero && coincideProveedor)) continue;
-      if (!(coincideProveedor && coincideMonto) && !(coincideNumero && (coincideProveedor || coincideMonto))) continue;
-
-      candidatos.push({
-        id: item.id,
-        contactName: item.contact_name,
-        fecha: item.date ?? "",
-        total,
-        descripcion: item.description ?? "",
-        documentNumber: item.document_number || undefined,
-        moneda: (item.currency ?? criterios.moneda ?? "EUR").toUpperCase(),
+    for (let pagina = 0; pagina < MAX_PAGINAS_PURCHASES; pagina++) {
+      const params = new URLSearchParams({
+        limit: "100",
+        start_date: formatDateLocal(desde),
+        end_date: formatDateLocal(hasta),
       });
-    }
+      if (cursor) params.set("cursor", cursor);
 
-    if (!data.has_more) break;
-    if (!data.cursor || pagina === MAX_PAGINAS_PURCHASES - 1) {
-      throw new Error("Holded devolvió una búsqueda incompleta de compras; no es seguro asumir que no hay duplicados.");
+      const data = (await holdedWriteCall(empresa, "GET", `/purchases?${params.toString()}`)) as {
+        items?: Array<{ id: string; contact_name?: string; date?: string; total?: string; description?: string; document_number?: string | null; currency?: string }>;
+        cursor?: string;
+        has_more?: boolean;
+      };
+
+      for (const item of data.items ?? []) {
+        const total = totalSiCompraCoincide(criterios, item, soloNumeroExacto);
+        if (total === undefined || !item.contact_name) continue;
+
+        candidatos.push({
+          id: item.id,
+          contactName: item.contact_name,
+          fecha: item.date ?? "",
+          total,
+          descripcion: item.description ?? "",
+          documentNumber: item.document_number || undefined,
+          moneda: (item.currency ?? criterios.moneda ?? "EUR").toUpperCase(),
+        });
+      }
+
+      if (!data.has_more) break;
+      if (!data.cursor || pagina === MAX_PAGINAS_PURCHASES - 1) {
+        // El pase ancho solo añade evidencia al pase normal (que ya terminó): que quede incompleto no debe bloquear nada.
+        if (soloNumeroExacto) return;
+        throw new Error("Holded devolvió una búsqueda incompleta de compras; no es seguro asumir que no hay duplicados.");
+      }
+      cursor = data.cursor;
     }
-    cursor = data.cursor;
-  }
+  };
+
+  await escanear(VENTANA_DIAS_BUSQUEDA, false);
+  // Caso real (Footprint, Booking «Pulse 95», 2026-10-07): el mismo documento 5580815125 se leyó una vez con fecha 02-09 (el cargo)
+  // y otra con 21-09 (la entrada al hotel). A 19 días, el gasto ya creado quedaba fuera de la ventana y Wobi propuso crear uno
+  // NUEVO en vez de adjuntar el comprobante al existente. Un número de documento real + el mismo proveedor + el mismo importe
+  // identifican el documento sea cual sea la fecha que se haya leído: si el pase normal no encontró nada, se repite con una
+  // ventana ancha aceptando SOLO esa terna.
+  if (candidatos.length === 0 && numeroObjetivoUtil) await escanear(VENTANA_DIAS_NUMERO_EXACTO, true);
 
   if (candidatos.length > 0) return candidatos;
 
