@@ -30,7 +30,7 @@ import {
 import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
-import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import { buscarMovimientosPorTipoCambio, cargoUnicoParaEquivalente, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { notaCargosMayores } from "../holded/cargoMayor";
 import {
   obtenerPoliticaMonedaLiquidacion,
@@ -385,7 +385,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     let busquedaFxIncompleta = false;
     const candidatosFx = await buscarMovimientosPorTipoCambio(
       empresa,
-      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto },
+      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true },
       monedasReales
     ).catch((error) => {
       busquedaFxIncompleta = true;
@@ -393,13 +393,15 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       return [] as Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>;
     });
 
-    if (candidatosFx.length === 1) {
-      const unico = candidatosFx[0];
+    const unico = cargoUnicoParaEquivalente(candidatosFx);
+    if (unico) {
       montoEquivalenteResuelto = Math.abs(unico.monto);
       monedaEquivalenteResuelta = unico.moneda;
       datos.razon =
         (datos.razon ? `${datos.razon} ` : "") +
-        `[Resuelto automáticamente contra un único cargo bancario real: ${describirMovimientoMultimoneda(unico)}.]`;
+        (unico.compatibilidad === "por_confirmar"
+          ? `[Único cargo bancario posible, con nombre distinto (por confirmar): ${describirMovimientoMultimoneda(unico)}.]`
+          : `[Resuelto automáticamente contra un único cargo bancario real: ${describirMovimientoMultimoneda(unico)}.]`);
     } else {
       const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
       let pistas = "";

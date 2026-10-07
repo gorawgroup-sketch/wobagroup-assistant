@@ -301,3 +301,19 @@ export function describirMovimientoMultimoneda(
     `${movimiento.moneda} (${movimiento.fecha}${referencia}${nombre})`
   );
 }
+
+/**
+ * Entre los cargos que devuelve la búsqueda por tipo de cambio, ¿hay UNO que se pueda tomar como el importe real del gasto?
+ *
+ * Caso real (Footprint, «Lunch – 180 pesos mexicanos – revolut», 2026-10-06): el único cargo posible era «Merpago*eugeniodiaz»
+ * (−8,92 EUR, Mercado Pago), cuyo nombre no se parece al del comercio. La búsqueda de esta rama no admitía cargos «por confirmar»,
+ * no encontraba nada y Wobi pedía el importe en texto libre, sin botones, aunque el cargo estaba ahí. Ahora se admite: un cargo
+ * seguro (nombre reconocido o ya confirmado antes) gana a uno por confirmar; si no hay ninguno seguro, un único por confirmar sirve
+ * para armar la propuesta, que lo muestra con el aviso «nombre distinto» y exige que Carlos lo confirme con el botón.
+ */
+export function cargoUnicoParaEquivalente<T extends { compatibilidad?: "por_confirmar" | "aprendido" }>(candidatos: readonly T[]): T | undefined {
+  const seguros = candidatos.filter((c) => c.compatibilidad !== "por_confirmar");
+  if (seguros.length === 1) return seguros[0];
+  if (seguros.length === 0 && candidatos.length === 1) return candidatos[0];
+  return undefined;
+}

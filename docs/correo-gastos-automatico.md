@@ -93,3 +93,9 @@ Si una operación continúa incierta, revisar su evento, etiquetas y estado real
 `npm run test:mail-auto` ejecuta los casos con Gmail/Holded simulados. Para probar además las reservas, bloqueos, auditoría y control de versiones contra PostgreSQL real, pasar `WOBI_MAIL_TEST_DATABASE_URL` apuntando exclusivamente a una base desechable. Esa prueba vacía las tablas de automatización de dicha base; nunca reutilizar la base de producción.
 
 Las pruebas cubren elegibilidad, duplicados, lectura completa, simulación, correos mixtos, interrupciones, recuperación, errores de Gmail, adjuntos reales y conciliación. No se realizaron escrituras reales en Gmail ni Holded durante el desarrollo.
+
+## Factura en moneda sin cuenta propia: el cargo con nombre distinto también cuenta (2026-10-07)
+
+Caso real (Footprint, «Lunch – 180 pesos mexicanos – revolut», 06-10): el único cargo posible era «Merpago*eugeniodiaz» (−8,92 EUR, Mercado Pago). La búsqueda de la rama «moneda sin cuenta real y sin equivalente» no admitía cargos con nombre distinto («por confirmar»), no encontraba nada y Wobi pedía el importe en texto libre, sin botones.
+
+- `procesarGastoEntrante.ts` busca ahora con `incluirPorConfirmar` y `cargoUnicoParaEquivalente` (`movimientoMultimoneda.ts`) decide: un cargo seguro gana a uno por confirmar; sin seguros, un único por confirmar sirve para armar la **propuesta con botones**, que lo muestra con «⚠️ nombre distinto» y exige que se confirme. Con varios candidatos sigue la pregunta en texto libre (pendiente de unificar con «Conciliar con #N»).
