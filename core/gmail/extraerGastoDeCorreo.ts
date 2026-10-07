@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { CACHE_1H } from "../claude/cacheControl";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
@@ -246,7 +247,7 @@ export async function extraerGastoDeCorreo(
         {
           type: "text",
           text: buildSystemPrompt(clasificacionesAprendidas),
-          cache_control: { type: "ephemeral" },
+          cache_control: CACHE_1H,
         },
       ],
       tools,

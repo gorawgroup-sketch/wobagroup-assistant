@@ -65,6 +65,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Cerrar cargos sin soporte (par cargo+reembolso sin gasto; gasto sin soporte conciliado) | #379 | 07-10-2026 |
 | Lectura de la cadena del correo, paso 1: remitente real, mensaje nuevo sin citas ni firma, sin recorte de 8.000 caracteres (`core/correo/lectura/`) | #383 | 07-10-2026 |
 | Orden: tablero al día y lógica nueva fuera de `gastoCallbackHandler.ts` | #382 | 07-10-2026 |
+| Cashflow: filtro «solo ingresos / solo gastos» al proponer, verificar y comparar lo que falta (`core/cashflow/filtroTipoMovimiento.ts`) | #387 | 07-10-2026 |
 
 ## Pendiente de decisión de Carlos
 

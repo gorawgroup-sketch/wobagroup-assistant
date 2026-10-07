@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./types";
 import { compararCashflowHoldedTool } from "./compararCashflowHolded";
+import { DESCRIPCION_PARAMETRO_TIPO } from "../cashflow/filtroTipoMovimiento";
 
 /**
  * A diferencia de consultar_cashflow_resumen (que solo lee los números ya
@@ -67,6 +68,7 @@ export const verificarCashflowActualizadoTool: ToolDefinition = {
           "Etiqueta de una semana CONCRETA a revisar, ej. 'S36' — para cuando preguntan por una semana " +
           "pasada específica (no solo actual/anterior). Si se da, tiene prioridad sobre 'periodo'.",
       },
+      tipo_movimiento: { type: "string", enum: ["ingresos", "gastos", "todos"], description: DESCRIPCION_PARAMETRO_TIPO },
     },
   },
   handler: async (input) => {
