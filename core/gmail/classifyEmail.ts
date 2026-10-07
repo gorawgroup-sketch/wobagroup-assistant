@@ -9,6 +9,9 @@ import { obtenerInstruccionesAplicablesCorreo } from "./instruccionesAprendidasS
 import { analizarRespuestaDeSoportes } from "../soportes/respuestaSoportes";
 import { leerCadena } from "../correo/lectura/cadena";
 import { lineaRemitenteReal, textoParaClasificador } from "../correo/lectura/paraClasificador";
+import { leerAdjuntosParaClasificador, lecturaVisualActiva, seccionAdjuntos } from "../correo/lectura/adjuntos";
+import { dependenciasConVision } from "../correo/lectura/adjuntosVisuales";
+import { accionGlobal, listaDePeticiones, normalizarPeticiones, type Peticion } from "../correo/lectura/peticiones";
 
 const MODEL = resolverModeloDocumental("clasificar_correo");
 const MAX_ITERATIONS = 4;
@@ -39,6 +42,8 @@ export interface AnalisisCorreo {
   resumen: string;
   accionSugerida: string;
   razon: string;
+  /** Qué pide cada persona y la acción propuesta para cada una (core/correo/lectura/peticiones.ts). */
+  peticiones?: Peticion[];
 }
 
 const REPORTAR_TOOL_NAME = "reportar_analisis_correo";
@@ -79,6 +84,24 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "recomendación en una frase clara y accionable.",
       },
       razon: { type: "string", description: "Por qué se clasificó así — 1 frase, nunca vacía." },
+      peticiones: {
+        type: "array",
+        description:
+          "Una entrada por CADA petición distinta que alguien hace en el mensaje nuevo, en la nota de quien reenvía o en el contenido " +
+          "reenviado/adjuntos leídos que está pendiente de atender. Vacío si no hay ninguna petición (solo informativo o un documento " +
+          "para archivar). No repitas peticiones del historial citado que ya se atendieron.",
+        items: {
+          type: "object",
+          properties: {
+            quien: { type: "string", description: "Quién la hace (nombre o dirección, tal como aparece)." },
+            que: { type: "string", description: "Qué pide, en concreto y con los datos del correo (importes, fechas, nombres)." },
+            accion: { type: "string", description: "Acción concreta propuesta para ESTA petición (nunca «ya hecho»)." },
+            sobre_adjunto: { type: "string", description: "Nombre del adjunto al que se refiere, o vacío." },
+            fecha_limite: { type: "string", description: "Plazo o fecha límite que menciona, o vacío." },
+          },
+          required: ["quien", "que", "accion"],
+        },
+      },
     },
     required: ["tipo", "resumen", "accion_sugerida", "razon"],
   },
@@ -114,6 +137,9 @@ function buildSystemPrompt(hayAdjuntos: boolean): string {
       "mensajes anteriores. Atribuye cada petición a quien la hizo: lo que dice el historial citado ya se atendió o es " +
       "contexto, no una petición nueva; lo que pide quien reenvía está en su nota (si no hay nota, solo quiere que se " +
       "atienda el contenido reenviado). Si el aviso dice que se omitió parte del historial, no concluyas nada sobre lo omitido.",
+    "Además del resumen y la acción global, enumera en `peticiones` CADA petición distinta (quién, qué, acción propuesta para " +
+      "esa petición): un correo que pide tres cosas devuelve tres entradas, cada una con su acción. Si el correo trae adjuntos " +
+      "leídos (Word, Excel, texto), una petición escrita dentro de ellos cuenta igual; indica el adjunto en `sobre_adjunto`.",
     "Clasifica el correo en uno de estos tipos (solo para contexto interno, no determina qué botones ve el " +
       "usuario — todos los correos reciben las mismas opciones):",
     "- documento_para_archivar: trae un adjunto que parece un documento del negocio (factura, contrato, etc.)" +
@@ -210,10 +236,18 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
       ].join("\n")
     : "";
 
+  // Adjuntos (Word/Excel/texto sin IA; PDF e imágenes con visión, acotada y memorizada): una petición escrita en ellos no se pierde. Un fallo aquí nunca bloquea el análisis.
+  const lecturaAdjuntos = correo.adjuntos?.length
+    ? await leerAdjuntosParaClasificador(correo.id, correo.adjuntos, lecturaVisualActiva() ? dependenciasConVision : undefined, `Correo de ${correo.de}, asunto «${correo.asunto}»`).catch((error) => {
+        console.error("[classifyEmail] No se pudieron leer los adjuntos para el análisis (continúa sin ellos):", error instanceof Error ? error.message : error);
+        return [];
+      })
+    : [];
   const userText = [
     contextoAprendido,
     textoParaClasificador({ de: correo.de, asunto: correo.asunto, fecha: correo.fecha }, lectura, cuerpoCompleto),
-  ].filter(Boolean).join("\n");
+    seccionAdjuntos(lecturaAdjuntos),
+  ].filter(Boolean).join("\n\n");
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userText }];
   const consultarConocimiento = crearConsultorConocimiento({
@@ -254,11 +288,14 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
     if (reportar) {
       const input = reportar.input as Record<string, unknown>;
       const remitenteReal = lineaRemitenteReal(lectura);
+      const peticiones = normalizarPeticiones(input.peticiones);
+      const lista = listaDePeticiones(peticiones);
       return {
         tipo: (input.tipo as TipoCorreo) ?? "informativo",
-        resumen: `${remitenteReal ? `${remitenteReal}\n` : ""}${(input.resumen as string) ?? correo.asunto}`,
-        accionSugerida: (input.accion_sugerida as string) ?? "Ninguna.",
+        resumen: [remitenteReal, (input.resumen as string) ?? correo.asunto, lista].filter(Boolean).join("\n"),
+        accionSugerida: accionGlobal(peticiones, (input.accion_sugerida as string) ?? "Ninguna."),
         razon: (input.razon as string) ?? "",
+        peticiones,
       };
     }
 
