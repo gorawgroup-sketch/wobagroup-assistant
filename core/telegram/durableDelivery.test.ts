@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CoordinadorEntregasTelegram,
+  marcarCallbackSinEfecto,
   configuracionEntregasDurables,
   crearEntregaTelegram,
   type EntregaTelegramDurable,
@@ -254,6 +255,34 @@ test("«Aprobar selección» repetido tras un primer toque completado sin efecto
   await coordinador.atender(reintento.entrega, reintento.nueva);
   assert.deepEqual(procesadas, [1, 3]);
   assert.equal(coordinador.estado.reabiertas, 1);
+});
+
+test("un «Aprobar selección» que rebotó sin efecto libera el botón: el siguiente toque se atiende sin esperar el margen", async () => {
+  const repo = new RepoMemoria();
+  const procesadas: number[] = [];
+  let ahora = 1_000_000;
+  const coordinador = new CoordinadorEntregasTelegram(repo, async (u) => {
+    procesadas.push(u.update_id);
+    // El manejador no encontró ninguna casilla marcada.
+    if (u.update_id === 1) marcarCallbackSinEfecto(u.callback_query?.id);
+  }, async () => {}, { ahora: () => ahora });
+  const primera = await coordinador.reservar(aprobar(1, 1), true);
+  await coordinador.atender(primera.entrega, primera.nueva);
+  assert.equal(repo.filas.get(primera.entrega.clave)?.estado, "completada");
+  repo.filas.get(primera.entrega.clave)!.actualizadoEn = ahora;
+
+  // Cinco segundos después, con la casilla ya guardada, el operador vuelve a pulsar: se atiende.
+  ahora += 5_000;
+  const segunda = await coordinador.reservar(aprobar(2, 2), true);
+  assert.equal(segunda.nueva, true);
+  await coordinador.atender(segunda.entrega, segunda.nueva);
+  assert.deepEqual(procesadas, [1, 2]);
+  repo.filas.get(primera.entrega.clave)!.actualizadoEn = ahora;
+
+  // La segunda sí tuvo efecto: un doble toque inmediato vuelve a ser un duplicado.
+  ahora += 3_000;
+  const rebote = await coordinador.reservar(aprobar(3, 3), true);
+  assert.equal(rebote.nueva, false);
 });
 
 test("un reenvío de transporte del MISMO update_id nunca reabre, aunque llegue mucho después", async () => {

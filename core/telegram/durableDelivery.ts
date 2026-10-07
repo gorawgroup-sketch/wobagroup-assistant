@@ -62,6 +62,21 @@ export function esVerificacionSoloLectura(data: string | undefined): boolean {
 /** Un doble toque o un reenvío de Telegram ocurren en segundos; pasado este margen es una decisión nueva. */
 export const VENTANA_DUPLICADO_CALLBACK_MS = 45_000;
 
+/**
+ * Entregas que terminaron SIN EFECTO (p. ej. «Aprobar selección» sin ninguna casilla marcada): el siguiente toque del
+ * operador sobre el mismo botón no es un duplicado y se atiende sin esperar el margen. Caso real (Holded Technologies,
+ * 07-10-2026): la casilla tardó en guardarse, el primer «Aprobar» no encontró nada y el segundo, pocos segundos después,
+ * quedaba bloqueado con «Esta acción ya fue procesada» hasta pasar los 45 s. Solo en memoria: tras un reinicio rige el margen.
+ */
+const entregasSinEfecto = new Set<string>();
+const claveDeCallbackEnCurso = new Map<string, string>();
+
+/** Lo llama un manejador cuando su pulsación no hizo nada (validación que rebota): libera el botón para el siguiente toque. */
+export function marcarCallbackSinEfecto(callbackId: string | undefined): void {
+  const clave = callbackId ? claveDeCallbackEnCurso.get(callbackId) : undefined;
+  if (clave) entregasSinEfecto.add(clave);
+}
+
 export interface RepositorioEntregasTelegram {
   reservar(entrega: EntregaTelegramDurable): Promise<{ entrega: EntregaTelegramDurable; nueva: boolean }>;
   /** Vuelve a dejar `reservada` una entrega que estaba `completada`; undefined si ya no lo está. */
@@ -178,11 +193,12 @@ export class CoordinadorEntregasTelegram {
       // update.update_id distinto exige un toque humano nuevo: un reenvío de transporte de Telegram (503 del
       // webhook, reintento real) repite el MISMO update_id que la entrega ya completada y nunca debe reabrirla,
       // aunque llegue mucho después (hallazgo real de auditoría).
+      const sinEfecto = entregasSinEfecto.has(entrega.clave);
       if (!resultado.nueva && resultado.entrega.estado === "completada" && entrega.reabrirCompletadaTrasMs !== undefined &&
         entrega.updateId !== resultado.entrega.updateId &&
-        entrega.creadoEn - resultado.entrega.actualizadoEn >= entrega.reabrirCompletadaTrasMs) {
+        (sinEfecto || entrega.creadoEn - resultado.entrega.actualizadoEn >= entrega.reabrirCompletadaTrasMs)) {
         const reabierta = await this.repositorio.reabrirCompletada(entrega.clave, entrega);
-        if (reabierta) { this.reabiertas++; return { entrega: reabierta, nueva: true }; }
+        if (reabierta) { entregasSinEfecto.delete(entrega.clave); this.reabiertas++; return { entrega: reabierta, nueva: true }; }
       }
       if (!resultado.nueva) this.duplicadas++;
       return resultado;
@@ -255,6 +271,8 @@ export class CoordinadorEntregasTelegram {
 
     this.activas.add(clave);
     if (recuperada) this.recuperadas++;
+    const callbackId = update.callback_query?.id;
+    if (callbackId) claveDeCallbackEnCurso.set(callbackId, clave);
     try {
       await this.procesar(update);
       await this.repositorio.marcarCompletada(clave);
@@ -262,6 +280,7 @@ export class CoordinadorEntregasTelegram {
       await this.declararIncierta(clave);
       throw error;
     } finally {
+      if (callbackId) claveDeCallbackEnCurso.delete(callbackId);
       this.activas.delete(clave);
     }
   }
