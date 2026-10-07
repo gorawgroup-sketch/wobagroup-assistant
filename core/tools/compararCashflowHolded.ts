@@ -16,6 +16,7 @@ import {
   previousWeekRange,
   weekLabel,
 } from "../utils/isoWeek";
+import { DESCRIPCION_PARAMETRO_TIPO, etiquetaTipo, filtrarPorTipo, leerTipoMovimiento, notaPorFiltro, type TipoMovimiento } from "../cashflow/filtroTipoMovimiento";
 import type { ToolDefinition } from "./types";
 
 const EMPRESAS: EmpresaCashflowCruce[] = ["WOBA", "EWORKS"];
@@ -111,7 +112,8 @@ function referenciaFila(resultado: ResultadoCruceCashflowHolded, indice: number)
 export function formatearEmpresa(
   resultado: ResultadoCruceCashflowHolded,
   direccion: Direccion,
-  resolucionGlobal: ResolucionFilasSinEmpresa
+  resolucionGlobal: ResolucionFilasSinEmpresa,
+  tipoMovimiento: TipoMovimiento = "todos"
 ): string {
   const atribuciones = resolucionGlobal.atribuciones.filter((item) => item.empresa === resultado.empresa);
   const ambiguosVisibles = resultado.ambiguos.filter(
@@ -119,9 +121,12 @@ export function formatearEmpresa(
       !caso.movimiento ||
       !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(caso.movimiento))
   );
-  const movimientosSinCashflowVisibles = resultado.movimientosSinCashflow.filter(
+  const sinResolver = resultado.movimientosSinCashflow.filter(
     (movimiento) => !resolucionGlobal.movimientosResueltos.has(claveMovimientoGlobal(movimiento))
   );
+  // «Solo ingresos / solo gastos» (core/cashflow/filtroTipoMovimiento.ts): lo ocultado se dice, no desaparece.
+  const { visibles: movimientosSinCashflowVisibles, ocultosIngresos, ocultosGastos } =
+    filtrarPorTipo(sinResolver, tipoMovimiento, (movimiento) => movimiento.valorEur > 0);
   const lineas: string[] = [
     `\n${resultado.empresa} — ${resultado.coincidencias.length + atribuciones.length} coincidencia(s) verificadas`,
     `Cobertura bancaria consultada: ${resultado.desdeBancos} a ${resultado.hastaBancos}.`,
@@ -154,16 +159,20 @@ export function formatearEmpresa(
 
   if (direccion !== "cashflow_a_banco") {
     if (movimientosSinCashflowVisibles.length === 0) {
-      lineas.push("✅ Banco → cashflow: no hay movimientos confirmados como ausentes.");
+      lineas.push(tipoMovimiento === "todos"
+        ? "✅ Banco → cashflow: no hay movimientos confirmados como ausentes."
+        : `✅ Banco → cashflow: no hay ${tipoMovimiento} confirmados como ausentes.`);
     } else {
-      lineas.push(`⚠️ Banco → cashflow: ${movimientosSinCashflowVisibles.length} movimiento(s) sin fila confirmada:`);
+      lineas.push(`⚠️ Banco → cashflow: ${movimientosSinCashflowVisibles.length} ${tipoMovimiento === "todos" ? "movimiento(s)" : tipoMovimiento} sin fila confirmada:`);
       lineas.push(
         ...movimientosSinCashflowVisibles.map(
           (movimiento) =>
-            `  • ${movimiento.fecha} · ${movimiento.descripcion} · ${Math.abs(movimiento.valorEur).toFixed(2)} EUR · ${movimiento.cuenta} (${movimiento.moneda}) · id ${movimiento.id}`
+            `  • ${movimiento.fecha} · ${movimiento.descripcion} · ${etiquetaTipo(movimiento.valorEur > 0)} de ${Math.abs(movimiento.valorEur).toFixed(2)} EUR · ${movimiento.cuenta} (${movimiento.moneda}) · id ${movimiento.id}`
         )
       );
     }
+    const notaFiltro = notaPorFiltro(tipoMovimiento, ocultosIngresos, ocultosGastos);
+    if (notaFiltro) lineas.push(`ℹ️ ${notaFiltro}`);
   }
 
   if (direccion !== "banco_a_cashflow") {
@@ -329,6 +338,7 @@ export const compararCashflowHoldedTool: ToolDefinition = {
         description:
           "Qué parte de Holded comparar: movimientos bancarios, documentos de gasto (/purchases), o ambos. Por defecto ambos.",
       },
+      tipo_movimiento: { type: "string", enum: ["ingresos", "gastos", "todos"], description: DESCRIPCION_PARAMETRO_TIPO },
     },
   },
   seguraParaModoRapido: true,
@@ -344,6 +354,8 @@ export const compararCashflowHoldedTool: ToolDefinition = {
       return "Error: fuente no válida.";
     }
     const fuente = fuenteSolicitada(input);
+    const tipoMovimiento = leerTipoMovimiento(input.tipo_movimiento);
+    if (typeof tipoMovimiento === "object") return `Error: ${tipoMovimiento.error}`;
     const rango = rangoPedido(input);
     if ("error" in rango) return `Error: ${rango.error}`;
 
@@ -429,7 +441,7 @@ export const compararCashflowHoldedTool: ToolDefinition = {
     // aparece primero como atribuida y después como conflicto en la misma respuesta.
     const partes = [
       `${incompleto ? "⛔ INFORME INCOMPLETO" : "Informe verificado"} cashflow ↔ Holded — ${rango.etiqueta} (${rango.desde} a ${rango.hasta})`,
-      ...resultadosVisibles.map((resultado) => formatearEmpresa(resultado, direccion, resolucionGlobalSegura)),
+      ...resultadosVisibles.map((resultado) => formatearEmpresa(resultado, direccion, resolucionGlobalSegura, tipoMovimiento)),
       ...resultadosGastosVisibles.map((resultado) =>
         formatearGastosHolded(resultado, resolucionGastosSegura, direccion)
       ),
