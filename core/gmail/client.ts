@@ -1,3 +1,4 @@
+import { esImagenIncrustadaDeRelleno } from "../correo/lectura/decoracion";
 import { google, gmail_v1 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
@@ -592,7 +593,7 @@ export function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined
 
   function recorrer(part: gmail_v1.Schema$MessagePart | undefined): void {
     if (!part) return;
-    if (part.filename && part.body?.attachmentId && !esParteDecorativaInline(part)) {
+    if (part.filename && part.body?.attachmentId && !esParteDecorativaInline(part) && !esImagenIncrustadaDeRelleno(part)) {
       adjuntos.push({
         filename: part.filename,
         mimeType: part.mimeType ?? "application/octet-stream",
