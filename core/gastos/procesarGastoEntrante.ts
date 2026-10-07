@@ -528,6 +528,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       const origenTxt = entrada.correoOrigen
         ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
         : "";
+      // Mismo freno que el aviso de propuesta pendiente: un correo con muchos adjuntos repetía este aviso por cada uno.
+      const claveAviso = `duplicado:${duplicadoInterno.registro.gastoId}:${entrada.correoOrigen?.mensajeIdGmail ?? entrada.nombreArchivoOriginal}`;
+      if (!(await frenoAvisoPropuesta.puedeAvisar(claveAviso))) {
+        console.log(`[procesarGastoEntrante] Aviso de gasto ya procesado omitido (ya se avisó hace poco): ${claveAviso}`);
+        return "propuesta_duplicada";
+      }
       await sendTelegramMessage(
         chatId,
         `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
