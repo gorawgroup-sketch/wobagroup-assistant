@@ -118,3 +118,10 @@ Caso real (Footprint, Booking «Antaris», 207,09 €): el gasto existía pero s
 Caso real: «Revisa el correo con asunto "Fwd: €204.65 - $4,036.92MXN - Hospedaje - Business Trip Guadalajara"» respondía «no encontré ningún correo» aunque el asunto era exacto. Gmail no casa importes con separador de miles («$4,036.92MXN»); el del asunto sin coma sí se encontraba.
 
 - `procesarCorreoPuntual` (`core/jobs/revisarCorreoNuevo.ts`): si la búsqueda literal da 0, repite con `subject:(palabras)` (`core/gmail/consultaCorreoTolerante.ts`, con prueba) y acepta solo un correo cuyo asunto real contenga TODAS esas palabras. No se activa con consultas de Gmail con operadores (`from:`, etc.) ni con búsquedas de menos de 3 palabras.
+
+## Comprobante de texto sin «Ð» ni enlaces kilométricos (2026-10-07)
+
+Caso real (Footprint, gasto Hospedaje Guadalajara): el comprobante generado desde el cuerpo del correo mostraba una «Ð» al final de cada línea y enlaces de seguimiento de 150+ caracteres. Los correos traen saltos `\r\n` y la fuente estándar de pdfkit pinta el `\r` como «Ð».
+
+- `limpiarTextoParaPDF` (`core/gmail/generarComprobantePDF.ts`, con prueba): normaliza saltos a `\n`, quita caracteres de control, compacta líneas en blanco y acorta los enlaces de más de 70 caracteres (conserva acentos, ñ y €). Se aplica a todo el texto del PDF de texto. El render visual desde HTML (Chromium) no cambia.
+- Los comprobantes ya adjuntos en Holded no se tocan: Holded no permite sustituirlos por API.
