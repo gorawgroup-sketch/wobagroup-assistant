@@ -27,6 +27,7 @@ import {
   sendTelegramMessageWithButtons,
   sendTelegramTemporaryNotice,
 } from "../telegram/client";
+import { marcarCallbackSinEfecto } from "../telegram/durableDelivery";
 import type { InlineKeyboardButton } from "../telegram/types";
 import {
   consumirPropuestaGasto,
@@ -2840,6 +2841,8 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
     // de por qué — parecía que el botón simplemente no hacía nada, sin explicación. Se manda también
     // como mensaje real (sendTelegramMessage, ya visible en Telegram Y en el chat web por el mismo
     // historial compartido) para que la explicación llegue sin importar desde qué canal se tocó.
+    // Esta pulsación no hizo nada: el siguiente toque no debe quedar bloqueado como «ya procesada» (ver durableDelivery.ts).
+    marcarCallbackSinEfecto(callback.id);
     await answerCallbackQuerySafe(callback.id, "No marcaste ninguna acción todavía — marca al menos una y vuelve a aprobar.");
     await sendTelegramMessage(propuesta.chatId, "No marcaste ninguna acción todavía — marca al menos una casilla y vuelve a tocar \"▶️ Aprobar selección\".").catch((error) =>
       console.error("[gastoCallbackHandler] Error avisando que no había selección marcada (no crítico):", error)
