@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  cargoQueYaSoporta, componerAnalisis, hechosDelCargo, limpiarCuerpoSinCitas, parsearAsuntoRespuesta, proponerAccionCargo,
+  cargoQueYaSoporta, componerAnalisis, extraerListaCargos, hechosDelCargo, limpiarCuerpoSinCitas, parsearAsuntoRespuesta, proponerAccionCargo,
   type InterpretacionCargo, type SoporteLeido,
 } from "./respuestaSoportes";
 
@@ -102,4 +102,14 @@ test("si nadie queda con nada pendiente, la respuesta propuesta solo agradece y 
   const a = componerAnalisis({ nombre: "Ana Prueba", cargos: [CARGOS[1]], interpretaciones: [{ numero: 1, situacion: "no_reconoce", loQueDice: "no es mío" }], hechos: [{}], soportes: [] });
   assert.match(a.accionSugerida, /agradeciendo la respuesta.*no queda nada por pedirle/);
   assert.match(a.resumen, /El correo no trae adjuntos\./);
+});
+
+test("la lista de cargos del modelo se acepta como lista, como texto JSON o como texto con el objeto envuelto (caso real 07-10)", () => {
+  const items = [{ numero: 1, situacion: "no_reconoce", lo_que_dice: "no es mío" }];
+  assert.deepEqual(extraerListaCargos({ cargos: items }), items);
+  assert.deepEqual(extraerListaCargos({ cargos: JSON.stringify(items) }), items);
+  assert.deepEqual(extraerListaCargos({ cargos: JSON.stringify({ cargos: items }) }), items, "envuelto: {\"cargos\":\"{\\\"cargos\\\":[…]}\"}");
+  assert.equal(extraerListaCargos({ cargos: "esto no es json" }), undefined);
+  assert.equal(extraerListaCargos({ cargos: 5 }), undefined);
+  assert.equal(extraerListaCargos(undefined), undefined);
 });
