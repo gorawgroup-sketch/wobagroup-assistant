@@ -373,6 +373,6 @@ test("la regla del proceso de soportes está en el prompt fijo del asistente y c
   for (const clave of [
     "/soportes", "«Payer»", "UN resumen con una casilla por persona", "proponer_envio_correo", "un solo correo por persona",
     "asistente@wobagroup.com", "CUADRO", "hoja de Excel", "nunca se suman monedas", "reenvíen", "dominio de la empresa",
-    "registrar_email_titular_soportes", "«Enviar»", "sociedad", "menos de 7 días", "recordatorio",
+    "registrar_email_titular_soportes", "«Enviar»", "sociedad", "menos de 7 días", "recordatorio", "RESPONDE a la solicitud", "UNA acción por cada cargo", "proponer_cerrar_cargo_sin_soporte",
   ]) assert.ok(REGLA_PROCESO_SOPORTES.includes(clave), `falta «${clave}» en la regla`);
 });
