@@ -239,14 +239,28 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
     }],
   });
   const uso = respuesta.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === TOOL_NAME);
-  const lista = (uso?.input as { cargos?: Array<Record<string, unknown>> } | undefined)?.cargos;
-  if (!Array.isArray(lista)) throw new Error(`El modelo no devolvió la interpretación por cargo (stop: ${respuesta.stop_reason}; entrada: ${JSON.stringify(uso?.input ?? null).slice(0, 300)}).`);
+  const lista = extraerListaCargos(uso?.input);
+  if (!lista) throw new Error(`El modelo no devolvió la interpretación por cargo (stop: ${respuesta.stop_reason}; entrada: ${JSON.stringify(uso?.input ?? null).slice(0, 300)}).`);
   return lista.map((x) => ({
     numero: Number(x.numero),
     situacion: (["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "otra_persona", "sin_mencion"].includes(String(x.situacion)) ? x.situacion : "sin_mencion") as SituacionCargo,
     loQueDice: String(x.lo_que_dice ?? ""),
     adjunto: typeof x.adjunto === "string" && x.adjunto.trim() ? x.adjunto.trim() : undefined,
   }));
+}
+
+/**
+ * El modelo a veces entrega `cargos` como un TEXTO que contiene el JSON (a veces incluso envuelto en otro `{"cargos":[…]}`)
+ * en vez de una lista: se aceptan las tres formas. Caso real 2026-10-07: la respuesta de Alejandro caía al análisis
+ * genérico porque la lista llegó como cadena.
+ */
+export function extraerListaCargos(entrada: unknown): Array<Record<string, unknown>> | undefined {
+  let valor: unknown = (entrada as { cargos?: unknown } | undefined)?.cargos;
+  for (let i = 0; i < 2 && typeof valor === "string"; i++) {
+    try { valor = JSON.parse(valor); } catch { return undefined; }
+    if (valor && typeof valor === "object" && !Array.isArray(valor) && "cargos" in valor) valor = (valor as { cargos: unknown }).cargos;
+  }
+  return Array.isArray(valor) ? (valor as Array<Record<string, unknown>>) : undefined;
 }
 
 /** Un reintento: una respuesta mal formada del modelo no debe dejar la respuesta del correo sin análisis por cargo. */
