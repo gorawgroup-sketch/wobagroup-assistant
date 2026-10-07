@@ -137,3 +137,10 @@ Caso real (Footprint, Hotel101 Madrid, 9→11 septiembre): el recibo de Booking 
 - `core/gastos/mismaEstancia.ts` (pura, con 7 pruebas de casos reales): dos gastos de hospedaje son la misma estancia si coinciden hotel, persona, fechas de entrada y salida (se leen del concepto «Hospedaje <hotel> — <persona> — 09-11 sep 2026 …») e importe (≤ 8 %, misma moneda). Estancias distintas del mismo huésped y hotel, otro huésped o otra moneda no coinciden.
 - `core/gastos/mismaEstanciaRegistrada.ts`: busca esa coincidencia en (1) el registro de gastos creados desde correo —los tickets que Holded oculta de /purchases solo se encuentran por su id; las filas antiguas sin concepto se leen por id, con tope— y (2) los hospedajes del listado de compras de Holded (±45 días).
 - `procesarGastoEntrante.ts`: añade a la propuesta el aviso «⚠️ Posible MISMA estancia ya registrada: gasto … » y nunca bloquea ni decide. Los candidatos de la propia propuesta se excluyen. Si falla la lectura, el aviso se omite y la propuesta sale como siempre.
+
+## El equivalente del correo debe cuadrar con la tasa del día (2026-10-07)
+
+Caso real (Footprint, Hospedaje Guadalajara): el recibo era de 4.036,92 MXN (≈ 204,65 €, que fue el cargo del banco) pero en el hilo se comentó «corresponde a 174,60€» —otra reserva—. Un equivalente explícito del correo tiene prioridad sobre buscar el cargo en el banco, así que Wobi propuso crear el gasto por 174,60 €.
+
+- `core/gastos/equivalenteCoherente.ts` (`equivalenteCuadraConTasa`, con prueba): un equivalente que se aparta más del **8 %** de lo que da la tasa del día se **ignora** y se busca el cargo real en el banco (la propuesta lo dice en la razón). Sin tasa, o con datos inválidos, no se juzga y el equivalente se conserva. El spread normal de una tarjeta es del 1-4 %.
+- Comprobado con tasas reales: 4.036,92 MXN → 204,65 € cuadra, 174,60 € no. Con 40 gastos reales ya creados con equivalente, 39 cuadran; 1 no (Uber, 9.744,65 CRC → 18,26 USD, −15 %), que con esta regla pasaría por la búsqueda en el banco en vez de aceptarse a ciegas.
