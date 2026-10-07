@@ -1,4 +1,5 @@
 import { obtenerPropuestasGastoPorChat, type PropuestaGasto } from "../gastos/gastoProposalSheet";
+import { obtenerGastosPendienteDatosPorChat } from "../gastos/gastoPendienteDatosStore";
 import { reenviarPropuestaGasto } from "../gastos/reenviarPropuestaGasto";
 import { obtenerConciliacionesPendientesPorChat } from "../gastos/conciliacionPendienteStore";
 import { obtenerConciliacionesAmbiguasPendientesPorChat } from "../gastos/conciliacionAmbiguaPendienteStore";
@@ -6,6 +7,7 @@ import {
   filtrarConciliacionesPorTexto,
   reenviarPreguntaConciliacion,
   reenviarPreguntaConciliacionAmbigua,
+  reenviarPreguntaGastoPendienteDatos,
 } from "../gastos/reenviarPreguntaPendiente";
 import { montosCercanos } from "../utils/montos";
 import type { ToolDefinition } from "./types";
@@ -148,6 +150,26 @@ export const reenviarBotonesPropuestaGastoTool: ToolDefinition = {
           `No hay propuestas de gasto que coincidan, pero sí ${total} preguntas de conciliación pendientes (gastos ya creados que ` +
           `esperan «¿conciliar?»). Pregúntale al usuario cuál quiere y vuelve a llamar con su respuesta en 'cual':\n${lista}`
         );
+      }
+      // Caso real (Carlos, 2026-10-07, «Lunch - 180 pesos mexicanos - revolut»): la pregunta pendiente era el importe exacto en la
+      // moneda real (texto libre), guardada en gastoPendienteDatos; esta tool contestó «no hay nada» y la cola siguió parada.
+      const datosPendientes = filtrarConciliacionesPorTexto(
+        (await obtenerGastosPendienteDatosPorChat(chatId)).map((g) => ({
+          pendiente: g, descripcionGasto: `${g.datos.proveedor || ""} ${g.correoOrigen?.asunto ?? ""}`.trim(), proveedor: g.datos.proveedor, monto: g.datos.monto,
+        })),
+        cual
+      );
+      if (datosPendientes.length === 1 && total === 0) {
+        const g = datosPendientes[0].pendiente;
+        await reenviarPreguntaGastoPendienteDatos(g, "🔁 Pregunta pendiente renovada — respóndela aquí mismo en texto.");
+        return (
+          `Listo — el gasto de "${g.datos.proveedor || "proveedor sin leer"}" (${g.datos.monto} ${g.datos.moneda}) está leído pero le falta un dato ` +
+          `(${g.motivo}); volví a poner la pregunta al final del chat. Dile al usuario que la responda en texto (esta tool no creó ni cerró nada).`
+        );
+      }
+      if (datosPendientes.length > 1 && total === 0) {
+        const lista = datosPendientes.map((d, i) => `${i + 1}. ${d.pendiente.datos.proveedor || "proveedor sin leer"} — ${d.pendiente.datos.monto} ${d.pendiente.datos.moneda} (falta: ${d.pendiente.motivo})`).join("\n");
+        return `No hay propuestas ni conciliaciones que coincidan, pero sí ${datosPendientes.length} gastos leídos a los que les falta un dato. Pregúntale al usuario cuál y vuelve a llamar con su respuesta en 'cual':\n${lista}`;
       }
       if (pendientes.length === 0) {
         return (
