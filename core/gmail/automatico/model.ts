@@ -14,7 +14,15 @@ export const VERSION_POLITICA = "correo-gastos-v25";
 // v22 invalida únicamente las lecturas automáticas antiguas. Varias quedaron
 // persistidas como incompletas durante el incidente del límite diario de IA;
 // conservarlas para siempre impediría que una orden manual pudiera repararlas.
-export const VERSION_ANALISIS = "correo-gastos-analysis-v22";
+//
+// v23 (07-10-2026): la lectura robusta del analizador (#357, 05-10) se desplegó SIN cambiar esta versión, así que los
+// análisis «incompleto» guardados bajo v22 se reutilizaron en cada pasada y esos correos nunca se volvieron a leer
+// («5: el analizador no dio por completa la lectura», repetido durante días). Regla desde ahora: cada cambio del analizador
+// (core/gmail/automatico/analyze.ts) cambia esta versión; el guardarraíl core/guardarrailes/versionAnalisisCorreo.test.ts
+// lo exige comparando la huella del archivo.
+export const VERSION_ANALISIS = "correo-gastos-analysis-v23";
+/** Huella (sha256, 12 hex) de analyze.ts con la que se publicó VERSION_ANALISIS. La actualiza quien cambia el analizador. */
+export const HUELLA_ANALIZADOR_CORREO = "281a9aab9e6e";
 /**
  * Misma ventana ya aprendida por el flujo manual. En viajes, la fecha del
  * comprobante puede ser la del servicio y el cargo haberse producido semanas
