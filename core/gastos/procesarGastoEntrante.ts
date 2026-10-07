@@ -1,3 +1,4 @@
+import { debeOfrecerSoporteDistinto } from "./soporteDistinto";
 import { frenoAvisoPropuesta } from "./avisoPropuestaPendiente";
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
@@ -14,6 +15,7 @@ import {
   combinarTagsGastoAprendidos,
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
+  descargarAdjuntosCompraHolded,
   type CuentaSugerida,
 } from "../holded/write";
 import {
@@ -519,31 +521,56 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         soportePendiente: true,
       };
     } else {
-      const motivo = duplicadoInterno.motivo === "mismo_archivo"
-        ? "el archivo es exactamente el mismo"
-        : "coinciden el número de documento y el proveedor";
-      // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
-      // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
-      // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
-      // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
-      // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
-      const origenTxt = entrada.correoOrigen
-        ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
-        : "";
-      // Mismo freno que el aviso de propuesta pendiente: un correo con muchos adjuntos repetía este aviso por cada uno.
-      const claveAviso = `duplicado:${duplicadoInterno.registro.gastoId}:${entrada.correoOrigen?.mensajeIdGmail ?? entrada.nombreArchivoOriginal}`;
-      if (!(await frenoAvisoPropuesta.puedeAvisar(claveAviso))) {
-        console.log(`[procesarGastoEntrante] Aviso de gasto ya procesado omitido (ya se avisó hace poco): ${claveAviso}`);
+      // Gasto ya procesado, pero el archivo de ahora puede ser un soporte mejor que los que tiene (caso Antaris: solo una
+      // captura de mapa). Si el gasto no tiene ya este mismo archivo y su soporte son solo imágenes, se ofrece adjuntarlo
+      // con el flujo normal («Es este (#1)»). Si no se pueden leer sus adjuntos, se bloquea como siempre.
+      let ofrecerSoporteDistinto = false;
+      if (duplicadoInterno.motivo === "mismo_numero_y_proveedor") {
+        try {
+          const adjuntosDelGasto = await descargarAdjuntosCompraHolded(duplicadoInterno.registro.empresa, duplicadoInterno.registro.gastoId);
+          ofrecerSoporteDistinto = debeOfrecerSoporteDistinto({ huellaContenido, mimeTypeNuevo: entrada.mimeType, adjuntosDelGasto });
+        } catch (error) {
+          console.error("[procesarGastoEntrante] No se pudieron leer los adjuntos del gasto existente; se bloquea como siempre:", error instanceof Error ? error.message : error);
+        }
+      }
+      if (ofrecerSoporteDistinto) {
+        const registrada = duplicadoInterno.registro.identidad;
+        candidatoRecuperacion = {
+          id: duplicadoInterno.registro.gastoId,
+          contactName: registrada?.proveedor || datos.proveedor,
+          fecha: registrada?.fecha || datos.fecha,
+          total: registrada?.monto ?? montoParaHolded,
+          descripcion: registrada?.concepto || datos.concepto,
+          documentNumber: registrada?.numeroDocumento || datos.numeroDocumento,
+          moneda: registrada?.moneda || monedaParaHolded,
+        };
+      } else {
+        const motivo = duplicadoInterno.motivo === "mismo_archivo"
+          ? "el archivo es exactamente el mismo"
+          : "coinciden el número de documento y el proveedor";
+        // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
+        // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
+        // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
+        // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
+        // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
+        const origenTxt = entrada.correoOrigen
+          ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
+          : "";
+        // Mismo freno que el aviso de propuesta pendiente: un correo con muchos adjuntos repetía este aviso por cada uno.
+        const claveAviso = `duplicado:${duplicadoInterno.registro.gastoId}:${entrada.correoOrigen?.mensajeIdGmail ?? entrada.nombreArchivoOriginal}`;
+        if (!(await frenoAvisoPropuesta.puedeAvisar(claveAviso))) {
+          console.log(`[procesarGastoEntrante] Aviso de gasto ya procesado omitido (ya se avisó hace poco): ${claveAviso}`);
+          return "propuesta_duplicada";
+        }
+        await sendTelegramMessage(
+          chatId,
+          `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
+            `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
+            `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
+            `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
+        );
         return "propuesta_duplicada";
       }
-      await sendTelegramMessage(
-        chatId,
-        `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
-          `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
-          `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
-          `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
-      );
-      return "propuesta_duplicada";
     }
   }
   // Pedido explícito de Carlos, casos reales ALDI/Ahorramas: un recibo simplificado (sin los datos
