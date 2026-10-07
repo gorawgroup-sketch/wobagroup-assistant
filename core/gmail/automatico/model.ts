@@ -20,9 +20,9 @@ export const VERSION_POLITICA = "correo-gastos-v25";
 // («5: el analizador no dio por completa la lectura», repetido durante días). Regla desde ahora: cada cambio del analizador
 // (core/gmail/automatico/analyze.ts) cambia esta versión; el guardarraíl core/guardarrailes/versionAnalisisCorreo.test.ts
 // lo exige comparando la huella del archivo.
-export const VERSION_ANALISIS = "correo-gastos-analysis-v23";
+export const VERSION_ANALISIS = "correo-gastos-analysis-v24";
 /** Huella (sha256, 12 hex) de analyze.ts con la que se publicó VERSION_ANALISIS. La actualiza quien cambia el analizador. */
-export const HUELLA_ANALIZADOR_CORREO = "281a9aab9e6e";
+export const HUELLA_ANALIZADOR_CORREO = "e69e83383a54";
 /**
  * Misma ventana ya aprendida por el flujo manual. En viajes, la fecha del
  * comprobante puede ser la del servicio y el cargo haberse producido semanas

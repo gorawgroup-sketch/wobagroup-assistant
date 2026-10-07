@@ -23,3 +23,22 @@ test("resuelve por monto con coma o punto y devuelve vacío si nada coincide", (
   assert.deepEqual(filtrarConciliacionesPorTexto(pendientes, "35.62 USD").map(p => p.monto), [35.62]);
   assert.deepEqual(filtrarConciliacionesPorTexto(pendientes, "Cratevo"), []);
 });
+
+test("la pregunta de un gasto al que falta un dato se reconstruye según el motivo (caso Lunch 180 MXN)", async () => {
+  const { textoPreguntaGastoPendienteDatos } = await import("./reenviarPreguntaPendiente");
+  const base = {
+    id: "73ddb5f9", chatId: 1, rutaLocal: "/tmp/x.jpg", nombreArchivoOriginal: "x.jpg", creadoEn: 0,
+    datos: { proveedor: "Cnidos y Rifados", monto: 180, moneda: "MXN" } as never,
+  };
+  const moneda = textoPreguntaGastoPendienteDatos({ ...base, motivo: "moneda" });
+  assert.match(moneda, /Cnidos y Rifados/);
+  assert.match(moneda, /180 MXN/);
+  assert.match(moneda, /monto EXACTO y la moneda/);
+  assert.match(moneda, /descarta la pregunta pendiente del gasto/);
+  assert.match(textoPreguntaGastoPendienteDatos({ ...base, motivo: "empresa" }), /WOBA, EWORKS o Footprint/);
+  assert.match(textoPreguntaGastoPendienteDatos({ ...base, motivo: "fecha" }), /AAAA-MM-DD/);
+  assert.match(textoPreguntaGastoPendienteDatos({ ...base, motivo: "proveedor" }), /proveedor/);
+  const verificacion = textoPreguntaGastoPendienteDatos({ ...base, motivo: "verificacion_duplicado" });
+  assert.match(verificacion, /verificación de duplicados/);
+  assert.doesNotMatch(verificacion, /descarta la pregunta/);
+});
