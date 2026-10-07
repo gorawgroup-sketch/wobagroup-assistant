@@ -141,6 +141,13 @@ export interface DatosFactura {
    */
   numeroDocumento?: string;
   /**
+   * false cuando el propio ARCHIVO no trae el proveedor, el importe y la fecha (un icono, un logo, un mapa, una captura sin datos) y los
+   * datos de esta lectura salen solo del contexto del correo o de su asunto; true cuando se leen en el archivo mismo; undefined si el
+   * modelo no lo indicó (se trata como true). Un archivo así no sirve como comprobante contable (caso real: captura de un mapa en el gasto
+   * de Antaris).
+   */
+  datosEnElDocumento?: boolean;
+  /**
    * true si el documento es un recibo/tique simplificado (sin los datos
    * fiscales de la empresa compradora impresos) — legalmente no deducible
    * de IVA. Pedido explícito de Carlos, casos reales ALDI/Ahorramas: cuando
@@ -274,6 +281,13 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "varias personas/toda la oficina, o si no se identificó ninguna persona asociada).",
       },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
+      datos_en_el_documento: {
+        type: "boolean",
+        description:
+          "true si el proveedor, el importe y la fecha se leen en el propio ARCHIVO (factura, recibo, ticket, captura de un recibo o de una " +
+          "confirmación con esos datos). false si el archivo NO los trae —un icono, un logo, un mapa, una foto o captura sin datos de compra— " +
+          "y lo que reportas sale solo del contexto del correo o de su asunto. Sé estricto: un archivo que no muestra el gasto no es un comprobante.",
+      },
       numero_documento: {
         type: "string",
         description:
@@ -730,6 +744,7 @@ export async function extraerDatosFactura(
         contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
         fecha: (input.fecha as string) ?? "",
         numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
+        datosEnElDocumento: typeof input.datos_en_el_documento === "boolean" ? input.datos_en_el_documento : undefined,
         concepto: (input.concepto as string) ?? "",
         reciboSimplificado,
         pagos: normalizarPagos(input.pagos),

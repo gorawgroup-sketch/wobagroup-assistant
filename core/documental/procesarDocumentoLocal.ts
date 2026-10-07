@@ -9,6 +9,7 @@ import { sendTelegramMessage } from "../telegram/client";
 import { esArchivoEml, parsearEml, type AdjuntoDeEml } from "./parseEml";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
+import { sustitutoSiElArchivoNoTieneInformacion } from "./soporteSinInformacion";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
 
@@ -168,15 +169,37 @@ export async function procesarDocumentoLocal(
     );
 
     if (datosFactura?.esFacturaOGasto) {
+      // Un archivo sin información contable (un mapa, un icono, una captura sin datos) no puede ser el comprobante del gasto: si viene de un
+      // correo, el comprobante pasa a ser el PDF generado desde el cuerpo de ese correo. Ante cualquier duda o fallo se conserva el archivo.
+      let rutaSoporte = entrada.rutaLocal;
+      let mimeSoporte = entrada.mimeType;
+      let nombreSoporte = entrada.nombreArchivoOriginal;
+      let esAdjuntoDeGmail = true;
+      try {
+        const sustituto = await sustitutoSiElArchivoNoTieneInformacion({
+          rutaLocal: entrada.rutaLocal, mimeType: entrada.mimeType, nombreArchivo: entrada.nombreArchivoOriginal,
+          datos: datosFactura, mensajeIdGmail: entrada.correoOrigen?.mensajeIdGmail,
+        });
+        if (sustituto) {
+          rutaSoporte = sustituto.rutaLocal;
+          mimeSoporte = sustituto.mimeType;
+          nombreSoporte = sustituto.nombreArchivo;
+          esAdjuntoDeGmail = false;
+          datosFactura.razon = `${datosFactura.razon ? `${datosFactura.razon} ` : ""}[El adjunto «${entrada.nombreArchivoOriginal}» no trae información contable: el comprobante es el PDF generado desde el cuerpo del correo.]`;
+          console.log(`[procesarDocumentoLocal] «${entrada.nombreArchivoOriginal}» sin información contable: se usa el cuerpo del correo como comprobante.`);
+        }
+      } catch (error) {
+        console.error(`[procesarDocumentoLocal] No se pudo comprobar/sustituir el soporte sin información de «${entrada.nombreArchivoOriginal}» (se conserva el archivo):`, error instanceof Error ? error.message : error);
+      }
       const resultado = await procesarGastoEntrante({
         chatId: entrada.chatId,
-        rutaLocal: entrada.rutaLocal,
-        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-        mimeType: entrada.mimeType,
+        rutaLocal: rutaSoporte,
+        nombreArchivoOriginal: nombreSoporte,
+        mimeType: mimeSoporte,
         datos: datosFactura,
         deColaCorreo: entrada.correoOrigen?.deColaCorreo,
         origenAdjuntoGmail:
-          entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
+          esAdjuntoDeGmail && entrada.correoOrigen?.mensajeIdGmail && entrada.correoOrigen?.attachmentIdGmail
             ? {
                 mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail,
                 attachmentIdGmail: entrada.correoOrigen.attachmentIdGmail,
