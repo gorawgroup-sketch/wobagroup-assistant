@@ -32,6 +32,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Correo | `core/gmail/`, `core/jobs/revisarCorreoNuevo.ts` |
 | Documentos y conocimiento | `core/documental/`, `core/knowledge/`, `core/drive/` |
 | Seguros | `core/seguros/` |
+| Soportes (pedir comprobantes a quien gastó con la tarjeta) | `core/soportes/` |
 | Cashflow | `core/google/`, `core/cashflow/` |
 | Informes | `core/informes/`, `core/reportes/` |
 | Cerebro (front) | `frontend-cerebro/`, `core/cerebro/` |
@@ -51,6 +52,17 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Cambiar el proveedor de un gasto ya creado + corregir el alias aprendido | Conciliación y bancos | `feat/cambiar-proveedor-compra` | Claude Code | En PR. Tool `proponer_cambio_proveedor_compra`, reutiliza la edición verificada y los botones `edicioncompra_*` |
 | Botón «Conciliar esta parte» tras crear un gasto cuyo recibo se cobró en varios pagos (fase B) | Conciliación y bancos | `feat/conciliacion-parcial-boton` | Claude Code | En PR. Módulo `core/gastos/conciliacionParcialRecibo.ts`; 2 puntos de conexión en `gastoCallbackHandler.ts` |
 | Reglas «ya está sumado en otra línea» del cashflow (botón Explicar + herramienta de chat) | Cashflow | `feat/reglas-cashflow-agregadas` | Claude Code | En PR. Carpeta `core/cashflow/` (reglas, explicación, almacén de espera) + 4 puntos de conexión |
+| Lectura completa del correo (remitente original en cadenas, mensaje nuevo sin citas, adjuntos y lista de peticiones con una acción cada una) | Correo | `feat/lectura-correo-cadena` (paso 1) | Claude Code | Carlos dio el visto bueno el 07-10-2026 y pidió empezar por el paso 1. En 3 PR: (1) remitente original y cadenas + quitar el recorte de 8.000 caracteres del clasificador, sin IA; (2) peticiones y adjuntos en la cola manual; (3) revisión automática y directorio de personas. Carpeta propia `core/correo/lectura/`; los archivos centrales (`classifyEmail.ts`, `revisarCorreoNuevo.ts`) solo reciben el punto de conexión. Una sola sesión en el área Correo mientras dure. Medir el coste de IA antes de activar. |
+
+### Hecho reciente
+
+| Trabajo | PR | Fecha |
+|---|---|---|
+| Pedir soportes a quien gastó con la tarjeta: CSV de Revolut → resumen por persona → un correo por titular (cuadro + Excel, direcciones del buzón, regla fija en el prompt) | #370, #371, #372, #373 | 06/07-10-2026 |
+| `/preguntas` con un botón por pendiente y búsqueda tolerante | #374, #376 | 06-10-2026 |
+| Casa Peppe: tasa COP robusta, teclado en el mensaje pulsado, tasas en paralelo | #375, #377 | 06-10-2026 |
+| Respuesta a la solicitud de soportes: lectura completa y una acción por cargo | #378 | 07-10-2026 |
+| Cerrar cargos sin soporte (par cargo+reembolso sin gasto; gasto sin soporte conciliado) | #379 | 07-10-2026 |
 
 ## Pendiente de decisión de Carlos
 
