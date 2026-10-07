@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { downloadTelegramFile, getTelegramFile, sendTelegramMessage } from "../telegram/client";
 import { procesarDocumentoLocal } from "./procesarDocumentoLocal";
 import { intentarExtractoRevolut } from "../soportes/recibirExtracto";
+import { capturarArchivoEnModoConocimiento } from "../knowledge/modoConocimiento";
 import type { TelegramMessage } from "../telegram/types";
 
 const UPLOADS_DIR = join(process.cwd(), "tmp", "uploads");
@@ -96,6 +97,10 @@ export async function handleIncomingFile(message: TelegramMessage): Promise<void
     }
 
     const bytes = await downloadTelegramFile(fileInfo.file_path);
+
+    // Con /conocimiento activo, todo archivo es conocimiento para los agentes y no entra en ningún otro flujo (gasto, archivo en Drive…).
+    const autorArchivo = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || message.from?.username;
+    if (await capturarArchivoEnModoConocimiento(chatId, { bytes, nombre: archivo.nombreOriginal, mimeType: archivo.mimeType, caption: message.caption, autor: autorArchivo })) return;
 
     // Un extracto de Revolut no es un documento para archivar: es la entrada del flujo de soportes por titular.
     if (await intentarExtractoRevolut(chatId, bytes, archivo.nombreOriginal, archivo.mimeType, message.caption)) return;

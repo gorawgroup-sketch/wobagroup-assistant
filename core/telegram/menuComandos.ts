@@ -11,6 +11,7 @@ export const COMANDOS_MENU: ReadonlyArray<{ command: string; description: string
   { command: "soportes", description: "Pedir soportes de gastos con tarjeta (subir CSV de Revolut)" },
   { command: "transferencias", description: "Transferencias entre cuentas propias por conciliar" },
   { command: "preguntas", description: "Volver a mostrar las preguntas pendientes" },
+  { command: "conocimiento", description: "Enseñar a los agentes: documentos, enlaces o texto" },
 ];
 
 /** «/transferencias», «/transferencias woba» o «transferencias internas de Footprint»: devuelve la empresa pedida o "todas". */

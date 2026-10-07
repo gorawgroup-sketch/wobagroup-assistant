@@ -67,6 +67,7 @@ import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStor
 import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "../core/documental/pendienteReclasificacionStore";
 import { esMensajeCaptura } from "../core/knowledge/capture";
+import { capturarTextoEnModoConocimiento, handleModoConocimientoCallback, iniciarModoConocimiento, parsearComandoConocimiento } from "../core/knowledge/modoConocimiento";
 import { ejecutarComandoPreguntas, handleReenviarPreguntaCallback, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
 import { consumirPendienteExplicacion } from "../core/cashflow/pendienteExplicacionStore";
 import { continuarConExplicacion } from "../core/cashflow/explicacionCashflow";
@@ -1730,6 +1731,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleReenviarPreguntaCallback(callback);
     } else if (data.startsWith("sinsop_")) {
       await handleConciliarSinSoporteCallback(callback);
+    } else if (data.startsWith("conoc_")) {
+      await handleModoConocimientoCallback(callback);
     } else if (data.startsWith("sopm_")) {
       await handleSoportesModoCallback(callback);
     } else if (data.startsWith("sop_")) {
@@ -2325,6 +2328,23 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude revisar las transferencias ahora. No se tocó nada en Holded; inténtalo de nuevo en un momento.");
     }
     return;
+  }
+
+  // Menú de Telegram → modo conocimiento: lo que se envíe después (texto, enlaces, documentos, fotos) se guarda como conocimiento de los agentes.
+  if (parsearComandoConocimiento(incoming.text)) {
+    try {
+      await iniciarModoConocimiento(incoming.chatId);
+    } catch (error) {
+      console.error("[conocimiento] Error iniciando el modo conocimiento:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude activar el modo conocimiento ahora. No se guardó nada; inténtalo de nuevo en un momento.");
+    }
+    return;
+  }
+
+  // Con el modo conocimiento activo, el texto o enlace suelto es conocimiento y no pasa por ningún otro flujo. Una respuesta a un mensaje
+  // concreto del bot (reply) y las órdenes con «/» siguen su camino de siempre.
+  if (!incoming.replyToMessageId && !incoming.text.trim().startsWith("/")) {
+    if (await capturarTextoEnModoConocimiento(incoming.chatId, incoming.text, incoming.fromNombre || incoming.fromUsername)) return;
   }
 
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
