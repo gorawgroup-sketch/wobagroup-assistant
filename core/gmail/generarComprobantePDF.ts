@@ -281,6 +281,25 @@ export async function verificarMotorComprobanteVisual(): Promise<void> {
   }
 }
 
+/**
+ * Texto de un correo listo para pintarlo en el PDF de texto (pdfkit, fuente estándar).
+ *
+ * Caso real (Footprint, Booking «Hospedaje Guadalajara», 2026-10-07): el comprobante generado desde el cuerpo mostraba una «Ð» al final
+ * de cada línea. Los correos traen saltos `\r\n`; la fuente estándar de pdfkit pinta el `\r` como «Ð». Además, los enlaces de
+ * seguimiento de 150+ caracteres ocupaban media página. Se normalizan los saltos, se quitan los caracteres de control y se acortan los
+ * enlaces largos (el comprobante sigue conteniendo todos los datos del gasto).
+ */
+export function limpiarTextoParaPDF(texto: string): string {
+  return texto
+    .replace(/\r\n?/g, "\n")
+    .replace(/\t/g, "    ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/<?(https?:\/\/[^\s<>]{70,})>?/g, (_, url: string) => `<${url.slice(0, 60)}…>`)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 async function generarComprobanteTextoPDF(
   correo: DatosCorreoParaComprobante,
   extraido: DatosFactura
@@ -299,22 +318,22 @@ async function generarComprobanteTextoPDF(
     );
     doc.moveDown();
     doc.fontSize(10).fillColor("#000");
-    doc.text(`De: ${correo.de}`);
-    doc.text(`Asunto: ${correo.asunto}`);
-    doc.text(`Fecha del correo: ${correo.fecha}`);
+    doc.text(`De: ${limpiarTextoParaPDF(correo.de)}`);
+    doc.text(`Asunto: ${limpiarTextoParaPDF(correo.asunto)}`);
+    doc.text(`Fecha del correo: ${limpiarTextoParaPDF(correo.fecha)}`);
     doc.moveDown();
     doc.fontSize(11).text("Datos del gasto:", { underline: true });
     doc.fontSize(10);
-    if (extraido.proveedor) doc.text(`Proveedor: ${extraido.proveedor}`);
+    if (extraido.proveedor) doc.text(`Proveedor: ${limpiarTextoParaPDF(extraido.proveedor)}`);
     doc.text(`Monto: ${extraido.monto} ${extraido.moneda}`);
     if (extraido.montoEquivalente !== undefined && extraido.monedaEquivalente) {
       doc.text(`Monto equivalente: ${extraido.montoEquivalente} ${extraido.monedaEquivalente}`);
     }
     if (extraido.fecha) doc.text(`Fecha del gasto: ${extraido.fecha}`);
-    if (extraido.concepto) doc.text(`Concepto: ${extraido.concepto}`);
+    if (extraido.concepto) doc.text(`Concepto: ${limpiarTextoParaPDF(extraido.concepto)}`);
     doc.moveDown();
     doc.fontSize(11).text("Cuerpo completo del correo original:", { underline: true });
-    doc.fontSize(9).fillColor("#333").text(correo.cuerpoCompleto || "(vacío)");
+    doc.fontSize(9).fillColor("#333").text(limpiarTextoParaPDF(correo.cuerpoCompleto) || "(vacío)");
     doc.end();
   });
 }
