@@ -100,3 +100,13 @@ async function purgarCaducadas(): Promise<void> {
     console.error("[soportes] No se pudieron purgar campañas caducadas (no crítico):", error instanceof Error ? error.message : error);
   }
 }
+
+/** La última solicitud ENVIADA a esa dirección para esa empresa (la más reciente por fecha de creación). */
+export async function ultimaSolicitudEnviada(email: string, empresa: string): Promise<PersonaCampana | undefined> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const buscadas = email.trim().toLowerCase();
+  return filas
+    .map((f) => desdeFila(f.rowIndex, f.valores))
+    .filter((p): p is PersonaCampana => !!p && p.estado === "enviado" && p.empresa === empresa && p.email.trim().toLowerCase() === buscadas)
+    .sort((a, b) => b.creadoEn - a.creadoEn)[0];
+}

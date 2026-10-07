@@ -5,6 +5,7 @@ import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import { obtenerInstruccionesAplicablesCorreo } from "./instruccionesAprendidasStore";
+import { analizarRespuestaDeSoportes } from "../soportes/respuestaSoportes";
 
 const MODEL = resolverModeloDocumental("clasificar_correo");
 const MAX_ITERATIONS = 4;
@@ -165,6 +166,14 @@ function buildSystemPrompt(hayAdjuntos: boolean): string {
  * solicitud real sobre él).
  */
 export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: string, hayAdjuntos = false): Promise<AnalisisCorreo> {
+  // La respuesta a una solicitud de soportes de tarjeta se analiza cargo por cargo (core/soportes/respuestaSoportes.ts).
+  // Si no es una (o falla), sigue el análisis genérico de siempre.
+  try {
+    const porCargo = await analizarRespuestaDeSoportes(correo, cuerpoCompleto);
+    if (porCargo) return porCargo;
+  } catch (error) {
+    console.error("[classifyEmail] El análisis por cargo de la respuesta de soportes falló; se usa el análisis genérico:", error instanceof Error ? error.message : error);
+  }
   const anthropic = getClient();
   const ejecucion = crearEjecucionIA("clasificar_correo");
 
