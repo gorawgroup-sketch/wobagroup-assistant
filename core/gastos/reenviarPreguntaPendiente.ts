@@ -110,18 +110,32 @@ export async function reenviarPreguntaPendienteDelCorreo(
  * pendientes del chat que coinciden con lo que el usuario nombró (proveedor, parte del nombre,
  * descripción, monto). Sin `cual`, todas. Lógica pura, probada aparte.
  */
+/**
+ * Texto de búsqueda de /preguntas sin acentos ni puntuación: «casa peppe.» (con el punto de la frase, como lo escribió Carlos el
+ * 2026-10-06) encuentra «Casa Peppe (Il Gusto S.A.S.)». Las palabras se separan por un solo espacio.
+ */
+export function normalizarBusqueda(texto: string): string {
+  return texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** «142,48.» → 142.48 (ignora la puntuación final de la frase); NaN si no es un importe. */
+export function importeDeBusqueda(texto: string): number {
+  return Number(texto.trim().replace(/[.,;:!?)\s]+$/, "").replace(/[^\d.,]/g, "").replace(",", "."));
+}
+
 export function filtrarConciliacionesPorTexto<T extends { descripcionGasto: string; proveedor?: string; monto?: number }>(
   pendientes: T[],
   cual: string
 ): T[] {
-  const texto = cual.trim().toLowerCase();
-  if (!texto) return pendientes;
+  const texto = normalizarBusqueda(cual);
+  if (!texto) return cual.trim() ? [] : pendientes;
   const porNombre = pendientes.filter((p) => {
-    const nombre = `${p.proveedor ?? ""} ${p.descripcionGasto}`.toLowerCase();
-    return nombre.includes(texto) || (p.proveedor?.trim() ? texto.includes(p.proveedor.toLowerCase()) : false);
+    const nombre = normalizarBusqueda(`${p.proveedor ?? ""} ${p.descripcionGasto}`);
+    const proveedor = p.proveedor?.trim() ? normalizarBusqueda(p.proveedor) : "";
+    return nombre.includes(texto) || (proveedor ? texto.includes(proveedor) : false);
   });
   if (porNombre.length > 0) return porNombre;
-  const comoMonto = Number(texto.replace(/[^\d.,]/g, "").replace(",", "."));
+  const comoMonto = importeDeBusqueda(cual);
   if (Number.isFinite(comoMonto) && comoMonto > 0) {
     const porMonto = pendientes.filter((p) => p.monto !== undefined && montosCercanos(p.monto, comoMonto, 0.01));
     if (porMonto.length > 0) return porMonto;

@@ -58,6 +58,7 @@ import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleSoportesCallback } from "../core/soportes/soportesTelegram";
+import { handleConciliarSinSoporteCallback } from "../core/holded/conciliarSinSoporte";
 import { handleSoportesModoCallback, iniciarSoportes } from "../core/soportes/comandoSoportes";
 import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion, restaurarPendienteDesambiguacion, type PendienteDesambiguacion } from "../core/documental/disambiguationStore";
@@ -66,7 +67,7 @@ import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStor
 import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "../core/documental/pendienteReclasificacionStore";
 import { esMensajeCaptura } from "../core/knowledge/capture";
-import { ejecutarComandoPreguntas, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
+import { ejecutarComandoPreguntas, handleReenviarPreguntaCallback, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
 import { consumirPendienteExplicacion } from "../core/cashflow/pendienteExplicacionStore";
 import { continuarConExplicacion } from "../core/cashflow/explicacionCashflow";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
@@ -1725,6 +1726,10 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleRegistroManualCashflowCallback(callback);
     } else if (data.startsWith("transfint_")) {
       await handleTransferenciasCallback(callback);
+    } else if (data.startsWith("preg_r:")) {
+      await handleReenviarPreguntaCallback(callback);
+    } else if (data.startsWith("sinsop_")) {
+      await handleConciliarSinSoporteCallback(callback);
     } else if (data.startsWith("sopm_")) {
       await handleSoportesModoCallback(callback);
     } else if (data.startsWith("sop_")) {
@@ -2274,7 +2279,9 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   const cualPregunta = parsearComandoPreguntas(incoming.text);
   if (cualPregunta !== undefined) {
     try {
-      await sendTelegramMessage(incoming.chatId, await ejecutarComandoPreguntas(incoming.chatId, cualPregunta));
+      const respuesta = await ejecutarComandoPreguntas(incoming.chatId, cualPregunta);
+      if (respuesta.botones) await sendTelegramMessageWithButtons(incoming.chatId, respuesta.texto, respuesta.botones);
+      else await sendTelegramMessage(incoming.chatId, respuesta.texto);
     } catch (error) {
       console.error("[preguntas] Error reenviando la pregunta pendiente:", error instanceof Error ? error.message : error);
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude reenviar la pregunta pendiente ahora. No se tocó nada; inténtalo de nuevo en un momento.");

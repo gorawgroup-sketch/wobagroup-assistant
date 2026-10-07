@@ -43,12 +43,12 @@ test("no repite un 404 histórico ni lo sustituye por una tasa actual", async ()
     const {obtenerTasaCambioHistorica} = await import('./exchangeRate');
     assert.equal(await obtenerTasaCambioHistorica('2026-08-26','COP','EUR'), undefined);
     assert.equal(await obtenerTasaCambioHistorica('2026-08-26','COP','EUR'), undefined);
-    assert.equal(llamadas,2);
+    assert.equal(llamadas,1, 'COP va directo a la cobertura ampliada (el BCE no lo publica) y el 404 no se repite');
   } finally { globalThis.fetch = original; }
 });
 
 
-test("COP usa referencia histórica inversa precisa tras 404 y comparte consultas concurrentes", async () => {
+test("COP usa directamente la referencia histórica inversa precisa y comparte consultas concurrentes", async () => {
   const original = globalThis.fetch; const urls: string[] = [];
   globalThis.fetch = async (url) => {
     urls.push(String(url));
@@ -58,8 +58,8 @@ test("COP usa referencia histórica inversa precisa tras 404 y comparte consulta
   try {
     const {obtenerTasaCambioHistorica} = await import('./exchangeRate');
     const tasas = await Promise.all([obtenerTasaCambioHistorica('2026-09-22','COP','EUR'),obtenerTasaCambioHistorica('2026-09-22','COP','EUR')]);
-    assert.equal(urls.length,2);
-    assert.match(urls[1], /EUR\/COP\?date=2026-09-22/);
+    assert.equal(urls.length,1);
+    assert.match(urls[0], /EUR\/COP\?date=2026-09-22/);
     assert.equal(tasas[0],1/4000); assert.equal(tasas[0],tasas[1]);
     assert.ok(Math.abs(14000*tasas[0]! - 3.50) < .02);
   } finally { globalThis.fetch = original; }
@@ -78,4 +78,33 @@ test("rechaza tasa futura, par incorrecto y cotización histórica demasiado ant
       assert.equal(await obtenerTasaCambioHistorica(fecha,'COP','EUR'),undefined);
     }
   } finally {globalThis.fetch=original;}
+});
+
+test("una moneda que el BCE no publica (COP) consulta solo la cobertura ampliada, y la tasa obtenida se conserva", async () => {
+  const original = globalThis.fetch; const urls: string[] = [];
+  globalThis.fetch = async (u) => { urls.push(String(u)); return new Response(JSON.stringify({ date: "2026-10-02", base: "EUR", quote: "COP", rate: 3734.57 }), { status: 200 }); };
+  try {
+    const { obtenerTasaCambioHistorica } = await import("./exchangeRate");
+    const tasa = await obtenerTasaCambioHistorica("2026-10-02", "COP", "EUR");
+    assert.ok(tasa && Math.abs(tasa - 1 / 3734.57) < 1e-12);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(await obtenerTasaCambioHistorica("2026-10-02", "COP", "EUR"), tasa);
+    assert.equal(urls.length, 1, "la segunda consulta sale de la caché");
+    assert.match(urls[0], /\/v2\/rate\/EUR\/COP\?date=2026-10-02/);
+  } finally { globalThis.fetch = original; }
+});
+
+test("un timeout aislado en COP se reintenta una vez antes de rendirse", async () => {
+  const original = globalThis.fetch; let llamadas = 0;
+  globalThis.fetch = async () => {
+    llamadas++;
+    if (llamadas === 1) throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    return new Response(JSON.stringify({ date: "2026-10-03", base: "EUR", quote: "COP", rate: 3700 }), { status: 200 });
+  };
+  try {
+    const { obtenerTasaCambioHistorica } = await import("./exchangeRate");
+    const tasa = await obtenerTasaCambioHistorica("2026-10-03", "COP", "EUR");
+    assert.ok(tasa && Math.abs(tasa - 1 / 3700) < 1e-12);
+    assert.equal(llamadas, 2);
+  } finally { globalThis.fetch = original; }
 });

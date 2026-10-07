@@ -27,6 +27,7 @@ import {
   sendTelegramMessageWithButtons,
   sendTelegramTemporaryNotice,
 } from "../telegram/client";
+import { marcarCallbackSinEfecto } from "../telegram/durableDelivery";
 import type { InlineKeyboardButton } from "../telegram/types";
 import {
   consumirPropuestaGasto,
@@ -2566,6 +2567,22 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
  * seleccionAcciones y repinta el MISMO mensaje (editTelegramMessageReplyMarkup,
  * nunca editTelegramMessage, para no tocar el texto original de la propuesta).
  */
+/**
+ * El botón que se pulsa vive en un mensaje concreto; el id guardado en la propuesta puede ser el de una versión anterior
+ * (la propuesta se reenvió con «Botones renovados», o la escritura del id nuevo falló por cuota de Sheets). Repintar el
+ * teclado o cerrar el mensaje en el id guardado daba «message to edit not found» y el botón parecía no hacer nada
+ * (Casa Peppe, 2026-10-06: «Crear (sin conciliar)» no se activaba). Los cambios van al mensaje que Carlos tiene delante, y
+ * ese pasa a ser el guardado.
+ */
+export async function propuestaEnMensajePulsado(callback: TelegramCallbackQuery, propuesta: PropuestaGasto): Promise<PropuestaGasto> {
+  const pulsado = callback.message?.message_id;
+  const chat = callback.message?.chat.id;
+  if (!pulsado || pulsado <= 0 || pulsado === propuesta.messageId || (chat !== undefined && chat !== propuesta.chatId)) return propuesta;
+  await actualizarMessageIdGasto(propuesta.id, pulsado).catch((error) =>
+    console.error("[gastoCallbackHandler] No se pudo guardar el mensaje pulsado de la propuesta (no crítico):", error instanceof Error ? error.message : error));
+  return { ...propuesta, messageId: pulsado };
+}
+
 async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propuestaId: string, key: string | undefined): Promise<void> {
   if (!key) {
     await answerCallbackQuerySafe(callback.id);
@@ -2595,7 +2612,8 @@ async function handleGastoToggleCallback(callback: TelegramCallbackQuery, propue
     await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
-  const { propuesta, seleccion: nuevaSeleccion } = resultado;
+  const { seleccion: nuevaSeleccion } = resultado;
+  const propuesta = await propuestaEnMensajePulsado(callback, resultado.propuesta);
   await answerCallbackQuerySafe(callback.id);
 
   const propuestaActualizada: PropuestaGasto = { ...propuesta, seleccionAcciones: nuevaSeleccion };
@@ -2804,11 +2822,12 @@ async function dispararDecisionFinalVisible(
  */
 async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propuestaId: string): Promise<void> {
   // En la cola de la propuesta: si una casilla marcada hace un momento aún se está guardando, esta lectura espera a que termine.
-  const propuesta = await conSeleccionGasto(propuestaId, () => obtenerPropuestaGasto(propuestaId));
-  if (!propuesta) {
+  const guardada = await conSeleccionGasto(propuestaId, () => obtenerPropuestaGasto(propuestaId));
+  if (!guardada) {
     await retirarPreguntaCaducada(callback, "Esta propuesta ya no está disponible.");
     return;
   }
+  const propuesta = await propuestaEnMensajePulsado(callback, guardada);
 
   const seleccion = propuesta.seleccionAcciones ?? [];
   if (seleccion.length === 0) {
@@ -2822,6 +2841,8 @@ async function handleGastoAprobarCallback(callback: TelegramCallbackQuery, propu
     // de por qué — parecía que el botón simplemente no hacía nada, sin explicación. Se manda también
     // como mensaje real (sendTelegramMessage, ya visible en Telegram Y en el chat web por el mismo
     // historial compartido) para que la explicación llegue sin importar desde qué canal se tocó.
+    // Esta pulsación no hizo nada: el siguiente toque no debe quedar bloqueado como «ya procesada» (ver durableDelivery.ts).
+    marcarCallbackSinEfecto(callback.id);
     await answerCallbackQuerySafe(callback.id, "No marcaste ninguna acción todavía — marca al menos una y vuelve a aprobar.");
     await sendTelegramMessage(propuesta.chatId, "No marcaste ninguna acción todavía — marca al menos una casilla y vuelve a tocar \"▶️ Aprobar selección\".").catch((error) =>
       console.error("[gastoCallbackHandler] Error avisando que no había selección marcada (no crítico):", error)
@@ -3967,21 +3988,27 @@ async function manejarContactoNoEncontrado(
  * solo reconocía "WOBA"/"EWORKS" — escribir "Footprint, concepto..." se
  * ignoraba en silencio y la empresa quedaba sin corregir, sin ningún aviso.
  */
-function parsearCorreccionClasificacion(
+export function parsearCorreccionClasificacion(
   texto: string,
   empresaActual: PropuestaGasto["empresa"]
 ): { empresa: PropuestaGasto["empresa"]; concepto: string } {
+  // La empresa puede venir sola al principio («WOBA, …») o etiquetada («Empresa: WOBA, …», «es de WOBA»): caso real
+  // 2026-10-07 (recibo de OpenAI), «Empresa: WOBA, pagado con la tarjeta ••1816» dejaba la empresa en Footprint y metía
+  // todo el texto en el concepto.
+  const nombreEmpresa = (v: string): PropuestaGasto["empresa"] | undefined => {
+    const t = v.trim().toUpperCase().replace(/^EMPRESA\s*[:=]\s*/, "").replace(/^(ES\s+DE|DE)\s+/, "").trim();
+    return t === "WOBA" ? "WOBA" : t === "EWORKS" ? "EWORKS" : t === "FOOTPRINT" ? "Footprint" : undefined;
+  };
   const [empresaRaw, ...resto] = texto.split(",");
-  const empresaTexto = empresaRaw.trim().toUpperCase();
-  const empresa: PropuestaGasto["empresa"] =
-    empresaTexto === "WOBA"
-      ? "WOBA"
-      : empresaTexto === "EWORKS"
-        ? "EWORKS"
-        : empresaTexto === "FOOTPRINT"
-          ? "Footprint"
-          : empresaActual;
-  const concepto = resto.join(",").trim() || texto.trim();
+  const alPrincipio = nombreEmpresa(empresaRaw);
+  const etiquetada = /\bempresa\s*[:=]\s*(woba|eworks|footprint)\b/i.exec(texto);
+  const empresa: PropuestaGasto["empresa"] = alPrincipio ?? (etiquetada ? nombreEmpresa(etiquetada[1])! : empresaActual);
+  const conceptoRestante = alPrincipio
+    ? resto.join(",").trim()
+    : etiquetada
+      ? texto.replace(etiquetada[0], "").replace(/^[\s,;.-]+|[\s,;.-]+$/g, "").trim()
+      : "";
+  const concepto = conceptoRestante || texto.trim();
   return { empresa, concepto };
 }
 
