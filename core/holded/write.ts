@@ -6384,6 +6384,26 @@ async function aplicarConciliacionRegistrada(
  * Envío crudo de una conciliación, sin registro durable propio: SOLO para flujos que verifican por lectura antes y
  * después de cada envío (ver conciliarCargoConReembolso.ts). Pasa por la misma guardia de escrituras que el resto.
  */
+/**
+ * Marca un movimiento como conciliado SIN enlazarlo a ningún documento (cuerpo vacío: lo documenta Holded; el movimiento
+ * queda «forced_reconciled» con reconciled_amount 0). Solo para la decisión explícita «conciliar sin soporte» de una persona
+ * (core/holded/conciliarSinSoporte.ts): para un gasto con comprobante hay que enlazar el documento, nunca esto. Pasa por la
+ * misma guardia que el resto de escrituras y no se reintenta aquí.
+ */
+export async function marcarMovimientoConciliadoSinDocumento(empresa: Empresa, accountId: string, movementId: string): Promise<void> {
+  invalidarCacheCuentasTesoreria(empresa);
+  try {
+    await holdedWriteCall(
+      empresa,
+      "POST",
+      `/treasury/accounts/${encodeURIComponent(accountId)}/bank-movements/${encodeURIComponent(movementId)}/reconcile`,
+      {}
+    );
+  } finally {
+    invalidarCacheCuentasTesoreria(empresa);
+  }
+}
+
 export async function enviarConciliacionMovimientoHolded(
   empresa: Empresa, accountId: string, movementId: string, documentId: string
 ): Promise<void> {
