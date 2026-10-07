@@ -58,6 +58,7 @@ import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
 import { handleSoportesCallback } from "../core/soportes/soportesTelegram";
+import { handleConciliarSinSoporteCallback } from "../core/holded/conciliarSinSoporte";
 import { handleSoportesModoCallback, iniciarSoportes } from "../core/soportes/comandoSoportes";
 import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion, restaurarPendienteDesambiguacion, type PendienteDesambiguacion } from "../core/documental/disambiguationStore";
@@ -1727,6 +1728,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleTransferenciasCallback(callback);
     } else if (data.startsWith("preg_r:")) {
       await handleReenviarPreguntaCallback(callback);
+    } else if (data.startsWith("sinsop_")) {
+      await handleConciliarSinSoporteCallback(callback);
     } else if (data.startsWith("sopm_")) {
       await handleSoportesModoCallback(callback);
     } else if (data.startsWith("sop_")) {

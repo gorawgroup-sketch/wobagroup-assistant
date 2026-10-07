@@ -428,6 +428,15 @@ Pensado para hacerse una vez por semana, por empresa:
 6. **Cuando alguien responde** al correo («Re: Footprint · Soportes pendientes de tus gastos con tarjeta…»), Wobi lo lee entero —el cuerpo sin las citas y todos los adjuntos— y, en vez del resumen genérico, publica **una acción propuesta por cada cargo pedido**: soporte nuevo (se crea el gasto desde el adjunto y se concilia, con su propuesta y botones), soporte que ya estaba registrado (se concilia con el gasto existente) o que ya soporta OTRO cargo conciliado (se le pide el recibo correcto), cargo compensado por un reembolso (no necesita soporte; hoy el cierre cargo↔reembolso es manual en Holded), cargo no reconocido (se mantiene pendiente y se investiga, sin volver a reclamárselo) y cargos sin mencionar (se recuerdan). Contrasta cada cargo con Holded y con el registro de soportes ya procesados. «✅ Proceder» redacta la respuesta pidiéndole solo lo que falta. Solo lee: no crea ni concilia nada por sí mismo.
 7. Los cargos pedidos quedan registrados (`_soportes_solicitados`); la semana siguiente solo se piden los nuevos, y los de más de 7 días sin conciliar vuelven marcados como recordatorio. Cuando los soportes llegan a asistente@wobagroup.com, el flujo de correo normal crea el gasto y lo concilia.
 
+## Cerrar un cargo SIN soporte (decisión explícita, dos modos)
+
+Herramienta `proponer_cerrar_cargo_sin_soporte` (se pide en el chat: «concílialo sin soporte», «cierra el cargo con su reembolso»). Lee Holded, comprueba que los movimientos siguen pendientes y sin conciliación parcial y muestra el **antes/ahora** con botones; solo un superadministrador confirma. Al confirmar se relee Holded justo antes de escribir, se aplica una sola vez, se vuelve a leer para comprobarlo y nunca se repite sola.
+
+- **Modo «par»** — un cargo y su reembolso TOTAL (Rappi 0,83 USD): dos movimientos de la misma cuenta y moneda que suman cero. Ambos se marcan conciliados sin enlazar documento (`forced_reconciled`). No se crea gasto ni asiento: el efecto contable neto es cero. Si no suman cero, se niega.
+- **Modo «gasto»** — un cargo real sin recibo (Payu*uber 7,37 €): se CREA en Holded un gasto sin adjunto, clonando proveedor, cuenta contable y etiquetas de un gasto ya registrado de la misma persona (`plantilla_compra_id`; hoy solo plantillas sin impuestos y de la misma moneda), con la descripción «… — SIN SOPORTE (motivo)», y se concilia con el cargo. Queda en la contabilidad; si llega el recibo, se adjunta a ese gasto.
+
+Marcar como conciliado sin documento un cargo que sí es un gasto real **no está permitido**: lo dejaría fuera de los libros.
+
 ## Informe de reintegro de gastos por persona o proyecto (PDF + comprobantes)
 
 Pedido explícito de Carlos (02-10-2026), tras un caso real: pidió los gastos de septiembre de Nuria Ortiz para reclamarlos a MIMO y el chat respondió «solo hay 1» cuando en Holded había 28.
