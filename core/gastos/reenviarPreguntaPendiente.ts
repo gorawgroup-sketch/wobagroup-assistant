@@ -4,10 +4,12 @@ import {
   type ConciliacionAmbiguaPendiente,
 } from "./conciliacionAmbiguaPendienteStore";
 import { obtenerPropuestasGastoPorChat } from "./gastoProposalSheet";
+import { obtenerGastosPendienteDatosPorChat, type GastoPendienteDatos } from "./gastoPendienteDatosStore";
+import { botonesFalloTemporalVerificacionPendiente } from "./gastoPendienteDatosActions";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { botonContinuarConciliacion } from "./continuarCorreoConciliacion";
 import { botonesOfertaParcial, consultarCargoParcial, textoOfertaParcial } from "./conciliacionParcialRecibo";
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { montosCercanos } from "../utils/montos";
 
 /**
@@ -28,7 +30,45 @@ import { montosCercanos } from "../utils/montos";
 export type PreguntaReenviada =
   | { tipo: "propuesta"; descripcion: string }
   | { tipo: "conciliacion"; descripcion: string }
-  | { tipo: "conciliacion_ambigua"; descripcion: string };
+  | { tipo: "conciliacion_ambigua"; descripcion: string }
+  | { tipo: "gasto_pendiente_datos"; descripcion: string };
+
+/**
+ * Texto de la pregunta que sigue esperando respuesta para un gasto al que le falta un dato (se contesta en texto libre;
+ * `reintentar_gasto_pendiente` la consume). Lógica pura, probada aparte.
+ *
+ * Caso real (Carlos, 2026-10-07): la cola llevaba horas parada en «Lunch - 180 pesos mexicanos - revolut»: el recibo se leyó
+ * bien, pero Footprint no tiene cuenta en MXN y Wobi pidió en texto el importe exacto en la moneda real. Esa pregunta quedó
+ * enterrada en el chat y el aviso de fin de revisión decía «fallo temporal» porque este reenvío no miraba este almacén.
+ */
+export function textoPreguntaGastoPendienteDatos(p: GastoPendienteDatos): string {
+  const proveedor = p.datos.proveedor?.trim() || "Gasto";
+  const importe = `${p.datos.monto} ${p.datos.moneda}`;
+  const cierre = "Si no tienes el dato, dime «descarta la pregunta pendiente del gasto» y la cola sigue sin registrar nada.";
+  switch (p.motivo) {
+    case "empresa":
+      return `📄 «${proveedor}» · ${importe}: no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece y sigo. ${cierre}`;
+    case "moneda":
+      return `💱 «${proveedor}» · ${importe}: necesito el monto EXACTO y la moneda que salió de la cuenta real (ej. «40.46 EUR»); no calculo tipos de cambio. Respóndeme aquí en texto libre y sigo. ${cierre}`;
+    case "fecha":
+      return `🔎 «${proveedor}» · ${importe}: el comprobante no tiene una fecha verificable. Respóndeme con la fecha documentada (AAAA-MM-DD) y sigo. ${cierre}`;
+    case "proveedor":
+      return `🏷️ ${importe}: no pude leer el proveedor del comprobante. Dime su nombre y sigo. ${cierre}`;
+    case "verificacion_duplicado":
+      return `⚠️ «${proveedor}» · ${importe}: la verificación de duplicados en Holded quedó pendiente; por seguridad no se propuso ni creó el gasto.`;
+  }
+}
+
+/** Vuelve a poner al final del chat la pregunta del dato que falta. Nunca crea ni cierra nada. */
+export async function reenviarPreguntaGastoPendienteDatos(p: GastoPendienteDatos, encabezado: string): Promise<void> {
+  const texto = `${encabezado}\n\n${textoPreguntaGastoPendienteDatos(p)}`;
+  // El fallo de verificación se retoma con sus botones acotados (reintentar/aplazar); un fallo técnico nunca se «confirma».
+  if (p.motivo === "verificacion_duplicado") {
+    await sendTelegramMessageWithButtons(p.chatId, texto, botonesFalloTemporalVerificacionPendiente(p.id));
+  } else {
+    await sendTelegramMessage(p.chatId, texto);
+  }
+}
 
 export async function reenviarPreguntaConciliacion(p: ConciliacionPendiente, encabezado: string): Promise<number> {
   // Si el banco tiene UN único cargo del proveedor menor que el gasto (recibo cobrado en varios pagos), el reenvío ya trae el botón de la parte.
@@ -101,6 +141,14 @@ export async function reenviarPreguntaPendienteDelCorreo(
   if (ambigua) {
     await reenviarPreguntaConciliacionAmbigua(ambigua, encabezado);
     return { tipo: "conciliacion_ambigua", descripcion: ambigua.descripcionGasto };
+  }
+  // Cuarto almacén (caso Lunch 180 MXN): un gasto leído al que le falta un dato que se responde en texto libre.
+  const pendienteDatos = (await obtenerGastosPendienteDatosPorChat(chatId)).find((g) =>
+    coincideCorreo({ mensajeIdGmail: g.correoOrigen?.mensajeIdGmail, threadId: g.correoOrigen?.threadId }, mensajeId, threadId)
+  );
+  if (pendienteDatos) {
+    await reenviarPreguntaGastoPendienteDatos(pendienteDatos, encabezado);
+    return { tipo: "gasto_pendiente_datos", descripcion: `${pendienteDatos.datos.proveedor || "gasto"} — ${pendienteDatos.datos.monto} ${pendienteDatos.datos.moneda}` };
   }
   return undefined;
 }
