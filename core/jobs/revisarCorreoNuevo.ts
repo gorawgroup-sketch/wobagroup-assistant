@@ -23,7 +23,7 @@ import {
 } from "../gmail/client";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
-import { extraerRemitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../gmail/remitenteReenvio";
+import { remitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../correo/lectura/cadena";
 import { verificarFacturasEnlazadasEnCuerpo } from "../gmail/facturasEnlazadasEnCuerpo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
@@ -1522,7 +1522,7 @@ async function procesarCorreoPuntualInterno(
   // todos modos — si Gmail falla leyendo el cuerpo, lo correcto es seguir sin el remitente original
   // (el comportamiento de siempre, nunca peor), no abortar toda la búsqueda puntual por un dato extra.
   const remitenteOriginal = await obtenerCuerpoCompletoCorreo(correo.id)
-    .then(extraerRemitenteOriginalDeReenvio)
+    .then((cuerpo) => remitenteOriginalDeReenvio(correo.de, cuerpo))
     .catch((error) => {
       console.error("[revisarCorreoNuevo] No se pudo leer el cuerpo para buscar el remitente original del reenvío (no crítico):", error);
       return undefined;
