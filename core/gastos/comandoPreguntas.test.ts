@@ -58,3 +58,26 @@ test("el botón reenvía solo la pendiente elegida, o la primera, y avisa si ya 
   assert.deepEqual(await pulsar("preg_r:primera"), ["a"]);
   assert.deepEqual(await pulsar("preg_r:s:inexistente"), []);
 });
+
+test("el texto de búsqueda ignora la puntuación final, los acentos y las mayúsculas (caso «casa peppe.»)", async () => {
+  const propuesta = { id: "p1", proveedor: "Casa Peppe (Il Gusto S.A.S.)", concepto: "Desayuno restaurante — Medellín", monto: 64463, moneda: "COP" } as never;
+  for (const texto of ["casa peppe.", "Casa  Peppe,", "CASA PEPPE", "il gusto s.a.s", "medellin", "«casa peppe»"]) {
+    const enviados: string[] = [];
+    const deps = { ...montar().deps, propuestas: async () => [propuesta], simples: async () => [], reenviarPropuesta: async (p: { id: string }) => { enviados.push(p.id); } };
+    const r = await ejecutarComandoPreguntas(1, texto, deps as never);
+    assert.deepEqual(enviados, ["p1"], texto);
+    assert.match(r.texto, /Reenvié al final del chat/, texto);
+  }
+  const deps = { ...montar().deps, propuestas: async () => [propuesta], simples: async () => [] };
+  assert.match((await ejecutarComandoPreguntas(1, "pizzeria.", deps as never)).texto, /No encuentro ninguna pregunta pendiente/);
+});
+
+test("un importe con punto o coma finales también se encuentra («142,48.»)", async () => {
+  const { importeDeBusqueda } = await import("./reenviarPreguntaPendiente");
+  assert.equal(importeDeBusqueda("142,48."), 142.48);
+  assert.equal(importeDeBusqueda("  581.92 "), 581.92);
+  assert.ok(!(importeDeBusqueda("metro") > 0), "un nombre no es un importe");
+  const { deps, enviados } = montar();
+  await ejecutarComandoPreguntas(1, "142,48.", deps);
+  assert.deepEqual(enviados, ["c"]);
+});
