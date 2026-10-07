@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { CACHE_1H } from "../claude/cacheControl";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import type { CorreoResumen } from "./client";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
@@ -239,7 +240,7 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
       // El prompt es idéntico para los correos del mismo tipo. Marcarlo como prefijo cacheable no
       // cambia lo que ve el modelo y abarata repeticiones cercanas y vueltas de tool-use.
       system: [
-        { type: "text", text: buildSystemPrompt(hayAdjuntos), cache_control: { type: "ephemeral" } },
+        { type: "text", text: buildSystemPrompt(hayAdjuntos), cache_control: CACHE_1H },
       ],
       tools,
       messages,

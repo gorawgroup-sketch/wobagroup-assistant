@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calcularAhorroNetoCacheUSD, calcularAnalisisCostosDiario, calcularCostoUSD, type FilaUso } from "./costTracking";
+import { calcularAhorroNetoCacheUSD, calcularAnalisisCostosDiario, calcularCostoUSD, escriturasCachePorTtl, type FilaUso } from "./costTracking";
 
 test("calcula el ahorro neto de caché frente al mismo contexto sin caché", () => {
   // Sonnet 5: lectura de 1M ahorra $1,80; creación de 1M añade $0,50.
@@ -63,4 +63,17 @@ test("sin ningún consumo hoy ni esta semana, los desgloses quedan vacíos (nunc
   assert.deepEqual(a.porProcesoHoy, []);
   assert.deepEqual(a.porProcesoSemana, []);
   assert.equal(a.hoy.gastoRealApiUSD, 0);
+});
+
+test("la escritura de caché de 1 hora se cobra al doble de la entrada; sin desglose, todo cuenta como 5 minutos", () => {
+  const base = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
+  // 1.000.000 tokens escritos en 5 min a 1,25 × 2 USD = 2,50 USD.
+  assert.ok(Math.abs(calcularCostoUSD({ ...base, cache_creation_input_tokens: 1_000_000 }, "claude-sonnet-5") - 2.5) < 1e-9);
+  // Los mismos tokens en 1 h: 2 × 2 USD = 4 USD.
+  const hora = { ...base, cache_creation_input_tokens: 1_000_000, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 } };
+  assert.ok(Math.abs(calcularCostoUSD(hora, "claude-sonnet-5") - 4) < 1e-9);
+  assert.deepEqual(escriturasCachePorTtl(hora), { cinco: 0, hora: 1_000_000 });
+  // Mezcla: 600k de 5 min + 400k de 1 h.
+  const mezcla = { ...base, cache_creation_input_tokens: 1_000_000, cache_creation: { ephemeral_5m_input_tokens: 600_000, ephemeral_1h_input_tokens: 400_000 } };
+  assert.ok(Math.abs(calcularCostoUSD(mezcla, "claude-sonnet-5") - (0.6 * 2.5 + 0.4 * 4)) < 1e-9);
 });

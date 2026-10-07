@@ -1,4 +1,5 @@
 import { INSTRUCCION_GEOGRAFIA_UBER } from "../gastos/proveedorUber";
+import { CACHE_1H } from "../claude/cacheControl";
 import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
@@ -602,13 +603,13 @@ export async function extraerDatosFactura(
       // proyecto para este tipo de llamada (ver core/claude/client.ts). Acá
       // el riesgo es más serio todavía: esto extrae datos de FACTURAS reales.
       max_tokens: 8192,
-      // Las reglas aprendidas cambian rara vez y se repiten entre adjuntos
-      // del mismo lote. El PDF/imagen nunca se incluye en este breakpoint.
+      // Las reglas aprendidas cambian rara vez y se repiten entre adjuntos del mismo lote y entre lotes de la misma
+      // hora: caché de 1 h (medido: con 5 min se reescribía casi en cada factura). El PDF/imagen nunca entra aquí.
       system: [
         {
           type: "text",
           text: buildSystemPrompt(clasificacionesAprendidas),
-          cache_control: { type: "ephemeral" },
+          cache_control: CACHE_1H,
         },
       ],
       tools,
