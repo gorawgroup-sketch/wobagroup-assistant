@@ -17,6 +17,7 @@ import {
   nombreProveedorParaBusqueda,
   ajustarPropuestaAlMovimientoRecomendado,
   type EstadoIntentoConciliacion,
+  parsearCorreccionClasificacion,
 } from "./gastoCallbackHandler";
 import { combinarTagsGastoAprendidos } from "../holded/write";
 import type { ResolucionContactoPendiente } from "./contactoResolucionStore";
@@ -924,4 +925,13 @@ test("proveedor duplicado en Holded: se elige entre las fichas y no se ofrece cr
   const texto = textoResolucionContacto(resolucion);
   assert.match(texto, /está 2 veces en los contactos de Holded/);
   assert.match(texto, /lo recordaré y no volveré a preguntarlo/);
+});
+
+test("la corrección de clasificación entiende la empresa al principio, etiquetada o con «es de»", () => {
+  assert.deepEqual(parsearCorreccionClasificacion("WOBA, pagado con la tarjeta ••1816", "Footprint"), { empresa: "WOBA", concepto: "pagado con la tarjeta ••1816" });
+  assert.deepEqual(parsearCorreccionClasificacion("Empresa: WOBA, pagado con la tarjeta ••1816", "Footprint"), { empresa: "WOBA", concepto: "pagado con la tarjeta ••1816" });
+  assert.deepEqual(parsearCorreccionClasificacion("es de eworks, suscripción mensual", "Footprint"), { empresa: "EWORKS", concepto: "suscripción mensual" });
+  assert.deepEqual(parsearCorreccionClasificacion("suscripción mensual (empresa: footprint)", "WOBA"), { empresa: "Footprint", concepto: "suscripción mensual ()" });
+  // Sin empresa reconocible: se conserva la actual y todo el texto es el concepto.
+  assert.deepEqual(parsearCorreccionClasificacion("gasto de oficina", "WOBA"), { empresa: "WOBA", concepto: "gasto de oficina" });
 });

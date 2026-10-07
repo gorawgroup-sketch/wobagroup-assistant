@@ -3985,21 +3985,27 @@ async function manejarContactoNoEncontrado(
  * solo reconocía "WOBA"/"EWORKS" — escribir "Footprint, concepto..." se
  * ignoraba en silencio y la empresa quedaba sin corregir, sin ningún aviso.
  */
-function parsearCorreccionClasificacion(
+export function parsearCorreccionClasificacion(
   texto: string,
   empresaActual: PropuestaGasto["empresa"]
 ): { empresa: PropuestaGasto["empresa"]; concepto: string } {
+  // La empresa puede venir sola al principio («WOBA, …») o etiquetada («Empresa: WOBA, …», «es de WOBA»): caso real
+  // 2026-10-07 (recibo de OpenAI), «Empresa: WOBA, pagado con la tarjeta ••1816» dejaba la empresa en Footprint y metía
+  // todo el texto en el concepto.
+  const nombreEmpresa = (v: string): PropuestaGasto["empresa"] | undefined => {
+    const t = v.trim().toUpperCase().replace(/^EMPRESA\s*[:=]\s*/, "").replace(/^(ES\s+DE|DE)\s+/, "").trim();
+    return t === "WOBA" ? "WOBA" : t === "EWORKS" ? "EWORKS" : t === "FOOTPRINT" ? "Footprint" : undefined;
+  };
   const [empresaRaw, ...resto] = texto.split(",");
-  const empresaTexto = empresaRaw.trim().toUpperCase();
-  const empresa: PropuestaGasto["empresa"] =
-    empresaTexto === "WOBA"
-      ? "WOBA"
-      : empresaTexto === "EWORKS"
-        ? "EWORKS"
-        : empresaTexto === "FOOTPRINT"
-          ? "Footprint"
-          : empresaActual;
-  const concepto = resto.join(",").trim() || texto.trim();
+  const alPrincipio = nombreEmpresa(empresaRaw);
+  const etiquetada = /\bempresa\s*[:=]\s*(woba|eworks|footprint)\b/i.exec(texto);
+  const empresa: PropuestaGasto["empresa"] = alPrincipio ?? (etiquetada ? nombreEmpresa(etiquetada[1])! : empresaActual);
+  const conceptoRestante = alPrincipio
+    ? resto.join(",").trim()
+    : etiquetada
+      ? texto.replace(etiquetada[0], "").replace(/^[\s,;.-]+|[\s,;.-]+$/g, "").trim()
+      : "";
+  const concepto = conceptoRestante || texto.trim();
   return { empresa, concepto };
 }
 
