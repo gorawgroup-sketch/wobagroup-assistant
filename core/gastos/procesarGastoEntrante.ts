@@ -34,6 +34,7 @@ import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTec
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, cargoUnicoParaEquivalente, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { notaCargosMayores } from "../holded/cargoMayor";
+import { equivalenteCuadraConTasa } from "./equivalenteCoherente";
 import {
   obtenerPoliticaMonedaLiquidacion,
   seleccionarMovimientoLiquidacionSeguro,
@@ -299,6 +300,36 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   const politicaLiquidacion = obtenerPoliticaMonedaLiquidacion(empresa, datos.proveedor, monedaOriginal);
   let montoEquivalenteResuelto = datos.montoEquivalente;
   let monedaEquivalenteResuelta = datos.monedaEquivalente?.toUpperCase().trim();
+  // Un equivalente que se aparta de la tasa del día no es una conversión (caso Guadalajara: 174,60 € dicho de pasada en el hilo para unos
+  // 4.036,92 MXN que eran ≈ 204,65 €): se ignora y se busca el cargo real en el banco. Sin tasa, se conserva.
+  if (montoEquivalenteResuelto !== undefined && monedaEquivalenteResuelta && monedaEquivalenteResuelta !== monedaOriginal) {
+    try {
+      let tasa: number | undefined;
+      try {
+        tasa = await obtenerTasaCambioHistorica(datos.fecha, monedaOriginal, monedaEquivalenteResuelta);
+      } catch (error) {
+        console.error("[procesarGastoEntrante] Tasa histórica no disponible para validar el equivalente:", error instanceof Error ? error.message : error);
+      }
+      if (tasa === undefined) {
+        try {
+          tasa = await obtenerTasaCambioActual(monedaOriginal, monedaEquivalenteResuelta);
+        } catch (error) {
+          console.error("[procesarGastoEntrante] Tasa actual no disponible para validar el equivalente:", error instanceof Error ? error.message : error);
+        }
+      }
+      if (!equivalenteCuadraConTasa({ monto: datos.monto, equivalente: montoEquivalenteResuelto, tasa })) {
+        datos.razon =
+          (datos.razon ? `${datos.razon} ` : "") +
+          `[El equivalente indicado (${montoEquivalenteResuelto} ${monedaEquivalenteResuelta}) no cuadra con la tasa del día para ${datos.monto} ${monedaOriginal} ` +
+          `(≈ ${(datos.monto * (tasa as number)).toFixed(2)} ${monedaEquivalenteResuelta}); se ignora y se busca el cargo real en el banco.]`;
+        console.log(`[procesarGastoEntrante] Equivalente ${montoEquivalenteResuelto} ${monedaEquivalenteResuelta} descartado: no cuadra con la tasa (${datos.monto} ${monedaOriginal}).`);
+        montoEquivalenteResuelto = undefined;
+        monedaEquivalenteResuelta = undefined;
+      }
+    } catch (error) {
+      console.error("[procesarGastoEntrante] No se pudo validar el equivalente con la tasa (se conserva):", error instanceof Error ? error.message : error);
+    }
+  }
   let movimientoLiquidacionUsado: Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>[number] | undefined;
 
   // Regla contable confirmada por Carlos (caso real Anthropic, doc
