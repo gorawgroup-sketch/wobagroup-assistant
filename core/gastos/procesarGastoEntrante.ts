@@ -1,3 +1,4 @@
+import { frenoAvisoPropuesta } from "./avisoPropuestaPendiente";
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
 import { esFechaDocumentoValida } from "./fechaDocumento";
@@ -734,6 +735,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       // Caso real (Carlos, 2026-09-30): «resuelve la propuesta existente» dejaba el chat sin botones, porque esa
       // propuesta estaba muchos mensajes más arriba (correo de 5 adjuntos). La decisión pendiente va siempre al
       // final del chat, con sus botones; el aviso explica por qué no se propone otra.
+      // Un aviso por propuesta cada 10 min (core/gastos/avisoPropuestaPendiente.ts): un correo con muchos adjuntos, un reintento
+      // o un reinicio ya no llenan el chat con el mismo mensaje. La decisión sigue pendiente en el aviso ya enviado.
+      if (!(await frenoAvisoPropuesta.puedeAvisar(propuestaYaPendiente.id))) {
+        console.log(`[procesarGastoEntrante] Aviso de propuesta pendiente omitido (ya se avisó hace menos de 10 min): ${propuestaYaPendiente.id}`);
+        return "propuesta_pendiente_existente";
+      }
       const encabezado =
         `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta pendiente para este mismo correo ` +
         `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +

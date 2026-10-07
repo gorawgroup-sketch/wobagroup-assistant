@@ -35,6 +35,13 @@ Antes de clasificar, cada correo se lee como una **cadena**: quién lo escribe d
 - **Seguridad:** el texto de un reenvío lo puede escribir cualquiera. El remitente real sale del cuerpo, nunca se trata como verificado, **no se registra en el directorio de personas** (evita que alguien lo envenene para que el asistente resuelva un nombre a una dirección falsa) y no autoriza nada. Se conservan todas las protecciones del extractor anterior: la dirección es la de los ángulos, un nombre con «@» no es un nombre y un formato corrupto no produce email.
 - Sustituye a `core/gmail/remitenteReenvio.ts` (retirado): el camino de «correo puntual» usa el mismo lector.
 
+## Imágenes de relleno y avisos repetidos (2026-10-07)
+
+**Incidente:** el correo «Hotel Wynwood – 133.37 usd – revolut» (Booking.com) traía **58 imágenes «noname»** de 0,3 a 17 KB —logos, iconos y píxeles referenciados desde el HTML— y el chat se llenó del mismo aviso «ya tiene una propuesta pendiente para este mismo correo» (una vez por imagen y por pasada), con una acción de 13 minutos y unos 3 USD de lecturas de factura. El filtro de decoración solo conocía las imágenes `inline`: 46 de las 58 llegaban como `attachment` con Content-ID.
+
+- **Causa de fondo** (`core/correo/lectura/decoracion.ts`, conectado en `extraerAdjuntos`): una imagen con Content-ID, de tamaño conocido ≤ 30 KB y con el nombre de relleno «noname» (o sin nombre) es decoración **sea cual sea su disposición**. Un PDF u otro documento, una imagen con nombre real, una grande o sin Content-ID, o de tamaño desconocido siguen siendo adjuntos. Auditado con 150 correos reales de 60 días: solo afecta a 3 correos, todos con imágenes incrustadas en el HTML (el recibo real del tren de Italia sigue siendo adjunto).
+- **Freno de fondo** (`core/gastos/avisoPropuestaPendiente.ts`): aunque otra cosa vuelva a generar muchos adjuntos, el aviso de «propuesta pendiente» sale **una vez por propuesta cada 10 min**. El registro es durable (`_avisos_propuesta_pendiente`), se carga una vez en memoria, serializa las decisiones (58 llamadas simultáneas dejan pasar una) y sobrevive a los despliegues. Si no se puede leer el registro, se avisa como siempre (nunca se calla de más).
+
 ## Única ruta de creación y conversión manual a ticket
 
 La fase automática no mantiene reglas paralelas para crear compras. Reutiliza las mismas funciones durables del flujo uno a uno para inferir la cuenta desde los precedentes y correcciones confirmadas, componer las etiquetas funcionales, crear o corregir la compra, adjuntar el comprobante y conciliar el movimiento. Si esa memoria no permite demostrar una cuenta o cualquier otro dato, el correo queda para revisión manual; no se sustituye por una cuenta, etiqueta o valor por defecto.
