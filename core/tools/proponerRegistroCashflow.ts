@@ -1,5 +1,6 @@
 import { detectarNoRegistrados, enviarPropuestaCandidato, type EmpresaCashflow } from "../jobs/revisarHoldedVsCashflow";
 import { rangoPedido } from "./compararCashflowHolded";
+import { DESCRIPCION_PARAMETRO_TIPO, filtrarPorTipo, leerTipoMovimiento, notaPorFiltro } from "../cashflow/filtroTipoMovimiento";
 import type { ToolDefinition } from "./types";
 
 const EMPRESAS: EmpresaCashflow[] = ["WOBA", "EWORKS"];
@@ -39,6 +40,7 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
         description: "'semana_actual' (por defecto) revisa lo que va de la semana en curso. 'semana_anterior' revisa la semana pasada completa.",
       },
       semana: { type: "string", description: "Semana exacta del informe, por ejemplo S38. Tiene prioridad sobre periodo." },
+      tipo_movimiento: { type: "string", enum: ["ingresos", "gastos", "todos"], description: DESCRIPCION_PARAMETRO_TIPO },
     },
   },
   handler: async (input, context) => {
@@ -52,6 +54,9 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
       return "Error: 'empresa' debe ser WOBA o EWORKS (Footprint no tiene cashflow en Sheets).";
     }
     const empresas = empresaFiltro ? [empresaFiltro] : EMPRESAS;
+
+    const tipo = leerTipoMovimiento(input.tipo_movimiento);
+    if (typeof tipo === "object") return `Error: ${tipo.error}`;
 
     const rango = rangoPedido(input);
     if ("error" in rango) return `Error: ${rango.error}`;
@@ -71,13 +76,21 @@ export const proponerRegistroCashflowTool: ToolDefinition = {
           continue;
         }
 
+        // «Solo ingresos / solo gastos»: lo que se oculta se dice, nunca desaparece en silencio.
+        const { visibles, ocultosIngresos, ocultosGastos } = filtrarPorTipo(candidatos, tipo, (c) => c.esIngreso);
+        const nota = notaPorFiltro(tipo, ocultosIngresos, ocultosGastos);
+        if (visibles.length === 0) {
+          partes.push(`✅ ${empresa}: no hay ${tipo} por proponer en ${semanaLabel}.${nota ? ` ${nota}` : ""}`);
+          continue;
+        }
+
         let enviadas = 0;
-        for (const candidato of candidatos) {
+        for (const candidato of visibles) {
           const ok = await enviarPropuestaCandidato(chatId, candidato, semanaLabel, false);
           if (ok) enviadas++;
         }
         totalPropuestas += enviadas;
-        partes.push(`📋 ${empresa}: te mandé ${enviadas} propuesta(s) con botones arriba, para ${semanaLabel}.`);
+        partes.push(`📋 ${empresa}: te mandé ${enviadas} propuesta(s)${tipo === "todos" ? "" : ` de ${tipo}`} con botones arriba, para ${semanaLabel}.${nota ? ` ${nota}` : ""}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         partes.push(`⚠️ ${empresa}: no se pudo proponer (${message}).`);
