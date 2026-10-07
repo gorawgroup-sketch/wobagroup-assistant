@@ -105,3 +105,10 @@ Caso real (Footprint, «Lunch – 180 pesos mexicanos – revolut», 06-10): el 
 Caso real (Footprint, Booking «Pulse 95», documento 5580815125): la misma reserva se leyó con fecha 02-09 (el cargo) y con 21-09 (la entrada al hotel). La búsqueda de duplicados en Holded solo mira ±10 días, así que con 21-09 no veía el gasto ya creado y Wobi propuso **crear uno nuevo** (sin la opción de adjuntar el comprobante al existente).
 
 - `buscarGastoSimilar` (`core/holded/write.ts`): si el pase normal no encuentra nada y el documento tiene número identificable, repite con una ventana de ±120 días aceptando **solo** número de documento + proveedor + importe iguales (`totalSiCompraCoincide`, con prueba). La fecha no cuenta; el pase ancho nunca bloquea si queda incompleto.
+
+## Gasto ya procesado con un soporte sin información: ofrecer el bueno (2026-10-07)
+
+Caso real (Footprint, Booking «Antaris», 207,09 €): el gasto existía pero su único comprobante era una captura de mapa; el PDF bueno del mismo correo (`Hospedaje - Booking Antaris.pdf`) se bloqueaba como «ya procesado» (mismo número y proveedor) y Wobi no ofrecía adjuntarlo.
+
+- `core/gastos/soporteDistinto.ts` (`debeOfrecerSoporteDistinto`, con prueba): en el bloqueo por identidad (`mismo_numero_y_proveedor`) se descargan los adjuntos del gasto y, si ya tiene ese mismo archivo, se bloquea como siempre. Si no lo tiene y o bien no hay adjuntos, o el archivo nuevo es un PDF y todo lo adjunto son imágenes, se ofrece el flujo normal «Es este (#1)» (adjuntar al existente), nunca crear ni conciliar solo.
+- Si no se pueden leer los adjuntos de Holded, se bloquea como siempre. Un PDF distinto sobre un gasto que ya tiene un PDF no se ofrece (puede ser otra versión del mismo documento).
