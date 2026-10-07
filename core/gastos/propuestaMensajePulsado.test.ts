@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { propuestaEnMensajePulsado } from "./gastoCallbackHandler";
+import { propuestaEnMensajePulsado } from "./propuestaMensajePulsado";
 
 const propuesta = { id: "2e3842c8", chatId: 77, messageId: 6213 } as never;
 const cb = (message?: { message_id: number; chat: { id: number } }) => ({ id: "c", data: "gasto_toggle:2e3842c8:crear", message }) as never;
