@@ -53,12 +53,12 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Botón «Conciliar esta parte» tras crear un gasto cuyo recibo se cobró en varios pagos (fase B) | Conciliación y bancos | `feat/conciliacion-parcial-boton` | Claude Code | En PR. Módulo `core/gastos/conciliacionParcialRecibo.ts`; 2 puntos de conexión en `gastoCallbackHandler.ts` |
 | Reglas «ya está sumado en otra línea» del cashflow (botón Explicar + herramienta de chat) | Cashflow | `feat/reglas-cashflow-agregadas` | Claude Code | En PR. Carpeta `core/cashflow/` (reglas, explicación, almacén de espera) + 4 puntos de conexión |
 | Lectura completa del correo (remitente original en cadenas, mensaje nuevo sin citas, adjuntos y lista de peticiones con una acción cada una) | Correo | _sin rama todavía (paso 2)_ | Claude Code | Paso 1 hecho (#383, 07-10-2026). Carlos dio el visto bueno el 07-10-2026. En 3 PR: (1) remitente original y cadenas + quitar el recorte de 8.000 caracteres del clasificador, sin IA; (2) peticiones y adjuntos en la cola manual; (3) revisión automática y directorio de personas. Carpeta propia `core/correo/lectura/`; los archivos centrales (`classifyEmail.ts`, `revisarCorreoNuevo.ts`) solo reciben el punto de conexión. Una sola sesión en el área Correo mientras dure. Medir el coste de IA antes de activar. |
-| Incidente 07-10: imágenes de relleno «noname» tratadas como adjuntos y aviso de propuesta pendiente repetido sin freno | Correo | `fix/adjuntos-embebidos-y-avisos-repetidos` | Claude Code | En PR (07-10-2026). Lógica en `core/correo/lectura/decoracion.ts` y `core/gastos/avisoPropuestaPendiente.ts`; `gmail/client.ts` y `procesarGastoEntrante.ts` solo reciben el punto de conexión. |
 
 ### Hecho reciente
 
 | Trabajo | PR | Fecha |
 |---|---|---|
+| Incidente 07-10: imágenes de relleno «noname» como adjuntos y aviso de propuesta pendiente repetido sin freno (`core/correo/lectura/decoracion.ts`, `core/gastos/avisoPropuestaPendiente.ts`) | #389 | 07-10-2026 |
 | Pedir soportes a quien gastó con la tarjeta: CSV de Revolut → resumen por persona → un correo por titular (cuadro + Excel, direcciones del buzón, regla fija en el prompt) | #370, #371, #372, #373 | 06/07-10-2026 |
 | `/preguntas` con un botón por pendiente y búsqueda tolerante | #374, #376 | 06-10-2026 |
 | Casa Peppe: tasa COP robusta, teclado en el mensaje pulsado, tasas en paralelo | #375, #377 | 06-10-2026 |
