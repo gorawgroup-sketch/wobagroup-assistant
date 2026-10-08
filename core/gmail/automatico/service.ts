@@ -43,17 +43,30 @@ const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de 
  *  - La empresa de la operación ya está fijada por su plan; una relectura que no la sabe («desconocida») no la contradice. Una relectura que
  *    nombra OTRA empresa distinta sí bloquea.
  */
-export function reciboCorrespondeALaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
+export function motivosDeNoCorrespondencia(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): string[] {
   const centimos = (monto: number) => Math.round(monto * 100);
-  const anteriorContable = anterior.equivalente ?? { monto: anterior.monto, moneda: anterior.moneda };
-  const actualContable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
   const tolerancia = Math.max(0, op.plan.toleranciaCentimos);
-  const empresaCoincide = actual.empresa === op.plan.empresa || actual.empresa === "desconocida";
-  const totalCoincide = actualContable.moneda !== op.plan.movimiento.moneda ||
-    Math.abs(centimos(actualContable.monto) - op.plan.totalCentimos) <= tolerancia;
-  return actual.fuente === anterior.fuente && empresaCoincide &&
-    actual.fecha === anterior.fecha && actualContable.moneda === anteriorContable.moneda &&
-    Math.abs(centimos(actualContable.monto) - centimos(anteriorContable.monto)) <= tolerancia && totalCoincide;
+  const motivos: string[] = [];
+  if (actual.fuente !== anterior.fuente) motivos.push("otra parte del correo");
+  if (!(actual.empresa === op.plan.empresa || actual.empresa === "desconocida")) motivos.push(`empresa ${actual.empresa} en vez de ${op.plan.empresa}`);
+  if (actual.fecha !== anterior.fecha) motivos.push("otra fecha");
+  // El importe IMPRESO es lo que identifica al recibo. El `equivalente` del plan puede venir de la búsqueda bancaria (evidencia),
+  // no del correo: la relectura no lo trae y compararlo ahí daba «340 MXN» contra «EUR» (caso real 08-10-2026: Antaris, Xue Cafe).
+  if (actual.moneda !== anterior.moneda || Math.abs(centimos(actual.monto) - centimos(anterior.monto)) > tolerancia) motivos.push("otro importe impreso");
+  // Si lo releído (impreso o equivalente) está en la moneda del movimiento, tiene que cuadrar con el total del plan; en otra moneda
+  // no son comparables (24,20 USD del recibo frente a 20,88 EUR del cargo nunca coinciden y no tienen por qué).
+  const contable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
+  if (contable.moneda === op.plan.movimiento.moneda && Math.abs(centimos(contable.monto) - op.plan.totalCentimos) > tolerancia) {
+    motivos.push("no cuadra con el cargo del plan");
+  }
+  // Con las dos lecturas en la misma moneda contable, también deben coincidir entre sí.
+  if (anterior.equivalente && actual.equivalente && anterior.equivalente.moneda === actual.equivalente.moneda &&
+    Math.abs(centimos(actual.equivalente.monto) - centimos(anterior.equivalente.monto)) > tolerancia) motivos.push("otro equivalente");
+  return motivos;
+}
+
+export function reciboCorrespondeALaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
+  return motivosDeNoCorrespondencia(anterior, actual, op).length === 0;
 }
 
 /**
@@ -450,7 +463,7 @@ export class ServicioCorreoAutomatico {
                     ? [`lectura:${analisisRecuperado.detalleIncompleto.slice(0, 200)}`] : []),
                   ...(motivoRelectura === "relectura_sin_recibo_unico" ? [`relectura:${recibosFuente.length} recibo(s) en la parte «${op.plan.recibo.fuente}»`] : []),
                   ...(motivoRelectura === "relectura_no_coincide"
-                    ? [`relectura:antes ${op.plan.recibo.monto} ${op.plan.recibo.moneda} del ${op.plan.recibo.fecha}; ahora ${recibosFuente[0].monto} ${recibosFuente[0].moneda} del ${recibosFuente[0].fecha} (${recibosFuente[0].empresa})`] : [])];
+                    ? [`relectura:antes ${op.plan.recibo.monto} ${op.plan.recibo.moneda} del ${op.plan.recibo.fecha}; ahora ${recibosFuente[0].monto} ${recibosFuente[0].moneda} del ${recibosFuente[0].fecha} (${recibosFuente[0].empresa}); difiere en: ${motivosDeNoCorrespondencia(op.plan.recibo, recibosFuente[0], op).join(", ")}`] : [])];
                 operacionesBloqueadas.set(op.id, motivosRelectura);
                 if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
                   motivos: motivosRelectura, detalles: [this.detalleOperacion(op, motivosRelectura)] });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analisisReutilizable, ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS, reciboCorrespondeALaOperacion, prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
+import { motivosDeNoCorrespondencia, analisisReutilizable, ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS, reciboCorrespondeALaOperacion, prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { evaluarAuto, hash, VERSION_ANALISIS, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 import { UsoApiNoAutorizadoError } from "../../ai/policy";
@@ -695,4 +695,23 @@ test("relectura: en la misma moneda del movimiento el importe debe cuadrar con e
   const anterior = { ...reciboFixture(), moneda: "EUR", monto: 50, equivalente: undefined, empresa: "WOBA" as const };
   const op = operacionDe(anterior, "EUR", 4000); // el plan cobró 40 €, el recibo dice 50 €: no es la misma operación
   assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), false);
+});
+
+test("relectura: el equivalente del plan salió de la búsqueda bancaria, no del correo; que la relectura no lo traiga no es otra operación (caso real 08-10: Antaris 340 MXN, Xue Cafe 19.513 COP)", () => {
+  for (const [moneda, monto, eur] of [["MXN", 340, 1693], ["COP", 19513, 439]] as const) {
+    const anterior = { ...reciboFixture(), moneda, monto, empresa: "Footprint" as const, equivalente: { moneda: "EUR", monto: eur / 100 } };
+    const op = operacionDe(anterior, "EUR", eur);
+    const relectura = { ...anterior, equivalente: undefined };
+    assert.deepEqual(motivosDeNoCorrespondencia(anterior, relectura, op), [], moneda);
+    assert.equal(reciboCorrespondeALaOperacion(anterior, relectura, op), true, moneda);
+    // y lo que sí cambia sigue bloqueando, diciendo por qué
+    assert.deepEqual(motivosDeNoCorrespondencia(anterior, { ...relectura, monto: monto + 100 }, op), ["otro importe impreso"]);
+    assert.deepEqual(motivosDeNoCorrespondencia(anterior, { ...relectura, fecha: "2026-01-01" }, op), ["otra fecha"]);
+  }
+});
+
+test("relectura: un equivalente releído en la moneda del cargo que no cuadra con el plan sigue bloqueando", () => {
+  const anterior = { ...reciboFixture(), moneda: "MXN", monto: 340, empresa: "Footprint" as const, equivalente: { moneda: "EUR", monto: 16.93 } };
+  const op = operacionDe(anterior, "EUR", 1693);
+  assert.deepEqual(motivosDeNoCorrespondencia(anterior, { ...anterior, equivalente: { moneda: "EUR", monto: 30 } }, op), ["no cuadra con el cargo del plan", "otro equivalente"]);
 });
