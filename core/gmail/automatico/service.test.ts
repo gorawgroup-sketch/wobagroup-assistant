@@ -133,7 +133,7 @@ test("el informe oculta ids de operaciones y muestra una sola causa principal po
       detalles: [{ proveedor: "ALDI", empresa: "Footprint", monto: 82.31, moneda: "EUR",
         motivos: ["operacion_incierta:uuid-interno", "detalle:timeout privado"] }] }],
   });
-  assert.match(texto, /La operación ya empezó, pero falta confirmar que quedó completa en Holded/);
+  assert.match(texto, /La operación de una revisión anterior quedó en estado incierto/);
   assert.doesNotMatch(texto, /uuid-interno|operacion_incierta|timeout privado|movimiento_no_libre/);
 });
 test("simulación analiza y audita sin reservas, escrituras ni marcado leído", async () => {

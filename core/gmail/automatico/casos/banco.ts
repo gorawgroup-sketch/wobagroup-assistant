@@ -64,8 +64,8 @@ export const CASOS: CasoReal[] = [
     conciliarFalla: "Conciliación no confirmada al 100 %: partial.",
     operacionesPrevias: [operacionPrevia({ id: "op-partial", correo: correoCaso("partial"), estado: "incierta", pasoIncierto: "conciliando", compraId: "compra-mca",
       version: VERSION_POLITICA, detalle: "Conciliación no confirmada al 100 %: partial.", recibo: reciboCaso({ proveedor: "MCA Airports", moneda: "USD", monto: 16.54 }) })],
-    // Contrato vigente del informe: una operación sin cerrar se dice sin exponer detalles técnicos ni ids (ver service.test.ts).
-    espera: [/La operación ya empezó, pero falta confirmar que quedó completa en Holded/, /Footprint · MCA Airports · 16\.54 USD/],
+    // Contrato del informe: el paso que quedó a medias, sin exponer ids ni detalles técnicos (ver service.test.ts).
+    espera: [/La operación de una revisión anterior quedó en estado incierto \(Holded no confirmó el último paso\)/, /Footprint · MCA Airports · 16\.54 USD/],
     noEspera: [GENERICO_LECTURA, CODIGOS_INTERNOS],
   },
 ];
