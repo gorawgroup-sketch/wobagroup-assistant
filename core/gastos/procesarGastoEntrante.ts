@@ -57,6 +57,12 @@ export interface GastoEntrante {
   /** true si este adjunto vino de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
   deColaCorreo?: boolean;
   /**
+   * Norma de resolución autónoma (Carlos, 2026-10-08): una retoma automática de un pendiente de moneda (el banco aún no
+   * mostraba el cargo) vuelve a buscar el cargo real sin volver a preguntar. Si sigue sin aparecer, se conserva el pendiente
+   * en silencio; el usuario ya fue avisado la primera vez y el resumen diario lo lista.
+   */
+  retomaSilenciosa?: boolean;
+  /**
    * Si rutaLocal viene de un adjunto real de Gmail, sus ids — permite volver
    * a descargarlo de la fuente durable si la copia local (tmp/uploads, no
    * sobrevive un redeploy de Railway) se pierde antes de adjuntarlo al gasto
@@ -377,7 +383,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         origenAdjuntoGmail: entrada.origenAdjuntoGmail,
         correoOrigen: entrada.correoOrigen,
       });
-      await sendTelegramMessage(
+      if (!entrada.retomaSilenciosa) await sendTelegramMessage(
         chatId,
         `📄 ${empresa} · ${datos.proveedor || "Anthropic"} · ${datos.monto.toFixed(2)} ${monedaOriginal} · ${fechaBusqueda}.\n\n` +
           `La liquidación se registra en ${politicaLiquidacion.moneda} usando el importe real del banco. ` +
@@ -460,7 +466,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
             `spread de la tarjeta, por eso no lo registro directamente): ${referencias.join(" / ")}.`;
         }
       }
-      await sendTelegramMessage(
+      if (!entrada.retomaSilenciosa) await sendTelegramMessage(
         chatId,
         `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
           `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
@@ -469,9 +475,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           (busquedaFxIncompleta
             ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
             : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
-          `${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
-          `a calcular un tipo de cambio yo mismo) antes de registrar nada. Respóndeme aquí mismo en texto libre con el ` +
-          `monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`
+          `${pistas} Lo dejo pendiente de comprobación bancaria: en cada revisión de correo vuelvo a buscar el cargo real yo ` +
+          `mismo, sin pedirte cálculos ni tipos de cambio (el importe que se registra es siempre el del banco). Si ya tienes a ` +
+          `mano el importe exacto que salió de la cuenta, dímelo aquí (ej. «40.46 EUR») y sigo ahora mismo.`
       );
       await guardarGastoPendienteDatos({
         chatId,

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { NORMA_EXTRACTOR } from "../ia/normaResolucionAutonoma";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -223,7 +224,7 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
   const respuesta = await crearMensajeAnthropic(cliente, ejecucion, {
     model: resolverModeloDocumental("clasificar_correo"),
     max_tokens: 8192,
-    system: "Lees la respuesta de una persona a un correo que le pidió los soportes (facturas/recibos) de cargos hechos con su tarjeta. Para CADA cargo de la tabla, di qué responde de ese cargo concreto, leyendo el cuerpo completo (no las citas). Nunca asumas que algo está resuelto si no lo dice. Termina siempre llamando a la herramienta.",
+    system: "Lees la respuesta de una persona a un correo que le pidió los soportes (facturas/recibos) de cargos hechos con su tarjeta. Para CADA cargo de la tabla, di qué responde de ese cargo concreto, leyendo el cuerpo completo (no las citas). Nunca asumas que algo está resuelto si no lo dice. Termina siempre llamando a la herramienta." + "\n\n" + NORMA_EXTRACTOR,
     tools: [tool],
     tool_choice: { type: "tool", name: TOOL_NAME },
     messages: [{

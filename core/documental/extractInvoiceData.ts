@@ -1,4 +1,5 @@
 import { INSTRUCCION_GEOGRAFIA_UBER } from "../gastos/proveedorUber";
+import { bloqueNormaResolucion } from "../ia/normaResolucionAutonoma";
 import { CACHE_1H } from "../claude/cacheControl";
 import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
@@ -612,6 +613,7 @@ export async function extraerDatosFactura(
           text: buildSystemPrompt(clasificacionesAprendidas),
           cache_control: CACHE_1H,
         },
+        bloqueNormaResolucion("extractor"),
       ],
       tools,
       messages,

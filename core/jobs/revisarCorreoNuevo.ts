@@ -58,6 +58,7 @@ import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorre
 import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
+import { retomarPendientesMonedaSinPreguntar } from "../gastos/retomarPendientesMoneda";
 import { mensajeDeExceso } from "../correo/lectura/proteccionAdjuntos";
 import {
   encolarCorreos,
@@ -428,6 +429,11 @@ async function sincronizarColaCorreo(
   // Avianca/Larrauri), se reintenta acá, en cada revisión, en vez de esperar 48h o requerir que
   // Carlos lo destrabe a mano — la mayoría de estos fallos son transitorios (cuota de Sheets/Gmail
   // agotada por unos minutos), así que un reintento normal minutos/horas después suele bastar.
+  // Norma de resolución autónoma: los recibos que esperan el cargo real del banco se vuelven a buscar solos en cada
+  // revisión (ver core/gastos/retomarPendientesMoneda.ts); el punto de conexión es solo esta llamada.
+  await retomarPendientesMonedaSinPreguntar(chatId).catch((error) =>
+    console.error("[revisarCorreoNuevo] Error retomando pendientes de moneda (no crítico):", error)
+  );
   const pendienteDeConfirmar = await reintentarActivoPendienteDeMarcarLeido(chatId).catch((error) => {
     console.error("[revisarCorreoNuevo] Error revisando si hay un correo pendiente de confirmar leído:", error);
     return undefined;
