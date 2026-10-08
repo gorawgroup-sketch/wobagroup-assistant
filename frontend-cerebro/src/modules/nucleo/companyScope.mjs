@@ -30,7 +30,27 @@ export function scopeSnapshot(moduleId, snapshot, companyId) {
     case 'seguros': {
       const source = snapshot.seguros || {};
       const polizas = onlyCompany(source.polizas, companyId);
-      result.seguros = { ...source, polizas, proximasARenovar: onlyCompany(source.proximasARenovar, companyId), pagosSinConfirmar: onlyCompany(source.pagosSinConfirmar, companyId), porEmpresa: { [companyId]: source.porEmpresa?.[companyId] || { total: 0, vigentes: 0, pendientesConfirmar: 0 } }, totalPolizasActivas: polizas.filter(item => item.estado !== 'no_contratada').length };
+      const pagosSinConfirmar = onlyCompany(source.pagosSinConfirmar, companyId);
+      const vigentes = polizas.filter(item => item.estado === 'vigente').length;
+      result.seguros = {
+        ...source,
+        polizas,
+        proximasARenovar: onlyCompany(source.proximasARenovar, companyId),
+        proximos: onlyCompany(source.proximos, companyId),
+        pagosSinConfirmar,
+        documentos: Array.isArray(source.documentos) ? onlyCompany(source.documentos, companyId) : source.documentos,
+        // Estos conteos de presentación usan los estados recibidos; nunca atribuyen al selector el total del grupo.
+        resumen: {
+          ...source.resumen,
+          vigentes,
+          sinConfirmarPago: pagosSinConfirmar.length,
+          porConfirmarOEnHold: polizas.filter(item => item.estado === 'pendiente_confirmacion').length,
+          vencidas: polizas.filter(item => item.estado === 'vencida').length,
+          noContratadas: polizas.filter(item => item.estado === 'no_contratada').length,
+        },
+        porEmpresa: { [companyId]: source.porEmpresa?.[companyId] || { total: 0, vigentes: 0, pendientesConfirmar: 0 } },
+        totalPolizasActivas: vigentes,
+      };
       break;
     }
     case 'fiscal': {

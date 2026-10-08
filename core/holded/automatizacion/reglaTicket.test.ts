@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluarReglaTicket, TOPE_EUR_AUTOMATICO } from "./reglaTicket";
+import { entradaReglaDesdeCompra, evaluarReglaTicket, monedaOriginalDeDescripcion, TOPE_EUR_AUTOMATICO } from "./reglaTicket";
 import { escanearReglaTicket, puedeReabrirPorRegla, reiniciarVistosParaPruebas, tasaDeCambio } from "./escaneoTickets";
 import { procesarColaTickets, claveTicket } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
@@ -204,4 +204,83 @@ test("puedeReabrirPorRegla: solo lo provisional y nunca intentado", () => {
   assert.equal(puedeReabrirPorRegla(t("omitido", 1, { origen: "recepcion", clasificacion: "factura" })), false);
   assert.equal(puedeReabrirPorRegla(t("requiere_intervencion", 0, { origen: "regla_auto" }, "Clasificación dudosa")), false);
   assert.equal(puedeReabrirPorRegla(t("requiere_intervencion", 0, { origen: "recepcion" }, "Sin sesión web de Holded")), false);
+});
+
+/* ───────── Caso real 08-10-2026 (Footprint): restaurantes y taxis de México/Colombia sin convertir y sin pregunta ───────── */
+
+const provisional = (id: string) => ({
+  clave: claveTicket("Footprint", id), tipo: "ticket" as const, empresa: "Footprint", objetivo: id, estado: "requiere_intervencion" as const, intentos: 0,
+  creadoEn: 1, actualizadoEn: 1, ultimoError: "Clasificación dudosa: pendiente de revisión",
+  evidencia: { proveedor: `Prov ${id}`, clasificacion: "revisar", motivos: ["sin evidencia"], origen: "recepcion" } as Record<string, unknown>,
+});
+// Gasto ya en EUR (se convirtió al crearlo); la descripción deja escrita la moneda del recibo, como hace WOBI.
+const enEuros = (id: string, descripcion = "Almuerzo restaurante — 6 oct 2026") => compra(id, { currency: "EUR", currency_change: "1.00", total: "8,92", description: descripcion });
+const sinNif = (id: string) => ({ [`k-${id}`]: { code: "" } });
+
+test("regla: un recibo original fuera del euro (MXN) con el gasto ya en EUR es señal de ticket; en euros no; con NIF o por encima del tope nunca", () => {
+  assert.equal(evaluarReglaTicket({ ...base, monedaOriginal: "MXN" }).decision, "ticket");
+  assert.match(evaluarReglaTicket({ ...base, monedaOriginal: "mxn" }).motivos.join(" "), /recibo original en MXN/);
+  assert.equal(evaluarReglaTicket({ ...base, monedaOriginal: "EUR" }).decision, "revisar");
+  assert.equal(evaluarReglaTicket({ ...base, monedaOriginal: "COP", tieneNif: true }).decision, "nunca");
+  assert.equal(evaluarReglaTicket({ ...base, monedaOriginal: "COP", totalEUR: TOPE_EUR_AUTOMATICO + 1 }).decision, "nunca");
+});
+
+test("la moneda del recibo se lee de la frase que WOBI deja en la descripción del gasto", () => {
+  assert.equal(monedaOriginalDeDescripcion("Almuerzo — 6 oct 2026 (180 MXN, comprobante en MXN)"), "MXN");
+  assert.equal(monedaOriginalDeDescripcion("Pedido Rappi — Medellín — 1 oct 2026 (53300 COP, comprobante en COP)"), "COP");
+  assert.equal(monedaOriginalDeDescripcion("Hospedaje (200 USD, Comprobante en usd)"), "USD");
+  assert.equal(monedaOriginalDeDescripcion("Tiquete aéreo LATAM — reservado vía Booking.com"), undefined);
+  assert.equal(monedaOriginalDeDescripcion(undefined), undefined);
+  const e = entradaReglaDesdeCompra({ currency: "EUR", currency_change: "1.00", total: "8,92", description: "Café — (85 MXN, comprobante en MXN)" }, { code: "" }, false);
+  assert.equal(e.monedaOriginal, "MXN");
+});
+
+test("un dudoso que ya traía registro provisional AHORA se pregunta (antes la pregunta no llegaba nunca), una sola vez, y el botón lo puede atender", async () => {
+  reiniciarVistosParaPruebas();
+  const almacen = new AlmacenTrabajosMemoria();
+  await almacen.guardar(provisional("duda"));
+  const leer = mundo([enEuros("duda")], sinNif("duda"));
+  const r = await escanearReglaTicket("Footprint", almacen, { leer, simulada: false });
+  assert.deepEqual(r.dudosos.map((d) => d.id), ["duda"]);
+  const t = await almacen.obtener(claveTicket("Footprint", "duda"));
+  assert.equal(t?.evidencia.origen, "regla_revisar");
+  assert.equal(t?.estado, "requiere_intervencion");
+  assert.equal(t?.intentos, 0);
+  // Una sola vez: tras reiniciar la memoria del proceso (despliegue) no vuelve a preguntar.
+  reiniciarVistosParaPruebas();
+  assert.equal((await escanearReglaTicket("Footprint", almacen, { leer, simulada: false })).dudosos.length, 0);
+  // Y la decisión del botón funciona sobre ese registro.
+  const { aprobarDudoso } = await import("./decisionesTickets");
+  assert.equal(await aprobarDudoso(almacen, "Footprint", "duda"), "aprobado");
+  assert.equal((await almacen.obtener(claveTicket("Footprint", "duda")))?.estado, "solicitado");
+});
+
+test("recibos en MXN/COP convertidos a EUR pasan a la cola solos, sin preguntar; el que no tiene señal sigue preguntándose", async () => {
+  reiniciarVistosParaPruebas();
+  const almacen = new AlmacenTrabajosMemoria();
+  for (const id of ["cnidos", "rappi", "booking"]) await almacen.guardar(provisional(id));
+  const compras = [
+    enEuros("cnidos", "Almuerzo restaurante Cnidos y Rifados, Ciudad de México — 6 oct 2026 (180 MXN, comprobante en MXN)"),
+    enEuros("rappi", "Pedido Rappi — Poke Laureles, Medellín, Colombia — 1 oct 2026 (53300 COP, comprobante en COP)"),
+    enEuros("booking", "Tiquete aéreo LATAM LA4400 — Bogotá → Miami — reservado vía Booking.com"),
+  ];
+  const contactos = { ...sinNif("cnidos"), ...sinNif("rappi"), ...sinNif("booking") };
+  const r = await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, contactos), simulada: false });
+  assert.deepEqual(r.candidatos.map((c) => c.id).sort(), ["cnidos", "rappi"]);
+  assert.deepEqual(r.dudosos.map((d) => d.id), ["booking"]);
+  const t = await almacen.obtener(claveTicket("Footprint", "cnidos"));
+  assert.equal(t?.estado, "solicitado"); assert.equal(t?.evidencia.origen, "regla_auto");
+  assert.match(String(t?.evidencia.motivos), /recibo original en MXN/);
+});
+
+test("el recibo en otra moneda no salta las exclusiones: con NIF del proveedor o por encima de 500 € no se convierte", async () => {
+  reiniciarVistosParaPruebas();
+  const almacen = new AlmacenTrabajosMemoria();
+  const compras = [
+    enEuros("conNif", "Cena (180 MXN, comprobante en MXN)"),
+    compra("grande", { currency: "EUR", currency_change: "1.00", total: "900,00", description: "Hotel (18000 MXN, comprobante en MXN)" }),
+  ];
+  const r = await escanearReglaTicket("Footprint", almacen, { leer: mundo(compras, { "k-conNif": { code: "B12345678" }, "k-grande": { code: "" } }), simulada: false });
+  assert.equal(r.candidatos.length, 0);
+  assert.equal(r.excluidas, 2);
 });

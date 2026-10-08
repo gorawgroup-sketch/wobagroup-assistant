@@ -1,6 +1,6 @@
 import { holdedGet, type Empresa } from "../client";
 import { entradaReglaDesdeCompra, evaluarReglaTicket } from "./reglaTicket";
-import { registrarDudoso } from "./decisionesTickets";
+import { convertirProvisionalEnDudoso, registrarDudoso } from "./decisionesTickets";
 import { claveTicket, creadoPorWobi } from "./tickets";
 import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
 
@@ -33,7 +33,8 @@ const vistos = new Map<string, "candidato" | "no_wobi" | "revisar" | "excluida">
 export const reiniciarVistosParaPruebas = () => vistos.clear();
 
 export async function escanearReglaTicket(
-  empresa: Empresa, almacen: AlmacenTrabajos, opciones: { leer?: Leer; dias?: number; ahora?: () => number; simulada: boolean },
+  empresa: Empresa, almacen: AlmacenTrabajos,
+  opciones: { leer?: Leer; dias?: number; ahora?: () => number; simulada: boolean },
 ): Promise<ResultadoEscaneo> {
   const leer = opciones.leer ?? holdedGet;
   const ahora = opciones.ahora ?? Date.now;
@@ -48,7 +49,6 @@ export async function escanearReglaTicket(
     if (c) convertidos.add(c);
   }
   const contactos = new Map<string, Raw | null>();
-
   let cursor: string | undefined;
   for (let pagina = 0; pagina < 20; pagina++) {
     const page = (await leer(empresa, "/purchases", { limit: "100", start_date: desde, end_date: hasta, cursor })) as { items?: Raw[]; cursor?: string; has_more?: boolean };
@@ -71,7 +71,10 @@ export async function escanearReglaTicket(
         vistos.set(clave, "revisar"); salida.aRevisar++;
         // Solo se pregunta por los que WOBI creó, y una sola vez (queda registrado a la espera de la decisión de Carlos).
         const proveedorDudoso = String(d.contact_name ?? item.contact_name ?? "");
-        if (await registrarDudoso(almacen, { empresa, id, proveedor: proveedorDudoso, motivos: r.motivos })) salida.dudosos.push({ empresa, id, proveedor: proveedorDudoso, total: String(d.total ?? ""), moneda, fecha: String(d.date ?? ""), motivos: r.motivos });
+        const preguntar = previo
+          ? await convertirProvisionalEnDudoso(almacen, previo, { proveedor: proveedorDudoso, motivos: r.motivos }, ahora())
+          : await registrarDudoso(almacen, { empresa, id, proveedor: proveedorDudoso, motivos: r.motivos }, ahora());
+        if (preguntar) salida.dudosos.push({ empresa, id, proveedor: proveedorDudoso, total: String(d.total ?? ""), moneda, fecha: String(d.date ?? ""), motivos: r.motivos });
         continue;
       }
       const proveedor = String(d.contact_name ?? item.contact_name ?? "");

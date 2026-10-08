@@ -55,12 +55,12 @@ export default function ModuleDetails({ m, liveData, groupData, companyId, fuent
                 <div role="status" style={{ color: C.amberBright, marginTop: 14 }}>Datos no disponibles para tomar decisiones. WOBi reintentará la lectura automáticamente.</div>
               ) : liveData ? (
                 <div style={{ marginTop: 16, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
-                  <div className="nv-metrics">{rows.map(([label, value], i) => (
+                  {rows.length > 0 && <div className="nv-metrics">{rows.map(([label, value], i) => (
                     <div key={i} className="nv-metric" style={{ "--metric-color": ["#65d9f2","#a99cff","#62d4ae","#e5bb7a"][i%4] }}>
                       <span className="nv-metric-label">{label}</span>
                       <span className="nv-metric-value">{value}</span>
                     </div>
-                  ))}</div>
+                  ))}</div>}
                   {m.id === "cashflow" && (
                     <div style={{ marginTop: 6 }}>
                       <div

@@ -1,6 +1,6 @@
 import type { Empresa } from "../client";
 import { claveTicket } from "./tickets";
-import { nuevoTrabajo, type AlmacenTrabajos } from "./trabajos";
+import { nuevoTrabajo, type AlmacenTrabajos, type Trabajo } from "./trabajos";
 
 /**
  * Decisiones de Carlos sobre la conversión a ticket (botones del chat). Solo tocan el registro propio de WOBI: la conversión real en
@@ -54,5 +54,24 @@ export async function registrarDudoso(almacen: AlmacenTrabajos, d: { empresa: Em
   t.evidencia = { origen: "regla_revisar", proveedor: d.proveedor, motivos: d.motivos };
   await almacen.guardar(t);
   await almacen.evento(clave, "dudoso_pendiente_de_decision", { motivos: d.motivos });
+  return true;
+}
+
+/**
+ * El gasto que crea WOBI ya trae un registro PROVISIONAL («Clasificación dudosa», 0 intentos, origen «recepcion»). Cuando la regla
+ * tampoco puede decidir, ese registro se convierte en la pregunta pendiente de Carlos (origen «regla_revisar», la que atienden los
+ * botones «Convertir a ticket / No es ticket»). Antes `registrarDudoso` veía el registro y no hacía nada: la pregunta no llegaba nunca
+ * (caso real 08-10-2026, Footprint: cuatro tickets de Colombia sin convertir y sin que nadie preguntara). Devuelve true si hay que preguntar.
+ */
+export async function convertirProvisionalEnDudoso(
+  almacen: AlmacenTrabajos, previo: Trabajo, d: { proveedor: string; motivos: string[] }, ahora = Date.now(),
+): Promise<boolean> {
+  previo.estado = "requiere_intervencion"; previo.ultimoError = "Pendiente de tu decisión (botón en el chat)"; previo.actualizadoEn = ahora;
+  previo.evidencia = {
+    ...previo.evidencia, origen: "regla_revisar", proveedor: d.proveedor, motivos: d.motivos,
+    clasificacionProvisional: { clasificacion: previo.evidencia.clasificacion, motivos: previo.evidencia.motivos },
+  };
+  await almacen.guardar(previo);
+  await almacen.evento(previo.clave, "dudoso_pendiente_de_decision", { motivos: d.motivos, desdeProvisional: true });
   return true;
 }
