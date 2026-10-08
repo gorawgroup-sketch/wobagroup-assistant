@@ -46,3 +46,12 @@ test('global modules remain explicitly global', () => {
   assert.match(companyScopeNote('correo', 'WOBA'), /Vista conjunta/);
   assert.equal(scopeSnapshot('seguros', null, 'WOBA'), null);
 });
+test('seguros: calendario de pagos respeta empresa y conserva null; actividad es conjunta', () => {
+  const source = {...sample.seguros, calendarioPagos:[{empresa:'WOBA'},{empresa:'EWORKS'},{empresa:'Footprint'}], bitacora:[{tarea:'avisos'}], programacion:[{id:'avisos'}]};
+  const scoped = scopeSnapshot('seguros', {seguros:source}, 'EWORKS').seguros;
+  assert.deepEqual(scoped.calendarioPagos, [{empresa:'EWORKS'}]);
+  assert.equal(scoped.bitacora, source.bitacora);
+  assert.equal(scoped.programacion, source.programacion);
+  assert.equal(scopeSnapshot('seguros', {seguros:{...source,calendarioPagos:null}},'WOBA').seguros.calendarioPagos, null);
+  assert.equal(source.calendarioPagos.length, 3);
+});
