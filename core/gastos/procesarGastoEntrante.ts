@@ -35,6 +35,7 @@ import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, cargoUnicoParaEquivalente, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { notaCargosMayores } from "../holded/cargoMayor";
 import { equivalenteCuadraConTasa } from "./equivalenteCoherente";
+import { convertirATasa, mejorCargoPorCercania, monedaDestinoPreferida } from "./conversionAutomatica";
 import {
   obtenerPoliticaMonedaLiquidacion,
   seleccionarMovimientoLiquidacionSeguro,
@@ -56,12 +57,6 @@ export interface GastoEntrante {
   datos: DatosFactura;
   /** true si este adjunto vino de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
   deColaCorreo?: boolean;
-  /**
-   * Norma de resolución autónoma (Carlos, 2026-10-08): una retoma automática de un pendiente de moneda (el banco aún no
-   * mostraba el cargo) vuelve a buscar el cargo real sin volver a preguntar. Si sigue sin aparecer, se conserva el pendiente
-   * en silencio; el usuario ya fue avisado la primera vez y el resumen diario lo lista.
-   */
-  retomaSilenciosa?: boolean;
   /**
    * Si rutaLocal viene de un adjunto real de Gmail, sus ids — permite volver
    * a descargarlo de la fuente durable si la copia local (tmp/uploads, no
@@ -383,7 +378,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         origenAdjuntoGmail: entrada.origenAdjuntoGmail,
         correoOrigen: entrada.correoOrigen,
       });
-      if (!entrada.retomaSilenciosa) await sendTelegramMessage(
+      await sendTelegramMessage(
         chatId,
         `📄 ${empresa} · ${datos.proveedor || "Anthropic"} · ${datos.monto.toFixed(2)} ${monedaOriginal} · ${fechaBusqueda}.\n\n` +
           `La liquidación se registra en ${politicaLiquidacion.moneda} usando el importe real del banco. ` +
@@ -433,64 +428,64 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       return [] as Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>;
     });
 
-    const unico = cargoUnicoParaEquivalente(candidatosFx);
-    if (unico) {
-      montoEquivalenteResuelto = Math.abs(unico.monto);
-      monedaEquivalenteResuelta = unico.moneda;
+    // Wobi resuelve solo (regla de Carlos, 2026-10-08: nada de preguntar lo que se puede convertir): 1) el único cargo que coincide con la
+    // conversión; 2) si hay varios, el más cercano en fecha e importe; 3) si no hay ninguno, la conversión a la tasa del día en EUR/USD,
+    // y es la conciliación posterior la que ajusta el cambio contra el cargo real.
+    const elegido = cargoUnicoParaEquivalente(candidatosFx) ?? mejorCargoPorCercania(candidatosFx, fechaBusquedaFx);
+    if (elegido) {
+      montoEquivalenteResuelto = Math.abs(elegido.monto);
+      monedaEquivalenteResuelta = elegido.moneda;
       datos.razon =
         (datos.razon ? `${datos.razon} ` : "") +
-        (unico.compatibilidad === "por_confirmar"
-          ? `[Único cargo bancario posible, con nombre distinto (por confirmar): ${describirMovimientoMultimoneda(unico)}.]`
-          : `[Resuelto automáticamente contra un único cargo bancario real: ${describirMovimientoMultimoneda(unico)}.]`);
+        (elegido.compatibilidad === "por_confirmar"
+          ? `[Cargo bancario más probable, con nombre distinto (por confirmar): ${describirMovimientoMultimoneda(elegido)}.]`
+          : `[Resuelto automáticamente contra el cargo bancario que coincide con la conversión: ${describirMovimientoMultimoneda(elegido)}.]`);
     } else {
-      const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
-      let pistas = "";
-      if (candidatosFx.length > 1) {
-        pistas =
-          `\n\nEncontré ${candidatosFx.length} cargos bancarios que podrían corresponder (importe cercano según la tasa ` +
-          `de la fecha), pero no pude confirmar cuál sin ambigüedad:\n` +
-          candidatosFx.map((c, i) => describirMovimientoMultimoneda(c, i)).join("\n");
-      } else {
-        const referencias: string[] = [];
-        for (const destino of Array.from(monedasReales).sort()) {
-          const tasa =
-            (await obtenerTasaCambioHistorica(fechaBusquedaFx, monedaOriginal, destino).catch(() => undefined)) ??
-            (await obtenerTasaCambioActual(monedaOriginal, destino).catch(() => undefined));
-          if (tasa !== undefined) {
-            referencias.push(`≈${(datos.monto * tasa).toFixed(2)} ${destino}`);
+      const destino = monedaDestinoPreferida(monedasReales);
+      let tasa: number | undefined;
+      if (destino) {
+        try {
+          tasa = await obtenerTasaCambioHistorica(fechaBusquedaFx, monedaOriginal, destino);
+        } catch (error) {
+          console.error("[procesarGastoEntrante] Tasa histórica no disponible para convertir:", error instanceof Error ? error.message : error);
+        }
+        if (tasa === undefined) {
+          try {
+            tasa = await obtenerTasaCambioActual(monedaOriginal, destino);
+          } catch (error) {
+            console.error("[procesarGastoEntrante] Tasa actual no disponible para convertir:", error instanceof Error ? error.message : error);
           }
         }
-        if (referencias.length > 0) {
-          pistas =
-            `\n\nSolo como referencia de la tasa de cambio del día (nunca el cargo real — puede diferir por el ` +
-            `spread de la tarjeta, por eso no lo registro directamente): ${referencias.join(" / ")}.`;
-        }
       }
-      if (!entrada.retomaSilenciosa) await sendTelegramMessage(
-        chatId,
-        `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
-          `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
-          `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
-          `trae el monto equivalente en alguna de esas monedas, y ` +
-          (busquedaFxIncompleta
-            ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
-            : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
-          `${pistas} Lo dejo pendiente de comprobación bancaria: en cada revisión de correo vuelvo a buscar el cargo real yo ` +
-          `mismo, sin pedirte cálculos ni tipos de cambio (el importe que se registra es siempre el del banco). Si ya tienes a ` +
-          `mano el importe exacto que salió de la cuenta, dímelo aquí (ej. «40.46 EUR») y sigo ahora mismo.`
-      );
-      await guardarGastoPendienteDatos({
-        chatId,
-        rutaLocal: entrada.rutaLocal,
-        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-        mimeType: entrada.mimeType,
-        datos,
-        motivo: "moneda",
-        deColaCorreo: entrada.deColaCorreo,
-        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-        correoOrigen: entrada.correoOrigen,
-      }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
-      return "pendiente_datos";
+      const convertido = convertirATasa(datos.monto, tasa);
+      if (destino && convertido !== undefined) {
+        montoEquivalenteResuelto = convertido;
+        monedaEquivalenteResuelta = destino;
+        datos.razon =
+          (datos.razon ? `${datos.razon} ` : "") +
+          `[${datos.monto} ${monedaOriginal} convertidos a ${convertido.toFixed(2)} ${destino} con la tasa del día (${(tasa as number).toPrecision(5)}). ` +
+          `${busquedaFxIncompleta ? "La consulta de cargos en Holded quedó incompleta; " : "Todavía no hay en el banco un cargo que coincida; "}` +
+          `al conciliar con el cargo real se ajusta la diferencia de cambio.]`;
+      } else {
+        // Último recurso: sin ninguna tasa disponible (ni histórica ni actual) no se puede convertir. Se avisa y se reintenta solo.
+        await sendTelegramMessage(
+          chatId,
+          `📄 «${datos.proveedor || "proveedor desconocido"}» · ${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}): no pude obtener ahora la tasa de cambio ` +
+            `del día para convertirlo. No hace falta que hagas nada: lo reintento solo en la próxima revisión.`
+        );
+        await guardarGastoPendienteDatos({
+          chatId,
+          rutaLocal: entrada.rutaLocal,
+          nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+          mimeType: entrada.mimeType,
+          datos,
+          motivo: "moneda",
+          deColaCorreo: entrada.deColaCorreo,
+          origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+          correoOrigen: entrada.correoOrigen,
+        }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
+        return "pendiente_datos";
+      }
     }
   }
 

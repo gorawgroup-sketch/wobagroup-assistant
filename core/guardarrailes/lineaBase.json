@@ -1,6 +1,6 @@
 {
   "core/gastos/gastoCallbackHandler.ts": 10,
-  "core/gastos/procesarGastoEntrante.ts": 6,
+  "core/gastos/procesarGastoEntrante.ts": 4,
   "core/gastos/reprocesarResolucionProveedor.ts": 1,
   "core/gmail/automatico/model.ts": 1,
   "core/gmail/automatico/service.ts": 2,

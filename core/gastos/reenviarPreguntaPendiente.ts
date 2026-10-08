@@ -49,7 +49,7 @@ export function textoPreguntaGastoPendienteDatos(p: GastoPendienteDatos): string
     case "empresa":
       return `📄 «${proveedor}» · ${importe}: no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece y sigo. ${cierre}`;
     case "moneda":
-      return `💱 «${proveedor}» · ${importe}: necesito el monto EXACTO y la moneda que salió de la cuenta real (ej. «40.46 EUR»); no calculo tipos de cambio. Respóndeme aquí en texto libre y sigo. ${cierre}`;
+      return `💱 «${proveedor}» · ${importe}: no pude convertirlo ahora (sin tasa de cambio disponible). No hace falta que hagas nada: lo reintento solo en la próxima revisión.`;
     case "fecha":
       return `🔎 «${proveedor}» · ${importe}: el comprobante no tiene una fecha verificable. Respóndeme con la fecha documentada (AAAA-MM-DD) y sigo. ${cierre}`;
     case "proveedor":
@@ -147,6 +147,14 @@ export async function reenviarPreguntaPendienteDelCorreo(
     coincideCorreo({ mensajeIdGmail: g.correoOrigen?.mensajeIdGmail, threadId: g.correoOrigen?.threadId }, mensajeId, threadId)
   );
   if (pendienteDatos) {
+    // Un gasto en una moneda que la empresa no tiene ya no pregunta nada: se retoma con la conversión automática y sale con botones.
+    if (pendienteDatos.motivo === "moneda") {
+      const { reprocesarPendienteDeMoneda } = await import("./reprocesarPendienteMoneda");
+      const reproceso = await reprocesarPendienteDeMoneda(pendienteDatos);
+      if (reproceso === "propuesta") {
+        return { tipo: "propuesta", descripcion: `${pendienteDatos.datos.proveedor || "gasto"} — ${pendienteDatos.datos.monto} ${pendienteDatos.datos.moneda}` };
+      }
+    }
     await reenviarPreguntaGastoPendienteDatos(pendienteDatos, encabezado);
     return { tipo: "gasto_pendiente_datos", descripcion: `${pendienteDatos.datos.proveedor || "gasto"} — ${pendienteDatos.datos.monto} ${pendienteDatos.datos.moneda}` };
   }

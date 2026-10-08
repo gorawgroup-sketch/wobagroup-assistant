@@ -47,12 +47,15 @@ Antes de que una capacidad nueva pregunte algo al usuario, el PR debe responder 
 - ¿Queda ambigüedad real entre opciones concretas? Entonces, y solo entonces, una pregunta con las opciones y una
   recomendación, todas en un mismo mensaje.
 
-## Primera aplicación (2026-10-08)
+## Primera aplicación (2026-10-08, PR #404)
 
 Recibo en una moneda sin cuenta real (caso «Lunch - 180 pesos mexicanos - revolut», Footprint): antes se pedía a Carlos
-el importe exacto que salió del banco. Ahora `core/gastos/retomarPendientesMoneda.ts` vuelve a buscar el cargo real en cada
-revisión de correo (`retomaSilenciosa`): si aparece un único cargo, el flujo sigue solo hasta la propuesta con botones; si
-no, el pendiente se conserva en silencio y el resumen diario lo lista. El aviso inicial ya no pide cálculos.
+el importe exacto que salió del banco. Ahora `procesarGastoEntrante` lo resuelve solo, en este orden: (1) el único cargo
+bancario que coincide con la conversión; (2) si hay varios, el más cercano en fecha e importe; (3) si no hay ninguno,
+conversión a la tasa del día en EUR (USD si no hay EUR), con la razón explicando de dónde sale el importe, y la diferencia
+de cambio se ajusta al conciliar con el cargo real. Siempre sale la propuesta con botones; solo sin ninguna tasa disponible
+se avisa y se reintenta solo. Los pendientes antiguos se reprocesan al reenviar la pregunta del correo activo
+(`core/gastos/reprocesarPendienteMoneda.ts`).
 
 ## Lo que la norma NO cambia
 
