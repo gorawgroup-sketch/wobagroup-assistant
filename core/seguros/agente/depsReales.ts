@@ -22,6 +22,7 @@ import { esFormatoVisual, extraerTextoDeterminista } from "../../documental/extr
 import { transcribirParaCaptura } from "../../documental/transcribeForCapture";
 import { formatDateLocal } from "../../utils/dateFormat";
 import { listarDocumentosPoliza } from "../documentosPolizaStore";
+import { leerPagosSeguros } from "../pagos/pagosStore";
 import { actualizarPoliza, listarPolizas } from "../polizaRegistroSheet";
 import { leerCorreosDeSeguros } from "../vigilante/correos";
 import { guardarEstadoVigilante } from "../vigilante/estadoStore";
@@ -86,6 +87,7 @@ export function depsRealesAgente(): DepsConsulta {
     hoy,
     listarPolizas,
     listarDocumentos: listarDocumentosPoliza,
+    listarPagos: leerPagosSeguros,
     buscarDocumentosDrive: async (consulta, empresa) => {
       const raices = empresa && ROOT_FOLDERS[empresa] ? { [empresa]: ROOT_FOLDERS[empresa] } : ROOT_FOLDERS;
       const encontrados = await searchDriveFilesAllRoots(raices, consulta, 4, 30);

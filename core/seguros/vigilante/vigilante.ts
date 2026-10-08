@@ -58,6 +58,11 @@ export interface FuentesVigilante {
   borrarEstado(ids: string[]): Promise<void>;
   purgarCorreosVistos(fechaLimite: string): Promise<number>;
   invalidarCerebro(): void;
+  /**
+   * Opcional: se llama tras escribir en el registro un pago confirmado en el banco (calendario de pagos: marca el pago como pagado y genera
+   * el siguiente de la serie). Es un refuerzo: si falla se anota y la revisión sigue.
+   */
+  alConfirmarPago?(pago: PagoConfirmado, hoy: string): Promise<void>;
 }
 
 export interface ResultadoVigilante {
@@ -250,7 +255,14 @@ export async function ejecutarVigilanteSeguros(
         advertencias.push(`No pude actualizar ${etiquetaPoliza(original)} en el registro: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (todasEscritas) confirmadosEscritos.push(pago);
+    if (todasEscritas) {
+      confirmadosEscritos.push(pago);
+      if (fuentes.alConfirmarPago) {
+        try { await fuentes.alConfirmarPago(pago, hoy); } catch (error) {
+          advertencias.push(`No pude actualizar el calendario de pagos con el pago confirmado del ${pago.movimiento.fecha}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
   }
 
   for (const d of devolucionesBrutas) {

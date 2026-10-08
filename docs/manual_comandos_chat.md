@@ -406,6 +406,16 @@ Pedido de Carlos (05-10-2026): que Wobi Seguros sea un agente independiente, int
 - **Resumen semanal** (lunes 9:10, sin IA): pagos sin confirmar, lo que espera a Carlos y los vencimientos y pagos de los próximos 60 días; calla si no hay nada.
 - Si el especialista no está disponible (límite de IA, caída de la API), Wobi lo dice y te da los datos crudos del registro.
 
+### Calendario de pagos de seguros — aviso a 3 días con comprobación de caja y evento en tu calendario
+
+Pedido de Carlos (05-10-2026): que Wobi Seguros avise de los pagos con tiempo y diga si hay saldo. No es un comando: corre cada día a las **8:55** (sin IA) y escribe por Telegram solo cuando un pago está a **1-3 días**.
+
+- **Qué te llega:** «🛡️ Seguros — pagos de los próximos 3 días»: por cada pago, la empresa, el concepto, el importe (con «estimado» mientras no haya recibo), el adeudo o la transferencia y la **cuenta de cargo**, y debajo la comprobación: **✅ alcanza** (con lo que sobra), **⚠️ NO alcanza** (con lo que falta y qué otras cuentas de la empresa tienen saldo) o **❓ no pude comprobar la caja** (cuenta no encontrada, saldo negativo o Holded sin responder). El día antes repite solo si sigue sin alcanzar. No mueve dinero ni traspasa: la decisión es tuya.
+- **En tu calendario:** cada pago aparece como evento «🛡️ Seguro: …» **3 días antes a las 9:00** (invitación desde asistente@; la primera vez llegan 6 invitaciones, una por pago ya conocido).
+- **Se mantiene solo:** cuando el vigilante confirma un cobro en el banco, el pago pasa a «pagado» con el importe real y se crea el siguiente de la serie.
+- **Preguntárselo:** «¿qué pagos de seguros vienen?» (el especialista lista el calendario con importe, cuenta y si ya tiene evento).
+- No habrá un aviso real hasta el 24/02/2027 (el primer pago es el 27/02); hasta entonces solo verás los eventos.
+
 ## Facturas de venta por correo → Ingresos del cashflow + respuesta al remitente
 
 Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las facturas que WOBA y eWorks emiten a sus clientes, para saber cuándo entrará ese dinero.

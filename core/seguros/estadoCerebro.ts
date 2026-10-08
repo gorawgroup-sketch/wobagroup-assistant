@@ -18,6 +18,8 @@ import { eventosProximos } from "./informeSemanal";
 import type { PolizaConFila } from "./polizaRegistroSheet";
 import { leerEstadoVigilante } from "./vigilante/estadoStore";
 import { diasEntre } from "./vigilante/fechas";
+import { leerPagosSeguros } from "./pagos/pagosStore";
+import type { PagoSeguro } from "./pagos/tipos";
 import { CLAVE_ULTIMA_REVISION, parsearUltimaRevision, type UltimaRevisionVigilante } from "./vigilante/ultimaRevision";
 
 export const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"] as const;
@@ -29,11 +31,16 @@ export interface ComplementosSeguros {
   conocimiento: EntradaConocimiento[];
   documentos: DocumentoPoliza[];
   ultimaRevision: UltimaRevisionVigilante | null;
+  /** Calendario de pagos estructurado (`_pagos_seguros`). Ausente = no se pudo leer: los pagos salen de las notas del registro. */
+  pagos?: PagoSeguro[];
 }
 
 export async function leerComplementosReales(): Promise<ComplementosSeguros> {
   const [conocimiento, documentos, estado] = await Promise.all([leerConocimiento(), listarDocumentosPoliza(), leerEstadoVigilante()]);
-  return { conocimiento, documentos, ultimaRevision: parsearUltimaRevision(estado.get(CLAVE_ULTIMA_REVISION)?.version) };
+  // El calendario de pagos es un complemento más: si no se puede leer, los pagos salen de las notas (no se cae toda la sección).
+  let pagos: PagoSeguro[] | undefined;
+  try { pagos = await leerPagosSeguros(); } catch (error) { console.error("[estadoCerebro] No se pudo leer el calendario de pagos; los pagos salen de las notas del registro:", error); }
+  return { conocimiento, documentos, ultimaRevision: parsearUltimaRevision(estado.get(CLAVE_ULTIMA_REVISION)?.version), pagos };
 }
 
 let memo: { leidoEn: number; datos: ComplementosSeguros } | null = null;
@@ -129,7 +136,7 @@ export function construirEstadoSeguros(polizas: PolizaConFila[], complementos: C
       vencidas: polizas.filter((p) => p.estado === "vencida").length,
       noContratadas: polizas.filter((p) => p.estado === "no_contratada").length,
     },
-    proximos: eventosProximos(polizas, hoyIso, HORIZONTE_PROXIMOS_DIAS).map((e) => ({
+    proximos: eventosProximos(polizas, hoyIso, HORIZONTE_PROXIMOS_DIAS, complementos?.pagos).map((e) => ({
       fecha: e.fecha, diasRestantes: diasEntre(hoyIso, e.fecha), tipo: e.tipo, empresa: e.empresa, polizaId: e.polizaId, texto: e.texto,
     })),
     complementosDisponibles: complementos != null,

@@ -7,6 +7,8 @@
  *
  * Nada aquí mueve dinero, escribe en Holded ni envía correos.
  */
+import type { PagoSeguro } from "../pagos/tipos";
+import { textoDePagoCalendario } from "../informeSemanal";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { PolizaConFila } from "../polizaRegistroSheet";
 import type { DocumentoPoliza } from "../documentosPolizaStore";
@@ -52,6 +54,8 @@ export interface PropuestaParaEnviar {
 /** Todo lo que el especialista toca fuera de sí mismo, inyectable para probarlo sin red. */
 export interface DepsAgente {
   hoy(): string;
+  /** Calendario de pagos estructurado (`_pagos_seguros`). Opcional: sin él, el especialista usa solo lo anotado en el registro. */
+  listarPagos?(): Promise<PagoSeguro[]>;
   listarPolizas(): Promise<PolizaConFila[]>;
   listarDocumentos(): Promise<DocumentoPoliza[]>;
   buscarDocumentosDrive(consulta: string, empresa?: string): Promise<DocumentoDrive[]>;
@@ -340,7 +344,19 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
               `${proximos.length ? `\n    ${proximos.join("\n    ")}` : ""}`
           );
         }
-        return lim(`Vencimientos a ${hoy} (horizonte ${horizonte} días):\n${lineas.join("\n") || "(nada dentro del horizonte)"}`);
+        // El calendario de pagos estructurado: fechas, importes (estimados o no) y cuenta de cargo de cada pago que viene.
+        let calendario = "";
+        if (deps.listarPagos) {
+          try {
+            const previstos = (await deps.listarPagos()).filter((x) => x.estado === "previsto" && diasEntre(hoy, x.fecha) >= 0 && diasEntre(hoy, x.fecha) <= horizonte).sort((a, b) => a.fecha.localeCompare(b.fecha));
+            calendario =
+              `\n\nCalendario de pagos (_pagos_seguros, ${previstos.length}): cada pago con su fecha, importe y cuenta de cargo; Wobi avisa por Telegram a 3 días con la comprobación de saldo y deja el evento en el calendario de Carlos.\n` +
+              (previstos.map((x) => `- ${x.fecha} · ${textoDePagoCalendario(x)} · ${x.eventoCalendarId ? "evento de calendario puesto" : "sin evento de calendario aún"}${x.notas ? ` · ${unaLinea(x.notas, 200)}` : ""}`).join("\n") || "(ningún pago previsto en el horizonte)");
+          } catch (error) {
+            calendario = `\n\n(No pude leer el calendario de pagos: ${error instanceof Error ? error.message : String(error)}. Lo de arriba sale solo del registro.)`;
+          }
+        }
+        return lim(`Vencimientos a ${hoy} (horizonte ${horizonte} días):\n${lineas.join("\n") || "(nada dentro del horizonte)"}${calendario}`);
       },
     },
     {

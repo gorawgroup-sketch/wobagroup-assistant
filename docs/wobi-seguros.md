@@ -438,7 +438,7 @@ Pedido explícito de Carlos (05/10/2026): «valida pagos que se hayan hecho o co
 **Caso que motivó la regla del saldo (verificado en vivo, 05/10/2026).** El 01/09 Holded mostró «ALLIANZ −1.016,86 €» y «AEGON −234,41 €» como cargos conciliados; el saldo de BBVA nunca los incluyó (el abono de 1.300 € del día 02 se calculó sobre un saldo de 28,94 €) y Acodrid confirmó el 30/09 que el banco había devuelto el recibo y exigió transferencia. Un vigilante que se fiara del apunte habría marcado la renovación como pagada un mes antes de que lo estuviera. Hoy el adeudo de Markel (323,24 €, 05/10) está en la misma situación incierta: el vigilante lo trata como «en tránsito» hasta que el saldo lo confirme o lo descarte (tests: `cadena.test.ts` con los 37 movimientos reales).
 
 **Límites conocidos, dichos con franqueza.**
-- Con una sola fecha de vencimiento por póliza (§5) el vigilante no sabe cuándo toca la siguiente cuota semestral: no avisa de un pago que falta, solo reconoce los que ya están pendientes. El calendario de pagos con alertas y verificación de caja (§6.2) es la pieza siguiente.
+- Con una sola fecha de vencimiento por póliza (§5) el vigilante no sabía cuándo toca la siguiente cuota: desde el 06-10-2026 el calendario de pagos estructurado (§27) lo resuelve, y el vigilante lo actualiza al confirmar un pago.
 - Solo ve el buzón del asistente: un correo que la correduría envía solo a Carlos no llega hasta que él lo reenvía.
 - Dos pólizas pendientes con el mismo importe y la misma contraparte se avisan como «no sé atribuir», nunca se adivina.
 - Si `WOBI_AI_API_MODE` pasara a `allowlist`, esta pieza no necesita permisos: no usa IA.
@@ -471,7 +471,7 @@ Pedido de Carlos (05/10/2026): que Wobi Seguros sea «lo suficientemente indepen
 - Un modelo puede leer mal una cláusula: por eso los pagos, saldos y fechas salen de herramientas y las condiciones se citan literalmente del documento, que se lee entero cuando la pregunta es concreta. Aun así, para decisiones con consecuencias (contratar, excluir una garantía) hay que confirmar con Acodrid.
 - Solo sabe lo que está en el registro, Drive y el buzón del asistente. Hoy faltan las condiciones de la renovación 2026/27 del multirriesgo de Allianz (§13 punto 23).
 - Añade entre 30 y 100 segundos a una pregunta de condiciones.
-- Pendiente (PRs aparte): calendario de pagos estructurado con alertas a 3 días y verificación de caja (§6.2); contrato de datos y panel de Cerebro para Seguros (encargo a Codex).
+- Hecho después: contrato de datos para Cerebro (§26) y calendario de pagos con alertas a 3 días y verificación de caja (§27). Pendiente: el panel de Seguros en el Núcleo (Codex).
 
 ## 26. Lo que Seguros entrega a Cerebro (2026-10-05)
 
@@ -480,4 +480,22 @@ La sección `seguros` del estado agregado la construye ahora `core/seguros/estad
 - **Compatible hacia atrás.** `polizas`, `proximasARenovar`, `pagosSinConfirmar`, `porEmpresa`, `totalPolizasActivas` y `linkRegistro` conservan su forma. Un solo significado cambia, a propósito: `totalPolizasActivas` cuenta las pólizas **vigentes** (el panel decía 9 «activas» con 6 vigentes, porque incluía una vencida y dos en hold).
 - **Nuevo:** `resumen` (vigentes, pago sin confirmar, en hold o por confirmar, vencidas, no contratadas), `proximos` (vencimientos y pagos anotados a 400 días, con días que faltan, empresa y póliza), `esperandoACarlos` (con los días que lleva), `memoria` (decisiones, reglas, contactos y hechos vigentes de Wobi Seguros), `documentos` (los ya leídos, con resumen y enlace) y `vigilante.ultimaRevision` (qué encontró el vigilante en su última revisión, incluidos los cargos en tránsito).
 - **Frescura honesta.** La memoria, los documentos y la última revisión se leen aparte (`seguros.complementos`), con caché de 5 minutos para no multiplicar las lecturas de Sheets del panel (1 lectura/minuto antes; ahora ~1,6). Si esa lectura falla, `complementosDisponibles` es `false` y esos campos van a `null`: el front debe decir «Sin lectura actual», nunca mostrar un cero. El vigilante, el especialista y el job descartan la caché cuando escriben.
+
+## 27. Calendario de pagos con alerta de caja (2026-10-06)
+
+Pedido de Carlos (05/10/2026): que el agente avise de los pagos de seguros con tiempo, **ponga el evento en su calendario** y diga **si hay saldo** en la cuenta donde se cobra (la causa de fondo de los recibos devueltos: BBVA …6229 suele estar casi a cero el día 1). Es el diseño de §6.2, ya construido. Sin IA: coste cero.
+
+**Qué hay (`core/seguros/pagos/`).**
+- **Calendario estructurado** en la pestaña `_pagos_seguros` (una fila por pago futuro: fecha, importe, `estimado`, cuenta de cargo, forma —adeudo o transferencia—, recurrencia en meses, evento de calendario y avisos ya enviados). La cuenta de cargo es el **nombre exacto de la cuenta en Holded** (así se encuentra su saldo): `BBVA`, `CAIXA BANK EWORKS`, `Main`. Se siembra sola con los 6 pagos que las notas del registro citan expresamente (EWORKS 27/02 y 27/08/2027, Allianz y su complemento 01/03/2027, RC de WOBA 17/04/2027, RC de Footprint 25/08/2027), todos **estimados** hasta ver el recibo.
+- **Trabajo diario a las 8:55** (`revisarPagosSeguros`, después del vigilante de las 8:35 y los avisos de las 8:50): (1) pone en el calendario de Carlos —invitado desde asistente@— el evento de cada pago, **3 días antes a las 9:00 de Madrid**, y retira el de los pagos ya cerrados; (2) cuando un pago está a 1-3 días, **avisa por Telegram con la comprobación de caja**: saldo de la cuenta de cargo hoy frente a lo que sale de esa cuenta hasta esa fecha (suma los pagos de seguros previstos de la misma cuenta), si alcanza o cuánto falta, y qué otras cuentas bancarias de la empresa tienen saldo suficiente. El día antes repite solo si la caja sigue sin alcanzar o sin poder comprobarse. Calla si no toca nada.
+- **Honestidad con los datos dudosos:** una cuenta que no se encuentra, un saldo negativo (p. ej. `CAIXA BANK EWORKS` figura en −20.281,34 €: puede ser una cuenta de crédito) o una lectura fallida de Holded se dicen como «no pude comprobar la caja», nunca como «alcanza» ni «no alcanza». No mueve dinero ni propone traspasos: la decisión es de la persona.
+- **El vigilante lo mantiene vivo:** al confirmar un pago en el banco, la fila pasa a «pagado» con el importe real y se genera el **siguiente pago de la serie** (anual, semestral…) con el mismo importe como estimado, para que el calendario no se quede sin futuro. Si el calendario falla, la revisión sigue y lo anota.
+- **Lo ven el panel y el agente:** `proximos` del contrato de Cerebro (§26) sale del calendario para las pólizas que tienen pagos previstos (el resto sigue saliendo de las notas del registro), el resumen semanal lo usa y la herramienta `calendario_vencimientos` del especialista lo lista con su importe, cuenta y si ya tiene evento.
+
+**Verificado en vivo (06/10/2026).** El almacén real (pestaña creada y sembrada, escritura en su sitio y vuelta atrás sin desplazar filas) y una **simulación del 26/02/2027 con los saldos reales de hoy**: avisaría de EWORKS (cuenta con saldo negativo: no comprobable) y de los dos recibos de Allianz del 01/03 (BBVA tiene 654,81 € y salen 1.244,14 €: faltan 589,33 €; Main tiene 4.097,45 €). No habrá un aviso real hasta el 24/02/2027 (el primer pago es el 27/02); hasta entonces solo se ve el calendario.
+
+**Límites, dichos con franqueza.**
+- Los importes futuros son estimaciones: se afinan con el recibo real (Acodrid/Markel avisan por carta de pago) y el vigilante los fija al confirmar el cobro. Cambiar una fecha a mano en la hoja no mueve el evento del calendario (se borra la fila de evento y se recrea, o se avisa a Claude Code).
+- La comprobación usa el saldo de hoy y solo los cargos de seguros del calendario: no incluye otros cargos domiciliados de la cuenta ni ingresos que vayan a llegar.
+- Las altas y bajas de pagos distintas de la recurrencia (una póliza nueva, un cambio de fecha) se anotan en la hoja o piden un cambio al agente; proponerlas con botón desde el agente (como los cambios del registro) queda para un siguiente paso.
 
