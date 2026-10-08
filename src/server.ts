@@ -95,6 +95,7 @@ import {
 } from "../core/jobs/revisionCorreoManual";
 import { solicitarCierre } from "../core/utils/cierreServicio";
 import { entregarRespuestaChat } from "../core/telegram/entregarRespuestaChat";
+import { enviarPropuestasDiferidas } from "../core/seguros/agente/propuestasDiferidas";
 import { accionEsperoBuzon, conContextoInteractivo, esperaAgotada } from "../core/telegram/contextoInteractivo";
 import { EsperaBuzonPorChat, textoFinEsperaBuzon } from "../core/telegram/esperaBuzonPorChat";
 import { BuzonOcupadoError } from "../core/gmail/automatico/postgres";
@@ -1123,6 +1124,8 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
             presentacion: "web",
           });
         } finally {
+          // Si Wobi Seguros dejó una propuesta preparada en este turno, sale ahora al Telegram del usuario.
+          await enviarPropuestasDiferidas(identidad.chatId);
           // Despierta el front al terminar (con éxito o error). La respuesta
           // se recupera por requestId; no depende de mantener el POST vivo.
           publicarCambioCerebro("chat_web");
@@ -2419,6 +2422,8 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     }
   } finally {
     detenerEscribiendo();
+    // Las propuestas de Wobi Seguros salen DESPUÉS de la respuesta: sus botones quedan al final del chat.
+    await enviarPropuestasDiferidas(incoming.chatId);
   }
 }
 

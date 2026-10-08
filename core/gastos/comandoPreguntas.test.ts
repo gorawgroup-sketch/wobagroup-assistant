@@ -20,6 +20,8 @@ function montar() {
     reenviarPropuesta: async () => undefined,
     reenviarSimple: async (p) => { enviados.push((p as { id: string }).id); },
     reenviarAmbigua: async () => undefined,
+    seguros: async () => [],
+    reenviarSeguros: async () => undefined,
   };
   return { deps, enviados };
 }
@@ -35,7 +37,7 @@ test("sin texto y con varias pendientes lista y pide precisar; con una sola, la 
   assert.deepEqual(enviados, []); assert.match(lista.texto, /Hay 3 pendientes/); assert.match(lista.texto, /\/preguntas metro/);
   assert.match((await ejecutarComandoPreguntas(1, "inexistente", deps)).texto, /No encuentro ninguna pregunta pendiente que coincida con «inexistente».*Hay 3 pendientes/);
   const vacio = { ...deps, simples: async () => [] };
-  assert.match((await ejecutarComandoPreguntas(1, "", vacio as never)).texto, /No hay ninguna propuesta de gasto ni pregunta de conciliación pendiente/);
+  assert.match((await ejecutarComandoPreguntas(1, "", vacio as never)).texto, /No hay ninguna propuesta de gasto, pregunta de conciliación ni propuesta de Wobi Seguros pendiente/);
   const uno = { ...deps, simples: async () => [(await deps.simples(1))[0]] };
   const m = montar(); await ejecutarComandoPreguntas(1, "", { ...m.deps, simples: uno.simples }); assert.deepEqual(m.enviados, ["a"]);
 });
@@ -80,4 +82,18 @@ test("un importe con punto o coma finales también se encuentra («142,48.»)", 
   const { deps, enviados } = montar();
   await ejecutarComandoPreguntas(1, "142,48.", deps);
   assert.deepEqual(enviados, ["c"]);
+});
+
+test("una propuesta de Wobi Seguros pendiente se reenvía con /preguntas (caso Acodrid 08-10: quedó enterrada) y no se confunde con los gastos", async () => {
+  const { deps } = montar();
+  const reenviados: string[] = [];
+  const seguros = { id: "scb7741605", chatId: 1, messageId: 6628, accion: "recordar", datos: JSON.stringify({ tipo: "pendiente_carlos", texto: "Acodrid confirmó la transferencia de 323,24 € del recibo 2026/138406." }), cita: "x", creadoEn: 0 };
+  const conSeguros: DependenciasComandoPreguntas = { ...deps, simples: async () => [], seguros: async () => [seguros] as never, reenviarSeguros: async (c) => { reenviados.push((c as { id: string }).id); } };
+  const r = await ejecutarComandoPreguntas(1, "", conSeguros);
+  assert.deepEqual(reenviados, ["scb7741605"]);
+  assert.match(r.texto, /Propuesta de Wobi Seguros: Acodrid confirmó/);
+  const porTexto = montar(); const rs: string[] = [];
+  await ejecutarComandoPreguntas(1, "acodrid", { ...porTexto.deps, seguros: async () => [seguros] as never, reenviarSeguros: async (c) => { rs.push((c as { id: string }).id); } });
+  assert.deepEqual(rs, ["scb7741605"], "buscar por «acodrid» encuentra la de Seguros");
+  assert.deepEqual(porTexto.enviados, [], "y no reenvía ningún gasto");
 });
