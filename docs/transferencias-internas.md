@@ -131,9 +131,12 @@ Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint 
 2. La **entrada** se concilia por la API contra ese cobro. Si vale menos en EUR que la salida, el cobro queda
    `partial_reconciled` con la diferencia de cambio pendiente; así es como queda también a mano.
 
-3. **Diferencia a favor** (la entrada vale MÁS en EUR que la salida; solo con entrada en euros): tras el paso 2 la entrada
-   queda conciliada en parte y el resto se lleva a la cuenta **62600000** con un segundo «Transferir» sobre la entrada
-   (decisión de Carlos, 05-10-2026: la misma cuenta en WOBA, eWorks y Footprint). **Pendiente de su prueba controlada.**
+3. **Diferencia a favor** (la entrada vale MÁS en EUR que la salida): **no se ejecuta** (decisión de Carlos, 08-10-2026). Una
+   transferencia entre cuentas propias no toca ninguna cuenta de comisiones o de diferencias (ni la 62600000 ni la pasarela
+   «Comision cambio/cobro cliente» de Footprint, que deja un pago pendiente sin movimiento que conciliar). La propuesta sale sin
+   botón de conciliar y con el motivo. Criterio nuevo pedido por Carlos y **pendiente de construir**: entre divisas distintas se
+   ajusta la tasa de cambio de la propia transferencia (referencia: la tasa de Holded de ese día) para que lo que sale sea lo que
+   entra, sin ajustes en otras cuentas; en la misma divisa los importes son exactos.
 
 Los traspasos en una misma moneda distinta del euro (USD↔USD) se ejecutan igual que una conversión (pulsar sobre la salida; valoración en euros de Holded). Límites actuales: diferencia máxima 3 % entre las valoraciones en euros de las dos patas (Holded valora en euros también las patas en otra moneda: USD → COP vale igual). Primera USD → COP pendiente de verificar en vivo (Footprint 11/09, 0,71 € a favor). **Validado por Carlos el 05-10-2026**
 (eWorks 02/09, −433,96 EUR → +500 USD: asiento único de 433,96 €, los dos movimientos conciliados y 2,11 € de diferencia
@@ -150,7 +153,8 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Conversiones con diferencia a favor**: prueba controlada de una sola (eWorks 16/09, −593 USD → +513,73 EUR, 0,03 € a favor).
+1. **Conversiones entre divisas ajustando la tasa de cambio** (sin residuos y sin cuentas de diferencias): hay que ver cómo lo
+   permite la pantalla «Transferir» de Holded antes de construirlo.
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
 
 ## Varias conversiones el mismo día: emparejar por valor, no por descripción (2026-10-08)
