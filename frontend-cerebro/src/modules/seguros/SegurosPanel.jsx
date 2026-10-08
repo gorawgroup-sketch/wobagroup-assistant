@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import TelegramHandoff from '../nucleo/TelegramHandoff.jsx';
 import { agruparMemoria, agruparProximos, distintivoPoliza, lecturaDisponible, revisionAntigua, separarNotas } from './segurosView.mjs';
+import { SegurosActividad, SegurosProgramacion } from './SegurosActividad.jsx';
+import SegurosCalendario from './SegurosCalendario.jsx';
+import SegurosDocumentos from './SegurosDocumentos.jsx';
+import { diasLegibles, mensajeRevision } from './segurosView.mjs';
 import './SegurosPanel.css';
 
 const EMPRESAS = ['WOBA', 'EWORKS', 'Footprint'];
@@ -29,7 +33,6 @@ const empty = (texto, unavailable) => <p className="sg-muted">{unavailable || te
 function PolicyCard({ poliza, documentos, complementosDisponibles, puedeArreglar, confirmandoId, marcandoId, onMarcar, onCancelar }) {
   const badge = distintivoPoliza(poliza);
   const notas = separarNotas(poliza.notas);
-  const archivos = Array.isArray(documentos) ? documentos.filter(d => d.polizaId === poliza.id) : null;
   const permitePago = poliza.estadoPago === 'pendiente' || poliza.estadoPago === 'sin_confirmar';
   return <article className="sg-policy">
     <div className="sg-policy-head">
@@ -39,19 +42,7 @@ function PolicyCard({ poliza, documentos, complementosDisponibles, puedeArreglar
     <div className="sg-policy-meta">{money(poliza) && <span>Prima: {money(poliza)}</span>}{poliza.fechaVencimiento && <span>Vence: {poliza.fechaVencimiento}</span>}</div>
     {notas.actual && <p className="sg-current">{notas.actual}</p>}
     {notas.historia && <details className="sg-details"><summary>Ver historia</summary><p>{notas.historia}</p></details>}
-    <div className="sg-documents">
-      <h5>Documentos leídos</h5>
-      {lecturaDisponible(archivos, complementosDisponibles)
-        ? empty('', lecturaDisponible(archivos, complementosDisponibles))
-        : archivos.length ? archivos.map((d, i) => <div className="sg-document" key={`${d.enlace}-${i}`}>
-          <strong>{d.nombre}</strong><span>{d.tipo}</span>
-          <span>Vigencia: {d.vigencia || 'sin dato'} · Prima: {d.prima || 'sin dato'}</span>
-          <span>Capital: {d.capital || 'sin dato'}</span>
-          {d.resumen && <><p>{d.resumen.length > 280 ? `${d.resumen.slice(0, 277).trimEnd()}…` : d.resumen}</p>
-            {d.resumen.length > 280 && <details className="sg-details"><summary>Ver resumen completo</summary><p>{d.resumen}</p></details>}</>}
-          {d.enlace && <a href={d.enlace} target="_blank" rel="noopener noreferrer">Abrir en Drive ↗</a>}
-        </div>) : empty('Ningún documento leído para esta póliza.')}
-    </div>
+    <SegurosDocumentos documentos={documentos} polizaId={poliza.id} complementosDisponibles={complementosDisponibles} />
     {permitePago && (puedeArreglar
       ? <div className="sg-action-row"><button type="button" disabled={!!marcandoId} onClick={() => onMarcar(poliza.id)}>{marcandoId === poliza.id ? 'Marcando…' : confirmandoId === poliza.id ? 'Confirmar pago' : 'Marcar como pagado'}</button>{confirmandoId === poliza.id && marcandoId !== poliza.id && <button type="button" className="sg-quiet" onClick={onCancelar}>Cancelar</button>}</div>
       : <p className="sg-muted">Requiere administración para confirmar el pago.</p>)}
@@ -100,7 +91,7 @@ export default function SegurosPanel({ apiKey, puedeArreglar, estado, onRefresh 
   };
   const hito = grupo => <li key={grupo.key} className={grupo.cercano ? 'sg-hito sg-hito--soon' : 'sg-hito'}>
     <strong>{grupo.empresa} · {grupo.eventos[0]?.texto?.replace(/^(Vence|Pago)\s*/i, '') || grupo.polizaId}</strong>
-    <ul>{grupo.eventos.map((evento, i) => <li key={i}>{evento.tipo === 'pago' ? 'Pago' : 'Vencimiento'} · {evento.fecha} · {evento.diasRestantes <= 0 ? 'vencido' : `en ${evento.diasRestantes} días`}</li>)}</ul>
+    <ul>{grupo.eventos.map((evento, i) => <li key={i}>{evento.tipo === 'pago' ? 'Pago' : 'Vencimiento'} · {evento.fecha} · {diasLegibles(evento.diasRestantes)}</li>)}</ul>
   </li>;
 
   return <div className="sg-panel">
@@ -117,6 +108,9 @@ export default function SegurosPanel({ apiKey, puedeArreglar, estado, onRefresh 
         : estado.esperandoACarlos.map(e => <div className="sg-alert" key={e.id}><strong>Espera a Carlos · grupo completo · {e.diasEsperando} días</strong><p>{e.texto}</p></div>)}
       {!!revision?.advertencias?.length && <div className="sg-alert"><strong>Revisión incompleta · grupo completo</strong>{revision.advertencias.map((texto, i) => <p key={i}>{texto}</p>)}</div>}
     </section>}
+    <SegurosActividad estado={estado} />
+    <SegurosProgramacion programacion={estado.programacion} />
+    <SegurosCalendario estado={estado} />
     <section className="sg-section" aria-labelledby="sg-upcoming-title">
       <h3 id="sg-upcoming-title">Próximos pagos y vencimientos</h3>
       {!proximos.length ? empty('Ningún pago ni vencimiento anotado.') : <>
@@ -145,9 +139,8 @@ export default function SegurosPanel({ apiKey, puedeArreglar, estado, onRefresh 
     </details>
     <section className="sg-section sg-watch" aria-label="Vigilante de seguros">
       <strong>Vigilante · grupo completo</strong>
-      <p>Horarios: {(estado.vigilante?.horarios || []).join(' y ') || 'sin horario informado'}</p>
-      {lecturaDisponible(revision, complementosDisponibles)
-        ? empty('', lecturaDisponible(revision, complementosDisponibles))
+      {mensajeRevision(revision, complementosDisponibles)
+        ? empty('', mensajeRevision(revision, complementosDisponibles))
         : <p>Última revisión del vigilante: {fechaLegible(revision.fecha)}{revisionAntigua(revision.fecha) ? ' · hace más de 24 h; comprobar actualización' : ''}</p>}
     </section>
     <section className="sg-section sg-questions" aria-label="Preguntar a Wobi Seguros">
