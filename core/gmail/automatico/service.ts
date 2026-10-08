@@ -623,10 +623,31 @@ export class ServicioCorreoAutomatico {
 
 type DetallePendiente = NonNullable<ResultadoAuto["pendientes"][number]["detalles"]>[number];
 
-function explicarPendiente(motivos: string[], detalle?: DetallePendiente): string {
+/** Frases que el informe NO puede usar: cada motivo dice su causa concreta (guardarraíl core/guardarrailes/motivosSinGenericos.test.ts). */
+export const FRASES_GENERICAS_PROHIBIDAS = [
+  "No se cumplieron todas las condiciones necesarias",
+  "no dio por completa la lectura",
+  "fallo temporal al leerla",
+  "ya empezó, pero falta confirmar que quedó completa",
+];
+
+const PASOS_OPERACION: Record<string, string> = {
+  reservada: "quedó reservada y aún no se creó en Holded",
+  creando: "se estaba creando en Holded y no se confirmó",
+  adjuntando: "se creó y quedó a medias al adjuntar el comprobante",
+  conciliando: "se creó y quedó a medias al conciliar con el banco",
+  incierta: "quedó en estado incierto (Holded no confirmó el último paso)",
+  completada: "figura como completada pero falta la confirmación final",
+};
+
+export function explicarPendiente(motivos: string[], detalle?: DetallePendiente): string {
   const tiene = (valor: string) => motivos.some(motivo => motivo === valor || motivo.startsWith(`${valor}:`));
-  if (motivos.some(motivo => motivo.startsWith("operacion_"))) {
-    return "La operación ya empezó, pero falta confirmar que quedó completa en Holded.";
+  const operacion = motivos.find(motivo => motivo.startsWith("operacion_"));
+  if (operacion) {
+    // Qué paso quedó a medias (nunca el id interno): «operacion_<estado>:<id>».
+    const estado = operacion.slice("operacion_".length).split(":")[0];
+    const paso = PASOS_OPERACION[estado] ?? `quedó en el paso «${estado.replace(/_/g, " ")}»`;
+    return `La operación de una revisión anterior ${paso}; hay que comprobarla en Holded antes de continuarla.`;
   }
   if (tiene("posible_duplicado")) return "Puede estar registrado previamente; hay que comprobarlo antes de crear otro gasto.";
   if (tiene("no_es_ticket_o_recibo_pagado")) return "El documento no se identificó como recibo de pago; la búsqueda bancaria automática no se ejecutó.";
@@ -693,7 +714,7 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
     const parte = motivos.find(motivo => motivo.startsWith("lectura:"))?.slice("lectura:".length).trim();
     return parte
       ? `El analizador no pudo leer una parte de este correo: ${acotar(parte)}`
-      : "El analizador no dio por completa la lectura de este correo (algún adjunto, enlace o parte del hilo no se pudo leer).";
+      : "El analizador marcó la lectura como incompleta sin nombrar la parte que no pudo leer; se trata como fallo del analizador y hay que revisar el correo a mano.";
   }
   if (tiene("otras_acciones_pendientes")) return "El correo contiene además otra solicitud que debe revisar el operador.";
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";
@@ -704,8 +725,31 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   if (tiene("fallo_temporal_analisis_ia")) return "El servicio de análisis tuvo un fallo temporal; el correo se conserva para reintento.";
   if (tiene("fallo_tecnico_analisis_ia")) return "El analizador no pudo completar este correo; el motivo técnico quedó registrado.";
   if (tiene("correo_original_no_disponible")) return "La operación existe, pero Gmail ya no permite recuperar el comprobante original.";
-  if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) return "La fase automática no terminó y el correo se conserva para revisión manual.";
-  return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";
+  if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) {
+    const que = motivos.find(motivo => motivo.startsWith("error_automatico:"))?.slice("error_automatico:".length).trim();
+    return `La fase automática se interrumpió${que ? ` (${acotar(que)})` : ""}; el correo se conserva para revisión manual.`;
+  }
+  const quien = detalle?.proveedor ? `«${detalle.proveedor}»` : "el comprobante";
+  const importe = detalle?.monto !== undefined && detalle?.moneda ? ` (${detalle.monto} ${detalle.moneda})` : "";
+  if (tiene("empresa_en_conflicto_con_el_comprador")) return `La factura va a nombre de una sociedad distinta de la que sugiere el contexto; hay que decidir a qué empresa pertenece ${quien}${importe}.`;
+  if (tiene("empresa_no_habilitada_o_ambigua")) return `No se pudo determinar con seguridad a qué empresa pertenece ${quien}${importe}${detalle?.empresa ? ` (el analizador propuso ${detalle.empresa})` : ""}.`;
+  if (tiene("falta_evidencia")) return `El analizador no citó la evidencia del documento (proveedor, importe y fecha, o la empresa) para ${quien}${importe}.`;
+  if (tiene("fecha_invalida")) return `La fecha del comprobante de ${quien}${importe} no es válida o no está; hay que confirmarla a mano.`;
+  if (tiene("moneda_invalida")) return `La moneda leída para ${quien} no es un código válido (${detalle?.moneda || "vacía"}); hay que corregirla a mano.`;
+  if (tiene("datos_incompletos")) return `Falta el proveedor o el concepto del gasto${importe}; hay que completarlos a mano.`;
+  if (tiene("importe_o_equivalente_invalido")) return `El importe o su equivalente bancario de ${quien} no son coherentes; hay que revisarlos a mano.`;
+  if (tiene("fuente_inexistente")) return `El recibo de ${quien} se atribuyó a un adjunto que no existe en el correo; hay que revisarlo a mano.`;
+  if (tiene("varios_gastos_en_misma_fuente")) return `El mismo adjunto o cuerpo contiene varios recibos (${quien}${importe}); se registran a mano uno a uno.`;
+  if (tiene("tipo_ticket_no_soportado") || motivos.some(motivo => motivo.startsWith("tipo_"))) {
+    const tipo = motivos.find(motivo => motivo.startsWith("tipo_"))?.replace(/^tipo_/, "").replace(/_/g, " ");
+    return `El tipo de documento de ${quien} no se registra automáticamente como ticket (${tipo || "tipo no soportado"}); se crea a mano.`;
+  }
+  if (tiene("operacion_pendiente_sin_escritura_en_simulacion")) return "Modo simulación: la operación se habría ejecutado, pero no se escribió nada.";
+  if (tiene("simulacion_sin_modificar_correo")) return "Modo simulación: el correo no se marcó como leído.";
+  if (tiene("relectura_fallida")) return "La relectura del correo falló por un error técnico; se reintenta en la siguiente pasada.";
+  // Ningún motivo conocido llega aquí (guardarraíl). Si uno nuevo lo hace, se nombra en claro en vez de esconderlo.
+  const legible = motivos.map(motivo => motivo.split(":")[0].replace(/_/g, " ")).filter(Boolean).join(", ");
+  return `Motivo sin explicación catalogada (${legible || "sin motivo"}); revisar a mano y avisar al equipo.`;
 }
 
 /** Máximo de compras que el informe detalla una a una; el resto se resume en «y N más». */
