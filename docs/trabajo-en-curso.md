@@ -30,6 +30,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Conciliación y bancos | `core/holded/` (búsqueda de cargos, conciliaciones), `core/gastos/` |
 | Automatización de Holded en servidor | `core/holded/automatizacion/`, `core/jobs/automatizacionHolded.ts` |
 | Correo | `core/gmail/`, `core/jobs/revisarCorreoNuevo.ts` |
+
+**Dueño único por área y día (Carlos, 08-10-2026).** Las áreas críticas están en `.github/areas-criticas.json`. El CI rechaza un PR nuevo que toque un área mientras otro PR abierto más antiguo la toca (`scripts/ci/colision-de-area.mjs`); el PR antiguo tiene prioridad. Para aceptar una colisión a sabiendas, Carlos pone la etiqueta `colision-aceptada`. Antes de empezar en un área: mirar los PR abiertos y esta tabla; si hay otro, coordinar o esperar.
+
+**Banco de casos reales (`core/gmail/automatico/casos/`).** Cada correo que bloqueó la revisión queda como caso de extremo a extremo (sin IA) con el informe que debe salir. Al cerrar un incidente de correo, añadir su caso al banco en el mismo PR.
 | Documentos y conocimiento | `core/documental/`, `core/knowledge/`, `core/drive/` |
 | Seguros | `core/seguros/` |
 | Soportes (pedir comprobantes a quien gastó con la tarjeta) | `core/soportes/` |
@@ -59,6 +63,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | PR | Fecha |
 |---|---|---|
+| Dueño único por área (guardarraíl de colisión en CI, `.github/areas-criticas.json`) + banco de casos reales de extremo a extremo del correo automático (`core/gmail/automatico/casos/`) | #412 | 08-10-2026 |
 | Norma de resolución autónoma centralizada: módulo `core/ia/normaResolucionAutonoma.ts` inyectado en Wobi, Seguros y extractores + guardarraíl de cobertura + docs/norma-resolucion-autonoma.md (primera aplicación: moneda sin cuenta propia, #404) | #405 | 08-10-2026 |
 | Correo activo con la pregunta en `_gastos_pendientes_datos` (caso Lunch 180 MXN) + la verificación fallida del analizador ya no se guarda como «incompleto» (v24) + diagnóstico de respuestas rechazadas (`core/gastos/reenviarPreguntaPendiente.ts`, `core/gmail/automatico/analyze.ts`) | #397 | 07-10-2026 |
 | Incidente 07-10: imágenes de relleno «noname» como adjuntos y aviso de propuesta pendiente repetido sin freno (`core/correo/lectura/decoracion.ts`, `core/gastos/avisoPropuestaPendiente.ts`) | #389 | 07-10-2026 |

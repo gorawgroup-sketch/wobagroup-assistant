@@ -1,0 +1,11 @@
+{
+  "_doc": "Áreas con dueño único por día (docs/trabajo-en-curso.md). Un PR nuevo que toque una de estas rutas mientras otro PR abierto más antiguo también la toca no pasa el CI, salvo que lleve la etiqueta colision-aceptada (la pone Carlos).",
+  "areas": {
+    "correo-automatico": ["core/gmail/automatico/"],
+    "gastos-entrantes": ["core/gastos/procesarGastoEntrante.ts", "core/gastos/reenviarPreguntaPendiente.ts", "core/gastos/gastoCallbackHandler.ts", "core/jobs/revisarCorreoNuevo.ts", "core/jobs/revisionCorreoManual.ts"],
+    "holded-escritura": ["core/holded/write.ts"],
+    "transferencias": ["core/holded/transferencias/"],
+    "seguros": ["core/seguros/"],
+    "chat-central": ["core/claude/client.ts", "core/ia/"]
+  }
+}
