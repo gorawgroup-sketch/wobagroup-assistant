@@ -216,3 +216,11 @@ Caso real (Carlos): la factura de renovación de dominios de Name.com (pedido 28
 - Revisión automática (`evaluarAuto`): si la evidencia de empresa del recibo nombra a OTRA sociedad del grupo, no se crea (`empresa_en_conflicto_con_el_comprador`).
 - Comprobado con las dos facturas reales de Name.com (6 de 6 lecturas → WOBA) y con 9 facturas normales de las tres empresas: 8 coinciden, 1 sin comprador reconocible, 0 correcciones falsas.
 - Auditoría de los gastos de septiembre-octubre (224 PDF con texto leídos): además del reportado, queda el de Name.com 82,04 USD (pedido 28488474, footprint.global), creado en Footprint y a nombre de Business Atelier Europa SL. 173 comprobantes son imágenes o escaneos y no se pudieron comprobar así.
+
+## La señal débil de «viaje» cede ante el historial del proveedor (2026-10-08)
+
+Caso real (Carlos, WOBA): la factura de comunidad y garaje del edificio Luarca (275 € = 50 %) se creó en **«Gastos de viaje»** aunque los 12 meses anteriores del mismo proveedor (JESUS GOMEZ TARRIÑO) están en **Arrendamiento**. Causa, reproducida en vivo: la foto de la factura se leyó como recibo simplificado y llegó desde un buzón del grupo, así que se activó el atajo «ticket de equipo + recibo simplificado» (`calcularSenalDeViaje`), que se resuelve ANTES que el historial del proveedor. Sin esa señal, la misma entrada daba Arrendamiento con 45 evidencias.
+
+- `inferirCuentaGasto` (`core/holded/write.ts`): si la señal de viaje es **débil** (solo «ticket de equipo»: sin persona identificada, sin contexto de viaje detectado en el documento y sin naturaleza de desplazamiento como taxi, avión, combustible…) y el historial del propio proveedor **contradice** la cuenta de viaje (`historialContradiceCuenta`: al menos 3 líneas y la cuenta de viaje con el 20 % o menos), se sigue con los tiers normales (proveedor, concepto, categoría). Luarca: 1 línea de viaje entre 68 → Arrendamiento.
+- La regla de Carlos no cambia: un ticket con persona identificada, contexto de viaje o naturaleza de desplazamiento sigue yendo a viaje. Comprobado antes/después con ALDI + persona, Kruidvat, D1 SAS y Station Gomerco: sin diferencia.
+- Ojo: las cuentas «hermanas» de un mismo concepto (varias de arrendamiento) cuentan juntas como «no viaje»; por eso se mide la cuenta de viaje y no una cuenta dominante.
