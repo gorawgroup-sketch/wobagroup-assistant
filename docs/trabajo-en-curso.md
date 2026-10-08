@@ -63,6 +63,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | PR | Fecha |
 |---|---|---|
+| Informe por diferencias (`core/gmail/automatico/informeDiferencias.ts`): cada revisión dice qué cambió desde la anterior (resueltos, nuevos, cambios de motivo, iguales) antes de la lista completa; resumen por correo guardado en `wobi_mail_events` (`revision_resumen`) | _PR pendiente_ | 08-10-2026 |
 | Revisión en seco tras cada despliegue (`core/gmail/automatico/revisionEnSeco.ts`): simulación sin IA ni escrituras unos minutos después de arrancar con versión nueva, comparación por correo con la anterior y aviso solo si empeora; `WOBI_MAIL_DRY_RUN=off` la apaga | #416 | 08-10-2026 |
 | Cero motivos genéricos en el informe del correo automático: cada código con explicación concreta, comodín que nombra el motivo, guardarraíl `core/guardarrailes/motivosSinGenericos.test.ts`; aviso veraz del correo activo sin pregunta (`core/jobs/revisionCorreoManual.ts`) | #415 | 08-10-2026 |
 | Dueño único por área (guardarraíl de colisión en CI, `.github/areas-criticas.json`) + banco de casos reales de extremo a extremo del correo automático (`core/gmail/automatico/casos/`) | #412 | 08-10-2026 |

@@ -22,6 +22,8 @@ import { intentarCerrarOperacion, mensajeOperacionBloqueada, resolverOperacionAn
   type ResultadoOperacionAnterior } from "./operacionAnterior";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
+import { diferenciasDeEstaRevision, EVENTO_RESUMEN_REVISION } from "./informeDiferencias";
+import type { ResumenSeco } from "./revisionEnSeco";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
 import { conTiempoMaximo, enteroAcotado } from "../../utils/asyncTimeout";
 import { cierreSolicitado } from "../../utils/cierreServicio";
@@ -219,6 +221,13 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   });
   try {
     const resultado = await service.revisar(config);
+    // Informe por diferencias: solo las pasadas reales se registran y se comparan (la revisión en seco guarda lo suyo aparte).
+    if (!opciones.enSeco) {
+      resultado.diferencias = await diferenciasDeEstaRevision(resultado, (process.env.RAILWAY_GIT_COMMIT_SHA ?? "desconocida").slice(0, 7), {
+        ultimo: async () => (await storeAuto.ultimoResumenRevision(config.buzon)) as ResumenSeco | undefined,
+        guardar: (resumen) => storeAuto.auditar({ buzon: config.buzon, tipo: EVENTO_RESUMEN_REVISION, datos: resumen }),
+      });
+    }
     await colaNotificacion;
     return resultado;
   } finally {

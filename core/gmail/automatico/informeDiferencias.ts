@@ -26,7 +26,7 @@ export function calcularDiferencias(anterior: ResumenSeco | undefined, actual: R
     else if (antes.estado !== ahora.estado) dif.cambiados.push({ asunto: ahora.asunto, antes: antes.estado, ahora: ahora.estado });
     else dif.iguales++;
   }
-  for (const [id, antes] of Object.entries(anterior?.correos ?? {})) {
+  for (const [id, antes] of Object.entries((anterior?.correos ?? {}) as ResumenSeco["correos"])) {
     if (antes.estado !== AUTOMATIZABLE && !(id in actual.correos)) dif.resueltos.push({ asunto: antes.asunto });
   }
   return dif;

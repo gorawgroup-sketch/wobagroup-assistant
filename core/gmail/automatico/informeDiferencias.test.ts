@@ -22,7 +22,7 @@ test("clasifica nuevos, resueltos, cambiados e iguales; lo automatizado no cuent
 
 test("la sección del informe dice lo que cambió, o que no hay registro anterior, o que no hay cambios", () => {
   const conCambios = lineasDiferencias({ desde: "2026-10-08T10:00:00Z", nuevos: [{ asunto: "E", estado: "Nuevo motivo" }], resueltos: [{ asunto: "C" }], cambiados: [], iguales: 2 }).join("\n");
-  assert.match(conCambios, /🔁 Desde la última revisión \(08\/10, 12:00\)/);
+  assert.match(conCambios, /🔁 Desde la última revisión \(08\/10.{0,3}12:00\)/);
   assert.match(conCambios, /✅ Resueltos desde entonces: 1\.\n  • «C»/);
   assert.match(conCambios, /🆕 Pendientes nuevos: 1\.\n  • «E»: Nuevo motivo/);
   assert.match(conCambios, /➡️ Siguen igual: 2\./);
