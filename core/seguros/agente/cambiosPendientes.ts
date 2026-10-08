@@ -118,6 +118,8 @@ export interface AlmacenCambios {
   actualizarMessageId(id: string, messageId: number): Promise<void>;
   /** Lee la propuesta SIN retirarla (para comprobar el chat antes de decidirla). */
   ver(id: string): Promise<CambioPendiente | undefined>;
+  /** Propuestas vigentes (no decididas, no caducadas) de un chat. */
+  listarPorChat(chatId: number): Promise<CambioPendiente[]>;
   /** Devuelve la propuesta y la RETIRA (aprobada o cancelada): una propuesta solo se decide una vez. */
   consumir(id: string): Promise<CambioPendiente | undefined>;
 }
@@ -152,6 +154,9 @@ export const almacenCambiosReal: AlmacenCambios = {
   },
   async ver(id) {
     return (await leerVigentes()).find((f) => f.cambio.id === id)?.cambio;
+  },
+  async listarPorChat(chatId) {
+    return (await leerVigentes()).map((f) => f.cambio).filter((c) => c.chatId === chatId);
   },
   async consumir(id) {
     const fila = (await leerVigentes()).find((f) => f.cambio.id === id);

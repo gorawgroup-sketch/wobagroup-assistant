@@ -397,7 +397,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const cita = unaLinea(texto(e.cita_usuario), 200);
           propuestas++;
           await deps.proponerCambio(ctx.chatId as number, { accion: "actualizar_poliza", datos, cita, texto: textoDePropuesta("actualizar_poliza", datos, cita, poliza) });
-          return `Propuesta enviada al Telegram de la persona con los botones «Aplicar» y «Cancelar». Todavía NO está cambiado nada: díselo y que pulse Aplicar si está de acuerdo.`;
+          return `Propuesta preparada: sus botones «Aplicar» y «Cancelar» llegarán al Telegram de la persona justo DEBAJO de tu respuesta. Todavía NO está cambiado nada: dile que pulse Aplicar en ese mensaje si está de acuerdo. No digas que ya la enviaste.`;
         },
       },
       {
@@ -427,7 +427,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const cita = unaLinea(texto(e.cita_usuario), 200);
           propuestas++;
           await deps.proponerCambio(ctx.chatId as number, { accion: "recordar", datos, cita, texto: textoDePropuesta("recordar", datos, cita) });
-          return "Propuesta enviada al Telegram de la persona con los botones «Aplicar» y «Cancelar». Todavía NO está guardado: díselo y que pulse Aplicar si está de acuerdo.";
+          return "Propuesta preparada: sus botones «Aplicar» y «Cancelar» llegarán al Telegram de la persona justo DEBAJO de tu respuesta. Todavía NO está guardado: dile que pulse Aplicar en ese mensaje si está de acuerdo. No digas que ya la enviaste.";
         },
       },
       {
@@ -452,7 +452,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const cita = unaLinea(texto(e.cita_usuario), 200);
           propuestas++;
           await deps.proponerCambio(ctx.chatId as number, { accion: "retirar_recuerdo", datos, cita, texto: textoDePropuesta("retirar_recuerdo", datos, cita) });
-          return "Propuesta enviada al Telegram de la persona con los botones «Aplicar» y «Cancelar». Todavía NO está retirado: díselo y que pulse Aplicar si está de acuerdo.";
+          return "Propuesta preparada: sus botones «Aplicar» y «Cancelar» llegarán al Telegram de la persona justo DEBAJO de tu respuesta. Todavía NO está retirado: dile que pulse Aplicar en ese mensaje si está de acuerdo. No digas que ya la enviaste.";
         },
       },
     );
