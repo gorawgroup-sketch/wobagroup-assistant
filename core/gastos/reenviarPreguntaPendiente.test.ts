@@ -33,7 +33,7 @@ test("la pregunta de un gasto al que falta un dato se reconstruye según el moti
   const moneda = textoPreguntaGastoPendienteDatos({ ...base, motivo: "moneda" });
   assert.match(moneda, /Cnidos y Rifados/);
   assert.match(moneda, /180 MXN/);
-  assert.match(moneda, /sin tasa de cambio disponible/);
+  assert.match(moneda, /no hay en el banco un cargo que coincida/);
   assert.match(moneda, /No hace falta que hagas nada/);
   assert.doesNotMatch(moneda, /monto EXACTO/, "ya no se le pide a nadie el importe: Wobi convierte solo");
   assert.match(textoPreguntaGastoPendienteDatos({ ...base, motivo: "empresa" }), /WOBA, EWORKS o Footprint/);

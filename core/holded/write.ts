@@ -2460,7 +2460,7 @@ function palabrasSignificativas(texto: string): string[] {
     .filter((p) => p.length >= 5 && !PALABRAS_IGNORADAS_CONCEPTO.has(p));
 }
 
-async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuenta[]> {
+export async function recolectarLineasConCuenta(empresa: Empresa): Promise<LineaConCuenta[]> {
   const lineas: LineaConCuenta[] = [];
   let cursor: string | undefined;
 
@@ -2857,6 +2857,15 @@ export function sugerirCuentaPorViaje(
 }
 
 /**
+ * ¿El historial de un proveedor contradice esta cuenta? Cierto si hay al menos 3 líneas y la cuenta tiene el 20 % o menos. Pura.
+ * (Las cuentas hermanas de un mismo concepto, p. ej. varias de arrendamiento, cuentan juntas como «no viaje»: se mide la cuenta señalada.)
+ */
+export function historialContradiceCuenta(lineas: ReadonlyArray<{ account: string }>, cuenta: string, minimo = 3, maxProporcion = 0.2): boolean {
+  if (lineas.length < minimo) return false;
+  return lineas.filter((l) => l.account === cuenta).length / lineas.length <= maxProporcion;
+}
+
+/**
  * Tier "viaje" de inferirCuentaGasto — pedido explícito de Carlos, casos reales (Simon Talloen en
  * desplazamiento, tickets de ALDI y Ahorramas): un gasto cotidiano (comida, taxi, lo que sea) de alguien
  * de viaje debe contabilizarse como gasto de viaje/desplazamiento, sin importar qué proveedor/concepto
@@ -3027,7 +3036,17 @@ export async function inferirCuentaGasto(
     : undefined;
   if (senalDeViaje) {
     const sugeridoPorViaje = sugerirCuentaPorViaje(lineas, tagsCategoria, contextoEjemploViaje);
-    if (sugeridoPorViaje) return sugeridoPorViaje;
+    if (sugeridoPorViaje) {
+      // Caso real (Carlos, 2026-10-08, factura de comunidad y garaje del edificio Luarca, WOBA): la foto de la factura se leyó como recibo
+      // simplificado y llegó desde un buzón del grupo → «ticket de equipo». Esa señal DÉBIL (sin persona identificada, sin contexto de
+      // viaje y sin naturaleza de desplazamiento) mandó el gasto a «Gastos de viaje» por delante de los 12 meses de arrendamiento del mismo
+      // proveedor. La señal débil cede cuando el historial del propio proveedor contradice «viaje»; la fuerte (persona, contexto de viaje,
+      // taxi, avión…) mantiene la regla de Carlos de que el gasto cotidiano de alguien de viaje va a viaje.
+      const senalFuerteDeViaje = Boolean(criterios.contextoDeViaje || criterios.personaAsociada) ||
+        tagsCategoria.some((t) => TAGS_NATURALEZA_DESPLAZAMIENTO.has(t));
+      const historialProveedor = seleccionarCoincidenciasProveedor(criterios.proveedor, lineas).coincidencias;
+      if (senalFuerteDeViaje || !historialContradiceCuenta(historialProveedor, sugeridoPorViaje.accountId)) return sugeridoPorViaje;
+    }
   }
 
   // textosParecidos (no un simple includes/substring) — bug real encontrado

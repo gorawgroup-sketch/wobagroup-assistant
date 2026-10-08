@@ -35,6 +35,7 @@ import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, cargoUnicoParaEquivalente, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { notaCargosMayores } from "../holded/cargoMayor";
 import { equivalenteCuadraConTasa } from "./equivalenteCoherente";
+import { empresaNombradaEnTexto } from "./empresaPorComprador";
 import { convertirATasa, mejorCargoPorCercania, monedaDestinoPreferida } from "./conversionAutomatica";
 import {
   obtenerPoliticaMonedaLiquidacion,
@@ -195,8 +196,40 @@ function compararNumeroDocumento(numeroEntrante: string | undefined, candidato: 
  * nuevo, y manda la propuesta con botones — nunca escribe nada en Holded
  * por sí sola, eso ocurre solo en gastoCallbackHandler.ts tras aprobación.
  */
+/** Tasa del día (histórica de la fecha del documento; si no, la actual). undefined si ninguna está disponible. Solo para convertir el
+ * importe de un recibo cuando el banco aún no muestra el cargo: el cargo real, cuando aparezca, manda al conciliar. */
+async function tasaDelDia(fecha: string, origen: string, destino: string): Promise<number | undefined> {
+  let tasa: number | undefined;
+  try {
+    tasa = await obtenerTasaCambioHistorica(fecha, origen, destino);
+  } catch (error) {
+    console.error("[procesarGastoEntrante] Tasa histórica no disponible para convertir:", error instanceof Error ? error.message : error);
+  }
+  if (tasa === undefined) {
+    try {
+      tasa = await obtenerTasaCambioActual(origen, destino);
+    } catch (error) {
+      console.error("[procesarGastoEntrante] Tasa actual no disponible para convertir:", error instanceof Error ? error.message : error);
+    }
+  }
+  return tasa;
+}
+
 export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<ResultadoGastoEntrante> {
   const { chatId, datos } = entrada;
+
+  // La factura manda sobre el contexto: si nombra como COMPRADOR a una sociedad del grupo, el gasto es de esa sociedad, aunque el contexto
+  // (dominios, remitente, proyecto) apunte a otra (caso Name.com 28837066, 08-10: iba a Business Atelier Europa SL y se creó en EWORKS).
+  // Lo que el operador fijó a mano no se toca.
+  const empresaDelComprador = empresaNombradaEnTexto(datos.compradorRazonSocial);
+  if (empresaDelComprador && datos.empresaProbable !== empresaDelComprador && !datos.empresaFijadaPorOperador) {
+    datos.razon =
+      (datos.razon ? `${datos.razon} ` : "") +
+      `[La factura va a nombre de «${datos.compradorRazonSocial}»: el gasto es de ${empresaDelComprador}` +
+      `${esEmpresaHolded(datos.empresaProbable) ? `, no de ${datos.empresaProbable}` : ""}.]`;
+    console.log(`[procesarGastoEntrante] Empresa corregida por el comprador de la factura: ${datos.empresaProbable} → ${empresaDelComprador} («${datos.compradorRazonSocial}»).`);
+    datos.empresaProbable = empresaDelComprador;
+  }
 
   // Un proveedor ilegible no impide ofrecer la vía autorizada sin contacto.
   // No inventar un nombre: la resolución usa el contacto genérico existente
@@ -367,6 +400,23 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       montoEquivalenteResuelto = Math.abs(movimientoLiquidacionUsado.monto);
       monedaEquivalenteResuelta = politicaLiquidacion.moneda;
     } else {
+      // Norma de resolución autónoma (Carlos, 08-10-2026, caso recibo de Anthropic 24,20 USD en WOBA): si el banco aún no
+      // muestra el cargo en la moneda de liquidación, se convierte a la tasa del día y sale la propuesta con botones; la
+      // diferencia de cambio se ajusta al conciliar con el cargo real. Misma regla que la rama de moneda sin cuenta propia
+      // (PR #404); antes esta rama dejaba el recibo «pendiente de comprobación bancaria» sin proponer nada.
+      const tasaLiquidacion = await tasaDelDia(fechaBusqueda, monedaOriginal, politicaLiquidacion.moneda);
+      const convertidoLiquidacion = convertirATasa(datos.monto, tasaLiquidacion);
+      if (convertidoLiquidacion !== undefined) {
+        montoEquivalenteResuelto = convertidoLiquidacion;
+        monedaEquivalenteResuelta = politicaLiquidacion.moneda;
+        datos.razon =
+          (datos.razon ? `${datos.razon} ` : "") +
+          `[${datos.monto} ${monedaOriginal} convertidos a ${convertidoLiquidacion.toFixed(2)} ${politicaLiquidacion.moneda} con la tasa del día ` +
+          `(${(tasaLiquidacion as number).toPrecision(5)}); liquidación en ${politicaLiquidacion.moneda} según la política de ${empresa}. ` +
+          `Todavía no hay en el banco un cargo que coincida; al conciliar con el cargo real se ajusta la diferencia de cambio.]`;
+      }
+    }
+    if (montoEquivalenteResuelto === undefined || monedaEquivalenteResuelta !== politicaLiquidacion.moneda) {
       await guardarGastoPendienteDatos({
         chatId,
         rutaLocal: entrada.rutaLocal,
@@ -381,11 +431,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       await sendTelegramMessage(
         chatId,
         `📄 ${empresa} · ${datos.proveedor || "Anthropic"} · ${datos.monto.toFixed(2)} ${monedaOriginal} · ${fechaBusqueda}.\n\n` +
-          `La liquidación se registra en ${politicaLiquidacion.moneda} usando el importe real del banco. ` +
-          `La búsqueda todavía no permite vincular un cargo disponible de forma inequívoca; esto no demuestra que no se haya cobrado. ` +
-          `El movimiento puede estar pendiente de sincronización, ya conciliado o tener varios candidatos.\n\n` +
-          `No necesitas calcular ni facilitar el cambio. El documento queda pendiente de comprobación bancaria; ` +
-          `al retomarlo se vuelve a buscar el cargo y se comprueba que no exista ya el gasto antes de crearlo.`
+          `La liquidación se registra en ${politicaLiquidacion.moneda}. Todavía no hay en el banco un cargo que coincida y tampoco pude ` +
+          `obtener ahora la tasa de cambio del día para convertirlo. No hace falta que hagas nada: lo reintento solo en la próxima revisión.`
       );
       return "pendiente_datos";
     }

@@ -67,6 +67,7 @@ export const reintentarGastoPendienteTool: ToolDefinition = {
 
     if (pendiente.motivo === "empresa" && empresa && (EMPRESAS as readonly string[]).includes(empresa)) {
       datos.empresaProbable = empresa as (typeof EMPRESAS)[number];
+      datos.empresaFijadaPorOperador = true;
     }
     if (pendiente.motivo === "proveedor" && proveedor) {
       datos.proveedor = proveedor;

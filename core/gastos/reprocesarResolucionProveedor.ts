@@ -175,7 +175,7 @@ async function leerAdjuntoCorreo(
     : reconstruirGastoDesdeAsuntoPago(correo.asunto, cuerpo, correo.fecha, datosLeidos);
   if (!datosBase) throw new Error("La lectura no confirmó el gasto y el asunto no contiene importes verificables.");
   const proveedor = await resolverProveedorRealDesdeMovimiento(datosBase, empresa);
-  const datos = { ...datosBase, proveedor, empresaProbable: empresa };
+  const datos = { ...datosBase, proveedor, empresaProbable: empresa, empresaFijadaPorOperador: true };
   const resultado = await procesarGastoEntrante({
     chatId,
     rutaLocal: rutaTrabajo,
