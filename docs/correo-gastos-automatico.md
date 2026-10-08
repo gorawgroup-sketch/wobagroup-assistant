@@ -207,6 +207,16 @@ Los logs del 08-10 mostraron que el aviso del #395 se ejecutaba con TODAS las pr
 - Un gasto del registro que ya no existe en Holded se **omite** (y se recuerda 30 min) en vez de abortar la comprobación.
 - Las lecturas por id van en **paralelo** (8 a la vez) y con memoria de 30 min: de unos 12 s a unos 3,6 s con los mismos resultados (Hotel101 sigue detectando el recibo `6aba2709` y la factura 50808).
 
+## La factura manda: el gasto es de la sociedad a cuyo nombre va (2026-10-08)
+
+Caso real (Carlos): la factura de renovación de dominios de Name.com (pedido 28837066, 85,57 €) iba a nombre de **Business Atelier Europa SL (WOBA)** y se creó en **EWORKS** porque los dominios eran eworks.studio y eworkstudio.com. El extractor decidía la empresa «según el documento y el contexto» sin comprobar el comprador impreso. Regla de Carlos: «no puedes dar gastos a una empresa con facturas que vienen a nombre de otra».
+
+- El extractor devuelve ahora `compradorRazonSocial` (campo **obligatorio** del lector: el comprador impreso en «Customer information», «Bill to», «Facturar a»…). `empresaNombradaEnTexto` (`core/gastos/empresaPorComprador.ts`, con pruebas) lo traduce a una sociedad del grupo con sus nombres legales (WOBA = Business Atelier Europa SL, EWORKS = Compañía de Proyectos eWorks SL, Footprint = BUSINESS FOOTPRINT EU SL; «Business Atelier» a secas no vale; tolera la errata real «BUSSINES»).
+- `procesarGastoEntrante`: si el comprador es una sociedad del grupo distinta de la que propuso el contexto, **manda el comprador** y la razón de la propuesta lo dice. Lo que el operador fijó a mano (`empresaFijadaPorOperador`) no se toca.
+- Revisión automática (`evaluarAuto`): si la evidencia de empresa del recibo nombra a OTRA sociedad del grupo, no se crea (`empresa_en_conflicto_con_el_comprador`).
+- Comprobado con las dos facturas reales de Name.com (6 de 6 lecturas → WOBA) y con 9 facturas normales de las tres empresas: 8 coinciden, 1 sin comprador reconocible, 0 correcciones falsas.
+- Auditoría de los gastos de septiembre-octubre (224 PDF con texto leídos): además del reportado, queda el de Name.com 82,04 USD (pedido 28488474, footprint.global), creado en Footprint y a nombre de Business Atelier Europa SL. 173 comprobantes son imágenes o escaneos y no se pudieron comprobar así.
+
 ## La señal débil de «viaje» cede ante el historial del proveedor (2026-10-08)
 
 Caso real (Carlos, WOBA): la factura de comunidad y garaje del edificio Luarca (275 € = 50 %) se creó en **«Gastos de viaje»** aunque los 12 meses anteriores del mismo proveedor (JESUS GOMEZ TARRIÑO) están en **Arrendamiento**. Causa, reproducida en vivo: la foto de la factura se leyó como recibo simplificado y llegó desde un buzón del grupo, así que se activó el atajo «ticket de equipo + recibo simplificado» (`calcularSenalDeViaje`), que se resuelve ANTES que el historial del proveedor. Sin esa señal, la misma entrada daba Arrendamiento con 45 evidencias.

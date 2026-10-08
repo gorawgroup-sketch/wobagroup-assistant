@@ -634,3 +634,14 @@ test("tras reintentar, un análisis incompleto NO se vuelve a pagar hasta pasada
   assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS - 1)?.completo, false);
   assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS + 1), undefined);
 });
+
+test("la evidencia de empresa que nombra a OTRA sociedad del grupo impide la creación automática", () => {
+  const recibo = { ...analisisFixture().recibos[0], empresa: "EWORKS" as const, evidenciaEmpresa: "Datos del cliente: BUSINESS ATELIER EUROPA SL" };
+  const config = { ...configFixture, empresas: ["WOBA", "EWORKS", "Footprint"] as typeof configFixture.empresas };
+  const decision = evaluarAuto(correoFixture(), { ...analisisFixture(), recibos: [recibo] }, recibo, evidenciaFixture(), config);
+  assert.equal(decision.apto, false);
+  assert.ok(!decision.apto && decision.motivos.includes("empresa_en_conflicto_con_el_comprador"), JSON.stringify(decision));
+  const coherente = { ...recibo, empresa: "WOBA" as const };
+  const ok = evaluarAuto(correoFixture(), { ...analisisFixture(), recibos: [coherente] }, coherente, evidenciaFixture(), config);
+  assert.ok(ok.apto || !ok.motivos.includes("empresa_en_conflicto_con_el_comprador"), JSON.stringify(ok));
+});
