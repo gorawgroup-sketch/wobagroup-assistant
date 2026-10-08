@@ -224,3 +224,11 @@ Caso real (Carlos, WOBA): la factura de comunidad y garaje del edificio Luarca (
 - `inferirCuentaGasto` (`core/holded/write.ts`): si la señal de viaje es **débil** (solo «ticket de equipo»: sin persona identificada, sin contexto de viaje detectado en el documento y sin naturaleza de desplazamiento como taxi, avión, combustible…) y el historial del propio proveedor **contradice** la cuenta de viaje (`historialContradiceCuenta`: al menos 3 líneas y la cuenta de viaje con el 20 % o menos), se sigue con los tiers normales (proveedor, concepto, categoría). Luarca: 1 línea de viaje entre 68 → Arrendamiento.
 - La regla de Carlos no cambia: un ticket con persona identificada, contexto de viaje o naturaleza de desplazamiento sigue yendo a viaje. Comprobado antes/después con ALDI + persona, Kruidvat, D1 SAS y Station Gomerco: sin diferencia.
 - Ojo: las cuentas «hermanas» de un mismo concepto (varias de arrendamiento) cuentan juntas como «no viaje»; por eso se mide la cuenta de viaje y no una cuenta dominante.
+
+## La relectura de una operación anterior ya no se bloquea por divisa ni por empresa (2026-10-08)
+
+Con el diagnóstico del #410 («el recibo no coincide con el de la operación anterior (antes 24.2 USD del 2026-09-20; ahora 24.2 USD del 2026-09-20 (WOBA))») se vio la causa real de los correos atascados: seis operaciones ya empezadas se bloqueaban aunque el recibo releído tenía el MISMO importe y fecha. Dos condiciones de `reciboCorrespondeALaOperacion` (`core/gmail/automatico/service.ts`, con 4 pruebas) fallaban:
+
+- **Divisa mezclada:** se comparaba el importe del recibo (24,20 USD) con `plan.totalCentimos`, que es el importe del MOVIMIENTO bancario (20,88 EUR). En cualquier gasto en moneda extranjera nunca coincidía. Ahora el total del plan solo se compara si recibo y movimiento están en la misma moneda; si no, basta con que cuadre con el recibo de la operación anterior.
+- **Empresa:** se exigía que la relectura repitiera la empresa; si el modelo respondía «desconocida» se bloqueaba. La empresa ya la fijó el plan: «desconocida» no la contradice; otra empresa distinta sí bloquea.
+- Se mantienen: misma parte del correo, misma fecha, misma moneda contable e importe dentro de la tolerancia.

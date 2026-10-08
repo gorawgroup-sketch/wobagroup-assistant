@@ -35,6 +35,28 @@ export interface PuertoAutomatico {
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
 /**
+ * ¿La relectura de un correo da el MISMO recibo que usó la operación anterior? Misma parte (fuente), misma fecha, misma moneda contable e
+ * importe dentro de la tolerancia. Dos precisiones (caso real 08-10-2026: cinco operaciones en moneda extranjera atascadas con «el recibo no
+ * coincide» aunque importe y fecha eran idénticos):
+ *  - El total del plan (`totalCentimos`) es el importe del MOVIMIENTO bancario: solo es comparable con el recibo si están en la misma moneda
+ *    (24,20 USD del recibo frente a 20,88 EUR del cargo nunca coinciden y no tienen por qué).
+ *  - La empresa de la operación ya está fijada por su plan; una relectura que no la sabe («desconocida») no la contradice. Una relectura que
+ *    nombra OTRA empresa distinta sí bloquea.
+ */
+export function reciboCorrespondeALaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
+  const centimos = (monto: number) => Math.round(monto * 100);
+  const anteriorContable = anterior.equivalente ?? { monto: anterior.monto, moneda: anterior.moneda };
+  const actualContable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
+  const tolerancia = Math.max(0, op.plan.toleranciaCentimos);
+  const empresaCoincide = actual.empresa === op.plan.empresa || actual.empresa === "desconocida";
+  const totalCoincide = actualContable.moneda !== op.plan.movimiento.moneda ||
+    Math.abs(centimos(actualContable.monto) - op.plan.totalCentimos) <= tolerancia;
+  return actual.fuente === anterior.fuente && empresaCoincide &&
+    actual.fecha === anterior.fecha && actualContable.moneda === anteriorContable.moneda &&
+    Math.abs(centimos(actualContable.monto) - centimos(anteriorContable.monto)) <= tolerancia && totalCoincide;
+}
+
+/**
  * Un análisis COMPLETO guardado se reutiliza siempre (un mensaje de Gmail es inmutable). Uno INCOMPLETO no: se guardó en un mal momento
  * (adjunto que no se pudo leer entonces, fallo del modelo, tope de coste…) y reutilizarlo para siempre dejaba el correo atascado en
  * «el analizador no dio por completa la lectura» aunque ahora se lea bien (caso real, 2026-10-08: el recibo de Anthropic de 24,20 USD salía
@@ -172,14 +194,7 @@ export class ServicioCorreoAutomatico {
   }
 
   private reciboCorrespondeALaMismaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
-    const centimos = (monto: number) => Math.round(monto * 100);
-    const anteriorContable = anterior.equivalente ?? { monto: anterior.monto, moneda: anterior.moneda };
-    const actualContable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
-    const tolerancia = Math.max(0, op.plan.toleranciaCentimos);
-    return actual.fuente === anterior.fuente && actual.empresa === op.plan.empresa &&
-      actual.fecha === anterior.fecha && actualContable.moneda === anteriorContable.moneda &&
-      Math.abs(centimos(actualContable.monto) - centimos(anteriorContable.monto)) <= tolerancia &&
-      Math.abs(centimos(actualContable.monto) - op.plan.totalCentimos) <= tolerancia;
+    return reciboCorrespondeALaOperacion(anterior, actual, op);
   }
 
   private contactoSeguroParaReparar(recibo: ReciboAuto, evidencia: EvidenciaAuto): boolean {
