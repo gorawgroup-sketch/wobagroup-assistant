@@ -206,3 +206,11 @@ Los logs del 08-10 mostraron que el aviso del #395 se ejecutaba con TODAS las pr
 - Solo se comprueba si el concepto es de **hospedaje** (`esHospedaje`): para cualquier otro gasto no se lee nada (0 ms).
 - Un gasto del registro que ya no existe en Holded se **omite** (y se recuerda 30 min) en vez de abortar la comprobación.
 - Las lecturas por id van en **paralelo** (8 a la vez) y con memoria de 30 min: de unos 12 s a unos 3,6 s con los mismos resultados (Hotel101 sigue detectando el recibo `6aba2709` y la factura 50808).
+
+## La señal débil de «viaje» cede ante el historial del proveedor (2026-10-08)
+
+Caso real (Carlos, WOBA): la factura de comunidad y garaje del edificio Luarca (275 € = 50 %) se creó en **«Gastos de viaje»** aunque los 12 meses anteriores del mismo proveedor (JESUS GOMEZ TARRIÑO) están en **Arrendamiento**. Causa, reproducida en vivo: la foto de la factura se leyó como recibo simplificado y llegó desde un buzón del grupo, así que se activó el atajo «ticket de equipo + recibo simplificado» (`calcularSenalDeViaje`), que se resuelve ANTES que el historial del proveedor. Sin esa señal, la misma entrada daba Arrendamiento con 45 evidencias.
+
+- `inferirCuentaGasto` (`core/holded/write.ts`): si la señal de viaje es **débil** (solo «ticket de equipo»: sin persona identificada, sin contexto de viaje detectado en el documento y sin naturaleza de desplazamiento como taxi, avión, combustible…) y el historial del propio proveedor **contradice** la cuenta de viaje (`historialContradiceCuenta`: al menos 3 líneas y la cuenta de viaje con el 20 % o menos), se sigue con los tiers normales (proveedor, concepto, categoría). Luarca: 1 línea de viaje entre 68 → Arrendamiento.
+- La regla de Carlos no cambia: un ticket con persona identificada, contexto de viaje o naturaleza de desplazamiento sigue yendo a viaje. Comprobado antes/después con ALDI + persona, Kruidvat, D1 SAS y Station Gomerco: sin diferencia.
+- Ojo: las cuentas «hermanas» de un mismo concepto (varias de arrendamiento) cuentan juntas como «no viaje»; por eso se mide la cuenta de viaje y no una cuenta dominante.
