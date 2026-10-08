@@ -138,6 +138,16 @@ Caso real (Footprint, Hotel101 Madrid, 9→11 septiembre): el recibo de Booking 
 - `core/gastos/mismaEstanciaRegistrada.ts`: busca esa coincidencia en (1) el registro de gastos creados desde correo —los tickets que Holded oculta de /purchases solo se encuentran por su id; las filas antiguas sin concepto se leen por id, con tope— y (2) los hospedajes del listado de compras de Holded (±45 días).
 - `procesarGastoEntrante.ts`: añade a la propuesta el aviso «⚠️ Posible MISMA estancia ya registrada: gasto … » y nunca bloquea ni decide. Los candidatos de la propia propuesta se excluyen. Si falla la lectura, el aviso se omite y la propuesta sale como siempre.
 
+## Un archivo sin información contable no puede ser el comprobante (2026-10-07)
+
+Pedido de Carlos: «esto es contabilidad… si pones comprobantes sin información, van a ser problemas legales». Casos reales: la captura de un mapa como único comprobante del gasto de Antaris y los iconos de Booking en el de Pulse 95. Con el contexto del correo, el lector rellenaba proveedor e importe desde el asunto aunque el archivo no mostrara nada.
+
+- El lector (`extraerDatosFactura`) devuelve ahora `datosEnElDocumento`: false si el proveedor, el importe y la fecha no están en el propio archivo y salen solo del correo.
+- `core/documental/soporteSinInformacion.ts` (con 6 pruebas): para una **imagen** de un correo marcada así, una **segunda lectura sin el contexto del correo** debe confirmar que no hay proveedor ni importe. Solo entonces el comprobante pasa a ser el **PDF generado desde el cuerpo** de ese correo. Si el lector dice que los datos sí están, o la segunda lectura los encuentra, el archivo no se toca. Ante cualquier fallo se conserva el archivo original.
+- Integrado en `procesarDocumentoLocal` (camino de adjuntos). No afecta a PDF ni a archivos de Telegram.
+- Comprobado en vivo con adjuntos reales: el mapa de Antaris se sustituye; su PDF real y las tres capturas reales de Guadalajara no.
+- Coste: la segunda lectura solo ocurre cuando una imagen sale marcada «sin datos» (unos céntimos).
+
 ## El número de reserva del correo cuenta como número de documento (2026-10-07)
 
 Caso real (Footprint, Hospedaje Guadalajara): el gasto existía con la reserva 5773032811 como número de documento, pero al leer una captura del mismo correo el extractor no devolvía ningún número; la detección de duplicados se apoya en el número y no lo reconoció.
