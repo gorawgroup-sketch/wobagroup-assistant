@@ -504,3 +504,6 @@ Pedido de Carlos (04-10-2026): las órdenes frecuentes deben estar a un clic. El
 
 ### Botón «➕ Crear el gasto ahora, sin conciliar (el cargo llega después)» (08-10-2026)
 Aparece cuando Wobi encuentra un movimiento bancario **ya conciliado** parecido al recibo y por eso no propone crear el gasto (caso real: recibo de Anthropic del día, cuyo cargo llega al banco al día siguiente; el movimiento «probable» era otro). Al pulsarlo, Wobi da ese movimiento por ajeno y manda la propuesta normal con «Crear gasto»; la conciliación se hace después con «Buscar el cargo de nuevo» cuando el cargo real aparezca. No escribe nada en Holded hasta que se pulse «Crear gasto». Además, ese aviso ya no se repite si la misma pregunta sigue viva para el mismo correo.
+
+### Aviso «✅ Este gasto ya está registrado en Holded» (08-10-2026)
+Cuando el único cargo bancario parecido ya está conciliado, Wobi sigue ese cargo hasta su documento en Holded. Si la compra enlazada es del mismo proveedor y el mismo importe, el recibo es ese gasto (típico de tickets, que la API no lista, o de recibos con número distinto al de la factura): lo dice con número, importe y fecha, no ofrece crear nada y el correo queda resuelto. Solo si el documento enlazado es de otro proveedor o importe sigue el aviso de verificación con sus botones (reprocesar, aplazar, cerrar, crear sin conciliar).
