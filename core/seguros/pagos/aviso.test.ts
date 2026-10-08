@@ -30,7 +30,10 @@ test("el recordatorio del día antes solo se envía si la caja sigue sin alcanza
   const alcanza: ResultadoCaja = { estado: "alcanza", cuenta: "BBVA", saldo: 2000, necesario: 955, sobra: 1045 };
   const noAlcanza: ResultadoCaja = { estado: "no_alcanza", cuenta: "BBVA", saldo: 100, necesario: 955, faltan: 855, otras: [] };
   const dudoso: ResultadoCaja = { estado: "no_comprobable", motivo: "x", necesario: 955 };
+  const descubierto: ResultadoCaja = { estado: "descubierto", cuenta: "CAIXA BANK EWORKS", saldo: -20281.34, necesario: 840.74 };
   assert.equal(merecePorCaja("d3", alcanza), true, "el aviso a 3 días se envía siempre: es el recordatorio del pago");
+  assert.equal(merecePorCaja("d3", descubierto), true);
+  assert.equal(merecePorCaja("d1", descubierto), false, "una cuenta en descubierto lo está siempre: el «d3» ya lo dijo y repetirlo sería ruido");
   assert.equal(merecePorCaja("d1", alcanza), false);
   assert.equal(merecePorCaja("d1", noAlcanza), true);
   assert.equal(merecePorCaja("d1", dudoso), true);
@@ -42,7 +45,7 @@ test("el mensaje junta los pagos de hoy en uno, con la comprobación de caja, lo
   const informe = construirInformePagos(
     [
       aviso({ pago: pago({ empresa: "EWORKS", fecha: "2027-02-27", importe: 840.74, cuentaDeCargo: "CAIXA BANK EWORKS", concepto: "RC Markel 025S00287RCG — 1.ª cuota", id: "e" }), dias: 3,
-        caja: { estado: "no_comprobable", motivo: "«CAIXA BANK EWORKS» figura con saldo negativo (-20281.34 EUR): puede ser una cuenta de crédito; comprueba su límite", necesario: 840.74 } }),
+        caja: { estado: "descubierto", cuenta: "CAIXA BANK EWORKS", saldo: -20281.34, necesario: 840.74 } }),
       aviso({ caja: { estado: "no_alcanza", cuenta: "BBVA", saldo: 654.81, necesario: 1244.14, faltan: 589.33, otras: [{ nombre: "Main", saldo: 4097.45 }] } }),
     ],
     "2027-02-26"
@@ -51,7 +54,7 @@ test("el mensaje junta los pagos de hoy en uno, con la comprobación de caja, lo
   assert.match(informe.titulo, /^⚠️ Seguros — pagos de los próximos 3 días \(26\/02\)/);
   const lineas = informe.cuerpo.split("\n");
   assert.match(lineas[0], /\*\*27\/02\*\* \(en 3 días\) · \[EWORKS\] RC Markel 025S00287RCG — 1\.ª cuota · 840,74 € \(estimado\) · adeudo en «CAIXA BANK EWORKS»/);
-  assert.match(lineas[1], /❓ no pude comprobar la caja: «CAIXA BANK EWORKS» figura con saldo negativo/);
+  assert.match(lineas[1], /ℹ️ cuenta en descubierto: «CAIXA BANK EWORKS» figura en -20\.281,34 € \(es el saldo que da el banco\)\. No sé cuánto crédito queda disponible, así que no puedo asegurar el cargo de 840,74 €: comprueba el límite de la cuenta antes de esa fecha\./);
   assert.match(informe.cuerpo, /\*\*01\/03\*\* \(en 3 días\) · \[WOBA\] Allianz showroom 054239034/);
   assert.match(informe.cuerpo, /⚠️ NO alcanza: «BBVA» tiene 654,81 € y salen 1\.244,14 € \(faltan 589,33 €\)\. Otras cuentas con saldo: Main 4\.097,45 €\./);
   assert.match(informe.cuerpo, /No muevo dinero: si hace falta traspasar, decídelo tú/);

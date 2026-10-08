@@ -30,8 +30,11 @@ export function nivelQueToca(pago: PagoSeguro, hoy: string): { nivel: NivelAviso
   return null;
 }
 
-/** Un «d1» solo se envía si la caja sigue sin alcanzar o sin poder comprobarse: si alcanzaba, no se repite el aviso. */
-export const merecePorCaja = (nivel: NivelAviso, caja: ResultadoCaja): boolean => nivel === "d3" || caja.estado !== "alcanza";
+/**
+ * Un «d1» solo se envía si la caja sigue sin alcanzar o sin poder comprobarse: si alcanzaba, no se repite el aviso. Una cuenta en
+ * descubierto tampoco lo repite: su saldo negativo es permanente y el «d3» ya lo dijo (repetirlo cada vez sería ruido sin información nueva).
+ */
+export const merecePorCaja = (nivel: NivelAviso, caja: ResultadoCaja): boolean => nivel === "d3" || (caja.estado !== "alcanza" && caja.estado !== "descubierto");
 
 const euros = (valor: number, moneda: string): string => `${formatearEuros(valor)} ${moneda === "EUR" ? "€" : moneda}`;
 
@@ -43,6 +46,11 @@ function textoCaja(caja: ResultadoCaja, moneda: string): string {
       const otras = caja.otras.length > 0 ? ` Otras cuentas con saldo: ${caja.otras.map((o) => `${o.nombre} ${euros(o.saldo, moneda)}`).join(", ")}.` : "";
       return `⚠️ NO alcanza: «${caja.cuenta}» tiene ${euros(caja.saldo, moneda)} y salen ${euros(caja.necesario, moneda)} (faltan ${euros(caja.faltan, moneda)}).${otras}`;
     }
+    case "descubierto":
+      return (
+        `ℹ️ cuenta en descubierto: «${caja.cuenta}» figura en ${euros(caja.saldo, moneda)} (es el saldo que da el banco). No sé cuánto crédito queda disponible, ` +
+        `así que no puedo asegurar el cargo de ${euros(caja.necesario, moneda)}: comprueba el límite de la cuenta antes de esa fecha.`
+      );
     default:
       return `❓ no pude comprobar la caja: ${caja.motivo}.`;
   }
