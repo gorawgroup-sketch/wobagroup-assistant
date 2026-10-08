@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { EntradaNueva } from "../bitacora/tipos";
 import type { TelegramCallbackQuery } from "../../telegram/types";
 import type { CambioPendiente } from "./cambiosPendientes";
 import { handleSegurosCambioCallback, type DepsCallbackSeguros } from "./callbackSeguros";
@@ -125,4 +126,55 @@ test("quien pulsa sin nombre de pila queda identificado por su usuario o su id",
   cb.from = { id: 42, username: "carlos_woba" } as TelegramCallbackQuery["from"];
   await handleSegurosCambioCallback(cb, e.deps);
   assert.equal(e.log.aplicados[0].por, "@carlos_woba");
+});
+
+const propuestaDeRecordar = () => pendiente({ accion: "recordar", datos: JSON.stringify({ tipo: "decision", texto: "Se excluye la RC del multirriesgo de WOBA" }) });
+
+test("la decisión queda en la bitácora: aplicar (con su resultado), cancelar y fallo al aplicar", async () => {
+  const aplicada = entorno([propuestaDeRecordar()]);
+  const registros: EntradaNueva[] = [];
+  aplicada.deps.registrar = async (entrada) => { registros.push(entrada); };
+  await handleSegurosCambioCallback(pulsacion("segcambio_aplicar:sc12345678", CHAT, "Carlos"), aplicada.deps);
+  assert.equal(registros.length, 1);
+  assert.equal(registros[0].tarea, "agente");
+  assert.equal(registros[0].origen, "agente");
+  assert.equal(registros[0].resultado, "con_novedades");
+  assert.equal(registros[0].resumen, "Carlos aprobó y se aplicó: recordar (decision): «Se excluye la RC del multirriesgo de WOBA».");
+
+  const cancelada = entorno([propuestaDeRecordar()]);
+  const registrosCancelar: EntradaNueva[] = [];
+  cancelada.deps.registrar = async (entrada) => { registrosCancelar.push(entrada); };
+  await handleSegurosCambioCallback(pulsacion("segcambio_cancelar:sc12345678", CHAT, "Carlos"), cancelada.deps);
+  assert.equal(registrosCancelar.length, 1);
+  assert.match(registrosCancelar[0].resumen, /Carlos canceló la propuesta: recordar \(decision\)/);
+  assert.equal(registrosCancelar[0].resultado, "sin_novedades");
+
+  const fallida = entorno([propuestaDeRecordar()]);
+  fallida.comportamiento.aplicar = async () => { throw new Error("Quota exceeded"); };
+  const registrosFallo: EntradaNueva[] = [];
+  fallida.deps.registrar = async (entrada) => { registrosFallo.push(entrada); };
+  await handleSegurosCambioCallback(pulsacion("segcambio_aplicar:sc12345678"), fallida.deps);
+  assert.equal(registrosFallo[0].resultado, "error");
+  assert.deepEqual(registrosFallo[0].detalle.notas, ["Quota exceeded"]);
+});
+
+test("una bitácora que falla no impide ni deshace la decisión", async () => {
+  const e = entorno([propuestaDeRecordar()]);
+  e.deps.registrar = async () => { throw new Error("Sheets agotado"); };
+  const original = console.error; console.error = () => {};
+  try { await handleSegurosCambioCallback(pulsacion("segcambio_aplicar:sc12345678"), e.deps); } finally { console.error = original; }
+  assert.equal(e.log.aplicados.length, 1);
+  assert.equal(e.almacen.size, 0);
+  assert.equal(e.log.ediciones.at(-1), "✅ Registro actualizado.");
+});
+
+test("lo que no llega a decidirse (propuesta caducada o botón de otro chat) no deja constancia", async () => {
+  const caducada = entorno([]);
+  const registros: EntradaNueva[] = [];
+  caducada.deps.registrar = async (entrada) => { registros.push(entrada); };
+  await handleSegurosCambioCallback(pulsacion("segcambio_aplicar:sc12345678"), caducada.deps);
+  const otroChat = entorno([propuestaDeRecordar()]);
+  otroChat.deps.registrar = async (entrada) => { registros.push(entrada); };
+  await handleSegurosCambioCallback(pulsacion("segcambio_aplicar:sc12345678", 9999), otroChat.deps);
+  assert.equal(registros.length, 0);
 });

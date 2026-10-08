@@ -359,6 +359,35 @@ test("el calendario de vencimientos añade el calendario de pagos estructurado (
   assert.doesNotMatch(await herramienta(depsFalsas()).ejecutar({}), /Calendario de pagos/, "sin la dependencia no inventa nada");
 });
 
+test("ver_actividad cuenta lo que hizo Wobi Seguros y cuándo, y distingue «no hizo nada» de «no pude leerlo»", async () => {
+  const { entrada } = await import("../bitacora/pruebas");
+  const herramienta = (d: ReturnType<typeof depsFalsas>) => crearHerramientas({ deps: d, textoDeLaPersona: "q", puedeProponer: false }).find((h) => h.definicion.name === "ver_actividad")!;
+  const deps = depsFalsas();
+  const pedidos: number[] = [];
+  deps.listarActividad = async (limite) => {
+    pedidos.push(limite);
+    return [
+      entrada({ id: "a", tarea: "pagos", cuando: "2026-10-09T06:55:30.000Z", resumen: "Calendario revisado: 6 pagos previstos", detalle: { eventos: [{ accion: "creado", titulo: "🛡️ Seguro: RC", inicio: "2027-02-24T08:00:00.000Z" }] } }),
+      entrada({ id: "b", tarea: "vigilante", cuando: "2026-10-09T06:35:40.000Z", resumen: "Banco, correo y registro revisados: sin novedades" }),
+    ];
+  };
+  const salida = await herramienta(deps).ejecutar({});
+  assert.deepEqual(pedidos, [150], "lee de sobra: el estado de cada tarea sale de todas las entradas");
+  assert.match(salida, /- 09\/10 08:55 · Calendario de pagos · sin novedades — Calendario revisado: 6 pagos previstos/);
+  assert.match(salida, /↳ evento de calendario creado: 🛡️ Seguro: RC \(24\/02 09:00\)/);
+  assert.match(salida, /Cuándo trabaja cada tarea:/);
+
+  const filtrada = await herramienta(deps).ejecutar({ tarea: "vigilante", limite: 3 });
+  assert.equal(pedidos.at(-1), 150, "filtrando por tarea lee lo mismo y filtra después");
+  assert.doesNotMatch(filtrada.split("Cuándo trabaja")[0], /Calendario de pagos ·/);
+  assert.match(filtrada, /solo «Vigilante»/);
+
+  const roto = depsFalsas();
+  roto.listarActividad = async () => { throw new Error("Sheets agotado"); };
+  assert.match(await herramienta(roto).ejecutar({}), /No pude leer la bitácora: Sheets agotado\. No es lo mismo que «no hizo nada»: la lectura falló\./);
+  assert.equal(await herramienta(depsFalsas()).ejecutar({}), "La bitácora de actividad no está disponible en esta sesión.");
+});
+
 test("el modelo del especialista solo admite modelos con tarifa conocida", () => {
   assert.equal(resolverModeloAgente({}), "claude-sonnet-5");
   assert.equal(resolverModeloAgente({ WOBI_AI_MODEL_AGENTE_SEGUROS: "claude-sonnet-4-6" }), "claude-sonnet-4-6");
