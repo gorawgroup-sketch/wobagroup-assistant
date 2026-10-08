@@ -92,10 +92,11 @@ test("sin herramientas: el especialista contesta con su dossier (registro, memor
   assert.equal(r.iteraciones, 1);
   const system = modelo.llamadas[0].system as Anthropic.TextBlockParam[];
   assert.equal(system[0].text, SYSTEM_ESTATICO);
-  assert.match(system[1].text, /FECHA DE HOY: martes 2026-10-06/);
-  assert.match(system[1].text, /woba_rc_suplemento_3_3 · \[WOBA\]/);
-  assert.match(system[1].text, /\[dec-aegon-fuera-de-alcance\]/); // la memoria de Carlos viaja en cada consulta
-  assert.deepEqual(system[1].cache_control, { type: "ephemeral" });
+  assert.match(system[1].text, /NORMA DE RESOLUCIÓN AUTÓNOMA/); // la norma central viaja con cada agente (Carlos, 08-10-2026)
+  assert.match(system[2].text, /FECHA DE HOY: martes 2026-10-06/);
+  assert.match(system[2].text, /woba_rc_suplemento_3_3 · \[WOBA\]/);
+  assert.match(system[2].text, /\[dec-aegon-fuera-de-alcance\]/); // la memoria de Carlos viaja en cada consulta
+  assert.deepEqual(system[2].cache_control, { type: "ephemeral" });
 });
 
 test("ciclo con herramientas: pide el registro, lee el resultado y responde con texto", async () => {

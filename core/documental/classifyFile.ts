@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { bloqueNormaResolucion } from "../ia/normaResolucionAutonoma";
 import { CACHE_1H } from "../claude/cacheControl";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import { listarCarpetasEnRuta } from "../drive/client";
@@ -302,7 +303,7 @@ export async function clasificarDocumento(
       max_tokens: 8192,
       // Prefijo estable compartido por los archivos procesados en el mismo
       // lote; los metadatos del archivo siguen siendo entrada no cacheada.
-      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: CACHE_1H }],
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: CACHE_1H }, bloqueNormaResolucion("extractor")],
       // Desde la segunda vuelta, cachea además el historial de herramientas. No se activa en la primera
       // para no pagar una escritura de caché sobre una entrada única si Claude resuelve de inmediato.
       cache_control: i > 0 ? { type: "ephemeral" } : undefined,
