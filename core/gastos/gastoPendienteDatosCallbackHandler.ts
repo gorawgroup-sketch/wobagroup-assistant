@@ -35,7 +35,7 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
   const messageId = callback.message?.message_id;
 
   if (chatId === undefined || !pendienteId ||
-      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer")) {
+      (accion !== "gpd_reintentar" && accion !== "gpd_confirmar" && accion !== "gpd_posponer" && accion !== "gpd_crear")) {
     await responderCallback(callback.id, "Esta acción no es válida.");
     return;
   }
@@ -70,7 +70,7 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
 
   await responderCallback(
     callback.id,
-    accion === "gpd_reintentar" ? "Reprocesando..." : "Confirmando y continuando..."
+    accion === "gpd_reintentar" ? "Reprocesando..." : accion === "gpd_crear" ? "Preparando la propuesta sin conciliar..." : "Confirmando y continuando..."
   );
   if (messageId !== undefined) {
     await editTelegramMessageReplyMarkup(chatId, messageId, []).catch((error) =>
@@ -126,6 +126,9 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
       deColaCorreo: pendiente.deColaCorreo,
       correoOrigen: pendiente.correoOrigen,
       origenAdjuntoGmail: pendiente.origenAdjuntoGmail,
+      // «Crear ahora»: el movimiento ya conciliado que lo frenaba se da por ajeno; sale la propuesta normal y la
+      // conciliación se hace cuando llegue el cargo real (Buscar el cargo de nuevo).
+      crearAunqueHayaCargoConciliado: accion === "gpd_crear",
     });
 
     if (resultado === "propuesta_duplicada" && pendiente.deColaCorreo) {
@@ -146,7 +149,9 @@ export async function handleGastoPendienteDatosCallback(callback: TelegramCallba
           ? "✅ Reprocesado: Holded confirmó evidencia suficiente de duplicado. No se creó otro gasto."
           : resultado === "propuesta_pendiente_existente"
             ? "🔎 Reprocesado: ya existe una propuesta pendiente para esta factura; no se generó otra."
-            : "✅ Reprocesado: se generó una propuesta nueva con sus acciones seguras.";
+            : accion === "gpd_crear"
+              ? "✅ Propuesta lista para crear el gasto sin conciliar: revisa el mensaje nuevo. Cuando el cargo llegue al banco, «Buscar el cargo de nuevo» lo concilia."
+              : "✅ Reprocesado: se generó una propuesta nueva con sus acciones seguras.";
 
     if (messageId !== undefined) {
       await editTelegramMessage(chatId, messageId, textoResultado, []).catch(() => {});
