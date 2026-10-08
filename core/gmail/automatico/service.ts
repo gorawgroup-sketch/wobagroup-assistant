@@ -382,7 +382,8 @@ export class ServicioCorreoAutomatico {
     resultado.reservados = preparados.filter(preparado =>
       preparado.motivos.includes("revision_manual_o_autorespuesta_activa")
     ).length;
-    const operacionesBloqueadas = new Map<string, string>();
+    // Por operación: motivo principal + detalles que viajan con él (p. ej. «lectura:<parte no leída>»).
+    const operacionesBloqueadas = new Map<string, string[]>();
     if (config.modo === "execute") {
       const recuperables = await this.store.recuperables(config.buzon, VERSION_POLITICA);
       let recuperados = 0;
@@ -422,9 +423,22 @@ export class ServicioCorreoAutomatico {
               const recibosFuente = analisisRecuperado.recibos.filter(r => r.fuente === op.plan.recibo.fuente);
               if (!analisisRecuperado.completo || recibosFuente.length !== 1 ||
                 !this.reciboCorrespondeALaMismaOperacion(op.plan.recibo, recibosFuente[0], op)) {
-                operacionesBloqueadas.set(op.id, "lectura_incompleta");
+                // Caso real (Carlos, 07/08-10-2026): «5: el analizador no dio por completa la lectura» durante días. Tres
+                // causas distintas salían con la misma etiqueta y ninguna decía qué pasaba: (a) lectura incompleta de verdad
+                // (con su parte concreta), (b) la relectura no encuentra un único recibo en la misma parte que la operación
+                // anterior, (c) el recibo releído no coincide (empresa, fecha o importe) con la operación anterior.
+                const motivoRelectura = !analisisRecuperado.completo
+                  ? "lectura_incompleta"
+                  : recibosFuente.length !== 1 ? "relectura_sin_recibo_unico" : "relectura_no_coincide";
+                const motivosRelectura = [motivoRelectura,
+                  ...(!analisisRecuperado.completo && analisisRecuperado.detalleIncompleto
+                    ? [`lectura:${analisisRecuperado.detalleIncompleto.slice(0, 200)}`] : []),
+                  ...(motivoRelectura === "relectura_sin_recibo_unico" ? [`relectura:${recibosFuente.length} recibo(s) en la parte «${op.plan.recibo.fuente}»`] : []),
+                  ...(motivoRelectura === "relectura_no_coincide"
+                    ? [`relectura:antes ${op.plan.recibo.monto} ${op.plan.recibo.moneda} del ${op.plan.recibo.fecha}; ahora ${recibosFuente[0].monto} ${recibosFuente[0].moneda} del ${recibosFuente[0].fecha} (${recibosFuente[0].empresa})`] : [])];
+                operacionesBloqueadas.set(op.id, motivosRelectura);
                 if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-                  motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, "lectura_incompleta")] });
+                  motivos: motivosRelectura, detalles: [this.detalleOperacion(op, motivosRelectura)] });
                 continue;
               }
               const reciboActual = recibosFuente[0];
@@ -432,7 +446,7 @@ export class ServicioCorreoAutomatico {
               op.plan.recibo = reciboActual;
               if (!evidenciaActual.contacto?.id || !this.contactoSeguroParaReparar(reciboActual, evidenciaActual)) {
                 const motivo = evidenciaActual.contacto?.id ? "proveedor_no_verificado" : "proveedor_no_encontrado";
-                operacionesBloqueadas.set(op.id, motivo);
+                operacionesBloqueadas.set(op.id, [motivo]);
                 if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
                   motivos: [motivo], detalles: [this.detalleOperacion(op, motivo)] });
                 continue;
@@ -442,9 +456,11 @@ export class ServicioCorreoAutomatico {
               op.plan.evidencia.motivoProveedor = evidenciaActual.motivoProveedor;
               op.plan.evidencia.candidatosProveedor = evidenciaActual.candidatosProveedor;
             } catch (error) {
-              operacionesBloqueadas.set(op.id, "lectura_incompleta");
+              // Un fallo técnico al releer no es una lectura incompleta: se dice como lo que es y se reintenta en la siguiente pasada.
+              const motivosFallo = ["relectura_fallida", `error:${mensajeError(error)}`];
+              operacionesBloqueadas.set(op.id, motivosFallo);
               if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-                motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, `error:${mensajeError(error)}`)] });
+                motivos: motivosFallo, detalles: [this.detalleOperacion(op, motivosFallo)] });
               continue;
             }
           }
@@ -496,9 +512,9 @@ export class ServicioCorreoAutomatico {
             const previa = await this.store.buscarFuente(config.buzon, correo.id, recibo.fuente);
             let op = previa;
             if (op && operacionesBloqueadas.has(op.id)) {
-              const motivo = operacionesBloqueadas.get(op.id)!;
-              motivos.push(motivo);
-              detalles.push(this.detalleOperacion(op, motivo));
+              const motivosBloqueo = operacionesBloqueadas.get(op.id)!;
+              motivos.push(...motivosBloqueo);
+              detalles.push(this.detalleOperacion(op, motivosBloqueo));
               continue;
             }
             if (op && op.estado === "reservada" && this.opciones.detener?.()) {
@@ -579,11 +595,14 @@ export class ServicioCorreoAutomatico {
     return resultado;
   }
 
-  private detalleOperacion(op: OperacionAuto, motivo: string): NonNullable<ResultadoAuto["pendientes"][number]["detalles"]>[number] {
+  /** El detalle por operación lleva TODOS los motivos (incluidas las partes «lectura:»/«relectura:»): la sección «Casos que el
+   * operador debe revisar primero» se redacta desde aquí, y sin ellas volvía a salir el aviso genérico. */
+  private detalleOperacion(op: OperacionAuto, motivo: string | string[]): NonNullable<ResultadoAuto["pendientes"][number]["detalles"]>[number] {
+    const lista = Array.isArray(motivo) ? motivo : [motivo];
     return { proveedor: op.plan.recibo.proveedor, empresa: op.plan.empresa, monto: op.plan.recibo.monto,
       moneda: op.plan.recibo.moneda, contacto: op.plan.evidencia.contacto?.nombre,
       metodoContacto: op.plan.evidencia.contacto?.metodo, motivoProveedor: op.plan.evidencia.motivoProveedor,
-      motivos: [motivo, ...(op.detalle ? [`detalle:${op.detalle}`] : [])] };
+      motivos: [...lista, ...(op.detalle ? [`detalle:${op.detalle}`] : [])] };
   }
 }
 
@@ -641,6 +660,13 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   };
   const errorTecnico = motivos.find(motivo => motivo.startsWith("error:"))?.slice("error:".length).trim();
   const detalleOperacion = motivos.find(motivo => motivo.startsWith("detalle:"))?.slice("detalle:".length).trim();
+  if (tiene("relectura_sin_recibo_unico") || tiene("relectura_no_coincide")) {
+    const que = motivos.find(motivo => motivo.startsWith("relectura:"))?.slice("relectura:".length).trim();
+    const base = tiene("relectura_sin_recibo_unico")
+      ? "Al releer el correo con el analizador actual no aparece un único recibo en la misma parte que usó la operación anterior"
+      : "Al releer el correo, el recibo no coincide con el de la operación anterior";
+    return `${base}${que ? ` (${acotar(que)})` : ""}; revisa esa operación a mano antes de continuarla (no es un comprobante ilegible).`;
+  }
   if (tiene("lectura_excede_limite")) {
     return "El hilo es demasiado largo para leerlo entero de forma automática; revísalo a mano (no es un comprobante ilegible).";
   }
