@@ -23,5 +23,13 @@ Pedido de Carlos (06-10-2026): *«es importante poder ver qué es lo que está h
 - Pruebas: helpers puros en `segurosView.mjs` con `docs/ejemplos/estado-seguros.json` como fixture (agrupar por día, distintivos, `null` ⇒ sin lectura, `[]` ⇒ aún sin actividad, filtro por tarea, solo avisos) y el filtro de `calendarioPagos` por empresa en `companyScope.test.mjs`.
 - Verificación: tras desplegar, `GET /api/cerebro/estado` debe traer `seguros.programacion` con 5 tareas y, pasada la primera mañana (8:35 / 8:50 / 8:55), `seguros.bitacora` con sus entradas; capturas de P1–P4 y del caso «Sin lectura actual».
 
+## Además, en este mismo PR
+
+- **Dos detalles pendientes de la revisión del #363:** (1) con `complementosDisponibles === true` y `vigilante.ultimaRevision === null` debe decir «Aún sin revisión registrada» (hoy dice «Sin lectura actual»); (2) un hito con `diasRestantes === 0` debe decir «hoy», no «vencido».
+- **«Documentos leídos» con más documentos:** el 08-10-2026 Wobi Seguros leyó las condiciones de las pólizas vigentes (generales, particulares, cartas de pago, certificados…), así que cada póliza pasa de 0-1 documentos a 3-6, cada uno con un `resumen` de hasta 4.000 caracteres. Comprobar que la lista sigue siendo cómoda: ordenada por `fechaDocumento` (la más reciente primero), plegada por defecto si hay más de 2, con «Ver resumen completo» en cada uno y la `vigencia` bien visible (hay documentos de periodos anteriores).
+
+## Cuándo empezar
+Con `main` actualizado y **fusionados** el #363 (panel v1) y el PR de la bitácora (backend). Rama nueva desde `main`; el PR no toca `core/seguros/`, así que no choca con la regla de CI «dueño único por área».
+
 ## Fuera de alcance
 Avisar por Telegram cuando una tarea va `retrasada` (backend, pendiente de decidir el margen); editar horarios; ejecutar tareas desde el panel.
