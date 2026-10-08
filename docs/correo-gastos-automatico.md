@@ -144,3 +144,11 @@ Caso real (Footprint, Hospedaje Guadalajara): el recibo era de 4.036,92 MXN (≈
 
 - `core/gastos/equivalenteCoherente.ts` (`equivalenteCuadraConTasa`, con prueba): un equivalente que se aparta más del **8 %** de lo que da la tasa del día se **ignora** y se busca el cargo real en el banco (la propuesta lo dice en la razón). Sin tasa, o con datos inválidos, no se juzga y el equivalente se conserva. El spread normal de una tarjeta es del 1-4 %.
 - Comprobado con tasas reales: 4.036,92 MXN → 204,65 € cuadra, 174,60 € no. Con 40 gastos reales ya creados con equivalente, 39 cuadran; 1 no (Uber, 9.744,65 CRC → 18,26 USD, −15 %), que con esta regla pasaría por la búsqueda en el banco en vez de aceptarse a ciegas.
+
+## Moneda sin cuenta propia: vuelve la búsqueda estricta y gana el cargo exacto con la tasa (2026-10-08)
+
+El 07-10 (#390) la búsqueda de esta rama empezó a admitir también cargos «por confirmar» (nombre distinto). Con los correos en pesos mexicanos de Simon (Uber, Rappi, cafés) eso trajo candidatos sin relación (un hotel noruego para un reparto de 220 MXN) y más ambigüedad: «Taxi 129,94 MXN» pasó a tener cinco cargos y quedó en texto libre, sin botones. Se restaura el comportamiento estricto de la semana anterior y se añade una regla sin riesgo:
+
+- La búsqueda de la rama «moneda sin cuenta y sin equivalente» ya **no** admite cargos «por confirmar».
+- `cargoUnicoParaEquivalente` (con pruebas): con varios candidatos, si **uno solo** coincide al céntimo con la tasa del día (±2 céntimos o 0,5 %), ese es el cargo (Taxi 129,94 MXN → «Dlo*serv Uber Rides Ca» −6,43 €, los otros cuatro quedan a 0,09-0,78 €). Con dos o más iguales, o ninguno, se sigue preguntando; no se adivina.
+- Pendiente de hacer bien: cuando haya un único cargo con nombre distinto, ofrecerlo como pregunta con botones («¿Es este cargo? Sí / No, escribiré el importe») en lugar de elegirlo.
