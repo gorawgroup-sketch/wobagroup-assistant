@@ -57,6 +57,32 @@ test("una revisión pedida desde el chat consta como manual", () => {
   assert.equal(entradaVigilante({ resultado: resultadoVigilante(), informe: null, entregado: null, origen: "manual" }).origen, "manual");
 });
 
+test("vigilante: cada mensaje de la pasada consta con SU hora de entrega (el informe pendiente reenviado sale primero)", () => {
+  const pendiente = { titulo: "Antiguo", cuerpo: "No llegó ayer" };
+  const e = entradaVigilante({
+    resultado: resultadoVigilante({ nuevo: { confirmados: items(1) }, informe }), informe, entregado: true,
+    entregadoEn: "2026-10-09T06:35:41.200Z", reenvio: { informe: pendiente, entregadoEn: "2026-10-09T06:35:40.100Z" },
+  });
+  assert.deepEqual(e.detalle.avisos, [
+    { canal: "telegram", titulo: "Antiguo", texto: "No llegó ayer", entregado: true, entregadoEn: "2026-10-09T06:35:40.100Z" },
+    { canal: "telegram", titulo: "🛡️ Seguros", texto: "Cuerpo del aviso", entregado: true, entregadoEn: "2026-10-09T06:35:41.200Z" },
+  ]);
+  assert.match(e.resumen, /reenviado un aviso anterior que no había llegado/);
+  const soloReenvio = entradaVigilante({ resultado: resultadoVigilante(), informe: null, entregado: null, reenvio: { informe: pendiente, entregadoEn: "2026-10-09T06:35:40.100Z" } });
+  assert.equal(soloReenvio.detalle.avisos?.length, 1, "un reenvío sin informe nuevo también deja su aviso");
+  const noLlego = entradaVigilante({ resultado: resultadoVigilante({ nuevo: { devoluciones: items(1) }, informe }), informe, entregado: false, entregadoEn: "2026-10-09T06:35:41.200Z" });
+  assert.equal(noLlego.detalle.avisos?.[0].entregadoEn, undefined, "si no llegó no hay hora de entrega aunque se pase una");
+});
+
+test("avisos del registro, calendario de pagos y resumen semanal anotan la hora de entrega de su mensaje", () => {
+  const cierre = entradaAvisos({ activas: { pagos: 1, renovaciones: 0 }, nuevas: { pagos: 1, renovaciones: 0 }, envio: { titulo: "T", cuerpo: "C", entregado: true, entregadoEn: "2026-10-09T06:50:09.000Z" } });
+  assert.equal(cierre.detalle.avisos?.[0].entregadoEn, "2026-10-09T06:50:09.000Z");
+  const pagos = entradaPagos({ r: resultadoPagos({ avisos: items(1) as unknown as ResultadoCalendarioPagos["avisos"], informe }), informe, entregado: true, entregadoEn: "2026-10-09T06:55:20.000Z" });
+  assert.equal(pagos.detalle.avisos?.[0].entregadoEn, "2026-10-09T06:55:20.000Z");
+  const semanal = entradaSemanal({ informe, entregado: true, entregadoEn: "2026-10-12T07:10:05.000Z" });
+  assert.equal(semanal.detalle.avisos?.[0].entregadoEn, "2026-10-12T07:10:05.000Z");
+});
+
 // --- avisos del registro ------------------------------------------------------------------------------------------
 
 test("avisos del registro sin nada activo, con todo ya avisado, enviado y fallido", () => {

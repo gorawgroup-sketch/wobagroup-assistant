@@ -517,7 +517,7 @@ Todos los avisos van al mismo chat de alertas de Telegram. Los eventos se crean 
 
 **Qué queda en la bitácora** (pestaña `_seguros_bitacora`, una fila por ejecución o decisión; `core/seguros/bitacora/`):
 - **Cada pasada de cada tarea, aunque no encuentre nada** («sin novedades»): así se ve que corrió y a qué hora. También los errores (p. ej. falta el chat de alertas) en vez de un silencio.
-- **Cada aviso que mandó por Telegram, con su texto exacto** y si Telegram lo aceptó (`entregado`): es «cómo he recibido las alertas».
+- **Cada aviso que mandó por Telegram, con su texto exacto** (hasta 8.000 caracteres; si se corta, `truncado: true`), si Telegram lo aceptó (`entregado`) y **el instante en que lo aceptó** (`entregadoEn`, por mensaje: una pasada puede enviar varios y el `cuando` de la entrada es el final de la pasada). Es «cómo he recibido las alertas». Las constancias anteriores al 09-10-2026 no tienen `entregadoEn`.
 - **Cada evento de calendario creado o retirado** (título e inicio).
 - **Cada decisión sobre una propuesta del especialista** (aprobada, rechazada por cambio de la fila, fallida o cancelada) y cada revisión pedida a mano desde el chat.
 - Se poda sola (la pasada de las 8:55): al pasar de 400 entradas quedan las 300 más recientes (≈ 2 meses). La constancia **nunca condiciona el trabajo**: si Sheets falla al anotarla, la tarea ya hizo lo suyo y solo se pierde esa línea (queda en el log del servidor).

@@ -16,7 +16,8 @@ import { registrarActividad, type Registrar } from "../seguros/bitacora/registra
 export async function revisarPagosSeguros(
   deps: DepsCalendarioPagos = depsRealesCalendarioPagos(),
   enviar: (chatId: number, informe: Informe) => Promise<unknown> = (chatId, informe) => sendTelegramMessageExpandable(chatId, informe.titulo, informe.cuerpo),
-  registrar: Registrar = registrarActividad
+  registrar: Registrar = registrarActividad,
+  ahora: () => Date = () => new Date()
 ): Promise<{ avisado: boolean }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
   if (!chatId) {
@@ -35,10 +36,12 @@ export async function revisarPagosSeguros(
   let avisado = false;
   // null = no había aviso que enviar; true/false = Telegram lo aceptó o no.
   let entregado: boolean | null = null;
+  let entregadoEn: string | undefined;
   if (r.informe) {
     try {
       await enviar(chatId, r.informe);
       entregado = true;
+      entregadoEn = ahora().toISOString();
       await marcarAvisosEnviados(deps, r.avisos);
       avisado = true;
     } catch (error) {
@@ -46,7 +49,7 @@ export async function revisarPagosSeguros(
       console.error("[revisarPagosSeguros] No se pudo entregar el aviso de pagos (se repite mañana):", error);
     }
   }
-  await registrar(entradaPagos({ r, informe: r.informe, entregado }), { podar: true });
+  await registrar(entradaPagos({ r, informe: r.informe, entregado, entregadoEn }), { podar: true });
   for (const advertencia of r.advertencias) console.warn(`[revisarPagosSeguros] ${advertencia}`);
   console.log(
     `[revisarPagosSeguros] ${r.hoy}: ${r.eventosCreados} evento(s) de calendario creado(s), ${r.eventosRetirados} retirado(s), ${r.avisos.length} pago(s) a avisar; ${avisado ? "aviso enviado" : "sin aviso"}.`
