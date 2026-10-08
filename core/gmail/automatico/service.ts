@@ -1,4 +1,5 @@
 import { esRemitenteDelGrupo } from "../../gastos/remitenteDelGrupo";
+import { lineasDiferencias } from "./informeDiferencias";
 import { completarEquivalenteExplicito } from "./equivalenteExplicito";
 import { candidatosMovimientoAuto, evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
   nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
@@ -800,7 +801,8 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     ...(r.fallosAnalisis ? [`Fallos técnicos del analizador: ${r.fallosAnalisis}. Los correos permanecen sin leer para reintento.`] : []),
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
-    `Mensajes con asuntos pendientes (incluye operaciones anteriores; no equivale a hilos sin leer): ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`];
+    `Mensajes con asuntos pendientes (incluye operaciones anteriores; no equivale a hilos sin leer): ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`,
+    ...lineasDiferencias(r.diferencias)];
   if (r.gastos.length) {
     const porEmpresa = new Map<string, number>();
     for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);

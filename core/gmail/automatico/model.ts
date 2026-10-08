@@ -427,6 +427,8 @@ export interface ResultadoAuto {
   fallosAnalisis?: number;
   /** Mensajes que ya estaban bajo una decisión manual o autorrespuesta activa. */
   reservados?: number;
+  /** Qué cambió respecto a la revisión anterior (ver informeDiferencias.ts); ausente si no se pudo calcular. */
+  diferencias?: import("./informeDiferencias").DiferenciasRevision;
   /**
    * La revisión paró en un punto de control porque el proceso recibió la orden de cerrarse (un
    * despliegue nuevo). Lo hecho queda durable; el resultado es parcial y no debe informarse como
