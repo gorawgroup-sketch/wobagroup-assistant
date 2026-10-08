@@ -6,6 +6,7 @@ import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import type { DatosFactura } from "../documental/extractInvoiceData";
+import { numeroDeReservaEnTexto } from "../documental/numeroDeReserva";
 
 const MODEL = resolverModeloDocumental("extraer_gasto_correo");
 const MAX_ITERATIONS = 4;
@@ -277,7 +278,7 @@ export async function extraerGastoDeCorreo(
             : undefined,
         contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
         fecha: (input.fecha as string) ?? "",
-        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
+        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : numeroDeReservaEnTexto(cuerpoCompleto),
         concepto,
         // Un correo describiendo un gasto (notificación de tarjeta, texto pegado) nunca trae los
         // datos fiscales de la empresa compradora ni un desglose de IVA limpio por tipo — se trata

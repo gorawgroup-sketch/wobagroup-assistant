@@ -146,3 +146,26 @@ test("descarga hilos con concurrencia acotada, conserva orden e informa progreso
   assert.equal(progreso[0], 0);
   assert.equal(progreso.at(-1), 4);
 });
+
+test("protección de coste: 58 imágenes decorativas incrustadas y repetidas no se descargan; solo el recibo real", async () => {
+  const descargas: string[] = [];
+  const gmail = { users: { messages: { attachments: { get: async ({ id }: { id: string }) => { descargas.push(id); return { data: { data: b64("contenido") } }; } } } } } as unknown as gmail_v1.Gmail;
+  const cab = (disp: string) => [{ name: "Content-Disposition", value: disp }, { name: "Content-ID", value: "<c>" }];
+  const decorativas = Array.from({ length: 58 }, (_, i) => ({ partId: `d${i}`, filename: "noname", mimeType: "image/png", body: { attachmentId: `dec${i}`, size: 500 + (i % 6) }, headers: cab(i < 12 ? "inline" : "attachment") }));
+  const r = await contenidoCompleto(gmail, { id: "m", payload: { parts: [
+    { mimeType: "text/plain", body: { data: b64("Recibo adjunto") } },
+    ...decorativas,
+    { partId: "r", filename: "Receipt.pdf", mimeType: "application/pdf", body: { attachmentId: "recibo", size: 34_000 }, headers: [] },
+    { partId: "r2", filename: "Receipt.pdf", mimeType: "application/pdf", body: { attachmentId: "recibo-repetido", size: 34_000 }, headers: [] },
+  ] } });
+  assert.deepEqual(descargas, ["recibo"], "no se descargó ninguna decorativa ni el repetido");
+  assert.deepEqual(r.adjuntos.map((a) => a.nombre), ["Receipt.pdf"]);
+});
+
+test("protección de coste: con más de 20 adjuntos reales se corta ANTES de descargar ninguno", async () => {
+  let descargas = 0;
+  const gmail = { users: { messages: { attachments: { get: async () => { descargas++; return { data: { data: b64("x") } }; } } } } } as unknown as gmail_v1.Gmail;
+  const partes = Array.from({ length: 25 }, (_, i) => ({ partId: String(i), filename: `f${i}.pdf`, mimeType: "application/pdf", body: { attachmentId: `a${i}`, size: 10_000 + i }, headers: [] }));
+  await assert.rejects(() => contenidoCompleto(gmail, { id: "m", payload: { parts: partes } }), /25 adjuntos reales.*revisión manual/);
+  assert.equal(descargas, 0);
+});

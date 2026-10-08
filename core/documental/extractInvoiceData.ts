@@ -10,6 +10,7 @@ import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { normalizarPagos, type PagoRecibo } from "../holded/pagosMultiples/pagos";
+import { numeroDeReservaEnTexto } from "./numeroDeReserva";
 
 const MODEL = resolverModeloDocumental("extraer_factura");
 const MAX_ITERATIONS = 4;
@@ -743,7 +744,7 @@ export async function extraerDatosFactura(
         personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
         contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
         fecha: (input.fecha as string) ?? "",
-        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
+        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : numeroDeReservaEnTexto(contextoCorreo),
         datosEnElDocumento: typeof input.datos_en_el_documento === "boolean" ? input.datos_en_el_documento : undefined,
         concepto: (input.concepto as string) ?? "",
         reciboSimplificado,

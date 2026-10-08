@@ -58,6 +58,7 @@ import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorre
 import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
+import { mensajeDeExceso } from "../correo/lectura/proteccionAdjuntos";
 import {
   encolarCorreos,
   hayActivo,
@@ -788,6 +789,15 @@ async function procesarCorreoLocalizado(
       // podría marcar el mensaje leído dejando la petición del cuerpo sin
       // atender. El wrapper mantiene el activo y avisa para reintentar.
       throw error;
+    }
+
+    // Protección de coste: los adjuntos decorativos y repetidos ya se descartaron al leer el correo; si además se superó el tope por correo,
+    // se avisa UNA vez de que el resto no se lee (en vez de gastar IA en decenas de archivos).
+    if ((correo.adjuntosOmitidos?.exceso ?? 0) > 0) {
+      await sendTelegramMessage(chatId, `📎 ${correo.asunto}\n${mensajeDeExceso(correo.adjuntosOmitidos!.exceso)}`).catch(() => {});
+    }
+    if (correo.adjuntosOmitidos) {
+      console.log(`[revisarCorreoNuevo] Adjuntos omitidos por protección de coste en ${correo.id}:`, correo.adjuntosOmitidos);
     }
 
     let indiceAdjunto = 0;

@@ -148,9 +148,43 @@ Pedido de Carlos: «esto es contabilidad… si pones comprobantes sin informaci�
 - Comprobado en vivo con adjuntos reales: el mapa de Antaris se sustituye; su PDF real y las tres capturas reales de Guadalajara no.
 - Coste: la segunda lectura solo ocurre cuando una imagen sale marcada «sin datos» (unos céntimos).
 
+## El número de reserva del correo cuenta como número de documento (2026-10-07)
+
+Caso real (Footprint, Hospedaje Guadalajara): el gasto existía con la reserva 5773032811 como número de documento, pero al leer una captura del mismo correo el extractor no devolvía ningún número; la detección de duplicados se apoya en el número y no lo reconoció.
+
+- `core/documental/numeroDeReserva.ts` (`numeroDeReservaEnTexto`, con prueba): último recurso **determinista**, solo cuando el modelo no devuelve número. Lee del texto del correo un número de 6 a 20 cifras junto a una etiqueta de reserva o confirmación («Número de reserva», «Booking number», «Confirmation number», «Confirmation:», «Localizador»…). Si el texto menciona dos o más números distintos, no elige ninguno.
+- Conectado en `extraerDatosFactura` (contexto del correo del adjunto) y en `extraerGastoDeCorreo` (cuerpo completo).
+- Comprobado en vivo con el correo real: las capturas de Guadalajara ahora devuelven el número 5773032811.
+- Alcance honesto: el gasto de Guadalajara ya existente no se puede recuperar con esto (es un ticket que Holded oculta de /purchases y no está en el registro de Wobi); sí quedan con número, y por tanto reconocibles, los gastos que se creen desde ahora.
+
 ## El equivalente del correo debe cuadrar con la tasa del día (2026-10-07)
 
 Caso real (Footprint, Hospedaje Guadalajara): el recibo era de 4.036,92 MXN (≈ 204,65 €, que fue el cargo del banco) pero en el hilo se comentó «corresponde a 174,60€» —otra reserva—. Un equivalente explícito del correo tiene prioridad sobre buscar el cargo en el banco, así que Wobi propuso crear el gasto por 174,60 €.
 
 - `core/gastos/equivalenteCoherente.ts` (`equivalenteCuadraConTasa`, con prueba): un equivalente que se aparta más del **8 %** de lo que da la tasa del día se **ignora** y se busca el cargo real en el banco (la propuesta lo dice en la razón). Sin tasa, o con datos inválidos, no se juzga y el equivalente se conserva. El spread normal de una tarjeta es del 1-4 %.
 - Comprobado con tasas reales: 4.036,92 MXN → 204,65 € cuadra, 174,60 € no. Con 40 gastos reales ya creados con equivalente, 39 cuadran; 1 no (Uber, 9.744,65 CRC → 18,26 USD, −15 %), que con esta regla pasaría por la búsqueda en el banco en vez de aceptarse a ciegas.
+
+## Protección de coste ANTES de leer o descargar adjuntos (2026-10-08)
+
+Regla de Carlos: el sistema debe ser económico y sustentable, y la protección va **antes** de gastar, no cuando el gasto ya está creado. Caso real (07-10): un correo con 58 imágenes «noname» costó unos 3-4 USD sin ser ningún gasto. El 07-10 se cerró en la cola manual (`extraerAdjuntos`); la **revisión automática** seguía descargando y enviando al modelo todas las imágenes del correo.
+
+Capas, todas por metadatos (sin bajar ni leer nada), en `core/correo/lectura/proteccionAdjuntos.ts`:
+1. **Decoración incrustada** (imagen + Content-ID + pequeña + «noname», o inline decorativa): se descarta en el origen — ahora también en la revisión automática (`partesAdjuntasAProcesar` en `core/gmail/automatico/gmail.ts`).
+2. **Repetidas** (mismo tipo, nombre y tamaño): se lee una.
+3. **Tope por correo**: la cola manual lee como mucho 12 adjuntos por correo y avisa una vez de cuántos no (`adjuntosOmitidos` en el resumen del correo); la revisión automática, con más de 20 adjuntos reales, corta **antes de descargar ninguno** y deja el correo para revisión manual (sin gastar IA).
+
+Pruebas: el caso de las 58 imágenes + 1 recibo (solo se descarga el recibo), el corte con 25 facturas sin descargar nada, repetidos y tope.
+
+## Moneda sin cuenta propia: vuelve la búsqueda estricta y gana el cargo exacto con la tasa (2026-10-08)
+
+El 07-10 (#390) la búsqueda de esta rama empezó a admitir también cargos «por confirmar» (nombre distinto). Con los correos en pesos mexicanos de Simon (Uber, Rappi, cafés) eso trajo candidatos sin relación (un hotel noruego para un reparto de 220 MXN) y más ambigüedad: «Taxi 129,94 MXN» pasó a tener cinco cargos y quedó en texto libre, sin botones. Se restaura el comportamiento estricto de la semana anterior y se añade una regla sin riesgo:
+
+- La búsqueda de la rama «moneda sin cuenta y sin equivalente» ya **no** admite cargos «por confirmar».
+- `cargoUnicoParaEquivalente` (con pruebas): con varios candidatos, si **uno solo** coincide al céntimo con la tasa del día (±2 céntimos o 0,5 %), ese es el cargo (Taxi 129,94 MXN → «Dlo*serv Uber Rides Ca» −6,43 €, los otros cuatro quedan a 0,09-0,78 €). Con dos o más iguales, o ninguno, se sigue preguntando; no se adivina.
+- Pendiente de hacer bien: cuando haya un único cargo con nombre distinto, ofrecerlo como pregunta con botones («¿Es este cargo? Sí / No, escribiré el importe») en lugar de elegirlo.
+
+## Un análisis incompleto ya no se queda fijado para siempre (2026-10-08)
+
+Síntoma (Carlos, 08-10): la revisión automática no concilia ningún correo y deja 5 con «el analizador no dio por completa la lectura» aunque ya se había corregido. Causa: el servicio reutilizaba SIEMPRE el análisis guardado del mismo mensaje y versión, también si estaba marcado incompleto (guardado en un mal momento: adjunto que no se pudo leer entonces, fallo del modelo, tope de coste). Releído ahora, el recibo de Anthropic de 24,20 USD sale **completo** con un recibo; en la revisión salía incompleto.
+
+- `analisisReutilizable` (`core/gmail/automatico/service.ts`, con pruebas): un análisis completo se reutiliza siempre; uno incompleto solo si se guardó hace menos de **2 h** (marca `analizadoEn`); los guardados antes de este cambio, sin marca, se reintentan una vez. Así un correo atascado se vuelve a leer, y uno que sigue ilegible no gasta IA más de una vez cada 2 h. Los límites de coste (`maxAnalisisNuevos`, tope diario por proceso) siguen mandando.
