@@ -499,3 +499,40 @@ Pedido de Carlos (05/10/2026): que el agente avise de los pagos de seguros con t
 - La comprobación usa el saldo de hoy y solo los cargos de seguros del calendario: no incluye otros cargos domiciliados de la cuenta ni ingresos que vayan a llegar.
 - Las altas y bajas de pagos distintas de la recurrencia (una póliza nueva, un cambio de fecha) se anotan en la hoja o piden un cambio al agente; proponerlas con botón desde el agente (como los cambios del registro) queda para un siguiente paso.
 
+## 28. Bitácora y mapa de funcionamiento (2026-10-08)
+
+Pedido de Carlos (06/10/2026): «es importante poder ver qué es lo que está haciendo [Wobi Seguros] y saber en qué momento lo hace, ver en qué calendario quedan las cosas registradas y cómo he recibido las alertas». Hasta hoy solo se guardaba la **última** revisión del vigilante; los avisos de las 8:50, el calendario de las 8:55 y el resumen del lunes no dejaban rastro, y de cada aviso solo quedaba el propio chat de Telegram. Sin IA: coste cero.
+
+**Mapa: qué corre, cuándo, qué escribe y dónde queda constancia** (hora de Madrid; la lista vive en `core/seguros/bitacora/programacion.ts` y una prueba comprueba que coincide con las cadenas cron de `scheduler.ts`):
+
+| Tarea | Cuándo | Qué hace | Avisa | IA |
+|---|---|---|---|---|
+| Vigilante | 08:35 y 17:35 | Banco (Holded), correo de aseguradoras y registro: confirma cobros, detecta devoluciones y cargos que no encajan | Solo si hay novedad | No |
+| Avisos del registro | 08:50 | Vencimientos a ≤ 30 días y pagos pendientes o devueltos | Una vez por caso nuevo | No |
+| Calendario de pagos | 08:55 | Eventos de calendario 3 días antes (09:00) y, a 1-3 días del pago, comprobación de caja | A 1-3 días; el día antes solo si no alcanza o no se pudo comprobar | No |
+| Resumen semanal | Lunes 09:10 | Pagos sin confirmar, lo que espera a Carlos, próximos 60 días | Si hay algo | No |
+| Especialista | Cuando se le pregunta | Responde, lee documentos, propone cambios con ✅/❌ | La respuesta | Sí (≈ 0,05–0,17 $ por consulta) |
+
+Todos los avisos van al mismo chat de alertas de Telegram. Los eventos se crean en el **calendario principal de la cuenta del asistente** (`GMAIL_IMPERSONATE_EMAIL`) y Carlos va **invitado** (`GOOGLE_IMPERSONATE_EMAIL`): le aparecen en su Google Calendar con aviso 30 minutos antes y un correo 1 hora antes.
+
+**Qué queda en la bitácora** (pestaña `_seguros_bitacora`, una fila por ejecución o decisión; `core/seguros/bitacora/`):
+- **Cada pasada de cada tarea, aunque no encuentre nada** («sin novedades»): así se ve que corrió y a qué hora. También los errores (p. ej. falta el chat de alertas) en vez de un silencio.
+- **Cada aviso que mandó por Telegram, con su texto exacto** y si Telegram lo aceptó (`entregado`): es «cómo he recibido las alertas».
+- **Cada evento de calendario creado o retirado** (título e inicio).
+- **Cada decisión sobre una propuesta del especialista** (aprobada, rechazada por cambio de la fila, fallida o cancelada) y cada revisión pedida a mano desde el chat.
+- Se poda sola (la pasada de las 8:55): al pasar de 400 entradas quedan las 300 más recientes (≈ 2 meses). La constancia **nunca condiciona el trabajo**: si Sheets falla al anotarla, la tarea ya hizo lo suyo y solo se pierde esa línea (queda en el log del servidor).
+
+**Contrato con Cerebro** (`seguros` en `/api/cerebro/estado`; cuatro campos nuevos, los anteriores no cambian):
+- `bitacora`: las últimas 40 entradas, la más reciente primero (`cuando`, `tarea`, `etiqueta`, `origen`, `resultado`, `resumen`, `avisos[]`, `eventos[]`, `cifras`, `notas`). `null` = no se pudo leer (no es «sin actividad»); `[]` = aún no hay.
+- `programacion`: las cinco tareas con `cuando` (frase lista), `proxima` (ISO), `ultima` (su última constancia) y `estado`: `al_dia`, `retrasada` (su última cita pasó y no dejó constancia: no corrió, se omitió porque la anterior seguía en curso o el servidor se reinició justo entonces), `sin_registro` (la bitácora es nueva y aún no hay ninguna pasada programada anotada), `sin_lectura` o `bajo_demanda`.
+- `calendarioPagos`: cada pago del calendario con el estado de su evento (`creado`, `pendiente` —se creará a las 8:55— o `no_aplica`) y sus avisos ya enviados. `null` = sin lectura.
+- `calendario`: en qué cuenta se crean los eventos y si se invita a Carlos.
+
+**Herramienta del especialista `ver_actividad`:** lo mismo en texto, por el chat («¿qué hiciste hoy en seguros?», «¿cuándo fue la última revisión?», «¿qué avisos me mandaste?», «¿qué has puesto en el calendario?»). Distingue «no hizo nada» de «no pude leer la bitácora».
+
+**Límites, dichos con franqueza.**
+- La bitácora **empieza el 08-10-2026**: no hay historia anterior (esas pasadas no dejaron nada que recuperar). Hasta la primera pasada programada de cada tarea su estado es `sin_registro`.
+- Una tarea `retrasada` se **muestra**, pero todavía **no avisa por Telegram** (un aviso de «el vigilante no corrió» exige decidir el margen para no hacer ruido; queda como siguiente paso).
+- El texto de los avisos se guarda tal cual salió (puede traer importes, cuentas y números de póliza): la pestaña es de uso interno, como el resto de `_seguros_*`.
+- El panel de Cerebro que dibuja esto lo hace Codex (`docs/encargo-codex-seguros-front-v2.md`); hasta que se fusione, los datos están en el contrato y en el chat, no en pantalla.
+

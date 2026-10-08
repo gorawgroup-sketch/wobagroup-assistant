@@ -418,6 +418,14 @@ Pedido de Carlos (05-10-2026): que Wobi Seguros avise de los pagos con tiempo y 
 - **Preguntárselo:** «¿qué pagos de seguros vienen?» (el especialista lista el calendario con importe, cuenta y si ya tiene evento).
 - No habrá un aviso real hasta el 24/02/2027 (el primer pago es el 27/02); hasta entonces solo verás los eventos.
 
+### Qué ha hecho Wobi Seguros y cuándo (bitácora)
+
+Pedido de Carlos (06-10-2026): ver qué hace el agente de seguros y en qué momento, en qué calendario quedan los eventos y cómo recibió las alertas. Es solo lectura y no cuesta IA más allá de la propia consulta al especialista.
+
+- **Por el chat:** «¿qué hiciste hoy en seguros?», «¿cuándo fue la última revisión del banco?», «¿qué avisos me mandaste esta semana?», «¿qué has puesto en el calendario?», «¿cada cuánto vigilas?». Responde con lo último que hizo cada tarea (vigilante 8:35/17:35, avisos 8:50, calendario de pagos 8:55, resumen del lunes 9:10 y los cambios que aprobaste), los avisos que llegaron a Telegram —y si alguno **no llegó**— y cuándo toca la próxima vez. Si una tarea no dejó constancia en su última cita, lo dice (**retrasada**); si no pudo leer la bitácora, también, sin confundirlo con «no hizo nada».
+- **En Cerebro (área Seguros):** el contrato ya trae `bitacora`, `programacion`, `calendarioPagos` y `calendario`; el panel que los dibuja lo hace Codex. Hasta entonces: el chat.
+- **Dónde queda:** pestaña `_seguros_bitacora` de la hoja de Sheets (una fila por pasada; se poda sola a las 300 más recientes). Empieza el 08-10-2026: no hay historia anterior.
+
 ## Facturas de venta por correo → Ingresos del cashflow + respuesta al remitente
 
 Pedido explícito de Carlos (02-10-2026): empiezan a llegar por correo las facturas que WOBA y eWorks emiten a sus clientes, para saber cuándo entrará ese dinero.

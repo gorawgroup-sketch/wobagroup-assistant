@@ -538,5 +538,361 @@
       "08:35",
       "17:35"
     ]
+  },
+  "bitacora": [
+    {
+      "id": "mgh3k9ab",
+      "cuando": "2026-10-09T06:55:31.000Z",
+      "tarea": "pagos",
+      "etiqueta": "Calendario de pagos",
+      "origen": "programada",
+      "resultado": "con_novedades",
+      "resumen": "Calendario revisado: 6 pagos previstos · eventos de calendario: 6 creado(s), 0 retirado(s) · próximo pago: 27/02/2027 (EWORKS, RC Markel 025S00287RCG — 1.ª cuota semestral de la renovación 2027) · ningún pago a 1-3 días",
+      "avisos": [],
+      "eventos": [
+        {
+          "accion": "creado",
+          "titulo": "🛡️ Seguro: RC Markel 025S00287RCG — 1.ª cuota semestral de la renovación 2027 — 840,74 € (estimado) el 27/02/2027",
+          "inicio": "2027-02-24T08:00:00.000Z"
+        },
+        {
+          "accion": "creado",
+          "titulo": "🛡️ Seguro: RC Markel 025S00287RCG — 2.ª cuota semestral de la renovación 2027 — 838,41 € (estimado) el 27/08/2027",
+          "inicio": "2027-08-24T07:00:00.000Z"
+        },
+        {
+          "accion": "creado",
+          "titulo": "🛡️ Seguro: Allianz showroom 054239034 — 2.ª cuota semestral 2026/27 — 955,00 € (estimado) el 01/03/2027",
+          "inicio": "2027-02-26T08:00:00.000Z"
+        },
+        {
+          "accion": "creado",
+          "titulo": "🛡️ Seguro: Allianz showroom — complemento por ampliación (Rental Code), recibo 01/03–01/09/2027 — 289,14 € (estimado) el 01/03/2027",
+          "inicio": "2027-02-26T08:00:00.000Z"
+        },
+        {
+          "accion": "creado",
+          "titulo": "🛡️ Seguro: RC Markel 023S00453RCG — renovación 2027/28 — 2.012,65 € (estimado) el 17/04/2027",
+          "inicio": "2027-04-14T07:00:00.000Z"
+        },
+        {
+          "accion": "creado",
+          "titulo": "🛡️ Seguro: RC profesional Markel 026S00905RCP — renovación 2027/28 (pago único) — 1.671,03 € (estimado) el 25/08/2027",
+          "inicio": "2027-08-22T07:00:00.000Z"
+        }
+      ],
+      "cifras": {
+        "previstos": 6,
+        "eventosCreados": 6,
+        "eventosRetirados": 0,
+        "pagosAvisados": 0
+      },
+      "notas": []
+    },
+    {
+      "id": "mgh3j2cd",
+      "cuando": "2026-10-09T06:50:12.000Z",
+      "tarea": "avisos",
+      "etiqueta": "Avisos del registro",
+      "origen": "programada",
+      "resultado": "sin_novedades",
+      "resumen": "Registro revisado: 1 caso activo, todos ya avisados antes.",
+      "avisos": [],
+      "eventos": [],
+      "cifras": {
+        "pagosActivos": 1,
+        "renovacionesActivas": 0,
+        "pagosNuevos": 0,
+        "renovacionesNuevas": 0
+      },
+      "notas": []
+    },
+    {
+      "id": "mgh3hxef",
+      "cuando": "2026-10-09T06:35:40.000Z",
+      "tarea": "vigilante",
+      "etiqueta": "Vigilante",
+      "origen": "programada",
+      "resultado": "sin_novedades",
+      "resumen": "Banco, correo y registro revisados: sin novedades · 1 cargo sigue en tránsito sin confirmar",
+      "avisos": [],
+      "eventos": [],
+      "cifras": {
+        "confirmados": 0,
+        "enTransitoNuevos": 0,
+        "devoluciones": 0,
+        "cargosNuevos": 0,
+        "correosNuevos": 0,
+        "enTransitoAhora": 1,
+        "cargosARevisarAhora": 0
+      },
+      "notas": []
+    },
+    {
+      "id": "mgbq1zgh",
+      "cuando": "2026-10-08T15:35:08.000Z",
+      "tarea": "vigilante",
+      "etiqueta": "Vigilante",
+      "origen": "programada",
+      "resultado": "con_novedades",
+      "resumen": "Novedades: 1 correo nuevo de aseguradoras · aviso enviado por Telegram · 1 cargo sigue en tránsito sin confirmar",
+      "avisos": [
+        {
+          "canal": "telegram",
+          "titulo": "🛡️ Seguros — novedades de la revisión",
+          "texto": "Correo nuevo de Acodrid (07/10): confirman que trasladaron a Markel la transferencia del recibo 2026/138406.",
+          "entregado": true
+        }
+      ],
+      "eventos": [],
+      "cifras": {
+        "confirmados": 0,
+        "enTransitoNuevos": 0,
+        "devoluciones": 0,
+        "cargosNuevos": 0,
+        "correosNuevos": 1,
+        "enTransitoAhora": 1,
+        "cargosARevisarAhora": 0
+      },
+      "notas": []
+    },
+    {
+      "id": "mgbp8yij",
+      "cuando": "2026-10-08T14:10:22.000Z",
+      "tarea": "agente",
+      "etiqueta": "Especialista",
+      "origen": "agente",
+      "resultado": "con_novedades",
+      "resumen": "Carlos aprobó y se aplicó: recordar (hecho): «Acodrid confirmó el 07/10 que trasladó a Markel la transferencia de 323,24 €».",
+      "avisos": [],
+      "eventos": [],
+      "cifras": {},
+      "notas": [
+        "Recuerdo guardado."
+      ]
+    }
+  ],
+  "programacion": [
+    {
+      "id": "vigilante",
+      "nombre": "Vigilante: banco, correo y registro",
+      "cuando": "Todos los días a las 08:35 y 17:35 (hora de Madrid)",
+      "dias": "diario",
+      "horas": [
+        "08:35",
+        "17:35"
+      ],
+      "conIA": false,
+      "queHace": "Mira los movimientos del banco en Holded y el correo de aseguradoras y corredurías, y mantiene al día el registro: confirma cobros, detecta recibos devueltos y cargos que no encajan.",
+      "cuandoAvisa": "Solo cuando hay una novedad.",
+      "proxima": "2026-10-09T15:35:00.000Z",
+      "ultima": {
+        "cuando": "2026-10-09T06:35:40.000Z",
+        "resultado": "sin_novedades",
+        "resumen": "Banco, correo y registro revisados: sin novedades · 1 cargo sigue en tránsito sin confirmar",
+        "origen": "programada"
+      },
+      "estado": "al_dia"
+    },
+    {
+      "id": "avisos",
+      "nombre": "Avisos del registro",
+      "cuando": "Todos los días a las 08:50 (hora de Madrid)",
+      "dias": "diario",
+      "horas": [
+        "08:50"
+      ],
+      "conIA": false,
+      "queHace": "Revisa el registro de pólizas: vencimientos a 30 días o menos y pagos pendientes o devueltos por el banco.",
+      "cuandoAvisa": "Una sola vez por cada caso nuevo.",
+      "proxima": "2026-10-10T06:50:00.000Z",
+      "ultima": {
+        "cuando": "2026-10-09T06:50:12.000Z",
+        "resultado": "sin_novedades",
+        "resumen": "Registro revisado: 1 caso activo, todos ya avisados antes.",
+        "origen": "programada"
+      },
+      "estado": "al_dia"
+    },
+    {
+      "id": "pagos",
+      "nombre": "Calendario de pagos",
+      "cuando": "Todos los días a las 08:55 (hora de Madrid)",
+      "dias": "diario",
+      "horas": [
+        "08:55"
+      ],
+      "conIA": false,
+      "queHace": "Pone en el calendario el evento de cada pago (3 días antes, a las 9:00) y, cuando un pago está a 1-3 días, comprueba el saldo de su cuenta de cargo en Holded.",
+      "cuandoAvisa": "Cuando un pago está a 1-3 días; el día antes repite solo si la caja no alcanza o no se pudo comprobar.",
+      "proxima": "2026-10-10T06:55:00.000Z",
+      "ultima": {
+        "cuando": "2026-10-09T06:55:31.000Z",
+        "resultado": "con_novedades",
+        "resumen": "Calendario revisado: 6 pagos previstos · eventos de calendario: 6 creado(s), 0 retirado(s) · próximo pago: 27/02/2027 (EWORKS, RC Markel 025S00287RCG — 1.ª cuota semestral de la renovación 2027) · ningún pago a 1-3 días",
+        "origen": "programada"
+      },
+      "estado": "al_dia"
+    },
+    {
+      "id": "semanal",
+      "nombre": "Resumen semanal",
+      "cuando": "Los lunes a las 09:10 (hora de Madrid)",
+      "dias": "lunes",
+      "horas": [
+        "09:10"
+      ],
+      "conIA": false,
+      "queHace": "Resume los pagos sin confirmar, lo que espera a Carlos y los vencimientos y pagos de los próximos 60 días.",
+      "cuandoAvisa": "Los lunes, si hay algo que contar.",
+      "proxima": "2026-10-12T07:10:00.000Z",
+      "ultima": null,
+      "estado": "sin_registro"
+    },
+    {
+      "id": "agente",
+      "nombre": "Especialista (cuando le preguntas)",
+      "cuando": "Cuando le preguntas",
+      "dias": "bajo_demanda",
+      "horas": [],
+      "conIA": true,
+      "queHace": "Responde preguntas sobre pólizas, documentos y banco, lee documentos de Drive y propone cambios al registro y a su memoria con botón ✅/❌.",
+      "cuandoAvisa": "Solo cuando le hablas.",
+      "proxima": null,
+      "ultima": {
+        "cuando": "2026-10-08T14:10:22.000Z",
+        "resultado": "con_novedades",
+        "resumen": "Carlos aprobó y se aplicó: recordar (hecho): «Acodrid confirmó el 07/10 que trasladó a Markel la transferencia de 323,24 €».",
+        "origen": "agente"
+      },
+      "estado": "bajo_demanda"
+    }
+  ],
+  "calendarioPagos": [
+    {
+      "id": "eworks_rc_markel:2027-02-27",
+      "polizaId": "eworks_rc_markel",
+      "empresa": "EWORKS",
+      "fecha": "2027-02-27",
+      "diasRestantes": 141,
+      "importe": 840.74,
+      "moneda": "EUR",
+      "estimado": true,
+      "concepto": "RC Markel 025S00287RCG — 1.ª cuota semestral de la renovación 2027",
+      "cuentaDeCargo": "CAIXA BANK EWORKS",
+      "forma": "adeudo",
+      "estado": "previsto",
+      "evento": {
+        "estado": "creado",
+        "titulo": "🛡️ Seguro: RC Markel 025S00287RCG — 1.ª cuota semestral de la renovación 2027 — 840,74 € (estimado) el 27/02/2027",
+        "inicio": "2027-02-24T08:00:00.000Z"
+      },
+      "avisosEnviados": []
+    },
+    {
+      "id": "woba_showroom_2026_2027:2027-03-01",
+      "polizaId": "woba_showroom_2026_2027",
+      "empresa": "WOBA",
+      "fecha": "2027-03-01",
+      "diasRestantes": 143,
+      "importe": 955,
+      "moneda": "EUR",
+      "estimado": true,
+      "concepto": "Allianz showroom 054239034 — 2.ª cuota semestral 2026/27",
+      "cuentaDeCargo": "BBVA",
+      "forma": "adeudo",
+      "estado": "previsto",
+      "evento": {
+        "estado": "creado",
+        "titulo": "🛡️ Seguro: Allianz showroom 054239034 — 2.ª cuota semestral 2026/27 — 955,00 € (estimado) el 01/03/2027",
+        "inicio": "2027-02-26T08:00:00.000Z"
+      },
+      "avisosEnviados": []
+    },
+    {
+      "id": "woba_showroom_complemento_2026_2027:2027-03-01",
+      "polizaId": "woba_showroom_complemento_2026_2027",
+      "empresa": "WOBA",
+      "fecha": "2027-03-01",
+      "diasRestantes": 143,
+      "importe": 289.14,
+      "moneda": "EUR",
+      "estimado": true,
+      "concepto": "Allianz showroom — complemento por ampliación (Rental Code), recibo 01/03–01/09/2027",
+      "cuentaDeCargo": "BBVA",
+      "forma": "adeudo",
+      "estado": "previsto",
+      "evento": {
+        "estado": "creado",
+        "titulo": "🛡️ Seguro: Allianz showroom — complemento por ampliación (Rental Code), recibo 01/03–01/09/2027 — 289,14 € (estimado) el 01/03/2027",
+        "inicio": "2027-02-26T08:00:00.000Z"
+      },
+      "avisosEnviados": []
+    },
+    {
+      "id": "woba_rc_markel:2027-04-17",
+      "polizaId": "woba_rc_markel",
+      "empresa": "WOBA",
+      "fecha": "2027-04-17",
+      "diasRestantes": 190,
+      "importe": 2012.65,
+      "moneda": "EUR",
+      "estimado": true,
+      "concepto": "RC Markel 023S00453RCG — renovación 2027/28",
+      "cuentaDeCargo": "BBVA",
+      "forma": "adeudo",
+      "estado": "previsto",
+      "evento": {
+        "estado": "creado",
+        "titulo": "🛡️ Seguro: RC Markel 023S00453RCG — renovación 2027/28 — 2.012,65 € (estimado) el 17/04/2027",
+        "inicio": "2027-04-14T07:00:00.000Z"
+      },
+      "avisosEnviados": []
+    },
+    {
+      "id": "footprint_rc_markel:2027-08-25",
+      "polizaId": "footprint_rc_markel",
+      "empresa": "Footprint",
+      "fecha": "2027-08-25",
+      "diasRestantes": 320,
+      "importe": 1671.03,
+      "moneda": "EUR",
+      "estimado": true,
+      "concepto": "RC profesional Markel 026S00905RCP — renovación 2027/28 (pago único)",
+      "cuentaDeCargo": "Main",
+      "forma": "adeudo",
+      "estado": "previsto",
+      "evento": {
+        "estado": "creado",
+        "titulo": "🛡️ Seguro: RC profesional Markel 026S00905RCP — renovación 2027/28 (pago único) — 1.671,03 € (estimado) el 25/08/2027",
+        "inicio": "2027-08-22T07:00:00.000Z"
+      },
+      "avisosEnviados": []
+    },
+    {
+      "id": "eworks_rc_markel:2027-08-27",
+      "polizaId": "eworks_rc_markel",
+      "empresa": "EWORKS",
+      "fecha": "2027-08-27",
+      "diasRestantes": 322,
+      "importe": 838.41,
+      "moneda": "EUR",
+      "estimado": true,
+      "concepto": "RC Markel 025S00287RCG — 2.ª cuota semestral de la renovación 2027",
+      "cuentaDeCargo": "CAIXA BANK EWORKS",
+      "forma": "adeudo",
+      "estado": "previsto",
+      "evento": {
+        "estado": "creado",
+        "titulo": "🛡️ Seguro: RC Markel 025S00287RCG — 2.ª cuota semestral de la renovación 2027 — 838,41 € (estimado) el 27/08/2027",
+        "inicio": "2027-08-24T07:00:00.000Z"
+      },
+      "avisosEnviados": []
+    }
+  ],
+  "calendario": {
+    "cuenta": "asistente@wobagroup.com",
+    "invitaACarlos": true,
+    "texto": "Los eventos se crean en el calendario principal de la cuenta del asistente y se te invita desde ahí: te aparecen en tu propio Google Calendar, con aviso 30 minutos antes y un correo 1 hora antes."
   }
 }

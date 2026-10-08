@@ -5,7 +5,9 @@
  * Compatible hacia atrás: los campos que ya existían (`polizas`, `proximasARenovar`, `pagosSinConfirmar`, `porEmpresa`,
  * `totalPolizasActivas`, `linkRegistro`) conservan su forma. Cambia un significado, a propósito: `totalPolizasActivas`
  * ahora cuenta las pólizas VIGENTES (antes incluía las vencidas y las que están en hold: «9 activas» con 6 vigentes).
- * Se añaden `resumen`, `proximos`, `esperandoACarlos`, `memoria`, `documentos` y `vigilante`.
+ * Se añaden `resumen`, `proximos`, `esperandoACarlos`, `memoria`, `documentos` y `vigilante`; y, para ver qué hace Wobi Seguros y
+ * cuándo, `bitacora` (lo que hizo, lo último primero), `programacion` (cuándo trabaja cada tarea y si va al día), `calendarioPagos`
+ * (cada pago previsto con el estado de su evento de calendario y de sus avisos) y `calendario` (en qué calendario quedan los eventos).
  *
  * Las partes lentas (memoria, documentos, última revisión) se leen de Sheets como mucho cada 5 minutos y se invalidan
  * cuando el vigilante o el especialista escriben: el panel se refresca cada minuto y no debe multiplicar las lecturas.
@@ -18,13 +20,21 @@ import { eventosProximos } from "./informeSemanal";
 import type { PolizaConFila } from "./polizaRegistroSheet";
 import { leerEstadoVigilante } from "./vigilante/estadoStore";
 import { diasEntre } from "./vigilante/fechas";
+import { leerBitacora } from "./bitacora/bitacoraStore";
+import { tareaProgramada } from "./bitacora/programacion";
+import type { EntradaBitacora } from "./bitacora/tipos";
+import {
+  ENTRADAS_A_LEER, vistaBitacora, vistaCalendario, vistaCalendarioPagos, vistaProgramacion,
+  type VistaBitacora, type VistaCalendario, type VistaPagoCalendario, type VistaTareaProgramada,
+} from "./bitacora/vistas";
 import { leerPagosSeguros } from "./pagos/pagosStore";
 import type { PagoSeguro } from "./pagos/tipos";
 import { CLAVE_ULTIMA_REVISION, parsearUltimaRevision, type UltimaRevisionVigilante } from "./vigilante/ultimaRevision";
 
 export const EMPRESAS_SEGUROS = ["WOBA", "EWORKS", "Footprint"] as const;
 export const HORIZONTE_PROXIMOS_DIAS = 400;
-export const HORARIOS_VIGILANTE = ["08:35", "17:35"];
+/** Sale de la programación compartida (bitacora/programacion.ts): una sola fuente de lo que se le dice a la persona. */
+export const HORARIOS_VIGILANTE = tareaProgramada("vigilante").horas;
 const TTL_COMPLEMENTOS_MS = 5 * 60_000;
 
 export interface ComplementosSeguros {
@@ -33,14 +43,18 @@ export interface ComplementosSeguros {
   ultimaRevision: UltimaRevisionVigilante | null;
   /** Calendario de pagos estructurado (`_pagos_seguros`). Ausente = no se pudo leer: los pagos salen de las notas del registro. */
   pagos?: PagoSeguro[];
+  /** Bitácora (`_seguros_bitacora`): lo que Wobi Seguros hizo y cuándo. Ausente = no se pudo leer. */
+  bitacora?: EntradaBitacora[];
 }
 
 export async function leerComplementosReales(): Promise<ComplementosSeguros> {
   const [conocimiento, documentos, estado] = await Promise.all([leerConocimiento(), listarDocumentosPoliza(), leerEstadoVigilante()]);
-  // El calendario de pagos es un complemento más: si no se puede leer, los pagos salen de las notas (no se cae toda la sección).
+  // El calendario de pagos y la bitácora son complementos más: si no se pueden leer, la sección sigue y esa parte se marca «sin lectura».
   let pagos: PagoSeguro[] | undefined;
   try { pagos = await leerPagosSeguros(); } catch (error) { console.error("[estadoCerebro] No se pudo leer el calendario de pagos; los pagos salen de las notas del registro:", error); }
-  return { conocimiento, documentos, ultimaRevision: parsearUltimaRevision(estado.get(CLAVE_ULTIMA_REVISION)?.version), pagos };
+  let bitacora: EntradaBitacora[] | undefined;
+  try { bitacora = await leerBitacora(ENTRADAS_A_LEER); } catch (error) { console.error("[estadoCerebro] No se pudo leer la bitácora de Seguros; el panel la marca sin lectura:", error); }
+  return { conocimiento, documentos, ultimaRevision: parsearUltimaRevision(estado.get(CLAVE_ULTIMA_REVISION)?.version), pagos, bitacora };
 }
 
 let memo: { leidoEn: number; datos: ComplementosSeguros } | null = null;
@@ -93,6 +107,22 @@ export interface EstadoSeguros {
     polizaId: string; empresa: string; nombre: string; tipo: string; fechaDocumento: string; vigencia: string; prima: string; capital: string; resumen: string; enlace: string;
   }> | null;
   vigilante: { ultimaRevision: UltimaRevisionVigilante | null; horarios: string[] };
+  /** Lo que Wobi Seguros ha hecho y cuándo (la más reciente primero, hasta 40). null = no se pudo leer: no es «sin actividad». */
+  bitacora: VistaBitacora[] | null;
+  /** Cuándo trabaja cada tarea, su próxima cita, su última constancia y si va al día. Siempre presente. */
+  programacion: VistaTareaProgramada[];
+  /** Cada pago del calendario con el estado de su evento y de sus avisos. null = no se pudo leer el calendario. */
+  calendarioPagos: VistaPagoCalendario[] | null;
+  /** En qué calendario se crean los eventos y a quién se invita. */
+  calendario: VistaCalendario;
+}
+
+/** Lo que `construirEstadoSeguros` no puede saber por sí solo (viene del entorno del servidor). */
+export interface OpcionesEstadoSeguros {
+  /** Cuenta propietaria del calendario donde se crean los eventos. */
+  cuentaCalendario?: string;
+  /** Hay un correo de invitado configurado: los eventos le llegan a la persona. */
+  invitaCalendario?: boolean;
 }
 
 function vista(p: PolizaConFila): PolizaVista {
@@ -105,7 +135,13 @@ function vista(p: PolizaConFila): PolizaVista {
 }
 
 /** Puro: sin lecturas. `complementos` null = no se pudieron leer. */
-export function construirEstadoSeguros(polizas: PolizaConFila[], complementos: ComplementosSeguros | null, hoy: Date, linkRegistro: string): EstadoSeguros {
+export function construirEstadoSeguros(
+  polizas: PolizaConFila[],
+  complementos: ComplementosSeguros | null,
+  hoy: Date,
+  linkRegistro: string,
+  opciones: OpcionesEstadoSeguros = {}
+): EstadoSeguros {
   const hoyIso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
   const { proximasARenovar, pagosSinConfirmar } = calcularAlertasSeguros(polizas, hoy);
 
@@ -153,6 +189,10 @@ export function construirEstadoSeguros(polizas: PolizaConFila[], complementos: C
         }))
       : null,
     vigilante: { ultimaRevision: complementos?.ultimaRevision ?? null, horarios: HORARIOS_VIGILANTE },
+    bitacora: vistaBitacora(complementos?.bitacora),
+    programacion: vistaProgramacion(complementos?.bitacora, hoy),
+    calendarioPagos: vistaCalendarioPagos(complementos?.pagos, hoyIso),
+    calendario: vistaCalendario(opciones.cuentaCalendario, opciones.invitaCalendario === true),
   };
 }
 
@@ -161,4 +201,5 @@ export const ESTADO_SEGUROS_VACIO: EstadoSeguros = {
   polizas: [], proximasARenovar: [], pagosSinConfirmar: [], porEmpresa: {}, totalPolizasActivas: 0, linkRegistro: "",
   resumen: { vigentes: 0, sinConfirmarPago: 0, porConfirmarOEnHold: 0, vencidas: 0, noContratadas: 0 }, proximos: [],
   complementosDisponibles: false, esperandoACarlos: null, memoria: null, documentos: null, vigilante: { ultimaRevision: null, horarios: HORARIOS_VIGILANTE },
+  bitacora: null, programacion: vistaProgramacion(undefined, null), calendarioPagos: null, calendario: vistaCalendario(undefined, false),
 };

@@ -22,6 +22,9 @@ import { esFormatoVisual, extraerTextoDeterminista } from "../../documental/extr
 import { transcribirParaCaptura } from "../../documental/transcribeForCapture";
 import { formatDateLocal } from "../../utils/dateFormat";
 import { listarDocumentosPoliza } from "../documentosPolizaStore";
+import { leerBitacora } from "../bitacora/bitacoraStore";
+import { entradaVigilante } from "../bitacora/entradas";
+import { registrarActividad } from "../bitacora/registrar";
 import { leerPagosSeguros } from "../pagos/pagosStore";
 import { actualizarPoliza, listarPolizas } from "../polizaRegistroSheet";
 import { leerCorreosDeSeguros } from "../vigilante/correos";
@@ -88,6 +91,7 @@ export function depsRealesAgente(): DepsConsulta {
     listarPolizas,
     listarDocumentos: listarDocumentosPoliza,
     listarPagos: leerPagosSeguros,
+    listarActividad: leerBitacora,
     buscarDocumentosDrive: async (consulta, empresa) => {
       const raices = empresa && ROOT_FOLDERS[empresa] ? { [empresa]: ROOT_FOLDERS[empresa] } : ROOT_FOLDERS;
       const encontrados = await searchDriveFilesAllRoots(raices, consulta, 4, 30);
@@ -126,6 +130,8 @@ export function depsRealesAgente(): DepsConsulta {
       const resultado = await ejecutarVigilanteSeguros(reales);
       // Lo que se cuenta aquí ya lo ha visto la persona: no se vuelve a avisar por Telegram.
       await guardarEstadoVigilante(resultado.clavesAvisadas).catch((e) => console.error("[agenteSeguros] No se pudo marcar lo avisado (no crítico):", e));
+      // Una revisión pedida desde el chat también queda en la bitácora (no es una pasada programada: no cuenta para «va al día»).
+      await registrarActividad(entradaVigilante({ resultado, informe: null, entregado: null, origen: "manual" }));
       return resultado.respuestaChat;
     },
     conocimiento: almacenConocimientoReal,
