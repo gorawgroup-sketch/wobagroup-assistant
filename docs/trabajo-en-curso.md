@@ -30,8 +30,13 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Conciliación y bancos | `core/holded/` (búsqueda de cargos, conciliaciones), `core/gastos/` |
 | Automatización de Holded en servidor | `core/holded/automatizacion/`, `core/jobs/automatizacionHolded.ts` |
 | Correo | `core/gmail/`, `core/jobs/revisarCorreoNuevo.ts` |
+
+**Dueño único por área y día (Carlos, 08-10-2026).** Las áreas críticas están en `.github/areas-criticas.json`. El CI rechaza un PR nuevo que toque un área mientras otro PR abierto más antiguo la toca (`scripts/ci/colision-de-area.mjs`); el PR antiguo tiene prioridad. Para aceptar una colisión a sabiendas, Carlos pone la etiqueta `colision-aceptada`. Antes de empezar en un área: mirar los PR abiertos y esta tabla; si hay otro, coordinar o esperar.
+
+**Banco de casos reales (`core/gmail/automatico/casos/`).** Cada correo que bloqueó la revisión queda como caso de extremo a extremo (sin IA) con el informe que debe salir. Al cerrar un incidente de correo, añadir su caso al banco en el mismo PR.
 | Documentos y conocimiento | `core/documental/`, `core/knowledge/`, `core/drive/` |
 | Seguros | `core/seguros/` |
+| Soportes (pedir comprobantes a quien gastó con la tarjeta) | `core/soportes/` |
 | Cashflow | `core/google/`, `core/cashflow/` |
 | Informes | `core/informes/`, `core/reportes/` |
 | Cerebro (front) | `frontend-cerebro/`, `core/cerebro/` |
@@ -52,6 +57,31 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Cambiar el proveedor de un gasto ya creado + corregir el alias aprendido | Conciliación y bancos | `feat/cambiar-proveedor-compra` | Claude Code | En PR. Tool `proponer_cambio_proveedor_compra`, reutiliza la edición verificada y los botones `edicioncompra_*` |
 | Botón «Conciliar esta parte» tras crear un gasto cuyo recibo se cobró en varios pagos (fase B) | Conciliación y bancos | `feat/conciliacion-parcial-boton` | Claude Code | En PR. Módulo `core/gastos/conciliacionParcialRecibo.ts`; 2 puntos de conexión en `gastoCallbackHandler.ts` |
 | Reglas «ya está sumado en otra línea» del cashflow (botón Explicar + herramienta de chat) | Cashflow | `feat/reglas-cashflow-agregadas` | Claude Code | En PR. Carpeta `core/cashflow/` (reglas, explicación, almacén de espera) + 4 puntos de conexión |
+| Wobi Seguros: bitácora (qué hizo y cuándo), programación, calendario de pagos y alertas recibidas en el contrato de Cerebro + herramienta `ver_actividad` del especialista | Seguros | `feat/seguros-bitacora` | Claude Code | En PR (sin IA). Carpeta `core/seguros/bitacora/`. Puntos de conexión: los 4 trabajos de `core/jobs/*Seguros*.ts` (cada pasada deja constancia), `callbackSeguros.ts`, `estadoCerebro.ts` + una línea en `estadoAgregado.ts`, `herramientas.ts`. El panel lo hace Codex (`docs/encargo-codex-seguros-front-v2.md`). Al fusionar: quitar esta fila |
+| Lectura completa del correo (remitente original en cadenas, mensaje nuevo sin citas, adjuntos y lista de peticiones con una acción cada una) | Correo | _sin rama todavía (paso 3)_ | Claude Code | Pasos 1 (#383) y 2 (#386) hechos el 07-10-2026; falta el paso 3: que la revisión automática use la misma lectura. Carlos dio el visto bueno el 07-10-2026. En 3 PR: (1) remitente original y cadenas + quitar el recorte de 8.000 caracteres del clasificador, sin IA; (2) peticiones y adjuntos en la cola manual; (3) revisión automática y directorio de personas. Carpeta propia `core/correo/lectura/`; los archivos centrales (`classifyEmail.ts`, `revisarCorreoNuevo.ts`) solo reciben el punto de conexión. Una sola sesión en el área Correo mientras dure. Medir el coste de IA antes de activar. |
+| Comando `/conocimiento` (modo conocimiento desde el menú de Telegram) | Conocimiento | `feat/comando-conocimiento` | Claude Code | En PR (07-10-2026). Lógica en `core/knowledge/modoConocimiento*.ts`; `server.ts`, `receiveFile.ts` y el menú solo reciben el punto de conexión. |
+
+### Hecho reciente
+
+| Trabajo | PR | Fecha |
+|---|---|---|
+| Calendario de pagos de Wobi Seguros: evento en el calendario de Carlos 3 días antes, aviso a 1-3 días con comprobación de caja y siguiente pago de la serie al confirmarse un cobro (`core/seguros/pagos/`, job 8:55) | #368 | 08-10-2026 |
+| Informe por diferencias (`core/gmail/automatico/informeDiferencias.ts`): cada revisión dice qué cambió desde la anterior (resueltos, nuevos, cambios de motivo, iguales) antes de la lista completa; resumen por correo guardado en `wobi_mail_events` (`revision_resumen`) | #418 | 08-10-2026 |
+| Revisión en seco tras cada despliegue (`core/gmail/automatico/revisionEnSeco.ts`): simulación sin IA ni escrituras unos minutos después de arrancar con versión nueva, comparación por correo con la anterior y aviso solo si empeora; `WOBI_MAIL_DRY_RUN=off` la apaga | #416 | 08-10-2026 |
+| Cero motivos genéricos en el informe del correo automático: cada código con explicación concreta, comodín que nombra el motivo, guardarraíl `core/guardarrailes/motivosSinGenericos.test.ts`; aviso veraz del correo activo sin pregunta (`core/jobs/revisionCorreoManual.ts`) | #415 | 08-10-2026 |
+| Dueño único por área (guardarraíl de colisión en CI, `.github/areas-criticas.json`) + banco de casos reales de extremo a extremo del correo automático (`core/gmail/automatico/casos/`) | #412 | 08-10-2026 |
+| Norma de resolución autónoma centralizada: módulo `core/ia/normaResolucionAutonoma.ts` inyectado en Wobi, Seguros y extractores + guardarraíl de cobertura + docs/norma-resolucion-autonoma.md (primera aplicación: moneda sin cuenta propia, #404) | #405 | 08-10-2026 |
+| Correo activo con la pregunta en `_gastos_pendientes_datos` (caso Lunch 180 MXN) + la verificación fallida del analizador ya no se guarda como «incompleto» (v24) + diagnóstico de respuestas rechazadas (`core/gastos/reenviarPreguntaPendiente.ts`, `core/gmail/automatico/analyze.ts`) | #397 | 07-10-2026 |
+| Incidente 07-10: imágenes de relleno «noname» como adjuntos y aviso de propuesta pendiente repetido sin freno (`core/correo/lectura/decoracion.ts`, `core/gastos/avisoPropuestaPendiente.ts`) | #389 | 07-10-2026 |
+| Pedir soportes a quien gastó con la tarjeta: CSV de Revolut → resumen por persona → un correo por titular (cuadro + Excel, direcciones del buzón, regla fija en el prompt) | #370, #371, #372, #373 | 06/07-10-2026 |
+| `/preguntas` con un botón por pendiente y búsqueda tolerante | #374, #376 | 06-10-2026 |
+| Casa Peppe: tasa COP robusta, teclado en el mensaje pulsado, tasas en paralelo | #375, #377 | 06-10-2026 |
+| Respuesta a la solicitud de soportes: lectura completa y una acción por cargo | #378 | 07-10-2026 |
+| Cerrar cargos sin soporte (par cargo+reembolso sin gasto; gasto sin soporte conciliado) | #379 | 07-10-2026 |
+| Lectura de la cadena del correo, paso 1: remitente real, mensaje nuevo sin citas ni firma, sin recorte de 8.000 caracteres (`core/correo/lectura/`) | #383 | 07-10-2026 |
+| Orden: tablero al día y lógica nueva fuera de `gastoCallbackHandler.ts` | #382 | 07-10-2026 |
+| Cashflow: filtro «solo ingresos / solo gastos» al proponer, verificar y comparar lo que falta (`core/cashflow/filtroTipoMovimiento.ts`) | #387 | 07-10-2026 |
+| Lectura completa del correo, paso 2: lista de peticiones con una acción cada una y adjuntos (Word/Excel sin IA; PDF e imágenes con visión acotada) en el análisis de la cola manual | #386 (+ #385) | 07-10-2026 |
 
 ## Pendiente de decisión de Carlos
 

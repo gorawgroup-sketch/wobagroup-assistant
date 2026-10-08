@@ -115,6 +115,28 @@ test("al día siguiente, si el saldo sigue por la rama de Markel, el cargo se co
   assert.match(r.informe?.cuerpo ?? "", /Marcada como pagada/);
 });
 
+test("al confirmar un pago avisa al calendario de pagos; si el calendario falla, la revisión sigue y lo anota", async () => {
+  const manana: MovimientoBanco[] = [
+    ...BBVA_REAL,
+    { empresa: "WOBA", cuentaId: "bbva", cuenta: "BBVA", id: "tel_06_10", fecha: "2026-10-06", descripcion: "TELEFONICA ADEUDO", importe: -20, moneda: "EUR", importeEur: -20, estado: "pending", saldoTras: -419.28 },
+  ];
+  const m = montar({ polizas: [suplementoMarkel()], movimientos: manana, correos: [], hoy: "2026-10-06" });
+  const recibidos: Array<{ polizas: string[]; fecha: string; hoy: string }> = [];
+  const bien = await ejecutarVigilanteSeguros({ ...m.fuentes, alConfirmarPago: async (pago, hoy) => { recibidos.push({ polizas: pago.polizas.map((p) => p.id), fecha: pago.movimiento.fecha, hoy }); } });
+  assert.equal(bien.contenido.confirmados.length, 1);
+  assert.deepEqual(recibidos, [{ polizas: ["woba_rc_suplemento_3_3"], fecha: "2026-10-05", hoy: "2026-10-06" }]);
+
+  const m2 = montar({ polizas: [suplementoMarkel()], movimientos: manana, correos: [], hoy: "2026-10-06" });
+  const mal = await ejecutarVigilanteSeguros({ ...m2.fuentes, alConfirmarPago: async () => { throw new Error("Sheets agotado"); } });
+  assert.equal(mal.contenido.confirmados.length, 1, "el pago sigue confirmado");
+  assert.equal(m2.escrituras.length, 1, "y el registro escrito");
+  assert.match(mal.contenido.advertencias.join(" "), /No pude actualizar el calendario de pagos con el pago confirmado del 2026-10-05: Sheets agotado/);
+
+  const m3 = montar({ polizas: [suplementoMarkel()], movimientos: manana, correos: [], hoy: "2026-10-06" });
+  const simulacion = await ejecutarVigilanteSeguros({ ...m3.fuentes, alConfirmarPago: async () => { throw new Error("no debe llamarse"); } }, { aplicar: false });
+  assert.equal(simulacion.contenido.advertencias.length, 0, "en simulación no se toca el calendario");
+});
+
 test("si en cambio el saldo sigue por la otra rama, el cargo se considera devuelto y NO se marca pagado", async () => {
   const manana: MovimientoBanco[] = [
     ...BBVA_REAL,

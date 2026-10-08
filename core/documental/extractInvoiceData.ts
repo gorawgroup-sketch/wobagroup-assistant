@@ -1,4 +1,6 @@
 import { INSTRUCCION_GEOGRAFIA_UBER } from "../gastos/proveedorUber";
+import { bloqueNormaResolucion } from "../ia/normaResolucionAutonoma";
+import { CACHE_1H } from "../claude/cacheControl";
 import { readFile } from "node:fs/promises";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
@@ -9,6 +11,7 @@ import { resolverModeloDocumental } from "../ai/modelRouting";
 import { mimeADocumentBlock, type DocumentOrImageBlock, type TextBlock } from "./documentBlock";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { normalizarPagos, type PagoRecibo } from "../holded/pagosMultiples/pagos";
+import { numeroDeReservaEnTexto } from "./numeroDeReserva";
 
 const MODEL = resolverModeloDocumental("extraer_factura");
 const MAX_ITERATIONS = 4;
@@ -140,6 +143,13 @@ export interface DatosFactura {
    */
   numeroDocumento?: string;
   /**
+   * false cuando el propio ARCHIVO no trae el proveedor, el importe y la fecha (un icono, un logo, un mapa, una captura sin datos) y los
+   * datos de esta lectura salen solo del contexto del correo o de su asunto; true cuando se leen en el archivo mismo; undefined si el
+   * modelo no lo indicó (se trata como true). Un archivo así no sirve como comprobante contable (caso real: captura de un mapa en el gasto
+   * de Antaris).
+   */
+  datosEnElDocumento?: boolean;
+  /**
    * true si el documento es un recibo/tique simplificado (sin los datos
    * fiscales de la empresa compradora impresos) — legalmente no deducible
    * de IVA. Pedido explícito de Carlos, casos reales ALDI/Ahorramas: cuando
@@ -154,6 +164,10 @@ export interface DatosFactura {
    */
   lineas: LineaFactura[];
   empresaProbable: EmpresaGasto;
+  /** Razón social del COMPRADOR tal como está impresa en el documento («Customer information», «Bill to», «Cliente»…); undefined si no aparece. */
+  compradorRazonSocial?: string;
+  /** El operador fijó la empresa a mano (respuesta a «¿de qué empresa es?»): el comprador de la factura no la sobrescribe. */
+  empresaFijadaPorOperador?: boolean;
   confianza: "alta" | "media" | "baja";
   razon: string;
 }
@@ -273,6 +287,13 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           "varias personas/toda la oficina, o si no se identificó ninguna persona asociada).",
       },
       fecha: { type: "string", description: "Fecha del documento en formato YYYY-MM-DD." },
+      datos_en_el_documento: {
+        type: "boolean",
+        description:
+          "true si el proveedor, el importe y la fecha se leen en el propio ARCHIVO (factura, recibo, ticket, captura de un recibo o de una " +
+          "confirmación con esos datos). false si el archivo NO los trae —un icono, un logo, un mapa, una foto o captura sin datos de compra— " +
+          "y lo que reportas sale solo del contexto del correo o de su asunto. Sé estricto: un archivo que no muestra el gasto no es un comprobante.",
+      },
       numero_documento: {
         type: "string",
         description:
@@ -376,6 +397,12 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           required: ["concepto", "base", "tipo_iva_pct", "tratamiento_fiscal"],
         },
       },
+      comprador_razon_social: {
+        type: "string",
+        description:
+          "Razón social del COMPRADOR/CLIENTE tal como está impresa en el documento (sección «Customer information», «Bill to», «Facturar a», " +
+          "«Datos del cliente»). Cópiala literal. Siempre busca esta sección; deja el campo vacío SOLO si de verdad no nombra al comprador. No la deduzcas de dominios, del remitente ni del proyecto.",
+      },
       empresa_probable: {
         type: "string",
         enum: ["WOBA", "EWORKS", "Footprint", "desconocida"],
@@ -384,7 +411,7 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       confianza: { type: "string", enum: ["alta", "media", "baja"] },
       razon: { type: "string", description: "Explicación breve de la clasificación (o de por qué no es una factura)." },
     },
-    required: ["es_factura_o_gasto", "confianza", "razon"],
+    required: ["es_factura_o_gasto", "confianza", "razon", "comprador_razon_social"],
   },
 };
 
@@ -602,14 +629,15 @@ export async function extraerDatosFactura(
       // proyecto para este tipo de llamada (ver core/claude/client.ts). Acá
       // el riesgo es más serio todavía: esto extrae datos de FACTURAS reales.
       max_tokens: 8192,
-      // Las reglas aprendidas cambian rara vez y se repiten entre adjuntos
-      // del mismo lote. El PDF/imagen nunca se incluye en este breakpoint.
+      // Las reglas aprendidas cambian rara vez y se repiten entre adjuntos del mismo lote y entre lotes de la misma
+      // hora: caché de 1 h (medido: con 5 min se reescribía casi en cada factura). El PDF/imagen nunca entra aquí.
       system: [
         {
           type: "text",
           text: buildSystemPrompt(clasificacionesAprendidas),
-          cache_control: { type: "ephemeral" },
+          cache_control: CACHE_1H,
         },
+        bloqueNormaResolucion("extractor"),
       ],
       tools,
       messages,
@@ -728,7 +756,8 @@ export async function extraerDatosFactura(
         personaAsociada: typeof input.persona_asociada === "string" && input.persona_asociada.trim() ? input.persona_asociada.trim() : undefined,
         contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
         fecha: (input.fecha as string) ?? "",
-        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : undefined,
+        numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : numeroDeReservaEnTexto(contextoCorreo),
+        datosEnElDocumento: typeof input.datos_en_el_documento === "boolean" ? input.datos_en_el_documento : undefined,
         concepto: (input.concepto as string) ?? "",
         reciboSimplificado,
         pagos: normalizarPagos(input.pagos),
@@ -743,6 +772,7 @@ export async function extraerDatosFactura(
         // ni siquiera a mostrarse como si fuera real.
         lineas: reciboSimplificado || lineas.length === 0 ? [lineaUnica] : lineas,
         empresaProbable: (input.empresa_probable as EmpresaGasto) ?? "desconocida",
+        compradorRazonSocial: typeof input.comprador_razon_social === "string" && input.comprador_razon_social.trim() ? input.comprador_razon_social.trim() : undefined,
         confianza: (input.confianza as DatosFactura["confianza"]) ?? "baja",
         razon: (input.razon as string) ?? "",
       };

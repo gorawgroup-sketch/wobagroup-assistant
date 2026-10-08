@@ -7,15 +7,15 @@ import type { PropuestaTransferencia } from "./deteccion";
 import { ejecutarTransferencia, motivoConversionNoEjecutable } from "./ejecucion";
 import { describirPropuesta } from "./informe";
 import { detectarTransferenciasDeEmpresa } from "./lectura";
+import { decidirPublicacion, registrosObsoletos } from "./reapertura";
 import { ejecucionAutorizada, modoTransferencias } from "./modo";
 import { guardarRegistro, listarRegistros, obtenerRegistroPorId, registroDesdePropuesta, type RegistroTransferencia } from "./registro";
 
 /** Propuestas de transferencias internas en Telegram y sus cuatro botones. Solo «Conciliar» puede llegar a escribir en Holded. */
 
+/** Por EMPRESA: antes era global y, con WOBA primero, eWorks y Footprint se quedaban sin propuestas (Carlos, 06-10-2026). */
 const MAX_PROPUESTAS_POR_PASADA = 5;
 const DIAS_ATRAS = 45;
-/** Estados en los que la operación ya tiene una propuesta viva, una decisión o un resultado: no se vuelve a proponer. */
-const CERRADOS: ReadonlyArray<RegistroTransferencia["estado"]> = ["propuesta", "ambigua", "aprobada", "ejecutando", "verificada", "fallida", "descartada", "revision_manual"];
 
 /**
  * Cada botón de Telegram solo se atiende UNA vez por mensaje (la entrega durable deduplica las acciones sensibles),
@@ -46,6 +46,13 @@ export function textoPropuesta(p: PropuestaTransferencia): string {
     `\nReferencia para autorizarla: ${p.clave}`;
 }
 
+/** Deja el mensaje de una propuesta sin botones y con el motivo; nunca falla la pasada por esto. */
+async function retirarMensaje(r: RegistroTransferencia, texto: string): Promise<void> {
+  if (!r.chatId || !r.messageId) return;
+  await editTelegramMessage(r.chatId, r.messageId, `${texto}\n${resumenRegistro(r)}`, []).catch((error) =>
+    console.error("[transferencias] No se pudo retirar el mensaje de una propuesta (no crítico):", error instanceof Error ? error.message : error));
+}
+
 /** Detecta y publica las operaciones que aún no tienen propuesta. Devuelve el resumen para el chat. Solo lee Holded. */
 export async function publicarPropuestasTransferencias(chatId: number, empresas: readonly Empresa[]): Promise<string> {
   if (modoTransferencias() === "apagado") return "La conciliación de transferencias internas está apagada (WOBI_TRANSFERENCIAS_MODO).";
@@ -64,13 +71,16 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
 
   for (const empresa of empresas) {
     const lectura = await detectarTransferenciasDeEmpresa(empresa, desde, hoy, hoy);
-    let sinDecidir = 0;
+    let sinDecidir = 0, publicadasEmpresa = 0;
     for (const p of lectura.propuestas) {
       // El registro se relee justo antes de escribir: una pasada no puede pisar una operación que otra acaba de tocar.
       const actual = (await listarRegistros()).find((r) => r.clave === p.clave);
-      if (actual && CERRADOS.includes(actual.estado)) continue;
+      const decision = decidirPublicacion(actual, p);
+      if (decision === "ya_publicada") continue;
+      // Estaba publicada como bloqueada y ahora la detección la da por buena: se retira aquel mensaje y se propone de nuevo con botón.
+      if (decision === "reabrir" && actual?.messageId) await retirarMensaje(actual, "↩️ Sustituida por una propuesta nueva más abajo: la detección ya la reconoce con claridad.");
       sinDecidir++;
-      if (publicadas >= MAX_PROPUESTAS_POR_PASADA) { restantes++; continue; }
+      if (publicadasEmpresa >= MAX_PROPUESTAS_POR_PASADA) { restantes++; continue; }
       const registro = registroDesdePropuesta(p);
       const bloqueada = p.confianza === "bloqueada";
       await guardarRegistro(registro);
@@ -78,6 +88,12 @@ export async function publicarPropuestasTransferencias(chatId: number, empresas:
       const messageId = await sendTelegramMessageWithButtons(chatId, textoPropuesta(p), botonesPropuesta(registro.id, { conConciliar: !bloqueada && (p.tipo !== "conversion" || conversionConBoton(p)) }));
       await guardarRegistro({ ...registro, estado: bloqueada ? "ambigua" : "propuesta", chatId, messageId });
       publicadas++;
+      publicadasEmpresa++;
+    }
+    // Mensajes de parejas bloqueadas que la detección ya no devuelve (cruces absurdos o movimientos conciliados a mano).
+    for (const r of registrosObsoletos(await listarRegistros(), empresa, lectura.propuestas)) {
+      await retirarMensaje(r, "↩️ Retirada: ya no es una pareja válida (el cruce no cuadra o los movimientos ya no están pendientes).");
+      await guardarRegistro({ ...r, estado: "saltada", detalle: "Retirada: la detección ya no la devuelve. Si vuelve a aparecer, se propondrá de nuevo." });
     }
     resumen.push(`${empresa}: ${lectura.propuestas.length} detectada(s), ${sinDecidir} sin decidir`);
   }

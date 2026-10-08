@@ -4,10 +4,12 @@ import {
   type ConciliacionAmbiguaPendiente,
 } from "./conciliacionAmbiguaPendienteStore";
 import { obtenerPropuestasGastoPorChat } from "./gastoProposalSheet";
+import { obtenerGastosPendienteDatosPorChat, type GastoPendienteDatos } from "./gastoPendienteDatosStore";
+import { botonesFalloTemporalVerificacionPendiente } from "./gastoPendienteDatosActions";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { botonContinuarConciliacion } from "./continuarCorreoConciliacion";
 import { botonesOfertaParcial, consultarCargoParcial, textoOfertaParcial } from "./conciliacionParcialRecibo";
-import { sendTelegramMessageWithButtons } from "../telegram/client";
+import { sendTelegramMessage, sendTelegramMessageWithButtons } from "../telegram/client";
 import { montosCercanos } from "../utils/montos";
 
 /**
@@ -28,7 +30,45 @@ import { montosCercanos } from "../utils/montos";
 export type PreguntaReenviada =
   | { tipo: "propuesta"; descripcion: string }
   | { tipo: "conciliacion"; descripcion: string }
-  | { tipo: "conciliacion_ambigua"; descripcion: string };
+  | { tipo: "conciliacion_ambigua"; descripcion: string }
+  | { tipo: "gasto_pendiente_datos"; descripcion: string };
+
+/**
+ * Texto de la pregunta que sigue esperando respuesta para un gasto al que le falta un dato (se contesta en texto libre;
+ * `reintentar_gasto_pendiente` la consume). Lógica pura, probada aparte.
+ *
+ * Caso real (Carlos, 2026-10-07): la cola llevaba horas parada en «Lunch - 180 pesos mexicanos - revolut»: el recibo se leyó
+ * bien, pero Footprint no tiene cuenta en MXN y Wobi pidió en texto el importe exacto en la moneda real. Esa pregunta quedó
+ * enterrada en el chat y el aviso de fin de revisión decía «fallo temporal» porque este reenvío no miraba este almacén.
+ */
+export function textoPreguntaGastoPendienteDatos(p: GastoPendienteDatos): string {
+  const proveedor = p.datos.proveedor?.trim() || "Gasto";
+  const importe = `${p.datos.monto} ${p.datos.moneda}`;
+  const cierre = "Si no tienes el dato, dime «descarta la pregunta pendiente del gasto» y la cola sigue sin registrar nada.";
+  switch (p.motivo) {
+    case "empresa":
+      return `📄 «${proveedor}» · ${importe}: no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece y sigo. ${cierre}`;
+    case "moneda":
+      return `💱 «${proveedor}» · ${importe}: todavía no hay en el banco un cargo que coincida y no pude obtener la tasa de cambio del día para convertirlo. No hace falta que hagas nada: lo reintento solo en la próxima revisión.`;
+    case "fecha":
+      return `🔎 «${proveedor}» · ${importe}: el comprobante no tiene una fecha verificable. Respóndeme con la fecha documentada (AAAA-MM-DD) y sigo. ${cierre}`;
+    case "proveedor":
+      return `🏷️ ${importe}: no pude leer el proveedor del comprobante. Dime su nombre y sigo. ${cierre}`;
+    case "verificacion_duplicado":
+      return `⚠️ «${proveedor}» · ${importe}: la verificación de duplicados en Holded quedó pendiente; por seguridad no se propuso ni creó el gasto.`;
+  }
+}
+
+/** Vuelve a poner al final del chat la pregunta del dato que falta. Nunca crea ni cierra nada. */
+export async function reenviarPreguntaGastoPendienteDatos(p: GastoPendienteDatos, encabezado: string): Promise<void> {
+  const texto = `${encabezado}\n\n${textoPreguntaGastoPendienteDatos(p)}`;
+  // El fallo de verificación se retoma con sus botones acotados (reintentar/aplazar); un fallo técnico nunca se «confirma».
+  if (p.motivo === "verificacion_duplicado") {
+    await sendTelegramMessageWithButtons(p.chatId, texto, botonesFalloTemporalVerificacionPendiente(p.id));
+  } else {
+    await sendTelegramMessage(p.chatId, texto);
+  }
+}
 
 export async function reenviarPreguntaConciliacion(p: ConciliacionPendiente, encabezado: string): Promise<number> {
   // Si el banco tiene UN único cargo del proveedor menor que el gasto (recibo cobrado en varios pagos), el reenvío ya trae el botón de la parte.
@@ -102,6 +142,22 @@ export async function reenviarPreguntaPendienteDelCorreo(
     await reenviarPreguntaConciliacionAmbigua(ambigua, encabezado);
     return { tipo: "conciliacion_ambigua", descripcion: ambigua.descripcionGasto };
   }
+  // Cuarto almacén (caso Lunch 180 MXN): un gasto leído al que le falta un dato que se responde en texto libre.
+  const pendienteDatos = (await obtenerGastosPendienteDatosPorChat(chatId)).find((g) =>
+    coincideCorreo({ mensajeIdGmail: g.correoOrigen?.mensajeIdGmail, threadId: g.correoOrigen?.threadId }, mensajeId, threadId)
+  );
+  if (pendienteDatos) {
+    // Un gasto en una moneda que la empresa no tiene ya no pregunta nada: se retoma con la conversión automática y sale con botones.
+    if (pendienteDatos.motivo === "moneda") {
+      const { reprocesarPendienteDeMoneda } = await import("./reprocesarPendienteMoneda");
+      const reproceso = await reprocesarPendienteDeMoneda(pendienteDatos);
+      if (reproceso === "propuesta") {
+        return { tipo: "propuesta", descripcion: `${pendienteDatos.datos.proveedor || "gasto"} — ${pendienteDatos.datos.monto} ${pendienteDatos.datos.moneda}` };
+      }
+    }
+    await reenviarPreguntaGastoPendienteDatos(pendienteDatos, encabezado);
+    return { tipo: "gasto_pendiente_datos", descripcion: `${pendienteDatos.datos.proveedor || "gasto"} — ${pendienteDatos.datos.monto} ${pendienteDatos.datos.moneda}` };
+  }
   return undefined;
 }
 
@@ -110,18 +166,32 @@ export async function reenviarPreguntaPendienteDelCorreo(
  * pendientes del chat que coinciden con lo que el usuario nombró (proveedor, parte del nombre,
  * descripción, monto). Sin `cual`, todas. Lógica pura, probada aparte.
  */
+/**
+ * Texto de búsqueda de /preguntas sin acentos ni puntuación: «casa peppe.» (con el punto de la frase, como lo escribió Carlos el
+ * 2026-10-06) encuentra «Casa Peppe (Il Gusto S.A.S.)». Las palabras se separan por un solo espacio.
+ */
+export function normalizarBusqueda(texto: string): string {
+  return texto.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** «142,48.» → 142.48 (ignora la puntuación final de la frase); NaN si no es un importe. */
+export function importeDeBusqueda(texto: string): number {
+  return Number(texto.trim().replace(/[.,;:!?)\s]+$/, "").replace(/[^\d.,]/g, "").replace(",", "."));
+}
+
 export function filtrarConciliacionesPorTexto<T extends { descripcionGasto: string; proveedor?: string; monto?: number }>(
   pendientes: T[],
   cual: string
 ): T[] {
-  const texto = cual.trim().toLowerCase();
-  if (!texto) return pendientes;
+  const texto = normalizarBusqueda(cual);
+  if (!texto) return cual.trim() ? [] : pendientes;
   const porNombre = pendientes.filter((p) => {
-    const nombre = `${p.proveedor ?? ""} ${p.descripcionGasto}`.toLowerCase();
-    return nombre.includes(texto) || (p.proveedor?.trim() ? texto.includes(p.proveedor.toLowerCase()) : false);
+    const nombre = normalizarBusqueda(`${p.proveedor ?? ""} ${p.descripcionGasto}`);
+    const proveedor = p.proveedor?.trim() ? normalizarBusqueda(p.proveedor) : "";
+    return nombre.includes(texto) || (proveedor ? texto.includes(proveedor) : false);
   });
   if (porNombre.length > 0) return porNombre;
-  const comoMonto = Number(texto.replace(/[^\d.,]/g, "").replace(",", "."));
+  const comoMonto = importeDeBusqueda(cual);
   if (Number.isFinite(comoMonto) && comoMonto > 0) {
     const porMonto = pendientes.filter((p) => p.monto !== undefined && montosCercanos(p.monto, comoMonto, 0.01));
     if (porMonto.length > 0) return porMonto;

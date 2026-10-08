@@ -22,6 +22,8 @@ import { intentarCerrarOperacion, mensajeOperacionBloqueada, resolverOperacionAn
   type ResultadoOperacionAnterior } from "./operacionAnterior";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
+import { diferenciasDeEstaRevision, EVENTO_RESUMEN_REVISION } from "./informeDiferencias";
+import type { ResumenSeco } from "./revisionEnSeco";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
 import { conTiempoMaximo, enteroAcotado } from "../../utils/asyncTimeout";
 import { cierreSolicitado } from "../../utils/cierreServicio";
@@ -103,9 +105,15 @@ export async function registrarOperacionFinalizada(op: OperacionAuto, opciones: 
 export async function revisarGastosAutomaticos(chatId: number, opciones: {
   informarProgreso?: boolean | (() => boolean);
   exhaustiva?: boolean;
+  /**
+   * Revisión en seco tras un despliegue (ver revisionEnSeco.ts): modo simulación, sin análisis nuevos (cero coste de IA:
+   * solo se reutilizan análisis guardados), sin escrituras en Holded, Gmail ni Sheets, y sin mensajes de progreso.
+   */
+  enSeco?: boolean;
 } = {}): Promise<ResultadoAuto> {
-  const config = configuracionAuto();
-  if (config.modo === "off") return { modo: "off", revisados: 0, completados: 0, simulados: 0, pendientes: [], gastos: [] };
+  const configBase = configuracionAuto();
+  if (configBase.modo === "off") return { modo: "off", revisados: 0, completados: 0, simulados: 0, pendientes: [], gastos: [] };
+  const config = opciones.enSeco ? { ...configBase, modo: "simulate" as const } : configBase;
   const limites = limitesRevisionAutomatica(opciones.exhaustiva === true);
   const fechaLimite = Date.now() + limites.maxDuracionMs;
   let mensajeProgreso: number | undefined;
@@ -114,7 +122,7 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     console.log(`[correo-auto] ${texto}`);
     ultimoProgreso.set(chatId, texto);
     const informar = typeof opciones.informarProgreso === "function" ? opciones.informarProgreso() : opciones.informarProgreso;
-    if (!informar) return Promise.resolve();
+    if (!informar || opciones.enSeco) return Promise.resolve();
     colaNotificacion = colaNotificacion.then(async () => {
       if (mensajeProgreso === undefined) mensajeProgreso = await sendTelegramMessageSmart(chatId, texto);
       else await editTelegramMessage(chatId, mensajeProgreso, texto, []);
@@ -189,17 +197,18 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     conciliar: op => holded.conciliar(op), verificarConciliacion: op => holded.verificarConciliacion(op),
     marcarResuelto: c => gmail.marcarResuelto(c),
     permitidoAhora: op => {
+      if (opciones.enSeco) return false;
       const actual = configuracionAuto();
       return actual.modo === "execute" && actual.empresas.includes(op.plan.empresa);
     },
     ejecutarProtegido: (op, tarea) => conOperacionAuto(op.id, () => protegerEscrituraHolded(op.plan.empresa, tarea)),
     cerrarConEvidencia: async op =>
-      (await intentarCerrarOperacion(op, 0, depsOperacionAnterior(storeAuto, config.buzon, holded), 0)).cerrada,
+      opciones.enSeco ? false : (await intentarCerrarOperacion(op, 0, depsOperacionAnterior(storeAuto, config.buzon, holded), 0)).cerrada,
   }, {
     concurrenciaAnalisis: limites.concurrenciaAnalisis,
     fechaLimite,
     detener: cierreSolicitado,
-    maxAnalisisNuevos: limites.maxAnalisisNuevos,
+    maxAnalisisNuevos: opciones.enSeco ? 0 : limites.maxAnalisisNuevos,
     progreso: async ({ fase, completados, total }) => {
       if (!esHito(completados, total)) return;
       await notificar(fase === "analisis"
@@ -212,6 +221,18 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
   });
   try {
     const resultado = await service.revisar(config);
+    // Informe por diferencias: solo las pasadas reales se registran y se comparan (la revisión en seco guarda lo suyo aparte).
+    if (!opciones.enSeco) {
+      try {
+        resultado.diferencias = await diferenciasDeEstaRevision(resultado, (process.env.RAILWAY_GIT_COMMIT_SHA ?? "desconocida").slice(0, 7), {
+          ultimo: async () => (await storeAuto.ultimoResumenRevision(config.buzon)) as ResumenSeco | undefined,
+          guardar: (resumen) => storeAuto.auditar({ buzon: config.buzon, tipo: EVENTO_RESUMEN_REVISION, datos: resumen }),
+        });
+      } catch (error) {
+        // El informe sale sin la sección de cambios; la revisión en sí ya terminó y no se toca.
+        console.warn("[correo-auto] No se pudo calcular el informe por diferencias:", error instanceof Error ? error.message : error);
+      }
+    }
     await colaNotificacion;
     return resultado;
   } finally {

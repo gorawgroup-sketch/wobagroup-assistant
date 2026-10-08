@@ -416,7 +416,11 @@ async function construirSeguros() {
   // Memoria, documentos y última revisión: lectura aparte (con caché de 5 min) para no multiplicar las lecturas de Sheets;
   // si falla, la sección lo declara (complementosDisponibles: false) en vez de presentar ceros.
   const complementos = await seguroSheets("seguros.complementos", () => leerComplementosSeguros(), null as Awaited<ReturnType<typeof leerComplementosSeguros>> | null);
-  return construirEstadoSeguros(polizas, complementos, new Date(), `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`);
+  return construirEstadoSeguros(polizas, complementos, new Date(), `https://docs.google.com/spreadsheets/d/${process.env.CASHFLOW_SHEET_ID ?? ""}/edit`, {
+    // Dónde quedan los eventos de calendario (misma cuenta y mismo invitado que usa el calendario de pagos).
+    cuentaCalendario: process.env.GMAIL_IMPERSONATE_EMAIL,
+    invitaCalendario: Boolean(process.env.GOOGLE_IMPERSONATE_EMAIL),
+  });
 }
 
 function construirAccesos(

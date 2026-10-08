@@ -9,6 +9,11 @@ import type { GastoEtiquetado } from "../holded/gastosPorEtiqueta";
 export interface FiltrosReintegro {
   /** Solo gastos totalmente pagados desde una cuenta bancaria; los sin pagar o parciales quedan fuera. */
   soloPagados: boolean;
+  /**
+   * Todos los gastos en un único listado y un único total, sin distinguir si están pagados en banco (pedido de Carlos
+   * 2026-10-05 para incluir Kyriad y Navigo): el PDF no usa «pagado»/«sin pagar» ni la columna de pago.
+   */
+  sinDistinguirPago?: boolean;
   /** Fragmentos compactos (minúsculas, sin acentos ni símbolos) que, si aparecen en proveedor o concepto, excluyen el gasto. */
   excluir: string[];
 }
@@ -26,20 +31,24 @@ export function normalizarExclusiones(terminos: string[], maxLongitud = 14): str
 }
 
 export function codificarFiltros(f: FiltrosReintegro): string {
-  if (!f.soloPagados && f.excluir.length === 0) return "";
-  return `${f.soloPagados ? "p" : "-"}${f.excluir.map((x) => `~${x}`).join("")}`;
+  if (!f.soloPagados && !f.sinDistinguirPago && f.excluir.length === 0) return "";
+  return `${f.sinDistinguirPago ? "u" : f.soloPagados ? "p" : "-"}${f.excluir.map((x) => `~${x}`).join("")}`;
 }
 
 export function decodificarFiltros(segmento: string | undefined): FiltrosReintegro {
   if (!segmento) return SIN_FILTROS;
   const [bandera, ...resto] = segmento.split("~");
-  return { soloPagados: bandera === "p", excluir: resto.filter((x) => x.length >= MIN_FRAGMENTO) };
+  return {
+    soloPagados: bandera === "p",
+    ...(bandera === "u" ? { sinDistinguirPago: true } : {}),
+    excluir: resto.filter((x) => x.length >= MIN_FRAGMENTO),
+  };
 }
 
 /** Filtros efectivos: acorta los fragmentos hasta que el `callback_data` completo quepa en 64 bytes; el informe usa ESTOS mismos. */
 export function ajustarFiltrosAlBoton(base: string, f: FiltrosReintegro): FiltrosReintegro {
   for (let largo = 14; largo >= MIN_FRAGMENTO; largo--) {
-    const candidatos: FiltrosReintegro = { soloPagados: f.soloPagados, excluir: [...new Set(f.excluir.map((x) => x.slice(0, largo)))] };
+    const candidatos: FiltrosReintegro = { soloPagados: f.soloPagados, ...(f.sinDistinguirPago ? { sinDistinguirPago: true } : {}), excluir: [...new Set(f.excluir.map((x) => x.slice(0, largo)))] };
     const seg = codificarFiltros(candidatos);
     if (Buffer.byteLength(`${base}${seg ? `:${seg}` : ""}`) <= MAX_BYTES_CALLBACK) return candidatos;
   }

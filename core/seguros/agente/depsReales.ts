@@ -22,6 +22,10 @@ import { esFormatoVisual, extraerTextoDeterminista } from "../../documental/extr
 import { transcribirParaCaptura } from "../../documental/transcribeForCapture";
 import { formatDateLocal } from "../../utils/dateFormat";
 import { listarDocumentosPoliza } from "../documentosPolizaStore";
+import { leerBitacora } from "../bitacora/bitacoraStore";
+import { entradaVigilante } from "../bitacora/entradas";
+import { registrarActividad } from "../bitacora/registrar";
+import { leerPagosSeguros } from "../pagos/pagosStore";
 import { actualizarPoliza, listarPolizas } from "../polizaRegistroSheet";
 import { leerCorreosDeSeguros } from "../vigilante/correos";
 import { guardarEstadoVigilante } from "../vigilante/estadoStore";
@@ -33,6 +37,7 @@ import { ejecutarVigilanteSeguros } from "../vigilante/vigilante";
 import { PROCESO_IA_AGENTE, resolverModeloAgente, type DepsConsulta } from "./agente";
 import { almacenCambiosReal, type DepsAplicar } from "./cambiosPendientes";
 import { almacenConocimientoReal } from "./conocimiento";
+import { diferirPropuesta } from "./propuestasDiferidas";
 import { almacenTextosReal, textoDeDocumento, type LectorDocumentos } from "./textosStore";
 
 let clienteAnthropic: Anthropic | null = null;
@@ -85,6 +90,8 @@ export function depsRealesAgente(): DepsConsulta {
     hoy,
     listarPolizas,
     listarDocumentos: listarDocumentosPoliza,
+    listarPagos: leerPagosSeguros,
+    listarActividad: leerBitacora,
     buscarDocumentosDrive: async (consulta, empresa) => {
       const raices = empresa && ROOT_FOLDERS[empresa] ? { [empresa]: ROOT_FOLDERS[empresa] } : ROOT_FOLDERS;
       const encontrados = await searchDriveFilesAllRoots(raices, consulta, 4, 30);
@@ -123,23 +130,29 @@ export function depsRealesAgente(): DepsConsulta {
       const resultado = await ejecutarVigilanteSeguros(reales);
       // Lo que se cuenta aquí ya lo ha visto la persona: no se vuelve a avisar por Telegram.
       await guardarEstadoVigilante(resultado.clavesAvisadas).catch((e) => console.error("[agenteSeguros] No se pudo marcar lo avisado (no crítico):", e));
+      // Una revisión pedida desde el chat también queda en la bitácora (no es una pasada programada: no cuenta para «va al día»).
+      await registrarActividad(entradaVigilante({ resultado, informe: null, entregado: null, origen: "manual" }));
       return resultado.respuestaChat;
     },
     conocimiento: almacenConocimientoReal,
+    // La propuesta no sale en mitad del turno: se encola y sale justo DESPUÉS de la respuesta de Wobi, para que sus botones
+    // queden al final del chat (propuestasDiferidas.ts). La fila y el mensaje se crean juntos al enviarla.
     proponerCambio: async (chatId, propuesta) => {
-      const cambio = await almacenCambiosReal.crear({ chatId, accion: propuesta.accion, datos: JSON.stringify(propuesta.datos), cita: propuesta.cita });
-      let messageId: number;
-      try {
-        messageId = await sendTelegramMessageWithButtons(chatId, propuesta.texto, [[
-          { text: "✅ Aplicar", callback_data: `segcambio_aplicar:${cambio.id}` },
-          { text: "❌ Cancelar", callback_data: `segcambio_cancelar:${cambio.id}` },
-        ]]);
-      } catch (error) {
-        // Sin mensaje no hay botón que la decida: no se deja una propuesta huérfana en la hoja.
-        await almacenCambiosReal.consumir(cambio.id).catch(() => undefined);
-        throw error;
-      }
-      await almacenCambiosReal.actualizarMessageId(cambio.id, messageId);
+      diferirPropuesta(chatId, async () => {
+        const cambio = await almacenCambiosReal.crear({ chatId, accion: propuesta.accion, datos: JSON.stringify(propuesta.datos), cita: propuesta.cita });
+        let messageId: number;
+        try {
+          messageId = await sendTelegramMessageWithButtons(chatId, propuesta.texto, [[
+            { text: "✅ Aplicar", callback_data: `segcambio_aplicar:${cambio.id}` },
+            { text: "❌ Cancelar", callback_data: `segcambio_cancelar:${cambio.id}` },
+          ]]);
+        } catch (error) {
+          // Sin mensaje no hay botón que la decida: no se deja una propuesta huérfana en la hoja.
+          await almacenCambiosReal.consumir(cambio.id).catch((e) => console.error("[depsReales] No se pudo retirar la propuesta sin mensaje:", e instanceof Error ? e.message : e));
+          throw error;
+        }
+        await almacenCambiosReal.actualizarMessageId(cambio.id, messageId);
+      });
     },
     // Solo un superadministrador en un chat privado de Telegram: es quien puede aprobar el botón (ACCIONES_SENSIBLES).
     puedeProponer: async (chatId) => chatId != null && chatId > 0 && (await obtenerRolUsuario(chatId)) === "superadmin",

@@ -131,9 +131,14 @@ Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint 
 2. La **entrada** se concilia por la API contra ese cobro. Si vale menos en EUR que la salida, el cobro queda
    `partial_reconciled` con la diferencia de cambio pendiente; así es como queda también a mano.
 
-Límites actuales: una pata debe ser en euros; si la entrada vale MÁS en EUR que la salida no se ejecuta (ese resto va a la
-cuenta de diferencias de cambio de la empresa —en Footprint, 62600000— y ese segundo paso no está construido); diferencia
-máxima 3 %. **Validado por Carlos el 05-10-2026**
+3. **Diferencia a favor** (la entrada vale MÁS en EUR que la salida): **no se ejecuta** (decisión de Carlos, 08-10-2026). Una
+   transferencia entre cuentas propias no toca ninguna cuenta de comisiones o de diferencias (ni la 62600000 ni la pasarela
+   «Comision cambio/cobro cliente» de Footprint, que deja un pago pendiente sin movimiento que conciliar). La propuesta sale sin
+   botón de conciliar y con el motivo. Criterio nuevo pedido por Carlos y **pendiente de construir**: entre divisas distintas se
+   ajusta la tasa de cambio de la propia transferencia (referencia: la tasa de Holded de ese día) para que lo que sale sea lo que
+   entra, sin ajustes en otras cuentas; en la misma divisa los importes son exactos.
+
+Los traspasos en una misma moneda distinta del euro (USD↔USD) se ejecutan igual que una conversión (pulsar sobre la salida; valoración en euros de Holded). Límites actuales: diferencia máxima 3 % entre las valoraciones en euros de las dos patas (Holded valora en euros también las patas en otra moneda: USD → COP vale igual). Primera USD → COP pendiente de verificar en vivo (Footprint 11/09, 0,71 € a favor). **Validado por Carlos el 05-10-2026**
 (eWorks 02/09, −433,96 EUR → +500 USD: asiento único de 433,96 €, los dos movimientos conciliados y 2,11 € de diferencia
 pendientes en el cobro). Con `WOBI_TRANSFERENCIAS_ALCANCE=eur,conversiones` las conversiones dentro de estos límites llevan
 botón de conciliar; las demás se proponen sin botón y con el motivo.
@@ -148,6 +153,14 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Conversiones con diferencia a favor** (la entrada vale más en EUR que la salida): llevar el resto a la cuenta de
-   diferencias de cambio de cada empresa (Footprint 62600000; WOBA y eWorks por confirmar con Carlos), con su prueba.
+1. **Conversiones entre divisas ajustando la tasa de cambio** (sin residuos y sin cuentas de diferencias): hay que ver cómo lo
+   permite la pantalla «Transferir» de Holded antes de construirlo.
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
+
+## Varias conversiones el mismo día: emparejar por valor, no por descripción (2026-10-08)
+
+Caso real, Footprint 07-10: el banco repite «Exchanged To Eur Main» en todas sus conversiones del día. Con dos salidas (−9.070,62 USD y −2.237,96 USD) y dos entradas (+8.100 EUR y +2.000 EUR) el detector formaba las 4 combinaciones y, al repetirse cada movimiento, bloqueaba las cuatro por «ambiguo»: Carlos recibía mensajes sin botón de conciliar. Las dos parejas buenas diferían un 0,31 % y un 0,39 % de la tasa del día; los dos cruces, un 75 %.
+
+- `detectarTransferencias`: una pareja cuyo valor en EUR o tasa se desvía más del límite (bloqueada ya en `evaluarPareja`) **no cuenta como competidora** si alguno de sus movimientos tiene otra pareja plausible; se descarta. Si no la tiene, se conserva bloqueada (una conversión realmente rara no desaparece). Dos candidatas plausibles para el mismo movimiento (dos entradas de 2.000 € para una misma salida) siguen siendo ambiguas: no se elige al azar. Las transferencias de la misma moneda no cambian.
+- `reapertura.ts` + `telegram.ts`: una pareja registrada como «ambigua» que ahora ya no está bloqueada se **reabre** (se retira el mensaje viejo y se propone con botón, si está autorizada por el alcance). Los registros «ambigua» que la detección ya no devuelve pasan a «saltada» (si vuelven, se proponen de nuevo) y su mensaje se deja sin botones con el motivo.
+- Verificado en vivo (solo lectura): Footprint pasó de 4 bloqueadas a 2 inequívocas.

@@ -49,3 +49,25 @@ test("conserva cargo explícito distinto en la misma moneda sin cambiar el recib
   assert.equal(r.recibos[0].monto, 147.44);
   assert.deepEqual(r.recibos[0].equivalente, { moneda: "EUR", monto: 142.48 });
 });
+
+test("si la segunda lectura de verificación falla, el análisis no se da por «incompleto»: se propaga como fallo técnico", async () => {
+  const { analizarAutomatico } = await import("./analyze");
+  const correo = {
+    id: "m1", threadId: "t1", de: "Stripe <receipts@stripe.com>", asunto: "Your receipt from Anthropic, PBC", fecha: "2026-10-07",
+    recibidoEn: 0, cuerpo: "Receipt 24.20 USD", contextoHilo: "", adjuntos: [], huella: "h1",
+  };
+  let llamadas = 0;
+  const llamar = async () => {
+    llamadas++;
+    if (llamadas === 1) {
+      return { stop_reason: "tool_use", content: [{ type: "tool_use" as const, id: "tu1", name: "analisis_correo_automatico",
+        input: { completo: false, otrasAcciones: false, resumen: "No estoy seguro de haber leído todo.", recibos: [] } }] as never };
+    }
+    throw new Error('Uso de API de IA bloqueado para "correo_gastos_automatico_manual": limite_diario_proceso_alcanzado.');
+  };
+  await assert.rejects(
+    analizarAutomatico(correo as never, { memoria: "" }, llamar as never),
+    (error: unknown) => error instanceof Error && /segunda lectura de verificación/.test(error.message) && /limite_diario_proceso_alcanzado/.test(error.message)
+  );
+  assert.equal(llamadas, 2);
+});

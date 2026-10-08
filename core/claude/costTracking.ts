@@ -58,27 +58,37 @@ export interface UsoAnthropic {
   output_tokens: number;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  /** Desglose por TTL que devuelve la API: la escritura de 1 h se cobra a 2×, la de 5 min a 1,25×. */
+  cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } | null;
   server_tool_use?: { web_search_requests?: number } | null;
+}
+
+/** Tokens escritos en caché separados por TTL; sin desglose, todo cuenta como 5 min (1,25×). */
+export function escriturasCachePorTtl(usage: UsoAnthropic): { cinco: number; hora: number } {
+  const total = usage.cache_creation_input_tokens ?? 0;
+  const hora = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+  return { hora, cinco: Math.max(0, total - hora) };
 }
 
 export function calcularCostoUSD(usage: UsoAnthropic, modelo: string): number {
   const { input: precioInput, output: precioOutput } = obtenerPrecios(modelo);
-  // La escritura de caché cuesta 25% más que el input normal; la lectura de
-  // caché cuesta 10% del input normal — misma proporción para todos los
-  // modelos de Claude, solo cambia la tarifa base de la que parten.
-  const precioCacheWrite = precioInput * 1.25;
+  // La escritura de caché de 5 min cuesta 25 % más que el input normal y la de 1 h el doble; la lectura cuesta el 10 %
+  // — misma proporción para todos los modelos de Claude, solo cambia la tarifa base de la que parten.
+  const precioCacheWrite5m = precioInput * 1.25;
+  const precioCacheWrite1h = precioInput * 2;
   const precioCacheRead = precioInput * 0.1;
 
   const inputTokens = usage.input_tokens ?? 0;
   const outputTokens = usage.output_tokens ?? 0;
-  const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+  const escrituras = escriturasCachePorTtl(usage);
   const cacheRead = usage.cache_read_input_tokens ?? 0;
   const busquedasWeb = usage.server_tool_use?.web_search_requests ?? 0;
 
   return (
     inputTokens * precioInput +
     outputTokens * precioOutput +
-    cacheCreation * precioCacheWrite +
+    escrituras.cinco * precioCacheWrite5m +
+    escrituras.hora * precioCacheWrite1h +
     cacheRead * precioCacheRead +
     busquedasWeb * PRECIO_POR_BUSQUEDA_WEB
   );

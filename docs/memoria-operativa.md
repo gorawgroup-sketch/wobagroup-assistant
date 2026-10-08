@@ -230,3 +230,16 @@ Caso real (Footprint, Uber 10,95 USD): la compra ya estaba pagada del todo (paym
 - **Regla (`core/gastos/alinearDocumentoAlCargo.ts`):** el gasto vale lo que salió del banco. Antes de conciliar, el documento pasa a la moneda del cargo, por el importe nativo y con la tasa implícita del propio cargo (nativo ÷ equivalente contable). Falla cerrado con pagos previos, cargo ocupado o cambiado, o diferencia fuera del margen de las coincidencias aproximadas. Es la misma regla que el flujo automático (`monedaRegistroPlanAuto`).
 - **Presentación:** los candidatos llevan `montoNativo`/`monedaNativa` y la propuesta lo dice («💱 Ese cargo salió de una cuenta en USD: son 55,32 USD…»).
 - **Límite de Holded:** guarda la tasa con dos decimales (1,1387 → 1,14); el importe y la moneda del documento sí quedan exactos, que es lo que la conciliación compara.
+
+## Procesos fijados por el operador
+
+### Pedir soportes a quien gastó con la tarjeta (2026-10-06)
+Carlos fijó este proceso como la única forma de hacerlo y pidió que el sistema lo recuerde siempre. No depende de la memoria de una conversación: la regla completa vive en el prompt estático (`core/soportes/reglaProceso.ts`, que `core/claude/client.ts` incluye en cada turno) y una prueba (`core/soportes/soportes.test.ts`) falla si desaparece o pierde alguna de sus reglas.
+
+- Entrada: `/soportes` → empresa → CSV de Revolut (el titular sale de la columna «Payer»; Holded no lo guarda).
+- Cruce determinista con Bancos de Holded; un resumen con una casilla por persona; nada sale sin «Enviar» (superadmin).
+- Un correo por persona (nunca por transacción), desde asistente@wobagroup.com, pidiendo los soportes a ese mismo buzón; cuadro con totales por moneda + hoja de Excel de seguimiento; texto fijo.
+- Dirección: confirmada → directorio + histórico del buzón (dominio de la empresa si hay varias) → nunca inventada. Enviar a una dirección la confirma y se guarda (`_titulares_soportes`).
+- Registro de lo pedido (`_soportes_solicitados`): no se repite antes de 7 días; después vuelve como recordatorio.
+- Cuando alguien responde a la solicitud, el correo se lee entero y se propone una acción por cada cargo pedido (`core/soportes/respuestaSoportes.ts`); un cargo sin recibo se cierra solo con `proponer_cerrar_cargo_sin_soporte` (par cargo+reembolso sin gasto, o gasto sin soporte creado y conciliado), con botón de superadmin.
+- Para cambiar el proceso hay que cambiar esa regla y su prueba, no solo decirlo en el chat.

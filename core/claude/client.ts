@@ -1,3 +1,6 @@
+import { REGLA_PROCESO_SOPORTES } from "../soportes/reglaProceso";
+import { NORMA_RESOLUCION_AUTONOMA } from "../ia/normaResolucionAutonoma";
+import { CACHE_1H } from "./cacheControl";
 import { notaContinuidadConversacion, textoDeMensajeHistorial, type ContextoConversacion } from "./temaConversacion";
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, executeToolBatch, getToolDefinitions } from "../tools/registry";
@@ -108,6 +111,8 @@ const SYSTEM_PROMPT_ESTATICO = [
     "herramienta proponer_envio_correo para preparar un borrador. Nunca respondas que no tienes " +
     "capacidad de enviar correos — el envío real solo se dispara cuando el usuario aprueba el " +
     "borrador con un botón en Telegram, así que proponer uno es siempre seguro.",
+  NORMA_RESOLUCION_AUTONOMA,
+  REGLA_PROCESO_SOPORTES,
   "El envío automatizado (con botón de aprobación) es SOLO para correo — decisión explícita de Carlos. " +
     "Para cualquier otro canal (WhatsApp, SMS, una llamada, avisar a alguien en persona, o cuando una " +
     "recomendación tuya implica 'avisar al proveedor'/'avisar a X'), NUNCA intentes enviarlo ni digas " +
@@ -761,15 +766,18 @@ async function ejecutarConversacion(
   // efectivo que arma Anthropic, este único breakpoint (más los del system
   // de abajo) cachea tools + system como un solo prefijo, sin necesidad de
   // marcar cada tool individualmente.
+  // Herramientas e instrucciones fijas: 1 hora (se reutilizan entre turnos separados por más de 5 min).
   if (tools.length > 0) {
-    tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: { type: "ephemeral" } };
+    tools[tools.length - 1] = { ...tools[tools.length - 1], cache_control: CACHE_1H };
   }
 
   const system: Anthropic.TextBlockParam[] = [
-    { type: "text", text: SYSTEM_PROMPT_ESTATICO, cache_control: { type: "ephemeral" } },
+    { type: "text", text: SYSTEM_PROMPT_ESTATICO, cache_control: CACHE_1H },
   ];
+  // El bloque variable (pendientes, conocimiento recuperado para esta pregunta) cambia casi en cada turno: no se marca,
+  // porque marcarlo solo pagaba la escritura (1,25×) sin que nadie la leyera después. Va DESPUÉS de los bloques de 1 h.
   if (systemExtra) {
-    system.push({ type: "text", text: systemExtra, cache_control: { type: "ephemeral" } });
+    system.push({ type: "text", text: systemExtra });
   }
   // El historial se lee antes de armar el prompt: los pendientes se recuerdan en cada turno y hay que saber de qué
   // se viene hablando para que un pendiente antiguo no secuestre la conversación (ver temaConversacion.ts).

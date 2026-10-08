@@ -8,6 +8,7 @@ import { publicarCambioCerebro } from "../../cerebro/realtime";
 import { invalidarComplementosSeguros } from "../estadoCerebro";
 import { buscarMensajes, obtenerResumenCorreo } from "../../gmail/client";
 import { listBankMovements, listTreasuryAccounts } from "../../holded/client";
+import { actualizarCalendarioConPagoConfirmado } from "../pagos/alConfirmarPago";
 import { actualizarPoliza, listarPolizas } from "../polizaRegistroSheet";
 import { leerEstadoVigilante, guardarEstadoVigilante, purgarEstadoVigilante } from "./estadoStore";
 import { leerMovimientosBancarios } from "./lecturaBancaria";
@@ -34,5 +35,7 @@ export function fuentesRealesVigilante(): FuentesVigilante {
       invalidarEstadoCerebro(["seguros"]);
       publicarCambioCerebro("seguros:vigilante");
     },
+    // Un pago confirmado en el banco se refleja en el calendario de pagos (pagado + siguiente de la serie).
+    alConfirmarPago: async (pago, hoy) => { await actualizarCalendarioConPagoConfirmado(pago, hoy); },
   };
 }

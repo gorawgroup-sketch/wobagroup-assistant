@@ -7,6 +7,11 @@
  *
  * Nada aquí mueve dinero, escribe en Holded ni envía correos.
  */
+import type { PagoSeguro } from "../pagos/tipos";
+import { textoActividad } from "../bitacora/texto";
+import { ENTRADAS_A_LEER } from "../bitacora/vistas";
+import { TAREAS_SEGUROS, type EntradaBitacora } from "../bitacora/tipos";
+import { textoDePagoCalendario } from "../informeSemanal";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { PolizaConFila } from "../polizaRegistroSheet";
 import type { DocumentoPoliza } from "../documentosPolizaStore";
@@ -52,6 +57,10 @@ export interface PropuestaParaEnviar {
 /** Todo lo que el especialista toca fuera de sí mismo, inyectable para probarlo sin red. */
 export interface DepsAgente {
   hoy(): string;
+  /** Calendario de pagos estructurado (`_pagos_seguros`). Opcional: sin él, el especialista usa solo lo anotado en el registro. */
+  listarPagos?(): Promise<PagoSeguro[]>;
+  /** La bitácora de Wobi Seguros (lo que hizo y cuándo), la más reciente primero. Opcional: sin ella la herramienta lo dice. */
+  listarActividad?(limite: number): Promise<EntradaBitacora[]>;
   listarPolizas(): Promise<PolizaConFila[]>;
   listarDocumentos(): Promise<DocumentoPoliza[]>;
   buscarDocumentosDrive(consulta: string, empresa?: string): Promise<DocumentoDrive[]>;
@@ -340,7 +349,47 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
               `${proximos.length ? `\n    ${proximos.join("\n    ")}` : ""}`
           );
         }
-        return lim(`Vencimientos a ${hoy} (horizonte ${horizonte} días):\n${lineas.join("\n") || "(nada dentro del horizonte)"}`);
+        // El calendario de pagos estructurado: fechas, importes (estimados o no) y cuenta de cargo de cada pago que viene.
+        let calendario = "";
+        if (deps.listarPagos) {
+          try {
+            const previstos = (await deps.listarPagos()).filter((x) => x.estado === "previsto" && diasEntre(hoy, x.fecha) >= 0 && diasEntre(hoy, x.fecha) <= horizonte).sort((a, b) => a.fecha.localeCompare(b.fecha));
+            calendario =
+              `\n\nCalendario de pagos (_pagos_seguros, ${previstos.length}): cada pago con su fecha, importe y cuenta de cargo; Wobi avisa por Telegram a 3 días con la comprobación de saldo y deja el evento en el calendario de Carlos.\n` +
+              (previstos.map((x) => `- ${x.fecha} · ${textoDePagoCalendario(x)} · ${x.eventoCalendarId ? "evento de calendario puesto" : "sin evento de calendario aún"}${x.notas ? ` · ${unaLinea(x.notas, 200)}` : ""}`).join("\n") || "(ningún pago previsto en el horizonte)");
+          } catch (error) {
+            calendario = `\n\n(No pude leer el calendario de pagos: ${error instanceof Error ? error.message : String(error)}. Lo de arriba sale solo del registro.)`;
+          }
+        }
+        return lim(`Vencimientos a ${hoy} (horizonte ${horizonte} días):\n${lineas.join("\n") || "(nada dentro del horizonte)"}${calendario}`);
+      },
+    },
+    {
+      definicion: {
+        name: "ver_actividad",
+        description:
+          "Qué ha hecho Wobi Seguros y cuándo: las últimas ejecuciones de sus tareas (revisiones del vigilante, avisos del registro, calendario de pagos, resumen semanal), los avisos que mandó por Telegram, los eventos que puso en el calendario y los cambios que se aprobaron o cancelaron; más cuándo trabaja cada tarea, cuál es su próxima cita y si va al día. " +
+          "Úsala para «¿qué hiciste hoy?», «¿cuándo fue la última revisión?», «¿qué avisos me mandaste?», «¿cada cuánto vigilas?», «¿qué has puesto en el calendario?».",
+        input_schema: {
+          type: "object",
+          properties: {
+            limite: { type: "number", description: "Cuántas entradas (por defecto 15, máximo 50)." },
+            tarea: { type: "string", enum: [...TAREAS_SEGUROS], description: "Solo las de una tarea." },
+            incluir_textos: { type: "boolean", description: "true para incluir el texto de cada aviso enviado (por defecto solo su título)." },
+          },
+        },
+      },
+      ejecutar: async (e) => {
+        if (!deps.listarActividad) return "La bitácora de actividad no está disponible en esta sesión.";
+        const limite = Math.min(50, Math.max(1, Math.floor(Number(e.limite) || 15)));
+        const tarea = typeof e.tarea === "string" && (TAREAS_SEGUROS as readonly string[]).includes(e.tarea) ? e.tarea : undefined;
+        try {
+          // Se lee de sobra: el estado de cada tarea («va al día») sale de todas las entradas, no solo de las que se enseñan.
+          const entradas = await deps.listarActividad(ENTRADAS_A_LEER);
+          return lim(textoActividad(entradas, { ahora: new Date(), tarea, incluirTextos: e.incluir_textos === true, limite }));
+        } catch (error) {
+          return `No pude leer la bitácora: ${error instanceof Error ? error.message : String(error)}. No es lo mismo que «no hizo nada»: la lectura falló.`;
+        }
       },
     },
     {
@@ -397,7 +446,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const cita = unaLinea(texto(e.cita_usuario), 200);
           propuestas++;
           await deps.proponerCambio(ctx.chatId as number, { accion: "actualizar_poliza", datos, cita, texto: textoDePropuesta("actualizar_poliza", datos, cita, poliza) });
-          return `Propuesta enviada al Telegram de la persona con los botones «Aplicar» y «Cancelar». Todavía NO está cambiado nada: díselo y que pulse Aplicar si está de acuerdo.`;
+          return `Propuesta preparada: sus botones «Aplicar» y «Cancelar» llegarán al Telegram de la persona justo DEBAJO de tu respuesta. Todavía NO está cambiado nada: dile que pulse Aplicar en ese mensaje si está de acuerdo. No digas que ya la enviaste.`;
         },
       },
       {
@@ -427,7 +476,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const cita = unaLinea(texto(e.cita_usuario), 200);
           propuestas++;
           await deps.proponerCambio(ctx.chatId as number, { accion: "recordar", datos, cita, texto: textoDePropuesta("recordar", datos, cita) });
-          return "Propuesta enviada al Telegram de la persona con los botones «Aplicar» y «Cancelar». Todavía NO está guardado: díselo y que pulse Aplicar si está de acuerdo.";
+          return "Propuesta preparada: sus botones «Aplicar» y «Cancelar» llegarán al Telegram de la persona justo DEBAJO de tu respuesta. Todavía NO está guardado: dile que pulse Aplicar en ese mensaje si está de acuerdo. No digas que ya la enviaste.";
         },
       },
       {
@@ -452,7 +501,7 @@ export function crearHerramientas(ctx: ContextoHerramientas): HerramientaAgente[
           const cita = unaLinea(texto(e.cita_usuario), 200);
           propuestas++;
           await deps.proponerCambio(ctx.chatId as number, { accion: "retirar_recuerdo", datos, cita, texto: textoDePropuesta("retirar_recuerdo", datos, cita) });
-          return "Propuesta enviada al Telegram de la persona con los botones «Aplicar» y «Cancelar». Todavía NO está retirado: díselo y que pulse Aplicar si está de acuerdo.";
+          return "Propuesta preparada: sus botones «Aplicar» y «Cancelar» llegarán al Telegram de la persona justo DEBAJO de tu respuesta. Todavía NO está retirado: dile que pulse Aplicar en ese mensaje si está de acuerdo. No digas que ya la enviaste.";
         },
       },
     );

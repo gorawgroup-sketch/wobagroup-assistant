@@ -21,9 +21,10 @@ import {
   extraerDireccionCorreo,
   type CorreoResumen,
 } from "../gmail/client";
+import { asuntoContieneLasPalabras, consultasDeRespaldo } from "../gmail/consultaCorreoTolerante";
 import { analizarCorreo } from "../gmail/classifyEmail";
 import { extraerGastoDeCorreo } from "../gmail/extraerGastoDeCorreo";
-import { extraerRemitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../gmail/remitenteReenvio";
+import { remitenteOriginalDeReenvio, type RemitenteOriginalReenvio } from "../correo/lectura/cadena";
 import { verificarFacturasEnlazadasEnCuerpo } from "../gmail/facturasEnlazadasEnCuerpo";
 import { generarComprobantePDF } from "../gmail/generarComprobantePDF";
 import { guardarUltimoCheck } from "../gmail/lastCheckStore";
@@ -57,6 +58,7 @@ import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorre
 import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
+import { mensajeDeExceso } from "../correo/lectura/proteccionAdjuntos";
 import {
   encolarCorreos,
   hayActivo,
@@ -227,6 +229,10 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
 const revisionesEnCurso = new Map<number, Promise<ResultadoRevisarCorreo>>();
 const revisionesInteractivas = new Set<number>();
 const revisionesExhaustivas = new Set<number>();
+/** Punto de conexión de la revisión en seco (core/gmail/automatico/revisionEnSeco.ts): no arranca si hay una revisión real en marcha. */
+export function hayRevisionEnCurso(): boolean {
+  return revisionesEnCurso.size > 0;
+}
 export class RevisionCorreoOcupadaError extends Error {
   constructor() {
     super("Otra revisión mantiene el buzón ocupado. Vuelve a intentarlo en unos minutos.");
@@ -787,6 +793,15 @@ async function procesarCorreoLocalizado(
       // podría marcar el mensaje leído dejando la petición del cuerpo sin
       // atender. El wrapper mantiene el activo y avisa para reintentar.
       throw error;
+    }
+
+    // Protección de coste: los adjuntos decorativos y repetidos ya se descartaron al leer el correo; si además se superó el tope por correo,
+    // se avisa UNA vez de que el resto no se lee (en vez de gastar IA en decenas de archivos).
+    if ((correo.adjuntosOmitidos?.exceso ?? 0) > 0) {
+      await sendTelegramMessage(chatId, `📎 ${correo.asunto}\n${mensajeDeExceso(correo.adjuntosOmitidos!.exceso)}`).catch(() => {});
+    }
+    if (correo.adjuntosOmitidos) {
+      console.log(`[revisarCorreoNuevo] Adjuntos omitidos por protección de coste en ${correo.id}:`, correo.adjuntosOmitidos);
     }
 
     let indiceAdjunto = 0;
@@ -1503,7 +1518,17 @@ async function procesarCorreoPuntualInterno(
   adjuntos?: number;
 }> {
   const query = busqueda.trim() ? `${busqueda.trim()} in:inbox` : "is:unread in:inbox";
-  const ids = await buscarMensajes(query, 1);
+  let ids = await buscarMensajes(query, 1);
+  // Gmail no casa los importes con separador de miles («$4,036.92MXN»): si la consulta literal no halla nada, se repite con las
+  // palabras del asunto y solo se acepta un correo cuyo asunto las contenga todas (ver consultaCorreoTolerante.ts).
+  if (ids.length === 0 && busqueda.trim()) {
+    for (const respaldo of consultasDeRespaldo(busqueda)) {
+      for (const candidato of await buscarMensajes(`${respaldo} in:inbox`, 5)) {
+        if (asuntoContieneLasPalabras((await obtenerResumenCorreo(candidato)).asunto, busqueda)) { ids = [candidato]; break; }
+      }
+      if (ids.length > 0) break;
+    }
+  }
   if (ids.length === 0) return { encontrado: false };
 
   const correo = await obtenerResumenCorreo(ids[0]);
@@ -1522,7 +1547,7 @@ async function procesarCorreoPuntualInterno(
   // todos modos — si Gmail falla leyendo el cuerpo, lo correcto es seguir sin el remitente original
   // (el comportamiento de siempre, nunca peor), no abortar toda la búsqueda puntual por un dato extra.
   const remitenteOriginal = await obtenerCuerpoCompletoCorreo(correo.id)
-    .then(extraerRemitenteOriginalDeReenvio)
+    .then((cuerpo) => remitenteOriginalDeReenvio(correo.de, cuerpo))
     .catch((error) => {
       console.error("[revisarCorreoNuevo] No se pudo leer el cuerpo para buscar el remitente original del reenvío (no crítico):", error);
       return undefined;

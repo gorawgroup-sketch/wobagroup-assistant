@@ -4,6 +4,7 @@
  * transmite lo que responde: el especialista es quien razona sobre seguros.
  */
 import type Anthropic from "@anthropic-ai/sdk";
+import { bloqueNormaResolucion } from "../../ia/normaResolucionAutonoma";
 import { MODELO_SONNET_4_6, MODELO_SONNET_5 } from "../../ai/modelRouting";
 import { ejecutarBucle, type CrearMensaje, type ResultadoBucle } from "./bucle";
 import { leerConocimiento } from "./conocimiento";
@@ -62,6 +63,7 @@ export async function consultarAgenteSeguros(peticion: PeticionAgente, deps: Dep
 
   const system: Anthropic.TextBlockParam[] = [
     { type: "text", text: SYSTEM_ESTATICO },
+    bloqueNormaResolucion(),
     // La marca de caché va en el último bloque: caché del prefijo completo (instrucciones + dossier) para los pasos siguientes.
     {
       type: "text",

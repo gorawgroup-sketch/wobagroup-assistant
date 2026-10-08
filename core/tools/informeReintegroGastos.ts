@@ -29,6 +29,7 @@ export const informeReintegroGastosTool: ToolDefinition = {
       hasta: { type: "string", description: "Fin del periodo YYYY-MM-DD, si no es un mes natural." },
       destinatario: { type: "string", description: "Empresa a la que se pide el reintegro (ej. 'MIMO'). Opcional." },
       solo_pagados_en_banco: { type: "boolean", description: "true = el informe y los comprobantes incluyen SOLO los gastos pagados en bancos (sin la parte de «sin pagar»). Úsalo cuando pidan «solo lo descontado de bancos»." },
+      sin_distinguir_pago: { type: "boolean", description: "true = todos los gastos en un único listado y un único total, SIN mencionar si están pagados en banco (úsalo cuando pidan incluir gastos sin cargo en banco «sumando al total, sin discriminar»). Incompatible con solo_pagados_en_banco." },
       excluir_proveedores: { type: "array", items: { type: "string" }, description: "Proveedores/palabras a EXCLUIR del informe y de los comprobantes porque se cobran por separado (ej. ['Northgate España'] para el renting)." },
     },
     required: ["empresa", "etiqueta"],
@@ -51,6 +52,7 @@ export const informeReintegroGastosTool: ToolDefinition = {
       persona: texto(input.persona) || etiqueta.charAt(0).toUpperCase() + etiqueta.slice(1),
       destinatario: texto(input.destinatario) || undefined,
       soloPagados: input.solo_pagados_en_banco === true,
+      sinDistinguirPago: input.sin_distinguir_pago === true,
       excluir: Array.isArray(input.excluir_proveedores) ? input.excluir_proveedores.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()) : undefined,
     });
   },

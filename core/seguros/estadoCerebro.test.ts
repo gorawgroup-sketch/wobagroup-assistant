@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { EntradaConocimiento } from "./agente/conocimiento";
 import type { DocumentoPoliza } from "./documentosPolizaStore";
-import { construirEstadoSeguros, invalidarComplementosSeguros, leerComplementosSeguros, type ComplementosSeguros } from "./estadoCerebro";
+import { entrada } from "./bitacora/pruebas";
+import { ESTADO_SEGUROS_VACIO, HORARIOS_VIGILANTE, construirEstadoSeguros, invalidarComplementosSeguros, leerComplementosSeguros, type ComplementosSeguros } from "./estadoCerebro";
+import { pago } from "./pagos/pruebas";
 import type { PolizaConFila } from "./polizaRegistroSheet";
 import { parsearUltimaRevision } from "./vigilante/ultimaRevision";
 
@@ -67,6 +69,23 @@ test("los próximos vencimientos y pagos van ordenados, con los días que faltan
   assert.ok(e.proximos.every((p) => p.polizaId !== "woba_showroom_allianz" && p.polizaId !== "woba_transporte_pantallas_pendiente"));
 });
 
+test("con el calendario de pagos, los pagos de «próximos» salen de él (importe, estimado y cuenta) y no se duplican con las notas; sin él, de las notas", async () => {
+  const { pago } = await import("./pagos/pruebas");
+  const conCalendario = construirEstadoSeguros(
+    REGISTRO,
+    { ...complementos, pagos: [pago({ id: "woba_showroom_complemento_2026_2027:2027-03-01", polizaId: "woba_showroom_complemento_2026_2027", fecha: "2027-03-01", importe: 289.14, concepto: "Allianz showroom — complemento", estimado: true })] },
+    HOY,
+    "x"
+  );
+  const pagos = conCalendario.proximos.filter((p) => p.tipo === "pago" && p.polizaId === "woba_showroom_complemento_2026_2027");
+  assert.equal(pagos.length, 1);
+  assert.match(pagos[0].texto, /\[WOBA\] Allianz showroom — complemento — 289,14 € \(estimado\) · adeudo en «BBVA»/);
+  assert.equal(pagos[0].diasRestantes, 147);
+  const sinCalendario = construirEstadoSeguros(REGISTRO, complementos, HOY, "x");
+  assert.match(sinCalendario.proximos.find((p) => p.tipo === "pago")?.texto ?? "", /2º recibo del suplemento el 01\/03\/2027/);
+  assert.equal(conCalendario.proximos.length, sinCalendario.proximos.length, "la misma cantidad de hitos: el calendario sustituye, no añade");
+});
+
 test("lo que espera a Carlos lleva los días que lleva esperando y la memoria vigente no repite los pendientes ni lo retirado", () => {
   const e = construirEstadoSeguros(REGISTRO, complementos, HOY, "x");
   assert.deepEqual(e.esperandoACarlos, [{ id: "pend-a", texto: "texto pend-a", desde: "2026-09-24", diasEsperando: 11 }]);
@@ -122,4 +141,48 @@ test("la última revisión guardada se lee de vuelta; un valor ilegible es «sin
   const r = parsearUltimaRevision(JSON.stringify(complementos.ultimaRevision));
   assert.equal(r?.fecha, "2026-10-05T15:35:00.000Z");
   assert.deepEqual(r?.enTransito, ["[WOBA] RC: -323,24 €"]);
+});
+
+test("el contrato lleva lo que hizo Wobi Seguros y cuándo: bitácora, programación, calendario de pagos y dónde quedan los eventos", () => {
+  const conTodo: ComplementosSeguros = {
+    ...complementos,
+    bitacora: [
+      entrada({ id: "vieja", cuando: "2026-10-05T06:35:40.000Z" }),
+      entrada({ id: "nueva", tarea: "pagos", cuando: "2026-10-05T06:55:30.000Z", resultado: "con_novedades", resumen: "Calendario revisado: 6 pagos previstos" }),
+    ],
+    pagos: [pago({ fecha: "2027-02-27", eventoCalendarId: "evt-1", avisos: "d3" }), pago({ id: "otro", fecha: "2027-08-27" })],
+  };
+  const e = construirEstadoSeguros(REGISTRO, conTodo, HOY, "https://sheet", { cuentaCalendario: "asistente@wobagroup.com", invitaCalendario: true });
+  assert.deepEqual(e.bitacora?.map((b) => b.id), ["nueva", "vieja"], "lo último primero");
+  assert.equal(e.bitacora?.[0].etiqueta, "Calendario de pagos");
+  assert.deepEqual(e.programacion.map((t) => t.id), ["vigilante", "avisos", "pagos", "semanal", "agente"]);
+  assert.equal(e.programacion[2].ultima?.resumen, "Calendario revisado: 6 pagos previstos");
+  assert.equal(e.programacion[0].cuando, "Todos los días a las 08:35 y 17:35 (hora de Madrid)");
+  assert.deepEqual(e.calendarioPagos?.map((p) => [p.fecha, p.evento.estado, p.avisosEnviados]), [["2027-02-27", "creado", ["aviso a 3 días"]], ["2027-08-27", "pendiente", []]]);
+  assert.equal(e.calendario.cuenta, "asistente@wobagroup.com");
+  assert.equal(e.calendario.invitaACarlos, true);
+  assert.deepEqual(e.vigilante.horarios, ["08:35", "17:35"], "el campo anterior no cambia");
+  assert.equal(JSON.stringify(e).includes("undefined"), false);
+});
+
+test("sin lectura de la bitácora o del calendario de pagos el contrato dice null (no «sin actividad»), y la programación sigue", () => {
+  const e = construirEstadoSeguros(REGISTRO, complementos, HOY, "https://sheet");
+  assert.equal(e.bitacora, null);
+  assert.equal(e.calendarioPagos, null);
+  assert.equal(e.programacion.length, 5, "lo que corre no depende de poder leer su constancia");
+  assert.ok(e.programacion.filter((t) => t.dias !== "bajo_demanda").every((t) => t.estado === "sin_lectura"));
+  assert.equal(e.calendario.cuenta, null);
+  assert.equal(e.calendario.invitaACarlos, false);
+
+  const sinComplementos = construirEstadoSeguros(REGISTRO, null, HOY, "https://sheet");
+  assert.equal(sinComplementos.bitacora, null);
+  assert.equal(sinComplementos.complementosDisponibles, false);
+});
+
+test("los horarios del vigilante salen de la programación compartida y la forma de reserva no inventa actividad", () => {
+  assert.deepEqual(HORARIOS_VIGILANTE, ["08:35", "17:35"]);
+  assert.equal(ESTADO_SEGUROS_VACIO.bitacora, null);
+  assert.equal(ESTADO_SEGUROS_VACIO.calendarioPagos, null);
+  assert.equal(ESTADO_SEGUROS_VACIO.programacion.length, 5);
+  assert.ok(ESTADO_SEGUROS_VACIO.programacion.every((t) => t.proxima === null && t.ultima === null), "sin hora de referencia no hay próxima cita");
 });

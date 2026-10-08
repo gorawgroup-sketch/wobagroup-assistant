@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
+import { motivosDeNoCorrespondencia, analisisReutilizable, ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS, reciboCorrespondeALaOperacion, prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { evaluarAuto, hash, VERSION_ANALISIS, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
-import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
+import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 import { UsoApiNoAutorizadoError } from "../../ai/policy";
 
 function escenario() {
@@ -133,7 +133,7 @@ test("el informe oculta ids de operaciones y muestra una sola causa principal po
       detalles: [{ proveedor: "ALDI", empresa: "Footprint", monto: 82.31, moneda: "EUR",
         motivos: ["operacion_incierta:uuid-interno", "detalle:timeout privado"] }] }],
   });
-  assert.match(texto, /La operación ya empezó, pero falta confirmar que quedó completa en Holded/);
+  assert.match(texto, /La operación de una revisión anterior quedó en estado incierto/);
   assert.doesNotMatch(texto, /uuid-interno|operacion_incierta|timeout privado|movimiento_no_libre/);
 });
 test("simulación analiza y audita sin reservas, escrituras ni marcado leído", async () => {
@@ -606,4 +606,112 @@ test("con el cierre pedido, una operación ya reservada se deja reservada (sin P
   assert.equal(e.llamadas.crear, 1);
   assert.equal(r.interrumpida, true);
   assert.ok(r.pendientes.every(p => p.motivos.some(m => m.startsWith("operacion_") || m === "revision_pospuesta_por_reinicio")));
+});
+
+test("un análisis INCOMPLETO guardado (sin marca de fecha, de antes del arreglo) se reintenta; uno COMPLETO se reutiliza", async () => {
+  const completo = escenario();
+  await completo.store.guardarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS, { ...completo.a, completo: true });
+  await completo.service.revisar(configFixture);
+  assert.equal(completo.analisisLlamadas(), 0, "el completo guardado no se vuelve a pagar");
+
+  const incompleto = escenario();
+  await incompleto.store.guardarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS,
+    { ...incompleto.a, completo: false, detalleIncompleto: "adjunto ilegible entonces" });
+  await incompleto.service.revisar(configFixture);
+  assert.equal(incompleto.analisisLlamadas(), 1, "el incompleto fijado en un mal momento se vuelve a leer");
+});
+
+test("tras reintentar, un análisis incompleto NO se vuelve a pagar hasta pasadas 2 h", async () => {
+  const e = escenario();
+  e.a.completo = false;
+  e.a.detalleIncompleto = "adjunto que sigue siendo ilegible";
+  await e.service.revisar(configFixture);
+  assert.equal(e.analisisLlamadas(), 1);
+  await e.service.revisar(configFixture);
+  assert.equal(e.analisisLlamadas(), 1, "dentro de la espera no se gasta IA otra vez");
+  const guardado = await e.store.buscarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS);
+  assert.equal(typeof guardado?.analizadoEn, "number");
+  assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS - 1)?.completo, false);
+  assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS + 1), undefined);
+});
+
+test("la relectura de una operación anterior distingue sus tres causas y ninguna se disfraza de «lectura incompleta»", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 3, completados: 0, simulados: 0, gastos: [],
+    pendientes: [
+      { mensajeId: "a", asunto: "Anthropic", motivos: ["relectura_no_coincide", "relectura:antes 24.2 USD del 2026-10-07; ahora 24.2 USD del 2026-10-06 (WOBA)"],
+        detalles: [{ proveedor: "Anthropic, PBC", empresa: "WOBA", monto: 24.2, moneda: "USD", motivos: ["relectura_no_coincide", "relectura:antes 24.2 USD del 2026-10-07; ahora 24.2 USD del 2026-10-06 (WOBA)"] }] },
+      { mensajeId: "b", asunto: "Antaris", motivos: ["relectura_sin_recibo_unico", "relectura:2 recibo(s) en la parte «cuerpo»"],
+        detalles: [{ proveedor: "Antaris Suite", empresa: "Footprint", monto: 340, moneda: "MXN", motivos: ["relectura_sin_recibo_unico", "relectura:2 recibo(s) en la parte «cuerpo»"] }] },
+      { mensajeId: "c", asunto: "Xue", motivos: ["lectura_incompleta", "lectura:No pude leer el adjunto «20260924_074802.jpg»: imagen ilegible"],
+        detalles: [{ proveedor: "Xue Cafe", empresa: "Footprint", monto: 19513, moneda: "COP", motivos: ["lectura_incompleta", "lectura:No pude leer el adjunto «20260924_074802.jpg»: imagen ilegible"] }] },
+      { mensajeId: "d", asunto: "Delhaize", motivos: ["relectura_fallida", "error:Holded 502"],
+        detalles: [{ proveedor: "Delhaize", empresa: "Footprint", monto: 140.41, moneda: "EUR", motivos: ["relectura_fallida", "error:Holded 502"] }] },
+    ] });
+  assert.match(texto, /el recibo no coincide con el de la operación anterior \(antes 24\.2 USD del 2026-10-07; ahora 24\.2 USD del 2026-10-06 \(WOBA\)\)/);
+  assert.match(texto, /no aparece un único recibo en la misma parte que usó la operación anterior \(2 recibo\(s\) en la parte «cuerpo»\)/);
+  assert.match(texto, /El analizador no pudo leer una parte de este correo: No pude leer el adjunto «20260924_074802\.jpg»/);
+  assert.match(texto, /Una comprobación técnica falló y se reintentará en la siguiente pasada: Holded 502/);
+  assert.doesNotMatch(texto, /no dio por completa la lectura/);
+});
+
+test("la evidencia de empresa que nombra a OTRA sociedad del grupo impide la creación automática", () => {
+  const recibo = { ...analisisFixture().recibos[0], empresa: "EWORKS" as const, evidenciaEmpresa: "Datos del cliente: BUSINESS ATELIER EUROPA SL" };
+  const config = { ...configFixture, empresas: ["WOBA", "EWORKS", "Footprint"] as typeof configFixture.empresas };
+  const decision = evaluarAuto(correoFixture(), { ...analisisFixture(), recibos: [recibo] }, recibo, evidenciaFixture(), config);
+  assert.equal(decision.apto, false);
+  assert.ok(!decision.apto && decision.motivos.includes("empresa_en_conflicto_con_el_comprador"), JSON.stringify(decision));
+  const coherente = { ...recibo, empresa: "WOBA" as const };
+  const ok = evaluarAuto(correoFixture(), { ...analisisFixture(), recibos: [coherente] }, coherente, evidenciaFixture(), config);
+  assert.ok(ok.apto || !ok.motivos.includes("empresa_en_conflicto_con_el_comprador"), JSON.stringify(ok));
+});
+
+function operacionDe(recibo: ReturnType<typeof reciboFixture>, movimientoMoneda: string, totalCentimos: number): OperacionAuto {
+  return { id: "op1", estado: "reservada", plan: { empresa: recibo.empresa, recibo, movimiento: { moneda: movimientoMoneda }, totalCentimos, toleranciaCentimos: 1 } } as unknown as OperacionAuto;
+}
+
+test("relectura: un recibo en USD cuyo cargo del plan es en EUR sigue siendo la misma operación (caso Anthropic 24,20 USD)", () => {
+  const anterior = { ...reciboFixture(), moneda: "USD", monto: 24.2, equivalente: undefined, empresa: "WOBA" as const };
+  const op = operacionDe(anterior, "EUR", 2088);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), true);
+});
+
+test("relectura: si la relectura no sabe la empresa («desconocida») no contradice la de la operación; si nombra otra, bloquea", () => {
+  const anterior = { ...reciboFixture(), moneda: "USD", monto: 16.54, equivalente: undefined, empresa: "Footprint" as const };
+  const op = operacionDe(anterior, "USD", 1654);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, empresa: "desconocida" }, op), true);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, empresa: "WOBA" }, op), false);
+});
+
+test("relectura: otra fecha, otro importe o otra parte del correo siguen sin coincidir", () => {
+  const anterior = { ...reciboFixture(), moneda: "EUR", monto: 50, equivalente: undefined, empresa: "WOBA" as const };
+  const op = operacionDe(anterior, "EUR", 5000);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), true);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, fecha: "2026-01-01" }, op), false);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, monto: 60 }, op), false);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, fuente: "adjunto-2" }, op), false);
+});
+
+test("relectura: en la misma moneda del movimiento el importe debe cuadrar con el total del plan", () => {
+  const anterior = { ...reciboFixture(), moneda: "EUR", monto: 50, equivalente: undefined, empresa: "WOBA" as const };
+  const op = operacionDe(anterior, "EUR", 4000); // el plan cobró 40 €, el recibo dice 50 €: no es la misma operación
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), false);
+});
+
+test("relectura: el equivalente del plan salió de la búsqueda bancaria, no del correo; que la relectura no lo traiga no es otra operación (caso real 08-10: Antaris 340 MXN, Xue Cafe 19.513 COP)", () => {
+  for (const [moneda, monto, eur] of [["MXN", 340, 1693], ["COP", 19513, 439]] as const) {
+    const anterior = { ...reciboFixture(), moneda, monto, empresa: "Footprint" as const, equivalente: { moneda: "EUR", monto: eur / 100 } };
+    const op = operacionDe(anterior, "EUR", eur);
+    const relectura = { ...anterior, equivalente: undefined };
+    assert.deepEqual(motivosDeNoCorrespondencia(anterior, relectura, op), [], moneda);
+    assert.equal(reciboCorrespondeALaOperacion(anterior, relectura, op), true, moneda);
+    // y lo que sí cambia sigue bloqueando, diciendo por qué
+    assert.deepEqual(motivosDeNoCorrespondencia(anterior, { ...relectura, monto: monto + 100 }, op), ["otro importe impreso"]);
+    assert.deepEqual(motivosDeNoCorrespondencia(anterior, { ...relectura, fecha: "2026-01-01" }, op), ["otra fecha"]);
+  }
+});
+
+test("relectura: un equivalente releído en la moneda del cargo que no cuadra con el plan sigue bloqueando", () => {
+  const anterior = { ...reciboFixture(), moneda: "MXN", monto: 340, empresa: "Footprint" as const, equivalente: { moneda: "EUR", monto: 16.93 } };
+  const op = operacionDe(anterior, "EUR", 1693);
+  assert.deepEqual(motivosDeNoCorrespondencia(anterior, { ...anterior, equivalente: { moneda: "EUR", monto: 30 } }, op), ["no cuadra con el cargo del plan", "otro equivalente"]);
 });

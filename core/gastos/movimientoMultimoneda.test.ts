@@ -118,3 +118,40 @@ test('foreign currency search rejects taxi/fuel for food before text or buttons,
  });
  assert.deepEqual(r.map(m=>m.movementId),['food']);
 });
+
+test("las tasas de las distintas monedas destino se piden a la vez, no una tras otra", async () => {
+  let enCurso = 0, maximoSimultaneas = 0;
+  const t0 = Date.now();
+  await buscarMovimientosPorTipoCambio(
+    "Footprint",
+    { monto: 64463, moneda: "COP", fecha: "2026-10-02", proveedor: "Casa Peppe" },
+    ["EUR", "USD", "GBP"],
+    {
+      async obtenerTasa() {
+        enCurso++; maximoSimultaneas = Math.max(maximoSimultaneas, enCurso);
+        await new Promise((r) => setTimeout(r, 60));
+        enCurso--;
+        return 0.0002677;
+      },
+      async buscarCercanos() { return []; },
+      async buscarPorNombre() { return []; },
+    }
+  );
+  assert.equal(maximoSimultaneas, 3);
+  assert.ok(Date.now() - t0 < 170, "tres consultas de 60 ms en serie tardarían 180 ms");
+});
+
+test("si la tasa de una moneda falla, las demás siguen buscando", async () => {
+  const consultadas: string[] = [];
+  await buscarMovimientosPorTipoCambio(
+    "Footprint",
+    { monto: 64463, moneda: "COP", fecha: "2026-10-02", proveedor: "Casa Peppe" },
+    ["EUR", "USD"],
+    {
+      async obtenerTasa(_f, _o, destino) { if (destino === "USD") throw new Error("timeout"); return 0.0002677; },
+      async buscarCercanos(_e, criterios) { consultadas.push(criterios.moneda ?? ""); return []; },
+      async buscarPorNombre() { return []; },
+    }
+  );
+  assert.deepEqual(consultadas, ["EUR"]);
+});

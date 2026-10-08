@@ -5,6 +5,8 @@
  * comprueba el rol ANTES de llegar aquí.
  */
 import type { TelegramCallbackQuery } from "../../telegram/types";
+import { entradaCambio } from "../bitacora/entradas";
+import type { EntradaNueva } from "../bitacora/tipos";
 import { almacenCambiosReal, aplicarCambio, type AlmacenCambios, type CambioPendiente, type ResultadoAplicar } from "./cambiosPendientes";
 
 export interface DepsCallbackSeguros {
@@ -13,14 +15,17 @@ export interface DepsCallbackSeguros {
   responder(callbackId: string, texto?: string): Promise<void>;
   editar(chatId: number, messageId: number, texto: string): Promise<void>;
   retirarCaducada(callback: TelegramCallbackQuery, texto: string): Promise<void>;
+  /** Deja constancia de la decisión en la bitácora de Seguros. Opcional y a prueba de fallos: nunca impide ni deshace la decisión. */
+  registrar?(entrada: EntradaNueva): Promise<unknown>;
 }
 
 /** Las dependencias reales se cargan al usarse: este módulo lo importa server.ts y no debe arrastrar el cliente de Claude al arrancar. */
 async function depsReales(): Promise<DepsCallbackSeguros> {
-  const [{ answerCallbackQuery, editTelegramMessage }, { retirarPreguntaCaducada }, { depsAplicarReales }] = await Promise.all([
+  const [{ answerCallbackQuery, editTelegramMessage }, { retirarPreguntaCaducada }, { depsAplicarReales }, { registrarActividad }] = await Promise.all([
     import("../../telegram/client"),
     import("../../telegram/preguntaCaducada"),
     import("./depsReales"),
+    import("../bitacora/registrar"),
   ]);
   const aplicarDeps = depsAplicarReales();
   return {
@@ -29,6 +34,7 @@ async function depsReales(): Promise<DepsCallbackSeguros> {
     responder: async (id, texto) => { await answerCallbackQuery(id, texto); },
     editar: (chatId, messageId, texto) => editTelegramMessage(chatId, messageId, texto, []),
     retirarCaducada: (callback, texto) => retirarPreguntaCaducada(callback, texto),
+    registrar: (entrada) => registrarActividad(entrada),
   };
 }
 
@@ -64,21 +70,29 @@ export async function handleSegurosCambioCallback(callback: TelegramCallbackQuer
   const editar = async (texto: string) => {
     try { await d.editar(cambio.chatId, cambio.messageId, texto); } catch (error) { console.error("[callbackSeguros] No se pudo editar el mensaje (no crítico):", error); }
   };
+  // La constancia en la bitácora tampoco puede impedir la decisión.
+  const registrar = async (entrada: EntradaNueva) => {
+    try { await d.registrar?.(entrada); } catch (error) { console.error("[callbackSeguros] No se pudo anotar la decisión en la bitácora (no crítico):", error); }
+  };
+  const por = nombreDe(callback);
 
   if (accion === "segcambio_cancelar") {
     await seguro("Cancelado.");
     await editar("❌ Cancelado: no se cambió nada.");
+    await registrar(entradaCambio({ cambio, decision: "cancelar", por }));
     return;
   }
 
   await seguro("Aplicando...");
   await editar("🔄 Aplicando el cambio…");
   try {
-    const resultado = await d.aplicar(cambio, nombreDe(callback));
+    const resultado = await d.aplicar(cambio, por);
     await editar(resultado.ok ? `✅ ${resultado.mensaje}` : `⚠️ ${resultado.mensaje}`);
+    await registrar(entradaCambio({ cambio, decision: "aplicar", por, resultado }));
   } catch (error) {
     const mensaje = error instanceof Error ? error.message : String(error);
     console.error("[callbackSeguros] Error aplicando el cambio:", mensaje);
     await editar(`⚠️ No pude confirmar el cambio: ${mensaje}\n\nComprueba el registro antes de repetirlo; la propuesta ya no está pendiente.`);
+    await registrar(entradaCambio({ cambio, decision: "aplicar", por, error }));
   }
 }
