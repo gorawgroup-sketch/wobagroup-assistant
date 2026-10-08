@@ -71,7 +71,7 @@ test("vigilante con un aviso entregado: la constancia guarda el texto que recibi
   assert.deepEqual(m.enviados, ["🛡️ Seguros"]);
   assert.ok(m.guardado.some((g) => g.id === "pago:x"));
   assert.equal(r.registros[0].entrada.resultado, "con_novedades");
-  assert.deepEqual(r.registros[0].entrada.detalle.avisos, [{ canal: "telegram", titulo: "🛡️ Seguros", texto: "Cuerpo del aviso", entregado: true }]);
+  assert.deepEqual(r.registros[0].entrada.detalle.avisos, [{ canal: "telegram", titulo: "🛡️ Seguros", texto: "Cuerpo del aviso", entregado: true, entregadoEn: "2026-10-08T15:35:07.000Z" }]);
 });
 
 test("vigilante cuyo aviso no llega a Telegram: queda pendiente de reenvío y la constancia lo dice (no finge que llegó)", async () => {
@@ -82,6 +82,7 @@ test("vigilante cuyo aviso no llega a Telegram: queda pendiente de reenvío y la
   assert.ok(m.guardado.some((g) => g.id === "pendiente_envio"), "el informe queda guardado para reenviarlo");
   assert.equal(r.registros[0].entrada.resultado, "con_advertencias");
   assert.equal(r.registros[0].entrada.detalle.avisos?.[0].entregado, false);
+  assert.equal(r.registros[0].entrada.detalle.avisos?.[0].entregadoEn, undefined, "no llegó: no hay hora de entrega");
 });
 
 test("vigilante que reenvía un informe anterior pendiente lo anota y libera el pendiente", async () => {
@@ -92,6 +93,7 @@ test("vigilante que reenvía un informe anterior pendiente lo anota y libera el 
   assert.deepEqual(m.enviados, ["Antiguo"]);
   assert.deepEqual(m.borrado, ["pendiente_envio"]);
   assert.match(r.registros[0].entrada.resumen, /reenviado un aviso anterior que no había llegado/);
+  assert.deepEqual(r.registros[0].entrada.detalle.avisos, [{ canal: "telegram", titulo: "Antiguo", texto: "No llegó ayer", entregado: true, entregadoEn: "2026-10-08T15:35:07.000Z" }], "el reenvío también consta como aviso, con su hora");
 });
 
 test("si el vigilante falla, queda la constancia del error y el fallo sigue subiendo al planificador", async () => {
@@ -149,7 +151,7 @@ test("calendario de pagos que avisa: el aviso entregado consta con su texto y qu
   const m = montarPagos("2026-10-09", [pago({ fecha: "2026-10-12", eventoCalendarId: "evt-0" })]);
   const r = registrador();
   const enviados: Informe[] = [];
-  const salida = await conChat("4242", () => revisarPagosSeguros(m.deps, async (_c, i) => { enviados.push(i); }, r.registrar));
+  const salida = await conChat("4242", () => revisarPagosSeguros(m.deps, async (_c, i) => { enviados.push(i); }, r.registrar, () => new Date("2026-10-09T06:55:20.000Z")));
   assert.deepEqual(salida, { avisado: true });
   assert.equal(enviados.length, 1);
   assert.equal(m.filas()[0].avisos, "d3");
@@ -157,6 +159,7 @@ test("calendario de pagos que avisa: el aviso entregado consta con su texto y qu
   assert.equal(entrada.resultado, "con_novedades");
   assert.equal(entrada.detalle.avisos?.[0].entregado, true);
   assert.equal(entrada.detalle.avisos?.[0].texto, enviados[0].cuerpo);
+  assert.equal(entrada.detalle.avisos?.[0].entregadoEn, "2026-10-09T06:55:20.000Z", "la hora en que Telegram aceptó el mensaje, no la del final de la pasada");
 });
 
 test("calendario de pagos cuyo aviso no llega: no se marca como enviado (se repite) y la constancia lo dice", async () => {

@@ -6,6 +6,9 @@ export function botonesVerificacionDuplicadoPendiente(id: string): InlineKeyboar
     [{ text: "🔄 Ya lo liberé: reprocesar", callback_data: `gpd_reintentar:${id}` }],
     [{ text: "➡️ Dejar pendiente y seguir", callback_data: `gpd_posponer:${id}` }],
     [{ text: "✅ Análisis correcto: cerrar y seguir", callback_data: `gpd_confirmar:${id}` }],
+    // Norma de resolución autónoma (Carlos, 08-10-2026, recibo de Anthropic): el cargo de hoy llega al banco mañana y el
+    // movimiento «probable» ya conciliado es otro. Sin esta salida, no había forma de crear el gasto y conciliarlo después.
+    [{ text: "➕ Crear el gasto ahora, sin conciliar (el cargo llega después)", callback_data: `gpd_crear:${id}` }],
   ];
 }
 

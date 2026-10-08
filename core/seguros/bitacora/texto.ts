@@ -21,7 +21,7 @@ const RESULTADO: Record<ResultadoTarea, string> = { sin_novedades: "sin novedade
 const ESTADO: Record<VistaTareaProgramada["estado"], string> = {
   al_dia: "al día", retrasada: "RETRASADA (su última cita no dejó constancia)", sin_registro: "aún sin constancia (la bitácora es nueva)", sin_lectura: "no se pudo leer la bitácora", bajo_demanda: "cuando se le pregunta",
 };
-const MAX_TEXTO_AVISO = 600;
+const MAX_TEXTO_AVISO = 3500;
 
 export function textoActividad(entradas: EntradaBitacora[], opciones: { ahora: Date; tarea?: string; incluirTextos?: boolean; limite: number }): string {
   const elegidas = entradas
@@ -33,7 +33,9 @@ export function textoActividad(entradas: EntradaBitacora[], opciones: { ahora: D
     const base = `- ${fechaHoraMadrid(e.cuando)} · ${ETIQUETAS_TAREA[e.tarea]}${e.origen === "programada" ? "" : ` (${e.origen})`} · ${RESULTADO[e.resultado]} — ${e.resumen}`;
     const extras: string[] = [];
     for (const a of e.detalle.avisos ?? []) {
-      extras.push(`  ↳ aviso por Telegram${a.entregado ? "" : " (NO llegó)"}: «${a.titulo}»${opciones.incluirTextos ? `\n${a.texto.slice(0, MAX_TEXTO_AVISO)}` : ""}`);
+      const estado = !a.entregado ? " (NO llegó)" : a.entregadoEn ? ` (entregado ${fechaHoraMadrid(a.entregadoEn)})` : "";
+      const texto = opciones.incluirTextos ? `\n${a.texto.slice(0, MAX_TEXTO_AVISO)}${a.truncado || a.texto.length > MAX_TEXTO_AVISO ? "\n[texto recortado]" : ""}` : "";
+      extras.push(`  ↳ aviso por Telegram${estado}: «${a.titulo}»${texto}`);
     }
     for (const ev of e.detalle.eventos ?? []) extras.push(`  ↳ evento de calendario ${ev.accion}: ${ev.titulo} (${fechaHoraMadrid(ev.inicio)})`);
     for (const nota of e.detalle.notas ?? []) extras.push(`  ↳ ${nota}`);

@@ -43,19 +43,50 @@ test("un detalle ilegible deja la entrada sin detalle (no tumba la lectura de la
   } finally { console.error = original; }
 });
 
-test("el detalle se acota: pocos avisos, texto limitado, cifras finitas y notas cortas", () => {
+test("el detalle se acota: pocos avisos, texto largo cortado y marcado, cifras finitas y notas cortas", () => {
   const detalle = acotarDetalle({
-    avisos: Array.from({ length: 10 }, (_, i) => ({ canal: "telegram" as const, titulo: `aviso ${i}`, texto: "x".repeat(5000), entregado: true })),
+    avisos: [
+      ...Array.from({ length: 9 }, (_, i) => ({ canal: "telegram" as const, titulo: `aviso ${i}`, texto: "x".repeat(12_000), entregado: true })),
+    ],
     eventos: Array.from({ length: 50 }, (_, i) => ({ accion: "creado" as const, titulo: `ev ${i}`, inicio: "2027-01-01T08:00:00.000Z" })),
     cifras: { buena: 3, mala: Number.NaN, infinita: Number.POSITIVE_INFINITY },
     notas: Array.from({ length: 30 }, () => "n".repeat(1000)),
   });
   assert.equal(detalle.avisos?.length, MAX_AVISOS);
-  assert.ok(detalle.avisos?.every((a) => a.texto.length === MAX_TEXTO_AVISO));
+  assert.ok(detalle.avisos?.every((a) => a.texto.length === MAX_TEXTO_AVISO && a.truncado === true), "un texto más largo que el tope se corta y SE DICE");
   assert.equal(detalle.eventos?.length, MAX_EVENTOS);
   assert.deepEqual(detalle.cifras, { buena: 3 });
   assert.equal(detalle.notas?.length, MAX_NOTAS);
   assert.ok(detalle.notas?.every((n) => n.length <= 240));
+});
+
+test("un aviso se guarda ENTERO si cabe (un mensaje de Telegram entero), con la hora exacta en que Telegram lo aceptó", () => {
+  const texto = "Línea de un aviso largo.\n".repeat(160); // ≈ 4.000 caracteres: lo máximo que cabe en un mensaje de Telegram
+  const detalle = acotarDetalle({
+    avisos: [
+      { canal: "telegram", titulo: "T", texto, entregado: true, entregadoEn: "2026-10-09T06:50:12.345+00:00" },
+      { canal: "telegram", titulo: "No llegó", texto: "x", entregado: false, entregadoEn: "2026-10-09T06:50:13.000Z" },
+      { canal: "telegram", titulo: "Hora rota", texto: "x", entregado: true, entregadoEn: "ayer por la tarde" },
+    ],
+  });
+  assert.equal(detalle.avisos?.[0].texto, texto.trim(), "íntegro, sin cortar");
+  assert.equal(detalle.avisos?.[0].truncado, undefined);
+  assert.equal(detalle.avisos?.[0].entregadoEn, "2026-10-09T06:50:12.345Z", "se normaliza a ISO UTC");
+  assert.equal(detalle.avisos?.[1].entregadoEn, undefined, "un aviso que no llegó no tiene hora de entrega");
+  assert.equal(detalle.avisos?.[2].entregadoEn, undefined, "una hora ilegible se descarta, no se inventa");
+  const viaje = filaAEntrada({ rowIndex: 2, valores: entradaAFila(entrada({ detalle })) });
+  assert.deepEqual(viaje?.detalle.avisos, detalle.avisos, "la hora y el texto sobreviven al viaje por la hoja");
+});
+
+test("si la fila no cabe en una celda, primero se acortan los textos de los avisos y solo después se descarta el detalle", () => {
+  const cifras = Object.fromEntries(Array.from({ length: 700 }, (_, i) => [`cifra_numero_${i}_con_nombre_largo`, i])); // ≈ 22.000 caracteres
+  const avisos = Array.from({ length: 4 }, (_, i) => ({ canal: "telegram" as const, titulo: `a${i}`, texto: "y".repeat(8000), entregado: true }));
+  const fila = entradaAFila(entrada({ detalle: { avisos, cifras } }));
+  assert.ok(fila[6].length <= 45_000);
+  const detalle = JSON.parse(fila[6]);
+  assert.equal(detalle.avisos.length, 4, "los avisos siguen ahí");
+  assert.ok(detalle.avisos.every((a: { texto: string; truncado?: boolean }) => a.texto.length === 1500 && a.truncado === true), "acortados y marcados");
+  assert.equal(Object.keys(detalle.cifras).length, 700);
 });
 
 test("el resumen se recorta y un detalle que aun así no cabe en una celda se sustituye por un aviso (la fila nunca se rechaza)", () => {

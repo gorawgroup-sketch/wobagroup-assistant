@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buscarPolizaDelDocumento, idDocumentoPoliza, integrarDocumentoPoliza, normalizarNumeroPoliza } from "./integrarDocumentoPoliza";
+import { buscarPolizaDelDocumento, idDocumentoPoliza, integrarDocumentoPoliza, normalizarNumeroPoliza, numeroDePolizaEnNombre } from "./integrarDocumentoPoliza";
 import { interpretarReportePoliza, type DatosDocumentoPoliza } from "./extraerDatosPoliza";
 import type { DocumentoPoliza } from "./documentosPolizaStore";
 import { esDocumentoParaWobiSeguros } from "../documental/archiveFile";
@@ -121,4 +121,45 @@ test("el clasificador puede pedir el contenido de una carpeta profunda por su ru
   assert.deepEqual(rutaDeCarpetaPadre("SEGUROS📜 / EUROPA"), ["SEGUROS📜", "EUROPA"]);
   assert.deepEqual(rutaDeCarpetaPadre("EUROPA"), ["EUROPA"]);
   assert.deepEqual(rutaDeCarpetaPadre(undefined), []);
+});
+
+test("el número de póliza también se reconoce en el nombre del archivo (condiciones generales sin número impreso)", () => {
+  assert.equal(numeroDePolizaEnNombre("BUSINESS ATELIER EUROPA, S.L.  023S00453RCG Condiciones Generales RC.pdf", registro), "023S00453RCG");
+  assert.equal(numeroDePolizaEnNombre("CERTIF. POL.54239034.PDF", registro), "054239034", "devuelve el número tal como está en el registro (con su cero)");
+  assert.equal(numeroDePolizaEnNombre("POLIZA 054239034 - Devolver firmado.PDF", registro), "054239034");
+  assert.equal(numeroDePolizaEnNombre("Signed_ADXP_230727_88822458000000_KITPOLI_000252 .pdf", registro), "", "sin ninguno de los números del registro: no se adivina");
+  assert.equal(numeroDePolizaEnNombre("023S00453RCG y 054239034 juntas.pdf", registro), "", "dos pólizas distintas en el nombre: ambiguo, mejor sin enlazar");
+  assert.equal(numeroDePolizaEnNombre("Condiciones.pdf", [{ numeroPoliza: "1234" }]), "", "un número demasiado corto aparecería por casualidad");
+  assert.equal(numeroDePolizaEnNombre("Condiciones.pdf", [{ numeroPoliza: "" }]), "");
+});
+
+test("unas condiciones generales sin número impreso se enlazan por el número del nombre del archivo, y su id sigue siendo el del nombre", async () => {
+  const sinNumero = datos({ tipoDocumento: "condiciones generales", numeroPoliza: "", suplemento: "", fechaDocumento: "", vigenciaInicio: "", vigenciaFin: "", prima: "", moneda: "" });
+  const e = entorno(sinNumero);
+  const nombre = "BUSINESS ATELIER EUROPA, S.L.  023S00453RCG Condiciones Generales RC.pdf";
+  const r = await integrarDocumentoPoliza({ ...entrada, nombreArchivo: nombre }, e.deps);
+  assert.equal(r.estado, "integrado");
+  assert.equal(r.documento?.polizaId, "woba_rc_markel");
+  assert.equal(r.documento?.empresa, "WOBA");
+  assert.equal(r.documento?.numeroPoliza, "023S00453RCG");
+  assert.match(r.mensaje, /póliza 023S00453RCG/);
+  assert.match(r.mensaje, /por el número del nombre del archivo/);
+  assert.equal(r.documento?.id, idDocumentoPoliza(sinNumero, nombre), "el id no cambia: dos versiones con distinto nombre no se confunden");
+
+  // Otra versión de las condiciones generales (otro archivo) también se integra: no se toman por el mismo documento.
+  const otra = await integrarDocumentoPoliza({ ...entrada, nombreArchivo: "023S00453RCG Condiciones Generales RC (2025).pdf" }, e.deps);
+  assert.equal(otra.estado, "integrado");
+  assert.equal(e.guardados.length, 2);
+});
+
+test("el número impreso manda sobre el del nombre del archivo, y sin ninguno el documento queda suelto", async () => {
+  const impreso = entorno(datos({ numeroPoliza: "054239034", suplemento: "" }));
+  const r1 = await integrarDocumentoPoliza({ ...entrada, nombreArchivo: "023S00453RCG - nombre engañoso.pdf" }, impreso.deps);
+  assert.equal(r1.documento?.polizaId, "woba_showroom_2026_2027");
+  assert.doesNotMatch(r1.mensaje, /nombre del archivo/);
+
+  const suelto = entorno(datos({ numeroPoliza: "", suplemento: "", tipoDocumento: "condiciones generales" }));
+  const r2 = await integrarDocumentoPoliza({ ...entrada, nombreArchivo: "Condiciones Generales.pdf" }, suelto.deps);
+  assert.equal(r2.documento?.polizaId, "");
+  assert.match(r2.mensaje, /no trae número de póliza: queda como documento suelto/);
 });

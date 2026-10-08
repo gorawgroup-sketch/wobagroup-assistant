@@ -77,7 +77,7 @@ async function conversionTicketsHoldedInterna(opciones: { revisionNocturna?: boo
       } catch (error) { console.error(`[conversionTicketsHolded] Error explorando candidatos de ${empresa}:`, error instanceof Error ? error.message : error); }
     }
     // Gastos que la regla no puede decidir sola: se pregunta con botones (máx. 6 por ciclo; el resto, en el siguiente).
-    for (const d of dudosos.slice(0, 6)) await preguntarDudosoPorBoton(d).catch(() => undefined);
+    for (const d of dudosos.slice(0, 6)) await preguntarDudosoPorBoton(d).catch((error) => console.error("[conversionTicketsHolded] No se pudo preguntar por un gasto dudoso:", error instanceof Error ? error.message : error));
     if (nuevos.length > 0) {
       const lista = nuevos.slice(0, 12).map((c) => `  • ${etiquetaEmpresa(c.empresa)} · ${c.proveedor} · ${c.total} ${c.moneda} (${c.fecha}) — ${c.motivos.join("; ")}`).join("\n");
       await notificarAdmins(`🧾 Regla de ticket (${reglaModo === "activo" ? "ACTIVA: se convierten solos cuando estén conciliados y con comprobante" : "SIMULACIÓN: no se convierte nada"}): ${nuevos.length} candidato(s) nuevo(s)\n${lista}${nuevos.length > 12 ? `\n  … y ${nuevos.length - 12} más` : ""}`).catch(() => undefined);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { pago } from "../pagos/pruebas";
 import { entrada } from "./pruebas";
-import { ENTRADAS_A_LEER, MAX_ENTRADAS_EN_CONTRATO, vistaBitacora, vistaCalendario, vistaCalendarioPagos, vistaProgramacion } from "./vistas";
+import { ENTRADAS_A_LEER, MAX_ENTRADAS_EN_CONTRATO, PRESUPUESTO_TEXTO_AVISOS, vistaBitacora, vistaCalendario, vistaCalendarioPagos, vistaProgramacion } from "./vistas";
 
 // --- bitácora -----------------------------------------------------------------------------------------------------
 
@@ -18,9 +18,10 @@ test("la bitácora sale con lo último primero, con su etiqueta, acotada y con e
   assert.equal(vista[0].id, `e${MAX_ENTRADAS_EN_CONTRATO + 9}`, "la más reciente primero");
   assert.equal(vista[0].etiqueta, "Vigilante");
 
-  const larga = vistaBitacora([entrada({ detalle: { avisos: [{ canal: "telegram", titulo: "T", texto: "y".repeat(3000), entregado: true }] } })])!;
-  assert.ok(larga[0].avisos[0].texto.length <= 700);
-  assert.match(larga[0].avisos[0].texto, /…$/);
+  const larga = vistaBitacora([entrada({ detalle: { avisos: [{ canal: "telegram", titulo: "T", texto: "y".repeat(3000), entregado: true, entregadoEn: "2026-10-09T06:35:41.200Z" }] } })])!;
+  assert.equal(larga[0].avisos[0].texto.length, 3000, "el aviso viaja ENTERO (Codex pidió el texto completo)");
+  assert.equal(larga[0].avisos[0].truncado, undefined);
+  assert.equal(larga[0].avisos[0].entregadoEn, "2026-10-09T06:35:41.200Z", "y con la hora exacta de su entrega");
   assert.deepEqual(larga[0].eventos, []);
   assert.deepEqual(larga[0].cifras, {});
   assert.deepEqual(larga[0].notas, []);
@@ -102,4 +103,21 @@ test("el estado de una tarea semanal no depende de que su constancia quepa entre
   const programacion = vistaProgramacion(todas, new Date("2026-10-08T07:00:00Z"));
   assert.equal(programacion.find((t) => t.id === "semanal")!.estado, "al_dia");
   assert.equal(programacion.find((t) => t.id === "semanal")!.ultima?.cuando, "2026-10-05T07:10:30.000Z");
+});
+
+test("los avisos más recientes viajan enteros y, si entre todos pasan del presupuesto, los más antiguos se acortan y se marcan", () => {
+  const entradas = Array.from({ length: 14 }, (_, i) => entrada({
+    id: `a${i}`, cuando: new Date(Date.UTC(2026, 9, 1, 8, i)).toISOString(),
+    detalle: { avisos: [{ canal: "telegram", titulo: `aviso ${i}`, texto: String.fromCharCode(97 + i).repeat(8000), entregado: true }] },
+  }));
+  const vista = vistaBitacora(entradas)!; // la más reciente primero: a13, a12, …
+  const textos = vista.map((v) => v.avisos[0]);
+  const enteros = textos.filter((a) => a.truncado === undefined);
+  assert.equal(enteros.length, Math.floor(PRESUPUESTO_TEXTO_AVISOS / 8000), "caben 12 avisos de 8.000 caracteres");
+  assert.ok(enteros.every((a) => a.texto.length === 8000));
+  const acortados = textos.filter((a) => a.truncado === true);
+  assert.equal(acortados.length, 2);
+  assert.ok(acortados.every((a) => a.texto.length <= 1501 && a.texto.endsWith("…")));
+  assert.equal(vista[0].avisos[0].truncado, undefined, "el más reciente siempre entero");
+  assert.equal(vista[13].avisos[0].truncado, true, "el más antiguo es el que se acorta");
 });
