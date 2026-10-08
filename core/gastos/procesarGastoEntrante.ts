@@ -24,7 +24,7 @@ import {
   buscarPropuestaGastoPendiente,
   type PropuestaGasto,
 } from "./gastoProposalSheet";
-import { guardarGastoPendienteDatos } from "./gastoPendienteDatosStore";
+import { guardarGastoPendienteDatos, obtenerGastosPendienteDatosPorChat } from "./gastoPendienteDatosStore";
 import {
   botonesFalloTemporalVerificacionPendiente,
   botonesVerificacionDuplicadoPendiente,
@@ -58,6 +58,12 @@ export interface GastoEntrante {
   datos: DatosFactura;
   /** true si este adjunto vino de la cola de revisión de correo uno a uno — ver PropuestaGasto.deColaCorreo. */
   deColaCorreo?: boolean;
+  /**
+   * Botón «Crear el gasto ahora, sin conciliar» (caso Anthropic, 08-10-2026): el operador confirma que el movimiento ya
+   * conciliado que frenaba la propuesta es otro cargo. Se omite ese freno y sale la propuesta normal; la conciliación se
+   * hace después, cuando el cargo real aparezca en el banco.
+   */
+  crearAunqueHayaCargoConciliado?: boolean;
   /**
    * Si rutaLocal viene de un adjunto real de Gmail, sus ids — permite volver
    * a descargarlo de la fuente durable si la copia local (tmp/uploads, no
@@ -722,7 +728,28 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     return "pendiente_datos";
   }
 
+  if (movimientosYaConciliados.length > 0 && entrada.crearAunqueHayaCargoConciliado) {
+    console.log("[procesarGastoEntrante] El operador confirmó que el movimiento ya conciliado es otro cargo; se propone crear sin conciliar:", {
+      proveedor: datos.proveedor, monto: montoParaHolded, moneda: monedaParaHolded, movimientos: movimientosYaConciliados.map((m) => m.movementId ?? m.descripcion),
+    });
+    movimientosYaConciliados = [];
+  }
   if (movimientosYaConciliados.length > 0) {
+    // Mismo correo con esta misma pregunta ya viva: no se repite el aviso (caso real 08-10-2026: el mensaje de Anthropic salió dos veces).
+    // Si la comprobación falla no se asume nada: se manda el aviso como siempre (mejor repetido que perdido).
+    let yaPreguntado: { id: string } | undefined;
+    if (entrada.correoOrigen?.mensajeIdGmail) {
+      try {
+        yaPreguntado = (await obtenerGastosPendienteDatosPorChat(chatId))
+          .find((p) => p.motivo === "verificacion_duplicado" && p.correoOrigen?.mensajeIdGmail === entrada.correoOrigen?.mensajeIdGmail);
+      } catch (error) {
+        console.error("[procesarGastoEntrante] No se pudo comprobar si la verificación ya estaba pendiente; se avisa igualmente:", error);
+      }
+    }
+    if (yaPreguntado) {
+      console.log("[procesarGastoEntrante] Verificación de duplicado ya pendiente para este correo; no se repite el aviso:", yaPreguntado.id);
+      return "pendiente_datos";
+    }
     const proveedorVisible = esProveedorNoIdentificado(datos.proveedor)
       ? "proveedor no identificado en el ticket"
       : datos.proveedor;

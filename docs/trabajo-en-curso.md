@@ -65,6 +65,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Trabajo | PR | Fecha |
 |---|---|---|
 | Calendario de pagos de Wobi Seguros: evento en el calendario de Carlos 3 días antes, aviso a 1-3 días con comprobación de caja y siguiente pago de la serie al confirmarse un cobro (`core/seguros/pagos/`, job 8:55) | #368 | 08-10-2026 |
+| Botón «Crear el gasto ahora, sin conciliar» cuando el único cargo parecido ya está conciliado (caso Anthropic) + guarda contra el aviso duplicado (`core/gastos/procesarGastoEntrante.ts`, `gastoPendienteDatosCallbackHandler.ts`) | _PR pendiente_ | 08-10-2026 |
 | Informe por diferencias (`core/gmail/automatico/informeDiferencias.ts`): cada revisión dice qué cambió desde la anterior (resueltos, nuevos, cambios de motivo, iguales) antes de la lista completa; resumen por correo guardado en `wobi_mail_events` (`revision_resumen`) | #418 | 08-10-2026 |
 | Revisión en seco tras cada despliegue (`core/gmail/automatico/revisionEnSeco.ts`): simulación sin IA ni escrituras unos minutos después de arrancar con versión nueva, comparación por correo con la anterior y aviso solo si empeora; `WOBI_MAIL_DRY_RUN=off` la apaga | #416 | 08-10-2026 |
 | Cero motivos genéricos en el informe del correo automático: cada código con explicación concreta, comodín que nombra el motivo, guardarraíl `core/guardarrailes/motivosSinGenericos.test.ts`; aviso veraz del correo activo sin pregunta (`core/jobs/revisionCorreoManual.ts`) | #415 | 08-10-2026 |
