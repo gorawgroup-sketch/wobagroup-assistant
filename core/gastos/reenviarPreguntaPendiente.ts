@@ -49,7 +49,7 @@ export function textoPreguntaGastoPendienteDatos(p: GastoPendienteDatos): string
     case "empresa":
       return `📄 «${proveedor}» · ${importe}: no tengo clara la empresa. Dime a qué empresa (WOBA, EWORKS o Footprint) pertenece y sigo. ${cierre}`;
     case "moneda":
-      return `💱 «${proveedor}» · ${importe}: no pude convertirlo ahora (sin tasa de cambio disponible). No hace falta que hagas nada: lo reintento solo en la próxima revisión.`;
+      return `💱 «${proveedor}» · ${importe}: todavía no hay en el banco un cargo que coincida y no pude obtener la tasa de cambio del día para convertirlo. No hace falta que hagas nada: lo reintento solo en la próxima revisión.`;
     case "fecha":
       return `🔎 «${proveedor}» · ${importe}: el comprobante no tiene una fecha verificable. Respóndeme con la fecha documentada (AAAA-MM-DD) y sigo. ${cierre}`;
     case "proveedor":
