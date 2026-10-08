@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -49,6 +50,13 @@ jobs:
 
       - name: Instalar dependencias
         run: npm ci
+
+      - name: Dueño único por área (colisión con otros PR abiertos)
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/ci/colision-de-area.mjs
 
       - name: Ejecutar pruebas
         run: npm test

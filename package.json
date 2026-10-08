@@ -13,7 +13,7 @@
     "mail:auto:status": "tsx scripts/mail-auto-db.ts status",
     "test:mail-auto": "node --import tsx --test core/gmail/automatico/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test core/*/*.test.ts core/*/*/*.test.ts && node --test scripts/claude-max/*.test.mjs frontend-cerebro/src/*.test.mjs"
+    "test": "tsx --test core/*/*.test.ts core/*/*/*.test.ts core/*/*/*/*.test.ts && node --test scripts/claude-max/*.test.mjs scripts/ci/*.test.mjs frontend-cerebro/src/*.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

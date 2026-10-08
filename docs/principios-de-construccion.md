@@ -97,6 +97,14 @@ para decidir si algo puede resolverse solo y dónde se hace cumplir (prompt cent
 está en [docs/norma-resolucion-autonoma.md](norma-resolucion-autonoma.md). Un agente nuevo que llame al modelo sin
 declararse en `COBERTURA_NORMA` (`core/ia/normaResolucionAutonoma.ts`) hace fallar las pruebas.
 
+## Contra la recurrencia (Carlos, 2026-10-08): dueño único por área y banco de casos reales
+
+Quince PR en 24 h sobre la misma área desde varias sesiones produjeron colisiones, correcciones a medias y síntomas que
+«volvían» con otra causa. Dos reglas con guardarraíl: (1) **un dueño por área y día**: el CI rechaza un PR que toque un área
+crítica (`.github/areas-criticas.json`) mientras otro PR abierto más antiguo la toca; (2) **banco de casos reales**
+(`core/gmail/automatico/casos/`): cada incidente de correo se cierra añadiendo su caso de extremo a extremo con el informe
+que debe salir, para que ninguna causa vuelva a disfrazarse de otra.
+
 ## Cuándo un archivo compartido es una señal de alerta
 
 Si un archivo empieza a acumular módulos o casos no relacionados entre sí — más de un par
