@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { esMismaEstancia, fechasDeEstancia } from "./mismaEstancia";
+import { esHospedaje, esMismaEstancia, fechasDeEstancia } from "./mismaEstancia";
 
 const factura50808 = { concepto: "Hospedaje Hotel101 Madrid — Simon Talloen — 09-11 sep 2026 (2 noches, Standard Double Room) + cargo carga vehículo eléctrico", monto: 242.19, moneda: "EUR" };
 const recibo = { concepto: "Hospedaje Hotel101 Madrid — Simon Talloen — 09-11 sep 2026 (2 noches, reserva 6188872919)", monto: 232.2, moneda: "EUR" };
@@ -47,4 +47,11 @@ test("lee varios formatos de fechas", () => {
   assert.deepEqual(fechasDeEstancia("21 al 23 de septiembre"), { desde: { dia: 21, mes: 9 }, hasta: { dia: 23, mes: 9 } });
   assert.deepEqual(fechasDeEstancia("30 sep - 02 oct 2026"), { desde: { dia: 30, mes: 9 }, hasta: { dia: 2, mes: 10 } });
   assert.equal(fechasDeEstancia("sin fechas"), undefined);
+});
+
+test("solo los conceptos de hospedaje activan la comprobación (el resto de gastos no paga lecturas)", () => {
+  assert.equal(esHospedaje("Hospedaje Hotel101 Madrid — Simon Talloen — 09-11 sep 2026"), true);
+  assert.equal(esHospedaje("Alojamiento en Lisboa"), true);
+  assert.equal(esHospedaje("Gastos de comunidad y garaje — Edificio Luarca"), false);
+  assert.equal(esHospedaje("Traslado Uber (UberX)"), false);
 });

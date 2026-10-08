@@ -42,7 +42,7 @@ function segmentos(concepto: string): string[] {
   return concepto.split(/\s+[—–]\s+/).map((s) => s.trim()).filter(Boolean);
 }
 
-function esHospedaje(concepto: string): boolean {
+export function esHospedaje(concepto: string): boolean {
   return /^\s*(hospedaje|alojamiento)\b/i.test(concepto);
 }
 

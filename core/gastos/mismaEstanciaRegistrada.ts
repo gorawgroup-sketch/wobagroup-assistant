@@ -2,13 +2,19 @@ import type { Empresa } from "../holded/client";
 import { holdedGet } from "../holded/client";
 import { obtenerCompraHoldedPorId } from "../holded/write";
 import { listarRegistrosGastoPorEmpresa } from "./gastoPorCorreoStore";
-import { esMismaEstancia, type EstanciaGasto } from "./mismaEstancia";
+import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
+import { esHospedaje, esMismaEstancia, type EstanciaGasto } from "./mismaEstancia";
 
 export interface EstanciaRegistrada { gastoId: string; proveedor: string; monto: number; moneda: string; fecha: string }
 
 const VENTANA_DIAS = 45;
 const MAX_LECTURAS_POR_ID = 40;
 const RECIENTE_MS = 90 * 24 * 60 * 60_000;
+
+/** Lo leído por id se recuerda 30 min (también los borrados): varias propuestas seguidas no repiten las mismas lecturas de Holded. */
+type LecturaGasto = { concepto?: string; proveedor?: string; monto?: number; moneda?: string; fecha?: string } | null;
+const CACHE_LECTURAS_MS = 30 * 60_000;
+const cacheLecturas = new Map<string, { hasta: number; lectura: LecturaGasto }>();
 
 function montoHolded(raw: unknown): number {
   if (typeof raw === "number") return raw;
@@ -28,7 +34,8 @@ export async function buscarMismaEstanciaRegistrada(
   actual: EstanciaGasto,
   opciones: { fecha?: string; excluirMensajeIdGmail?: string; excluirGastoIds?: readonly string[] }
 ): Promise<EstanciaRegistrada[]> {
-  if (!actual.concepto) return [];
+  // Solo los hospedajes tienen «misma estancia»: para cualquier otro gasto no se lee nada (antes cada propuesta pagaba hasta 40 lecturas de Holded).
+  if (!actual.concepto || !esHospedaje(actual.concepto)) return [];
   const encontrados = new Map<string, EstanciaRegistrada>();
   const excluidos = new Set(opciones.excluirGastoIds ?? []);
   const anotar = (gastoId: string, e: { concepto?: string; proveedor?: string; monto?: number; moneda?: string; fecha?: string }) => {
@@ -37,18 +44,37 @@ export async function buscarMismaEstanciaRegistrada(
   };
 
   const ahora = Date.now();
-  let lecturas = 0;
+  const porLeer: string[] = [];
   for (const registro of await listarRegistrosGastoPorEmpresa(empresa)) {
     if (opciones.excluirMensajeIdGmail && registro.mensajeIdGmail === opciones.excluirMensajeIdGmail) continue;
     const i = registro.identidad;
     if (i?.concepto && i.monto !== undefined) { anotar(registro.gastoId, i); continue; }
-    if (ahora - registro.creadoEn > RECIENTE_MS || lecturas >= MAX_LECTURAS_POR_ID) continue;
-    lecturas += 1;
-    const compra = (await obtenerCompraHoldedPorId(empresa, registro.gastoId)) as Record<string, unknown>;
-    anotar(registro.gastoId, {
-      concepto: String(compra.description ?? ""), proveedor: String(compra.contact_name ?? ""),
-      monto: montoHolded(compra.total), moneda: String(compra.currency ?? "").toUpperCase(), fecha: String(compra.date ?? "").slice(0, 10),
-    });
+    if (ahora - registro.creadoEn > RECIENTE_MS) continue;
+    const guardada = cacheLecturas.get(`${empresa}:${registro.gastoId}`);
+    if (guardada && guardada.hasta > ahora) {
+      if (guardada.lectura) anotar(registro.gastoId, guardada.lectura);
+      continue;
+    }
+    if (porLeer.length < MAX_LECTURAS_POR_ID) porLeer.push(registro.gastoId);
+  }
+  // Las filas antiguas sin concepto ni importe se leen por id en Holded, en paralelo y con tope.
+  const lecturas = await mapearConConcurrencia(porLeer, 8, async (gastoId) => {
+    try {
+      const compra = (await obtenerCompraHoldedPorId(empresa, gastoId)) as Record<string, unknown>;
+      const lectura: LecturaGasto = {
+        concepto: String(compra.description ?? ""), proveedor: String(compra.contact_name ?? ""),
+        monto: montoHolded(compra.total), moneda: String(compra.currency ?? "").toUpperCase(), fecha: String(compra.date ?? "").slice(0, 10),
+      };
+      return { gastoId, lectura };
+    } catch (error) {
+      // Un gasto del registro que ya no existe en Holded (borrado a mano) no puede abortar la comprobación de los demás.
+      console.warn(`[mismaEstanciaRegistrada] No se pudo leer el gasto ${gastoId} del registro; se omite:`, error instanceof Error ? error.message.slice(0, 120) : error);
+      return { gastoId, lectura: null as LecturaGasto };
+    }
+  });
+  for (const { gastoId, lectura } of lecturas) {
+    cacheLecturas.set(`${empresa}:${gastoId}`, { hasta: ahora + CACHE_LECTURAS_MS, lectura });
+    if (lectura) anotar(gastoId, lectura);
   }
 
   const base = opciones.fecha && /^\d{4}-\d{2}-\d{2}/.test(opciones.fecha) ? new Date(opciones.fecha.slice(0, 10)) : new Date();
