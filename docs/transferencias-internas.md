@@ -152,3 +152,11 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 1. **Conversiones con diferencia a favor**: prueba controlada de una sola (eWorks 16/09, −593 USD → +513,73 EUR, 0,03 € a favor).
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
+
+## Varias conversiones el mismo día: emparejar por valor, no por descripción (2026-10-08)
+
+Caso real, Footprint 07-10: el banco repite «Exchanged To Eur Main» en todas sus conversiones del día. Con dos salidas (−9.070,62 USD y −2.237,96 USD) y dos entradas (+8.100 EUR y +2.000 EUR) el detector formaba las 4 combinaciones y, al repetirse cada movimiento, bloqueaba las cuatro por «ambiguo»: Carlos recibía mensajes sin botón de conciliar. Las dos parejas buenas diferían un 0,31 % y un 0,39 % de la tasa del día; los dos cruces, un 75 %.
+
+- `detectarTransferencias`: una pareja cuyo valor en EUR o tasa se desvía más del límite (bloqueada ya en `evaluarPareja`) **no cuenta como competidora** si alguno de sus movimientos tiene otra pareja plausible; se descarta. Si no la tiene, se conserva bloqueada (una conversión realmente rara no desaparece). Dos candidatas plausibles para el mismo movimiento (dos entradas de 2.000 € para una misma salida) siguen siendo ambiguas: no se elige al azar. Las transferencias de la misma moneda no cambian.
+- `reapertura.ts` + `telegram.ts`: una pareja registrada como «ambigua» que ahora ya no está bloqueada se **reabre** (se retira el mensaje viejo y se propone con botón, si está autorizada por el alcance). Los registros «ambigua» que la detección ya no devuelve pasan a «saltada» (si vuelven, se proponen de nuevo) y su mensaje se deja sin botones con el motivo.
+- Verificado en vivo (solo lectura): Footprint pasó de 4 bloqueadas a 2 inequívocas.

@@ -193,3 +193,35 @@ test("un movimiento de Holded sin id, importe o fecha no se convierte: no se adi
   assert.deepEqual(aMovimiento("usd", "USD", { id: "x", amount: "-900.00", accounting_amount: "-792.26", booking_date: "2026-09-29T00:00:00+00:00", status: "pending", reconciled_amount: "0.00", description: "Exchanged To Eur Main" }),
     { id: "x", cuentaId: "usd", fecha: "2026-09-29", importe: -900, moneda: "USD", equivalenteEur: -792.26, descripcion: "Exchanged To Eur Main", estado: "pending", conciliado: 0 });
 });
+
+test("caso real Footprint 07-10: dos conversiones el mismo día con la misma descripción del banco se emparejan por valor, sin cruces", () => {
+  const tasa = () => 0.8947;
+  const grande = mov("usd", "2026-10-07", -9070.62, "Exchanged To Eur Main", { equivalenteEur: -8074.95 });
+  const pequena = mov("usd", "2026-10-07", -2237.96, "Exchanged To Eur Main", { equivalenteEur: -1992.3 });
+  const entra8100 = mov("main", "2026-10-07", 8100, "Exchanged To Eur Main");
+  const entra2000 = mov("main", "2026-10-07", 2000, "Exchanged To Eur Main");
+  const p = detectar([grande, pequena, entra8100, entra2000], CUENTAS, tasa);
+  assert.equal(p.length, 2, "los cruces de 75 % de diferencia no son parejas");
+  const par = (o: string, d: string) => p.find((x) => x.origen.movimiento.id === o && x.destino.movimiento.id === d);
+  assert.equal(par(grande.id, entra8100.id)?.confianza, "automatica");
+  assert.equal(par(pequena.id, entra2000.id)?.confianza, "automatica");
+  assert.equal(par(grande.id, entra2000.id), undefined);
+  assert.equal(par(pequena.id, entra8100.id), undefined);
+});
+
+test("si dos entradas iguales encajan con la misma salida, sigue siendo ambiguo (no se elige al azar)", () => {
+  const salida = mov("usd", "2026-10-07", -2237.96, "Exchanged To Eur Main", { equivalenteEur: -1992.3 });
+  const p = detectar([salida, mov("main", "2026-10-07", 2000, "Exchanged To Eur Main"), mov("main", "2026-10-07", 2000, "Exchanged To Eur Main")], CUENTAS, () => 0.8947);
+  assert.equal(p.length, 2);
+  assert.ok(p.every((x) => x.confianza === "bloqueada"));
+  assert.match(p[0].motivos[p[0].motivos.length - 1], /Ambiguo/);
+});
+
+test("una conversión rara cuyo único candidato no cuadra se sigue mostrando bloqueada, no desaparece", () => {
+  const p = detectar([
+    mov("usd", "2026-10-07", -9070.62, "Exchanged To Eur Main", { equivalenteEur: -8074.95 }),
+    mov("main", "2026-10-07", 2000, "Exchanged To Eur Main"),
+  ], CUENTAS, () => 0.8947);
+  assert.equal(p.length, 1);
+  assert.equal(p[0].confianza, "bloqueada");
+});
