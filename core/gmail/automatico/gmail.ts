@@ -1,10 +1,28 @@
 import type { gmail_v1 } from "googleapis";
 import { hash, type AdjuntoAuto, type CorreoAuto } from "./model";
 import { mapearConConcurrencia } from "../../utils/mapearConConcurrencia";
-import { ETIQUETA_PROCESADO_AUTOMATICO } from "../client";
+import { ETIQUETA_PROCESADO_AUTOMATICO, esParteDecorativaInline } from "../client";
+import { esImagenIncrustadaDeRelleno } from "../../correo/lectura/decoracion";
+import { deduplicarYAcotar } from "../../correo/lectura/proteccionAdjuntos";
 
 const header = (m: gmail_v1.Schema$Message, nombre: string) => m.payload?.headers?.find(h => h.name?.toLowerCase() === nombre.toLowerCase())?.value ?? "";
 const decode = (s: string) => Buffer.from(s, "base64url");
+
+export const MAX_ADJUNTOS_AUTO = 20;
+
+/** partId de las partes con archivo que SÍ se procesan: sin decorativas incrustadas ni repetidas (mismo tipo, nombre y tamaño). */
+export function partesAdjuntasAProcesar(payload: gmail_v1.Schema$MessagePart | undefined): Set<string> {
+  const candidatas: Array<{ partId: string; filename: string; mimeType: string; size: number | null }> = [];
+  (function recorrer(p: gmail_v1.Schema$MessagePart | undefined): void {
+    if (!p) return;
+    const esArchivo = Boolean(p.body?.attachmentId) && (Boolean(p.filename) || (p.mimeType ?? "").toLowerCase().startsWith("image/"));
+    if (esArchivo && !esParteDecorativaInline(p) && !esImagenIncrustadaDeRelleno(p)) {
+      candidatas.push({ partId: p.partId ?? "", filename: p.filename ?? "", mimeType: p.mimeType ?? "", size: p.body?.size ?? null });
+    }
+    p.parts?.forEach(recorrer);
+  })(payload);
+  return new Set(deduplicarYAcotar(candidatas, Number.POSITIVE_INFINITY).aLeer.map((c) => c.partId));
+}
 
 /** Todas las partes textuales, también cuando Gmail guarda el cuerpo como attachmentId.
  * Se incluyen plain y HTML: escoger solo la primera parte puede perder información. */
@@ -16,9 +34,16 @@ export async function contenidoCompleto(gmail: gmail_v1.Gmail, m: gmail_v1.Schem
   const html: string[] = [];
   const adjuntos: AdjuntoAuto[] = [];
   let bytes = 0;
+  // Protección de coste ANTES de descargar nada (caso 07-10: un correo con 58 imágenes «noname»): se decide por metadatos qué partes con
+  // archivo se leerán. Las decorativas incrustadas y las repetidas ni se descargan ni llegan al modelo; si aun así hay más de MAX_ADJUNTOS_AUTO
+  // se corta antes de bajar ninguna (lectura incompleta → revisión manual, sin gastar IA).
+  const aDescargar = partesAdjuntasAProcesar(m.payload);
+  if (aDescargar.size > MAX_ADJUNTOS_AUTO) throw new Error(`El mensaje trae ${aDescargar.size} adjuntos reales (máximo ${MAX_ADJUNTOS_AUTO} en lectura automática); revisión manual.`);
   async function recorrer(p: gmail_v1.Schema$MessagePart): Promise<void> {
     if (p.parts?.length) { for (const sub of p.parts) await recorrer(sub); return; }
     if (!p.body) throw new Error("Parte MIME sin cuerpo; lectura incompleta.");
+    // Parte con archivo que la protección dejó fuera (decorativa o repetida): no se descarga.
+    if (p.body.attachmentId && (p.filename || (p.mimeType ?? "").toLowerCase().startsWith("image/")) && !aDescargar.has(p.partId ?? "")) return;
     if ((p.body.size ?? 0) > 25_000_000) throw new Error("Adjunto supera 25 MB; revisión manual.");
     let data = p.body.data ? decode(p.body.data) : Buffer.alloc(0);
     if (p.body.attachmentId) {

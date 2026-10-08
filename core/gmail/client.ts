@@ -1,4 +1,5 @@
 import { esImagenIncrustadaDeRelleno } from "../correo/lectura/decoracion";
+import { deduplicarYAcotar, type OmitidosPorProteccion } from "../correo/lectura/proteccionAdjuntos";
 import { google, gmail_v1 } from "googleapis";
 import { loadServiceAccountCredentials } from "../google/serviceAccount";
 import { registrarPersonaDesdeCorreo } from "../directorio/directorioPersonasSheet";
@@ -460,6 +461,8 @@ export interface CorreoResumen {
   fecha: string;
   extracto: string;
   adjuntos: AdjuntoCorreo[];
+  /** Adjuntos que NO se leerán por protección de coste (decoración, repetidos, exceso del tope); ver proteccionAdjuntos.ts. */
+  adjuntosOmitidos?: OmitidosPorProteccion;
 }
 
 function leerHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, nombre: string): string {
@@ -565,7 +568,7 @@ export function esHuellaInlineDecorativaConocida(part: gmail_v1.Schema$MessagePa
   return HUELLAS_INLINE_DECORATIVAS_CONOCIDAS.has(huella);
 }
 
-function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
+export function esParteDecorativaInline(part: gmail_v1.Schema$MessagePart): boolean {
   const disposicion = part.headers?.find((h) => h.name?.toLowerCase() === "content-disposition")?.value ?? "";
   if (!disposicion.toLowerCase().startsWith("inline")) return false;
   // Caso real (Carlos, 2026-09-29, Yessenia, «17,96€ - transporte italiano»): el comprobante era un PDF de 19.842
@@ -607,6 +610,28 @@ export function extraerAdjuntos(payload: gmail_v1.Schema$MessagePart | undefined
 
   recorrer(payload);
   return adjuntos;
+}
+
+/** Partes con archivo (nombre y attachmentId) de un mensaje, decorativas o no. */
+function contarPartesConArchivo(payload: gmail_v1.Schema$MessagePart | undefined): number {
+  let total = 0;
+  (function recorrer(part: gmail_v1.Schema$MessagePart | undefined): void {
+    if (!part) return;
+    if (part.filename && part.body?.attachmentId) total++;
+    part.parts?.forEach(recorrer);
+  })(payload);
+  return total;
+}
+
+/**
+ * Adjuntos reales de un mensaje YA protegidos para el coste: sin decoración (extraerAdjuntos), sin repetidos y con el tope por correo.
+ * Es lo que se lee y se procesa; `omitidos` dice cuántos se dejaron fuera y por qué.
+ */
+export function extraerAdjuntosProtegidos(payload: gmail_v1.Schema$MessagePart | undefined): { adjuntos: AdjuntoCorreo[]; omitidos: OmitidosPorProteccion } {
+  const reales = extraerAdjuntos(payload);
+  const decorativas = Math.max(0, contarPartesConArchivo(payload) - reales.length);
+  const { aLeer, repetidas, exceso } = deduplicarYAcotar(reales.map((a) => ({ ...a, size: a.size })));
+  return { adjuntos: aLeer as AdjuntoCorreo[], omitidos: { decorativas, repetidas, exceso } };
 }
 
 /** Lista los IDs de mensajes de la bandeja de entrada recibidos después de `afterUnixSeconds`. */
@@ -657,6 +682,7 @@ export async function obtenerResumenCorreo(id: string): Promise<CorreoResumen> {
   const gmail = getGmailClient();
   const res = await gmail.users.messages.get({ userId: "me", id, format: "full" });
   const msg = res.data;
+  const { adjuntos, omitidos } = extraerAdjuntosProtegidos(msg.payload);
 
   return {
     id: msg.id ?? id,
@@ -666,7 +692,8 @@ export async function obtenerResumenCorreo(id: string): Promise<CorreoResumen> {
     asunto: leerHeader(msg.payload?.headers, "Subject"),
     fecha: leerHeader(msg.payload?.headers, "Date"),
     extracto: msg.snippet ?? "",
-    adjuntos: extraerAdjuntos(msg.payload),
+    adjuntos,
+    ...(omitidos.decorativas + omitidos.repetidas + omitidos.exceso > 0 ? { adjuntosOmitidos: omitidos } : {}),
   };
 }
 

@@ -174,6 +174,8 @@ export interface AnalisisAuto {
   recibos: ReciboAuto[]; motivoManual?: string;
   /** Cuando `completo` es false: la parte CONCRETA (adjunto, enlace, página) que no se pudo leer y por qué. Nunca una duda de interpretación. */
   detalleIncompleto?: string;
+  /** Cuándo se guardó este análisis (ms). Solo se usa para no reintentar un análisis incompleto antes de tiempo, ver reutilizable() en service.ts. */
+  analizadoEn?: number;
 }
 export interface MovimientoAuto {
   id: string; cuentaId: string; moneda: string; fecha: string; centimos: number;
