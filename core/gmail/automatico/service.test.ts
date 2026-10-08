@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
+import { analisisReutilizable, ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS, prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { evaluarAuto, hash, VERSION_ANALISIS, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
 import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
 import { UsoApiNoAutorizadoError } from "../../ai/policy";
@@ -606,4 +606,31 @@ test("con el cierre pedido, una operación ya reservada se deja reservada (sin P
   assert.equal(e.llamadas.crear, 1);
   assert.equal(r.interrumpida, true);
   assert.ok(r.pendientes.every(p => p.motivos.some(m => m.startsWith("operacion_") || m === "revision_pospuesta_por_reinicio")));
+});
+
+test("un análisis INCOMPLETO guardado (sin marca de fecha, de antes del arreglo) se reintenta; uno COMPLETO se reutiliza", async () => {
+  const completo = escenario();
+  await completo.store.guardarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS, { ...completo.a, completo: true });
+  await completo.service.revisar(configFixture);
+  assert.equal(completo.analisisLlamadas(), 0, "el completo guardado no se vuelve a pagar");
+
+  const incompleto = escenario();
+  await incompleto.store.guardarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS,
+    { ...incompleto.a, completo: false, detalleIncompleto: "adjunto ilegible entonces" });
+  await incompleto.service.revisar(configFixture);
+  assert.equal(incompleto.analisisLlamadas(), 1, "el incompleto fijado en un mal momento se vuelve a leer");
+});
+
+test("tras reintentar, un análisis incompleto NO se vuelve a pagar hasta pasadas 2 h", async () => {
+  const e = escenario();
+  e.a.completo = false;
+  e.a.detalleIncompleto = "adjunto que sigue siendo ilegible";
+  await e.service.revisar(configFixture);
+  assert.equal(e.analisisLlamadas(), 1);
+  await e.service.revisar(configFixture);
+  assert.equal(e.analisisLlamadas(), 1, "dentro de la espera no se gasta IA otra vez");
+  const guardado = await e.store.buscarAnalisis(configFixture.buzon, "m1", correoFixture("m1").huella, VERSION_ANALISIS);
+  assert.equal(typeof guardado?.analizadoEn, "number");
+  assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS - 1)?.completo, false);
+  assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS + 1), undefined);
 });
