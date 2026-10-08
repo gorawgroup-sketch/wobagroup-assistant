@@ -223,10 +223,15 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     const resultado = await service.revisar(config);
     // Informe por diferencias: solo las pasadas reales se registran y se comparan (la revisión en seco guarda lo suyo aparte).
     if (!opciones.enSeco) {
-      resultado.diferencias = await diferenciasDeEstaRevision(resultado, (process.env.RAILWAY_GIT_COMMIT_SHA ?? "desconocida").slice(0, 7), {
-        ultimo: async () => (await storeAuto.ultimoResumenRevision(config.buzon)) as ResumenSeco | undefined,
-        guardar: (resumen) => storeAuto.auditar({ buzon: config.buzon, tipo: EVENTO_RESUMEN_REVISION, datos: resumen }),
-      });
+      try {
+        resultado.diferencias = await diferenciasDeEstaRevision(resultado, (process.env.RAILWAY_GIT_COMMIT_SHA ?? "desconocida").slice(0, 7), {
+          ultimo: async () => (await storeAuto.ultimoResumenRevision(config.buzon)) as ResumenSeco | undefined,
+          guardar: (resumen) => storeAuto.auditar({ buzon: config.buzon, tipo: EVENTO_RESUMEN_REVISION, datos: resumen }),
+        });
+      } catch (error) {
+        // El informe sale sin la sección de cambios; la revisión en sí ya terminó y no se toca.
+        console.warn("[correo-auto] No se pudo calcular el informe por diferencias:", error instanceof Error ? error.message : error);
+      }
     }
     await colaNotificacion;
     return resultado;

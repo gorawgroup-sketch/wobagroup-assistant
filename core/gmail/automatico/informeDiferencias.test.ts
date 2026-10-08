@@ -22,7 +22,7 @@ test("clasifica nuevos, resueltos, cambiados e iguales; lo automatizado no cuent
 
 test("la sección del informe dice lo que cambió, o que no hay registro anterior, o que no hay cambios", () => {
   const conCambios = lineasDiferencias({ desde: "2026-10-08T10:00:00Z", nuevos: [{ asunto: "E", estado: "Nuevo motivo" }], resueltos: [{ asunto: "C" }], cambiados: [], iguales: 2 }).join("\n");
-  assert.match(conCambios, /🔁 Desde la última revisión \(08\/10.{0,3}12:00\)/);
+  assert.match(conCambios, /🔁 Desde la última revisión \(0?8\/10.{0,3}12:00\)/);
   assert.match(conCambios, /✅ Resueltos desde entonces: 1\.\n  • «C»/);
   assert.match(conCambios, /🆕 Pendientes nuevos: 1\.\n  • «E»: Nuevo motivo/);
   assert.match(conCambios, /➡️ Siguen igual: 2\./);
@@ -39,10 +39,9 @@ test("el informe completo incluye la sección de diferencias antes de la lista d
   assert.match(texto, /🆕 Pendientes nuevos: 1\./);
 });
 
-test("un fallo del almacén no interrumpe la revisión: el informe sale sin la sección", async () => {
+test("un fallo del almacén se propaga (runtime.ts lo atrapa y deja el informe sin la sección); sin anterior, guarda y no inventa diferencias", async () => {
   const resultado = { modo: "execute" as const, revisados: 0, completados: 0, simulados: 0, gastos: [], pendientes: [] };
-  const dif = await diferenciasDeEstaRevision(resultado, "v", { ultimo: async () => { throw new Error("Postgres caído"); }, guardar: async () => {} });
-  assert.equal(dif, undefined);
+  await assert.rejects(diferenciasDeEstaRevision(resultado, "v", { ultimo: async () => { throw new Error("Postgres caído"); }, guardar: async () => {} }), /Postgres caído/);
   const guardados: ResumenSeco[] = [];
   const ok = await diferenciasDeEstaRevision(resultado, "v", { ultimo: async () => undefined, guardar: async (r) => { guardados.push(r); } });
   assert.equal(ok?.desde, undefined); assert.equal(guardados.length, 1);

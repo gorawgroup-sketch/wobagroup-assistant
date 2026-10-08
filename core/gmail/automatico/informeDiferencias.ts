@@ -65,16 +65,12 @@ export interface AlmacenResumenes {
   guardar: (resumen: ResumenSeco) => Promise<void>;
 }
 
-/** Calcula las diferencias contra la pasada real anterior y guarda la actual. Nunca interrumpe la revisión: ante un fallo, se avisa en el log y el informe sale sin la sección. */
-export async function diferenciasDeEstaRevision(resultado: ResultadoAuto, version: string, almacen: AlmacenResumenes, ahora = new Date()): Promise<DiferenciasRevision | undefined> {
+/** Calcula las diferencias contra la pasada real anterior y guarda la actual. Si el almacén falla, lanza: quien llama decide (en
+ * runtime.ts el informe sale sin la sección y la revisión no se interrumpe). */
+export async function diferenciasDeEstaRevision(resultado: ResultadoAuto, version: string, almacen: AlmacenResumenes, ahora = new Date()): Promise<DiferenciasRevision> {
   const actual = resumirParaComparar(resultado, version, ahora);
-  try {
-    const anterior = await almacen.ultimo();
-    const dif = calcularDiferencias(anterior, actual);
-    await almacen.guardar(actual);
-    return dif;
-  } catch (error) {
-    console.warn("[correo-auto] No se pudo calcular el informe por diferencias (la revisión sigue igual):", error instanceof Error ? error.message : error);
-    return undefined;
-  }
+  const anterior = await almacen.ultimo();
+  const dif = calcularDiferencias(anterior, actual);
+  await almacen.guardar(actual);
+  return dif;
 }
