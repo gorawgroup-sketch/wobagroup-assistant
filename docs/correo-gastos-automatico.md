@@ -152,3 +152,9 @@ El 07-10 (#390) la búsqueda de esta rama empezó a admitir también cargos «po
 - La búsqueda de la rama «moneda sin cuenta y sin equivalente» ya **no** admite cargos «por confirmar».
 - `cargoUnicoParaEquivalente` (con pruebas): con varios candidatos, si **uno solo** coincide al céntimo con la tasa del día (±2 céntimos o 0,5 %), ese es el cargo (Taxi 129,94 MXN → «Dlo*serv Uber Rides Ca» −6,43 €, los otros cuatro quedan a 0,09-0,78 €). Con dos o más iguales, o ninguno, se sigue preguntando; no se adivina.
 - Pendiente de hacer bien: cuando haya un único cargo con nombre distinto, ofrecerlo como pregunta con botones («¿Es este cargo? Sí / No, escribiré el importe») en lugar de elegirlo.
+
+## Un análisis incompleto ya no se queda fijado para siempre (2026-10-08)
+
+Síntoma (Carlos, 08-10): la revisión automática no concilia ningún correo y deja 5 con «el analizador no dio por completa la lectura» aunque ya se había corregido. Causa: el servicio reutilizaba SIEMPRE el análisis guardado del mismo mensaje y versión, también si estaba marcado incompleto (guardado en un mal momento: adjunto que no se pudo leer entonces, fallo del modelo, tope de coste). Releído ahora, el recibo de Anthropic de 24,20 USD sale **completo** con un recibo; en la revisión salía incompleto.
+
+- `analisisReutilizable` (`core/gmail/automatico/service.ts`, con pruebas): un análisis completo se reutiliza siempre; uno incompleto solo si se guardó hace menos de **2 h** (marca `analizadoEn`); los guardados antes de este cambio, sin marca, se reintentan una vez. Así un correo atascado se vuelve a leer, y uno que sigue ilegible no gasta IA más de una vez cada 2 h. Los límites de coste (`maxAnalisisNuevos`, tope diario por proceso) siguen mandando.
