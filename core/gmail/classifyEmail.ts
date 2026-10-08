@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { bloqueNormaResolucion } from "../ia/normaResolucionAutonoma";
 import { CACHE_1H } from "../claude/cacheControl";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import type { CorreoResumen } from "./client";
@@ -275,6 +276,7 @@ export async function analizarCorreo(correo: CorreoResumen, cuerpoCompleto: stri
       // cambia lo que ve el modelo y abarata repeticiones cercanas y vueltas de tool-use.
       system: [
         { type: "text", text: buildSystemPrompt(hayAdjuntos), cache_control: CACHE_1H },
+        bloqueNormaResolucion("extractor"),
       ],
       tools,
       messages,

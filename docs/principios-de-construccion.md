@@ -87,6 +87,16 @@ cualquier cambio ahí se vuelve riesgoso para todo lo demás.
   los checks obligatorios y las protecciones de rama; no extender esta autorización a
   operaciones financieras ni a acciones destructivas o cambios de acceso.
 
+## Principio de resolución autónoma (Carlos, 2026-10-08)
+
+El sistema es un solucionador de problemas: nunca traslada al usuario algo que puede resolver solo. Toda capacidad nueva
+se diseña para agotar primero sus almacenes, sus herramientas, el contenido completo y las fuentes externas verificables;
+si el dato depende de un tercero (banco sin sincronizar), el caso se aparca y se reintenta solo; y si pregunta, la
+pregunta llega con lo investigado, las opciones y una recomendación, en un solo mensaje. La norma completa, con la escala
+para decidir si algo puede resolverse solo y dónde se hace cumplir (prompt central, sub-agentes, extractores y guardarraíl),
+está en [docs/norma-resolucion-autonoma.md](norma-resolucion-autonoma.md). Un agente nuevo que llame al modelo sin
+declararse en `COBERTURA_NORMA` (`core/ia/normaResolucionAutonoma.ts`) hace fallar las pruebas.
+
 ## Cuándo un archivo compartido es una señal de alerta
 
 Si un archivo empieza a acumular módulos o casos no relacionados entre sí — más de un par

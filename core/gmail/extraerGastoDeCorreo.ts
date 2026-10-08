@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { bloqueNormaResolucion } from "../ia/normaResolucionAutonoma";
 import { CACHE_1H } from "../claude/cacheControl";
 import { crearConsultorConocimiento, knowledgeBaseTool } from "../tools/knowledgeBase";
 import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendidaSheet";
@@ -250,6 +251,7 @@ export async function extraerGastoDeCorreo(
           text: buildSystemPrompt(clasificacionesAprendidas),
           cache_control: CACHE_1H,
         },
+        bloqueNormaResolucion("extractor"),
       ],
       tools,
       messages,

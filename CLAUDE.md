@@ -24,6 +24,14 @@ El sistema crece con varias sesiones a la vez (Claude Code y Codex). Para no cre
   conexión.
 - Al fusionar: borra la rama, cierra la copia de trabajo y actualiza el tablero.
 
+## Norma de resolución autónoma (Carlos, 2026-10-08)
+
+El sistema es un solucionador de problemas, no un repartidor: nunca traslada al usuario algo que puede resolver solo.
+Antes de que una capacidad pregunte, agota almacenes, herramientas, contenido completo y fuentes externas verificables;
+si el dato depende de un tercero, aparca y reintenta sola; si pregunta, llega con opciones y recomendación en un solo
+mensaje. Todo agente que llame al modelo inyecta la norma desde `core/ia/normaResolucionAutonoma.ts` (guardarraíl en
+`core/guardarrailes/`). Detalle y escala de decisión: [docs/norma-resolucion-autonoma.md](docs/norma-resolucion-autonoma.md).
+
 ## Los 3 puntos de extensión ya existentes — úsalos, no los reinventes
 
 1. **Nuevo módulo de Cerebro (front)** → entrada en `SECCIONES`
