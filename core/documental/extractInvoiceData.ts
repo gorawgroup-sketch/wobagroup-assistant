@@ -164,6 +164,10 @@ export interface DatosFactura {
    */
   lineas: LineaFactura[];
   empresaProbable: EmpresaGasto;
+  /** Razón social del COMPRADOR tal como está impresa en el documento («Customer information», «Bill to», «Cliente»…); undefined si no aparece. */
+  compradorRazonSocial?: string;
+  /** El operador fijó la empresa a mano (respuesta a «¿de qué empresa es?»): el comprador de la factura no la sobrescribe. */
+  empresaFijadaPorOperador?: boolean;
   confianza: "alta" | "media" | "baja";
   razon: string;
 }
@@ -393,6 +397,12 @@ const REPORTAR_TOOL: Anthropic.Tool = {
           required: ["concepto", "base", "tipo_iva_pct", "tratamiento_fiscal"],
         },
       },
+      comprador_razon_social: {
+        type: "string",
+        description:
+          "Razón social del COMPRADOR/CLIENTE tal como está impresa en el documento (sección «Customer information», «Bill to», «Facturar a», " +
+          "«Datos del cliente»). Cópiala literal. Siempre busca esta sección; deja el campo vacío SOLO si de verdad no nombra al comprador. No la deduzcas de dominios, del remitente ni del proyecto.",
+      },
       empresa_probable: {
         type: "string",
         enum: ["WOBA", "EWORKS", "Footprint", "desconocida"],
@@ -401,7 +411,7 @@ const REPORTAR_TOOL: Anthropic.Tool = {
       confianza: { type: "string", enum: ["alta", "media", "baja"] },
       razon: { type: "string", description: "Explicación breve de la clasificación (o de por qué no es una factura)." },
     },
-    required: ["es_factura_o_gasto", "confianza", "razon"],
+    required: ["es_factura_o_gasto", "confianza", "razon", "comprador_razon_social"],
   },
 };
 
@@ -762,6 +772,7 @@ export async function extraerDatosFactura(
         // ni siquiera a mostrarse como si fuera real.
         lineas: reciboSimplificado || lineas.length === 0 ? [lineaUnica] : lineas,
         empresaProbable: (input.empresa_probable as EmpresaGasto) ?? "desconocida",
+        compradorRazonSocial: typeof input.comprador_razon_social === "string" && input.comprador_razon_social.trim() ? input.comprador_razon_social.trim() : undefined,
         confianza: (input.confianza as DatosFactura["confianza"]) ?? "baja",
         razon: (input.razon as string) ?? "",
       };

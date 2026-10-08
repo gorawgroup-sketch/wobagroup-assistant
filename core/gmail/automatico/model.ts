@@ -1,5 +1,6 @@
 import { movimientoCompatibleConGasto } from "../../holded/write";
 import { createHash } from "node:crypto";
+import { empresaNombradaEnTexto } from "../../gastos/empresaPorComprador";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
@@ -329,6 +330,9 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   if (!new Set(["ticket", "recibo"]).has(r.tipo)) motivos.push("no_es_ticket_o_recibo_pagado");
   if (!r.evidencia.trim() || !r.evidenciaEmpresa.trim()) motivos.push("falta_evidencia");
   if (empresaEvaluada === "desconocida" || !config.empresas.includes(empresaEvaluada)) motivos.push("empresa_no_habilitada_o_ambigua");
+  // La evidencia de empresa nombra a OTRA sociedad del grupo (p. ej. «Datos del cliente: BUSINESS ATELIER EUROPA SL» para un recibo que se iba a crear en EWORKS).
+  const empresaEnLaEvidencia = empresaNombradaEnTexto(r.evidenciaEmpresa);
+  if (empresaEnLaEvidencia && empresaEnLaEvidencia !== empresaEvaluada) motivos.push("empresa_en_conflicto_con_el_comprador");
   if (!fechaValida(r.fecha)) motivos.push("fecha_invalida");
   if (!/^[A-Z]{3}$/.test(r.moneda)) motivos.push("moneda_invalida");
   if (!r.proveedor.trim() || !r.concepto.trim()) motivos.push("datos_incompletos");
