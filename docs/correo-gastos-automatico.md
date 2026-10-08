@@ -234,3 +234,12 @@ Con el diagnóstico del #410 («el recibo no coincide con el de la operación an
 - Se mantienen: misma parte del correo, misma fecha, misma moneda contable e importe dentro de la tolerancia.
 
 **Cero motivos genéricos (punto 3 del plan contra la recurrencia, 2026-10-08).** Cada código de motivo que emite la revisión automática tiene una explicación propia y concreta en `explicarPendiente` (con el dato que lo acompaña: parte no leída, versiones de la relectura, error, paso de la operación que quedó a medias, tipo de documento). El comodín final ya no dice «no se cumplieron las condiciones»: nombra el motivo en claro para que se catalogue. El guardarraíl `core/guardarrailes/motivosSinGenericos.test.ts` extrae los códigos del código fuente y falla si alguno cae en el comodín o usa una frase de `FRASES_GENERICAS_PROHIBIDAS`. En la revisión manual, el aviso del correo activo sin pregunta localizable dice lo que pasa y qué hacer (ya no «fallo temporal al leerla»).
+
+## La relectura compara el importe IMPRESO, no un equivalente que salió del banco (2026-10-08)
+
+El #413 no cubrió Antaris (340 MXN) ni Xue Cafe (19.513 COP): seguían saliendo con «el recibo no coincide… antes 340 MXN del 2026-09-08; ahora 340 MXN del 2026-09-08 (Footprint)» (cifras idénticas). Causa: `plan.recibo.equivalente` puede venir de la búsqueda bancaria (`evidencia.equivalenteBancario`, `service.ts`), no del correo. La relectura no lo trae, y `reciboCorrespondeALaOperacion` comparaba «EUR del plan» contra «MXN de la relectura».
+
+- `motivosDeNoCorrespondencia` (nuevo) devuelve la lista de diferencias; `reciboCorrespondeALaOperacion` es «lista vacía». Se compara el importe y la moneda IMPRESOS; el equivalente solo importa si la relectura lo trae (debe cuadrar con el total del plan en la moneda del cargo, y con el equivalente anterior si ambos están en la misma moneda).
+- Si algo sí difiere, el aviso lo dice: «…; difiere en: otro importe impreso».
+- Siguen bloqueando: otra parte del correo, otra empresa nombrada, otra fecha, otro importe impreso, un equivalente releído que no cuadra con el cargo. Pruebas con Antaris y Xue Cafe en `service.test.ts`.
+
