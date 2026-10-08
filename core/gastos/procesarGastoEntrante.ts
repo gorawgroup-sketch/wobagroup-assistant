@@ -44,7 +44,8 @@ import {
 import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
-import { buscarGastoProcesadoPorIdentidad } from "./gastoPorCorreoStore";
+import { buscarGastoProcesadoPorIdentidad, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
+import { buscarCompraEnlazadaAlCargo } from "./gastoYaRegistradoPorCargo";
 import { buscarMismaEstanciaRegistrada } from "./mismaEstanciaRegistrada";
 import { calcularHuellaContenido } from "./identidadGasto";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
@@ -735,6 +736,33 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     movimientosYaConciliados = [];
   }
   if (movimientosYaConciliados.length > 0) {
+    // Caso real (Carlos, 08-10-2026, Anthropic VJCCOFZT-0016): el cargo conciliado puede estar enlazado a ESTE mismo gasto,
+    // ya registrado como ticket (invisible en /purchases) y con otro número. Se sigue el cargo hasta su compra antes de
+    // hablar de «otro documento» o de ofrecer crear nada. Solo lecturas; un fallo no decide nada y se sigue como antes.
+    for (const m of movimientosYaConciliados) {
+      let compraEnlazada: Awaited<ReturnType<typeof buscarCompraEnlazadaAlCargo>>;
+      try {
+        compraEnlazada = await buscarCompraEnlazadaAlCargo(empresa, { monto: m.monto, moneda: m.moneda, fecha: m.fecha, descripcion: m.descripcion }, datos.proveedor);
+      } catch (error) {
+        console.error("[procesarGastoEntrante] No se pudo seguir el cargo conciliado hasta su documento (se sigue con la verificación normal):", error);
+        continue;
+      }
+      if (!compraEnlazada) continue;
+      console.log("[procesarGastoEntrante] El cargo conciliado está enlazado a este mismo gasto, ya registrado:", { compraId: compraEnlazada.compraId, numero: compraEnlazada.numero });
+      if (entrada.correoOrigen?.mensajeIdGmail) {
+        await registrarGastoDesdeCorreo({
+          mensajeIdGmail: entrada.correoOrigen.mensajeIdGmail, attachmentId: entrada.origenAdjuntoGmail?.attachmentIdGmail,
+          gastoId: compraEnlazada.compraId, empresa, completado: true,
+        }).catch((error) => console.error("[procesarGastoEntrante] No se pudo anotar el gasto ya registrado (no crítico):", error));
+      }
+      await sendTelegramMessage(
+        chatId,
+        `✅ Este gasto ya está registrado en Holded: ${compraEnlazada.contacto} · ${compraEnlazada.total.toFixed(2)} ${compraEnlazada.moneda ?? m.moneda}` +
+          `${compraEnlazada.numero ? ` · ${compraEnlazada.numero}` : ""} · ${compraEnlazada.fecha}, conciliado con el cargo «${m.descripcion}» del ${m.fecha}. ` +
+          `No se crea ni se concilia nada más; el correo queda resuelto.`
+      );
+      return "propuesta_duplicada";
+    }
     // Mismo correo con esta misma pregunta ya viva: no se repite el aviso (caso real 08-10-2026: el mensaje de Anthropic salió dos veces).
     // Si la comprobación falla no se asume nada: se manda el aviso como siempre (mejor repetido que perdido).
     let yaPreguntado: { id: string } | undefined;
