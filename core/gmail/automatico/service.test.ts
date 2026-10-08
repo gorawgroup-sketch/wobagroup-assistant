@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analisisReutilizable, ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS, prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
+import { analisisReutilizable, ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS, reciboCorrespondeALaOperacion, prioridadAnalisisAutomatico, resumenAutomatico, ServicioCorreoAutomatico, type PuertoAutomatico } from "./service";
 import { evaluarAuto, hash, VERSION_ANALISIS, VERSION_POLITICA, type OperacionAuto, type StoreAuto } from "./model";
-import { analisisFixture, configFixture, correoFixture, evidenciaFixture } from "./fixtures";
+import { analisisFixture, configFixture, correoFixture, evidenciaFixture, reciboFixture } from "./fixtures";
 import { UsoApiNoAutorizadoError } from "../../ai/policy";
 
 function escenario() {
@@ -663,4 +663,36 @@ test("la evidencia de empresa que nombra a OTRA sociedad del grupo impide la cre
   const coherente = { ...recibo, empresa: "WOBA" as const };
   const ok = evaluarAuto(correoFixture(), { ...analisisFixture(), recibos: [coherente] }, coherente, evidenciaFixture(), config);
   assert.ok(ok.apto || !ok.motivos.includes("empresa_en_conflicto_con_el_comprador"), JSON.stringify(ok));
+});
+
+function operacionDe(recibo: ReturnType<typeof reciboFixture>, movimientoMoneda: string, totalCentimos: number): OperacionAuto {
+  return { id: "op1", estado: "reservada", plan: { empresa: recibo.empresa, recibo, movimiento: { moneda: movimientoMoneda }, totalCentimos, toleranciaCentimos: 1 } } as unknown as OperacionAuto;
+}
+
+test("relectura: un recibo en USD cuyo cargo del plan es en EUR sigue siendo la misma operación (caso Anthropic 24,20 USD)", () => {
+  const anterior = { ...reciboFixture(), moneda: "USD", monto: 24.2, equivalente: undefined, empresa: "WOBA" as const };
+  const op = operacionDe(anterior, "EUR", 2088);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), true);
+});
+
+test("relectura: si la relectura no sabe la empresa («desconocida») no contradice la de la operación; si nombra otra, bloquea", () => {
+  const anterior = { ...reciboFixture(), moneda: "USD", monto: 16.54, equivalente: undefined, empresa: "Footprint" as const };
+  const op = operacionDe(anterior, "USD", 1654);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, empresa: "desconocida" }, op), true);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, empresa: "WOBA" }, op), false);
+});
+
+test("relectura: otra fecha, otro importe o otra parte del correo siguen sin coincidir", () => {
+  const anterior = { ...reciboFixture(), moneda: "EUR", monto: 50, equivalente: undefined, empresa: "WOBA" as const };
+  const op = operacionDe(anterior, "EUR", 5000);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), true);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, fecha: "2026-01-01" }, op), false);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, monto: 60 }, op), false);
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior, fuente: "adjunto-2" }, op), false);
+});
+
+test("relectura: en la misma moneda del movimiento el importe debe cuadrar con el total del plan", () => {
+  const anterior = { ...reciboFixture(), moneda: "EUR", monto: 50, equivalente: undefined, empresa: "WOBA" as const };
+  const op = operacionDe(anterior, "EUR", 4000); // el plan cobró 40 €, el recibo dice 50 €: no es la misma operación
+  assert.equal(reciboCorrespondeALaOperacion(anterior, { ...anterior }, op), false);
 });
