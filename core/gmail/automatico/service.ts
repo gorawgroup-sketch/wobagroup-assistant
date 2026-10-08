@@ -34,6 +34,20 @@ export interface PuertoAutomatico {
   cerrarConEvidencia?(op: OperacionAuto): Promise<boolean>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
+/**
+ * Un análisis COMPLETO guardado se reutiliza siempre (un mensaje de Gmail es inmutable). Uno INCOMPLETO no: se guardó en un mal momento
+ * (adjunto que no se pudo leer entonces, fallo del modelo, tope de coste…) y reutilizarlo para siempre dejaba el correo atascado en
+ * «el analizador no dio por completa la lectura» aunque ahora se lea bien (caso real, 2026-10-08: el recibo de Anthropic de 24,20 USD salía
+ * incompleto en la revisión y completo al releerlo). Se reintenta, pero no más de una vez cada 2 h para no gastar IA en lo que sigue
+ * siendo ilegible; los guardados sin marca de fecha (anteriores a este cambio) se reintentan una vez.
+ */
+export const ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS = 2 * 60 * 60_000;
+export function analisisReutilizable(guardado: AnalisisAuto | undefined, ahora = Date.now()): AnalisisAuto | undefined {
+  if (!guardado) return undefined;
+  if (guardado.completo) return guardado;
+  return typeof guardado.analizadoEn === "number" && ahora - guardado.analizadoEn < ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS ? guardado : undefined;
+}
+
 export function diagnosticoAnalisis(error: unknown): string {
   if (!(error instanceof Error)) return "Error no estructurado";
   // No incluir cuerpos de correos ni respuestas remotas en logs.
@@ -114,7 +128,7 @@ export class ServicioCorreoAutomatico {
       if (await this.puerto.reservadoManualmente(correo.threadId)) {
         return { correo, motivos: ["revision_manual_o_autorespuesta_activa"] };
       }
-      let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
+      let analisis = analisisReutilizable(await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS));
       if (!analisis) {
         const pospuesto = this.motivoPospuesto();
         if (pospuesto) return { correo, motivos: [pospuesto] };
@@ -122,7 +136,7 @@ export class ServicioCorreoAutomatico {
           return { correo, motivos: ["revision_pospuesta_por_limite_de_coste"] };
         }
         presupuesto.disponibles--;
-        analisis = await this.puerto.analizar(correo);
+        analisis = { ...(await this.puerto.analizar(correo)), analizadoEn: Date.now() };
         await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS, analisis);
         await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis",
           datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
@@ -146,9 +160,9 @@ export class ServicioCorreoAutomatico {
   }
 
   private async analizarParaRecuperacion(config: ConfigAuto, correo: CorreoAuto): Promise<AnalisisAuto> {
-    let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
+    let analisis = analisisReutilizable(await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS));
     if (!analisis) {
-      analisis = await this.puerto.analizar(correo);
+      analisis = { ...(await this.puerto.analizar(correo)), analizadoEn: Date.now() };
       await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS, analisis);
       await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "reanalisis_reparacion",
         datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos,

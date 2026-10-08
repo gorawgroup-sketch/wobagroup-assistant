@@ -144,3 +144,9 @@ Caso real (Footprint, Hospedaje Guadalajara): el recibo era de 4.036,92 MXN (≈
 
 - `core/gastos/equivalenteCoherente.ts` (`equivalenteCuadraConTasa`, con prueba): un equivalente que se aparta más del **8 %** de lo que da la tasa del día se **ignora** y se busca el cargo real en el banco (la propuesta lo dice en la razón). Sin tasa, o con datos inválidos, no se juzga y el equivalente se conserva. El spread normal de una tarjeta es del 1-4 %.
 - Comprobado con tasas reales: 4.036,92 MXN → 204,65 € cuadra, 174,60 € no. Con 40 gastos reales ya creados con equivalente, 39 cuadran; 1 no (Uber, 9.744,65 CRC → 18,26 USD, −15 %), que con esta regla pasaría por la búsqueda en el banco en vez de aceptarse a ciegas.
+
+## Un análisis incompleto ya no se queda fijado para siempre (2026-10-08)
+
+Síntoma (Carlos, 08-10): la revisión automática no concilia ningún correo y deja 5 con «el analizador no dio por completa la lectura» aunque ya se había corregido. Causa: el servicio reutilizaba SIEMPRE el análisis guardado del mismo mensaje y versión, también si estaba marcado incompleto (guardado en un mal momento: adjunto que no se pudo leer entonces, fallo del modelo, tope de coste). Releído ahora, el recibo de Anthropic de 24,20 USD sale **completo** con un recibo; en la revisión salía incompleto.
+
+- `analisisReutilizable` (`core/gmail/automatico/service.ts`, con pruebas): un análisis completo se reutiliza siempre; uno incompleto solo si se guardó hace menos de **2 h** (marca `analizadoEn`); los guardados antes de este cambio, sin marca, se reintentan una vez. Así un correo atascado se vuelve a leer, y uno que sigue ilegible no gasta IA más de una vez cada 2 h. Los límites de coste (`maxAnalisisNuevos`, tope diario por proceso) siguen mandando.
