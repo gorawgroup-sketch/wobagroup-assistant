@@ -34,6 +34,7 @@ import { ejecutarVigilanteSeguros } from "../vigilante/vigilante";
 import { PROCESO_IA_AGENTE, resolverModeloAgente, type DepsConsulta } from "./agente";
 import { almacenCambiosReal, type DepsAplicar } from "./cambiosPendientes";
 import { almacenConocimientoReal } from "./conocimiento";
+import { diferirPropuesta } from "./propuestasDiferidas";
 import { almacenTextosReal, textoDeDocumento, type LectorDocumentos } from "./textosStore";
 
 let clienteAnthropic: Anthropic | null = null;
@@ -128,20 +129,24 @@ export function depsRealesAgente(): DepsConsulta {
       return resultado.respuestaChat;
     },
     conocimiento: almacenConocimientoReal,
+    // La propuesta no sale en mitad del turno: se encola y sale justo DESPUÉS de la respuesta de Wobi, para que sus botones
+    // queden al final del chat (propuestasDiferidas.ts). La fila y el mensaje se crean juntos al enviarla.
     proponerCambio: async (chatId, propuesta) => {
-      const cambio = await almacenCambiosReal.crear({ chatId, accion: propuesta.accion, datos: JSON.stringify(propuesta.datos), cita: propuesta.cita });
-      let messageId: number;
-      try {
-        messageId = await sendTelegramMessageWithButtons(chatId, propuesta.texto, [[
-          { text: "✅ Aplicar", callback_data: `segcambio_aplicar:${cambio.id}` },
-          { text: "❌ Cancelar", callback_data: `segcambio_cancelar:${cambio.id}` },
-        ]]);
-      } catch (error) {
-        // Sin mensaje no hay botón que la decida: no se deja una propuesta huérfana en la hoja.
-        await almacenCambiosReal.consumir(cambio.id).catch(() => undefined);
-        throw error;
-      }
-      await almacenCambiosReal.actualizarMessageId(cambio.id, messageId);
+      diferirPropuesta(chatId, async () => {
+        const cambio = await almacenCambiosReal.crear({ chatId, accion: propuesta.accion, datos: JSON.stringify(propuesta.datos), cita: propuesta.cita });
+        let messageId: number;
+        try {
+          messageId = await sendTelegramMessageWithButtons(chatId, propuesta.texto, [[
+            { text: "✅ Aplicar", callback_data: `segcambio_aplicar:${cambio.id}` },
+            { text: "❌ Cancelar", callback_data: `segcambio_cancelar:${cambio.id}` },
+          ]]);
+        } catch (error) {
+          // Sin mensaje no hay botón que la decida: no se deja una propuesta huérfana en la hoja.
+          await almacenCambiosReal.consumir(cambio.id).catch((e) => console.error("[depsReales] No se pudo retirar la propuesta sin mensaje:", e instanceof Error ? e.message : e));
+          throw error;
+        }
+        await almacenCambiosReal.actualizarMessageId(cambio.id, messageId);
+      });
     },
     // Solo un superadministrador en un chat privado de Telegram: es quien puede aprobar el botón (ACCIONES_SENSIBLES).
     puedeProponer: async (chatId) => chatId != null && chatId > 0 && (await obtenerRolUsuario(chatId)) === "superadmin",

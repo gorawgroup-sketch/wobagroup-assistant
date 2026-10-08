@@ -159,7 +159,7 @@ test("tras tres reanudaciones encadenadas se avisa y no se relanza; una caducada
 test("un correo activo bloqueando y un fallo siguen avisando como antes del cambio", async () => {
   const e = escenario({ resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura X", de: "Proveedor" } }) });
   await ejecutarRevisionCorreoManual(CHAT);
-  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta: "Factura X"/);
+  assert.match(e.enviados[0].texto, /La cola espera tu respuesta al correo "Factura X"/);
   e.restaurar();
   const f = escenario({ resultado: async () => { throw new Error("Gmail caído"); } });
   await ejecutarRevisionCorreoManual(CHAT);
@@ -189,7 +189,7 @@ test("no se ofrece reprocesar un correo con pendientesRestantes=0: ya está resu
     resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura ya resuelta", de: "Proveedor" } }),
   });
   await ejecutarRevisionCorreoManual(CHAT);
-  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta: "Factura ya resuelta"/);
+  assert.match(e.enviados[0].texto, /La cola espera tu respuesta al correo "Factura ya resuelta"/);
   assert.doesNotMatch(e.enviados[0].texto, /no tiene ninguna pregunta viva/);
   e.restaurar();
 });
@@ -200,7 +200,7 @@ test("si no se pudo comprobar la pregunta viva, el aviso es el de siempre (nunca
     resultado: async () => ({ correosRevisados: 0, activoBloqueando: { asunto: "Factura X", de: "Proveedor" } }),
   });
   await ejecutarRevisionCorreoManual(CHAT);
-  assert.match(e.enviados[0].texto, /Ya tienes un correo activo esperando tu respuesta/);
+  assert.match(e.enviados[0].texto, /La cola espera tu respuesta al correo/);
   e.restaurar();
 });
 

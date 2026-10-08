@@ -1,4 +1,5 @@
 import { esRemitenteDelGrupo } from "../../gastos/remitenteDelGrupo";
+import { lineasDiferencias } from "./informeDiferencias";
 import { completarEquivalenteExplicito } from "./equivalenteExplicito";
 import { candidatosMovimientoAuto, evaluarAuto, type AnalisisAuto, type ConfigAuto, type CorreoAuto, type EvidenciaAuto,
   nombresProveedorCompatibles, type OperacionAuto, type PlanAuto, type ReciboAuto, type ResultadoAuto,
@@ -34,6 +35,55 @@ export interface PuertoAutomatico {
   cerrarConEvidencia?(op: OperacionAuto): Promise<boolean>;
 }
 const mensajeError = (e: unknown) => e instanceof Error ? e.message : "Error de verificación";
+/**
+ * ¿La relectura de un correo da el MISMO recibo que usó la operación anterior? Misma parte (fuente), misma fecha, misma moneda contable e
+ * importe dentro de la tolerancia. Dos precisiones (caso real 08-10-2026: cinco operaciones en moneda extranjera atascadas con «el recibo no
+ * coincide» aunque importe y fecha eran idénticos):
+ *  - El total del plan (`totalCentimos`) es el importe del MOVIMIENTO bancario: solo es comparable con el recibo si están en la misma moneda
+ *    (24,20 USD del recibo frente a 20,88 EUR del cargo nunca coinciden y no tienen por qué).
+ *  - La empresa de la operación ya está fijada por su plan; una relectura que no la sabe («desconocida») no la contradice. Una relectura que
+ *    nombra OTRA empresa distinta sí bloquea.
+ */
+export function motivosDeNoCorrespondencia(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): string[] {
+  const centimos = (monto: number) => Math.round(monto * 100);
+  const tolerancia = Math.max(0, op.plan.toleranciaCentimos);
+  const motivos: string[] = [];
+  if (actual.fuente !== anterior.fuente) motivos.push("otra parte del correo");
+  if (!(actual.empresa === op.plan.empresa || actual.empresa === "desconocida")) motivos.push(`empresa ${actual.empresa} en vez de ${op.plan.empresa}`);
+  if (actual.fecha !== anterior.fecha) motivos.push("otra fecha");
+  // El importe IMPRESO es lo que identifica al recibo. El `equivalente` del plan puede venir de la búsqueda bancaria (evidencia),
+  // no del correo: la relectura no lo trae y compararlo ahí daba «340 MXN» contra «EUR» (caso real 08-10-2026: Antaris, Xue Cafe).
+  if (actual.moneda !== anterior.moneda || Math.abs(centimos(actual.monto) - centimos(anterior.monto)) > tolerancia) motivos.push("otro importe impreso");
+  // Si lo releído (impreso o equivalente) está en la moneda del movimiento, tiene que cuadrar con el total del plan; en otra moneda
+  // no son comparables (24,20 USD del recibo frente a 20,88 EUR del cargo nunca coinciden y no tienen por qué).
+  const contable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
+  if (contable.moneda === op.plan.movimiento.moneda && Math.abs(centimos(contable.monto) - op.plan.totalCentimos) > tolerancia) {
+    motivos.push("no cuadra con el cargo del plan");
+  }
+  // Con las dos lecturas en la misma moneda contable, también deben coincidir entre sí.
+  if (anterior.equivalente && actual.equivalente && anterior.equivalente.moneda === actual.equivalente.moneda &&
+    Math.abs(centimos(actual.equivalente.monto) - centimos(anterior.equivalente.monto)) > tolerancia) motivos.push("otro equivalente");
+  return motivos;
+}
+
+export function reciboCorrespondeALaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
+  return motivosDeNoCorrespondencia(anterior, actual, op).length === 0;
+}
+
+/**
+ * Un análisis COMPLETO guardado se reutiliza siempre (un mensaje de Gmail es inmutable). Uno INCOMPLETO no: se guardó en un mal momento
+ * (adjunto que no se pudo leer entonces, fallo del modelo, tope de coste…) y reutilizarlo para siempre dejaba el correo atascado en
+ * «el analizador no dio por completa la lectura» aunque ahora se lea bien (caso real, 2026-10-08: el recibo de Anthropic de 24,20 USD salía
+ * incompleto en la revisión y completo al releerlo). Se reintenta, pero no más de una vez cada 2 h para no gastar IA en lo que sigue
+ * siendo ilegible; los guardados sin marca de fecha (anteriores a este cambio) se reintentan una vez.
+ */
+export const ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS = 2 * 60 * 60_000;
+export function analisisReutilizable(guardado: AnalisisAuto | undefined, ahora = Date.now()): AnalisisAuto | undefined {
+  if (!guardado) return undefined;
+  if (guardado.completo) return guardado;
+  return typeof guardado.analizadoEn === "number" && ahora - guardado.analizadoEn < ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS ? guardado : undefined;
+}
+
 export function diagnosticoAnalisis(error: unknown): string {
   if (!(error instanceof Error)) return "Error no estructurado";
   // No incluir cuerpos de correos ni respuestas remotas en logs.
@@ -114,7 +164,7 @@ export class ServicioCorreoAutomatico {
       if (await this.puerto.reservadoManualmente(correo.threadId)) {
         return { correo, motivos: ["revision_manual_o_autorespuesta_activa"] };
       }
-      let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
+      let analisis = analisisReutilizable(await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS));
       if (!analisis) {
         const pospuesto = this.motivoPospuesto();
         if (pospuesto) return { correo, motivos: [pospuesto] };
@@ -122,7 +172,7 @@ export class ServicioCorreoAutomatico {
           return { correo, motivos: ["revision_pospuesta_por_limite_de_coste"] };
         }
         presupuesto.disponibles--;
-        analisis = await this.puerto.analizar(correo);
+        analisis = { ...(await this.puerto.analizar(correo)), analizadoEn: Date.now() };
         await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS, analisis);
         await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "analisis",
           datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos, completo: analisis.completo,
@@ -146,9 +196,9 @@ export class ServicioCorreoAutomatico {
   }
 
   private async analizarParaRecuperacion(config: ConfigAuto, correo: CorreoAuto): Promise<AnalisisAuto> {
-    let analisis = await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS);
+    let analisis = analisisReutilizable(await this.store.buscarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS));
     if (!analisis) {
-      analisis = await this.puerto.analizar(correo);
+      analisis = { ...(await this.puerto.analizar(correo)), analizadoEn: Date.now() };
       await this.store.guardarAnalisis(config.buzon, correo.id, correo.huella, VERSION_ANALISIS, analisis);
       await this.store.auditar({ buzon: config.buzon, mensajeId: correo.id, tipo: "reanalisis_reparacion",
         datos: { huella: correo.huella, resumen: analisis.resumen, recibos: analisis.recibos,
@@ -158,14 +208,7 @@ export class ServicioCorreoAutomatico {
   }
 
   private reciboCorrespondeALaMismaOperacion(anterior: ReciboAuto, actual: ReciboAuto, op: OperacionAuto): boolean {
-    const centimos = (monto: number) => Math.round(monto * 100);
-    const anteriorContable = anterior.equivalente ?? { monto: anterior.monto, moneda: anterior.moneda };
-    const actualContable = actual.equivalente ?? { monto: actual.monto, moneda: actual.moneda };
-    const tolerancia = Math.max(0, op.plan.toleranciaCentimos);
-    return actual.fuente === anterior.fuente && actual.empresa === op.plan.empresa &&
-      actual.fecha === anterior.fecha && actualContable.moneda === anteriorContable.moneda &&
-      Math.abs(centimos(actualContable.monto) - centimos(anteriorContable.monto)) <= tolerancia &&
-      Math.abs(centimos(actualContable.monto) - op.plan.totalCentimos) <= tolerancia;
+    return reciboCorrespondeALaOperacion(anterior, actual, op);
   }
 
   private contactoSeguroParaReparar(recibo: ReciboAuto, evidencia: EvidenciaAuto): boolean {
@@ -368,7 +411,8 @@ export class ServicioCorreoAutomatico {
     resultado.reservados = preparados.filter(preparado =>
       preparado.motivos.includes("revision_manual_o_autorespuesta_activa")
     ).length;
-    const operacionesBloqueadas = new Map<string, string>();
+    // Por operación: motivo principal + detalles que viajan con él (p. ej. «lectura:<parte no leída>»).
+    const operacionesBloqueadas = new Map<string, string[]>();
     if (config.modo === "execute") {
       const recuperables = await this.store.recuperables(config.buzon, VERSION_POLITICA);
       let recuperados = 0;
@@ -408,9 +452,22 @@ export class ServicioCorreoAutomatico {
               const recibosFuente = analisisRecuperado.recibos.filter(r => r.fuente === op.plan.recibo.fuente);
               if (!analisisRecuperado.completo || recibosFuente.length !== 1 ||
                 !this.reciboCorrespondeALaMismaOperacion(op.plan.recibo, recibosFuente[0], op)) {
-                operacionesBloqueadas.set(op.id, "lectura_incompleta");
+                // Caso real (Carlos, 07/08-10-2026): «5: el analizador no dio por completa la lectura» durante días. Tres
+                // causas distintas salían con la misma etiqueta y ninguna decía qué pasaba: (a) lectura incompleta de verdad
+                // (con su parte concreta), (b) la relectura no encuentra un único recibo en la misma parte que la operación
+                // anterior, (c) el recibo releído no coincide (empresa, fecha o importe) con la operación anterior.
+                const motivoRelectura = !analisisRecuperado.completo
+                  ? "lectura_incompleta"
+                  : recibosFuente.length !== 1 ? "relectura_sin_recibo_unico" : "relectura_no_coincide";
+                const motivosRelectura = [motivoRelectura,
+                  ...(!analisisRecuperado.completo && analisisRecuperado.detalleIncompleto
+                    ? [`lectura:${analisisRecuperado.detalleIncompleto.slice(0, 200)}`] : []),
+                  ...(motivoRelectura === "relectura_sin_recibo_unico" ? [`relectura:${recibosFuente.length} recibo(s) en la parte «${op.plan.recibo.fuente}»`] : []),
+                  ...(motivoRelectura === "relectura_no_coincide"
+                    ? [`relectura:antes ${op.plan.recibo.monto} ${op.plan.recibo.moneda} del ${op.plan.recibo.fecha}; ahora ${recibosFuente[0].monto} ${recibosFuente[0].moneda} del ${recibosFuente[0].fecha} (${recibosFuente[0].empresa}); difiere en: ${motivosDeNoCorrespondencia(op.plan.recibo, recibosFuente[0], op).join(", ")}`] : [])];
+                operacionesBloqueadas.set(op.id, motivosRelectura);
                 if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-                  motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, "lectura_incompleta")] });
+                  motivos: motivosRelectura, detalles: [this.detalleOperacion(op, motivosRelectura)] });
                 continue;
               }
               const reciboActual = recibosFuente[0];
@@ -418,7 +475,7 @@ export class ServicioCorreoAutomatico {
               op.plan.recibo = reciboActual;
               if (!evidenciaActual.contacto?.id || !this.contactoSeguroParaReparar(reciboActual, evidenciaActual)) {
                 const motivo = evidenciaActual.contacto?.id ? "proveedor_no_verificado" : "proveedor_no_encontrado";
-                operacionesBloqueadas.set(op.id, motivo);
+                operacionesBloqueadas.set(op.id, [motivo]);
                 if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
                   motivos: [motivo], detalles: [this.detalleOperacion(op, motivo)] });
                 continue;
@@ -428,9 +485,11 @@ export class ServicioCorreoAutomatico {
               op.plan.evidencia.motivoProveedor = evidenciaActual.motivoProveedor;
               op.plan.evidencia.candidatosProveedor = evidenciaActual.candidatosProveedor;
             } catch (error) {
-              operacionesBloqueadas.set(op.id, "lectura_incompleta");
+              // Un fallo técnico al releer no es una lectura incompleta: se dice como lo que es y se reintenta en la siguiente pasada.
+              const motivosFallo = ["relectura_fallida", `error:${mensajeError(error)}`];
+              operacionesBloqueadas.set(op.id, motivosFallo);
               if (!correoNoLeido) resultado.pendientes.push({ mensajeId: correo.id, asunto: correo.asunto,
-                motivos: ["lectura_incompleta"], detalles: [this.detalleOperacion(op, `error:${mensajeError(error)}`)] });
+                motivos: motivosFallo, detalles: [this.detalleOperacion(op, motivosFallo)] });
               continue;
             }
           }
@@ -482,9 +541,9 @@ export class ServicioCorreoAutomatico {
             const previa = await this.store.buscarFuente(config.buzon, correo.id, recibo.fuente);
             let op = previa;
             if (op && operacionesBloqueadas.has(op.id)) {
-              const motivo = operacionesBloqueadas.get(op.id)!;
-              motivos.push(motivo);
-              detalles.push(this.detalleOperacion(op, motivo));
+              const motivosBloqueo = operacionesBloqueadas.get(op.id)!;
+              motivos.push(...motivosBloqueo);
+              detalles.push(this.detalleOperacion(op, motivosBloqueo));
               continue;
             }
             if (op && op.estado === "reservada" && this.opciones.detener?.()) {
@@ -565,20 +624,44 @@ export class ServicioCorreoAutomatico {
     return resultado;
   }
 
-  private detalleOperacion(op: OperacionAuto, motivo: string): NonNullable<ResultadoAuto["pendientes"][number]["detalles"]>[number] {
+  /** El detalle por operación lleva TODOS los motivos (incluidas las partes «lectura:»/«relectura:»): la sección «Casos que el
+   * operador debe revisar primero» se redacta desde aquí, y sin ellas volvía a salir el aviso genérico. */
+  private detalleOperacion(op: OperacionAuto, motivo: string | string[]): NonNullable<ResultadoAuto["pendientes"][number]["detalles"]>[number] {
+    const lista = Array.isArray(motivo) ? motivo : [motivo];
     return { proveedor: op.plan.recibo.proveedor, empresa: op.plan.empresa, monto: op.plan.recibo.monto,
       moneda: op.plan.recibo.moneda, contacto: op.plan.evidencia.contacto?.nombre,
       metodoContacto: op.plan.evidencia.contacto?.metodo, motivoProveedor: op.plan.evidencia.motivoProveedor,
-      motivos: [motivo, ...(op.detalle ? [`detalle:${op.detalle}`] : [])] };
+      motivos: [...lista, ...(op.detalle ? [`detalle:${op.detalle}`] : [])] };
   }
 }
 
 type DetallePendiente = NonNullable<ResultadoAuto["pendientes"][number]["detalles"]>[number];
 
-function explicarPendiente(motivos: string[], detalle?: DetallePendiente): string {
+/** Frases que el informe NO puede usar: cada motivo dice su causa concreta (guardarraíl core/guardarrailes/motivosSinGenericos.test.ts). */
+export const FRASES_GENERICAS_PROHIBIDAS = [
+  "No se cumplieron todas las condiciones necesarias",
+  "no dio por completa la lectura",
+  "fallo temporal al leerla",
+  "ya empezó, pero falta confirmar que quedó completa",
+];
+
+const PASOS_OPERACION: Record<string, string> = {
+  reservada: "quedó reservada y aún no se creó en Holded",
+  creando: "se estaba creando en Holded y no se confirmó",
+  adjuntando: "se creó y quedó a medias al adjuntar el comprobante",
+  conciliando: "se creó y quedó a medias al conciliar con el banco",
+  incierta: "quedó en estado incierto (Holded no confirmó el último paso)",
+  completada: "figura como completada pero falta la confirmación final",
+};
+
+export function explicarPendiente(motivos: string[], detalle?: DetallePendiente): string {
   const tiene = (valor: string) => motivos.some(motivo => motivo === valor || motivo.startsWith(`${valor}:`));
-  if (motivos.some(motivo => motivo.startsWith("operacion_"))) {
-    return "La operación ya empezó, pero falta confirmar que quedó completa en Holded.";
+  const operacion = motivos.find(motivo => motivo.startsWith("operacion_"));
+  if (operacion) {
+    // Qué paso quedó a medias (nunca el id interno): «operacion_<estado>:<id>».
+    const estado = operacion.slice("operacion_".length).split(":")[0];
+    const paso = PASOS_OPERACION[estado] ?? `quedó en el paso «${estado.replace(/_/g, " ")}»`;
+    return `La operación de una revisión anterior ${paso}; hay que comprobarla en Holded antes de continuarla.`;
   }
   if (tiene("posible_duplicado")) return "Puede estar registrado previamente; hay que comprobarlo antes de crear otro gasto.";
   if (tiene("no_es_ticket_o_recibo_pagado")) return "El documento no se identificó como recibo de pago; la búsqueda bancaria automática no se ejecutó.";
@@ -627,6 +710,13 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   };
   const errorTecnico = motivos.find(motivo => motivo.startsWith("error:"))?.slice("error:".length).trim();
   const detalleOperacion = motivos.find(motivo => motivo.startsWith("detalle:"))?.slice("detalle:".length).trim();
+  if (tiene("relectura_sin_recibo_unico") || tiene("relectura_no_coincide")) {
+    const que = motivos.find(motivo => motivo.startsWith("relectura:"))?.slice("relectura:".length).trim();
+    const base = tiene("relectura_sin_recibo_unico")
+      ? "Al releer el correo con el analizador actual no aparece un único recibo en la misma parte que usó la operación anterior"
+      : "Al releer el correo, el recibo no coincide con el de la operación anterior";
+    return `${base}${que ? ` (${acotar(que)})` : ""}; revisa esa operación a mano antes de continuarla (no es un comprobante ilegible).`;
+  }
   if (tiene("lectura_excede_limite")) {
     return "El hilo es demasiado largo para leerlo entero de forma automática; revísalo a mano (no es un comprobante ilegible).";
   }
@@ -638,7 +728,7 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
     const parte = motivos.find(motivo => motivo.startsWith("lectura:"))?.slice("lectura:".length).trim();
     return parte
       ? `El analizador no pudo leer una parte de este correo: ${acotar(parte)}`
-      : "El analizador no dio por completa la lectura de este correo (algún adjunto, enlace o parte del hilo no se pudo leer).";
+      : "El analizador marcó la lectura como incompleta sin nombrar la parte que no pudo leer; se trata como fallo del analizador y hay que revisar el correo a mano.";
   }
   if (tiene("otras_acciones_pendientes")) return "El correo contiene además otra solicitud que debe revisar el operador.";
   if (tiene("correo_sin_gastos_automatizables")) return "El correo no contiene un ticket o recibo que se pueda registrar automáticamente.";
@@ -649,8 +739,31 @@ function explicarPendiente(motivos: string[], detalle?: DetallePendiente): strin
   if (tiene("fallo_temporal_analisis_ia")) return "El servicio de análisis tuvo un fallo temporal; el correo se conserva para reintento.";
   if (tiene("fallo_tecnico_analisis_ia")) return "El analizador no pudo completar este correo; el motivo técnico quedó registrado.";
   if (tiene("correo_original_no_disponible")) return "La operación existe, pero Gmail ya no permite recuperar el comprobante original.";
-  if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) return "La fase automática no terminó y el correo se conserva para revisión manual.";
-  return "No se cumplieron todas las condiciones necesarias para automatizarlo con seguridad.";
+  if (motivos.some(motivo => motivo.startsWith("error_automatico:"))) {
+    const que = motivos.find(motivo => motivo.startsWith("error_automatico:"))?.slice("error_automatico:".length).trim();
+    return `La fase automática se interrumpió${que ? ` (${acotar(que)})` : ""}; el correo se conserva para revisión manual.`;
+  }
+  const quien = detalle?.proveedor ? `«${detalle.proveedor}»` : "el comprobante";
+  const importe = detalle?.monto !== undefined && detalle?.moneda ? ` (${detalle.monto} ${detalle.moneda})` : "";
+  if (tiene("empresa_en_conflicto_con_el_comprador")) return `La factura va a nombre de una sociedad distinta de la que sugiere el contexto; hay que decidir a qué empresa pertenece ${quien}${importe}.`;
+  if (tiene("empresa_no_habilitada_o_ambigua")) return `No se pudo determinar con seguridad a qué empresa pertenece ${quien}${importe}${detalle?.empresa ? ` (el analizador propuso ${detalle.empresa})` : ""}.`;
+  if (tiene("falta_evidencia")) return `El analizador no citó la evidencia del documento (proveedor, importe y fecha, o la empresa) para ${quien}${importe}.`;
+  if (tiene("fecha_invalida")) return `La fecha del comprobante de ${quien}${importe} no es válida o no está; hay que confirmarla a mano.`;
+  if (tiene("moneda_invalida")) return `La moneda leída para ${quien} no es un código válido (${detalle?.moneda || "vacía"}); hay que corregirla a mano.`;
+  if (tiene("datos_incompletos")) return `Falta el proveedor o el concepto del gasto${importe}; hay que completarlos a mano.`;
+  if (tiene("importe_o_equivalente_invalido")) return `El importe o su equivalente bancario de ${quien} no son coherentes; hay que revisarlos a mano.`;
+  if (tiene("fuente_inexistente")) return `El recibo de ${quien} se atribuyó a un adjunto que no existe en el correo; hay que revisarlo a mano.`;
+  if (tiene("varios_gastos_en_misma_fuente")) return `El mismo adjunto o cuerpo contiene varios recibos (${quien}${importe}); se registran a mano uno a uno.`;
+  if (tiene("tipo_ticket_no_soportado") || motivos.some(motivo => motivo.startsWith("tipo_"))) {
+    const tipo = motivos.find(motivo => motivo.startsWith("tipo_"))?.replace(/^tipo_/, "").replace(/_/g, " ");
+    return `El tipo de documento de ${quien} no se registra automáticamente como ticket (${tipo || "tipo no soportado"}); se crea a mano.`;
+  }
+  if (tiene("operacion_pendiente_sin_escritura_en_simulacion")) return "Modo simulación: la operación se habría ejecutado, pero no se escribió nada.";
+  if (tiene("simulacion_sin_modificar_correo")) return "Modo simulación: el correo no se marcó como leído.";
+  if (tiene("relectura_fallida")) return "La relectura del correo falló por un error técnico; se reintenta en la siguiente pasada.";
+  // Ningún motivo conocido llega aquí (guardarraíl). Si uno nuevo lo hace, se nombra en claro en vez de esconderlo.
+  const legible = motivos.map(motivo => motivo.split(":")[0].replace(/_/g, " ")).filter(Boolean).join(", ");
+  return `Motivo sin explicación catalogada (${legible || "sin motivo"}); revisar a mano y avisar al equipo.`;
 }
 
 /** Máximo de compras que el informe detalla una a una; el resto se resume en «y N más». */
@@ -688,7 +801,8 @@ export function resumenAutomatico(r: ResultadoAuto, opciones: { revisionesConsol
     ...(r.fallosAnalisis ? [`Fallos técnicos del analizador: ${r.fallosAnalisis}. Los correos permanecen sin leer para reintento.`] : []),
     `Gastos creados, soportados y conciliados: ${r.completados}.`,
     ...(r.modo === "simulate" ? [`${r.simulados} gasto(s) cumplirían los requisitos. No se modificó Holded ni Gmail.`] : []),
-    `Mensajes con asuntos pendientes (incluye operaciones anteriores; no equivale a hilos sin leer): ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`];
+    `Mensajes con asuntos pendientes (incluye operaciones anteriores; no equivale a hilos sin leer): ${new Set(r.pendientes.map(p => p.mensajeId)).size}.`,
+    ...lineasDiferencias(r.diferencias)];
   if (r.gastos.length) {
     const porEmpresa = new Map<string, number>();
     for (const g of r.gastos) porEmpresa.set(g.empresa, (porEmpresa.get(g.empresa) ?? 0) + 1);

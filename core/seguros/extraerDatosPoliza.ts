@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { NORMA_EXTRACTOR } from "../ia/normaResolucionAutonoma";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
@@ -135,7 +136,7 @@ export async function extraerDatosPoliza(
       // Mismo modelo y misma palanca de rollback que el lector de facturas: es la misma clase de lectura documental.
       model: resolverModeloDocumental("extraer_factura"),
       max_tokens: 8192,
-      system: SYSTEM,
+      system: `${SYSTEM}\n\n${NORMA_EXTRACTOR}`,
       tools: [TOOL],
       messages,
     });

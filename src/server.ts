@@ -57,6 +57,9 @@ import { notificarSolicitudAcceso, handleAuthCallback } from "../core/telegram/a
 import { handleCallbackQuery } from "../core/telegram/callbackHandler";
 import { handleSegurosCambioCallback } from "../core/seguros/agente/callbackSeguros";
 import { handleIncomingFile } from "../core/documental/receiveFile";
+import { handleSoportesCallback } from "../core/soportes/soportesTelegram";
+import { handleConciliarSinSoporteCallback } from "../core/holded/conciliarSinSoporte";
+import { handleSoportesModoCallback, iniciarSoportes } from "../core/soportes/comandoSoportes";
 import { handleDocumentCallback, handleDesambiguacionCallback } from "../core/documental/documentCallbackHandler";
 import { consumirPendienteDesambiguacion, restaurarPendienteDesambiguacion, type PendienteDesambiguacion } from "../core/documental/disambiguationStore";
 import { consumirPendienteReglaClasificacion } from "../core/documental/pendienteReglaClasificacionStore";
@@ -64,7 +67,8 @@ import { registrarReglaClasificacion } from "../core/documental/carpetaReglaStor
 import { consumirPendienteAlertaDocumento } from "../core/documental/pendienteAlertaDocumentoStore";
 import { guardarPendienteReclasificacion } from "../core/documental/pendienteReclasificacionStore";
 import { esMensajeCaptura } from "../core/knowledge/capture";
-import { ejecutarComandoPreguntas, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
+import { capturarTextoEnModoConocimiento, handleModoConocimientoCallback, iniciarModoConocimiento, parsearComandoConocimiento } from "../core/knowledge/modoConocimiento";
+import { ejecutarComandoPreguntas, handleReenviarPreguntaCallback, parsearComandoPreguntas } from "../core/gastos/comandoPreguntas";
 import { consumirPendienteExplicacion } from "../core/cashflow/pendienteExplicacionStore";
 import { continuarConExplicacion } from "../core/cashflow/explicacionCashflow";
 import { obtenerCapturasCrudas } from "../core/knowledge/capturaSheet";
@@ -75,6 +79,7 @@ import { obtenerHistorialVisible } from "../core/claude/conversationStore";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
+import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import {
@@ -91,6 +96,7 @@ import {
 } from "../core/jobs/revisionCorreoManual";
 import { solicitarCierre } from "../core/utils/cierreServicio";
 import { entregarRespuestaChat } from "../core/telegram/entregarRespuestaChat";
+import { enviarPropuestasDiferidas } from "../core/seguros/agente/propuestasDiferidas";
 import { accionEsperoBuzon, conContextoInteractivo, esperaAgotada } from "../core/telegram/contextoInteractivo";
 import { EsperaBuzonPorChat, textoFinEsperaBuzon } from "../core/telegram/esperaBuzonPorChat";
 import { BuzonOcupadoError } from "../core/gmail/automatico/postgres";
@@ -147,7 +153,7 @@ import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorC
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
 import { handleTransferenciasCallback, publicarPropuestasTransferencias } from "../core/holded/transferencias/telegram";
 import { EMPRESAS_TRANSFERENCIAS } from "../core/holded/transferencias/modo";
-import { parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
+import { parsearComandoSoportes, parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
 import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
@@ -1119,6 +1125,8 @@ app.post("/api/cerebro/chat", async (req: Request, res: Response) => {
             presentacion: "web",
           });
         } finally {
+          // Si Wobi Seguros dejó una propuesta preparada en este turno, sale ahora al Telegram del usuario.
+          await enviarPropuestasDiferidas(identidad.chatId);
           // Despierta el front al terminar (con éxito o error). La respuesta
           // se recupera por requestId; no depende de mantener el POST vivo.
           publicarCambioCerebro("chat_web");
@@ -1723,6 +1731,16 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleRegistroManualCashflowCallback(callback);
     } else if (data.startsWith("transfint_")) {
       await handleTransferenciasCallback(callback);
+    } else if (data.startsWith("preg_r:")) {
+      await handleReenviarPreguntaCallback(callback);
+    } else if (data.startsWith("sinsop_")) {
+      await handleConciliarSinSoporteCallback(callback);
+    } else if (data.startsWith("conoc_")) {
+      await handleModoConocimientoCallback(callback);
+    } else if (data.startsWith("sopm_")) {
+      await handleSoportesModoCallback(callback);
+    } else if (data.startsWith("sop_")) {
+      await handleSoportesCallback(callback);
     } else if (data.startsWith("reintegrozip:")) {
       await handleReintegroZipCallback(callback);
     } else if (data.startsWith("loteimpuestos_")) {
@@ -2268,10 +2286,30 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
   const cualPregunta = parsearComandoPreguntas(incoming.text);
   if (cualPregunta !== undefined) {
     try {
-      await sendTelegramMessage(incoming.chatId, await ejecutarComandoPreguntas(incoming.chatId, cualPregunta));
+      const respuesta = await ejecutarComandoPreguntas(incoming.chatId, cualPregunta);
+      if (respuesta.botones) await sendTelegramMessageWithButtons(incoming.chatId, respuesta.texto, respuesta.botones);
+      else await sendTelegramMessage(incoming.chatId, respuesta.texto);
     } catch (error) {
       console.error("[preguntas] Error reenviando la pregunta pendiente:", error instanceof Error ? error.message : error);
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude reenviar la pregunta pendiente ahora. No se tocó nada; inténtalo de nuevo en un momento.");
+    }
+    return;
+  }
+
+  // Menú de Telegram → pedir soportes a quien gastó con la tarjeta (core/soportes/): deja armado el proceso y espera el CSV.
+  const comandoSoportes = parsearComandoSoportes(incoming.text);
+  if (comandoSoportes !== undefined) {
+    // Trabaja con movimientos bancarios y puede acabar enviando correos: solo administración.
+    const rolSoportes = await obtenerRolUsuario(incoming.chatId);
+    if (rolSoportes !== "superadmin" && rolSoportes !== "admin") {
+      await sendTelegramMessage(incoming.chatId, "Esta orden trabaja con movimientos bancarios y solo está disponible para administración.");
+      return;
+    }
+    try {
+      await iniciarSoportes(incoming.chatId, comandoSoportes.empresa);
+    } catch (error) {
+      console.error("[soportes] Error iniciando el proceso de soportes:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude iniciar el proceso ahora. No se tocó nada; inténtalo de nuevo en un momento.");
     }
     return;
   }
@@ -2294,6 +2332,23 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude revisar las transferencias ahora. No se tocó nada en Holded; inténtalo de nuevo en un momento.");
     }
     return;
+  }
+
+  // Menú de Telegram → modo conocimiento: lo que se envíe después (texto, enlaces, documentos, fotos) se guarda como conocimiento de los agentes.
+  if (parsearComandoConocimiento(incoming.text)) {
+    try {
+      await iniciarModoConocimiento(incoming.chatId);
+    } catch (error) {
+      console.error("[conocimiento] Error iniciando el modo conocimiento:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude activar el modo conocimiento ahora. No se guardó nada; inténtalo de nuevo en un momento.");
+    }
+    return;
+  }
+
+  // Con el modo conocimiento activo, el texto o enlace suelto es conocimiento y no pasa por ningún otro flujo. Una respuesta a un mensaje
+  // concreto del bot (reply) y las órdenes con «/» siguen su camino de siempre.
+  if (!incoming.replyToMessageId && !incoming.text.trim().startsWith("/")) {
+    if (await capturarTextoEnModoConocimiento(incoming.chatId, incoming.text, incoming.fromNombre || incoming.fromUsername)) return;
   }
 
   if (/^\/?(revisarcorreo|revisamail)\b/i.test(incoming.text.trim())) {
@@ -2368,6 +2423,8 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     }
   } finally {
     detenerEscribiendo();
+    // Las propuestas de Wobi Seguros salen DESPUÉS de la respuesta: sus botones quedan al final del chat.
+    await enviarPropuestasDiferidas(incoming.chatId);
   }
 }
 
@@ -2985,6 +3042,8 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
 servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
+  // Punto 4 del plan contra la recurrencia (08-10-2026): revisión en seco tras cada despliegue (core/gmail/automatico/revisionEnSeco.ts).
+  programarRevisionEnSecoTrasDespliegue();
   // Menú de comandos de Telegram (core/telegram/menuComandos.ts): se publica en cada arranque; nunca bloquea.
   void publicarMenuComandos();
   // Panel /cerebro: lo deja caliente antes de que llegue el primer visitante y lo mantiene fresco en segundo plano.

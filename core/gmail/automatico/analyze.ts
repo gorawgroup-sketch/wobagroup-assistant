@@ -109,7 +109,13 @@ export async function llamarConReparo(
     else if (bloques.length !== 1) problema = `Debes responder llamando exactamente UNA vez a ${schema.name} (llamaste ${bloques.length}).`;
     else {
       try { return validarAnalisis(bloques[0].input, fuentes); }
-      catch (error) { problema = `Tu respuesta no pasó la validación: ${error instanceof Error ? error.message : String(error)} Llama de nuevo a la herramienta con TODOS los campos requeridos.`; }
+      catch (error) {
+        problema = `Tu respuesta no pasó la validación: ${error instanceof Error ? error.message : String(error)} Llama de nuevo a la herramienta con TODOS los campos requeridos.`;
+        // Diagnóstico sin contenido (caso Xue Cafe, 07-10-2026: «sin estructura verificable» tres veces seguidas sin saber qué devolvía).
+        const entrada = bloques[0].input;
+        console.warn("[correo-auto] Respuesta del analizador rechazada:", { intento, motivo: error instanceof Error ? error.message : String(error),
+          claves: esObjeto(entrada) ? Object.keys(entrada).map((k) => `${k}:${Array.isArray(entrada[k]) ? "array" : typeof entrada[k]}`) : typeof entrada });
+      }
     }
     ultimoError = problema;
     if (intento === MAX_INTENTOS_FORMATO) break;
@@ -197,8 +203,13 @@ export async function analizarAutomatico(c: CorreoAuto, opciones: OpcionesAnalis
       analisis = segunda.completo
         ? { ...segunda, resumen: `[Confirmado en una segunda lectura] ${segunda.resumen}` }
         : { ...segunda, detalleIncompleto: segunda.detalleIncompleto?.trim() || analisis.resumen.slice(0, 200) };
-    } catch {
-      // La verificación es un refuerzo: si falla, se conserva el primer resultado (incompleto) tal cual.
+    } catch (error) {
+      // Caso real (07-10-2026, recibo de Anthropic y dos de Antaris Suite): la relectura falló porque saltó el tope diario de IA
+      // y se CONSERVÓ el primer resultado («incompleto» sin parte nombrada), que quedó guardado por versión y se reutilizó en las
+      // pasadas siguientes como «el analizador no dio por completa la lectura». Un «incompleto» sin verificar no es un resultado:
+      // se propaga como fallo técnico, no se guarda, y la siguiente pasada vuelve a leer el correo.
+      const detalle = error instanceof Error ? error.message : String(error);
+      throw new Error(`La segunda lectura de verificación no pudo completarse (${detalle}); el correo se releerá en la siguiente pasada.`, { cause: error });
     }
   }
   // Regla determinista: un adjunto que podría ser el comprobante y que no se pudo leer nunca deja pasar la lectura como completa.

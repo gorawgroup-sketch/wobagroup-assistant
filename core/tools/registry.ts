@@ -15,6 +15,8 @@ import { proponerEnvioCorreoTool } from "./proposeEmail";
 import { registrarCorreccionTool } from "./registerCorrection";
 import { costosIATool } from "./costosIA";
 import { gastosSinComprobanteTool } from "./gastosSinComprobante";
+import { registrarEmailTitularSoportesTool } from "./registrarEmailTitularSoportes";
+import { proponerConciliarSinSoporteTool } from "./proponerConciliarSinSoporte";
 import { movimientosSinConciliarTool } from "./movimientosSinConciliar";
 import { proponerEventoCalendarioTool } from "./proponerEvento";
 import { consultarEventosCalendarioTool } from "./consultarEventosCalendario";
@@ -86,6 +88,8 @@ const tools: ToolDefinition[] = [
   registrarCorreccionTool,
   costosIATool,
   gastosSinComprobanteTool,
+  registrarEmailTitularSoportesTool,
+  proponerConciliarSinSoporteTool,
   movimientosSinConciliarTool,
   proponerEventoCalendarioTool,
   consultarEventosCalendarioTool,

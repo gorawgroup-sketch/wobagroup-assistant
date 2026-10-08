@@ -22,5 +22,22 @@ test("el menú cumple las reglas de Telegram: minúsculas, sin espacios, descrip
     assert.match(c.command, /^[a-z0-9_]{1,32}$/);
     assert.ok(c.description.length >= 3 && c.description.length <= 256);
   }
-  assert.deepEqual(COMANDOS_MENU.map((c) => c.command), ["revisarcorreo", "transferencias", "preguntas"]);
+  assert.deepEqual(COMANDOS_MENU.map((c) => c.command), ["revisarcorreo", "soportes", "transferencias", "preguntas", "conocimiento"]);
+});
+
+test("«/soportes» y «pedir soportes» arrancan el proceso, con o sin empresa", async () => {
+  const { parsearComandoSoportes } = await import("./menuComandos");
+  assert.deepEqual(parsearComandoSoportes("/soportes"), {});
+  assert.deepEqual(parsearComandoSoportes("/soportes@WobiBot"), {});
+  assert.deepEqual(parsearComandoSoportes("/soportes woba"), { empresa: "WOBA" });
+  assert.deepEqual(parsearComandoSoportes("Pedir soportes de Footprint"), { empresa: "Footprint" });
+  assert.deepEqual(parsearComandoSoportes("pedir soportes de las tarjetas"), {});
+  assert.deepEqual(parsearComandoSoportes("/soportes eworks"), { empresa: "EWORKS" });
+});
+
+test("una frase que solo menciona soportes no arranca el proceso", async () => {
+  const { parsearComandoSoportes } = await import("./menuComandos");
+  assert.equal(parsearComandoSoportes("¿qué soportes faltan de Nuria?"), undefined);
+  assert.equal(parsearComandoSoportes("necesito pedir soportes a Alberto por el hotel"), undefined);
+  assert.equal(parsearComandoSoportes("soportes"), undefined);
 });

@@ -1,3 +1,5 @@
+import { debeOfrecerSoporteDistinto } from "./soporteDistinto";
+import { frenoAvisoPropuesta } from "./avisoPropuestaPendiente";
 import { crearTrazaBusqueda, describirTrazaBusqueda } from "../holded/trazaBusqueda";
 import { buscarCargoSinFecha, seleccionarFechaBancaria } from "./busquedaSinFecha";
 import { esFechaDocumentoValida } from "./fechaDocumento";
@@ -13,6 +15,7 @@ import {
   combinarTagsGastoAprendidos,
   inferirTagsCategoria,
   obtenerMonedasCuentasReales,
+  descargarAdjuntosCompraHolded,
   type CuentaSugerida,
 } from "../holded/write";
 import {
@@ -29,8 +32,11 @@ import {
 import { guardarVinculoBancarioPropuesta } from "./vinculoBancarioPropuesta";
 import { construirTecladoGasto, opcionesTecladoDesdePropuesta } from "./gastoTeclado";
 import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
-import { buscarMovimientosPorTipoCambio, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
+import { buscarMovimientosPorTipoCambio, cargoUnicoParaEquivalente, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { notaCargosMayores } from "../holded/cargoMayor";
+import { equivalenteCuadraConTasa } from "./equivalenteCoherente";
+import { empresaNombradaEnTexto } from "./empresaPorComprador";
+import { convertirATasa, mejorCargoPorCercania, monedaDestinoPreferida } from "./conversionAutomatica";
 import {
   obtenerPoliticaMonedaLiquidacion,
   seleccionarMovimientoLiquidacionSeguro,
@@ -39,6 +45,7 @@ import type { DatosFactura } from "../documental/extractInvoiceData";
 import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad } from "./gastoPorCorreoStore";
+import { buscarMismaEstanciaRegistrada } from "./mismaEstanciaRegistrada";
 import { calcularHuellaContenido } from "./identidadGasto";
 import { obtenerTasaCambioHistorica, obtenerTasaCambioActual } from "../utils/exchangeRate";
 import { evaluarPagosMultiples } from "../holded/pagosMultiples/pagos";
@@ -189,8 +196,40 @@ function compararNumeroDocumento(numeroEntrante: string | undefined, candidato: 
  * nuevo, y manda la propuesta con botones — nunca escribe nada en Holded
  * por sí sola, eso ocurre solo en gastoCallbackHandler.ts tras aprobación.
  */
+/** Tasa del día (histórica de la fecha del documento; si no, la actual). undefined si ninguna está disponible. Solo para convertir el
+ * importe de un recibo cuando el banco aún no muestra el cargo: el cargo real, cuando aparezca, manda al conciliar. */
+async function tasaDelDia(fecha: string, origen: string, destino: string): Promise<number | undefined> {
+  let tasa: number | undefined;
+  try {
+    tasa = await obtenerTasaCambioHistorica(fecha, origen, destino);
+  } catch (error) {
+    console.error("[procesarGastoEntrante] Tasa histórica no disponible para convertir:", error instanceof Error ? error.message : error);
+  }
+  if (tasa === undefined) {
+    try {
+      tasa = await obtenerTasaCambioActual(origen, destino);
+    } catch (error) {
+      console.error("[procesarGastoEntrante] Tasa actual no disponible para convertir:", error instanceof Error ? error.message : error);
+    }
+  }
+  return tasa;
+}
+
 export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<ResultadoGastoEntrante> {
   const { chatId, datos } = entrada;
+
+  // La factura manda sobre el contexto: si nombra como COMPRADOR a una sociedad del grupo, el gasto es de esa sociedad, aunque el contexto
+  // (dominios, remitente, proyecto) apunte a otra (caso Name.com 28837066, 08-10: iba a Business Atelier Europa SL y se creó en EWORKS).
+  // Lo que el operador fijó a mano no se toca.
+  const empresaDelComprador = empresaNombradaEnTexto(datos.compradorRazonSocial);
+  if (empresaDelComprador && datos.empresaProbable !== empresaDelComprador && !datos.empresaFijadaPorOperador) {
+    datos.razon =
+      (datos.razon ? `${datos.razon} ` : "") +
+      `[La factura va a nombre de «${datos.compradorRazonSocial}»: el gasto es de ${empresaDelComprador}` +
+      `${esEmpresaHolded(datos.empresaProbable) ? `, no de ${datos.empresaProbable}` : ""}.]`;
+    console.log(`[procesarGastoEntrante] Empresa corregida por el comprador de la factura: ${datos.empresaProbable} → ${empresaDelComprador} («${datos.compradorRazonSocial}»).`);
+    datos.empresaProbable = empresaDelComprador;
+  }
 
   // Un proveedor ilegible no impide ofrecer la vía autorizada sin contacto.
   // No inventar un nombre: la resolución usa el contacto genérico existente
@@ -295,6 +334,36 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
   const politicaLiquidacion = obtenerPoliticaMonedaLiquidacion(empresa, datos.proveedor, monedaOriginal);
   let montoEquivalenteResuelto = datos.montoEquivalente;
   let monedaEquivalenteResuelta = datos.monedaEquivalente?.toUpperCase().trim();
+  // Un equivalente que se aparta de la tasa del día no es una conversión (caso Guadalajara: 174,60 € dicho de pasada en el hilo para unos
+  // 4.036,92 MXN que eran ≈ 204,65 €): se ignora y se busca el cargo real en el banco. Sin tasa, se conserva.
+  if (montoEquivalenteResuelto !== undefined && monedaEquivalenteResuelta && monedaEquivalenteResuelta !== monedaOriginal) {
+    try {
+      let tasa: number | undefined;
+      try {
+        tasa = await obtenerTasaCambioHistorica(datos.fecha, monedaOriginal, monedaEquivalenteResuelta);
+      } catch (error) {
+        console.error("[procesarGastoEntrante] Tasa histórica no disponible para validar el equivalente:", error instanceof Error ? error.message : error);
+      }
+      if (tasa === undefined) {
+        try {
+          tasa = await obtenerTasaCambioActual(monedaOriginal, monedaEquivalenteResuelta);
+        } catch (error) {
+          console.error("[procesarGastoEntrante] Tasa actual no disponible para validar el equivalente:", error instanceof Error ? error.message : error);
+        }
+      }
+      if (!equivalenteCuadraConTasa({ monto: datos.monto, equivalente: montoEquivalenteResuelto, tasa })) {
+        datos.razon =
+          (datos.razon ? `${datos.razon} ` : "") +
+          `[El equivalente indicado (${montoEquivalenteResuelto} ${monedaEquivalenteResuelta}) no cuadra con la tasa del día para ${datos.monto} ${monedaOriginal} ` +
+          `(≈ ${(datos.monto * (tasa as number)).toFixed(2)} ${monedaEquivalenteResuelta}); se ignora y se busca el cargo real en el banco.]`;
+        console.log(`[procesarGastoEntrante] Equivalente ${montoEquivalenteResuelto} ${monedaEquivalenteResuelta} descartado: no cuadra con la tasa (${datos.monto} ${monedaOriginal}).`);
+        montoEquivalenteResuelto = undefined;
+        monedaEquivalenteResuelta = undefined;
+      }
+    } catch (error) {
+      console.error("[procesarGastoEntrante] No se pudo validar el equivalente con la tasa (se conserva):", error instanceof Error ? error.message : error);
+    }
+  }
   let movimientoLiquidacionUsado: Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>[number] | undefined;
 
   // Regla contable confirmada por Carlos (caso real Anthropic, doc
@@ -331,6 +400,23 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       montoEquivalenteResuelto = Math.abs(movimientoLiquidacionUsado.monto);
       monedaEquivalenteResuelta = politicaLiquidacion.moneda;
     } else {
+      // Norma de resolución autónoma (Carlos, 08-10-2026, caso recibo de Anthropic 24,20 USD en WOBA): si el banco aún no
+      // muestra el cargo en la moneda de liquidación, se convierte a la tasa del día y sale la propuesta con botones; la
+      // diferencia de cambio se ajusta al conciliar con el cargo real. Misma regla que la rama de moneda sin cuenta propia
+      // (PR #404); antes esta rama dejaba el recibo «pendiente de comprobación bancaria» sin proponer nada.
+      const tasaLiquidacion = await tasaDelDia(fechaBusqueda, monedaOriginal, politicaLiquidacion.moneda);
+      const convertidoLiquidacion = convertirATasa(datos.monto, tasaLiquidacion);
+      if (convertidoLiquidacion !== undefined) {
+        montoEquivalenteResuelto = convertidoLiquidacion;
+        monedaEquivalenteResuelta = politicaLiquidacion.moneda;
+        datos.razon =
+          (datos.razon ? `${datos.razon} ` : "") +
+          `[${datos.monto} ${monedaOriginal} convertidos a ${convertidoLiquidacion.toFixed(2)} ${politicaLiquidacion.moneda} con la tasa del día ` +
+          `(${(tasaLiquidacion as number).toPrecision(5)}); liquidación en ${politicaLiquidacion.moneda} según la política de ${empresa}. ` +
+          `Todavía no hay en el banco un cargo que coincida; al conciliar con el cargo real se ajusta la diferencia de cambio.]`;
+      }
+    }
+    if (montoEquivalenteResuelto === undefined || monedaEquivalenteResuelta !== politicaLiquidacion.moneda) {
       await guardarGastoPendienteDatos({
         chatId,
         rutaLocal: entrada.rutaLocal,
@@ -345,11 +431,8 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       await sendTelegramMessage(
         chatId,
         `📄 ${empresa} · ${datos.proveedor || "Anthropic"} · ${datos.monto.toFixed(2)} ${monedaOriginal} · ${fechaBusqueda}.\n\n` +
-          `La liquidación se registra en ${politicaLiquidacion.moneda} usando el importe real del banco. ` +
-          `La búsqueda todavía no permite vincular un cargo disponible de forma inequívoca; esto no demuestra que no se haya cobrado. ` +
-          `El movimiento puede estar pendiente de sincronización, ya conciliado o tener varios candidatos.\n\n` +
-          `No necesitas calcular ni facilitar el cambio. El documento queda pendiente de comprobación bancaria; ` +
-          `al retomarlo se vuelve a buscar el cargo y se comprueba que no exista ya el gasto antes de crearlo.`
+          `La liquidación se registra en ${politicaLiquidacion.moneda}. Todavía no hay en el banco un cargo que coincida y tampoco pude ` +
+          `obtener ahora la tasa de cambio del día para convertirlo. No hace falta que hagas nada: lo reintento solo en la próxima revisión.`
       );
       return "pendiente_datos";
     }
@@ -392,62 +475,64 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       return [] as Awaited<ReturnType<typeof buscarMovimientosPorTipoCambio>>;
     });
 
-    if (candidatosFx.length === 1) {
-      const unico = candidatosFx[0];
-      montoEquivalenteResuelto = Math.abs(unico.monto);
-      monedaEquivalenteResuelta = unico.moneda;
+    // Wobi resuelve solo (regla de Carlos, 2026-10-08: nada de preguntar lo que se puede convertir): 1) el único cargo que coincide con la
+    // conversión; 2) si hay varios, el más cercano en fecha e importe; 3) si no hay ninguno, la conversión a la tasa del día en EUR/USD,
+    // y es la conciliación posterior la que ajusta el cambio contra el cargo real.
+    const elegido = cargoUnicoParaEquivalente(candidatosFx) ?? mejorCargoPorCercania(candidatosFx, fechaBusquedaFx);
+    if (elegido) {
+      montoEquivalenteResuelto = Math.abs(elegido.monto);
+      monedaEquivalenteResuelta = elegido.moneda;
       datos.razon =
         (datos.razon ? `${datos.razon} ` : "") +
-        `[Resuelto automáticamente contra un único cargo bancario real: ${describirMovimientoMultimoneda(unico)}.]`;
+        (elegido.compatibilidad === "por_confirmar"
+          ? `[Cargo bancario más probable, con nombre distinto (por confirmar): ${describirMovimientoMultimoneda(elegido)}.]`
+          : `[Resuelto automáticamente contra el cargo bancario que coincide con la conversión: ${describirMovimientoMultimoneda(elegido)}.]`);
     } else {
-      const monedasRealesTxt = Array.from(monedasReales).sort().join(", ");
-      let pistas = "";
-      if (candidatosFx.length > 1) {
-        pistas =
-          `\n\nEncontré ${candidatosFx.length} cargos bancarios que podrían corresponder (importe cercano según la tasa ` +
-          `de la fecha), pero no pude confirmar cuál sin ambigüedad:\n` +
-          candidatosFx.map((c, i) => describirMovimientoMultimoneda(c, i)).join("\n");
-      } else {
-        const referencias: string[] = [];
-        for (const destino of Array.from(monedasReales).sort()) {
-          const tasa =
-            (await obtenerTasaCambioHistorica(fechaBusquedaFx, monedaOriginal, destino).catch(() => undefined)) ??
-            (await obtenerTasaCambioActual(monedaOriginal, destino).catch(() => undefined));
-          if (tasa !== undefined) {
-            referencias.push(`≈${(datos.monto * tasa).toFixed(2)} ${destino}`);
+      const destino = monedaDestinoPreferida(monedasReales);
+      let tasa: number | undefined;
+      if (destino) {
+        try {
+          tasa = await obtenerTasaCambioHistorica(fechaBusquedaFx, monedaOriginal, destino);
+        } catch (error) {
+          console.error("[procesarGastoEntrante] Tasa histórica no disponible para convertir:", error instanceof Error ? error.message : error);
+        }
+        if (tasa === undefined) {
+          try {
+            tasa = await obtenerTasaCambioActual(monedaOriginal, destino);
+          } catch (error) {
+            console.error("[procesarGastoEntrante] Tasa actual no disponible para convertir:", error instanceof Error ? error.message : error);
           }
         }
-        if (referencias.length > 0) {
-          pistas =
-            `\n\nSolo como referencia de la tasa de cambio del día (nunca el cargo real — puede diferir por el ` +
-            `spread de la tarjeta, por eso no lo registro directamente): ${referencias.join(" / ")}.`;
-        }
       }
-      await sendTelegramMessage(
-        chatId,
-        `📄 Detecté una factura en ${monedaOriginal} — ${datos.proveedor || "proveedor desconocido"}, ` +
-          `${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}) — pero ${monedaOriginal} no es ` +
-          `ninguna de las monedas de cuenta real que tiene ${empresa} en Holded (${monedasRealesTxt}), el documento no ` +
-          `trae el monto equivalente en alguna de esas monedas, y ` +
-          (busquedaFxIncompleta
-            ? `la consulta de cargos bancarios en Holded quedó incompleta (falló), así que no puedo confirmar ningún cargo ahora.`
-            : `no encontré un único cargo bancario real que lo confirme sin ambigüedad.`) +
-          `${pistas} Necesito el monto EXACTO y la moneda que salió de la cuenta real (no voy ` +
-          `a calcular un tipo de cambio yo mismo) antes de registrar nada. Respóndeme aquí mismo en texto libre con el ` +
-          `monto y la moneda (ej. "40.46 EUR") y sigo de inmediato.`
-      );
-      await guardarGastoPendienteDatos({
-        chatId,
-        rutaLocal: entrada.rutaLocal,
-        nombreArchivoOriginal: entrada.nombreArchivoOriginal,
-        mimeType: entrada.mimeType,
-        datos,
-        motivo: "moneda",
-        deColaCorreo: entrada.deColaCorreo,
-        origenAdjuntoGmail: entrada.origenAdjuntoGmail,
-        correoOrigen: entrada.correoOrigen,
-      }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
-      return "pendiente_datos";
+      const convertido = convertirATasa(datos.monto, tasa);
+      if (destino && convertido !== undefined) {
+        montoEquivalenteResuelto = convertido;
+        monedaEquivalenteResuelta = destino;
+        datos.razon =
+          (datos.razon ? `${datos.razon} ` : "") +
+          `[${datos.monto} ${monedaOriginal} convertidos a ${convertido.toFixed(2)} ${destino} con la tasa del día (${(tasa as number).toPrecision(5)}). ` +
+          `${busquedaFxIncompleta ? "La consulta de cargos en Holded quedó incompleta; " : "Todavía no hay en el banco un cargo que coincida; "}` +
+          `al conciliar con el cargo real se ajusta la diferencia de cambio.]`;
+      } else {
+        // Último recurso: sin ninguna tasa disponible (ni histórica ni actual) no se puede convertir. Se avisa y se reintenta solo.
+        await sendTelegramMessage(
+          chatId,
+          `📄 «${datos.proveedor || "proveedor desconocido"}» · ${datos.monto} ${monedaOriginal} (${datos.fecha || "sin fecha"}, ${empresa}): no pude obtener ahora la tasa de cambio ` +
+            `del día para convertirlo. No hace falta que hagas nada: lo reintento solo en la próxima revisión.`
+        );
+        await guardarGastoPendienteDatos({
+          chatId,
+          rutaLocal: entrada.rutaLocal,
+          nombreArchivoOriginal: entrada.nombreArchivoOriginal,
+          mimeType: entrada.mimeType,
+          datos,
+          motivo: "moneda",
+          deColaCorreo: entrada.deColaCorreo,
+          origenAdjuntoGmail: entrada.origenAdjuntoGmail,
+          correoOrigen: entrada.correoOrigen,
+        }).catch((error) => console.error("[procesarGastoEntrante] Error guardando pendiente (moneda):", error));
+        return "pendiente_datos";
+      }
     }
   }
 
@@ -516,25 +601,56 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         soportePendiente: true,
       };
     } else {
-      const motivo = duplicadoInterno.motivo === "mismo_archivo"
-        ? "el archivo es exactamente el mismo"
-        : "coinciden el número de documento y el proveedor";
-      // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
-      // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
-      // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
-      // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
-      // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
-      const origenTxt = entrada.correoOrigen
-        ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
-        : "";
-      await sendTelegramMessage(
-        chatId,
-        `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
-          `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
-          `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
-          `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
-      );
-      return "propuesta_duplicada";
+      // Gasto ya procesado, pero el archivo de ahora puede ser un soporte mejor que los que tiene (caso Antaris: solo una
+      // captura de mapa). Si el gasto no tiene ya este mismo archivo y su soporte son solo imágenes, se ofrece adjuntarlo
+      // con el flujo normal («Es este (#1)»). Si no se pueden leer sus adjuntos, se bloquea como siempre.
+      let ofrecerSoporteDistinto = false;
+      if (duplicadoInterno.motivo === "mismo_numero_y_proveedor") {
+        try {
+          const adjuntosDelGasto = await descargarAdjuntosCompraHolded(duplicadoInterno.registro.empresa, duplicadoInterno.registro.gastoId);
+          ofrecerSoporteDistinto = debeOfrecerSoporteDistinto({ huellaContenido, mimeTypeNuevo: entrada.mimeType, adjuntosDelGasto });
+        } catch (error) {
+          console.error("[procesarGastoEntrante] No se pudieron leer los adjuntos del gasto existente; se bloquea como siempre:", error instanceof Error ? error.message : error);
+        }
+      }
+      if (ofrecerSoporteDistinto) {
+        const registrada = duplicadoInterno.registro.identidad;
+        candidatoRecuperacion = {
+          id: duplicadoInterno.registro.gastoId,
+          contactName: registrada?.proveedor || datos.proveedor,
+          fecha: registrada?.fecha || datos.fecha,
+          total: registrada?.monto ?? montoParaHolded,
+          descripcion: registrada?.concepto || datos.concepto,
+          documentNumber: registrada?.numeroDocumento || datos.numeroDocumento,
+          moneda: registrada?.moneda || monedaParaHolded,
+        };
+      } else {
+        const motivo = duplicadoInterno.motivo === "mismo_archivo"
+          ? "el archivo es exactamente el mismo"
+          : "coinciden el número de documento y el proveedor";
+        // Pedido explícito de Carlos (2026-09-16): este aviso bloqueaba silenciosamente un gasto sin decir
+        // de qué correo o factura se trataba, ni su proveedor/monto/fecha — imposible saber en qué punto
+        // quedó el manejo de ese correo sin ir a buscarlo a mano. Se agrega toda la identificación ya
+        // disponible en este punto (archivo, correo de origen si vino de Gmail, proveedor, monto, fecha,
+        // concepto) en el mismo formato ya usado para el aviso de propuesta duplicada más abajo.
+        const origenTxt = entrada.correoOrigen
+          ? ` (correo de ${entrada.correoOrigen.de}, asunto "${entrada.correoOrigen.asunto}")`
+          : "";
+        // Mismo freno que el aviso de propuesta pendiente: un correo con muchos adjuntos repetía este aviso por cada uno.
+        const claveAviso = `duplicado:${duplicadoInterno.registro.gastoId}:${entrada.correoOrigen?.mensajeIdGmail ?? entrada.nombreArchivoOriginal}`;
+        if (!(await frenoAvisoPropuesta.puedeAvisar(claveAviso))) {
+          console.log(`[procesarGastoEntrante] Aviso de gasto ya procesado omitido (ya se avisó hace poco): ${claveAviso}`);
+          return "propuesta_duplicada";
+        }
+        await sendTelegramMessage(
+          chatId,
+          `⛔ No propuse crear ni conciliar este gasto: "${entrada.nombreArchivoOriginal}"${origenTxt} — ` +
+            `${datos.proveedor || "proveedor desconocido"}, ${datos.monto} ${monedaParaHolded} (${datos.fecha || "sin fecha"})` +
+            `${datos.concepto ? `, "${datos.concepto}"` : ""}. Motivo: ${motivo} que en el gasto ${duplicadoInterno.registro.gastoId} ` +
+            `de ${duplicadoInterno.registro.empresa}. Ya fue procesado anteriormente, aunque Holded lo oculte de /purchases al convertirlo en ticket.`
+        );
+        return "propuesta_duplicada";
+      }
     }
   }
   // Pedido explícito de Carlos, casos reales ALDI/Ahorramas: un recibo simplificado (sin los datos
@@ -734,6 +850,12 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       // Caso real (Carlos, 2026-09-30): «resuelve la propuesta existente» dejaba el chat sin botones, porque esa
       // propuesta estaba muchos mensajes más arriba (correo de 5 adjuntos). La decisión pendiente va siempre al
       // final del chat, con sus botones; el aviso explica por qué no se propone otra.
+      // Un aviso por propuesta cada 10 min (core/gastos/avisoPropuestaPendiente.ts): un correo con muchos adjuntos, un reintento
+      // o un reinicio ya no llenan el chat con el mismo mensaje. La decisión sigue pendiente en el aviso ya enviado.
+      if (!(await frenoAvisoPropuesta.puedeAvisar(propuestaYaPendiente.id))) {
+        console.log(`[procesarGastoEntrante] Aviso de propuesta pendiente omitido (ya se avisó hace menos de 10 min): ${propuestaYaPendiente.id}`);
+        return "propuesta_pendiente_existente";
+      }
       const encabezado =
         `📄 "${entrada.nombreArchivoOriginal}" ya tiene una propuesta pendiente para este mismo correo ` +
         `(${propuestaYaPendiente.proveedor} — ${propuestaYaPendiente.monto.toFixed(2)} ${propuestaYaPendiente.moneda}). ` +
@@ -863,6 +985,25 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     )
     .join("\n");
 
+  // Aviso (nunca bloqueo): ¿ya hay un gasto de la MISMA estancia de hotel? El recibo de Booking y la factura del hotel llegan por
+  // correos distintos, con números distintos, y son el mismo gasto (caso Hotel101 Madrid, 232,20 € vs 242,19 €).
+  let notaMismaEstancia = "";
+  try {
+    const mismas = await buscarMismaEstanciaRegistrada(
+      empresa,
+      { concepto: datos.concepto, monto: montoParaHolded, moneda: monedaParaHolded },
+      { fecha: datos.fecha, excluirMensajeIdGmail: entrada.correoOrigen?.mensajeIdGmail, excluirGastoIds: candidatos.map((c) => c.id) }
+    );
+    if (mismas.length > 0) {
+      notaMismaEstancia =
+        `⚠️ Posible MISMA estancia ya registrada: ` +
+        mismas.map((m) => `gasto ${m.gastoId.slice(0, 8)} (${m.proveedor}, ${Number.isFinite(m.monto) ? m.monto.toFixed(2) : "?"} ${m.moneda}, ${m.fecha || "sin fecha"})`).join("; ") +
+        `. El recibo de Booking y la factura del hotel de una misma estancia son UN solo gasto: si lo es, no lo crees — cancela y decide cuál conservar ` +
+        `(lo normal es la factura del hotel, con el pago del recibo aplicado a ella).`;
+    }
+  } catch (error) {
+    console.error("[procesarGastoEntrante] No se pudo comprobar si el hospedaje ya estaba registrado (el aviso se omite):", error instanceof Error ? error.message : error);
+  }
   const importeTexto = usarEquivalente
     ? `${montoParaHolded.toFixed(2)} ${monedaParaHolded} (comprobante en ${datos.monto} ${monedaOriginal}` +
       `${movimientoLiquidacionUsado ? "; importe EUR tomado del cargo bancario exacto" : ""})`
@@ -934,6 +1075,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     }
     if (avisoNumeroDocumento) lineasTexto.push(``, avisoNumeroDocumento);
     if (notaTicket) lineasTexto.push(``, notaTicket);
+    if (notaMismaEstancia) lineasTexto.push(``, notaMismaEstancia);
     lineasTexto.push(
       ``,
       esRecuperacionIncompleta
@@ -1214,7 +1356,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         ? `${desgloseIva} — recibo simplificado (sin datos fiscales completos), sujeto pasivo.`
         : desgloseIva,
       `Confianza de la clasificación: ${datos.confianza} (${datos.razon})`,
-    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + notaMovimiento + notaPagosMultiples;
+    ].join("\n") + notaCuenta + (notaTicket ? `\n\n${notaTicket}` : "") + (notaMismaEstancia ? `\n\n${notaMismaEstancia}` : "") + notaMovimiento + notaPagosMultiples;
 
     // Publicar desde el mismo estado que acaba de quedar guardado. La propuesta
     // inicial aún no tenía banco y los controles ocultaban las acciones válidas.

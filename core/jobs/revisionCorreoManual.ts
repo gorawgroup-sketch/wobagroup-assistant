@@ -173,9 +173,10 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
         } else {
           await dependencias.enviarConBotones(
             chatId,
-            `⏸️ Ya tienes un correo activo esperando tu respuesta: "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}). ` +
-              `No pude volver a mostrar su pregunta ahora mismo (fallo temporal al leerla); sus botones siguen en el mensaje original, más arriba, ` +
-              `o pide «reenvía los botones de ${resultado.activoBloqueando.asunto}».`,
+            `⏸️ La cola espera tu respuesta al correo "${resultado.activoBloqueando.asunto}" (de ${resultado.activoBloqueando.de}). ` +
+              `No encontré ninguna pregunta pendiente de ese correo en mis almacenes, y ahora mismo no puedo confirmar si queda alguna viva ` +
+              `(acabas de usar botones o falló una consulta). Si ya lo resolviste, pulsa «Descartar y liberar»; si no, vuelve a lanzar ` +
+              `/revisarcorreo en unos minutos y te ofreceré reprocesarlo sin duplicar nada.`,
             [[{ text: "🗑️ Descartar y liberar", callback_data: "colacorreo_descartaractivo" }]]
           ).catch((error) => console.error("Error enviando confirmación de revisión de correo:", error));
         }

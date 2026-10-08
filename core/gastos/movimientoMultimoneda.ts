@@ -98,14 +98,19 @@ export async function buscarMovimientosPorTipoCambio(
   ).filter((moneda) => moneda && moneda !== monedaOrigen);
   const resultados = new Map<string, MovimientoBancarioCandidato>();
 
-  for (const monedaDestino of monedasDestino) {
-    let tasa: number | undefined;
+  // Las tasas de todas las monedas destino se piden a la vez: con el servicio de tipo de cambio lento (2026-10-06) cada una
+  // podía tardar 20 s y en serie la propuesta de Casa Peppe tardaba 47 s en renovarse.
+  const tasasPorMoneda = new Map<string, number | undefined>(await Promise.all(monedasDestino.map(async (monedaDestino): Promise<[string, number | undefined]> => {
     try {
-      tasa = await dependencias.obtenerTasa(criterios.fecha, monedaOrigen, monedaDestino);
+      return [monedaDestino, await dependencias.obtenerTasa(criterios.fecha, monedaOrigen, monedaDestino)];
     } catch (error) {
       console.error(`[movimientoMultimoneda] Error consultando tasa ${monedaOrigen}->${monedaDestino}:`, error);
-      continue;
+      return [monedaDestino, undefined];
     }
+  })));
+
+  for (const monedaDestino of monedasDestino) {
+    const tasa = tasasPorMoneda.get(monedaDestino);
     if (tasa === undefined || !Number.isFinite(tasa) || tasa <= 0) continue;
 
     const montoReferencia = Math.abs(criterios.monto) * tasa;
@@ -295,4 +300,29 @@ export function describirMovimientoMultimoneda(
     `${prefijo}"${movimiento.descripcion || "(sin descripción)"}" — ${movimiento.monto.toFixed(2)} ` +
     `${movimiento.moneda} (${movimiento.fecha}${referencia}${nombre})`
   );
+}
+
+/**
+ * Entre los cargos que devuelve la búsqueda por tipo de cambio, ¿hay UNO que se pueda tomar como el importe real del gasto?
+ *
+ * Caso real (Footprint, «Lunch – 180 pesos mexicanos – revolut», 2026-10-06): el único cargo posible era «Merpago*eugeniodiaz»
+ * (−8,92 EUR, Mercado Pago), cuyo nombre no se parece al del comercio. La búsqueda de esta rama no admitía cargos «por confirmar»,
+ * no encontraba nada y Wobi pedía el importe en texto libre, sin botones, aunque el cargo estaba ahí. Ahora se admite: un cargo
+ * seguro (nombre reconocido o ya confirmado antes) gana a uno por confirmar; si no hay ninguno seguro, un único por confirmar sirve
+ * para armar la propuesta, que lo muestra con el aviso «nombre distinto» y exige que Carlos lo confirme con el botón.
+ */
+/** Un cargo coincide «al céntimo» con la referencia si se aparta menos de max(0,02; 0,5 %) de lo que da la tasa. */
+export function coincideConLaReferencia(c: { monto: number; montoReferencia?: number }): boolean {
+  if (c.montoReferencia === undefined || !Number.isFinite(c.montoReferencia) || c.montoReferencia <= 0) return false;
+  return Math.abs(Math.abs(c.monto) - c.montoReferencia) <= Math.max(0.02, c.montoReferencia * 0.005);
+}
+
+export function cargoUnicoParaEquivalente<T extends { compatibilidad?: "por_confirmar" | "aprendido"; monto: number; montoReferencia?: number }>(candidatos: readonly T[]): T | undefined {
+  const seguros = candidatos.filter((c) => c.compatibilidad !== "por_confirmar");
+  if (seguros.length === 1) return seguros[0];
+  if (seguros.length === 0 && candidatos.length === 1) return candidatos[0];
+  // Varios candidatos parecidos (caso real 2026-10-08: «Taxi 129,94 MXN» con cinco cargos de Uber, dos «Pending», entre 5,65 y 6,43 €): si
+  // UNO SOLO coincide al céntimo con la tasa del día, ese es el cargo. Con dos o más iguales (dos viajes del mismo importe) no se adivina.
+  const exactos = candidatos.filter(coincideConLaReferencia);
+  return exactos.length === 1 ? exactos[0] : undefined;
 }

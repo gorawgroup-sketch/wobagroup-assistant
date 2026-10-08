@@ -1,5 +1,6 @@
 import { movimientoCompatibleConGasto } from "../../holded/write";
 import { createHash } from "node:crypto";
+import { empresaNombradaEnTexto } from "../../gastos/empresaPorComprador";
 
 export type EmpresaAuto = "WOBA" | "EWORKS" | "Footprint";
 export type ModoAuto = "off" | "simulate" | "execute";
@@ -14,7 +15,15 @@ export const VERSION_POLITICA = "correo-gastos-v25";
 // v22 invalida únicamente las lecturas automáticas antiguas. Varias quedaron
 // persistidas como incompletas durante el incidente del límite diario de IA;
 // conservarlas para siempre impediría que una orden manual pudiera repararlas.
-export const VERSION_ANALISIS = "correo-gastos-analysis-v22";
+//
+// v23 (07-10-2026): la lectura robusta del analizador (#357, 05-10) se desplegó SIN cambiar esta versión, así que los
+// análisis «incompleto» guardados bajo v22 se reutilizaron en cada pasada y esos correos nunca se volvieron a leer
+// («5: el analizador no dio por completa la lectura», repetido durante días). Regla desde ahora: cada cambio del analizador
+// (core/gmail/automatico/analyze.ts) cambia esta versión; el guardarraíl core/guardarrailes/versionAnalisisCorreo.test.ts
+// lo exige comparando la huella del archivo.
+export const VERSION_ANALISIS = "correo-gastos-analysis-v24";
+/** Huella (sha256, 12 hex) de analyze.ts con la que se publicó VERSION_ANALISIS. La actualiza quien cambia el analizador. */
+export const HUELLA_ANALIZADOR_CORREO = "e69e83383a54";
 /**
  * Misma ventana ya aprendida por el flujo manual. En viajes, la fecha del
  * comprobante puede ser la del servicio y el cargo haberse producido semanas
@@ -166,6 +175,8 @@ export interface AnalisisAuto {
   recibos: ReciboAuto[]; motivoManual?: string;
   /** Cuando `completo` es false: la parte CONCRETA (adjunto, enlace, página) que no se pudo leer y por qué. Nunca una duda de interpretación. */
   detalleIncompleto?: string;
+  /** Cuándo se guardó este análisis (ms). Solo se usa para no reintentar un análisis incompleto antes de tiempo, ver reutilizable() en service.ts. */
+  analizadoEn?: number;
 }
 export interface MovimientoAuto {
   id: string; cuentaId: string; moneda: string; fecha: string; centimos: number;
@@ -319,6 +330,9 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   if (!new Set(["ticket", "recibo"]).has(r.tipo)) motivos.push("no_es_ticket_o_recibo_pagado");
   if (!r.evidencia.trim() || !r.evidenciaEmpresa.trim()) motivos.push("falta_evidencia");
   if (empresaEvaluada === "desconocida" || !config.empresas.includes(empresaEvaluada)) motivos.push("empresa_no_habilitada_o_ambigua");
+  // La evidencia de empresa nombra a OTRA sociedad del grupo (p. ej. «Datos del cliente: BUSINESS ATELIER EUROPA SL» para un recibo que se iba a crear en EWORKS).
+  const empresaEnLaEvidencia = empresaNombradaEnTexto(r.evidenciaEmpresa);
+  if (empresaEnLaEvidencia && empresaEnLaEvidencia !== empresaEvaluada) motivos.push("empresa_en_conflicto_con_el_comprador");
   if (!fechaValida(r.fecha)) motivos.push("fecha_invalida");
   if (!/^[A-Z]{3}$/.test(r.moneda)) motivos.push("moneda_invalida");
   if (!r.proveedor.trim() || !r.concepto.trim()) motivos.push("datos_incompletos");
@@ -413,6 +427,8 @@ export interface ResultadoAuto {
   fallosAnalisis?: number;
   /** Mensajes que ya estaban bajo una decisión manual o autorrespuesta activa. */
   reservados?: number;
+  /** Qué cambió respecto a la revisión anterior (ver informeDiferencias.ts); ausente si no se pudo calcular. */
+  diferencias?: import("./informeDiferencias").DiferenciasRevision;
   /**
    * La revisión paró en un punto de control porque el proceso recibió la orden de cerrarse (un
    * despliegue nuevo). Lo hecho queda durable; el resultado es parcial y no debe informarse como
