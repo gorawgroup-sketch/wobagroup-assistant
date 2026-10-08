@@ -2,6 +2,8 @@ import { prepararCalendarioPagos, marcarAvisosEnviados, type DepsCalendarioPagos
 import { depsRealesCalendarioPagos } from "../seguros/pagos/depsReales";
 import type { Informe } from "../seguros/vigilante/informe";
 import { sendTelegramMessageExpandable } from "../telegram/client";
+import { entradaError, entradaPagos } from "../seguros/bitacora/entradas";
+import { registrarActividad, type Registrar } from "../seguros/bitacora/registrar";
 
 /**
  * Calendario de pagos de seguros (core/seguros/pagos/): cada día, sin IA, pone en el calendario de Carlos el evento de cada pago (3 días antes),
@@ -9,28 +11,42 @@ import { sendTelegramMessageExpandable } from "../telegram/client";
  * (8:35, que confirma o devuelve lo ya cobrado) y de los avisos de las 8:50. Calla si no toca avisar nada.
  *
  * Entrega «al menos una vez»: el aviso se marca como enviado solo después de que Telegram lo acepte; si falla, se repite al día siguiente.
+ * Cada pasada deja su constancia en la bitácora (core/seguros/bitacora/), también la que no avisa de nada; esta es además la que poda la bitácora.
  */
 export async function revisarPagosSeguros(
   deps: DepsCalendarioPagos = depsRealesCalendarioPagos(),
-  enviar: (chatId: number, informe: Informe) => Promise<unknown> = (chatId, informe) => sendTelegramMessageExpandable(chatId, informe.titulo, informe.cuerpo)
+  enviar: (chatId: number, informe: Informe) => Promise<unknown> = (chatId, informe) => sendTelegramMessageExpandable(chatId, informe.titulo, informe.cuerpo),
+  registrar: Registrar = registrarActividad
 ): Promise<{ avisado: boolean }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
   if (!chatId) {
     console.error("[revisarPagosSeguros] Falta CASHFLOW_ALERTS_CHAT_ID, no se puede notificar: no se revisa nada.");
+    await registrar(entradaError("pagos", "programada", new Error("Falta CASHFLOW_ALERTS_CHAT_ID"), "No se pudo revisar"), { podar: true });
     return { avisado: false };
   }
 
-  const r = await prepararCalendarioPagos(deps);
+  let r: Awaited<ReturnType<typeof prepararCalendarioPagos>>;
+  try {
+    r = await prepararCalendarioPagos(deps);
+  } catch (error) {
+    await registrar(entradaError("pagos", "programada", error, "La revisión falló"), { podar: true });
+    throw error;
+  }
   let avisado = false;
+  // null = no había aviso que enviar; true/false = Telegram lo aceptó o no.
+  let entregado: boolean | null = null;
   if (r.informe) {
     try {
       await enviar(chatId, r.informe);
+      entregado = true;
       await marcarAvisosEnviados(deps, r.avisos);
       avisado = true;
     } catch (error) {
+      if (entregado !== true) entregado = false;
       console.error("[revisarPagosSeguros] No se pudo entregar el aviso de pagos (se repite mañana):", error);
     }
   }
+  await registrar(entradaPagos({ r, informe: r.informe, entregado }), { podar: true });
   for (const advertencia of r.advertencias) console.warn(`[revisarPagosSeguros] ${advertencia}`);
   console.log(
     `[revisarPagosSeguros] ${r.hoy}: ${r.eventosCreados} evento(s) de calendario creado(s), ${r.eventosRetirados} retirado(s), ${r.avisos.length} pago(s) a avisar; ${avisado ? "aviso enviado" : "sin aviso"}.`

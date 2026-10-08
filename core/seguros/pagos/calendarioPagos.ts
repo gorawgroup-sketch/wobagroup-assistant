@@ -23,10 +23,23 @@ export interface DepsCalendarioPagos {
   borrarEvento(eventoId: string): Promise<void>;
 }
 
+/** Un evento que el calendario de pagos puso o retiró en esta pasada (para la bitácora). */
+export interface EventoDeCalendario {
+  accion: "creado" | "retirado";
+  titulo: string;
+  /** Inicio del evento (ISO UTC). */
+  inicio: string;
+}
+
 export interface ResultadoCalendarioPagos {
   hoy: string;
   eventosCreados: number;
   eventosRetirados: number;
+  eventos: EventoDeCalendario[];
+  /** Pagos previstos en el calendario (con o sin evento puesto). */
+  previstos: number;
+  /** El próximo pago previsto (hoy o más adelante): así el resumen dice cuándo toca lo siguiente. */
+  proximo: { fecha: string; empresa: Empresa; concepto: string; importe: number; moneda: string; estimado: boolean } | null;
   avisos: AvisoPago[];
   informe: Informe | null;
   advertencias: string[];
@@ -38,20 +51,25 @@ export async function prepararCalendarioPagos(deps: DepsCalendarioPagos): Promis
   let pagos = await deps.leerPagos();
   let eventosCreados = 0;
   let eventosRetirados = 0;
+  const eventos: EventoDeCalendario[] = [];
 
   const reemplazar = (nuevo: PagoSeguroConFila) => { pagos = pagos.map((p) => (p.id === nuevo.id ? nuevo : p)); };
 
   // 1) Eventos de calendario: uno por pago previsto (el día del evento, hoy o futuro) y fuera los de pagos ya cerrados.
   for (const p of pagos.filter((x) => x.estado === "previsto" && !x.eventoCalendarId && diasEntre(hoy, x.fecha) <= HORIZONTE_EVENTOS_DIAS && diasEntre(hoy, fechaDelEvento(x)) >= 0)) {
-    const id = await deps.crearEvento(eventoDePago(p));
+    const evento = eventoDePago(p);
+    const id = await deps.crearEvento(evento);
     if (!id) { advertencias.push(`No pude crear el evento de calendario de «${p.concepto}» (${p.fecha}); se reintenta mañana.`); continue; }
     reemplazar(await deps.actualizar(p, { eventoCalendarId: id }));
     eventosCreados++;
+    eventos.push({ accion: "creado", titulo: evento.resumen, inicio: evento.fechaHoraInicioISO });
   }
   for (const p of pagos.filter((x) => x.estado !== "previsto" && x.eventoCalendarId)) {
+    const evento = eventoDePago(p);
     await deps.borrarEvento(p.eventoCalendarId);
     reemplazar(await deps.actualizar(p, { eventoCalendarId: "" }));
     eventosRetirados++;
+    eventos.push({ accion: "retirado", titulo: evento.resumen, inicio: evento.fechaHoraInicioISO });
   }
 
   // 2) Avisos de hoy con la comprobación de caja (las cuentas de cada empresa se leen una sola vez).
@@ -70,7 +88,13 @@ export async function prepararCalendarioPagos(deps: DepsCalendarioPagos): Promis
     const caja = evaluarCaja(pago, pagos, cuentasPorEmpresa.get(pago.empresa) ?? null, hoy);
     if (merecePorCaja(toca.nivel, caja)) avisos.push({ pago, dias: toca.dias, nivel: toca.nivel, caja });
   }
-  return { hoy, eventosCreados, eventosRetirados, avisos, informe: construirInformePagos(avisos, hoy), advertencias };
+  const previstosHoy = pagos.filter((p) => p.estado === "previsto");
+  const siguiente = previstosHoy.filter((p) => diasEntre(hoy, p.fecha) >= 0).sort((a, b) => a.fecha.localeCompare(b.fecha))[0];
+  return {
+    hoy, eventosCreados, eventosRetirados, eventos, previstos: previstosHoy.length,
+    proximo: siguiente ? { fecha: siguiente.fecha, empresa: siguiente.empresa, concepto: siguiente.concepto, importe: siguiente.importe, moneda: siguiente.moneda, estimado: siguiente.estimado } : null,
+    avisos, informe: construirInformePagos(avisos, hoy), advertencias,
+  };
 }
 
 /** Tras entregar el mensaje: deja constancia del aviso en cada pago (así no se repite). */

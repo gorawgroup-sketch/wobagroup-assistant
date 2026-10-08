@@ -7,6 +7,8 @@ import {
   purgarAlertasSegurosNoActivas,
 } from "../seguros/alertasNotificadasStore";
 import { sendTelegramMessageExpandable } from "../telegram/client";
+import { entradaAvisos, entradaError, type CierreAvisos } from "../seguros/bitacora/entradas";
+import { registrarActividad, type Registrar } from "../seguros/bitacora/registrar";
 
 function claveRenovacion(p: PolizaProximaARenovar): string {
   return `${p.id}:renovacion`;
@@ -68,16 +70,31 @@ function describirDiasRestantes(dias: number): string {
  * mensaje claro con el motivo es la primera versión útil sin inventar un
  * botón que no hace nada real todavía.
  */
-export async function revisarAlertasSeguros(): Promise<{ avisosEnviados: number }> {
+export async function revisarAlertasSeguros(registrar: Registrar = registrarActividad): Promise<{ avisosEnviados: number }> {
   const chatId = process.env.CASHFLOW_ALERTS_CHAT_ID ? Number(process.env.CASHFLOW_ALERTS_CHAT_ID) : undefined;
 
   if (!chatId) {
     console.error("[revisarAlertasSeguros] Falta CASHFLOW_ALERTS_CHAT_ID, no se puede notificar.");
+    await registrar(entradaError("avisos", "programada", new Error("Falta CASHFLOW_ALERTS_CHAT_ID"), "No se pudo revisar"));
     return { avisosEnviados: 0 };
   }
 
+  // Cada pasada deja su constancia en la bitácora (también las que no encuentran nada: así se ve que corrió).
+  const cierre: CierreAvisos = { activas: { pagos: 0, renovaciones: 0 }, nuevas: { pagos: 0, renovaciones: 0 }, envio: null };
+  try {
+    const resultado = await avisarSiHayNovedades(chatId, cierre);
+    await registrar(entradaAvisos(cierre));
+    return resultado;
+  } catch (error) {
+    await registrar(entradaError("avisos", "programada", error, "La revisión falló"));
+    throw error;
+  }
+}
+
+async function avisarSiHayNovedades(chatId: number, cierre: CierreAvisos): Promise<{ avisosEnviados: number }> {
   const polizas = await listarPolizas();
   const { proximasARenovar, pagosSinConfirmar } = calcularAlertasSeguros(polizas);
+  cierre.activas = { pagos: pagosSinConfirmar.length, renovaciones: proximasARenovar.length };
 
   // Purga primero lo que ya no está activo — corre siempre, incluso si no hay nada nuevo que avisar
   // (mismo criterio que revisarAnotacionesCashflow: la purga no depende de si hay algo que notificar).
@@ -100,6 +117,8 @@ export async function revisarAlertasSeguros(): Promise<{ avisosEnviados: number 
   const renovacionesNuevas = proximasARenovar.filter(
     (p) => yaNotificadas.get(claveRenovacion(p)) !== claveRenovacionVersion(p)
   );
+
+  cierre.nuevas = { pagos: pagosNuevos.length, renovaciones: renovacionesNuevas.length };
 
   if (pagosNuevos.length === 0 && renovacionesNuevas.length === 0) {
     return { avisosEnviados: 0 };
@@ -128,11 +147,14 @@ export async function revisarAlertasSeguros(): Promise<{ avisosEnviados: number 
   const cuerpo = bloques.join("\n\n") + "\n\nDetalle completo en Cerebro (nodo Seguros, grupo Finanzas).";
 
   let avisosEnviados = 0;
+  const titulo = "🛡️ Seguros — necesita tu atención";
   try {
-    await sendTelegramMessageExpandable(chatId, "🛡️ Seguros — necesita tu atención", cuerpo);
+    await sendTelegramMessageExpandable(chatId, titulo, cuerpo);
     avisosEnviados = pagosNuevos.length + renovacionesNuevas.length;
+    cierre.envio = { titulo, cuerpo, entregado: true };
   } catch (error) {
     console.error("[revisarAlertasSeguros] Error enviando aviso a Telegram (se reintenta mañana):", error);
+    cierre.envio = { titulo, cuerpo, entregado: false };
     return { avisosEnviados: 0 }; // no se marca nada como notificado — se reintenta completo en la próxima corrida
   }
 
