@@ -229,6 +229,10 @@ async function pedirConfirmacionSiguienteCorreo(chatId: number, mensaje: string)
 const revisionesEnCurso = new Map<number, Promise<ResultadoRevisarCorreo>>();
 const revisionesInteractivas = new Set<number>();
 const revisionesExhaustivas = new Set<number>();
+/** Punto de conexión de la revisión en seco (core/gmail/automatico/revisionEnSeco.ts): no arranca si hay una revisión real en marcha. */
+export function hayRevisionEnCurso(): boolean {
+  return revisionesEnCurso.size > 0;
+}
 export class RevisionCorreoOcupadaError extends Error {
   constructor() {
     super("Otra revisión mantiene el buzón ocupado. Vuelve a intentarlo en unos minutos.");

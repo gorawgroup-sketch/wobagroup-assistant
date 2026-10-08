@@ -429,4 +429,9 @@ export class PostgresAutoStore implements StoreAuto {
   async auditar(e: { buzon: string; mensajeId?: string; tipo: string; datos: unknown }): Promise<void> {
     await this.db.query("INSERT INTO wobi_mail_events(mailbox,message_id,kind,data) VALUES($1,$2,$3,$4)", [e.buzon, e.mensajeId ?? null, e.tipo, JSON.stringify(e.datos)]);
   }
+  /** Última revisión en seco registrada (ver revisionEnSeco.ts), de cualquier versión. */
+  async ultimaRevisionEnSeco(buzon: string): Promise<unknown | undefined> {
+    const r = await this.db.query("SELECT data FROM wobi_mail_events WHERE mailbox=$1 AND kind='revision_en_seco' ORDER BY id DESC LIMIT 1", [buzon]);
+    return r.rows[0]?.data;
+  }
 }
