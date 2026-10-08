@@ -419,7 +419,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     let busquedaFxIncompleta = false;
     const candidatosFx = await buscarMovimientosPorTipoCambio(
       empresa,
-      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true },
+      { monto: datos.monto, moneda: monedaOriginal, fecha: fechaBusquedaFx, proveedor: datos.proveedor, concepto: datos.concepto },
       monedasReales
     ).catch((error) => {
       busquedaFxIncompleta = true;
