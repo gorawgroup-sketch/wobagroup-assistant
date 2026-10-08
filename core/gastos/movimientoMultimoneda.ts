@@ -311,9 +311,18 @@ export function describirMovimientoMultimoneda(
  * seguro (nombre reconocido o ya confirmado antes) gana a uno por confirmar; si no hay ninguno seguro, un único por confirmar sirve
  * para armar la propuesta, que lo muestra con el aviso «nombre distinto» y exige que Carlos lo confirme con el botón.
  */
-export function cargoUnicoParaEquivalente<T extends { compatibilidad?: "por_confirmar" | "aprendido" }>(candidatos: readonly T[]): T | undefined {
+/** Un cargo coincide «al céntimo» con la referencia si se aparta menos de max(0,02; 0,5 %) de lo que da la tasa. */
+export function coincideConLaReferencia(c: { monto: number; montoReferencia?: number }): boolean {
+  if (c.montoReferencia === undefined || !Number.isFinite(c.montoReferencia) || c.montoReferencia <= 0) return false;
+  return Math.abs(Math.abs(c.monto) - c.montoReferencia) <= Math.max(0.02, c.montoReferencia * 0.005);
+}
+
+export function cargoUnicoParaEquivalente<T extends { compatibilidad?: "por_confirmar" | "aprendido"; monto: number; montoReferencia?: number }>(candidatos: readonly T[]): T | undefined {
   const seguros = candidatos.filter((c) => c.compatibilidad !== "por_confirmar");
   if (seguros.length === 1) return seguros[0];
   if (seguros.length === 0 && candidatos.length === 1) return candidatos[0];
-  return undefined;
+  // Varios candidatos parecidos (caso real 2026-10-08: «Taxi 129,94 MXN» con cinco cargos de Uber, dos «Pending», entre 5,65 y 6,43 €): si
+  // UNO SOLO coincide al céntimo con la tasa del día, ese es el cargo. Con dos o más iguales (dos viajes del mismo importe) no se adivina.
+  const exactos = candidatos.filter(coincideConLaReferencia);
+  return exactos.length === 1 ? exactos[0] : undefined;
 }
