@@ -16,6 +16,8 @@ export interface EntradaRegla {
   tieneNif: boolean;
   /** País del contacto (ISO-2) si se conoce. */
   pais?: string;
+  /** Moneda impresa en el recibo cuando el gasto se creó en otra (típico: recibo en MXN/COP convertido a EUR al crearlo). */
+  monedaOriginal?: string;
   /** Ya se convirtió antes un gasto de este mismo proveedor (aprendizaje). */
   proveedorConvertidoAntes: boolean;
   textoEvidencia?: string;
@@ -31,6 +33,8 @@ export function evaluarReglaTicket(e: EntradaRegla): ResultadoRegla {
   const motivos: string[] = [];
   const moneda = e.moneda.toUpperCase().trim();
   if (moneda !== "EUR") motivos.push(`proveedor sin NIF y gasto en ${moneda} (no es euro)`);
+  const original = (e.monedaOriginal ?? "").toUpperCase().trim();
+  if (original && original !== "EUR" && original !== moneda) motivos.push(`proveedor sin NIF y recibo original en ${original} (no es euro)`);
   const pais = (e.pais ?? "").toUpperCase();
   if (pais && !PAISES_UE.has(pais)) motivos.push(`proveedor sin NIF de fuera de la UE (${pais})`);
   if (e.proveedorConvertidoAntes) motivos.push("ya se convirtió antes un gasto de este proveedor");
@@ -49,6 +53,16 @@ export const tasaDeCambio = (v: unknown): number => {
   return Number.isFinite(n) ? n : NaN;
 };
 
+/**
+ * Moneda del recibo original cuando el gasto está en otra: WOBI la deja escrita en la descripción del gasto al crearlo, p. ej.
+ * «… 6 oct 2026 (180 MXN, comprobante en MXN)». Caso real 08-10-2026, Footprint: cuatro tickets de México y Colombia seguían como compra
+ * porque el gasto está en EUR (se convirtió al crearlo) y el contacto no tiene país.
+ */
+export function monedaOriginalDeDescripcion(descripcion: unknown): string | undefined {
+  const m = /comprobante\s+en\s+([A-Za-z]{3})\b/i.exec(String(descripcion ?? ""));
+  return m ? m[1].toUpperCase() : undefined;
+}
+
 /** Arma la entrada de la regla a partir de la compra de Holded y su contacto. Es la ÚNICA forma de calcularla: el escáner y la cola usan esta. */
 export function entradaReglaDesdeCompra(d: Raw, contacto: Raw | null, proveedorConvertidoAntes: boolean): EntradaRegla {
   const nif = String(contacto?.vat_number ?? contacto?.code ?? "").trim();
@@ -57,7 +71,7 @@ export function entradaReglaDesdeCompra(d: Raw, contacto: Raw | null, proveedorC
   const totalEUR = moneda.toUpperCase() === "EUR" ? (Number.isFinite(total) ? total : null) : (Number.isFinite(total) && Number.isFinite(tasa) && tasa > 0 ? total / tasa : null);
   return {
     moneda, totalEUR, tieneNif: nif !== "", pais: String((contacto?.bill_address as Raw | undefined)?.country_code ?? ""),
-    proveedorConvertidoAntes,
+    proveedorConvertidoAntes, monedaOriginal: monedaOriginalDeDescripcion(d.description ?? d.desc),
     textoEvidencia: [d.description, (Array.isArray(d.lines) ? (d.lines as Raw[])[0]?.name : "")].filter(Boolean).join(" · "),
   };
 }

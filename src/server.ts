@@ -153,7 +153,8 @@ import { handleEdicionValorCashflowCallback } from "../core/google/edicionValorC
 import { handleRegistroManualCashflowCallback } from "../core/google/registroManualCashflowCallbackHandler";
 import { handleTransferenciasCallback, publicarPropuestasTransferencias } from "../core/holded/transferencias/telegram";
 import { EMPRESAS_TRANSFERENCIAS } from "../core/holded/transferencias/modo";
-import { parsearComandoSoportes, parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
+import { parsearComandoSoportes, parsearComandoTickets, parsearComandoTransferencias, publicarMenuComandos } from "../core/telegram/menuComandos";
+import { conversionTicketsHolded } from "../core/jobs/automatizacionHolded";
 import { handleReintegroZipCallback } from "../core/informes/reintegroTelegram";
 import { handleLoteImpuestosCallback } from "../core/google/loteImpuestosCallbackHandler";
 import { handleEventoCallback } from "../core/crm/eventoCallbackHandler";
@@ -2330,6 +2331,31 @@ async function procesarUpdateTelegram(update: TelegramUpdate): Promise<void> {
     } catch (error) {
       console.error("[transferencias] Error revisando las transferencias internas:", error instanceof Error ? error.message : error);
       await sendTelegramMessage(incoming.chatId, "⚠️ No pude revisar las transferencias ahora. No se tocó nada en Holded; inténtalo de nuevo en un momento.");
+    }
+    return;
+  }
+
+  // Menú de Telegram → revisión inmediata de compras a convertir en ticket (la misma que corre sola cada 30 minutos).
+  if (parsearComandoTickets(incoming.text)) {
+    // La conversión escribe en Holded a través de la cola: solo el superadministrador.
+    if ((await obtenerRolUsuario(incoming.chatId)) !== "superadmin") {
+      await sendTelegramMessage(incoming.chatId, "Esta orden lanza conversiones en Holded y solo está disponible para el superadministrador.");
+      return;
+    }
+    if (obtenerTrazaAutomatizacion().enEjecucion.tickets) {
+      await sendTelegramMessage(incoming.chatId, "⏳ Ya hay una revisión de tickets en marcha. Cuando termine te llegarán sus preguntas con botones; vuelve a pedirla en un par de minutos si quieres otra.");
+      return;
+    }
+    await sendTelegramMessage(incoming.chatId, "🧾 Revisando las compras de WOBA, eWorks y Footprint para convertir en ticket las que cumplen la regla...");
+    try {
+      const resumen = await conversionTicketsHolded();
+      const estados = resumen ? Object.entries(resumen.porEstado).map(([e, n]) => `${n} ${e.replace(/_/g, " ")}`).join(", ") : "";
+      await sendTelegramMessage(incoming.chatId, resumen
+        ? `✅ Revisión terminada. En la cola: ${resumen.revisados} gasto(s)${estados ? ` (${estados})` : ""}. Los dudosos te llegan aparte con botones «Convertir a ticket / No es ticket»; los que cumplen la regla se convierten solos cuando están conciliados y con comprobante.`
+        : "La conversión a ticket está apagada o sin almacén duradero; no se hizo nada.");
+    } catch (error) {
+      console.error("[tickets] Error en la revisión manual de tickets:", error instanceof Error ? error.message : error);
+      await sendTelegramMessage(incoming.chatId, "⚠️ No pude completar la revisión de tickets ahora. No se tocó nada fuera de la cola habitual; inténtalo de nuevo en un momento.");
     }
     return;
   }
