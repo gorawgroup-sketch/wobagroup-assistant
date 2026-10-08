@@ -144,3 +144,14 @@ Caso real (Footprint, Hospedaje Guadalajara): el recibo era de 4.036,92 MXN (≈
 
 - `core/gastos/equivalenteCoherente.ts` (`equivalenteCuadraConTasa`, con prueba): un equivalente que se aparta más del **8 %** de lo que da la tasa del día se **ignora** y se busca el cargo real en el banco (la propuesta lo dice en la razón). Sin tasa, o con datos inválidos, no se juzga y el equivalente se conserva. El spread normal de una tarjeta es del 1-4 %.
 - Comprobado con tasas reales: 4.036,92 MXN → 204,65 € cuadra, 174,60 € no. Con 40 gastos reales ya creados con equivalente, 39 cuadran; 1 no (Uber, 9.744,65 CRC → 18,26 USD, −15 %), que con esta regla pasaría por la búsqueda en el banco en vez de aceptarse a ciegas.
+
+## Protección de coste ANTES de leer o descargar adjuntos (2026-10-08)
+
+Regla de Carlos: el sistema debe ser económico y sustentable, y la protección va **antes** de gastar, no cuando el gasto ya está creado. Caso real (07-10): un correo con 58 imágenes «noname» costó unos 3-4 USD sin ser ningún gasto. El 07-10 se cerró en la cola manual (`extraerAdjuntos`); la **revisión automática** seguía descargando y enviando al modelo todas las imágenes del correo.
+
+Capas, todas por metadatos (sin bajar ni leer nada), en `core/correo/lectura/proteccionAdjuntos.ts`:
+1. **Decoración incrustada** (imagen + Content-ID + pequeña + «noname», o inline decorativa): se descarta en el origen — ahora también en la revisión automática (`partesAdjuntasAProcesar` en `core/gmail/automatico/gmail.ts`).
+2. **Repetidas** (mismo tipo, nombre y tamaño): se lee una.
+3. **Tope por correo**: la cola manual lee como mucho 12 adjuntos por correo y avisa una vez de cuántos no (`adjuntosOmitidos` en el resumen del correo); la revisión automática, con más de 20 adjuntos reales, corta **antes de descargar ninguno** y deja el correo para revisión manual (sin gastar IA).
+
+Pruebas: el caso de las 58 imágenes + 1 recibo (solo se descarga el recibo), el corte con 25 facturas sin descargar nada, repetidos y tope.
