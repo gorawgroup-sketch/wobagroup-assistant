@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { SIN_ACTIVIDAD, SIN_LECTURA, agruparBitacora, distintivoResultado, estadoProgramacion, fechaMadrid, horaMadrid, proximaLegible } from './segurosView.mjs';
+import { SIN_ACTIVIDAD, SIN_LECTURA, agruparBitacora, distintivoResultado, estadoProgramacion, fechaMadrid, horaMadrid, horaAviso, proximaLegible } from './segurosView.mjs';
 
 export function Badge({ value }) { return <span className={`sg-badge sg-badge--${value.tono}`}>{value.texto}</span>; }
 function Avisos({ entrada }) {
   return <div className="sg-avisos">{entrada.avisos?.map((aviso, i) => <article className="sg-aviso" key={i}>
     <div className="sg-row"><strong>{aviso.titulo || 'Aviso de Telegram'}</strong><span className={`sg-badge sg-badge--${aviso.entregado === false ? 'danger' : 'neutral'}`}>{aviso.entregado === false ? 'No llegó a Telegram' : aviso.entregado === true ? 'Aceptado por Telegram' : 'Entrega sin confirmar'}</span></div>
-    <small>Hora de ejecución: {horaMadrid(entrada.cuando)} · Madrid. Hora individual de entrega no disponible.</small>
+    <small>{horaAviso(aviso, entrada.cuando)}</small>
+    {aviso.truncado === true && <span className="sg-badge sg-badge--warning">texto recortado</span>}
     <p className="sg-exact-text">{aviso.texto}</p>
   </article>)}</div>;
 }

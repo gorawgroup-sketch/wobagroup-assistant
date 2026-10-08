@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { scopeSnapshot } from './modules/nucleo/companyScope.mjs';
-import { SIN_LECTURA, SIN_ACTIVIDAD, agruparBitacora, distintivoResultado, estadoProgramacion, diaMadrid, horaMadrid, proximaLegible, diasLegibles, mensajeRevision, ordenarDocumentos, separarPagos } from './modules/seguros/segurosView.mjs';
+import { SIN_LECTURA, SIN_ACTIVIDAD, agruparBitacora, distintivoResultado, estadoProgramacion, diaMadrid, horaMadrid, horaAviso, proximaLegible, diasLegibles, mensajeRevision, ordenarDocumentos, separarPagos } from './modules/seguros/segurosView.mjs';
 const fixture = JSON.parse(readFileSync(new URL('../../docs/ejemplos/estado-seguros.json', import.meta.url), 'utf8'));
 
 test('fixture: actividad ordenada por día Madrid, sin alterar ni recortar textos', () => {
@@ -85,4 +85,28 @@ test('documentos: seis documentos ordenados con vigencia y resumen de 4000 carac
   assert.equal(ordenados[0].vigencia, documentos[0].vigencia);
   assert.deepEqual(documentos, copia);
   assert.equal(ordenarDocumentos(null), null);
+});
+
+
+test('fixture actualizado: cada aviso muestra su hora de entrega de Madrid, independiente de la ejecución', () => {
+  const entrada = fixture.bitacora.find(e => e.avisos.some(a => a.entregadoEn));
+  assert.ok(entrada, 'el fixture de main debe incluir una entrega registrada');
+  const aviso = entrada.avisos.find(a => a.entregadoEn);
+  assert.equal(horaAviso(aviso, '2026-10-08T06:00:00Z'), `Hora de entrega: ${horaMadrid(aviso.entregadoEn)} · Madrid.`);
+  assert.equal(horaAviso({ ...aviso, entregadoEn:'2026-01-09T07:50:00Z' }, entrada.cuando), 'Hora de entrega: 08:50 · Madrid.');
+  assert.equal(horaAviso({ ...aviso, entregadoEn:'2026-07-09T06:50:00Z' }, entrada.cuando), 'Hora de entrega: 08:50 · Madrid.');
+  for (const historico of [{entregado:true}, {entregado:false}, {entregadoEn:null}]) {
+    assert.equal(horaAviso(historico, '2026-10-08T15:35:00Z'), 'Hora de ejecución: 17:35 · Madrid. Hora individual de entrega no disponible.');
+  }
+});
+test('avisos completos y recortados conservan el texto y la marca del backend', () => {
+  const entrada = fixture.bitacora.find(e => e.avisos.length);
+  const texto = '<b>Texto literal</b>\n' + 'a'.repeat(7979);
+  assert.equal(texto.length, 8000);
+  for (const truncado of [false, true]) {
+    const recibida = {...entrada, avisos:[{...entrada.avisos[0],texto,truncado}]};
+    const aviso = agruparBitacora([recibida], {soloAvisos:true})[0].entradas[0].avisos[0];
+    assert.equal(aviso.texto, texto);
+    assert.equal(aviso.truncado, truncado);
+  }
 });

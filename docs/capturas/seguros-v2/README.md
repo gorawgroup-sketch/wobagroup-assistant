@@ -17,9 +17,6 @@ Comprobado en navegador: filtros combinados, avisos no entregados, aislamiento p
 
 GET autenticado `/api/cerebro/estado` en producción devolvió 200, `programacion` con 5 tareas, `calendarioPagos` con 6 pagos, `complementosDisponibles: true` y `bitacora: []` en la consulta de esta entrega. La bitácora todavía no acredita pasadas programadas; el front dice que empezó el 08-10-2026, sin fabricar entradas anteriores. Se necesita comprobar las entradas tras las primeras pasadas programadas del backend.
 
-Datos que debe ampliar Claude Code para completar el requisito de avisos:
-
-1. `vistaBitacora` recorta `avisos[].texto` a 700 caracteres y el almacén también limita el texto. El front muestra todo lo recibido, pero no puede recuperar lo omitido ni garantizar que sea el aviso original completo.
-2. `AvisoRegistrado` no incluye fecha/hora individual de entrega. `cuando` es el final de la ejecución, no la entrega. Se rotula «Hora de ejecución» y se declara que la hora individual de entrega no está disponible. Para mostrar la entrega exacta se necesita un campo acordado en el contrato.
+El contrato actualizado del PR #426 permite mostrar el aviso recibido entero (hasta 8.000 caracteres), su marca `truncado` como «texto recortado» y `entregadoEn` como «Hora de entrega» en Madrid. Para las constancias antiguas o avisos sin entrega individual se conserva el rótulo de hora de ejecución y la declaración de hora de entrega no disponible.
 
 No se modificó `core/seguros/`, no se leyó Sheets y no se activó auto-merge.

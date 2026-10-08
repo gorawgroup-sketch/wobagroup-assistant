@@ -118,3 +118,9 @@ export function separarPagos(pagos, complementosDisponibles) {
   const ordenados = pagos.slice().sort((a, b) => a.fecha.localeCompare(b.fecha));
   return { previstos: ordenados.filter(p => p.estado === 'previsto'), historia: ordenados.filter(p => p.estado !== 'previsto') };
 }
+
+export function horaAviso(aviso, ejecucion) {
+  return aviso.entregadoEn
+    ? `Hora de entrega: ${horaMadrid(aviso.entregadoEn)} · Madrid.`
+    : `Hora de ejecución: ${horaMadrid(ejecucion)} · Madrid. Hora individual de entrega no disponible.`;
+}
