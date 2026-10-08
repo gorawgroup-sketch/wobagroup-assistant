@@ -251,11 +251,22 @@ export function detectarTransferencias(
     }
   }
 
-  // Asignación global: ningún movimiento puede usarse dos veces. Si un movimiento tiene más de una pareja posible,
+  // Una pareja cuyo valor en EUR o cuya tasa se desvía más del límite NO es una competidora de verdad: es un cruce absurdo
+  // (9.070,62 USD → +2.000 EUR, 75 % de diferencia) que solo existe porque el banco repite la misma descripción en todas
+  // sus conversiones del día. Si alguno de sus movimientos tiene otra pareja plausible, el cruce se descarta; si no la tiene,
+  // se conserva (bloqueada) para que una conversión realmente rara no desaparezca sin que nadie la vea.
+  // Caso real 08-10-2026, Footprint: dos conversiones del mismo día (9.070,62 USD → 8.100 EUR y 2.237,96 USD → 2.000 EUR)
+  // generaban 4 parejas bloqueadas por «ambiguo»; las dos buenas diferían un 0,3 %.
+  const plausible = (p: PropuestaTransferencia) => p.confianza !== "bloqueada";
+  const tienePlausible = new Set<string>();
+  for (const p of candidatas) if (plausible(p)) for (const id of [p.origen.movimiento.id, p.destino.movimiento.id]) tienePlausible.add(id);
+  const sinCruces = candidatas.filter((p) => plausible(p) || ![p.origen.movimiento.id, p.destino.movimiento.id].some((id) => tienePlausible.has(id)));
+
+  // Asignación global: ningún movimiento puede usarse dos veces. Si un movimiento tiene más de una pareja POSIBLE,
   // todas las parejas en las que participa quedan bloqueadas para revisión humana.
   const usos = new Map<string, number>();
-  for (const p of candidatas) for (const id of [p.origen.movimiento.id, p.destino.movimiento.id]) usos.set(id, (usos.get(id) ?? 0) + 1);
-  const propuestas = candidatas.map((p) => {
+  for (const p of sinCruces) for (const id of [p.origen.movimiento.id, p.destino.movimiento.id]) usos.set(id, (usos.get(id) ?? 0) + 1);
+  const propuestas = sinCruces.map((p) => {
     const repetidos = [p.origen.movimiento.id, p.destino.movimiento.id].filter((id) => (usos.get(id) ?? 0) > 1);
     return repetidos.length === 0 ? p : {
       ...p, confianza: "bloqueada" as const,
