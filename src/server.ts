@@ -79,6 +79,7 @@ import { obtenerHistorialVisible } from "../core/claude/conversationStore";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
+import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
 import {
@@ -3036,6 +3037,8 @@ app.post("/webhook/github-autofix", async (req: Request, res: Response) => {
 servidorHttp = app.listen(PORT, () => {
   console.log(`WOBA Copilot escuchando en el puerto ${PORT}`);
   startScheduler();
+  // Punto 4 del plan contra la recurrencia (08-10-2026): revisión en seco tras cada despliegue (core/gmail/automatico/revisionEnSeco.ts).
+  programarRevisionEnSecoTrasDespliegue();
   // Menú de comandos de Telegram (core/telegram/menuComandos.ts): se publica en cada arranque; nunca bloquea.
   void publicarMenuComandos();
   // Panel /cerebro: lo deja caliente antes de que llegue el primer visitante y lo mantiene fresco en segundo plano.
