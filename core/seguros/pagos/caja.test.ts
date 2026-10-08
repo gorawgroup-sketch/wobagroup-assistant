@@ -54,12 +54,11 @@ test("si el saldo cubre, lo dice con lo que sobra; el saldo justo también alcan
   assert.equal(evaluarCaja(pago({ importe: 654.81 }), [pago({ importe: 654.81 })], WOBA, "2027-02-26").estado, "alcanza");
 });
 
-test("un dato dudoso nunca se presenta como «alcanza» ni como «no alcanza»: cuenta no encontrada, saldo negativo (cuenta de crédito), saldo ausente o lectura fallida", () => {
+test("un dato dudoso nunca se presenta como «alcanza» ni como «no alcanza»: cuenta no encontrada, saldo ausente o lectura fallida; y un saldo negativo se dice «descubierto»", () => {
   const eworks = pago({ empresa: "EWORKS", cuentaDeCargo: "CAIXA BANK EWORKS", importe: 840.74 });
   const caixa: CuentaCaja[] = [{ nombre: "CAIXA BANK EWORKS", moneda: "EUR", saldo: -20281.34, tipo: "bank" }];
   const negativa = evaluarCaja(eworks, [eworks], caixa, "2027-02-24");
-  assert.equal(negativa.estado, "no_comprobable");
-  if (negativa.estado === "no_comprobable") assert.match(negativa.motivo, /saldo negativo \(-20281\.34 EUR\): puede ser una cuenta de crédito/);
+  assert.deepEqual(negativa, { estado: "descubierto", cuenta: "CAIXA BANK EWORKS", saldo: -20281.34, necesario: 840.74 }, "el saldo es cierto (el del banco): se dice tal cual, sin afirmar si alcanza");
   assert.equal(evaluarCaja(eworks, [eworks], [{ nombre: "CAIXA BANK EWORKS", moneda: "EUR", saldo: Number.NaN, tipo: "bank" }], "2027-02-24").estado, "no_comprobable");
   assert.equal(evaluarCaja(eworks, [eworks], WOBA, "2027-02-24").estado, "no_comprobable", "sin cuenta con ese nombre");
   const fallo = evaluarCaja(eworks, [eworks], null, "2027-02-24");

@@ -48,6 +48,24 @@ export function buscarPolizaDelDocumento<T extends Pick<Poliza, "id" | "numeroPo
   return principales.find((p) => p.estado === "vigente") ?? principales[0] ?? candidatas[0];
 }
 
+/**
+ * Las condiciones generales son del PRODUCTO, no de la póliza: no traen impreso el número de póliza, pero el nombre del archivo casi siempre
+ * lo lleva («… 023S00453RCG Condiciones Generales RC.pdf»). Busca en el nombre el número principal de alguna póliza del registro y lo devuelve
+ * tal como está en el registro; vacío si ninguno aparece o si aparecen varios distintos (ambiguo: mejor sin enlazar que mal enlazado).
+ * Caso real (08-10-2026): 5 documentos leídos de Drive quedaron sin póliza y el panel, que filtra por póliza, no los enseñaba.
+ */
+export function numeroDePolizaEnNombre<T extends Pick<Poliza, "numeroPoliza">>(nombreArchivo: string, polizas: T[]): string {
+  const nombre = normalizarNumeroPoliza(nombreArchivo);
+  const encontrados = new Map<string, string>();
+  for (const p of polizas) {
+    const bruto = (p.numeroPoliza.match(/[A-Za-z0-9]+/) ?? [""])[0];
+    const principal = normalizarNumeroPoliza(bruto);
+    // Un número demasiado corto aparecería por casualidad en cualquier nombre.
+    if (principal.length >= 7 && nombre.includes(principal)) encontrados.set(principal, bruto);
+  }
+  return encontrados.size === 1 ? [...encontrados.values()][0] : "";
+}
+
 /** Mismo documento (misma póliza, suplemento, tipo y fecha) → mismo id: integrar dos veces no duplica. */
 export function idDocumentoPoliza(datos: Pick<DatosDocumentoPoliza, "numeroPoliza" | "suplemento" | "tipoDocumento" | "fechaDocumento">, nombreArchivo: string): string {
   const base = datos.numeroPoliza
@@ -91,16 +109,19 @@ export async function integrarDocumentoPoliza(
 
   const id = idDocumentoPoliza(datos, entrada.nombreArchivo);
   const [existentes, polizas] = await Promise.all([d.documentos(), d.polizas()]);
-  const poliza = buscarPolizaDelDocumento(polizas, datos.numeroPoliza, datos.suplemento);
+  // Número impreso en el documento; si no trae (condiciones generales), el que lleva el nombre del archivo.
+  const numeroDelNombre = datos.numeroPoliza ? "" : numeroDePolizaEnNombre(entrada.nombreArchivo, polizas);
+  const numero = datos.numeroPoliza || numeroDelNombre;
+  const poliza = buscarPolizaDelDocumento(polizas, numero, datos.suplemento);
   const titulo = [
     datos.tipoDocumento || "documento de póliza",
-    datos.numeroPoliza ? `póliza ${datos.numeroPoliza}${datos.suplemento ? ` (suplemento ${datos.suplemento})` : ""}` : "",
+    numero ? `póliza ${numero}${datos.suplemento ? ` (suplemento ${datos.suplemento})` : ""}` : "",
     datos.aseguradora,
   ].filter(Boolean).join(" — ");
   const enlace = poliza
-    ? `enlazado a «${poliza.tipoCobertura}» de ${poliza.empresa} en el registro`
-    : datos.numeroPoliza
-      ? `la póliza ${datos.numeroPoliza} no está en el registro de pólizas: queda como documento suelto hasta que la des de alta`
+    ? `enlazado a «${poliza.tipoCobertura}» de ${poliza.empresa} en el registro${numeroDelNombre ? " (por el número del nombre del archivo)" : ""}`
+    : numero
+      ? `la póliza ${numero} no está en el registro de pólizas: queda como documento suelto hasta que la des de alta`
       : "no trae número de póliza: queda como documento suelto";
 
   const previo = existentes.find((doc) => doc.id === id);
@@ -112,7 +133,7 @@ export async function integrarDocumentoPoliza(
     id,
     polizaId: poliza?.id ?? "",
     empresa: poliza?.empresa ?? (datos.empresa === "desconocida" ? "" : datos.empresa),
-    numeroPoliza: datos.numeroPoliza + (datos.suplemento ? ` (suplemento ${datos.suplemento})` : ""),
+    numeroPoliza: numero + (datos.suplemento ? ` (suplemento ${datos.suplemento})` : ""),
     aseguradora: datos.aseguradora,
     tipoDocumento: datos.tipoDocumento,
     nombreArchivo: entrada.nombreArchivo,

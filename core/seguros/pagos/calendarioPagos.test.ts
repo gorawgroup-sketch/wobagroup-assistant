@@ -67,21 +67,22 @@ test("el evento de un pago ya cerrado (pagado, devuelto o cancelado) se retira d
   assert.ok(m.filas().every((f) => f.eventoCalendarId === ""));
 });
 
-test("SIMULACIÓN con saldos reales (24-28/02/2027): avisa de EWORKS (cuenta con saldo negativo: no comprobable) y de los dos recibos de Allianz (BBVA no cubre 1.244,14 €), sin repetir lo ya avisado", async () => {
+test("SIMULACIÓN con saldos reales (24-28/02/2027): avisa de EWORKS (cuenta en descubierto) y de los dos recibos de Allianz (BBVA no cubre 1.244,14 €), sin repetir lo ya avisado", async () => {
   const m = montar("2027-02-24", pagosSembrados("2026-10-06T00:00:00.000Z"), { cuentas: { WOBA: cuentasWoba, EWORKS: cuentasEworks } });
   // El 24/02 solo toca EWORKS (27/02 es dentro de 3 días): una sola lectura de cuentas, la de EWORKS.
   const dia24 = await prepararCalendarioPagos(m.deps);
   assert.deepEqual(m.lecturasDeCuentas, ["EWORKS"]);
   assert.equal(dia24.avisos.length, 1);
-  assert.equal(dia24.avisos[0].caja.estado, "no_comprobable");
+  assert.equal(dia24.avisos[0].caja.estado, "descubierto");
+  assert.match(dia24.informe?.cuerpo ?? "", /cuenta en descubierto: «CAIXA BANK EWORKS» figura en -20\.281,34 €/);
   assert.match(dia24.informe?.cuerpo ?? "", /\[EWORKS\] RC Markel 025S00287RCG — 1\.ª cuota semestral de la renovación 2027 · 840,74 € \(estimado\) · adeudo en «CAIXA BANK EWORKS»/);
   await marcarAvisosEnviados(m.deps, dia24.avisos);
   assert.equal(m.filas().find((f) => f.polizaId === "eworks_rc_markel" && f.fecha === "2027-02-27")?.avisos, "d3");
 
-  // El 26/02 tocan las dos cuotas de Allianz (01/03, a 3 días): se suman en BBVA y no alcanzan. EWORKS (27/02) está a 1 día: recordatorio.
+  // El 26/02 tocan las dos cuotas de Allianz (01/03, a 3 días): se suman en BBVA y no alcanzan. EWORKS (27/02) está a 1 día pero su cuenta
+  // sigue en descubierto, igual que hace dos días: no se repite el aviso.
   const dia26 = await prepararCalendarioPagos({ ...m.deps, hoy: () => "2027-02-26" });
   assert.deepEqual(dia26.avisos.map((a) => `${a.pago.polizaId}:${a.nivel}`).sort(), [
-    "eworks_rc_markel:d1",
     "woba_showroom_2026_2027:d3",
     "woba_showroom_complemento_2026_2027:d3",
   ]);
