@@ -34,7 +34,7 @@ export const CASOS: CasoReal[] = [
       recibos: [reciboCaso({ proveedor: "Antaris Suite", moneda: "MXN", monto: 340, fecha: "2026-09-21", concepto: "Hospedaje" })] },
     operacionesPrevias: [operacionPrevia({ id: "op-antaris", correo: correoCaso("antaris"), estado: "completada", compraId: "compra-antaris", version: "politica-anterior",
       recibo: reciboCaso({ proveedor: "Antaris Suite", moneda: "MXN", monto: 340, fecha: "2026-09-20", concepto: "Hospedaje" }) })],
-    espera: [/Al releer el correo, el recibo no coincide con el de la operación anterior \(antes 340 MXN del 2026-09-20; ahora 340 MXN del 2026-09-21 \(Footprint\)\)/],
+    espera: [/Al releer el correo, el recibo no coincide con el de la operación anterior \(antes 340 MXN del 2026-09-20; ahora 340 MXN del 2026-09-21 \(Footprint\); difiere en: otra fecha\)/],
     noEspera: [GENERICO_LECTURA, CODIGOS_INTERNOS],
   },
   {
