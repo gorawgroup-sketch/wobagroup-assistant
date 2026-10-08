@@ -641,7 +641,8 @@
           "canal": "telegram",
           "titulo": "🛡️ Seguros — novedades de la revisión",
           "texto": "Correo nuevo de Acodrid (07/10): confirman que trasladaron a Markel la transferencia del recibo 2026/138406.",
-          "entregado": true
+          "entregado": true,
+          "entregadoEn": "2026-10-08T15:35:08.412Z"
         }
       ],
       "eventos": [],

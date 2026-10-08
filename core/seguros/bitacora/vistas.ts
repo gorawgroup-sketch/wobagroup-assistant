@@ -6,20 +6,23 @@ import { eventoDePago, fechaDelEvento } from "../pagos/eventoCalendario";
 import type { PagoSeguro } from "../pagos/tipos";
 import { diasEntre } from "../vigilante/fechas";
 import { PROGRAMACION_SEGUROS, estadoDeTarea, proximaOcurrencia, textoCuando, type EstadoTarea } from "./programacion";
-import type { AvisoRegistrado, EntradaBitacora, EventoRegistrado, ResultadoTarea, TareaSeguros } from "./tipos";
+import { TEXTO_AVISO_CORTO, type AvisoRegistrado, type EntradaBitacora, type EventoRegistrado, type ResultadoTarea, type TareaSeguros } from "./tipos";
 
 export const ETIQUETAS_TAREA: Record<TareaSeguros, string> = {
   vigilante: "Vigilante", avisos: "Avisos del registro", pagos: "Calendario de pagos", semanal: "Resumen semanal", agente: "Especialista",
 };
 
-/** Cuántas entradas viajan en el contrato (la hoja guarda más) y cuánto texto de cada aviso: el panel se refresca cada minuto. */
+/**
+ * Cuántas entradas viajan en el contrato (la hoja guarda más) y cuánto texto de aviso en total: el panel se refresca cada minuto. Los avisos
+ * más recientes viajan ENTEROS; si entre todos pasan del presupuesto, los más antiguos se acortan a TEXTO_AVISO_CORTO y se marcan `truncado`.
+ */
 export const MAX_ENTRADAS_EN_CONTRATO = 40;
+export const PRESUPUESTO_TEXTO_AVISOS = 100_000;
 /**
  * Cuántas se LEEN para calcular el estado de cada tarea (al día / retrasada): bastantes más que las que se enseñan, porque la constancia
  * de una tarea semanal tiene hasta 7 días y no puede quedar fuera de la ventana solo porque las demás tareas escriben más a menudo.
  */
 export const ENTRADAS_A_LEER = 150;
-const MAX_TEXTO_AVISO_EN_CONTRATO = 700;
 
 export interface VistaBitacora {
   id: string;
@@ -35,15 +38,26 @@ export interface VistaBitacora {
   notas: string[];
 }
 
+/** Los avisos de una entrada con el texto que quepa en lo que queda de presupuesto (el orden de llamada es del más reciente al más antiguo). */
+function avisosDelContrato(avisos: AvisoRegistrado[], presupuesto: { restante: number }): AvisoRegistrado[] {
+  return avisos.map((a) => {
+    if (a.texto.length <= presupuesto.restante) { presupuesto.restante -= a.texto.length; return a; }
+    const corto = a.texto.slice(0, TEXTO_AVISO_CORTO);
+    presupuesto.restante = Math.max(0, presupuesto.restante - corto.length);
+    return { ...a, texto: corto.length < a.texto.length ? `${corto.trimEnd()}…` : corto, truncado: true };
+  });
+}
+
 /** `entradas` undefined = no se pudo leer la bitácora (null en el contrato: «sin lectura», no «sin actividad»). */
 export function vistaBitacora(entradas: EntradaBitacora[] | undefined): VistaBitacora[] | null {
   if (!entradas) return null;
+  const presupuesto = { restante: PRESUPUESTO_TEXTO_AVISOS };
   return [...entradas]
     .sort((a, b) => Date.parse(b.cuando) - Date.parse(a.cuando))
     .slice(0, MAX_ENTRADAS_EN_CONTRATO)
     .map((e) => ({
       id: e.id, cuando: e.cuando, tarea: e.tarea, etiqueta: ETIQUETAS_TAREA[e.tarea], origen: e.origen, resultado: e.resultado, resumen: e.resumen,
-      avisos: (e.detalle.avisos ?? []).map((a) => ({ ...a, texto: a.texto.length > MAX_TEXTO_AVISO_EN_CONTRATO ? `${a.texto.slice(0, MAX_TEXTO_AVISO_EN_CONTRATO - 1).trimEnd()}…` : a.texto })),
+      avisos: avisosDelContrato(e.detalle.avisos ?? [], presupuesto),
       eventos: e.detalle.eventos ?? [], cifras: e.detalle.cifras ?? {}, notas: e.detalle.notas ?? [],
     }));
 }

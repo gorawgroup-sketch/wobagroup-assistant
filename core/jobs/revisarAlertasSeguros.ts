@@ -151,7 +151,7 @@ async function avisarSiHayNovedades(chatId: number, cierre: CierreAvisos): Promi
   try {
     await sendTelegramMessageExpandable(chatId, titulo, cuerpo);
     avisosEnviados = pagosNuevos.length + renovacionesNuevas.length;
-    cierre.envio = { titulo, cuerpo, entregado: true };
+    cierre.envio = { titulo, cuerpo, entregado: true, entregadoEn: new Date().toISOString() };
   } catch (error) {
     console.error("[revisarAlertasSeguros] Error enviando aviso a Telegram (se reintenta mañana):", error);
     cierre.envio = { titulo, cuerpo, entregado: false };

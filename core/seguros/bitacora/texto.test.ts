@@ -16,7 +16,10 @@ test("la actividad en texto: lo último primero, con avisos, eventos, notas y la
       id: "b", tarea: "pagos", cuando: "2026-10-08T06:55:30.000Z", resultado: "con_novedades", resumen: "Calendario revisado: 6 pagos previstos",
       detalle: {
         eventos: [{ accion: "creado", titulo: "🛡️ Seguro: RC — 840,74 € el 27/02/2027", inicio: "2027-02-24T08:00:00.000Z" }],
-        avisos: [{ canal: "telegram", titulo: "🛡️ Seguros — pagos", texto: "Texto completo del aviso", entregado: false }],
+        avisos: [
+          { canal: "telegram", titulo: "🛡️ Seguros — pagos", texto: "Texto completo del aviso", entregado: false },
+          { canal: "telegram", titulo: "Otro aviso", texto: "Texto del otro", entregado: true, entregadoEn: "2026-10-08T06:55:41.000Z", truncado: true },
+        ],
         notas: ["No pude crear un evento"],
       },
     }),
@@ -28,6 +31,7 @@ test("la actividad en texto: lo último primero, con avisos, eventos, notas y la
   assert.match(lineas[1], /^- 08\/10 08:55 · Calendario de pagos · con novedades — Calendario revisado: 6 pagos previstos$/);
   assert.match(texto, /↳ evento de calendario creado: 🛡️ Seguro: RC — 840,74 € el 27\/02\/2027 \(24\/02 09:00\)/);
   assert.match(texto, /↳ aviso por Telegram \(NO llegó\): «🛡️ Seguros — pagos»/);
+  assert.match(texto, /↳ aviso por Telegram \(entregado 08\/10 08:55\): «Otro aviso»/, "con la hora en que Telegram lo aceptó");
   assert.doesNotMatch(texto, /Texto completo del aviso/, "por defecto solo el título del aviso");
   assert.match(texto, /↳ No pude crear un evento/);
   assert.match(texto, /- 08\/10 08:35 · Vigilante · sin novedades — Banco, correo y registro revisados: sin novedades/);
@@ -36,7 +40,9 @@ test("la actividad en texto: lo último primero, con avisos, eventos, notas y la
   assert.match(texto, /- Avisos del registro: Todos los días a las 08:50 \(hora de Madrid\) · próxima: 09\/10 08:50 · aún sin constancia/);
   assert.match(texto, /- Especialista \(cuando le preguntas\): Cuando le preguntas · cuando se le pregunta/);
 
-  assert.match(textoActividad(entradas, { ahora, limite: 15, incluirTextos: true }), /Texto completo del aviso/);
+  const conTextos = textoActividad(entradas, { ahora, limite: 15, incluirTextos: true });
+  assert.match(conTextos, /Texto completo del aviso/);
+  assert.match(conTextos, /Texto del otro\n\[texto recortado\]/, "un aviso cortado al guardarlo lo dice");
 });
 
 test("filtra por tarea, limita y, sin constancia, dice que la bitácora es nueva en vez de inventar actividad", () => {

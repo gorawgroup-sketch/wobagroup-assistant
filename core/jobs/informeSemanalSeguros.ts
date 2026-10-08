@@ -41,7 +41,7 @@ export async function informeSemanalSeguros(registrar: Registrar = registrarActi
     await registrar(entradaSemanal({ informe, entregado: false }));
     throw error;
   }
-  await registrar(entradaSemanal({ informe, entregado: true }));
+  await registrar(entradaSemanal({ informe, entregado: true, entregadoEn: new Date().toISOString() }));
   console.log("[informeSemanalSeguros] resumen semanal enviado.");
   return { enviado: true };
 }

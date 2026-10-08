@@ -12,11 +12,24 @@ const n = (cantidad: number, singular: string, plural: string): string => `${can
 const fechaLarga = (fecha: string): string => fecha.split("-").reverse().join("/");
 const mensajeDe = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, MAX_NOTA);
 
-const avisoDe = (informe: Informe | null, entregado: boolean | null): AvisoRegistrado[] | undefined =>
-  informe && entregado !== null ? [{ canal: "telegram", titulo: informe.titulo, texto: informe.cuerpo, entregado }] : undefined;
+/** `entregadoEn`: el instante en que Telegram aceptó ESE mensaje (solo tiene sentido si `entregado` es true). */
+const avisoDe = (informe: Informe | null, entregado: boolean | null, entregadoEn?: string): AvisoRegistrado[] | undefined =>
+  informe && entregado !== null
+    ? [{ canal: "telegram", titulo: informe.titulo, texto: informe.cuerpo, entregado, ...(entregado && entregadoEn ? { entregadoEn } : {}) }]
+    : undefined;
 
 /** `entregado`: true = Telegram lo aceptó, false = falló, null = no había nada que enviar. */
-export function entradaVigilante(a: { resultado: ResultadoVigilante; informe: Informe | null; entregado: boolean | null; reenviado?: boolean; origen?: OrigenEjecucion }): EntradaNueva {
+export function entradaVigilante(a: {
+  resultado: ResultadoVigilante;
+  informe: Informe | null;
+  entregado: boolean | null;
+  /** Cuándo aceptó Telegram el informe de esta revisión. */
+  entregadoEn?: string;
+  /** Un informe anterior que no había llegado y que esta pasada ha reenviado (se anota como un aviso más, con su propia hora). */
+  reenvio?: { informe: Informe; entregadoEn?: string };
+  reenviado?: boolean;
+  origen?: OrigenEjecucion;
+}): EntradaNueva {
   const nuevo = a.resultado.contenido;
   const ahora = a.resultado.situacion;
   const partes: string[] = [];
@@ -26,11 +39,13 @@ export function entradaVigilante(a: { resultado: ResultadoVigilante; informe: In
   if (nuevo.cargos.length) partes.push(n(nuevo.cargos.length, "cargo que no encaja", "cargos que no encajan"));
   if (nuevo.correos.length) partes.push(n(nuevo.correos.length, "correo nuevo de aseguradoras", "correos nuevos de aseguradoras"));
   const advertencias = [...nuevo.advertencias, ...nuevo.fallosPersistentes];
+  // Los mensajes de esta pasada en el orden en que salieron: primero el informe pendiente que se reenvía (si lo hay) y luego el de esta revisión.
+  const avisos = [...(a.reenvio ? avisoDe(a.reenvio.informe, true, a.reenvio.entregadoEn) ?? [] : []), ...(avisoDe(a.informe, a.entregado, a.entregadoEn) ?? [])];
 
   let resumen = partes.length ? `Novedades: ${partes.join(", ")}` : "Banco, correo y registro revisados: sin novedades";
   if (a.entregado === true) resumen += " · aviso enviado por Telegram";
   if (a.entregado === false) resumen += " · el aviso no llegó a Telegram y queda pendiente de reenvío";
-  if (a.reenviado) resumen += " · reenviado un aviso anterior que no había llegado";
+  if (a.reenviado || a.reenvio) resumen += " · reenviado un aviso anterior que no había llegado";
   if (ahora.enTransito.length) resumen += ` · ${n(ahora.enTransito.length, "cargo sigue", "cargos siguen")} en tránsito sin confirmar`;
   if (advertencias.length) resumen += ` · revisión incompleta (${n(advertencias.length, "advertencia", "advertencias")})`;
 
@@ -39,7 +54,7 @@ export function entradaVigilante(a: { resultado: ResultadoVigilante; informe: In
     resultado: advertencias.length || a.entregado === false ? "con_advertencias" : partes.length ? "con_novedades" : "sin_novedades",
     resumen,
     detalle: {
-      avisos: avisoDe(a.informe, a.entregado),
+      avisos: avisos.length ? avisos : undefined,
       cifras: {
         confirmados: nuevo.confirmados.length, enTransitoNuevos: nuevo.enTransito.length, devoluciones: nuevo.devoluciones.length, cargosNuevos: nuevo.cargos.length,
         correosNuevos: nuevo.correos.length, enTransitoAhora: ahora.enTransito.length, cargosARevisarAhora: ahora.cargos.length,
@@ -52,12 +67,12 @@ export function entradaVigilante(a: { resultado: ResultadoVigilante; informe: In
 export interface CierreAvisos {
   activas: { pagos: number; renovaciones: number };
   nuevas: { pagos: number; renovaciones: number };
-  envio: { titulo: string; cuerpo: string; entregado: boolean } | null;
+  envio: { titulo: string; cuerpo: string; entregado: boolean; entregadoEn?: string } | null;
 }
 
 export function entradaAvisos(c: CierreAvisos): EntradaNueva {
   const cifras = { pagosActivos: c.activas.pagos, renovacionesActivas: c.activas.renovaciones, pagosNuevos: c.nuevas.pagos, renovacionesNuevas: c.nuevas.renovaciones };
-  const avisos = c.envio ? [{ canal: "telegram" as const, titulo: c.envio.titulo, texto: c.envio.cuerpo, entregado: c.envio.entregado }] : undefined;
+  const avisos = c.envio ? avisoDe({ titulo: c.envio.titulo, cuerpo: c.envio.cuerpo }, c.envio.entregado, c.envio.entregadoEn) : undefined;
   if (c.envio && !c.envio.entregado) {
     return { tarea: "avisos", origen: "programada", resultado: "error", resumen: "No se pudo entregar el aviso a Telegram; se reintenta mañana.", detalle: { avisos, cifras } };
   }
@@ -78,7 +93,7 @@ export function entradaAvisos(c: CierreAvisos): EntradaNueva {
   };
 }
 
-export function entradaPagos(a: { r: ResultadoCalendarioPagos; informe: Informe | null; entregado: boolean | null }): EntradaNueva {
+export function entradaPagos(a: { r: ResultadoCalendarioPagos; informe: Informe | null; entregado: boolean | null; entregadoEn?: string }): EntradaNueva {
   const { r } = a;
   const creados = r.eventos.filter((e) => e.accion === "creado").length;
   const retirados = r.eventos.length - creados;
@@ -94,7 +109,7 @@ export function entradaPagos(a: { r: ResultadoCalendarioPagos; informe: Informe 
     resultado: r.advertencias.length || a.entregado === false ? "con_advertencias" : hayNovedad ? "con_novedades" : "sin_novedades",
     resumen: `Calendario revisado: ${partes.join(" · ")}`,
     detalle: {
-      avisos: avisoDe(a.informe, a.entregado),
+      avisos: avisoDe(a.informe, a.entregado, a.entregadoEn),
       eventos: r.eventos,
       cifras: { previstos: r.previstos, eventosCreados: creados, eventosRetirados: retirados, pagosAvisados: r.avisos.length },
       notas: r.advertencias,
@@ -102,10 +117,10 @@ export function entradaPagos(a: { r: ResultadoCalendarioPagos; informe: Informe 
   };
 }
 
-export function entradaSemanal(a: { informe: Informe | null; entregado: boolean | null }): EntradaNueva {
+export function entradaSemanal(a: { informe: Informe | null; entregado: boolean | null; entregadoEn?: string }): EntradaNueva {
   if (!a.informe) return { tarea: "semanal", origen: "programada", resultado: "sin_novedades", resumen: "Resumen semanal: nada que contar esta semana.", detalle: {} };
   if (a.entregado === false) return { tarea: "semanal", origen: "programada", resultado: "error", resumen: "No se pudo enviar el resumen semanal a Telegram.", detalle: { avisos: avisoDe(a.informe, false) } };
-  return { tarea: "semanal", origen: "programada", resultado: "con_novedades", resumen: "Resumen semanal enviado por Telegram.", detalle: { avisos: avisoDe(a.informe, true) } };
+  return { tarea: "semanal", origen: "programada", resultado: "con_novedades", resumen: "Resumen semanal enviado por Telegram.", detalle: { avisos: avisoDe(a.informe, true, a.entregadoEn) } };
 }
 
 /** Una línea que dice QUÉ se decidió en una propuesta del especialista (sin volver a pedir la póliza ni la memoria). */
