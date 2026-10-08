@@ -11,6 +11,7 @@ export const COMANDOS_MENU: ReadonlyArray<{ command: string; description: string
   { command: "soportes", description: "Pedir soportes de gastos con tarjeta (subir CSV de Revolut)" },
   { command: "transferencias", description: "Transferencias entre cuentas propias por conciliar" },
   { command: "preguntas", description: "Volver a mostrar las preguntas pendientes" },
+  { command: "tickets", description: "Revisar ya las compras que deben pasar a ticket" },
   { command: "conocimiento", description: "Enseñar a los agentes: documentos, enlaces o texto" },
 ];
 
@@ -25,6 +26,12 @@ export function parsearComandoTransferencias(texto: string): "WOBA" | "EWORKS" |
   if (empresa === "eworks") return "EWORKS";
   if (empresa === "footprint") return "Footprint";
   return undefined;
+}
+
+/** «/tickets» o «revisar tickets»: lanza ya la revisión de compras a convertir en ticket (la misma que corre sola cada 30 minutos). */
+export function parsearComandoTickets(texto: string): boolean {
+  const t = texto.trim().normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  return /^(?:\/tickets(?:@\w+)?|revisar\s+(?:los\s+)?tickets|convertir\s+(?:las\s+)?compras\s+a\s+tickets?)\s*$/.test(t);
 }
 
 /**

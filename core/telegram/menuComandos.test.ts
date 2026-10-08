@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { COMANDOS_MENU, parsearComandoTransferencias } from "./menuComandos";
+import { COMANDOS_MENU, parsearComandoTransferencias, parsearComandoTickets } from "./menuComandos";
 
 test("el comando del menú y la orden escrita piden lo mismo", () => {
   assert.equal(parsearComandoTransferencias("/transferencias"), "todas");
@@ -22,7 +22,7 @@ test("el menú cumple las reglas de Telegram: minúsculas, sin espacios, descrip
     assert.match(c.command, /^[a-z0-9_]{1,32}$/);
     assert.ok(c.description.length >= 3 && c.description.length <= 256);
   }
-  assert.deepEqual(COMANDOS_MENU.map((c) => c.command), ["revisarcorreo", "soportes", "transferencias", "preguntas", "conocimiento"]);
+  assert.deepEqual(COMANDOS_MENU.map((c) => c.command), ["revisarcorreo", "soportes", "transferencias", "preguntas", "tickets", "conocimiento"]);
 });
 
 test("«/soportes» y «pedir soportes» arrancan el proceso, con o sin empresa", async () => {
@@ -40,4 +40,10 @@ test("una frase que solo menciona soportes no arranca el proceso", async () => {
   assert.equal(parsearComandoSoportes("¿qué soportes faltan de Nuria?"), undefined);
   assert.equal(parsearComandoSoportes("necesito pedir soportes a Alberto por el hotel"), undefined);
   assert.equal(parsearComandoSoportes("soportes"), undefined);
+});
+
+test("«/tickets» y sus frases lanzan la revisión de tickets; una frase que solo menciona tickets es conversación", () => {
+  for (const t of ["/tickets", "/tickets@wobi_bot", "revisar tickets", "Revisar los tickets", "convertir compras a ticket"]) assert.equal(parsearComandoTickets(t), true, t);
+  for (const t of ["tickets de avión", "¿qué tickets hay?", "/ticketsx", "mándame el ticket de Uber"]) assert.equal(parsearComandoTickets(t), false, t);
+  assert.ok(COMANDOS_MENU.some((c) => c.command === "tickets"));
 });

@@ -182,3 +182,14 @@ lista aprobada: `WOBI_HOLDED_SYNC_BANCARIA_CUENTAS="Empresa:idCuenta,…"` (con 
 **Caso controlado:** `WOBI_HOLDED_TICKETS_CASO="WOBA:<idCompra>"` (con `WOBI_HOLDED_TICKETS_MODO=activo` y
 `WOBI_HOLDED_TICKETS_EMPRESAS=WOBA`) limita la ejecución a ese único gasto y avisa del resultado a los administradores.
 Para quitarlo: borrar la variable.
+
+## La regla pregunta de verdad y reconoce el recibo en otra moneda (2026-10-08)
+
+Caso real, Footprint: Cnidos y Rifados (180 MXN → 8,92 €), Raku Café, Cocos y Poke Laureles seguían como «Compra». Tres causas:
+
+1. **La pregunta con botones no llegaba nunca.** Todo gasto que crea WOBI trae un registro provisional («Clasificación dudosa»). `registrarDudoso` veía ese registro y no hacía nada, así que la regla, al no decidir, no preguntaba. Ahora `convertirProvisionalEnDudoso` convierte ese registro en la pregunta pendiente (origen `regla_revisar`, la que atienden los botones) y se pregunta una sola vez.
+2. **Faltaba una señal.** El contacto no tiene país y el gasto está en EUR (se convirtió al crearlo), así que «sin señal clara». WOBI deja en la descripción del gasto la moneda del recibo («… (180 MXN, comprobante en MXN)»): `monedaOriginalDeDescripcion` la lee y cuenta como señal de ticket. Las exclusiones siguen ganando (NIF/CIF, tope de 500 €). En seco con datos reales: Cnidos, Raku Café, Cocos y Poke Laureles pasan a ticket; solo se preguntan Booking (LATAM), Apartment Vila Olímpica y Rinkel.
+3. **Sin forma de lanzarla a mano.** `/tickets` (menú) ejecuta ya la misma pasada que corre cada 30 minutos; solo superadministrador.
+
+No cambia: Uber Colombia sin comprobante adjunto o Metro Art Hotel sin conciliar del todo siguen esperando (son requisitos de seguridad de la cola).
+
