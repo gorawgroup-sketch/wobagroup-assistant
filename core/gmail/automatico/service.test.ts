@@ -634,3 +634,22 @@ test("tras reintentar, un análisis incompleto NO se vuelve a pagar hasta pasada
   assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS - 1)?.completo, false);
   assert.equal(analisisReutilizable(guardado, (guardado?.analizadoEn ?? 0) + ESPERA_REINTENTO_ANALISIS_INCOMPLETO_MS + 1), undefined);
 });
+
+test("la relectura de una operación anterior distingue sus tres causas y ninguna se disfraza de «lectura incompleta»", () => {
+  const texto = resumenAutomatico({ modo: "execute", revisados: 3, completados: 0, simulados: 0, gastos: [],
+    pendientes: [
+      { mensajeId: "a", asunto: "Anthropic", motivos: ["relectura_no_coincide", "relectura:antes 24.2 USD del 2026-10-07; ahora 24.2 USD del 2026-10-06 (WOBA)"],
+        detalles: [{ proveedor: "Anthropic, PBC", empresa: "WOBA", monto: 24.2, moneda: "USD", motivos: ["relectura_no_coincide", "relectura:antes 24.2 USD del 2026-10-07; ahora 24.2 USD del 2026-10-06 (WOBA)"] }] },
+      { mensajeId: "b", asunto: "Antaris", motivos: ["relectura_sin_recibo_unico", "relectura:2 recibo(s) en la parte «cuerpo»"],
+        detalles: [{ proveedor: "Antaris Suite", empresa: "Footprint", monto: 340, moneda: "MXN", motivos: ["relectura_sin_recibo_unico", "relectura:2 recibo(s) en la parte «cuerpo»"] }] },
+      { mensajeId: "c", asunto: "Xue", motivos: ["lectura_incompleta", "lectura:No pude leer el adjunto «20260924_074802.jpg»: imagen ilegible"],
+        detalles: [{ proveedor: "Xue Cafe", empresa: "Footprint", monto: 19513, moneda: "COP", motivos: ["lectura_incompleta", "lectura:No pude leer el adjunto «20260924_074802.jpg»: imagen ilegible"] }] },
+      { mensajeId: "d", asunto: "Delhaize", motivos: ["relectura_fallida", "error:Holded 502"],
+        detalles: [{ proveedor: "Delhaize", empresa: "Footprint", monto: 140.41, moneda: "EUR", motivos: ["relectura_fallida", "error:Holded 502"] }] },
+    ] });
+  assert.match(texto, /el recibo no coincide con el de la operación anterior \(antes 24\.2 USD del 2026-10-07; ahora 24\.2 USD del 2026-10-06 \(WOBA\)\)/);
+  assert.match(texto, /no aparece un único recibo en la misma parte que usó la operación anterior \(2 recibo\(s\) en la parte «cuerpo»\)/);
+  assert.match(texto, /El analizador no pudo leer una parte de este correo: No pude leer el adjunto «20260924_074802\.jpg»/);
+  assert.match(texto, /Una comprobación técnica falló y se reintentará en la siguiente pasada: Holded 502/);
+  assert.doesNotMatch(texto, /no dio por completa la lectura/);
+});
