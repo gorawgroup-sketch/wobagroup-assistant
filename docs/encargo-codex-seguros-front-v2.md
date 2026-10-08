@@ -33,3 +33,8 @@ Con `main` actualizado y **fusionados** el #363 (panel v1) y el PR de la bitáco
 
 ## Fuera de alcance
 Avisar por Telegram cuando una tarea va `retrasada` (backend, pendiente de decidir el margen); editar horarios; ejecutar tareas desde el panel.
+
+## Ampliación del contrato (09-10-2026, a petición de Codex en el PR #425)
+- `bitacora[].avisos[].texto` ya **no se recorta a 700 caracteres**: viaja entero (hasta 8.000 caracteres; los avisos más recientes siempre enteros). Si algún aviso se cortó (por tamaño de fila o por el presupuesto de texto del contrato, que acorta los más antiguos a 1.500), trae **`truncado: true`**: rotularlo «texto recortado».
+- `bitacora[].avisos[].entregadoEn` (ISO UTC, opcional): el instante exacto en que Telegram aceptó **ese** mensaje. Usarlo como «Hora de entrega» (hora de Madrid) cuando exista; si falta (constancias anteriores al 09-10-2026, o `entregado: false`) mantener el rótulo actual de hora de ejecución. Una pasada puede tener varios avisos (p. ej. un informe pendiente reenviado y el nuevo), cada uno con su hora.
+

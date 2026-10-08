@@ -56,3 +56,71 @@ export function revisionAntigua(fecha, ahora = Date.now()) {
   const leida = Date.parse(fecha || '');
   return Number.isFinite(leida) && ahora - leida > 24 * 60 * 60 * 1000;
 }
+
+export const SIN_ACTIVIDAD = 'Aún sin actividad registrada: la bitácora empezó el 08-10-2026';
+const zonaMadrid = 'Europe/Madrid';
+export function diaMadrid(valor) {
+  const fecha = new Date(valor);
+  if (!Number.isFinite(fecha.getTime())) return null;
+  const partes = new Intl.DateTimeFormat('en-CA', { timeZone: zonaMadrid, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(fecha);
+  const parte = tipo => partes.find(p => p.type === tipo).value;
+  return `${parte('year')}-${parte('month')}-${parte('day')}`;
+}
+export function horaMadrid(valor) {
+  const fecha = new Date(valor);
+  return valor && Number.isFinite(fecha.getTime())
+    ? new Intl.DateTimeFormat('es-ES', { timeZone: zonaMadrid, hour: '2-digit', minute: '2-digit' }).format(fecha) : SIN_LECTURA;
+}
+export function fechaMadrid(valor) {
+  const fecha = new Date(valor?.length === 10 ? `${valor}T12:00:00Z` : valor);
+  return valor && Number.isFinite(fecha.getTime())
+    ? new Intl.DateTimeFormat('es-ES', { timeZone: zonaMadrid, day: 'numeric', month: 'long', year: 'numeric' }).format(fecha) : SIN_LECTURA;
+}
+export function proximaLegible(valor, ahora = Date.now()) {
+  if (!valor) return SIN_LECTURA;
+  const dia = diaMadrid(valor);
+  if (!dia) return SIN_LECTURA;
+  // Día civil de Madrid: sumar al mediodía evita saltos al cambiar el horario de verano.
+  const hoy = diaMadrid(ahora);
+  const manana = new Date(`${hoy}T12:00:00Z`); manana.setUTCDate(manana.getUTCDate() + 1);
+  return `${dia === hoy ? 'hoy' : dia === diaMadrid(manana) ? 'mañana' : fechaMadrid(valor)} ${horaMadrid(valor)}`;
+}
+export function distintivoResultado(resultado) {
+  return ({ sin_novedades: { texto: 'Sin novedades', tono: 'neutral' }, con_novedades: { texto: 'Con novedades', tono: 'success' }, con_advertencias: { texto: 'Con advertencias', tono: 'warning' }, error: { texto: 'Error', tono: 'danger' } })[resultado] || { texto: resultado || SIN_LECTURA, tono: 'neutral' };
+}
+export function estadoProgramacion(estado) {
+  return ({ al_dia: { texto: 'Al día', tono: 'success' }, retrasada: { texto: 'Retrasada · su última cita no dejó constancia', tono: 'danger' }, sin_registro: { texto: 'Aún sin constancia: la bitácora es nueva', tono: 'neutral' }, sin_lectura: { texto: SIN_LECTURA, tono: 'neutral' }, bajo_demanda: { texto: 'Cuando se le pregunta', tono: 'neutral' } })[estado] || { texto: SIN_LECTURA, tono: 'neutral' };
+}
+export function agruparBitacora(bitacora, { tarea = '', soloAvisos = false } = {}, complementosDisponibles) {
+  if (lecturaDisponible(bitacora, complementosDisponibles)) return null;
+  const entradas = bitacora.filter(e => (!tarea || e.tarea === tarea) && (!soloAvisos || e.avisos?.length))
+    .slice().sort((a, b) => Date.parse(b.cuando) - Date.parse(a.cuando));
+  const grupos = new Map();
+  for (const entrada of entradas) {
+    const dia = diaMadrid(entrada.cuando) || 'Sin fecha';
+    if (!grupos.has(dia)) grupos.set(dia, { dia, entradas: [] });
+    grupos.get(dia).entradas.push(entrada);
+  }
+  return [...grupos.values()];
+}
+export function diasLegibles(dias) {
+  if (dias == null || !Number.isFinite(Number(dias))) return 'sin fecha relativa';
+  return Number(dias) === 0 ? 'hoy' : Number(dias) < 0 ? `vencido hace ${Math.abs(Number(dias))} días` : `en ${dias} días`;
+}
+export function mensajeRevision(revision, complementosDisponibles) {
+  return complementosDisponibles === false ? SIN_LECTURA : revision == null ? 'Aún sin revisión registrada' : null;
+}
+export function ordenarDocumentos(documentos) {
+  return documentos == null ? null : documentos.slice().sort((a, b) => String(b.fechaDocumento || '').localeCompare(String(a.fechaDocumento || '')));
+}
+export function separarPagos(pagos, complementosDisponibles) {
+  if (lecturaDisponible(pagos, complementosDisponibles)) return null;
+  const ordenados = pagos.slice().sort((a, b) => a.fecha.localeCompare(b.fecha));
+  return { previstos: ordenados.filter(p => p.estado === 'previsto'), historia: ordenados.filter(p => p.estado !== 'previsto') };
+}
+
+export function horaAviso(aviso, ejecucion) {
+  return aviso.entregadoEn
+    ? `Hora de entrega: ${horaMadrid(aviso.entregadoEn)} · Madrid.`
+    : `Hora de ejecución: ${horaMadrid(ejecucion)} · Madrid. Hora individual de entrega no disponible.`;
+}

@@ -45,7 +45,9 @@ export async function revisarSegurosVigilante(
   let avisado = false;
   // Constancia para la bitácora: null = no había informe que enviar; true/false = Telegram lo aceptó o no.
   let entregado: boolean | null = null;
-  let reenviado = false;
+  // Cuándo aceptó Telegram cada mensaje de esta pasada (el informe de esta revisión y, si lo hubo, el pendiente que se reenvió).
+  let entregadoEn: string | undefined;
+  let reenvio: { informe: Informe; entregadoEn: string } | undefined;
 
   // Resumen para el panel de Cerebro («última revisión…»): se guarda siempre, haya o no aviso.
   await fuentes.guardarEstado([{ id: CLAVE_ULTIMA_REVISION, version: JSON.stringify(resumirRevision(resultado, fuentes.ahora())) }])
@@ -57,10 +59,10 @@ export async function revisarSegurosVigilante(
   if (pendiente) {
     try {
       await enviar(chatId, pendiente);
+      reenvio = { informe: pendiente, entregadoEn: fuentes.ahora().toISOString() };
       await fuentes.borrarEstado(["pendiente_envio"]);
       pendiente = null;
       avisado = true;
-      reenviado = true;
     } catch (error) {
       console.error("[revisarSegurosVigilante] No se pudo reenviar el informe pendiente (se reintenta):", error);
     }
@@ -71,6 +73,7 @@ export async function revisarSegurosVigilante(
     try {
       await enviar(chatId, resultado.informe);
       entregado = true;
+      entregadoEn = fuentes.ahora().toISOString();
       await fuentes.guardarEstado(resultado.clavesAvisadas);
       avisado = true;
     } catch (error) {
@@ -86,7 +89,7 @@ export async function revisarSegurosVigilante(
     await fuentes.guardarEstado(resultado.clavesAvisadas).catch((e) => console.error("[revisarSegurosVigilante] Error marcando avisos (no crítico):", e));
   }
 
-  await registrar(entradaVigilante({ resultado, informe: resultado.informe, entregado, reenviado }));
+  await registrar(entradaVigilante({ resultado, informe: resultado.informe, entregado, entregadoEn, reenvio }));
   console.log(
     `[revisarSegurosVigilante] ${resultado.hoy}: ${resultado.contenido.confirmados.length} pago(s) confirmado(s), ` +
       `${resultado.contenido.enTransito.length} en tránsito, ${resultado.contenido.devoluciones.length} devolución(es), ` +

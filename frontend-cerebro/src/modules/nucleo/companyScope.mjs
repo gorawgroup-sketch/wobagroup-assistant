@@ -38,6 +38,7 @@ export function scopeSnapshot(moduleId, snapshot, companyId) {
         proximasARenovar: onlyCompany(source.proximasARenovar, companyId),
         proximos: onlyCompany(source.proximos, companyId),
         pagosSinConfirmar,
+        calendarioPagos: Array.isArray(source.calendarioPagos) ? onlyCompany(source.calendarioPagos, companyId) : source.calendarioPagos,
         documentos: Array.isArray(source.documentos) ? onlyCompany(source.documentos, companyId) : source.documentos,
         // Estos conteos de presentación usan los estados recibidos; nunca atribuyen al selector el total del grupo.
         resumen: {
