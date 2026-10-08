@@ -198,3 +198,11 @@ Regla de Carlos: una factura en una moneda que la empresa no tiene como cuenta (
 - Los pendientes ya guardados con esa pregunta se **reprocesan solos** al reenviar la pregunta del correo activo (`reprocesarPendienteMoneda.ts`): la propuesta con botones sustituye a la pregunta. Si el reproceso falla, el pendiente se restaura.
 - Verificado con los cargos reales de Footprint: Taxi 129,94 MXN → cargo «Dlo*serv Uber Rides» −6,43 €; Taxi 119,95 MXN → −5,94 €; Café 70 MXN → «Rest Drip Cafe» −3,66 €; repartos de 220,11 y 189,98 MXN y el almuerzo de 180 MXN, sin cargo aún → 10,88 €, 9,39 € y 8,90 € a la tasa del día.
 - La línea base de errores tragados de `procesarGastoEntrante.ts` baja de 6 a 4 (se eliminaron los de la rama de pregunta).
+
+## El aviso de «misma estancia» solo corre para hospedajes (2026-10-08)
+
+Los logs del 08-10 mostraron que el aviso del #395 se ejecutaba con TODAS las propuestas (también un gasto de comunidad de 550 €), leía hasta 40 gastos del registro por id en Holded una a una y se caía por completo con el 404 de un gasto ya borrado. Corrección en `core/gastos/mismaEstanciaRegistrada.ts`:
+
+- Solo se comprueba si el concepto es de **hospedaje** (`esHospedaje`): para cualquier otro gasto no se lee nada (0 ms).
+- Un gasto del registro que ya no existe en Holded se **omite** (y se recuerda 30 min) en vez de abortar la comprobación.
+- Las lecturas por id van en **paralelo** (8 a la vez) y con memoria de 30 min: de unos 12 s a unos 3,6 s con los mismos resultados (Hotel101 sigue detectando el recibo `6aba2709` y la factura 50808).
