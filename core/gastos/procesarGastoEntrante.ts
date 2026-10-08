@@ -35,6 +35,7 @@ import { reenviarPropuestaGasto } from "./reenviarPropuestaGasto";
 import { buscarMovimientosPorTipoCambio, cargoUnicoParaEquivalente, describirMovimientoMultimoneda } from "./movimientoMultimoneda";
 import { notaCargosMayores } from "../holded/cargoMayor";
 import { equivalenteCuadraConTasa } from "./equivalenteCoherente";
+import { empresaNombradaEnTexto } from "./empresaPorComprador";
 import { convertirATasa, mejorCargoPorCercania, monedaDestinoPreferida } from "./conversionAutomatica";
 import {
   obtenerPoliticaMonedaLiquidacion,
@@ -197,6 +198,19 @@ function compararNumeroDocumento(numeroEntrante: string | undefined, candidato: 
  */
 export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<ResultadoGastoEntrante> {
   const { chatId, datos } = entrada;
+
+  // La factura manda sobre el contexto: si nombra como COMPRADOR a una sociedad del grupo, el gasto es de esa sociedad, aunque el contexto
+  // (dominios, remitente, proyecto) apunte a otra (caso Name.com 28837066, 08-10: iba a Business Atelier Europa SL y se creó en EWORKS).
+  // Lo que el operador fijó a mano no se toca.
+  const empresaDelComprador = empresaNombradaEnTexto(datos.compradorRazonSocial);
+  if (empresaDelComprador && datos.empresaProbable !== empresaDelComprador && !datos.empresaFijadaPorOperador) {
+    datos.razon =
+      (datos.razon ? `${datos.razon} ` : "") +
+      `[La factura va a nombre de «${datos.compradorRazonSocial}»: el gasto es de ${empresaDelComprador}` +
+      `${esEmpresaHolded(datos.empresaProbable) ? `, no de ${datos.empresaProbable}` : ""}.]`;
+    console.log(`[procesarGastoEntrante] Empresa corregida por el comprador de la factura: ${datos.empresaProbable} → ${empresaDelComprador} («${datos.compradorRazonSocial}»).`);
+    datos.empresaProbable = empresaDelComprador;
+  }
 
   // Un proveedor ilegible no impide ofrecer la vía autorizada sin contacto.
   // No inventar un nombre: la resolución usa el contacto genérico existente
