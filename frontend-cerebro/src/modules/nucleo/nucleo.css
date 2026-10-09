@@ -369,3 +369,18 @@
 .nv-settings-section>div[style] { max-width:900px!important; border-color:#6ebdd854!important; border-radius:16px!important; background:linear-gradient(145deg,#153247,#0b1d2c)!important; box-shadow:0 14px 35px #020c1559; }
 
 .nv-settings-locked button+button { margin-left:10px; background:transparent; color:#a9d1e1; border-color:#6a9db1; }
+/* Capability remains discoverable: mute decoration, keep labels and focus legible. */
+.nv-node.nv-area--planned { color:#8fa6b4; text-shadow:none; }
+.nv-node.nv-area--planned .nv-node-icon { color:#8299a8; border-color:#617c8b70; background:#0a172044; box-shadow:none; opacity:.65; }
+.nv-node.nv-area--planned:is(:hover,:focus-visible) { color:#c4d5df; text-shadow:none; }
+.nv-node.nv-area--planned:is(:hover,:focus-visible) .nv-node-icon { box-shadow:none; border-color:#a1b6c5; opacity:.85; }
+.nv-node.nv-area--planned .nv-node-icon::after { opacity:0; }
+.nv-node:is(.nv-area--checking,.nv-area--incident) .nv-node-icon { filter:saturate(.3); box-shadow:none; }
+.nv-node.nv-area--documents .nv-node-icon { filter:saturate(.7); }
+.nv-area-map>button.nv-area--planned { background:#0b182466; border-color:#6e879526; color:#a5bbc9; }
+.nv-area-map>button.nv-area--planned .nv-map-icon { opacity:.65; background:transparent; border-style:dotted; }
+.nv-area-map>button.nv-area--planned:hover { border-color:#a1b6c5; box-shadow:none; }
+.nv-area-map>button:is(.nv-area--checking,.nv-area--incident) { background:#0b1b29; box-shadow:none; }
+.nv-area--planned .nv-area-emblem { opacity:.42; filter:saturate(.12); }
+.nv-area--planned .nv-stage { color:#b1c1cc; background:#6d879618; border-color:#6d879655; }
+.nv-area--checking .nv-stage,.nv-area--incident .nv-stage { color:#e6bd85; }

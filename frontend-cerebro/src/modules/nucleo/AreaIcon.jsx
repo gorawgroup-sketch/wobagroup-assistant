@@ -1,4 +1,5 @@
 const paths = {
+  processes: <><rect x="2" y="3" width="7" height="5" rx="1" /><rect x="15" y="16" width="7" height="5" rx="1" /><path d="M9 5h9v8m-3-3 3 3 3-3M15 19H6v-8m-3 3 3-3 3 3" /></>,
   finance: <><path d="M4 19V9m5 10V5m5 14v-8m5 8V3M2 21h20" /></>,
   operations: <><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5" /></>,
   insurance: <><path d="M12 2 4 6v6c0 5 8 10 8 10s8-5 8-10V6l-8-4Z" /><path d="m8 12 3 3 5-6" /></>,
@@ -11,7 +12,7 @@ const paths = {
   quality: <><circle cx="12" cy="9" r="6" /><path d="m9 9 2 2 4-4M8 14l-2 8 6-3 6 3-2-8" /></>,
   technology: <><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4M10 10h4v4h-4z" /></>,
 };
-export const AREA_COLORS = ['#52ddf5','#8faaff','#60e6ba','#69c8ff','#d9a0ff','#db9bfa','#72dcc9','#f2c780','#87b9ff','#8edbc2','#b6a5fc'];
+export const AREA_COLORS = ['#52ddf5','#8faaff','#60e6ba','#69c8ff','#d9a0ff','#db9bfa','#72dcc9','#f2c780','#87b9ff','#8edbc2','#b6a5fc','#8fcfdf'];
 export default function AreaIcon({ id }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[id] || paths.technology}</svg>;
 }
