@@ -376,3 +376,9 @@
 .nv-area-map>button.nv-area--planned .nv-map-icon { opacity:.65; }
 .nv-area--planned .nv-area-emblem { opacity:.65; }
 .nv-area--checking .nv-stage,.nv-area--incident .nv-stage { color:#e6bd85; }
+
+.nv-command form { display:grid; gap:12px; margin:24px 0; }
+.nv-command input { width:100%; box-sizing:border-box; padding:14px; border:1px solid #60cde080; border-radius:12px; color:#e2f3fa; background:#0b2435; font:inherit; }
+.nv-command form button { padding:12px; border-radius:12px; background:#143c51; color:#a9edff; border:1px solid #60cde0; font:inherit; }
+.nv-command .nv-text-action { display:block; margin:12px 0; }
+.nv-command small { display:block; color:#a3baca; }
