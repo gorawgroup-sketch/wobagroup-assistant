@@ -8,6 +8,7 @@ import { esTitularEmpresa } from "./cruceExtracto";
 import { mostrarResumen, textoResumen } from "./campanaSoportes";
 import { actualizarPersona, leerCampana, mutexCampana, type PersonaCampana } from "./campanaSoportesStore";
 import { generarSeguimientoXlsx, nombreArchivoSeguimiento, redactarCorreoSoportesHtml } from "./correoSoportesHtml";
+import { estadosDesdeHolded, sincronizarHoja } from "./hojaSeguimiento";
 import { asuntoCorreoSoportes, redactarCorreoSoportes } from "./redactarCorreoSoportes";
 import { registrarSolicitud } from "./solicitudesSoportesSheet";
 import { resolverEmailCompleto } from "./emailTitular";
@@ -29,8 +30,28 @@ async function responder(id: string, texto?: string): Promise<void> {
 const PENDIENTES = ["pendiente", "enviando", "fallido"];
 const hashCorto = (t: string): string => createHash("sha1").update(t.toLowerCase()).digest("hex").slice(0, 8);
 
-const datosCorreo = (p: PersonaCampana) => ({ titular: p.titular, empresa: p.empresa, desde: p.desde, hasta: p.hasta, cargos: p.cargos, yaSolicitados: p.yaSolicitados });
-export const cuerpoDe = (p: PersonaCampana): string => redactarCorreoSoportes(datosCorreo(p));
+const datosCorreo = (p: PersonaCampana, hoja?: { url: string; yaPedidas: number }) => ({
+  titular: p.titular, empresa: p.empresa, desde: p.desde, hasta: p.hasta, cargos: p.cargos,
+  yaSolicitados: Math.max(p.yaSolicitados, hoja?.yaPedidas ?? 0), ...(hoja ? { hojaUrl: hoja.url } : {}),
+});
+
+/**
+ * Deja al día la hoja compartida de la persona (la crea la primera vez) y devuelve su enlace. Si falla, el correo sale igual con el
+ * Excel adjunto de siempre: la hoja es un complemento y nunca debe impedir que se pidan los soportes.
+ */
+async function prepararHoja(p: PersonaCampana): Promise<{ url: string; yaPedidas: number } | undefined> {
+  try {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const estadoDe = await estadosDesdeHolded(p.empresa as Empresa, new Date(Date.now() - 150 * 86_400_000).toISOString().slice(0, 10), hoy);
+    const r = await sincronizarHoja(p.empresa, p.titular, p.email, p.cargos, estadoDe, hoy);
+    console.log(`[soportes] Hoja de ${p.titular}: ${r.nuevas} nuevo(s), ${r.yaPedidas} ya pedido(s), ${r.estadosActualizados} estado(s) actualizado(s).`);
+    return { url: r.url, yaPedidas: r.yaPedidas };
+  } catch (error) {
+    console.error(`[soportes] No se pudo preparar la hoja compartida de ${p.titular}; el correo sale con el Excel adjunto:`, error instanceof Error ? error.message : error);
+    return undefined;
+  }
+}
+export const cuerpoDe = (p: PersonaCampana, hoja?: { url: string; yaPedidas: number }): string => redactarCorreoSoportes(datosCorreo(p, hoja));
 
 export async function handleSoportesCallback(callback: TelegramCallbackQuery): Promise<void> {
   const chatId = callback.message?.chat.id;
@@ -108,12 +129,15 @@ export async function handleSoportesCallback(callback: TelegramCallbackQuery): P
       for (const p of aEnviar) {
         const actual = await actualizarPersona(p, { estado: "enviando" });
         try {
+          // Hoja compartida y editable de la persona (siempre el mismo archivo); si no se pudo preparar, sale el Excel adjunto de siempre.
+          const hoja = await prepararHoja(p);
+          const datos = datosCorreo(p, hoja);
           await enviarCorreo({
             to: p.email,
             asunto: asuntoCorreoSoportes(p),
-            cuerpo: cuerpoDe(p),
-            cuerpoHtml: redactarCorreoSoportesHtml(datosCorreo(p)),
-            adjuntos: [{ filename: nombreArchivoSeguimiento(datosCorreo(p)), mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", content: await generarSeguimientoXlsx(datosCorreo(p)) }],
+            cuerpo: cuerpoDe(p, hoja),
+            cuerpoHtml: redactarCorreoSoportesHtml(datos),
+            ...(hoja ? {} : { adjuntos: [{ filename: nombreArchivoSeguimiento(datos), mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", content: await generarSeguimientoXlsx(datos) }] }),
             idempotencyKey: `soportes:${id}:${p.indice}:${hashCorto(p.email)}`,
             proceso: "soportes_titular",
           });

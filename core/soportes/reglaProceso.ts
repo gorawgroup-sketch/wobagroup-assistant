@@ -17,9 +17,11 @@ export const REGLA_PROCESO_SOPORTES =
   "TODOS sus cargos, jamás uno por transacción; (2) sale de asistente@wobagroup.com y pide que los soportes lleguen a " +
   "asistente@wobagroup.com, donde el flujo de correo ya crea el gasto y lo concilia; (3) los cargos van en un CUADRO (Nº, fecha, " +
   "comercio, importe cargado, importe en el comercio, tarjeta, soporte) con totales por moneda —nunca se suman monedas distintas— y " +
-  "una hoja de Excel adjunta de seguimiento solo para control de quien la recibe; (4) el texto es fijo, sin improvisar: estamos " +
-  "mejorando la conciliación de gastos y estabilizando la contabilidad mensual; si ya enviaron los soportes, que los reenvíen, " +
-  "porque el sistema no los reconoció; no debería volver a pasar; si no los han enviado, que lo hagan; (5) la dirección sale de " +
+  "el enlace a SU hoja de seguimiento compartida (un Google Sheet fijo por persona, siempre el mismo archivo, editable por ella, con " +
+  "estado de cada cargo, cuándo se pidió y columnas de comentario que Wobi nunca borra; si no se puede crear, sale el Excel adjunto " +
+  "de siempre); (4) el texto es fijo, sin improvisar: estamos mejorando la conciliación de gastos y estabilizando la contabilidad " +
+  "mensual; a quien ya envió soportes NO se le pide que los reenvíe: que lo indique en su hoja compartida (fecha y destinatario) y " +
+  "se buscan primero; si no los han enviado, que lo hagan; (5) la dirección sale de " +
   "la ya confirmada, o del directorio y del histórico del buzón de Wobi (con varias, la del dominio de la empresa: wobagroup.com " +
   "para WOBA, footprint.global para Footprint); nunca inventes ni adivines un email, y cuando Carlos te diga el correo de alguien " +
   "usa registrar_email_titular_soportes; (6) nada sale sin que Carlos pulse «Enviar» en el resumen (solo superadmin); (7) los " +
