@@ -131,12 +131,9 @@ Igual que se vienen haciendo a mano (leído de conversiones reales de Footprint 
 2. La **entrada** se concilia por la API contra ese cobro. Si vale menos en EUR que la salida, el cobro queda
    `partial_reconciled` con la diferencia de cambio pendiente; así es como queda también a mano.
 
-3. **Diferencia a favor** (la entrada vale MÁS en EUR que la salida): **no se ejecuta** (decisión de Carlos, 08-10-2026). Una
-   transferencia entre cuentas propias no toca ninguna cuenta de comisiones o de diferencias (ni la 62600000 ni la pasarela
-   «Comision cambio/cobro cliente» de Footprint, que deja un pago pendiente sin movimiento que conciliar). La propuesta sale sin
-   botón de conciliar y con el motivo. Criterio nuevo pedido por Carlos y **pendiente de construir**: entre divisas distintas se
-   ajusta la tasa de cambio de la propia transferencia (referencia: la tasa de Holded de ese día) para que lo que sale sea lo que
-   entra, sin ajustes en otras cuentas; en la misma divisa los importes son exactos.
+3. **Diferencia a favor** (la entrada vale MÁS en EUR que la salida; solo con entrada en euros): tras el paso 2 la entrada
+   queda conciliada en parte y el resto se lleva a la cuenta **62600000** con un segundo «Transferir» sobre la entrada
+   (decisión de Carlos, 05-10-2026: la misma cuenta en WOBA, eWorks y Footprint). **Pendiente de su prueba controlada.**
 
 Los traspasos en una misma moneda distinta del euro (USD↔USD) se ejecutan igual que una conversión (pulsar sobre la salida; valoración en euros de Holded). Límites actuales: diferencia máxima 3 % entre las valoraciones en euros de las dos patas (Holded valora en euros también las patas en otra moneda: USD → COP vale igual). Primera USD → COP pendiente de verificar en vivo (Footprint 11/09, 0,71 € a favor). **Validado por Carlos el 05-10-2026**
 (eWorks 02/09, −433,96 EUR → +500 USD: asiento único de 433,96 €, los dos movimientos conciliados y 2,11 € de diferencia
@@ -153,8 +150,7 @@ ofrece «Comprobar en Holded y continuar», que lee antes de actuar.
 
 ## Lo que falta (cada paso con autorización de Carlos)
 
-1. **Conversiones entre divisas ajustando la tasa de cambio** (sin residuos y sin cuentas de diferencias): hay que ver cómo lo
-   permite la pantalla «Transferir» de Holded antes de construirlo.
+1. **Conversiones con diferencia a favor**: prueba controlada de una sola (eWorks 16/09, −593 USD → +513,73 EUR, 0,03 € a favor).
 2. **Pasada programada** en el servidor para proponer sin que haya que pedirlo.
 
 ## Varias conversiones el mismo día: emparejar por valor, no por descripción (2026-10-08)
@@ -164,3 +160,17 @@ Caso real, Footprint 07-10: el banco repite «Exchanged To Eur Main» en todas s
 - `detectarTransferencias`: una pareja cuyo valor en EUR o tasa se desvía más del límite (bloqueada ya en `evaluarPareja`) **no cuenta como competidora** si alguno de sus movimientos tiene otra pareja plausible; se descarta. Si no la tiene, se conserva bloqueada (una conversión realmente rara no desaparece). Dos candidatas plausibles para el mismo movimiento (dos entradas de 2.000 € para una misma salida) siguen siendo ambiguas: no se elige al azar. Las transferencias de la misma moneda no cambian.
 - `reapertura.ts` + `telegram.ts`: una pareja registrada como «ambigua» que ahora ya no está bloqueada se **reabre** (se retira el mensaje viejo y se propone con botón, si está autorizada por el alcance). Los registros «ambigua» que la detección ya no devuelve pasan a «saltada» (si vuelven, se proponen de nuevo) y su mensaje se deja sin botones con el motivo.
 - Verificado en vivo (solo lectura): Footprint pasó de 4 bloqueadas a 2 inequívocas.
+
+## Decisión de Carlos (2026-10-09): se restaura el método histórico con la 62600000 en las tres empresas
+
+El 08-10 se retiró la 62600000 del motor (#420) por el pago pendiente que deja en la pasarela de Footprint. Carlos aclaró que **nunca pidió cancelar ese método**: el único roce estaba en Footprint, y lo que quiere es reproducir tal cual cómo se han hecho siempre las conversiones entre monedas. Se revirtió el #420 y se comprobó el histórico en Holded (solo lectura, cobros/pagos «trans» y asientos desde sep-2025):
+
+| | WOBA | eWorks | Footprint |
+|---|---|---|---|
+| Conversiones con cobro/pago «trans» | 32 | 11 | 172 |
+| Entrada = salida en euros | 11 (cobro y pago conciliados) | 1 | 55 |
+| Entrada vale **menos** | 10 (cobro «parcial», la diferencia queda pendiente) | 9 | 57 |
+| Entrada vale **más** | cobro del resto conciliado, sin pago pendiente (9) | cobro del resto (1) | cobro del resto + **pago pendiente en la pasarela «Comision cambio/cobro cliente»** (48, desde 2025-10-27) |
+| Asientos con crédito en la 62600000 por cambio | 7 (ene–sep 2026) | 2 (mar y sep 2026) | 47 (2025-10-28 a 2026-10-07) |
+
+Conclusión: la diferencia a favor va a la 62600000 con un segundo «Transferir» sobre la entrada, en las tres empresas. En Footprint esa cuenta contable está ligada a una pasarela (tipo `gateway`), por eso el resto deja un pago pendiente sin movimiento bancario; es lo que ya hacían a mano desde octubre de 2025 (el robot hizo 8 de los 47). WOBA y eWorks no tienen ninguna cuenta de tesorería con esa contable, y el resto queda solo como cobro conciliado. Si el gestor de Carlos decide reclasificar (p. ej. a la 768), se cambia en `CUENTA_DIFERENCIAS_CAMBIO` (`ejecucion.ts`).
