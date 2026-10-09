@@ -46,6 +46,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
+| Recuperar colores de áreas del Núcleo | Cerebro (front) | codex/colores-areas | Codex | Verificado: 51 pruebas front, typecheck, build y navegación en tres compañías/móvil; colores originales y transparencia solo en agentes previstos. |
 | Área Procesos y estado visual de áreas conectadas / pendientes | Cerebro (front) | `codex/area-procesos` | Codex | Verificado: 51 pruebas del front, typecheck, build y navegación del build compilado. Reserva del futuro subagente; estados visuales según las fuentes, sin cambios de backend. [PR #430](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/430), pendiente de revisión. |
 | Seguros v2: actividad, programación, calendario de pagos y avisos | Cerebro (front) | `codex/seguros-panel-v2` ([PR #425](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/425)) | Codex | PR abierto para Carlos, pruebas, tipos y build locales en verde; #363 y #421 fusionados, contrato verificado en producción (5 tareas, 6 pagos, bitácora aún vacía). Solo lectura; sin auto-merge. Actualizado con main y #426: hora individual de entrega y marca de texto recortado incorporadas. |
 | Panel de Seguros del Núcleo (P1–P7) | Cerebro (front) | `codex/seguros-panel` ([PR #363](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/363)) | Codex | Abierto para revisión, sin fusionar; solo frontend, pruebas y verificación en vivo. |
