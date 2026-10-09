@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CuentaTransferencia, MovimientoTransferencia } from "./deteccion";
 import { ejecutarTransferencia, importeDeHolded, motivoConversionNoEjecutable, type DependenciasEjecucion, type LineaAsiento, type PagoTransferencia } from "./ejecucion";
-import { casosAutorizados, ejecucionAutorizada, modoTransferencias } from "./modo";
+import { casosAutorizados, diferenciaAFavorAutorizada, ejecucionAutorizada, modoTransferencias } from "./modo";
 import { importeEnPantalla } from "./navegadorTransferencia";
 import type { RegistroTransferencia } from "./registro";
 
 const O = "a".repeat(24), D = "b".repeat(24);
 const HOY = "2026-10-03";
-const SI = { permitirEscritura: true };
+const SI = { permitirEscritura: true, permitirDiferenciaAFavor: true };
 const registro = (extra: Partial<RegistroTransferencia> = {}): RegistroTransferencia => ({
   clave: `WOBA:${O}>${D}`, id: "abc123def456", empresa: "WOBA", tipo: "transferencia", fecha: "2026-10-01",
   origenCuenta: "main", origenMovimiento: O, origenFecha: "2026-10-01", destinoCuenta: "bbva", destinoMovimiento: D, destinoFecha: "2026-10-01",
@@ -287,32 +287,113 @@ test("conversión: un cobro conciliado por un importe que no es el valor de la e
   assert.match(res.mensaje, /cobro de la transferencia en la otra cuenta sigue pendiente/);
 });
 
-/** Conversión con 3 céntimos a favor (eWorks 16/09/2026: −593 USD valorados en 513,70 EUR → +513,73 EUR). */
-function conversionAFavor() {
+/** Conversión real de eWorks (16/09/2026): −593 USD (513,70 EUR) → +513,73 EUR: 3 céntimos a favor. */
+function conversionAFavor(opciones: { segundoRobotNoPulsa?: boolean } = {}) {
   const h = holded();
   h.cuentas[0].moneda = "USD";
   h.movimientos.set(O, { ...h.movimientos.get(O)!, importe: -593, moneda: "USD", equivalenteEur: -513.7 });
   h.movimientos.set(D, { ...h.movimientos.get(D)!, importe: 513.73 });
   const r = registro({ tipo: "conversion", importeOrigen: -593, monedaOrigen: "USD", importeDestino: 513.73 });
   h.deps.transferir = async (_e, orden) => {
-    h.escrituras.push(`transferir:${orden.cuentaId}:${orden.cuentaContable}:${orden.importe}`);
-    return { estado: "ok", detalle: "", pulsado: true };
+    const sobreOrigen = orden.movimientoId === O;
+    if (!sobreOrigen && opciones.segundoRobotNoPulsa) return { estado: "elemento_no_encontrado", detalle: "El formulario no muestra el importe 0,03", pulsado: false };
+    h.escrituras.push(`transferir:${orden.cuentaId}:${sobreOrigen ? "origen" : "destino"}:${orden.cuentaContable}:${orden.importe}${orden.restante !== undefined ? `:resto${orden.restante}` : ""}`);
+    if (sobreOrigen) {
+      h.lineas.push({ asientoId: "pago-1", cuenta: "57200001", debe: 513.7, haber: 0, descripcion: "Exchanged", fecha: "2026-10-01" });
+      h.lineas.push({ asientoId: "pago-1", cuenta: "57200015", debe: 0, haber: 513.7, descripcion: "Exchanged", fecha: "2026-10-01" });
+      h.movimientos.set(O, { ...h.movimientos.get(O)!, estado: "reconciled", conciliado: -593 });
+      h.pagos.push({ id: "pago-doc", tipo: "payment", cuentaId: "main", importe: 513.7, conciliado: true, movimiento: O });
+      h.pagos.push({ id: "cobro-doc", tipo: "collection", cuentaId: "bbva", importe: 513.7, conciliado: false, movimiento: O });
+    } else {
+      h.lineas.push({ asientoId: "resto-1", cuenta: "57200001", debe: 0.03, haber: 0, descripcion: "Exchanged", fecha: "2026-10-01" });
+      h.lineas.push({ asientoId: "resto-1", cuenta: "62600000", debe: 0, haber: 0.03, descripcion: "Exchanged", fecha: "2026-10-01" });
+      h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 513.73 });
+      h.pagos.push({ id: "cobro-resto", tipo: "collection", cuentaId: "bbva", importe: 0.03, conciliado: true, movimiento: D });
+    }
+    return { estado: "ok", pulsado: true };
+  };
+  h.deps.conciliarConPago = async (_e, cuentaId, movimientoId, pagoId, tipo) => {
+    h.escrituras.push(`conciliar:${cuentaId}:${movimientoId === O ? "origen" : "destino"}:${pagoId}:${tipo}`);
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "partial", conciliado: 513.7 });
+    h.pagos.find((p) => p.id === pagoId)!.conciliado = true;
   };
   return { h, r };
 }
 
-test("una conversión con diferencia a favor NO se ejecuta: ninguna transferencia entre cuentas propias toca cuentas de comisiones o diferencias", async () => {
+test("conversión con diferencia a favor: tras conciliar la entrada, el resto va a la 62600000 con un segundo «Transferir»", async () => {
   const { h, r } = conversionAFavor();
   const res = await ejecutarTransferencia(r, h.deps, SI);
-  assert.equal(res.estado, "propuesta");
-  assert.match(res.mensaje, /No se escribió nada en Holded.*diferencia a favor.*cuentas de comisiones/);
-  assert.deepEqual(h.escrituras, [], "ni el primer «Transferir» ni ninguno hacia 62600000");
+  assert.equal(res.estado, "verificada", res.mensaje);
+  assert.deepEqual(h.escrituras, ["transferir:main:origen:57200001:513.7", "conciliar:bbva:destino:cobro-doc:collection", "transferir:bbva:destino:62600000:513.73:resto0.03"]);
+  assert.match(res.mensaje, /diferencia a favor de 0\.03 EUR quedó en la cuenta 62600000/);
+  assert.equal(res.registro.asientoId, "pago-1");
 });
 
-test("ningún camino del ejecutor lleva dinero a la cuenta 62600000", async () => {
+test("diferencia a favor con entrada en otra moneda (USD → COP): el resto se pasa a euros con la valoración de Holded", async () => {
   const { h, r } = conversionAFavor();
-  await ejecutarTransferencia(r, h.deps, SI);
-  assert.ok(!h.escrituras.some((e) => e.includes("62600000")), h.escrituras.join(" | "));
+  // Entrada de 4.750.000 COP valorada en 1.300,71 EUR; la salida vale 1.300,00 EUR → 0,71 EUR a favor.
+  h.cuentas[1].moneda = "COP";
+  h.movimientos.set(O, { ...h.movimientos.get(O)!, importe: -1531.63, equivalenteEur: -1300 });
+  h.movimientos.set(D, { ...h.movimientos.get(D)!, importe: 4750000, moneda: "COP", equivalenteEur: 1300.71 });
+  const reg = { ...r, importeOrigen: -1531.63, importeDestino: 4750000, monedaDestino: "COP" };
+  const original = h.deps.transferir;
+  h.deps.transferir = async (e, orden) => {
+    if (orden.movimientoId === O) {
+      h.escrituras.push(`transferir:origen:${orden.cuentaContable}:${orden.importe}`);
+      h.lineas.push({ asientoId: "pago-1", cuenta: "57200001", debe: 1300, haber: 0, descripcion: "x", fecha: "2026-10-01" }, { asientoId: "pago-1", cuenta: "57200015", debe: 0, haber: 1300, descripcion: "x", fecha: "2026-10-01" });
+      h.movimientos.set(O, { ...h.movimientos.get(O)!, estado: "reconciled", conciliado: -1531.63 });
+      h.pagos.push({ id: "pago-doc", tipo: "payment", cuentaId: "main", importe: 1300, conciliado: true, movimiento: O }, { id: "cobro-doc", tipo: "collection", cuentaId: "bbva", importe: 1300, conciliado: false, movimiento: O });
+      return { estado: "ok", pulsado: true };
+    }
+    h.escrituras.push(`transferir:destino:${orden.cuentaContable}:${orden.importe}:resto${orden.restante}`);
+    h.lineas.push({ asientoId: "resto-1", cuenta: "57200001", debe: 0.71, haber: 0, descripcion: "x", fecha: "2026-10-01" }, { asientoId: "resto-1", cuenta: "62600000", debe: 0, haber: 0.71, descripcion: "x", fecha: "2026-10-01" });
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 4750000 });
+    h.pagos.push({ id: "cobro-resto", tipo: "collection", cuentaId: "bbva", importe: 0.71, conciliado: true, movimiento: D });
+    void e; void original;
+    return { estado: "ok", pulsado: true };
+  };
+  h.deps.conciliarConPago = async (_e, _c, _m, pagoId) => {
+    // Holded aplica 1.300 EUR: en COP quedan sin conciliar los que equivalen a 0,71 EUR.
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "partial", conciliado: Math.round(4750000 * (1300 / 1300.71)) });
+    h.pagos.find((p) => p.id === pagoId)!.conciliado = true;
+  };
+  const res = await ejecutarTransferencia(reg, h.deps, SI);
+  assert.equal(res.estado, "verificada", res.mensaje);
+  assert.deepEqual(h.escrituras, ["transferir:origen:57200001:1300", "transferir:destino:62600000:1300.71:resto0.71"]);
+});
+
+test("diferencia a favor: si el segundo «Transferir» no se pulsa queda fallida y al retomar solo se hace ese paso", async () => {
+  const fallo = conversionAFavor({ segundoRobotNoPulsa: true });
+  const res = await ejecutarTransferencia(fallo.r, fallo.h.deps, SI);
+  assert.equal(res.estado, "fallida");
+  assert.match(res.mensaje, /falta llevar la diferencia a favor de 0\.03 EUR/);
+  assert.equal(fallo.h.escrituras.length, 2);
+  // Al retomar: la transferencia y la conciliación ya existen; solo se pulsa el resto.
+  const { h } = fallo;
+  h.deps.transferir = async (_e, orden) => {
+    h.escrituras.push(`transferir:${orden.cuentaId}:destino:${orden.cuentaContable}:${orden.importe}:resto${orden.restante}`);
+    h.lineas.push({ asientoId: "resto-1", cuenta: "57200001", debe: 0.03, haber: 0, descripcion: "x", fecha: "2026-10-01" });
+    h.lineas.push({ asientoId: "resto-1", cuenta: "62600000", debe: 0, haber: 0.03, descripcion: "x", fecha: "2026-10-01" });
+    h.movimientos.set(D, { ...h.movimientos.get(D)!, estado: "reconciled", conciliado: 513.73 });
+    h.pagos.push({ id: "cobro-resto", tipo: "collection", cuentaId: "bbva", importe: 0.03, conciliado: true, movimiento: D });
+    return { estado: "ok", pulsado: true };
+  };
+  const segundo = await ejecutarTransferencia(res.registro, h.deps, SI);
+  assert.equal(segundo.estado, "verificada", segundo.mensaje);
+  assert.deepEqual(h.escrituras.slice(2), ["transferir:bbva:destino:62600000:513.73:resto0.03"]);
+});
+
+test("la diferencia a favor sigue pareja a pareja: sin su autorización no se pulsa nada", async () => {
+  const { h, r } = conversionAFavor();
+  const res = await ejecutarTransferencia(r, h.deps, { permitirEscritura: true });
+  assert.equal(res.estado, "propuesta");
+  assert.match(res.mensaje, /diferencia a favor.*en prueba/);
+  assert.deepEqual(h.escrituras, []);
+  const clave = `EWORKS:${O}>${D}`;
+  const abierto = { WOBI_TRANSFERENCIAS_MODO: "activo", WOBI_TRANSFERENCIAS_ALCANCE: "eur,conversiones" };
+  assert.equal(diferenciaAFavorAutorizada(clave, abierto), false);
+  assert.equal(diferenciaAFavorAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_CASOS: clave }), true);
+  assert.equal(diferenciaAFavorAutorizada(clave, { ...abierto, WOBI_TRANSFERENCIAS_ALCANCE: "eur,conversiones,conversiones_a_favor" }), true);
 });
 
 test("transferencia USD↔USD: se asienta por la valoración en euros, como una conversión (pulsar sobre la salida)", async () => {
@@ -358,12 +439,12 @@ test("una conversión solo lleva botón si cabe en los límites (valoración en 
     ({ id: "x", cuentaId: "c", fecha: "2026-09-02", importe, moneda, equivalenteEur, descripcion: "", estado: "pending", conciliado: 0 });
   assert.equal(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 431.85)), undefined);
   assert.equal(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.70, "EUR")), undefined);
-  // Diferencia a favor: no se ejecuta (la entrada vale más que la salida; Wobi no usa cuentas de diferencias).
-  assert.match(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.73, "EUR")) ?? "", /diferencia a favor/);
-  assert.match(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 436)) ?? "", /diferencia a favor/);
-  // Sin pata en euros (USD → COP) vale mientras la entrada no valga más: Holded valora las dos patas en euros.
+  // Diferencia a favor: se ejecuta sea cual sea la moneda de la entrada (el resto va a la cuenta de diferencias).
+  assert.equal(motivoConversionNoEjecutable(mov(-593, "USD", -513.70), mov(513.73, "EUR")), undefined);
+  assert.equal(motivoConversionNoEjecutable(mov(-433.96, "EUR"), mov(500, "USD", 436)), undefined);
+  // Sin pata en euros (USD → COP) también vale: Holded valora las dos patas en euros.
   assert.equal(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1290)), undefined);
-  assert.match(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1300.71)) ?? "", /diferencia a favor/);
+  assert.equal(motivoConversionNoEjecutable(mov(-1531.63, "USD", -1300), mov(4750000, "COP", 1300.71)), undefined);
   assert.match(motivoConversionNoEjecutable(mov(-100, "EUR"), mov(110, "USD")) ?? "", /valoración en euros/);
 });
 
