@@ -9,6 +9,7 @@ import { TELEGRAM_URL, TELEGRAM_WEB_URL } from './TelegramHandoff.jsx';
 import { AREAS, COMPANIES, STAGES, areaById, companyById } from './organization.mjs';
 import { systemAttention } from './attention.mjs';
 import { companyScopeNote } from './companyScope.mjs';
+import { areaStatus } from './areaStatus.mjs';
 import './nucleo.css';
 
 const COMPANY_KEY = 'wobi_nucleo_company';
@@ -38,7 +39,7 @@ function Reveal({ title, onClose, children, accent }) {
     {children}
   </dialog>;
 }
-const POSITIONS = [[23,24],[77,31],[25,73],[73,76],[47,12],[86,51],[50,88],[14,49],[70,14],[16,88],[87,89]];
+const POSITIONS = [[23,24],[77,31],[25,73],[73,76],[47,12],[86,51],[50,88],[14,49],[70,14],[16,88],[87,89],[17,10]];
 
 export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, onLogout, refreshing, status, data, error, isAdmin, name }) {
   const [companyId, setCompanyId] = useState(initialCompany);
@@ -50,6 +51,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const workspace = availableModules.find(item => item.id === workspaceId);
   const company = companyById(companyId);
   const area = areaById(areaId);
+  const selectedStatus = area ? areaStatus(area, data) : null;
   const failures = [...new Set((data?.fuentes || []).filter(item => !item.ok).map(item => item.fuente.split('.')[0]))];
   const connections = (data?.conexiones || []).filter(item => !item.ok);
   const hasIncident = Boolean(error || failures.length || connections.length || data?.actualizacionParcial);
@@ -84,7 +86,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id)}
     </ModuleWorkspace> : <main className="nv-universe is-expanded" aria-label="Núcleo de WOBi">
       <div className="nv-constellation">
-        <NanoField expanded activeNode={activeNode} nodes={visibleAreas.map((item,index) => { const [x,y] = POSITIONS[index]; return { id:item.id,x,y }; })} />
+        <NanoField expanded activeNode={activeNode} nodes={visibleAreas.map((item,index) => { const [x,y] = POSITIONS[index]; return { id:item.id,x,y,flow:areaStatus(item,data).flow }; })} />
         <div className="nv-holo-frame" aria-hidden="true"><span /><span /><span /><span /></div>
         <svg className="nv-holo-orbits" viewBox="0 0 700 580" aria-hidden="true">
           <defs><radialGradient id="nv-floor"><stop stopColor="#41cdea" stopOpacity=".12" /><stop offset="1" stopColor="#41cdea" stopOpacity="0" /></radialGradient></defs>
@@ -100,11 +102,12 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
         <nav id="nv-area-orbit" className="nv-area-orbit" aria-label="Áreas de la compañía">
           {visibleAreas.map((item, index) => {
             const [x, y] = POSITIONS[index];
-            return <button key={item.id} className={`nv-node nv-node--${item.stage}`} type="button" onPointerEnter={() => setActiveNode(item.id)} onPointerLeave={() => setActiveNode(null)} onFocus={() => setActiveNode(item.id)} onBlur={() => setActiveNode(null)} onClick={() => showArea(item.id)} style={{ '--x': `${x}%`, '--y': `${y}%`, '--delay': `${index * 45}ms`, '--area-color': AREA_COLORS[index] }}><span className="nv-node-icon"><AreaIcon id={item.id} /></span><span>{item.short}</span></button>;
+            const visual = areaStatus(item, data);
+            return <button key={item.id} className={`nv-node nv-node--${item.stage} nv-area--${visual.id}`} type="button" onPointerEnter={() => setActiveNode(item.id)} onPointerLeave={() => setActiveNode(null)} onFocus={() => setActiveNode(item.id)} onBlur={() => setActiveNode(null)} onClick={() => showArea(item.id)} title={visual.label} aria-label={`${item.short}: ${visual.label}`} style={{ '--x': `${x}%`, '--y': `${y}%`, '--delay': `${index * 45}ms`, '--area-color': visual.id === 'planned' ? '#78909f' : AREA_COLORS[index] }}><span className="nv-node-icon"><AreaIcon id={item.id} /></span><span>{item.short}</span></button>;
           })}
         </nav>
       </div>
-      <div className="nv-whisper" aria-live="polite"><span>{`${company.name} · ${AREAS.length} áreas`}</span><small>{'Toca el núcleo para explorar el mapa'}</small></div>
+      <div className="nv-whisper" aria-live="polite"><span>{`${company.name} · ${AREAS.length} áreas`}</span><small>{'Áreas iluminadas: conectadas · Áreas tenues: pendientes'}</small></div>
     </main>}
 
     <nav className="nv-dock" aria-label="Acciones del núcleo">
@@ -117,10 +120,10 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       <button type="button" onClick={() => setPanel('menu')} aria-label="Abrir opciones de WOBi">WOBi / {company.name}<span aria-hidden="true"> ···</span></button>
     </footer>
 
-    {panel && <Reveal accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
-      {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => <button type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{STAGES[item.stage]}</small></span><span aria-hidden="true">↗</span></button>)}</section>}
+    {panel && <Reveal accent={panel === "area" ? selectedStatus.id === 'planned' ? '#78909f' : AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
+      {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':visual.id === 'planned' ? '#78909f' : AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
       {panel === 'documents' && <DocumentSearch key={companyId} company={company} apiKey={apiKey} onClose={closePanel} />}
-      {panel === 'area' && area && <div className="nv-area-detail"><div className="nv-area-hero"><div><span className="nv-area-eyebrow">INTELIGENCIA / {company.name}</span><h1>{area.name}</h1><span className={`nv-stage nv-stage--${area.stage}`}>{STAGES[area.stage]}</span></div><span className="nv-area-emblem"><NanoField compact /><span className="nv-emblem-badge"><AreaIcon id={area.id} /></span></span></div><p>{area.description}</p>
+      {panel === 'area' && area && <div className={`nv-area-detail nv-area--${selectedStatus.id}`}><div className="nv-area-hero"><div><span className="nv-area-eyebrow">INTELIGENCIA / {company.name}</span><h1>{area.name}</h1><span className={`nv-stage nv-stage--${area.stage}`}>{STAGES[area.stage]} · {selectedStatus.label}</span></div><span className="nv-area-emblem"><NanoField compact /><span className="nv-emblem-badge"><AreaIcon id={area.id} /></span></span></div><p>{area.description}</p>
         {area.modules.length > 0 && <><div className="nv-module-list">{area.modules.map(module => <button key={module.id} type="button" onClick={() => openModule(module.id)} className="nv-tool-entry"><span className="nv-tool-icon"><AreaIcon id={area.id} /></span><span className="nv-tool-name">{module.name}</span><span className="nv-tool-arrow">↗</span></button>)}</div><small>Al abrir una herramienta se indica si sus datos corresponden a la compañía elegida o al conjunto del sistema.</small></>}
         {area.stage === 'planned' && <small>Su agente especializado todavía no está conectado.</small>}
         <button className="nv-text-action" type="button" onClick={() => setPanel('documents')}>Buscar documentos en {company.name} ↗</button>

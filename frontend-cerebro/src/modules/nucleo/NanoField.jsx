@@ -68,7 +68,7 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
       }
       // Orbiting nanobots travel outward to the same areas that the operator can open.
       for (const [index,node] of config.current.nodes.entries()) {
-        const goal = config.current.activeNode === node.id ? 1 : 0;
+        const goal = config.current.activeNode === node.id ? (node.flow ?? 1) : 0;
         const strength=reduced ? goal : (focusStrength.get(node.id)||0)+(goal-(focusStrength.get(node.id)||0))*.1;
         focusStrength.set(node.id,strength);
         let nx=node.x;
@@ -83,13 +83,13 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
           const curl=Math.sin(progress*16-t*2+j*.2)*(1-progress)*7;
           const x=sx+(tx-sx)*progress-dy/length*(curve+curl);
           const y=sy+(ty-sy)*progress+dx/length*(curve+curl);
-          const alpha=(.1+strength*.65)*Math.sin(progress*Math.PI);
+          const alpha=(.1+strength*.65)*Math.sin(progress*Math.PI)*(node.flow ?? 1);
           dot(x,y,.9+strength*.9,alpha,j%6===0);
         }
         // A small halo assembles the destination instead of a static connector line.
         for(let j=0;j<18;j++) {
           const a=j*Math.PI/9-t*.6;
-          dot(tx+Math.cos(a)*(17+strength*6),ty+Math.sin(a)*(17+strength*6),1,.12+strength*.45,j%6===0);
+          dot(tx+Math.cos(a)*(17+strength*6),ty+Math.sin(a)*(17+strength*6),1,(.12+strength*.45)*(node.flow ?? 1),j%6===0);
         }
       }
       // Loose outer particles make the boundary breathe instead of looking like a rigid globe.
