@@ -1,0 +1,1 @@
+Build de producción con fuentes simuladas. Colores originales sin desaturación; áreas previstas con opacidad .65, áreas habilitadas con opacidad 1 incluso ante incidencias de lectura. Comprobado en tres compañías, lista, detalle y móvil sin solapamientos ni errores de consola.
