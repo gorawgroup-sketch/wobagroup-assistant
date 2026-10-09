@@ -29,7 +29,16 @@ export interface DatosCorreoSoportes {
   cargos: CargoCorreo[];
   /** Cuántos de estos cargos ya se pidieron en un envío anterior (recordatorio). */
   yaSolicitados?: number;
+  /** Hoja de seguimiento compartida y editable de esta persona (Google Sheets). Con ella ya no se adjunta Excel ni se pide reenviar. */
+  hojaUrl?: string;
 }
+
+/** Con hoja compartida: nadie tiene que reenviar lo ya enviado; lo indica en la hoja y lo buscamos nosotros primero. */
+export const TEXTO_YA_ENVIADOS_CON_HOJA =
+  "Si ya enviaste alguno de ellos, no hace falta que lo reenvíes: indícalo en la columna «Comment» de tu hoja compartida (fecha y destinatario) y lo localizamos nosotros primero. Si todavía no los has enviado, te pedimos que lo hagas.";
+export const TEXTO_HOJA_ANTES = "Aquí tienes tu hoja de seguimiento, la misma de siempre y editable por ti: ";
+export const TEXTO_HOJA_DESPUES = ". En ella ves el estado de cada cargo y cuándo se pidió, y puedes dejar tus comentarios; respondemos en la columna «Wobi's answer» y nunca borramos lo que escribes.";
+export const textoHojaCompartida = (url: string): string => `${TEXTO_HOJA_ANTES}${url}${TEXTO_HOJA_DESPUES}`;
 
 /** Subtotal por moneda de cuenta; las monedas nunca se suman entre sí. */
 export function totalesPorMoneda(cargos: CargoCorreo[]): Array<{ moneda: string; total: number }> {
@@ -60,13 +69,17 @@ export function redactarCorreoSoportes(d: DatosCorreoSoportes): string {
     "",
     `Por favor, envía la factura o el recibo de cada uno respondiendo a este correo (o escribiendo a ${BUZON_SOPORTES}).`,
     "",
-    "Si ya los habías enviado y te los pedimos de nuevo, te agradecemos que los reenvíes: por alguna razón nuestro sistema no reconoció lo que ya mandaste. Esto no debería volver a pasar en adelante, pero por ahora te pedimos este favor. Si todavía no los has enviado, te pedimos que lo hagas.",
+    d.hojaUrl
+      ? TEXTO_YA_ENVIADOS_CON_HOJA
+      : "Si ya los habías enviado y te los pedimos de nuevo, te agradecemos que los reenvíes: por alguna razón nuestro sistema no reconoció lo que ya mandaste. Esto no debería volver a pasar en adelante, pero por ahora te pedimos este favor. Si todavía no los has enviado, te pedimos que lo hagas.",
     recordatorio,
     ...d.cargos.map(lineaCargo),
     "",
     `Total de ${d.cargos.length} ${d.cargos.length === 1 ? "cargo" : "cargos"}: ${totales}.`,
     "",
-    "Te adjuntamos esta misma lista en Excel, con una columna de estado, solo para tu propio control: no hace falta devolverla; lo que necesitamos son los soportes.",
+    d.hojaUrl
+      ? textoHojaCompartida(d.hojaUrl)
+      : "Te adjuntamos esta misma lista en Excel, con una columna de estado, solo para tu propio control: no hace falta devolverla; lo que necesitamos son los soportes.",
     "",
     "Si un mismo comprobante cubre varias operaciones, indícanos cuáles. Si algún cargo no lo reconoces o corresponde a otra persona, cuéntanoslo para revisarlo.",
     "",

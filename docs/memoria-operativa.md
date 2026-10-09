@@ -238,7 +238,7 @@ Carlos fijó este proceso como la única forma de hacerlo y pidió que el sistem
 
 - Entrada: `/soportes` → empresa → CSV de Revolut (el titular sale de la columna «Payer»; Holded no lo guarda).
 - Cruce determinista con Bancos de Holded; un resumen con una casilla por persona; nada sale sin «Enviar» (superadmin).
-- Un correo por persona (nunca por transacción), desde asistente@wobagroup.com, pidiendo los soportes a ese mismo buzón; cuadro con totales por moneda + hoja de Excel de seguimiento; texto fijo.
+- Un correo por persona (nunca por transacción), desde asistente@wobagroup.com, pidiendo los soportes a ese mismo buzón; cuadro con totales por moneda + hoja de Google compartida y editable (siempre la misma por persona; si no se puede crear, el Excel adjunto de siempre); texto fijo.
 - Dirección: confirmada → directorio + histórico del buzón (dominio de la empresa si hay varias) → nunca inventada. Enviar a una dirección la confirma y se guarda (`_titulares_soportes`).
 - Registro de lo pedido (`_soportes_solicitados`): no se repite antes de 7 días; después vuelve como recordatorio.
 - Cuando alguien responde a la solicitud, el correo se lee entero y se propone una acción por cada cargo pedido (`core/soportes/respuestaSoportes.ts`); un cargo sin recibo se cierra solo con `proponer_cerrar_cargo_sin_soporte` (par cargo+reembolso sin gasto, o gasto sin soporte creado y conciliado), con botón de superadmin.
