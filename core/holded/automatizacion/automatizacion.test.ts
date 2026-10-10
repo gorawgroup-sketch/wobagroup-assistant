@@ -9,8 +9,7 @@ import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } fro
 import type { CuentaParaNavegador, NavegadorHolded, ResultadoNavegador } from "./navegador";
 import {
   clasificarCuenta, cuentaTieneActualizacionConfirmada, lanzarSincronizacionBancaria, reabrirTransitoriasDelDia, textoAvisoSincronizacion,
-  verificarSincronizacionBancaria, VENTANA_VERIFICACION_MS,
-} from "./sincronizacionBancaria";
+  verificarSincronizacionBancaria, VENTANA_VERIFICACION_MS, cerrarPendientesDelDia } from "./sincronizacionBancaria";
 import { claveTicket, reabrirTicketsTransitorios, reevaluarCambiosNormales, detalleDiferencias, diferenciasInstantanea, instantaneaCompra, inventarioCandidatos, procesarColaTickets, registrarClasificacionDocumento } from "./tickets";
 import { AlmacenTrabajosMemoria } from "./trabajos";
 import { nombreVariableSesion, sesionWebConfigurada } from "./navegadorHolded";
@@ -122,6 +121,27 @@ test("sincronización lanzada pero sin evidencia dentro de la ventana → «no c
     assert.equal(trabajo?.estado, "no_confirmado");
     assert.match(textoAvisoSincronizacion([trabajo!]) ?? "", /sin actualización confirmada/);
     assert.equal((await cuentaTieneActualizacionConfirmada(almacen, "WOBA", "a", 0)).confirmada, false);
+  }));
+
+test("cierre del día: una cuenta que sigue «solicitada» tras fallar sus pasadas pasa a «no confirmado» y entra en el aviso (caso 10-10-2026)", () =>
+  conEntorno(ENV_SYNC, async () => {
+    let t = Date.parse("2026-10-10T04:00:00Z");
+    const almacen = new AlmacenTrabajosMemoria();
+    const nav = new NavegadorFalso(() => ({ estado: "error", detalle: "No se confirmó la sincronización: la pantalla no mostró «Actualizado hace unos segundos» en 5 minutos" }));
+    const dep = { almacen, navegador: () => nav, leerCuentas: async () => [cuenta("a")], ahora: () => t, dormir: async () => {} };
+    await lanzarSincronizacionBancaria("2026-10-10", dep); // 06:00 falla
+    t += 80 * 60_000;
+    await lanzarSincronizacionBancaria("2026-10-10", dep); // 07:20 falla (la de 06:40 se omitió por solapamiento)
+    assert.equal((await almacen.obtener("sync:2026-10-10:WOBA:a"))?.estado, "solicitado");
+    t += 2 * 3_600_000; // 09:45
+    assert.equal((await verificarSincronizacionBancaria(dep)).verificadas, 0); // antes: nadie la miraba
+    const cerradas = await cerrarPendientesDelDia(almacen, "2026-10-10", () => t);
+    assert.equal(cerradas.length, 1);
+    const trabajo = await almacen.obtener("sync:2026-10-10:WOBA:a");
+    assert.equal(trabajo?.estado, "no_confirmado");
+    assert.match(trabajo?.ultimoError ?? "", /No se completó en las pasadas del día \(2 intento\(s\), 2 pasada\(s\)\); última causa: No se confirmó/);
+    assert.match(textoAvisoSincronizacion([trabajo!]) ?? "", /1 cuenta\(s\) sin actualización confirmada/);
+    assert.equal(await cerrarPendientesDelDia(almacen, "2026-10-10", () => t).then((c) => c.length), 0); // idempotente
   }));
 
 test("sesión caducada o banco que exige consentimiento: requiere intervención, sin reintentos ni reconexión", () =>

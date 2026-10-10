@@ -255,6 +255,27 @@ export async function verificarSincronizacionBancaria(dep: DependenciasSync, des
   return salida;
 }
 
+/**
+ * Cierre del día (09:45): una cuenta que sigue «solicitada» o «en curso» ya no va a recibir más pasadas hoy. Caso real
+ * (10-10-2026): la pasada de las 06:00 se alargó (5 min de espera por cuenta que no confirmaba), la de las 06:40 se omitió
+ * por solapamiento y la de las 07:20 volvió a fallar; 5 cuentas conectadas (WOBA Main, Pocket EUR/USD, Footprint Emoney
+ * EUR/USD) quedaron «solicitadas» con 2 de 3 pasadas, nunca pasaron a «fallido» y el aviso de las 09:45 salió vacío.
+ * Aquí se cierran como «no confirmado» con su última causa, para que el aviso las nombre y el estado quede en el registro.
+ */
+export async function cerrarPendientesDelDia(almacen: AlmacenTrabajos, fecha: string, ahora: () => number = Date.now): Promise<Trabajo[]> {
+  const abiertas = (await almacen.listar({ tipo: "sync_bancaria", estados: ["solicitado", "en_curso"], desde: ahora() - 36 * 3_600_000 }))
+    .filter((t) => t.clave.startsWith(`sync:${fecha}:`));
+  for (const t of abiertas) {
+    const causa = t.ultimoError ? `; última causa: ${t.ultimoError}` : "";
+    t.ultimoError = `No se completó en las pasadas del día (${t.intentos ?? 0} intento(s), ${Number(t.evidencia.pasadas ?? 0)} pasada(s))${causa}`;
+    t.estado = "no_confirmado";
+    t.actualizadoEn = ahora();
+    await almacen.guardar(t);
+    await almacen.evento(t.clave, "cerrado_sin_confirmar", { intentos: t.intentos ?? 0, pasadas: Number(t.evidencia.pasadas ?? 0) });
+  }
+  return abiertas;
+}
+
 /** Aviso a Carlos solo si hay algo que él deba hacer o saber; en silencio si todo salió bien. */
 export function textoAvisoSincronizacion(trabajos: Trabajo[]): string | undefined {
   const mal = trabajos.filter((t) => ["fallido", "requiere_intervencion", "no_confirmado"].includes(t.estado));
