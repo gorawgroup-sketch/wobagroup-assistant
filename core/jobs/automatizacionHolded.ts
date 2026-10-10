@@ -4,7 +4,7 @@ import { etiquetaEmpresa } from "../holded/automatizacion/empresas";
 import { avisarDisyuntorPorBoton, preguntarDudosoPorBoton } from "../holded/automatizacion/telegramTickets";
 import { escanearReglaTicket, type CandidatoRegla } from "../holded/automatizacion/escaneoTickets";
 import { empresasAutomatizacion, modoAutomatizacion, parsearCasosAprobados } from "../holded/automatizacion/modo";
-import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync } from "../holded/automatizacion/sincronizacionBancaria";
+import { lanzarSincronizacionBancaria, textoAvisoSincronizacion, verificarSincronizacionBancaria, type ResumenSync, cerrarPendientesDelDia } from "../holded/automatizacion/sincronizacionBancaria";
 import { claveTicket, procesarColaTickets, reabrirTicketsTransitorios, registrarCasoAprobado, reevaluarCambiosNormales, type ResumenTickets } from "../holded/automatizacion/tickets";
 import { almacenTrabajosHolded, hayAlmacenDuradero, nuevoTrabajo } from "../holded/automatizacion/trabajos";
 import type { Empresa } from "../holded/client";
@@ -47,6 +47,9 @@ async function sincronizacionBancariaHoldedInterna(fase: "lanzar" | "verificar" 
   const r = await verificarSincronizacionBancaria(dep);
   console.log("[sincronizacionBancariaHolded]", JSON.stringify({ fase, modo, ...r }));
   if (fase === "cierre" && modo === "activo") {
+    // Lo que siga «solicitado» o «en curso» a esta hora ya no tendrá más pasadas: se cierra como no confirmado y entra en el aviso.
+    const cerradas = await cerrarPendientesDelDia(dep.almacen, fecha);
+    if (cerradas.length) console.log("[sincronizacionBancariaHolded] cerradas sin confirmar al cierre:", JSON.stringify(cerradas.map((t) => t.clave)));
     const hoy = (await dep.almacen.listar({ tipo: "sync_bancaria", desde: Date.parse(`${fecha}T00:00:00Z`) - 3_600_000 * 2 })).filter((t) => t.clave.startsWith(`sync:${fecha}:`));
     const aviso = textoAvisoSincronizacion(hoy);
     if (aviso) await notificarAdmins(aviso); // en silencio si todo salió bien
