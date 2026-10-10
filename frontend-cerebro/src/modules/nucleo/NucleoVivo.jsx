@@ -107,7 +107,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {navigationNotice && <p className="nv-navigation-notice" role="status">{navigationNotice}<button type="button" onClick={()=>setNavigationNotice(null)} aria-label="Cerrar aviso de navegación">×</button></p>}
     {workspace ? <ModuleWorkspace audioLevel={audioLevel} module={workspace} modules={availableModules} onOpen={openModule}
-      onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={workspaceDestination?.scope==='group' ? 'Actividad del grupo completo; el selector de empresa no filtra esta bitácora.' : companyScopeNote(workspace.id, company.name)} groupScope={workspaceDestination?.scope==='group'}>
+      onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={workspaceDestination?.scope==='group' ? 'Actividad del grupo completo; el selector de empresa no filtra esta bitácora.' : companyScopeNote(workspace.id, company.name)} groupScope={workspaceDestination?.scope==='group'} destinationId={workspaceDestination?.capabilityId}>
       {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id, workspaceDestination)}
     </ModuleWorkspace> : <main className="nv-universe is-expanded" aria-label="Núcleo de WOBi">
       <div className="nv-constellation">
