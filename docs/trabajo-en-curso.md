@@ -116,6 +116,12 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 - La copia `.worktrees/mail-auto-integration` guarda la instalación completa de `node_modules` que enlazan otras copias:
   no cerrarla sin reinstalar antes en otro sitio.
 
+## Navegación precisa de Seguros (10-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Vistas exactas de pagos pendientes, renovaciones y actividad; solo lectura | `codex/seguros-navegacion-precisa` | Cerebro front / Seguros | Codex | Implementado desde #437. 68 pruebas front, tipos y build verdes; router compilado + navegador real: 9 destinos, compañía/grupo, permisos, fechas no soportadas, null, voz/enjambre y móvil correctos. Suite backend: 4 fallos por expectativas registered; pendiente de adaptación de pruebas por Claude. Sin auto-merge ni despliegue. |
+
 ## Navegador: micrófono visible (10-10-2026)
 
 | Trabajo | Rama | Área | Responsable | Estado |

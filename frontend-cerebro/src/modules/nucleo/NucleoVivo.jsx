@@ -70,6 +70,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const [areaId, setAreaId] = useState(null);
   const [activeNode, setActiveNode] = useState(null);
   const [workspaceId, setWorkspaceId] = useState(null);
+  const [workspaceDestination, setWorkspaceDestination] = useState(null);
   const availableModules = [...modules, { id:'strategic_planning',name:'Planeación estratégica',detail:'Hoja de seguimiento pendiente de conectar' }, { id:'control_diario',name:'Control diario',detail:'Diagnóstico y prioridades del sistema' }, {id:'administracion',name:'Ajustes y administración',detail:'Usuarios, programaciones y conexiones'}];
   const workspace = availableModules.find(item => item.id === workspaceId);
   const company = companyById(companyId);
@@ -91,9 +92,9 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
     try { localStorage.setItem(COMPANY_KEY, id); } catch { /* optional preference */ }
   };
   const closePanel = () => { setPanel(null); setActiveNode(null); };
-  const openModule = id => { setPanel(null); setWorkspaceId(id); };
+  const openModule = (id,destination=null) => { setPanel(null); setWorkspaceId(id); setWorkspaceDestination(destination); };
   const showArea = id => { setActiveNode(id); setAreaId(id); setPanel('area'); };
-  const goHome = event => { setNavigationNotice(null); event?.preventDefault?.(); setWorkspaceId(null); setPanel(null); setAreaId(null); setActiveNode(null); };
+  const goHome = event => { setNavigationNotice(null); event?.preventDefault?.(); setWorkspaceId(null); setWorkspaceDestination(null); setPanel(null); setAreaId(null); setActiveNode(null); };
 
   return <div className={`nv-shell${workspace ? ' nv-shell--workspace' : ''}${panel==='command'?' nv-shell--command':''}`}>
     {!panel && <NanoAmbient />}
@@ -106,8 +107,8 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {navigationNotice && <p className="nv-navigation-notice" role="status">{navigationNotice}<button type="button" onClick={()=>setNavigationNotice(null)} aria-label="Cerrar aviso de navegación">×</button></p>}
     {workspace ? <ModuleWorkspace audioLevel={audioLevel} module={workspace} modules={availableModules} onOpen={openModule}
-      onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={companyScopeNote(workspace.id, company.name)}>
-      {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id)}
+      onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={workspaceDestination?.scope==='group' ? 'Actividad del grupo completo; el selector de empresa no filtra esta bitácora.' : companyScopeNote(workspace.id, company.name)} groupScope={workspaceDestination?.scope==='group'}>
+      {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id, workspaceDestination)}
     </ModuleWorkspace> : <main className="nv-universe is-expanded" aria-label="Núcleo de WOBi">
       <div className="nv-constellation">
         <NanoField expanded audioLevel={audioLevel} activeNode={activeNode} nodes={visibleAreas.map((item,index) => { const [x,y] = POSITIONS[index]; return { id:item.id,x,y,flow:areaStatus(item,data).flow }; })} />
@@ -151,10 +152,11 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
         const destination=validateDestination(proposal);
         if (!destination) return;
         chooseCompany(destination.companyId);
-        setNavigationNotice([`Vista solicitada: ${companyById(destination.companyId).name}.`,...(proposal.avisos||[])].join(' '));
+        setNavigationNotice([destination.scope==='group'?'Vista solicitada: grupo completo.':`Vista solicitada: ${companyById(destination.companyId).name}.`,...(proposal.avisos||[])].join(' '));
         if (destination.target.kind === 'area') showArea(destination.target.id);
-        else if (availableModules.some(item => item.id === destination.target.id)) openModule(destination.target.id);
-        speak(`Abro ${proposal.etiqueta || 'el destino solicitado'} en ${companyById(destination.companyId).name}. ${(proposal.avisos||[]).join(' ')}`);
+        else if (destination.target.kind === 'section' && destination.status === 'available' && availableModules.some(item => item.id === destination.target.module)) openModule(destination.target.module,destination);
+        else if (destination.target.kind === 'module' && availableModules.some(item => item.id === destination.target.id)) openModule(destination.target.id);
+        speak(`Abro ${proposal.etiqueta || 'el destino solicitado'} ${destination.scope==='group'?'del grupo completo':`en ${companyById(destination.companyId).name}`}. ${(proposal.avisos||[]).join(' ')}`);
       }} />}
       {panel === 'documents' && <DocumentSearch key={companyId} company={company} apiKey={apiKey} onClose={closePanel} />}
       {panel === 'area' && area && <div className={`nv-area-detail nv-area--${selectedStatus.id}`}><div className="nv-area-hero"><div><span className="nv-area-eyebrow">INTELIGENCIA / {company.name}</span><h1>{area.name}</h1><span className={`nv-stage nv-stage--${area.stage}`}>{STAGES[area.stage]} · {selectedStatus.label}</span></div><span className="nv-area-emblem"><NanoField compact audioLevel={audioLevel} /><span className="nv-emblem-badge"><AreaIcon id={area.id} /></span></span></div><p>{area.description}</p>
