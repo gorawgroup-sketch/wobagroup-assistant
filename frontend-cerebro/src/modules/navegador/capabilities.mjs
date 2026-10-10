@@ -7,9 +7,17 @@ export function buildCapabilities(areas = AREAS) {
     { id: `area:${area.id}`, label: area.name, description: area.description,
       status: area.stage === 'planned' ? 'planned' : 'available',
       target: { kind: 'area', id: area.id }, companies: COMPANIES.map(c => c.id) },
-    ...area.modules.map(module => ({ id: `module:${area.id}:${module.id}`,
-      label: module.name, description: area.description, status: 'available',
-      target: { kind: 'module', id: module.id }, companies: COMPANIES.map(c => c.id) })),
+    ...area.modules.flatMap(module => [
+      { id: `module:${area.id}:${module.id}`,
+        label: module.name, description: area.description, status: 'available',
+        target: { kind: 'module', id: module.id }, companies: COMPANIES.map(c => c.id) },
+      // Destinos precisos (secciones) de un módulo: `registered` = registrado pero sin vista implementada todavía; `scope: 'group'` =
+      // sus datos son del grupo completo y no se atribuyen a una sola compañía.
+      ...(module.sections || []).map(section => ({ id: `section:${area.id}:${module.id}:${section.id}`,
+        label: section.name, description: section.description || area.description,
+        status: section.implemented === true ? 'available' : 'registered', scope: section.scope === 'group' ? 'group' : 'company',
+        target: { kind: 'section', area: area.id, module: module.id, id: section.id }, companies: COMPANIES.map(c => c.id) })),
+    ]),
   ]);
   if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error('Capacidad duplicada');
   return entries;
