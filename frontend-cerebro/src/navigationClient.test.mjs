@@ -22,3 +22,15 @@ test('cambio de versión exige catálogo actualizado y fallo HTTP nunca produce 
  await assert.rejects(invoke({...destination,catalogVersion:'nav-2'}));
  await assert.rejects(invoke(destination,{fetcher:async()=>({ok:false,status:503})}),/503/);
 });
+test('sección exige módulo, área, alcance y estado compatibles en ambos catálogos',async()=>{
+ const section={...destination,capabilityId:'section:insurance:seguros:actividad'};
+ assert.equal((await invoke(section)).capabilityId,section.capabilityId);
+ for(const patch of [{target:{kind:'section',id:'actividad',area:'finance',module:'holded'}},{scope:'company'},{status:'registered'}]){
+  let n=0;await assert.rejects(invoke(section,{fetcher:async()=>({ok:true,json:async()=>n++===0?{...catalog,capacidades:catalog.capacidades.map(c=>c.id===section.capabilityId?{...c,...patch}:c)}:section})}));
+ }
+});
+test('valida alternativa sin filtro y rechaza una alternativa inventada',async()=>{
+ const result={tipo:'no_disponible',requestId:'req-123456',catalogVersion:'nav-1',motivo:'destino_no_implementado',mensaje:'Vista no disponible',alternativa:{capabilityId:destination.capabilityId,companyId:'WOBA',etiqueta:'Seguros',sinFiltro:true}};
+ assert.ok((await invoke(result)).alternativa.sinFiltro);
+ await assert.rejects(invoke({...result,alternativa:{...result.alternativa,capabilityId:'inventado'}}));
+});

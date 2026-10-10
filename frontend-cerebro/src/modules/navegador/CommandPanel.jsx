@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { interpretNavigation } from './client.mjs';
 import { conversationReply } from './conversation.mjs';
+import { companyById } from '../nucleo/organization.mjs';
 export default function CommandPanel({company,headers,onDestination,onDocuments,onFeedback=()=>{},onStart=()=>{}}) {
   const [query,setQuery]=useState('');
   const [state,setState]=useState({});
@@ -49,8 +50,8 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
     </form>
     <button type="button" className="nv-microphone" aria-pressed={listening} onClick={listen}><svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>{listening?'Detener micrófono':'Dictar petición'}</button><p className="nv-microphone-help">Pulsa el micrófono para hablar. Permite el acceso en tu navegador; después revisa el texto y pulsa Encontrar destino.</p>
     <div role="status">{state.reply&&<p>{state.reply}</p>}{listening&&<p>Escuchando…</p>}{state.dictated&&<p>Revisa lo que entendí y pulsa Encontrar destino.</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
-    {state.result?.tipo==='no_disponible'&&<p>{state.result.mensaje}</p>}
-    {state.result?.tipo==='aclaracion'&&<><p>{state.result.pregunta}</p>{state.result.opciones.map((option,index)=><button className="nv-text-action" key={index} type="button" onClick={()=>run({seleccion:{capabilityId:option.capabilityId,companyId:option.companyId}})}>{option.etiqueta}{option.sinFiltro?' · Abrir módulo completo, sin filtro':''} ↗</button>)}</>}</div>
+    {state.result?.tipo==='no_disponible'&&<><p>{state.result.mensaje}</p>{state.result.alternativa&&<button className="nv-text-action" type="button" onClick={()=>run({seleccion:{capabilityId:state.result.alternativa.capabilityId,companyId:state.result.alternativa.companyId}})}>{state.result.alternativa.etiqueta} · Abrir módulo completo, sin filtro ↗</button>}</>}
+    {state.result?.tipo==='aclaracion'&&<><p>{state.result.pregunta}</p>{state.result.opciones.map((option,index)=><button className="nv-text-action" key={index} type="button" onClick={()=>run({seleccion:{capabilityId:option.capabilityId,companyId:option.companyId}})}>{option.etiqueta} · {companyById(option.companyId).name}{option.sinFiltro?(option.capabilityId.startsWith('section:')?' · Abrir esta vista, sin filtro adicional':' · Abrir módulo completo, sin filtro'):''} ↗</button>)}</>}</div>
     {state.error&&<button type="button" className="nv-text-action" onClick={()=>run({texto:query.trim()})} disabled={!query.trim()}>Reintentar</button>}
     <button className="nv-text-action" type="button" onClick={onDocuments}>Buscar documentos en Drive ↗</button>
     <small>Solo navegación. No ejecuta operaciones ni calcula cifras. Dictado según compatibilidad del navegador; revisa el texto antes de enviarlo.</small>

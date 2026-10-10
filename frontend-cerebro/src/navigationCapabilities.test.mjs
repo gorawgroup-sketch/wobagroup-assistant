@@ -30,16 +30,17 @@ test('descubre nombres con acentos y no pretende aplicar filtros ni calcular cos
   assert.equal(findDestinations('xyz inexistente').status,'unknown');
 });
 
-test('Seguros registra tres destinos precisos: no se descubren por nombre y su estado lo declara el front (registered hasta implemented)',()=>{
+test('Seguros activa tres destinos precisos y conserva el estado de secciones pendientes',()=>{
   const catalog=buildCapabilities();
   const secciones=catalog.filter(c=>c.target.kind==='section');
   assert.deepEqual(secciones.map(c=>c.id),['section:insurance:seguros:pagos_pendientes','section:insurance:seguros:proximas_renovaciones','section:insurance:seguros:actividad']);
-  for(const c of secciones){ assert.ok(['registered','available'].includes(c.status),`estado de sección desconocido: ${c.status}`); assert.equal(c.target.area,'insurance'); assert.equal(c.target.module,'seguros'); assert.equal(c.companies.length,3); }
+  for(const c of secciones){ assert.equal(c.status,'available'); assert.equal(c.target.area,'insurance'); assert.equal(c.target.module,'seguros'); assert.equal(c.companies.length,3); }
   assert.deepEqual(secciones.map(c=>c.scope),['company','company','group']);
   // Compatibilidad: los destinos actuales no cambian y la descubierta local no ofrece secciones.
   assert.equal(catalog.find(c=>c.id==='module:insurance:seguros').status,'available');
   assert.equal(findDestinations('muestrame seguros').entries.some(e=>e.target.kind==='section'),false);
   assert.equal(findDestinations('actividad de wobi seguros').entries.some(e=>e.target.kind==='section'),false);
+  assert.equal(validateDestination({capabilityId:'section:insurance:seguros:actividad',companyId:'WOBA'}).status,'available');
   const sinImplementar=buildCapabilities(AREAS.map(a=>a.id==='insurance'?{...a,modules:[{...a.modules[0],sections:a.modules[0].sections.map(s=>({...s,implemented:false}))}]}:a));
   assert.ok(sinImplementar.filter(c=>c.target.kind==='section').every(c=>c.status==='registered'),'sin implemented, la sección queda registered');
   assert.equal(validateDestination({capabilityId:'section:insurance:seguros:actividad',companyId:'WOBA'},sinImplementar).status,'registered');
