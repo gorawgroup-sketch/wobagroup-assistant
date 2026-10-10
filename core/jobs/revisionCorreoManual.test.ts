@@ -163,7 +163,8 @@ test("un correo activo bloqueando y un fallo siguen avisando como antes del camb
   e.restaurar();
   const f = escenario({ resultado: async () => { throw new Error("Gmail caído"); } });
   await ejecutarRevisionCorreoManual(CHAT);
-  assert.match(f.enviados[0].texto, /Hubo un error revisando el correo/);
+  assert.match(f.enviados[0].texto, /La revisión de correo se detuvo por un error: /);
+  assert.doesNotMatch(f.enviados[0].texto, /Hubo un error revisando el correo/);
   f.restaurar();
 });
 
