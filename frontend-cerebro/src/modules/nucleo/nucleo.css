@@ -386,3 +386,8 @@
 .nv-navigation-notice button { float:right; color:inherit; border:0; background:none; font:inherit; }
 .nv-voice-control { display:flex; justify-content:center; align-items:center; gap:12px; flex-wrap:wrap; color:#acd6e4; font-size:12px; margin:12px; }
 .nv-voice-control button { border:1px solid #58b9cf77; color:#a9e5f3; background:#102738; border-radius:20px; padding:8px 14px; font:inherit; }
+
+.nv-microphone { display:inline-flex; align-items:center; gap:10px; padding:12px 18px; border:1px solid #60cde0; border-radius:24px; background:#123747; color:#b6f1ff; font:inherit; cursor:pointer; transition:background .2s, box-shadow .2s; }
+.nv-microphone:hover, .nv-microphone[aria-pressed="true"] { background:#1a4c5d; box-shadow:0 0 18px #60cde026; }
+.nv-microphone:focus-visible { outline:2px solid #ffbe71; outline-offset:4px; }
+.nv-microphone-help { max-width:60ch; color:#a3baca; font-size:.9rem; line-height:1.5; }
