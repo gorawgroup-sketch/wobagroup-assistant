@@ -193,3 +193,4 @@ Caso real, Footprint: Cnidos y Rifados (180 MXN → 8,92 €), Raku Café, Cocos
 
 No cambia: Uber Colombia sin comprobante adjunto o Metro Art Hotel sin conciliar del todo siguen esperando (son requisitos de seguridad de la cola).
 
+**Cierre del día sin cuentas invisibles (10-10-2026, PR #438).** Caso real: la pasada de las 06:00 se alargó (hasta 5 minutos por cuenta que no confirmaba), la de las 06:40 se omitió por solapamiento y la de las 07:20 volvió a fallar; cinco cuentas conectadas (WOBA Main, Pocket EUR/USD, Footprint Emoney EUR/USD) quedaron «solicitadas» con 2 de 3 pasadas, nunca pasaron a «fallido» y el aviso de las 09:45 salió vacío. Ahora el cierre (`cerrarPendientesDelDia`) pasa a «no confirmado» toda cuenta del día que siga «solicitada» o «en curso», con el número de intentos y la última causa, y el aviso las nombra. Qué hacer ese día: sincronizar a mano en Holded las cuentas nombradas si se necesitan los movimientos antes de la pasada siguiente.
