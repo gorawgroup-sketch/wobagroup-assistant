@@ -168,14 +168,26 @@ function sinAreasRedundantes(c: Puntuada[]): Puntuada[] {
 }
 
 const refinamientosDe = (textoNorm: string): string[] => REFINAMIENTOS.filter((r) => r.patron.test(textoNorm)).map((r) => r.etiqueta);
-const companiasMencionadas = (textoNorm: string, validas: string[]): string[] =>
+export const companiasMencionadas = (textoNorm: string, validas: string[]): string[] =>
   COMPANIAS.filter((c) => c.patron.test(textoNorm) && validas.includes(c.id)).map((c) => c.id);
 
-const quitarCompanias = (textoNorm: string): string => {
+export const quitarCompanias = (textoNorm: string): string => {
   let t = textoNorm;
   for (const c of COMPANIAS) t = t.replace(new RegExp(c.patron.source, "g"), " ");
   return t.replace(/\s+/g, " ").trim();
 };
+
+/** ¿El texto nombra algún destino del catálogo (por nombre, sinónimo o intención de sección)? Lo usa la conversación para decidir si hay que apoyarse en el contexto. */
+export function reconoceDestino(texto: string, catalogo: CatalogoNavegacion): boolean {
+  const t = quitarCompanias(normalizar(texto));
+  return conIntenciones(t, catalogo.capacidades, puntuar(t, catalogo.capacidades)).length > 0;
+}
+
+/** Ids de las SECCIONES que el texto nombra (por frase propia o por intención dentro de su módulo). */
+export function seccionesReconocidas(texto: string, catalogo: CatalogoNavegacion): string[] {
+  const t = quitarCompanias(normalizar(texto));
+  return conIntenciones(t, catalogo.capacidades, puntuar(t, catalogo.capacidades)).filter((p) => p.cap.target.kind === "section").map((p) => p.cap.id);
+}
 
 /* ───────── resultado de un destino concreto ───────── */
 
