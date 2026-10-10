@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 
 /** A live, bounded swarm, drawn locally. No image, video, network or perpetual hidden loop. */
-export default function NanoField({ expanded = false, activeNode = null, nodes = [], compact = false }) {
+export default function NanoField({ expanded = false, activeNode = null, nodes = [], compact = false, audioLevel = 0 }) {
   const ref = useRef(null);
-  const config = useRef({ expanded, activeNode, nodes });
+  const config = useRef({ expanded, activeNode, nodes, audioLevel });
   const redraw = useRef(null);
-  useEffect(() => { config.current = { expanded, activeNode, nodes }; redraw.current?.(); }, [expanded, activeNode, nodes]);
+  useEffect(() => { config.current = { expanded, activeNode, nodes, audioLevel }; redraw.current?.(); }, [expanded, activeNode, nodes, audioLevel]);
   useEffect(() => {
     const canvas = ref.current;
     const ctx = canvas?.getContext('2d');
@@ -17,7 +17,7 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
       return { y, ring: Math.sqrt(1 - y * y), angle: i * 2.399963, seed: Math.sin(i * 127.1) * .5 + .5, amber: i % 7 === 0 };
     });
     const focusStrength = new Map();
-    let frame = 0, width = 0, height = 0, last = 0, time = 0, spread = 0;
+    let frame = 0, width = 0, height = 0, last = 0, time = 0, spread = 0, voice = 0;
     const dot = (x, y, size, alpha, amber, glow = false) => {
       if (compact) size *= .65;
       ctx.globalAlpha = alpha;
@@ -29,8 +29,9 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
       const reduced = motion.matches;
       const t = reduced ? 0 : time;
       spread += ((config.current.expanded ? 1 : 0) - spread) * .075;
+      voice += ((reduced ? 0 : Math.min(1,Math.max(0,config.current.audioLevel || 0))) - voice) * .15;
       const cx = width / 2, cy = height * .47;
-      const radius = Math.min(width * .28, height * .31, 175) * (1 + spread * .08);
+      const radius = Math.min(width * .28, height * .31, 175) * (1 + spread * .08 + voice * .045);
       ctx.globalAlpha = 1;
       ctx.clearRect(0, 0, width, height);
       const glow = ctx.createRadialGradient(cx,cy,0,cx,cy,radius * 1.3);
@@ -115,5 +116,5 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
     document.addEventListener('visibilitychange',resume);motion.addEventListener('change',resume);
     return ()=>{cancelAnimationFrame(frame);redraw.current=null;observer.disconnect();document.removeEventListener('visibilitychange',resume);motion.removeEventListener('change',resume);};
   }, [compact]);
-  return <canvas ref={ref} className="nv-field" aria-hidden="true" />;
+  return <canvas ref={ref} className="nv-field" data-audio-level={audioLevel.toFixed(3)} aria-hidden="true" />;
 }

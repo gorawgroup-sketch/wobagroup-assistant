@@ -20,6 +20,7 @@ export function createStreamingWobiSpeech({
     return new Context({ latencyHint: "interactive" });
   },
   onStateChange = () => {},
+  onAudioLevel = null,
 } = {}) {
   let context;
   let current;
@@ -31,6 +32,9 @@ export function createStreamingWobiSpeech({
   const stop = () => {
     if (!current) return;
     current.controller.abort();
+    clearTimeout(current.levelTimer);
+    current.analyser?.disconnect();
+    onAudioLevel?.(0);
     for (const source of current.sources) { source.onended = null; source.stop(); source.disconnect(); }
     current.sources.clear();
     current = undefined;
@@ -65,6 +69,20 @@ export function createStreamingWobiSpeech({
       }
       signal.throwIfAborted();
       report("loading");
+      if (onAudioLevel && ctx.createAnalyser) {
+        session.analyser = ctx.createAnalyser();
+        session.analyser.fftSize = 256;
+        session.analyser.connect(ctx.destination);
+        const levels = new Uint8Array(session.analyser.fftSize);
+        const sample = () => {
+          if (signal.aborted || current !== session) return;
+          session.analyser.getByteTimeDomainData(levels);
+          const rms = Math.sqrt(levels.reduce((sum, value) => sum + ((value-128)/128)**2, 0)/levels.length);
+          onAudioLevel(Math.min(1, rms*4));
+          session.levelTimer = setTimeout(sample, 50);
+        };
+        sample();
+      }
       const schedule = async bytes => {
         // Bound decoded audio ahead of playback; stop/mute interrupts this wait too.
         while (session.nextStart - ctx.currentTime > 10) await wait(50, signal);
@@ -76,7 +94,7 @@ export function createStreamingWobiSpeech({
         for (let i = 0; i < samples; i++) output[i] = input.getInt16(i * 2, true) / 32768;
         const source = ctx.createBufferSource();
         source.buffer = buffer;
-        source.connect(ctx.destination);
+        source.connect(session.analyser || ctx.destination);
         source.onended = () => { session.sources.delete(source); source.disconnect(); };
         session.sources.add(source);
         const start = Math.max(session.nextStart, ctx.currentTime + (session.nextStart ? 0.005 : 0.06));
@@ -134,6 +152,9 @@ export function createStreamingWobiSpeech({
         throw error;
       }
     } finally {
+      clearTimeout(session.levelTimer);
+      session.analyser?.disconnect();
+      if (current === session) onAudioLevel?.(0);
       if (current === session) { if (!failed) report("idle"); current = undefined; }
     }
   }

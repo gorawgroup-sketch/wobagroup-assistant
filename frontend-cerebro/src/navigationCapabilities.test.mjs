@@ -19,3 +19,13 @@ test('rechaza destinos inventados, compañías desconocidas y filtros aún no im
     {capabilityId:'area:insurance',companyId:'WOBA',section:'pagos'}]) assert.equal(validateDestination(proposal),null);
   assert.equal(validateDestination({capabilityId:'module:insurance:seguros',companyId:'Footprint'}).target.kind,'module');
 });
+
+import { findDestinations } from './modules/navegador/resolve.mjs';
+test('descubre nombres con acentos y no pretende aplicar filtros ni calcular costes',()=>{
+  assert.ok(findDestinations('abre fiscalidad').entries.some(e=>e.target.id==='fiscal'));
+  assert.ok(findDestinations('muéstrame seguros').entries.some(e=>e.target.id==='insurance'));
+  assert.equal(findDestinations('seguros pendientes').status,'needs_interpretation');
+  assert.equal(findDestinations('costos hoy').status,'needs_interpretation');
+  assert.equal(findDestinations('seguros eWorks').status,'needs_interpretation');
+  assert.equal(findDestinations('xyz inexistente').status,'unknown');
+});
