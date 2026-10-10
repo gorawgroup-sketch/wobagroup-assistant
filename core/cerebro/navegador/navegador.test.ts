@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import express from "express";
 import { cargarCatalogoNavegacion, construirCatalogo, normalizarCapacidades, reiniciarCatalogoParaPruebas, versionDelCatalogo, type CatalogoNavegacion } from "./catalogo";
-import { ALIAS, interpretarNavegacion, normalizar, puntuar, type RespuestaNavegacion } from "./interprete";
+import { ALIAS, AVISO_GRUPO, INTENCIONES_SECCION, interpretarNavegacion, normalizar, puntuar, type RespuestaNavegacion } from "./interprete";
 import { nivelDeIdentidad, nivelRequerido, tieneAcceso, type NivelAcceso } from "./permisos";
 import { crearRouterNavegador } from "./router";
 
@@ -110,15 +110,16 @@ test("área prevista: agente_previsto, sin fingir un agente conectado; mensaje d
   }
 });
 
-test("filtros, secciones, fechas y cifras: NUNCA se abre el módulo genérico como si estuviera filtrado", () => {
-  for (const texto of ["pagos pendientes de seguros", "renovaciones de seguros", "seguros que vencen este mes", "pólizas vencidas"]) {
+test("filtros, fechas y cifras sin destino preciso: NUNCA se abre el módulo genérico como si estuviera filtrado", () => {
+  for (const texto of ["pólizas vencidas", "cuánto pagamos en seguros", "seguros de hoy"]) {
     const r = pedir(texto, "anonimo");
     assert.equal(r.tipo, "aclaracion", texto);
     assert.equal(r.tipo === "aclaracion" && r.opciones.length, 1);
     assert.equal(r.tipo === "aclaracion" && r.opciones[0].sinFiltro, true, "la opción dice que es SIN filtro");
+    assert.equal(r.tipo === "aclaracion" && r.opciones[0].capabilityId, "module:insurance:seguros");
     assert.match(r.tipo === "aclaracion" ? r.pregunta : "", /no puedo abrir .* ya filtrado|solo se abre el módulo completo/i);
   }
-  for (const texto of ["cuánto hemos gastado", "saldo de hoy", "renovaciones pendientes"]) {
+  for (const texto of ["cuánto hemos gastado", "saldo de hoy", "pagos pendientes", "pendientes de hoy"]) {
     const r = pedir(texto, "superadmin");
     assert.equal(r.tipo === "no_disponible" && r.motivo, "destino_no_implementado", texto);
   }
@@ -262,4 +263,160 @@ test("este módulo no importa herramientas, chat, modelos, Holded, Drive, Gmail 
     }
     assert.doesNotMatch(codigo, /\brequire\(|\beval\(|child_process|\bfetch\(|anthropic|crearMensaje|askClaude|holdedWriteCall/i, archivo);
   }
+});
+
+/* ───────── destinos precisos de Seguros (secciones) ───────── */
+
+const SEC = { pagos: "section:insurance:seguros:pagos_pendientes", renov: "section:insurance:seguros:proximas_renovaciones", act: "section:insurance:seguros:actividad" };
+const secciones = (c: CatalogoNavegacion) => c.capacidades.filter((x) => x.target.kind === "section");
+/** El mismo catálogo con las vistas ya implementadas por el front: es lo que verá el servidor cuando Codex ponga `implemented: true`. */
+const implementado = (): CatalogoNavegacion => construirCatalogo(catalogo.capacidades.map((c) => (c.target.kind === "section" ? { ...c, status: "available" as const } : c)));
+const FRASES = {
+  pagos: ["pagos pendientes de seguros", "seguros pendientes de pago", "pólizas pendientes de pago", "pagos sin confirmar de seguros", "pagos de seguros", "recibos pendientes de seguros"],
+  renov: ["próximas renovaciones", "renovaciones de seguros", "qué seguros vencen pronto", "vencimientos de seguros", "pólizas por vencer", "próximos vencimientos de seguros"],
+  act: ["actividad de Wobi Seguros", "qué ha hecho Wobi Seguros", "historial de actividad de seguros", "bitácora de seguros", "últimas acciones de seguros"],
+};
+
+test("el catálogo registra tres destinos precisos de Seguros, con su área, su módulo y su alcance, y todavía sin vista", () => {
+  const sec = secciones(catalogo);
+  assert.deepEqual(sec.map((c) => c.id).sort(), Object.values(SEC).sort());
+  for (const c of sec) {
+    assert.equal(c.status, "registered"); assert.deepEqual([c.target.area, c.target.module], ["insurance", "seguros"]);
+    assert.deepEqual(c.companies.sort(), ["EWORKS", "Footprint", "WOBA"]);
+  }
+  assert.equal(catalogo.capacidades.find((c) => c.id === SEC.act)?.scope, "group", "la actividad es del grupo completo");
+  assert.equal(catalogo.capacidades.find((c) => c.id === SEC.pagos)?.scope, "company");
+  assert.notEqual(implementado().version, catalogo.version, "implementar una vista cambia la versión del catálogo");
+  for (const id of Object.keys(INTENCIONES_SECCION)) assert.ok(catalogo.capacidades.some((c) => c.id === id), `la intención «${id}» ya no existe en el catálogo`);
+});
+
+test("una sección mal formada es un error del catálogo: sin área y módulo, con id que no coincide o con alcance desconocido", () => {
+  const buena = { id: "section:a:m:s", label: "S", description: "", status: "registered", target: { kind: "section", id: "s", area: "a", module: "m" }, companies: ["WOBA"], scope: "company" };
+  assert.equal(normalizarCapacidades([buena])[0].target.module, "m");
+  assert.throws(() => normalizarCapacidades([{ ...buena, target: { kind: "section", id: "s" } }]), /área y su módulo/);
+  assert.throws(() => normalizarCapacidades([{ ...buena, id: "section:otra:m:s" }]), /área y su módulo/);
+  assert.throws(() => normalizarCapacidades([{ ...buena, scope: "mundo" }]), /alcance desconocido/);
+});
+
+test("una sección hereda los permisos de su módulo: ni más abierta ni más cerrada", () => {
+  for (const id of Object.values(SEC)) {
+    assert.deepEqual(nivelRequerido(id), nivelRequerido("module:insurance:seguros"), id);
+    assert.equal(tieneAcceso("anonimo", id), true, id);
+  }
+  assert.equal(nivelRequerido("section:finance:holded:pagos").minimo, "admin");
+  assert.equal(tieneAcceso("colaborador", "section:finance:holded:pagos"), false);
+  assert.equal(nivelRequerido("section:laboratorio:x:y").minimo, "colaborador", "sección de un módulo sin política: cerrada por defecto");
+});
+
+test("mientras la vista no esté implementada: destino_no_implementado con la sección reconocida y el módulo completo como alternativa; JAMÁS destino", () => {
+  for (const [clave, frases] of Object.entries(FRASES)) for (const texto of frases) {
+    const r = pedir(texto, "anonimo", "Footprint");
+    assert.equal(r.tipo, "no_disponible", texto);
+    if (r.tipo !== "no_disponible") continue;
+    assert.equal(r.motivo, "destino_no_implementado", texto);
+    assert.equal(r.capabilityId, SEC[clave as keyof typeof SEC], texto);
+    assert.equal(r.companyId, "Footprint");
+    assert.deepEqual(r.alternativa, { capabilityId: "module:insurance:seguros", companyId: "Footprint", etiqueta: "Control de seguros", sinFiltro: true }, texto);
+    assert.match(r.mensaje, /ya está registrada, pero todavía no está implementada/);
+  }
+  const dos = pedir("pagos y renovaciones de seguros", "anonimo");
+  assert.equal(dos.tipo === "no_disponible" && dos.motivo, "destino_no_implementado");
+  const msg = dos.tipo === "no_disponible" ? dos.mensaje : "";
+  assert.ok(msg.includes("«Pagos pendientes de seguros»") && msg.includes("«Próximas renovaciones de seguros»"), msg);
+});
+
+test("con la vista implementada: destino preciso con la empresa explícita (la seleccionada o la nombrada en el texto)", () => {
+  const cat = implementado();
+  const dest = (texto: string, comp = "WOBA", nivel: NivelAcceso = "anonimo") => interpretarNavegacion({ texto, companyId: comp, nivel, catalogo: cat, requestId: "req-12345678" });
+  for (const [clave, frases] of Object.entries(FRASES)) for (const texto of frases) {
+    const r = dest(texto, "EWORKS");
+    assert.equal(r.tipo, "destino", texto);
+    if (r.tipo !== "destino") continue;
+    assert.equal(r.capabilityId, SEC[clave as keyof typeof SEC], texto);
+    assert.equal(r.companyId, "EWORKS"); assert.equal(r.companyOrigen, "seleccionada");
+    assert.equal(r.catalogVersion, cat.version);
+  }
+  const texto = dest("próximas renovaciones de seguros de Footprint", "WOBA");
+  assert.equal(texto.tipo === "destino" && texto.companyId, "Footprint"); assert.equal(texto.tipo === "destino" && texto.companyOrigen, "texto");
+  const pagos = dest("pagos pendientes de seguros", "WOBA", "colaborador");
+  assert.equal(pagos.tipo === "destino" && pagos.capabilityId, SEC.pagos, "mismo permiso que el módulo de Seguros");
+});
+
+test("actividad: es del grupo completo, así que lleva aviso y no se atribuye a una compañía; pagos y renovaciones sí son por compañía", () => {
+  const cat = implementado();
+  const act = interpretarNavegacion({ texto: "actividad de seguros de todas las empresas", companyId: "WOBA", nivel: "anonimo", catalogo: cat, requestId: "req-12345678" });
+  assert.equal(act.tipo, "destino"); assert.deepEqual(act.tipo === "destino" && act.avisos, [AVISO_GRUPO]);
+  const pagos = interpretarNavegacion({ texto: "pagos pendientes de seguros", companyId: "WOBA", nivel: "anonimo", catalogo: cat, requestId: "req-12345678" });
+  assert.deepEqual(pagos.tipo === "destino" && pagos.avisos, []);
+});
+
+test("empresa explícita: «todas las empresas» o «el grupo» en una vista por compañía se pregunta, y varias compañías nombradas también; nunca se elige por el usuario", () => {
+  const cat = implementado();
+  const pedirEn = (texto: string) => interpretarNavegacion({ texto, companyId: "WOBA", nivel: "anonimo", catalogo: cat, requestId: "req-12345678" });
+  for (const texto of ["pagos pendientes de seguros de todas las empresas", "renovaciones del grupo", "próximas renovaciones conjuntas"]) {
+    const r = pedirEn(texto);
+    assert.equal(r.tipo, "aclaracion", texto);
+    assert.deepEqual(r.tipo === "aclaracion" && r.opciones.map((o) => o.companyId).sort(), ["EWORKS", "Footprint", "WOBA"]);
+    assert.ok(r.tipo === "aclaracion" && r.opciones.every((o) => o.capabilityId === (texto.includes("pagos") ? SEC.pagos : SEC.renov)));
+  }
+  const dos = pedirEn("pagos de seguros de WOBA y eWorks");
+  assert.deepEqual(dos.tipo === "aclaracion" && dos.opciones.map((o) => o.companyId).sort(), ["EWORKS", "WOBA"]);
+});
+
+test("filtros que la sección no resuelve (fechas, cifras) se aclaran: no se abre la vista como si estuviera filtrada; los que ya resuelve no cuentan", () => {
+  const cat = implementado();
+  const pedirEn = (texto: string) => interpretarNavegacion({ texto, companyId: "WOBA", nivel: "anonimo", catalogo: cat, requestId: "req-12345678" });
+  assert.equal(pedirEn("pagos pendientes de seguros").tipo, "destino", "«pendientes» y «pagos» los resuelve la propia sección");
+  assert.equal(pedirEn("próximas renovaciones de seguros").tipo, "destino", "«próximas» y «renovaciones» también");
+  for (const texto of ["pagos pendientes de seguros de octubre", "renovaciones de seguros este mes", "cuánto es el total de pagos pendientes de seguros"]) {
+    const r = pedirEn(texto);
+    assert.equal(r.tipo, "aclaracion", texto);
+    assert.equal(r.tipo === "aclaracion" && r.opciones.length, 1);
+    assert.equal(r.tipo === "aclaracion" && r.opciones[0].sinFiltro, true);
+    assert.match(r.tipo === "aclaracion" ? r.pregunta : "", /ya filtrado/);
+  }
+  const sin = pedirEn("pagos pendientes de seguros");
+  assert.ok(!JSON.stringify(sin).includes("filtro"), "un destino exacto no habla de filtros");
+});
+
+test("una opción elegida que es una sección se valida igual: implementada abre, sin implementar no, y sin permiso nunca", () => {
+  const sel = (cat: CatalogoNavegacion, nivel: NivelAcceso, capabilityId = SEC.pagos, companyId = "Footprint") =>
+    interpretarNavegacion({ seleccion: { capabilityId, companyId }, companyId: "WOBA", nivel, catalogo: cat, requestId: "req-12345678" });
+  const ok = sel(implementado(), "anonimo");
+  assert.equal(ok.tipo === "destino" && ok.capabilityId, SEC.pagos); assert.equal(ok.tipo === "destino" && ok.companyId, "Footprint"); assert.equal(ok.tipo === "destino" && ok.companyOrigen, "seleccionada");
+  assert.equal(sel(catalogo, "anonimo").tipo === "no_disponible" && (sel(catalogo, "anonimo") as { motivo: string }).motivo, "destino_no_implementado");
+  const falsa = sel(implementado(), "superadmin", "section:insurance:seguros:inventada");
+  assert.equal(falsa.tipo === "no_disponible" && falsa.motivo, "destino_no_implementado");
+});
+
+test("COMPATIBILIDAD: los destinos actuales responden igual con y sin las secciones registradas", () => {
+  const sinSecciones = construirCatalogo(catalogo.capacidades.filter((c) => c.target.kind !== "section"));
+  const casos: Array<[string, NivelAcceso, string]> = [["abre seguros", "anonimo", "WOBA"], ["seguros de Footprint", "anonimo", "WOBA"], ["finanzas", "admin", "WOBA"], ["holded", "admin", "WOBA"],
+    ["cashflow de Footprint", "admin", "WOBA"], ["cashflow", "admin", "WOBA"], ["cashflow", "colaborador", "WOBA"], ["recursos humanos", "admin", "WOBA"], ["pólizas vencidas", "anonimo", "WOBA"],
+    ["calendario", "anonimo", "EWORKS"], ["documentos", "anonimo", "WOBA"], ["xyzzy plugh", "anonimo", "WOBA"], ["cuánto hemos gastado", "admin", "WOBA"], ["holded y correo", "admin", "WOBA"]];
+  for (const [texto, nivel, comp] of casos) {
+    const quitar = (r: RespuestaNavegacion) => ({ ...r, catalogVersion: "x" });
+    const a = quitar(interpretarNavegacion({ texto, companyId: comp, nivel, catalogo, requestId: "req-12345678" }));
+    const b = quitar(interpretarNavegacion({ texto, companyId: comp, nivel, catalogo: sinSecciones, requestId: "req-12345678" }));
+    assert.deepEqual(a, b, `«${texto}» cambió al registrar las secciones`);
+  }
+  // Y los módulos y áreas siguen siendo abribles con la misma forma de respuesta.
+  assert.deepEqual(Object.keys(pedir("abre seguros", "anonimo")).sort(), ["avisos", "capabilityId", "catalogVersion", "companyId", "companyOrigen", "etiqueta", "requestId", "tipo"]);
+});
+
+test("el router sirve las secciones con su estado, alcance y destino completo; y responde la alternativa sin URLs ni selectores", async () => {
+  await conServidor({}, async (url) => {
+    const cat = await (await fetch(`${url}/catalogo`, { headers: H })).json() as { capacidades: Array<{ id: string; status: string; scope?: string; target: Record<string, string>; acceso: string }> };
+    const s = cat.capacidades.filter((c) => c.target.kind === "section");
+    assert.equal(s.length, 3); assert.ok(s.every((c) => c.status === "registered" && c.acceso === "permitido"));
+    assert.deepEqual(s.find((c) => c.id === SEC.act)?.target, { kind: "section", id: "actividad", area: "insurance", module: "seguros" });
+    assert.equal(s.find((c) => c.id === SEC.act)?.scope, "group");
+    const r = await (await post(url, { texto: "pagos pendientes de seguros", companyId: "WOBA" })).json() as RespuestaNavegacion;
+    assert.equal(r.tipo === "no_disponible" && r.motivo, "destino_no_implementado");
+    assert.doesNotMatch(JSON.stringify(r), /https?:|<|selector|querySelector/i);
+  });
+  await conServidor({ catalogo: async () => implementado() }, async (url) => {
+    const r = await (await post(url, { texto: "próximas renovaciones", companyId: "Footprint" })).json() as RespuestaNavegacion;
+    assert.equal(r.tipo === "destino" && r.capabilityId, SEC.renov); assert.equal(r.tipo === "destino" && r.companyId, "Footprint");
+  });
 });

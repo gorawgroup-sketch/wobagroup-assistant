@@ -76,7 +76,7 @@ export function crearRouterNavegador(deps: DepsRouterNavegador) {
       generadoEn: new Date(ahora()).toISOString(),
       companias,
       capacidades: c.catalogo.capacidades.map((cap) => ({
-        id: cap.id, label: cap.label, description: cap.description, status: cap.status, target: cap.target,
+        id: cap.id, label: cap.label, description: cap.description, status: cap.status, target: cap.target, ...(cap.scope ? { scope: cap.scope } : {}),
         companies: cap.companies.filter((x) => companias.includes(x)),
         acceso: tieneAcceso(c.nivel, cap.id) ? "permitido" : "permiso_insuficiente",
         nivelRequerido: nivelRequerido(cap.id).minimo,

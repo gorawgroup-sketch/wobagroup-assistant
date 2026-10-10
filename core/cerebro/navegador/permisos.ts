@@ -29,8 +29,16 @@ const REQUISITOS: Requisito[] = [
   { coincide: (id) => /^(area|module):(insurance|corporate|operations|people|marketing|commercial|procurement|compliance|quality|technology|processes)(:|$)/.test(id), minimo: "anonimo", razon: "consulta de solo lectura" },
 ];
 
+/** Una sección (`section:<área>:<módulo>:<sección>`) hereda SIEMPRE los permisos de su módulo: nunca es más abierta ni más cerrada que él. */
+export const padreDeSeccion = (id: string): string => {
+  if (!id.startsWith("section:")) return id;
+  const [, area, modulo] = id.split(":");
+  return `module:${area}:${modulo}`;
+};
+
 export function nivelRequerido(capacidadId: string): { minimo: NivelAcceso; razon: string } {
-  const r = REQUISITOS.find((x) => x.coincide(capacidadId));
+  const id = padreDeSeccion(capacidadId);
+  const r = REQUISITOS.find((x) => x.coincide(id));
   return r ? { minimo: r.minimo, razon: r.razon } : { minimo: "colaborador", razon: "capacidad sin política explícita (cerrada por defecto)" };
 }
 
