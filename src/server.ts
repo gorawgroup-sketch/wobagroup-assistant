@@ -186,6 +186,8 @@ import {
 } from "../core/cerebro/webChatCoordinator";
 import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { crearRouterVoz } from "../core/cerebro/voiceRouter";
+import { cargarCatalogoNavegacion } from "../core/cerebro/navegador/catalogo";
+import { crearRouterNavegador } from "../core/cerebro/navegador/router";
 import { prepararEntradaVoz } from "../core/telegram/voiceInput";
 import { ErrorNotaVoz } from "../core/ai/transcribeAudio";
 import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
@@ -625,6 +627,12 @@ async function exigeAccesoValido(req: Request, res: Response): Promise<boolean> 
 
 app.use("/api/cerebro/voz", crearRouterVoz(exigeAccesoValido));
 app.use("/api/cerebro/documentos", crearRouterDocumentos(exigeAccesoValido));
+// Navegación de solo lectura: identidad y permisos del servidor, catálogo único del front. Sin herramientas ni escritura.
+app.use("/api/cerebro/navegador", crearRouterNavegador({
+  autorizar: exigeAccesoValido,
+  identidad: (req) => identidadChatDesdeRequest(req),
+  catalogo: () => cargarCatalogoNavegacion(),
+}));
 
 /**
  * Canal de invalidación en tiempo real. Envía solo metadatos; los datos de

@@ -40,3 +40,8 @@ Estados reales: escuchando → interpretando → abriendo → abierto; alternati
 5. Casos reales por compañía/permisos, ambiguos, fuentes fallidas, capacidades nuevas, cancelación y reintentos; feature flag y reversión antes de producción.
 
 Telegram y derivación a Claude Code externos quedan fuera de estas cinco fases internas. No automatizar pantallas ni enviar mensajes en esta entrega.
+
+## Estado del backend (2026-10-10)
+
+La interpretación de solo lectura con catálogo y permisos validados en servidor está en `core/cerebro/navegador/` y su contrato exacto (endpoints, variantes, permisos, fuentes y cambios propuestos para el front del #433) en [`docs/navegador-wobi-contrato.md`](navegador-wobi-contrato.md). El servidor carga el catálogo del propio `capabilities.mjs` del front (una sola fuente, versionada), no ejecuta herramientas ni modifica datos, y no usa IA todavía.
+
