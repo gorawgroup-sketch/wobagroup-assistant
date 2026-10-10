@@ -16,7 +16,8 @@ import type { Capacidad } from "./catalogo";
 export type NivelAcceso = "anonimo" | "colaborador" | "admin" | "superadmin";
 const ORDEN: readonly NivelAcceso[] = ["anonimo", "colaborador", "admin", "superadmin"];
 
-export interface IdentidadNavegacion { rol?: Rol; modo: "completo" | "solo_lectura" }
+/** `chatId` solo sirve para aislar el contexto de conversación por identidad; nunca influye en permisos. */
+export interface IdentidadNavegacion { rol?: Rol; modo: "completo" | "solo_lectura"; chatId?: number }
 
 export function nivelDeIdentidad(i: IdentidadNavegacion): NivelAcceso {
   return i.modo === "completo" && i.rol ? i.rol : "anonimo";

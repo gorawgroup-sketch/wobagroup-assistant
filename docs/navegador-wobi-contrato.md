@@ -118,3 +118,38 @@ Peticiones como «pagos pendientes de seguros», «seguros pendientes de pago»,
 `SegurosDestination` abre únicamente la sección registrada. Pagos usa `pagosSinConfirmar`; renovaciones combina `proximasARenovar` y los eventos de tipo `vencimiento` de `proximos`, sin duplicar la misma póliza/fecha ni incluir pagos. No calcula importes ni plazos nuevos. `null` conserva «Sin lectura actual»; las dos listas de renovaciones conservan su disponibilidad por separado. Actividad reutiliza la bitácora del grupo sin filtrarla por empresa.
 
 La compañía se indica en las opciones de aclaración. Fechas adicionales sin soporte se rotulan «sin filtro adicional»; nunca se anuncian como aplicadas. «Ver Control de seguros completo» sale de la vista precisa y vuelve al módulo habitual, sin activar escrituras. La voz sigue el camino existente y el enjambre del módulo reacciona a su amplitud.
+
+## Conversacional, solo lectura (E1: determinista, sin IA y sin coste)
+
+Aprobado en la propuesta `docs/navegador-wobi-conversacional-propuesta.md`. **E1 no usa ningún modelo**: no hay llamadas a IA ni coste nuevo; E2/E3 (modelo detrás de interruptor) siguen pendientes de aprobación. `/interpretar` y `/catalogo` no cambian de forma (el catálogo solo **añade** `conversacional`).
+
+### Disponibilidad
+`GET /catalogo` añade `conversacional: { disponible: true, modo: "deterministico", lecturas: [...] }`. El front usa `/conversar` si `disponible`; si no, `/interpretar` como hasta ahora.
+
+### `POST /api/cerebro/navegador/conversar`
+Mismas cabeceras de identidad que el resto (`X-Cerebro-Key`, `X-Cerebro-Device`, `X-Cerebro-Nombre`) y mismo límite de 40 peticiones/minuto.
+Cuerpo: `{ texto | seleccion, companyId, requestId?, conversacionId? }`. **Solo se leen esos campos**: rol, permisos, capacidades, URLs, contexto u opciones enviados por el cliente se ignoran.
+
+Respuesta: las tres variantes de `/interpretar` más:
+- `modo`: `"deterministico"` (E1).
+- `conversacionId`: opaco, lo emite el servidor; el cliente solo lo devuelve en la petición siguiente. Uno ajeno, inventado, caducado o de otro tipo se ignora (se emite uno nuevo); no es un error.
+- `resumen`: texto con **plantillas del servidor** (cifras y fechas salen de los datos, no de un modelo). Siempre presente.
+- `companyOrigen` puede ser ahora `"contexto"`: la compañía se heredó de la conversación; el front debe mostrarla.
+- `lectura` (solo las tres vistas de Seguros, y solo si el destino ya pasó estado y permiso): ver abajo.
+
+### `lectura` v1
+`{ tipo, empresa, leidoEn, generadoEn, estado, refrescando, fuentes[], avisos[], total?, mostrados?, items?, causa?, proximoPago? }`
+- `tipo`: `seguros_pagos_pendientes | seguros_proximas_renovaciones | seguros_actividad`. `empresa` es `null` en la actividad (grupo completo, con su aviso).
+- `estado`: `completa` | `incompleta` (dato conservado de una lectura anterior, fuente sin constancia, complementos caídos o calendario de pagos sin leer) | `no_consultable`.
+- `leidoEn`: el **más antiguo** de los últimos éxitos de las fuentes usadas (`seguros.polizas`, `seguros.complementos`); `null` si no se sabe.
+- `total` **solo** con `estado: "completa"`; `items` máx. 10; importes y textos tal cual constan en el registro, **nunca sumados ni mezclando monedas**.
+- **Un fallo nunca es «no hay»**: `no_consultable` no lleva `items`, `total` ni `mostrados`. La actividad con `bitacora === null` es `no_consultable`, no «sin actividad». Un cero real es `completa` con `total: 0`.
+- Si la vista es `available` y la lectura es `no_consultable`, la respuesta es `no_disponible` con `motivo: "fuente_no_consultable"` y `mensaje` = `resumen`. Si la vista sigue `registered`, sigue siendo `destino_no_implementado` (con su `alternativa`) **y además** lleva `lectura` y `resumen`: los datos existen aunque la vista no.
+
+### Contexto de conversación (en memoria del servidor)
+Solo datos estructurados (`companyId`, compañía del selector, `capabilityId`, opciones ofrecidas); **nunca texto**. Una entrada por identidad + dispositivo, caduca a los 10 minutos sin uso, máx. 500 entradas, se pierde al desplegar. Seguimientos que resuelve: «y el de Footprint», «ese mismo de eWorks» (misma vista, otra compañía), «y las renovaciones», «y la actividad» (otra vista, misma compañía), «el primero / el segundo / el último», «el de eWorks» y «sí» (solo con una opción). Una compañía explícita en el texto manda sobre el contexto; si la persona **cambia el selector**, manda el selector y se olvidan las opciones pendientes. Sin contexto vigente no se adivina: se pregunta. El contexto nunca concede permisos: cada resolución pasa por `resolverDestino`/`interpretarNavegacion` con la identidad de esa petición.
+
+### Qué hace Codex
+1. Usar `/conversar` si `catálogo.conversacional.disponible`; guardar y reenviar `conversacionId`; borrarlo al limpiar el chat.
+2. Pintar `resumen` y, si hay `lectura`, la fecha (`leidoEn`), el estado y los `avisos`; nunca presentar `incompleta` como completa ni `no_consultable` como lista vacía.
+3. Mostrar la compañía cuando `companyOrigen === "contexto"`.
