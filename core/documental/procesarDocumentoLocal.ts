@@ -4,6 +4,7 @@ import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extraerDatosFactura, type DatosFactura } from "./extractInvoiceData";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
+import { detectarNotificacionTributaria, pistaCarpetaNotificacionTributaria } from "./notificacionTributaria";
 import { manejarClasificacion } from "./processClassification";
 import { sendTelegramMessage } from "../telegram/client";
 import { esArchivoEml, parsearEml, type AdjuntoDeEml } from "./parseEml";
@@ -168,7 +169,14 @@ export async function procesarDocumentoLocal(
       extraerDatosFactura(entrada.rutaLocal, entrada.mimeType, entrada.captionEfectivo, entrada.nombreArchivoOriginal)
     );
 
-    if (datosFactura?.esFacturaOGasto) {
+    // Incidencia #7: una notificación de la AEAT/TGSS nunca es un gasto, aunque el lector la haya marcado como factura.
+    const notificacion = datosFactura?.esFacturaOGasto
+      ? detectarNotificacionTributaria({ proveedor: datosFactura.proveedor, concepto: datosFactura.concepto, numero: datosFactura.numeroDocumento, nombreArchivo: entrada.nombreArchivoOriginal })
+      : undefined;
+    if (notificacion) {
+      console.log(`[procesarDocumentoLocal] «${entrada.nombreArchivoOriginal}»: ${notificacion.razon}`);
+      pistaContenido = pistaCarpetaNotificacionTributaria(notificacion, datosFactura ? `${datosFactura.monto} ${datosFactura.moneda}` : undefined);
+    } else if (datosFactura?.esFacturaOGasto) {
       // Un archivo sin información contable (un mapa, un icono, una captura sin datos) no puede ser el comprobante del gasto: si viene de un
       // correo, el comprobante pasa a ser el PDF generado desde el cuerpo de ese correo. Ante cualquier duda o fallo se conserva el archivo.
       let rutaSoporte = entrada.rutaLocal;
@@ -237,7 +245,7 @@ export async function procesarDocumentoLocal(
     // El lector SÍ vio el contenido; el clasificador de carpetas solo ve nombre y texto. Lo que el lector concluyó
     // (póliza de seguro, justificante aduanero…) se le pasa como pista para que elija bien la carpeta.
     esDocumentoPoliza = datosFactura?.esDocumentoPoliza === true;
-    if (esDocumentoPoliza) {
+    if (esDocumentoPoliza && !notificacion) {
       pistaContenido = "Leído del contenido: es documentación de una PÓLIZA DE SEGURO (no un gasto); va en la carpeta " +
         `de seguros de su empresa. Año en curso: ${new Date().getFullYear()}.` +
         (datosFactura?.razonNoGasto ? ` ${datosFactura.razonNoGasto}` : "");
@@ -337,7 +345,11 @@ async function procesarAdjuntoEml(
     console.error(`[procesarDocumentoLocal] Error leyendo el .eml "${entrada.nombreArchivoOriginal}" como gasto (se archiva como documento genérico):`, error);
   }
 
-  if (datosGasto?.esFacturaOGasto) {
+  const notificacionEml = datosGasto?.esFacturaOGasto
+    ? detectarNotificacionTributaria({ proveedor: datosGasto.proveedor, concepto: datosGasto.concepto, numero: datosGasto.numeroDocumento, texto: contenido.asunto })
+    : undefined;
+  if (notificacionEml) console.log(`[procesarDocumentoLocal] .eml «${entrada.nombreArchivoOriginal}»: ${notificacionEml.razon}`);
+  if (datosGasto?.esFacturaOGasto && !notificacionEml) {
     try {
       const bytesComprobante = await generarComprobantePDF(
         { de: contenido.de, asunto: contenido.asunto, fecha: contenido.fecha ?? "", cuerpoCompleto: contenido.textoPlano, htmlOriginal: contenido.html },
@@ -383,7 +395,7 @@ async function procesarAdjuntoEml(
     nombreArchivoOriginal: entrada.nombreArchivoOriginal,
     mimeType: entrada.mimeType,
     nombreParaClasificar: entrada.nombreParaClasificar,
-    captionEfectivo: contextoEml,
+    captionEfectivo: notificacionEml ? [pistaCarpetaNotificacionTributaria(notificacionEml, datosGasto ? `${datosGasto.monto} ${datosGasto.moneda}` : undefined), contextoEml].filter(Boolean).join("\n\n") : contextoEml,
     correoOrigen: entrada.correoOrigen,
     notaAdjunto: entrada.notaAdjunto,
   });

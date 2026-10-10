@@ -1,4 +1,5 @@
 import { movimientoCompatibleConGasto } from "../../holded/write";
+import { detectarNotificacionTributaria } from "../../documental/notificacionTributaria";
 import { createHash } from "node:crypto";
 import { empresaNombradaEnTexto } from "../../gastos/empresaPorComprador";
 
@@ -328,6 +329,8 @@ export function evaluarAuto(c: CorreoAuto, a: AnalisisAuto, r: ReciboAuto, e: Ev
   const empresaEvaluada = e.empresaDetectada ?? r.empresa;
   if (!a.completo) motivos.push("lectura_incompleta");
   if (!new Set(["ticket", "recibo"]).has(r.tipo)) motivos.push("no_es_ticket_o_recibo_pagado");
+  // Incidencia #7: una notificación de la AEAT/TGSS (sanción, apremio, requerimiento) nunca se automatiza como gasto.
+  if (detectarNotificacionTributaria({ proveedor: r.proveedor, concepto: r.concepto, numero: r.numero })) motivos.push("notificacion_tributaria_no_es_gasto");
   if (!r.evidencia.trim() || !r.evidenciaEmpresa.trim()) motivos.push("falta_evidencia");
   if (empresaEvaluada === "desconocida" || !config.empresas.includes(empresaEvaluada)) motivos.push("empresa_no_habilitada_o_ambigua");
   // La evidencia de empresa nombra a OTRA sociedad del grupo (p. ej. «Datos del cliente: BUSINESS ATELIER EUROPA SL» para un recibo que se iba a crear en EWORKS).

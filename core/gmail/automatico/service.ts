@@ -663,6 +663,7 @@ export function explicarPendiente(motivos: string[], detalle?: DetallePendiente)
     const paso = PASOS_OPERACION[estado] ?? `quedó en el paso «${estado.replace(/_/g, " ")}»`;
     return `La operación de una revisión anterior ${paso}; hay que comprobarla en Holded antes de continuarla.`;
   }
+  if (tiene("notificacion_tributaria_no_es_gasto")) return "Es una notificación oficial de la AEAT o la Seguridad Social (sanción, apremio o requerimiento), no un gasto: se archiva en Requerimientos Hacienda y se revisa; nunca se crea como compra.";
   if (tiene("posible_duplicado")) return "Puede estar registrado previamente; hay que comprobarlo antes de crear otro gasto.";
   if (tiene("no_es_ticket_o_recibo_pagado")) return "El documento no se identificó como recibo de pago; la búsqueda bancaria automática no se ejecutó.";
   if (tiene("verificacion_incompleta")) return "No se completaron las consultas de verificación; no se puede concluir que falte el cargo bancario.";
