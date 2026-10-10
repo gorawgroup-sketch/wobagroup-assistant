@@ -45,6 +45,13 @@ const POSITIONS = [[23,24],[77,31],[25,73],[73,76],[47,12],[86,51],[50,88],[14,4
 
 export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, onLogout, refreshing, status, data, error, isAdmin, name }) {
   const [companyId, setCompanyId] = useState(initialCompany);
+  const [deviceId] = useState(() => {
+    const saved=localStorage.getItem('wobi_cerebro_device');
+    if(saved && /^[a-zA-Z0-9_-]{16,128}$/.test(saved))return saved;
+    const id=crypto.randomUUID().replaceAll('-','');localStorage.setItem('wobi_cerebro_device',id);return id;
+  });
+  const navigationHeaders={'X-Cerebro-Key':apiKey,'X-Cerebro-Device':deviceId,'X-Cerebro-Nombre':encodeURIComponent(name||''),'Content-Type':'application/json'};
+  const [navigationNotice,setNavigationNotice]=useState(null);
   const [panel, setPanel] = useState(null);
   const [areaId, setAreaId] = useState(null);
   const [activeNode, setActiveNode] = useState(null);
@@ -72,7 +79,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const closePanel = () => { setPanel(null); setActiveNode(null); };
   const openModule = id => { setPanel(null); setWorkspaceId(id); };
   const showArea = id => { setActiveNode(id); setAreaId(id); setPanel('area'); };
-  const goHome = event => { event?.preventDefault?.(); setWorkspaceId(null); setPanel(null); setAreaId(null); setActiveNode(null); };
+  const goHome = event => { setNavigationNotice(null); event?.preventDefault?.(); setWorkspaceId(null); setPanel(null); setAreaId(null); setActiveNode(null); };
 
   return <div className={`nv-shell${workspace ? ' nv-shell--workspace' : ''}`}>
     {!panel && <NanoAmbient />}
@@ -83,6 +90,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       <a className="nv-telegram-shortcut" href={TELEGRAM_WEB_URL} target="_blank" rel="noopener noreferrer" aria-label="Abrir Telegram Web en otra pestaña" title="Conversar con WOBi · Telegram en otra pestaña"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-5 18-5-7-8-4Zm8 4L21 3" /></svg><span>Telegram</span><small>↗</small></a>
     </header>
 
+    {navigationNotice && <p className="nv-navigation-notice" role="status">{navigationNotice}<button type="button" onClick={()=>setNavigationNotice(null)} aria-label="Cerrar aviso de navegación">×</button></p>}
     {workspace ? <ModuleWorkspace module={workspace} modules={availableModules} onOpen={openModule}
       onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={companyScopeNote(workspace.id, company.name)}>
       {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id)}
@@ -124,9 +132,11 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {panel && <Reveal accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
       {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
-      {panel === 'command' && <CommandPanel company={company} onDocuments={() => setPanel('documents')} onDestination={proposal => {
+      {panel === 'command' && <CommandPanel key={companyId} company={company} headers={navigationHeaders} onDocuments={() => setPanel('documents')} onDestination={proposal => {
         const destination=validateDestination(proposal);
-        if (!destination || destination.companyId !== companyId) return;
+        if (!destination) return;
+        chooseCompany(destination.companyId);
+        setNavigationNotice([`Vista solicitada: ${companyById(destination.companyId).name}.`,...(proposal.avisos||[])].join(' '));
         if (destination.target.kind === 'area') showArea(destination.target.id);
         else if (availableModules.some(item => item.id === destination.target.id)) openModule(destination.target.id);
       }} />}

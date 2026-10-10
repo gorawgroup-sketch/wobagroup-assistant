@@ -382,3 +382,5 @@
 .nv-command form button { padding:12px; border-radius:12px; background:#143c51; color:#a9edff; border:1px solid #60cde0; font:inherit; }
 .nv-command .nv-text-action { display:block; margin:12px 0; }
 .nv-command small { display:block; color:#a3baca; }
+.nv-navigation-notice { margin:12px auto; max-width:1100px; padding:12px 18px; border:1px solid #58b9cf77; border-radius:12px; background:#102b3c; color:#c7eaf4; }
+.nv-navigation-notice button { float:right; color:inherit; border:0; background:none; font:inherit; }

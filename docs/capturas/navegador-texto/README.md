@@ -1,0 +1,1 @@
+Panel conectado al contrato backend #434. Captura aclaracion.png: build compilado con respuestas controladas; no contiene datos privados. Probadas tres cabeceras de sesión, destino con cambio de empresa y avisos, aclaración sin filtro revalidada, fuente no consultable, HTTP 503 y móvil. La verificación contra backend publicado queda pendiente de fusionar #434.
