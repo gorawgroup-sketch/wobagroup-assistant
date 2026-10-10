@@ -632,6 +632,11 @@ app.use("/api/cerebro/navegador", crearRouterNavegador({
   autorizar: exigeAccesoValido,
   identidad: (req) => identidadChatDesdeRequest(req),
   catalogo: () => cargarCatalogoNavegacion(),
+  // Mismo snapshot que sirve /estado (caché SWR): no añade lecturas a Sheets. Solo la parte de Seguros y sus fuentes.
+  snapshotSeguros: async () => {
+    const estado = await obtenerEstadoCerebro();
+    return { generadoEn: estado.generadoEn, refrescando: estado.refrescando, fuentes: estado.fuentes, seguros: estado.seguros };
+  },
 }));
 
 /**
