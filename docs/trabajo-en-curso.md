@@ -121,7 +121,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Vistas exactas de pagos pendientes, renovaciones y actividad; solo lectura | `codex/seguros-navegacion-precisa` | Cerebro front / Seguros | Codex | Implementado desde #437. 68 pruebas front, tipos y build verdes; router compilado + navegador real: 9 destinos, compañía/grupo, permisos, fechas no soportadas, null, voz/enjambre y móvil correctos. PR #440 en borrador. Integración de prueba con #439: 2123 pruebas backend y 75 adicionales, cero fallos. Espera fusión de #439 para traerlo desde main y repetir tipos/build. Sin auto-merge ni despliegue del front todavía. |
+| Vistas exactas de pagos pendientes, renovaciones y actividad; solo lectura | `codex/seguros-navegacion-precisa` | Cerebro front / Seguros | Codex | Implementado desde #437. 68 pruebas front, tipos y build verdes; router compilado + navegador real: 9 destinos, compañía/grupo, permisos, fechas no soportadas, null, voz/enjambre y móvil correctos. PR #440. #439 integrado desde main; npm test: 2123 pruebas backend y 75 adicionales, cero fallos. Publicación pendiente de CI y comprobación del commit desplegado en Railway. |
 
 ## Navegador: micrófono visible (10-10-2026)
 
