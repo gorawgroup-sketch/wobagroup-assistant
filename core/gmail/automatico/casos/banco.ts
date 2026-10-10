@@ -17,6 +17,15 @@ export const CASOS: CasoReal[] = [
     noEspera: [/Por qué quedaron gastos para revisión manual/],
   },
   {
+    nombre: "AEAT (incidencia #7): una sanción tributaria nunca se automatiza como gasto, se dice como notificación oficial",
+    origen: "09-09-2026, correo de Alberto «dos notificaciones hacienda C.P.E.»: la sanción (137,62 €) salió como propuesta de gasto.",
+    correo: correoCaso("aeat", { asunto: "Fwd: dos notificaciones hacienda C.P.E." }),
+    analisis: { completo: true, resumen: "Notificación de sanción", otrasAcciones: true,
+      recibos: [reciboCaso({ tipo: "recibo", empresa: "EWORKS", evidenciaEmpresa: "EWORKS", proveedor: "Agencia Tributaria (AEAT)", monto: 137.62, concepto: "Sanción tributaria Art. 191 LGT IS 2024" })] },
+    espera: [/notificación oficial de la AEAT o la Seguridad Social \(sanción, apremio o requerimiento\), no un gasto/],
+    noEspera: [GENERICO_LECTURA, CODIGOS_INTERNOS, /Gastos creados, soportados y conciliados: 1/],
+  },
+  {
     nombre: "Xue Cafe: adjunto ilegible se dice con el nombre del adjunto",
     origen: "07/08-10-2026: «Fwd: Café - 19.513,00 cop - revolut», jpg de 3,2 MB; salía «no dio por completa la lectura» sin decir qué.",
     correo: correoCaso("xue", { asunto: "Fwd: Café - 19.513,00 cop - revolut", adjuntos: [{ id: "adj1", nombre: "20260924_074802.jpg", mime: "image/jpeg" } as never] }),
