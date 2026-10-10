@@ -119,4 +119,4 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Micrófono visible y respuestas habladas de cortesía y ayuda, con pruebas de órdenes mixtas | `codex/navegador-seguros-destinos` | Front / navegador | Codex | Verificado: tipos, build, suite completa previa y 62 pruebas del front tras el cambio; navegador real confirma dictado revisable y saludo sin navegación. Publicación en curso. Destinos filtrados requieren ampliar contrato con Claude Code. |
+| Micrófono visible y respuestas habladas de cortesía y ayuda, con pruebas de órdenes mixtas | `codex/navegador-seguros-destinos` | Front / navegador | Codex | Verificado: tipos, build, suite completa previa y 62 pruebas del front tras el cambio; navegador real confirma dictado revisable y saludo sin navegación. PR #435: micrófono y cortesía, panel lateral sin modal; verificado en escritorio/móvil y reacción del enjambre al audio y al silenciar. Destinos filtrados requieren ampliar contrato con Claude Code. |

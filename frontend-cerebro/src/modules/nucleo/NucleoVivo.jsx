@@ -21,18 +21,21 @@ function dateLabel(value) {
   const date = new Date(value);
   return value && Number.isFinite(date.getTime()) ? date.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : 'Sin lectura verificada';
 }
-function Reveal({ title, onClose, children, accent }) {
+function Reveal({ title, onClose, children, accent, inline=false }) {
   const dialog = useRef(null);
   const openedAt = useRef(0);
   useEffect(() => {
     const node = dialog.current;
     const previous = document.activeElement;
     openedAt.current = performance.now();
-    node.showModal();
+    if(!inline)node.showModal();
     node.querySelector('input')?.focus();
-    return () => { node.close(); previous?.focus?.(); };
-  }, []);
-  return <dialog className="nv-reveal" ref={dialog} onCancel={onClose} aria-label={title} style={{"--area-color":accent || "#66d8f0"}}
+    const escape=event=>{if(inline&&event.key==='Escape')onClose();};
+    if(inline)window.addEventListener('keydown',escape);
+    return () => { if(!inline)node.close();window.removeEventListener('keydown',escape); previous?.focus?.(); };
+  }, [inline]);
+  const Surface=inline?'aside':'dialog';
+  return <Surface className={`nv-reveal${inline?' nv-command-inline':''}`} ref={dialog} onCancel={onClose} aria-label={title} style={{"--area-color":accent || "#66d8f0"}}
     onClickCapture={event => {
       // The second click that opened a disclosure must not activate a tool underneath it.
       if (event.detail > 0 && performance.now()-openedAt.current < 350) { event.preventDefault(); event.stopPropagation(); }
@@ -40,7 +43,7 @@ function Reveal({ title, onClose, children, accent }) {
     <NanoAmbient />
     <header><span>{title}</span><button type="button" onClick={onClose} aria-label="Cerrar detalle">×</button></header>
     {children}
-  </dialog>;
+  </Surface>;
 }
 const POSITIONS = [[23,24],[77,31],[25,73],[73,76],[47,12],[86,51],[50,88],[14,49],[70,14],[16,88],[87,89],[17,10]];
 
@@ -92,7 +95,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const showArea = id => { setActiveNode(id); setAreaId(id); setPanel('area'); };
   const goHome = event => { setNavigationNotice(null); event?.preventDefault?.(); setWorkspaceId(null); setPanel(null); setAreaId(null); setActiveNode(null); };
 
-  return <div className={`nv-shell${workspace ? ' nv-shell--workspace' : ''}`}>
+  return <div className={`nv-shell${workspace ? ' nv-shell--workspace' : ''}${panel==='command'?' nv-shell--command':''}`}>
     {!panel && <NanoAmbient />}
     <header className="nv-header">
       <a className="nv-wordmark" href="/cerebro/" onClick={goHome} aria-label="WOBi, mostrar todas las áreas">WOB<span>i</span></a>
@@ -142,7 +145,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       <button type="button" onClick={() => setPanel('menu')} aria-label="Abrir opciones de WOBi">WOBi / {company.name}<span aria-hidden="true"> ···</span></button>
     </footer>
 
-    {panel && <Reveal accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
+    {panel && <Reveal inline={panel==='command'} accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
       {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
       {panel === 'command' && <CommandPanel key={companyId} company={company} headers={navigationHeaders} onFeedback={speak} onStart={() => { speaker.stop(); if(voiceEnabled)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
         const destination=validateDestination(proposal);
