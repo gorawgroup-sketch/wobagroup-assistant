@@ -123,10 +123,16 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Vistas exactas de pagos pendientes, renovaciones y actividad; solo lectura | `codex/seguros-navegacion-precisa` | Cerebro front / Seguros | Codex | Implementado desde #437. 68 pruebas front, tipos y build verdes; router compilado + navegador real: 9 destinos, compañía/grupo, permisos, fechas no soportadas, null, voz/enjambre y móvil correctos. PR #440. #439 integrado desde main; npm test: 2123 pruebas backend y 75 adicionales, cero fallos. Publicación pendiente de CI y comprobación del commit desplegado en Railway. |
+| Vistas exactas de pagos pendientes, renovaciones y actividad; solo lectura | `codex/seguros-navegacion-precisa` | Cerebro front / Seguros | Codex | Implementado desde #437. 68 pruebas front, tipos y build verdes; router compilado + navegador real: 9 destinos, compañía/grupo, permisos, fechas no soportadas, null, voz/enjambre y móvil correctos. PR #440. #439 integrado desde main; npm test: 2123 pruebas backend y 75 adicionales, cero fallos. #440 fusionado y desplegado: Railway SUCCESS/RUNNING del commit 200476f; assets y tres destinos, compañía/grupo, voz/enjambre verificados en producción. |
 
 ## Navegador: micrófono visible (10-10-2026)
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
 | Micrófono visible y respuestas habladas de cortesía y ayuda, con pruebas de órdenes mixtas | `codex/navegador-seguros-destinos` | Front / navegador | Codex | Verificado: tipos, build, suite completa previa y 62 pruebas del front tras el cambio; navegador real confirma dictado revisable y saludo sin navegación. PR #435: micrófono y cortesía, panel lateral sin modal; verificado en escritorio/móvil y reacción del enjambre al audio y al silenciar. Destinos filtrados requieren ampliar contrato con Claude Code. |
+
+## Voz: conversación y envío fluido (10-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Saludos con el nombre al final y envío automático al terminar de hablar | `codex/voz-interaccion-fluida` | Front / navegador | Codex | Implementado desde main; npm test (2128 backend, 79 adicionales, cero fallos), tipos y build verdes. Chrome con router real y reconocimiento simulado: saludo y destino automáticos, cancelación, permiso de micrófono, rechazo de Finanzas, audio/enjambre, movimiento reducido y móvil correctos. PR #442; main integrado con #441 y verificación de expansión del dibujo durante audio (+9,5% en la prueba). Pendiente CI y despliegue. Interpretación abierta con modelo requiere contrato de Claude. |
