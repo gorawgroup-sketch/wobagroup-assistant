@@ -17,7 +17,7 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
       return { y, ring: Math.sqrt(1 - y * y), angle: i * 2.399963, seed: Math.sin(i * 127.1) * .5 + .5, amber: i % 7 === 0 };
     });
     const focusStrength = new Map();
-    let frame = 0, width = 0, height = 0, last = 0, time = 0, spread = 0, voice = 0;
+    let frame = 0, width = 0, height = 0, last = 0, time = 0, spread = 0, voice = 0, voicePhase = 0;
     const dot = (x, y, size, alpha, amber, glow = false) => {
       if (compact) size *= .65;
       ctx.globalAlpha = alpha;
@@ -29,20 +29,22 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
       const reduced = motion.matches;
       const t = reduced ? 0 : time;
       spread += ((config.current.expanded ? 1 : 0) - spread) * .075;
-      voice += ((reduced ? 0 : Math.min(1,Math.max(0,config.current.audioLevel || 0))) - voice) * .15;
+      const level = Number.isFinite(config.current.audioLevel) ? Math.min(1,Math.max(0,config.current.audioLevel)) : 0;
+      voice += ((reduced ? 0 : Math.pow(level, .65)) - voice) * .12;
+      voicePhase += voice * .032;
       const cx = width / 2, cy = height * .47;
-      const radius = Math.min(width * .28, height * .31, 175) * (1 + spread * .08 + voice * .045);
+      const radius = Math.min(width * .28, height * .31, 175) * (1 + spread * .08 + voice * .18);
       ctx.globalAlpha = 1;
       ctx.clearRect(0, 0, width, height);
       const glow = ctx.createRadialGradient(cx,cy,0,cx,cy,radius * 1.3);
-      glow.addColorStop(0,'#168dcc32');glow.addColorStop(.55,'#0c62b51c');glow.addColorStop(1,'#07385400');
+      glow.addColorStop(0,`rgba(22,141,204,${.2+voice*.14})`);glow.addColorStop(.55,`rgba(12,98,181,${.11+voice*.07})`);glow.addColorStop(1,'#07385400');
       ctx.fillStyle=glow;ctx.fillRect(0,0,width,height);
-      const rotation=t * .34, tilt=.28 + Math.sin(t*.18)*.13;
+      const rotation=t * .34+voicePhase*.65, tilt=.28 + Math.sin(t*.18)*.13;
       // Multiple rotating ribbons form a volume; amber particles circulate through its inner layers.
       for (let i=0;i<count;i++) {
         const p=particles[i];
         const a=p.angle+rotation+Math.sin(p.y*4+t*.55)*.25;
-        const breathing=1+Math.sin(a*3+p.y*5+t*.8)*.07;
+        const breathing=1+Math.sin(a*3+p.y*5+t*.8)*(.07+voice*.045);
         const layer=(i%4===0 ? .58+p.seed*.3 : .88+p.seed*.12)*breathing;
         const x=p.ring*Math.cos(a)*layer;
         const z=p.ring*Math.sin(a)*layer;
@@ -53,14 +55,14 @@ export default function NanoField({ expanded = false, activeNode = null, nodes =
         const px=cx+x*radius*perspective, py=cy+ry*radius*perspective;
         const front=(rz+1)/2;
         const alpha=.3+front*.68;
-        const size=(1+front*1.25)*(p.amber ? 1.2 : 1);
+        const size=(1+front*1.25)*(p.amber ? 1.2 : 1)*(1+voice*.2);
         dot(px,py,size,alpha,p.amber,i%17===0&&front>.4);
       }
       // Warm filaments circulate through the center, preserving WOBi's amber identity.
       const filamentCount = compact ? 190 : 520;
       for(let i=0;i<filamentCount;i++) {
         const u=i/filamentCount;
-        const a=u*Math.PI*18-t*.9;
+        const a=u*Math.PI*18-t*.9-voicePhase*.8;
         const waist=.14+Math.sin(u*Math.PI)*.25;
         const depth=(Math.sin(a)+1)/2;
         const x=cx+Math.cos(a)*radius*waist;

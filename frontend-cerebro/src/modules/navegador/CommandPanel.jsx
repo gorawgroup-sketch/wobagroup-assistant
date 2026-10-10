@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { interpretNavigation } from './client.mjs';
 import { conversationReply } from './conversation.mjs';
+import { startDictation } from './dictation.mjs';
 import { companyById } from '../nucleo/organization.mjs';
 export default function CommandPanel({company,headers,onDestination,onDocuments,onFeedback=()=>{},onStart=()=>{}}) {
   const [query,setQuery]=useState('');
@@ -14,13 +15,13 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
     const Recognition=window.SpeechRecognition || window.webkitSpeechRecognition;
     if(!Recognition){setState({error:'Este navegador no admite dictado. Puedes escribir tu petición.'});return;}
     onStart();pending.current?.abort();setState({});
-    const recognition=new Recognition();microphone.current=recognition;
-    recognition.lang='es-ES';recognition.interimResults=false;recognition.continuous=false;
-    recognition.onstart=()=>setListening(true);
-    recognition.onend=()=>setListening(false);
-    recognition.onerror=()=>{setListening(false);setState({error:'No pude transcribir el audio. Puedes reintentar o escribir.'});};
-    recognition.onresult=event=>{const text=event.results[0]?.[0]?.transcript || '';setQuery(text.slice(0,200));setState({dictated:true});};
-    try{recognition.start();}catch{setState({error:'No pude activar el micrófono. Puedes escribir.'});}
+    microphone.current?.abort();
+    microphone.current=startDictation(Recognition,{
+      onListening:setListening,
+      onTranscript:text=>setQuery(text.slice(0,200)),
+      onSubmit:text=>run({texto:text}),
+      onError:message=>setState({error:message})
+    });
   };
   useEffect(()=>()=>pending.current?.abort(),[]);
   const run=async(input)=>{
@@ -45,15 +46,16 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
   return <section className="nv-command"><h1>Pídele a WOBi</h1><p>Navegación interna · {company.name}</p>
     <form onSubmit={e=>{e.preventDefault();run({texto:query.trim()});}}>
       <label htmlFor="nv-command-query">¿Qué quieres encontrar?</label>
-      <input id="nv-command-query" value={query} onChange={e=>{pending.current?.abort();setQuery(e.target.value);setState({});}} placeholder="Por ejemplo: abre Seguros de eWorks" maxLength={200}/>
+      <input id="nv-command-query" value={query} onChange={e=>{pending.current?.abort();microphone.current?.abort();setQuery(e.target.value);setState({});}} placeholder="Por ejemplo: abre Seguros de eWorks" maxLength={200}/>
       <button type="submit" disabled={!query.trim()}>Encontrar destino</button>
     </form>
-    <button type="button" className="nv-microphone" aria-pressed={listening} onClick={listen}><svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>{listening?'Detener micrófono':'Dictar petición'}</button><p className="nv-microphone-help">Pulsa el micrófono para hablar. Permite el acceso en tu navegador; después revisa el texto y pulsa Encontrar destino.</p>
-    <div role="status">{state.reply&&<p>{state.reply}</p>}{listening&&<p>Escuchando…</p>}{state.dictated&&<p>Revisa lo que entendí y pulsa Encontrar destino.</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
+    <button type="button" className="nv-microphone" aria-pressed={listening} onClick={listen}><svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>{listening?'Terminar y enviar':'Hablar con WOBi'}</button><p className="nv-microphone-help">Pulsa el micrófono y habla. Cuando termines, WOBi procesará la petición automáticamente. Puedes cancelar antes de enviarla.</p>
+    {listening&&<button className="nv-text-action" type="button" onClick={()=>{microphone.current?.abort();setState({reply:'Escucha cancelada. No envié la petición.'});}}>Cancelar escucha</button>}
+    <div role="status">{state.reply&&<p>{state.reply}</p>}{listening&&<p>Escuchando…</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
     {state.result?.tipo==='no_disponible'&&<><p>{state.result.mensaje}</p>{state.result.alternativa&&<button className="nv-text-action" type="button" onClick={()=>run({seleccion:{capabilityId:state.result.alternativa.capabilityId,companyId:state.result.alternativa.companyId}})}>{state.result.alternativa.etiqueta} · Abrir módulo completo, sin filtro ↗</button>}</>}
     {state.result?.tipo==='aclaracion'&&<><p>{state.result.pregunta}</p>{state.result.opciones.map((option,index)=><button className="nv-text-action" key={index} type="button" onClick={()=>run({seleccion:{capabilityId:option.capabilityId,companyId:option.companyId}})}>{option.etiqueta} · {companyById(option.companyId).name}{option.sinFiltro?(option.capabilityId.startsWith('section:')?' · Abrir esta vista, sin filtro adicional':' · Abrir módulo completo, sin filtro'):''} ↗</button>)}</>}</div>
     {state.error&&<button type="button" className="nv-text-action" onClick={()=>run({texto:query.trim()})} disabled={!query.trim()}>Reintentar</button>}
     <button className="nv-text-action" type="button" onClick={onDocuments}>Buscar documentos en Drive ↗</button>
-    <small>Solo navegación. No ejecuta operaciones ni calcula cifras. Dictado según compatibilidad del navegador; revisa el texto antes de enviarlo.</small>
+    <small>Solo navegación. No ejecuta operaciones ni calcula cifras. Voz según compatibilidad del navegador. Las aclaraciones requieren elegir una opción; no se ejecutan operaciones.</small>
   </section>;
 }
