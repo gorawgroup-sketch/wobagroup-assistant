@@ -1,1 +1,3 @@
 Panel conectado al contrato backend #434. Captura aclaracion.png: build compilado con respuestas controladas; no contiene datos privados. Probadas tres cabeceras de sesión, destino con cambio de empresa y avisos, aclaración sin filtro revalidada, fuente no consultable, HTTP 503 y móvil. La verificación contra backend publicado queda pendiente de fusionar #434.
+
+Voz/enjambre: pruebas con audio PCM controlado, señal de amplitud positiva y vuelta a cero al silenciar. Backend #434 en producción: catálogo 22 capacidades e interpretación eWorks HTTP 200; voz real HTTP 200, PCM 24 kHz. Dictado requiere compatibilidad/permisos del navegador; no hay escucha permanente ni transcripción propia en servidor.

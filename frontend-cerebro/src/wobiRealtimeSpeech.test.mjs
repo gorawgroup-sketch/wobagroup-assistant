@@ -77,3 +77,13 @@ test("browser activation can resume once and later replies need no Play gesture"
   await playingAgain.promise; context.sources[1].finish(); await second;
   assert.equal(context.resumes, 1);
 });
+
+test('swarm level follows analyser samples and resets when muted', async () => {
+  const ctx=new Context();const levels=[];
+  ctx.createAnalyser=()=>({fftSize:256,connect(){},disconnect(){},getByteTimeDomainData(data){data.fill(160);}});
+  const speaker=createStreamingWobiSpeech({makeContext:()=>ctx,onAudioLevel:value=>levels.push(value),fetchAudio:async()=>new Response(new Uint8Array(6000),{headers:{'X-Audio-Format':'pcm-s16le','X-Audio-Sample-Rate':'24000'}})});
+  await speaker.activate();const speaking=speaker.speak('Aquí está',{});
+  await new Promise(resolve=>setTimeout(resolve,60));
+  assert.ok(levels.some(value=>value>0));speaker.stop();await speaking;
+  assert.equal(levels.at(-1),0);speaker.dispose();
+});

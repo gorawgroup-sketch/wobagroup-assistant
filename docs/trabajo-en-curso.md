@@ -46,7 +46,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
-| Navegador inteligente: front, voz y enjambre | Cerebro (front) | codex/navegador-texto | Codex | PR #433: contrato #434, tres cabeceras, permisos confirmados, voz existente y amplitud real del enjambre. Validación final en curso. |
+| Navegador inteligente: front, voz y enjambre | Cerebro (front) | codex/navegador-texto | Codex | PR #433: contrato #434, tres cabeceras, permisos confirmados, voz existente y amplitud real del enjambre. Pruebas completas verdes: 2111 backend (6 omitidas), 67 adicionales; voz PCM real y backend verificados en producción. Dictado según navegador, voz y enjambre por amplitud. PR #433 listo para CI y despliegue. |
 | Navegador inteligente: interpretación de solo lectura | Cerebro (backend) | feat/navegador-interpretacion | Claude Code | #434 fusionado. Contrato en docs/navegador-wobi-contrato.md; sin IA, herramientas ni escritura. |
 | Recuperar colores de áreas del Núcleo | Cerebro (front) | codex/colores-areas | Codex | Verificado: 51 pruebas front, typecheck, build y navegación en tres compañías/móvil; colores originales y transparencia solo en agentes previstos. |
 | Área Procesos y estado visual de áreas conectadas / pendientes | Cerebro (front) | `codex/area-procesos` | Codex | Verificado: 51 pruebas del front, typecheck, build y navegación del build compilado. Reserva del futuro subagente; estados visuales según las fuentes, sin cambios de backend. [PR #430](https://github.com/gorawgroup-sketch/wobagroup-assistant/pull/430), pendiente de revisión. |

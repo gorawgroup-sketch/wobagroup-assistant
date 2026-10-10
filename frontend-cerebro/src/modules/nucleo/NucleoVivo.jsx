@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createStreamingWobiSpeech } from '../../wobiRealtimeSpeech.js';
 import NanoField from './NanoField.jsx';
 import NanoAmbient from './NanoAmbient.jsx';
 import AreaIcon, { AREA_COLORS } from './AreaIcon.jsx';
@@ -52,6 +53,16 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   });
   const navigationHeaders={'X-Cerebro-Key':apiKey,'X-Cerebro-Device':deviceId,'X-Cerebro-Nombre':encodeURIComponent(name||''),'Content-Type':'application/json'};
   const [navigationNotice,setNavigationNotice]=useState(null);
+  const [voiceEnabled,setVoiceEnabled]=useState(()=>localStorage.getItem('wobi_navigation_voice')==='on');
+  const [voiceState,setVoiceState]=useState('idle');
+  const [audioLevel,setAudioLevel]=useState(0);
+  const [voiceError,setVoiceError]=useState('');
+  const speaker=useMemo(()=>createStreamingWobiSpeech({onStateChange:setVoiceState,onAudioLevel:setAudioLevel}),[]);
+  useEffect(()=>()=>speaker.dispose(),[speaker]);
+  useEffect(()=>{const hide=()=>{if(document.hidden)speaker.stop();};document.addEventListener('visibilitychange',hide);return()=>document.removeEventListener('visibilitychange',hide);},[speaker]);
+  const speak=message=>{if(!voiceEnabled)return;setVoiceError('');speaker.speak(message,navigationHeaders).catch(()=>setVoiceError('No pude reproducir la voz. La información sigue disponible por escrito.'));};
+  const toggleVoice=()=>{const enabled=!voiceEnabled;setVoiceEnabled(enabled);localStorage.setItem('wobi_navigation_voice',enabled?'on':'off');if(enabled)speaker.activate().catch(()=>setVoiceError('Activa el audio para escuchar a WOBi.'));else speaker.stop();};
+
   const [panel, setPanel] = useState(null);
   const [areaId, setAreaId] = useState(null);
   const [activeNode, setActiveNode] = useState(null);
@@ -91,12 +102,12 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
     </header>
 
     {navigationNotice && <p className="nv-navigation-notice" role="status">{navigationNotice}<button type="button" onClick={()=>setNavigationNotice(null)} aria-label="Cerrar aviso de navegación">×</button></p>}
-    {workspace ? <ModuleWorkspace module={workspace} modules={availableModules} onOpen={openModule}
+    {workspace ? <ModuleWorkspace audioLevel={audioLevel} module={workspace} modules={availableModules} onOpen={openModule}
       onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={companyScopeNote(workspace.id, company.name)}>
       {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id)}
     </ModuleWorkspace> : <main className="nv-universe is-expanded" aria-label="Núcleo de WOBi">
       <div className="nv-constellation">
-        <NanoField expanded activeNode={activeNode} nodes={visibleAreas.map((item,index) => { const [x,y] = POSITIONS[index]; return { id:item.id,x,y,flow:areaStatus(item,data).flow }; })} />
+        <NanoField expanded audioLevel={audioLevel} activeNode={activeNode} nodes={visibleAreas.map((item,index) => { const [x,y] = POSITIONS[index]; return { id:item.id,x,y,flow:areaStatus(item,data).flow }; })} />
         <div className="nv-holo-frame" aria-hidden="true"><span /><span /><span /><span /></div>
         <svg className="nv-holo-orbits" viewBox="0 0 700 580" aria-hidden="true">
           <defs><radialGradient id="nv-floor"><stop stopColor="#41cdea" stopOpacity=".12" /><stop offset="1" stopColor="#41cdea" stopOpacity="0" /></radialGradient></defs>
@@ -120,6 +131,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       <div className="nv-whisper" aria-live="polite"><span>{`${company.name} · ${AREAS.length} áreas`}</span><small>{'Color pleno: áreas habilitadas · Color tenue: agentes pendientes'}</small></div>
     </main>}
 
+    <div className="nv-voice-control"><button type="button" aria-pressed={voiceEnabled} onClick={toggleVoice}>{voiceEnabled?'Desactivar voz':'Activar voz de WOBi'}</button><span role="status">{voiceError || (voiceState==='playing'?'WOBi está hablando':voiceState==='loading'?'Preparando voz…':voiceState==='blocked'?'Activa el audio para escuchar a WOBi':'')}</span></div>
     <nav className="nv-dock" aria-label="Acciones del núcleo">
       <button type="button" onClick={() => { setWorkspaceId(null); setPanel('map'); }}><span aria-hidden="true">◌</span> Áreas</button>
       <button type="button" className="nv-find" onClick={() => setPanel('command')}><span aria-hidden="true">⌕</span> Pídele a WOBi <kbd>⌘ K</kbd></button>
@@ -132,16 +144,17 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {panel && <Reveal accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
       {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
-      {panel === 'command' && <CommandPanel key={companyId} company={company} headers={navigationHeaders} onDocuments={() => setPanel('documents')} onDestination={proposal => {
+      {panel === 'command' && <CommandPanel key={companyId} company={company} headers={navigationHeaders} onFeedback={speak} onStart={() => { speaker.stop(); if(voiceEnabled)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
         const destination=validateDestination(proposal);
         if (!destination) return;
         chooseCompany(destination.companyId);
         setNavigationNotice([`Vista solicitada: ${companyById(destination.companyId).name}.`,...(proposal.avisos||[])].join(' '));
         if (destination.target.kind === 'area') showArea(destination.target.id);
         else if (availableModules.some(item => item.id === destination.target.id)) openModule(destination.target.id);
+        speak(`Abro ${proposal.etiqueta || 'el destino solicitado'} en ${companyById(destination.companyId).name}. ${(proposal.avisos||[]).join(' ')}`);
       }} />}
       {panel === 'documents' && <DocumentSearch key={companyId} company={company} apiKey={apiKey} onClose={closePanel} />}
-      {panel === 'area' && area && <div className={`nv-area-detail nv-area--${selectedStatus.id}`}><div className="nv-area-hero"><div><span className="nv-area-eyebrow">INTELIGENCIA / {company.name}</span><h1>{area.name}</h1><span className={`nv-stage nv-stage--${area.stage}`}>{STAGES[area.stage]} · {selectedStatus.label}</span></div><span className="nv-area-emblem"><NanoField compact /><span className="nv-emblem-badge"><AreaIcon id={area.id} /></span></span></div><p>{area.description}</p>
+      {panel === 'area' && area && <div className={`nv-area-detail nv-area--${selectedStatus.id}`}><div className="nv-area-hero"><div><span className="nv-area-eyebrow">INTELIGENCIA / {company.name}</span><h1>{area.name}</h1><span className={`nv-stage nv-stage--${area.stage}`}>{STAGES[area.stage]} · {selectedStatus.label}</span></div><span className="nv-area-emblem"><NanoField compact audioLevel={audioLevel} /><span className="nv-emblem-badge"><AreaIcon id={area.id} /></span></span></div><p>{area.description}</p>
         {area.modules.length > 0 && <><div className="nv-module-list">{area.modules.map(module => <button key={module.id} type="button" onClick={() => openModule(module.id)} className="nv-tool-entry"><span className="nv-tool-icon"><AreaIcon id={area.id} /></span><span className="nv-tool-name">{module.name}</span><span className="nv-tool-arrow">↗</span></button>)}</div><small>Al abrir una herramienta se indica si sus datos corresponden a la compañía elegida o al conjunto del sistema.</small></>}
         {area.stage === 'planned' && <small>Su agente especializado todavía no está conectado.</small>}
         <button className="nv-text-action" type="button" onClick={() => setPanel('documents')}>Buscar documentos en {company.name} ↗</button>
