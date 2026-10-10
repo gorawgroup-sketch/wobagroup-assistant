@@ -193,9 +193,16 @@ export function ejecutarRevisionCorreoManual(chatId: number, opciones: { reanuda
       // Una revisión que falló por sí misma no se retoma sola: repetirla repetiría el fallo.
       await inicio;
       await dependencias.cerrarRegistroRevision(chatId).catch(() => undefined);
+      // Incidencia #6 (09-09-2026): «Hubo un error revisando el correo» sin causa ni correo afectado dejaba a Carlos a
+      // ciegas. Ahora se dice la causa (sin identificadores internos) y hasta dónde llegó la revisión.
+      const causa = (error instanceof Error ? error.message : String(error))
+        .replace(/[0-9a-f]{8}-[0-9a-f-]{20,}|[0-9a-f]{16,}/gi, "…").replace(/\s+/g, " ").trim().slice(0, 220) || "causa no informada";
+      const ultimoPunto = dependencias.progresoRevisionAutomatica(chatId)?.replace(/^⏳\s*/, "");
       const mensaje = error instanceof RevisionCorreoOcupadaError
         ? "⏳ Ya hay otra revisión de correo trabajando. El proceso sigue protegido; vuelve a intentarlo en unos minutos."
-        : "⚠️ Hubo un error revisando el correo.";
+        : `⚠️ La revisión de correo se detuvo por un error: ${causa}` +
+          (ultimoPunto ? `\nÚltimo punto alcanzado: ${ultimoPunto}` : "") +
+          "\nNo se dejó nada a medias en Holded. Vuelve a lanzar /revisarcorreo; si se repite, pásame este mensaje tal cual.";
       await dependencias.enviar(chatId, mensaje).catch(() => {});
     })
     .finally(() => {

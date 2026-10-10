@@ -30,7 +30,7 @@ test('descubre nombres con acentos y no pretende aplicar filtros ni calcular cos
   assert.equal(findDestinations('xyz inexistente').status,'unknown');
 });
 
-test('Seguros registra tres destinos precisos implementados: no se descubren por nombre ni se abren como si lo estuvieran',()=>{
+test('Seguros activa tres destinos precisos y conserva el estado de secciones pendientes',()=>{
   const catalog=buildCapabilities();
   const secciones=catalog.filter(c=>c.target.kind==='section');
   assert.deepEqual(secciones.map(c=>c.id),['section:insurance:seguros:pagos_pendientes','section:insurance:seguros:proximas_renovaciones','section:insurance:seguros:actividad']);
@@ -41,6 +41,9 @@ test('Seguros registra tres destinos precisos implementados: no se descubren por
   assert.equal(findDestinations('muestrame seguros').entries.some(e=>e.target.kind==='section'),false);
   assert.equal(findDestinations('actividad de wobi seguros').entries.some(e=>e.target.kind==='section'),false);
   assert.equal(validateDestination({capabilityId:'section:insurance:seguros:actividad',companyId:'WOBA'}).status,'available');
+  const sinImplementar=buildCapabilities(AREAS.map(a=>a.id==='insurance'?{...a,modules:[{...a.modules[0],sections:a.modules[0].sections.map(s=>({...s,implemented:false}))}]}:a));
+  assert.ok(sinImplementar.filter(c=>c.target.kind==='section').every(c=>c.status==='registered'),'sin implemented, la sección queda registered');
+  assert.equal(validateDestination({capabilityId:'section:insurance:seguros:actividad',companyId:'WOBA'},sinImplementar).status,'registered');
   const implementada=buildCapabilities(AREAS.map(a=>a.id==='insurance'?{...a,modules:[{...a.modules[0],sections:a.modules[0].sections.map(s=>({...s,implemented:true}))}]}:a));
   assert.ok(implementada.filter(c=>c.target.kind==='section').every(c=>c.status==='available'));
 });
