@@ -139,8 +139,9 @@ test("cierre del día: una cuenta que sigue «solicitada» tras fallar sus pasad
     assert.equal(cerradas.length, 1);
     const trabajo = await almacen.obtener("sync:2026-10-10:WOBA:a");
     assert.equal(trabajo?.estado, "no_confirmado");
-    assert.match(trabajo?.ultimoError ?? "", /No se completó en las pasadas del día \(2 intento\(s\), 2 pasada\(s\)\); última causa: No se confirmó/);
+    assert.match(trabajo?.ultimoError ?? "", /Holded no confirmó la actualización en las pasadas del día \(2 intento\(s\), 2 pasada\(s\)\); última causa: No se confirmó/);
     assert.match(textoAvisoSincronizacion([trabajo!]) ?? "", /1 cuenta\(s\) sin actualización confirmada/);
+    assert.match(textoAvisoSincronizacion([trabajo!]) ?? "", /fallo de comunicación entre el banco y Holded, no un error del sistema/);
     assert.equal(await cerrarPendientesDelDia(almacen, "2026-10-10", () => t).then((c) => c.length), 0); // idempotente
   }));
 
