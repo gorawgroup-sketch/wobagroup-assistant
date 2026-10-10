@@ -1,3 +1,4 @@
+import SegurosDestination from './modules/seguros/SegurosDestination.jsx';
 import ModuleDetails from "./modules/nucleo/ModuleDetails.jsx";
 import NucleoVivo from "./modules/nucleo/NucleoVivo.jsx";
 import SettingsHub from "./modules/nucleo/SettingsHub.jsx";
@@ -3578,7 +3579,8 @@ export default function CerebroWoba() {
               {m.id === "seguros" && apiKey && <SegurosPanel apiKey={apiKey} puedeArreglar={esAdmin} estado={moduleData?.seguros} onRefresh={refreshLiveData} />}
   </ModuleDetails>;
   };
-  const renderNucleoModule = (id, onOpen, companyId) => {
+  const renderNucleoModule = (id, onOpen, companyId, destination) => {
+    if (id === "seguros" && destination?.target.kind === "section") return <SegurosDestination estado={liveData?.seguros} sectionId={destination.target.id} companyId={companyId} companyName={{WOBA:"WOBA",EWORKS:"eWorks",Footprint:"Footprint Global"}[companyId]} onFull={() => onOpen("seguros")} />;
     if (id === "control_diario") return <ControlDiarioPanel data={liveData} apiKey={apiKey}
       actualizacionId={get(liveData, "actualizadoEn") || get(liveData, "cacheadoEn")}
       onAbrir={onOpen} onPreguntarWobi={preguntarWobi} puedeResolver={esAdmin} onRefresh={refreshLiveData} />;

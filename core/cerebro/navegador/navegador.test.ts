@@ -269,25 +269,48 @@ test("este módulo no importa herramientas, chat, modelos, Holded, Drive, Gmail 
 
 const SEC = { pagos: "section:insurance:seguros:pagos_pendientes", renov: "section:insurance:seguros:proximas_renovaciones", act: "section:insurance:seguros:actividad" };
 const secciones = (c: CatalogoNavegacion) => c.capacidades.filter((x) => x.target.kind === "section");
-/** El mismo catálogo con las vistas ya implementadas por el front: es lo que verá el servidor cuando Codex ponga `implemented: true`. */
-const implementado = (): CatalogoNavegacion => construirCatalogo(catalogo.capacidades.map((c) => (c.target.kind === "section" ? { ...c, status: "available" as const } : c)));
+/**
+ * Catálogos de PRUEBA con el estado de las secciones fijado explícitamente: no dependen de lo que el front tenga declarado hoy
+ * (`implemented` en organization.mjs). El catálogo real solo se usa donde el estado da igual o donde se acepta el que declare el front.
+ */
+const conEstadoDeSecciones = (estado: "registered" | "available"): CatalogoNavegacion =>
+  construirCatalogo(catalogo.capacidades.map((c) => (c.target.kind === "section" ? { ...c, status: estado } : c)));
+/** Secciones con la vista aún sin implementar (`registered`): el estado en que se registraron. */
+const registrado = (): CatalogoNavegacion => conEstadoDeSecciones("registered");
+/** Secciones con la vista ya implementada por el front (`implemented: true`). */
+const implementado = (): CatalogoNavegacion => conEstadoDeSecciones("available");
+const pedirCon = (cat: CatalogoNavegacion, texto: string, nivel: NivelAcceso, companyId = "WOBA"): RespuestaNavegacion =>
+  interpretarNavegacion({ texto, companyId, nivel, catalogo: cat, requestId: "req-12345678" });
 const FRASES = {
   pagos: ["pagos pendientes de seguros", "seguros pendientes de pago", "pólizas pendientes de pago", "pagos sin confirmar de seguros", "pagos de seguros", "recibos pendientes de seguros"],
   renov: ["próximas renovaciones", "renovaciones de seguros", "qué seguros vencen pronto", "vencimientos de seguros", "pólizas por vencer", "próximos vencimientos de seguros"],
   act: ["actividad de Wobi Seguros", "qué ha hecho Wobi Seguros", "historial de actividad de seguros", "bitácora de seguros", "últimas acciones de seguros"],
 };
 
-test("el catálogo registra tres destinos precisos de Seguros, con su área, su módulo y su alcance, y todavía sin vista", () => {
+test("el catálogo real registra tres destinos precisos de Seguros, con su área, su módulo y su alcance, y acepta el estado que declare el front", () => {
   const sec = secciones(catalogo);
   assert.deepEqual(sec.map((c) => c.id).sort(), Object.values(SEC).sort());
   for (const c of sec) {
-    assert.equal(c.status, "registered"); assert.deepEqual([c.target.area, c.target.module], ["insurance", "seguros"]);
-    assert.deepEqual(c.companies.sort(), ["EWORKS", "Footprint", "WOBA"]);
+    assert.ok(c.status === "registered" || c.status === "available", `«${c.id}» tiene un estado que el servidor no entiende: ${c.status}`);
+    assert.deepEqual([c.target.area, c.target.module], ["insurance", "seguros"]);
+    assert.deepEqual([...c.companies].sort(), ["EWORKS", "Footprint", "WOBA"]);
   }
   assert.equal(catalogo.capacidades.find((c) => c.id === SEC.act)?.scope, "group", "la actividad es del grupo completo");
   assert.equal(catalogo.capacidades.find((c) => c.id === SEC.pagos)?.scope, "company");
-  assert.notEqual(implementado().version, catalogo.version, "implementar una vista cambia la versión del catálogo");
+  assert.equal(catalogo.capacidades.find((c) => c.id === SEC.renov)?.scope, "company");
+  assert.match(catalogo.version, /^nav-[0-9a-f]{12}$/);
   for (const id of Object.keys(INTENCIONES_SECCION)) assert.ok(catalogo.capacidades.some((c) => c.id === id), `la intención «${id}» ya no existe en el catálogo`);
+});
+
+test("implementar una vista cambia la versión del catálogo: lo que declara el front manda, y el servidor lo sirve tal cual", () => {
+  const pendiente = registrado(), hecho = implementado();
+  assert.notEqual(pendiente.version, hecho.version);
+  assert.ok(secciones(pendiente).every((c) => c.status === "registered") && secciones(hecho).every((c) => c.status === "available"));
+  // Parcial: Codex puede activar una sección y dejar las otras; cada una conserva su estado.
+  const parcial = construirCatalogo(catalogo.capacidades.map((c) => (c.id === SEC.act ? { ...c, status: "available" as const } : c.target.kind === "section" ? { ...c, status: "registered" as const } : c)));
+  assert.equal(pedirCon(parcial, "actividad de Wobi Seguros", "anonimo").tipo, "destino");
+  const pagos = pedirCon(parcial, "pagos pendientes de seguros", "anonimo");
+  assert.equal(pagos.tipo === "no_disponible" && pagos.motivo, "destino_no_implementado");
 });
 
 test("una sección mal formada es un error del catálogo: sin área y módulo, con id que no coincide o con alcance desconocido", () => {
@@ -309,8 +332,9 @@ test("una sección hereda los permisos de su módulo: ni más abierta ni más ce
 });
 
 test("mientras la vista no esté implementada: destino_no_implementado con la sección reconocida y el módulo completo como alternativa; JAMÁS destino", () => {
+  const cat = registrado();
   for (const [clave, frases] of Object.entries(FRASES)) for (const texto of frases) {
-    const r = pedir(texto, "anonimo", "Footprint");
+    const r = pedirCon(cat, texto, "anonimo", "Footprint");
     assert.equal(r.tipo, "no_disponible", texto);
     if (r.tipo !== "no_disponible") continue;
     assert.equal(r.motivo, "destino_no_implementado", texto);
@@ -319,7 +343,7 @@ test("mientras la vista no esté implementada: destino_no_implementado con la se
     assert.deepEqual(r.alternativa, { capabilityId: "module:insurance:seguros", companyId: "Footprint", etiqueta: "Control de seguros", sinFiltro: true }, texto);
     assert.match(r.mensaje, /ya está registrada, pero todavía no está implementada/);
   }
-  const dos = pedir("pagos y renovaciones de seguros", "anonimo");
+  const dos = pedirCon(cat, "pagos y renovaciones de seguros", "anonimo");
   assert.equal(dos.tipo === "no_disponible" && dos.motivo, "destino_no_implementado");
   const msg = dos.tipo === "no_disponible" ? dos.mensaje : "";
   assert.ok(msg.includes("«Pagos pendientes de seguros»") && msg.includes("«Próximas renovaciones de seguros»"), msg);
@@ -384,28 +408,30 @@ test("una opción elegida que es una sección se valida igual: implementada abre
     interpretarNavegacion({ seleccion: { capabilityId, companyId }, companyId: "WOBA", nivel, catalogo: cat, requestId: "req-12345678" });
   const ok = sel(implementado(), "anonimo");
   assert.equal(ok.tipo === "destino" && ok.capabilityId, SEC.pagos); assert.equal(ok.tipo === "destino" && ok.companyId, "Footprint"); assert.equal(ok.tipo === "destino" && ok.companyOrigen, "seleccionada");
-  assert.equal(sel(catalogo, "anonimo").tipo === "no_disponible" && (sel(catalogo, "anonimo") as { motivo: string }).motivo, "destino_no_implementado");
+  const pendiente = sel(registrado(), "anonimo");
+  assert.equal(pendiente.tipo === "no_disponible" && pendiente.motivo, "destino_no_implementado");
+  assert.equal(sel(registrado(), "anonimo").tipo === "no_disponible" && (sel(registrado(), "anonimo") as { alternativa?: { capabilityId: string } }).alternativa?.capabilityId, "module:insurance:seguros");
   const falsa = sel(implementado(), "superadmin", "section:insurance:seguros:inventada");
   assert.equal(falsa.tipo === "no_disponible" && falsa.motivo, "destino_no_implementado");
 });
 
-test("COMPATIBILIDAD: los destinos actuales responden igual con y sin las secciones registradas", () => {
+test("COMPATIBILIDAD: los destinos actuales responden igual sin secciones, con secciones sin implementar y con secciones implementadas", () => {
   const sinSecciones = construirCatalogo(catalogo.capacidades.filter((c) => c.target.kind !== "section"));
   const casos: Array<[string, NivelAcceso, string]> = [["abre seguros", "anonimo", "WOBA"], ["seguros de Footprint", "anonimo", "WOBA"], ["finanzas", "admin", "WOBA"], ["holded", "admin", "WOBA"],
     ["cashflow de Footprint", "admin", "WOBA"], ["cashflow", "admin", "WOBA"], ["cashflow", "colaborador", "WOBA"], ["recursos humanos", "admin", "WOBA"], ["pólizas vencidas", "anonimo", "WOBA"],
     ["calendario", "anonimo", "EWORKS"], ["documentos", "anonimo", "WOBA"], ["xyzzy plugh", "anonimo", "WOBA"], ["cuánto hemos gastado", "admin", "WOBA"], ["holded y correo", "admin", "WOBA"]];
-  for (const [texto, nivel, comp] of casos) {
-    const quitar = (r: RespuestaNavegacion) => ({ ...r, catalogVersion: "x" });
-    const a = quitar(interpretarNavegacion({ texto, companyId: comp, nivel, catalogo, requestId: "req-12345678" }));
-    const b = quitar(interpretarNavegacion({ texto, companyId: comp, nivel, catalogo: sinSecciones, requestId: "req-12345678" }));
-    assert.deepEqual(a, b, `«${texto}» cambió al registrar las secciones`);
+  const quitar = (r: RespuestaNavegacion) => ({ ...r, catalogVersion: "x" });
+  for (const [nombre, cat] of [["registered", registrado()], ["implementadas", implementado()], ["real", catalogo]] as const) {
+    for (const [texto, nivel, comp] of casos) {
+      assert.deepEqual(quitar(pedirCon(cat, texto, nivel, comp)), quitar(pedirCon(sinSecciones, texto, nivel, comp)), `«${texto}» cambió con las secciones ${nombre}`);
+    }
   }
   // Y los módulos y áreas siguen siendo abribles con la misma forma de respuesta.
   assert.deepEqual(Object.keys(pedir("abre seguros", "anonimo")).sort(), ["avisos", "capabilityId", "catalogVersion", "companyId", "companyOrigen", "etiqueta", "requestId", "tipo"]);
 });
 
 test("el router sirve las secciones con su estado, alcance y destino completo; y responde la alternativa sin URLs ni selectores", async () => {
-  await conServidor({}, async (url) => {
+  await conServidor({ catalogo: async () => registrado() }, async (url) => {
     const cat = await (await fetch(`${url}/catalogo`, { headers: H })).json() as { capacidades: Array<{ id: string; status: string; scope?: string; target: Record<string, string>; acceso: string }> };
     const s = cat.capacidades.filter((c) => c.target.kind === "section");
     assert.equal(s.length, 3); assert.ok(s.every((c) => c.status === "registered" && c.acceso === "permitido"));

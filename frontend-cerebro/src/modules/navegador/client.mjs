@@ -13,9 +13,9 @@ export async function interpretNavigation(payload, {headers,signal,fetcher=fetch
   if(result.catalogVersion!==catalog.version) current=await read('/api/cerebro/navegador/catalogo');
   if(current.version!==result.catalogVersion) throw Error('El catálogo cambió. Reintenta la petición.');
   const validate=proposal=>{
-    const server=current.capacidades.find(c=>c.id===proposal.capabilityId&&c.acceso==='permitido'&&c.companies.includes(proposal.companyId));
+    const server=current.capacidades.find(c=>c.id===proposal.capabilityId&&c.status==='available'&&c.acceso==='permitido'&&c.companies.includes(proposal.companyId));
     const local=validateDestination(proposal);
-    return server&&current.companias.includes(proposal.companyId)&&local&&server.target.kind===local.target.kind&&server.target.id===local.target.id?local:null;
+    return server&&current.companias.includes(proposal.companyId)&&local&&server.target.kind===local.target.kind&&server.target.id===local.target.id&&local.status==='available'&&(local.target.kind!=='section'||(server.target.module===local.target.module&&server.target.area===local.target.area&&server.scope===local.scope))?local:null;
   };
   if(result.tipo==='destino') {
     if(!validate(result)||!Array.isArray(result.avisos)||result.avisos.some(a=>typeof a!=='string')) throw Error('Destino no válido. No se abre nada.');
@@ -23,6 +23,7 @@ export async function interpretNavigation(payload, {headers,signal,fetcher=fetch
     if(typeof result.pregunta!=='string'||!Array.isArray(result.opciones)||result.opciones.some(o=>!validate(o)||typeof o.etiqueta!=='string')) throw Error('Opciones no válidas.');
   } else if(result.tipo==='no_disponible') {
     if(typeof result.mensaje!=='string'||!['agente_previsto','destino_no_implementado','permiso_insuficiente','fuente_no_consultable'].includes(result.motivo)) throw Error('Respuesta no válida.');
+    if(result.alternativa && (!validate(result.alternativa)||typeof result.alternativa.etiqueta!=='string'||result.alternativa.sinFiltro!==true)) throw Error('Alternativa no válida.');
   } else throw Error('Respuesta no reconocida.');
   return result;
 }

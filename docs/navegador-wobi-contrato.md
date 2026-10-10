@@ -112,3 +112,9 @@ Peticiones como «pagos pendientes de seguros», «seguros pendientes de pago»,
 4. Mostrar `avisos` (actividad del grupo) y, ante `no_disponible`/`destino_no_implementado` con `alternativa`, ofrecer abrir el módulo completo marcándolo como «sin filtrar».
 5. `findDestinations` (descubrimiento local) ya **no ofrece secciones** por nombre; solo la interpretación del servidor las propone.
 
+
+### Implementación del front: vistas precisas de Seguros
+
+`SegurosDestination` abre únicamente la sección registrada. Pagos usa `pagosSinConfirmar`; renovaciones combina `proximasARenovar` y los eventos de tipo `vencimiento` de `proximos`, sin duplicar la misma póliza/fecha ni incluir pagos. No calcula importes ni plazos nuevos. `null` conserva «Sin lectura actual»; las dos listas de renovaciones conservan su disponibilidad por separado. Actividad reutiliza la bitácora del grupo sin filtrarla por empresa.
+
+La compañía se indica en las opciones de aclaración. Fechas adicionales sin soporte se rotulan «sin filtro adicional»; nunca se anuncian como aplicadas. «Ver Control de seguros completo» sale de la vista precisa y vuelve al módulo habitual, sin activar escrituras. La voz sigue el camino existente y el enjambre del módulo reacciona a su amplitud.

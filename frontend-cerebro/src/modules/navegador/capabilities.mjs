@@ -32,5 +32,5 @@ export function validateDestination(proposal, capabilities = buildCapabilities()
   // Exact sections/filters are not yet wired. Never silently drop requested filters.
   if (proposal.section != null || proposal.filters != null) return null;
   return { capabilityId: entry.id, companyId: proposal.companyId,
-    target: { ...entry.target }, status: entry.status };
+    target: { ...entry.target }, status: entry.status, ...(entry.scope ? {scope:entry.scope} : {}) };
 }
