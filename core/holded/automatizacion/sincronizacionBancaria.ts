@@ -261,13 +261,14 @@ export async function verificarSincronizacionBancaria(dep: DependenciasSync, des
  * por solapamiento y la de las 07:20 volvió a fallar; 5 cuentas conectadas (WOBA Main, Pocket EUR/USD, Footprint Emoney
  * EUR/USD) quedaron «solicitadas» con 2 de 3 pasadas, nunca pasaron a «fallido» y el aviso de las 09:45 salió vacío.
  * Aquí se cierran como «no confirmado» con su última causa, para que el aviso las nombre y el estado quede en el registro.
+ * No es un veredicto sobre el sistema: lo normal es un retraso o un fallo de comunicación entre el banco y Holded (Carlos, 10-10-2026).
  */
 export async function cerrarPendientesDelDia(almacen: AlmacenTrabajos, fecha: string, ahora: () => number = Date.now): Promise<Trabajo[]> {
   const abiertas = (await almacen.listar({ tipo: "sync_bancaria", estados: ["solicitado", "en_curso"], desde: ahora() - 36 * 3_600_000 }))
     .filter((t) => t.clave.startsWith(`sync:${fecha}:`));
   for (const t of abiertas) {
     const causa = t.ultimoError ? `; última causa: ${t.ultimoError}` : "";
-    t.ultimoError = `No se completó en las pasadas del día (${t.intentos ?? 0} intento(s), ${Number(t.evidencia.pasadas ?? 0)} pasada(s))${causa}`;
+    t.ultimoError = `Holded no confirmó la actualización en las pasadas del día (${t.intentos ?? 0} intento(s), ${Number(t.evidencia.pasadas ?? 0)} pasada(s))${causa}`;
     t.estado = "no_confirmado";
     t.actualizadoEn = ahora();
     await almacen.guardar(t);
@@ -282,7 +283,8 @@ export function textoAvisoSincronizacion(trabajos: Trabajo[]): string | undefine
   if (mal.length === 0) return undefined;
   const lineas = mal.map((t) => `  • ${etiquetaEmpresa(t.empresa)} · ${String(t.evidencia.nombre ?? t.objetivo)}: ${t.estado.replace(/_/g, " ")}${t.ultimoError ? ` — ${t.ultimoError}` : ""}`);
   return [`⚠️ Sincronización bancaria de Holded: ${mal.length} cuenta(s) sin actualización confirmada.`, ...lineas,
-    "", "Si hace falta renovar el consentimiento del banco o la sesión web de Holded, tiene que hacerlo una persona; el sistema no reconecta bancos."].join("\n");
+    "", "Lo habitual es un retraso o un fallo de comunicación entre el banco y Holded, no un error del sistema: esas cuentas conservan los movimientos de la última sincronización buena y se vuelven a lanzar mañana a las 06:00. " +
+    "Si necesitas los movimientos de hoy antes, pulsa «Sincronizar» en Holded en esa cuenta. Si hace falta renovar el consentimiento del banco o la sesión web de Holded, tiene que hacerlo una persona; el sistema no reconecta bancos."].join("\n");
 }
 
 function marcaSync(c: TreasuryAccount | undefined): number | undefined {
