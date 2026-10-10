@@ -11,14 +11,23 @@ import { pathToFileURL } from "node:url";
  * Es SOLO metadata de navegación: nunca concede acceso. Los permisos los decide `permisos.ts` con la identidad resuelta en servidor.
  */
 
-export type EstadoCapacidad = "available" | "planned";
+/**
+ * available  = destino implementado y abrible.
+ * planned    = área prevista, sin agente conectado (`agente_previsto`).
+ * registered = destino PRECISO (sección) registrado en el catálogo cuya vista el front aún no ha implementado (`destino_no_implementado`).
+ */
+export type EstadoCapacidad = "available" | "planned" | "registered";
+/** company = los datos son de la compañía elegida; group = del grupo completo y no se atribuyen a una sola compañía. */
+export type AlcanceCapacidad = "company" | "group";
 export interface Capacidad {
   id: string;
   label: string;
   description: string;
   status: EstadoCapacidad;
-  target: { kind: "area" | "module"; id: string };
+  /** Una sección es un destino preciso DENTRO de un módulo: lleva su área y su módulo, y hereda sus permisos. */
+  target: { kind: "area" | "module" | "section"; id: string; area?: string; module?: string };
   companies: string[];
+  scope?: AlcanceCapacidad;
 }
 export interface CatalogoNavegacion {
   /** Huella estable del contenido: cambia si cambia cualquier destino, estado o compañía del catálogo. */
@@ -49,20 +58,25 @@ export function normalizarCapacidades(bruto: unknown): Capacidad[] {
     if (ids.has(id)) throw new Error(`Catálogo de navegación inválido: capacidad duplicada «${id}».`);
     ids.add(id);
     const status = r.status;
-    if (status !== "available" && status !== "planned") throw new Error(`Catálogo de navegación inválido: estado desconocido en «${id}».`);
+    if (status !== "available" && status !== "planned" && status !== "registered") throw new Error(`Catálogo de navegación inválido: estado desconocido en «${id}».`);
     const t = r.target as Record<string, unknown> | undefined;
-    if (!t || (t.kind !== "area" && t.kind !== "module")) throw new Error(`Catálogo de navegación inválido: destino desconocido en «${id}».`);
+    if (!t || (t.kind !== "area" && t.kind !== "module" && t.kind !== "section")) throw new Error(`Catálogo de navegación inválido: destino desconocido en «${id}».`);
+    if (t.kind === "section" && (typeof t.area !== "string" || typeof t.module !== "string" || !id.startsWith(`section:${t.area}:${t.module}:`))) {
+      throw new Error(`Catálogo de navegación inválido: la sección «${id}» no indica su área y su módulo.`);
+    }
+    if (r.scope !== undefined && r.scope !== "company" && r.scope !== "group") throw new Error(`Catálogo de navegación inválido: alcance desconocido en «${id}».`);
     if (!Array.isArray(r.companies) || r.companies.some((c) => typeof c !== "string")) throw new Error(`Catálogo de navegación inválido: compañías de «${id}».`);
     return {
       id, label: texto(r.label, "label"), description: typeof r.description === "string" ? r.description : "", status,
-      target: { kind: t.kind, id: texto(t.id, "target.id") }, companies: [...(r.companies as string[])],
+      target: { kind: t.kind, id: texto(t.id, "target.id"), ...(t.kind === "section" ? { area: t.area as string, module: t.module as string } : {}) },
+      companies: [...(r.companies as string[])], ...(r.scope ? { scope: r.scope as AlcanceCapacidad } : {}),
     };
   });
 }
 
 export function versionDelCatalogo(capacidades: Capacidad[]): string {
   const estable = [...capacidades].sort((a, b) => a.id.localeCompare(b.id))
-    .map((c) => [c.id, c.status, c.target.kind, c.target.id, [...c.companies].sort()]);
+    .map((c) => [c.id, c.status, c.target.kind, c.target.id, c.target.area ?? null, c.target.module ?? null, c.scope ?? null, [...c.companies].sort()]);
   return `nav-${createHash("sha256").update(JSON.stringify(estable)).digest("hex").slice(0, 12)}`;
 }
 

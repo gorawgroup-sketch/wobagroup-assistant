@@ -5,7 +5,7 @@ Respuesta de Claude Code al encargo de `docs/encargo-navegador-wobi.md` (#432), 
 ## Principios (qué garantiza el servidor)
 
 - **Un único catálogo.** El servidor carga `frontend-cerebro/src/modules/navegador/capabilities.mjs` (`buildCapabilities()`, derivado de `organization.mjs`): no hay copia. Registrar un área o módulo en el front lo hace descubrible aquí sin tocar el backend. Si el archivo falta o tiene una forma inesperada, el servidor responde **503** y no abre nada; nunca un catálogo vacío ni inventado.
-- **Versión del catálogo** = `nav-` + 12 primeros hex de SHA-256 de `[id, status, target.kind, target.id, companies ordenadas]` de cada capacidad, ordenadas por `id`. Cambia si cambia cualquier destino, estado o compañía.
+- **Versión del catálogo** = `nav-` + 12 primeros hex de SHA-256 de `[id, status, target.kind, target.id, target.area, target.module, scope, companies ordenadas]` de cada capacidad, ordenadas por `id`. Cambia si cambia cualquier destino, estado, alcance o compañía (p. ej. al implementar una vista).
 - **Identidad y permisos del servidor.** Misma identidad que el chat: cabeceras `X-Cerebro-Key`, `X-Cerebro-Device` y `X-Cerebro-Nombre`. Del cuerpo solo se leen `texto`, `seleccion`, `companyId` y `requestId`; cualquier otro campo (rol, permisos, capacidades, URLs, selectores) **se ignora**. Seleccionar una compañía no concede permisos.
 - **Sin camino a acciones.** El módulo no importa herramientas, chat, modelos, Holded, Drive, Gmail ni Telegram (una prueba estática lo vigila). No hay IA en esta entrega: la interpretación es determinista (nombres y sinónimos contra el catálogo), sin coste por petición.
 - **Salida acotada.** Solo `capabilityId` registrado + `companyId` válido. Nunca URLs, scripts ni selectores; el texto del usuario no se copia a la respuesta.
@@ -67,3 +67,48 @@ Nivel de la identidad: dispositivo sin vincular = `anonimo`; vinculado = su rol 
 
 ## Fuera de esta entrega
 Interpretación con modelo (decisión de coste pendiente), audio/voz (sesión existente, límites y errores) y secciones/filtros reales (Codex registra cada destino exacto y añade pruebas; entonces entran en el catálogo y el servidor los descubre).
+
+---
+
+## Ampliación: destinos precisos de Seguros (secciones)
+
+Una **sección** es un destino preciso *dentro* de un módulo. Solo lectura, con los permisos actuales de Seguros y siempre con compañía explícita; el servidor devuelve ids **registrados** en el catálogo, nunca URLs, rutas ni selectores.
+
+### Qué se registra (catálogo único: `organization.mjs` → `capabilities.mjs`)
+El módulo `seguros` declara `sections`; `buildCapabilities()` genera una capacidad por sección:
+
+| `capabilityId` | Qué debe mostrar la vista | `scope` |
+|---|---|---|
+| `section:insurance:seguros:pagos_pendientes` | Pagos de pólizas sin confirmar (`estado.pagosSinConfirmar`) de **la compañía elegida** | `company` |
+| `section:insurance:seguros:proximas_renovaciones` | Renovaciones y vencimientos próximos (`estado.proximos`, `proximasARenovar`) de **la compañía elegida** | `company` |
+| `section:insurance:seguros:actividad` | Actividad de Wobi Seguros (`estado.bitacora`) | `group` |
+
+```jsonc
+{ "id": "section:insurance:seguros:actividad", "label": "Actividad de Wobi Seguros", "description": "…", "status": "registered",
+  "scope": "group", "target": { "kind": "section", "area": "insurance", "module": "seguros", "id": "actividad" }, "companies": ["WOBA","Footprint","EWORKS"] }
+```
+- **`status`** pasa a tener tres valores: `available` (abrible), `planned` (área prevista) y **`registered`** (destino registrado cuya vista el front aún no ha implementado). Hoy las tres secciones son `registered` (`implemented: false` en `organization.mjs`).
+- **`scope`** (nuevo, opcional): `company` = datos de la compañía elegida; `group` = datos del grupo completo, que **no** se atribuyen a una sola compañía. La actividad de Wobi Seguros es del grupo (la vista ya dice «Grupo completo»).
+- **`target`** de una sección lleva `area` y `module` además de `kind` e `id`. Los destinos actuales (`area`, `module`) no cambian.
+- **Permisos:** una sección **hereda exactamente** los de su módulo (`module:insurance:seguros` → hoy cualquier sesión válida, solo lectura). Una sección de un módulo sin política se cierra por defecto.
+
+### Qué responde el servidor
+Peticiones como «pagos pendientes de seguros», «seguros pendientes de pago», «próximas renovaciones», «qué seguros vencen pronto», «actividad de Wobi Seguros», «qué ha hecho Wobi Seguros»:
+
+1. **Vista aún no implementada (`registered`, el estado de hoy)** → `no_disponible` con `motivo: "destino_no_implementado"`, `capabilityId` = la sección reconocida, `companyId`, y **`alternativa`** (campo nuevo y opcional): `{ capabilityId: "module:insurance:seguros", companyId, etiqueta, sinFiltro: true }`, el módulo completo que sí se puede abrir. Nunca `destino`.
+2. **Vista implementada (`available`)** → `destino` con `capabilityId` de la sección y `companyId` explícito (`companyOrigen: "seleccionada" | "texto"`). Para `scope: "group"` lleva `avisos: ["Esta vista es del grupo completo: no se atribuye a una sola compañía."]`.
+3. **Empresa explícita.** «De todas las empresas», «del grupo» o «conjunto» en una vista `company` → `aclaracion` con una opción por compañía (no existe vista conjunta y no se elige por el usuario). Varias compañías nombradas → `aclaracion` entre ellas. En una vista `group` no se pregunta.
+4. **Filtros que la sección no resuelve** (fechas, cifras, otros): `aclaracion` con una única opción `sinFiltro: true` sobre la **sección**. Lo que la sección ya resuelve por sí misma no cuenta como filtro (`pendientes`/`pagos` en pagos pendientes; `renovaciones`/`vencimientos` en renovaciones).
+5. **Dos secciones a la vez** («pagos y renovaciones de seguros») → `aclaracion` entre ambas si están implementadas; si no, `destino_no_implementado` nombrando las dos.
+6. **Sin la palabra de Seguros** («pagos pendientes» a secas, «actividad») no se adivina el dominio: `destino_no_implementado` (cifras/filtros) o `aclaracion` con áreas. Excepción: «renovaciones» sola, que solo existe en Seguros.
+7. **`seleccion`** de una sección se valida igual (implementada → `destino`; sin implementar → `destino_no_implementado`; sin permiso → `permiso_insuficiente`).
+
+**Compatibilidad:** `area` y `module` responden igual que antes (hay una prueba que compara las respuestas con y sin secciones). Lo único que cambia es la respuesta a estas tres intenciones: antes `aclaracion` con el módulo completo, ahora `destino_no_implementado` (+ `alternativa`) hasta que la vista exista, y `destino` después.
+
+### Lo que implementa Codex (front) para activarlas
+1. Hacer la vista exacta de cada sección dentro de `SegurosPanel` (datos que ya trae `estado`) y una forma de **abrirla por su id** (`target.module` + `target.id`).
+2. En `NucleoVivo` (manejo de `destino`): si `target.kind === 'section'`, abrir el módulo `target.module` y mostrar la sección `target.id`. Hoy ese manejador solo conoce `area` y `module`.
+3. Poner `implemented: true` en la sección correspondiente de `organization.mjs`, con sus pruebas. En cuanto se despliegue, el servidor empieza a devolver `destino` para ella sin tocar el backend.
+4. Mostrar `avisos` (actividad del grupo) y, ante `no_disponible`/`destino_no_implementado` con `alternativa`, ofrecer abrir el módulo completo marcándolo como «sin filtrar».
+5. `findDestinations` (descubrimiento local) ya **no ofrece secciones** por nombre; solo la interpretación del servidor las propone.
+

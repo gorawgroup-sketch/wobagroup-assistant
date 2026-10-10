@@ -7,6 +7,7 @@ export function findDestinations(text, catalog = buildCapabilities()) {
   const terms=query.replace(/\b(abre|abrir|muestra|muestrame|ver|busca|buscar|quiero|el|la|los|las|de|del|en|por|favor)\b/g,' ').split(/\s+/).filter(Boolean);
   if (!terms.length) return {status:'unknown',entries:[]};
   const unsupported=/\b(pendientes?|hoy|ayer|costos?|cuanto|cuantos|sin conciliar|pagos|renovaciones|woba|eworks|footprint|empresa)\b/.test(query);
-  const entries=catalog.filter(entry=>terms.some(term=>normalize(entry.label).includes(term)));
+  // Las secciones (destinos precisos) solo las ofrece la interpretación del servidor: aquí no hay vista que abrir por nombre.
+  const entries=catalog.filter(entry=>entry.target.kind!=='section'&&terms.some(term=>normalize(entry.label).includes(term)));
   return {status:unsupported?'needs_interpretation':entries.length?'choices':'unknown',entries};
 }
