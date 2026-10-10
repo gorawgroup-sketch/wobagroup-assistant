@@ -386,3 +386,25 @@
 .nv-navigation-notice button { float:right; color:inherit; border:0; background:none; font:inherit; }
 .nv-voice-control { display:flex; justify-content:center; align-items:center; gap:12px; flex-wrap:wrap; color:#acd6e4; font-size:12px; margin:12px; }
 .nv-voice-control button { border:1px solid #58b9cf77; color:#a9e5f3; background:#102738; border-radius:20px; padding:8px 14px; font:inherit; }
+
+.nv-microphone { display:inline-flex; align-items:center; gap:10px; padding:12px 18px; border:1px solid #60cde0; border-radius:24px; background:#123747; color:#b6f1ff; font:inherit; cursor:pointer; transition:background .2s, box-shadow .2s; }
+.nv-microphone:hover, .nv-microphone[aria-pressed="true"] { background:#1a4c5d; box-shadow:0 0 18px #60cde026; }
+.nv-microphone:focus-visible { outline:2px solid #ffbe71; outline-offset:4px; }
+.nv-microphone-help { max-width:60ch; color:#a3baca; font-size:.9rem; line-height:1.5; }
+
+/* La conversación comparte el núcleo: sin modal, backdrop ni desenfoque del enjambre. */
+.nv-shell--command { display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,380px); grid-template-rows:64px minmax(430px,1fr) auto auto auto; gap:0 24px; height:auto; min-height:calc(100svh - 44px); }
+.nv-shell--command>.nv-header { grid-column:1 / -1; }
+.nv-shell--command>.nv-universe,.nv-shell--command>.nv-module-workspace { grid-column:1; grid-row:2; min-width:0; }
+.nv-shell--command>.nv-voice-control,.nv-shell--command>.nv-dock,.nv-shell--command>.nv-footer,.nv-shell--command>.nv-navigation-notice { grid-column:1 / -1; }
+.nv-command-inline { position:relative; grid-column:2; grid-row:2; align-self:center; box-sizing:border-box; width:100%; margin:20px 0; max-height:70svh; overflow:auto; padding:22px; backdrop-filter:none; }
+.nv-command-inline h1 { font-size:25px; }
+@media(max-width:900px) {
+ .nv-shell--command { display:flex; height:auto; }
+ .nv-shell--command>.nv-header { order:0; }
+ .nv-shell--command>.nv-universe,.nv-shell--command>.nv-module-workspace { order:1; flex:none; min-height:430px; }
+ .nv-shell--command>.nv-command-inline { order:2; max-height:none; margin:16px 0; }
+ .nv-shell--command>.nv-voice-control { order:3; }
+ .nv-shell--command>.nv-dock { order:4; }
+ .nv-shell--command>.nv-footer { order:5; }
+}

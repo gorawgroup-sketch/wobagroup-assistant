@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { interpretNavigation } from './client.mjs';
+import { conversationReply } from './conversation.mjs';
 export default function CommandPanel({company,headers,onDestination,onDocuments,onFeedback=()=>{},onStart=()=>{}}) {
   const [query,setQuery]=useState('');
   const [state,setState]=useState({});
@@ -25,6 +26,8 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
     microphone.current?.abort();setListening(false);
     onStart();
     pending.current?.abort();
+    const reply=conversationReply(input.texto);
+    if(reply){setState({reply});onFeedback(reply);return;}
     const controller=new AbortController();pending.current=controller;
     setState({loading:true});
     const timer=setTimeout(()=>controller.abort('timeout'),20000);
@@ -44,8 +47,8 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
       <input id="nv-command-query" value={query} onChange={e=>{pending.current?.abort();setQuery(e.target.value);setState({});}} placeholder="Por ejemplo: abre Seguros de eWorks" maxLength={200}/>
       <button type="submit" disabled={!query.trim()}>Encontrar destino</button>
     </form>
-    <button type="button" className="nv-text-action" aria-pressed={listening} onClick={listen}>{listening?'Detener micrófono':'Dictar petición'}</button>
-    <div role="status">{listening&&<p>Escuchando…</p>}{state.dictated&&<p>Revisa lo que entendí y pulsa Encontrar destino.</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
+    <button type="button" className="nv-microphone" aria-pressed={listening} onClick={listen}><svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>{listening?'Detener micrófono':'Dictar petición'}</button><p className="nv-microphone-help">Pulsa el micrófono para hablar. Permite el acceso en tu navegador; después revisa el texto y pulsa Encontrar destino.</p>
+    <div role="status">{state.reply&&<p>{state.reply}</p>}{listening&&<p>Escuchando…</p>}{state.dictated&&<p>Revisa lo que entendí y pulsa Encontrar destino.</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
     {state.result?.tipo==='no_disponible'&&<p>{state.result.mensaje}</p>}
     {state.result?.tipo==='aclaracion'&&<><p>{state.result.pregunta}</p>{state.result.opciones.map((option,index)=><button className="nv-text-action" key={index} type="button" onClick={()=>run({seleccion:{capabilityId:option.capabilityId,companyId:option.companyId}})}>{option.etiqueta}{option.sinFiltro?' · Abrir módulo completo, sin filtro':''} ↗</button>)}</>}</div>
     {state.error&&<button type="button" className="nv-text-action" onClick={()=>run({texto:query.trim()})} disabled={!query.trim()}>Reintentar</button>}

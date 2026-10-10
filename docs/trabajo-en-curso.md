@@ -114,3 +114,9 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 - Railway despliega solo desde `main`; borrar ramas fusionadas no afecta a producción.
 - La copia `.worktrees/mail-auto-integration` guarda la instalación completa de `node_modules` que enlazan otras copias:
   no cerrarla sin reinstalar antes en otro sitio.
+
+## Navegador: micrófono visible (10-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Micrófono visible y respuestas habladas de cortesía y ayuda, con pruebas de órdenes mixtas | `codex/navegador-seguros-destinos` | Front / navegador | Codex | Verificado: tipos, build, suite completa previa y 62 pruebas del front tras el cambio; navegador real confirma dictado revisable y saludo sin navegación. PR #435: micrófono y cortesía, panel lateral sin modal; verificado en escritorio/móvil y reacción del enjambre al audio y al silenciar. Destinos filtrados requieren ampliar contrato con Claude Code. |
