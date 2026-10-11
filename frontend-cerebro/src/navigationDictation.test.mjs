@@ -24,3 +24,8 @@ test('errores, resultados provisionales, silencio y frases largas no envían ór
 test('cancelación ignora resultados y errores tardíos',()=>{
  const s=setup();s.control.abort();s.result('abre seguros');s.rec.onerror({error:'network'});assert.deepEqual(s.transcripts,[]);assert.deepEqual(s.errors,[]);assert.deepEqual(s.submitted,[]);
 });
+
+test('corrige el vocativo Guapi en pantalla y en la petición enviada',()=>{
+ const s=setup();s.result('hola Guapi');assert.deepEqual(s.transcripts,['hola WOBi']);s.rec.onend();assert.deepEqual(s.submitted,['hola WOBi']);
+ const c=setup();c.result('busca documentos en Guapi');c.rec.onend();assert.deepEqual(c.submitted,['busca documentos en Guapi']);
+});
