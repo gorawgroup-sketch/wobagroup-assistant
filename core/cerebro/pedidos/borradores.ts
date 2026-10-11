@@ -3,6 +3,8 @@
  * (persona, pedidoId): otra persona con el mismo pedidoId no la ve ni la pisa. Caducan a los 10 minutos si nadie los confirma; si el
  * servidor se reinicia se pierden (solo un borrador sin confirmar: nada se ha enviado, la persona lo vuelve a pedir). Una vez
  * confirmado, la verdad pasa al ledger durable de Telegram y esta entrada solo recuerda que ya se envió (anti doble envío).
+ * Un borrador caducado NO se borra enseguida: se sigue devolviendo como «expirado» durante un día, para que el front pueda decirle a la
+ * persona que no se envió nada en vez de toparse con un «no existe» (caso típico: dejar un borrador sin confirmar y volver más tarde).
  */
 export const TTL_BORRADOR_MS = 10 * 60_000;
 export const MAX_BORRADORES_PENDIENTES_POR_CHAT = 20;
@@ -45,7 +47,8 @@ export function crearAlmacenBorradores(opciones: { ahora?: () => number; ttlMs?:
   const entradas = new Map<string, Borrador>();
   const clave = (chatId: number, pedidoId: string): string => `${chatId}:${pedidoId}`;
 
-  const caducado = (b: Borrador, t: number): boolean => (b.estado === "pendiente" ? t >= b.expiraEn : t - (b.confirmadoEn ?? b.creadoEn) >= RETENCION_CONFIRMADO_MS);
+  const venceBorrador = (b: Borrador, t: number): boolean => b.estado === "pendiente" && t >= b.expiraEn;
+  const caducado = (b: Borrador, t: number): boolean => (b.estado === "pendiente" ? t - b.expiraEn >= RETENCION_CONFIRMADO_MS : t - (b.confirmadoEn ?? b.creadoEn) >= RETENCION_CONFIRMADO_MS);
   const purgar = (): void => {
     const t = ahora();
     for (const [k, b] of entradas) if (caducado(b, t)) entradas.delete(k);
@@ -66,9 +69,11 @@ export function crearAlmacenBorradores(opciones: { ahora?: () => number; ttlMs?:
     crear({ chatId, pedidoId, dispositivo, texto, textoHash }) {
       purgar();
       const existente = vigente(chatId, pedidoId);
-      if (existente) return existente.textoHash === textoHash ? { tipo: "existente", borrador: { ...existente } } : { tipo: "conflicto_texto" };
+      // Un borrador vencido no se envió ni se enviará: pedir de nuevo con ese id abre uno nuevo (con el texto que sea).
+      if (existente && venceBorrador(existente, ahora())) entradas.delete(clave(chatId, pedidoId));
+      else if (existente) return existente.textoHash === textoHash ? { tipo: "existente", borrador: { ...existente } } : { tipo: "conflicto_texto" };
       let pendientes = 0;
-      for (const b of entradas.values()) if (b.chatId === chatId && b.estado === "pendiente") pendientes++;
+      for (const b of entradas.values()) if (b.chatId === chatId && b.estado === "pendiente" && !venceBorrador(b, ahora())) pendientes++;
       if (pendientes >= MAX_BORRADORES_PENDIENTES_POR_CHAT) return { tipo: "demasiados_pendientes" };
       const t = ahora();
       const borrador: Borrador = { pedidoId, chatId, dispositivo, texto, textoHash, estado: "pendiente", creadoEn: t, expiraEn: t + ttl };
@@ -81,13 +86,13 @@ export function crearAlmacenBorradores(opciones: { ahora?: () => number; ttlMs?:
     },
     confirmar(chatId, pedidoId) {
       const b = vigente(chatId, pedidoId);
-      if (!b || b.estado !== "pendiente") return undefined;
+      if (!b || b.estado !== "pendiente" || venceBorrador(b, ahora())) return undefined;
       b.estado = "confirmado"; b.confirmadoEn = ahora();
       return { ...b };
     },
     cancelar(chatId, pedidoId) {
       const b = vigente(chatId, pedidoId);
-      if (!b || b.estado !== "pendiente") return undefined;
+      if (!b || b.estado !== "pendiente" || venceBorrador(b, ahora())) return undefined;
       b.estado = "cancelado";
       return { ...b };
     },

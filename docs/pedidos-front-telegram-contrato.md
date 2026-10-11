@@ -53,14 +53,14 @@ Errores: `400 texto_invalido` (vacío, >4000, caracteres de control) · `422 tex
 ### `POST /:pedidoId/confirmar`
 Cuerpo `{ textoHash }` (el recibido en el borrador). Idempotente.
 `202` `{ pedidoId, ref, estado: "recibido", ejecucion: "pendiente", mensaje, resultado, recibidoEn, duplicada: false }`. Un reintento devuelve el estado actual con `duplicada: true` (`202` mientras corre, `200` si ya terminó).
-Errores: `404 borrador_no_encontrado` (caducó o el servidor se reinició y nunca se envió) · `409 texto_distinto|pedido_cancelado` · `410 borrador_caducado` · `429` · `503 recepcion_fallida`.
+Errores: `404 borrador_no_encontrado` (el servidor se reinició o pasó más de un día y nunca se envió) · `409 texto_distinto|pedido_cancelado` · `410 borrador_caducado` · `429` · `503 recepcion_fallida`.
 
 ### `POST /:pedidoId/cancelar`
 Solo mientras es borrador → `cancelado`. Si ya se envió: `409 ya_enviado`.
 
 ### `GET /:pedidoId` — estado y resultado
 `{ pedidoId, ref, estado, ejecucion, detalle?, mensaje, resultado: { canal: "telegram", donde }, recibidoEn?, actualizadoEn? }`.
-Solo la propia persona ve sus pedidos (otro usuario → `404`). Se conservan en el ledger unos 30 días (`WOBI_TELEGRAM_LEDGER_RETENTION_DAYS`). Sondear cada 2–3 s mientras `recibido`/`procesando`; el servidor cachea el estado 2 s.
+Solo la propia persona ve sus pedidos (otro usuario → `404 pedido_no_encontrado`). Un borrador abandonado se sigue consultando como `expirado` durante 24 h (nunca como «no existe»); pasado ese tiempo, o si el pedido ya salió del ledger, es `404 pedido_no_encontrado`: **el front debe tratarlo como «no hay pedido» y olvidar la referencia guardada**, no como un pedido sin verificar. Se conservan en el ledger unos 30 días (`WOBI_TELEGRAM_LEDGER_RETENTION_DAYS`). Sondear cada 2–3 s mientras `recibido`/`procesando`; el servidor cachea el estado 2 s.
 
 ### Estados
 | `estado` | `ejecucion` | Significado |

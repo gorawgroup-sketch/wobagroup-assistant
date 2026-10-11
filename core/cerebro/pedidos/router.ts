@@ -176,11 +176,14 @@ export function crearRouterPedidos(deps: DepsRouterPedidos) {
     ...extra,
   });
 
+  const vencido = (b: Borrador): boolean => b.estado === "pendiente" && ahora() >= b.expiraEn;
   const vistaBorrador = (b: Borrador): VistaEstadoPedido => b.estado === "cancelado"
     ? { estado: "cancelado", ejecucion: "no_enviada", mensaje: "Cancelaste este pedido. No se envió nada." }
-    : ahora() >= b.expiraEn
-      ? { estado: "expirado", ejecucion: "no_enviada", mensaje: "El borrador caducó sin confirmarse. No se envió nada." }
-      : { estado: "pendiente_confirmacion", ejecucion: "no_enviada", mensaje: "Revisa el texto y confírmalo para enviarlo a WOBi. Confirmar el envío no aprueba ninguna operación: las aprobaciones siguen siendo en Telegram." };
+    : vencido(b)
+      ? { estado: "expirado", ejecucion: "no_enviada", mensaje: "El borrador caducó sin confirmarse. No se envió nada: vuelve a escribir la solicitud." }
+      : b.estado === "confirmado"
+        ? { estado: "recibido", ejecucion: "pendiente", mensaje: "Tu confirmación quedó registrada; consulta de nuevo el estado en unos segundos." }
+        : { estado: "pendiente_confirmacion", ejecucion: "no_enviada", mensaje: "Revisa el texto y confírmalo para enviarlo a WOBi. Confirmar el envío no aprueba ninguna operación: las aprobaciones siguen siendo en Telegram." };
 
   router.get("/disponibilidad", async (req, res) => {
     const id = await sesion(req, res);
@@ -251,7 +254,7 @@ export function crearRouterPedidos(deps: DepsRouterPedidos) {
         res.status(409).json({ error: "El texto confirmado no coincide con el que se mostró. No se envió nada; revisa el pedido y confírmalo de nuevo.", codigo: "texto_distinto" });
         return;
       }
-      if (b.estado === "pendiente" && ahora() >= b.expiraEn) { res.status(410).json({ error: "El borrador caducó sin confirmarse. No se envió nada.", codigo: "borrador_caducado" }); return; }
+      if (vencido(b)) { res.status(410).json({ error: "El borrador caducó sin confirmarse. No se envió nada.", codigo: "borrador_caducado" }); return; }
 
       // Recepción durable: la reserva en el ledger es lo que convierte el pedido en «recibido». Es idempotente por (persona, pedido):
       // doble clic, reintento o fallo de red devuelven la misma entrega y jamás una segunda ejecución.
@@ -299,6 +302,7 @@ export function crearRouterPedidos(deps: DepsRouterPedidos) {
     if (!PEDIDO_ID.test(pedidoId)) { res.status(400).json({ error: "pedidoId inválido.", codigo: "pedido_id_invalido" }); return; }
     const b = almacen.obtener(id.chatId, pedidoId);
     if (b?.estado === "cancelado") { res.json(cuerpoEstado(id, pedidoId, vistaBorrador(b), { duplicada: true })); return; }
+    if (b && vencido(b)) { res.json(cuerpoEstado(id, pedidoId, vistaBorrador(b), { duplicada: true })); return; }
     const cancelado = b ? almacen.cancelar(id.chatId, pedidoId) : undefined;
     if (!cancelado) {
       const enviado = (b && b.estado === "confirmado") || await estadoDeEntrega(id.chatId, pedidoId);
