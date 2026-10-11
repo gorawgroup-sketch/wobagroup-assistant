@@ -148,4 +148,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Reconocer ayuda genérica con variaciones naturales sin absorber consultas concretas | `codex/ayuda-conversacional` | Front / navegador | Codex | Ayuda y presentación en primera persona implementadas; suite completa anterior sin fallos, front final, tipos y build verificados antes de publicar. «Costos de hoy» requiere ampliación del contrato por Claude, con aclaración entre contabilidad y operación de WOBi; encargo en docs/encargo-navegador-costos.md. No se calcula ni inventa en el front. |
+| Reconocer ayuda genérica con variaciones naturales sin absorber consultas concretas | `codex/ayuda-conversacional` | Front / navegador | Codex | PR #446 fusionado y desplegado: ddb763d SUCCESS/RUNNING; ayuda y presentación verificadas en producción con voz HTTP 200 y reacción del enjambre. suite completa anterior sin fallos, front final, tipos y build verificados antes de publicar. «Costos de hoy» requiere ampliación del contrato por Claude, con aclaración entre contabilidad y operación de WOBi; encargo en docs/encargo-navegador-costos.md. No se calcula ni inventa en el front. |
+
+## Derivación a Telegram (11-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Abrir chat de WOBi ante operaciones explícitas con aviso hablado y petición copiable | `codex/derivacion-telegram` | Front / navegador | Codex | Verificado: npm test (2159 backend pasan, 6 omitidas; 91 adicionales), tipos/build y Chrome contra router compilado: voz/enjambre, destino fijo sin opener, petición preservada, bloqueo con alternativa y navegación interna intacta. Sin envío automático ni cambios de backend. Publicación pendiente. |

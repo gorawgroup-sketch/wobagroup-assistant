@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {requiresTelegram,openTelegram,TELEGRAM_CHAT_URL} from './modules/navegador/telegram.mjs';
+test('deriva operaciones explícitas y apertura de Telegram',()=>{for(const q of ['crea una factura de WOBA','por favor revisa los correos','Wobi puedes registrar un gasto','concilia los movimientos','abre el chat de Telegram','llévame al chat de Telegram'])assert.equal(requiresTelegram(q),true,q);});
+test('no confunde consultas, negaciones, cortesía ni fallos con operaciones',()=>{for(const q of ['abre correo','muéstrame facturas','pagos pendientes de seguros','no crees una factura','costos de hoy','hola','no pude consultar la fuente','el agente está previsto',null])assert.equal(requiresTelegram(q),false,q);});
+test('destino fijo, sin texto de negocio y sin acceso a opener',()=>{let args,url;const tab={opener:{},location:{replace:v=>url=v}};assert.equal(openTelegram((...a)=>{args=a;return tab;}),true);assert.deepEqual(args,['about:blank','_blank']);assert.equal(tab.opener,null);assert.equal(url,TELEGRAM_CHAT_URL);});
+test('apertura bloqueada o fallida permite alternativa visible',()=>{assert.equal(openTelegram(()=>null),false);assert.equal(openTelegram(()=>{throw Error('bloqueado');}),false);});
