@@ -1,4 +1,4 @@
-export const OPERATION_HELP='Si necesitas ejecutar una operación, debes hacerlo con WOBi a través del chat de Telegram. Aquí puedo orientarte y consultar las vistas disponibles. ¿Quieres que te abra el chat de Telegram?';
+export const OPERATION_HELP='Puedes pedir la operación aquí. Prepararé un borrador para que revises el texto y confirmes su envío a WOBi. Necesitas este dispositivo vinculado a tu Telegram; las aprobaciones de operaciones financieras o sensibles siguen en Telegram.';
 const normalize=text=>typeof text==='string'?text.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[¿?¡!.,]/g,' ').replace(/\b(wobi|woby|wobby|wovi|wowi)\b/g,' ').replace(/\s+/g,' ').trim():'';
 export function operationHelp(text){
  const q=normalize(text);

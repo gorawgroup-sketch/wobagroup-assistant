@@ -163,4 +163,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 |---|---|---|---|---|
 | Corregir Guapi como vocativo y orientar preguntas sobre operaciones con oferta contextual de Telegram | `codex/dictado-nombre-wobi` | Front / voz | Codex | Verificado: npm test (2159 backend pasan, 6 omitidas; 96 adicionales), tipos/build y Chrome con dictado simulado: nombre corregido, saludo/voz/enjambre, oferta de Telegram y sí contextual. Sin modificar el motor de reconocimiento ni el backend. Publicación pendiente. |
 
-| Orientación de revisión de estados financieros hacia Telegram | codex/orientacion-financiera | Front / navegador | Codex | Verificado: 2159 backend + 91 front, tipos/build y Chrome; conserva solicitud, pide confirmar; sin envío ni cambios de backend |
+| Orientación de revisión de estados financieros hacia Telegram | codex/orientacion-financiera | Front / navegador | Codex | PR #449 fusionado y desplegado: 8ba6685 SUCCESS/RUNNING; orientación, voz, enjambre y solicitud preservada verificados. Sustituido para dispositivos vinculados por el panel del contrato #450. |
+
+## Panel de pedidos desde el front (11-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Borrador, confirmación, vínculo y seguimiento del contrato #450 | `codex/pedidos-front` | Front / navegador | Codex | Implementado desde main #450. npm test: 2182 backend pasan, 6 omitidas; 109 adicionales. Front final: 103/103. Tipos y build completos verdes; Chrome con router/coordinador durable reales y repositorio de prueba: identidad sin vínculo, borrador/hash, doble clic, respuesta perdida, recarga, estados, incierto, historial como texto, dictado/voz/enjambre, apagado y móvil. Capturas en docs/evidencias/pedidos-front/. Sin cambios en core/ ni src/. Prueba real vinculada pendiente de Carlos. |

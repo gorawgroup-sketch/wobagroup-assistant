@@ -11,3 +11,9 @@ export function openTelegram(open=(...args)=>globalThis.open(...args)){
  try{tab=open('about:blank','_blank');if(!tab)return false;tab.opener=null;tab.location.replace(TELEGRAM_CHAT_URL);return true;}
  catch{try{tab?.close();}catch{}return false;}
 }
+
+export function wantsTelegramChat(text){
+ if(typeof text!=='string')return false;
+ const q=text.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[¿?¡!.,]/g,' ').replace(/\s+/g,' ').trim().replace(/^(por favor )?(?:puedes |podrias |quiero que |necesito que )?/,'');
+ return /^(?:abre|abrir|llevame|vamos)(?: el| al)? (?:chat de )?telegram$/.test(q);
+}
