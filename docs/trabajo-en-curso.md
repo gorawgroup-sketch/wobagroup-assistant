@@ -142,4 +142,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Conectar /conversar, contexto de sesión y resumen hablado con calidad de lectura | `codex/navegador-conversacional-front` | Front / navegador | Codex | Verificado desde main #443/#444: npm test (2159 backend pasan, 6 omitidas; 86 adicionales), tipos y build verdes. Chrome contra router compilado: contexto, tres destinos de Seguros, lectura completa/incompleta/no consultable, reinicio, permisos, voz/enjambre y móvil. Sin cambios en core/ ni src/, sin IA nueva ni escrituras. Publicación y despliegue pendientes. |
+| Conectar /conversar, contexto de sesión y resumen hablado con calidad de lectura | `codex/navegador-conversacional-front` | Front / navegador | Codex | Verificado desde main #443/#444: npm test (2159 backend pasan, 6 omitidas; 86 adicionales), tipos y build verdes. Chrome contra router compilado: contexto, tres destinos de Seguros, lectura completa/incompleta/no consultable, reinicio, permisos, voz/enjambre y móvil. Sin cambios en core/ ni src/, sin IA nueva ni escrituras. PR #445 fusionado y desplegado: 8cd5acc SUCCESS/RUNNING; cuatro consultas en producción con lectura completa, voz HTTP 200 y enjambre/silenciar correctos. |
+
+## Ayuda conversacional y consulta de costos (11-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Reconocer ayuda genérica con variaciones naturales sin absorber consultas concretas | `codex/ayuda-conversacional` | Front / navegador | Codex | Ayuda y presentación en primera persona implementadas; suite completa anterior sin fallos, front final, tipos y build verificados antes de publicar. «Costos de hoy» requiere ampliación del contrato por Claude, con aclaración entre contabilidad y operación de WOBi; encargo en docs/encargo-navegador-costos.md. No se calcula ni inventa en el front. |
