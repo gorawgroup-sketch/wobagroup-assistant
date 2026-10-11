@@ -170,3 +170,5 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
 | Borrador, confirmación, vínculo y seguimiento del contrato #450 | `codex/pedidos-front` | Front / navegador | Codex | Implementado desde main #450. npm test: 2182 backend pasan, 6 omitidas; 109 adicionales. Front final: 103/103. Tipos y build completos verdes; Chrome con router/coordinador durable reales y repositorio de prueba: identidad sin vínculo, borrador/hash, doble clic, respuesta perdida, recarga, estados, incierto, historial como texto, dictado/voz/enjambre, apagado y móvil. Capturas en docs/evidencias/pedidos-front/. Sin cambios en core/ ni src/. Prueba real vinculada pendiente de Carlos. |
+
+| Recuperar el panel ante referencia inexistente (404 pedido_no_encontrado) | `codex/pedido-referencia-caducada` | Front / pedidos | Codex | Limpia la referencia y el seguimiento al montar o consultar; permite una solicitud nueva. Sin cambios de backend. Prueba de regresión de 404 y conservación en otros fallos. |

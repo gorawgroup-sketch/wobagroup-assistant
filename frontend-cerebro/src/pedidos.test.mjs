@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {createPedidosClient,validatePedido,historyAfterRef,pedidoStorageKey,loadPedidoId,savePedidoId,activePedido} from './modules/pedidos/client.mjs';
+import {createPedidosClient,validatePedido,historyAfterRef,pedidoStorageKey,loadPedidoId,savePedidoId,activePedido,forgetMissingPedido} from './modules/pedidos/client.mjs';
 import {wantsTelegramChat,requiresTelegram} from './modules/navegador/telegram.mjs';
 const id='1234567890123456',ref='AABBCCDD',hash='a'.repeat(64),texto='¿Qué pagos de seguros hay pendientes?';
 const draft={pedidoId:id,ref,estado:'pendiente_confirmacion',ejecucion:'no_enviada',mensaje:'Revisa',texto,textoHash:hash,expiraEn:'2099-01-01T00:00:00Z'};
@@ -54,4 +54,13 @@ test('reintento explícito tras pérdida de red confirma el mismo id y hash, sin
 });
 test('almacenamiento bloqueado devuelve fallo explícito, no promete recuperación',()=>{
  assert.equal(savePedidoId({setItem:()=>{throw Error('bloqueado');}},'key',id),false);assert.equal(loadPedidoId({getItem:()=>{throw Error('bloqueado');}},'key'),null);
+});
+
+test('404 pedido_no_encontrado al consultar olvida la referencia; otros fallos conservan el seguimiento',async()=>{
+ const map=new Map();const storage={getItem:k=>map.get(k),setItem:(k,v)=>map.set(k,v),removeItem:k=>map.delete(k)};const key=pedidoStorageKey(headers);
+ for(const [codigo,http,forgotten] of [['pedido_no_encontrado',404,true],['borrador_no_encontrado',404,false],['pedido_no_encontrado',503,false],['resultado_incierto',500,false]]){
+  savePedidoId(storage,key,id);let calls=0;const c=createPedidosClient({headers,fetcher:async()=>{calls++;return fixture({error:'No hay pedido',codigo},false,http);}});
+  try{await c.status(id);assert.fail('Debe fallar');}catch(e){assert.equal(forgetMissingPedido(e,storage,key),forgotten);}
+  assert.equal(loadPedidoId(storage,key),forgotten?null:id);assert.equal(calls,1);
+ }
 });
