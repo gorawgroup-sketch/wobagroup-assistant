@@ -188,6 +188,8 @@ import { webChatRequestStore } from "../core/cerebro/webChatRequestStore";
 import { crearRouterVoz } from "../core/cerebro/voiceRouter";
 import { cargarCatalogoNavegacion } from "../core/cerebro/navegador/catalogo";
 import { crearRouterNavegador } from "../core/cerebro/navegador/router";
+import { registrarBitacoraPedido } from "../core/cerebro/pedidos/bitacoraSheet";
+import { crearRouterPedidos } from "../core/cerebro/pedidos/router";
 import { prepararEntradaVoz } from "../core/telegram/voiceInput";
 import { ErrorNotaVoz } from "../core/ai/transcribeAudio";
 import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
@@ -637,6 +639,29 @@ app.use("/api/cerebro/navegador", crearRouterNavegador({
     const estado = await obtenerEstadoCerebro();
     return { generadoEn: estado.generadoEn, refrescando: estado.refrescando, fuentes: estado.fuentes, seguros: estado.seguros };
   },
+}));
+
+// «Pídele a WOBi» → mismo procesamiento que un mensaje de Telegram de la persona (update sintético por el ledger durable).
+// Identidad = la del chat web vinculado a SU Telegram; confirmar el envío no aprueba nada (las aprobaciones siguen en Telegram).
+app.use("/api/cerebro/pedidos", (req: Request, res: Response, next) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "X-Cerebro-Key, X-Cerebro-Nombre, X-Cerebro-Device, Content-Type");
+  res.set("Access-Control-Allow-Methods", "GET, POST");
+  if (req.method === "OPTIONS") { res.sendStatus(204); return; }
+  next();
+}, crearRouterPedidos({
+  autorizar: exigeAccesoValido,
+  identidad: (req) => identidadChatDesdeRequest(req),
+  entregas: {
+    reservar: (update) => coordinadorEntregasTelegram.reservar(update, false),
+    atender: (entrega, nueva) => coordinadorEntregasTelegram.atender(entrega, nueva),
+    obtener: (clave) => durableDeliveryStore.obtener(clave),
+  },
+  entregaDurableHabilitada: configuracionTelegramDurable.habilitado,
+  eco: (chatId, texto) => sendTelegramMessage(chatId, texto),
+  rastrear: trackearEnSegundoPlano,
+  bitacora: registrarBitacoraPedido,
+  habilitado: () => (process.env.WOBI_PEDIDOS_FRONT ?? "activo").trim().toLowerCase() !== "apagado",
 }));
 
 /**
