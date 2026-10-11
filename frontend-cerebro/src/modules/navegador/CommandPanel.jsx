@@ -3,6 +3,7 @@ import { interpretNavigation } from './client.mjs';
 import { conversationReply } from './conversation.mjs';
 import { requiresTelegram, openTelegram, TELEGRAM_PROCESSING_MESSAGE } from './telegram.mjs';
 import { operationHelp, telegramConfirmation, OPERATION_HELP } from './operationHelp.mjs';
+import { financialHelp, FINANCIAL_HELP } from './financialHelp.mjs';
 import TelegramRequest from './TelegramRequest.jsx';
 import ConversationResponse from './ConversationResponse.jsx';
 import { startDictation } from './dictation.mjs';
@@ -11,7 +12,7 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
   const [query,setQuery]=useState('');
   const [state,setState]=useState({});
   const pending=useRef(null);
-  const telegramOffer=useRef(false);
+  const telegramOffer=useRef(null);
   const microphone=useRef(null);
   const [listening,setListening]=useState(false);
   useEffect(()=>()=>microphone.current?.abort(),[]);
@@ -34,17 +35,21 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
     onStart();
     pending.current?.abort();
     const confirmation=telegramOffer.current?telegramConfirmation(input.texto):null;
-    telegramOffer.current=false;
+    const offeredRequest=telegramOffer.current;
+    telegramOffer.current=null;
     if(confirmation===false){const reply='De acuerdo, seguimos aquí. Dime qué quieres consultar.';setState({reply});onFeedback(reply);return;}
+    if(financialHelp(input.texto)){
+      telegramOffer.current=input.texto;setState({reply:FINANCIAL_HELP,offerTelegram:true});onFeedback(FINANCIAL_HELP);return;
+    }
     if(operationHelp(input.texto)){
       telegramOffer.current=true;setState({reply:OPERATION_HELP,offerTelegram:true});onFeedback(OPERATION_HELP);return;
     }
     if(confirmation===true||requiresTelegram(input.texto)){
-      const reply=confirmation===true?'Voy a abrir el chat de WOBi en Telegram. Allí puedes pedir la operación que necesitas.':TELEGRAM_PROCESSING_MESSAGE;
-      setState({reply,handoff:true,telegram:confirmation===true?null:input.texto});onFeedback(reply);
+      const reply=confirmation===true?'Voy a abrir el chat de WOBi en Telegram. Allí puedes solicitar lo que necesitas. Tu petición todavía no se ha enviado.':TELEGRAM_PROCESSING_MESSAGE;
+      setState({reply,handoff:true,telegram:confirmation===true?(typeof offeredRequest==='string'?offeredRequest:null):input.texto});onFeedback(reply);
       if(!openTelegram()){
         const reply='Esta solicitud debe procesarse con WOBi en Telegram. El navegador bloqueó la apertura automática. Pulsa Abrir chat de WOBi; tu petición todavía no se ha enviado.';
-        setState({reply,handoff:true,telegram:confirmation===true?null:input.texto});onFeedback(reply);
+        setState({reply,handoff:true,telegram:confirmation===true?(typeof offeredRequest==='string'?offeredRequest:null):input.texto});onFeedback(reply);
       }
       return;
     }

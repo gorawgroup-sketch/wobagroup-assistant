@@ -161,3 +161,5 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
 | Corregir Guapi como vocativo y orientar preguntas sobre operaciones con oferta contextual de Telegram | `codex/dictado-nombre-wobi` | Front / voz | Codex | Verificado: npm test (2159 backend pasan, 6 omitidas; 96 adicionales), tipos/build y Chrome con dictado simulado: nombre corregido, saludo/voz/enjambre, oferta de Telegram y sí contextual. Sin modificar el motor de reconocimiento ni el backend. Publicación pendiente. |
+
+| Orientación de revisión de estados financieros hacia Telegram | codex/orientacion-financiera | Front / navegador | Codex | Verificado: 2159 backend + 91 front, tipos/build y Chrome; conserva solicitud, pide confirmar; sin envío ni cambios de backend |
