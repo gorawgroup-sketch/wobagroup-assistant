@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
-import {activePedido,createPedidosClient,historyAfterRef,loadPedidoId,pedidoStorageKey,savePedidoId} from './client.mjs';
+import {activePedido,createPedidosClient,historyAfterRef,forgetMissingPedido,loadPedidoId,pedidoStorageKey,savePedidoId} from './client.mjs';
 import {TELEGRAM_CHAT_URL,openTelegram} from '../navegador/telegram.mjs';
 import TelegramRequest from '../navegador/TelegramRequest.jsx';
 import './pedidos.css';
@@ -18,7 +18,10 @@ export default function PedidoPanel({headers,request,query,onFeedback=()=>{}}){
   lock.current=true;lastAction.current=action;setBusy(true);setError('');
   const abort=new AbortController();controller.current=abort;const timeout=setTimeout(()=>abort.abort(),20000);
   try{await fn(abort.signal);}catch(e){if(mounted.current){
-   if(['borrador_caducado','borrador_no_encontrado','pedido_cancelado'].includes(e.codigo)&&current.current?.pedidoId){
+   if(['status','availability'].includes(action)&&forgetMissingPedido(e,localStorage,storageKey)){
+    current.current=null;setPedido(null);setHistory(null);setText('');setPolling(true);pollCount.current=0;
+    const message='No hay pedido para esta referencia. Puedes preparar una solicitud nueva.';setError(message);announce(message);
+   }else if(['borrador_caducado','borrador_no_encontrado','pedido_cancelado'].includes(e.codigo)&&current.current?.pedidoId){
     accept({...current.current,estado:e.codigo==='pedido_cancelado'?'cancelado':'expirado',ejecucion:'no_enviada',mensaje:'No se envió nada. Vuelve a escribir la solicitud y revisa el nuevo borrador.'});
    }else{
     if(action==='draft'&&['texto_invalido','texto_no_permitido','sin_vinculo','apagado','entrega_durable_apagada'].includes(e.codigo)){savePedidoId(localStorage,storageKey,null);current.current=null;setPedido(null);}

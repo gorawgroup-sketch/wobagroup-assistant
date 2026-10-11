@@ -43,3 +43,9 @@ export function historyAfterRef(history,ref){
  }
  return result;
 }
+
+// Solo un 404 de consulta con este código permite olvidar una referencia.
+export function forgetMissingPedido(error,storage,key){
+ if(error?.status!==404||error?.codigo!=='pedido_no_encontrado')return false;
+ savePedidoId(storage,key,null);return true;
+}
