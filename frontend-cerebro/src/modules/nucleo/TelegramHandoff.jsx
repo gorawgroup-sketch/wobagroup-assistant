@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { TELEGRAM_CHAT_URL } from '../navegador/telegram.mjs';
 export const TELEGRAM_URL = 'https://t.me/Woba_asistente_bot';
-export const TELEGRAM_WEB_URL = 'https://web.telegram.org/k/#@Woba_asistente_bot';
+export const TELEGRAM_WEB_URL = TELEGRAM_CHAT_URL;
 
 /** Explicit handoff: never sends a message or passes business text through a URL. */
 export default function TelegramHandoff({ question, onClose }) {
