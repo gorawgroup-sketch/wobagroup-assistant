@@ -164,8 +164,12 @@ test("borradores: idempotentes por (persona, pedido), aislados entre personas, c
   assert.ok(a.confirmar(1, ID1)); assert.equal(a.confirmar(1, ID1), undefined, "solo se confirma desde pendiente");
   assert.equal(a.cancelar(1, ID1), undefined, "lo confirmado no se cancela");
   t += TTL_BORRADOR_MS;
-  assert.equal(a.obtener(2, ID1), undefined, "el pendiente caduca a los 10 minutos");
+  assert.equal(a.obtener(2, ID1)?.estado, "pendiente", "el vencido sigue consultable (para decir «expirado»)");
+  assert.equal(a.confirmar(2, ID1), undefined, "pero ya no se puede confirmar"); assert.equal(a.cancelar(2, ID1), undefined);
+  assert.equal(a.crear({ ...base, chatId: 2, texto: "otro texto", textoHash: hashTextoPedido("otro texto") }).tipo, "creado", "pedir de nuevo con ese id abre un borrador nuevo");
   assert.equal(a.obtener(1, ID1)?.estado, "confirmado", "lo confirmado se recuerda para detectar el doble envío");
+  t += 24 * 60 * 60_000;
+  assert.equal(a.obtener(1, ID1), undefined, "y pasado un día se olvida");
 });
 
 /* ───────── permisos e identidad ───────── */
@@ -296,7 +300,14 @@ test("CONFIRMACIÓN: cancelar impide el envío; lo ya enviado no se cancela; un 
     const ID3 = "pedido-cccccccccccccccc";
     const b3 = await json(await post(e.url, "", { texto: "se me pasó el tiempo", pedidoId: ID3 }));
     t += TTL_BORRADOR_MS + 1;
-    const cad = await post(e.url, `/${ID3}/confirmar`, { textoHash: b3.textoHash }); assert.equal(cad.status, 404);
+    assert.equal((await post(e.url, `/${ID2}/cancelar`, {})).status, 409, "lo ya enviado nunca se presenta como expirado ni se cancela, pase el tiempo que pase");
+    assert.equal((await json(await get(e.url, `/${ID2}`))).estado, "terminado");
+    const cad = await post(e.url, `/${ID3}/confirmar`, { textoHash: b3.textoHash }); assert.equal(cad.status, 410); assert.equal((await json(cad)).codigo, "borrador_caducado");
+    // Volver más tarde a un borrador abandonado dice «expirado» (no «no existe»), y se puede empezar de nuevo.
+    const consulta = await get(e.url, `/${ID3}`); assert.equal(consulta.status, 200);
+    const exp = await json(consulta); assert.equal(exp.estado, "expirado"); assert.equal(exp.ejecucion, "no_enviada"); assert.equal(exp.texto, undefined, "sin devolver el texto");
+    assert.equal((await post(e.url, `/${ID3}/cancelar`, {})).status, 200);
+    const nuevo = await post(e.url, "", { texto: "se me pasó el tiempo", pedidoId: ID3 }); assert.equal(nuevo.status, 201); assert.equal((await json(nuevo)).estado, "pendiente_confirmacion");
     assert.equal(e.procesados.length, 1, "solo el confirmado a tiempo");
   });
 });
