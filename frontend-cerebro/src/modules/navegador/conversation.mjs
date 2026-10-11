@@ -1,7 +1,8 @@
+import { normalizeAssistantName } from './assistantName.mjs';
 // Respuestas de cortesía y orientación; nunca autorizan ni ejecutan destinos.
 export function conversationReply(text) {
   if (typeof text !== 'string') return null;
-  const normalized = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[¿?¡!.,]/g, ' ').replace(/\s+/g, ' ').trim().replace(/\b(wobi|wobby|wovi|bobi|bobby)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const normalized = normalizeAssistantName(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[¿?¡!.,]/g, ' ').replace(/\s+/g, ' ').trim().replace(/\b(wobi|woby|wobby|wovi|wowi|bobi|bobby)\b/g, ' ').replace(/\s+/g, ' ').trim();
   if (/^(hola|buenas|buenos dias|buenas tardes|buenas noches)( como estas| que tal| estas ahi)?$/.test(normalized) || /^(como estas|que tal|estas ahi)$/.test(normalized)) return 'Hola, estoy aquí para ayudarte. ¿Qué quieres encontrar en WOBi?';
   if (/^(quien eres|que eres|(?:si )?presentate|(?:te )?(?:puedes|podrias) presentar(?:te)?(?: hay alguien que te quiere conocer)?)$/.test(normalized)) return 'Hola, soy WOBi, la inteligencia artificial de WOBA. También te acompaño en la gestión de eWorks y Footprint Global. Puedes hablarme o escribirme para encontrar las áreas del sistema. Hoy, desde este espacio, puedo consultar los pagos pendientes, las próximas renovaciones y la actividad de Seguros, mostrarte de dónde viene la información y abrir la vista correspondiente. Las demás herramientas disponibles se consultan según tus permisos. Seguiremos incorporando agentes para procesos, personas, marketing, compliance y otras áreas: las verás con su estado para saber cuáles están listas. Para la interacción operativa con WOBi seguimos usando Telegram. Dime qué necesitas y te indicaré qué puedo encontrar ahora.';
   if (/^(gracias|muchas gracias)$/.test(normalized)) return 'Con gusto. Dime qué más quieres encontrar.';

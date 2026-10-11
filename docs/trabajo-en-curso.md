@@ -154,4 +154,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Abrir chat de WOBi ante operaciones explícitas con aviso hablado y petición copiable | `codex/derivacion-telegram` | Front / navegador | Codex | Verificado: npm test (2159 backend pasan, 6 omitidas; 91 adicionales), tipos/build y Chrome contra router compilado: voz/enjambre, destino fijo sin opener, petición preservada, bloqueo con alternativa y navegación interna intacta. Sin envío automático ni cambios de backend. Publicación pendiente. |
+| Abrir chat de WOBi ante operaciones explícitas con aviso hablado y petición copiable | `codex/derivacion-telegram` | Front / navegador | Codex | Verificado: npm test (2159 backend pasan, 6 omitidas; 91 adicionales), tipos/build y Chrome contra router compilado: voz/enjambre, destino fijo sin opener, petición preservada, bloqueo con alternativa y navegación interna intacta. Sin envío automático ni cambios de backend. PR #447 fusionado y desplegado: 62232d0 SUCCESS/RUNNING, apertura real del chat y voz HTTP 200 verificados; sin envío de mensajes. |
+
+## Nombre dictado de WOBi (11-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Corregir Guapi como vocativo y orientar preguntas sobre operaciones con oferta contextual de Telegram | `codex/dictado-nombre-wobi` | Front / voz | Codex | Verificado: npm test (2159 backend pasan, 6 omitidas; 96 adicionales), tipos/build y Chrome con dictado simulado: nombre corregido, saludo/voz/enjambre, oferta de Telegram y sí contextual. Sin modificar el motor de reconocimiento ni el backend. Publicación pendiente. |

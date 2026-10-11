@@ -1,3 +1,4 @@
+import { normalizeAssistantName } from './assistantName.mjs';
 // Una escucha iniciada por el usuario; nunca vuelve a encender el micrófono sola.
 export function startDictation(Recognition, { onListening, onTranscript, onSubmit, onError }) {
   const recognition = new Recognition();
@@ -8,7 +9,7 @@ export function startDictation(Recognition, { onListening, onTranscript, onSubmi
   recognition.onstart = () => { if (!cancelled) onListening(true); };
   recognition.onresult = event => {
     if (cancelled || ended || failed) return;
-    text = Array.from(event.results).filter(result => result.isFinal).map(result => result[0]?.transcript || '').join(' ').trim();
+    text = normalizeAssistantName(Array.from(event.results).filter(result => result.isFinal).map(result => result[0]?.transcript || '').join(' ').trim());
     onTranscript(text);
   };
   recognition.onerror = event => {
