@@ -136,4 +136,10 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Saludos con el nombre al final y envío automático al terminar de hablar | `codex/voz-interaccion-fluida` | Front / navegador | Codex | Implementado desde main; npm test (2128 backend, 79 adicionales, cero fallos), tipos y build verdes. Chrome con router real y reconocimiento simulado: saludo y destino automáticos, cancelación, permiso de micrófono, rechazo de Finanzas, audio/enjambre, movimiento reducido y móvil correctos. PR #442; main integrado con #441 y verificación de expansión del dibujo durante audio (+9,5% en la prueba). Pendiente CI y despliegue. Interpretación abierta con modelo requiere contrato de Claude. |
+| Saludos con el nombre al final y envío automático al terminar de hablar | `codex/voz-interaccion-fluida` | Front / navegador | Codex | Implementado desde main; npm test (2128 backend, 79 adicionales, cero fallos), tipos y build verdes. Chrome con router real y reconocimiento simulado: saludo y destino automáticos, cancelación, permiso de micrófono, rechazo de Finanzas, audio/enjambre, movimiento reducido y móvil correctos. PR #442; main integrado con #441 y verificación de expansión del dibujo durante audio (+9,5% en la prueba). #442 fusionado y desplegado: 3715c3c SUCCESS/RUNNING, saludo, audio real y expansión verificados. Interpretación abierta con modelo requiere contrato de Claude. |
+
+## Integración conversacional E1 (11-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Conectar /conversar, contexto de sesión y resumen hablado con calidad de lectura | `codex/navegador-conversacional-front` | Front / navegador | Codex | Verificado desde main #443/#444: npm test (2159 backend pasan, 6 omitidas; 86 adicionales), tipos y build verdes. Chrome contra router compilado: contexto, tres destinos de Seguros, lectura completa/incompleta/no consultable, reinicio, permisos, voz/enjambre y móvil. Sin cambios en core/ ni src/, sin IA nueva ni escrituras. Publicación y despliegue pendientes. |

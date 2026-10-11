@@ -1,5 +1,6 @@
+import { validateConversationResponse } from './response.mjs';
 import { validateDestination } from './capabilities.mjs';
-export async function interpretNavigation(payload, {headers,signal,fetcher=fetch}) {
+export async function interpretNavigation(payload, {headers,signal,fetcher=fetch,conversation}) {
   const read=async(url,options={})=>{
     const response=await fetcher(url,{...options,headers,signal,cache:'no-store'});
     if(!response.ok) throw Error(`No se pudo consultar el navegador (${response.status}). Reintenta.`);
@@ -7,7 +8,9 @@ export async function interpretNavigation(payload, {headers,signal,fetcher=fetch
   };
   const catalog=await read('/api/cerebro/navegador/catalogo');
   if(typeof catalog.version!=='string'||!Array.isArray(catalog.capacidades)||!Array.isArray(catalog.companias)) throw Error('Catálogo no válido. No se abre ningún destino.');
-  const result=await read('/api/cerebro/navegador/interpretar',{method:'POST',body:JSON.stringify(payload)});
+  const conversational=catalog.conversacional?.disponible===true;
+  const body={companyId:payload.companyId,requestId:payload.requestId,...(payload.seleccion?{seleccion:payload.seleccion}:{texto:payload.texto}),...(conversational&&conversation?.current?.id?{conversacionId:conversation.current.id}:{})};
+  const result=await read(`/api/cerebro/navegador/${conversational?'conversar':'interpretar'}`,{method:'POST',body:JSON.stringify(body)});
   if(result.requestId!==payload.requestId||typeof result.catalogVersion!=='string') throw Error('Respuesta de navegación no válida.');
   let current=catalog;
   if(result.catalogVersion!==catalog.version) current=await read('/api/cerebro/navegador/catalogo');
@@ -25,5 +28,10 @@ export async function interpretNavigation(payload, {headers,signal,fetcher=fetch
     if(typeof result.mensaje!=='string'||!['agente_previsto','destino_no_implementado','permiso_insuficiente','fuente_no_consultable'].includes(result.motivo)) throw Error('Respuesta no válida.');
     if(result.alternativa && (!validate(result.alternativa)||typeof result.alternativa.etiqueta!=='string'||result.alternativa.sinFiltro!==true)) throw Error('Alternativa no válida.');
   } else throw Error('Respuesta no reconocida.');
+  if(conversational){
+    if(!validateConversationResponse(result,current.companias))throw Error('Respuesta conversacional no válida. No se abre nada.');
+    signal?.throwIfAborted();
+    if(conversation)conversation.current={id:result.conversacionId};
+  }
   return result;
 }
