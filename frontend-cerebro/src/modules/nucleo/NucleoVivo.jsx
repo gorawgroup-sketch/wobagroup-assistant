@@ -3,6 +3,7 @@ import { createStreamingWobiSpeech } from '../../wobiRealtimeSpeech.js';
 import NanoField from './NanoField.jsx';
 import NanoAmbient from './NanoAmbient.jsx';
 import AreaIcon, { AREA_COLORS } from './AreaIcon.jsx';
+import ConversationResponse from '../navegador/ConversationResponse.jsx';
 import CommandPanel from '../navegador/CommandPanel.jsx';
 import { validateDestination } from '../navegador/capabilities.mjs';
 import DocumentSearch from './DocumentSearch.jsx';
@@ -55,6 +56,8 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
     const id=crypto.randomUUID().replaceAll('-','');localStorage.setItem('wobi_cerebro_device',id);return id;
   });
   const navigationHeaders={'X-Cerebro-Key':apiKey,'X-Cerebro-Device':deviceId,'X-Cerebro-Nombre':encodeURIComponent(name||''),'Content-Type':'application/json'};
+  const conversation=useRef({id:null});
+  const [conversationAnswer,setConversationAnswer]=useState(null);
   const [navigationNotice,setNavigationNotice]=useState(null);
   const [voiceEnabled,setVoiceEnabled]=useState(()=>localStorage.getItem('wobi_navigation_voice')==='on');
   const [voiceState,setVoiceState]=useState('idle');
@@ -92,7 +95,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
     try { localStorage.setItem(COMPANY_KEY, id); } catch { /* optional preference */ }
   };
   const closePanel = () => { setPanel(null); setActiveNode(null); };
-  const openModule = (id,destination=null) => { setPanel(null); setWorkspaceId(id); setWorkspaceDestination(destination); };
+  const openModule = (id,destination=null,answer=null) => { setPanel(null); setWorkspaceId(id); setWorkspaceDestination(destination);setConversationAnswer(answer); };
   const showArea = id => { setActiveNode(id); setAreaId(id); setPanel('area'); };
   const goHome = event => { setNavigationNotice(null); event?.preventDefault?.(); setWorkspaceId(null); setWorkspaceDestination(null); setPanel(null); setAreaId(null); setActiveNode(null); };
 
@@ -100,7 +103,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
     {!panel && <NanoAmbient />}
     <header className="nv-header">
       <a className="nv-wordmark" href="/cerebro/" onClick={goHome} aria-label="WOBi, mostrar todas las áreas">WOB<span>i</span></a>
-      <select className="nv-company" value={companyId} onChange={event => chooseCompany(event.target.value)} aria-label="Compañía para datos y documentos">{COMPANIES.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+      <select className="nv-company" value={companyId} onChange={event => {chooseCompany(event.target.value);setConversationAnswer(null);setNavigationNotice(null);}} aria-label="Compañía para datos y documentos">{COMPANIES.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
       <button type="button" className="nv-settings-shortcut" onClick={() => openModule('administracion')} aria-label="Abrir ajustes y administración" title="Ajustes y administración"><span aria-hidden="true">⚙</span><span>Ajustes</span></button>
       <a className="nv-telegram-shortcut" href={TELEGRAM_WEB_URL} target="_blank" rel="noopener noreferrer" aria-label="Abrir Telegram Web en otra pestaña" title="Conversar con WOBi · Telegram en otra pestaña"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 18-7-5 18-5-7-8-4Zm8 4L21 3" /></svg><span>Telegram</span><small>↗</small></a>
     </header>
@@ -108,6 +111,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
     {navigationNotice && <p className="nv-navigation-notice" role="status">{navigationNotice}<button type="button" onClick={()=>setNavigationNotice(null)} aria-label="Cerrar aviso de navegación">×</button></p>}
     {workspace ? <ModuleWorkspace audioLevel={audioLevel} module={workspace} modules={availableModules} onOpen={openModule}
       onBack={() => setWorkspaceId(null)} onRefresh={onRefresh} refreshing={refreshing} status={status} data={data} company={company} scopeNote={workspaceDestination?.scope==='group' ? 'Actividad del grupo completo; el selector de empresa no filtra esta bitácora.' : companyScopeNote(workspace.id, company.name)} groupScope={workspaceDestination?.scope==='group'} destinationId={workspaceDestination?.capabilityId}>
+      <ConversationResponse result={conversationAnswer}/>
       {workspace.id === 'strategic_planning' ? <StrategicPlanning company={company} onOpenDocuments={() => setPanel('documents')} /> : renderModule(workspace.id, openModule, company.id, workspaceDestination)}
     </ModuleWorkspace> : <main className="nv-universe is-expanded" aria-label="Núcleo de WOBi">
       <div className="nv-constellation">
@@ -148,15 +152,16 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {panel && <Reveal inline={panel==='command'} accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
       {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
-      {panel === 'command' && <CommandPanel key={companyId} company={company} headers={navigationHeaders} onFeedback={speak} onStart={() => { speaker.stop(); if(voiceEnabled)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
+      {panel === 'command' && <CommandPanel key={companyId} company={company} headers={navigationHeaders} conversation={conversation} onClear={()=>{conversation.current={id:null};setConversationAnswer(null);setNavigationNotice(null);}} onFeedback={speak} onStart={() => { speaker.stop(); if(voiceEnabled)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
         const destination=validateDestination(proposal);
         if (!destination) return;
         chooseCompany(destination.companyId);
-        setNavigationNotice([destination.scope==='group'?'Vista solicitada: grupo completo.':`Vista solicitada: ${companyById(destination.companyId).name}.`,...(proposal.avisos||[])].join(' '));
+        if(proposal.lectura)onRefresh('evento');
+        setNavigationNotice([...(proposal.companyOrigen==='contexto'?['Compañía de la conversación.']:[]),destination.scope==='group'?'Vista solicitada: grupo completo.':`Vista solicitada: ${companyById(destination.companyId).name}.`,...(proposal.avisos||[])].join(' '));
         if (destination.target.kind === 'area') showArea(destination.target.id);
-        else if (destination.target.kind === 'section' && destination.status === 'available' && availableModules.some(item => item.id === destination.target.module)) openModule(destination.target.module,destination);
-        else if (destination.target.kind === 'module' && availableModules.some(item => item.id === destination.target.id)) openModule(destination.target.id);
-        speak(`Abro ${proposal.etiqueta || 'el destino solicitado'} ${destination.scope==='group'?'del grupo completo':`en ${companyById(destination.companyId).name}`}. ${(proposal.avisos||[]).join(' ')}`);
+        else if (destination.target.kind === 'section' && destination.status === 'available' && availableModules.some(item => item.id === destination.target.module)) openModule(destination.target.module,destination,proposal);
+        else if (destination.target.kind === 'module' && availableModules.some(item => item.id === destination.target.id)) openModule(destination.target.id,null,proposal);
+        speak(proposal.resumen||`Abro ${proposal.etiqueta || 'el destino solicitado'} ${destination.scope==='group'?'del grupo completo':`en ${companyById(destination.companyId).name}`}. ${(proposal.avisos||[]).join(' ')}`);
       }} />}
       {panel === 'documents' && <DocumentSearch key={companyId} company={company} apiKey={apiKey} onClose={closePanel} />}
       {panel === 'area' && area && <div className={`nv-area-detail nv-area--${selectedStatus.id}`}><div className="nv-area-hero"><div><span className="nv-area-eyebrow">INTELIGENCIA / {company.name}</span><h1>{area.name}</h1><span className={`nv-stage nv-stage--${area.stage}`}>{STAGES[area.stage]} · {selectedStatus.label}</span></div><span className="nv-area-emblem"><NanoField compact audioLevel={audioLevel} /><span className="nv-emblem-badge"><AreaIcon id={area.id} /></span></span></div><p>{area.description}</p>
