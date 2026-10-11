@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { interpretNavigation } from './client.mjs';
 import { conversationReply } from './conversation.mjs';
-import { requiresTelegram, openTelegram, TELEGRAM_PROCESSING_MESSAGE } from './telegram.mjs';
-import { operationHelp, telegramConfirmation, OPERATION_HELP } from './operationHelp.mjs';
-import { financialHelp, FINANCIAL_HELP } from './financialHelp.mjs';
+import { requiresTelegram, wantsTelegramChat, openTelegram } from './telegram.mjs';
+import { operationHelp, OPERATION_HELP } from './operationHelp.mjs';
+import { financialHelp } from './financialHelp.mjs';
+import PedidoPanel from '../pedidos/PedidoPanel.jsx';
 import TelegramRequest from './TelegramRequest.jsx';
 import ConversationResponse from './ConversationResponse.jsx';
 import { startDictation } from './dictation.mjs';
@@ -11,8 +12,8 @@ import { companyById } from '../nucleo/organization.mjs';
 export default function CommandPanel({company,headers,onDestination,onDocuments,onFeedback=()=>{},onStart=()=>{},conversation,onClear=()=>{}}) {
   const [query,setQuery]=useState('');
   const [state,setState]=useState({});
+  const [pedidoRequest,setPedidoRequest]=useState(null);
   const pending=useRef(null);
-  const telegramOffer=useRef(null);
   const microphone=useRef(null);
   const [listening,setListening]=useState(false);
   useEffect(()=>()=>microphone.current?.abort(),[]);
@@ -34,22 +35,23 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
     microphone.current?.abort();setListening(false);
     onStart();
     pending.current?.abort();
-    const confirmation=telegramOffer.current?telegramConfirmation(input.texto):null;
-    const offeredRequest=telegramOffer.current;
-    telegramOffer.current=null;
-    if(confirmation===false){const reply='De acuerdo, seguimos aquí. Dime qué quieres consultar.';setState({reply});onFeedback(reply);return;}
     if(financialHelp(input.texto)){
-      telegramOffer.current=input.texto;setState({reply:FINANCIAL_HELP,offerTelegram:true});onFeedback(FINANCIAL_HELP);return;
+      const reply='Puedo llevar esa solicitud al procesamiento de WOBi. Revisa el texto en el panel de envío y confírmalo; la respuesta llegará a tu Telegram.';
+      setPedidoRequest({text:input.texto,key:crypto.randomUUID()});setState({reply});onFeedback(reply);return;
     }
     if(operationHelp(input.texto)){
-      telegramOffer.current=true;setState({reply:OPERATION_HELP,offerTelegram:true});onFeedback(OPERATION_HELP);return;
+      setState({reply:OPERATION_HELP});onFeedback(OPERATION_HELP);return;
     }
-    if(confirmation===true||requiresTelegram(input.texto)){
-      const reply=confirmation===true?'Voy a abrir el chat de WOBi en Telegram. Allí puedes solicitar lo que necesitas. Tu petición todavía no se ha enviado.':TELEGRAM_PROCESSING_MESSAGE;
-      setState({reply,handoff:true,telegram:confirmation===true?(typeof offeredRequest==='string'?offeredRequest:null):input.texto});onFeedback(reply);
+    if(requiresTelegram(input.texto)&&!wantsTelegramChat(input.texto)){
+      const reply='Esta solicitud se procesa como un mensaje tuyo de Telegram. Revisa el texto abajo y confirma el envío. Todavía no he enviado nada.';
+      setPedidoRequest({text:input.texto,key:crypto.randomUUID()});setState({reply});onFeedback(reply);return;
+    }
+    if(wantsTelegramChat(input.texto)){
+      const reply='Abro tu chat de WOBi en Telegram.';
+      setState({reply,handoff:true,telegram:null});onFeedback(reply);
       if(!openTelegram()){
-        const reply='Esta solicitud debe procesarse con WOBi en Telegram. El navegador bloqueó la apertura automática. Pulsa Abrir chat de WOBi; tu petición todavía no se ha enviado.';
-        setState({reply,handoff:true,telegram:confirmation===true?(typeof offeredRequest==='string'?offeredRequest:null):input.texto});onFeedback(reply);
+        const reply='El navegador bloqueó la apertura automática. Pulsa Abrir chat de WOBi para continuar en Telegram.';
+        setState({reply,handoff:true,telegram:null});onFeedback(reply);
       }
       return;
     }
@@ -74,14 +76,15 @@ export default function CommandPanel({company,headers,onDestination,onDocuments,
       <input id="nv-command-query" value={query} onChange={e=>{pending.current?.abort();microphone.current?.abort();setQuery(e.target.value);setState({});}} placeholder="Por ejemplo: abre Seguros de eWorks" maxLength={200}/>
       <button type="submit" disabled={!query.trim()}>Encontrar destino</button>
     </form>
-    <button type="button" className="nv-microphone" aria-pressed={listening} onClick={listen}><svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>{listening?'Terminar y enviar':'Hablar con WOBi'}</button><p className="nv-microphone-help">Pulsa el micrófono y habla. Cuando termines, WOBi procesará la petición automáticamente. Puedes cancelar antes de enviarla.</p>
+    <button type="button" className="nv-microphone" aria-pressed={listening} onClick={listen}><svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>{listening?'Terminar y enviar':'Hablar con WOBi'}</button><p className="nv-microphone-help">Pulsa el micrófono y habla. Al terminar, WOBi interpretará tu petición. Si hay que enviarla al procesamiento de Telegram, revisarás el borrador y confirmarás el envío.</p>
     {listening&&<button className="nv-text-action" type="button" onClick={()=>{microphone.current?.abort();setState({reply:'Escucha cancelada. No envié la petición.'});}}>Cancelar escucha</button>}
-    <div role="status">{state.reply&&<p>{state.reply}</p>}{state.offerTelegram&&<div><button className="nv-text-action" type="button" onClick={()=>run({texto:'sí'})}>Sí, abrir Telegram</button><button className="nv-text-action" type="button" onClick={()=>run({texto:'no'})}>No, seguir aquí</button></div>}{state.handoff&&<TelegramRequest key={state.telegram||'chat'} text={state.telegram||''}/>}{listening&&<p>Escuchando…</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
+    <div role="status">{state.reply&&<p>{state.reply}</p>}{state.handoff&&<TelegramRequest key={state.telegram||'chat'} text={state.telegram||''}/>}{listening&&<p>Escuchando…</p>}{state.loading&&<p>Interpretando la petición…</p>}{state.error&&<p>{state.error}</p>}
     {state.result?.resumen&&<ConversationResponse result={state.result}/>}{state.result?.tipo==='no_disponible'&&<>{!state.result.resumen&&<p>{state.result.mensaje}</p>}{state.result.alternativa&&<button className="nv-text-action" type="button" onClick={()=>run({seleccion:{capabilityId:state.result.alternativa.capabilityId,companyId:state.result.alternativa.companyId}})}>{state.result.alternativa.etiqueta} · Abrir módulo completo, sin filtro ↗</button>}</>}
     {state.result?.tipo==='aclaracion'&&<>{!state.result.resumen&&<p>{state.result.pregunta}</p>}{state.result.opciones.map((option,index)=><button className="nv-text-action" key={index} type="button" onClick={()=>run({seleccion:{capabilityId:option.capabilityId,companyId:option.companyId}})}>{option.etiqueta} · {companyById(option.companyId).name}{option.sinFiltro?(option.capabilityId.startsWith('section:')?' · Abrir esta vista, sin filtro adicional':' · Abrir módulo completo, sin filtro'):''} ↗</button>)}</>}</div>
     {state.error&&<button type="button" className="nv-text-action" onClick={()=>run({texto:query.trim()})} disabled={!query.trim()}>Reintentar</button>}
+    <PedidoPanel headers={headers} request={pedidoRequest} query={query} onFeedback={onFeedback}/>
     <button className="nv-text-action" type="button" onClick={onDocuments}>Buscar documentos en Drive ↗</button>
-    <button className="nv-text-action" type="button" onClick={()=>{pending.current?.abort();microphone.current?.abort();onStart();telegramOffer.current=false;onClear();setQuery('');setState({reply:'Conversación reiniciada. Dime qué quieres encontrar.'});}}>Nueva conversación</button>
-    <small>Consulta y navegación de solo lectura. No ejecuta operaciones. Voz según compatibilidad del navegador. Las aclaraciones requieren elegir una opción; no se ejecutan operaciones.</small>
+    <button className="nv-text-action" type="button" onClick={()=>{pending.current?.abort();microphone.current?.abort();onStart();onClear();setPedidoRequest(null);setQuery('');setState({reply:'Conversación reiniciada. Dime qué quieres encontrar.'});}}>Nueva conversación</button>
+    <small>La navegación consulta información. Los pedidos requieren confirmar el texto; las aprobaciones siguen en Telegram. Voz según compatibilidad del navegador.</small>
   </section>;
 }
