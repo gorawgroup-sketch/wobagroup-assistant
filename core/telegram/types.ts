@@ -58,10 +58,24 @@ export interface TelegramCallbackQuery {
   data?: string;
 }
 
+/**
+ * Marca de un update SINTÉTICO: lo crea el servidor a partir de un pedido que la persona confirmó en el front (ver
+ * core/cerebro/pedidos/). Nunca llega de Telegram y el procesamiento no la lee: solo deja constancia del origen en el ledger.
+ */
+export interface OrigenUpdateFront {
+  canal: "front";
+  pedidoId: string;
+  ref: string;
+  /** Huella corta del dispositivo (nunca el id real). */
+  dispositivo: string;
+  textoHash: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  origen?: OrigenUpdateFront;
 }
 
 export interface IncomingMessage {
