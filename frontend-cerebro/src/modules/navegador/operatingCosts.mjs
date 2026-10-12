@@ -1,5 +1,5 @@
 const normalize=text=>typeof text==='string'?text.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase():'';
-const monetary=/\b(?:costos?|costes?|gastos?|consumo|cuanto|cuesta|precio)\b/;
+const monetary=/\b(?:costos?|costes?|gastos?|gasta|gastamos|gastado|consumo|consume|cuesta|precio)\b/;
 export function operatingCostRequest(text){
  const q=normalize(text);
  return !/\bno (?:quiero|muestres|consultes)\b/.test(q)&&monetary.test(q)&&/\b(?:sistema|wobi|api|inteligencia artificial|control diario)\b/.test(q);
