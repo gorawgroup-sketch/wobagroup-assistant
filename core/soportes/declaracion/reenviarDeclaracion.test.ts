@@ -26,7 +26,7 @@ test("el reenvío por no recibido no pide disculpas por un olvido que no hubo", 
   assert.doesNotMatch(cuerpo, /olvidamos/);
 });
 
-import { seleccionarDeclaracionPendiente } from "./reenviarDeclaracion";
+import { destinosReenvio, seleccionarDeclaracionPendiente } from "./reenviarDeclaracion";
 import type { Declaracion } from "./declaracionStore";
 
 const base = (x: Partial<Declaracion>): Declaracion => ({ id: "x", empresa: "EWORKS", titular: "German Alejandro Robles", email: "project@wobagroup.com", cargoFirmante: "", chatId: 1,
@@ -47,4 +47,17 @@ test("sin ningún dato, si solo hay una persona pendiente se usa; si hay varias 
   assert.throws(() => seleccionarDeclaracionPendiente(dos, { titular: "Alberto" }), /No hay ninguna declaración pendiente de firma para Alberto/);
   // Dos declaraciones de la misma persona: se toma la más reciente, no se pregunta.
   assert.equal(seleccionarDeclaracionPendiente([base({ id: "antigua", creadoEn: 1 }), base({ id: "reciente", creadoEn: 2 })], { titular: "German" }).id, "reciente");
+});
+
+test("un correo de destino que no coincide con el registrado no bloquea: se localiza por nombre (caso «envíaselo a german@eworkstudio.com»)", () => {
+  const pendientes = [base({ id: "german", email: "project@wobagroup.com" }), base({ id: "simon", titular: "Simon Talloen", email: "simon@example.com" })];
+  assert.equal(seleccionarDeclaracionPendiente(pendientes, { email: "german@eworkstudio.com", titular: "German" }).id, "german");
+  assert.equal(seleccionarDeclaracionPendiente(pendientes, { email: "simon@example.com", titular: "German" }).id, "simon", "si el correo coincide, manda el correo");
+  assert.throws(() => seleccionarDeclaracionPendiente(pendientes, { email: "nadie@example.com" }), /varias declaraciones pendientes/);
+});
+
+test("el correo registrado siempre va y los indicados por Carlos se añaden sin repetir (caso «deja los 2 mails»)", () => {
+  assert.deepEqual(destinosReenvio("project@wobagroup.com", "german@eworkstudio.com"), ["project@wobagroup.com", "german@eworkstudio.com"]);
+  assert.deepEqual(destinosReenvio("project@wobagroup.com", "Project@wobagroup.com; otro@x.com"), ["project@wobagroup.com", "otro@x.com"]);
+  assert.deepEqual(destinosReenvio("project@wobagroup.com", undefined), ["project@wobagroup.com"]);
 });
