@@ -177,4 +177,4 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Responder desde Control diario y derivar consultas financieras no soportadas al chat | `codex/costos-reales-telegram` | Front / navegador | Codex | Verificado: tipos, build completo (Chrome local para PDF), 2182 pruebas backend + 115 adicionales y 108 front; front compilado reproduce las dos frases de las capturas con lectura real conservada de Control diario. Publicación en curso. |
+| Responder desde Control diario y derivar consultas financieras no soportadas al chat | `codex/costos-reales-telegram` | Front / navegador | Codex | Verificado: tipos, build completo (Chrome local para PDF), 2182 pruebas backend + 115 adicionales y 108 front; front compilado reproduce las dos frases de las capturas con lectura real conservada de Control diario. Publicación en PR #454; seguimiento de fusión y despliegue en ese PR. |
