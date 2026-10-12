@@ -59,14 +59,15 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const conversation=useRef({id:null});
   const [conversationAnswer,setConversationAnswer]=useState(null);
   const [navigationNotice,setNavigationNotice]=useState(null);
-  const [voiceEnabled,setVoiceEnabled]=useState(()=>localStorage.getItem('wobi_navigation_voice')==='on');
+  const [voiceEnabled,setVoiceEnabled]=useState(()=>localStorage.getItem('wobi_navigation_voice')!=='off');
   const [voiceState,setVoiceState]=useState('idle');
   const [audioLevel,setAudioLevel]=useState(0);
   const [voiceError,setVoiceError]=useState('');
   const speaker=useMemo(()=>createStreamingWobiSpeech({onStateChange:setVoiceState,onAudioLevel:setAudioLevel}),[]);
   useEffect(()=>()=>speaker.dispose(),[speaker]);
   useEffect(()=>{const hide=()=>{if(document.hidden)speaker.stop();};document.addEventListener('visibilitychange',hide);return()=>document.removeEventListener('visibilitychange',hide);},[speaker]);
-  const speak=message=>{if(!voiceEnabled)return;setVoiceError('');speaker.speak(message,navigationHeaders).catch(()=>setVoiceError('No pude reproducir la voz. La información sigue disponible por escrito.'));};
+  const voiceEnabledRef=useRef(voiceEnabled);voiceEnabledRef.current=voiceEnabled;
+  const speak=message=>{if(!voiceEnabledRef.current)return;setVoiceError('');speaker.speak(message,navigationHeaders).catch(()=>setVoiceError('No pude reproducir la voz. La información sigue disponible por escrito.'));};
   const toggleVoice=()=>{const enabled=!voiceEnabled;setVoiceEnabled(enabled);localStorage.setItem('wobi_navigation_voice',enabled?'on':'off');if(enabled)speaker.activate().catch(()=>setVoiceError('Activa el audio para escuchar a WOBi.'));else speaker.stop();};
 
   const [panel, setPanel] = useState(null);
@@ -152,7 +153,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
 
     {panel && <Reveal inline={panel==='command'} accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
       {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
-      {panel === 'command' && <CommandPanel key={companyId} data={data} onControlDaily={() => openModule('control_diario')} company={company} headers={navigationHeaders} conversation={conversation} onClear={()=>{conversation.current={id:null};setConversationAnswer(null);setNavigationNotice(null);}} onFeedback={speak} onStart={() => { speaker.stop(); if(voiceEnabled)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
+      {panel === 'command' && <CommandPanel key={companyId} data={data} onControlDaily={() => openModule('control_diario')} company={company} headers={navigationHeaders} conversation={conversation} onClear={()=>{conversation.current={id:null};setConversationAnswer(null);setNavigationNotice(null);}} onFeedback={speak} onStart={options => { speaker.stop(); if(options?.voice){voiceEnabledRef.current=true;setVoiceEnabled(true);localStorage.setItem('wobi_navigation_voice','on');} if(voiceEnabledRef.current)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
         const destination=validateDestination(proposal);
         if (!destination) return;
         chooseCompany(destination.companyId);
