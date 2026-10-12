@@ -3,6 +3,7 @@ import { revisarHoldedVsCashflow } from "./revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "./revisarAlertasFiscales";
 import { revisarCorreoNuevo } from "./revisarCorreoNuevo";
 import { enviarResumenPendientesDiario } from "./resumenPendientesDiario";
+import { recordatoriosDeclaraciones } from "../soportes/declaracion/firmaDeclaracion";
 import { revisarCostosIA } from "./revisarCostosIA";
 import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
 import { revisarEstructuraCashflow } from "./revisarEstructuraCashflow";
@@ -214,6 +215,12 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] enviarResumenPendientesDiario programado: diario 19:10 (${TIMEZONE})`);
+
+  // Declaraciones de gastos sin soporte sin devolver firmadas: recordatorio propuesto (con botón) tras N días.
+  cron.schedule("35 9 * * 1-5", () => {
+    ejecutarSinSolapamiento("recordatoriosDeclaraciones", () => recordatoriosDeclaraciones());
+  }, { timezone: TIMEZONE });
+  console.log(`[scheduler] recordatoriosDeclaraciones programado: días hábiles 09:35 (${TIMEZONE})`);
 
   cron.schedule(
     "30 23 * * *",
