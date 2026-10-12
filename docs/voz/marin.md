@@ -4,7 +4,7 @@ Elección de Carlos: 12-10-2026. Marin reemplaza Dalia en las salidas de voz exi
 
 ## Estado
 
-Integración en `codex/voz-marin`, PR #463. Consulta gratuita del catálogo con la clave existente: HTTP 200. Cuenta API: 9,99 USD de saldo observado; recarga automática ON a umbral 5 USD, objetivo 10 USD y techo mensual 20 USD. Desactivación pendiente de Carlos. Dos pruebas reales: MP3 (respuesta SSE guardada de la primera generación) y PCM (nueva generación), HTTP 200 y voz Marin. Tokens 20/60 y 48/53: 0,0013968 USD, registrados una vez en Control diario. No hay compras ni cambios de facturación. Activación continua pendiente de recarga OFF.
+Integración en `codex/voz-marin`, PR #463. Consulta gratuita del catálogo con la clave existente: HTTP 200. Cuenta API: 9,99 USD de saldo observado; recarga automática ON a umbral 5 USD, objetivo 10 USD y techo mensual 20 USD. Carlos desactivó la recarga; OFF verificado en la página de facturación. Dos pruebas reales: MP3 (respuesta SSE guardada de la primera generación) y PCM (nueva generación), HTTP 200 y voz Marin. Tokens 20/60 y 48/53: 0,0013968 USD, registrados una vez en Control diario. No hay compras ni cambios de facturación. Activación autorizada usando el saldo existente, sin recargas.
 
 ## Un único camino de audio
 
