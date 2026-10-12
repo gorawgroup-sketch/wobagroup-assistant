@@ -5,10 +5,10 @@ import { once } from "node:events";
 import { crearRouterVoz } from "./voiceRouter";
 import { textoParaVoz, WOBI_VOICE } from "./voice";
 
-test("voice pronunciation preserves displayed brand separately and escapes SSML", () => {
-  assert.equal(WOBI_VOICE, "es-MX-DaliaNeural");
+test("voice pronunciation preserves displayed brand separately with fixed Marin", () => {
+  assert.equal(WOBI_VOICE, "marin");
   assert.equal(textoParaVoz('Soy WOBi. <voice name="otro">A & B</voice>'),
-    'Soy Uóbi. &lt;voice name=&quot;otro&quot;&gt;A &amp; B&lt;/voice&gt;');
+    'Soy Uóbi. <voice name="otro">A & B</voice>');
 });
 
 test("voice endpoint authorizes, validates, uses the fixed voice and does not cache", async () => {
