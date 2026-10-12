@@ -20,6 +20,10 @@ export interface BorradorCorreo {
   correoMensajeId?: string;
   /** Acción durable que reservó y transfirió esta unidad concreta de cola. */
   unidadColaId?: string;
+  /** Adjuntos que se descargan de Drive en el momento del envío (declaración de gastos sin soporte, etc.). */
+  adjuntosDrive?: Array<{ fileId: string; nombre: string; mimeType: string }>;
+  /** Declaración de gastos sin soporte que viaja en este borrador: al enviarse, pasa a «enviada». */
+  declaracionId?: string;
 }
 
 export interface CorrelacionBorradorCorreo {
@@ -59,6 +63,8 @@ const HEADERS = [
   "correoThreadId",
   "correoMensajeId",
   "unidadColaId",
+  "adjuntosDriveJson",
+  "declaracionId",
 ];
 
 function assertSheetId(): string {
@@ -101,7 +107,7 @@ async function ensureTab(): Promise<number> {
     // de headers es una migración aditiva e idempotente.
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A1:M1`,
+      range: `${TAB_NAME}!A1:O1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADERS] },
     });
@@ -120,7 +126,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:M1`,
+    range: `${TAB_NAME}!A1:O1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -145,7 +151,20 @@ function rowToBorrador(row: unknown[]): BorradorCorreo | null {
     correoThreadId: row[10] ? String(row[10]) : undefined,
     correoMensajeId: row[11] ? String(row[11]) : undefined,
     unidadColaId: row[12] ? String(row[12]) : undefined,
+    adjuntosDrive: adjuntosDesdeCelda(row[13]),
+    declaracionId: row[14] ? String(row[14]) : undefined,
   };
+}
+
+function adjuntosDesdeCelda(celda: unknown): BorradorCorreo["adjuntosDrive"] {
+  if (!celda) return undefined;
+  try {
+    const lista = JSON.parse(String(celda));
+    return Array.isArray(lista) && lista.length ? lista : undefined;
+  } catch {
+    console.error("[emailDraftStore] Adjuntos de Drive ilegibles en un borrador; se ignoran.");
+    return undefined;
+  }
 }
 
 function borradorToRow(b: BorradorCorreo): (string | number)[] {
@@ -163,6 +182,8 @@ function borradorToRow(b: BorradorCorreo): (string | number)[] {
     b.correoThreadId ?? "",
     b.correoMensajeId ?? "",
     b.unidadColaId ?? "",
+    b.adjuntosDrive?.length ? JSON.stringify(b.adjuntosDrive) : "",
+    b.declaracionId ?? "",
   ];
 }
 
