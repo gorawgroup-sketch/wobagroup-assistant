@@ -44,6 +44,8 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 ## En curso
 
+Alertas de saldos API: Codex, `codex/alertas-saldos-api`, Control diario. Avisos OpenAI/Anthropic, sin recargas. Lecturas confirmadas con fecha y consumo WOBi por proveedor; sin presentar estimación como saldo directo.
+
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
 | Navegador inteligente: front, voz y enjambre | Cerebro (front) | codex/navegador-texto | Codex | PR #433: contrato #434, tres cabeceras, permisos confirmados, voz existente y amplitud real del enjambre. Pruebas completas verdes: 2111 backend (6 omitidas), 67 adicionales; voz PCM real y backend verificados en producción. Dictado según navegador, voz y enjambre por amplitud. PR #433 listo para CI y despliegue. |
