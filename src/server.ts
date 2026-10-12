@@ -1,3 +1,4 @@
+import { crearRouterSaldos } from "../core/saldosApi/router";
 // Debe ser el PRIMER import del archivo, sin excepción. Causa raíz real
 // (encontrada en vivo 2026-09-27): 37 stores de Sheets en todo el proyecto
 // leían su `process.env.CASHFLOW_SHEET_ID` (y variables equivalentes) al
@@ -884,6 +885,11 @@ app.get("/api/cerebro/control-diario/ediciones-inciertas", async (req: Request, 
     res.status(500).json({ error: "No se pudo leer el estado de las ediciones inciertas." });
   }
 });
+
+app.use("/api/cerebro/control-diario/saldos", crearRouterSaldos(exigeKeyMaestra, () => {
+  invalidarEstadoCerebro(["controlDiario"]);
+  publicarCambioCerebro("control_diario:saldos");
+}));
 
 app.post("/api/cerebro/control-diario/resolver", async (req: Request, res: Response) => {
   res.set("Access-Control-Allow-Origin", "*");
