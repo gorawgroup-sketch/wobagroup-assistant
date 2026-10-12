@@ -68,7 +68,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   useEffect(()=>{const hide=()=>{if(document.hidden)speaker.stop();};document.addEventListener('visibilitychange',hide);return()=>document.removeEventListener('visibilitychange',hide);},[speaker]);
   const voiceEnabledRef=useRef(voiceEnabled);voiceEnabledRef.current=voiceEnabled;
   const speak=message=>{if(!voiceEnabledRef.current)return;setVoiceError('');speaker.speak(message,navigationHeaders).catch(()=>setVoiceError('No pude reproducir la voz. La información sigue disponible por escrito.'));};
-  const toggleVoice=()=>{const enabled=!voiceEnabled;setVoiceEnabled(enabled);localStorage.setItem('wobi_navigation_voice',enabled?'on':'off');if(enabled)speaker.activate().catch(()=>setVoiceError('Activa el audio para escuchar a WOBi.'));else speaker.stop();};
+  const toggleVoice=()=>{if(voiceEnabled&&voiceState==='blocked'){setVoiceError('');speaker.activate().catch(()=>setVoiceError('Pulsa de nuevo para reanudar el audio.'));return;}const enabled=!voiceEnabled;setVoiceEnabled(enabled);localStorage.setItem('wobi_navigation_voice',enabled?'on':'off');if(enabled)speaker.activate().catch(()=>setVoiceError('Activa el audio para escuchar a WOBi.'));else speaker.stop();};
 
   const [panel, setPanel] = useState(null);
   const [areaId, setAreaId] = useState(null);
@@ -140,7 +140,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       <div className="nv-whisper" aria-live="polite"><span>{`${company.name} · ${AREAS.length} áreas`}</span><small>{'Color pleno: áreas habilitadas · Color tenue: agentes pendientes'}</small></div>
     </main>}
 
-    <div className="nv-voice-control"><button type="button" aria-pressed={voiceEnabled} onClick={toggleVoice}>{voiceEnabled?'Desactivar voz':'Activar voz de WOBi'}</button><span role="status">{voiceError || (voiceState==='playing'?'WOBi está hablando':voiceState==='loading'?'Preparando voz…':voiceState==='blocked'?'Activa el audio para escuchar a WOBi':'')}</span></div>
+    <div className="nv-voice-control"><button type="button" aria-pressed={voiceEnabled} onClick={toggleVoice}>{voiceEnabled?(voiceState==='blocked'?'Reanudar voz de WOBi':'Desactivar voz'):'Activar voz de WOBi'}</button><span role="status">{voiceError || (voiceState==='playing'?'WOBi está hablando':voiceState==='loading'?'Preparando voz…':voiceState==='blocked'?'Pulsa Reanudar voz de WOBi para continuar la respuesta':'')}</span></div>
     <nav className="nv-dock" aria-label="Acciones del núcleo">
       <button type="button" onClick={() => { setWorkspaceId(null); setPanel('map'); }}><span aria-hidden="true">◌</span> Áreas</button>
       <button type="button" className="nv-find" onClick={() => setPanel('command')}><span aria-hidden="true">⌕</span> Pídele a WOBi <kbd>⌘ K</kbd></button>

@@ -87,3 +87,46 @@ test('swarm level follows analyser samples and resets when muted', async () => {
   assert.ok(levels.some(value=>value>0));speaker.stop();await speaking;
   assert.equal(levels.at(-1),0);speaker.dispose();
 });
+
+test('mobile buffers a complete phrase before playback despite delayed and odd network chunks', async () => {
+ const ctx=new Context(), playing=deferred();let stream;const states=[];
+ const player=createStreamingWobiSpeech({makeContext:()=>ctx,bufferBeforePlayback:()=>true,onStateChange:s=>{states.push(s);if(s==='playing')playing.resolve();},fetchAudio:async()=>response(new ReadableStream({start(c){stream=c;c.enqueue(new Uint8Array(5761));}}))});
+ await player.activate();const speaking=player.speak('Marin completa la frase',{});
+ await new Promise(r=>setTimeout(r,30));assert.equal(ctx.sources.length,0);assert.equal(states.at(-1),'loading');
+ ctx.currentTime=2;stream.enqueue(new Uint8Array(5759));stream.close();await playing.promise;
+ assert.equal(ctx.sources.length,1);assert.equal(ctx.sources[0].buffer.duration,0.24);
+ ctx.sources[0].finish();await speaking;player.dispose();
+});
+
+test('an unlocked iPhone context interrupted by microphone recovers before the reply without a new synthesis', async()=>{
+ const ctx=new Context(),playing=deferred();let requests=0;
+ const player=createStreamingWobiSpeech({makeContext:()=>ctx,bufferBeforePlayback:()=>true,fetchAudio:async()=>{requests++;return response(new Uint8Array(5760));},onStateChange:s=>{if(s==='playing')playing.resolve();}});
+ await player.activate();ctx.state='interrupted';
+ const speaking=player.speak('Respuesta después de hablar',{});await playing.promise;
+ assert.equal(ctx.state,'running');assert.equal(ctx.resumes,2);assert.equal(requests,1);
+ ctx.sources[0].finish();await speaking;player.dispose();
+});
+
+test('interruption during playback resumes the same buffer and stop prevents later recovery',async()=>{
+ const ctx=new Context(),playing=deferred(),recovered=deferred();let requests=0;const states=[];
+ const player=createStreamingWobiSpeech({makeContext:()=>ctx,fetchAudio:async()=>{requests++;return response(new Uint8Array(5760));},onStateChange:s=>{states.push(s);if(s==='playing'){playing.resolve();if(states.includes('blocked'))recovered.resolve();}}});
+ await player.activate();const speaking=player.speak('No cortar la respuesta',{});await playing.promise;
+ ctx.state='interrupted';ctx.dispatchEvent(new Event('statechange'));await recovered.promise;
+ assert.equal(requests,1);assert.equal(ctx.sources.length,1);assert.notEqual(ctx.sources[0].stopped,true);assert.equal(ctx.resumes,2);
+ player.stop();await speaking;ctx.state='interrupted';ctx.dispatchEvent(new Event('statechange'));await Promise.resolve();assert.equal(ctx.resumes,2);player.dispose();
+});
+
+test('when automatic resume is denied the prepared reply waits for the user tap without refetching',async()=>{
+ const ctx=new Context(),playing=deferred(),blocked=deferred();let deny=false,requests=0;const normal=ctx.resume.bind(ctx);
+ ctx.resume=async()=>{if(deny)throw new Error('NotAllowedError');return normal();};
+ const player=createStreamingWobiSpeech({makeContext:()=>ctx,fetchAudio:async()=>{requests++;return response(new Uint8Array(5760));},onStateChange:s=>{if(s==='playing')playing.resolve();if(s==='blocked')blocked.resolve();}});
+ await player.activate();const speaking=player.speak('Mantener la frase',{});await playing.promise;deny=true;ctx.state='interrupted';ctx.dispatchEvent(new Event('statechange'));await blocked.promise;await new Promise(r=>setTimeout(r,10));
+ assert.equal(ctx.state,'interrupted');deny=false;await player.activate();assert.equal(ctx.state,'running');assert.equal(requests,1);assert.equal(ctx.sources.length,1);ctx.sources[0].finish();await speaking;player.dispose();
+});
+
+test('delayed microphone release recovers automatically without requesting voice until audio is running',async()=>{
+ const ctx=new Context(),playing=deferred();let released=false,requests=0;const normal=ctx.resume.bind(ctx);
+ ctx.resume=async()=>{if(!released&&ctx.state==='interrupted'){ctx.resumes++;return;}return normal();};
+ const player=createStreamingWobiSpeech({makeContext:()=>ctx,fetchAudio:async()=>{assert.equal(ctx.state,'running');requests++;return response(new Uint8Array(5760));},onStateChange:s=>{if(s==='playing')playing.resolve();}});
+ await player.activate();ctx.state='interrupted';const speaking=player.speak('Respuesta tras liberar el micrófono',{});setTimeout(()=>{released=true},40);await playing.promise;assert.equal(requests,1);assert.equal(ctx.resumes,3);ctx.sources[0].finish();await speaking;player.dispose();
+});
