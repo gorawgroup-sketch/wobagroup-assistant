@@ -22,6 +22,7 @@ import { intentarCerrarOperacion, mensajeOperacionBloqueada, resolverOperacionAn
   type ResultadoOperacionAnterior } from "./operacionAnterior";
 import { PostgresAutoStore, conOperacionAuto, protegerEscrituraHolded, hayCoordinacionDurable, poolAuto } from "./postgres";
 import { ServicioCorreoAutomatico } from "./service";
+import { hilosConDeclaracionEnviada } from "../../soportes/declaracion/firmaDeclaracion";
 import { diferenciasDeEstaRevision, EVENTO_RESUMEN_REVISION } from "./informeDiferencias";
 import type { ResumenSeco } from "./revisionEnSeco";
 import { editTelegramMessage, sendTelegramMessageSmart } from "../../telegram/client";
@@ -175,6 +176,8 @@ export async function revisarGastosAutomaticos(chatId: number, opciones: {
     for (const p of await obtenerPropuestasGastoPorChat(chat)) if (p.correoOrigen?.threadId) manuales.add(p.correoOrigen.threadId);
     for (const p of await obtenerPropuestasAccionCorreoPorChat(chat)) manuales.add(p.threadId);
   }
+  // Hilos con una declaración de gastos sin soporte esperando firma: la respuesta (PDF/foto del documento firmado) nunca es un recibo.
+  for (const threadId of await hilosConDeclaracionEnviada()) manuales.add(threadId);
   const estadosAutorespuesta = new Map((await listarHilosAutorespuesta()).map(estado => [estado.threadId, estado.estado]));
   const storeAuto = new PostgresAutoStore();
   const service = new ServicioCorreoAutomatico(storeAuto, {

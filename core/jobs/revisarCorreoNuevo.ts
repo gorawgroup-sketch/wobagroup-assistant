@@ -35,6 +35,7 @@ import { yaSeAvisoHoy, marcarAvisadoHoy } from "./avisoUnicoPorDiaStore";
 import { sendTelegramMessage, sendTelegramMessageWithButtons, sendTelegramMessageSmart, answerCallbackQuery, editTelegramMessageReplyMarkup } from "../telegram/client";
 import type { TelegramCallbackQuery } from "../telegram/types";
 import { procesarDocumentoLocal } from "../documental/procesarDocumentoLocal";
+import { declaracionEnviadaDelHilo, proponerFirmaRecibida } from "../soportes/declaracion/firmaDeclaracion";
 import { procesarGastoEntrante } from "../gastos/procesarGastoEntrante";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { cierreSolicitado } from "../utils/cierreServicio";
@@ -697,6 +698,14 @@ async function procesarCorreoLocalizado(
   // depender de que el clasificador liviano de correo haya acertado el
   // tipo. Cada adjunto es su propia decisión independiente — un correo
   // con 3 adjuntos necesita 3 resoluciones antes de darse por leído.
+  // Declaración de gastos sin soporte (paso B): una respuesta en el hilo de una declaración enviada se trata como posible
+  // documento firmado (pregunta con botón), nunca como recibo. Punto de conexión; la lógica vive en core/soportes/declaracion/.
+  // Si el registro no se puede leer, el correo no se procesa a ciegas: el fallo sube y la cola lo reintenta (como cualquier otra lectura).
+  const declaracionDelHilo = await declaracionEnviadaDelHilo(correo.threadId);
+  if (declaracionDelHilo && !opciones.soloArchivar) {
+    const enManosDeLaFirma = await proponerFirmaRecibida({ chatId, declaracion: declaracionDelHilo, correo, deColaCorreo });
+    if (enManosDeLaFirma) return;
+  }
   if (correo.adjuntos.length > 0) {
     // Segundo hallazgo real (2026-09-09, caso Alberto/AEAT): un correo con adjuntos iba DIRECTO al
     // procesamiento de documento/gasto de arriba, sin que nada mirara el CUERPO del correo — "Revisa
