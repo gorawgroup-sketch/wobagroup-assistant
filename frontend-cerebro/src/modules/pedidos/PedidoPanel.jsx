@@ -85,8 +85,11 @@ export default function PedidoPanel({headers,request,query,compact=false,onFeedb
  const unresolved=pedido&&!pedido.estado;
  const ended=pedido&&['terminado','cancelado','expirado'].includes(pedido.estado);
  if(compact&&!request&&!pedido)return null;
- return <section className="nv-pedidos" aria-label="Pedidos a WOBi">
-  <h2>{compact?"Continuar con WOBi":"Enviar una solicitud a WOBi"}</h2>
+ const collapsed = compact && ended && !error;
+ const Container = collapsed ? 'details' : 'section';
+ return <Container className={`nv-pedidos${compact?' nv-pedidos-compact':''}${collapsed?' nv-pedidos-ended':''}`} aria-label="Pedidos a WOBi">
+  {collapsed&&<summary>Última solicitud · {labels[pedido.estado]} <span>{pedido.ref&&`Ref. ${pedido.ref}`}</span></summary>}
+  {!collapsed&&<h2>{compact?"Continuar con WOBi":"Enviar una solicitud a WOBi"}</h2>}
   {!compact&&<p>Procesada como un mensaje tuyo de Telegram. La respuesta y las aprobaciones llegan a tu chat.</p>}
   <div role="status">{busy&&<p>Consultando…</p>}{!availability&&!busy&&<p>Comprobando cómo enviar tu solicitud…</p>}{availability&&!availability.disponible&&<p className="nv-pedido-warning">{availability.mensaje||'El envío no está disponible.'}</p>}{error&&<p className="nv-pedido-warning">{error}</p>}</div>
   {['apagado','entrega_durable_apagada'].includes(availability?.motivo)&&<><p>Puedes continuar en Telegram mientras el envío desde aquí no está disponible.</p><TelegramRequest compact={compact} onFeedback={onFeedback} text={request?.text||text||query||''}/></>}
@@ -109,5 +112,5 @@ export default function PedidoPanel({headers,request,query,compact=false,onFeedb
    {history&&<div className="nv-pedido-result"><h3>Historial posterior a la referencia</h3>{messages.length?messages.map((m,i)=><pre key={i}>{m.texto}</pre>):<p>Aún no aparece esta referencia en el historial visible. Consulta el chat de Telegram; esto no demuestra que el pedido haya fallado.</p>}<small>Las aprobaciones se hacen en Telegram. Esta vista solo muestra texto.</small></div>}
    {ended&&<button type="button" disabled={busy} onClick={clear}>Preparar otra solicitud</button>}
   </div>}
- </section>;
+ </Container>;
 }
