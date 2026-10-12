@@ -19,19 +19,27 @@ export function createStreamingWobiSpeech({
     if (!Context) throw new Error("Este navegador no admite la voz en tiempo real.");
     return new Context({ latencyHint: "interactive" });
   },
+  // Mobile networks may pause delivery longer than one 120 ms PCM block.
+  bufferBeforePlayback = () => typeof navigator !== "undefined" &&
+    (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)),
   onStateChange = () => {},
   onAudioLevel = null,
 } = {}) {
   let context;
   let current;
+  let activated = false;
   const getContext = () => context ??= makeContext();
   // Called directly from the voice toggle or Send gesture, before any fetch.
   const activate = () => {
+    activated = true;
     try { return getContext().resume(); } catch (error) { return Promise.reject(error); }
   };
   const stop = () => {
     if (!current) return;
     current.controller.abort();
+    current.removeStateListener?.();
+    clearTimeout(current.recoveryTimer);
     clearTimeout(current.levelTimer);
     current.analyser?.disconnect();
     onAudioLevel?.(0);
@@ -54,19 +62,46 @@ export function createStreamingWobiSpeech({
     const signal = session.controller.signal;
     const report = state => { if (current === session) onStateChange(state); };
     let failed = false;
+    let recovering = false;
     try {
       const ctx = getContext();
-      if (ctx.state !== "running") {
+      const recover = () => {
+        if (signal.aborted || current !== session || ctx.state === "running" || recovering || !activated || (session.recoveryAttempts || 0) >= 4) return;
+        recovering = true;
+        session.recoveryAttempts = (session.recoveryAttempts || 0) + 1;
+        // A microphone session can interrupt a context already unlocked by a tap.
+        Promise.resolve().then(() => { if (!signal.aborted && current === session) return ctx.resume(); }).catch(() => {}).finally(() => {
+          recovering = false;
+          // iOS may release the microphone route after recognition.onend.
+          if (!signal.aborted && current === session && ctx.state !== "running" && session.recoveryAttempts < 4) {
+            clearTimeout(session.recoveryTimer);
+            session.recoveryTimer = setTimeout(recover, 150 * 2 ** (session.recoveryAttempts - 1));
+          }
+        });
+      };
+      const changed = () => {
+        if (signal.aborted || current !== session) return;
+        if (ctx.state === "running") { clearTimeout(session.recoveryTimer); session.recoveryAttempts = 0; report(session.sources.size ? "playing" : "loading"); }
+        else { report("blocked"); onBlocked(); recover(); }
+      };
+      ctx.addEventListener("statechange", changed);
+      session.removeStateListener = () => ctx.removeEventListener("statechange", changed);
+      const ensureRunning = async () => {
+        if (ctx.state === "running") return;
         report("blocked"); onBlocked();
         await new Promise((resolve, reject) => {
-          const cleanup = () => { ctx.removeEventListener("statechange", changed); signal.removeEventListener("abort", aborted); };
-          const changed = () => { if (ctx.state === "running") { cleanup(); resolve(); } };
+          const cleanup = () => { ctx.removeEventListener("statechange", resumed); signal.removeEventListener("abort", aborted); };
+          const resumed = () => {
+            if (ctx.state === "running") { cleanup(); resolve(); }
+            else if (ctx.state === "closed") { cleanup(); reject(new Error("El audio se cerró. Vuelve a activar la voz.")); }
+          };
           const aborted = () => { cleanup(); reject(signal.reason); };
-          ctx.addEventListener("statechange", changed);
+          ctx.addEventListener("statechange", resumed);
           signal.addEventListener("abort", aborted, { once: true });
-          if (signal.aborted) aborted(); else changed();
+          if (signal.aborted) aborted(); else { resumed(); recover(); }
         });
-      }
+      };
+      await ensureRunning();
       signal.throwIfAborted();
       report("loading");
       if (onAudioLevel && ctx.createAnalyser) {
@@ -84,6 +119,7 @@ export function createStreamingWobiSpeech({
         sample();
       }
       const schedule = async bytes => {
+        await ensureRunning();
         // Bound decoded audio ahead of playback; stop/mute interrupts this wait too.
         while (session.nextStart - ctx.currentTime > 10) await wait(50, signal);
         signal.throwIfAborted();
@@ -120,6 +156,8 @@ export function createStreamingWobiSpeech({
         }
         const reader = response.body.getReader();
         let pending = new Uint8Array(0);
+        const buffered = bufferBeforePlayback();
+        const chunks = [];
         let bytes = 0;
         try {
           while (true) {
@@ -128,6 +166,7 @@ export function createStreamingWobiSpeech({
             if (done) break;
             bytes += value.length;
             if (bytes > 4_000_000) throw new Error("Respuesta de audio demasiado grande.");
+            if (buffered) { chunks.push(value); continue; }
             const combined = new Uint8Array(pending.length + value.length);
             combined.set(pending); combined.set(value, pending.length);
             let offset = 0;
@@ -136,6 +175,11 @@ export function createStreamingWobiSpeech({
               offset += BLOCK_SAMPLES * 2;
             }
             pending = combined.slice(offset);
+          }
+          if (buffered) {
+            pending = new Uint8Array(bytes);
+            let offset = 0;
+            for (const chunk of chunks) { pending.set(chunk, offset); offset += chunk.length; }
           }
           if (!bytes || pending.length % 2) throw new Error("El audio llegó incompleto.");
           if (pending.length) await schedule(pending);
@@ -152,6 +196,8 @@ export function createStreamingWobiSpeech({
         throw error;
       }
     } finally {
+      session.removeStateListener?.();
+      clearTimeout(session.recoveryTimer);
       clearTimeout(session.levelTimer);
       session.analyser?.disconnect();
       if (current === session) onAudioLevel?.(0);

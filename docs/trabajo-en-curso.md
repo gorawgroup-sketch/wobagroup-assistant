@@ -201,4 +201,10 @@ Envío directo y orientación hablada: Codex, `codex/envio-directo-wobi`, Front/
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Micrófono al principio, opciones secundarias y pedidos terminados recogidos | `codex/wobi-panel-compacto` | Front / navegador-pedidos | Codex | Tipos y build completos verdes; 109 pruebas del front. Chrome compilado verifica micrófono primero y fijo, ayuda/áreas/pedido terminado recogidos, dictado, envío único, seguimiento e incertidumbre visibles y móvil. Seguimiento de publicación en el PR de esta rama. |
+| Micrófono al principio, opciones secundarias y pedidos terminados recogidos | `codex/wobi-panel-compacto` | Front / navegador-pedidos | Codex | Tipos y build completos verdes; 109 pruebas del front. Chrome compilado verifica micrófono primero y fijo, ayuda/áreas/pedido terminado recogidos, dictado, envío único, seguimiento e incertidumbre visibles y móvil. PR #468 fusionado y desplegado: 72836a5 SUCCESS, front/CSS y salud HTTP 200; rama y worktree cerrados. |
+
+## Continuidad de Marin en móvil (12-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Recuperar audio interrumpido al usar el micrófono y evitar cortes de red en móvil | `codex/voz-movil` | Front / reproducción de voz | Codex | 114 pruebas front, tipos y build completos verdes. Núcleo compilado y WebAudio real: tres turnos táctiles con PCM Marin existente, red lenta, recuperación automática y manual sin regenerar; micrófono simulado, sin teléfono físico. Seguimiento del despliegue en el PR de esta rama. |
