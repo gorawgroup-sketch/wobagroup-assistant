@@ -1,4 +1,6 @@
 import { retirarPreguntaCaducada } from "../telegram/preguntaCaducada";
+import { descargarArchivoDrive } from "../drive/client";
+import { actualizarDeclaracion } from "../soportes/declaracion/declaracionStore";
 import Anthropic from "@anthropic-ai/sdk";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
@@ -890,7 +892,14 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
   await answerCallbackQuerySafe(callback.id, "Enviando...");
 
   try {
-    await enviarCorreo({
+    // Adjuntos guardados en Drive (p. ej. la declaración de gastos sin soporte): se descargan en el momento del envío.
+    const adjuntos = borrador.adjuntosDrive?.length
+      ? await Promise.all(borrador.adjuntosDrive.map(async (a) => {
+          const archivo = await descargarArchivoDrive(a.fileId);
+          return { filename: a.nombre, mimeType: a.mimeType || archivo.mimeType, content: archivo.bytes };
+        }))
+      : undefined;
+    const enviado = await enviarCorreo({
       to: borrador.to,
       asunto: borrador.subject,
       cuerpo: borrador.cuerpo,
@@ -898,7 +907,12 @@ async function handleDraftCallbackInterno(callback: TelegramCallbackQuery): Prom
       proceso: "borrador_aprobado",
       threadId: borrador.threadId,
       messageIdHeader: borrador.messageIdHeader,
+      adjuntos,
     });
+    if (borrador.declaracionId) {
+      await actualizarDeclaracion(borrador.declaracionId, { estado: "enviada", enviadoEn: Date.now(), threadId: enviado.threadId })
+        .catch((error) => console.error("[emailCallbackHandler] Correo enviado, pero no se pudo marcar la declaración como enviada:", error instanceof Error ? error.message : error));
+    }
 
     // Solo se consume (se descarta) el borrador si el envío tuvo éxito —
     // si falla, se conserva para poder reintentar sin perder el texto.
