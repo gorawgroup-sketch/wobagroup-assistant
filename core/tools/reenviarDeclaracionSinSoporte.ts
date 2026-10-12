@@ -21,7 +21,7 @@ export const reenviarDeclaracionSinSoporteTool: ToolDefinition = {
       motivo: { type: "string", enum: ["sin_adjunto", "no_recibida"], description: "sin_adjunto: el correo anterior fue sin documento (con disculpa). no_recibida: reenvío simple." },
       declaracion_id: { type: "string", description: "Id de la declaración, si se conoce." },
       empresa: { type: "string", enum: [...EMPRESAS] },
-      email: { type: "string", description: "Correo de la persona, si se conoce." },
+      email: { type: "string", description: "Correo(s) adicionales de destino que indique el usuario, separados por coma. Se AÑADEN al correo registrado de la persona, nunca lo sustituyen. Si no lo dice, no lo pidas." },
       titular: { type: "string", description: "Nombre (o parte) de la persona tal como lo dice el usuario, p. ej. «German». Basta con esto: la declaración pendiente se localiza sola." },
     },
   },
@@ -37,7 +37,7 @@ export const reenviarDeclaracionSinSoporteTool: ToolDefinition = {
         email: typeof input.email === "string" ? input.email.trim() || undefined : undefined,
         titular: typeof input.titular === "string" ? input.titular.trim() || undefined : undefined,
       });
-      return `Listo — el reenvío de la declaración ${r.declaracion.nombreArchivo} a ${r.declaracion.email} (${r.enElHilo ? "en el hilo del correo anterior" : "en correo nuevo"}, con el documento adjunto) ya se mostró en Telegram con botones. No hace falta repetirlo: dile al usuario que pulse «Enviar así» cuando lo revise.`;
+      return `Listo — el reenvío de la declaración ${r.declaracion.nombreArchivo} a ${r.destino} (${r.enElHilo ? "en el hilo del correo anterior" : "en correo nuevo"}, con el documento adjunto) ya se mostró en Telegram con botones. No hace falta repetirlo: dile al usuario que pulse «Enviar así» cuando lo revise.`;
     } catch (error) {
       console.error("[reenviarDeclaracionSinSoporte] Fallo con entrada", JSON.stringify(input), ":", error instanceof Error ? error.message : error);
       return `No pude preparar el reenvío: ${error instanceof Error ? error.message : String(error)}`;
