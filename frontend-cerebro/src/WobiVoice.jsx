@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-// One neural recording for every device, with WOBi pronounced as Uóbi.
-const GREETING_AUDIO = `${import.meta.env.BASE_URL}brand/wobi-saludo-neural-v3.mp3`;
+// Marin elegida por Carlos; muestra descargada de OpenAI.fm el 12-10-2026.
+const GREETING_AUDIO = `${import.meta.env.BASE_URL}brand/wobi-saludo-marin-v1.mp3`;
 
 export default function WobiVoice({ onSpeakingChange }) {
   const audioRef = useRef(null);
