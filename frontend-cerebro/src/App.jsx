@@ -1,3 +1,4 @@
+import SaldosApi from "./modules/saldosApi/SaldosApi.jsx";
 import SegurosDestination from './modules/seguros/SegurosDestination.jsx';
 import ModuleDetails from "./modules/nucleo/ModuleDetails.jsx";
 import NucleoVivo from "./modules/nucleo/NucleoVivo.jsx";
@@ -945,6 +946,7 @@ function ControlDiarioPanel({ data, apiKey, actualizacionId, onAbrir, onPregunta
 
       {abierto && (
         <div className="control-diario-contenido">
+          <SaldosApi saldos={control.saldosApi} apiKey={apiKey} puedeEditar={puedeResolver} onRefresh={onRefresh} />
           <div className="control-metricas">
             {[
               ["API hoy", control.costosDisponibles ? fmtUSD(costos?.hoy?.gastoRealApiUSD) : "No disponible"],

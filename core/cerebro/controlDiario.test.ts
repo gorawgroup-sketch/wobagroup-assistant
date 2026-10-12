@@ -459,3 +459,12 @@ test("si ya salta el umbral diario configurado, el gasto de hoy no duplica la ta
   assert.match(umbral.detalle, /405 llamadas/);
   assert.ok((umbral.pasos?.length ?? 0) >= 3);
 });
+
+test("saldo API bajo aparece en diagnóstico y eleva su prioridad", () => {
+  const entrada = entradaBase();
+  entrada.saldosApi = [{ proveedor: "openai", fuente: "https://platform.openai.com/settings/organization/billing/overview", saldoConfirmadoUSD: 2, verificadoEn: new Date().toISOString(), estimadoUSD: 0.8, consumoDesdeLecturaUSD: 1.2, umbralUSD: 5, lecturaAntigua: false, estado: "critico" }];
+  const control = generarControlDiario(entrada);
+  assert.equal(control.estado, "critico");
+  assert.equal(control.recomendaciones[0].id, "saldo-api-openai");
+  assert.equal(control.saldosApi?.[0].saldoConfirmadoUSD, 2);
+});

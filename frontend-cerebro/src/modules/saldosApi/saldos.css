@@ -1,0 +1,7 @@
+.saldos-api { display: grid; gap: 1rem; margin: 1rem 0; }
+.saldos-api article { padding: 1rem; border: 1px solid currentColor; border-radius: 12px; }
+.saldos-api article[role="alert"] { border-color: #e8a75c; }
+.saldos-api form { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; }
+.saldos-api label { display: grid; gap: .3rem; }
+.saldos-api input { max-width: 100%; padding: .5rem; }
+.saldos-api p { line-height: 1.5; }

@@ -1,3 +1,4 @@
+import { obtenerSaldosApi, SaldoApi } from "../saldosApi";
 import {
   obtenerAnalisisCostosDiario,
   type AnalisisCostosDiario,
@@ -66,6 +67,7 @@ export interface ControlDiario {
   resumen: string;
   generadoEn: string;
   costosDisponibles: boolean;
+  saldosApi?: SaldoApi[];
   costos: AnalisisCostosDiario | null;
   memoria: DiagnosticoMemoriaConversacional;
   politica: PoliticaControlDiario;
@@ -80,6 +82,7 @@ export interface ControlDiario {
 }
 
 export interface EntradaControlDiario {
+  saldosApi?: SaldoApi[];
   costos: AnalisisCostosDiario | null;
   memoria: DiagnosticoMemoriaConversacional;
   politica: PoliticaControlDiario;
@@ -171,6 +174,16 @@ function listaEmpresas(empresas: string[]): string {
 export function generarControlDiario(entrada: EntradaControlDiario): ControlDiario {
   const recomendaciones: RecomendacionControlDiario[] = [];
   const { costos, memoria, politica } = entrada;
+  for (const saldo of entrada.saldosApi ?? []) {
+    if (saldo.estado === "normal") continue;
+    recomendaciones.push({
+      id: `saldo-api-${saldo.proveedor}`, prioridad: saldo.estado === "critico" ? "critica" : "alta",
+      titulo: `${saldo.proveedor === "openai" ? "OpenAI / GPT" : "Anthropic"}: ${saldo.estado === "verificar" ? "verificar saldo" : "saldo API bajo"}`,
+      detalle: saldo.estimadoUSD === null ? "No hay una lectura fiable del saldo API." : `Estimación según consumo registrado por WOBi: $${saldo.estimadoUSD.toFixed(2)}. Umbral: $${saldo.umbralUSD.toFixed(2)}.`,
+      siguientePaso: "Consulta la facturación del proveedor y actualiza la lectura en Control diario. Recarga manualmente si corresponde.", modulo: "accesos",
+      pasos: ["Verifica el saldo en la cuenta API. Las suscripciones de chat se contabilizan por separado.", "Actualiza el saldo confirmado y su fecha en Control diario."],
+    });
+  }
 
   if (entrada.enviosCorreo === null) {
     recomendaciones.push({
@@ -586,6 +599,7 @@ export function generarControlDiario(entrada: EntradaControlDiario): ControlDiar
     estado,
     resumen,
     generadoEn: (entrada.generadoEn ?? new Date()).toISOString(),
+    saldosApi: entrada.saldosApi,
     costosDisponibles: costos !== null,
     costos,
     memoria,
@@ -642,9 +656,11 @@ export async function construirControlDiario(referencia: Date = new Date()): Pro
       return new Set<string>();
     }),
   ]);
+  const saldosApi = await obtenerSaldosApi(referencia);
   const config = cargarConfiguracionPoliticaApi();
 
   return generarControlDiario({
+    saldosApi,
     costos,
     memoria,
     politica: {
