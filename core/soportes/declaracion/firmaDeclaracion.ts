@@ -11,6 +11,7 @@ import { retirarPreguntaCaducada } from "../../telegram/preguntaCaducada";
 import type { Empresa } from "../../holded/client";
 import { actualizarDeclaracion, listarDeclaraciones, obtenerDeclaracion, type Declaracion } from "./declaracionStore";
 import { RUTA_CARPETA_DECLARACIONES } from "./plantillas";
+import { aplicarDeclaracion, proponerAplicacion } from "./aplicarDeclaracion";
 
 /**
  * Paso B del flujo «declaración de gastos sin soporte» (Carlos, 12-10-2026): seguir la declaración enviada hasta que la
@@ -100,8 +101,32 @@ export async function handleDeclaracionCallback(callback: TelegramCallbackQuery)
   const [accion, id] = (callback.data ?? "").split(":");
   const chatId = callback.message?.chat.id;
   const messageId = callback.message?.message_id;
-  if (!chatId || !id || (accion !== "decl_firmada" && accion !== "decl_nofirma")) { await responder(callback.id, "Acción no válida."); return; }
+  if (!chatId || !id || !["decl_firmada", "decl_nofirma", "decl_aplicar", "decl_noaplicar"].includes(accion)) { await responder(callback.id, "Acción no válida."); return; }
   const d = await obtenerDeclaracion(id);
+
+  // Paso C: aplicar la declaración firmada como soporte en Holded (botón explícito de Carlos).
+  if (accion === "decl_aplicar" || accion === "decl_noaplicar") {
+    if (!d || d.estado !== "firmada") { await retirarPreguntaCaducada(callback, d?.estado === "aplicada" ? "Esta declaración ya se aplicó." : "Esta declaración no está en estado firmada."); return; }
+    if (accion === "decl_noaplicar") {
+      await responder(callback.id, "Ok, queda firmada sin aplicar.");
+      if (messageId) await editTelegramMessage(chatId, messageId, `⏸️ La declaración firmada de ${d.titular} queda guardada sin aplicar como soporte. Cuando quieras, pide «aplica la declaración firmada de ${d.titular}».`, []).catch(() => undefined);
+      return;
+    }
+    await responder(callback.id, "Aplicando como soporte...");
+    if (messageId) await editTelegramMessage(chatId, messageId, `🔄 Aplicando la declaración firmada de ${d.titular} como soporte en Holded…`, []).catch(() => undefined);
+    try {
+      const r = await aplicarDeclaracion(chatId, d);
+      const texto = `✅ Declaración de ${d.titular}: ${r.adjuntados} gasto(s) existentes con la declaración adjunta; ${r.propuestos} gasto(s) nuevos propuestos arriba con sus botones` +
+        (r.fallos.length ? `; ${r.fallos.length} con fallo:\n  • ${r.fallos.join("\n  • ")}` : ".");
+      if (messageId) await editTelegramMessage(chatId, messageId, texto, []).catch(() => sendTelegramMessage(chatId, texto).catch(() => undefined));
+      else await sendTelegramMessage(chatId, texto).catch(() => undefined);
+    } catch (error) {
+      const detalle = error instanceof Error ? error.message : String(error);
+      console.error("[declaracion] No se pudo aplicar la declaración firmada:", detalle);
+      await sendTelegramMessage(chatId, `⚠️ No pude aplicar la declaración de ${d.titular} (${detalle}). No se dejó nada a medias sin registrar; pide «aplica la declaración firmada de ${d.titular}» para reintentar.`).catch(() => undefined);
+    }
+    return;
+  }
   if (!d || !d.firmaCandidata || d.estado !== "enviada") { await retirarPreguntaCaducada(callback, "Esta pregunta ya fue resuelta."); return; }
   const identidad: IdentidadCorreoCola = { threadId: d.threadId ?? "", mensajeId: d.firmaCandidata.mensajeId };
 
@@ -134,10 +159,12 @@ export async function handleDeclaracionCallback(callback: TelegramCallbackQuery)
     await actualizarDeclaracion(d.id, { estado: "firmada", firmadaEn: Date.now(), archivoFirmadoDriveId: subido.fileId, firmaCandidata: undefined });
     await avanzarCola(chatId, identidad, `declaracion:${d.id}:firmada`).catch((e) => console.error("[declaracion] Firma guardada, pero no se pudo avanzar la cola:", e instanceof Error ? e.message : e));
     const texto = `✅ Declaración firmada de ${d.titular} (${d.empresa}) guardada en Drive: ${subido.webViewLink}\n` +
-      `Cargos que cubre: ${d.cargos.length} (${d.cargos.map((c) => `${c.lugar} ${c.valor.toFixed(2)}`).join(", ")}). ` +
-      `Siguiente paso: ponerla como soporte de esos gastos en Holded (se construye como paso C; hasta entonces, el documento ya está disponible en Drive).`;
+      `Cargos que cubre: ${d.cargos.length} (${d.cargos.map((c) => `${c.lugar} ${c.valor.toFixed(2)}`).join(", ")}).`;
     if (messageId) await editTelegramMessage(chatId, messageId, texto, []).catch(() => sendTelegramMessage(chatId, texto).catch(() => undefined));
     else await sendTelegramMessage(chatId, texto).catch(() => undefined);
+    // Paso C: proponer de inmediato aplicarla como soporte (con botón).
+    const firmada = await obtenerDeclaracion(d.id);
+    if (firmada) await proponerAplicacion(chatId, firmada).catch((e) => console.error("[declaracion] No se pudo proponer la aplicación como soporte:", e instanceof Error ? e.message : e));
   } catch (error) {
     const detalle = error instanceof Error ? error.message : String(error);
     console.error("[declaracion] No se pudo guardar la declaración firmada:", detalle);

@@ -2,12 +2,14 @@ import type { Empresa } from "../../holded/client";
 
 /**
  * Plantillas «GASTOS SIN SOPORTE» por empresa (docx en la raíz del Drive de cada una; creadas el 12-10-2026 con su imagen
- * institucional). Se pueden sustituir por variable de entorno sin tocar código. Footprint usa los documentos por persona
- * (Simon, Alberto) y todavía no tiene plantilla genérica.
+ * institucional). Se pueden sustituir por variable de entorno sin tocar código. Footprint tiene plantilla genérica desde el 12-10-2026
+ * (derivada del documento de Simon).
  */
 const PLANTILLAS_POR_DEFECTO: Partial<Record<Empresa, string>> = {
   EWORKS: "1gJJuxrrggus_4_tuRhEGysclOPxIw_Eg",
   WOBA: "1JAKTEQLpUNUeujdi5FaU_fF4uh4gcBeV",
+  // Derivada el 12-10-2026 del documento de Simon (misma imagen institucional), con marcadores y una fila vacía.
+  Footprint: "1eSkaJDSP9cvCWvUCwfZn89SVchP_1x03",
 };
 
 export const FIRMA_EMPRESA: Partial<Record<Empresa, string>> = {
