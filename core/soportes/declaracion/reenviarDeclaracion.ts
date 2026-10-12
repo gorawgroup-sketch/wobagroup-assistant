@@ -2,7 +2,7 @@ import { buscarMensajes, obtenerResumenCorreo } from "../../gmail/client";
 import { actualizarMessageIdBorrador, consumirBorradorCorreo, crearBorradorCorreo, obtenerBorradorCorreo } from "../../gmail/emailDraftStore";
 import type { Empresa } from "../../holded/client";
 import { editTelegramMessage, sendTelegramMessageWithButtons } from "../../telegram/client";
-import { listarDeclaraciones, obtenerDeclaracion, type Declaracion } from "./declaracionStore";
+import { actualizarDeclaracion, listarDeclaraciones, obtenerDeclaracion, type Declaracion } from "./declaracionStore";
 import { textoCorreoDeclaracion } from "./generarDeclaracion";
 import { fechaCorta, importe } from "./plantillaDeclaracion";
 
@@ -41,11 +41,16 @@ function normalizar(texto: string): string {
 export function seleccionarDeclaracionPendiente(pendientes: Declaracion[], criterio: { empresa?: string; email?: string; titular?: string }): Declaracion {
   let candidatas = pendientes.filter((d) => d.estado === "generada" || d.estado === "enviada");
   if (criterio.empresa) candidatas = candidatas.filter((d) => d.empresa === criterio.empresa);
-  if (criterio.email?.trim()) candidatas = candidatas.filter((d) => d.email.toLowerCase() === criterio.email!.trim().toLowerCase());
-  else if (criterio.titular?.trim()) {
-    const palabras = normalizar(criterio.titular).split(/\s+/).filter(Boolean);
-    candidatas = candidatas.filter((d) => { const t = normalizar(d.titular); return palabras.every((p) => t.includes(p)); });
-  }
+  const porNombre = (lista: Declaracion[]): Declaracion[] => {
+    const palabras = normalizar(criterio.titular ?? "").split(/\s+/).filter(Boolean);
+    return palabras.length ? lista.filter((d) => { const t = normalizar(d.titular); return palabras.every((p) => t.includes(p)); }) : lista;
+  };
+  if (criterio.email?.trim()) {
+    const porCorreo = candidatas.filter((d) => d.email.toLowerCase() === criterio.email!.trim().toLowerCase());
+    // Caso real 12-10: Carlos dijo «envíaselo a german@eworkstudio.com» y la declaración estaba registrada con otro correo.
+    // El correo dado es el DESTINO que quiere Carlos, no un filtro: si no coincide con ninguna, se busca por nombre.
+    candidatas = porCorreo.length ? porCorreo : porNombre(candidatas);
+  } else candidatas = porNombre(candidatas);
   candidatas.sort((a, b) => b.creadoEn - a.creadoEn);
   const quien = criterio.email?.trim() || criterio.titular?.trim() || (criterio.empresa ? `la empresa ${criterio.empresa}` : "ninguna persona concreta");
   if (!candidatas.length) throw new Error(`No hay ninguna declaración pendiente de firma para ${quien}.`);
@@ -54,7 +59,7 @@ export function seleccionarDeclaracionPendiente(pendientes: Declaracion[], crite
   return candidatas[0];
 }
 
-export interface ResultadoReenvio { declaracion: Declaracion; borradorId: string; messageId: number; enElHilo: boolean }
+export interface ResultadoReenvio { declaracion: Declaracion; borradorId: string; messageId: number; enElHilo: boolean; destino: string }
 
 export function textoCorreoReenvioDeclaracion(d: { titular: string; empresa: Empresa; cargos: Declaracion["cargos"]; nombreArchivo: string; motivo: MotivoReenvio }): { asunto: string; cuerpo: string } {
   const nombre = d.titular.trim().split(/\s+/)[0] || d.titular;
@@ -99,6 +104,15 @@ export async function localizarHiloEnviado(d: Declaracion): Promise<{ threadId: 
   return undefined;
 }
 
+/** Lista de destinatarios: el registrado primero y, sin repetir, los que indique Carlos (coma o punto y coma). */
+export function destinosReenvio(registrado: string, indicados?: string): string[] {
+  const lista = [registrado.trim()];
+  for (const c of (indicados ?? "").split(/[,;]/).map((x) => x.trim()).filter(Boolean)) {
+    if (!lista.some((x) => x.toLowerCase() === c.toLowerCase())) lista.push(c);
+  }
+  return lista;
+}
+
 export async function elegirDeclaracionAReenviar(e: Pick<EntradaReenvio, "declaracionId" | "empresa" | "email" | "titular">): Promise<Declaracion> {
   if (e.declaracionId) {
     const d = await obtenerDeclaracion(e.declaracionId);
@@ -114,14 +128,19 @@ export async function reenviarDeclaracion(e: EntradaReenvio): Promise<ResultadoR
   if (declaracion.estado === "firmada" || declaracion.estado === "aplicada") {
     throw new Error(`La declaración de ${declaracion.titular} ya está ${declaracion.estado}; no hay nada que reenviar.`);
   }
+  // Destino: el correo registrado de la persona SIEMPRE va (ahí vive el hilo y desde ahí contesta); si Carlos indica otra
+  // dirección, se añade como destinatario adicional (Carlos 12-10: «deja los 2 mails como destino»). No se sustituye.
+  const destinos = destinosReenvio(declaracion.email, e.email);
+  const destino = destinos.join(", ");
+  const adicionales = destinos.slice(1);
   const hilo = await localizarHiloEnviado(declaracion);
   const { asunto, cuerpo } = textoCorreoReenvioDeclaracion({ titular: declaracion.titular, empresa: declaracion.empresa as Empresa, cargos: declaracion.cargos, nombreArchivo: declaracion.nombreArchivo, motivo: e.motivo });
   const borrador = await crearBorradorCorreo({
-    chatId: e.chatId, messageId: 0, to: declaracion.email, subject: asunto, cuerpo, threadId: hilo?.threadId, messageIdHeader: hilo?.messageIdHeader,
+    chatId: e.chatId, messageId: 0, to: destino, subject: asunto, cuerpo, threadId: hilo?.threadId, messageIdHeader: hilo?.messageIdHeader,
     adjuntosDrive: [{ fileId: declaracion.driveFileId, nombre: declaracion.nombreArchivo, mimeType: MIME_DOCX }], declaracionId: declaracion.id,
   });
   const texto = [
-    `✉️ Reenvío de la declaración de gastos sin soporte de ${declaracion.titular} (${declaracion.empresa}) a ${declaracion.email}, ${hilo ? "como respuesta en el hilo del correo anterior" : "en un correo nuevo (no encontré el correo anterior en Enviados)"}, con el documento adjunto: ${declaracion.nombreArchivo}`,
+    `✉️ Reenvío de la declaración de gastos sin soporte de ${declaracion.titular} (${declaracion.empresa}) a ${destino}${adicionales.length ? ` (se añade ${adicionales.join(", ")} al registrado)` : ""}, ${hilo ? "como respuesta en el hilo del correo anterior" : "en un correo nuevo (no encontré el correo anterior en Enviados)"}, con el documento adjunto: ${declaracion.nombreArchivo}`,
     `Asunto: ${asunto}`, "", cuerpo,
   ].join("\n");
   let messageId = 0;
@@ -143,5 +162,5 @@ export async function reenviarDeclaracion(e: EntradaReenvio): Promise<ResultadoR
     }
     throw error;
   }
-  return { declaracion, borradorId: borrador.id, messageId, enElHilo: Boolean(hilo) };
+  return { declaracion, borradorId: borrador.id, messageId, enElHilo: Boolean(hilo), destino };
 }
