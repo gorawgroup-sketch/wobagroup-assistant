@@ -85,3 +85,21 @@ test('la explicación de un cargo descartado dice la causa REAL (antes mezclaba 
   assert.match(motivoDescarteCargoPorNombre(c, p, '*', { importeExacto: true, diasDeDiferencia: 0 }), /descripción del cargo está vacía/);
   assert.match(motivoDescarteCargoPorNombre(c, p, 'Bk', { importeExacto: true, diasDeDiferencia: Number.NaN }), /no coinciden la fecha/);
 });
+
+test('INVARIANTE: un cargo de importe y día exactos con categoría desconocida NUNCA queda «incompatible» por el aspecto de su descripción (longitud, mayúsculas, signos, cifras)', () => {
+  const proveedor = 'Proveedor Inventado Uno SL', concepto = 'Servicio varios';
+  let semilla = 20261012; // generador determinista: la misma tanda en cada ejecución
+  const azar = (n: number) => { semilla = (semilla * 1103515245 + 12345) & 0x7fffffff; return semilla % n; };
+  const alfabeto = 'abcdefghijklmnopqrstuvwxyz0123456789 *.-/';
+  let probadas = 0;
+  for (let i = 0; i < 600; i++) {
+    const largo = 2 + azar(28);
+    let d = ''; for (let j = 0; j < largo; j++) d += alfabeto[azar(alfabeto.length)];
+    if (azar(2)) d = d.toUpperCase();
+    // Solo descripciones con al menos 2 letras/números y sin categoría conocida (las demás tienen su propia regla, probada aparte).
+    if (d.replace(/[^a-z0-9]/gi, '').length < 2 || inferirTagsCategoria(d, '').length > 0) continue;
+    probadas++;
+    assert.notEqual(nivelCompatibilidadMovimiento(proveedor, concepto, d, { importeYFechaExactos: true }), 'incompatible', `«${d}» se descartaría con importe y día exactos`);
+  }
+  assert.ok(probadas > 300, `solo se probaron ${probadas} descripciones`);
+});
