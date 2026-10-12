@@ -1,0 +1,54 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "descriptor-corto-con-importe-y-fecha-exactos",
+  "fuente": "Caso real 2026-10-12 (Carlos): ticket Burger King Ámsterdam 20,15 EUR (Nuria Ortiz) y, en Main de Footprint, el cargo «Bk» −20,15 EUR del mismo día sin conciliar; el sistema dijo «no encontré ningún movimiento».",
+  "descripcion": "Una descripción bancaria de 2 letras («Bk») con importe y día exactos y categoría desconocida se ofrece POR CONFIRMAR al armar la propuesta (antes se descartaba por tener menos de 3 caracteres); la conciliación automática no la ve.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Burger King Isolatorweg (Amsterdam)",
+    "concepto": "Comida Burger King — Isolatorweg 25, Ámsterdam (AMS) — Nuria Ortiz — 9 oct 2026 — evento Avistic/APECS Noruega",
+    "monto": 20.15,
+    "moneda": "EUR",
+    "fecha": "2026-10-09"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-main",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    }
+  ],
+  "movimientos": {
+    "cuenta-main": [
+      {
+        "id": "m-bk",
+        "description": "Bk",
+        "amount": "-20.15",
+        "currency": "EUR",
+        "booking_date": "2026-10-09",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [
+      {
+        "movementId": "m-bk",
+        "compatibilidad": "por_confirmar"
+      }
+    ],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesIncluyen": [
+      "Crear y conciliar"
+    ],
+    "trazaContiene": [
+      "ofrecido por confirmar"
+    ]
+  }
+}

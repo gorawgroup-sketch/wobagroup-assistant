@@ -5115,8 +5115,43 @@ export function nivelCompatibilidadMovimiento(
   // Solo si la categoría del CARGO es desconocida: un cargo de categoría conocida distinta o con un gasto sin categoría
   // no se ofrece por importe (cualquier restaurante «encajaría» con un gasto sin clasificar).
   const cargoDesconocido = inferirTagsCategoria(descripcion, "").length === 0;
-  if (cargoDesconocido && normalizar(descripcion).length >= 3 && evidencia.importeYFechaExactos) return "por_confirmar";
+  if (cargoDesconocido && caracteresUtilesDeDescripcion(descripcion) >= LONGITUD_MINIMA_DESCRIPCION_POR_CONFIRMAR && evidencia.importeYFechaExactos) return "por_confirmar";
   return "incompatible";
+}
+
+/**
+ * Descripciones de banco de 2 letras existen y son el caso normal de algunos comercios («Bk» = Burger King, «Tr», «Ec»):
+ * con importe y día exactos, un solo cargo y categoría desconocida la evidencia es el importe y la fecha, no la longitud del
+ * texto. Con el mínimo en 3 el sistema decía «no encontré ningún movimiento» teniendo ese cargo delante (caso real
+ * 2026-10-12: «Bk» −20,15 EUR frente al ticket de Burger King del mismo día). Siempre se ofrece POR CONFIRMAR, nunca se
+ * concilia solo.
+ */
+export const LONGITUD_MINIMA_DESCRIPCION_POR_CONFIRMAR = 2;
+/** Letras y números de la descripción: «--», «*» o «.» no son un nombre aunque tengan 2 caracteres. */
+const caracteresUtilesDeDescripcion = (descripcion: string): number => normalizar(descripcion).replace(/[^a-z0-9]/g, "").length;
+
+/**
+ * Por qué un cargo del MISMO IMPORTE no se ofreció por nombre: la causa real, no una lista de posibilidades. La frase se enseña al
+ * operador («descarté …»), así que tiene que ser verdad (antes decía «no coinciden la fecha (±1 día) o la categoría…» aunque la fecha
+ * fuera la misma y lo que fallaba era otra cosa).
+ */
+export function motivoDescarteCargoPorNombre(
+  concepto: string,
+  proveedor: string,
+  descripcion: string,
+  evidencia: { importeExacto: boolean; diasDeDiferencia: number }
+): string {
+  const tagsCargo = inferirTagsCategoria(descripcion, "");
+  if (tagsCargo.length > 0) {
+    return `el nombre no se reconoce y la categoría del cargo ya es conocida (${tagsCargo.join("/")}) y no respalda este gasto`;
+  }
+  if (!evidencia.importeExacto) return "el nombre no se reconoce y el importe no es exacto (solo se ofrece sin nombre con importe exacto)";
+  if (!Number.isFinite(evidencia.diasDeDiferencia) || evidencia.diasDeDiferencia > 1) {
+    const dias = Number.isFinite(evidencia.diasDeDiferencia) ? ` (${Math.round(evidencia.diasDeDiferencia)} días de diferencia)` : "";
+    return `el nombre no se reconoce y no coinciden la fecha (±1 día)${dias}`;
+  }
+  if (caracteresUtilesDeDescripcion(descripcion) < LONGITUD_MINIMA_DESCRIPCION_POR_CONFIRMAR) return "el nombre no se reconoce y la descripción del cargo está vacía";
+  return "el nombre no se reconoce y no hay evidencia suficiente para ofrecerlo";
 }
 
 /**
@@ -5227,9 +5262,8 @@ export async function buscarMovimientoSimilar(
       const fechaMovimiento = mov.booking_date ? mov.booking_date.slice(0, 10) : "";
       let compatibilidad: "por_confirmar" | "aprendido" | undefined;
       if (criterios.proveedor) {
-        const importeYFechaExactos =
-          Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= (criterios.importeAproximadoPorCambio ? toleranciaEur : TOLERANCIA_MONTO) &&
-          diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
+        const importeExacto = Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= (criterios.importeAproximadoPorCambio ? toleranciaEur : TOLERANCIA_MONTO);
+        const importeYFechaExactos = importeExacto && diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos });
         const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);
         if (
@@ -5258,7 +5292,10 @@ export async function buscarMovimientoSimilar(
           const yaConfirmado = descriptorConfirmadoParaProveedor(await aprendidos, empresa, criterios.proveedor, monedaObjetivo, mov.description ?? "");
           if (yaConfirmado) compatibilidad = "aprendido";
           else if (nivel === "por_confirmar") compatibilidad = "por_confirmar";
-          else { anotar(monto, "descartado", "el nombre no se reconoce y no coinciden la fecha (±1 día) o la categoría del cargo ya es conocida y distinta"); continue; }
+          else {
+            anotar(monto, "descartado", motivoDescarteCargoPorNombre(criterios.concepto ?? "", criterios.proveedor, mov.description ?? "", { importeExacto, diasDeDiferencia }));
+            continue;
+          }
         }
       }
 
