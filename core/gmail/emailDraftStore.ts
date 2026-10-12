@@ -66,6 +66,10 @@ const HEADERS = [
   "adjuntosDriveJson",
   "declaracionId",
 ];
+/// Última columna real de la pestaña, derivada de HEADERS. Todos los rangos de lectura y escritura
+/// deben usarla: el 12-10-2026 el borrador de la declaración de German perdió el adjunto porque los
+/// rangos seguían fijos en `M` (13 columnas) tras añadir `adjuntosDriveJson` y `declaracionId`.
+const ULTIMA_COLUMNA = String.fromCharCode(64 + HEADERS.length);
 
 function assertSheetId(): string {
   const id = process.env.CASHFLOW_SHEET_ID;
@@ -107,7 +111,7 @@ async function ensureTab(): Promise<number> {
     // de headers es una migración aditiva e idempotente.
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A1:O1`,
+      range: `${TAB_NAME}!A1:${ULTIMA_COLUMNA}1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADERS] },
     });
@@ -126,7 +130,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:O1`,
+    range: `${TAB_NAME}!A1:${ULTIMA_COLUMNA}1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -135,7 +139,7 @@ async function ensureTab(): Promise<number> {
   return tabGridId;
 }
 
-function rowToBorrador(row: unknown[]): BorradorCorreo | null {
+export function rowToBorrador(row: unknown[]): BorradorCorreo | null {
   if (!row[0]) return null;
   return {
     id: String(row[0]),
@@ -167,7 +171,7 @@ function adjuntosDesdeCelda(celda: unknown): BorradorCorreo["adjuntosDrive"] {
   }
 }
 
-function borradorToRow(b: BorradorCorreo): (string | number)[] {
+export function borradorToRow(b: BorradorCorreo): (string | number)[] {
   return [
     b.id,
     b.chatId,
@@ -199,7 +203,7 @@ async function leerTodos(): Promise<FilaBorradorConIndice[]> {
 
   const resp = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:M10000`,
+    range: `${TAB_NAME}!A2:${ULTIMA_COLUMNA}10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   });
 
@@ -266,7 +270,7 @@ export async function crearBorradorCorreo(
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A:M`,
+      range: `${TAB_NAME}!A:${ULTIMA_COLUMNA}`,
       valueInputOption: "RAW",
       insertDataOption: "INSERT_ROWS",
       requestBody: { values: [borradorToRow(borrador)] },
@@ -466,7 +470,7 @@ export async function vincularBorradorACola(
     });
     const verificacion = await sheets.spreadsheets.values.get({
       spreadsheetId: assertSheetId(),
-      range: `${TAB_NAME}!A${match.rowIndex}:M${match.rowIndex}`,
+      range: `${TAB_NAME}!A${match.rowIndex}:${ULTIMA_COLUMNA}${match.rowIndex}`,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
     const verificado = rowToBorrador(verificacion.data.values?.[0] ?? []);

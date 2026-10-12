@@ -37,6 +37,7 @@ import { reintentarContactoPendienteTool } from "./reintentarContactoPendiente";
 import { fijarAliasProveedorTool } from "./fijarAliasProveedor";
 import { reintentarGastoPendienteTool, descartarGastoPendienteDatosTool } from "./reintentarGastoPendiente";
 import { prepararDeclaracionSinSoporteTool } from "./prepararDeclaracionSinSoporte";
+import { reenviarDeclaracionSinSoporteTool } from "./reenviarDeclaracionSinSoporte";
 import { reenviarBotonesPropuestaGastoTool } from "./reenviarBotonesPropuestaGasto";
 import { explicarBusquedaCargoTool } from "./explicarBusquedaCargo";
 import { reclasificarDocumentoPendienteTool, descartarDocumentoPendienteTool } from "./reclasificarDocumentoPendiente";
@@ -113,6 +114,7 @@ const tools: ToolDefinition[] = [
   reintentarGastoPendienteTool,
   descartarGastoPendienteDatosTool,
   prepararDeclaracionSinSoporteTool,
+  reenviarDeclaracionSinSoporteTool,
   reenviarBotonesPropuestaGastoTool,
   explicarBusquedaCargoTool,
   reclasificarDocumentoPendienteTool,
