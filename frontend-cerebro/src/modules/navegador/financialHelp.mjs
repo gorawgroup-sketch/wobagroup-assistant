@@ -3,5 +3,5 @@ export const FINANCIAL_HELP='No puedo revisar ni analizar los estados financiero
 export function financialHelp(text){
  if(typeof text!=='string')return false;
  const q=text.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
- return /\b(?:revisar|revisa|analizar|analiza|evaluar|evalua)\b/.test(q)&&/\b(?:estados? financieros?|balance(?:s)? contables?|cuentas anuales)\b/.test(q);
+ return !/\bno (?:revises|analices|abras|quiero)\b/.test(q)&&/\b(?:estados? financieros?|balance(?:s)? contables?|cuentas anuales)\b/.test(q);
 }

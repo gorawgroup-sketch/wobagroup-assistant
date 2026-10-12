@@ -510,3 +510,7 @@ Cuando el único cargo bancario parecido ya está conciliado, Wobi sigue ese car
 
 ### Notificaciones de la AEAT y de la Seguridad Social: nunca son gasto (10-10-2026, incidencia #7)
 Una sanción tributaria, una providencia de apremio, un requerimiento, una liquidación o una diligencia de embargo de la Agencia Tributaria o de la Tesorería General de la Seguridad Social no se propone nunca como gasto en Holded, aunque el lector la vea como una «factura» con importe. Wobi la reconoce por el organismo y el tipo de acto (regla determinista, sin IA) y la trata como documento oficial: propone archivarla en la carpeta de requerimientos de Hacienda de su empresa (p. ej. «REQUERIMIENTOS HACIENDA») y queda para revisar e informar. Si en un correo vienen varias notificaciones, todas reciben el mismo tratamiento. En la revisión automática, el motivo sale como «notificación oficial de la AEAT o la Seguridad Social, no un gasto».
+
+### Consultas desde Pídele a WOBi (12-10-2026)
+
+«Cuál es el costo de operación de este sistema» usa la lectura ya disponible en Pendientes → Ver control diario: gasto real de API en USD de hoy, ayer, semana y mes, proyección separada y procesos. Indica alcance conjunto, fecha y lectura conservada; no incluye cuotas fijas ni alojamiento. Períodos históricos, otras monedas o datos ausentes ofrecen Telegram. «Cómo están los estados financieros de Footprint» abre el chat de WOBi y conserva la petición para copiarla. Abrir el chat no envía mensajes.
