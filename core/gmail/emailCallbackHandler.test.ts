@@ -54,6 +54,10 @@ test("guardar, orientar y proceder restauran la acción al fallar sin avanzar la
 
   const orientar = fuente.slice(inicioOrientar, inicioProceder);
   assert.match(orientar, /mensajeId:\s*propuesta\.mensajeId/);
+  // Caso real 12-10-2026: con messageId 0 la edición fallaba («message to edit not found») y el botón no mostraba nada.
+  assert.match(orientar, /editTelegramMessage\(propuesta\.chatId, messageIdVisible,/);
+  assert.match(orientar, /sendTelegramMessage\(propuesta\.chatId, peticion\)/);
+  assert.match(fuente, /const messageIdVisible = propuesta\.messageId \|\| callback\.message\?\.message_id \|\| 0;/);
   assert.match(orientar, /restaurarPropuestaTrasError\(/);
   assert.doesNotMatch(orientar, /avanzarColaCorreoSiActivo/);
 

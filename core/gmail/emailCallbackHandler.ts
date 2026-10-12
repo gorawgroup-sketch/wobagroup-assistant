@@ -470,6 +470,11 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
     return;
   }
 
+  // Caso real (Carlos, 12-10-2026, «Dar instrucciones específicas» sin efecto): la propuesta se publicó con messageId 0
+  // (no se pudo guardar el id por un tiempo agotado de Sheets) y cada edición apuntaba a un mensaje inexistente:
+  // «message to edit not found». El mensaje que tiene el botón es el que acaba de pulsarse: ese es el que se edita.
+  const messageIdVisible = propuesta.messageId || callback.message?.message_id || 0;
+
   const identidadPropuesta = identidadCorreoDePropuesta(propuesta);
   if (propuesta.deColaCorreo && !identidadPropuesta) {
     await answerCallbackQuerySafe(callback.id, "No pude verificar a qué correo pertenece esta acción.");
@@ -484,7 +489,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
     await answerCallbackQuerySafe(callback.id, "Descartado.");
     await editTelegramMessage(
       propuesta.chatId,
-      propuesta.messageId,
+      messageIdVisible,
       `❌ Descartado — ${propuesta.asunto} (${propuesta.de})`,
       []
     ).catch((error) => console.error("[emailCallbackHandler] No se pudo reflejar el descarte en Telegram (no crítico):", error));
@@ -503,7 +508,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
     try {
       const cuerpo = await obtenerCuerpoCompletoCorreo(propuesta.mensajeId);
       const contenido = [`De: ${propuesta.de}`, `Asunto: ${propuesta.asunto}`, "", cuerpo].join("\n");
-      await editTelegramMessage(propuesta.chatId, propuesta.messageId, "🧠 Guardando como conocimiento — elige la empresa abajo.", []);
+      await editTelegramMessage(propuesta.chatId, messageIdVisible, "🧠 Guardando como conocimiento — elige la empresa abajo.", []);
       // Pedido explícito de Carlos: revisar_correo_puntual (fuera de la cola) también puede crear
       // PropuestaAccionCorreo — ya no es cierto que "solo se crea desde la cola", así que esto sigue
       // el deColaCorreo real de la propuesta en vez de asumir true.
@@ -539,12 +544,16 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
         deColaCorreo: propuesta.deColaCorreo,
         mensajeId: propuesta.mensajeId,
       });
-      await editTelegramMessage(
-        propuesta.chatId,
-        propuesta.messageId,
-        `✏️ Ok — respóndeme qué quieres que haga con este correo ("${propuesta.asunto}", de ${propuesta.de}).`,
-        []
-      ).catch((error) => console.error("[emailCallbackHandler] No se pudo mostrar la solicitud de orientación (no crítico):", error));
+      const peticion = `✏️ Ok — respóndeme qué quieres que haga con este correo ("${propuesta.asunto}", de ${propuesta.de}). ` +
+        "Escríbelo como mensaje normal; lo aplico a este correo.";
+      try {
+        await editTelegramMessage(propuesta.chatId, messageIdVisible, peticion, []);
+      } catch (error) {
+        // La orientación ya está guardada: la petición tiene que verse sí o sí, aunque el mensaje original no se pueda editar.
+        console.error("[emailCallbackHandler] No se pudo editar el mensaje con la solicitud de orientación; se manda aparte:", error instanceof Error ? error.message : error);
+        await sendTelegramMessage(propuesta.chatId, peticion).catch((e) =>
+          console.error("[emailCallbackHandler] Tampoco se pudo mandar la solicitud de orientación aparte:", e instanceof Error ? e.message : e));
+      }
     } catch (error) {
       console.error("[emailCallbackHandler] Error guardando la orientación pendiente:", error);
       await restaurarPropuestaTrasError(
@@ -559,7 +568,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
   await answerCallbackQuerySafe(callback.id, "Procesando...");
   await editTelegramMessage(
     propuesta.chatId,
-    propuesta.messageId,
+    messageIdVisible,
     `🔄 Procesando — ${propuesta.asunto} (${propuesta.de})\n\nEsto puede tardar uno o dos minutos si hace falta explorar Drive o Holded.`,
     []
   ).catch((error) => console.error("[emailCallbackHandler] No se pudo mostrar 'Procesando...' (no crítico):", error));
@@ -587,7 +596,7 @@ async function handleEmailActionCallbackInterno(callback: TelegramCallbackQuery)
 
     await editTelegramMessageSmart(
       propuesta.chatId,
-      propuesta.messageId,
+      messageIdVisible,
       respuesta,
       [],
       `✅ Procesado — ${propuesta.asunto} (${propuesta.de})`
