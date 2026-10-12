@@ -13,7 +13,11 @@ const HEADERS = ["id", "empresa", "titular", "email", "cargoFirmante", "chatId",
 const NUM_COLS = HEADERS.length;
 
 export type EstadoDeclaracion = "generada" | "enviada" | "firmada" | "aplicada" | "descartada";
-export interface CargoDeclarado { id: string; fecha: string; lugar: string; valor: number; moneda: string }
+export interface CargoDeclarado {
+  id: string; fecha: string; lugar: string; valor: number; moneda: string;
+  /** Paso C: cómo quedó el soporte en Holded para este cargo (adjuntado a una compra existente, o propuesto como gasto nuevo). */
+  estadoSoporte?: "adjuntado" | "propuesto"; compraId?: string;
+}
 /** Adjunto recibido en el hilo de la declaración que podría ser el documento firmado (pendiente del botón de Carlos). */
 export interface FirmaCandidata { mensajeId: string; filename: string; mimeType: string; size: number; recibidaEn: number }
 export interface Declaracion {

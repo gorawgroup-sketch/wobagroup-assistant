@@ -333,6 +333,8 @@ const ACCIONES_SENSIBLES = new Set([
   "gpd_crear",
   "decl_firmada",
   "decl_nofirma",
+  "decl_aplicar",
+  "decl_noaplicar",
   "resumen_descartar_todo",
   // Mismo criterio: descartar UN pendiente individual del resumen de fin de día (ver
   // resumenPendientesDiario.ts) es la misma clase de decisión que "Descartar todo", solo que a
