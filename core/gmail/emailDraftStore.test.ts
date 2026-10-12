@@ -4,6 +4,8 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   consumirBorradorUnaVez,
+  rowToBorrador,
+  borradorToRow,
   seleccionarBorradorCorrelacionado,
   seleccionarBorradorParaRecordatorio,
   type BorradorCorreo,
@@ -177,4 +179,34 @@ test("seleccionarBorradorParaRecordatorio: elige el manual más reciente, nunca 
     undefined,
     "si el único borrador es de la cola, no hay nada que recordar por esta vía"
   );
+});
+
+test("los adjuntos de Drive y la declaración sobreviven la ida y vuelta por la fila (caso German 12-10)", () => {
+  const borrador: BorradorCorreo = {
+    id: "2b866339",
+    chatId: 1,
+    messageId: 2,
+    to: "persona@example.com",
+    subject: "EWORKS · Declaración de gastos sin soporte para tu firma",
+    cuerpo: "Texto",
+    creadoEn: 10,
+    adjuntosDrive: [{ fileId: "1phvahYB", nombre: "GASTOS SIN SOPORTE.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }],
+    declaracionId: "7aeb11cd",
+  };
+  const fila = borradorToRow(borrador);
+  assert.equal(fila.length, 15, "la fila debe cubrir las 15 columnas de la pestaña");
+  const leido = rowToBorrador(fila);
+  assert.deepEqual(leido?.adjuntosDrive, borrador.adjuntosDrive);
+  assert.equal(leido?.declaracionId, "7aeb11cd");
+});
+
+test("ningún rango de fila completa queda fijo en 13 columnas: la última columna sale de HEADERS", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/gmail/emailDraftStore.ts"), "utf8");
+  assert.match(fuente, /const ULTIMA_COLUMNA = String\.fromCharCode\(64 \+ HEADERS\.length\)/);
+  // Rangos de fila completa (A…): todos con la última columna derivada, ninguno con una letra fija.
+  const rangosFilaCompleta = fuente.match(/`\$\{TAB_NAME\}!A[^`]*`/g) ?? [];
+  assert.ok(rangosFilaCompleta.length >= 4, "deben existir los rangos de cabecera, lectura, alta y verificación");
+  for (const rango of rangosFilaCompleta) {
+    assert.match(rango, /\$\{ULTIMA_COLUMNA\}/, `rango con columna fija: ${rango}`);
+  }
 });
