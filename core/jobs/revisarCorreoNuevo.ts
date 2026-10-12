@@ -700,10 +700,8 @@ async function procesarCorreoLocalizado(
   // con 3 adjuntos necesita 3 resoluciones antes de darse por leído.
   // Declaración de gastos sin soporte (paso B): una respuesta en el hilo de una declaración enviada se trata como posible
   // documento firmado (pregunta con botón), nunca como recibo. Punto de conexión; la lógica vive en core/soportes/declaracion/.
-  const declaracionDelHilo = await declaracionEnviadaDelHilo(correo.threadId).catch((error) => {
-    console.error("[revisarCorreoNuevo] No se pudo comprobar si el hilo tiene una declaración enviada (se sigue el flujo normal):", error instanceof Error ? error.message : error);
-    return undefined;
-  });
+  // Si el registro no se puede leer, el correo no se procesa a ciegas: el fallo sube y la cola lo reintenta (como cualquier otra lectura).
+  const declaracionDelHilo = await declaracionEnviadaDelHilo(correo.threadId);
   if (declaracionDelHilo && !opciones.soloArchivar) {
     const enManosDeLaFirma = await proponerFirmaRecibida({ chatId, declaracion: declaracionDelHilo, correo, deColaCorreo });
     if (enManosDeLaFirma) return;

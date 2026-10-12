@@ -5,7 +5,6 @@ import { incrementarPendientesActivo, revertirIncrementoPendientesActivo, type I
 import { resolverOCrearCarpeta, subirArchivoADrive } from "../../drive/client";
 import { ROOT_FOLDERS } from "../../drive/rootFolders";
 import { crearBorradorCorreo, actualizarMessageIdBorrador, obtenerBorradorCorreo, consumirBorradorCorreo } from "../../gmail/emailDraftStore";
-import { avanzarColaCorreoSiActivo } from "../../jobs/revisarCorreoNuevo";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramMessageWithButtons } from "../../telegram/client";
 import type { TelegramCallbackQuery } from "../../telegram/types";
 import { retirarPreguntaCaducada } from "../../telegram/preguntaCaducada";
@@ -87,6 +86,12 @@ export async function proponerFirmaRecibida(p: { chatId: number; declaracion: De
   }
 }
 
+/** revisarCorreoNuevo importa este módulo (punto de conexión): se carga en diferido para no cerrar el ciclo en el arranque. */
+async function avanzarCola(chatId: number, identidad: IdentidadCorreoCola, clave: string): Promise<void> {
+  const { avanzarColaCorreoSiActivo } = await import("../../jobs/revisarCorreoNuevo");
+  await avanzarCola(chatId, identidad, clave);
+}
+
 async function responder(id: string, texto?: string): Promise<void> {
   try { await answerCallbackQuery(id, texto); } catch (error) { console.error("[declaracion] No se pudo responder el callback (no crítico):", error instanceof Error ? error.message : error); }
 }
@@ -103,7 +108,7 @@ export async function handleDeclaracionCallback(callback: TelegramCallbackQuery)
   if (accion === "decl_nofirma") {
     await responder(callback.id, "Ok.");
     await actualizarDeclaracion(d.id, { firmaCandidata: undefined, nota: `${d.nota ? `${d.nota} ` : ""}[${new Date().toISOString().slice(0, 10)}: adjunto «${d.firmaCandidata.filename}» descartado como firma]` });
-    await avanzarColaCorreoSiActivo(chatId, identidad, `declaracion:${d.id}:nofirma:${d.firmaCandidata.mensajeId}`).catch((e) => console.error("[declaracion] No se pudo avanzar la cola tras «no es la firma»:", e instanceof Error ? e.message : e));
+    await avanzarCola(chatId, identidad, `declaracion:${d.id}:nofirma:${d.firmaCandidata.mensajeId}`).catch((e) => console.error("[declaracion] No se pudo avanzar la cola tras «no es la firma»:", e instanceof Error ? e.message : e));
     if (messageId) await editTelegramMessage(chatId, messageId, `Ok — el adjunto «${d.firmaCandidata.filename}» no es la declaración firmada de ${d.titular}. La declaración sigue «enviada»; si hace falta, pídele el documento de nuevo.`, []).catch(() => undefined);
     return;
   }
@@ -127,7 +132,7 @@ export async function handleDeclaracionCallback(callback: TelegramCallbackQuery)
       await unlink(rutaLocal).catch(() => undefined);
     }
     await actualizarDeclaracion(d.id, { estado: "firmada", firmadaEn: Date.now(), archivoFirmadoDriveId: subido.fileId, firmaCandidata: undefined });
-    await avanzarColaCorreoSiActivo(chatId, identidad, `declaracion:${d.id}:firmada`).catch((e) => console.error("[declaracion] Firma guardada, pero no se pudo avanzar la cola:", e instanceof Error ? e.message : e));
+    await avanzarCola(chatId, identidad, `declaracion:${d.id}:firmada`).catch((e) => console.error("[declaracion] Firma guardada, pero no se pudo avanzar la cola:", e instanceof Error ? e.message : e));
     const texto = `✅ Declaración firmada de ${d.titular} (${d.empresa}) guardada en Drive: ${subido.webViewLink}\n` +
       `Cargos que cubre: ${d.cargos.length} (${d.cargos.map((c) => `${c.lugar} ${c.valor.toFixed(2)}`).join(", ")}). ` +
       `Siguiente paso: ponerla como soporte de esos gastos en Holded (se construye como paso C; hasta entonces, el documento ya está disponible en Drive).`;
