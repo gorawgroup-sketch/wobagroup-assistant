@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {movimientoCompatibleConGasto, inferirTagsCategoria, combinarTagsGastoAprendidos, nivelCompatibilidadMovimiento, candidatoUtilizableParaGasto, proveedorPareceEnDescripcion, compatibleSoloPorCategoria} from './write';
+import {movimientoCompatibleConGasto, inferirTagsCategoria, combinarTagsGastoAprendidos, nivelCompatibilidadMovimiento, candidatoUtilizableParaGasto, proveedorPareceEnDescripcion, compatibleSoloPorCategoria, motivoDescarteCargoPorNombre} from './write';
 test('el importe exacto no permite cruzar proveedor ni categoría',()=>{
  assert.equal(movimientoCompatibleConGasto('Bolt','Taxi aeropuerto','Osteria Del Lovo'),false);
  assert.equal(movimientoCompatibleConGasto('Uber','Traslado taxi','Uber Eats'),false);
@@ -62,4 +62,26 @@ test('compatible solo por categoría: el nombre no se reconoce y solo coinciden 
   assert.equal(compatibleSoloPorCategoria('UBER COLOMBIA', 'Traslado Uber', 'Uber Pending', manual), false);
   // Incompatible (categorías contradictorias) no es compatible por categoría.
   assert.equal(compatibleSoloPorCategoria('Bolt', 'Taxi aeropuerto', 'Osteria Del Lovo', manual), false);
+});
+
+test('caso real 2026-10-12: «Bk» (2 letras) con importe y fecha exactos es POR CONFIRMAR, no «no encontré nada»; sin esa evidencia sigue incompatible', () => {
+  const proveedor = 'Burger King Isolatorweg (Amsterdam)';
+  const concepto = 'Comida Burger King — Isolatorweg 25, Ámsterdam (AMS) — Nuria Ortiz — 9 oct 2026 — evento Avistic/APECS Noruega';
+  for (const descripcion of ['Bk', 'BK', 'bk']) {
+    assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, descripcion, { importeYFechaExactos: true }), 'por_confirmar', descripcion);
+    assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, descripcion), 'incompatible', `${descripcion}: sin evidencia exacta no se ofrece`);
+  }
+  // Una descripción vacía o sin letras/números no es evidencia de nada; una categoría conocida distinta tampoco.
+  for (const descripcion of ['', ' ', '*', '--']) assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, descripcion, { importeYFechaExactos: true }), 'incompatible', JSON.stringify(descripcion));
+  assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, 'Uber', { importeYFechaExactos: true }), 'incompatible');
+});
+
+test('la explicación de un cargo descartado dice la causa REAL (antes mezclaba fecha y categoría aunque fallara otra cosa)', () => {
+  const p = 'Burger King Isolatorweg (Amsterdam)', c = 'Comida Burger King';
+  assert.match(motivoDescarteCargoPorNombre(c, p, 'Bk', { importeExacto: true, diasDeDiferencia: 3 }), /no coinciden la fecha \(±1 día\) \(3 días de diferencia\)/);
+  assert.doesNotMatch(motivoDescarteCargoPorNombre(c, p, 'Bk', { importeExacto: true, diasDeDiferencia: 3 }), /categor/);
+  assert.match(motivoDescarteCargoPorNombre(c, p, 'Uber', { importeExacto: true, diasDeDiferencia: 0 }), /la categoría del cargo ya es conocida \(.+\)/);
+  assert.match(motivoDescarteCargoPorNombre(c, p, 'Bk', { importeExacto: false, diasDeDiferencia: 0 }), /el importe no es exacto/);
+  assert.match(motivoDescarteCargoPorNombre(c, p, '*', { importeExacto: true, diasDeDiferencia: 0 }), /descripción del cargo está vacía/);
+  assert.match(motivoDescarteCargoPorNombre(c, p, 'Bk', { importeExacto: true, diasDeDiferencia: Number.NaN }), /no coinciden la fecha/);
 });

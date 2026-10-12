@@ -1,0 +1,53 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "descriptor-corto-con-categoria-conocida",
+  "fuente": "Invariante de seguridad del cambio del 2026-10-12: relajar la longitud mínima no ofrece cargos de otra categoría.",
+  "descripcion": "Un cargo de categoría conocida (taxi) con el importe y el día exactos de un gasto de restaurante no se ofrece, y la explicación dice que es por la categoría.",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Burger King Isolatorweg (Amsterdam)",
+    "concepto": "Comida Burger King — Isolatorweg 25, Ámsterdam (AMS) — Nuria Ortiz — 9 oct 2026 — evento Avistic/APECS Noruega",
+    "monto": 20.15,
+    "moneda": "EUR",
+    "fecha": "2026-10-09"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-main",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    }
+  ],
+  "movimientos": {
+    "cuenta-main": [
+      {
+        "id": "m-bk",
+        "description": "Uber",
+        "amount": "-20.15",
+        "currency": "EUR",
+        "booking_date": "2026-10-09",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ],
+    "trazaContiene": [
+      "descarté",
+      "categoría"
+    ]
+  }
+}

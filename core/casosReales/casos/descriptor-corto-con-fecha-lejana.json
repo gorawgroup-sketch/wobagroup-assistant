@@ -1,0 +1,53 @@
+{
+  "tipo": "busqueda_cargo",
+  "id": "descriptor-corto-con-fecha-lejana",
+  "fuente": "Caso real 2026-10-12: la explicación mostrada («no coinciden la fecha (±1 día) o la categoría…») no decía la causa real.",
+  "descripcion": "La misma descripción de 2 letras pero a 3 días: no se ofrece, y la explicación dice que es por la fecha (no por «categoría»).",
+  "empresa": "Footprint",
+  "ticket": {
+    "proveedor": "Burger King Isolatorweg (Amsterdam)",
+    "concepto": "Comida Burger King — Isolatorweg 25, Ámsterdam (AMS) — Nuria Ortiz — 9 oct 2026 — evento Avistic/APECS Noruega",
+    "monto": 20.15,
+    "moneda": "EUR",
+    "fecha": "2026-10-09"
+  },
+  "cuentas": [
+    {
+      "id": "cuenta-main",
+      "name": "Main",
+      "currency": "EUR"
+    },
+    {
+      "id": "cuenta-usd",
+      "name": "FTG USD",
+      "currency": "USD"
+    }
+  ],
+  "movimientos": {
+    "cuenta-main": [
+      {
+        "id": "m-bk",
+        "description": "Bk",
+        "amount": "-20.15",
+        "currency": "EUR",
+        "booking_date": "2026-10-12",
+        "status": "pending",
+        "reconciled_amount": "0.00"
+      }
+    ]
+  },
+  "esperado": {
+    "candidatos": [],
+    "vistoPorConciliacionAutomatica": [],
+    "botonesExcluyen": [
+      "Crear y conciliar"
+    ],
+    "botonesIncluyen": [
+      "Crear (sin conciliar)"
+    ],
+    "trazaContiene": [
+      "descarté",
+      "no coinciden la fecha (±1 día) (3 días de diferencia)"
+    ]
+  }
+}
