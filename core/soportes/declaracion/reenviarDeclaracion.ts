@@ -20,11 +20,38 @@ export type MotivoReenvio = "sin_adjunto" | "no_recibida";
 
 export interface EntradaReenvio {
   chatId: number;
-  /** Id de la declaración; si falta, se busca la última no cerrada de la persona en la empresa. */
+  /** Id de la declaración; si falta, se busca la última pendiente de firma por correo, nombre o empresa. */
   declaracionId?: string;
   empresa?: Empresa;
   email?: string;
+  /** Nombre (o parte) de la persona, tal como lo dice Carlos: «German», «Simon Talloen». */
+  titular?: string;
   motivo: MotivoReenvio;
+}
+
+function normalizar(texto: string): string {
+  return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+/**
+ * Elige sola la declaración pendiente (norma de resolución autónoma): por correo, por nombre (todas las palabras dadas
+ * dentro del titular) o, si no se da nada y solo hay una pendiente, esa. Lanza con la lista cuando hay varias.
+ * Caso real 12-10: Wobi llamó al reenvío con «German» y sin correo, y la herramienta falló en 0 ms pidiendo el correo.
+ */
+export function seleccionarDeclaracionPendiente(pendientes: Declaracion[], criterio: { empresa?: string; email?: string; titular?: string }): Declaracion {
+  let candidatas = pendientes.filter((d) => d.estado === "generada" || d.estado === "enviada");
+  if (criterio.empresa) candidatas = candidatas.filter((d) => d.empresa === criterio.empresa);
+  if (criterio.email?.trim()) candidatas = candidatas.filter((d) => d.email.toLowerCase() === criterio.email!.trim().toLowerCase());
+  else if (criterio.titular?.trim()) {
+    const palabras = normalizar(criterio.titular).split(/\s+/).filter(Boolean);
+    candidatas = candidatas.filter((d) => { const t = normalizar(d.titular); return palabras.every((p) => t.includes(p)); });
+  }
+  candidatas.sort((a, b) => b.creadoEn - a.creadoEn);
+  const quien = criterio.email?.trim() || criterio.titular?.trim() || (criterio.empresa ? `la empresa ${criterio.empresa}` : "ninguna persona concreta");
+  if (!candidatas.length) throw new Error(`No hay ninguna declaración pendiente de firma para ${quien}.`);
+  const personas = new Set(candidatas.map((d) => `${d.titular} <${d.email}> (${d.empresa})`));
+  if (personas.size > 1) throw new Error(`Hay varias declaraciones pendientes y «${quien}» no basta para distinguirlas: ${[...personas].join("; ")}. Indica el correo o el nombre completo.`);
+  return candidatas[0];
 }
 
 export interface ResultadoReenvio { declaracion: Declaracion; borradorId: string; messageId: number; enElHilo: boolean }
@@ -72,17 +99,14 @@ export async function localizarHiloEnviado(d: Declaracion): Promise<{ threadId: 
   return undefined;
 }
 
-export async function elegirDeclaracionAReenviar(e: Pick<EntradaReenvio, "declaracionId" | "empresa" | "email">): Promise<Declaracion> {
+export async function elegirDeclaracionAReenviar(e: Pick<EntradaReenvio, "declaracionId" | "empresa" | "email" | "titular">): Promise<Declaracion> {
   if (e.declaracionId) {
     const d = await obtenerDeclaracion(e.declaracionId);
     if (!d) throw new Error(`No existe la declaración ${e.declaracionId}.`);
     return d;
   }
-  if (!e.email) throw new Error("Hace falta el id de la declaración o el correo de la persona.");
-  const candidatas = (await listarDeclaraciones({ empresa: e.empresa, email: e.email, estados: ["generada", "enviada"] }))
-    .sort((a, b) => b.creadoEn - a.creadoEn);
-  if (!candidatas.length) throw new Error(`${e.email} no tiene ninguna declaración pendiente de firma${e.empresa ? ` en ${e.empresa}` : ""}.`);
-  return candidatas[0];
+  const pendientes = await listarDeclaraciones({ estados: ["generada", "enviada"] });
+  return seleccionarDeclaracionPendiente(pendientes, { empresa: e.empresa, email: e.email, titular: e.titular });
 }
 
 export async function reenviarDeclaracion(e: EntradaReenvio): Promise<ResultadoReenvio> {
