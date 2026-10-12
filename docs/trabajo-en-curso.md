@@ -195,4 +195,10 @@ Envío directo y orientación hablada: Codex, `codex/envio-directo-wobi`, Front/
 
 | Trabajo | Rama | Área | Responsable | Estado |
 |---|---|---|---|---|
-| Saldos cerrados por defecto, indicadores visibles y edición desplegable | `codex/saldos-compactos` | Front / saldos API | Codex | Tipos y build completos verdes, 109 pruebas del front y Chrome compilado: cierre inicial, expansión, formularios ocultos, controles oscuros y móvil sin desbordamiento. Publicación y seguimiento en PR de esta rama; cerrar rama y worktree al desplegar. |
+| Saldos cerrados por defecto, indicadores visibles y edición desplegable | `codex/saldos-compactos` | Front / saldos API | Codex | Tipos y build completos verdes, 109 pruebas del front y Chrome compilado: cierre inicial, expansión, formularios ocultos, controles oscuros y móvil sin desbordamiento. PR #467 fusionado y desplegado: 74f735a SUCCESS, front/CSS y salud HTTP 200. Rama y worktree cerrados. |
+
+## Panel de WOBi esencial (12-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Micrófono al principio, opciones secundarias y pedidos terminados recogidos | `codex/wobi-panel-compacto` | Front / navegador-pedidos | Codex | Tipos y build completos verdes; 109 pruebas del front. Chrome compilado verifica micrófono primero y fijo, ayuda/áreas/pedido terminado recogidos, dictado, envío único, seguimiento e incertidumbre visibles y móvil. Seguimiento de publicación en el PR de esta rama. |

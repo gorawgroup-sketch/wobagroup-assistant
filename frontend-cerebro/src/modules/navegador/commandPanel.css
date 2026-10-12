@@ -1,0 +1,17 @@
+.nv-command .nv-command-primary { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 0; background: #102c3d; border-bottom: 1px solid #58cddd33; }
+.nv-command .nv-command-primary h1 { margin: 0; font-size: 24px; }
+.nv-command .nv-command-primary p { margin: 5px 0 0; font-size: 12px; color: #a3baca; }
+.nv-command .nv-command-primary .nv-microphone { margin: 0; font-size: 15px; padding: 12px 16px; }
+.nv-command > form { margin: 16px 0; gap: 8px; }
+.nv-command > form label { font-size: 14px; }
+.nv-command-options, .nv-command-choices { margin: 14px 0 0; padding: 12px 0; border-top: 1px solid #58cddd33; color: #a3baca; font-size: 13px; }
+.nv-command-options > summary, .nv-command-choices > summary { cursor: pointer; color: #9bdbe9; }
+.nv-command-options .nv-microphone-help { font-size: 13px; }
+.nv-command-options small { font-size: 12px; line-height: 1.5; }
+.nv-command-options summary:focus-visible, .nv-command-choices summary:focus-visible { outline: 2px solid #8ed8eb; outline-offset: 4px; }
+@media (max-width: 480px) {
+ .nv-command .nv-command-primary { align-items: flex-start; }
+ .nv-command .nv-command-primary > div { width: 100%; }
+ .nv-command .nv-command-primary h1 { font-size: 22px; }
+ .nv-command .nv-command-primary .nv-microphone { width: 100%; justify-content: center; }
+}
