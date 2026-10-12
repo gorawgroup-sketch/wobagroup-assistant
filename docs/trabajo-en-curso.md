@@ -190,3 +190,9 @@ Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. PR #463 fusionado; b908bc2 d
 | Responder desde Control diario y derivar consultas financieras no soportadas al chat | `codex/costos-reales-telegram` | Front / navegador | Codex | Verificado: tipos, build completo (Chrome local para PDF), 2182 pruebas backend + 115 adicionales y 108 front; front compilado reproduce las dos frases de las capturas con lectura real conservada de Control diario. Publicación en PR #454; seguimiento de fusión y despliegue en ese PR. |
 
 Envío directo y orientación hablada: Codex, `codex/envio-directo-wobi`, Front/navegador-pedidos. Un único botón de envío junto a la consulta; conservar audio y referencia durable.
+
+## Saldos API compactos (12-10-2026)
+
+| Trabajo | Rama | Área | Responsable | Estado |
+|---|---|---|---|---|
+| Saldos cerrados por defecto, indicadores visibles y edición desplegable | `codex/saldos-compactos` | Front / saldos API | Codex | Tipos y build completos verdes, 109 pruebas del front y Chrome compilado: cierre inicial, expansión, formularios ocultos, controles oscuros y móvil sin desbordamiento. Publicación y seguimiento en PR de esta rama; cerrar rama y worktree al desplegar. |
