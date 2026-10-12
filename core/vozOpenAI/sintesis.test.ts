@@ -4,7 +4,7 @@ import { transmitirMarin } from "./sintesis";
 
 const event = (value: unknown) => `data: ${JSON.stringify(value)}\r\n\r\n`;
 const delta = event({ type: "speech.audio.delta", audio: Buffer.from([0, 0, 1, 0]).toString("base64") });
-const done = event({ type: "speech.audio.done", usage: { input_tokens: 100, output_tokens: 200 } });
+const done = event({ type: "speech.audio.done", usage: { input_tokens: 100, output_tokens: 200 } }) + "data: [DONE]\r\n\r\n";
 const permit = async () => ({ permitida: true, motivo: "test", soloObservacion: false });
 const registrar = async () => {};
 

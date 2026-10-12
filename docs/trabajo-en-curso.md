@@ -44,7 +44,7 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 ## En curso
 
-Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. Preparado: tipos/build, 2.205 pruebas backend (6 omitidas) y 115 adicionales pasan. Endpoints compilados y saludo verificados con proveedor simulado. Clave existente: consulta de modelo HTTP 200. Pendiente saldo y síntesis real; sin activación ni despliegue.
+Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. Preparado: tipos/build, 2.205 pruebas backend (6 omitidas) y 115 adicionales pasan. Endpoints compilados y saludo verificados con proveedor simulado. Clave existente: consulta de modelo HTTP 200. Saldo 9,99 USD. MP3/PCM Marin reales HTTP 200; 0,0013968 USD registrados. Pendiente apagar recarga automática y verificar despliegue.
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|

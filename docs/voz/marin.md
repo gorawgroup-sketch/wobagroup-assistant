@@ -4,7 +4,7 @@ Elección de Carlos: 12-10-2026. Marin reemplaza Dalia en las salidas de voz exi
 
 ## Estado
 
-Preparación en `codex/voz-marin`. No activada en producción. Consulta gratuita del catálogo con la clave existente: HTTP 200 para `gpt-4o-mini-tts`. Saldo, recargas y una síntesis real aún pendientes. No confundir disponibilidad del modelo con saldo ni con una reproducción real verificada.
+Integración en `codex/voz-marin`, PR #463. Consulta gratuita del catálogo con la clave existente: HTTP 200. Cuenta API: 9,99 USD de saldo observado; recarga automática ON a umbral 5 USD, objetivo 10 USD y techo mensual 20 USD. Desactivación pendiente de Carlos. Dos pruebas reales: MP3 (respuesta SSE guardada de la primera generación) y PCM (nueva generación), HTTP 200 y voz Marin. Tokens 20/60 y 48/53: 0,0013968 USD, registrados una vez en Control diario. No hay compras ni cambios de facturación. Activación continua pendiente de recarga OFF.
 
 ## Un único camino de audio
 
@@ -18,9 +18,9 @@ La clave vive solo en el servidor. El proveedor recibe el texto que se va a leer
 
 ## Activación pendiente
 
-1. Consultar el saldo y recargas de la organización de la clave existente, no solo de otra organización abierta en el navegador.
-2. Confirmar una prueba breve con cargo al saldo existente y presupuesto acordado. No comprar créditos, cambiar recargas ni ampliar límites por este cambio.
-3. Verificar una síntesis real de Marin por MP3 y PCM, pronunciación y cancelación, y ambos reproductores de WOBA.
+1. Verificar que la recarga automática esté OFF en la organización de la clave existente.
+2. Pruebas reales verificadas. No comprar créditos ni ampliar límites por este cambio. Añadir techo diario de 0,10 USD al proceso de voz conservando los demás límites.
+3. Tras despliegue, verificar la respuesta real de Marin y ambos reproductores de WOBA; mantener cancelación y la voz fija.
 4. Habilitar `WOBI_OPENAI_VOICE_ENABLED=true`. Si la política global usa allowlist, autorizar el proceso `sintetizar_voz_wobi` sin cambiar los otros procesos. Mantener los techos globales y de proceso.
 5. Desplegar solo tras pruebas, tipos y build completos y revisión. No activar el gasto solo porque exista una clave.
 

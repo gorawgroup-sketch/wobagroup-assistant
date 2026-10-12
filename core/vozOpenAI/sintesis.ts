@@ -48,6 +48,10 @@ export async function transmitirMarin(texto: string, signal: AbortSignal,
     const data = frame.split("\n").filter(line => line.startsWith("data:"))
       .map(line => line.slice(5).trimStart()).join("\n");
     if (!data) return;
+    if (data.trim() === "[DONE]") {
+      if (!done) throw new Error("Cierre sin métricas finales");
+      return;
+    }
     const event = JSON.parse(data);
     if (done) throw new Error("Audio posterior al cierre");
     if (event.type === "speech.audio.delta") {
