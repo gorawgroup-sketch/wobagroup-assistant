@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   ConflictoEdicionCompraError,
   EdicionCompraInciertaError,
+  MAX_EDICIONES_AUTOMATICAS_POR_COMPRA,
+  TopeEdicionesAutomaticasError,
   ejecutarEdicionCompraDurable,
   identidadEdicionCompra,
   reconciliarEdicionesCompraPendientes,
@@ -13,7 +15,7 @@ import {
   type ResultadoEdicionCompra,
   type TransporteEdicionCompra,
 } from "./durablePurchaseEdit";
-import { configuracionEdicionesCompraDurables, huellaEstadoCompra, huellaEstadoCompraVersion, coincideEstadoCompraEsperado } from "./write";
+import { configuracionEdicionesCompraDurables, huellaEstadoCompra, huellaEstadoCompraVersion, coincideEstadoCompraEsperado, edicionCompraSinCambios } from "./write";
 
 interface DocumentoPrueba { id: string; numero: string; }
 
@@ -53,6 +55,10 @@ class RepoMemoria implements RepositorioEdicionesCompra {
       .filter((r) => r.estado === "editando" || r.estado === "incierta")
       .map((r) => ({ ...r }));
   }
+  async contarEdicionesAutomaticas(empresa: string, purchaseId: string, excluirClave: string) {
+    return [...this.filas.values()].filter((r) => r.empresa === empresa && r.purchaseId === purchaseId && r.clave !== excluirClave &&
+      r.proceso.startsWith("correo_gasto_automatico") && r.estado !== "preparada").length;
+  }
   private cambiar(
     clave: string,
     permitidos: EstadoEdicionCompra[],
@@ -72,7 +78,7 @@ class RepoMemoria implements RepositorioEdicionesCompra {
   }
 }
 
-function transporte(opciones: { errorEdicion?: unknown; aplicadaInicial?: boolean } = {}) {
+function transporte(opciones: { errorEdicion?: unknown; aplicadaInicial?: boolean; sinCambios?: boolean } = {}) {
   let aplicada = opciones.aplicadaInicial ?? false;
   const preparaciones: PreparacionEdicionCompra[] = [];
   const ediciones: PreparacionEdicionCompra[] = [];
@@ -87,7 +93,7 @@ function transporte(opciones: { errorEdicion?: unknown; aplicadaInicial?: boolea
     ediciones,
     verificaciones,
     async preparar() {
-      const preparacion = { huellaEsperada: "huella-final", verificarTotal: true, payload: { numero: "B" } };
+      const preparacion = { huellaEsperada: "huella-final", verificarTotal: true, payload: { numero: "B" }, ...(opciones.sinCambios ? { sinCambios: true } : {}) };
       preparaciones.push(preparacion);
       return preparacion;
     },
@@ -357,4 +363,70 @@ test("descripción vacía devuelta por Holded confirma líneas nuevas sin oculta
     assert.equal(coincideEstadoCompraEsperado({ ...leida, contact_id: "otro" }, esperada, true), false);
     assert.equal(coincideEstadoCompraEsperado({ ...leida, total: "138,00" }, esperada, true), false);
   }
+});
+
+
+/* ───────── PUT duplica adjuntos: sin cambios no se escribe, y la automatización tiene tope ───────── */
+
+const ejecutarComo = (repo: RepoMemoria, holded: TransporteEdicionCompra<DocumentoPrueba>, clave: string, proceso: string, compra = "purchase-1") =>
+  ejecutarEdicionCompraDurable(clave, "Footprint", compra, CAMBIOS, proceso, repo, holded, 1);
+
+test("si el documento YA está como se pide NO se hace PUT (cada PUT duplica sus adjuntos) y queda verificada", async () => {
+  const repo = new RepoMemoria();
+  const holded = transporte({ aplicadaInicial: true, sinCambios: true });
+  const r = await ejecutarComo(repo, holded, "reparar:1", "correo_gasto_automatico_reparar");
+  assert.equal(holded.ediciones.length, 0, "ningún PUT");
+  assert.equal(r.sinPut, true); assert.equal(r.reutilizado, false);
+  assert.equal([...repo.filas.values()][0].estado, "verificada");
+});
+
+test("si «sin cambios» fuera un error de cálculo y el documento NO está como se pide, no se da por verificada: queda incierta", async () => {
+  const repo = new RepoMemoria();
+  const holded = transporte({ aplicadaInicial: false, sinCambios: true });
+  await assert.rejects(() => ejecutarComo(repo, holded, "reparar:2", "correo_gasto_automatico_reparar"), EdicionCompraInciertaError);
+  assert.equal(holded.ediciones.length, 0);
+});
+
+test("TOPE: una automatización no hace más de %d PUT sobre la misma compra, aunque cambie la versión de la política".replace("%d", String(MAX_EDICIONES_AUTOMATICAS_POR_COMPRA)), async () => {
+  const repo = new RepoMemoria();
+  const registros: string[] = [];
+  for (let i = 1; i <= MAX_EDICIONES_AUTOMATICAS_POR_COMPRA; i++) {
+    const h = transporte(); await ejecutarComo(repo, h, `correo-auto-reparar:op:v${i}`, "correo_gasto_automatico_reparar"); registros.push(`v${i}`);
+    assert.equal(h.ediciones.length, 1);
+  }
+  const bloqueada = transporte();
+  await assert.rejects(() => ejecutarComo(repo, bloqueada, "correo-auto-reparar:op:v99", "correo_gasto_automatico_reparar"), TopeEdicionesAutomaticasError);
+  assert.equal(bloqueada.ediciones.length, 0, "el PUT ni se intenta");
+  // Lo cerrado a mano sigue contando: es el mismo PUT.
+  const humano = transporte();
+  await assert.rejects(() => ejecutarComo(repo, humano, "correo-auto-reparar:op:v100", "correo_gasto_automatico_reparar|cierre_revision_humana"), TopeEdicionesAutomaticasError);
+  assert.equal(registros.length, MAX_EDICIONES_AUTOMATICAS_POR_COMPRA);
+});
+
+test("TOPE: no afecta a otra compra, a una edición aprobada por una persona, ni a una repetición sin cambios", async () => {
+  const repo = new RepoMemoria();
+  for (let i = 1; i <= MAX_EDICIONES_AUTOMATICAS_POR_COMPRA; i++) await ejecutarComo(repo, transporte(), `a:${i}`, "correo_gasto_automatico_reparar");
+  const otra = transporte(); await ejecutarComo(repo, otra, "b:1", "correo_gasto_automatico_reparar", "purchase-2"); assert.equal(otra.ediciones.length, 1);
+  const aprobada = transporte(); await ejecutarComo(repo, aprobada, "c:1", "edicion_compra_aprobada"); assert.equal(aprobada.ediciones.length, 1, "la decisión de una persona no la limita el tope");
+  const sinCambios = transporte({ aplicadaInicial: true, sinCambios: true });
+  const r = await ejecutarComo(repo, sinCambios, "a:99", "correo_gasto_automatico_reparar");
+  assert.equal(r.sinPut, true, "sin PUT no hay nada que limitar");
+});
+
+test("edicionCompraSinCambios: el estado real de la compra de Ahorramas (32.768 adjuntos) se reconoce como «sin cambios» y cualquier diferencia real no", () => {
+  const actual = {
+    id: "6aafc4da82a59b46bc0dfbae", document_number: "S107307/0044052", contact_id: "67a09e0275818fabe203d290", date: "2026-09-09", due_date: null,
+    currency: "EUR", currency_change: "1.00", total: "7,60", tags: ["alimentacion", "simontalloen"], description: "Compra supermercado Ahorramas", notes: "WOBI_AUTO:69bd889d",
+    lines: [{ name: "Compra supermercado Ahorramas", type: "product", description: "", price: "7,60", units: "1,00", discount: "0,00", tax: "0", taxes: [], tags: ["alimentacion", "simontalloen"], account: "65e9870a00c67a51a4049616", retention: "0,00", product_id: null, sku: null, project_id: null, unit_type: null }],
+  } as never;
+  const igual = { ...(actual as object), lines: [{ name: "Compra supermercado Ahorramas", type: "product", price: 7.6, units: 1, taxes: [], tags: ["simontalloen", "alimentacion"], account: "65e9870a00c67a51a4049616" }] } as never;
+  assert.equal(edicionCompraSinCambios(actual, igual), true);
+  const cambios: Array<[string, Record<string, unknown>]> = [
+    ["importe", { total: "8,60", lines: [{ name: "Compra supermercado Ahorramas", type: "product", price: 8.6, units: 1, taxes: [], tags: ["alimentacion", "simontalloen"], account: "65e9870a00c67a51a4049616" }] }],
+    ["cuenta contable", { lines: [{ name: "Compra supermercado Ahorramas", type: "product", price: 7.6, units: 1, taxes: [], tags: ["alimentacion", "simontalloen"], account: "otra" }] }],
+    ["etiquetas", { tags: ["alimentacion"], lines: [{ name: "Compra supermercado Ahorramas", type: "product", price: 7.6, units: 1, taxes: [], tags: ["alimentacion"], account: "65e9870a00c67a51a4049616" }] }],
+    ["proveedor", { contact_id: "otro" }], ["fecha", { date: "2026-09-10" }], ["moneda", { currency: "USD" }], ["número", { document_number: "X" }],
+    ["impuestos", { lines: [{ name: "Compra supermercado Ahorramas", type: "product", price: 7.6, units: 1, taxes: ["s_iva_10"], tags: ["alimentacion", "simontalloen"], account: "65e9870a00c67a51a4049616" }] }],
+  ];
+  for (const [nombre, c] of cambios) assert.equal(edicionCompraSinCambios(actual, { ...(igual as object), ...c } as never), false, nombre);
 });

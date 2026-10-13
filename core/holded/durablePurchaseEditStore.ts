@@ -1,6 +1,7 @@
 import { actualizarFila, agregarFila, eliminarFilas, leerFila, leerFilas } from "../google/sheetsKeyValueStore";
 import { conMutex } from "../utils/asyncMutex";
 import { enteroAcotado } from "../utils/asyncTimeout";
+import { PREFIJO_PROCESO_AUTOMATICO } from "./durablePurchaseEdit";
 import type {
   EstadoEdicionCompra,
   RegistroEdicionCompra,
@@ -204,6 +205,28 @@ class StoreEdicionesCompra implements RepositorioEdicionesCompra {
       return [...this.registros.values()]
         .filter((r) => r.estado === "editando" || r.estado === "incierta")
         .map((r) => this.publico(r));
+    });
+  }
+
+  async contarEdicionesAutomaticas(empresa: RegistroEdicionCompra["empresa"], purchaseId: string, excluirClave: string): Promise<number> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      // Cuenta lo que ya cruzó la frontera de escritura (editando, verificada o incierta); una preparada nunca llegó a hacer PUT.
+      return [...this.registros.values()].filter((r) =>
+        r.empresa === empresa && r.purchaseId === purchaseId && r.clave !== excluirClave &&
+        r.proceso.startsWith(PREFIJO_PROCESO_AUTOMATICO) && r.estado !== "preparada").length;
+    });
+  }
+
+  /** Compras (id y empresa) con alguna edición desde `desdeMs`: es donde puede haberse duplicado un adjunto. */
+  async comprasEditadasDesde(desdeMs: number): Promise<Array<{ empresa: RegistroEdicionCompra["empresa"]; purchaseId: string }>> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const vistas = new Map<string, { empresa: RegistroEdicionCompra["empresa"]; purchaseId: string }>();
+      for (const r of this.registros.values()) {
+        if (r.estado !== "preparada" && r.actualizadoEn >= desdeMs) vistas.set(`${r.empresa}:${r.purchaseId}`, { empresa: r.empresa, purchaseId: r.purchaseId });
+      }
+      return [...vistas.values()];
     });
   }
 

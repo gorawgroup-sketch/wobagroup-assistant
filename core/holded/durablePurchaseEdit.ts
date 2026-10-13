@@ -23,6 +23,11 @@ export interface PreparacionEdicionCompra {
   verificarTotal: boolean;
   /** Solo vive en memoria durante la llamada; el ledger nunca persiste el body financiero. */
   payload: unknown;
+  /**
+   * El documento YA está exactamente en el estado pedido: no se hace PUT. Holded duplica la lista de adjuntos en cada PUT (2^n; caso real
+   * 2026-10-13, una compra con 32.768 copias de su comprobante tras 15 «reparaciones» sin cambios), así que un PUT innecesario no es inocuo.
+   */
+  sinCambios?: boolean;
 }
 
 export interface ResultadoEdicionCompra<T> {
@@ -39,6 +44,27 @@ export interface RepositorioEdicionesCompra {
   marcarVerificada(clave: string): Promise<void>;
   marcarIncierta(clave: string): Promise<void>;
   listarPendientes(): Promise<RegistroEdicionCompra[]>;
+  /**
+   * PUT que una automatización ya hizo (o pudo hacer) sobre esta compra, sin contar `excluirClave`. Opcional: sin él no se aplica el tope.
+   */
+  contarEdicionesAutomaticas?(empresa: Empresa, purchaseId: string, excluirClave: string): Promise<number>;
+}
+
+/** Prefijo de los procesos de edición lanzados por una automatización (no por una aprobación del operador). */
+export const PREFIJO_PROCESO_AUTOMATICO = "correo_gasto_automatico";
+/**
+ * Tope de PUT automáticos por compra a lo largo de su vida. Cada PUT duplica sus adjuntos en Holded; pasado el tope la automatización no
+ * vuelve a tocar el documento y lo deja para una persona (una política nueva no debe «reparar» otra vez lo que ya se reparó).
+ */
+export const MAX_EDICIONES_AUTOMATICAS_POR_COMPRA = 2;
+
+export class TopeEdicionesAutomaticasError extends Error {
+  constructor(public readonly purchaseId: string) {
+    super(
+      `Esta compra ya recibió ${MAX_EDICIONES_AUTOMATICAS_POR_COMPRA} ediciones automáticas. Cada edición duplica sus adjuntos en Holded, así que Wobi no la edita más sola: revísala a mano.`
+    );
+    this.name = "TopeEdicionesAutomaticasError";
+  }
 }
 
 export interface TransporteEdicionCompra<T> {
@@ -131,7 +157,7 @@ export async function ejecutarEdicionCompraDurable<T>(
   repositorio: RepositorioEdicionesCompra,
   transporte: TransporteEdicionCompra<T>,
   ahora = Date.now()
-): Promise<{ resultado: ResultadoEdicionCompra<T>; reutilizado: boolean }> {
+): Promise<{ resultado: ResultadoEdicionCompra<T>; reutilizado: boolean; sinPut?: boolean }> {
   const inicial = identidadEdicionCompra(idempotencyKey, empresa, purchaseId, cambios, proceso, ahora);
   let { registro } = await repositorio.reservar(inicial);
 
@@ -158,6 +184,11 @@ export async function ejecutarEdicionCompraDurable<T>(
   // Si preparar falla, el registro continúa en preparada y es seguro corregir.
   const preparacion = await transporte.preparar();
   if (!preparacion.huellaEsperada?.trim()) throw new Error("La edición no produjo una huella verificable.");
+  // Antes de cruzar la frontera de escritura: una automatización no repite PUT sobre una compra indefinidamente.
+  if (!preparacion.sinCambios && proceso.startsWith(PREFIJO_PROCESO_AUTOMATICO) && repositorio.contarEdicionesAutomaticas) {
+    const previas = await repositorio.contarEdicionesAutomaticas(empresa, purchaseId, registro.clave);
+    if (previas >= MAX_EDICIONES_AUTOMATICAS_POR_COMPRA) throw new TopeEdicionesAutomaticasError(purchaseId);
+  }
   const editando = await repositorio.marcarEditando(
     registro.clave,
     preparacion.huellaEsperada,
@@ -176,26 +207,28 @@ export async function ejecutarEdicionCompraDurable<T>(
     throw new EdicionCompraInciertaError();
   }
 
-  try {
-    await transporte.editar(preparacion);
-  } catch (error) {
-    if (esRechazoDefinitivoSinCompra(error)) {
-      await repositorio.marcarPreparada(editando.clave);
-      throw error;
-    }
+  if (!preparacion.sinCambios) {
     try {
-      const encontrado = await verificar(editando, repositorio, transporte);
-      if (encontrado) return { resultado: encontrado, reutilizado: true };
-    } catch {
-      // El PUT o la lectura pueden haber fallado; el estado seguro es incierta.
+      await transporte.editar(preparacion);
+    } catch (error) {
+      if (esRechazoDefinitivoSinCompra(error)) {
+        await repositorio.marcarPreparada(editando.clave);
+        throw error;
+      }
+      try {
+        const encontrado = await verificar(editando, repositorio, transporte);
+        if (encontrado) return { resultado: encontrado, reutilizado: true };
+      } catch {
+        // El PUT o la lectura pueden haber fallado; el estado seguro es incierta.
+      }
+      await repositorio.marcarIncierta(editando.clave).catch(() => undefined);
+      throw new EdicionCompraInciertaError();
     }
-    await repositorio.marcarIncierta(editando.clave).catch(() => undefined);
-    throw new EdicionCompraInciertaError();
   }
 
   try {
     const encontrado = await verificar(editando, repositorio, transporte);
-    if (encontrado) return { resultado: encontrado, reutilizado: false };
+    if (encontrado) return { resultado: encontrado, reutilizado: false, ...(preparacion.sinCambios ? { sinPut: true } : {}) };
   } catch {
     // Un 200 sin relectura verificable no demuestra el estado final.
   }
