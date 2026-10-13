@@ -25,6 +25,7 @@ test("Marin uses existing server credentials, streaming and exact reported token
       registrar: async (...args) => { metrics.push(args); },
     });
   const body = JSON.parse(request!.body as string);
+  assert.match(body.instructions, /español latinoamericano.*acento mexicano/);
   assert.equal(body.voice, "marin"); assert.equal(body.stream_format, "sse");
   assert.equal(body.response_format, "pcm"); assert.equal(body.input, 'Hola, Uóbi. A & B');
   assert.equal(metrics.length, 1);

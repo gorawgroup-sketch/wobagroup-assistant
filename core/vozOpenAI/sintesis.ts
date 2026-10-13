@@ -5,7 +5,7 @@ import { registrarUsoIA } from "../claude/costTracking";
 export const VOZ_WOBI = "marin";
 export const MODELO_VOZ = "gpt-4o-mini-tts";
 export const PROCESO_VOZ = "sintetizar_voz_wobi";
-const INSTRUCCIONES = "Habla en español con tono natural, cálido y conversacional. Pronunciación clara, velocidad tranquila. Lee exactamente el texto recibido, sin añadir comentarios. WOBi se pronuncia Uóbi.";
+const INSTRUCCIONES = "Habla en español latinoamericano con acento mexicano suave y neutro, sin acento peninsular de España ni ceceo. Mantén la voz Marin con tono natural, cálido y conversacional. Pronunciación clara, velocidad tranquila. Lee exactamente el texto recibido, sin añadir comentarios. WOBi se pronuncia Uóbi.";
 interface Dependencias {
   fetch: typeof fetch;
   autorizar: typeof autorizarLlamadaApi;
