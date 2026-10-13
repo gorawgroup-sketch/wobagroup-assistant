@@ -37,6 +37,8 @@ import { obtenerResumenColaPorChat } from "../core/gmail/colaRevisionStore";
 import { avisoEstadoCola, esContinuacionCorreo, avisoInterrumpido, contextoSolicitudInterrumpida, decodificarClaveAviso } from "../core/telegram/interruptedNotice";
 import "../core/google/globalOptions";
 import { crearRouterDocumentos } from "../core/cerebro/documentos/router";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
 import express, { type Request, type Response } from "express";
@@ -192,6 +194,7 @@ import { cargarCatalogoNavegacion } from "../core/cerebro/navegador/catalogo";
 import { crearRouterNavegador } from "../core/cerebro/navegador/router";
 import { registrarBitacoraPedido } from "../core/cerebro/pedidos/bitacoraSheet";
 import { crearRouterPedidos } from "../core/cerebro/pedidos/router";
+import { crearRouterRestaurarComprobantes } from "../core/holded/restaurarComprobantesRouter";
 import { prepararEntradaVoz } from "../core/telegram/voiceInput";
 import { ErrorNotaVoz } from "../core/ai/transcribeAudio";
 import { obtenerBotonesActivos, obtenerBotonesDeMensaje } from "../core/cerebro/webBotonesStore";
@@ -216,7 +219,8 @@ import { iniciarActividadCallback } from "../core/telegram/callbackActivity";
 import { obtenerEstadoPlanificadorHerramientas } from "../core/tools/scheduler";
 import { esErrorTrasEjecucion, mensajeFalloTrasEjecucion } from "../core/utils/errorTrasEjecucion";
 import { resumirMetricasCachesLectura } from "../core/utils/readCache";
-import { obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
+import { descargarArchivoDrive, obtenerEstadoSubidasDriveDurables, reconciliarSubidasDriveAlArrancar } from "../core/drive/client";
+import { holdedGet } from "../core/holded/client";
 import {
   obtenerEstadoCreacionesCompraDurables,
   obtenerEstadoEdicionesCompraDurables,
@@ -229,6 +233,7 @@ import {
   reconciliarMovimientosAlArrancar,
   precalentarMonedasCuentasReales,
   reconciliarContactosAlArrancar,
+  adjuntarComprobanteHolded,
 } from "../core/holded/write";
 import { obtenerTrazaAutomatizacion } from "../core/holded/automatizacion/traza";
 import { handleTicketReglaCallback } from "../core/holded/automatizacion/telegramTickets";
@@ -664,6 +669,28 @@ app.use("/api/cerebro/pedidos", (req: Request, res: Response, next) => {
   rastrear: trackearEnSegundoPlano,
   bitacora: registrarBitacoraPedido,
   habilitado: () => (process.env.WOBI_PEDIDOS_FRONT ?? "activo").trim().toLowerCase() !== "apagado",
+}));
+
+// Reposición de los comprobantes rescatados (Holded duplicó sus adjuntos): sube la copia de Drive por el mismo camino durable que usa
+// WOBi al crear un gasto. Solo las compras del manifiesto y solo si la compra no tiene adjuntos. Protegida por ADMIN_SECRET.
+app.use("/admin/restaurar-comprobante", crearRouterRestaurarComprobantes({
+  secreto: () => process.env.ADMIN_SECRET,
+  deps: {
+    contarAdjuntos: async (empresa, purchaseId) => {
+      const r = (await holdedGet(empresa, `/purchases/${encodeURIComponent(purchaseId)}/attachments`)) as { items?: unknown[] } | unknown[];
+      return (Array.isArray(r) ? r : r.items ?? []).length;
+    },
+    descargarDeDrive: async (fileId) => ({ bytes: (await descargarArchivoDrive(fileId)).bytes }),
+    adjuntar: async (empresa, purchaseId, archivo, idempotencyKey) => {
+      const carpeta = await mkdtemp(join(tmpdir(), "wobi-restaurar-"));
+      const ruta = join(carpeta, archivo.nombreArchivo.replace(/[^a-zA-Z0-9._-]+/g, "_"));
+      try {
+        await writeFile(ruta, archivo.bytes);
+        const r = await adjuntarComprobanteHolded(empresa, purchaseId, ruta, archivo.nombreArchivo, archivo.mimeType, { idempotencyKey, proceso: "restaurar_comprobante_rescate" });
+        return { attachmentId: r.attachmentId };
+      } finally { await rm(carpeta, { recursive: true, force: true }); }
+    },
+  },
 }));
 
 /**
