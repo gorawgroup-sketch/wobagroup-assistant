@@ -143,7 +143,7 @@ export function crearRouterNavegador(deps: DepsRouterNavegador) {
     try {
       res.json(await conversar({
         texto: p.texto, seleccion: p.seleccion, companyId: p.companyId, nivel: c.nivel, catalogo: c.catalogo, requestId: p.requestId,
-        conversacionId: p.conversacionId, clave: claveDeContexto(req, c.identidad), almacen, snapshotSeguros: deps.snapshotSeguros, ahora,
+        nombreSesion: c.identidad.nombre, conversacionId: p.conversacionId, clave: claveDeContexto(req, c.identidad), almacen, snapshotSeguros: deps.snapshotSeguros, ahora,
       }));
     } catch (error) {
       console.error("[navegador] Fallo al conversar:", error instanceof Error ? error.name : "Error");

@@ -523,3 +523,8 @@ Mientras una declaración está «enviada», su hilo de correo queda reservado: 
 
 ### Declaración de gastos sin soporte: soporte en Holded (12-10-2026, paso C)
 En cuanto una declaración queda **firmada** (botón «Sí, es la firmada: guardar»), Wobi la revisa cargo a cargo en Holded y propone, con un solo botón **✅ Aplicar como soporte (N)** / **⏸️ Ahora no**: a los gastos que ya existen (compra única por proveedor, importe y fecha) se les adjunta la declaración firmada; los que no existen se proponen como gasto nuevo con la declaración como comprobante, cada uno con sus botones de siempre (Crear y conciliar, contacto, duplicados). Un cargo con varias compras posibles se deja a mano y se dice. El mismo documento es el soporte de todos los cargos de la persona. Funciona igual para cualquier persona y empresa (WOBA, eWorks y Footprint tienen plantilla). Si se pospone, basta pedir «aplica la declaración firmada de X».
+
+
+## Conversación básica del panel WOBi (13-10-2026)
+
+El panel reconoce combinaciones de saludos, ayuda, presentación, cortesía, despedidas, preguntas sobre la identidad y peticiones de explicación con variaciones de orden, acentos y puntuación. Por ejemplo: «¿me echas una mano?», «no sé por dónde empezar», «¿recuerdas mi nombre?», «¿y tú?» o «repíteme lo que dijiste» después de una respuesta cotidiana. Las peticiones concretas conservan su ruta de navegación o procesamiento. El nombre procede de la sesión resuelta en el servidor, no de un nombre escrito en la consulta. Se conserva solo la intención del diálogo durante diez minutos, aislada por usuario y dispositivo; no se guarda el nombre ni texto en ese contexto.

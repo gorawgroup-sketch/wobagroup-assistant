@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { interpretNavigation } from './client.mjs';
-import { conversationReply } from './conversation.mjs';
 import { requiresTelegram, wantsTelegramChat, openTelegram } from './telegram.mjs';
 import { operationHelp, OPERATION_HELP } from './operationHelp.mjs';
 import OperatingCosts from './OperatingCosts.jsx';
@@ -13,6 +12,8 @@ import ConversationResponse from './ConversationResponse.jsx';
 import { startDictation } from './dictation.mjs';
 import { companyById } from '../nucleo/organization.mjs';
 export default function CommandPanel({company,headers,data,onControlDaily,onDestination,onDocuments,onFeedback=()=>{},onStart=()=>{},conversation,onClear=()=>{}}) {
+  const sessionKey=JSON.stringify(headers);
+  useEffect(()=>{pending.current?.abort();microphone.current?.abort();setState({});setPedidoRequest(null);if(conversation)conversation.current={};},[sessionKey]);
   const [query,setQuery]=useState('');
   const [state,setState]=useState({});
   const [pedidoRequest,setPedidoRequest]=useState(null);
@@ -68,8 +69,6 @@ export default function CommandPanel({company,headers,data,onControlDaily,onDest
       }
       return;
     }
-    const reply=conversationReply(input.texto);
-    if(reply){setState({reply});onFeedback(reply);return;}
     const controller=new AbortController();pending.current=controller;
     setState({loading:true});
     const timer=setTimeout(()=>controller.abort('timeout'),20000);

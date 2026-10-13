@@ -1,3 +1,4 @@
+import { reconocerCotidiano, responderCotidiano } from "./dialogo/cotidiano";
 import type { CatalogoNavegacion } from "./catalogo";
 import type { AlmacenContexto, EstadoConversacion, OpcionContexto } from "./contexto";
 import { companiasMencionadas, interpretarNavegacion, normalizar, quitarCompanias, reconoceDestino, resolverDestino, seccionesReconocidas, type RespuestaNavegacion } from "./interprete";
@@ -22,6 +23,8 @@ export type RespuestaConversar = RespuestaBase & { modo: "deterministico"; conve
 
 export interface EntradaConversar {
   texto?: string;
+  /** Nombre resuelto por el servidor para esta sesión. No se acepta del cuerpo. */
+  nombreSesion?: string;
   seleccion?: { capabilityId: string; companyId: string };
   companyId: string;
   nivel: NivelAcceso;
@@ -148,6 +151,22 @@ function resumenDe(r: RespuestaBase, lectura?: LecturaSeguros): string {
 
 export async function conversar(e: EntradaConversar): Promise<RespuestaConversar> {
   const ctx = e.almacen.obtener(e.clave, e.conversacionId);
+  const respondeOpcion = ctx && ctx.opciones.length === 1 && AFIRMACION.test(normalizar(e.texto ?? ""));
+  const dialogo = !respondeOpcion && !e.seleccion && !reconoceDestino(e.texto ?? "", e.catalogo) ? reconocerCotidiano(e.texto ?? "", ctx?.dialogo) : null;
+  if (dialogo) {
+    const base = interpretarNavegacion({ texto: "", companyId: e.companyId, nivel: e.nivel, catalogo: e.catalogo, requestId: e.requestId });
+    const opciones = base.tipo === "aclaracion" ? base.opciones : [];
+    const pregunta = responderCotidiano(dialogo, e.nombreSesion, opciones.map(o => o.etiqueta), ctx?.dialogo);
+    const estado: EstadoConversacion = {
+      companyId: ctx?.companySeleccionada === e.companyId ? ctx.companyId : e.companyId,
+      companySeleccionada: e.companyId, capabilityId: ctx?.companySeleccionada === e.companyId ? ctx.capabilityId : null,
+      opciones: dialogo.intenciones.includes("ayuda") ? opciones : ctx?.companySeleccionada === e.companyId ? ctx.opciones : [],
+      dialogo: { intencion: dialogo.intenciones.filter(i => !["saludo", "gracias", "despedida"].includes(i)).at(-1) ?? dialogo.intenciones.at(-1) ?? "saludo", turno: Math.min((ctx?.dialogo?.turno ?? 0) + 1, 100) },
+    };
+    const conversacionId = e.almacen.guardar(e.clave, estado, ctx && typeof e.conversacionId === "string" ? e.conversacionId : undefined);
+    return { requestId: e.requestId, catalogVersion: e.catalogo.version, tipo: "aclaracion", pregunta,
+      opciones: dialogo.intenciones.includes("ayuda") ? opciones : [], modo: "deterministico", conversacionId, resumen: pregunta };
+  }
   const { r: decidida, companyBase } = decidir(e, ctx);
   let r: RespuestaBase = decidida;
 

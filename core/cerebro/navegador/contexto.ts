@@ -1,3 +1,4 @@
+import type { ContextoCotidiano } from "./dialogo/cotidiano";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -15,6 +16,7 @@ const MAX_OPCIONES = 4;
 export interface OpcionContexto { capabilityId: string; companyId: string; sinFiltro?: boolean }
 
 export interface EstadoConversacion {
+  dialogo?: ContextoCotidiano;
   /** Compañía efectiva de la última respuesta (la del texto, la del contexto o la seleccionada). */
   companyId: string;
   /** Compañía que había en el selector del front en la última petición: sirve para detectar que la persona la cambió. */
@@ -59,7 +61,7 @@ export function crearAlmacenContexto(opciones: { ahora?: () => number; ttlMs?: n
       if (!e) return null;
       if (!vigente(e)) { entradas.delete(clave); return null; }
       if (typeof conversacionId !== "string" || conversacionId !== e.id) return null;
-      return { companyId: e.companyId, companySeleccionada: e.companySeleccionada, capabilityId: e.capabilityId, opciones: e.opciones.map((o) => ({ ...o })) };
+      return { ...(e.dialogo ? { dialogo: { ...e.dialogo } } : {}), companyId: e.companyId, companySeleccionada: e.companySeleccionada, capabilityId: e.capabilityId, opciones: e.opciones.map((o) => ({ ...o })) };
     },
     guardar(clave, estado, continuaId) {
       const previa = entradas.get(clave);
@@ -67,7 +69,7 @@ export function crearAlmacenContexto(opciones: { ahora?: () => number; ttlMs?: n
       entradas.delete(clave); // reinserta al final: el orden del mapa es el de uso reciente
       purgar();
       entradas.set(clave, {
-        id, ts: ahora(), companyId: estado.companyId, companySeleccionada: estado.companySeleccionada, capabilityId: estado.capabilityId,
+        id, ts: ahora(), ...(estado.dialogo ? { dialogo: { ...estado.dialogo } } : {}), companyId: estado.companyId, companySeleccionada: estado.companySeleccionada, capabilityId: estado.capabilityId,
         opciones: estado.opciones.slice(0, MAX_OPCIONES).map((o) => ({ capabilityId: o.capabilityId, companyId: o.companyId, ...(o.sinFiltro ? { sinFiltro: true } : {}) })),
       });
       return id;

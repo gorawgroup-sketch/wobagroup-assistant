@@ -1,3 +1,4 @@
+import { reconocerCotidiano, responderCotidiano } from "./dialogo/cotidiano";
 import type { Capacidad, CatalogoNavegacion } from "./catalogo";
 import { restriccionDeFuente, tieneAcceso, type NivelAcceso } from "./permisos";
 
@@ -233,18 +234,6 @@ const opcionDe = (cap: Capacidad, companyId: string, sinFiltro = false): OpcionN
 const ofrecibles = (caps: Capacidad[], companyId: string, nivel: NivelAcceso): Capacidad[] =>
   caps.filter((c) => c.status === "available" && c.companies.includes(companyId) && tieneAcceso(nivel, c.id));
 
-/** Conversación básica solo cuando no se ha reconocido un destino concreto. */
-function respuestaBasica(texto: string): string | undefined {
-  const saludo = /\b(hola|buenas|buenos dias|buenas tardes|buenas noches|hey|que tal|como estas|como te va)\b/.test(texto);
-  const ayuda = /\b(ayudame|ayuda|ayudar|apoyo|orientame|que puedes hacer|que sabes hacer|como funciona|necesito algo|una mano)\b/.test(texto);
-  if (saludo || ayuda) return `${saludo ? "¡Hola! Estoy aquí y listo para ayudarte. " : "Claro, te ayudo. "}Cuéntame qué necesitas consultar o qué quieres hacer, aunque todavía no sepas el nombre del área. También puedes elegir una de las opciones disponibles.`;
-  if (/\b(gracias|muchas gracias|te agradezco|muy amable)\b/.test(texto)) return "¡Con gusto! Si necesitas algo más, cuéntamelo y seguimos.";
-  if (/\b(adios|hasta luego|nos vemos|hasta pronto|chao)\b/.test(texto)) return "¡Hasta luego! Aquí estaré cuando necesites ayuda.";
-  if (/\b(quien eres|como te llamas|que eres)\b/.test(texto)) return "Soy WOBi, tu asistente para consultar la información del sistema y ayudarte a encontrar las áreas disponibles. ¿Qué necesitas?";
-  if (/\b(no entiendo|no entendi|explicame|no se por donde empezar)\b/.test(texto)) return "Vamos paso a paso. Dime qué necesitas resolver con tus propias palabras y te ayudaré a encontrar dónde consultarlo.";
-  return undefined;
-}
-
 /* ───────── punto de entrada ───────── */
 
 export function interpretarNavegacion(e: EntradaInterpretacion): RespuestaNavegacion {
@@ -270,7 +259,8 @@ export function interpretarNavegacion(e: EntradaInterpretacion): RespuestaNavega
 
   if (candidatas.length === 0) {
     const disponibles = ofrecibles(caps.filter((c) => c.target.kind === "area"), e.companyId, e.nivel).slice(0, 6);
-    const charla = respuestaBasica(original);
+    const dialogo = reconocerCotidiano(original);
+    const charla = dialogo ? responderCotidiano(dialogo) : undefined;
     if (charla) return { ...base, tipo: "aclaracion", pregunta: charla,
       opciones: disponibles.map((c) => opcionDe(c, e.companyId)) };
     if (refinamientos.length > 0) {
