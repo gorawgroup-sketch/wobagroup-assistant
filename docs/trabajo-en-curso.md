@@ -44,13 +44,14 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 ## En curso
 
-| Saludos compuestos y acento de Marin | Cerebro / voz | `codex/wobi-conversacion-voz` | Codex | Tipos, build, 74 pruebas y HTTP del router compilado verificados; publicación y prueba en panel autorizadas por Carlos el 13-10-2026. |
+Saludos y Marin: PR #470 fusionado y desplegado en 985f365; panel y voz verificados, trabajo cerrado.
 
 Alertas de saldos API: Codex, `codex/alertas-saldos-api`, Control diario. Avisos OpenAI/Anthropic, sin recargas. Lecturas confirmadas con fecha y consumo WOBi por proveedor; sin presentar estimación como saldo directo.
 Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. PR #463 fusionado; b908bc2 desplegado SUCCESS. Recarga automática apagada por Carlos. Producción: saludo coincide, MP3 200 Marin y PCM 200 Marin/24 kHz, health 200. Evidencia local output/voz-marin/produccion.json. Trabajo cerrado.
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
+| Conversación cotidiana e identidad de sesión | Cerebro / navegador | codex/wobi-dialogo-identidad | Codex | En curso: comprensión por intención, seguimientos y nombre de la sesión resuelta por el servidor. |
 | Navegador inteligente: front, voz y enjambre | Cerebro (front) | codex/navegador-texto | Codex | PR #433: contrato #434, tres cabeceras, permisos confirmados, voz existente y amplitud real del enjambre. Pruebas completas verdes: 2111 backend (6 omitidas), 67 adicionales; voz PCM real y backend verificados en producción. Dictado según navegador, voz y enjambre por amplitud. PR #433 listo para CI y despliegue. |
 | Navegador inteligente: interpretación de solo lectura | Cerebro (backend) | feat/navegador-interpretacion | Claude Code | #434 fusionado. Contrato en docs/navegador-wobi-contrato.md; sin IA, herramientas ni escritura. |
 | Navegador: destinos precisos de Seguros (pagos pendientes, próximas renovaciones, actividad), solo lectura, registrados en el catálogo como secciones | Cerebro (backend + catálogo) | feat/navegador-seguros-destinos | Claude Code | Contrato ampliado en `docs/navegador-wobi-contrato.md`. Las tres secciones están `registered` (sin vista): Codex implementa las vistas, la apertura por id y pone `implemented: true`. |
