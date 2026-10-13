@@ -1,9 +1,9 @@
 import { normalizeAssistantName } from './assistantName.mjs';
 // Una escucha iniciada por el usuario; nunca vuelve a encender el micrófono sola.
-export function startDictation(Recognition, { onListening, onTranscript, onSubmit, onError }) {
+export function startDictation(Recognition, { onListening, onTranscript, onReview, onError }) {
   const recognition = new Recognition();
   let cancelled = false, ended = false, failed = false, text = '';
-  recognition.lang = 'es-ES';
+  recognition.lang = 'es-MX';
   recognition.interimResults = false;
   recognition.continuous = false;
   recognition.onstart = () => { if (!cancelled) onListening(true); };
@@ -24,7 +24,7 @@ export function startDictation(Recognition, { onListening, onTranscript, onSubmi
     if (failed) return;
     if (!text) { onError('No escuché una petición. Pulsa el micrófono e inténtalo de nuevo.'); return; }
     if (text.length > 200) { onError('La petición es demasiado larga. Dila más corta o escríbela; no enviaré una frase recortada.'); return; }
-    onSubmit(text);
+    onReview(text);
   };
   try { recognition.start(); } catch { failed = true; ended = true; onListening(false); onError('No pude activar el micrófono. Puedes escribir.'); }
   return {

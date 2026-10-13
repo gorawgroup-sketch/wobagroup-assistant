@@ -6,14 +6,14 @@ function setup() {
   class Recognition {
     constructor(){rec=this;} start(){this.onstart();} stop(){this.onend();} abort(){this.onend();}
   }
-  const control=startDictation(Recognition,{onListening:v=>listening.push(v),onTranscript:v=>transcripts.push(v),onSubmit:v=>submitted.push(v),onError:v=>errors.push(v)});
+  const control=startDictation(Recognition,{onListening:v=>listening.push(v),onTranscript:v=>transcripts.push(v),onReview:v=>submitted.push(v),onError:v=>errors.push(v)});
   const result=(text,final=true)=>{const r=[{transcript:text}];r.isFinal=final;rec.onresult({results:[r]});};
   return {rec,control,result,submitted,errors,transcripts,listening};
 }
-test('envía una frase final al terminar, sin Enter y sin duplicaciones',()=>{
+test('entrega una frase final para revisión al terminar, sin enviar una consulta',()=>{
  const s=setup();s.result('hola Wobi');assert.deepEqual(s.submitted,[]);s.rec.onend();s.rec.onend();s.result('otro');assert.deepEqual(s.submitted,['hola Wobi']);assert.deepEqual(s.listening,[true,false]);
 });
-test('terminar y enviar procesa el texto, cancelar nunca lo envía',()=>{
+test('terminar deja el texto para revisión, cancelar lo descarta',()=>{
  const s=setup();s.result('abre seguros');s.control.stop();assert.deepEqual(s.submitted,['abre seguros']);
  const c=setup();c.result('abre seguros');c.control.abort();c.rec.onend();assert.deepEqual(c.submitted,[]);
 });
@@ -25,7 +25,15 @@ test('cancelación ignora resultados y errores tardíos',()=>{
  const s=setup();s.control.abort();s.result('abre seguros');s.rec.onerror({error:'network'});assert.deepEqual(s.transcripts,[]);assert.deepEqual(s.errors,[]);assert.deepEqual(s.submitted,[]);
 });
 
-test('corrige el vocativo Guapi en pantalla y en la petición enviada',()=>{
+test('corrige el vocativo Guapi en pantalla y en la transcripción revisable',()=>{
  const s=setup();s.result('hola Guapi');assert.deepEqual(s.transcripts,['hola WOBi']);s.rec.onend();assert.deepEqual(s.submitted,['hola WOBi']);
  const c=setup();c.result('busca documentos en Guapi');c.rec.onend();assert.deepEqual(c.submitted,['busca documentos en Guapi']);
+});
+
+
+test('Bobi como vocativo se corrige, Nuria y otros nombres quedan para revisión humana',()=>{
+ const s=setup();s.result('hola Bobi');s.rec.onend();assert.deepEqual(s.submitted,['hola WOBi']);
+ const c=setup();c.result('dame los gastos de novia');c.rec.onend();assert.deepEqual(c.submitted,['dame los gastos de novia']);
+ const b=setup();b.result('los gastos de Bobi');b.rec.onend();assert.deepEqual(b.submitted,['los gastos de Bobi']);
+ assert.equal(s.rec.lang,'es-MX');
 });
