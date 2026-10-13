@@ -13,6 +13,8 @@ const HEADERS = [
   "clave", "proceso", "estado", "marcador", "empresa", "contactId", "fecha", "huellaSolicitud", "holdedPurchaseId", "creadoEn", "actualizadoEn", "verificadoEn",
 ];
 const NUM_COLS = HEADERS.length;
+/** Marca visible en la hoja de los registros cerrados sin efecto (ver cerrarSinEfecto). */
+export const SUFIJO_CIERRE_SIN_EFECTO = "|cierre_sin_efecto_verificado";
 const CLAVE_MUTEX = `holded-compras:${TAB_NAME}`;
 const RETENCION_MS = enteroAcotado(process.env.WOBI_HOLDED_PURCHASE_LEDGER_RETENTION_DAYS, 365, 90, 1095) * 24 * 60 * 60 * 1000;
 const PURGA_CADA_MS = 6 * 60 * 60 * 1000;
@@ -156,6 +158,37 @@ class StoreCreacionesCompra implements RepositorioCreacionesCompra {
       await this.inicializarYPurgar();
       return [...this.registros.values()]
         .filter((r) => r.empresa === empresa && r.holdedPurchaseId)
+        .map((r) => r.holdedPurchaseId as string);
+    });
+  }
+
+  /**
+   * Cierra SIN EFECTO un registro incierto cuya inexistencia (o sustitución por un intento posterior correcto) ya se demostró leyendo
+   * Holded: vuelve a «preparada» (nada llegó a hacerse) y deja la marca visible en el proceso. Nunca toca Holded.
+   */
+  async cerrarSinEfecto(clave: string): Promise<boolean> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const actual = await this.refrescar(clave);
+      if (!actual || actual.estado !== "incierta") return false;
+      const siguiente: RegistroConFila = {
+        ...actual,
+        estado: "preparada",
+        proceso: actual.proceso.endsWith(SUFIJO_CIERRE_SIN_EFECTO) ? actual.proceso : `${actual.proceso}${SUFIJO_CIERRE_SIN_EFECTO}`,
+        actualizadoEn: Date.now(),
+      };
+      await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
+      this.registros.set(clave, siguiente);
+      return true;
+    });
+  }
+
+  /** Ids de las compras que Wobi creó para una empresa entre dos instantes (para comprobar si un intento incierto fue sustituido por otro correcto). */
+  async listarIdsCreadasEntre(empresa: RegistroCreacionCompra["empresa"], desdeMs: number, hastaMs: number): Promise<string[]> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      return [...this.registros.values()]
+        .filter((r) => r.empresa === empresa && r.holdedPurchaseId && r.creadoEn >= desdeMs && r.creadoEn <= hastaMs)
         .map((r) => r.holdedPurchaseId as string);
     });
   }

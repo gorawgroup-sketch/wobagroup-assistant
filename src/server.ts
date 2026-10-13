@@ -41,6 +41,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server as HttpServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import express, { type Request, type Response } from "express";
 import { parseIncomingUpdate, sendTelegramMessage, sendTelegramMessageSmart, sendTelegramMessageWithButtons, editTelegramMessage, answerCallbackQuery, iniciarIndicadorEscribiendo, avisarTrabajando, entregarRespuestaTrasTrabajar } from "../core/telegram/client";
 import { mensajeFalloTurno } from "../core/claude/turnSafety";
@@ -83,6 +84,7 @@ import { obtenerHistorialVisible } from "../core/claude/conversationStore";
 import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/claude/webSearchLog";
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
+import { ejecutarCierreInciertas } from "../core/jobs/cerrarInciertasAntiguas";
 import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
@@ -682,6 +684,23 @@ registrarAvisadorAdjuntosDuplicados(async (a) => {
     "Holded no permite borrarlos por programa. Para dejarla bien: abre la compra en Holded, borra el primer adjunto (se borran todas las copias) y avísame para volver a subir su comprobante. No la edites otra vez antes de limpiarla.",
   ].join("\n");
   for (const admin of admins) await sendTelegramMessage(admin.userId, texto).catch((error) => console.error("[adjuntos] No se pudo avisar a un admin:", error instanceof Error ? error.name : "Error"));
+});
+
+// Cierre de inciertos antiguos a demanda (mismo trabajo que el cron de las 8:40). Por defecto SIMULA: solo cierra con { "simular": false }.
+// Protegida por ADMIN_SECRET en la cabecera `x-admin-secret`. Nunca escribe en Holded.
+app.post("/admin/cerrar-inciertas", express.json(), async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const esperado = process.env.ADMIN_SECRET;
+  if (!esperado) { res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." }); return; }
+  const recibido = Buffer.from(String(req.get("x-admin-secret") ?? "")), correcto = Buffer.from(esperado);
+  if (recibido.length !== correcto.length || !timingSafeEqual(recibido, correcto)) { res.status(403).json({ error: "Secreto de administración inválido o ausente." }); return; }
+  try {
+    const r = await ejecutarCierreInciertas({ simular: (req.body as { simular?: unknown } | undefined)?.simular !== false });
+    res.json({ simulado: r.simulado, cerrados: r.cerrados, dudosos: r.dudosos, omitidos: r.omitidos });
+  } catch (error) {
+    console.error("[admin/cerrar-inciertas] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No se pudo completar el cierre." });
+  }
 });
 
 // Reposición de los comprobantes rescatados (Holded duplicó sus adjuntos): sube la copia de Drive por el mismo camino durable que usa
