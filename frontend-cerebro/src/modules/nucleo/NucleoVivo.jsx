@@ -22,7 +22,7 @@ function dateLabel(value) {
   const date = new Date(value);
   return value && Number.isFinite(date.getTime()) ? date.toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : 'Sin lectura verificada';
 }
-function Reveal({ title, onClose, children, accent, inline=false }) {
+function Reveal({ title, onClose, children, accent, inline=false, audioLevel=0 }) {
   const dialog = useRef(null);
   const openedAt = useRef(0);
   useEffect(() => {
@@ -41,7 +41,7 @@ function Reveal({ title, onClose, children, accent, inline=false }) {
       // The second click that opened a disclosure must not activate a tool underneath it.
       if (event.detail > 0 && performance.now()-openedAt.current < 350) { event.preventDefault(); event.stopPropagation(); }
     }}>
-    <NanoAmbient />
+    <NanoAmbient audioLevel={audioLevel} />
     <header><span>{title}</span><button type="button" onClick={onClose} aria-label="Cerrar detalle">×</button></header>
     {children}
   </Surface>;
@@ -101,7 +101,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
   const goHome = event => { setNavigationNotice(null); event?.preventDefault?.(); setWorkspaceId(null); setWorkspaceDestination(null); setPanel(null); setAreaId(null); setActiveNode(null); };
 
   return <div className={`nv-shell${workspace ? ' nv-shell--workspace' : ''}${panel==='command'?' nv-shell--command':''}`}>
-    {!panel && <NanoAmbient />}
+    {!panel && <NanoAmbient audioLevel={audioLevel} />}
     <header className="nv-header">
       <a className="nv-wordmark" href="/cerebro/" onClick={goHome} aria-label="WOBi, mostrar todas las áreas">WOB<span>i</span></a>
       <select className="nv-company" value={companyId} onChange={event => {chooseCompany(event.target.value);setConversationAnswer(null);setNavigationNotice(null);}} aria-label="Compañía para datos y documentos">{COMPANIES.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
@@ -151,7 +151,7 @@ export default function NucleoVivo({ apiKey, modules, renderModule, onRefresh, o
       <button type="button" onClick={() => setPanel('menu')} aria-label="Abrir opciones de WOBi">WOBi / {company.name}<span aria-hidden="true"> ···</span></button>
     </footer>
 
-    {panel && <Reveal inline={panel==='command'} accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
+    {panel && <Reveal audioLevel={audioLevel} inline={panel==='command'} accent={panel === "area" ? AREA_COLORS[AREAS.findIndex(item => item.id === areaId)] : undefined} title={panel === 'documents' ? company.name : panel === 'area' ? `${company.name} / ${area?.name}` : panel === 'attention' ? 'Pendientes del sistema' : panel === 'status' ? 'Estado de las conexiones' : panel === 'map' ? `Áreas de ${company.name}` : 'Tu espacio'} onClose={closePanel}>
       {panel === 'map' && <section className="nv-area-map"><p>Selecciona un área para ver sus herramientas y su estado.</p>{AREAS.map((item,index) => { const visual = areaStatus(item, data); return <button className={`nv-area--${visual.id}`} type="button" key={item.id} onClick={() => showArea(item.id)} style={{'--area-color':AREA_COLORS[index]}}><span className="nv-map-icon"><AreaIcon id={item.id}/></span><span><strong>{item.name}</strong><small>{visual.label}</small></span><span aria-hidden="true">↗</span></button>; })}</section>}
       {panel === 'command' && <CommandPanel key={companyId} data={data} onControlDaily={() => openModule('control_diario')} company={company} headers={navigationHeaders} conversation={conversation} onClear={()=>{conversation.current={id:null};setConversationAnswer(null);setNavigationNotice(null);}} onFeedback={speak} onStart={options => { speaker.stop(); if(options?.voice){voiceEnabledRef.current=true;setVoiceEnabled(true);localStorage.setItem('wobi_navigation_voice','on');} if(voiceEnabledRef.current)speaker.activate().catch(()=>{}); }} onDocuments={() => setPanel('documents')} onDestination={proposal => {
         const destination=validateDestination(proposal);

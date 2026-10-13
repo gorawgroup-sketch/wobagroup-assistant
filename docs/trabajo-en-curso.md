@@ -51,8 +51,9 @@ Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. PR #463 fusionado; b908bc2 d
 
 | Trabajo | Área | Rama | Quién | Estado |
 |---|---|---|---|---|
-| Conversación cotidiana e identidad de sesión | Cerebro / navegador | codex/wobi-dialogo-identidad | Codex | PR #471 fusionado en 7598007; CI aprobado. |
-| Dictado revisable y cancelación clara de borradores | Cerebro / pedidos | codex/wobi-corregir-dictado | Codex | En curso: revisión antes de consultar, Corregir texto y Cancelar visibles. |
+| Enjambre del panel conectado a la voz | Cerebro / visual | codex/wobi-enjambre-voz | Codex | En curso: partículas visibles del panel siguen la amplitud real de Marin. |
+| Conversación cotidiana e identidad de sesión | Cerebro / navegador | codex/wobi-dialogo-identidad | Codex | PR #471 fusionado; Carlos verificado en el panel de producción. |
+| Dictado revisable y cancelación clara de borradores | Cerebro / pedidos | codex/wobi-corregir-dictado | Codex | PR #472 fusionado y desplegado en cd180712; Corregir y Cancelar visibles en producción, flujo local verificado. |
 | Navegador inteligente: front, voz y enjambre | Cerebro (front) | codex/navegador-texto | Codex | PR #433: contrato #434, tres cabeceras, permisos confirmados, voz existente y amplitud real del enjambre. Pruebas completas verdes: 2111 backend (6 omitidas), 67 adicionales; voz PCM real y backend verificados en producción. Dictado según navegador, voz y enjambre por amplitud. PR #433 listo para CI y despliegue. |
 | Navegador inteligente: interpretación de solo lectura | Cerebro (backend) | feat/navegador-interpretacion | Claude Code | #434 fusionado. Contrato en docs/navegador-wobi-contrato.md; sin IA, herramientas ni escritura. |
 | Navegador: destinos precisos de Seguros (pagos pendientes, próximas renovaciones, actividad), solo lectura, registrados en el catálogo como secciones | Cerebro (backend + catálogo) | feat/navegador-seguros-destinos | Claude Code | Contrato ampliado en `docs/navegador-wobi-contrato.md`. Las tres secciones están `registered` (sin vista): Codex implementa las vistas, la apertura por id y pone `implemented: true`. |
