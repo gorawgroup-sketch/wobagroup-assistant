@@ -13,7 +13,7 @@ import { startDictation } from './dictation.mjs';
 import { companyById } from '../nucleo/organization.mjs';
 export default function CommandPanel({company,headers,data,onControlDaily,onDestination,onDocuments,onFeedback=()=>{},onStart=()=>{},conversation,onClear=()=>{}}) {
   const sessionKey=JSON.stringify(headers);
-  useEffect(()=>{pending.current?.abort();microphone.current?.abort();setState({});setPedidoRequest(null);if(conversation)conversation.current={};},[sessionKey]);
+  useEffect(()=>{pending.current?.abort();microphone.current?.abort();onStart();setQuery('');setState({});setPedidoRequest(null);if(conversation)conversation.current={};},[sessionKey]);
   const [query,setQuery]=useState('');
   const [state,setState]=useState({});
   const [pedidoRequest,setPedidoRequest]=useState(null);
