@@ -1,3 +1,4 @@
+import {cancelForRevision} from './revision.mjs';
 import {pedidoGuidance} from './guidance.mjs';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {activePedido,createPedidosClient,historyAfterRef,forgetMissingPedido,loadPedidoId,pedidoStorageKey,savePedidoId} from './client.mjs';
@@ -5,7 +6,7 @@ import {TELEGRAM_CHAT_URL,openTelegram} from '../navegador/telegram.mjs';
 import TelegramRequest from '../navegador/TelegramRequest.jsx';
 import './pedidos.css';
 const labels={pendiente_confirmacion:'Borrador · sin enviar',recibido:'Recibido · ejecución pendiente',procesando:'Procesando',terminado:'Procesamiento terminado',fallido:'Resultado incierto',cancelado:'Cancelado · sin enviar',expirado:'Caducado · sin enviar'};
-export default function PedidoPanel({headers,request,query,compact=false,onFeedback=()=>{}}){
+export default function PedidoPanel({headers,request,query,compact=false,onFeedback=()=>{},onReset=()=>{}}){
  const identity=JSON.stringify(headers);
  const client=useMemo(()=>createPedidosClient({headers}),[identity]);
  const storageKey=pedidoStorageKey(headers);
@@ -76,7 +77,15 @@ export default function PedidoPanel({headers,request,query,compact=false,onFeedb
   const p=await client.draft(original,id,signal);accept(p);
  });
  const confirm=()=>job('confirm',async signal=>{const p=current.current;if(p?.estado!=='pendiente_confirmacion')return;if(!savePedidoId(localStorage,storageKey,p.pedidoId))throw Error('No puedo guardar la referencia en este navegador. No he confirmado el envío.');const confirmed=await client.confirm(p,signal);accept(confirmed);pollCount.current=0;setPolling(true);});
- const cancel=()=>job('cancel',async signal=>accept(await client.cancel(current.current.pedidoId,signal)));
+ const cancel=(edit=false)=>job('cancel',async signal=>{
+  const original=current.current;
+  if(original?.estado!=='pendiente_confirmacion')return;
+  const {cancelled}=await cancelForRevision(client,original,signal);
+  accept(cancelled);
+  if(!savePedidoId(localStorage,storageKey,null))throw Error('El borrador se canceló, pero no pude limpiar la referencia local. Consulta su estado antes de continuar.');
+  current.current=null;setPedido(null);setText('');setError('');setHistory(null);requestSeen.current=request?.key;
+  onReset({texto:edit?original.texto:'',edit,cancelled:true});
+ });
  const createLink=()=>job('link',async signal=>{const l=await client.link(signal);setLink(l);if(l.estado==='vinculado'){requestSeen.current=null;setAvailability(await client.availability(signal));}else announce('Abre tu chat de WOBi en Telegram y envía el código de vinculación que aparece aquí. Después pulsa Ya lo vinculé.');});
  const readHistory=()=>job('history',async signal=>{setHistory(await client.history(signal));});
  const clear=()=>{if(lock.current||activePedido(current.current)||current.current?.estado==='pendiente_confirmacion')return;savePedidoId(localStorage,storageKey,null);current.current=null;setPedido(null);setText('');setError('');setHistory(null);spoken.current='';};
@@ -98,11 +107,15 @@ export default function PedidoPanel({headers,request,query,compact=false,onFeedb
   {availability?.disponible&&<p>Destino: tu Telegram{typeof availability.destino?.cuenta==='string'?` · ${availability.destino.cuenta}`:''}.</p>}
   {availability?.disponible&&!pedido&&!compact&&<><label htmlFor="nv-pedido-text">Solicitud exacta</label><textarea id="nv-pedido-text" value={text} onChange={e=>setText(e.target.value)} maxLength={4000} disabled={busy}/><small>{text.length}/4000 · No añado una empresa ni modifico tu solicitud.</small><button type="button" disabled={busy||!query?.trim()} onClick={()=>setText(query)}>Usar lo que acabo de pedir</button><button type="button" disabled={busy||!text.trim()} onClick={()=>draft()}>Preparar envío</button></>}
   {pedido&&<div aria-live="polite"><p className="nv-pedido-state">{labels[pedido.estado]||'Estado aún sin verificar'}{pedido.ref&&` · Ref. ${pedido.ref}`}</p>{pedido.mensaje&&(!compact||!preparing)&&<p>{compact?pedidoGuidance(pedido):pedido.mensaje}</p>}{!compact&&<small>Ejecución: {pedido.ejecucion||'sin verificar'}.</small>}
-   {preparing&&!compact&&<><label htmlFor="nv-pedido-confirm-text">Este es el texto que se enviará</label><textarea id="nv-pedido-confirm-text" readOnly value={pedido.texto}/><p>Confirmar envía este texto a WOBi. No aprueba ninguna operación financiera ni sensible; las decisiones siguen en Telegram.</p><small>Borrador válido hasta {new Date(pedido.expiraEn).toLocaleTimeString('es-ES',{timeZone:'Europe/Madrid',hour:'2-digit',minute:'2-digit'})} (Madrid).</small><button type="button" disabled={busy||!availability?.disponible||Date.parse(pedido.expiraEn)<=Date.now()} onClick={confirm}>Confirmar y enviar</button><button type="button" disabled={busy||!availability?.disponible} onClick={cancel}>Cancelar borrador</button></>}
+   {preparing&&!compact&&<><label htmlFor="nv-pedido-confirm-text">Este es el texto que se enviará</label><textarea id="nv-pedido-confirm-text" readOnly value={pedido.texto}/><p>Confirmar envía este texto a WOBi. No aprueba ninguna operación financiera ni sensible; las decisiones siguen en Telegram.</p><small>Borrador válido hasta {new Date(pedido.expiraEn).toLocaleTimeString('es-ES',{timeZone:'Europe/Madrid',hour:'2-digit',minute:'2-digit'})} (Madrid).</small><button type="button" disabled={busy||!availability?.disponible||Date.parse(pedido.expiraEn)<=Date.now()} onClick={confirm}>Confirmar y enviar</button><button type="button" disabled={busy||!availability?.disponible} onClick={()=>cancel()}>Cancelar borrador</button></>}
    {preparing&&compact&&<>
     <p className="nv-pedido-exact-text">{pedido.texto}</p>
     <button type="button" disabled={busy||!availability?.disponible||Date.parse(pedido.expiraEn)<=Date.now()} onClick={confirm}>{busy?'Enviando…':'Enviar a WOBi en Telegram'}</button>
-    <details><summary>Opciones del envío</summary><button type="button" disabled={busy} onClick={cancel}>Cancelar solicitud</button></details>
+    <div className="nv-pedido-draft-actions">
+     <button type="button" disabled={busy} onClick={()=>cancel(true)}>Corregir texto</button>
+     <button type="button" disabled={busy} onClick={()=>cancel()}>Cancelar y empezar de nuevo</button>
+    </div>
+    <small>Corregir cancela este borrador sin enviarlo y devuelve su texto al campo de consulta.</small>
    </>}
    {unresolved&&<p>No se ha podido verificar este pedido. Consulta su estado; no prepares un pedido nuevo mientras haya dudas.</p>}
    {(activePedido(pedido)||unresolved||error)&&<button type="button" disabled={busy} onClick={()=>check()}>Consultar estado sin reenviar</button>}

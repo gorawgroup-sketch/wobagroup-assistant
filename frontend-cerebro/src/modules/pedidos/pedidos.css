@@ -8,3 +8,5 @@
 .nv-pedidos-ended > summary { font-size: 13px; line-height: 1.5; }
 .nv-pedidos-ended > summary span { font-size: 11px; color: #a3baca; margin-left: 8px; }
 .nv-pedidos-ended > summary:focus-visible { outline: 2px solid #8ed8eb; outline-offset: 4px; }
+
+.nv-pedido-draft-actions { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0; }.nv-pedido-draft-actions button { margin:0; min-height:44px; }.nv-pedido-draft-actions button:last-child { border-color:#efbd76; color:#f6d2a1; }

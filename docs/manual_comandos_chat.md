@@ -528,3 +528,8 @@ En cuanto una declaración queda **firmada** (botón «Sí, es la firmada: guard
 ## Conversación básica del panel WOBi (13-10-2026)
 
 El panel reconoce combinaciones de saludos, ayuda, presentación, cortesía, despedidas, preguntas sobre la identidad y peticiones de explicación con variaciones de orden, acentos y puntuación. Por ejemplo: «¿me echas una mano?», «no sé por dónde empezar», «¿recuerdas mi nombre?», «¿y tú?» o «repíteme lo que dijiste» después de una respuesta cotidiana. Las peticiones concretas conservan su ruta de navegación o procesamiento. El nombre procede de la sesión resuelta en el servidor, no de un nombre escrito en la consulta. Se conserva solo la intención del diálogo durante diez minutos, aislada por usuario y dispositivo; no se guarda el nombre ni texto en ese contexto.
+## Corregir dictado y cancelar borradores en el panel (13-10-2026)
+
+Al terminar el dictado, revisa el texto y pulsa Consultar. Puedes editar nombres y términos, descartar el texto o dictar de nuevo. El vocativo «hola Bobi» se normaliza a «hola WOBi»; nombres de personas dentro de una consulta se mantienen para que los revises, sin adivinar quién es «novia».
+
+Un borrador sin enviar muestra Corregir texto y Cancelar y empezar de nuevo, junto a Enviar a WOBi en Telegram. Corregir cancela primero el borrador en el servidor y devuelve el texto al campo editable. Si la cancelación no se confirma, se mantiene la referencia y se consulta el estado. Una solicitud ya recibida o en ejecución no se presenta como cancelada.
