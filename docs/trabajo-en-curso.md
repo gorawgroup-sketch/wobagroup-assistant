@@ -44,6 +44,8 @@ que describían un estado que ya no existía. Pedido de Carlos: crecer de manera
 
 ## En curso
 
+| Saludos compuestos y acento de Marin | Cerebro / voz | `codex/wobi-conversacion-voz` | Codex | Tipos, build, 74 pruebas y HTTP del router compilado verificados; publicación y prueba en panel autorizadas por Carlos el 13-10-2026. |
+
 Alertas de saldos API: Codex, `codex/alertas-saldos-api`, Control diario. Avisos OpenAI/Anthropic, sin recargas. Lecturas confirmadas con fecha y consumo WOBi por proveedor; sin presentar estimación como saldo directo.
 Voz Marin: Codex, `codex/voz-marin`, Cerebro/audio. PR #463 fusionado; b908bc2 desplegado SUCCESS. Recarga automática apagada por Carlos. Producción: saludo coincide, MP3 200 Marin y PCM 200 Marin/24 kHz, health 200. Evidencia local output/voz-marin/produccion.json. Trabajo cerrado.
 

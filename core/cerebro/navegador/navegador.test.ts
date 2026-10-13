@@ -446,3 +446,18 @@ test("el router sirve las secciones con su estado, alcance y destino completo; y
     assert.equal(r.tipo === "destino" && r.capabilityId, SEC.renov); assert.equal(r.tipo === "destino" && r.companyId, "Footprint");
   });
 });
+
+
+test("WOBi conversa con saludos, ayuda y cortesía sin perder destinos concretos", () => {
+  for (const texto of ["hola WOBi cómo estás me puedes ayudar con algo", "buenos días", "¿qué puedes hacer?", "necesito ayuda", "muchas gracias", "hasta luego", "quién eres", "no entiendo"]) {
+    const r = pedir(texto, "anonimo");
+    assert.equal(r.tipo, "aclaracion", texto);
+    if (r.tipo === "aclaracion") {
+      assert.doesNotMatch(r.pregunta, /No reconozco/);
+      assert.ok(r.opciones.every(o => tieneAcceso("anonimo", o.capabilityId)));
+    }
+  }
+  assert.equal(pedir("hola abre seguros", "anonimo").tipo, "destino");
+  const r = pedir("hola WOBi cómo estás me puedes ayudar con al", "anonimo");
+  assert.ok(r.tipo === "aclaracion" && /listo para ayudarte/.test(r.pregunta));
+});
