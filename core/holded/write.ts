@@ -52,6 +52,7 @@ import { durableFxResidualAdjustmentStore } from "./durableFxResidualAdjustmentS
 import { proveedorExcluidoDeAjusteCambio, registrarAjusteCambioAplicado } from "./ajusteCambioAprendidoSheet";
 import {
   EdicionCompraInciertaError,
+  PREFIJO_PROCESO_AUTOMATICO,
   ejecutarEdicionCompraDurable,
   reconciliarEdicionesCompraPendientes,
   type PreparacionEdicionCompra,
@@ -3714,6 +3715,10 @@ export async function adjuntarComprobanteHolded(
   const bytes = await readFile(rutaLocal);
   validarTamanoAdjuntoHolded(bytes.byteLength);
 
+  // Norma de adjuntos: una compra ya duplicada no recibe más. Una lectura fallida se propaga (no se sube a ciegas).
+  const existentes = await contarAdjuntosCompra(empresa, purchaseId);
+  if (existentes >= MAX_ADJUNTOS_PARA_EDITAR) throw new EdicionBloqueadaPorAdjuntosError(purchaseId, existentes, false);
+
   const durableHabilitado = configuracionAdjuntosCompraDurables().habilitado;
   if (durableHabilitado && !contexto?.idempotencyKey?.trim()) {
     throw new Error("El adjunto durable de Holded requiere una clave idempotente de la aprobación.");
@@ -4533,7 +4538,8 @@ export function tasaCambioParaEdicion(compra: CompraHoldedCruda): number {
 async function prepararEdicionCompraHolded(
   empresa: Empresa,
   purchaseId: string,
-  cambios: CambiosCompraHolded
+  cambios: CambiosCompraHolded,
+  proceso?: string
 ): Promise<PreparacionEdicionCompra> {
   const actual = await obtenerCompraHoldedPorId(empresa, purchaseId);
 
@@ -4702,15 +4708,25 @@ async function prepararEdicionCompraHolded(
     lines: items as LineaCompraHoldedCruda[],
     total: cambios.montoNuevo ?? actual.total,
   };
+  const sinCambios = edicionCompraSinCambios(actual, esperada);
+  // Norma de adjuntos: antes de cruzar la frontera del PUT. Una lectura fallida NO se toma por «sin adjuntos»: se propaga y no se edita.
+  let adjuntosAntes: number | undefined;
+  if (!sinCambios) {
+    adjuntosAntes = await contarAdjuntosCompra(empresa, purchaseId);
+    const automatica = (proceso ?? "").startsWith(PREFIJO_PROCESO_AUTOMATICO);
+    if (!permiteEditarConAdjuntos(adjuntosAntes, automatica)) throw new EdicionBloqueadaPorAdjuntosError(purchaseId, adjuntosAntes, automatica);
+  }
   return {
     huellaEsperada: huellaEstadoCompra(esperada, verificarTotal, Boolean(cuentaNueva || cambios.tagsNuevos !== undefined)),
     verificarTotal,
-    sinCambios: edicionCompraSinCambios(actual, esperada),
+    sinCambios,
     payload: {
       empresa,
       purchaseId,
       body,
       fecha: cambios.fecha ?? actual.date ?? "",
+      adjuntosAntes,
+      proceso,
     } satisfies PayloadEdicionCompraHolded,
   };
 }
@@ -4728,11 +4744,49 @@ export function edicionCompraSinCambios(actual: CompraHoldedCruda, esperada: Com
   return huellaEstadoCompraVersion(actual, true, 3) === huellaEstadoCompraVersion(esperada, true, 3);
 }
 
+/**
+ * NORMA DE ADJUNTOS (2026-10-13). En Holded cada PUT de una compra duplica la lista de sus adjuntos (adjuntos = 2^n), el PUT es un reemplazo
+ * completo y la API NO permite borrar adjuntos (solo GET y POST): un duplicado solo se limpia a mano en la interfaz. Por eso:
+ *  - una automatización NO hace PUT sobre una compra que ya tiene algún adjunto;
+ *  - una edición aprobada por una persona no se hace si la compra ya está duplicada (≥ MAX_ADJUNTOS_PARA_EDITAR): así el peor caso son 4 copias,
+ *    nunca miles;
+ *  - si aun así un PUT aumenta los adjuntos, se avisa a los administradores en el momento;
+ *  - si no se puede leer cuántos adjuntos tiene, no se edita a ciegas.
+ */
+export const MAX_ADJUNTOS_PARA_EDITAR = 3;
+
+export class EdicionBloqueadaPorAdjuntosError extends Error {
+  constructor(public readonly purchaseId: string, public readonly adjuntos: number, public readonly automatica: boolean) {
+    super(automatica
+      ? `Esta compra ya tiene ${adjuntos} adjunto(s) y Holded duplica los adjuntos en cada edición (y no permite borrarlos por programa), así que Wobi no la edita sola: hazlo a mano en Holded o pídeselo a Wobi con una edición aprobada.`
+      : `Esta compra ya tiene ${adjuntos} adjuntos: Holded los duplica en cada edición y no permite borrarlos por programa. Antes de editarla hay que dejarla con un solo comprobante (en Holded, borra el primer adjunto) y pedir a Wobi que lo vuelva a subir.`);
+    this.name = "EdicionBloqueadaPorAdjuntosError";
+  }
+}
+
+/** ¿Se puede hacer PUT sobre una compra con tantos adjuntos? Pura: la regla vive aquí y se prueba aparte. */
+export function permiteEditarConAdjuntos(adjuntos: number, automatica: boolean): boolean {
+  return automatica ? adjuntos < 1 : adjuntos < MAX_ADJUNTOS_PARA_EDITAR;
+}
+
+async function contarAdjuntosCompra(empresa: Empresa, purchaseId: string): Promise<number> {
+  const r = (await holdedWriteCall(empresa, "GET", `/purchases/${encodeURIComponent(purchaseId)}/attachments`)) as { items?: unknown[] } | unknown[];
+  return (Array.isArray(r) ? r : r.items ?? []).length;
+}
+
+export interface AvisoAdjuntosDuplicados { empresa: Empresa; purchaseId: string; antes: number; despues: number; proceso?: string }
+let avisadorAdjuntos: ((aviso: AvisoAdjuntosDuplicados) => Promise<void>) | undefined;
+/** El servidor registra aquí cómo avisar a los administradores (Telegram); write.ts no depende del cliente de Telegram. */
+export function registrarAvisadorAdjuntosDuplicados(fn: (aviso: AvisoAdjuntosDuplicados) => Promise<void>): void { avisadorAdjuntos = fn; }
+
 interface PayloadEdicionCompraHolded {
   empresa: Empresa;
   purchaseId: string;
   body: Record<string, unknown>;
   fecha: string;
+  /** Adjuntos que tenía la compra justo antes del PUT (para detectar que el PUT los duplicó). */
+  adjuntosAntes?: number;
+  proceso?: string;
 }
 
 export function huellaEstadoCompraVersion(
@@ -4833,6 +4887,21 @@ async function aplicarEdicionPreparada(preparacion: PreparacionEdicionCompra): P
     if (/date has been locked/i.test(message)) throw new FechaBloqueadaError(payload.fecha);
     throw error;
   }
+  await avisarSiElPutDuplicoAdjuntos(payload);
+}
+
+/** Tras un PUT: si los adjuntos crecieron, se avisa AL MOMENTO (el aviso nunca hace fallar una edición ya aplicada). */
+async function avisarSiElPutDuplicoAdjuntos(payload: PayloadEdicionCompraHolded): Promise<void> {
+  if (payload.adjuntosAntes === undefined) return;
+  try {
+    const despues = await contarAdjuntosCompra(payload.empresa, payload.purchaseId);
+    if (despues > payload.adjuntosAntes) {
+      console.error(`[write] Holded duplicó los adjuntos de ${payload.empresa}:${payload.purchaseId} al guardar (${payload.adjuntosAntes} → ${despues}).`);
+      await avisadorAdjuntos?.({ empresa: payload.empresa, purchaseId: payload.purchaseId, antes: payload.adjuntosAntes, despues, proceso: payload.proceso });
+    }
+  } catch (error) {
+    console.error("[write] No se pudo comprobar los adjuntos tras la edición (la edición ya quedó aplicada):", error instanceof Error ? error.name : "Error");
+  }
 }
 
 export interface ContextoEdicionCompraHolded {
@@ -4853,7 +4922,7 @@ export async function editarCompraHolded(
   }
 
   if (!durableHabilitado || !contexto) {
-    const preparacion = await prepararEdicionCompraHolded(empresa, purchaseId, cambios);
+    const preparacion = await prepararEdicionCompraHolded(empresa, purchaseId, cambios, contexto?.proceso);
     await aplicarEdicionPreparada(preparacion);
     const registroLegacy: RegistroEdicionCompra = {
       clave: "legacy",
@@ -4888,7 +4957,7 @@ export async function editarCompraHolded(
         contexto.proceso ?? "edicion_compra_aprobada",
         durablePurchaseEditStore,
         {
-          preparar: () => prepararEdicionCompraHolded(empresa, purchaseId, cambios),
+          preparar: () => prepararEdicionCompraHolded(empresa, purchaseId, cambios, contexto.proceso ?? "edicion_compra_aprobada"),
           editar: aplicarEdicionPreparada,
           verificar: verificarEdicionRegistrada,
         }

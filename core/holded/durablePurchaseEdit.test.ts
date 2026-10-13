@@ -430,3 +430,13 @@ test("edicionCompraSinCambios: el estado real de la compra de Ahorramas (32.768 
   ];
   for (const [nombre, c] of cambios) assert.equal(edicionCompraSinCambios(actual, { ...(igual as object), ...c } as never), false, nombre);
 });
+
+
+test("si preparar() se niega (compra con adjuntos duplicados o lectura de adjuntos fallida) NO hay PUT y el registro sigue preparado: nada que reconciliar", async () => {
+  const repo = new RepoMemoria();
+  const holded = transporte();
+  holded.preparar = async () => { throw new Error("La compra ya tiene 4 adjuntos"); };
+  await assert.rejects(() => ejecutarComo(repo, holded, "operador:1", "edicion_compra_aprobada"), /ya tiene 4 adjuntos/);
+  assert.equal(holded.ediciones.length, 0);
+  assert.equal([...repo.filas.values()][0].estado, "preparada");
+});

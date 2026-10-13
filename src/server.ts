@@ -48,6 +48,7 @@ import { prepararAcuseCallback } from "../core/telegram/client";
 import { registrarPulsacionSobreMensaje } from "../core/telegram/preguntaCaducada";
 import {
   esUsuarioAutorizado,
+  obtenerAdmins,
   esAccionSensible,
   obtenerRolUsuario,
   puedeAprobarAccionSensible,
@@ -234,6 +235,7 @@ import {
   precalentarMonedasCuentasReales,
   reconciliarContactosAlArrancar,
   adjuntarComprobanteHolded,
+  registrarAvisadorAdjuntosDuplicados,
 } from "../core/holded/write";
 import { obtenerTrazaAutomatizacion } from "../core/holded/automatizacion/traza";
 import { handleTicketReglaCallback } from "../core/holded/automatizacion/telegramTickets";
@@ -670,6 +672,17 @@ app.use("/api/cerebro/pedidos", (req: Request, res: Response, next) => {
   bitacora: registrarBitacoraPedido,
   habilitado: () => (process.env.WOBI_PEDIDOS_FRONT ?? "activo").trim().toLowerCase() !== "apagado",
 }));
+
+// Norma de adjuntos: si un guardado de Holded duplica los adjuntos de una compra, se avisa a los administradores al momento.
+registrarAvisadorAdjuntosDuplicados(async (a) => {
+  const admins = await obtenerAdmins();
+  const texto = [
+    `⚠️ Holded duplicó los adjuntos de una compra al guardarla (${a.empresa} · ${a.purchaseId}): de ${a.antes} a ${a.despues}.`,
+    "",
+    "Holded no permite borrarlos por programa. Para dejarla bien: abre la compra en Holded, borra el primer adjunto (se borran todas las copias) y avísame para volver a subir su comprobante. No la edites otra vez antes de limpiarla.",
+  ].join("\n");
+  for (const admin of admins) await sendTelegramMessage(admin.userId, texto).catch((error) => console.error("[adjuntos] No se pudo avisar a un admin:", error instanceof Error ? error.name : "Error"));
+});
 
 // Reposición de los comprobantes rescatados (Holded duplicó sus adjuntos): sube la copia de Drive por el mismo camino durable que usa
 // WOBi al crear un gasto. Solo las compras del manifiesto y solo si la compra no tiene adjuntos. Protegida por ADMIN_SECRET.
