@@ -13,6 +13,8 @@ const HEADERS = [
   "clave", "proceso", "estado", "empresa", "nombre", "nombreNormalizado", "codigoFiscal", "codigoFiscalNormalizado", "huellaSolicitud", "holdedContactId", "creadoEn", "actualizadoEn", "verificadoEn",
 ];
 const NUM_COLS = HEADERS.length;
+/** Marca visible en la hoja de los registros cerrados sin efecto (ver cerrarSinEfecto). */
+export const SUFIJO_CIERRE_SIN_EFECTO = "|cierre_sin_efecto_verificado";
 const CLAVE_MUTEX = `holded-contactos:${TAB_NAME}`;
 const RETENCION_MS =
   enteroAcotado(process.env.WOBI_HOLDED_CONTACT_LEDGER_RETENTION_DAYS, 365, 90, 1095) * 24 * 60 * 60 * 1000;
@@ -127,6 +129,27 @@ class StoreCreacionesContacto implements RepositorioCreacionesContacto {
       };
       await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
       this.registros.set(clave, siguiente);
+    });
+  }
+
+  /**
+   * Cierra SIN EFECTO un registro incierto cuya inexistencia (o sustitución por un intento posterior correcto) ya se demostró leyendo
+   * Holded: vuelve a «preparada» (nada llegó a hacerse) y deja la marca visible en el proceso. Nunca toca Holded.
+   */
+  async cerrarSinEfecto(clave: string): Promise<boolean> {
+    return conMutex(CLAVE_MUTEX, async () => {
+      await this.inicializarYPurgar();
+      const actual = await this.refrescar(clave);
+      if (!actual || actual.estado !== "incierta") return false;
+      const siguiente: RegistroConFila = {
+        ...actual,
+        estado: "preparada",
+        proceso: actual.proceso.endsWith(SUFIJO_CIERRE_SIN_EFECTO) ? actual.proceso : `${actual.proceso}${SUFIJO_CIERRE_SIN_EFECTO}`,
+        actualizadoEn: Date.now(),
+      };
+      await actualizarFila(TAB_NAME, actual.rowIndex, NUM_COLS, aFila(siguiente));
+      this.registros.set(clave, siguiente);
+      return true;
     });
   }
 

@@ -1076,7 +1076,7 @@ function contactosUnicosPorId(contactos: HoldedContact[]): HoldedContact[] {
   return [...new Map(contactos.filter((c) => c.id).map((c) => [c.id, c])).values()];
 }
 
-async function inspeccionarCreacionContactoRegistrada(
+export async function inspeccionarCreacionContactoRegistrada(
   registro: RegistroCreacionContacto
 ): Promise<InspeccionCreacionContacto> {
   let exactosCodigo: HoldedContact[] = [];
