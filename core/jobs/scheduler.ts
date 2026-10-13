@@ -7,6 +7,7 @@ import { recordatoriosDeclaraciones } from "../soportes/declaracion/firmaDeclara
 import { revisarCostosIA } from "./revisarCostosIA";
 import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
 import { revisarEstructuraCashflow } from "./revisarEstructuraCashflow";
+import { revisarAdjuntosDuplicados } from "./revisarAdjuntosDuplicados";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
 import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
@@ -257,6 +258,16 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] revisarEstructuraCashflow programado: diario 8:25 (${TIMEZONE})`);
+
+  // Cada PUT de una compra duplica sus adjuntos en Holded (2026-10-13): todos los días, también fines de semana, sin escribir nada.
+  cron.schedule(
+    "35 8 * * *",
+    () => {
+      ejecutarSinSolapamiento("revisarAdjuntosDuplicados", () => revisarAdjuntosDuplicados());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] revisarAdjuntosDuplicados programado: diario 8:35 (${TIMEZONE})`);
 
   cron.schedule(
     "10 8 * * *",

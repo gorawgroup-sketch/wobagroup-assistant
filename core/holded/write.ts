@@ -95,7 +95,7 @@ import {
 import { durableContactStore } from "./durableContactStore";
 
 export { ConflictoCreacionCompraError, CreacionCompraInciertaError } from "./durablePurchase";
-export { ConflictoEdicionCompraError, EdicionCompraInciertaError } from "./durablePurchaseEdit";
+export { ConflictoEdicionCompraError, EdicionCompraInciertaError, TopeEdicionesAutomaticasError } from "./durablePurchaseEdit";
 export {
   AdjuntoCompraInciertoError,
   ConflictoAdjuntoCompraError,
@@ -416,6 +416,8 @@ function programarReconciliacionCreacionesCompra(demoraMs: number, intentosResta
 const metricasEdicionesCompraDurables = {
   activas: 0,
   editadas: 0,
+  /** Ediciones que NO hicieron PUT porque el documento ya estaba como se pedía (cada PUT duplica sus adjuntos en Holded). */
+  omitidasSinCambios: 0,
   reutilizadas: 0,
   verificadasRecuperadas: 0,
   incertidumbresDetectadas: 0,
@@ -4703,6 +4705,7 @@ async function prepararEdicionCompraHolded(
   return {
     huellaEsperada: huellaEstadoCompra(esperada, verificarTotal, Boolean(cuentaNueva || cambios.tagsNuevos !== undefined)),
     verificarTotal,
+    sinCambios: edicionCompraSinCambios(actual, esperada),
     payload: {
       empresa,
       purchaseId,
@@ -4710,6 +4713,19 @@ async function prepararEdicionCompraHolded(
       fecha: cambios.fecha ?? actual.date ?? "",
     } satisfies PayloadEdicionCompraHolded,
   };
+}
+
+/**
+ * ¿El PUT dejaría el documento exactamente como ya está? Compara la huella COMPLETA (versión 3: cabecera, total, descripción, notas,
+ * etiquetas y cada línea con importe, impuestos, cuenta, retención y etiquetas) del estado actual y del esperado. Ante cualquier
+ * diferencia o duda devuelve false y el PUT se hace como siempre: este atajo solo evita escrituras que no cambian nada.
+ *
+ * Por qué importa: Holded duplica la lista de adjuntos en CADA PUT (adjuntos = 2^n). Una «reparación» repetida sin cambios dejó 6 compras de
+ * Footprint con entre 256 y 32.768 copias de su comprobante (2026-10-13), y alguna dejó de abrirse en la interfaz.
+ */
+export function edicionCompraSinCambios(actual: CompraHoldedCruda, esperada: CompraHoldedCruda): boolean {
+  // Sin try/catch a propósito: la misma huella ya se calcula sobre `esperada` para verificar la edición, así que un dato que la rompa fallaría igual.
+  return huellaEstadoCompraVersion(actual, true, 3) === huellaEstadoCompraVersion(esperada, true, 3);
 }
 
 interface PayloadEdicionCompraHolded {
@@ -4878,6 +4894,7 @@ export async function editarCompraHolded(
         }
       );
       if (edicion.reutilizado) metricasEdicionesCompraDurables.reutilizadas++;
+      else if (edicion.sinPut) metricasEdicionesCompraDurables.omitidasSinCambios++;
       else metricasEdicionesCompraDurables.editadas++;
       return edicion.resultado.valor;
     } catch (error) {
