@@ -1,20 +1,25 @@
 import { useEffect, useRef } from 'react';
 
 /** Decorative, local nanobot currents shared by every tool and disclosure. */
-export default function NanoAmbient() {
+export default function NanoAmbient({ audioLevel = 0 }) {
   const ref = useRef(null);
+  const level = useRef(0);
+  const redraw = useRef(null);
+  const normalizedLevel = Number.isFinite(audioLevel) ? Math.min(1, Math.max(0, audioLevel)) : 0;
+  useEffect(() => { level.current = normalizedLevel; redraw.current?.(); }, [normalizedLevel]);
   useEffect(() => {
     const canvas = ref.current;
     const ctx = canvas?.getContext('2d');
     if (!ctx) return;
     const scope = canvas.parentElement;
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-    let width = 0, height = 0, frame = 0, last = 0, time = 0, target = null, burst = 0;
+    let width = 0, height = 0, frame = 0, last = 0, time = 0, target = null, burst = 0, voice = 0;
     const controls = 'button,a,summary,input,select,textarea,.nv-metric,.nv-policy';
     const select = event => { target = event.target.closest?.(controls) || null; if (reduced.matches) draw(); };
     const clear = event => { if (!scope.contains(event.relatedTarget)) target = null; };
     const activate = event => { select(event); burst = 1; if (reduced.matches) draw(); };
     const draw = () => {
+      voice = reduced.matches ? Math.pow(level.current, .65) : voice + (Math.pow(level.current, .65) - voice) * .22;
       ctx.clearRect(0,0,width,height);
       const t = reduced.matches ? 0 : time;
       // Coherent wisps: irregular density and shared velocity, never a dotted frame.
@@ -26,12 +31,13 @@ export default function NanoAmbient() {
           const envelope = Math.sin(u*Math.PI);
           const lane = (noise-.5)*envelope;
           const x = cx+(u-.5)*rx;
-          const y = cy+Math.sin(u*5.2+t*.32+phase)*ry*.3+lane*ry*.6;
-          const alpha = envelope*opacity*(.25+noise*.65);
+          const movement = reduced.matches ? 1 : 1 + voice * .55;
+          const y = cy+(Math.sin(u*5.2+t*.32+phase)*ry*.3+lane*ry*.6)*movement;
+          const alpha = Math.min(1, envelope*opacity*(.25+noise*.65)*(1+voice*.8));
           const length = 1+noise*1.8;
           ctx.strokeStyle = i%29===0 ? '#dfb77b' : '#79d2ea';
           ctx.globalAlpha = alpha;
-          ctx.lineWidth = .55;
+          ctx.lineWidth = .55 + voice * .45;
           ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+length,y+Math.cos(u*5.2+t*.32+phase)*.5); ctx.stroke();
         }
       };
@@ -86,7 +92,7 @@ export default function NanoAmbient() {
             const parcel = .4+.6*Math.sin(p*10-t*.4+index)**4;
             ctx.globalAlpha = (focused ? 1 : .8)*parcel*(.55+seed*.45);
             ctx.fillStyle = i%13===0 ? '#edbb72' : '#65d6f2';
-            const size = .9+seed*.8;
+            const size = (.9+seed*.8)*(1+voice*.35);
             ctx.fillRect(x,y,size,size);
           }
           if (focused) wisp(tx,ty,95+burst*70,14+burst*9,1,.75,150);
@@ -99,10 +105,11 @@ export default function NanoAmbient() {
       ctx.globalAlpha = 1;
     };
     const loop = now => {
-      if (now-last >= 40) { time += Math.min(now-last,80)/1000; last = now; draw(); }
+      if (now-last >= 40) { time += Math.min(now-last,80)/1000*(1+voice*.7); last = now; draw(); }
       frame = requestAnimationFrame(loop);
     };
     const resume = () => { cancelAnimationFrame(frame); last = performance.now(); draw(); if (!reduced.matches && !document.hidden) frame = requestAnimationFrame(loop); };
+    redraw.current = () => { if (reduced.matches && !document.hidden) draw(); };
     const resize = new ResizeObserver(([entry]) => {
       width = entry.contentRect.width; height = entry.contentRect.height;
       const dpr = Math.min(devicePixelRatio || 1,2);
@@ -114,12 +121,12 @@ export default function NanoAmbient() {
     scope.addEventListener('click',activate);
     document.addEventListener('visibilitychange',resume); reduced.addEventListener('change',resume);
     return () => {
-      cancelAnimationFrame(frame); resize.disconnect();
+      cancelAnimationFrame(frame); redraw.current = null; resize.disconnect();
       scope.removeEventListener('pointerover',select); scope.removeEventListener('focusin',select);
       scope.removeEventListener('pointerout',clear); scope.removeEventListener('focusout',clear);
       scope.removeEventListener('click',activate);
       document.removeEventListener('visibilitychange',resume); reduced.removeEventListener('change',resume);
     };
   }, []);
-  return <canvas ref={ref} className="nv-nano-ambient" aria-hidden="true" />;
+  return <canvas ref={ref} className="nv-nano-ambient" data-audio-level={normalizedLevel.toFixed(3)} aria-hidden="true" />;
 }
