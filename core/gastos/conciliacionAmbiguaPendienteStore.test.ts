@@ -181,5 +181,8 @@ test("la pregunta normal persiste threadId al final y conserva las columnas lega
   assert.match(fuente, /comprobanteConfirmado: row\[12\][\s\S]*threadIdGmail: row\[13\]/);
   assert.match(fuente, /pendiente\.comprobanteConfirmado \? "true" : "",\s*pendiente\.threadIdGmail \?\? ""/);
   assert.match(fuente, /restaurada\.comprobanteConfirmado \? "true" : "", restaurada\.threadIdGmail \?\? ""/);
-  assert.match(fuente, /A2:N10000/);
+  // Desde el 14-10 la última columna se deriva de HEADERS (columna O = nombresAlternativosJSON); ningún rango lleva «N» fijo.
+  assert.match(fuente, /"threadIdGmail",\s*"nombresAlternativosJSON"/);
+  assert.match(fuente, /A2:\$\{ULTIMA_COLUMNA\}10000/);
+  assert.doesNotMatch(fuente, /A2:N10000/);
 });
