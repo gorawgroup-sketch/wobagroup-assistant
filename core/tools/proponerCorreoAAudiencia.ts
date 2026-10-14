@@ -16,7 +16,7 @@ export const proponerCorreoAAudienciaTool: ToolDefinition = {
     "recordar, agradecer o aclarar algo a un grupo de personas («a todos los que…», «a toda esa base», «a los que ya se les pidió…»): nunca digas que no puedes " +
     "mandar un correo masivo ni uses proponer_envio_correo en un bucle (esa es para UN destinatario). TÚ redactas el asunto y el cuerpo siguiendo la orden " +
     "del usuario (español, tono profesional y corporativo, claro y conciso, con saludo y despedida; no inventes datos). Puedes usar las marcas {nombre} (nombre de pila), " +
-    "{nombre_completo} y {empresas}: se sustituyen por persona. Elige la audiencia que corresponda y pasa sus parámetros; las audiencias salen de los registros del " +
+    "{nombre_completo}, {empresas} y {detalle} (texto propio de cada persona, solo con la audiencia «lista» y `detalle` en cada destinatario): se sustituyen por persona. Elige la audiencia que corresponda y pasa sus parámetros; las audiencias salen de los registros del " +
     "sistema y solo incluyen personas con email que consta (nunca se adivina uno). Con solo_listar=true no se prepara nada: te dice a quién iría (úsalo para " +
     "contestar «¿a quién se lo enviarías?»). Si el usuario quiere dejar fuera a alguien (por ejemplo, a sí mismo), pasa su nombre y apellido en `excluir`. " +
     `Audiencias disponibles: ${listarAudiencias().map((a) => `«${a.id}» — ${a.descripcion} Parámetros: ${a.parametros}.`).join(" ")} ` +
