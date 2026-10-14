@@ -2,7 +2,7 @@ import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { obtenerPropuestasGastoPorChat } from "../gastos/gastoProposalSheet";
 import { getGmailClient, obtenerResumenCorreo } from "../gmail/client";
-import { debeAvisar, seguirComunicacion, textoSeguimiento, type AdjuntoEntrante, type DepsSeguimiento, type MensajeEntrante } from "../comunicaciones/seguimiento";
+import { debeAvisar, esLaMismaPersona, seguirComunicacion, textoSeguimiento, type AdjuntoEntrante, type DepsSeguimiento, type MensajeEntrante } from "../comunicaciones/seguimiento";
 import { listarComunicacionesRecientes } from "../comunicaciones/envioMasivoStore";
 import { guardarEstadoSeguimiento, leerEstadoSeguimiento } from "../comunicaciones/seguimientoStore";
 import { obtenerAdmins } from "../telegram/authorizedUsersSheet";
@@ -20,13 +20,17 @@ async function crearDeps(): Promise<DepsSeguimiento> {
   const superadmin = (await obtenerAdmins()).find((a) => a.rol === "superadmin")?.userId;
   const propuestas = superadmin ? await obtenerPropuestasGastoPorChat(superadmin) : [];
   return {
-    entrantes: async (email, desdeMs): Promise<MensajeEntrante[]> => {
-      const q = `in:anywhere from:${email} after:${Math.floor(desdeMs / 1000)}`;
-      const lista = await getGmailClient().users.messages.list({ userId: "me", q, maxResults: MAX_MENSAJES_POR_PERSONA });
+    entrantes: async (persona, desdeMs): Promise<MensajeEntrante[]> => {
+      // Por la dirección a la que se escribió Y por el nombre (escriben desde otras direcciones); el filtro fino por nombre se hace al leer cada remitente.
+      const primerNombre = persona.nombre.trim().split(/\s+/)[0] ?? "";
+      const q = `in:anywhere after:${Math.floor(desdeMs / 1000)} -from:asistente@wobagroup.com (from:${persona.email}${primerNombre.length >= 3 ? ` OR from:${primerNombre}` : ""})`;
+      const lista = await getGmailClient().users.messages.list({ userId: "me", q, maxResults: MAX_MENSAJES_POR_PERSONA * 2 });
       const salida: MensajeEntrante[] = [];
       for (const m of lista.data.messages ?? []) {
         if (!m.id) continue;
         const r = await obtenerResumenCorreo(m.id);
+        if (!esLaMismaPersona(r.de, persona)) continue;
+        if (salida.length >= MAX_MENSAJES_POR_PERSONA) break;
         const adjuntos: AdjuntoEntrante[] = [];
         for (const a of r.adjuntos) {
           const partId = a.partId ?? "";
