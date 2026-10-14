@@ -404,15 +404,15 @@ export function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
   };
 }
 
+/** Lista JSON de una celda (mismo patrón que cuentaTags arriba): una celda ilegible deja el campo vacío, no tumba la lectura. */
 function listaDesdeCelda(celda: unknown): string[] | undefined {
-  if (!celda) return undefined;
+  let lista: unknown;
   try {
-    const lista = JSON.parse(String(celda));
-    return Array.isArray(lista) && lista.length ? lista.map(String) : undefined;
+    lista = celda ? JSON.parse(String(celda)) : undefined;
   } catch {
-    console.error("[gastoProposalSheet] nombresAlternativosJSON ilegible en una propuesta; se ignora.");
-    return undefined;
+    lista = undefined;
   }
+  return Array.isArray(lista) && lista.length ? lista.map(String) : undefined;
 }
 
 export function propuestaToRow(p: PropuestaGasto): (string | number)[] {
