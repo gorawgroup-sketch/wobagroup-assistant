@@ -22,6 +22,7 @@ import { comparteNaturaleza, palabrasNaturalezaGasto } from "./naturalezaConcept
 import { montosCercanos } from "../utils/montos";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
+import { esCopiaPendienteDeConciliado, firmasConciliadas } from "./duplicadosBancarios";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
@@ -5036,6 +5037,8 @@ export interface MovimientoBancarioCandidato {
    * aviso: NUNCA se autoseleccionan ni se concilian sin que el operador elija ese cargo.
    */
   compatibilidad?: "por_confirmar" | "aprendido";
+  /** Advertencia para el operador (p. ej. posible duplicado de la sincronización bancaria). Nunca se concilia solo con aviso. */
+  aviso?: string;
 }
 
 // Hacia ADELANTE: un cargo bancario aparece más tarde que la fecha del
@@ -5354,8 +5357,14 @@ export async function buscarMovimientoSimilar(
         end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
       }
     ) };
+    const firmasConciliadasCuenta = firmasConciliadas(data.items ?? []);
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
+      // Copia «pendiente» de un cargo ya conciliado: casi siempre un duplicado de la sincronización, pero dos compras iguales el
+      // mismo día son posibles (Carlos, 14-10-2026): no se descarta en silencio; solo se ofrece «por confirmar» con aviso, nunca se
+      // recomienda ni se concilia sola. La automatización (sin incluirPorConfirmar) no lo ve.
+      const posibleDuplicado = esCopiaPendienteDeConciliado(mov, firmasConciliadasCuenta);
+      if (posibleDuplicado && !criterios.incluirPorConfirmar) continue;
       /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
       const anotar = (monto: number, resultado: "ofrecido" | "descartado", motivo: string) => {
         if (!traza || !Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) return;
@@ -5427,8 +5436,13 @@ export async function buscarMovimientoSimilar(
         }
       }
 
-      anotar(monto, "ofrecido", compatibilidad === "por_confirmar" ? "ofrecido por confirmar (nombre distinto)" : compatibilidad === "aprendido" ? "ofrecido (confirmado antes)" : "ofrecido (compatible)");
+      const aviso = posibleDuplicado
+        ? "posible duplicado: en esta cuenta hay otro cargo idéntico (misma descripción, importe y fecha) ya conciliado; comprueba en Holded si son dos compras reales o una copia de la sincronización"
+        : undefined;
+      if (posibleDuplicado) compatibilidad = "por_confirmar";
+      anotar(monto, "ofrecido", posibleDuplicado ? "ofrecido por confirmar (posible duplicado del banco)" : compatibilidad === "por_confirmar" ? "ofrecido por confirmar (nombre distinto)" : compatibilidad === "aprendido" ? "ofrecido (confirmado antes)" : "ofrecido (compatible)");
       candidatos.push({
+        ...(aviso ? { aviso } : {}),
         accountId: cuenta.id,
         movementId: mov.id,
         descripcion: mov.description ?? "",
@@ -5576,8 +5590,10 @@ export async function buscarMovimientoAproximado(
       { start_date: formatDateLocal(desde), end_date: formatDateLocal(hasta) }
     ) };
 
+    const firmasConciliadasCuenta = firmasConciliadas(data.items ?? []);
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
+      if (esCopiaPendienteDeConciliado(mov, firmasConciliadasCuenta)) continue;
       if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, opcionesNombre)) continue;
       // Su contrato exige «nombre parecido Y monto cercano»: la categoría sola solo vale con la fecha cercana (antes no tenía
       // tope y un restaurante lejano del mismo rubro se conciliaba tras «Sí, conciliar» y reescribía el importe de la compra).
