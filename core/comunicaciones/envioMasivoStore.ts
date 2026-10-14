@@ -83,3 +83,16 @@ async function purgarDestinatariosCaducados(): Promise<void> {
     console.error("[comunicaciones] No se pudieron purgar destinatarios caducados (no crítico):", error instanceof Error ? error.message : error);
   }
 }
+
+/** Comunicaciones creadas en los últimos días, con los destinatarios a los que SÍ se envió (para el seguimiento de respuestas). */
+export async function listarComunicacionesRecientes(dias = 14, ahora = Date.now()): Promise<Comunicacion[]> {
+  const desde = ahora - dias * 86_400_000;
+  const cabeceras = (await leerFilas(TAB_CABECERA, HEADERS_CABECERA.length, HEADERS_CABECERA)).filter((f) => (Number(f.valores[6]) || 0) >= desde);
+  if (cabeceras.length === 0) return [];
+  const todos = (await leerFilas(TAB_DESTINATARIOS, HEADERS_DESTINATARIOS.length, HEADERS_DESTINATARIOS)).map((f) => leerDestinatario(f.rowIndex, f.valores)).filter((d): d is DestinatarioGuardado => !!d);
+  return cabeceras.map((f) => {
+    const v = f.valores;
+    return { cabecera: { rowIndex: f.rowIndex, id: v[0], chatId: Number(v[1]), messageId: Number(v[2]), descripcion: v[3], asunto: v[4], cuerpo: v[5], creadoEn: Number(v[6]) || 0 },
+      destinatarios: todos.filter((d) => d.comunicacion === v[0] && d.estado === "enviado").sort((a, b) => a.indice - b.indice) };
+  }).filter((c) => c.destinatarios.length > 0);
+}
