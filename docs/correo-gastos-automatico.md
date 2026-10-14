@@ -247,3 +247,11 @@ El #413 no cubrió Antaris (340 MXN) ni Xue Cafe (19.513 COP): seguían saliendo
 **Revisión en seco tras cada despliegue (punto 4, 2026-10-08).** Cinco minutos después de arrancar con una versión nueva (`WOBI_MAIL_DRY_RUN_DELAY_MS`, 1–30 min), `core/gmail/automatico/revisionEnSeco.ts` repite la pasada de correo en modo simulación: sin análisis nuevos (solo los guardados, cero coste de IA), sin escribir en Holded, Gmail ni Sheets, sin mensajes de progreso y sin arrancar si hay una revisión real en marcha. Resume el resultado por correo («automatizable» o el motivo legible), lo guarda en `wobi_mail_events` (`revision_en_seco`) y lo compara con la revisión en seco anterior: solo si un correo que antes se automatizaba ahora queda pendiente, aparece un motivo sin catalogar o la pasada falla, avisa a Carlos por Telegram; si no, una línea en el log. Un reinicio sin despliegue (misma versión) no la repite. `WOBI_MAIL_DRY_RUN=off` la apaga.
 
 **Informe por diferencias (punto 5, 2026-10-08).** Cada pasada real guarda su resumen por correo («automatizable» o el motivo legible) en `wobi_mail_events` (`revision_resumen`) y el informe abre con «🔁 Desde la última revisión»: resueltos desde entonces, pendientes nuevos (con su motivo), cambios de motivo y cuántos siguen igual; después viene la lista completa de siempre. Sin registro anterior lo dice («primera revisión con registro de cambios»); si el almacén falla, el informe sale sin la sección y la revisión no se interrumpe. La revisión en seco no participa (guarda lo suyo aparte).
+
+## Operaciones inciertas sin compra (14-10-2026)
+
+Una operación que quedó «incierta» **sin compraId** solo puede cerrarse con una prueba: el registro durable de creaciones de
+compra (`_compras_holded_durables`, misma clave idempotente `correo-auto:<id>`) se reserva ANTES de llamar a Holded. Si no hay
+fila, la escritura nunca empezó → la operación se cierra como `rechazada` (auditoría `cierre_no_ejecutada`) y el correo queda
+libre para el flujo normal. Si hay fila con compra verificada, se verifica esa compra como propia; si hay fila sin compra, sigue
+bloqueada hasta tener pruebas. Caso real: «309,74 USD - Airbnb Madrid» bloqueado con «sin compra registrada» en cada reintento.

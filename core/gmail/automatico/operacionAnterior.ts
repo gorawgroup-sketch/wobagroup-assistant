@@ -91,6 +91,27 @@ export async function intentarCerrarOperacion(
       operacion: op.id, error: error instanceof Error ? error.message : String(error) });
     return bloqueo("lectura_fallida", ["no pude consultar Holded para comprobarlo"]);
   }
+  // Sin compra y sin registro durable de creación: la escritura nunca empezó. Se cierra como rechazada (nada que
+  // verificar, nada que repetir) y el correo vuelve a estar libre para el flujo normal. Antes esta operación bloqueaba
+  // el correo para siempre con «sin compra registrada» (Airbnb 309,74 USD, 2026-10-14).
+  if (!op.compraId && hechos.escrituraRegistrada === false) {
+    const estadoPrevio = { estado: op.estado, paso: op.pasoIncierto, detalle: op.detalle };
+    try {
+      op.estado = "rechazada";
+      op.pasoIncierto = undefined;
+      op.detalle = "Cerrada con prueba leída: la escritura en Holded nunca empezó (sin registro durable de creación ni compra); el correo queda libre.";
+      await deps.guardar(op);
+    } catch (error) {
+      op.estado = estadoPrevio.estado; op.pasoIncierto = estadoPrevio.paso; op.detalle = estadoPrevio.detalle;
+      console.error("[correo-auto] No se pudo cerrar la operación nunca ejecutada:", {
+        operacion: op.id, error: error instanceof Error ? error.message : String(error) });
+      return bloqueo("lectura_fallida", ["no pude dejar constancia del cierre; se reintentará"]);
+    }
+    await deps.auditar({ mensajeId: op.plan.correo.id, tipo: "cierre_no_ejecutada", datos: {
+      operacion: op.id, previo: estadoPrevio, origen: "revision_de_correo" } })
+      .catch(error => console.error("[correo-auto] Operación cerrada como no ejecutada; no se pudo auditar:", error));
+    return { cerrada: true };
+  }
   const evaluacion = evaluarEvidenciaCierre(op, hechos);
   if (evaluacion.veredicto !== "completa") {
     return bloqueo("sin_pruebas", evaluacion.faltan.map((k: ComprobacionCierre) => describirFaltanteCierre(k)));
