@@ -631,3 +631,11 @@ test("leerHechosCierre: una operación sin id de compra no inventa una: mira sol
   assert.deepEqual(hechos, { compra: null, adjuntos: 0, comprobanteCoincide: null, movimiento: null, escrituraRegistrada: false });
   assert.deepEqual(e.consultasGet, []);
 });
+
+test("leerHechosCierre: un registro durable en «preparada» (reservado sin llamar a Holded) cuenta como escritura no empezada", async () => {
+  const e = escenario();
+  (e.adapter as unknown as { registroCreacionPorClave: (clave: string) => Promise<{ estado: string }> }).registroCreacionPorClave = async () => ({ estado: "preparada" });
+  const hechos = await e.adapter.leerHechosCierre(e.op);
+  assert.equal(hechos.escrituraRegistrada, false);
+  assert.deepEqual(e.consultasGet, []);
+});
