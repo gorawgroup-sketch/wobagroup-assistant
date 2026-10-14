@@ -6,7 +6,7 @@ import { obtenerClasificacionesAprendidas } from "../gastos/clasificacionAprendi
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { resolverModeloDocumental } from "../ai/modelRouting";
-import type { DatosFactura } from "../documental/extractInvoiceData";
+import { nombresEnDocumentoDesde, type DatosFactura } from "../documental/extractInvoiceData";
 import { numeroDeReservaEnTexto } from "../documental/numeroDeReserva";
 
 const MODEL = resolverModeloDocumental("extraer_gasto_correo");
@@ -76,6 +76,16 @@ const REPORTAR_TOOL: Anthropic.Tool = {
         description:
           "Código de moneda ISO 4217 de 'monto_equivalente' — LITERALMENTE el que aparece junto a esa " +
           "cifra en el correo. NUNCA asumas que es EUR por defecto — algunas tarjetas están en USD.",
+      },
+      nombres_en_documento: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Otros nombres comerciales que aparecen en el correo y con los que este gasto puede figurar en el extracto del banco " +
+          "cuando el EMISOR del comprobante/notificación es otro: el alojamiento, local o establecimiento donde ocurrió el gasto, la marca o la " +
+          "plataforma que cobró. Ejemplo real: tasa turística emitida por 'Italianway S.p.A.' en nombre de 'Delia Stabile' por una " +
+          "estancia en 'Queen Home Cinzia' → ['Queen Home Cinzia'] (el banco decía 'Queen Home Apartments'). Solo nombres impresos " +
+          "en el correo, nunca inventados ni genéricos ('hotel', 'restaurante'). Vacío si el emisor es el único nombre.",
       },
       persona_asociada: {
         type: "string",
@@ -279,6 +289,7 @@ export async function extraerGastoDeCorreo(
             ? input.persona_asociada.trim()
             : undefined,
         contextoDeViaje: input.contexto_de_viaje === true || input.contexto_de_viaje === "true",
+        nombresEnDocumento: nombresEnDocumentoDesde(input.nombres_en_documento, (input.proveedor as string) ?? ""),
         fecha: (input.fecha as string) ?? "",
         numeroDocumento: typeof input.numero_documento === "string" && input.numero_documento.trim() ? input.numero_documento.trim() : numeroDeReservaEnTexto(cuerpoCompleto),
         concepto,

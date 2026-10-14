@@ -72,6 +72,7 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
         monto: propuesta.monto,
         fecha: propuesta.fecha,
         moneda: propuesta.moneda,
+        nombresAlternativos: propuesta.nombresAlternativos,
         ofrecerCargoMayor: !decisionPorIndice,
       });
       trazaBusqueda = r.traza;

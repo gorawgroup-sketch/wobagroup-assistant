@@ -277,7 +277,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       return "propuesta_duplicada";
     }
     let busquedaIncompleta = false;
-    const cargos = await buscarCargoSinFecha(empresa, { proveedor: datos.proveedor, concepto: datos.concepto, monto: datos.monto, moneda: datos.moneda }).catch(error => {
+    const cargos = await buscarCargoSinFecha(empresa, { proveedor: datos.proveedor, concepto: datos.concepto, monto: datos.monto, moneda: datos.moneda, nombresAlternativos: datos.nombresEnDocumento }).catch(error => {
       busquedaIncompleta = true;
       console.error("[procesarGastoEntrante] Búsqueda sin fecha incompleta", error);
       return [];
@@ -1004,6 +1004,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     cuentaId: cuentaSugerida?.accountId,
     cuentaTags: tagsFinal,
     personaAsociada: datos.personaAsociada,
+    nombresAlternativos: datos.nombresEnDocumento,
     deColaCorreo: entrada.deColaCorreo,
     origenAdjuntoGmail: entrada.origenAdjuntoGmail,
     correoOrigen: entrada.correoOrigen,
@@ -1179,14 +1180,14 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
     try {
       const candidatosMov = await buscarMovimientoSimilar(
         empresa,
-        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, incluirPorConfirmar: true, traza: trazaBusqueda },
+        { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, nombresAlternativos: datos.nombresEnDocumento, incluirPorConfirmar: true, traza: trazaBusqueda },
         toleranciaMov
       );
       // Un cargo que solo «por confirmar» (nombre distinto) es la última opción: si hay uno aproximado que sí coincide
       // por nombre, gana este último.
       const soloPorConfirmar = candidatosMov.length > 0 && candidatosMov.every((c) => c.compatibilidad === "por_confirmar");
       const aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
-        ? await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor })
+        ? await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, nombresAlternativos: datos.nombresEnDocumento })
         : [];
       if (aproximadosPrevios.length > 0) {
         movimientoAproximado = { ...aproximadosPrevios[0], origenCoincidencia: "aproximada" };
@@ -1211,6 +1212,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
           fecha: datos.fecha,
           moneda: monedaParaHolded,
           proveedor: datos.proveedor,
+          nombresAlternativos: datos.nombresEnDocumento,
         });
         if (candidatosAprox.length > 0) {
           movimientoAproximado = { ...candidatosAprox[0], origenCoincidencia: "aproximada" };
@@ -1277,7 +1279,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         !movimientoMonedaAlternativa && busquedaCargoCompleta && !esProveedorNoIdentificado(datos.proveedor)) {
       try {
         movimientosCargoMayor = await buscarCargoMayorDelProveedor(
-          empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto }
+          empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, concepto: datos.concepto, nombresAlternativos: datos.nombresEnDocumento }
         );
       } catch (error) {
         console.error("[procesarGastoEntrante] Error buscando un cargo mayor del proveedor:", error);

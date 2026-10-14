@@ -118,3 +118,19 @@ test("el aproximado exige nombre reconocido; la categoría sola solo vale con la
     assert.equal(r.length, 1);
   });
 });
+
+test("caso real 2026-10-14: la tasa turística de Italianway (Queen Home Cinzia) encuentra el cargo «Queen Home Apartments» −8,00 € por los nombres del documento", async () => {
+  const cargo = mov({ id: "qh", description: "Queen Home Apartments", amount: "-8.00", currency: "EUR", accounting_amount: "-8.00", booking_date: "2026-09-18" });
+  const criteriosTasa = {
+    monto: 8, fecha: "2026-09-20", moneda: "EUR", proveedor: "Delia Stabile (emitido por Italianway S.p.A.)",
+    concepto: "Tasa turística (Tourist tax) — Queen Home Cinzia, Venecia — 2 noches (18-20 sep 2026)", incluirPorConfirmar: true,
+  };
+  await conHolded([cargo], async () => {
+    const sinNombres = await buscarMovimientoSimilar("Footprint", criteriosTasa, undefined, sinAprendidas);
+    assert.equal(sinNombres.length, 0, "por el emisor solo (y 2 días de diferencia) no se ofrecía: así se perdió el caso real");
+    const conNombres = await buscarMovimientoSimilar("Footprint", { ...criteriosTasa, nombresAlternativos: ["Queen Home Cinzia"] }, undefined, sinAprendidas);
+    assert.equal(conNombres.length, 1);
+    assert.equal(conNombres[0].descripcion, "Queen Home Apartments");
+    assert.equal(conNombres[0].compatibilidad, undefined, "compatible por nombre: no es «por confirmar»");
+  });
+});

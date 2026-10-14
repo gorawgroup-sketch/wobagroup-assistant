@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {movimientoCompatibleConGasto, inferirTagsCategoria, combinarTagsGastoAprendidos, nivelCompatibilidadMovimiento, candidatoUtilizableParaGasto, proveedorPareceEnDescripcion, compatibleSoloPorCategoria, motivoDescarteCargoPorNombre} from './write';
+import {movimientoCompatibleConGasto, nombreReconocidoEnDescripcion, inferirTagsCategoria, combinarTagsGastoAprendidos, nivelCompatibilidadMovimiento, candidatoUtilizableParaGasto, proveedorPareceEnDescripcion, compatibleSoloPorCategoria, motivoDescarteCargoPorNombre} from './write';
 test('el importe exacto no permite cruzar proveedor ni categoría',()=>{
  assert.equal(movimientoCompatibleConGasto('Bolt','Taxi aeropuerto','Osteria Del Lovo'),false);
  assert.equal(movimientoCompatibleConGasto('Uber','Traslado taxi','Uber Eats'),false);
@@ -102,4 +102,20 @@ test('INVARIANTE: un cargo de importe y día exactos con categoría desconocida 
     assert.notEqual(nivelCompatibilidadMovimiento(proveedor, concepto, d, { importeYFechaExactos: true }), 'incompatible', `«${d}» se descartaría con importe y día exactos`);
   }
   assert.ok(probadas > 300, `solo se probaron ${probadas} descripciones`);
+});
+
+// Caso real 2026-10-14 (Footprint): tasa turística de 8 € emitida por Italianway en nombre de Delia Stabile por la estancia en
+// «Queen Home Cinzia»; el cargo del banco era «Queen Home Apartments» −8,00 €. Por el emisor no se reconocía; por los nombres
+// que trae el propio documento, sí.
+test('los nombres alternativos del documento reconocen el cargo cuando el emisor es otro (Queen Home Cinzia ↔ Queen Home Apartments)', () => {
+  const proveedor = 'Delia Stabile (emitido por Italianway S.p.A.)';
+  const concepto = 'Tasa turística (Tourist tax) — Queen Home Cinzia, Venecia — Yessenia Dos Prazeres — 2 noches';
+  const cargo = 'Queen Home Apartments';
+  assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, cargo), 'incompatible', 'sin nombres alternativos sigue sin reconocerse');
+  assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, cargo, { importeYFechaExactos: false }, { nombresAlternativos: ['Queen Home Cinzia'] }), 'compatible');
+  assert.equal(nombreReconocidoEnDescripcion(proveedor, cargo, { nucleoDeMarca: true, nombresAlternativos: ['Queen Home Cinzia'] }), true);
+  // Un nombre alternativo que no está en el cargo no inventa compatibilidad.
+  assert.equal(nivelCompatibilidadMovimiento(proveedor, concepto, 'Osteria Del Lovo', { importeYFechaExactos: false }, { nombresAlternativos: ['Queen Home Cinzia'] }), 'incompatible');
+  assert.equal(candidatoUtilizableParaGasto(proveedor, concepto, { descripcion: cargo }, { nombresAlternativos: ['Queen Home Cinzia'] }), true);
+  assert.equal(candidatoUtilizableParaGasto(proveedor, concepto, { descripcion: cargo }), false);
 });

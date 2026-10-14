@@ -7,7 +7,7 @@ export function seleccionarFechaBancaria(candidatos:CandidatoSinFecha[]):string|
  const unicos=[...new Map(candidatos.map(c=>[`${c.accountId}:${c.movementId}`,c])).values()];
  return unicos.length===1 && esFechaDocumentoValida(unicos[0].fecha) ? unicos[0].fecha : undefined;
 }
-export async function buscarCargoSinFecha(empresa:Empresa, datos:{proveedor:string;concepto:string;monto:number;moneda:string}):Promise<CandidatoSinFecha[]> {
+export async function buscarCargoSinFecha(empresa:Empresa, datos:{proveedor:string;concepto:string;monto:number;moneda:string;nombresAlternativos?:string[]}):Promise<CandidatoSinFecha[]> {
  const hasta=new Date(); const desde=new Date(hasta); desde.setUTCDate(desde.getUTCDate()-90);
  const cuentas:any=await holdedGet(empresa,'/treasury/accounts'); const candidatos:CandidatoSinFecha[]=[];
  for(const cuenta of (cuentas.items??[]).filter((c:any)=>!c.archived)){
@@ -19,7 +19,7 @@ export async function buscarCargoSinFecha(empresa:Empresa, datos:{proveedor:stri
    for(const m of r.items??[]){
     const amount=Number(String(m.amount).replace(',','.'));
     if(!(amount<0)||Math.abs(Math.abs(amount)-datos.monto)>0.005||(m.currency??'EUR').toUpperCase()!==datos.moneda.toUpperCase())continue;
-    if(!movimientoCompatibleConGasto(datos.proveedor,datos.concepto,m.description??'',{nucleoDeMarca:true}))continue;
+    if(!movimientoCompatibleConGasto(datos.proveedor,datos.concepto,m.description??'',{nucleoDeMarca:true,nombresAlternativos:datos.nombresAlternativos}))continue;
     candidatos.push({accountId:cuenta.id,movementId:m.id,descripcion:m.description,monto:amount,moneda:m.currency??'EUR',fecha:(m.booking_date??'').slice(0,10),status:m.status});
    }
    if(r.has_more&&(!r.cursor||vistos.has(r.cursor)))throw Error('Búsqueda bancaria incompleta; no se descartan duplicados.');

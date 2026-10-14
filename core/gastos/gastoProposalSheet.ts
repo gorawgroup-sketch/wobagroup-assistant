@@ -20,8 +20,8 @@ const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 días, igual que las demás propues
 // contextoDeViaje/reciboSimplificado/ticketDeEquipo) el valor se pierde en silencio si el rango de
 // escritura de una fila completa (A{fila}:__{fila}) es más angosto que el array que propuestaToRow
 // devuelve — Sheets simplemente descarta los valores sobrantes del array, sin ningún error.
-// HEADERS termina ahora en la columna AE (31 campos) — la próxima columna que se agregue DEBE
-// extender TODOS esos rangos a la letra siguiente (AF).
+// Desde 2026-10-14 la última columna se CALCULA de HEADERS.length (ULTIMA_COLUMNA) y todos los rangos de fila completa
+// la usan: agregar una columna es añadirla a HEADERS, a rowToPropuesta/propuestaToRow y a la migración aditiva de ensureTab.
 const HEADERS = [
   "id",
   "empresa",
@@ -54,10 +54,21 @@ const HEADERS = [
   "reciboSimplificado",
   "ticketDeEquipo",
   "motivoReintento",
+  "nombresAlternativosJSON",
 ];
+
+/** Letra de columna de Sheets (1 → A, 26 → Z, 27 → AA, 32 → AF). */
+export function letraColumna(n: number): string {
+  let s = "";
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+const ULTIMA_COLUMNA = letraColumna(HEADERS.length);
 
 export interface PropuestaGasto {
   id: string;
+  /** Otros nombres comerciales del documento (alojamiento, local, plataforma) con los que el cargo puede figurar en el banco. */
+  nombresAlternativos?: string[];
   empresa: Empresa;
   proveedor: string;
   monto: number;
@@ -268,6 +279,9 @@ async function ensureTab(): Promise<number> {
     // Migración aditiva: motivoReintento (ver su comentario en PropuestaGasto) — mismo patrón.
     await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AE1`,
       valueInputOption: "RAW", requestBody: { values: [["motivoReintento"]] } });
+    // Migración aditiva: nombresAlternativosJSON (otros nombres del documento para reconocer el cargo) — mismo patrón.
+    await sheets.spreadsheets.values.update({ spreadsheetId: sheetId, range: `${TAB_NAME}!AF1`,
+      valueInputOption: "RAW", requestBody: { values: [["nombresAlternativosJSON"]] } });
     tabGridId = existingId;
     return tabGridId;
   }
@@ -284,7 +298,7 @@ async function ensureTab(): Promise<number> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:AE1`,
+    range: `${TAB_NAME}!A1:${ULTIMA_COLUMNA}1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -293,7 +307,7 @@ async function ensureTab(): Promise<number> {
   return tabGridId;
 }
 
-function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
+export function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
   if (!row[0]) return null;
 
   let candidatos: PurchaseCandidato[] = [];
@@ -386,10 +400,22 @@ function rowToPropuesta(row: unknown[]): PropuestaGasto | null {
     reciboSimplificado: row[28] === "" || row[28] == null ? undefined : row[28] === true || row[28] === "true",
     ticketDeEquipo: row[29] === "" || row[29] == null ? undefined : row[29] === true || row[29] === "true",
     motivoReintento: row[30] ? String(row[30]) : undefined,
+    nombresAlternativos: listaDesdeCelda(row[31]),
   };
 }
 
-function propuestaToRow(p: PropuestaGasto): (string | number)[] {
+/** Lista JSON de una celda (mismo patrón que cuentaTags arriba): una celda ilegible deja el campo vacío, no tumba la lectura. */
+function listaDesdeCelda(celda: unknown): string[] | undefined {
+  let lista: unknown;
+  try {
+    lista = celda ? JSON.parse(String(celda)) : undefined;
+  } catch {
+    lista = undefined;
+  }
+  return Array.isArray(lista) && lista.length ? lista.map(String) : undefined;
+}
+
+export function propuestaToRow(p: PropuestaGasto): (string | number)[] {
   return [
     p.id,
     p.empresa,
@@ -422,6 +448,7 @@ function propuestaToRow(p: PropuestaGasto): (string | number)[] {
     p.reciboSimplificado === undefined ? "" : p.reciboSimplificado ? "true" : "false",
     p.ticketDeEquipo === undefined ? "" : p.ticketDeEquipo ? "true" : "false",
     p.motivoReintento ?? "",
+    p.nombresAlternativos?.length ? JSON.stringify(p.nombresAlternativos) : "",
   ];
 }
 
@@ -437,7 +464,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:AE10000`,
+    range: `${TAB_NAME}!A2:${ULTIMA_COLUMNA}10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
 
@@ -514,7 +541,7 @@ async function siguienteFilaLibre(): Promise<number> {
   // última fila con algo, en cualquier columna del rango".
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:AE`,
+    range: `${TAB_NAME}!A:${ULTIMA_COLUMNA}`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
   const rows = resp.data.values ?? [];
@@ -554,7 +581,7 @@ export async function crearPropuestaGasto(datos: Omit<PropuestaGasto, "id" | "cr
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:AE${fila}`,
+        range: `${TAB_NAME}!A${fila}:${ULTIMA_COLUMNA}${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(propuesta)] },
       });
@@ -913,7 +940,7 @@ export async function restaurarPropuestaGasto(propuesta: PropuestaGasto): Promis
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:AE${fila}`,
+        range: `${TAB_NAME}!A${fila}:${ULTIMA_COLUMNA}${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [propuestaToRow(restaurada)] },
       });
