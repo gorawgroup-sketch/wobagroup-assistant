@@ -75,14 +75,15 @@ registrarAudiencia({
 registrarAudiencia({
   id: "lista",
   descripcion: "Una lista que da quien pide el envío (nombres y emails escritos en la orden).",
-  parametros: "destinatarios: lista de { nombre, email }",
+  parametros: "destinatarios: lista de { nombre, email, detalle? } (detalle = texto propio de esa persona para la marca {detalle})",
   resolver: async (p) => {
     const bruto = Array.isArray(p.destinatarios) ? p.destinatarios : [];
-    const validos: Array<{ nombre: string; email: string }> = [], invalidos: string[] = [];
+    const validos: Array<{ nombre: string; email: string; detalle?: string }> = [], invalidos: string[] = [];
     for (const d of bruto) {
       const o = (d ?? {}) as Record<string, unknown>;
       const email = texto(o.email), nombre = texto(o.nombre);
-      if (emailValido(email)) validos.push({ nombre, email }); else invalidos.push(nombre || email || "(vacío)");
+      const detalle = texto(o.detalle);
+      if (emailValido(email)) validos.push({ nombre, email, ...(detalle ? { detalle } : {}) }); else invalidos.push(nombre || email || "(vacío)");
     }
     return { destinatarios: agruparPorEmail(validos), sinEmail: invalidos, omitidos: [] };
   },

@@ -4,10 +4,11 @@
  *   {nombre}          nombre de pila («Yessenia»)
  *   {nombre_completo} nombre tal como consta
  *   {empresas}        «Footprint y WOBA», las empresas por las que está en la audiencia (si la audiencia las conoce)
+ *   {detalle}         texto propio de cada persona que da la audiencia (lo que se le pide a ella en concreto)
  */
-export interface DatosPlantilla { nombre: string; empresas: string[] }
+export interface DatosPlantilla { nombre: string; empresas: string[]; detalle?: string }
 
-export const MARCAS_PLANTILLA = ["nombre", "nombre_completo", "empresas"] as const;
+export const MARCAS_PLANTILLA = ["nombre", "nombre_completo", "empresas", "detalle"] as const;
 
 const MARCA = /\{([a-z_]+)\}/gi;
 
@@ -31,6 +32,7 @@ export function renderizar(texto: string, d: DatosPlantilla): string {
       case "nombre": return nombreDePila(d.nombre) || d.nombre;
       case "nombre_completo": return d.nombre;
       case "empresas": return listaEmpresas(d.empresas);
+      case "detalle": return d.detalle ?? "";
       default: return entera;
     }
   });

@@ -82,7 +82,7 @@ export async function prepararEnvioMasivo(chatId: number, p: PeticionEnvio): Pro
   const yaEnviado = await enviosPrevios(p.asunto.trim(), r.destinatarios.map((d) => d.email)).catch(() => [] as string[]);
   const id = randomUUID().slice(0, 8), ahora = Date.now();
   const cabecera = { id, chatId, messageId: 0, descripcion: (p.descripcion ?? `Audiencia ${p.audiencia}`).trim().slice(0, 200), asunto: p.asunto.trim(), cuerpo: p.cuerpo.trim(), creadoEn: ahora };
-  await crearComunicacion(cabecera, r.destinatarios.map((d, indice) => ({ indice, nombre: d.nombre, email: d.email, empresas: d.empresas, estado: "pendiente" as const })));
+  await crearComunicacion(cabecera, r.destinatarios.map((d, indice) => ({ indice, nombre: d.nombre, email: d.email, empresas: d.empresas, estado: "pendiente" as const, ...(d.detalle ? { detalle: d.detalle } : {}) })));
   const messageId = await sendTelegramMessageWithButtons(chatId, textoResumen(cabecera, r.destinatarios.map((d) => ({ ...d, estado: "pendiente" as const })), { ...r, yaEnviado }), [
     [{ text: "👁 Ver correo", callback_data: `cm_v:${id}` }],
     [{ text: `✅ Enviar a ${r.destinatarios.length}`, callback_data: `cm_e:${id}` }, { text: "❌ Cancelar", callback_data: `cm_c:${id}` }],
