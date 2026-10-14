@@ -9,6 +9,7 @@ import { revisarNumeracionCashflow } from "./revisarNumeracionCashflow";
 import { revisarEstructuraCashflow } from "./revisarEstructuraCashflow";
 import { revisarAdjuntosDuplicados } from "./revisarAdjuntosDuplicados";
 import { ejecutarCierreInciertas } from "./cerrarInciertasAntiguas";
+import { ejecutarAuditoriaCargosExactos } from "./auditoriaCargosExactos";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
 import { revisarAccionesProgramadas } from "./revisarAccionesProgramadas";
@@ -278,6 +279,15 @@ export function startScheduler(): void {
     { timezone: TIMEZONE }
   );
   console.log(`[scheduler] cerrarInciertasAntiguas programado: diario 8:40 (${TIMEZONE})`);
+
+  cron.schedule(
+    "45 8 * * 1-5",
+    () => {
+      ejecutarSinSolapamiento("auditoriaCargosExactos", () => ejecutarAuditoriaCargosExactos());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] auditoriaCargosExactos programado: laborables 8:45 (${TIMEZONE})`);
 
   cron.schedule(
     "10 8 * * *",
