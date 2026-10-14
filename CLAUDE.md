@@ -17,6 +17,12 @@ El sistema será mucho más grande: antes de construir, buscar si ya existe (có
 `registry.ts`); una decisión tiene una sola función dueña; una capacidad nueva nunca contradice ni rodea un guardarraíl;
 todo lo añadido se registra donde se busca. Detalle en docs/principios-de-construccion.md §«Crecer ordenado».
 
+## Un incidente, un solo PR (Carlos, 2026-10-14)
+
+Antes de tocar código, recorrer la cadena completa del caso (leer → proponer → crear → conciliar → preguntar → reprocesar) y
+cubrirla entera en un PR con su caso real de extremo a extremo; resolver al operador hoy con lo existente. Detalle en
+docs/principios-de-construccion.md §«Un incidente, un solo PR».
+
 ## Orden de trabajo — antes de empezar cualquier cosa (Carlos, 2026-10-03)
 
 El sistema crece con varias sesiones a la vez (Claude Code y Codex). Para no crecer desordenado:
