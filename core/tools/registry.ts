@@ -57,6 +57,7 @@ import { buscarGastosPorEtiquetaTool } from "./buscarGastosPorEtiqueta";
 import { informeReintegroGastosTool } from "./informeReintegroGastos";
 import { leerAdjuntosCompraHoldedTool } from "./leerAdjuntosCompraHolded";
 import { revisarCorreoPuntualTool } from "./revisarCorreoPuntual";
+import { proponerCorreoAAudienciaTool } from "./proponerCorreoAAudiencia";
 import { revisarColaCorreoTool } from "./revisarColaCorreo";
 import { avanzarColaCorreoTool } from "./avanzarColaCorreo";
 import { gestionarContactoAutorespuestaTool } from "./gestionarContactoAutorespuesta";
@@ -137,6 +138,7 @@ const tools: ToolDefinition[] = [
   informeReintegroGastosTool,
   leerAdjuntosCompraHoldedTool,
   revisarCorreoPuntualTool,
+  proponerCorreoAAudienciaTool,
   revisarColaCorreoTool,
   avanzarColaCorreoTool,
   gestionarContactoAutorespuestaTool,
