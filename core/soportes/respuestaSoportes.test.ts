@@ -130,3 +130,19 @@ test("extraerCuerpoCitado conserva la tabla citada con las anotaciones de la per
   assert.match(citado, /^7 \| 30\/09\/2026 .*REENVIADO COMO 21\.16 euros/m);
   assert.doesNotMatch(citado, /Saludos, Kelly/);
 });
+
+// Carlos, 14-10-2026: en todos los cargos sin comprobante se envía el formato de transacciones sin soporte de la empresa para firma.
+test("un cargo reconocido sin recibo se cubre con la declaración de gastos sin soporte y la acción sugerida la prepara", () => {
+  const a = componerAnalisis({
+    nombre: "Kelly Johanna Correales", empresa: "Footprint", email: "kelly@footprint.global",
+    cargos: [CARGOS[1]],
+    interpretaciones: [{ numero: 1, situacion: "sin_recibo", loQueDice: "No lo encuentro como soporte en Uber, seguramente es un cargo adicional" }],
+    hechos: [{}], soportes: [],
+  });
+  assert.match(a.resumen, /Reconoce el cargo pero no tiene ni puede conseguir el comprobante/);
+  assert.match(a.resumen, /declaración de gastos sin soporte/);
+  assert.match(a.accionSugerida, /preparar_declaracion_gastos_sin_soporte/);
+  assert.match(a.accionSugerida, /Footprint/);
+  assert.match(a.accionSugerida, new RegExp(`id ${CARGOS[1].id}`));
+  assert.doesNotMatch(a.accionSugerida, /pidiéndole solo lo que falta/);
+});

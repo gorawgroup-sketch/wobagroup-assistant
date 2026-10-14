@@ -546,7 +546,7 @@ Un borrador sin enviar muestra Corregir texto y Cancelar y empezar de nuevo, jun
 
 ## Respuestas a la solicitud de soportes anotadas en la tabla
 
-Muchas personas contestan a la solicitud de soportes escribiendo junto a cada fila de la tabla que se les envió («ENVIADO», «REENVIADO», «REENVIADO COMO 21.16 euros - …», «NO LO ENCUENTRO…»). Wobi lee el cuerpo propio de la respuesta y además la tabla citada, y toma esas anotaciones como la respuesta a cada cargo: «enviado/reenviado» se comprueba en Holded (si el cargo ya está conciliado, nada que hacer) y «no lo encuentro» se trata como cargo sin soporte. Antes solo leía el cuerpo sin citas y decía «no dice nada» de cargos que sí estaban anotados (caso Kelly, 14-10-2026).
+Muchas personas contestan a la solicitud de soportes escribiendo junto a cada fila de la tabla que se les envió («ENVIADO», «REENVIADO», «REENVIADO COMO 21.16 euros - …», «NO LO ENCUENTRO…»). Wobi lee el cuerpo propio de la respuesta y además la tabla citada, y toma esas anotaciones como la respuesta a cada cargo: «enviado/reenviado» se comprueba en Holded (si el cargo ya está conciliado, nada que hacer) y «no lo encuentro / no tengo recibo» (reconoce el cargo pero no tiene comprobante) se cubre con la **declaración de gastos sin soporte** de la empresa: la acción sugerida prepara el documento con esos cargos (`preparar_declaracion_gastos_sin_soporte`) y, al pulsar «Proceder», se responde a la persona y se le propone el correo con la declaración para firma; firmada, queda como soporte en Holded (norma de Carlos, 14-10-2026: en todos los casos sin soporte). Antes solo leía el cuerpo sin citas y decía «no dice nada» de cargos que sí estaban anotados (caso Kelly, 14-10-2026).
 
 ## Preguntas de datos cuyo dato ya se pidió al creador
 

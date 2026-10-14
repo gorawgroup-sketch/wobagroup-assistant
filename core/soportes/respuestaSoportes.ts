@@ -23,7 +23,7 @@ import { lineaCargo, nombreDePila, type CargoCorreo } from "./redactarCorreoSopo
  * UNA acción concreta POR CARGO. Solo lee: nunca crea, concilia ni envía nada (la propuesta pasa por los botones del correo).
  */
 
-export type SituacionCargo = "soporte_adjunto" | "soporte_enviado_antes" | "compensado_reembolso" | "no_reconoce" | "otra_persona" | "sin_mencion";
+export type SituacionCargo = "soporte_adjunto" | "soporte_enviado_antes" | "compensado_reembolso" | "no_reconoce" | "sin_recibo" | "otra_persona" | "sin_mencion";
 
 export interface InterpretacionCargo {
   numero: number;
@@ -59,6 +59,8 @@ export interface PropuestaCargo {
   accion: string;
   /** true si Alejandro tiene que hacer algo (mandar un soporte, aclarar): entra en la respuesta que se le propone. */
   pideAlRemitente?: string;
+  /** La persona reconoce el cargo pero no tiene comprobante: se cubre con la declaración de gastos sin soporte firmada (Carlos, 14-10-2026). */
+  sinSoporte?: boolean;
 }
 
 const dinero = (n: number, m: string): string => `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${m}`;
@@ -147,6 +149,14 @@ export function proponerAccionCargo(cargo: CargoCorreo, dice: InterpretacionCarg
     };
   }
 
+  if (situacion === "sin_recibo") {
+    return {
+      resultado: "Reconoce el cargo pero no tiene ni puede conseguir el comprobante.",
+      accion: "Cubrirlo con la declaración de gastos sin soporte de la empresa, firmada por la persona (se le envía para firma y queda como soporte en Holded).",
+      sinSoporte: true,
+    };
+  }
+
   if (situacion === "no_reconoce" || situacion === "otra_persona") {
     return {
       resultado: situacion === "otra_persona" ? "Dice que el cargo corresponde a otra persona." : "No reconoce el cargo y dice que no es un gasto suyo.",
@@ -170,6 +180,9 @@ export function componerAnalisis(params: {
   hechos: HechosCargo[];
   soportes: SoporteLeido[];
   adjuntosNoLeidos?: string[];
+  /** Empresa y correo de la persona: necesarios para preparar la declaración de gastos sin soporte cuando algún cargo no tiene comprobante. */
+  empresa?: Empresa;
+  email?: string;
 }): AnalisisCorreo {
   const { nombre, cargos, interpretaciones, hechos, soportes } = params;
   const propuestas = cargos.map((c, i) => {
@@ -191,9 +204,15 @@ export function componerAnalisis(params: {
     ? `Adjuntos leídos: ${soportes.map((s) => `${s.nombre} (${s.esGasto ? `gasto: ${[s.proveedor, s.monto !== undefined ? dinero(s.monto, s.moneda ?? "") : ""].filter(Boolean).join(" ")}` : s.descripcion ?? "no es un gasto"})`).join("; ")}.`
     : "El correo no trae adjuntos.";
   const resumen = [`Respuesta de ${nombre} a la solicitud de soportes — leí el cuerpo completo y los adjuntos; esto es lo que propongo por cada cargo pedido:`, adjuntos, "", ...bloques].join("\n");
-  const accionSugerida = pendientes.length
+  // Cargos reconocidos sin comprobante: norma de Carlos (14-10-2026) — en todos los casos sin soporte se envía el formato de
+  // transacciones sin soporte de la empresa para que lo devuelvan firmado y sirva de respaldo (ver core/soportes/declaracion/).
+  const sinSoporte = cargos.filter((_, i) => propuestas[i].propuesta.sinSoporte);
+  const declaracion = sinSoporte.length
+    ? ` Además, preparar la declaración de gastos sin soporte de ${params.empresa ?? "su empresa"} para ${nombre}${params.email ? ` (${params.email})` : ""} con la herramienta preparar_declaracion_gastos_sin_soporte y estos cargos: ${sinSoporte.map((c) => `${c.fecha} · ${c.comercio.trim()} · ${Math.abs(c.total)} ${c.monedaCuenta} (id ${c.id})`).join("; ")}; en la respuesta decirle que le llega ese documento para firmarlo y devolverlo.`
+    : "";
+  const accionSugerida = (pendientes.length
     ? `Responder a ${nombreDePila(nombre) || nombre} confirmando lo resuelto y pidiéndole solo lo que falta: ${pendientes.join("; ")}.`
-    : `Responder a ${nombreDePila(nombre) || nombre} agradeciendo la respuesta y confirmando lo resuelto; no queda nada por pedirle.`;
+    : `Responder a ${nombreDePila(nombre) || nombre} agradeciendo la respuesta y confirmando lo resuelto; no queda nada por pedirle.`) + declaracion;
   return { tipo: "necesita_respuesta", resumen, accionSugerida, razon: "Respuesta a la solicitud de soportes de tarjeta: una acción por cargo." };
 }
 
@@ -219,8 +238,8 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
               numero: { type: "number", description: "El Nº del cargo en la tabla enviada." },
               situacion: {
                 type: "string",
-                enum: ["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "otra_persona", "sin_mencion"],
-                description: "soporte_adjunto: adjunta el comprobante en ESTE correo. soporte_enviado_antes: dice que ya lo envió en otro correo (aunque lo adjunte de nuevo, usa soporte_adjunto si lo adjunta ahora). compensado_reembolso: el cargo fue reembolsado/anulado. no_reconoce: dice que no es suyo y no lo reconoce. otra_persona: dice que lo hizo otra persona. sin_mencion: no habla de este cargo.",
+                enum: ["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "sin_recibo", "otra_persona", "sin_mencion"],
+                description: "soporte_adjunto: adjunta el comprobante en ESTE correo. soporte_enviado_antes: dice que ya lo envió en otro correo (aunque lo adjunte de nuevo, usa soporte_adjunto si lo adjunta ahora). compensado_reembolso: el cargo fue reembolsado/anulado. no_reconoce: dice que no es suyo y no lo reconoce. otra_persona: dice que lo hizo otra persona. sin_mencion: no habla de este cargo. sin_recibo: reconoce el cargo como suyo pero dice que NO tiene o NO encuentra el comprobante (p. ej. «no lo encuentro como soporte en Uber», «no tengo recibo», «fue un cargo adicional»).",
               },
               lo_que_dice: { type: "string", description: "Lo que responde de ESTE cargo, en una frase y con sus datos (fechas, importes, asuntos de correos anteriores)." },
               adjunto: { type: "string", description: "Nombre EXACTO del adjunto que cita como soporte de este cargo, o vacío." },
@@ -258,7 +277,7 @@ async function interpretarUnaVez(cargos: CargoCorreo[], cuerpo: string, adjuntos
   if (!lista) throw new Error(`El modelo no devolvió la interpretación por cargo (stop: ${respuesta.stop_reason}; entrada: ${JSON.stringify(uso?.input ?? null).slice(0, 300)}).`);
   return lista.map((x) => ({
     numero: Number(x.numero),
-    situacion: (["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "otra_persona", "sin_mencion"].includes(String(x.situacion)) ? x.situacion : "sin_mencion") as SituacionCargo,
+    situacion: (["soporte_adjunto", "soporte_enviado_antes", "compensado_reembolso", "no_reconoce", "sin_recibo", "otra_persona", "sin_mencion"].includes(String(x.situacion)) ? x.situacion : "sin_mencion") as SituacionCargo,
     loQueDice: String(x.lo_que_dice ?? ""),
     adjunto: typeof x.adjunto === "string" && x.adjunto.trim() ? x.adjunto.trim() : undefined,
   }));
@@ -384,5 +403,5 @@ export async function analizarRespuestaDeSoportes(correo: CorreoResumen, cuerpoC
     console.error("[respuestaSoportes] No se pudieron leer los movimientos de Holded:", error instanceof Error ? error.message : error);
   }
   const soportes: SoporteLeido[] = adjuntos.map(({ huella: _h, ...s }) => ({ ...s, cargoQueYaLoSoporta: s.yaRegistrado ? cargoQueYaSoporta(s.yaRegistrado, movimientos) : undefined }));
-  return componerAnalisis({ nombre: solicitud.titular, cargos, interpretaciones, hechos: cargos.map((c) => hechosDelCargo(c, movimientos)), soportes });
+  return componerAnalisis({ nombre: solicitud.titular, cargos, interpretaciones, hechos: cargos.map((c) => hechosDelCargo(c, movimientos)), soportes, empresa: asunto.empresa, email: solicitud.email });
 }
