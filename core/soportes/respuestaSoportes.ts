@@ -8,8 +8,8 @@ import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { resolverModeloDocumental } from "../ai/modelRouting";
 import { crearEjecucionIA } from "../ai/policy";
 import { extraerDatosFactura } from "../documental/extractInvoiceData";
-import { buscarGastoProcesadoPorIdentidad } from "../gastos/gastoPorCorreoStore";
-import { descargarAdjunto, extraerDireccionCorreo, type CorreoResumen } from "../gmail/client";
+import { buscarGastoProcesadoPorIdentidad, listarRegistrosGastoPorEmpresa, type GastoPorCorreo } from "../gastos/gastoPorCorreoStore";
+import { buscarMensajes, descargarAdjunto, extraerDireccionCorreo, obtenerResumenCorreo, type CorreoResumen } from "../gmail/client";
 import type { AnalisisCorreo } from "../gmail/classifyEmail";
 import { listBankMovements, listTreasuryAccounts, type Empresa } from "../holded/client";
 import { ultimaSolicitudEnviada } from "./campanaSoportesStore";
@@ -43,6 +43,8 @@ export interface SoporteLeido {
   fecha?: string;
   /** Si ese mismo archivo (o su número de documento) ya se convirtió en un gasto, cuál. */
   yaRegistrado?: { gastoId: string; proveedor?: string; monto?: number; moneda?: string; fecha?: string };
+  /** El recibo llegó en un correo anterior de la persona que sigue en la cola de revisión, aún sin registrar. */
+  enColaSinProcesar?: boolean;
   /** Otro cargo del banco, ya conciliado, que corresponde al importe del gasto ya registrado. */
   cargoQueYaLoSoporta?: { fecha: string; importe: number; moneda: string };
   /** Qué es el documento cuando no es un gasto (una captura de la app del banco, un resumen…). */
@@ -127,6 +129,12 @@ export function proponerAccionCargo(cargo: CargoCorreo, dice: InterpretacionCarg
         accion: "Crear el gasto desde ese comprobante y conciliarlo con este cargo: llega a continuación como propuesta con sus botones.",
       };
     }
+    if (soporte?.enColaSinProcesar) {
+      return {
+        resultado: `Sí lo envió: ${soporte.nombre}; ese correo sigue en la cola de revisión, aún sin registrar.`,
+        accion: "Nada que pedirle: procesar ese correo anterior (la cola lo registrará y conciliará con este cargo).",
+      };
+    }
     return {
       resultado: soporte ? `El adjunto ${soporte.nombre} no es un comprobante de gasto (${soporte.descripcion ?? "no trae proveedor ni importe"}).` : "Dice que lo envió, pero no encuentro ese comprobante ni en este correo ni ya registrado.",
       accion: "Pedirle de nuevo el recibo de este cargo.",
@@ -172,6 +180,95 @@ export function proponerAccionCargo(cargo: CargoCorreo, dice: InterpretacionCarg
     pideAlRemitente: `el recibo del cargo de ${importe} del ${fechaCorta(cargo.fecha)} (${cargo.comercio.trim()})`,
   };
 }
+
+/** Importes tal como suelen escribirse en los asuntos («8,35», «8.35», «245.050», «245050»). */
+function formasDeImporte(n: number | undefined): string[] {
+  if (n === undefined || !Number.isFinite(n)) return [];
+  const v = Math.abs(n);
+  const dos = v.toFixed(2);
+  const entero = Number.isInteger(v) ? String(v) : "";
+  const miles = v >= 1000 ? Math.round(v).toLocaleString("es-ES") : "";
+  return [...new Set([dos, dos.replace(".", ","), entero, miles].filter(Boolean))];
+}
+const normalizarTexto = (t: string): string => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+
+export interface CorreoAnteriorResumen { id: string; asunto: string; fecha: string }
+
+/**
+ * Pura. «Ya lo envié» sin adjunto: qué correo anterior de la persona trajo el recibo de ESTE cargo. Se reconoce por el asunto
+ * (el importe del cargo o del comercio, o el asunto citado en su respuesta, p. ej. «REENVIADO COMO 21.16 euros - Desayuno com
+ * Yanessy») y por la fecha (desde 3 días antes del cargo hasta 25 después). Caso real Kelly, 14-10-2026: seis cargos
+ * «reenviados» cuyos correos ya estaban registrados y el lector volvía a pedir el recibo.
+ */
+export function emparejarCorreoAnterior(cargo: CargoCorreo, dice: InterpretacionCargo | undefined, correos: CorreoAnteriorResumen[]): CorreoAnteriorResumen | undefined {
+  const asuntoCitado = normalizarTexto(dice?.loQueDice ?? "");
+  const importes = [...formasDeImporte(cargo.total), ...formasDeImporte(cargo.importeOriginal)];
+  const candidatos = correos.filter((c) => {
+    const d = (Date.parse(`${c.fecha.slice(0, 10)}T00:00:00Z`) - Date.parse(`${cargo.fecha}T00:00:00Z`)) / 86_400_000;
+    if (!Number.isFinite(d) || d < -3 || d > 25) return false;
+    const asunto = normalizarTexto(c.asunto).replace(/^(re|rv|fwd?|fw):\s*/g, "");
+    if (asunto.length >= 10 && asuntoCitado.includes(asunto)) return true;
+    return importes.some((imp) => asunto.includes(imp.toLowerCase()));
+  });
+  // Si hay varios con el mismo importe, el más cercano a la fecha del cargo.
+  return candidatos.sort((a, b) => Math.abs(Date.parse(a.fecha) - Date.parse(cargo.fecha)) - Math.abs(Date.parse(b.fecha) - Date.parse(cargo.fecha)))[0];
+}
+
+/**
+ * Con red: para cada cargo «ya lo envié» sin adjunto, localiza el correo anterior y su gasto registrado, y lo convierte en un
+ * SoporteLeido (nombre = «correo del DD/MM "asunto"») enlazado a la interpretación por `adjunto`, para que la acción por cargo
+ * lo trate como el comprobante que es. Un fallo de Gmail o del registro no decide nada: se sigue sin esta pista.
+ */
+export async function localizarSoportesEnviadosAntes(
+  email: string,
+  empresa: Empresa,
+  cargos: CargoCorreo[],
+  interpretaciones: InterpretacionCargo[],
+  deps: {
+    correosDe: (email: string) => Promise<CorreoAnteriorResumen[]>;
+    registros: (empresa: Empresa) => Promise<GastoPorCorreo[]>;
+  } = depsCorreosAnteriores
+): Promise<SoporteLeido[]> {
+  const pendientes = interpretaciones.filter((i) => i.situacion === "soporte_enviado_antes" && !i.adjunto);
+  if (!pendientes.length) return [];
+  let correos: CorreoAnteriorResumen[];
+  let registros: GastoPorCorreo[];
+  try {
+    [correos, registros] = await Promise.all([deps.correosDe(email), deps.registros(empresa)]);
+  } catch (error) {
+    console.error("[respuestaSoportes] No se pudieron leer los correos anteriores de la persona (se sigue sin esa pista):", error instanceof Error ? error.message : error);
+    return [];
+  }
+  const soportes: SoporteLeido[] = [];
+  for (const dice of pendientes) {
+    const cargo = cargos[dice.numero - 1];
+    if (!cargo) continue;
+    const correo = emparejarCorreoAnterior(cargo, dice, correos);
+    if (!correo) continue;
+    const nombre = `correo del ${fechaCorta(correo.fecha.slice(0, 10))} «${correo.asunto}»`;
+    dice.adjunto = nombre;
+    const reg = registros.find((r) => r.mensajeIdGmail === correo.id);
+    soportes.push(reg
+      ? { nombre, esGasto: true, proveedor: reg.identidad?.proveedor, monto: reg.identidad?.monto, moneda: reg.identidad?.moneda, fecha: reg.identidad?.fecha,
+          yaRegistrado: { gastoId: reg.gastoId, proveedor: reg.identidad?.proveedor, monto: reg.identidad?.monto, moneda: reg.identidad?.moneda, fecha: reg.identidad?.fecha } }
+      : { nombre, esGasto: false, descripcion: "correo anterior en la cola de revisión", enColaSinProcesar: true });
+  }
+  return soportes;
+}
+
+const depsCorreosAnteriores = {
+  correosDe: async (email: string): Promise<CorreoAnteriorResumen[]> => {
+    const ids = await buscarMensajes(`from:${email} newer_than:120d`, 60);
+    const salida: CorreoAnteriorResumen[] = [];
+    for (const id of ids) {
+      const r = await obtenerResumenCorreo(id);
+      const fecha = new Date(r.fecha);
+      salida.push({ id, asunto: r.asunto, fecha: Number.isFinite(fecha.getTime()) ? fecha.toISOString().slice(0, 10) : "" });
+    }
+    return salida;
+  },
+  registros: listarRegistrosGastoPorEmpresa,
+};
 
 export function componerAnalisis(params: {
   nombre: string;
@@ -403,5 +500,8 @@ export async function analizarRespuestaDeSoportes(correo: CorreoResumen, cuerpoC
     console.error("[respuestaSoportes] No se pudieron leer los movimientos de Holded:", error instanceof Error ? error.message : error);
   }
   const soportes: SoporteLeido[] = adjuntos.map(({ huella: _h, ...s }) => ({ ...s, cargoQueYaLoSoporta: s.yaRegistrado ? cargoQueYaSoporta(s.yaRegistrado, movimientos) : undefined }));
+  // «Ya lo envié» sin adjunto: el recibo está en un correo anterior de la persona (y normalmente ya registrado).
+  const anteriores = email ? await localizarSoportesEnviadosAntes(email, asunto.empresa, cargos, interpretaciones) : [];
+  soportes.push(...anteriores.map((s) => ({ ...s, cargoQueYaLoSoporta: s.yaRegistrado ? cargoQueYaSoporta(s.yaRegistrado, movimientos) : undefined })));
   return componerAnalisis({ nombre: solicitud.titular, cargos, interpretaciones, hechos: cargos.map((c) => hechosDelCargo(c, movimientos)), soportes, empresa: asunto.empresa, email: solicitud.email });
 }
