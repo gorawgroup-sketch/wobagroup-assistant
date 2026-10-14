@@ -45,6 +45,13 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
           "'Alberto Comolli', 'la factura de Sinfonía', 'proveedor@dominio.com') — puede ser lenguaje " +
           "natural o una consulta real de Gmail (ej. 'from:alberto@wobagroup.com').",
       },
+      volver_a_proponer: {
+        type: "boolean",
+        description:
+          "true cuando el usuario quiere REGISTRAR un gasto de ese correo que antes descartó con «Cancelar»/«Descartar» (Wobi avisa " +
+          "«ya lo descartaste tú antes»), o pide «vuelve a proponerlo» / «reprocesa aunque lo haya descartado»: se levanta el descarte y " +
+          "el correo se procesa de nuevo. Sin esto, un correo descartado no se vuelve a proponer.",
+      },
       solo_archivar: {
         type: "boolean",
         description:
@@ -67,7 +74,8 @@ export const revisarCorreoPuntualTool: ToolDefinition = {
     }
 
     const soloArchivar = input.solo_archivar === true || input.solo_archivar === "true";
-    const resultado = await procesarCorreoPuntual(chatId, busqueda, { soloArchivar });
+    const volverAProponer = input.volver_a_proponer === true || input.volver_a_proponer === "true";
+    const resultado = await procesarCorreoPuntual(chatId, busqueda, { soloArchivar, volverAProponer });
 
     if (!resultado.encontrado) {
       return `No encontré ningún correo que coincida con la referencia concreta "${busqueda}" en la bandeja de entrada, ni leído ni sin leer.`;

@@ -361,7 +361,10 @@ pidiendo. Si la nota no se puede leer, lo dice y no ejecuta nada. Detalle en `do
 
 Queda registrado que el operador decidió NO registrar ese comprobante (por correo y adjunto). En las siguientes
 revisiones ese adjunto se salta con «ya lo descartaste tú antes» y no se vuelve a proponer. Si más adelante sí hay que
-registrarlo, se pide por chat.
+registrarlo (o reprocesarlo con una corrección nueva), se pide por chat: **«vuelve a proponer el correo de X»** o
+«reprocesa el correo de X aunque lo haya descartado» → Wobi levanta el descarte (`revisar_correo_puntual` con
+`volver_a_proponer`) y lo procesa de nuevo con botones. Desde el servidor: `/admin/proponer-accion` con
+`{"tool":"revisar_correo_puntual","input":{"busqueda":"…","volver_a_proponer":true}}`.
 
 ### Lote de impuestos en el cashflow (secciones «Impuestos por pagar» y «Aplazamiento impuestos»)
 
