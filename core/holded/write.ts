@@ -1257,10 +1257,20 @@ function palabrasParecidas(a: string, b: string): boolean {
  * con `pistaContextual` — extraída como función pura para poder probar el desempate sin depender de
  * Holded. Ver el comentario de buscarContactosParecidos para el caso real que motivó el bonus.
  */
+/**
+ * Palabras de rubro o relleno: compartirlas NO hace parecidos a dos contactos. Caso real 2026-10-14: «Delia Stabile (Queen Apartments, vía
+ * Italianway)» se ofreció (y se aprendió como alias) como «APARTMENT VILA OLÍMPICA BARCELONA…» solo por «apartment(s)»; las dos facturas de
+ * Queen se crearon con un contacto que no era suyo. Se ignoran del lado del nombre buscado; si solo quedan palabras de rubro, no hay parecido.
+ */
+const PALABRAS_GENERICAS_CONTACTO = new Set([
+  "apartment", "apartments", "apartamento", "apartamentos", "appartement", "home", "homes", "house", "casa", "suites", "suite",
+  "residence", "residencia", "resort", "hotels", "hoteles", "hostels", "hostal", "beach", "garden", "next", "vila", "villa", "villas",
+]);
+
 export function puntuarContactoParecido(nombre: string, nombreCandidato: string, pistaContextual?: string): number {
   const palabrasObjetivo = normalizar(nombre)
     .split(" ")
-    .filter((p) => p.length >= 3);
+    .filter((p) => p.length >= 3 && !PALABRAS_GENERICAS_CONTACTO.has(p) && !PALABRAS_GENERICAS_MARCA.has(p));
   const palabrasCandidato = normalizar(nombreCandidato)
     .split(" ")
     .filter((p) => p.length >= 3);

@@ -120,3 +120,11 @@ test("caso adversarial Marbella/Marsella, con corroboración real: el mismo typo
   const score = puntuarDistintividad(objetivo, candidatoConTypoRealYCorroboracion, [objetivo, candidatoConTypoRealYCorroboracion]);
   assert.ok(score > 0, `con otra palabra real corroborando (Distribuciones/Hostelería), el typo sí debe contar (obtuvo ${score})`);
 });
+
+test("palabras de rubro («apartments», «villa»…) no hacen parecidos a dos contactos (caso Queen, 2026-10-14)", () => {
+  const ajeno = "APARTMENT VILA OLÍMPICA BARCELONA NEXT TO BEACH&GARDEN";
+  assert.equal(puntuarContactoParecido("Delia Stabile (Queen Apartments, vía Italianway S.p.A.)", ajeno), 0);
+  assert.equal(puntuarContactoParecido("Queen Home Apartments SRLS", ajeno), 0);
+  assert.ok(puntuarContactoParecido("Queen Home Apartments SRLS", "Queen Home Apartments") > 0, "el mismo comercio sigue reconociéndose por su nombre propio");
+  assert.ok(puntuarContactoParecido("Uber", "UBER COLOMBIA") > 0);
+});
