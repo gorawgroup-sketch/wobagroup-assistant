@@ -444,8 +444,8 @@ const ACCIONES_SENSIBLES = new Set([
   // Envía correos reales a las personas del equipo (soportes de cargos con tarjeta, core/soportes/): efecto externo,
   // solo un superadmin. Las casillas, «Ver correo», «Actualizar emails» y «Cancelar» no envían nada y no son sensibles.
   "sop_e",
-  // «Enviar» del aviso de formato de soportes (core/soportes/avisoFormatoTelegram.ts): también envía correos reales a las personas del equipo.
-  "sop_ae",
+  // «Enviar» de un correo a una audiencia (core/comunicaciones/): envía correos reales a varias personas; solo superadmin. «Ver correo» y «Cancelar» no envían nada.
+  "cm_e",
   // Conciliar un cargo SIN documento (core/holded/conciliarSinSoporte.ts): escribe en Holded y deja el cargo fuera de la contabilidad como
   // gasto; solo superadmin. «Cancelar» también, mismo criterio que el resto de pares sí/no.
   "sinsop_ok",

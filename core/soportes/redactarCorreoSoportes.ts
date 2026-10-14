@@ -13,7 +13,7 @@ export const BUZON_SOPORTES = "asistente@wobagroup.com";
 
 /**
  * Cómo se envía un soporte (decisión de Carlos, 2026-10-14: muchos lo enviaban respondiendo al correo de la solicitud y así el flujo no
- * podía leerlos bien). Fuente única: la usan el correo de soportes y el aviso de formato (avisoFormato.ts) para que nunca se contradigan.
+ * podía leerlos bien). Fuente única: la usan el correo de soportes, la hoja de seguimiento y la regla fija del asistente (reglaProceso.ts) para que nunca se contradigan; quien redacte un correo a una audiencia sobre soportes (core/comunicaciones/) parte de ellas.
  */
 export const EJEMPLO_ASUNTO_SOPORTE = "Uber traslado aeropuerto · 12,50 EUR · Footprint";
 export const INSTRUCCIONES_ENVIO_SOPORTES: readonly string[] = [

@@ -87,6 +87,7 @@ import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/schedul
 import { ejecutarCierreInciertas } from "../core/jobs/cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "../core/jobs/auditoriaCargosExactos";
 import { crearRouterProponerAccion } from "../core/tools/proponerAccionAdmin";
+import { handleEnvioMasivoCallback } from "../core/comunicaciones/envioMasivoTelegram";
 import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
@@ -1866,6 +1867,8 @@ async function despacharCallbackQuerySinSeguimiento(callback: TelegramCallbackQu
       await handleConciliarSinSoporteCallback(callback);
     } else if (data.startsWith("conoc_")) {
       await handleModoConocimientoCallback(callback);
+    } else if (data.startsWith("cm_")) {
+      await handleEnvioMasivoCallback(callback);
     } else if (data.startsWith("sopm_")) {
       await handleSoportesModoCallback(callback);
     } else if (data.startsWith("sop_")) {

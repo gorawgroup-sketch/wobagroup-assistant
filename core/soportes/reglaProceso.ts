@@ -31,5 +31,6 @@ export const REGLA_PROCESO_SOPORTES =
   "Holded, ni lo pedido hace menos de 7 días; (8) cada correo enviado deja registro y la semana siguiente solo se piden los nuevos " +
   "(los de más de 7 días vuelven como recordatorio); (9) cuando alguien RESPONDE a la solicitud, el correo se lee entero (cuerpo sin las citas + todos los adjuntos) y se propone UNA acción por cada cargo pedido —soporte nuevo a registrar, soporte ya registrado que sirve o NO sirve para ese cargo, cargo compensado por un reembolso, cargo no reconocido, cargo sin mencionar—, contrastando con Holded y con los soportes ya procesados; nunca un único resumen genérico, y lo que ya está resuelto no se le vuelve a pedir; (10) un cargo sin recibo que se decide cerrar sin soporte se cierra solo con proponer_cerrar_cargo_sin_soporte (par cargo+reembolso sin gasto, o gasto sin soporte creado y conciliado), con botón de superadmin; nunca se marca como conciliado sin documento un cargo que es un gasto real; " +
   "(11) para agradecer, recordar o aclarar el FORMATO a quienes YA recibieron una solicitud de soportes (sin repetir la lista de cargos) " +
-  "usa preparar_aviso_formato_soportes: toma los destinatarios del registro de solicitudes, muestra un resumen con botones y solo un " +
-  "superadmin pulsa «Enviar»; nunca digas que eso no se puede mezclar en un correo masivo ni uses proponer_envio_correo para eso.";
+  "usa proponer_correo_a_audiencia con la audiencia solicitud_soportes (toma las personas del registro de solicitudes con su email " +
+  "confirmado, un correo por persona) y redacta el texto según la orden, con el formato del punto 2; solo un superadmin pulsa «Enviar»; " +
+  "nunca digas que eso no se puede mezclar en un correo masivo ni uses proponer_envio_correo para eso.";
