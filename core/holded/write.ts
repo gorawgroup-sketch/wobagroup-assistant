@@ -22,6 +22,7 @@ import { comparteNaturaleza, palabrasNaturalezaGasto } from "./naturalezaConcept
 import { montosCercanos } from "../utils/montos";
 import { mapearConConcurrencia } from "../utils/mapearConConcurrencia";
 import { textosParecidos, palabrasDe } from "../utils/textoParecido";
+import { esCopiaPendienteDeConciliado, firmasConciliadas } from "./duplicadosBancarios";
 import { crearMensajeAnthropic } from "../ai/anthropicGateway";
 import { crearEjecucionIA } from "../ai/policy";
 import { transcribirParaCaptura } from "../documental/transcribeForCapture";
@@ -5354,8 +5355,11 @@ export async function buscarMovimientoSimilar(
         end_date: criterios.fechaExacta ? criterios.fecha : formatDateLocal(hasta),
       }
     ) };
+    const firmasConciliadasCuenta = firmasConciliadas(data.items ?? []);
     for (const mov of data.items ?? []) {
       if (criterios.fechaExacta && (mov.status !== "pending" || Number(mov.reconciled_amount ?? 0) !== 0)) continue;
+      // Copia «pendiente» de un cargo ya conciliado (duplicado de la sincronización): no es un cargo libre.
+      if (esCopiaPendienteDeConciliado(mov, firmasConciliadasCuenta)) { continue; }
       /** Anota (solo si hay traza) un cargo con el importe buscado y lo que se hizo con él. */
       const anotar = (monto: number, resultado: "ofrecido" | "descartado", motivo: string) => {
         if (!traza || !Number.isFinite(monto) || !montosCercanos(Math.abs(monto), Math.abs(criterios.monto), toleranciaEur)) return;
@@ -5576,8 +5580,10 @@ export async function buscarMovimientoAproximado(
       { start_date: formatDateLocal(desde), end_date: formatDateLocal(hasta) }
     ) };
 
+    const firmasConciliadasCuenta = firmasConciliadas(data.items ?? []);
     for (const mov of data.items ?? []) {
       if (estaConciliado(mov.status) || movimientoAgotadoSalvoRedondeo(mov)) continue;
+      if (esCopiaPendienteDeConciliado(mov, firmasConciliadasCuenta)) continue;
       if (!mov.description || !movimientoCompatibleConGasto(criterios.proveedor, "", mov.description, opcionesNombre)) continue;
       // Su contrato exige «nombre parecido Y monto cercano»: la categoría sola solo vale con la fecha cercana (antes no tenía
       // tope y un restaurante lejano del mismo rubro se conciliaba tras «Sí, conciliar» y reescribía el importe de la compra).

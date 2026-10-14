@@ -508,6 +508,8 @@ Pedido de Carlos (04-10-2026): las órdenes frecuentes deben estar a un clic. El
 
 ### Botón «➕ Es otro cargo: crear el gasto (concilio después)» (08-10-2026; rótulos aclarados el 14-10-2026)
 
+Duplicados del banco: si Holded muestra el mismo cargo dos veces (misma descripción, importe y fecha, uno conciliado y otro «pendiente»), la copia pendiente no se ofrece ni se concilia nunca; hay que borrarla en Holded. Proveedor recurrente (mismo importe cada pocos días): si todos los cargos de importe exacto son de otra fecha (más de 2 días) y hay uno del mismo día con unos céntimos de diferencia, se elige el del día.
+
 Aviso «movimiento bancario YA CONCILIADO»: desde el 14-10-2026 un cargo conciliado solo cuenta como posible duplicado si su fecha está a ≤2 días del comprobante (proveedores recurrentes como Anthropic cobran el mismo importe cada pocos días); los lejanos se apartan y la búsqueda normal encuentra el cargo libre del día. Sus botones: «➕ Es otro cargo: crear el gasto (concilio después)» · «🔄 Volver a comprobar el banco y reprocesar» (tras liberar un vínculo en Holded) · «✅ Ya estaba registrado: cerrar este correo» · «➡️ Aplazar este correo y seguir con la cola».
 Aparece cuando Wobi encuentra un movimiento bancario **ya conciliado** parecido al recibo y por eso no propone crear el gasto (caso real: recibo de Anthropic del día, cuyo cargo llega al banco al día siguiente; el movimiento «probable» era otro). Al pulsarlo, Wobi da ese movimiento por ajeno y manda la propuesta normal con «Crear gasto»; la conciliación se hace después con «Buscar el cargo de nuevo» cuando el cargo real aparezca. No escribe nada en Holded hasta que se pulse «Crear gasto». Además, ese aviso ya no se repite si la misma pregunta sigue viva para el mismo correo.
 
