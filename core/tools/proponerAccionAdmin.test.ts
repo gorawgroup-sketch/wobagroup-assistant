@@ -46,7 +46,7 @@ test("sin superadministrador no se propone nada; sin input válido, 400", async 
 });
 
 test("la lista de herramientas permitidas es cerrada y ninguna es de escritura directa", () => {
-  assert.deepEqual([...HERRAMIENTAS_PERMITIDAS].sort(), ["proponer_edicion_compra_holded", "reenviar_botones_propuesta_gasto", "revisar_correo_puntual"]);
+  assert.deepEqual([...HERRAMIENTAS_PERMITIDAS].sort(), ["preparar_aviso_formato_soportes", "proponer_edicion_compra_holded", "reenviar_botones_propuesta_gasto", "revisar_correo_puntual"]);
 });
 
 test("proponer_edicion_compra_holded: compra_id inválido o ni contacto ni id → error sin tocar Holded", async () => {

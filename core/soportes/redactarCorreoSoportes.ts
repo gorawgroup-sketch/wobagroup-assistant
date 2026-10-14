@@ -11,6 +11,17 @@ export type CargoCorreo = Pick<FilaExtracto, "id" | "fecha" | "comercio" | "tota
 
 export const BUZON_SOPORTES = "asistente@wobagroup.com";
 
+/**
+ * Cómo se envía un soporte (decisión de Carlos, 2026-10-14: muchos lo enviaban respondiendo al correo de la solicitud y así el flujo no
+ * podía leerlos bien). Fuente única: la usan el correo de soportes y el aviso de formato (avisoFormato.ts) para que nunca se contradigan.
+ */
+export const EJEMPLO_ASUNTO_SOPORTE = "Uber traslado aeropuerto · 12,50 EUR · Footprint";
+export const INSTRUCCIONES_ENVIO_SOPORTES: readonly string[] = [
+  `Envía cada soporte en un correo APARTE y nuevo a ${BUZON_SOPORTES}. No respondas al correo en el que te pedimos los soportes.`,
+  `En el asunto escribe el detalle del gasto, el valor, la moneda en que se pagó y la empresa. Ejemplo: «${EJEMPLO_ASUNTO_SOPORTE}».`,
+  "Adjunta el documento original (PDF o una foto legible de la factura o el recibo).",
+];
+
 const fmt = (n: number, moneda: string): string =>
   `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)} ${moneda}`;
 
@@ -67,7 +78,8 @@ export function redactarCorreoSoportes(d: DatosCorreoSoportes): string {
     "",
     `Estamos desarrollando la habilidad de nuestro asistente para mejorar la conciliación de gastos y estabilizar la contabilidad mensual de ${d.empresa}. Por esa razón te escribimos: estos son los cargos hechos con tu tarjeta entre el ${fechaCorta(d.desde)} y el ${fechaCorta(d.hasta)} que todavía no tienen su soporte conciliado en nuestra contabilidad.`,
     "",
-    `Por favor, envía la factura o el recibo de cada uno respondiendo a este correo (o escribiendo a ${BUZON_SOPORTES}).`,
+    "Por favor, envía el soporte de cada uno así:",
+    ...INSTRUCCIONES_ENVIO_SOPORTES.map((t, i) => `${i + 1}. ${t}`),
     "",
     d.hojaUrl
       ? TEXTO_YA_ENVIADOS_CON_HOJA

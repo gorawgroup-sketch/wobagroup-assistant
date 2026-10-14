@@ -47,6 +47,8 @@ export const ACCIONES_REABRIBLES_TRAS_COMPLETAR: ReadonlySet<string> = new Set([
   // reintentar solo los que faltan. Es seguro repetirlo: cada correo lleva una clave de idempotencia por campaña+persona+
   // destinatario y las personas ya enviadas quedan marcadas, así que nunca se manda dos veces lo mismo.
   "sop_e",
+  // Aviso de formato de soportes: mismo criterio — idempotente por aviso+persona+destinatario, el botón de reintento es el mismo.
+  "sop_ae",
 ]);
 /**
  * «Verificar resultado anterior» (`gasto_conciliar_si:ID:lectura`, `gasto_conciliar_elegir:ID:N:lectura`): solo relee compra y banco

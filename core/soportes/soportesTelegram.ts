@@ -12,6 +12,7 @@ import { estadosDesdeHolded, sincronizarHoja } from "./hojaSeguimiento";
 import { asuntoCorreoSoportes, redactarCorreoSoportes } from "./redactarCorreoSoportes";
 import { registrarSolicitud } from "./solicitudesSoportesSheet";
 import { resolverEmailCompleto } from "./emailTitular";
+import { handleAvisoFormatoCallback } from "./avisoFormatoTelegram";
 import { registrarEmailTitular } from "./titularesSoportesSheet";
 
 /**
@@ -57,6 +58,8 @@ export async function handleSoportesCallback(callback: TelegramCallbackQuery): P
   const chatId = callback.message?.chat.id;
   const [accion, id, indiceTexto] = (callback.data ?? "").split(":");
   if (!chatId || !id) { await responder(callback.id, "Petición no válida."); return; }
+  // Aviso de formato (avisoFormatoTelegram.ts): su propio estado y sus propios botones, aparte de la campaña de cargos.
+  if (accion === "sop_av" || accion === "sop_ae" || accion === "sop_ac") { await handleAvisoFormatoCallback(callback); return; }
 
   await conMutex(mutexCampana(id), async () => {
     const personas = await leerCampana(id);

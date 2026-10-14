@@ -15,6 +15,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "revisar_correo_puntual",
   "proponer_edicion_compra_holded",
   "reenviar_botones_propuesta_gasto",
+  // Solo muestra el resumen del aviso de formato de soportes con sus botones; el correo lo envía el botón «Enviar» (superadmin).
+  "preparar_aviso_formato_soportes",
 ]);
 
 function secretoValido(recibido: string | undefined, esperado: string): boolean {

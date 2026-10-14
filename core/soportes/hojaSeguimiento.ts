@@ -149,7 +149,7 @@ async function xlsxInicial(titular: string, empresa: string): Promise<Buffer> {
     "• Column «Wobi's answer» is where we reply to your comments.",
     "• «Status in Holded» is refreshed from the bank reconciliation. Pending = we still need the receipt or the match.",
     "• «First / Last requested» show when each charge was asked for, so you never have to review the same item twice.",
-    "• Receipts: send them to asistente@wobagroup.com (one email per receipt is fine, subject with merchant, amount and currency).",
+    "• Receipts: send each one in its OWN new email to asistente@wobagroup.com (do not reply to our request), with the expense detail, amount, currency and company in the subject.",
     "• Charges you already sent that still show as pending are normally waiting in our processing queue; tell us in the comment and we will check them first.",
   ]) leeme.addRow([t]);
   leeme.getRow(1).font = { bold: true, size: 13 };

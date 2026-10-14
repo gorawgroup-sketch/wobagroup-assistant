@@ -15,7 +15,9 @@ export const REGLA_PROCESO_SOPORTES =
   "'cargos por persona' desde consultar_movimientos_sin_conciliar o consultar_gastos_sin_comprobante, decir que el extracto no " +
   "trae quién gastó, ni preguntar 'quién tiene la tarjeta'. Reglas del proceso que no cambian: (1) un solo correo por persona con " +
   "TODOS sus cargos, jamás uno por transacción; (2) sale de asistente@wobagroup.com y pide que los soportes lleguen a " +
-  "asistente@wobagroup.com, donde el flujo de correo ya crea el gasto y lo concilia; (3) los cargos van en un CUADRO (Nº, fecha, " +
+  "asistente@wobagroup.com, donde el flujo de correo ya crea el gasto y lo concilia; cada soporte va en un correo APARTE y nuevo " +
+  "(nunca respondiendo al correo de la solicitud), con el detalle del gasto, el valor, la moneda en que se pagó y la empresa en el " +
+  "asunto, y el documento original adjunto; (3) los cargos van en un CUADRO (Nº, fecha, " +
   "comercio, importe cargado, importe en el comercio, tarjeta, soporte) con totales por moneda —nunca se suman monedas distintas— y " +
   "el enlace a SU hoja de seguimiento compartida (un Google Sheet fijo por persona, siempre el mismo archivo, editable por ella, con " +
   "estado de cada cargo, cuándo se pidió y columnas de comentario que Wobi nunca borra; si no se puede crear, sale el Excel adjunto " +
@@ -27,4 +29,7 @@ export const REGLA_PROCESO_SOPORTES =
   "usa registrar_email_titular_soportes; (6) nada sale sin que Carlos pulse «Enviar» en el resumen (solo superadmin); (7) los " +
   "titulares que son una sociedad no son destinatarios; no se reclaman los ya conciliados, los parciales, los que aún no están en " +
   "Holded, ni lo pedido hace menos de 7 días; (8) cada correo enviado deja registro y la semana siguiente solo se piden los nuevos " +
-  "(los de más de 7 días vuelven como recordatorio); (9) cuando alguien RESPONDE a la solicitud, el correo se lee entero (cuerpo sin las citas + todos los adjuntos) y se propone UNA acción por cada cargo pedido —soporte nuevo a registrar, soporte ya registrado que sirve o NO sirve para ese cargo, cargo compensado por un reembolso, cargo no reconocido, cargo sin mencionar—, contrastando con Holded y con los soportes ya procesados; nunca un único resumen genérico, y lo que ya está resuelto no se le vuelve a pedir; (10) un cargo sin recibo que se decide cerrar sin soporte se cierra solo con proponer_cerrar_cargo_sin_soporte (par cargo+reembolso sin gasto, o gasto sin soporte creado y conciliado), con botón de superadmin; nunca se marca como conciliado sin documento un cargo que es un gasto real.";
+  "(los de más de 7 días vuelven como recordatorio); (9) cuando alguien RESPONDE a la solicitud, el correo se lee entero (cuerpo sin las citas + todos los adjuntos) y se propone UNA acción por cada cargo pedido —soporte nuevo a registrar, soporte ya registrado que sirve o NO sirve para ese cargo, cargo compensado por un reembolso, cargo no reconocido, cargo sin mencionar—, contrastando con Holded y con los soportes ya procesados; nunca un único resumen genérico, y lo que ya está resuelto no se le vuelve a pedir; (10) un cargo sin recibo que se decide cerrar sin soporte se cierra solo con proponer_cerrar_cargo_sin_soporte (par cargo+reembolso sin gasto, o gasto sin soporte creado y conciliado), con botón de superadmin; nunca se marca como conciliado sin documento un cargo que es un gasto real; " +
+  "(11) para agradecer, recordar o aclarar el FORMATO a quienes YA recibieron una solicitud de soportes (sin repetir la lista de cargos) " +
+  "usa preparar_aviso_formato_soportes: toma los destinatarios del registro de solicitudes, muestra un resumen con botones y solo un " +
+  "superadmin pulsa «Enviar»; nunca digas que eso no se puede mezclar en un correo masivo ni uses proponer_envio_correo para eso.";

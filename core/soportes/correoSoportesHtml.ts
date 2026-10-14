@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { BUZON_SOPORTES, nombreDePila, TEXTO_HOJA_ANTES, TEXTO_HOJA_DESPUES, TEXTO_YA_ENVIADOS_CON_HOJA, totalesPorMoneda, type DatosCorreoSoportes } from "./redactarCorreoSoportes";
+import { BUZON_SOPORTES, INSTRUCCIONES_ENVIO_SOPORTES, nombreDePila, TEXTO_HOJA_ANTES, TEXTO_HOJA_DESPUES, TEXTO_YA_ENVIADOS_CON_HOJA, totalesPorMoneda, type DatosCorreoSoportes } from "./redactarCorreoSoportes";
 
 /**
  * Versión «con cuadro» del correo de soportes: una tabla HTML en el cuerpo (Nº, fecha, comercio, importe cargado, importe
@@ -51,7 +51,8 @@ export function redactarCorreoSoportesHtml(d: DatosCorreoSoportes): string {
   return [
     p(`Hola, ${esc(nombreDePila(d.titular) || d.titular)}:`),
     p(`Estamos desarrollando la habilidad de nuestro asistente para mejorar la conciliación de gastos y estabilizar la contabilidad mensual de ${esc(d.empresa)}. Por esa razón te escribimos: estos son los cargos hechos con tu tarjeta entre el ${fechaCorta(d.desde)} y el ${fechaCorta(d.hasta)} que todavía no tienen su soporte conciliado en nuestra contabilidad.`),
-    p(`Por favor, <b>envía la factura o el recibo de cada uno respondiendo a este correo</b> (o escribiendo a <a href="mailto:${BUZON_SOPORTES}">${BUZON_SOPORTES}</a>).`),
+    p("Por favor, <b>envía el soporte de cada uno así</b>:"),
+    `<ol style="font:14px/1.5 Arial,sans-serif;color:#1b2530;margin:0 0 12px;padding-left:22px">${INSTRUCCIONES_ENVIO_SOPORTES.map((t) => `<li>${esc(t).replace(BUZON_SOPORTES, `<a href="mailto:${BUZON_SOPORTES}">${BUZON_SOPORTES}</a>`)}</li>`).join("")}</ol>`,
     d.hojaUrl ? p(esc(TEXTO_YA_ENVIADOS_CON_HOJA)) : p("Si ya los habías enviado y te los pedimos de nuevo, te agradecemos que los reenvíes: por alguna razón nuestro sistema no reconoció lo que ya mandaste. Esto no debería volver a pasar en adelante, pero por ahora te pedimos este favor. Si todavía no los has enviado, te pedimos que lo hagas."),
     recordatorio,
     tablaCargosHtml(d),

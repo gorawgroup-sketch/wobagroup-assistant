@@ -47,3 +47,17 @@ export async function registrarSolicitud(empresa: string, titular: string, campa
   if (ids.length > MAX_CARACTERES_CELDA) throw new Error("Demasiadas operaciones en un solo correo para registrarlas en una celda.");
   await conMutex(MUTEX, () => agregarFila(TAB_NAME, NUM_COLS, HEADERS, [campana, empresa, titular, ahora, ids]).then(() => undefined));
 }
+
+/** Quién ha recibido alguna solicitud de soportes, por empresa (para el aviso de formato): una entrada por titular y empresa, la más reciente. */
+export async function leerSolicitantes(): Promise<Array<{ empresa: string; titular: string; solicitadoEn: number }>> {
+  const filas = await leerFilas(TAB_NAME, NUM_COLS, HEADERS);
+  const mapa = new Map<string, { empresa: string; titular: string; solicitadoEn: number }>();
+  for (const f of filas) {
+    const empresa = f.valores[1], titular = f.valores[2], solicitadoEn = Number(f.valores[3]) || 0;
+    if (!empresa || !titular) continue;
+    const clave = `${empresa}|${titular}`;
+    const previa = mapa.get(clave);
+    if (!previa || solicitadoEn > previa.solicitadoEn) mapa.set(clave, { empresa, titular, solicitadoEn });
+  }
+  return [...mapa.values()];
+}
