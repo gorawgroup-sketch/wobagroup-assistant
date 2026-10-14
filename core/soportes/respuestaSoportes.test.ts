@@ -156,12 +156,12 @@ test("«ya lo envié» sin adjunto: se localiza el correo anterior por importe o
     { id: "m2", asunto: "9.55 euros - Almuerzo MED - Visa", fecha: "2026-09-30" },
     { id: "m3", asunto: "28,49 USD - Otro - Visa", fecha: "2026-08-01" },
   ];
-  const dice = { numero: 1, situacion: "soporte_enviado_antes" as const, loQueDice: "Anota 'REENVIADO COMO 21.16 euros - Desayuno com Yanessy - Visa' junto al cargo" };
+  const dice: InterpretacionCargo = { numero: 1, situacion: "soporte_enviado_antes", loQueDice: "Anota 'REENVIADO COMO 21.16 euros - Desayuno com Yanessy - Visa' junto al cargo" };
   assert.equal(emparejarCorreoAnterior(cargo, dice, correos)?.id, "m1", "por el asunto citado en su respuesta");
   assert.equal(emparejarCorreoAnterior({ ...cargo, total: -9.55 }, { ...dice, loQueDice: "reenviado" }, correos)?.id, "m2", "por el importe del cargo en el asunto");
   assert.equal(emparejarCorreoAnterior({ ...cargo, total: -28.49 }, { ...dice, loQueDice: "reenviado" }, correos), undefined, "fuera de la ventana de fechas no cuenta");
 
-  const interpretaciones = [dice];
+  const interpretaciones: InterpretacionCargo[] = [dice];
   const soportes = await localizarSoportesEnviadosAntes("kelly@footprint.global", "Footprint", [cargo], interpretaciones, {
     correosDe: async () => correos,
     registros: async () => [{ mensajeIdGmail: "m1", gastoId: "g-21", empresa: "Footprint", creadoEn: 1, identidad: { proveedor: "CAFE DE SANTA BARBARA S.A.S", monto: 21.16, moneda: "EUR", fecha: "2026-09-30" } } as never],
@@ -177,7 +177,7 @@ test("«ya lo envié» sin adjunto: se localiza el correo anterior por importe o
 
 test("«ya lo envié» con el correo anterior aún en la cola: no se le pide nada, se procesa ese correo", async () => {
   const cargo = { ...CARGOS[1], fecha: "2026-10-01", comercio: "Crepes Y Waffles Pobla", total: -65.67, monedaCuenta: "EUR" };
-  const interpretaciones = [{ numero: 1, situacion: "soporte_enviado_antes" as const, loQueDice: "REENVIADO" }];
+  const interpretaciones: InterpretacionCargo[] = [{ numero: 1, situacion: "soporte_enviado_antes", loQueDice: "REENVIADO" }];
   const soportes = await localizarSoportesEnviadosAntes("k@x.com", "Footprint", [cargo], interpretaciones, {
     correosDe: async () => [{ id: "m8", asunto: "Fwd: 65,67 euros - Cena Team Colombia - Visa", fecha: "2026-10-11" }],
     registros: async () => [],
