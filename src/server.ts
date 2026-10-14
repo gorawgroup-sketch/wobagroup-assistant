@@ -86,6 +86,7 @@ import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { ejecutarCierreInciertas } from "../core/jobs/cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "../core/jobs/auditoriaCargosExactos";
+import { crearRouterProponerAccion } from "../core/tools/proponerAccionAdmin";
 import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
 import { revisarAlertasFiscales } from "../core/jobs/revisarAlertasFiscales";
@@ -686,6 +687,9 @@ registrarAvisadorAdjuntosDuplicados(async (a) => {
   ].join("\n");
   for (const admin of admins) await sendTelegramMessage(admin.userId, texto).catch((error) => console.error("[adjuntos] No se pudo avisar a un admin:", error instanceof Error ? error.name : "Error"));
 });
+
+// Acciones que SOLO PROPONEN (mensaje con botones en el chat del superadministrador); la escritura la sigue haciendo su botón. Ver proponerAccionAdmin.ts.
+app.use("/admin/proponer-accion", crearRouterProponerAccion({ secreto: () => process.env.ADMIN_SECRET }));
 
 // Cierre de inciertos antiguos a demanda (mismo trabajo que el cron de las 8:40). Por defecto SIMULA: solo cierra con { "simular": false }.
 // Protegida por ADMIN_SECRET en la cabecera `x-admin-secret`. Nunca escribe en Holded.

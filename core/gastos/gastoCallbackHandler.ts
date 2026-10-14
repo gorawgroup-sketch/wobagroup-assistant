@@ -1215,7 +1215,11 @@ async function hayCargoLibreParaConciliar(
   const similares = await buscarMovimientoSimilar(empresa, { ...gasto, incluirPorConfirmar: true });
   if (similares.length > 0) return true;
   if (!gasto.proveedor || esProveedorNoIdentificado(gasto.proveedor)) return false;
-  return (await buscarMovimientoAproximado(empresa, gasto)).length > 0;
+  if ((await buscarMovimientoAproximado(empresa, gasto)).length > 0) return true;
+  // Un cargo MAYOR del que este gasto es una parte (o el resto libre de uno ya repartido) también es un cargo que ofrecer: decir «no hay
+  // ningún cargo libre» con esa opción disponible llevó a dar por imposible lo que el botón «Buscar el cargo de nuevo» sí resuelve
+  // (caso Queen/Booking, 2026-10-14: 92,52 € frente a un cargo de 251,44 € con 92,52 € libres).
+  return (await buscarCargoMayorDelProveedor(empresa, { monto: gasto.monto, fecha: gasto.fecha, moneda: gasto.moneda, proveedor: gasto.proveedor })).length > 0;
 }
 
 /**
