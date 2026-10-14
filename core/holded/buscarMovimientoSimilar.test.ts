@@ -134,3 +134,14 @@ test("caso real 2026-10-14: la tasa turística de Italianway (Queen Home Cinzia)
     assert.equal(conNombres[0].compatibilidad, undefined, "compatible por nombre: no es «por confirmar»");
   });
 });
+
+test("porConfirmarHastaDias: al ELEGIR tras «Sí, conciliar», un cargo exacto de nombre desconocido se ofrece por confirmar a 2 días (por defecto solo ±1)", async () => {
+  const cargo = mov({ id: "qh", description: "Queen Home Apartments", amount: "-8.00", currency: "EUR", accounting_amount: "-8.00", booking_date: "2026-09-18" });
+  const c = { monto: 8, fecha: "2026-09-20", moneda: "EUR", proveedor: "Delia Stabile (emitido por Italianway S.p.A.)", concepto: "Tasa turística", incluirPorConfirmar: true };
+  await conHolded([cargo], async () => {
+    assert.equal((await buscarMovimientoSimilar("Footprint", c, undefined, sinAprendidas)).length, 0);
+    const r = await buscarMovimientoSimilar("Footprint", { ...c, porConfirmarHastaDias: 5 }, undefined, sinAprendidas);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].compatibilidad, "por_confirmar", "nunca compatible por sí solo: el operador elige con aviso");
+  });
+});

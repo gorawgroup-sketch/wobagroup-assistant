@@ -33,7 +33,10 @@ const HEADERS = [
   "mensajeIdGmail",
   "comprobanteConfirmado",
   "threadIdGmail",
+  "nombresAlternativosJSON",
 ];
+/** Última columna derivada de HEADERS: todos los rangos de fila completa la usan (ver la lección del 12-10 en emailDraftStore). */
+const ULTIMA_COLUMNA = String.fromCharCode(64 + HEADERS.length);
 
 /**
  * Cuando se crea un gasto SIN que antes se haya confirmado un movimiento
@@ -83,7 +86,7 @@ async function ensureTab(): Promise<void> {
     tabGridId = existing.properties?.sheetId ?? undefined;
     await sheets.spreadsheets.values.update({
       spreadsheetId: sheetId,
-      range: `${TAB_NAME}!A1:N1`,
+      range: `${TAB_NAME}!A1:${ULTIMA_COLUMNA}1`,
       valueInputOption: "RAW",
       requestBody: { values: [HEADERS] },
     });
@@ -98,7 +101,7 @@ async function ensureTab(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A1:N1`,
+    range: `${TAB_NAME}!A1:${ULTIMA_COLUMNA}1`,
     valueInputOption: "RAW",
     requestBody: { values: [HEADERS] },
   });
@@ -142,6 +145,12 @@ export interface ConciliacionPendiente {
   threadIdGmail?: string;
   /** Solo true cuando Holded confirmó que el soporte quedó adjunto. */
   comprobanteConfirmado: boolean;
+  /**
+   * Otros nombres del documento (alojamiento, local, plataforma) con los que el cargo puede figurar en el banco: viajan con la
+   * pregunta para que «Sí, conciliar» busque igual que la propuesta (caso real 14-10: tasa turística Italianway ↔ «Queen Home
+   * Apartments»; sin esto el botón volvía a buscar solo por el emisor y repetía «no encontré»).
+   */
+  nombresAlternativos?: string[];
 }
 
 interface FilaConIndice {
@@ -156,7 +165,7 @@ async function leerTodas(): Promise<FilaConIndice[]> {
 
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A2:N10000`,
+    range: `${TAB_NAME}!A2:${ULTIMA_COLUMNA}10000`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
 
@@ -181,10 +190,21 @@ async function leerTodas(): Promise<FilaConIndice[]> {
         mensajeIdGmail: row[11] ? String(row[11]) : undefined,
         comprobanteConfirmado: row[12] === true || row[12] === "true",
         threadIdGmail: row[13] ? String(row[13]) : undefined,
+        nombresAlternativos: listaDesdeCelda(row[14]),
       },
     });
   });
   return result;
+}
+
+function listaDesdeCelda(celda: unknown): string[] | undefined {
+  let lista: unknown;
+  try {
+    lista = celda ? JSON.parse(String(celda)) : undefined;
+  } catch {
+    lista = undefined;
+  }
+  return Array.isArray(lista) && lista.length ? lista.map(String) : undefined;
 }
 
 async function eliminarFila(rowIndex1Based: number): Promise<void> {
@@ -232,7 +252,7 @@ async function siguienteFilaLibre(): Promise<number> {
   const sheets = getClient();
   const resp = await leerSheetsConReintento(() => sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_NAME}!A:N`,
+    range: `${TAB_NAME}!A:${ULTIMA_COLUMNA}`,
     valueRenderOption: "UNFORMATTED_VALUE",
   }));
   const rows = resp.data.values ?? [];
@@ -277,13 +297,14 @@ export async function guardarConciliacionPendiente(
       pendiente.mensajeIdGmail ?? "",
       pendiente.comprobanteConfirmado ? "true" : "",
       pendiente.threadIdGmail ?? "",
+      pendiente.nombresAlternativos?.length ? JSON.stringify(pendiente.nombresAlternativos) : "",
     ];
 
     for (let intento = 0; intento < MAX_INTENTOS_ESCRITURA; intento++) {
       const fila = await siguienteFilaLibre();
       await sheets.spreadsheets.values.update({
         spreadsheetId: sheetId,
-        range: `${TAB_NAME}!A${fila}:N${fila}`,
+        range: `${TAB_NAME}!A${fila}:${ULTIMA_COLUMNA}${fila}`,
         valueInputOption: "RAW",
         requestBody: { values: [fila_valores] },
       });
@@ -342,11 +363,12 @@ export async function restaurarConciliacionPendiente(
       restaurada.gastoId, restaurada.moneda, restaurada.proveedor,
       restaurada.deColaCorreo === true ? "true" : "", restaurada.mensajeIdGmail ?? "",
       restaurada.comprobanteConfirmado ? "true" : "", restaurada.threadIdGmail ?? "",
+      restaurada.nombresAlternativos?.length ? JSON.stringify(restaurada.nombresAlternativos) : "",
     ];
     const fila = await siguienteFilaLibre();
     await getClient().spreadsheets.values.update({
       spreadsheetId: assertSheetId(),
-      range: `${TAB_NAME}!A${fila}:N${fila}`,
+      range: `${TAB_NAME}!A${fila}:${ULTIMA_COLUMNA}${fila}`,
       valueInputOption: "RAW",
       requestBody: { values: [filaValores] },
     });

@@ -5295,6 +5295,11 @@ export async function buscarMovimientoSimilar(
     /** Otros nombres del documento con los que puede figurar el cargo (ver OpcionesCompatibilidad.nombresAlternativos). */
     nombresAlternativos?: string[];
     /**
+     * Solo cuando el OPERADOR va a ELEGIR con aviso (tras «Sí, conciliar» sin cargo por nombre): un cargo del importe exacto y
+     * categoría desconocida se ofrece «por confirmar» hasta estos días de diferencia (por defecto 1). Nunca concilia solo.
+     */
+    porConfirmarHastaDias?: number;
+    /**
      * Solo las búsquedas que ARMAN una propuesta para el operador la activan: devuelve además cargos «por_confirmar» y
      * «aprendido». Las búsquedas que pueden conciliar sin preguntar (intentarConciliar) no la usan: ahí solo cuenta lo
      * compatible por nombre o categoría.
@@ -5385,7 +5390,7 @@ export async function buscarMovimientoSimilar(
       let compatibilidad: "por_confirmar" | "aprendido" | undefined;
       if (criterios.proveedor) {
         const importeExacto = Math.abs(Math.abs(monto) - Math.abs(criterios.monto)) <= (criterios.importeAproximadoPorCambio ? toleranciaEur : TOLERANCIA_MONTO);
-        const importeYFechaExactos = importeExacto && diasEntreFechas(fechaMovimiento, criterios.fecha) <= 1;
+        const importeYFechaExactos = importeExacto && diasEntreFechas(fechaMovimiento, criterios.fecha) <= (criterios.porConfirmarHastaDias ?? 1);
         const opcionesNombre = { nucleoDeMarca: true, nombresAlternativos: criterios.nombresAlternativos };
         const nivel = nivelCompatibilidadMovimiento(criterios.proveedor, criterios.concepto ?? "", mov.description ?? "", { importeYFechaExactos }, opcionesNombre);
         const diasDeDiferencia = diasEntreFechas(fechaMovimiento, criterios.fecha);

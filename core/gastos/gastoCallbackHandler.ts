@@ -910,7 +910,9 @@ async function intentarConciliar(
   deColaCorreo: boolean = false,
   mensajeIdGmail?: string,
   comprobanteConfirmado: boolean = true,
-  threadIdGmail?: string
+  threadIdGmail?: string,
+  /** Otros nombres del documento (ver ConciliacionPendiente.nombresAlternativos): la conciliación busca igual que la propuesta. */
+  nombresAlternativos?: string[]
 ): Promise<ResultadoIntentarConciliar> {
   try {
     const recuperada = await recuperarConciliacionAntesDeBuscar(empresa, gastoId);
@@ -918,7 +920,7 @@ async function intentarConciliar(
     const fechaBusqueda = fecha || new Date().toISOString().slice(0, 10);
     // La descripción recibida suele ser solo «contacto — importe»: el concepto real (categoría) se recupera de la compra.
     const conceptoBusqueda = await conceptoParaBusqueda(empresa, gastoId, descripcionGasto, proveedor);
-    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda });
+    const candidatos = await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda, nombresAlternativos });
 
     let candidato: Awaited<ReturnType<typeof buscarMovimientoSimilar>>[number] | undefined;
     let esAproximado = false;
@@ -932,7 +934,7 @@ async function intentarConciliar(
       // Mismo fallback que procesarGastoEntrante.ts (ver ese archivo para el
       // caso real que lo motivó): el match exacto puede no encontrar nada
       // cuando el equivalente en EUR de la factura es una estimación.
-      const aproximados = await buscarMovimientoAproximado(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor });
+      const aproximados = await buscarMovimientoAproximado(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, nombresAlternativos });
       if (aproximados.length === 1) {
         candidato = aproximados[0];
         esAproximado = true;
@@ -946,7 +948,9 @@ async function intentarConciliar(
       // «Crear (sin conciliar)» existe para los cargos que llegan tarde o con otro nombre: si la búsqueda estricta no
       // encuentra nada, se repite admitiendo los «por confirmar»/«aprendidos» (nombre distinto o solo la categoría con la fecha
       // lejana) y se pide ELEGIR con aviso. Nunca se concilia solo, pero tampoco queda un «No encontré» para siempre.
-      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda, incluirPorConfirmar: true }))
+      // El operador ELIGE con aviso: un cargo del importe exacto y nombre desconocido se ofrece aunque la fecha difiera unos días
+      // (caso real 14-10: tasa turística con 2 días de diferencia; «Sí, conciliar» repetía «no encontré» con el cargo a la vista).
+      const paraElegir = (await buscarMovimientoSimilar(empresa, { monto, fecha: fechaBusqueda, moneda, proveedor, concepto: conceptoBusqueda, nombresAlternativos, incluirPorConfirmar: true, porConfirmarHastaDias: DIAS_POR_CONFIRMAR_AL_ELEGIR }))
         .filter((m) => m.compatibilidad);
       if (paraElegir.length > 0) {
         return await ofrecerEleccionMovimientosAmbiguos(empresa, gastoId, descripcionGasto, chatId, paraElegir,
@@ -1207,19 +1211,22 @@ async function conciliarContraMovimientoEspecifico(
   }
 }
 
+/** Días de diferencia hasta los que un cargo del importe exacto y nombre desconocido se ofrece a ELEGIR (con aviso) tras «Sí, conciliar». */
+const DIAS_POR_CONFIRMAR_AL_ELEGIR = 5;
+
 /** Solo lectura: ¿hay ahora algún cargo libre (exacto, por confirmar o aproximado por nombre) para este gasto? Lanza si Holded falla. */
 async function hayCargoLibreParaConciliar(
   empresa: Empresa,
-  gasto: { monto: number; fecha: string; moneda: string; proveedor: string }
+  gasto: { monto: number; fecha: string; moneda: string; proveedor: string; nombresAlternativos?: string[] }
 ): Promise<boolean> {
-  const similares = await buscarMovimientoSimilar(empresa, { ...gasto, incluirPorConfirmar: true });
+  const similares = await buscarMovimientoSimilar(empresa, { ...gasto, incluirPorConfirmar: true, porConfirmarHastaDias: DIAS_POR_CONFIRMAR_AL_ELEGIR });
   if (similares.length > 0) return true;
   if (!gasto.proveedor || esProveedorNoIdentificado(gasto.proveedor)) return false;
   if ((await buscarMovimientoAproximado(empresa, gasto)).length > 0) return true;
   // Un cargo MAYOR del que este gasto es una parte (o el resto libre de uno ya repartido) también es un cargo que ofrecer: decir «no hay
   // ningún cargo libre» con esa opción disponible llevó a dar por imposible lo que el botón «Buscar el cargo de nuevo» sí resuelve
   // (caso Queen/Booking, 2026-10-14: 92,52 € frente a un cargo de 251,44 € con 92,52 € libres).
-  return (await buscarCargoMayorDelProveedor(empresa, { monto: gasto.monto, fecha: gasto.fecha, moneda: gasto.moneda, proveedor: gasto.proveedor })).length > 0;
+  return (await buscarCargoMayorDelProveedor(empresa, { monto: gasto.monto, fecha: gasto.fecha, moneda: gasto.moneda, proveedor: gasto.proveedor, nombresAlternativos: gasto.nombresAlternativos })).length > 0;
 }
 
 /**
@@ -1250,7 +1257,8 @@ async function preguntarSiConciliar(
   mensajeIdGmail?: string,
   comprobanteConfirmado: boolean = true,
   mensajeFallbackId?: number,
-  threadIdGmail?: string
+  threadIdGmail?: string,
+  nombresAlternativos?: string[]
 ): Promise<boolean> {
   let pendiente: Awaited<ReturnType<typeof guardarConciliacionPendiente>> | undefined;
   try {
@@ -1267,6 +1275,7 @@ async function preguntarSiConciliar(
       mensajeIdGmail,
       comprobanteConfirmado,
       threadIdGmail,
+      nombresAlternativos,
     });
     // Si este gasto ya tiene una conciliación registrada que no terminó de verificarse (el intento al aprobar «Crear y conciliar»
     // llegó a Holded pero no se pudo confirmar), preguntar «¿quieres que intente conciliar?» es contradictorio y no puede
@@ -1288,7 +1297,7 @@ async function preguntarSiConciliar(
     let sinCargoAhora = false;
     if (!ofertaParcial && !soloVerificar && previa === "nueva" && consultaParcial.tipo !== "consulta_fallida") {
       try {
-        sinCargoAhora = !(await hayCargoLibreParaConciliar(empresa, { monto, fecha, moneda, proveedor }));
+        sinCargoAhora = !(await hayCargoLibreParaConciliar(empresa, { monto, fecha, moneda, proveedor, nombresAlternativos }));
       } catch (error) {
         // Un fallo de Holded no es «no hay cargo»: se conserva la pregunta normal.
         console.error("[gastoCallbackHandler] No pude mirar el banco antes de preguntar la conciliación:", error instanceof Error ? error.message : error);
@@ -1901,7 +1910,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
           propuesta.deColaCorreo === true,
           propuesta.correoOrigen?.mensajeIdGmail,
           comprobanteConfirmado,
-          propuesta.correoOrigen?.threadId
+          propuesta.correoOrigen?.threadId,
+          propuesta.nombresAlternativos
         );
         preguntaConciliacionPendiente = resultadoConciliacion.estado === "esperando_eleccion";
         cierreCorreoVerificado = gastoPermiteCerrarCorreo(comprobanteConfirmado, resultadoConciliacion);
@@ -1982,7 +1992,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
             propuesta.correoOrigen?.mensajeIdGmail,
             resultado.comprobanteConfirmado,
             propuesta.messageId,
-            propuesta.correoOrigen?.threadId
+            propuesta.correoOrigen?.threadId,
+            resultado.conciliacionPendiente.nombresAlternativos
           );
           if (!preguntaConciliacionPendiente) {
             const seguimiento = resultado.conciliacionPendiente;
@@ -2225,7 +2236,8 @@ export async function handleGastoCallback(callback: TelegramCallbackQuery): Prom
       pendiente.deColaCorreo === true,
       pendiente.mensajeIdGmail,
       pendiente.comprobanteConfirmado,
-      pendiente.threadIdGmail
+      pendiente.threadIdGmail,
+      pendiente.nombresAlternativos
     );
     if (resultadoConciliacion.estado === "esperando_eleccion") {
       // intentarConciliar ya mandó un mensaje nuevo con los botones "🔗 Conciliar con #N" (ver
@@ -3094,6 +3106,7 @@ interface ResultadoCrearGasto {
     gastoId: string;
     moneda: string;
     proveedor: string;
+    nombresAlternativos?: string[];
   };
   /**
    * true cuando conciliarInline=true y la búsqueda encontró varios movimientos parecidos —
@@ -3544,6 +3557,7 @@ async function crearGastoYReportar(
     gastoId: gasto.id,
     moneda: propuesta.moneda,
     proveedor: propuesta.proveedor,
+    nombresAlternativos: propuesta.nombresAlternativos,
   };
 
   if (conciliarInline) {
@@ -3587,7 +3601,8 @@ async function crearGastoYReportar(
       propuesta.deColaCorreo === true,
       propuesta.correoOrigen?.mensajeIdGmail,
       comprobanteConfirmado,
-      propuesta.correoOrigen?.threadId
+      propuesta.correoOrigen?.threadId,
+      propuesta.nombresAlternativos
     );
     return { gastoId: gasto.id, mensaje: `${baseMensaje}${resultadoConciliacion.nota}`, comprobanteConfirmado,
       estadoConciliacion: resultadoConciliacion.estado,
@@ -3810,7 +3825,8 @@ export async function procesarGastoConContactoResuelto(
         resolucion.propuesta.correoOrigen?.mensajeIdGmail,
         resultado.comprobanteConfirmado,
         resolucion.messageId,
-        resolucion.propuesta.correoOrigen?.threadId
+        resolucion.propuesta.correoOrigen?.threadId,
+        resolucion.propuesta.nombresAlternativos
       );
       if (!preguntaConciliacionPendiente) {
         const seguimiento = resultado.conciliacionPendiente;
@@ -4133,7 +4149,8 @@ export async function continuarConCorreccionGasto(pendiente: PendienteCorreccion
         propuesta.correoOrigen?.mensajeIdGmail,
         resultado.comprobanteConfirmado,
         propuesta.messageId,
-        propuesta.correoOrigen?.threadId
+        propuesta.correoOrigen?.threadId,
+        resultado.conciliacionPendiente.nombresAlternativos
       );
       if (!preguntaConciliacionPendiente) {
         const seguimiento = resultado.conciliacionPendiente;
