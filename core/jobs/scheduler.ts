@@ -10,6 +10,7 @@ import { revisarEstructuraCashflow } from "./revisarEstructuraCashflow";
 import { revisarAdjuntosDuplicados } from "./revisarAdjuntosDuplicados";
 import { ejecutarCierreInciertas } from "./cerrarInciertasAntiguas";
 import { ejecutarAuditoriaCargosExactos } from "./auditoriaCargosExactos";
+import { ejecutarSeguimientoComunicaciones } from "./seguimientoComunicaciones";
 import { ejecutarSolicitudDatosFaltantes } from "./solicitarDatosFaltantes";
 import { revisarAplazamientoImpuestos } from "./revisarAplazamientoImpuestos";
 import { revisarAnotacionesCashflow } from "./revisarAnotacionesCashflow";
@@ -290,6 +291,15 @@ export function startScheduler(): void {
   );
   console.log(`[scheduler] auditoriaCargosExactos programado: laborables 8:45 (${TIMEZONE})`);
 
+  // Lo que han enviado o contestado las personas a las que se escribió con un correo a una audiencia (solo lectura; solo avisa si hay novedades).
+  cron.schedule(
+    "20 9,16 * * 1-5",
+    () => {
+      ejecutarSinSolapamiento("seguimientoComunicaciones", () => ejecutarSeguimientoComunicaciones());
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`[scheduler] seguimientoComunicaciones programado: laborables 9:20 y 16:20 (${TIMEZONE})`);
   // Pide a los creadores de gastos lo que falta en sus comprobantes (solo prepara el correo con botón; nada sale sin «Enviar»).
   cron.schedule(
     "5 9,15 * * 1-5",
