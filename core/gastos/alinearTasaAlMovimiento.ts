@@ -66,18 +66,30 @@ export async function alinearTasaCambioAlMovimientoElegido(
   const monedaDocumento = (compra.currency || "EUR").toUpperCase().trim();
   const monedaMovimiento = (movimiento?.currency || "EUR").toUpperCase().trim();
   if (monedaDocumento === "EUR") return { estado: "no_aplica", motivo: "el gasto ya está en EUR" };
-  if (monedaDocumento === monedaMovimiento) return { estado: "no_aplica", motivo: "gasto y cargo están en la misma moneda" };
-  if (monedaMovimiento !== "EUR") {
+  const importeMovimiento = numero(movimiento?.amount);
+  const total = numero(compra.total);
+  // Equivalente en EUR del cargo: su importe si la cuenta es EUR; si gasto y cargo están en la MISMA moneda extranjera (recibo en USD
+  // pagado desde la cuenta en USD), el equivalente contable que Holded da al cargo. Caso real 14-10-2026 (Airbnb 495,13 y 309,74 USD):
+  // el pago quedó anotado por el equivalente del cargo (428,04 €) pero la compra llevaba otra tasa y Holded la dejó «parcial».
+  let cargo: number;
+  if (monedaMovimiento === "EUR") {
+    cargo = Math.abs(importeMovimiento);
+  } else if (monedaDocumento === monedaMovimiento) {
+    const contable = numero(movimiento?.accounting_amount);
+    if (!Number.isFinite(contable) || contable === 0) {
+      return { estado: "no_aplica", motivo: `Holded no informa el equivalente contable en EUR del cargo en ${monedaMovimiento}` };
+    }
+    if (Math.abs(Math.abs(importeMovimiento) - Math.abs(elegido.monto)) > 0.005 || Math.abs(Math.abs(importeMovimiento) - total) > 0.005) {
+      throw new Error("El cargo en la moneda del gasto no coincide con su importe; no se ajustó la tasa de cambio del gasto.");
+    }
+    cargo = Math.abs(contable);
+  } else {
     return { estado: "no_aplica", motivo: `el cargo está en ${monedaMovimiento}: no se conoce su equivalente exacto en EUR` };
   }
-
-  const importeMovimiento = numero(movimiento?.amount);
-  const cargo = Math.abs(importeMovimiento);
-  const total = numero(compra.total);
   if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(cargo) || cargo <= 0 || importeMovimiento >= 0) {
     throw new Error("Importes no válidos para ajustar la tasa de cambio del gasto.");
   }
-  if (Math.abs(cargo - Math.abs(elegido.monto)) > 0.005) {
+  if (monedaMovimiento === "EUR" && Math.abs(cargo - Math.abs(elegido.monto)) > 0.005) {
     throw new Error("El cargo cambió desde la selección; no se ajustó la tasa de cambio del gasto.");
   }
   if (compraTienePagos(compra)) {

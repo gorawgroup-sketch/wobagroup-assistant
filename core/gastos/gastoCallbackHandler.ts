@@ -1061,7 +1061,11 @@ async function conciliarContraMovimientoEspecifico(
     // Cargo en otra moneda elegido a mano: antes de conciliar se fija la tasa de cambio del gasto a la tasa real de ese
     // cargo, para que la conciliación quede sin diferencia (ni pago extra por cambio ni saldo residual). Si no se puede
     // ajustar con certeza, no se concilia: hacerlo dejaría exactamente la diferencia que se quiere evitar.
-    if (movimiento.origenCoincidencia === "tipo_cambio") {
+    // También cuando gasto y cargo están en la misma moneda extranjera (recibo en USD pagado desde la cuenta en USD): la compra
+    // debe llevar la tasa contable del cargo o Holded la deja «parcial» (Airbnb 495,13 y 309,74 USD, 14-10-2026). La función devuelve
+    // `no_aplica` sin escribir cuando no hace falta.
+    const monedaCargo = (movimiento.monedaNativa ?? movimiento.moneda ?? "EUR").toUpperCase();
+    if (movimiento.origenCoincidencia === "tipo_cambio" || monedaCargo !== "EUR") {
       try {
         const alineacion = await alinearTasaCambioAlMovimientoElegido(empresa, gastoId, movimiento);
         if (alineacion.estado === "ajustada") {
