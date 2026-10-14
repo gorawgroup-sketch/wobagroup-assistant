@@ -1,4 +1,4 @@
-import { holdedGet } from "../holded/client";
+import { holdedGet, type Empresa } from "../holded/client";
 import { cerrarInciertasAntiguas, type CompraPosterior, type DepsCierreInciertas, type ResultadoCierre } from "../holded/cierreInciertas";
 import { durableContactStore } from "../holded/durableContactStore";
 import { durablePurchaseStore } from "../holded/durablePurchaseStore";
@@ -14,6 +14,14 @@ import { sendTelegramMessage } from "../telegram/client";
  */
 const MAX_COMPRAS_A_LEER = 80;
 
+/** Ids de compras creadas por WOBi (ledger de creaciones + registros de correo + asignaciones de cuenta) entre dos instantes. */
+export async function idsComprasPropiasEntre(empresa: Empresa, desdeMs: number, hastaMs: number): Promise<string[]> {
+  const ids = new Set<string>(await durablePurchaseStore.listarIdsCreadasEntre(empresa, desdeMs, hastaMs));
+  for (const r of await listarRegistrosGastoPorEmpresa(empresa)) if (r.creadoEn >= desdeMs && r.creadoEn <= hastaMs) ids.add(r.gastoId);
+  for (const a of await obtenerAsignacionesPendientesDeRevisar()) if (a.empresa === empresa && a.creadoEn >= desdeMs && a.creadoEn <= hastaMs) ids.add(a.gastoId);
+  return [...ids].filter((i) => /^[a-f0-9]{24}$/.test(i));
+}
+
 const depsReales: DepsCierreInciertas = {
   contactosInciertos: async () => (await durableContactStore.listarPendientes()).filter((r) => r.estado === "incierta"),
   inspeccionarContacto: inspeccionarCreacionContactoRegistrada,
@@ -21,11 +29,8 @@ const depsReales: DepsCierreInciertas = {
   comprasInciertas: async () => (await durablePurchaseStore.listarPendientes()).filter((r) => r.estado === "incierta"),
   nombreDeContacto: async (empresa, contactId) => String(((await holdedGet(empresa, `/contacts/${encodeURIComponent(contactId)}`)) as { name?: string }).name ?? ""),
   comprasPropiasPosteriores: async (empresa, desdeMs, hastaMs) => {
-    const ids = new Set<string>(await durablePurchaseStore.listarIdsCreadasEntre(empresa, desdeMs, hastaMs));
-    for (const r of await listarRegistrosGastoPorEmpresa(empresa)) if (r.creadoEn >= desdeMs && r.creadoEn <= hastaMs) ids.add(r.gastoId);
-    for (const a of await obtenerAsignacionesPendientesDeRevisar()) if (a.empresa === empresa && a.creadoEn >= desdeMs && a.creadoEn <= hastaMs) ids.add(a.gastoId);
     const salida: CompraPosterior[] = [];
-    for (const id of [...ids].filter((i) => /^[a-f0-9]{24}$/.test(i)).slice(0, MAX_COMPRAS_A_LEER)) {
+    for (const id of (await idsComprasPropiasEntre(empresa, desdeMs, hastaMs)).slice(0, MAX_COMPRAS_A_LEER)) {
       try {
         const d = (await holdedGet(empresa, `/purchases/${id}`)) as { id?: string; date?: string; contact_id?: string; contact_name?: string; notes?: string };
         if (d.id) salida.push({ id: d.id, fecha: String(d.date ?? ""), contactId: String(d.contact_id ?? ""), contactoNombre: String(d.contact_name ?? ""), notas: String(d.notes ?? "") });

@@ -85,6 +85,7 @@ import { obtenerBusquedasRecientes, obtenerResumenBusquedasWeb } from "../core/c
 import { obtenerAccionesPendientes } from "../core/jobs/accionesProgramadasStore";
 import { startScheduler, obtenerCantidadJobsEnCurso } from "../core/jobs/scheduler";
 import { ejecutarCierreInciertas } from "../core/jobs/cerrarInciertasAntiguas";
+import { ejecutarAuditoriaCargosExactos } from "../core/jobs/auditoriaCargosExactos";
 import { crearRouterProponerAccion } from "../core/tools/proponerAccionAdmin";
 import { programarRevisionEnSecoTrasDespliegue } from "../core/gmail/automatico/revisionEnSeco";
 import { revisarHoldedVsCashflow } from "../core/jobs/revisarHoldedVsCashflow";
@@ -704,6 +705,23 @@ app.post("/admin/cerrar-inciertas", express.json(), async (req, res) => {
   } catch (error) {
     console.error("[admin/cerrar-inciertas] Error:", error instanceof Error ? error.name : "Error");
     res.status(500).json({ error: "No se pudo completar el cierre." });
+  }
+});
+
+// Auditoría de cargos exactos no ofrecidos a demanda (mismo trabajo que el cron de las 8:45). Por defecto SIMULA (no avisa ni marca nada);
+// avisa solo con { "simular": false }. Solo lectura de Holded. Protegida por ADMIN_SECRET en la cabecera `x-admin-secret`.
+app.post("/admin/auditoria-cargos-exactos", express.json(), async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const esperado = process.env.ADMIN_SECRET;
+  if (!esperado) { res.status(503).json({ error: "ADMIN_SECRET no configurado en el servidor." }); return; }
+  const recibido = Buffer.from(String(req.get("x-admin-secret") ?? "")), correcto = Buffer.from(esperado);
+  if (recibido.length !== correcto.length || !timingSafeEqual(recibido, correcto)) { res.status(403).json({ error: "Secreto de administración inválido o ausente." }); return; }
+  try {
+    const r = await ejecutarAuditoriaCargosExactos({ simular: (req.body as { simular?: unknown } | undefined)?.simular !== false });
+    res.json({ simulado: r.simulado, comprasRevisadas: r.comprasRevisadas, ambiguos: r.ambiguos, hallazgos: r.hallazgos, nuevos: r.nuevos.length });
+  } catch (error) {
+    console.error("[admin/auditoria-cargos-exactos] Error:", error instanceof Error ? error.name : "Error");
+    res.status(500).json({ error: "No se pudo completar la auditoría." });
   }
 });
 
