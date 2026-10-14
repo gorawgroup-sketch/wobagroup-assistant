@@ -128,3 +128,12 @@ test("palabras de rubro («apartments», «villa»…) no hacen parecidos a dos 
   assert.ok(puntuarContactoParecido("Queen Home Apartments SRLS", "Queen Home Apartments") > 0, "el mismo comercio sigue reconociéndose por su nombre propio");
   assert.ok(puntuarContactoParecido("Uber", "UBER COLOMBIA") > 0);
 });
+
+test("puntuarDistintividad ignora palabras de rubro y formas societarias del nombre buscado (caso Queen, 2026-10-14)", () => {
+  const ajeno = "APARTMENT VILA OLÍMPICA BARCELONA NEXT TO BEACH&GARDEN";
+  const todos = [ajeno, "OSTERIA ULIVO TOP FOOD LUNIGIANA SRLS UNIPERSONALE", "WEY SRLS"];
+  assert.equal(puntuarDistintividad("Queen Home Apartments SRLS", ajeno, todos), 0);
+  assert.equal(puntuarDistintividad("Delia Stabile (Queen Apartments, vía Italianway S.p.A.)", ajeno, todos), 0);
+  assert.equal(puntuarDistintividad("Queen Home Apartments SRLS", "WEY SRLS", todos), 0);
+  assert.ok(puntuarDistintividad("Queen Home Apartments SRLS", "QUEEN HOME APARTMENTS", [...todos, "QUEEN HOME APARTMENTS"]) > 0, "el mismo comercio sigue reconociéndose");
+});

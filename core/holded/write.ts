@@ -883,7 +883,7 @@ function palabrasParecidasEstricto(a: string, b: string): boolean {
 export function puntuarDistintividad(objetivo: string, candidatoNombre: string, todosLosNombres: string[]): number {
   const palabrasObjetivo = normalizar(objetivo)
     .split(" ")
-    .filter((p) => p.length >= 5);
+    .filter((p) => p.length >= 5 && !esPalabraGenericaDeContacto(p));
   const palabrasCandidato = normalizar(candidatoNombre)
     .split(" ")
     .filter((p) => p.length >= 3);
@@ -1265,15 +1265,21 @@ function palabrasParecidas(a: string, b: string): boolean {
 const PALABRAS_GENERICAS_CONTACTO = new Set([
   "apartment", "apartments", "apartamento", "apartamentos", "appartement", "home", "homes", "house", "casa", "suites", "suite",
   "residence", "residencia", "resort", "hotels", "hoteles", "hostels", "hostal", "beach", "garden", "next", "vila", "villa", "villas",
+  // Formas societarias: «SRLS», «S.p.A.» no identifican a nadie (caso Queen: ofrecía «OSTERIA… SRLS», «AUTOGRILL ITALIA SPA»).
+  "srls", "spa", "snc", "sapa", "unipersonale", "gmbh", "limited", "company", "corporation",
+  // Países: «Italia» en el contacto y «Italianway» en el proveedor no son el mismo comercio.
+  "italia", "italy", "espana", "spain", "portugal", "france", "francia", "germany", "alemania", "colombia", "via",
 ]);
+const esPalabraGenericaDeContacto = (palabra: string): boolean =>
+  PALABRAS_GENERICAS_CONTACTO.has(palabra) || PALABRAS_GENERICAS_MARCA.has(palabra) || PALABRAS_VACIAS_MARCA.has(palabra);
 
 export function puntuarContactoParecido(nombre: string, nombreCandidato: string, pistaContextual?: string): number {
   const palabrasObjetivo = normalizar(nombre)
     .split(" ")
-    .filter((p) => p.length >= 3 && !PALABRAS_GENERICAS_CONTACTO.has(p) && !PALABRAS_GENERICAS_MARCA.has(p));
+    .filter((p) => p.length >= 3 && !esPalabraGenericaDeContacto(p));
   const palabrasCandidato = normalizar(nombreCandidato)
     .split(" ")
-    .filter((p) => p.length >= 3);
+    .filter((p) => p.length >= 3 && !esPalabraGenericaDeContacto(p));
   const scoreNombre = palabrasObjetivo
     .filter((po) => palabrasCandidato.some((pc) => palabrasParecidas(po, pc)))
     .reduce((suma, p) => suma + p.length, 0);
