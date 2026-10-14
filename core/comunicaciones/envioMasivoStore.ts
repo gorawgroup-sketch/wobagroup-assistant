@@ -8,7 +8,7 @@ import { conMutex } from "../utils/asyncMutex";
 const TAB_CABECERA = "_comunicaciones_masivas";
 const HEADERS_CABECERA = ["id", "chatId", "messageId", "descripcion", "asunto", "cuerpo", "creadoEn"];
 const TAB_DESTINATARIOS = "_comunicaciones_destinatarios";
-const HEADERS_DESTINATARIOS = ["comunicacion", "indice", "nombre", "email", "empresas", "estado", "creadoEn"];
+const HEADERS_DESTINATARIOS = ["comunicacion", "indice", "nombre", "email", "empresas", "estado", "creadoEn", "detalle"];
 const TTL_DESTINATARIOS_MS = 60 * 24 * 60 * 60 * 1000;
 export const MAX_CARACTERES_CUERPO = 20_000;
 export const mutexComunicacion = (id: string): string => `comunicacion-masiva:${id}`;
@@ -16,17 +16,17 @@ export const mutexComunicacion = (id: string): string => `comunicacion-masiva:${
 export type EstadoDestinatario = "pendiente" | "enviando" | "enviado" | "fallido" | "omitido";
 
 export interface Cabecera { id: string; chatId: number; messageId: number; descripcion: string; asunto: string; cuerpo: string; creadoEn: number }
-export interface DestinatarioGuardado { rowIndex: number; comunicacion: string; indice: number; nombre: string; email: string; empresas: string[]; estado: EstadoDestinatario; creadoEn: number }
+export interface DestinatarioGuardado { rowIndex: number; comunicacion: string; indice: number; nombre: string; email: string; empresas: string[]; estado: EstadoDestinatario; creadoEn: number; detalle?: string }
 export interface Comunicacion { cabecera: Cabecera & { rowIndex: number }; destinatarios: DestinatarioGuardado[] }
 
 const filaCabecera = (c: Cabecera): (string | number)[] => [c.id, c.chatId, c.messageId, c.descripcion, c.asunto, c.cuerpo, c.creadoEn];
-const filaDestinatario = (d: Omit<DestinatarioGuardado, "rowIndex">): (string | number)[] => [d.comunicacion, d.indice, d.nombre, d.email, JSON.stringify(d.empresas), d.estado, d.creadoEn];
+const filaDestinatario = (d: Omit<DestinatarioGuardado, "rowIndex">): (string | number)[] => [d.comunicacion, d.indice, d.nombre, d.email, JSON.stringify(d.empresas), d.estado, d.creadoEn, d.detalle ?? ""];
 
 function leerDestinatario(rowIndex: number, v: string[]): DestinatarioGuardado | undefined {
   let empresas: unknown;
   try { empresas = JSON.parse(v[4] || "[]"); } catch { return undefined; }
   if (!Array.isArray(empresas)) return undefined;
-  return { rowIndex, comunicacion: v[0], indice: Number(v[1]), nombre: v[2], email: v[3], empresas: empresas.map(String), estado: v[5] as EstadoDestinatario, creadoEn: Number(v[6]) || 0 };
+  return { rowIndex, comunicacion: v[0], indice: Number(v[1]), nombre: v[2], email: v[3], empresas: empresas.map(String), estado: v[5] as EstadoDestinatario, creadoEn: Number(v[6]) || 0, ...(v[7] ? { detalle: v[7] } : {}) };
 }
 
 export async function leerComunicacion(id: string): Promise<Comunicacion | undefined> {

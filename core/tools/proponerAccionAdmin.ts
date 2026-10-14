@@ -17,6 +17,8 @@ export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "reenviar_botones_propuesta_gasto",
   // Solo muestra el resumen del correo a una audiencia con sus botones; el correo lo envía el botón «Enviar» (superadmin).
   "proponer_correo_a_audiencia",
+  // Solo prepara el correo que pide a un creador el dato que falta en su gasto, con botón de envío (superadmin).
+  "solicitar_datos_faltantes_a_creadores",
 ]);
 
 function secretoValido(recibido: string | undefined, esperado: string): boolean {
