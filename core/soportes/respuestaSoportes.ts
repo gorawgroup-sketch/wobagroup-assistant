@@ -307,9 +307,14 @@ export function componerAnalisis(params: {
   const declaracion = sinSoporte.length
     ? ` Además, preparar la declaración de gastos sin soporte de ${params.empresa ?? "su empresa"} para ${nombre}${params.email ? ` (${params.email})` : ""} con la herramienta preparar_declaracion_gastos_sin_soporte y estos cargos: ${sinSoporte.map((c) => `${c.fecha} · ${c.comercio.trim()} · ${Math.abs(c.total)} ${c.monedaCuenta} (id ${c.id})`).join("; ")}; en la respuesta decirle que le llega ese documento para firmarlo y devolverlo.`
     : "";
-  const accionSugerida = (pendientes.length
-    ? `Responder a ${nombreDePila(nombre) || nombre} confirmando lo resuelto y pidiéndole solo lo que falta: ${pendientes.join("; ")}.`
-    : `Responder a ${nombreDePila(nombre) || nombre} agradeciendo la respuesta y confirmando lo resuelto; no queda nada por pedirle.`) + declaracion;
+  // Orden de ejecución al «Proceder» (caso real Kelly, 14-10-2026: el modelo gastó sus pasos en conciliaciones y nunca propuso el
+  // correo ni la declaración): 1) el correo de respuesta (proponer_envio_correo, en el mismo hilo); 2) la declaración si procede;
+  // las conciliaciones y los correos en cola NO se ejecutan aquí: los hace la cola/el flujo de gastos.
+  const accionSugerida = `PRIMERO, con proponer_envio_correo y en este mismo hilo: ` + (pendientes.length
+    ? `responder a ${nombreDePila(nombre) || nombre} confirmando lo resuelto y pidiéndole solo lo que falta: ${pendientes.join("; ")}.`
+    : `responder a ${nombreDePila(nombre) || nombre} agradeciendo la respuesta y confirmando lo resuelto; no queda nada por pedirle.`) +
+    declaracion +
+    " No concilies ni reproceses nada ahora: las conciliaciones y los correos anteriores en cola los resuelve el flujo de gastos.";
   return { tipo: "necesita_respuesta", resumen, accionSugerida, razon: "Respuesta a la solicitud de soportes de tarjeta: una acción por cargo." };
 }
 

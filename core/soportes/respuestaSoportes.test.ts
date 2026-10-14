@@ -72,7 +72,7 @@ test("caso real Alejandro: cada cargo recibe su propia acción y la respuesta so
   assert.match(a.resumen, /2\. 05\/09\/2026 · Dlo\*uber Rides[^]*Mantener el cargo pendiente como «no reconocido».*no volver a reclamárselo/);
   // 3 Payu*uber: el recibo ya soporta el 7,35 del 22/09 → pedir el del 23/09
   assert.match(a.resumen, /3\. 23\/09\/2026 · Payu\*uber[^]*ya soporta OTRO cargo, conciliado: 7,35 EUR del 22\/09[^]*Pedirle el recibo del viaje del 23\/09/);
-  assert.match(a.accionSugerida, /^Responder a Alejandro confirmando lo resuelto y pidiéndole solo lo que falta: el recibo del cargo de 7,37 EUR del 23\/09/);
+  assert.match(a.accionSugerida, /^PRIMERO, con proponer_envio_correo y en este mismo hilo: responder a Alejandro confirmando lo resuelto y pidiéndole solo lo que falta: el recibo del cargo de 7,37 EUR del 23\/09/);
   assert.doesNotMatch(a.accionSugerida, /Rappi|Dlo\*uber/, "lo resuelto o no reconocido no se vuelve a pedir");
   assert.match(a.resumen, /Adjuntos leídos: image\.png \(captura de la app del banco.*\); Receipt_22sep\.pdf \(gasto: Uber 26\.971,00 COP\)/);
 });
