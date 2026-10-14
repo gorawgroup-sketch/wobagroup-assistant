@@ -361,7 +361,10 @@ pidiendo. Si la nota no se puede leer, lo dice y no ejecuta nada. Detalle en `do
 
 Queda registrado que el operador decidió NO registrar ese comprobante (por correo y adjunto). En las siguientes
 revisiones ese adjunto se salta con «ya lo descartaste tú antes» y no se vuelve a proponer. Si más adelante sí hay que
-registrarlo, se pide por chat.
+registrarlo (o reprocesarlo con una corrección nueva), se pide por chat: **«vuelve a proponer el correo de X»** o
+«reprocesa el correo de X aunque lo haya descartado» → Wobi levanta el descarte (`revisar_correo_puntual` con
+`volver_a_proponer`) y lo procesa de nuevo con botones. Desde el servidor: `/admin/proponer-accion` con
+`{"tool":"revisar_correo_puntual","input":{"busqueda":"…","volver_a_proponer":true}}`.
 
 ### Lote de impuestos en el cashflow (secciones «Impuestos por pagar» y «Aplazamiento impuestos»)
 
@@ -537,6 +540,25 @@ Al terminar el dictado, revisa el texto y pulsa Consultar. Puedes editar nombres
 
 Un borrador sin enviar muestra Corregir texto y Cancelar y empezar de nuevo, junto a Enviar a WOBi en Telegram. Corregir cancela primero el borrador en el servidor y devuelve el texto al campo editable. Si la cancelación no se confirma, se mantiene la referencia y se consulta el estado. Una solicitud ya recibida o en ejecución no se presenta como cancelada.
 
+## Operación desde el servidor (puntos `/admin/*`)
+
+Para que quien opera el sistema resuelva un caso sin pedirle a Carlos que escriba comandos y sin ejecutar flujos de archivos
+desde un equipo local (la propuesta debe nacer en el servidor, donde viven los archivos y los botones). Todos exigen el
+secreto de administración (`ADMIN_SECRET`, cabecera `x-admin-secret` salvo donde se indique) y ninguno escribe en Holded por sí solo.
+
+- `POST /admin/proponer-accion` `{ "tool", "input" }` — ejecuta en el chat del superadministrador una herramienta de la lista cerrada
+  que **solo propone con botones**: `revisar_correo_puntual` (reprocesar un correo concreto; si es el correo activo de la cola,
+  responde que ya tiene su propuesta y hay que descartarla primero), `proponer_edicion_compra_holded`, `reenviar_botones_propuesta_gasto`, `proponer_correo_a_audiencia`.
+  La escritura la sigue haciendo el botón. (PR #480.)
+- `POST /admin/cerrar-inciertas` — cierre de operaciones inciertas antiguas; simula por defecto (`{"simular": false}` para cerrar). (PR #477.)
+- `POST /admin/auditoria-cargos-exactos` — auditoría de cargos exactos no ofrecidos; simula por defecto. (PR #479.)
+- `POST /admin/restaurar-comprobante` — reposición de comprobantes del manifiesto en compras sin adjuntos. (PR #476.)
+- `POST /admin/run-gmail-check?secret=…` — lanza la revisión de correo como `/revisarcorreo`.
+- `POST /admin/run-holded-check`, `/admin/run-holded-check-preliminar`, `/admin/run-fiscal-check`, `/admin/run-costos-check`,
+  `/admin/run-autorrevision-codigo` — disparan a demanda los chequeos programados correspondientes.
+- `GET /admin/uso-sheets`, `GET /admin/conocimiento-capturado`, `GET /admin/verificar-github-token` — solo lectura.
+
+Regla (principios de construcción, «Crecer ordenado»): antes de crear un punto nuevo, comprobar esta lista y `src/server.ts`.
 
 ## Correo a una audiencia (varias personas a la vez)
 

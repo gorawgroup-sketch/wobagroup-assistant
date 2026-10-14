@@ -57,7 +57,7 @@ import { buscarGastoDesdeCorreo } from "../gastos/gastoPorCorreoStore";
 import { revalidarRegistroRecienteDeCorreo } from "../gastos/verificarGastoPorCorreo";
 import { yaSeArchivoDesdeCorreo } from "../documental/documentoArchivadoPorCorreoStore";
 import { obtenerPropuestasClasificacionPorChat } from "../documental/classificationStore";
-import { gastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
+import { gastoDescartadoPorOperador, retirarGastoDescartadoPorOperador } from "../gastos/gastoDescartadoPorOperadorStore";
 import { describirGastoRegistrado } from "../gastos/describirGastoRegistrado";
 import { mensajeDeExceso } from "../correo/lectura/proteccionAdjuntos";
 import {
@@ -921,7 +921,7 @@ async function procesarCorreoLocalizado(
         await sendTelegramMessage(
           chatId,
           `📄 "${adjunto.filename}" (${correo.asunto}) — ya lo descartaste tú antes (${descartado.proveedor} — ` +
-            `${descartado.monto.toFixed(2)} ${descartado.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, dímelo por chat.`
+            `${descartado.monto.toFixed(2)} ${descartado.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, pídeme «vuelve a proponer el correo de ${correo.de.split("<")[0].trim() || "esa persona"}».`
         ).catch(() => {});
         if (deColaCorreo) {
           await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:adjunto:${adjunto.partId}:resolver`);
@@ -1134,7 +1134,7 @@ async function procesarCorreoLocalizado(
       await sendTelegramMessage(
         chatId,
         `📄 "${correo.asunto}" — ya lo descartaste tú antes (${descartadoEnCuerpo.proveedor} — ` +
-          `${descartadoEnCuerpo.monto.toFixed(2)} ${descartadoEnCuerpo.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, dímelo por chat.`
+          `${descartadoEnCuerpo.monto.toFixed(2)} ${descartadoEnCuerpo.moneda}); no lo vuelvo a proponer. Si quieres registrarlo, pídeme «vuelve a proponer el correo de ${correo.de.split("<")[0].trim() || "esa persona"}».`
       ).catch(() => {});
       if (deColaCorreo) await avanzarColaCorreoSiActivo(chatId, identidadCola, `correo:${correo.id}:cuerpo:resolver`);
       return;
@@ -1497,7 +1497,7 @@ export async function handleReintentarActivoCallback(callback: TelegramCallbackQ
 export async function procesarCorreoPuntual(
   chatId: number,
   busqueda: string,
-  opciones: { soloArchivar?: boolean } = {}
+  opciones: { soloArchivar?: boolean; volverAProponer?: boolean } = {}
 ): Promise<{
   encontrado: boolean;
   de?: string;
@@ -1514,7 +1514,7 @@ export async function procesarCorreoPuntual(
 async function procesarCorreoPuntualInterno(
   chatId: number,
   busqueda: string,
-  opciones: { soloArchivar?: boolean } = {}
+  opciones: { soloArchivar?: boolean; volverAProponer?: boolean } = {}
 ): Promise<{
   encontrado: boolean;
   de?: string;
@@ -1585,6 +1585,13 @@ async function procesarCorreoPuntualInterno(
     }
     await procesarCorreoLocalizado(chatId, correo, false, { soloArchivar: true });
     return { encontrado: true, de: correo.de, asunto: correo.asunto, remitenteOriginal, adjuntos: correo.adjuntos.length };
+  }
+
+  // «Vuelve a proponerlo»: el operador descartó antes este correo (o uno de sus adjuntos) y ahora sí quiere registrarlo.
+  // Se levanta el descarte ANTES de procesar; si no, el loop lo saltaría con «ya lo descartaste tú antes».
+  if (opciones.volverAProponer) {
+    const retirados = await retirarGastoDescartadoPorOperador(correo.id);
+    console.log(`[revisarCorreoNuevo] Reabierto el correo ${correo.id} a petición del operador: ${retirados} descarte(s) retirado(s).`);
   }
 
   const previa = await comprobarCorreoDisponible(correo.threadId, correo.id);
