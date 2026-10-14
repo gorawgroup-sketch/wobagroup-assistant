@@ -159,7 +159,9 @@ export async function reenviarPropuestaGasto(propuestaInicial: PropuestaGasto, e
       ? ""
       : propuesta.hayMovimientoBancario
         ? `\n\n💳 Sí hay un movimiento bancario real sin conciliar que coincide en monto y fecha — puedes usar "Crear y conciliar".` +
-          (propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "por_confirmar"
+          (propuesta.movimientosAmbiguos?.[0]?.aviso
+            ? `\n⚠️ ${propuesta.movimientosAmbiguos[0].aviso}. Confírmalo antes de aprobar.`
+            : propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "por_confirmar"
             ? `\n⚠️ El nombre del cargo ("${propuesta.movimientosAmbiguos[0].descripcion}") no coincide con el proveedor ("${propuesta.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. Confírmalo antes de aprobar.`
             : propuesta.movimientosAmbiguos?.[0]?.compatibilidad === "aprendido"
               ? `\n✔ Este cargo ("${propuesta.movimientosAmbiguos[0].descripcion}") ya lo confirmaste antes para este proveedor.`

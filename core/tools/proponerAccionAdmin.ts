@@ -13,6 +13,9 @@ import { executeTool } from "./registry";
  */
 export const HERRAMIENTAS_PERMITIDAS: ReadonlySet<string> = new Set([
   "revisar_correo_puntual",
+  // Proponen un correo (borrador con «Enviar así») y la declaración de gastos sin soporte (documento en Drive + borrador): nada sale sin botón.
+  "proponer_envio_correo",
+  "preparar_declaracion_gastos_sin_soporte",
   "proponer_edicion_compra_holded",
   "reenviar_botones_propuesta_gasto",
   // Solo muestra el resumen del correo a una audiencia con sus botones; el correo lo envía el botón «Enviar» (superadmin).

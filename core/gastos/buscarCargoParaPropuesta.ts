@@ -2,6 +2,7 @@ import { buscarCargoMayorDelProveedor, buscarMovimientoAproximado, buscarMovimie
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { crearTrazaBusqueda, type TrazaBusqueda } from "../holded/trazaBusqueda";
 import type { Empresa } from "../holded/client";
+import { DIAS_MAXIMOS_EXACTO_PREFERIDO, diasEntre, preferirAproximadoDelDia } from "./cargoDelDia";
 
 /**
  * ÚNICA jerarquía para elegir el cargo bancario de una propuesta de gasto (la usan la renovación de botones, la corrección de
@@ -62,10 +63,15 @@ export async function buscarCargoParaPropuesta(
   // Si el barrido aproximado falla, no se puede afirmar «no hay cargo por ese importe»: tampoco se ofrece uno mayor.
   let busquedaCompleta = true;
 
-  if ((exactos.length === 0 || soloPorConfirmar) && c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
+  // Proveedor recurrente: exactos de otra fecha frente a un aproximado del mismo día → gana el del día (ver cargoDelDia.ts).
+  const exactosLejanos = exactos.length > 0 && !soloPorConfirmar && exactos.every((m) => diasEntre(m.fecha, c.fecha) > DIAS_MAXIMOS_EXACTO_PREFERIDO);
+  if ((exactos.length === 0 || soloPorConfirmar || exactosLejanos) && c.proveedor.trim() && !esProveedorNoIdentificado(c.proveedor)) {
     try {
       const aproximados = await deps.aproximado(c.empresa, { monto: c.monto, fecha: c.fecha, moneda: c.moneda, proveedor: c.proveedor, nombresAlternativos: c.nombresAlternativos });
-      if (aproximados.length > 0) recomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
+      if (exactosLejanos) {
+        const delDia = preferirAproximadoDelDia(exactos, aproximados, c.fecha);
+        if (delDia) recomendado = { ...delDia, origenCoincidencia: "aproximada" };
+      } else if (aproximados.length > 0) recomendado = { ...aproximados[0], origenCoincidencia: "aproximada" };
     } catch (error) {
       busquedaCompleta = false;
       // Un fallo del segundo barrido de Holded no debe hacer perder los cargos exactos ya encontrados.

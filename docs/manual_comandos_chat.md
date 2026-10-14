@@ -508,6 +508,8 @@ Pedido de Carlos (04-10-2026): las órdenes frecuentes deben estar a un clic. El
 
 ### Botón «➕ Es otro cargo: crear el gasto (concilio después)» (08-10-2026; rótulos aclarados el 14-10-2026)
 
+Duplicados del banco: si Holded muestra el mismo cargo dos veces (misma descripción, importe y fecha, uno conciliado y otro «pendiente»), la copia pendiente solo se ofrece «por confirmar» con el aviso «posible duplicado…» (dos compras iguales el mismo día son posibles): nunca se recomienda ni se concilia sola; si es una copia de la sincronización, hay que borrarla en Holded. Proveedor recurrente (mismo importe cada pocos días): si todos los cargos de importe exacto son de otra fecha (más de 2 días) y hay uno del mismo día con unos céntimos de diferencia, se elige el del día.
+
 Aviso «movimiento bancario YA CONCILIADO»: desde el 14-10-2026 un cargo conciliado solo cuenta como posible duplicado si su fecha está a ≤2 días del comprobante (proveedores recurrentes como Anthropic cobran el mismo importe cada pocos días); los lejanos se apartan y la búsqueda normal encuentra el cargo libre del día. Sus botones: «➕ Es otro cargo: crear el gasto (concilio después)» · «🔄 Volver a comprobar el banco y reprocesar» (tras liberar un vínculo en Holded) · «✅ Ya estaba registrado: cerrar este correo» · «➡️ Aplazar este correo y seguir con la cola».
 Aparece cuando Wobi encuentra un movimiento bancario **ya conciliado** parecido al recibo y por eso no propone crear el gasto (caso real: recibo de Anthropic del día, cuyo cargo llega al banco al día siguiente; el movimiento «probable» era otro). Al pulsarlo, Wobi da ese movimiento por ajeno y manda la propuesta normal con «Crear gasto»; la conciliación se hace después con «Buscar el cargo de nuevo» cuando el cargo real aparezca. No escribe nada en Holded hasta que se pulse «Crear gasto». Además, ese aviso ya no se repite si la misma pregunta sigue viva para el mismo correo.
 
@@ -564,7 +566,7 @@ Para que quien opera el sistema resuelva un caso sin pedirle a Carlos que escrib
 desde un equipo local (la propuesta debe nacer en el servidor, donde viven los archivos y los botones). Todos exigen el
 secreto de administración (`ADMIN_SECRET`, cabecera `x-admin-secret` salvo donde se indique) y ninguno escribe en Holded por sí solo.
 
-- `POST /admin/proponer-accion` `{ "tool", "input" }` — ejecuta en el chat del superadministrador una herramienta de la lista cerrada
+- `POST /admin/proponer-accion` `{ "tool", "input" }` (lista permitida en `core/tools/proponerAccionAdmin.ts`; incluye `proponer_envio_correo` y `preparar_declaracion_gastos_sin_soporte`, que solo proponen con botones) — ejecuta en el chat del superadministrador una herramienta de la lista cerrada
   que **solo propone con botones**: `revisar_correo_puntual` (reprocesar un correo concreto; si es el correo activo de la cola,
   responde que ya tiene su propuesta y hay que descartarla primero), `proponer_edicion_compra_holded`, `reenviar_botones_propuesta_gasto`, `proponer_correo_a_audiencia`.
   La escritura la sigue haciendo el botón. (PR #480.)

@@ -46,6 +46,7 @@ import type { Empresa } from "../holded/client";
 import { esProveedorNoIdentificado } from "../holded/duplicateSignals";
 import { buscarGastoProcesadoPorIdentidad, registrarGastoDesdeCorreo } from "./gastoPorCorreoStore";
 import { conciliadosCercanosAlComprobante } from "./conciliadosCercanos";
+import { DIAS_MAXIMOS_EXACTO_PREFERIDO, diasEntre, preferirAproximadoDelDia } from "./cargoDelDia";
 import { buscarCompraEnlazadaAlCargo } from "./gastoYaRegistradoPorCargo";
 import { buscarMismaEstanciaRegistrada } from "./mismaEstanciaRegistrada";
 import { calcularHuellaContenido } from "./identidadGasto";
@@ -1198,9 +1199,19 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
       // Un cargo que solo «por confirmar» (nombre distinto) es la última opción: si hay uno aproximado que sí coincide
       // por nombre, gana este último.
       const soloPorConfirmar = candidatosMov.length > 0 && candidatosMov.every((c) => c.compatibilidad === "por_confirmar");
-      const aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
+      // Proveedor recurrente: exactos de otra fecha frente a un aproximado del mismo día → gana el del día (ver cargoDelDia.ts).
+      const exactosLejanos = candidatosMov.length > 0 && !soloPorConfirmar && candidatosMov.every((m) => diasEntre(m.fecha, datos.fecha) > DIAS_MAXIMOS_EXACTO_PREFERIDO);
+      let aproximadosPrevios = soloPorConfirmar && !esProveedorNoIdentificado(datos.proveedor)
         ? await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, nombresAlternativos: datos.nombresEnDocumento })
         : [];
+      if (exactosLejanos && !esProveedorNoIdentificado(datos.proveedor)) {
+        const aproximadosDelDia = await buscarMovimientoAproximado(empresa, { monto: montoParaHolded, fecha: datos.fecha, moneda: monedaParaHolded, proveedor: datos.proveedor, nombresAlternativos: datos.nombresEnDocumento });
+        const delDia = preferirAproximadoDelDia(candidatosMov, aproximadosDelDia, datos.fecha);
+        if (delDia) {
+          console.log("[procesarGastoEntrante] Exactos de otra fecha apartados; gana el cargo aproximado del día:", { fecha: datos.fecha, elegido: `${delDia.descripcion} ${delDia.fecha}` });
+          aproximadosPrevios = [delDia];
+        }
+      }
       if (aproximadosPrevios.length > 0) {
         movimientoAproximado = { ...aproximadosPrevios[0], origenCoincidencia: "aproximada" };
         otrosAproximados = aproximadosPrevios.length - 1;
@@ -1329,7 +1340,9 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         `"${movimientoBancario.descripcion || "(sin descripción)"}" — ${movimientoBancario.monto.toFixed(2)} ${movimientoBancario.moneda}${notaAproximacion} ` +
         `(${movimientoBancario.fecha}). El cargo ya está en el banco, solo falta registrarlo en Compras.` +
         notaOtraMoneda(movimientoBancario) +
-        (movimientoBancario.compatibilidad === "por_confirmar"
+        (movimientoBancario.aviso
+          ? `\n⚠️ ${movimientoBancario.aviso}. Confírmalo antes de aprobar "Crear y conciliar".`
+          : movimientoBancario.compatibilidad === "por_confirmar"
           ? `\n⚠️ El nombre del cargo no coincide con el proveedor ("${datos.proveedor}"): se sugiere solo porque coinciden importe, moneda y fecha. ` +
             `Confírmalo antes de aprobar "Crear y conciliar"; si lo confirmas, Wobi recordará este nombre para la próxima vez.`
           : "")
@@ -1345,7 +1358,7 @@ export async function procesarGastoEntrante(entrada: GastoEntrante): Promise<Res
         : candidatosMovAmbiguos.length > 0
           ? `\n\n💳 Encontré ${candidatosMovAmbiguos.length} movimientos bancarios parecidos, no sé cuál es el correcto:\n` +
             candidatosMovAmbiguos
-              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
+              .map((m, i) => `  ${i + 1}. "${m.descripcion || "(sin descripción)"}" — ${m.monto.toFixed(2)} ${m.moneda} (${m.fecha})${m.aviso ? ` ⚠️ ${m.aviso}` : m.compatibilidad === "por_confirmar" ? " ⚠️ nombre distinto" : m.compatibilidad === "aprendido" ? " ✔ confirmado antes para este proveedor" : ""}`)
               .join("\n") +
             `\nMarca "🔗 Conciliar con #N" abajo (o "Crear (sin conciliar)" si ninguno es) y aprueba tu selección.`
           : movimientosTipoCambio.length > 0
