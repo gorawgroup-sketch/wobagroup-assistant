@@ -150,3 +150,13 @@ test("con la fecha bloqueada, el botón concilia contra el movimiento recomendad
   assert.match(bloque, /recomendado \? "gasto_nuevo_conciliar" : "gasto_nuevo"/);
   assert.match(fuente, /fecha: propuesta\.movimientosAmbiguos\?\.\[0\]\?\.fecha \|\| propuesta\.fecha,/);
 });
+
+// Carlos, 14-10-2026 (caso Kelly / Crepes & Waffles): si el dato ya se le pidió al creador, la cola no espera al operador.
+test("la cola aparca el correo activo cuando el dato que falta ya se pidió al creador y sigue con el siguiente", async () => {
+  const fuente = await readFile(join(process.cwd(), "core/jobs/revisarCorreoNuevo.ts"), "utf8");
+  const fn = fuente.slice(fuente.indexOf("export async function aparcarActivoSiEsperaAlCreador"), fuente.indexOf("export async function avanzarColaCorreoSiActivo("));
+  assert.match(fn, /pendientesYaSolicitados\(\)/);
+  assert.match(fn, /pendientes\.every\(\(p\) => solicitados\.has\(p\.id\)\)/, "solo si TODAS las preguntas del correo ya se pidieron");
+  assert.match(fn, /avanzarColaCorreoSiActivo\(chatId, \{ threadId: activo\.id, mensajeId: activo\.mensajeId \}/);
+  assert.match(fuente, /if \(activo && await aparcarActivoSiEsperaAlCreador\(chatId, activo\)\)/);
+});
